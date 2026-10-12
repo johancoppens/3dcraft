@@ -6,7 +6,7 @@
 use crate::frames::{Mode, Scheduler, Ticket};
 use crate::state::{CameraState, ProjectionKind, UiState, VIEWS};
 use crate::theme::{Tokens, color, color_alpha};
-use crate::viewport::{self, Composed, LineKind, MAX_SIDE, MIN_SIDE, Overlay, Quality};
+use crate::viewport::{self, Composed, MAX_SIDE, MIN_SIDE, Overlay, Quality};
 use craft3d_engine::{DocumentStatus, FeatureState, Scene, Session};
 use craft3d_math::Bbox3;
 use std::sync::Arc;
@@ -935,13 +935,20 @@ fn paint_overlay(
         )
     };
     for line in &overlay.lines {
+        let tint = color_alpha(
+            line.kind.color(tokens),
+            viewport::opacity(line.hidden, tokens),
+        );
         painter.line_segment(
             [place(line.from), place(line.to)],
-            egui::Stroke::new(line.kind.width(tokens), color(line.kind.color(tokens))),
+            egui::Stroke::new(line.kind.width(tokens), tint),
         );
     }
-    for (at, kind) in &overlay.points {
-        let kind: LineKind = *kind;
-        painter.circle_filled(place(*at), tokens.point_radius, color(kind.color(tokens)));
+    for point in &overlay.points {
+        let tint = color_alpha(
+            point.kind.color(tokens),
+            viewport::opacity(point.hidden, tokens),
+        );
+        painter.circle_filled(place(point.at), tokens.point_radius, tint);
     }
 }

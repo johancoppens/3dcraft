@@ -481,8 +481,10 @@ fn ui_screenshot_over_tcp_is_a_png_of_the_requested_size_that_is_not_blank() {
     let body = |x: usize, y: usize| {
         let i = (y * 300 + x) * 3;
         let p = [rgb[i], rgb[i + 1], rgb[i + 2]];
-        // Shaded grey, not an axis or the background.
-        p != background && p[0].abs_diff(p[2]) < 40
+        // Shaded grey: not an axis, not the background, and not the dark
+        // line along the plate's edges, which is drawn on its outline and
+        // so reaches half its width beyond it.
+        p != background && p[0].abs_diff(p[2]) < 40 && p[0] > 80
     };
     let columns = (0..300).filter(|&x| (0..200).any(|y| body(x, y))).count();
     let rows = (0..200).filter(|&y| (0..300).any(|x| body(x, y))).count();

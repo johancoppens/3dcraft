@@ -498,7 +498,7 @@ fn clicking_a_row_selects_the_feature_and_its_sketch_is_highlighted() {
             .lines
             .iter()
             .map(|l| l.kind)
-            .filter(|k| !matches!(k, LineKind::Axis(_)))
+            .filter(|k| !matches!(k, LineKind::Axis(_) | LineKind::Edge))
             .collect()
     };
     assert_eq!(kinds(Some("F3")), [LineKind::Selected; 4]);

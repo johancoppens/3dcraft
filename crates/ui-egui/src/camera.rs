@@ -295,6 +295,20 @@ impl Projector {
         (x.is_finite() && y.is_finite() && depth.is_finite()).then_some(Projected { x, y, depth })
     }
 
+    /// The depth at the fraction `t` of the straight line on the image
+    /// from `a` to `b`, the projections of the ends of a segment in space.
+    /// Along a line on the screen of a perspective camera it is the
+    /// reciprocal of the depth that changes evenly, not the depth.
+    pub fn depth_between(&self, a: &Projected, b: &Projected, t: f64) -> f64 {
+        if self.perspective && a.depth > 0.0 && b.depth > 0.0 {
+            let inverse = 1.0 / a.depth + (1.0 / b.depth - 1.0 / a.depth) * t;
+            if inverse > 0.0 {
+                return 1.0 / inverse;
+            }
+        }
+        a.depth + (b.depth - a.depth) * t
+    }
+
     /// The part of the segment `a`–`b` in front of the eye, projected. A
     /// segment that crosses the eye plane is cut there rather than dropped.
     pub fn segment(&self, a: Vec3, b: Vec3) -> Option<(Projected, Projected)> {
