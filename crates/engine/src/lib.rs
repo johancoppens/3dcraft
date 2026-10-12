@@ -15,6 +15,7 @@ mod body_cmds;
 mod commands;
 mod file_cmds;
 mod params;
+mod query_cmds;
 mod scene;
 mod sketch_cmds;
 mod sweep_cmds;
@@ -151,6 +152,7 @@ impl Session {
                 sketch_cmds::SPECS,
                 sweep_cmds::SPECS,
                 body_cmds::SPECS,
+                query_cmds::SPECS,
             ]
             .concat()
         })
