@@ -54,7 +54,13 @@ pub const APP_LAYER: u32 = 8;
 const TESTKIT: u32 = 100;
 
 /// Dependencies allowed inside one layer: (crate, depends on).
-const SAME_LAYER: &[(&str, &str)] = &[("geom", "math")];
+const SAME_LAYER: &[(&str, &str)] = &[
+    ("geom", "math"),
+    // The wgpu renderer takes its camera, parameters, frame type and shading
+    // constants from the CPU reference renderer, so the two share one
+    // projection and can be compared pixel by pixel (docs/architecture.md §7).
+    ("gpu", "render"),
+];
 
 /// Format crates that must not depend on any workspace crate.
 const STANDALONE: &[&str] = &["step", "meshio", "zipstore"];

@@ -9,3 +9,15 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+craft3d-math.workspace = true
+craft3d-tess.workspace = true
+craft3d-render.workspace = true
+wgpu.workspace = true
+
+# Blocking entry points exist on native targets only; the browser has no
+# way to block on a future.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+pollster.workspace = true
+
+[dev-dependencies]
+craft3d-testkit.workspace = true
