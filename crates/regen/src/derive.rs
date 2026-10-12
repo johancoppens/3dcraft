@@ -31,31 +31,32 @@ pub(crate) struct Derived {
 
 /// The body a feature is made from: the source has to exist, come
 /// earlier, have succeeded, have a body, and still own it.
-fn source_body<'a>(
+pub(crate) fn source_body<'a>(
     doc: &Document,
     earlier: &'a [FeatureResult],
     id: FeatureId,
+    role: &str,
 ) -> Result<&'a FeatureResult, String> {
     let Some(source) = doc.feature(id) else {
         return Err(format!(
-            "source: there is no feature {id} (was it deleted?)"
+            "{role}: there is no feature {id} (was it deleted?)"
         ));
     };
     let name = &source.name;
     let Some(outcome) = earlier.iter().find(|r| r.id == id) else {
         return Err(format!(
-            "source: `{name}` comes after this feature in the history; move it before (feature.move)"
+            "{role}: `{name}` comes after this feature in the history; move it before (feature.move)"
         ));
     };
     match &outcome.status {
         Status::Ok => {}
-        Status::Suppressed => return Err(format!("source: `{name}` is suppressed")),
-        Status::RolledBack => return Err(format!("source: `{name}` is rolled back")),
-        Status::Failed(_) => return Err(format!("source: `{name}` failed; fix it first")),
+        Status::Suppressed => return Err(format!("{role}: `{name}` is suppressed")),
+        Status::RolledBack => return Err(format!("{role}: `{name}` is rolled back")),
+        Status::Failed(_) => return Err(format!("{role}: `{name}` failed; fix it first")),
     }
     if outcome.body.is_none() {
         return Err(format!(
-            "source: `{name}` is a {} and has no body",
+            "{role}: `{name}` is a {} and has no body",
             source.kind.type_name()
         ));
     }
@@ -64,7 +65,7 @@ fn source_body<'a>(
             .feature(taker)
             .map_or_else(|| taker.to_string(), |f| f.name.clone());
         return Err(format!(
-            "source: the body of `{name}` already went into `{taker}`; use that feature as the source, or give `{taker}` keep"
+            "{role}: the body of `{name}` already went into `{taker}`; use that feature as the source, or give `{taker}` keep"
         ));
     }
     Ok(outcome)
@@ -252,7 +253,7 @@ pub(crate) fn build(
             feature.kind.type_name()
         ));
     };
-    let source = source_body(doc, earlier, source_id)?;
+    let source = source_body(doc, earlier, source_id, "source")?;
     let Some(body) = &source.body else {
         return Err("source: it has no body".to_string());
     };

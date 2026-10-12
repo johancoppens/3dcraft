@@ -1,5 +1,15 @@
-//! TEMPORARY: stands in for `craft3d_kernel::revolve::revolve` until it is
-//! merged from its own branch. Delete this file then.
+//! TEMPORARY: stands in for `craft3d_kernel::revolve::revolve` and
+//! `craft3d_kernel::boolean::boolean` until they are merged from their own
+//! branches. Delete this file then.
+
+pub(crate) fn boolean(
+    _target: &craft3d_topo::Body,
+    _tool: &craft3d_topo::Body,
+    _op: craft3d_doc::BooleanOp,
+    _tolerance: &craft3d_math::Tolerance,
+) -> Result<(craft3d_topo::Body, Vec<(u64, usize)>), String> {
+    Err("booleans are not built yet".to_string())
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn revolve(

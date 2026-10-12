@@ -374,7 +374,7 @@ fn a_sketch_lies_on_a_face_of_a_copy() {
     for (face, words) in [
         (
             "F3:copy(2)/F2:side(e99)",
-            vec!["Bar", "no longer has a face"],
+            vec!["Ring", "no longer has a face"],
         ),
         (
             "F3:copy(2)/F1:side(e5)",

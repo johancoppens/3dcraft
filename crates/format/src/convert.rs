@@ -215,6 +215,21 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 normal: exprs_to_manifest(normal),
                 keep: *keep,
             },
+            doc::FeatureKind::Boolean(doc::Boolean {
+                op,
+                target: doc::FeatureId(target),
+                tool: doc::FeatureId(tool),
+                keep_tool,
+            }) => manifest::FeatureKind::Boolean {
+                op: match op {
+                    doc::BooleanOp::Union => manifest::BooleanOp::Union,
+                    doc::BooleanOp::Subtract => manifest::BooleanOp::Subtract,
+                    doc::BooleanOp::Intersect => manifest::BooleanOp::Intersect,
+                },
+                target: *target,
+                tool: *tool,
+                keep_tool: *keep_tool,
+            },
             doc::FeatureKind::Pattern(doc::Pattern {
                 source: doc::FeatureId(source),
                 count,
@@ -726,6 +741,21 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
                 point: exprs_to_doc(point),
                 normal: exprs_to_doc(normal),
                 keep,
+            }),
+            manifest::FeatureKind::Boolean {
+                op,
+                target,
+                tool,
+                keep_tool,
+            } => doc::FeatureKind::Boolean(doc::Boolean {
+                op: match op {
+                    manifest::BooleanOp::Union => doc::BooleanOp::Union,
+                    manifest::BooleanOp::Subtract => doc::BooleanOp::Subtract,
+                    manifest::BooleanOp::Intersect => doc::BooleanOp::Intersect,
+                },
+                target: doc::FeatureId(target),
+                tool: doc::FeatureId(tool),
+                keep_tool,
             }),
             manifest::FeatureKind::Pattern {
                 source,

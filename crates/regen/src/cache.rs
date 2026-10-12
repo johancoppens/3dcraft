@@ -242,11 +242,12 @@ pub(crate) fn features(
         };
         // A feature made from another one's body takes that body, on a
         // reused result as on a rebuilt one.
-        if matches!(result.status, Status::Ok)
-            && let Some((source, false)) = feature.kind.source()
-            && let Some(taken) = results.iter_mut().find(|r| r.id == source)
-        {
-            taken.consumed_by = Some(feature.id);
+        if matches!(result.status, Status::Ok) {
+            for (source, keep) in feature.kind.sources() {
+                if !keep && let Some(taken) = results.iter_mut().find(|r| r.id == source) {
+                    taken.consumed_by = Some(feature.id);
+                }
+            }
         }
         stamps.insert(feature.id, stamp);
         results.push(result);

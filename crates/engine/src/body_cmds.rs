@@ -10,7 +10,9 @@
 use crate::commands::{Run, add_feature, exprs, fail, feature_ref, origin, required, spec};
 use crate::params::Params;
 use crate::{CommandSpec, Session};
-use craft3d_doc::{Expr, FeatureKind, Mirror, Pattern, PatternLayout, Transform};
+use craft3d_doc::{
+    Boolean, BooleanOp, Expr, FeatureKind, Mirror, Pattern, PatternLayout, Transform,
+};
 use serde_json::Value;
 
 pub(crate) static SPECS: &[CommandSpec] = &[
@@ -20,6 +22,8 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Adds a feature whose body is the body of source mirrored in the plane through point with the given normal. With keep the source keeps its body and this is a mirrored copy.", doc: true, feature_mirror),
     spec!("feature.pattern", "Pattern", r#"{"source": id or name, "count": expr, "step": [expr, expr, expr], "angle": expr, "axis": [number, number, number] = [0, 0, 1], "point": [expr, expr, expr] = [0, 0, 0], "name": string = automatic}"#,
         "Adds a feature whose body is count instances of the body of source, the source included. Linear: give step, the shift from one instance to the next. Circular: give angle, the turn from one instance to the next about the line through point along axis (\"360 deg / n\" with count n goes evenly round). count is a whole number and may be a formula of variables. The instances must not overlap each other. The faces of instance i are named \"F5:copy(i)/...\".", doc: true, feature_pattern),
+    spec!("feature.boolean", "Boolean", r#"{"op": "union|subtract|intersect", "target": id or name, "tool": id or name, "keepTool": boolean = false, "name": string = automatic}"#,
+        "Adds a feature whose body is the bodies of target and tool combined: union is everything in either, subtract is the target without what the tool covers, intersect is what is in both. Both bodies go into it; with keepTool the tool keeps its body, to use it again. Faces keep their names with a prefix: \"F7:copy(0)/...\" for a face of the target, \"F7:copy(1)/...\" for one of the tool. What the kernel cannot combine yet fails with the reason and the faces involved.", doc: true, feature_boolean),
 ];
 
 fn triple(
@@ -113,6 +117,32 @@ fn feature_pattern(session: &mut Session, params: &Value) -> Run {
         source,
         count,
         layout,
+    });
+    add_feature(session, ID, p.str("name")?, kind)
+}
+
+fn feature_boolean(session: &mut Session, params: &Value) -> Run {
+    const ID: &str = "feature.boolean";
+    let p = Params::new(ID, params, &["op", "target", "tool", "keepTool", "name"])?;
+    let op = p.required_str("op")?;
+    let Some(op) = BooleanOp::from_name(op) else {
+        return fail(format!(
+            "{ID}: unknown op `{op}`; use union, subtract or intersect"
+        ));
+    };
+    let doc = session.document()?.history.current();
+    let target = feature_ref(doc, &p, ID, "target")?;
+    let tool = feature_ref(doc, &p, ID, "tool")?;
+    if target == tool {
+        return fail(format!(
+            "{ID}: `target` and `tool` are the same feature; a body cannot be combined with itself"
+        ));
+    }
+    let kind = FeatureKind::Boolean(Boolean {
+        op,
+        target,
+        tool,
+        keep_tool: p.bool("keepTool")?.unwrap_or(false),
     });
     add_feature(session, ID, p.str("name")?, kind)
 }

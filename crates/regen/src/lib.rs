@@ -16,6 +16,7 @@
 //! Regeneration with a [`RegenCache`] rebuilds only the features an edit
 //! touches, and gives exactly what a full regeneration gives ([`cache`]).
 
+mod boolean;
 mod cache;
 mod derive;
 mod extrude;
@@ -321,7 +322,10 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
         FeatureKind::Extrude(_) => return Err("an extrusion needs its sketch".to_string()),
         FeatureKind::Revolve(_) => return Err("a revolution needs its sketch".to_string()),
         // Built in `features`, which knows the earlier bodies.
-        FeatureKind::Transform(_) | FeatureKind::Mirror(_) | FeatureKind::Pattern(_) => {
+        FeatureKind::Transform(_)
+        | FeatureKind::Mirror(_)
+        | FeatureKind::Pattern(_)
+        | FeatureKind::Boolean(_) => {
             return Err(format!(
                 "a {} needs the body it is made from",
                 feature.kind.type_name()
@@ -451,6 +455,19 @@ fn build_feature(
         match swept.and_then(|(body, origins)| checked(doc, body).map(|body| (body, origins))) {
             Ok((body, origins)) => {
                 names = Some(Arc::new(Names::of_origins(feature.id, &origins)));
+                (Status::Ok, Some(Arc::new(body)))
+            }
+            Err(reason) => (Status::Failed(reason), None),
+        }
+    } else if let FeatureKind::Boolean(boolean) = &feature.kind {
+        match boolean::build(doc, feature.id, boolean, earlier)
+            .and_then(|(body, names)| checked(doc, body).map(|body| (body, names)))
+        {
+            Ok((body, made_names)) => {
+                names = made_names.map(Arc::new);
+                // Neither operand moves: a face of the result lies where
+                // the face it came from lies.
+                instances = Some(Arc::new(vec![Transform::IDENTITY; 2]));
                 (Status::Ok, Some(Arc::new(body)))
             }
             Err(reason) => (Status::Failed(reason), None),

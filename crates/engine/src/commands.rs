@@ -75,7 +75,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Adds a ring torus about axis, centred at position: major is the radius of the ring, minor of the tube.", doc: true, feature_torus),
     spec!("feature.extrude", "Extrude", r#"{"sketch": id or name, "distance": expr, "symmetric": boolean = false, "name": string = automatic}"#,
         "Adds a solid by sweeping the closed profiles of a sketch along its normal: loops of lines and arcs, and circles; a loop inside another is a hole. A negative distance goes the other way; symmetric puts half on each side of the sketch plane.", doc: true, feature_extrude),
-    spec!("feature.edit", "Edit Feature", r#"{"feature": id or name, "size": [expr; 3], "position": [expr; 3], "axis": [number; 3], "angle": expr, "radius": expr, "height": expr, "major": expr, "minor": expr, "distance": expr, "symmetric": boolean, "translate": [expr; 3], "pivot": [expr; 3], "point": [expr; 3], "normal": [number; 3], "step": [expr; 3], "count": expr, "keep": boolean}"#,
+    spec!("feature.edit", "Edit Feature", r#"{"feature": id or name, "size": [expr; 3], "position": [expr; 3], "axis": [number; 3], "angle": expr, "radius": expr, "height": expr, "major": expr, "minor": expr, "distance": expr, "symmetric": boolean, "translate": [expr; 3], "pivot": [expr; 3], "point": [expr; 3], "normal": [number; 3], "step": [expr; 3], "count": expr, "keep": boolean, "keepTool": boolean}"#,
         "Changes parameters of a feature; give only the ones to change. Which ones a feature has depends on its kind (document.inspect shows them under params).", doc: true, feature_edit),
     spec!("feature.rename", "Rename Feature", r#"{"feature": id or name, "name": string}"#,
         "Renames a feature.", doc: true, feature_rename),
@@ -644,7 +644,7 @@ fn feature_extrude(session: &mut Session, params: &Value) -> Run {
 }
 
 /// The parameters `feature.edit` can change, by name.
-const EDITABLE: [&str; 17] = [
+const EDITABLE: [&str; 18] = [
     "size",
     "position",
     "axis",
@@ -662,6 +662,7 @@ const EDITABLE: [&str; 17] = [
     "step",
     "count",
     "keep",
+    "keepTool",
 ];
 
 fn feature_edit(session: &mut Session, params: &Value) -> Run {
@@ -692,7 +693,7 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
     ] {
         p.expr(key)?;
     }
-    for key in ["symmetric", "keep"] {
+    for key in ["symmetric", "keep", "keepTool"] {
         p.bool(key)?;
     }
     let given: Vec<&str> = EDITABLE
@@ -790,6 +791,7 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
                 ("keep", Slot::Flag(&mut t.keep)),
             ],
         ),
+        FeatureKind::Boolean(b) => ("boolean", vec![("keepTool", Slot::Flag(&mut b.keep_tool))]),
         FeatureKind::Mirror(m) => (
             "mirror",
             vec![

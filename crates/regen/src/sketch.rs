@@ -412,6 +412,31 @@ fn no_such_face(made_by: &str, name: &PersistentName, names: &[PersistentName]) 
     )
 }
 
+/// True when two face names are the same, or differ only in the outline
+/// their cap was named after: all caps of one role of one feature lie in
+/// one plane (see [`made_face`]).
+fn same_plane(a: &PersistentName, b: &PersistentName) -> bool {
+    let (mut a, mut b) = (a, b);
+    for _ in 0..craft3d_doc::MAX_NAME_DEPTH {
+        match (&a.of, &b.of) {
+            (Some(next_a), Some(next_b)) => {
+                if (a.feature, a.role, &a.sources) != (b.feature, b.role, &b.sources) {
+                    return false;
+                }
+                (a, b) = (next_a, next_b);
+            }
+            (None, None) => {
+                return a.feature == b.feature
+                    && a.role == b.role
+                    && (a.sources == b.sources
+                        || matches!(a.role, NameRole::StartCap | NameRole::EndCap));
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
 /// The frame of the face a name points at, among the features regenerated
 /// so far. A name that points at nothing is an error that says what is
 /// there instead; it never resolves to another face.
@@ -440,8 +465,16 @@ fn resolve_face(
         let (Some(of), Some(instances)) = (&link.of, &outcome.instances) else {
             return Err(no_such_face(made_by, link, listed));
         };
-        // The face has to be one of the body this feature was made from.
-        if source.kind.source().map(|(id, _)| id) != Some(of.feature) {
+        // The face has to be one of the body this instance was made from
+        // (for a boolean: instance 0 is the target, 1 the tool), and it
+        // has to be there still: a boolean can cut a face away.
+        let sources = source.kind.sources();
+        let index = link.sources.first().and_then(|i| usize::try_from(*i).ok());
+        let from = match source.kind {
+            FeatureKind::Boolean(_) => index.and_then(|i| sources.get(i)),
+            _ => sources.first(),
+        };
+        if from.map(|(id, _)| *id) != Some(of.feature) {
             return Err(no_such_face(made_by, link, listed));
         }
         let instance = link
@@ -455,6 +488,9 @@ fn resolve_face(
                 instances.len()
             ));
         };
+        if !listed.iter().any(|face| same_plane(face, link)) {
+            return Err(no_such_face(made_by, link, listed));
+        }
         maps.push(*map);
         link = of;
     }

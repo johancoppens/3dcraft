@@ -344,6 +344,46 @@ pub struct Pattern {
     pub layout: PatternLayout,
 }
 
+/// How two bodies are combined.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BooleanOp {
+    /// Everything that is in either body.
+    Union,
+    /// The target without what the tool covers.
+    Subtract,
+    /// What is in both bodies.
+    Intersect,
+}
+
+impl BooleanOp {
+    pub const ALL: [BooleanOp; 3] = [BooleanOp::Union, BooleanOp::Subtract, BooleanOp::Intersect];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            BooleanOp::Union => "union",
+            BooleanOp::Subtract => "subtract",
+            BooleanOp::Intersect => "intersect",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|op| op.name() == name)
+    }
+}
+
+/// The bodies of two earlier features combined into one. Both bodies go
+/// into this feature; with `keep_tool` the tool keeps its own body, to cut
+/// several targets with one tool.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Boolean {
+    pub op: BooleanOp,
+    pub target: FeatureId,
+    pub tool: FeatureId,
+    #[serde(default)]
+    pub keep_tool: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum FeatureKind {
@@ -358,6 +398,7 @@ pub enum FeatureKind {
     Transform(Transform),
     Mirror(Mirror),
     Pattern(Pattern),
+    Boolean(Boolean),
 }
 
 impl FeatureKind {
@@ -375,12 +416,24 @@ impl FeatureKind {
             FeatureKind::Transform(_) => "transform",
             FeatureKind::Mirror(_) => "mirror",
             FeatureKind::Pattern(_) => "pattern",
+            FeatureKind::Boolean(_) => "boolean",
         }
     }
 
-    /// The feature whose body this feature is made from, and whether that
-    /// feature keeps its own body. `None` for a feature that makes its
-    /// body from nothing or from a sketch.
+    /// The features whose bodies this feature is made from, each with
+    /// whether it keeps its own body. Empty for a feature that makes its
+    /// body from nothing or from a sketch. For a boolean: the target, then
+    /// the tool.
+    pub fn sources(&self) -> Vec<(FeatureId, bool)> {
+        match self {
+            FeatureKind::Boolean(b) => vec![(b.target, false), (b.tool, b.keep_tool)],
+            other => other.source().into_iter().collect(),
+        }
+    }
+
+    /// The one feature whose body this feature is made from (a transform,
+    /// a mirror, a pattern), and whether that feature keeps its own body.
+    /// `None` for every other kind; see [`FeatureKind::sources`].
     pub fn source(&self) -> Option<(FeatureId, bool)> {
         match self {
             FeatureKind::Transform(t) => Some((t.source, t.keep)),
@@ -393,7 +446,8 @@ impl FeatureKind {
             | FeatureKind::Torus(_)
             | FeatureKind::Sketch(_)
             | FeatureKind::Extrude(_)
-            | FeatureKind::Revolve(_) => None,
+            | FeatureKind::Revolve(_)
+            | FeatureKind::Boolean(_) => None,
         }
     }
 
@@ -407,7 +461,7 @@ impl FeatureKind {
                 SketchPlane::Face { face, .. } => vec![face.feature],
                 SketchPlane::World { .. } => Vec::new(),
             },
-            other => other.source().map(|(id, _)| id).into_iter().collect(),
+            other => other.sources().into_iter().map(|(id, _)| id).collect(),
         }
     }
 
@@ -466,6 +520,7 @@ impl FeatureKind {
                 out = triple("point", &m.point);
                 out.extend(triple("normal", &m.normal));
             }
+            FeatureKind::Boolean(_) => out = Vec::new(),
             FeatureKind::Pattern(p) => {
                 out = vec![named("count", &p.count)];
                 match &p.layout {
@@ -522,6 +577,7 @@ impl FeatureKind {
                 .chain([&mut t.angle])
                 .collect(),
             FeatureKind::Mirror(m) => m.point.iter_mut().chain(m.normal.iter_mut()).collect(),
+            FeatureKind::Boolean(_) => Vec::new(),
             FeatureKind::Pattern(p) => {
                 let mut out = vec![&mut p.count];
                 match &mut p.layout {

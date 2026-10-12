@@ -52,7 +52,7 @@ fn v3_to_v4(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
 }
 
-/// Version 5 adds the `revolve` feature kind, the feature kinds that make
+/// Version 5 adds the `revolve` and `boolean` feature kinds, the feature kinds that make
 /// a body out of another body (`transform`, `mirror`, `pattern`), the name
 /// role `copy` with its `of`, and the roles `face`, `edge` and `vertex` for
 /// the entities of primitives. Nothing a version-4 file contains changes meaning.

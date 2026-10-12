@@ -215,12 +215,29 @@ pub enum FeatureKind {
         #[serde(default)]
         keep: bool,
     },
+    /// The bodies of features `target` and `tool` combined. With
+    /// `keep_tool` the tool keeps its own body.
+    Boolean {
+        op: BooleanOp,
+        target: u64,
+        tool: u64,
+        #[serde(default)]
+        keep_tool: bool,
+    },
     /// The body of feature `source`, `count` times in one body.
     Pattern {
         source: u64,
         count: String,
         layout: PatternLayout,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BooleanOp {
+    Union,
+    Subtract,
+    Intersect,
 }
 
 /// The axis of a revolution: the sketch's x or y axis, or one of its
