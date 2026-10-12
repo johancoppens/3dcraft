@@ -829,6 +829,17 @@ mod tests {
     }
 
     #[test]
+    fn a_stretch_of_angles_has_its_start_and_not_its_end() {
+        // Up to, not including: two stretches that share an end never
+        // both have it. Also across the seam at a full turn.
+        assert!(within(1.0, 1.0, 2.0) && within(1.5, 1.0, 2.0));
+        assert!(!within(2.0, 1.0, 2.0) && !within(0.5, 1.0, 2.0) && !within(2.5, 1.0, 2.0));
+        assert!(within(6.0, 5.0, 1.0) && within(0.5, 5.0, 1.0) && within(5.0, 5.0, 1.0));
+        assert!(!within(1.0, 5.0, 1.0) && !within(3.0, 5.0, 1.0));
+        assert!(!within(1.0, 1.0, 1.0));
+    }
+
+    #[test]
     fn the_nearest_point_of_a_long_ellipse_arc_is_the_nearest() {
         // 40 to 1: around its tips the curve doubles back on itself.
         let ellipse = Ellipse::new(tilted(), 20.0, 0.5).unwrap();

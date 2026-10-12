@@ -737,3 +737,38 @@ fn a_hundred_holes() {
         assert_eq!(body.faces.len(), 106);
     }
 }
+
+#[test]
+fn a_post_over_a_hole() {
+    for k in SCALES {
+        // A plate with a hole through it, and a post wider than the hole
+        // standing over it: the top face falls into the part outside the
+        // post and a ring under it, and the hole's rim belongs to the
+        // ring, the smaller of the two regions around it.
+        let plate = boxed(k, [0.0, 0.0, 0.0], [4.0, 3.0, 1.0]);
+        let holed = solve(&plate, &rod(k, [2.0, 1.5, 0.0], 0.5, 1.0), Subtract, k);
+        let post = rod(k, [2.0, 1.5, 1.0], 1.25, 2.0);
+        let capped = solve(&holed.body, &post, Union, k);
+        // Bottom 12 − π/4, top 12 − 25π/16, sides 14, the hole's wall π
+        // and its ceiling π/4, the post's wall 5π and lid 25π/16.
+        assert_mass(&capped, 12.0 - 0.25 * PI + 3.125 * PI, 38.0 + 6.0 * PI, k);
+        assert_eq!(genus(&capped.body), Some(0));
+        assert_eq!(capped.body.shells.len(), 1);
+        // The other way round, and taken away again.
+        let other = solve(&post, &holed.body, Union, k);
+        assert_mass(&other, 12.0 - 0.25 * PI + 3.125 * PI, 38.0 + 6.0 * PI, k);
+        let again = solve(&capped.body, &post, Subtract, k);
+        assert_mass(&again, 12.0 - 0.25 * PI, 38.0 + 0.5 * PI, k);
+        assert_eq!(genus(&again.body), Some(1));
+        // A thinner post through the hole leaves a ring-shaped gap.
+        let pin = rod(k, [2.0, 1.5, -1.0], 0.25, 3.0);
+        let pinned = solve(&holed.body, &pin, Union, k);
+        assert_eq!(pinned.body.shells.len(), 2);
+        assert_mass(
+            &pinned,
+            12.0 - 0.25 * PI + 0.0625 * PI * 3.0,
+            38.0 + 0.5 * PI + 2.0 * 0.0625 * PI + 1.5 * PI,
+            k,
+        );
+    }
+}

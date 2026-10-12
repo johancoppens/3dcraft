@@ -1310,3 +1310,100 @@ pub fn boolean(
         }
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::primitives;
+    use craft3d_math::Frame;
+
+    fn prepared(body: &Body) -> Solid<'_> {
+        let tolerance = Tolerance::default();
+        let mut vertices = Vertices {
+            points: Vec::new(),
+            meetings: Vec::new(),
+            merge: 0.5 * tolerance.linear,
+            guard: 2.0 * tolerance.linear,
+        };
+        match prepare(body, Operand::A, &mut vertices, &tolerance) {
+            Ok(solid) => solid,
+            Err(_) => panic!("a primitive is a valid operand"),
+        }
+    }
+
+    fn is_inside(solid: &Solid, p: Vec3) -> bool {
+        match inside(solid, p, &Tolerance::default()) {
+            Ok(inside) => inside,
+            Err(_) => panic!("no ray could tell"),
+        }
+    }
+
+    /// The first ray tried, as a unit vector.
+    fn first_ray() -> Vec3 {
+        let (x, y, z) = RAYS[0];
+        Vec3::new(x, y, z).normalized().unwrap()
+    }
+
+    #[test]
+    fn a_ray_through_an_edge_or_a_vertex_is_not_counted() {
+        let block = primitives::block(&Frame::WORLD, 2.0, 2.0, 2.0).unwrap();
+        let solid = prepared(&block);
+        let d = first_ray();
+        // From inside, straight at the middle of an edge and at a corner:
+        // the ray leaves through two or three faces at once.
+        for target in [Vec3::new(2.0, 1.0, 2.0), Vec3::new(2.0, 2.0, 2.0)] {
+            let p = target - d;
+            assert!(block_contains(p));
+            assert!(is_inside(&solid, p), "towards {target:?}");
+        }
+        // From outside, in through a face and out through the edge.
+        let p = Vec3::new(2.0, 1.0, 2.0) - d * 3.0;
+        assert!(!block_contains(p));
+        assert!(!is_inside(&solid, p));
+        // And the plain cases.
+        assert!(is_inside(&solid, Vec3::new(1.0, 1.0, 1.0)));
+        assert!(!is_inside(&solid, Vec3::new(3.0, 1.0, 1.0)));
+        assert!(!is_inside(&solid, Vec3::new(1.0, 1.0, -0.5)));
+    }
+
+    fn block_contains(p: Vec3) -> bool {
+        [p.x, p.y, p.z].iter().all(|c| (0.0..=2.0).contains(c))
+    }
+
+    #[test]
+    fn a_ray_that_grazes_a_cylinder_is_not_counted() {
+        let cylinder = primitives::cylinder(&Frame::WORLD, 1.0, 2.0).unwrap();
+        let solid = prepared(&cylinder);
+        let d = first_ray();
+        // The point of the wall where the first ray is tangent to it.
+        let across = Vec3::new(-d.y, d.x, 0.0).normalized().unwrap();
+        let touch = across + Vec3::Z;
+        let p = touch - d;
+        assert!(p.x.hypot(p.y) > 1.0);
+        assert!(!is_inside(&solid, p));
+        assert!(is_inside(&solid, Vec3::new(0.2, -0.3, 1.0)));
+        // Through the rim, where wall and lid meet.
+        let rim = Vec3::new(0.6, 0.8, 2.0);
+        assert!(is_inside(&solid, rim - d * 0.5));
+    }
+
+    #[test]
+    fn points_within_half_the_tolerance_are_one_vertex() {
+        let mut vertices = Vertices {
+            points: Vec::new(),
+            meetings: Vec::new(),
+            merge: 0.5e-6,
+            guard: 2e-6,
+        };
+        let mut add = |x: f64| vertices.find_or_add(Vec3::new(x, 0.0, 0.0)).ok();
+        assert_eq!(add(0.0), Some(0));
+        assert_eq!(add(1.0), Some(1));
+        assert_eq!(add(0.4e-6), Some(0));
+        assert_eq!(add(1.0 - 0.4e-6), Some(1));
+        // Neither the same place nor safely another.
+        assert_eq!(add(1e-6), None);
+        assert_eq!(add(1.0 + 1.9e-6), None);
+        assert_eq!(add(2.1e-6), Some(2));
+        assert_eq!(add(f64::NAN), None);
+    }
+}

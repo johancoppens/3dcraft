@@ -15,7 +15,7 @@ What exists on `main` today; where the code differs from the plan below, this su
 - **Document:** `doc` has `Document` (units, tolerance, variables, ordered features, rollback marker, next feature id), features `Block`, `Cylinder`, `Sphere`, `Cone`, `Torus` whose parameters are expressions kept as source text, an `Orientation` (axis and angle) on all but the sphere, stable never-reused feature ids, and `validate()`. Sketches are features too (`doc::sketch`): a plane (a world plane with an offset), point, line, circle and arc entities with ids that are never reused, sixteen kinds of constraint in the order they were added, and the last solution as the stored coordinates. Not built: the other feature kinds, references between features.
 - **Sketch solver:** `solve` takes a sketch as plain numbers (points, lines, circles, arcs; constraints with evaluated values) and returns solved coordinates, the degrees of freedom left, and per constraint whether it is satisfied, redundant or conflicting (the later constraint is blamed). Newton-type with minimum-norm steps from the given start, so a solved sketch does not move and a free part moves as little as possible; every loop is capped. It knows nothing about the document: `regen` maps one onto the other.
 - **Undo:** `ops::History` keeps snapshots (`Arc<Document>`) rather than reversible ops: an edit is applied to a copy and becomes one labelled step only if it succeeds and changes something.
-- **Kernel:** `kernel::primitives` builds block, cylinder, cone, sphere and torus as B-rep. `kernel::profile` finds the closed regions of a set of 2D curves (loops of lines and arcs joined end to end, circles; even-odd nesting gives holes and islands; open, branching, crossing or touching curves are errors that name them). `kernel::extrude` sweeps profiles along a plane's normal into one solid with a shell per profile, checked before it is returned, and reports for every face, edge and vertex where it came from (`Origins`).
+- **Kernel:** `kernel::primitives` builds block, cylinder, cone, sphere and torus as B-rep. `kernel::profile` finds the closed regions of a set of 2D curves (loops of lines and arcs joined end to end, circles; even-odd nesting gives holes and islands; open, branching, crossing or touching curves are errors that name them). `kernel::extrude` sweeps profiles along a plane's normal into one solid with a shell per profile, checked before it is returned, and reports for every face, edge and vertex where it came from (`Origins`). `kernel::boolean` is the union, difference and intersection of two solids whose faces are planes and cylinders (edges: lines, circles, ellipses), with coincident faces and smooth edges handled, and a source for every face, edge and vertex of the result; everything else is `KernelError::Unsupported` with the faces and the reason (§5.3 › Booleans as built). It rests on `geom::intersect`: closed-form intersections of planes and cylinders with each other and with lines, circles and ellipses.
 - **Regeneration:** `regen::regenerate` evaluates variables and builds each feature's body, with a status per feature (`Ok`, `Suppressed`, `RolledBack`, `Failed(reason)`); every body is run through `topo::check`. A bare number in a length parameter is taken in the document's unit. A sketch feature has no body: its result is the solved sketch (degrees of freedom, a state per constraint, solved coordinates, its frame in space), and `regen::settle_sketches` writes a solution back into the document, which the engine does at the end of every edit. No caching: a full rebuild per document revision, every sketch solved again.
 - **Tessellation:** two entry points. `tessellate_patches` meshes untrimmed Bézier patches on one uniform grid (the teapot). `tessellate_body` meshes any B-rep body edges first: every edge (line, circle, ellipse, NURBS) becomes points once, within the chordal tolerance, and every face that uses it uses those points, so the welded mesh of a valid solid is a closed manifold. Each face is triangulated in its surface's parameter space by our own constrained Delaunay triangulation (holes by the even–odd rule), with interior points added until every triangle is within tolerance of the surface; loops that wind around an axis are cut along a seam whose two sides share their 3D points; poles, apexes and collapsed patch edges become one point. Faces are tessellated in parallel (`std::thread::scope`) and merged in face order: 1, 2 and 8 threads give byte-identical meshes. Planar faces get no interior points (a block is 12 triangles). Still `Unsupported`: a loop winding more than once, or around both the axis and the tube of a torus; a face around an axis with no room for a straight seam.
 - **Mesh export:** `meshio` writes binary and ASCII STL, 3MF and OBJ; `io` welds a tessellated mesh, classifies it as solid or surface and encodes one or more objects. FreeCAD reads the box, the teapot and all fourteen tessellated reference solids (primitives, hemisphere, and the solids with trimmed faces) back as closed solids with the same counts, area and volume (`cargo xtask freecad`). No readers, no colours.
@@ -283,6 +283,49 @@ Each operation is a pure function: bodies and parameters in, `Result<OpResult, K
 - **Never an invalid body.** The result passes `topo::check` or the operation returns `Err`. Errors name the entities and the reason ("faces F3/cap and F5/side are tangent along a curve; tangent booleans are not supported yet").
 - **Deterministic:** no dependence on thread count or hash order.
 - **Not registered by itself:** `engine` registers commands; `kernel` stays engine-agnostic.
+
+#### Booleans as built (M7, kernel only, 2026-10-12)
+
+`kernel::boolean::boolean(a, b, op, tolerance)` returns a `BooleanResult`: the body and, per face, edge and vertex of it, a source (`FaceSource`, `EdgeSource`, `VertexSource`). It is not wired into `doc`, `regen` or `engine` yet.
+
+**Method** (imprint, classify, select, sew; `crates/kernel/src/boolean/`):
+
+1. *Section.* For each face of A and face of B whose boxes meet, the curves in which their surfaces cross come from `geom::intersect` in closed form. A curve is cut where an edge of either face meets the other face's surface; a stretch between two cuts is kept when its middle is in or on both faces.
+2. *Imprint.* Edges are split at the vertices found on them. Edge pieces and stretches are registered as arcs; two arcs between the same vertices along the same curve are one arc. That is the whole of the sewing: an edge of B that lies on a face of A, or along an edge of A, is shared from then on, and nothing is matched by position afterwards.
+3. *Regions.* A face with arcs across it falls into regions: around each vertex the arcs are sorted by direction in the tangent plane and loops are followed keeping the region on the left. On a plane a counter-clockwise loop is an outside and a clockwise loop a hole of the smallest region around it; on a cylinder loops that go around the axis are sorted along it and paired into bands.
+4. *Classify.* One point well inside a region decides for the region: on a face of the other solid with a coincident surface (same or opposite outward normal), or inside or outside the other solid by ray casting (a ray that meets an edge or grazes a face is abandoned for another, twelve at most).
+5. *Select and sew.* See the table below. Faces connected through edges form a shell; the result passes `topo::check` or the operation fails.
+
+| Region of | Outside the other | Inside the other | Coincident, same normal | Coincident, opposite normals |
+|---|---|---|---|---|
+| A, union | kept | | kept (the source is A's face) | |
+| A, intersection | | kept | kept (the source is A's face) | |
+| A, difference | kept | | | kept |
+| B, union | kept | | | |
+| B, intersection | | kept | | |
+| B, difference | | kept, turned inside out | | |
+
+**Supported and not** (every row has a test in `crates/kernel/tests/boolean.rs`):
+
+| Configuration | Result |
+|---|---|
+| plane / plane, crossing | line |
+| plane / plane, coincident (same or opposite normals; faces overlapping, touching or sharing edges) | handled by the table above |
+| plane / cylinder: across the axis, along the axis, oblique | circle, two lines, ellipse |
+| cylinder / cylinder, parallel axes | two lines; coaxial with equal radii is coincident and handled (a pin in its hole) |
+| a smooth edge of one body (plane tangent to cylinder) on a face of the other, or along its edge | handled: the line of contact is an edge like any other |
+| bodies apart; one inside the other | several shells (a union of two lumps, a cavity); an empty result is `KernelError::EmptyResult` |
+| cylinder / cylinder, axes not parallel, where the faces may meet | `Unsupported` (a quartic curve) |
+| cone, sphere, torus, Bézier or NURBS face, or a NURBS edge, anywhere in either body | `Unsupported`, even when the bodies are apart |
+| two faces touching along a line inside both (a cylinder lying on a plane, kissing cylinders) | `Unsupported` |
+| curves that leave a vertex in the same direction (a circle tangent to an edge it meets) | `Unsupported` |
+| bodies touching along an edge or at a vertex only, where the result would not be a manifold | `Unsupported` |
+| planes within 1e-6 rad of parallel without being parallel; a plane likewise nearly along a cylinder's axis | `Unsupported` |
+| anything that puts two points between half and twice the linear tolerance apart, or a face piece thinner than the tolerance resolves | `Unsupported` ("at the edge of tolerance") |
+
+**Tolerances.** Points within half the linear tolerance are one vertex; between that and twice the tolerance the operation refuses. No decision is taken on the sign of a number that could be rounding: inside/outside on a plane is a winding number, on a cylinder a parity decided by comparing angles computed once per vertex, and tangent or near-coincident configurations are refused rather than resolved. That is why this slice needs no exact predicates (D-open-6).
+
+**Not done:** faces are never merged (a face of A that continues into a coplanar face of B stays two faces with an edge between them; an imprint that separates two kept pieces of one face stays as an edge, for instance where a cutter only touched a face), an untouched operand does not come back with its entities in their old order, and there is no spatial index (every face pair is tested by box, every vertex against every vertex).
 
 ### 5.4 Sketch solver (`solve`)
 
