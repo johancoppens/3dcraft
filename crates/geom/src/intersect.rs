@@ -15,6 +15,14 @@
 //! intersection whose position amplifies rounding by a million or more and
 //! is refused.
 
+mod clip;
+mod exact;
+mod field;
+mod march;
+mod meet;
+
+pub use meet::{Meeting, MeetingCurve, SurfaceMeeting, meet_surfaces, meet_surfaces_numeric};
+
 use crate::{Circle, Curve3, Ellipse, GeomError, Line, Surface};
 use craft3d_math::{Frame, Tolerance, Vec3};
 use std::f64::consts::TAU;

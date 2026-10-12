@@ -40,6 +40,10 @@ pub enum GeomError {
     InvalidParameter(&'static str),
     /// Valid input that this kind of geometry cannot handle yet.
     Unsupported(&'static str),
+    /// A numeric method ran into one of its caps (iterations, points,
+    /// subdivisions) before it reached the tolerance; the text says which.
+    /// Nothing partial is returned.
+    NoConvergence(&'static str),
 }
 
 impl fmt::Display for GeomError {
@@ -57,6 +61,7 @@ impl fmt::Display for GeomError {
             }
             GeomError::InvalidParameter(rule) => write!(f, "invalid geometry: {rule}"),
             GeomError::Unsupported(what) => write!(f, "not supported yet: {what}"),
+            GeomError::NoConvergence(what) => write!(f, "did not converge: {what}"),
         }
     }
 }
