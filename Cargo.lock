@@ -483,6 +483,7 @@ dependencies = [
  "craft3d-geom",
  "craft3d-math",
  "craft3d-topo",
+ "serde_json",
 ]
 
 [[package]]
