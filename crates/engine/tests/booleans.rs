@@ -689,8 +689,12 @@ fn what_cannot_be_combined_fails_with_the_reason() {
         assert!(reason.contains("does not support"), "{reason}");
         assert_eq!(body_names(&mut s), ["Plate", "Far", "Ball"]);
     } else {
+        // The ball of radius 10 sits with its centre on the top of the
+        // plate, which is 8 thick: half of it stands above, and a cap of
+        // height 2 pokes out below, pi h^2 (3 r - h) / 3.
         let half = 2.0 / 3.0 * PI * 1000.0;
-        assert_volume(&mut s, "Lump", 19200.0 + half);
+        let cap = PI * 4.0 * (30.0 - 2.0) / 3.0;
+        assert_volume(&mut s, "Lump", 19200.0 + half + cap);
     }
 
     // Malformed requests are refused.

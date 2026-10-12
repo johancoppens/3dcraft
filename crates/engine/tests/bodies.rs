@@ -736,11 +736,15 @@ fn instances_that_touch_or_overlap_are_joined() {
         (&json!(true), &json!(true)),
         "{deep}"
     );
-    // Every face is still named after the instance and the face it came
-    // from.
+    // Every face is named after an instance and the face it came from.
+    // The three tops lie in one plane and have become one face, named
+    // after the first instance that has a part in it; the sides stay each
+    // instance's own.
     let names = found["faceNames"].as_array().unwrap();
+    let top = json!("F3:copy(0)/F2:endCap(e5,e6,e7,e8)");
+    assert_eq!(names.iter().filter(|n| **n == top).count(), 1, "{names:?}");
     assert!(
-        names.contains(&json!("F3:copy(2)/F2:endCap(e5,e6,e7,e8)")),
+        names.contains(&json!("F3:copy(2)/F2:side(e6)")),
         "{names:?}"
     );
     assert!(

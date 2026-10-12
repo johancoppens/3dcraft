@@ -828,7 +828,7 @@ fn check_lists_every_problem_or_says_ok() {
     );
     assert!(problems[2]["problem"].as_str().unwrap().contains("radius"));
     assert!(
-        error(&mut session, "document.check", json!({"deep": true}))
-            .contains("takes no parameters")
+        error(&mut session, "document.check", json!({"thorough": true}))
+            .contains("unknown parameter `thorough`")
     );
 }
