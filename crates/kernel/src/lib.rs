@@ -6,6 +6,7 @@
 //! ([`profile`]) and their extrusion ([`extrude`]). Revolve, booleans and
 //! blends arrive with their milestones.
 
+pub mod boolean;
 pub mod extrude;
 pub mod primitives;
 pub mod profile;
@@ -77,6 +78,20 @@ pub enum KernelError {
         operation: &'static str,
         defects: Vec<Defect>,
     },
+    /// The operation does not handle this geometry or this kind of contact
+    /// (yet). `reason` is a fixed text per cause; `faces` are the faces
+    /// involved (at most [`MAX_REPORTED`]), each with the operand it is a
+    /// face of.
+    Unsupported {
+        operation: &'static str,
+        reason: &'static str,
+        faces: Vec<(boolean::Operand, craft3d_topo::FaceId)>,
+    },
+    /// The operation leaves nothing: an intersection of bodies that do not
+    /// overlap, a body minus one that contains it.
+    EmptyResult {
+        operation: &'static str,
+    },
 }
 
 fn id_list(ids: &[u64]) -> String {
@@ -140,6 +155,28 @@ impl fmt::Display for KernelError {
                     write!(f, " {defect};")?;
                 }
                 Ok(())
+            }
+            KernelError::Unsupported {
+                operation,
+                reason,
+                faces,
+            } => {
+                write!(f, "{operation} does not support this: {reason}")?;
+                for (index, (operand, face)) in faces.iter().enumerate() {
+                    let body = match operand {
+                        boolean::Operand::A => "first",
+                        boolean::Operand::B => "second",
+                    };
+                    let lead = if index == 0 { " (" } else { ", " };
+                    write!(f, "{lead}face {} of the {body} body", face.0)?;
+                }
+                if !faces.is_empty() {
+                    write!(f, ")")?;
+                }
+                Ok(())
+            }
+            KernelError::EmptyResult { operation } => {
+                write!(f, "{operation} leaves nothing: the result is empty")
             }
         }
     }

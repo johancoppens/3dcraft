@@ -1,6 +1,6 @@
 # Testing: the AI loop and its oracles
 
-> **Last updated:** 2026-10-12 · **Status:** the loop is in use. In place: oracle 1 (closed-form mass properties, `testkit::solids`), oracle 2 (validity checker with seeded defects), oracle 4 (tessellation against the exact body, for patches), oracle 6 (constraint solver), oracle 7 (CPU side) and oracle 8 (FreeCAD). The rest is design
+> **Last updated:** 2026-10-12 · **Status:** the loop is in use. In place: oracle 1 (closed-form mass properties, `testkit::solids`), oracle 2 (validity checker with seeded defects), oracle 3 (boolean identities on seeded random pairs), oracle 4 (tessellation against the exact body, for patches), oracle 6 (constraint solver), oracle 7 (CPU side) and oracle 8 (FreeCAD). The rest is design
 
 3DCraft is written by AI agents while the developer watches. That only works if an agent can tell, without a human, whether what it built is right. This document says how.
 
@@ -64,6 +64,10 @@ Checked on generated inputs (proptest), by comparing mass properties and validit
 - `A ∪ B` equals `B ∪ A`; `A ∩ A = A`; `A − A` is empty; `A ∪ ∅ = A`
 - an operation followed by its inverse transform leaves mass properties unchanged
 - pattern of *n* disjoint copies has *n* × the volume
+
+As built for the booleans (M7, `crates/kernel/tests/boolean_random.rs`): seeded pairs (our own SplitMix64, no proptest) of blocks, cylinders, L-shaped extrusions and slots with a hole, in three placements (each turned at random; both turned alike, so axes and faces are parallel but nothing coincides; on a half-unit grid along the world axes, so faces are flush, touch and share edges), at scales 1e-3, 1 and 1e6 with the tolerance scaled along. Per pair the six booleans (both orders) must each give a body that passes the checker, an empty result, or `Unsupported`; then the volume identities above must hold to 1e-9, with the two area identities `area(A ∪ B) + area(A ∩ B) = area(A − B) + area(B − A) = area A + area B` where nothing is coincident, and `(A − B) ∪ (A ∩ B)` must have the volume of A (its pieces meet in coincident faces, which is what that union exercises).
+
+The identities compare the booleans with each other: a kernel that missed every intersection would satisfy them. So the intersection is also checked against the operands' own definitions: exactly for two axis-aligned boxes, and by sampling 3000 points (within five standard deviations) for every pair. The test run does 120 pairs per placement and scale; the long run (`cargo test --release -p craft3d-kernel --test boolean_random -- --ignored --nocapture`) does 1500 and prints, per placement and scale, how many pairs were solved and how many were refused for which reason. `BOOLEAN_PAIR="seed placement scale"` with the ignored test `one_pair` reproduces one pair. Boolean results also go through the tessellator (`crates/testkit/tests/boolean_tess.rs`, there because `kernel` and `tess` share a layer): the mesh is closed and its volume converges to the closed form.
 
 ### Oracle 4: tessellation against the exact body
 
