@@ -8,8 +8,9 @@
 use crate::params::Params;
 use crate::{CommandError, CommandSpec, OpenDocument, Session, base64};
 use craft3d_doc::{
-    Block, Cone, Cylinder, DocError, Document, Expr, Extrude, Feature, FeatureId, FeatureKind,
-    LengthUnit, Orientation, PatternLayout, Sphere, Tolerance, Torus, Units,
+    Block, Boolean, BooleanOp, Cone, Cylinder, DocError, Document, Expr, Extrude, Feature,
+    FeatureId, FeatureKind, LengthUnit, Orientation, PatternLayout, Sphere, Tolerance, Torus,
+    Units,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use craft3d_io::MeshFormat;
@@ -73,8 +74,8 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Adds a cone along axis: its base circle is centred at position, its apex is height further along the axis.", doc: true, feature_cone),
     spec!("feature.torus", "Torus", r#"{"major": expr, "minor": expr, "position": [expr, expr, expr] = [0, 0, 0], "axis": [number, number, number] = [0, 0, 1], "angle": expr = "0 deg", "name": string = automatic}"#,
         "Adds a ring torus about axis, centred at position: major is the radius of the ring, minor of the tube.", doc: true, feature_torus),
-    spec!("feature.extrude", "Extrude", r#"{"sketch": id or name, "distance": expr, "symmetric": boolean = false, "name": string = automatic}"#,
-        "Adds a solid by sweeping the closed profiles of a sketch along its normal: loops of lines and arcs, and circles; a loop inside another is a hole. A negative distance goes the other way; symmetric puts half on each side of the sketch plane.", doc: true, feature_extrude),
+    spec!("feature.extrude", "Extrude", r#"{"sketch": id or name, "distance": expr, "symmetric": boolean = false, "cut": id or name, "join": id or name, "intersect": id or name, "name": string = automatic}"#,
+        "Adds a solid by sweeping the closed profiles of a sketch along its normal: loops of lines and arcs, and circles; a loop inside another is a hole. A negative distance goes the other way; symmetric puts half on each side of the sketch plane. With cut, join or intersect (a feature with a body) the solid is combined with that body at once: two features are added in one undo step, the extrusion and a boolean, and the result is the boolean's (the one to build on; name applies to it) with the extrusion under sweep. A hole in a plate: sketch a circle on its top, extrude by a negative distance with cut.", doc: true, feature_extrude),
     spec!("feature.edit", "Edit Feature", r#"{"feature": id or name, "size": [expr; 3], "position": [expr; 3], "axis": [number; 3], "angle": expr, "radius": expr, "height": expr, "major": expr, "minor": expr, "distance": expr, "symmetric": boolean, "translate": [expr; 3], "pivot": [expr; 3], "point": [expr; 3], "normal": [number; 3], "step": [expr; 3], "count": expr, "keep": boolean, "keepTool": boolean}"#,
         "Changes parameters of a feature; give only the ones to change. Which ones a feature has depends on its kind (document.inspect shows them under params).", doc: true, feature_edit),
     spec!("feature.rename", "Rename Feature", r#"{"feature": id or name, "name": string}"#,
@@ -220,6 +221,70 @@ pub(crate) fn add_feature(
     let label = format!("Add {}", kind.type_name());
     let id = edit(session, command, &label, |doc| doc.add_feature(name, kind))?;
     feature_result(session, id)
+}
+
+/// The `cut`, `join` and `intersect` parameters of a sweep: the body the
+/// swept solid is combined with at once, and how.
+pub(crate) const COMBINE: [(&str, BooleanOp); 3] = [
+    ("cut", BooleanOp::Subtract),
+    ("join", BooleanOp::Union),
+    ("intersect", BooleanOp::Intersect),
+];
+
+pub(crate) fn combine_param(
+    doc: &Document,
+    p: &Params,
+    command: &str,
+) -> Result<Option<(BooleanOp, FeatureId)>, CommandError> {
+    let mut found = None;
+    for (key, op) in COMBINE {
+        if !p.has(key) {
+            continue;
+        }
+        if found.is_some() {
+            return fail(format!(
+                "{command}: give one of `cut`, `join` and `intersect`, not several"
+            ));
+        }
+        found = Some((op, feature_ref(doc, p, command, key)?));
+    }
+    Ok(found)
+}
+
+/// Adds a sweep (an extrusion, a revolution) and, when it is to be
+/// combined with a body at once, the boolean that does it, as one undo
+/// step. The name goes to what the caller builds on: the boolean when
+/// there is one, else the sweep.
+pub(crate) fn add_sweep(
+    session: &mut Session,
+    command: &'static str,
+    name: Option<&str>,
+    kind: FeatureKind,
+    combine: Option<(BooleanOp, FeatureId)>,
+) -> Run {
+    let Some((op, target)) = combine else {
+        return add_feature(session, command, name, kind);
+    };
+    let label = format!("Add {} and {}", kind.type_name(), op.name());
+    let (sweep, combined) = edit(session, command, &label, |doc| {
+        let sweep = doc.add_feature(None, kind)?;
+        let combined = doc.add_feature(
+            name,
+            FeatureKind::Boolean(Boolean {
+                op,
+                target,
+                tool: sweep,
+                keep_tool: false,
+            }),
+        )?;
+        Ok((sweep, combined))
+    })?;
+    let mut result = feature_result(session, combined)?;
+    let swept = feature_result(session, sweep)?;
+    if let Some(map) = result.as_object_mut() {
+        map.insert("sweep".into(), swept);
+    }
+    Ok(result)
 }
 
 /// What a feature command returns: the feature and how it regenerated, so
@@ -630,17 +695,26 @@ fn feature_extrude(session: &mut Session, params: &Value) -> Run {
     let p = Params::new(
         "feature.extrude",
         params,
-        &["sketch", "distance", "symmetric", "name"],
+        &[
+            "sketch",
+            "distance",
+            "symmetric",
+            "cut",
+            "join",
+            "intersect",
+            "name",
+        ],
     )?;
     let doc = session.document()?.history.current();
     let sketch = feature_ref(doc, &p, "feature.extrude", "sketch")?;
     doc.sketch(sketch).map_err(doc_error("feature.extrude"))?;
+    let combine = combine_param(doc, &p, "feature.extrude")?;
     let kind = FeatureKind::Extrude(Extrude {
         sketch,
         distance: required(&p, "distance")?,
         symmetric: p.bool("symmetric")?.unwrap_or(false),
     });
-    add_feature(session, "feature.extrude", p.str("name")?, kind)
+    add_sweep(session, "feature.extrude", p.str("name")?, kind, combine)
 }
 
 /// The parameters `feature.edit` can change, by name.

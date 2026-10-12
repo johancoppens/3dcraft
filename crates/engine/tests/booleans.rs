@@ -407,6 +407,89 @@ fn scenario_a_cut_splits_or_removes_a_referenced_face() {
 }
 
 #[test]
+fn an_extrusion_cuts_or_joins_a_body_in_one_command() {
+    // The phase 1 scenario: sketch on the top of a plate, cut two holes,
+    // change the plate, and everything follows.
+    let mut s = plate();
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"name": "Holes", "face": "F2:endCap()"}),
+    );
+    for x in [15, 45] {
+        run(
+            &mut s,
+            "sketch.circle",
+            json!({"sketch": "Holes", "center": [x, 20], "radius": 4}),
+        );
+    }
+    let made = run(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "Holes", "distance": -8, "cut": "Plate", "name": "Drilled"}),
+    );
+    assert_eq!(made["status"], "ok", "{made}");
+    assert_eq!(made["name"], "Drilled");
+    assert_eq!(made["sweep"]["status"], "ok", "{made}");
+    assert_volume(&mut s, "Drilled", 19200.0 - 2.0 * PI * 16.0 * 8.0);
+    assert_eq!(body_names(&mut s), ["Drilled"]);
+    // One undo step for both features.
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(body_names(&mut s), ["Plate"]);
+    run(&mut s, "edit.redo", json!({}));
+    // Blind pockets instead: half as deep.
+    let sweep = made["sweep"]["name"].as_str().unwrap().to_string();
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": sweep, "distance": -4}),
+    );
+    assert_volume(&mut s, "Drilled", 19200.0 - 2.0 * PI * 16.0 * 4.0);
+    // A boss joined on, on the top of the drilled plate.
+    let top = format!("{}:copy(0)/F2:endCap()", made["id"].as_str().unwrap());
+    run(&mut s, "sketch.create", json!({"name": "Pad", "face": top}));
+    run(
+        &mut s,
+        "sketch.circle",
+        json!({"sketch": "Pad", "center": [30, 20], "radius": 5}),
+    );
+    let joined = run(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "Pad", "distance": 10, "join": "Drilled", "name": "Part"}),
+    );
+    assert_eq!(joined["status"], "ok", "{joined}");
+    let pockets = 2.0 * PI * 16.0 * 4.0;
+    assert_volume(&mut s, "Part", 19200.0 - pockets + PI * 25.0 * 10.0);
+    // The plate gets longer: everything follows.
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "length", "expr": "90 mm"}),
+    );
+    assert_volume(&mut s, "Part", 28800.0 - pockets + PI * 25.0 * 10.0);
+    // Malformed: two targets, or one that is not there. Nothing is added.
+    let before = run(&mut s, "document.inspect", json!({}));
+    for (params, word) in [
+        (
+            json!({"sketch": "Pad", "distance": 1, "cut": "Part", "join": "Part"}),
+            "not several",
+        ),
+        (
+            json!({"sketch": "Pad", "distance": 1, "cut": "Nope"}),
+            "no feature named `Nope`",
+        ),
+    ] {
+        let e = s
+            .execute("feature.extrude", &params)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains(word), "{params}: {e}");
+    }
+    assert_eq!(run(&mut s, "document.inspect", json!({})), before);
+}
+
+#[test]
 fn the_three_operations_obey_the_volume_identities() {
     // Two blocks that overlap in a 10 x 10 x 10 corner.
     let build = |op: &str| {
