@@ -1,9 +1,15 @@
 name: CI
 
+# Not on every push: nobody uses the software yet, and the full suite on
+# three platforms costs about 25 runner-minutes (macOS counts tenfold in a
+# private repository). `cargo xtask ci` is run locally before every commit
+# and covers everything the Linux job does; what this adds is macOS and
+# Windows. Run it by hand before anything that must be certain:
+#   gh workflow run CI && gh run watch
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 5 * * 1" # Mondays 05:00 UTC
 
 concurrency:
   group: ci-${{ github.ref }}

@@ -103,7 +103,7 @@ cargo xtask freecad         # if you touched tess, meshio or io: FreeCAD reads o
 cargo test -p craft3d-engine --test panic_hunt                # if you added/changed commands (about 25 s; also part of the full test run)
 ```
 
-`cargo xtask ci` runs fmt, clippy, tests, layers and wasm in one go. If `cargo` is not on `PATH` in your shell, it is in `~/.cargo/bin`.
+`cargo xtask ci` runs fmt, clippy, tests, layers and wasm in one go. It is the gate: CI on GitHub (which adds macOS and Windows) runs only weekly and on demand (`gh workflow run CI`), so a commit is never checked there automatically. If `cargo` is not on `PATH` in your shell, it is in `~/.cargo/bin`.
 
 While iterating, run less and keep the full commands above as the final gate: `cargo test -p <crate> --lib --tests` skips examples and doctests, and `cargo test -p <crate> --test <file>` runs one integration-test file.
 

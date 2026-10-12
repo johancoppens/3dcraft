@@ -6,6 +6,10 @@ Decisions that shape the project, newest first, each with its reason. An agent t
 
 ## Taken
 
+### 2026-10-12: CI weekly and on demand
+
+Decided by the developer: while nobody uses the software, the GitHub workflow runs on Mondays and when started by hand, not on every push. The local `cargo xtask ci` is the gate. Revisit when there are users or outside contributors.
+
 ### 2026-10-12: Decisions made while building M2
 
 Made by the agent; the developer can overturn any of them.
