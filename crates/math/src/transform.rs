@@ -1,6 +1,6 @@
 //! Affine transforms of model space.
 
-use crate::Vec3;
+use crate::{Frame, Vec3};
 
 /// `p ↦ M p + t`, with `M` stored as its three rows.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -60,6 +60,79 @@ impl Transform {
             ],
             translation: Vec3::ZERO,
         })
+    }
+
+    /// Reflection in the plane through `point` with normal `normal`.
+    /// `None` for a zero or non-finite normal, or a non-finite point.
+    pub fn mirror(point: Vec3, normal: Vec3) -> Option<Transform> {
+        let n = normal.normalized()?;
+        if !point.is_finite() {
+            return None;
+        }
+        // Householder: v ↦ v − 2 n (n·v).
+        let row = |axis: Vec3, component: f64| axis - n * (2.0 * component);
+        let linear = Transform {
+            rows: [row(Vec3::X, n.x), row(Vec3::Y, n.y), row(Vec3::Z, n.z)],
+            translation: Vec3::ZERO,
+        };
+        linear.about(point)
+    }
+
+    /// Rotation by `angle` radians about the line through `point` along
+    /// `axis`, counter-clockwise seen from the axis tip. `None` for a zero
+    /// axis or anything not finite.
+    pub fn rotation_about(point: Vec3, axis: Vec3, angle: f64) -> Option<Transform> {
+        if !point.is_finite() {
+            return None;
+        }
+        Transform::rotation(axis, angle)?.about(point)
+    }
+
+    /// The linear part of `self` applied about `point` instead of the
+    /// origin: `p ↦ point + M (p − point)`.
+    fn about(&self, point: Vec3) -> Option<Transform> {
+        let translation = point - self.vector(point);
+        translation.is_finite().then_some(Transform {
+            rows: self.rows,
+            translation,
+        })
+    }
+
+    /// True when the transform preserves lengths within `epsilon`
+    /// (relative): the linear part is orthonormal (every entry of
+    /// `M Mᵀ − I` is at most `epsilon` in size, so the determinant is +1 or
+    /// −1 within about `3 epsilon`), and everything is finite. A rigid
+    /// motion has determinant +1; −1 means the transform also mirrors.
+    /// False for a negative or non-finite `epsilon`.
+    pub fn is_isometry(&self, epsilon: f64) -> bool {
+        // Written so that NaN anywhere fails the test.
+        if !(epsilon >= 0.0 && epsilon.is_finite() && self.translation.is_finite()) {
+            return false;
+        }
+        let [a, b, c] = self.rows;
+        [a.dot(a) - 1.0, b.dot(b) - 1.0, c.dot(c) - 1.0]
+            .into_iter()
+            .chain([a.dot(b), b.dot(c), c.dot(a)])
+            .all(|deviation| deviation.abs() <= epsilon)
+    }
+
+    /// The image of a frame under an isometry, as a right-handed frame.
+    ///
+    /// For a rigid motion all three axes are the images of the frame's
+    /// axes. A mirror would turn the frame left-handed, so there the x and
+    /// y axes are the images and the z axis is the *opposite* of the image
+    /// of z: local coordinates `(a, b, c)` of the frame map to
+    /// `(a, b, −c)` of the result.
+    ///
+    /// The axes are re-orthonormalised (z first, then x), so the result
+    /// depends only on the frame's axes and the transform: frames with
+    /// bit-identical axes get bit-identical axes. `None` when the image is
+    /// degenerate or not finite; meaningless for a transform that is not
+    /// an isometry.
+    pub fn frame(&self, frame: &Frame) -> Option<Frame> {
+        let z = self.vector(frame.z());
+        let z = if self.determinant() < 0.0 { -z } else { z };
+        Frame::new(self.point(frame.origin()), z, self.vector(frame.x()))
     }
 
     /// Maps a position.
@@ -202,5 +275,124 @@ mod tests {
                 .inverse()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn mirror_reflects_in_its_plane() {
+        let (point, normal) = (Vec3::new(1.0, -2.0, 3.0), Vec3::new(2.0, 1.0, -0.5));
+        let m = Transform::mirror(point, normal).unwrap();
+        assert!((m.determinant() + 1.0).abs() < 1e-15);
+        assert!(m.is_isometry(1e-15));
+        let n = normal.normalized().unwrap();
+        // Points of the plane stay; the normal direction is negated.
+        let in_plane = point + n.cross(Vec3::X) * 3.0 + n.cross(Vec3::Y) * -2.0;
+        assert!(close(m.point(in_plane), in_plane));
+        assert!(close(m.point(point + n * 2.5), point - n * 2.5));
+        assert!(close(m.vector(n), -n));
+        // An involution.
+        let p = Vec3::new(0.3, 9.0, -4.0);
+        assert!(close(m.point(m.point(p)), p));
+        assert!(close(m.then(&m).point(p), p));
+        // The plain coordinate mirrors are exact.
+        let mx = Transform::mirror(Vec3::ZERO, Vec3::X).unwrap();
+        assert_eq!(
+            mx.point(Vec3::new(1.0, 2.0, 3.0)),
+            Vec3::new(-1.0, 2.0, 3.0)
+        );
+        assert!(Transform::mirror(point, Vec3::ZERO).is_none());
+        assert!(Transform::mirror(point, Vec3::new(f64::NAN, 0.0, 1.0)).is_none());
+        assert!(Transform::mirror(Vec3::new(f64::INFINITY, 0.0, 0.0), Vec3::X).is_none());
+    }
+
+    #[test]
+    fn rotation_about_a_line_keeps_the_line() {
+        let (point, axis) = (Vec3::new(4.0, 0.0, -1.0), Vec3::new(0.0, 0.0, 2.0));
+        let r = Transform::rotation_about(point, axis, FRAC_PI_2).unwrap();
+        assert!(close(r.point(point), point));
+        assert!(close(r.point(point + axis * 3.0), point + axis * 3.0));
+        // (5, 0, 0) is one unit along +x from the line: it goes to +y.
+        assert!(close(
+            r.point(Vec3::new(5.0, 0.0, 0.0)),
+            Vec3::new(4.0, 1.0, 0.0)
+        ));
+        assert!((r.determinant() - 1.0).abs() < 1e-15);
+        // Angles about one line add up.
+        let (a, b) = (0.7, -1.9);
+        let ab = Transform::rotation_about(point, axis, a)
+            .unwrap()
+            .then(&Transform::rotation_about(point, axis, b).unwrap());
+        let sum = Transform::rotation_about(point, axis, a + b).unwrap();
+        let p = Vec3::new(1.5, 2.5, -3.5);
+        assert!(close(ab.point(p), sum.point(p)));
+        assert!(Transform::rotation_about(point, Vec3::ZERO, 1.0).is_none());
+        assert!(Transform::rotation_about(point, axis, f64::INFINITY).is_none());
+        assert!(Transform::rotation_about(Vec3::new(f64::NAN, 0.0, 0.0), axis, 1.0).is_none());
+    }
+
+    #[test]
+    fn isometries_are_recognised() {
+        let rigid = Transform::rotation(Vec3::new(1.0, 2.0, 3.0), 0.9)
+            .unwrap()
+            .then(&Transform::translation(Vec3::new(1e6, -3.0, 0.5)));
+        assert!(rigid.is_isometry(1e-14));
+        assert!(Transform::IDENTITY.is_isometry(0.0));
+        let mirrored = rigid.then(&Transform::mirror(Vec3::X, Vec3::new(1.0, 1.0, 0.0)).unwrap());
+        assert!(mirrored.is_isometry(1e-14) && mirrored.determinant() < 0.0);
+        assert!(!Transform::scaling(1.001).is_isometry(1e-6));
+        assert!(Transform::scaling(1.0 + 1e-9).is_isometry(1e-6));
+        assert!(
+            !Transform::scaling(-1.0)
+                .then(&Transform::scaling(2.0))
+                .is_isometry(1e-6)
+        );
+        assert!(Transform::scaling(-1.0).is_isometry(0.0), "a point mirror");
+        // A shear has determinant 1 and still changes lengths.
+        let shear = Transform {
+            rows: [Vec3::new(1.0, 0.5, 0.0), Vec3::Y, Vec3::Z],
+            translation: Vec3::ZERO,
+        };
+        assert!((shear.determinant() - 1.0).abs() < 1e-15);
+        assert!(!shear.is_isometry(1e-6));
+        assert!(!Transform::scaling(0.0).is_isometry(1e-6));
+        for bad in [f64::NAN, f64::INFINITY] {
+            assert!(!Transform::scaling(bad).is_isometry(1e-6));
+            assert!(!Transform::translation(Vec3::new(0.0, bad, 0.0)).is_isometry(1e-6));
+            assert!(!rigid.is_isometry(bad));
+        }
+        assert!(!rigid.is_isometry(-1.0));
+    }
+
+    #[test]
+    fn frames_stay_right_handed_and_a_mirror_negates_local_z() {
+        let frame = Frame::new(
+            Vec3::new(1.0, -2.0, 0.5),
+            Vec3::new(0.3, -0.4, 1.0),
+            Vec3::new(1.0, 0.2, 0.0),
+        )
+        .unwrap();
+        let rigid =
+            Transform::rotation_about(Vec3::new(3.0, 1.0, 0.0), Vec3::new(1.0, 1.0, 1.0), 2.1)
+                .unwrap();
+        let mirror =
+            Transform::mirror(Vec3::new(0.0, 5.0, 0.0), Vec3::new(1.0, -3.0, 2.0)).unwrap();
+        for (t, sign) in [(rigid, 1.0), (mirror, -1.0), (rigid.then(&mirror), -1.0)] {
+            let image = t.frame(&frame).unwrap();
+            assert!(image.x().cross(image.y()).distance(image.z()) < 1e-15);
+            for (a, b, c) in [(1.0, 0.0, 0.0), (0.5, -2.0, 0.0), (0.3, 0.7, -1.1)] {
+                assert!(close(
+                    t.point(frame.point(a, b, c)),
+                    image.point(a, b, sign * c)
+                ));
+            }
+            // Only the axes decide the axes: another origin, the same bits.
+            let moved = frame.at(Vec3::new(-7.0, 0.1, 22.0)).unwrap();
+            let moved_image = t.frame(&moved).unwrap();
+            assert_eq!(
+                (moved_image.x(), moved_image.y(), moved_image.z()),
+                (image.x(), image.y(), image.z())
+            );
+        }
+        assert!(Transform::scaling(f64::NAN).frame(&frame).is_none());
+        assert!(Transform::scaling(0.0).frame(&frame).is_none());
     }
 }
