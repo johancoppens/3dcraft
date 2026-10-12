@@ -1,0 +1,44 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "xtask"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/johancoppens/3dcraft"
+
+[workspace.dependencies]
+craft3d-math = { path = "crates/math" }
+craft3d-geom = { path = "crates/geom" }
+craft3d-tess = { path = "crates/tess" }
+craft3d-render = { path = "crates/render" }
+craft3d-testkit = { path = "crates/testkit" }
+# Not modelling code: image encoding only (decisions.md, D10).
+png = "0.17"
+serde_json = "1"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+# Never crash (AGENTS.md §3). clippy.toml allows these in tests only.
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unimplemented = "deny"
+todo = "deny"
+unreachable = "deny"
+indexing_slicing = "deny"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+[profile.dev]
+debug = "line-tables-only"
+# Geometry and rasterising are unusable at opt-level 0.
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
