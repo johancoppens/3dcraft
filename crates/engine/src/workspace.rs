@@ -131,51 +131,59 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), CommandError
 mod tests {
     use super::*;
 
+    /// Two absolute roots that are valid on every platform (`/work/in` is
+    /// not an absolute path on Windows, where it lacks a drive).
+    fn roots() -> (PathBuf, PathBuf) {
+        let base = std::env::temp_dir().join("craft3d-workspace-test");
+        (base.join("in"), base.join("out"))
+    }
+
     fn rooted() -> Workspace {
+        let (read, write) = roots();
         Workspace {
-            read: Access::Root(PathBuf::from("/work/in")),
-            write: Access::Root(PathBuf::from("/work/out")),
+            read: Access::Root(read),
+            write: Access::Root(write),
         }
     }
 
     #[test]
     fn paths_resolve_beneath_their_own_root() {
         let w = rooted();
-        assert_eq!(
-            w.resolve_read("a.3dcraft").unwrap(),
-            PathBuf::from("/work/in/a.3dcraft")
-        );
+        let (read, write) = roots();
+        assert_eq!(w.resolve_read("a.3dcraft").unwrap(), read.join("a.3dcraft"));
         assert_eq!(
             w.resolve_read("./parts/a.step").unwrap(),
-            PathBuf::from("/work/in/parts/a.step")
+            read.join("parts").join("a.step")
         );
+        assert_eq!(w.resolve_write("b.stl").unwrap(), write.join("b.stl"));
+        // An absolute path is accepted when it lies under the root.
+        let inside_read = read.join("a.stl");
+        let inside_write = write.join("b.stl");
         assert_eq!(
-            w.resolve_read("/work/in/a.stl").unwrap(),
-            PathBuf::from("/work/in/a.stl")
-        );
-        assert_eq!(
-            w.resolve_write("b.stl").unwrap(),
-            PathBuf::from("/work/out/b.stl")
+            w.resolve_read(inside_read.to_str().unwrap()).unwrap(),
+            inside_read
         );
         // Read and write authority are independent.
-        assert!(w.resolve_write("/work/in/a.stl").is_err());
-        assert!(w.resolve_read("/work/out/b.stl").is_err());
+        assert!(w.resolve_write(inside_read.to_str().unwrap()).is_err());
+        assert!(w.resolve_read(inside_write.to_str().unwrap()).is_err());
     }
 
     #[test]
     fn escapes_are_refused() {
         let w = rooted();
-        for bad in [
-            "../x",
-            "a/../../x",
-            "/etc/passwd",
-            "/work/inside/x",
-            "",
-            ".",
-            "/work/in",
-            "a\0b",
-            "/work/in/../out/x",
-        ] {
+        let (read, _) = roots();
+        let root = read.to_str().unwrap();
+        let separator = std::path::MAIN_SEPARATOR;
+        let computed = [
+            // A sibling directory whose name merely starts like the root.
+            format!("{root}side{separator}x"),
+            // The root itself is not a file.
+            root.to_string(),
+            // Leaving through `..` after an absolute prefix under the root.
+            format!("{root}{separator}..{separator}out{separator}x"),
+        ];
+        let fixed = ["../x", "a/../../x", "/etc/passwd", "", ".", "a\0b"].map(String::from);
+        for bad in fixed.iter().chain(&computed) {
             let error = w.resolve_read(bad).unwrap_err();
             assert!(!error.to_string().is_empty(), "`{bad}`");
         }
