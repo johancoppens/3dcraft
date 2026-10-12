@@ -687,3 +687,34 @@ fn what_cannot_be_measured_is_refused() {
     let error = mass_properties(&body).unwrap_err();
     assert!(error.to_string().contains("doubles back"), "{error}");
 }
+
+/// A sphere less an octant, as a sheet: a face that holds one pole and
+/// whose boundary passes through the other. 7/8 of 4πr².
+#[test]
+fn a_sphere_less_an_octant() {
+    for frame in frames(1.0) {
+        let octant = trimmed::sphere_octant(&frame, 2.0).unwrap().body;
+        let dome = octant
+            .faces
+            .iter()
+            .find(|f| matches!(f.surface, Surface::Sphere(_)))
+            .unwrap();
+        let mut around: Vec<Coedge> = octant.loops[dome.loops[0].0 as usize].coedges.clone();
+        around.reverse();
+        for c in &mut around {
+            c.reversed = !c.reversed;
+        }
+        let mut sheet = Body::new(BodyKind::Sheet);
+        sheet.vertices = octant.vertices.clone();
+        sheet.edges = octant.edges.clone();
+        let rest = sheet.add_loop(around);
+        let face = sheet.add_face(dome.surface.clone(), false, vec![rest]);
+        sheet.add_shell(vec![face]);
+        let area = mass_properties(&sheet).unwrap().area;
+        let expected = 3.5 * PI * 4.0;
+        assert!(
+            (area - expected).abs() <= 1e-11 * expected,
+            "{area} vs {expected}"
+        );
+    }
+}

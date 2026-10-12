@@ -12,3 +12,6 @@ workspace = true
 craft3d-math.workspace = true
 craft3d-geom.workspace = true
 craft3d-topo.workspace = true
+
+[dev-dependencies]
+craft3d-tess.workspace = true

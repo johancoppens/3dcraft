@@ -45,9 +45,11 @@ PhotoCraft's main oracle is free: every PSD contains Photoshop's own rendering. 
 | Cylinder r, h | V = πr²h, A = 2πr(r+h) |
 | Cone, sphere, torus | V = ⅓πr²h; V = 4/3πr³, A = 4πr²; V = 2π²Rr², A = 4π²Rr |
 | Extrusion of a profile | V = profile area × height (profile area from Green's theorem on the sketch) |
-| Revolution of a profile | Pappus: V = 2π × centroid distance × profile area |
+| Revolution of a profile | Pappus: V = angle × centroid distance × profile area; A = angle × Σ curve length × distance of the curve's own centroid, plus the two caps for a partial turn |
 | Box with a through hole | V = abc − πr²h |
 | Filleted box edge | V = abc − (1 − π/4) r² × edge length |
+
+In place for revolution (`crates/kernel/tests/revolve*.rs`): the profile catalogue about axes clear of it and profiles drawn against the axis, full and partial turns, either side of the axis, at three scales on tilted planes, volume and area to 1e-10; full turns against the primitives; a seeded random run. The faces a revolution makes are checked on their own in `crates/topo/tests/mass_revolved.rs` (torus segments, sphere segments and wedges, cone wedges).
 
 `testkit` *(planned)* provides these as reference solids with their expected values, at several scales and after arbitrary rigid transforms (mass properties must be invariant or transform predictably).
 
