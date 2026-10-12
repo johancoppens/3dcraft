@@ -129,6 +129,163 @@ impl Camera {
             projection: Projection::Perspective { fov_y_deg },
         })
     }
+
+    /// [`Camera::framing`], with the eye kept clear of `obstacle`: every
+    /// corner of that box is in front of the eye, with the same 5 %
+    /// margin. For a close-up of a part of a model (`bbox`) from outside
+    /// the whole of it (`obstacle`); the renderer does not draw what is
+    /// partly behind the eye.
+    ///
+    /// When the eye has to be further away than a field of view of
+    /// `fov_y_deg` puts it, the field of view is narrowed until `bbox`
+    /// fills the image again (a box with no size seen from that direction
+    /// has nothing to fill it with, and keeps `fov_y_deg`). `None` as for
+    /// `framing`.
+    pub fn framing_clear_of(
+        bbox: &Bbox3,
+        obstacle: &Bbox3,
+        toward_eye: Vec3,
+        up: Vec3,
+        fov_y_deg: f64,
+        aspect: f64,
+    ) -> Option<Camera> {
+        let camera = Camera::framing(bbox, toward_eye, up, fov_y_deg, aspect)?;
+        let Some((lo, hi)) = obstacle.corners() else {
+            return Some(camera);
+        };
+        let dir = toward_eye.normalized()?;
+        let center = camera.target;
+        // How far towards the eye the obstacle reaches.
+        let mut reach = 0.0_f64;
+        for x in [lo.x, hi.x] {
+            for y in [lo.y, hi.y] {
+                for z in [lo.z, hi.z] {
+                    reach = reach.max((Vec3::new(x, y, z) - center).dot(dir));
+                }
+            }
+        }
+        let distance = reach * 1.05;
+        if !distance.is_finite() {
+            return None;
+        }
+        if distance <= (camera.eye - center).dot(dir) {
+            return Some(camera);
+        }
+        // From there, the half angles `bbox` needs: a corner at offset
+        // `rel` is at depth `distance - rel·dir`.
+        let right = up.cross(dir).normalized()?;
+        let view_up = dir.cross(right);
+        let (lo, hi) = bbox.corners()?;
+        let mut half_y = 0.0_f64;
+        for x in [lo.x, hi.x] {
+            for y in [lo.y, hi.y] {
+                for z in [lo.z, hi.z] {
+                    let rel = Vec3::new(x, y, z) - center;
+                    let depth = distance - rel.dot(dir);
+                    if depth.is_nan() || depth <= 0.0 {
+                        return None;
+                    }
+                    half_y = half_y
+                        .max(rel.dot(view_up).abs() / depth)
+                        .max(rel.dot(right).abs() / (depth * aspect));
+                }
+            }
+        }
+        let narrowed = if half_y > 0.0 {
+            (half_y * 1.05).atan().to_degrees() * 2.0
+        } else {
+            fov_y_deg
+        };
+        (narrowed.is_finite() && narrowed > 0.0 && narrowed < 180.0).then_some(Camera {
+            eye: center + dir * distance,
+            target: center,
+            up,
+            projection: Projection::Perspective {
+                fov_y_deg: narrowed,
+            },
+        })
+    }
+
+    /// An orthographic camera that looks at the centre of `bbox` from the
+    /// direction `toward_eye` and shows every corner of the box with a
+    /// 5 % margin: lengths across the view are to scale, whatever their
+    /// depth. `None` for an empty box, a zero direction, an up vector
+    /// parallel to it, a bad aspect ratio, or a box that has no size seen
+    /// from that direction.
+    pub fn framing_orthographic(
+        bbox: &Bbox3,
+        toward_eye: Vec3,
+        up: Vec3,
+        aspect: f64,
+    ) -> Option<Camera> {
+        let center = bbox.center()?;
+        let (lo, hi) = bbox.corners()?;
+        let dir = toward_eye.normalized()?;
+        let right = up.cross(dir).normalized()?;
+        let view_up = dir.cross(right);
+        if !(aspect.is_finite() && aspect > 0.0) {
+            return None;
+        }
+        let (mut half_height, mut reach) = (0.0_f64, 0.0_f64);
+        for x in [lo.x, hi.x] {
+            for y in [lo.y, hi.y] {
+                for z in [lo.z, hi.z] {
+                    let rel = Vec3::new(x, y, z) - center;
+                    half_height = half_height
+                        .max(rel.dot(view_up).abs())
+                        .max(rel.dot(right).abs() / aspect);
+                    reach = reach.max(rel.dot(dir));
+                }
+            }
+        }
+        let half_height = half_height * 1.05;
+        // In front of the box; how far does not change the picture.
+        let distance = reach * 1.05 + half_height;
+        (half_height.is_finite() && half_height > 0.0 && distance.is_finite() && distance > 0.0)
+            .then_some(Camera {
+                eye: center + dir * distance,
+                target: center,
+                up,
+                projection: Projection::Orthographic { half_height },
+            })
+    }
+
+    /// The same camera zoomed in by `factor` about the centre of the
+    /// image: what was a length `l` on the image plane through the target
+    /// becomes `factor · l`, and the eye stays where it is, so nothing new
+    /// comes between it and the model. A perspective camera narrows its
+    /// field of view, an orthographic one its height. A factor below 1
+    /// zooms out. `None` for a factor that is not a positive finite
+    /// number, or one that leaves no valid camera.
+    pub fn zoomed(&self, factor: f64) -> Option<Camera> {
+        if !(factor.is_finite() && factor > 0.0) {
+            return None;
+        }
+        let projection = match self.projection {
+            Projection::Perspective { fov_y_deg } => {
+                if !(fov_y_deg > 0.0 && fov_y_deg < 180.0) {
+                    return None;
+                }
+                let half = (fov_y_deg.to_radians() * 0.5).tan() / factor;
+                let fov_y_deg = half.atan().to_degrees() * 2.0;
+                if !(fov_y_deg > 0.0 && fov_y_deg < 180.0) {
+                    return None;
+                }
+                Projection::Perspective { fov_y_deg }
+            }
+            Projection::Orthographic { half_height } => {
+                let half_height = half_height / factor;
+                if !(half_height.is_finite() && half_height > 0.0) {
+                    return None;
+                }
+                Projection::Orthographic { half_height }
+            }
+        };
+        Some(Camera {
+            projection,
+            ..*self
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -949,5 +1106,196 @@ mod tests {
             xs.iter().sum::<f64>() / xs.len() as f64
         };
         assert!(mean_x(28..32) > 160.0 && mean_x(24..28) < 160.0);
+    }
+
+    /// Where the corners of `bbox` land, as fractions of the half image:
+    /// (largest |x|, largest |y|), 1 being the image's edge.
+    fn extent(camera: &Camera, bbox: &Bbox3, aspect: f64) -> (f64, f64) {
+        let (w, h) = ((400.0 * aspect) as usize, 400);
+        let view = View::new(camera, w, h).unwrap();
+        let (lo, hi) = bbox.corners().unwrap();
+        let (mut ex, mut ey) = (0.0_f64, 0.0_f64);
+        for x in [lo.x, hi.x] {
+            for y in [lo.y, hi.y] {
+                for z in [lo.z, hi.z] {
+                    let p = view.project(Vec3::new(x, y, z)).unwrap();
+                    ex = ex.max((p.sx / w as f64 * 2.0 - 1.0).abs());
+                    ey = ey.max((p.sy / h as f64 * 2.0 - 1.0).abs());
+                }
+            }
+        }
+        (ex, ey)
+    }
+
+    #[test]
+    fn orthographic_framing_shows_the_box_to_scale_with_its_margin() {
+        for scale in [1e-3, 1.0, 1e6] {
+            let bbox = Bbox3::from_points([
+                Vec3::new(-3.0, -2.0, 0.0) * scale,
+                Vec3::new(3.5, 2.0, 3.2) * scale,
+            ]);
+            for (dir, up, aspect) in [
+                (Vec3::new(0.35, -1.0, 0.45), Vec3::Z, 1.6),
+                (Vec3::new(1.0, 0.2, 0.1), Vec3::Z, 0.5),
+                (Vec3::new(0.0, 0.0, 1.0), Vec3::Y, 1.0),
+                (Vec3::new(0.0, -1.0, 0.0), Vec3::Z, 2.5),
+            ] {
+                let camera = Camera::framing_orthographic(&bbox, dir, up, aspect).unwrap();
+                assert!(matches!(camera.projection, Projection::Orthographic { .. }));
+                // The widest corner is exactly at 1 / 1.05 of the half
+                // image, on the axis that decides, and none is outside.
+                let (ex, ey) = extent(&camera, &bbox, aspect);
+                let widest = ex.max(ey);
+                assert!(
+                    (widest - 1.0 / 1.05).abs() < 1e-9,
+                    "scale {scale}, from {dir:?}: {ex} x {ey}"
+                );
+                // The eye is in front of every corner.
+                let forward = (camera.target - camera.eye).normalized().unwrap();
+                let (lo, hi) = bbox.corners().unwrap();
+                for corner in [
+                    lo,
+                    hi,
+                    Vec3::new(lo.x, hi.y, lo.z),
+                    Vec3::new(hi.x, lo.y, hi.z),
+                ] {
+                    assert!((corner - camera.eye).dot(forward) > 0.0);
+                }
+            }
+            // Straight from the top, a box of 6.5 by 4 in a square image:
+            // the half height is half its width, plus the margin.
+            let camera = Camera::framing_orthographic(&bbox, Vec3::Z, Vec3::Y, 1.0).unwrap();
+            let Projection::Orthographic { half_height } = camera.projection else {
+                panic!("not orthographic");
+            };
+            assert!((half_height - 3.25 * 1.05 * scale).abs() < 1e-9 * scale);
+        }
+        let bbox = Bbox3::from_points([Vec3::ZERO, Vec3::new(1.0, 2.0, 3.0)]);
+        let none = |bbox: &Bbox3, dir: Vec3, up: Vec3, aspect: f64| {
+            Camera::framing_orthographic(bbox, dir, up, aspect).is_none()
+        };
+        assert!(none(&Bbox3::EMPTY, Vec3::X, Vec3::Z, 1.0));
+        assert!(none(&bbox, Vec3::ZERO, Vec3::Z, 1.0));
+        assert!(none(&bbox, Vec3::Z, Vec3::Z, 1.0));
+        for aspect in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert!(none(&bbox, Vec3::X, Vec3::Z, aspect));
+        }
+        // A box that is a line along the view direction shows no size.
+        let line = Bbox3::from_points([Vec3::ZERO, Vec3::new(5.0, 0.0, 0.0)]);
+        assert!(none(&line, Vec3::X, Vec3::Z, 1.0));
+        assert!(!none(&line, Vec3::Y, Vec3::Z, 1.0));
+    }
+
+    #[test]
+    fn framing_clear_of_keeps_the_eye_outside_the_model_and_the_box_framed() {
+        let detail = Bbox3::from_points([Vec3::new(-1.0, -1.0, -1.0), Vec3::new(1.0, 1.0, 1.0)]);
+        for (dir, up, aspect) in [
+            (Vec3::new(0.0, -1.0, 0.0), Vec3::Z, 1.0),
+            (Vec3::new(1.0, -1.0, 0.8), Vec3::Z, 1.5),
+            (Vec3::new(0.0, 0.0, 1.0), Vec3::Y, 0.7),
+        ] {
+            let plain = Camera::framing(&detail, dir, up, 30.0, aspect).unwrap();
+            // A model no larger than the detail changes nothing.
+            let same = Camera::framing_clear_of(&detail, &detail, dir, up, 30.0, aspect).unwrap();
+            assert_eq!(same, plain);
+            assert_eq!(
+                Camera::framing_clear_of(&detail, &Bbox3::EMPTY, dir, up, 30.0, aspect),
+                Some(plain)
+            );
+            // A model that reaches far towards the eye pushes the eye
+            // back beyond it, and the detail still fills the image.
+            let unit = dir.normalized().unwrap();
+            let mut model = detail;
+            model.add(unit * 500.0);
+            model.add(unit * -40.0);
+            let camera = Camera::framing_clear_of(&detail, &model, dir, up, 30.0, aspect).unwrap();
+            assert_eq!(camera.target, plain.target);
+            let forward = (camera.target - camera.eye).normalized().unwrap();
+            let (lo, hi) = model.corners().unwrap();
+            for x in [lo.x, hi.x] {
+                for y in [lo.y, hi.y] {
+                    for z in [lo.z, hi.z] {
+                        let depth = (Vec3::new(x, y, z) - camera.eye).dot(forward);
+                        assert!(depth > 0.0, "a corner of the model is behind the eye");
+                    }
+                }
+            }
+            let Projection::Perspective { fov_y_deg } = camera.projection else {
+                panic!("not perspective");
+            };
+            assert!(fov_y_deg < 30.0 && fov_y_deg > 0.0, "{fov_y_deg}");
+            let (ex, ey) = extent(&camera, &detail, aspect);
+            assert!(
+                (ex.max(ey) - 1.0 / 1.05).abs() < 1e-9,
+                "from {dir:?}: {ex} x {ey}"
+            );
+        }
+        assert!(
+            Camera::framing_clear_of(&Bbox3::EMPTY, &detail, Vec3::X, Vec3::Z, 30.0, 1.0).is_none()
+        );
+        assert!(Camera::framing_clear_of(&detail, &detail, Vec3::Z, Vec3::Z, 30.0, 1.0).is_none());
+        // A box that is a line along the view direction has nothing to
+        // fill the image with: the field of view stays.
+        let line = Bbox3::from_points([Vec3::ZERO, Vec3::new(0.0, 0.0, 2.0)]);
+        let mut model = line;
+        model.add(Vec3::new(0.0, 0.0, 90.0));
+        let camera = Camera::framing_clear_of(&line, &model, Vec3::Z, Vec3::Y, 30.0, 1.0).unwrap();
+        assert_eq!(
+            camera.projection,
+            Projection::Perspective { fov_y_deg: 30.0 }
+        );
+        assert!(camera.eye.z > 90.0);
+        let mut endless = detail;
+        endless.add(Vec3::new(f64::MAX, 0.0, 0.0));
+        assert!(Camera::framing_clear_of(&detail, &endless, Vec3::X, Vec3::Z, 30.0, 1.0).is_none());
+    }
+
+    #[test]
+    fn zooming_magnifies_about_the_centre_and_keeps_the_eye() {
+        let bbox = Bbox3::from_points([Vec3::new(-3.0, -2.0, 0.0), Vec3::new(3.5, 2.0, 3.2)]);
+        let dir = Vec3::new(1.0, -1.0, 0.8);
+        let cameras = [
+            Camera::framing(&bbox, dir, Vec3::Z, 30.0, 1.5).unwrap(),
+            Camera::framing_orthographic(&bbox, dir, Vec3::Z, 1.5).unwrap(),
+        ];
+        for camera in cameras {
+            assert_eq!(camera.zoomed(1.0).map(|c| c.eye), Some(camera.eye));
+            let (w, h) = (600, 400);
+            let before = View::new(&camera, w, h).unwrap();
+            // A point in the image plane through the target, off centre.
+            let p = camera.target + before.right * 0.4 + before.up * -0.25;
+            let at = |view: &View| {
+                let q = view.project(p).unwrap();
+                (q.sx - w as f64 / 2.0, q.sy - h as f64 / 2.0)
+            };
+            let (x0, y0) = at(&before);
+            for factor in [0.25, 0.5, 2.0, 7.5, 1000.0] {
+                let zoomed = camera.zoomed(factor).unwrap();
+                assert_eq!(
+                    (zoomed.eye, zoomed.target, zoomed.up),
+                    (camera.eye, camera.target, camera.up)
+                );
+                let (x, y) = at(&View::new(&zoomed, w, h).unwrap());
+                assert!(
+                    (x - x0 * factor).abs() < 1e-9 * factor.max(1.0)
+                        && (y - y0 * factor).abs() < 1e-9 * factor.max(1.0),
+                    "zoom {factor}: ({x}, {y}) from ({x0}, {y0})"
+                );
+            }
+            // Twice in a row is the product.
+            let twice = camera.zoomed(2.0).unwrap().zoomed(3.0).unwrap();
+            let (x, _) = at(&View::new(&twice, w, h).unwrap());
+            assert!((x - x0 * 6.0).abs() < 1e-9);
+            for bad in [0.0, -2.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+                assert!(camera.zoomed(bad).is_none(), "{bad}");
+            }
+            // So little zoom that nothing is left of the camera: refused.
+            assert!(camera.zoomed(1e-320).is_none());
+        }
+        let broken = Camera {
+            projection: Projection::Perspective { fov_y_deg: 200.0 },
+            ..cameras[0]
+        };
+        assert!(broken.zoomed(2.0).is_none());
     }
 }

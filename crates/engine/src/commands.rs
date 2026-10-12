@@ -93,8 +93,8 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Checks every body for validity and lists every problem: failed variables, failed features, defects of bodies. ok is true when there is none.", doc: true, document_check),
     spec!("document.measure", "Measure", r#"{"feature": id or name = all bodies}"#,
         "Returns volume, area and centroid, per body and in total, in document units.", doc: true, document_measure),
-    spec!("view.render", "Render", r#"{"path": string, "width": integer = 800, "height": integer = 600, "view": "iso|front|back|left|right|top|bottom" = "iso", "mode": "shaded|ids" = "shaded", "tolerance": number = automatic}"#,
-        "Renders the bodies with the CPU renderer. Writes a PNG under the write root when path is given, otherwise returns it as base64.", doc: true, view_render),
+    spec!("view.render", "Render", r#"{"path": string, "width": integer = 800, "height": integer = 600, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the whole model, "mode": "shaded|ids" = "shaded", "tolerance": number = automatic}"#,
+        "Renders the bodies with the CPU renderer. Writes a PNG under the write root when path is given, otherwise returns it as base64. orthographic shows lengths across the view to scale. box frames the region between two opposite corners (document units) instead of the whole model, seen from outside the model. zoom magnifies about the centre of the picture (2 shows half as much, twice as large; from 0.01 to 1000).", doc: true, view_render),
 ];
 
 /// The command id most like `id`, for "did you mean".
@@ -1086,11 +1086,44 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
 
 // ------------------------------------------------------------------- view
 
+/// The `box` of `view.render`: two opposite corners, in any order.
+fn view_box(value: &Value) -> Result<craft3d_math::Bbox3, CommandError> {
+    const SHAPE: &str = "view.render: `box` must be two opposite corners, [[x, y, z], [x, y, z]], \
+                         of numbers within ±1e12 that are not the same point";
+    let corner = |value: &Value| -> Option<Vec3> {
+        let [x, y, z] = value.as_array()?.as_slice() else {
+            return None;
+        };
+        let number = |v: &Value| v.as_f64().filter(|n| n.is_finite() && n.abs() <= 1e12);
+        Some(Vec3::new(number(x)?, number(y)?, number(z)?))
+    };
+    let corners = value
+        .as_array()
+        .and_then(|corners| match corners.as_slice() {
+            [a, b] => Some((corner(a)?, corner(b)?)),
+            _ => None,
+        });
+    match corners {
+        Some((a, b)) if a != b => Ok(craft3d_math::Bbox3::from_points([a, b])),
+        _ => fail(SHAPE),
+    }
+}
+
 fn view_render(session: &mut Session, params: &Value) -> Run {
     let p = Params::new(
         "view.render",
         params,
-        &["path", "width", "height", "view", "mode", "tolerance"],
+        &[
+            "path",
+            "width",
+            "height",
+            "view",
+            "projection",
+            "zoom",
+            "box",
+            "mode",
+            "tolerance",
+        ],
     )?;
     let width = p.integer("width", 16, 4096)?.unwrap_or(800);
     let height = p.integer("height", 16, 4096)?.unwrap_or(600);
@@ -1118,6 +1151,21 @@ fn view_render(session: &mut Session, params: &Value) -> Run {
             ));
         }
     };
+    let orthographic = match p.str("projection")?.unwrap_or("perspective") {
+        "perspective" => false,
+        "orthographic" => true,
+        other => {
+            return fail(format!(
+                "view.render: unknown projection `{other}`; use perspective or orthographic"
+            ));
+        }
+    };
+    let zoom = match p.number("zoom")? {
+        None => 1.0,
+        Some(zoom) if (0.01..=1000.0).contains(&zoom) => zoom,
+        Some(_) => return fail("view.render: `zoom` must be a number from 0.01 to 1000"),
+    };
+    let look_at = p.get("box").map(view_box).transpose()?;
     let path = p.str("path")?;
     let resolved = path
         .map(|path| session.workspace.resolve_write(path))
@@ -1148,8 +1196,22 @@ fn view_render(session: &mut Session, params: &Value) -> Run {
         ..RenderParams::default()
     };
     let aspect = width as f64 / height as f64;
-    let camera = Camera::framing(&all.bbox(), toward_eye, up, 30.0, aspect)
-        .ok_or_else(|| CommandError::new("view.render: cannot frame the model"))?;
+    let model = all.bbox();
+    let framed = look_at.unwrap_or(model);
+    let camera = if orthographic {
+        Camera::framing_orthographic(&framed, toward_eye, up, aspect)
+    } else {
+        // A close-up is taken from outside the whole model.
+        Camera::framing_clear_of(&framed, &model, toward_eye, up, 30.0, aspect)
+    }
+    .and_then(|camera| camera.zoomed(zoom))
+    .ok_or_else(|| {
+        CommandError::new(if look_at.is_some() {
+            "view.render: cannot frame this `box` from this view: seen from there it has no size"
+        } else {
+            "view.render: cannot frame the model"
+        })
+    })?;
     let frame = craft3d_render::render(&all, &camera, &render_params)
         .map_err(|e| CommandError::new(format!("view.render: {e}")))?;
     let png = if ids {
@@ -1161,6 +1223,9 @@ fn view_render(session: &mut Session, params: &Value) -> Run {
 
     let mut result = json!({
         "width": width, "height": height, "view": view,
+        "projection": if orthographic { "orthographic" } else { "perspective" },
+        "zoom": zoom,
+        "box": framed.corners().map(|(lo, hi)| json!([vec3(lo), vec3(hi)])),
         "triangles": all.triangles.len(),
         "coverage": frame.coverage(),
         "bodies": legend,

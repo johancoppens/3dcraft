@@ -430,6 +430,7 @@ dependencies = [
  "craft3d-render",
  "craft3d-tess",
  "craft3d-topo",
+ "png 0.17.16",
  "serde_json",
 ]
 
