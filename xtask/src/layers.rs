@@ -62,6 +62,10 @@ const SAME_LAYER: &[(&str, &str)] = &[
     ("gpu", "render"),
 ];
 
+/// Dev-dependencies allowed inside one layer, for tests only: (crate,
+/// depends on). The kernel's tests mesh the bodies it makes.
+const SAME_LAYER_DEV: &[(&str, &str)] = &[("kernel", "tess")];
+
 /// Format crates that must not depend on any workspace crate.
 const STANDALONE: &[&str] = &["step", "meshio", "zipstore"];
 
@@ -174,6 +178,10 @@ pub fn check() -> Result<(), String> {
                 None => errors.push(format!("{name} depends on unregistered crate {dep_name}")),
                 Some(dep_layer) if dep_layer < layer => {}
                 Some(dep_layer) if dep_layer == layer && SAME_LAYER.contains(&(short, dep_short)) => {}
+                Some(dep_layer)
+                    if dep_layer == layer
+                        && is_dev
+                        && SAME_LAYER_DEV.contains(&(short, dep_short)) => {}
                 Some(dep_layer) => errors.push(format!(
                     "{name} (L{layer}) must not depend on {dep_name} (L{dep_layer}): only lower layers"
                 )),

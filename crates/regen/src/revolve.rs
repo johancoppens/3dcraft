@@ -9,8 +9,7 @@ use craft3d_kernel::extrude::Origins;
 use craft3d_topo::Body;
 use std::f64::consts::TAU;
 
-// TEMPORARY, see pending.rs.
-use crate::pending::revolve;
+use craft3d_kernel::revolve::revolve;
 
 pub(crate) fn build(
     doc: &Document,

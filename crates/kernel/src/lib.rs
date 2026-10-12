@@ -3,13 +3,14 @@
 //! why it cannot (docs/architecture.md §5.3).
 //!
 //! So far: primitive solids, closed profiles from sketch curves
-//! ([`profile`]) and their extrusion ([`extrude`]). Revolve, booleans and
-//! blends arrive with their milestones.
+//! ([`profile`]), their extrusion ([`extrude`]) and their revolution
+//! ([`revolve`]). Booleans and blends arrive with their milestones.
 
 pub mod boolean;
 pub mod extrude;
 pub mod primitives;
 pub mod profile;
+pub mod revolve;
 
 use craft3d_geom::GeomError;
 use craft3d_topo::Defect;
@@ -69,6 +70,28 @@ pub enum KernelError {
     },
     /// A profile that `detect_profiles` would not have produced.
     InvalidProfile {
+        reason: &'static str,
+    },
+    /// The axis of a revolution is not a line in the sketch plane.
+    InvalidAxis {
+        reason: &'static str,
+    },
+    /// The revolution does not turn from a lower to a higher angle, turns
+    /// through more than a full turn, or through too little to move
+    /// anything further than the tolerance.
+    InvalidAngles {
+        from: f64,
+        to: f64,
+    },
+    /// The profiles have points on both sides of the axis of revolution;
+    /// these curves reach across to the side with less of them (at most
+    /// [`MAX_REPORTED`], ascending).
+    CrossesAxis {
+        curves: Vec<u64>,
+    },
+    /// A curve the operation cannot sweep yet.
+    UnsupportedCurve {
+        id: u64,
         reason: &'static str,
     },
     /// The operation built a body that fails the validity checker (at most
@@ -149,6 +172,24 @@ impl fmt::Display for KernelError {
                  the tolerance; got from {from} to {to}"
             ),
             KernelError::InvalidProfile { reason } => write!(f, "invalid profile: {reason}"),
+            KernelError::InvalidAxis { reason } => {
+                write!(f, "the axis of revolution is not usable: {reason}")
+            }
+            KernelError::InvalidAngles { from, to } => write!(
+                f,
+                "a revolution turns from a lower to a higher angle, through at most a full \
+                 turn and far enough to move the profile by more than the tolerance; got \
+                 from {from} to {to} radians"
+            ),
+            KernelError::CrossesAxis { curves } => write!(
+                f,
+                "the profile crosses the axis of revolution: curves {} reach across it; \
+                 keep the profile on one side (it may touch the axis)",
+                id_list(curves)
+            ),
+            KernelError::UnsupportedCurve { id, reason } => {
+                write!(f, "curve {id} cannot be revolved yet: {reason}")
+            }
             KernelError::InvalidBody { operation, defects } => {
                 write!(f, "{operation} produced an invalid body:")?;
                 for defect in defects {

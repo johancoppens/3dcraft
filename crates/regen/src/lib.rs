@@ -20,7 +20,6 @@ mod boolean;
 mod cache;
 mod derive;
 mod extrude;
-mod pending;
 mod revolve;
 mod sketch;
 

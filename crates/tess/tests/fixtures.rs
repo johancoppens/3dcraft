@@ -128,10 +128,10 @@ fn the_domed_block_matches_a_direct_sum_over_its_roof() {
 }
 
 /// The pipe elbow and the sphere octant are valid bodies with the stated
-/// counts. `mass_properties` cannot confirm their values (see the two
-/// ignored tests below), so what pins them here is the closed forms'
-/// own consistency: the elbow over a whole turn is the torus, and eight
-/// octants are the sphere.
+/// counts. `mass_properties` confirms their values in the two tests
+/// below; here the closed forms are checked against each other: the
+/// elbow over a whole turn is the torus, and eight octants are the
+/// sphere.
 #[test]
 fn the_elbow_and_the_octant_are_valid_bodies() {
     use craft3d_testkit::solids;
@@ -167,28 +167,10 @@ fn the_elbow_and_the_octant_are_valid_bodies() {
     }
 }
 
-/// A gap in `craft3d_topo::mass_properties`, kept as a failing test for
-/// whoever closes it: a face bounded by loops that wind around the *tube*
-/// of a torus. The two loops wind in opposite senses, so the check for
-/// "a loop that winds around the tube" (which sums the windings) does not
-/// fire; the integral then runs over a boundary on which du = 0 and
-/// returns 0 for the face. No error: a wrong area and a zero volume.
+/// Once a gap in `craft3d_topo::mass_properties`: a face bounded by loops
+/// that wind around the *tube* of a torus. Along them du = 0, so the
+/// integral over u alone came out as zero for the face.
 #[test]
-fn mass_properties_of_a_pipe_elbow_are_refused_not_wrong() {
-    // Until the integrator handles this, it must say so: the first version
-    // returned a wrong area and a zero volume without an error.
-    let solid = trimmed::pipe_elbow(&Frame::WORLD, 3.0, 1.0, 1.2).unwrap();
-    let error = mass_properties(&solid.body).unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("winds around the tube of a torus"),
-        "{error}"
-    );
-}
-
-#[test]
-#[ignore = "known gap in craft3d-topo: mass_properties cannot measure this face yet (it returns Unsupported)"]
 fn mass_properties_of_a_pipe_elbow() {
     let solid = trimmed::pipe_elbow(&Frame::WORLD, 3.0, 1.0, 1.2).unwrap();
     let mass = mass_properties(&solid.body).unwrap();
@@ -206,25 +188,11 @@ fn mass_properties_of_a_pipe_elbow() {
     );
 }
 
-/// A second gap, kept the same way: a face whose boundary passes through
-/// a pole of a sphere. In parameter space the pole is a whole edge of the
-/// region (u runs from one meridian to the other at v = π/2); the
-/// boundary integral leaves that edge out, which is only right when the
-/// reference latitude is the pole itself.
+/// Once a second gap: a face whose boundary passes through a pole of a
+/// sphere. In parameter space the pole is a whole edge of the region (u
+/// runs from one meridian to the other at v = π/2), which no edge of the
+/// body stands for.
 #[test]
-fn mass_properties_of_a_sphere_octant_are_refused_not_wrong() {
-    // Until the integrator handles this, it must say so: the first version
-    // returned a wrong area and a zero volume without an error.
-    let solid = trimmed::sphere_octant(&Frame::WORLD, 2.0).unwrap();
-    let error = mass_properties(&solid.body).unwrap_err();
-    assert!(
-        error.to_string().contains("passes through a pole"),
-        "{error}"
-    );
-}
-
-#[test]
-#[ignore = "known gap in craft3d-topo: mass_properties cannot measure this face yet (it returns Unsupported)"]
 fn mass_properties_of_a_sphere_octant() {
     let solid = trimmed::sphere_octant(&Frame::WORLD, 2.0).unwrap();
     let mass = mass_properties(&solid.body).unwrap();

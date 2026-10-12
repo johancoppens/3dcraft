@@ -130,7 +130,7 @@ fn a_full_turn_of_a_rectangle_is_a_ring() {
         .map(|n| n.as_str().unwrap())
         .collect();
     names.sort_unstable();
-    assert_eq!(names, ["F2:side(e6)", "F2:side(e7)", "F2:side(e8)"]);
+    assert_eq!(names, ["F3:side(e6)", "F3:side(e7)", "F3:side(e8)"]);
 }
 
 #[test]
