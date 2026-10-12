@@ -5,6 +5,7 @@ use crate::extrude::{Swept, swap_start_and_end, swept};
 use crate::{FeatureResult, angle};
 use craft3d_doc::{Document, Geometry, Revolve, RevolveAxis};
 use craft3d_expr::Evaluation;
+use craft3d_kernel::KernelError;
 use craft3d_kernel::extrude::Origins;
 use craft3d_topo::Body;
 use std::f64::consts::TAU;
@@ -84,7 +85,20 @@ pub(crate) fn build(
         (-size, 0.0)
     };
     let mut result = revolve(&profiles, &plane, point, direction, from, to, &tolerance)
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| match e {
+            // Curves are called what the sketch calls them.
+            KernelError::CrossesAxis { curves } => {
+                let list: Vec<String> = curves.iter().map(|id| format!("e{id}")).collect();
+                format!(
+                    "axis: sketch `{name}` lies on both sides of the axis ({} reach across); a profile may touch the axis but not cross it",
+                    list.join(", ")
+                )
+            }
+            KernelError::UnsupportedCurve { id, reason } => {
+                format!("sketch `{name}`: e{id} cannot be revolved about this axis: {reason}")
+            }
+            other => other.to_string(),
+        })?;
     // "Start" is the cap in the sketch plane, as for an extrusion.
     if !full && !feature.symmetric && turn < 0.0 {
         swap_start_and_end(&mut result.origins);

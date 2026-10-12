@@ -6,12 +6,18 @@ Decisions that shape the project, newest first, each with its reason. An agent t
 
 ## Taken
 
+### 2026-10-13: Decided by the developer
+
+- **The boolean kernel is the first priority:** it is what makes 3DCraft a professional tool. A case the kernel refuses is work owed, not an end state; the checklist is in [`roadmap.md`](roadmap.md).
+- **The kernel's tests may use the tessellator** (a dev-dependency inside one layer, listed as `SAME_LAYER_DEV` in `xtask/src/layers.rs`): every body an operation makes is also meshed as an independent check. The kernel's own code still does not depend on `tess`.
+
 ### 2026-10-13: Made during the night of 12 to 13 October (the developer was asleep)
 
 Made by the agent on the developer's instruction to decide by recommendation; the developer can overturn any of them.
 
 - **A sketch on a cap survives a change of the cap's outline** (field test, finding 1). All caps of one role of one extrusion lie in one plane with one frame, so for the plane of a sketch a cap name resolves to that plane as long as the feature has a cap of that role, also when the outline in the name is gone. `F2:endCap()` is accepted as "where F2 ends". This is not a retarget: the sketch lands exactly where it was. It replaces "a cap is named after all curves of its outer loop, and a reference then fails" below, for sketch planes only; a later consumer that needs the face itself (not its plane) still gets the exact match or nothing. The stored name is not rewritten.
 - **A sketch on a side face is measured from the origin of the extruded sketch, dropped onto the face** (field test, finding 2), not from the start of the line that made the face. Files written on 12 October with a sketch on a side face whose line does not start at that point place the sketch differently now; format 4 was never released.
+- **A revolution turns about a line in its sketch's plane:** the sketch's x or y axis, or one of its lines by entity id (usually a construction line), whose direction from start to end sets which way a positive angle goes (counter-clockwise seen from its tip). "Start" is the cap in the sketch plane, as for an extrusion; a full turn has no caps.
 - **Robust predicates (was D-open-6): tolerant floating point only, for now.** The boolean kernel for planes and cylinders takes no decision on the sign of a number that could be rounding: membership is a winding number or a parity, points merge at half the tolerance, and input within a band of the tolerance (up to twice) or within 1e-6 rad of tangent or parallel is refused as unsupported. Measured: 0 wrong or invalid results in 13,500 seeded random pairs at scales 1e-3, 1 and 1e6. The default in the table below was "adaptive exact for orientation predicates"; revisit when general polyhedra or freeform faces enter booleans.
 - **Booleans: one feature kind with an operation** (`feature.boolean` with `op`: union, subtract, intersect), a target and a tool. Both bodies go into the result; `keepTool` leaves the tool its body. There is no cut-extrude command yet: extrude, then subtract.
 - **Names through a boolean are copies** like those of a transform: instance 0 the target, 1 the tool. Pieces of one face share one name, and a sketch accepts that (one plane). Edges and vertices of a boolean are not named yet.
