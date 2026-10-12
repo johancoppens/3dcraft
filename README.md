@@ -38,6 +38,29 @@ claude mcp add craft3d -- "$PWD/target/release/craft3d-cli" mcp \
     --bridge 7878 --control-token-file "$PWD/.private/control.token"
 ```
 
+## First field test: an agent that only knew the command list
+
+A separate AI session got nothing but the MCP connection: no source, no docs, only what `command_list`
+and the error messages say. It built these, and checked every volume against a closed form or its own
+computation:
+
+![A plate with rounded corners and four holes, a hollow post with two ribs and a hexagonal head](docs/field-test/2026-10-12/img/04_plate_post_hex_head.png)
+
+A constrained plate sketch with four holes, a hollow post on its top face, ribs sketched on a side face
+and a hexagonal head: four bodies, each to the predicted volume, following the variables when the plate
+is made longer, and bit-identical after save and reopen.
+
+![Two spur gears, 30 and 50 teeth, in mesh](docs/field-test/2026-10-12/img/09_gear_pair_iso.png)
+
+Two spur gears (module 2, 30 and 50 teeth, bore with keyway) in mesh at centre distance 80. The
+50-tooth gear was built over MCP alone in 220 commands; its volume equals the script's own area
+integral to 12 digits, and the two outlines clear each other by 0.007 mm on the line of action.
+
+Nothing crashed and no command gave a wrong result silently. The same report lists what got in the way:
+no patterns (a gear is 700 literal points), no booleans, a cap face that is renamed when its outline
+changes, fixed perspective views that cannot zoom, and heavy payloads for bulk geometry over MCP.
+[The full findings](docs/field-test/2026-10-12/README.md), with the generator scripts.
+
 The tessellator handles any face the kernel can describe. These are the reference solids of the test
 suite, each checked against its closed-form volume and read back by FreeCAD as a closed solid:
 

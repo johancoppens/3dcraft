@@ -8,6 +8,7 @@ Start with [`AGENTS.md`](../AGENTS.md), then read in this order.
 |---|---|
 | [`architecture.md`](architecture.md) | Goals and principles, crate map and layers, document model, kernel, tessellator, renderers, engine seam |
 | [`development.md`](development.md) | Prerequisites, build and run, CLI, driving the app, watching along, environment variables |
+| [`field-test/2026-10-12/`](field-test/2026-10-12/README.md) | What an agent that only used 3DCraft over MCP built, and what it ran into |
 | [`testing.md`](testing.md) | The AI test loop, the oracles, test kinds per crate, evidence |
 | [`contributing.md`](contributing.md) | Rules and the "add a command" / "add a feature type" checklists |
 | [`control-protocol.md`](control-protocol.md) | JSON control channel, headless server, MCP tools |
