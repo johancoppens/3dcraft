@@ -11,7 +11,7 @@ use crate::params::Params;
 use crate::{CommandError, CommandSpec, Session};
 use craft3d_doc::{
     ConstraintId, ConstraintKind, DistanceDirection, Document, EntityId, Expr, FeatureId,
-    FeatureKind, Geometry, Sketch, SketchError, SketchPlane, WorldPlane,
+    FeatureKind, Geometry, PersistentName, Sketch, SketchError, SketchPlane, WorldPlane,
 };
 use craft3d_regen::{ConstraintState, SketchResult};
 use serde_json::{Map, Value, json};
@@ -20,8 +20,8 @@ use serde_json::{Map, Value, json};
 const MAX_POLYLINE_POINTS: usize = 1_000;
 
 pub(crate) static SPECS: &[CommandSpec] = &[
-    spec!("sketch.create", "New Sketch", r#"{"plane": "xy|yz|zx" = "xy", "offset": expr = 0, "name": string = automatic}"#,
-        "Adds an empty sketch on a world plane, moved by offset along the plane's normal. On xy the sketch axes are world X and Y, on yz they are Y and Z, on zx they are Z and X.", doc: true, sketch_create),
+    spec!("sketch.create", "New Sketch", r#"{"plane": "xy|yz|zx" = "xy", "face": face name, "offset": expr = 0, "name": string = automatic}"#,
+        "Adds an empty sketch on a world plane, or on a flat face of a body given by its name from document.inspect (faceNames, such as \"F2:endCap(e7,e8,e9)\"), moved by offset along the normal. On xy the sketch axes are world X and Y, on yz they are Y and Z, on zx they are Z and X. On the end cap of an extrusion they are those of the extruded sketch; on a side face x runs along its line and y along the extrusion.", doc: true, sketch_create),
     spec!("sketch.point", "Sketch Point", r#"{"sketch": id or name, "at": [number, number]}"#,
         "Adds a point to a sketch, at coordinates in document units. Returns its entity id.", doc: true, sketch_point),
     spec!("sketch.line", "Sketch Line", r#"{"sketch": id or name, "from": point id or [x, y], "to": point id or [x, y], "construction": boolean = false}"#,
@@ -34,8 +34,8 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Adds an arc about center, counter-clockwise from start to end. Solving keeps both ends at the same distance from the center.", doc: true, sketch_arc),
     spec!("sketch.constrain", "Constrain", r#"{"sketch": id or name, "type": "coincident|pointOn|horizontal|vertical|parallel|perpendicular|tangent|equal|concentric|symmetric|midpoint|fixed|distance|angle|radius|diameter", "entities": [entity id, ...], "value": expr, "direction": "direct|horizontal|vertical" = "direct"}"#,
         "Adds a constraint between entities. distance, angle, radius and diameter take a value; a distance takes one line (its length), two points, or a point and a line. symmetric takes two points and the mirror line. An angle is measured counter-clockwise from the first line to the second, each taken from its start to its end. Returns the constraint id and how the sketch solved.", doc: true, sketch_constrain),
-    spec!("sketch.edit", "Edit Sketch", r#"{"sketch": id or name, "constraint": constraint id, "value": expr, "entity": entity id, "construction": boolean, "at": [number, number], "plane": "xy|yz|zx", "offset": expr}"#,
-        "Changes a sketch: the value of a dimension (constraint and value), an entity's construction flag or a point's position before solving (entity with construction or at), or the plane and offset.", doc: true, sketch_edit),
+    spec!("sketch.edit", "Edit Sketch", r#"{"sketch": id or name, "constraint": constraint id, "value": expr, "entity": entity id, "construction": boolean, "at": [number, number], "plane": "xy|yz|zx", "face": face name, "offset": expr}"#,
+        "Changes a sketch: the value of a dimension (constraint and value), an entity's construction flag or a point's position before solving (entity with construction or at), or what it lies on (plane or face) and the offset.", doc: true, sketch_edit),
     spec!("sketch.delete", "Delete From Sketch", r#"{"sketch": id or name, "entity": entity id, "constraint": constraint id}"#,
         "Deletes a constraint, or an entity with the constraints on it. A point that lines, circles or arcs are built on cannot be deleted before them.", doc: true, sketch_delete),
     spec!("sketch.inspect", "Inspect Sketch", r#"{"sketch": id or name}"#,
@@ -139,6 +139,17 @@ fn plane_param(p: &Params, command: &str) -> Result<Option<WorldPlane>, CommandE
     }
 }
 
+/// The name of a face, as `document.inspect` lists it.
+fn face_param(p: &Params, command: &str) -> Result<Option<PersistentName>, CommandError> {
+    match p.str("face")? {
+        None => Ok(None),
+        Some(text) => text
+            .parse::<PersistentName>()
+            .map(Some)
+            .map_err(|reason| CommandError::new(format!("{command}: `face`: {reason}"))),
+    }
+}
+
 fn ids(list: &[EntityId]) -> Vec<String> {
     list.iter().map(|id| id.to_string()).collect()
 }
@@ -207,10 +218,19 @@ fn change<T>(
 
 fn sketch_create(session: &mut Session, params: &Value) -> Run {
     const COMMAND: &str = "sketch.create";
-    let p = Params::new(COMMAND, params, &["plane", "offset", "name"])?;
-    let plane = SketchPlane::World {
-        plane: plane_param(&p, COMMAND)?.unwrap_or_default(),
-        offset: Expr::new(p.expr("offset")?.unwrap_or_else(|| "0".to_string())),
+    let p = Params::new(COMMAND, params, &["plane", "face", "offset", "name"])?;
+    let offset = Expr::new(p.expr("offset")?.unwrap_or_else(|| "0".to_string()));
+    let plane = match (plane_param(&p, COMMAND)?, face_param(&p, COMMAND)?) {
+        (Some(_), Some(_)) => {
+            return fail(format!(
+                "{COMMAND}: give either a `plane` or a `face`, not both"
+            ));
+        }
+        (plane, None) => SketchPlane::World {
+            plane: plane.unwrap_or_default(),
+            offset,
+        },
+        (None, Some(face)) => SketchPlane::Face { face, offset },
     };
     let name = p.str("name")?;
     let id = edit(session, COMMAND, "Add sketch", |doc| {
@@ -421,6 +441,7 @@ fn sketch_edit(session: &mut Session, params: &Value) -> Run {
             "construction",
             "at",
             "plane",
+            "face",
             "offset",
         ],
     )?;
@@ -442,6 +463,12 @@ fn sketch_edit(session: &mut Session, params: &Value) -> Run {
         })?),
     };
     let plane = plane_param(&p, COMMAND)?;
+    let face = face_param(&p, COMMAND)?;
+    if plane.is_some() && face.is_some() {
+        return fail(format!(
+            "{COMMAND}: give either a `plane` or a `face`, not both"
+        ));
+    }
     let offset = p.expr("offset")?.map(Expr::new);
 
     match (&constraint, &value) {
@@ -460,9 +487,14 @@ fn sketch_edit(session: &mut Session, params: &Value) -> Run {
         }
         _ => {}
     }
-    if constraint.is_none() && entity.is_none() && plane.is_none() && offset.is_none() {
+    if constraint.is_none()
+        && entity.is_none()
+        && plane.is_none()
+        && face.is_none()
+        && offset.is_none()
+    {
         return fail(format!(
-            "{COMMAND}: give something to change: constraint and value, entity and construction or at, plane, or offset"
+            "{COMMAND}: give something to change: constraint and value, entity and construction or at, plane or face, or offset"
         ));
     }
     change(session, COMMAND, "Edit sketch", id, |s| {
@@ -495,15 +527,18 @@ fn sketch_edit(session: &mut Session, params: &Value) -> Run {
                 }
             }
         }
-        let SketchPlane::World {
-            plane: current_plane,
-            offset: current_offset,
-        } = &mut s.plane;
+        // A new plane or face keeps the offset unless one is given too.
+        let kept = s.plane.offset().clone();
         if let Some(plane) = plane {
-            *current_plane = plane;
+            s.plane = SketchPlane::World {
+                plane,
+                offset: kept,
+            };
+        } else if let Some(face) = face {
+            s.plane = SketchPlane::Face { face, offset: kept };
         }
         if let Some(offset) = offset {
-            *current_offset = offset;
+            *s.plane.offset_mut() = offset;
         }
         Ok(())
     })?;

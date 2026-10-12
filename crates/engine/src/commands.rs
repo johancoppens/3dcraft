@@ -8,8 +8,8 @@
 use crate::params::Params;
 use crate::{CommandError, CommandSpec, OpenDocument, Session, base64};
 use craft3d_doc::{
-    Block, Cone, Cylinder, DocError, Document, Expr, Feature, FeatureId, FeatureKind, LengthUnit,
-    Orientation, Sphere, Tolerance, Torus, Units,
+    Block, Cone, Cylinder, DocError, Document, Expr, Extrude, Feature, FeatureId, FeatureKind,
+    LengthUnit, Orientation, Sphere, Tolerance, Torus, Units,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use craft3d_io::MeshFormat;
@@ -54,7 +54,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("file.close", "Close", r#"{"discard": boolean = false}"#,
         "Closes the active document. Refuses unsaved changes unless discard is true.", doc: true, file_close),
     spec!("file.export", "Export Mesh", r#"{"path": string, "format": "stl|stl-ascii|3mf|obj" = from the extension, "tolerance": number = automatic}"#,
-        "Tessellates every body and writes a mesh file under the write root. tolerance is the chordal tolerance in document units.", doc: true, file_export),
+        "Tessellates every body and writes a mesh file under the write root. tolerance is the chordal tolerance in document units. closed counts the meshes that are watertight.", doc: true, file_export),
     spec!("edit.undo", "Undo", "{}", "Undoes the last change to the document.", doc: true, edit_undo),
     spec!("edit.redo", "Redo", "{}", "Redoes the change last undone.", doc: true, edit_redo),
     spec!("variable.set", "Set Variable", r#"{"name": string, "expr": expression}"#,
@@ -73,7 +73,9 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Adds a cone along axis: its base circle is centred at position, its apex is height further along the axis.", doc: true, feature_cone),
     spec!("feature.torus", "Torus", r#"{"major": expr, "minor": expr, "position": [expr, expr, expr] = [0, 0, 0], "axis": [number, number, number] = [0, 0, 1], "angle": expr = "0 deg", "name": string = automatic}"#,
         "Adds a ring torus about axis, centred at position: major is the radius of the ring, minor of the tube.", doc: true, feature_torus),
-    spec!("feature.edit", "Edit Feature", r#"{"feature": id or name, "size": [expr; 3], "position": [expr; 3], "axis": [number; 3], "angle": expr, "radius": expr, "height": expr, "major": expr, "minor": expr}"#,
+    spec!("feature.extrude", "Extrude", r#"{"sketch": id or name, "distance": expr, "symmetric": boolean = false, "name": string = automatic}"#,
+        "Adds a solid by sweeping the closed profiles of a sketch along its normal: loops of lines and arcs, and circles; a loop inside another is a hole. A negative distance goes the other way; symmetric puts half on each side of the sketch plane.", doc: true, feature_extrude),
+    spec!("feature.edit", "Edit Feature", r#"{"feature": id or name, "size": [expr; 3], "position": [expr; 3], "axis": [number; 3], "angle": expr, "radius": expr, "height": expr, "major": expr, "minor": expr, "distance": expr, "symmetric": boolean}"#,
         "Changes parameters of a feature; give only the ones to change.", doc: true, feature_edit),
     spec!("feature.rename", "Rename Feature", r#"{"feature": id or name, "name": string}"#,
         "Renames a feature.", doc: true, feature_rename),
@@ -431,10 +433,14 @@ fn file_export(session: &mut Session, params: &Value) -> Run {
         objects: Vec::new(),
     };
     let mut triangles = 0;
+    let mut closed = 0;
     for (name, mesh) in &meshes {
         let object = craft3d_io::to_object(mesh, name)
             .map_err(|e| CommandError::new(format!("file.export: {name}: {e}")))?;
         triangles += object.triangles.len();
+        if object.kind == craft3d_meshio::ObjectKind::Solid {
+            closed += 1;
+        }
         model.objects.push(object);
     }
     let bytes = craft3d_io::encode(&model, format)
@@ -444,6 +450,8 @@ fn file_export(session: &mut Session, params: &Value) -> Run {
         "path": path,
         "bytes": bytes.len(),
         "bodies": model.objects.len(),
+        // How many of the meshes are closed and consistently oriented.
+        "closed": closed,
         "triangles": triangles,
         "tolerance": tess.chordal_tolerance,
         "unit": length_unit(open.history.current()),
@@ -618,9 +626,35 @@ fn feature_torus(session: &mut Session, params: &Value) -> Run {
     add_feature(session, "feature.torus", p.str("name")?, kind)
 }
 
+fn feature_extrude(session: &mut Session, params: &Value) -> Run {
+    let p = Params::new(
+        "feature.extrude",
+        params,
+        &["sketch", "distance", "symmetric", "name"],
+    )?;
+    let doc = session.document()?.history.current();
+    let sketch = feature_ref(doc, &p, "feature.extrude", "sketch")?;
+    doc.sketch(sketch).map_err(doc_error("feature.extrude"))?;
+    let kind = FeatureKind::Extrude(Extrude {
+        sketch,
+        distance: required(&p, "distance")?,
+        symmetric: p.bool("symmetric")?.unwrap_or(false),
+    });
+    add_feature(session, "feature.extrude", p.str("name")?, kind)
+}
+
 /// The parameters `feature.edit` can change, by name.
-const EDITABLE: [&str; 8] = [
-    "size", "position", "axis", "radius", "height", "major", "minor", "angle",
+const EDITABLE: [&str; 10] = [
+    "size",
+    "position",
+    "axis",
+    "radius",
+    "height",
+    "major",
+    "minor",
+    "angle",
+    "distance",
+    "symmetric",
 ];
 
 fn feature_edit(session: &mut Session, params: &Value) -> Run {
@@ -637,9 +671,10 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
     for key in ["size", "position", "axis"] {
         p.expr3(key)?;
     }
-    for key in ["radius", "height", "major", "minor", "angle"] {
+    for key in ["radius", "height", "major", "minor", "angle", "distance"] {
         p.expr(key)?;
     }
+    let symmetric = p.bool("symmetric")?;
     let given: Vec<&str> = EDITABLE
         .into_iter()
         .filter(|key| p.get(key).is_some())
@@ -711,6 +746,13 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
                 ("angle", Slot::One(&mut t.orientation.angle)),
             ],
         ),
+        FeatureKind::Extrude(e) => (
+            "extrude",
+            vec![
+                ("distance", Slot::One(&mut e.distance)),
+                ("symmetric", Slot::Flag(&mut e.symmetric)),
+            ],
+        ),
     };
     let names: Vec<&str> = own.iter().map(|(key, _)| *key).collect();
     if let Some(unused) = given.iter().find(|key| !names.contains(key)) {
@@ -731,6 +773,11 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
                     *target = Expr::new(value);
                 }
             }
+            Slot::Flag(target) => {
+                if let Some(value) = symmetric {
+                    *target = value;
+                }
+            }
         }
     }
     edit(session, "feature.edit", "Edit feature", |doc| {
@@ -744,6 +791,7 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
 enum Slot<'a> {
     One(&'a mut Expr),
     Triple(&'a mut [Expr; 3]),
+    Flag(&'a mut bool),
 }
 
 fn feature_rename(session: &mut Session, params: &Value) -> Run {
@@ -890,6 +938,19 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
                 map.insert("volume".into(), mass.volume.into());
                 map.insert("area".into(), mass.area.into());
                 map.insert("centroid".into(), mass.centroid.map_or(Value::Null, vec3));
+            }
+            // What each face is called by the features that come after:
+            // a name made of where the face came from, not of its index.
+            if let (Some(map), Some(origins)) = (
+                entry.as_object_mut(),
+                outcome.and_then(|o| o.origins.as_ref()),
+            ) {
+                let names: Vec<String> = origins
+                    .faces
+                    .iter()
+                    .map(|origin| craft3d_regen::name_of(feature.id, origin).to_string())
+                    .collect();
+                map.insert("faceNames".into(), names.into());
             }
             // From a tessellation: exact for flat-faced bodies, inside the
             // true box by at most the tolerance for curved ones.

@@ -6,12 +6,15 @@
 //! text the user wrote. This crate is pure data with serde; it contains no
 //! geometry.
 //!
-//! So far: variables, primitive features and sketches with their
-//! constraints ([`sketch`]). The other feature kinds of
+//! So far: variables, primitive features, sketches with their constraints
+//! ([`sketch`]) and extrusions of sketches. The other feature kinds of
 //! docs/architecture.md §4 arrive with their milestones; `craft3d-format` fails to compile when a field is added
 //! here without being saved (AGENTS.md §8).
 
+pub mod name;
 pub mod sketch;
+
+pub use name::{NameRole, PersistentName};
 
 pub use sketch::{
     Constraint, ConstraintId, ConstraintKind, DistanceDirection, Entity, EntityId, Geometry,
@@ -213,6 +216,22 @@ pub struct Torus {
     pub orientation: Orientation,
 }
 
+/// A solid swept from the closed profiles of a sketch, along the sketch's
+/// normal.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Extrude {
+    /// The sketch feature the profiles come from. It has to come before
+    /// this feature in the history; regeneration reports it when it does
+    /// not, or is gone.
+    pub sketch: FeatureId,
+    /// How far, along the sketch's normal; a negative length goes the
+    /// other way.
+    pub distance: Expr,
+    /// Half of `distance` to each side of the sketch plane.
+    #[serde(default)]
+    pub symmetric: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum FeatureKind {
@@ -222,6 +241,7 @@ pub enum FeatureKind {
     Cone(Cone),
     Torus(Torus),
     Sketch(Sketch),
+    Extrude(Extrude),
 }
 
 impl FeatureKind {
@@ -234,6 +254,7 @@ impl FeatureKind {
             FeatureKind::Cone(_) => "cone",
             FeatureKind::Torus(_) => "torus",
             FeatureKind::Sketch(_) => "sketch",
+            FeatureKind::Extrude(_) => "extrude",
         }
     }
 
@@ -280,6 +301,7 @@ impl FeatureKind {
                 out.extend(turned(&t.orientation));
             }
             FeatureKind::Sketch(s) => out = s.exprs(),
+            FeatureKind::Extrude(e) => out = vec![named("distance", &e.distance)],
         }
         out
     }
@@ -315,6 +337,7 @@ impl FeatureKind {
                 .chain(turned(&mut t.orientation))
                 .collect(),
             FeatureKind::Sketch(s) => s.exprs_mut(),
+            FeatureKind::Extrude(e) => vec![&mut e.distance],
         }
     }
 }
@@ -849,6 +872,50 @@ mod tests {
             doc.sketch(FeatureId(99)).unwrap_err(),
             DocError::UnknownFeature(FeatureId(99))
         );
+    }
+
+    #[test]
+    fn an_extrusion_points_at_its_sketch_and_follows_variables() {
+        let (mut doc, sketch) = sketched();
+        let id = doc
+            .add_feature(
+                None,
+                FeatureKind::Extrude(Extrude {
+                    sketch,
+                    distance: Expr::new("2 * half"),
+                    symmetric: false,
+                }),
+            )
+            .unwrap();
+        assert_eq!(doc.feature(id).unwrap().name, "Extrude1");
+        doc.rename_variable("half", "h").unwrap();
+        let kind = &doc.feature(id).unwrap().kind;
+        assert_eq!(
+            kind.exprs()
+                .iter()
+                .map(|(n, e)| (n.as_str(), e.source()))
+                .collect::<Vec<_>>(),
+            [("distance", "2 * h")]
+        );
+        assert_eq!(
+            serde_json::to_value(kind).unwrap(),
+            serde_json::json!({"type": "extrude", "sketch": 3, "distance": "2 * h", "symmetric": false})
+        );
+        // `symmetric` may be absent. A sketch that is gone is not an
+        // invalid document: regeneration reports it.
+        let read: FeatureKind = serde_json::from_value(
+            serde_json::json!({"type": "extrude", "sketch": 3, "distance": "1"}),
+        )
+        .unwrap();
+        assert!(matches!(
+            read,
+            FeatureKind::Extrude(Extrude {
+                symmetric: false,
+                ..
+            })
+        ));
+        doc.remove_feature(sketch).unwrap();
+        assert_eq!(doc.validate(), Ok(()));
     }
 
     #[test]

@@ -12,7 +12,7 @@
 
 use craft3d_doc::{
     AngleUnit, Block, ConstraintKind, Cylinder, DistanceDirection, Document, EntityId, Expr,
-    FeatureId, FeatureKind, LengthUnit, Sketch, SketchPlane, Sphere, Units, WorldPlane,
+    Extrude, FeatureId, FeatureKind, LengthUnit, Sketch, SketchPlane, Sphere, Units, WorldPlane,
 };
 use craft3d_format::{
     FORMAT_VERSION, FormatError, MANIFEST_NAME, MAX_FILE_BYTES, MAX_MANIFEST_BYTES, from_bytes,
@@ -81,8 +81,18 @@ fn full(units: Units) -> Document {
     .unwrap();
     doc.feature_mut(pin).unwrap().suppressed = true;
     doc.set_rollback(Some(pin)).unwrap();
-    doc.add_feature(Some("Profile"), FeatureKind::Sketch(sketch()))
+    let profile = doc
+        .add_feature(Some("Profile"), FeatureKind::Sketch(sketch()))
         .unwrap();
+    doc.add_feature(
+        Some("Body"),
+        FeatureKind::Extrude(Extrude {
+            sketch: profile,
+            distance: Expr::new("-half"),
+            symmetric: true,
+        }),
+    )
+    .unwrap();
     doc.validate().unwrap();
     doc
 }
@@ -90,6 +100,11 @@ fn full(units: Units) -> Document {
 /// A `.3dcraft` file around a manifest written by hand.
 fn file_with(manifest: &str) -> Vec<u8> {
     write_stored(&[(MANIFEST_NAME, manifest.as_bytes())]).unwrap()
+}
+
+/// The version line of a manifest this build writes.
+fn version_field() -> String {
+    format!("\"format_version\": {FORMAT_VERSION}")
 }
 
 /// The manifest of [`small`] with one piece of text replaced.
@@ -126,11 +141,11 @@ fn a_document_with_everything_round_trips_in_every_unit() {
     // What the fixture is meant to contain.
     let doc = full(Units::default());
     let kinds: Vec<_> = doc.features.iter().map(|f| f.kind.type_name()).collect();
-    assert_eq!(kinds, ["block", "cylinder", "sphere", "sketch"]);
+    assert_eq!(kinds, ["block", "cylinder", "sphere", "sketch", "extrude"]);
     assert!(doc.features[1].suppressed && !doc.features[0].suppressed);
     assert_eq!(doc.rollback, Some(FeatureId(2)));
     assert_eq!(doc.features[2].id, FeatureId(4), "ids are not reused");
-    assert_eq!(doc.next_feature_id, 6);
+    assert_eq!(doc.next_feature_id, 7);
     assert_eq!(doc.variables.len(), 3);
 }
 
@@ -151,7 +166,7 @@ fn saving_twice_gives_the_same_bytes() {
 fn the_manifest_of_a_small_document_is_exactly_this() {
     let expected = r#"{
   "format": "3dcraft",
-  "format_version": 3,
+  "format_version": 4,
   "document": {
     "units": {
       "length": "mm",
@@ -323,7 +338,7 @@ fn fix_trailing_commas(json: &str) -> String {
 
 #[test]
 fn a_newer_format_version_says_a_newer_3dcraft_is_needed() {
-    let error = load_error(&edited("\"format_version\": 3", "\"format_version\": 7"));
+    let error = load_error(&edited(&version_field(), "\"format_version\": 7"));
     assert!(matches!(
         error,
         FormatError::NewerVersion {
@@ -341,18 +356,18 @@ fn a_newer_format_version_says_a_newer_3dcraft_is_needed() {
     // A newer file is likely to have fields this build does not know; the
     // version is what gets reported, not the fields.
     let newer = edited(
-        "\"format_version\": 3",
-        "\"format_version\": 4, \"holograms\": []",
+        &version_field(),
+        &format!(
+            "\"format_version\": {}, \"holograms\": []",
+            FORMAT_VERSION + 1
+        ),
     );
     assert!(matches!(
         load_error(&newer),
-        FormatError::NewerVersion { file: 4, .. }
+        FormatError::NewerVersion { file, .. } if file == u64::from(FORMAT_VERSION) + 1
     ));
     // Far beyond 32 bits.
-    let huge = edited(
-        "\"format_version\": 3",
-        "\"format_version\": 18446744073709551615",
-    );
+    let huge = edited(&version_field(), "\"format_version\": 18446744073709551615");
     assert!(matches!(
         load_error(&huge),
         FormatError::NewerVersion { file: u64::MAX, .. }
@@ -361,22 +376,19 @@ fn a_newer_format_version_says_a_newer_3dcraft_is_needed() {
 
 #[test]
 fn a_missing_or_unusable_format_version_is_an_error() {
-    let missing = load_error(&edited("  \"format_version\": 3,\n", ""));
+    let missing = load_error(&edited(&format!("  {},\n", version_field()), ""));
     assert!(matches!(&missing, FormatError::BadVersion(_)), "{missing}");
     assert!(missing.to_string().contains("format_version"), "{missing}");
     assert!(missing.to_string().contains("missing"), "{missing}");
     for bad in ["0", "-1", "1.5", "\"1\"", "null", "[1]", "1e400"] {
-        let json = edited(
-            "\"format_version\": 3",
-            &format!("\"format_version\": {bad}"),
-        );
+        let json = edited(&version_field(), &format!("\"format_version\": {bad}"));
         let error = from_manifest_json(json.as_bytes()).unwrap_err();
         assert!(
             matches!(error, FormatError::BadVersion(_) | FormatError::Json(_)),
             "{bad}: {error}"
         );
     }
-    let zero = load_error(&edited("\"format_version\": 3", "\"format_version\": 0"));
+    let zero = load_error(&edited(&version_field(), "\"format_version\": 0"));
     assert!(matches!(zero, FormatError::BadVersion(_)), "{zero}");
 }
 
@@ -968,7 +980,7 @@ fn a_sketch_is_written_like_this_and_round_trips() {
     doc.validate().unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 3);
+    assert_eq!(value["format_version"], FORMAT_VERSION);
     let kind = &value["document"]["features"][1]["kind"];
     assert_eq!(kind["type"], "sketch");
     assert_eq!(
@@ -1068,7 +1080,7 @@ fn a_sketch_that_breaks_the_rules_is_not_loaded() {
 
 /// A version-2 file, as written before sketches existed. Never edit this.
 #[test]
-fn a_version_2_file_opens_unchanged_and_is_saved_as_version_3() {
+fn a_version_2_file_opens_unchanged_and_is_saved_as_the_current_version() {
     let v2 = r#"{"format": "3dcraft", "format_version": 2, "document": {
         "units": {"length": "mm", "angle": "deg"},
         "tolerance": {"linear": 1e-6, "angular": 1e-9},
@@ -1088,6 +1100,143 @@ fn a_version_2_file_opens_unchanged_and_is_saved_as_version_3() {
     assert_eq!(ring.orientation.angle.source(), "15 deg");
     assert_eq!(doc.features[1].kind.type_name(), "cone");
     let saved = to_manifest_json(&doc).unwrap();
-    assert!(saved.contains("\"format_version\": 3"), "{saved}");
+    assert!(saved.contains(&version_field()), "{saved}");
     assert_eq!(from_manifest_json(saved.as_bytes()).unwrap(), doc);
+}
+
+/// Version 4: extrusions, as they are written.
+#[test]
+fn an_extrusion_is_written_like_this_and_round_trips() {
+    let doc = full(Units::default());
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["format_version"], 4);
+    assert_eq!(
+        value["document"]["features"][4],
+        serde_json::json!({
+            "id": 6, "name": "Body", "suppressed": false,
+            "kind": {"type": "extrude", "sketch": 5, "distance": "-half", "symmetric": true}
+        })
+    );
+    assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+    // `symmetric` is optional; `sketch` and `distance` are not.
+    let kind = |text: &str| {
+        let mut value = value.clone();
+        value["document"]["features"][4]["kind"] = serde_json::from_str(text).unwrap();
+        from_manifest_json(serde_json::to_string(&value).unwrap().as_bytes())
+    };
+    let one_sided = kind(r#"{"type": "extrude", "sketch": 5, "distance": "1"}"#).unwrap();
+    assert!(matches!(
+        &one_sided.features[4].kind,
+        FeatureKind::Extrude(Extrude {
+            symmetric: false,
+            ..
+        })
+    ));
+    assert!(kind(r#"{"type": "extrude", "distance": "1"}"#).is_err());
+    assert!(kind(r#"{"type": "extrude", "sketch": 5}"#).is_err());
+    assert!(kind(r#"{"type": "extrude", "sketch": "Profile", "distance": "1"}"#).is_err());
+    assert!(
+        kind(r#"{"type": "extrude", "sketch": 5, "distance": "1", "taper": "2 deg"}"#).is_err()
+    );
+}
+
+/// A version-3 file, as written before extrusions existed. Never edit this.
+#[test]
+fn a_version_3_file_opens_unchanged_and_is_saved_as_the_current_version() {
+    let v3 = r#"{"format": "3dcraft", "format_version": 3, "document": {
+        "units": {"length": "mm", "angle": "deg"},
+        "tolerance": {"linear": 1e-6, "angular": 1e-9},
+        "variables": [{"name": "w", "expr": "4 mm"}],
+        "features": [
+          {"id": 1, "name": "Profile", "suppressed": false, "kind": {"type": "sketch",
+            "plane": {"type": "world", "plane": "yz", "offset": "w"},
+            "entities": [
+              {"id": 1, "construction": false, "geometry": {"type": "point", "x": 0.0, "y": 0.0}},
+              {"id": 2, "geometry": {"type": "point", "x": 4.0, "y": 0.0}},
+              {"id": 3, "construction": true, "geometry": {"type": "line", "start": 1, "end": 2}},
+              {"id": 4, "construction": false, "geometry": {"type": "circle", "center": 1, "radius": 1.5}}],
+            "constraints": [
+              {"id": 1, "kind": {"type": "fixed", "point": 1}},
+              {"id": 2, "kind": {"type": "distance", "a": 3, "b": null, "value": "w"}}],
+            "next_entity_id": 5, "next_constraint_id": 3}}],
+        "rollback": null, "next_feature_id": 2}}"#;
+    let doc = from_manifest_json(v3.as_bytes()).unwrap();
+    let FeatureKind::Sketch(sketch) = &doc.features[0].kind else {
+        panic!()
+    };
+    assert_eq!(sketch.entities.len(), 4);
+    assert!(sketch.entities[2].construction && !sketch.entities[1].construction);
+    assert_eq!(sketch.point(EntityId(2)).unwrap(), (4.0, 0.0));
+    assert_eq!(
+        sketch.constraints[1].kind,
+        ConstraintKind::Distance {
+            a: EntityId(3),
+            b: None,
+            direction: DistanceDirection::Direct,
+            value: Expr::new("w"),
+        }
+    );
+    let saved = to_manifest_json(&doc).unwrap();
+    assert!(saved.contains(&version_field()), "{saved}");
+    assert_eq!(from_manifest_json(saved.as_bytes()).unwrap(), doc);
+}
+
+/// Version 4 also: a sketch on a face of a body, by the face's name.
+#[test]
+fn a_sketch_on_a_face_is_written_like_this_and_round_trips() {
+    use craft3d_doc::{NameRole, PersistentName};
+    let mut doc = full(Units::default());
+    let face = PersistentName {
+        feature: FeatureId(6),
+        role: NameRole::EndCap,
+        sources: vec![6, 7, 8],
+    };
+    doc.add_feature(
+        Some("Seat"),
+        FeatureKind::Sketch(Sketch::new(SketchPlane::Face {
+            face: face.clone(),
+            offset: Expr::new("half / 4"),
+        })),
+    )
+    .unwrap();
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        value["document"]["features"][5]["kind"]["plane"],
+        serde_json::json!({
+            "type": "face",
+            "face": {"feature": 6, "role": "endCap", "sources": [6, 7, 8]},
+            "offset": "half / 4"
+        })
+    );
+    assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+    // Every role is written by its name and read back.
+    for role in NameRole::ALL {
+        let mut doc = doc.clone();
+        let FeatureKind::Sketch(sketch) = &mut doc.features[5].kind else {
+            panic!()
+        };
+        sketch.plane = SketchPlane::Face {
+            face: PersistentName {
+                role,
+                ..face.clone()
+            },
+            offset: Expr::new("0"),
+        };
+        let json = to_manifest_json(&doc).unwrap();
+        assert!(
+            json.contains(&format!("\"role\": \"{}\"", role.name())),
+            "{json}"
+        );
+        assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+    }
+    // A name that is damaged in the file is an error, not another face.
+    let damaged = |from: &str, to: &str| {
+        assert!(json.contains(from), "{from}");
+        from_manifest_json(json.replacen(from, to, 1).as_bytes())
+    };
+    assert!(damaged("\"role\": \"endCap\"", "\"role\": \"roof\"").is_err());
+    assert!(damaged("\"feature\": 6,", "\"feature\": \"F6\",").is_err());
+    assert!(damaged("\"feature\": 6,", "\"feature\": 6, \"index\": 0,").is_err());
 }

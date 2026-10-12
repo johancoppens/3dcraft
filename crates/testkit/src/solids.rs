@@ -31,6 +31,9 @@ fn geometry(error: KernelError) -> GeomError {
     match error {
         KernelError::Geometry(e) => e,
         KernelError::InvalidSize { .. } => invalid("sizes must be positive and finite"),
+        // Profile and extrusion errors: the primitives used here never
+        // produce them.
+        _ => invalid("a primitive failed in a way only sketches can"),
     }
 }
 

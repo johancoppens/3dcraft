@@ -175,15 +175,51 @@ pub enum FeatureKind {
         next_entity_id: u64,
         next_constraint_id: u64,
     },
+    /// A solid swept from the closed profiles of a sketch along its
+    /// normal. `sketch` is the id of the sketch feature.
+    Extrude {
+        sketch: u64,
+        distance: String,
+        /// Always written; absent means one-sided.
+        #[serde(default)]
+        symmetric: bool,
+    },
 }
 
-/// What a sketch lies on.
+/// What a sketch lies on. (Declared after [`FeatureKind`], which uses it.)
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
 pub enum SketchPlane {
     /// A plane through the world origin, moved by `offset` (an expression)
     /// along its normal.
     World { plane: WorldPlane, offset: String },
+    /// A flat face of a body made earlier in the history, moved by
+    /// `offset` along the face's outward normal.
+    Face { face: Name, offset: String },
+}
+
+/// The persistent name of a face, edge or vertex: the feature that made
+/// it, the part it plays, and the ids of the input entities it came from
+/// (for an extrusion, sketch entity ids).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Name {
+    pub feature: u64,
+    pub role: NameRole,
+    pub sources: Vec<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NameRole {
+    StartCap,
+    EndCap,
+    Side,
+    StartEdge,
+    EndEdge,
+    LateralEdge,
+    StartVertex,
+    EndVertex,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

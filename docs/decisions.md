@@ -6,11 +6,22 @@ Decisions that shape the project, newest first, each with its reason. An agent t
 
 ## Taken
 
+### 2026-10-12: Persistent names, first version (M6)
+
+Made by the agent while building the first consumer (a sketch on a face); the developer can overturn any of them. The scheme itself is described in [`architecture.md`](architecture.md) §4.1.
+
+- **A name is made of the feature, the role and the input entities** (`F2:side(e7)`), never of an index or a position. It resolves to exactly the face with that origin or to nothing.
+- **A reference that cannot be resolved is stored and fails,** with the reason and the names that do exist, like every other feature whose input is not there. It is never repaired by guessing.
+- **Start and end of an extrusion are about the sketch plane,** not about which side is lower: the start cap lies in the sketch plane, the end cap at the far side. A symmetric extrusion starts on the side the sketch normal points away from.
+- **A sketch on a face looks at the face from outside,** with the frame described in the architecture document. The price: turning an extrusion round mirrors a sketch on its end cap. Keeping the position instead would mean a sketch whose normal points into the body.
+- **A sketch on a side face is measured from the plane of the extruded sketch,** not from where the extrusion starts, so it does not move when the extrusion gets deeper or symmetric.
+- **A cap is named after all curves of its profile's outer loop.** Adding or replacing a side of that loop renames the cap, and a reference to it then fails; a hole drawn inside does not. Whether a cap should be found by a looser match is left until a real model needs it.
+
 ### 2026-10-12: Sketches (start of M5)
 
 Decided by the developer, from options the agent put forward:
 
-- **A sketch lies on a world plane with an offset.** `xy`, `yz` or `zx`, moved along the normal by an expression. The plane is stored as a tagged enum, so datum planes and planar faces of bodies can join it in M6 without breaking files. On `xy` the sketch axes are world X and Y, on `yz` they are Y and Z, on `zx` they are Z and X: always right-handed, with the normal as the third axis.
+- **A sketch lies on a world plane with an offset.** `xy`, `yz` or `zx`, moved along the normal by an expression. The plane is stored as a tagged enum, so datum planes and planar faces of bodies can join it in M6 without breaking files (a face of an extrusion did, the same day). On `xy` the sketch axes are world X and Y, on `yz` they are Y and Z, on `zx` they are Z and X: always right-handed, with the normal as the third axis.
 - **The full constraint list from the first version:** coincident, point on curve, horizontal, vertical, parallel, perpendicular, tangent, equal, concentric, symmetric, midpoint, fixed, distance (also horizontal and vertical), angle, radius, diameter. One format version (3), no later migration for the missing ones.
 - **Profile detection moves to M6,** next to extrude, its first user. M5 ends at a solved sketch with degrees of freedom and diagnosis.
 

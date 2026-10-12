@@ -46,6 +46,13 @@ fn adversarial() -> Vec<Value> {
         json!("e0"),
         json!("c1"),
         json!("c18446744073709551615"),
+        json!("F7:side(e5)"),
+        json!("F7:endCap(e5,e6,e7,e8)"),
+        json!("F8:side(e10)"),
+        json!("F1:side(e1)"),
+        json!("F0:lateralEdge()"),
+        json!("F8:side(e18446744073709551615)"),
+        json!("F8:side(".to_string() + &"e1,".repeat(5_000) + "e1)"),
         json!("distance"),
         json!("tangent"),
         json!("zx"),
@@ -181,6 +188,20 @@ fn session(dir: &std::path::Path, state: usize) -> Session {
                 "sketch.constrain",
                 json!({"sketch": "Profile", "type": "distance", "entities": ["e5"], "value": "width / 4"}),
             );
+            // A plate with a hole, made from it, and a boss on its side.
+            run(
+                "feature.extrude",
+                json!({"sketch": "Profile", "distance": "width / 8", "name": "Body"}),
+            );
+            run(
+                "sketch.create",
+                json!({"name": "Seat", "face": "F7:side(e5)", "offset": 1}),
+            );
+            run(
+                "sketch.circle",
+                json!({"sketch": "Seat", "center": [3, 2], "radius": 1}),
+            );
+            run("feature.extrude", json!({"sketch": "Seat", "distance": 2}));
         }
         // A document full of things that fail: bad formulas, a cycle, a
         // suppressed and a rolled-back feature, undo and redo stacks.
@@ -217,6 +238,18 @@ fn session(dir: &std::path::Path, state: usize) -> Session {
                 "sketch.constrain",
                 json!({"sketch": "Profile", "type": "angle", "entities": ["e6", "e7"], "value": "a"}),
             );
+            // An extrusion of that sketch, and one whose sketch is gone.
+            run(
+                "feature.extrude",
+                json!({"sketch": "Profile", "distance": "zero"}),
+            );
+            run(
+                "sketch.create",
+                json!({"name": "Nowhere", "face": "F99:endCap(e1)", "offset": "broken"}),
+            );
+            run("sketch.create", json!({"name": "Gone"}));
+            run("feature.extrude", json!({"sketch": "Gone", "distance": 1}));
+            run("feature.delete", json!({"feature": "Gone"}));
             run("feature.suppress", json!({"feature": "Cylinder1"}));
             run("history.rollback", json!({"feature": "Plate"}));
             run("edit.undo", json!({}));
@@ -276,6 +309,8 @@ fn no_command_panics_on_adversarial_parameters() {
                 for (key, valid) in [
                     ("feature", json!("Plate")),
                     ("sketch", json!("Profile")),
+                    ("distance", json!(5)),
+                    ("face", json!("F7:side(e5)")),
                     ("type", json!("distance")),
                     ("entities", json!(["e1", "e2"])),
                     ("entity", json!("e1")),

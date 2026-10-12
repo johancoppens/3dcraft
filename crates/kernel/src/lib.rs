@@ -2,13 +2,20 @@
 //! returns a body which passes `craft3d_topo::check`, or an error that says
 //! why it cannot (docs/architecture.md §5.3).
 //!
-//! So far: primitive solids. Extrude, revolve, booleans and blends arrive
-//! with their milestones.
+//! So far: primitive solids, closed profiles from sketch curves
+//! ([`profile`]) and their extrusion ([`extrude`]). Revolve, booleans and
+//! blends arrive with their milestones.
 
+pub mod extrude;
 pub mod primitives;
+pub mod profile;
 
 use craft3d_geom::GeomError;
+use craft3d_topo::Defect;
 use std::fmt;
+
+/// The most curve ids, or defects, an error lists; the rest are left out.
+pub const MAX_REPORTED: usize = 8;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum KernelError {
@@ -18,6 +25,63 @@ pub enum KernelError {
         value: f64,
     },
     Geometry(GeomError),
+    /// There is nothing to make a profile from, or nothing to extrude.
+    NoProfile,
+    /// More curves than profile detection accepts.
+    TooManyCurves {
+        count: usize,
+        limit: usize,
+    },
+    /// Two curves were given the same id.
+    DuplicateCurveId {
+        id: u64,
+    },
+    /// A curve that is not a usable piece of boundary on its own.
+    DegenerateCurve {
+        id: u64,
+        reason: &'static str,
+    },
+    /// These curves have an end that meets no other curve (at most
+    /// [`MAX_REPORTED`] of them, ascending).
+    OpenProfile {
+        curves: Vec<u64>,
+    },
+    /// More than two curve ends meet at one place; these curves are
+    /// involved (at most [`MAX_REPORTED`], ascending).
+    BranchingProfile {
+        curves: Vec<u64>,
+    },
+    /// Two curves cross, touch or overlap away from an end they share.
+    CrossingCurves {
+        curves: [u64; 2],
+    },
+    /// A closed loop that encloses no area (at most [`MAX_REPORTED`] of its
+    /// curves, ascending).
+    ZeroAreaLoop {
+        curves: Vec<u64>,
+    },
+    /// The extrusion does not run from a lower to a higher offset, or is
+    /// thinner than the tolerance.
+    InvalidOffsets {
+        from: f64,
+        to: f64,
+    },
+    /// A profile that `detect_profiles` would not have produced.
+    InvalidProfile {
+        reason: &'static str,
+    },
+    /// The operation built a body that fails the validity checker (at most
+    /// [`MAX_REPORTED`] defects). The input is at the edge of what the
+    /// tolerance allows, or this is a bug in the kernel.
+    InvalidBody {
+        operation: &'static str,
+        defects: Vec<Defect>,
+    },
+}
+
+fn id_list(ids: &[u64]) -> String {
+    let parts: Vec<String> = ids.iter().map(u64::to_string).collect();
+    parts.join(", ")
 }
 
 impl fmt::Display for KernelError {
@@ -27,6 +91,56 @@ impl fmt::Display for KernelError {
                 write!(f, "{name} must be a positive, finite length, got {value}")
             }
             KernelError::Geometry(e) => write!(f, "{e}"),
+            KernelError::NoProfile => {
+                write!(f, "no closed profile: there are no curves to make one from")
+            }
+            KernelError::TooManyCurves { count, limit } => write!(
+                f,
+                "{count} curves are more than profile detection accepts ({limit})"
+            ),
+            KernelError::DuplicateCurveId { id } => {
+                write!(f, "two curves have the same id {id}")
+            }
+            KernelError::DegenerateCurve { id, reason } => {
+                write!(f, "curve {id} cannot bound a profile: {reason}")
+            }
+            KernelError::OpenProfile { curves } => write!(
+                f,
+                "the profile is not closed: an end of curve {} meets no other curve; \
+                 join the ends or remove the curve",
+                id_list(curves)
+            ),
+            KernelError::BranchingProfile { curves } => write!(
+                f,
+                "more than two curve ends meet at one place (curves {}); \
+                 a profile boundary cannot branch",
+                id_list(curves)
+            ),
+            KernelError::CrossingCurves { curves } => write!(
+                f,
+                "curves {} cross, touch or overlap away from a shared end; \
+                 split them there or move them apart",
+                id_list(curves)
+            ),
+            KernelError::ZeroAreaLoop { curves } => write!(
+                f,
+                "the loop of curves {} encloses no area: it folds back onto itself, \
+                 or crosses itself into parts that cancel",
+                id_list(curves)
+            ),
+            KernelError::InvalidOffsets { from, to } => write!(
+                f,
+                "an extrusion runs from a lower to a higher offset, further apart than \
+                 the tolerance; got from {from} to {to}"
+            ),
+            KernelError::InvalidProfile { reason } => write!(f, "invalid profile: {reason}"),
+            KernelError::InvalidBody { operation, defects } => {
+                write!(f, "{operation} produced an invalid body:")?;
+                for defect in defects {
+                    write!(f, " {defect};")?;
+                }
+                Ok(())
+            }
         }
     }
 }

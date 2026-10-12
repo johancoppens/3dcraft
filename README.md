@@ -11,8 +11,8 @@ variables and formulas, saved as `.3dcraft`, reopened, changed, rendered on the 
 STL, 3MF or OBJ, all through commands: from the command line, a JSON-lines server or an MCP server.
 Sketches can be drawn and constrained (lines, circles and arcs; sixteen kinds of constraint, with
 dimensions that follow variables) and are solved by 3DCraft's own solver, which reports the degrees of
-freedom left and which constraints are redundant or in conflict. Nothing is built from a sketch yet:
-there is no extrude, no booleans, no STEP and no desktop app;
+freedom left and which constraints are redundant or in conflict. A sketch's closed profiles, holes
+included, can be extruded into a solid. There are no booleans, no revolve, no STEP and no desktop app yet;
 [`docs/roadmap.md`](docs/roadmap.md) says what comes next.
 
 ```sh

@@ -115,7 +115,7 @@ For file formats the final judge is another program. Where available on the mach
 
 ## The topological naming suite
 
-Because stable references are the property most likely to rot silently, they get a dedicated suite *(planned, M6)*. Each scenario builds a model, attaches a downstream feature to a face or edge, edits something upstream, and asserts the downstream feature still refers to the entity a human would expect, or fails with `Missing` (never silently moves). Scenarios: change an extrude distance; add a sketch entity before the referenced one; reorder two independent features; split a referenced face with a cut; delete the feature that made the referenced edge.
+Because stable references are the property most likely to rot silently, they get a dedicated suite (version 1 since M6: `crates/engine/tests/naming.rs`, with a sketch on a face and a boss extruded from it as the downstream feature; the scenario with a cut waits for booleans). Each scenario builds a model, attaches a downstream feature to a face or edge, edits something upstream, and asserts the downstream feature still refers to the entity a human would expect, or fails with `Missing` (never silently moves). Scenarios: change an extrude distance; add a sketch entity before the referenced one; reorder two independent features; split a referenced face with a cut; delete the feature that made the referenced edge.
 
 ## Corpora
 

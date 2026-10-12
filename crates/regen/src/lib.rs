@@ -13,8 +13,11 @@
 //! solves every sketch), features that consume other features' bodies or
 //! sketches, persistent names.
 
+mod extrude;
 mod sketch;
 
+pub use craft3d_kernel::extrude::{Origin, Origins, Role};
+pub use extrude::name_of;
 pub use sketch::{ConstraintResult, ConstraintState, SketchResult, settle_sketches};
 
 use craft3d_doc::{Document, Expr, Feature, FeatureId, FeatureKind, Orientation};
@@ -61,6 +64,9 @@ pub struct FeatureResult {
     /// For a sketch: how it solved. Present for a failed sketch too, unless
     /// its plane could not be evaluated.
     pub sketch: Option<Arc<SketchResult>>,
+    /// Where each face, edge and vertex of `body` came from, for features
+    /// that report it (extrusions): what persistent names are made of.
+    pub origins: Option<Arc<Origins>>,
 }
 
 /// Everything derived from one document.
@@ -241,10 +247,16 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
         }
         // Solved in `features`; a sketch is not a body.
         FeatureKind::Sketch(_) => return Err("a sketch has no body".to_string()),
+        // Built in `features`, which knows the sketch's result.
+        FeatureKind::Extrude(_) => return Err("an extrusion needs its sketch".to_string()),
     }
     .map_err(|e| e.to_string())?;
 
-    // Never hand on an invalid body (docs/architecture.md §5.3).
+    checked(doc, body)
+}
+
+/// Never hand on an invalid body (docs/architecture.md §5.3).
+fn checked(doc: &Document, body: Body) -> Result<Body, String> {
     let tolerance = Tolerance::new(doc.tolerance.linear, doc.tolerance.angular)
         .ok_or("the document's tolerance is not positive and finite".to_string())?;
     match craft3d_topo::check(&body, &tolerance).first() {
@@ -302,14 +314,26 @@ fn features(doc: &Document, variables: &Evaluation) -> Vec<FeatureResult> {
     let mut rolled_back = false;
     for feature in &doc.features {
         let mut solved = None;
+        let mut origins = None;
         let (status, body) = if rolled_back {
             (Status::RolledBack, None)
         } else if feature.suppressed {
             (Status::Suppressed, None)
         } else if let FeatureKind::Sketch(sketch) = &feature.kind {
-            let (status, result) = sketch::solve_sketch(doc, variables, sketch);
+            let placement = sketch::place(doc, variables, sketch, &results);
+            let (status, result) = sketch::solve_sketch(doc, variables, sketch, placement);
             solved = result.map(Arc::new);
             (status, None)
+        } else if let FeatureKind::Extrude(extrusion) = &feature.kind {
+            match extrude::build(doc, variables, extrusion, &results)
+                .and_then(|(body, names)| checked(doc, body).map(|body| (body, names)))
+            {
+                Ok((body, names)) => {
+                    origins = Some(Arc::new(names));
+                    (Status::Ok, Some(Arc::new(body)))
+                }
+                Err(reason) => (Status::Failed(reason), None),
+            }
         } else {
             match build(doc, variables, feature) {
                 Ok(body) => (Status::Ok, Some(Arc::new(body))),
@@ -321,6 +345,7 @@ fn features(doc: &Document, variables: &Evaluation) -> Vec<FeatureResult> {
             status,
             body,
             sketch: solved,
+            origins,
         });
         if doc.rollback == Some(feature.id) {
             rolled_back = true;

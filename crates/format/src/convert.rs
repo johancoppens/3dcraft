@@ -153,13 +153,74 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                         },
                         offset: expr_to_manifest(offset),
                     },
+                    doc::SketchPlane::Face { face, offset } => manifest::SketchPlane::Face {
+                        face: name_to_manifest(face),
+                        offset: expr_to_manifest(offset),
+                    },
                 },
                 entities: entities.iter().map(entity_to_manifest).collect(),
                 constraints: constraints.iter().map(constraint_to_manifest).collect(),
                 next_entity_id: *next_entity_id,
                 next_constraint_id: *next_constraint_id,
             },
+            doc::FeatureKind::Extrude(doc::Extrude {
+                sketch: doc::FeatureId(sketch),
+                distance,
+                symmetric,
+            }) => manifest::FeatureKind::Extrude {
+                sketch: *sketch,
+                distance: expr_to_manifest(distance),
+                symmetric: *symmetric,
+            },
         },
+    }
+}
+
+fn name_to_manifest(name: &doc::PersistentName) -> manifest::Name {
+    use doc::NameRole as D;
+    use manifest::NameRole as M;
+    let doc::PersistentName {
+        feature: doc::FeatureId(feature),
+        role,
+        sources,
+    } = name;
+    manifest::Name {
+        feature: *feature,
+        role: match role {
+            D::StartCap => M::StartCap,
+            D::EndCap => M::EndCap,
+            D::Side => M::Side,
+            D::StartEdge => M::StartEdge,
+            D::EndEdge => M::EndEdge,
+            D::LateralEdge => M::LateralEdge,
+            D::StartVertex => M::StartVertex,
+            D::EndVertex => M::EndVertex,
+        },
+        sources: sources.clone(),
+    }
+}
+
+fn name_to_doc(name: manifest::Name) -> doc::PersistentName {
+    use doc::NameRole as D;
+    use manifest::NameRole as M;
+    let manifest::Name {
+        feature,
+        role,
+        sources,
+    } = name;
+    doc::PersistentName {
+        feature: doc::FeatureId(feature),
+        role: match role {
+            M::StartCap => D::StartCap,
+            M::EndCap => D::EndCap,
+            M::Side => D::Side,
+            M::StartEdge => D::StartEdge,
+            M::EndEdge => D::EndEdge,
+            M::LateralEdge => D::LateralEdge,
+            M::StartVertex => D::StartVertex,
+            M::EndVertex => D::EndVertex,
+        },
+        sources,
     }
 }
 
@@ -489,11 +550,24 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
                         },
                         offset: doc::Expr(offset),
                     },
+                    manifest::SketchPlane::Face { face, offset } => doc::SketchPlane::Face {
+                        face: name_to_doc(face),
+                        offset: doc::Expr(offset),
+                    },
                 },
                 entities: entities.into_iter().map(entity_to_doc).collect(),
                 constraints: constraints.into_iter().map(constraint_to_doc).collect(),
                 next_entity_id,
                 next_constraint_id,
+            }),
+            manifest::FeatureKind::Extrude {
+                sketch,
+                distance,
+                symmetric,
+            } => doc::FeatureKind::Extrude(doc::Extrude {
+                sketch: doc::FeatureId(sketch),
+                distance: doc::Expr(distance),
+                symmetric,
             }),
         },
     }

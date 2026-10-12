@@ -72,13 +72,37 @@ impl WorldPlane {
     }
 }
 
-/// What a sketch lies on. Datum planes and planar faces join this enum
-/// with the features that make them.
+/// What a sketch lies on. Datum planes join this enum with the feature
+/// that makes them.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum SketchPlane {
     /// A world plane, moved by `offset` along its normal.
     World { plane: WorldPlane, offset: Expr },
+    /// A flat face of a body made earlier in the history, by its
+    /// persistent name, moved by `offset` along the face's outward normal.
+    /// The sketch's origin and axes are the face's own: for the end cap of
+    /// an extrusion those of the extruded sketch, for a side face the
+    /// start of its line with x along the line and y along the extrusion.
+    Face {
+        face: crate::PersistentName,
+        offset: Expr,
+    },
+}
+
+impl SketchPlane {
+    /// The offset along the normal.
+    pub fn offset(&self) -> &Expr {
+        match self {
+            SketchPlane::World { offset, .. } | SketchPlane::Face { offset, .. } => offset,
+        }
+    }
+
+    pub fn offset_mut(&mut self) -> &mut Expr {
+        match self {
+            SketchPlane::World { offset, .. } | SketchPlane::Face { offset, .. } => offset,
+        }
+    }
 }
 
 impl Default for SketchPlane {
@@ -767,8 +791,7 @@ impl Sketch {
 
     /// Every expression of the sketch with a name that says where it is.
     pub fn exprs(&self) -> Vec<(String, &Expr)> {
-        let SketchPlane::World { offset, .. } = &self.plane;
-        let mut out = vec![("plane.offset".to_string(), offset)];
+        let mut out = vec![("plane.offset".to_string(), self.plane.offset())];
         out.extend(
             self.constraints
                 .iter()
@@ -778,8 +801,7 @@ impl Sketch {
     }
 
     pub(crate) fn exprs_mut(&mut self) -> Vec<&mut Expr> {
-        let SketchPlane::World { offset, .. } = &mut self.plane;
-        let mut out = vec![offset];
+        let mut out = vec![self.plane.offset_mut()];
         out.extend(
             self.constraints
                 .iter_mut()
