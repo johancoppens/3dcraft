@@ -1,7 +1,7 @@
 //! Where the regions of one solid's faces are with respect to the other
 //! solid, and which of them the operation keeps.
 
-use super::hits::curve_hits;
+use super::hits::{curve_hits, signed_distance};
 use super::outline::{Outline, Side, line_in_box};
 use super::regions::{self, Half};
 use super::section::Solid;
@@ -46,8 +46,27 @@ const TRIES: usize = 4;
 /// True when `p`, which is not on its boundary, is inside `solid`: a ray
 /// from it crosses the boundary an odd number of times. A ray that meets
 /// an edge, a vertex, or a face tangentially is abandoned for the next.
-fn inside(solid: &Solid, p: Vec3, tolerance: &Tolerance) -> Result<bool, Stop> {
+pub(super) fn inside(solid: &Solid, p: Vec3, tolerance: &Tolerance) -> Result<bool, Stop> {
     let tol = tolerance.linear;
+    // A point within reach of a face of the solid is neither inside nor
+    // outside it by any margin that means something.
+    for (face, (outline, box_)) in solid.outlines.iter().zip(&solid.boxes).enumerate() {
+        if !box_.contains(p, 2.0 * tol) {
+            continue;
+        }
+        let near = signed_distance(&outline.surface, p).is_some_and(|d| d.abs() < 2.0 * tol);
+        if near && let Ok((u, v)) = outline.surface.project(p) {
+            let named = [solid.name(face)];
+            let foot = outline.surface.eval(u, v);
+            if outline
+                .side(foot, tol)
+                .map_err(|r| Stop::of(r).at(&named))?
+                != Side::Out
+            {
+                return Err(Stop::of(ON_A_FACE).at(&named));
+            }
+        }
+    }
     'rays: for (x, y, z) in RAYS {
         let Ok(line) = Line::new(p, Vec3::new(x, y, z)) else {
             continue;
@@ -60,11 +79,15 @@ fn inside(solid: &Solid, p: Vec3, tolerance: &Tolerance) -> Result<bool, Stop> {
             else {
                 continue;
             };
-            // Behind the point there is nothing to count.
-            let from = enter.max(-2.0 * tol);
+            // Behind the point there is nothing to count. The stretch
+            // looked at starts at the point and ends well beyond the
+            // face, so that neither end of it is a place where the ray
+            // is found near the surface without having crossed it.
+            let from = -2.0 * tol;
             if !(leave > from) {
                 continue;
             }
+            let leave = leave + 16.0 * tol + 0.01 * (leave - enter.max(from));
             let named = [solid.name(face)];
             let side = |q: Vec3| outline.side(q, tol).map_err(|r| Stop::of(r).at(&named));
             let hits = match curve_hits(&ray, (from, leave), &outline.surface, tolerance)

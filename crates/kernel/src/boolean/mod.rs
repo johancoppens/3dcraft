@@ -550,6 +550,58 @@ pub fn boolean_with(
     })
 }
 
+/// Whether each of `points` is inside the solid `body`: `Some(true)`
+/// inside, `Some(false)` outside, `None` for a point within twice the
+/// tolerance of its boundary or one for which no ray could tell.
+///
+/// This is the classification the booleans use (a ray from the point,
+/// counting the faces it crosses), applied to any solid they accept as an
+/// operand. It does not use `craft3d_topo::mass_properties`, which makes a
+/// count of sampled points a measure of a body's volume that is
+/// independent of it.
+pub fn contains_points(
+    body: &Body,
+    points: &[Vec3],
+    tolerance: &Tolerance,
+) -> Result<Vec<Option<bool>>, KernelError> {
+    let unsupported = |stop| match stop {
+        Stop::Error(error) => error,
+        Stop::Unsupported { reason, mut faces } => {
+            faces.truncate(MAX_REPORTED);
+            KernelError::Unsupported {
+                operation: "point classification",
+                reason,
+                faces,
+            }
+        }
+    };
+    let tol = tolerance.linear;
+    if !(tol.is_finite() && tol > 0.0 && tolerance.angular.is_finite() && tolerance.angular > 0.0) {
+        return Err(KernelError::InvalidSize {
+            name: "tolerance",
+            value: tol,
+        });
+    }
+    // The vertices are not merged with anything here.
+    let mut vertices = Vertices {
+        points: Vec::new(),
+        meetings: Vec::new(),
+        merge: 0.0,
+        guard: 0.0,
+    };
+    let solid =
+        section::prepare(body, Operand::A, &mut vertices, tolerance).map_err(unsupported)?;
+    let mut found = Vec::with_capacity(points.len());
+    for &point in points {
+        found.push(match classify::inside(&solid, point, tolerance) {
+            Ok(inside) => Some(inside),
+            Err(Stop::Unsupported { .. }) => None,
+            Err(stop) => return Err(unsupported(stop)),
+        });
+    }
+    Ok(found)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

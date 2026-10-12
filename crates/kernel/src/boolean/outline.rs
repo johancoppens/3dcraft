@@ -246,7 +246,7 @@ pub(super) fn surface_distance(surface: &Surface, p: Vec3) -> f64 {
 }
 
 /// The point of the surface nearest to `p`.
-fn onto(surface: &Surface, p: Vec3) -> Option<Vec3> {
+pub(super) fn onto(surface: &Surface, p: Vec3) -> Option<Vec3> {
     let (u, v) = surface.project(p).ok()?;
     let q = surface.eval(u, v);
     q.is_finite().then_some(q)
@@ -444,6 +444,7 @@ impl Outline {
                 continue;
             };
             let mut step = seg.at(0.25).distance(seg.at(0.75));
+            let mut taken = 0;
             for _ in 0..64 {
                 step *= 0.5;
                 if !(step.is_finite() && step > margin) {
@@ -456,9 +457,15 @@ impl Outline {
                     continue;
                 }
                 match self.side(candidate, tol) {
+                    // Two from each piece, at different depths: where the
+                    // first is of no use (it is just where the other
+                    // body touches), the next is somewhere else.
                     Ok(Side::In) => {
                         found.push(candidate);
-                        break;
+                        taken += 1;
+                        if taken == 2 || found.len() >= want {
+                            break;
+                        }
                     }
                     Ok(_) => {}
                     Err(reason) => failure = failure.or(Some(reason)),
@@ -898,6 +905,34 @@ mod tests {
             }
             let inside = half.interior_points(tol, 4.0 * tol, 3).unwrap();
             assert!(!inside.is_empty());
+        }
+    }
+
+    #[test]
+    fn just_beyond_the_rim_of_a_cone_is_outside() {
+        // The surface goes on past the rim, widening slowly: a point of it
+        // a few tolerances beyond the rim is hardly further from the axis
+        // than the rim is.
+        let frame = tilted();
+        let slope: f64 = -0.278;
+        let cone = Surface::Cone(Cone::new(frame, 0.625, slope.atan()).unwrap());
+        let side = outline(
+            cone,
+            false,
+            vec![vec![arc(frame, 0.625, (0.0, TAU), false)]],
+        );
+        for u in [0.0, 9.3e-6, 1.0, 3.0, TAU - 1e-5] {
+            for (v, expected) in [
+                (-2.9e-6, Side::Out),
+                (-1e-3, Side::Out),
+                (2.9e-6, Side::In),
+                (1e-3, Side::In),
+                (0.5e-6, Side::On),
+            ] {
+                let r = 0.625 + v * slope;
+                let p = frame.point(r * u.cos(), r * u.sin(), v);
+                assert_eq!(side.side(p, 1e-6), Ok(expected), "({u}, {v})");
+            }
         }
     }
 

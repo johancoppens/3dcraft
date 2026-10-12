@@ -281,7 +281,8 @@ fn numeric(
             (Some(positive), None) if f(hi) != 0.0 && (f(hi) > 0.0) != positive => {
                 (root(&f, lo, hi), false)
             }
-            _ => (closest(&f, lo, hi), false),
+            // No crossing seen: as far as this piece shows, a touch.
+            _ => (closest(&f, lo, hi), true),
         };
         if f(t).abs() > tol {
             continue;
@@ -496,8 +497,9 @@ mod tests {
             curve_hits(&equator, (0.0, TAU), &torus, &tol).unwrap(),
             CurveIntersection::OnSurface
         );
-        // A line that ends on a sphere, and one that starts inside the
-        // tolerance and leaves: a hit at that end, not tangent.
+        // A line that ends on a sphere: a hit at that end; whether it
+        // would cross there the piece does not show, so it counts as a
+        // touch.
         let ball = Surface::Sphere(Sphere::new(Frame::WORLD, 2.0).unwrap());
         let spoke = Curve3::Nurbs(
             NurbsCurve::polynomial(
@@ -512,7 +514,7 @@ mod tests {
             panic!("expected a hit");
         };
         assert_eq!(hits.len(), 1);
-        assert!(!hits[0].tangent);
+        assert!(hits[0].tangent);
         assert!((hits[0].t - 1.0).abs() < 1e-6);
         // Through the apex of a cone, from outside to outside: a touch.
         let cone = Surface::Cone(Cone::new(Frame::WORLD, 1.0, -0.5).unwrap());

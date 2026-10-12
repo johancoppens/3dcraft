@@ -246,10 +246,13 @@ fn edge_cuts(
 /// of A and `fb` of B meet, that are within both faces. `found` are the
 /// places where an edge of either face meets the other's surface.
 ///
-/// Where the surfaces touch along the curve without crossing, a stretch
-/// along the boundary of either face is an edge like any other (a smooth
-/// edge of one body lying on a face of the other). One inside both faces
-/// divides neither: the faces touch there and stay as they are.
+/// Where the surfaces touch along the curve without crossing, a stretch is
+/// imprinted like any other. Along the boundary of either face it is an
+/// edge that was there already (a smooth edge of one body lying on a face
+/// of the other). Inside both it divides each face only if the result
+/// needs it to: a piece that ends inside a face, or has the same piece of
+/// the face on both sides, is dropped when the regions are made, and what
+/// it divides needlessly is merged again at the end.
 #[allow(clippy::too_many_arguments)]
 fn clip(
     meeting: &MeetingCurve,
@@ -424,9 +427,6 @@ fn clip(
             }
         }
         if !keep {
-            continue;
-        }
-        if meeting.tangent && inside == [true, true] {
             continue;
         }
         let start = vertices.find_or_add(from.point).map_err(|s| s.at(&named))?;

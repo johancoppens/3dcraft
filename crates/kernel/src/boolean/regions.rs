@@ -334,17 +334,31 @@ pub(super) fn build(
         let loops = trace(surface, reversed, boundary, &interior, arcs, points, tol)?;
         // An imprinted arc that a loop runs along both ways has the same
         // region on both sides.
-        let mut slits = BTreeSet::new();
-        for loop_ in &loops {
+        let twice = |chains: &[Vec<Half>]| {
+            let mut slits = BTreeSet::new();
             let mut used = BTreeSet::new();
-            for half in loop_ {
+            for half in chains.iter().flatten() {
                 if !used.insert(half.0) && interior.contains(&half.0) {
                     slits.insert(half.0);
                 }
             }
+            slits
+        };
+        let mut slits = BTreeSet::new();
+        for loop_ in &loops {
+            slits.append(&mut twice(std::slice::from_ref(loop_)));
         }
         if slits.is_empty() {
-            return group(surface, reversed, loops, arcs, points, tol);
+            // So has one that two loops of one region run along: a closed
+            // curve that does not divide its surface (a circle around a
+            // torus).
+            let regions = group(surface, reversed, loops, arcs, points, tol)?;
+            for region in &regions {
+                slits.append(&mut twice(region));
+            }
+            if slits.is_empty() {
+                return Ok(regions);
+            }
         }
         for slit in slits {
             interior.remove(&slit);
