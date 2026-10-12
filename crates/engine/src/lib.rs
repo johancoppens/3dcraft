@@ -12,6 +12,7 @@
 mod base64;
 mod commands;
 mod params;
+mod sketch_cmds;
 mod workspace;
 
 pub use workspace::{Access, Workspace};
@@ -47,6 +48,7 @@ impl fmt::Display for CommandError {
 impl std::error::Error for CommandError {}
 
 /// One entry of the command registry.
+#[derive(Clone, Copy)]
 pub struct CommandSpec {
     /// Stable id, such as `feature.block`.
     pub id: &'static str,
@@ -122,7 +124,8 @@ impl Session {
 
     /// The command registry, in a fixed order.
     pub fn commands() -> &'static [CommandSpec] {
-        commands::SPECS
+        static ALL: std::sync::OnceLock<Vec<CommandSpec>> = std::sync::OnceLock::new();
+        ALL.get_or_init(|| [commands::SPECS, sketch_cmds::SPECS].concat())
     }
 
     pub fn command(id: &str) -> Option<&'static CommandSpec> {

@@ -11,7 +11,8 @@
 )]
 
 use craft3d_doc::{
-    AngleUnit, Block, Cylinder, Document, Expr, FeatureId, FeatureKind, LengthUnit, Sphere, Units,
+    AngleUnit, Block, ConstraintKind, Cylinder, DistanceDirection, Document, EntityId, Expr,
+    FeatureId, FeatureKind, LengthUnit, Sketch, SketchPlane, Sphere, Units, WorldPlane,
 };
 use craft3d_format::{
     FORMAT_VERSION, FormatError, MANIFEST_NAME, MAX_FILE_BYTES, MAX_MANIFEST_BYTES, from_bytes,
@@ -80,6 +81,8 @@ fn full(units: Units) -> Document {
     .unwrap();
     doc.feature_mut(pin).unwrap().suppressed = true;
     doc.set_rollback(Some(pin)).unwrap();
+    doc.add_feature(Some("Profile"), FeatureKind::Sketch(sketch()))
+        .unwrap();
     doc.validate().unwrap();
     doc
 }
@@ -123,11 +126,11 @@ fn a_document_with_everything_round_trips_in_every_unit() {
     // What the fixture is meant to contain.
     let doc = full(Units::default());
     let kinds: Vec<_> = doc.features.iter().map(|f| f.kind.type_name()).collect();
-    assert_eq!(kinds, ["block", "cylinder", "sphere"]);
+    assert_eq!(kinds, ["block", "cylinder", "sphere", "sketch"]);
     assert!(doc.features[1].suppressed && !doc.features[0].suppressed);
     assert_eq!(doc.rollback, Some(FeatureId(2)));
     assert_eq!(doc.features[2].id, FeatureId(4), "ids are not reused");
-    assert_eq!(doc.next_feature_id, 5);
+    assert_eq!(doc.next_feature_id, 6);
     assert_eq!(doc.variables.len(), 3);
 }
 
@@ -148,7 +151,7 @@ fn saving_twice_gives_the_same_bytes() {
 fn the_manifest_of_a_small_document_is_exactly_this() {
     let expected = r#"{
   "format": "3dcraft",
-  "format_version": 2,
+  "format_version": 3,
   "document": {
     "units": {
       "length": "mm",
@@ -320,7 +323,7 @@ fn fix_trailing_commas(json: &str) -> String {
 
 #[test]
 fn a_newer_format_version_says_a_newer_3dcraft_is_needed() {
-    let error = load_error(&edited("\"format_version\": 2", "\"format_version\": 7"));
+    let error = load_error(&edited("\"format_version\": 3", "\"format_version\": 7"));
     assert!(matches!(
         error,
         FormatError::NewerVersion {
@@ -338,16 +341,16 @@ fn a_newer_format_version_says_a_newer_3dcraft_is_needed() {
     // A newer file is likely to have fields this build does not know; the
     // version is what gets reported, not the fields.
     let newer = edited(
-        "\"format_version\": 2",
-        "\"format_version\": 3, \"sketches\": []",
+        "\"format_version\": 3",
+        "\"format_version\": 4, \"holograms\": []",
     );
     assert!(matches!(
         load_error(&newer),
-        FormatError::NewerVersion { file: 3, .. }
+        FormatError::NewerVersion { file: 4, .. }
     ));
     // Far beyond 32 bits.
     let huge = edited(
-        "\"format_version\": 2",
+        "\"format_version\": 3",
         "\"format_version\": 18446744073709551615",
     );
     assert!(matches!(
@@ -358,13 +361,13 @@ fn a_newer_format_version_says_a_newer_3dcraft_is_needed() {
 
 #[test]
 fn a_missing_or_unusable_format_version_is_an_error() {
-    let missing = load_error(&edited("  \"format_version\": 2,\n", ""));
+    let missing = load_error(&edited("  \"format_version\": 3,\n", ""));
     assert!(matches!(&missing, FormatError::BadVersion(_)), "{missing}");
     assert!(missing.to_string().contains("format_version"), "{missing}");
     assert!(missing.to_string().contains("missing"), "{missing}");
     for bad in ["0", "-1", "1.5", "\"1\"", "null", "[1]", "1e400"] {
         let json = edited(
-            "\"format_version\": 2",
+            "\"format_version\": 3",
             &format!("\"format_version\": {bad}"),
         );
         let error = from_manifest_json(json.as_bytes()).unwrap_err();
@@ -373,7 +376,7 @@ fn a_missing_or_unusable_format_version_is_an_error() {
             "{bad}: {error}"
         );
     }
-    let zero = load_error(&edited("\"format_version\": 2", "\"format_version\": 0"));
+    let zero = load_error(&edited("\"format_version\": 3", "\"format_version\": 0"));
     assert!(matches!(zero, FormatError::BadVersion(_)), "{zero}");
 }
 
@@ -853,7 +856,7 @@ fn cones_tori_and_orientations_round_trip() {
     .unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 2);
+    assert_eq!(value["format_version"], FORMAT_VERSION);
     assert_eq!(
         value["document"]["features"][0]["kind"],
         serde_json::json!({
@@ -872,9 +875,9 @@ fn cones_tori_and_orientations_round_trip() {
 }
 
 /// A version-1 file has no orientations and no cones or tori; it opens as
-/// the same upright part, and is written back as version 2.
+/// the same upright part, and is written back as the current version.
 #[test]
-fn a_version_1_file_opens_upright_and_is_saved_as_version_2() {
+fn a_version_1_file_opens_upright_and_is_saved_as_the_current_version() {
     let v1 = r#"{"format": "3dcraft", "format_version": 1, "document": {
         "units": {"length": "mm", "angle": "deg"},
         "tolerance": {"linear": 1e-6, "angular": 1e-9},
@@ -890,6 +893,201 @@ fn a_version_1_file_opens_upright_and_is_saved_as_version_2() {
     assert!(
         to_manifest_json(&doc)
             .unwrap()
-            .contains("\"format_version\": 2")
+            .contains(&format!("\"format_version\": {FORMAT_VERSION}"))
     );
+}
+
+/// A sketch with one entity of every kind and one constraint of every
+/// type.
+fn sketch() -> Sketch {
+    let mut s = Sketch::new(SketchPlane::World {
+        plane: WorldPlane::Zx,
+        offset: Expr::new("half + 1 mm"),
+    });
+    let p: Vec<EntityId> = [
+        (0.0, 0.0),
+        (40.0, 0.0),
+        (40.0, 12.5),
+        (0.0, 12.5),
+        (20.0, 6.0),
+    ]
+    .into_iter()
+    .map(|(x, y)| s.add_point(x, y).unwrap())
+    .collect();
+    let bottom = s.add_line(p[0], p[1], false).unwrap();
+    let right = s.add_line(p[1], p[2], false).unwrap();
+    let top = s.add_line(p[2], p[3], true).unwrap();
+    let hole = s.add_circle(p[4], 2.5, false).unwrap();
+    let arc = s.add_arc(p[4], p[1], p[3], false).unwrap();
+    let direct = DistanceDirection::Direct;
+    let parts: [(&str, &[EntityId], Option<&str>, DistanceDirection); 17] = [
+        ("coincident", &[p[0], p[4]], None, direct),
+        ("pointOn", &[p[4], top], None, direct),
+        ("horizontal", &[bottom], None, direct),
+        ("vertical", &[p[1], p[2]], None, direct),
+        ("parallel", &[bottom, top], None, direct),
+        ("perpendicular", &[bottom, right], None, direct),
+        ("tangent", &[top, hole], None, direct),
+        ("equal", &[hole, arc], None, direct),
+        ("concentric", &[hole, arc], None, direct),
+        ("symmetric", &[p[0], p[3], top], None, direct),
+        ("midpoint", &[p[4], bottom], None, direct),
+        ("fixed", &[p[0]], None, direct),
+        ("distance", &[bottom], Some("width"), direct),
+        (
+            "distance",
+            &[p[0], p[2]],
+            Some("half / 2"),
+            DistanceDirection::Vertical,
+        ),
+        ("angle", &[bottom, right], Some("90 deg"), direct),
+        ("radius", &[arc], Some("width / 16"), direct),
+        ("diameter", &[hole], Some("5 mm"), direct),
+    ];
+    for (type_name, entities, value, direction) in parts {
+        let kind = ConstraintKind::from_parts(type_name, entities, value.map(Expr::new), direction)
+            .unwrap();
+        s.add_constraint(kind).unwrap();
+    }
+    // Gaps in both id sequences, as after deleting something.
+    let spare = s.add_point(1.0, 1.0).unwrap();
+    s.add_constraint(ConstraintKind::Fixed { point: spare })
+        .unwrap();
+    s.remove_entity(spare).unwrap();
+    s.add_point(-1.5e-7, 1e6).unwrap();
+    s
+}
+
+/// Version 3: sketches, as they are written.
+#[test]
+fn a_sketch_is_written_like_this_and_round_trips() {
+    let mut doc = small();
+    doc.set_variable("half", "width / 2").unwrap();
+    doc.add_feature(Some("Profile"), FeatureKind::Sketch(sketch()))
+        .unwrap();
+    doc.validate().unwrap();
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["format_version"], 3);
+    let kind = &value["document"]["features"][1]["kind"];
+    assert_eq!(kind["type"], "sketch");
+    assert_eq!(
+        kind["plane"],
+        serde_json::json!({"type": "world", "plane": "zx", "offset": "half + 1 mm"})
+    );
+    assert_eq!(
+        kind["entities"],
+        serde_json::json!([
+            {"id": 1, "construction": false, "geometry": {"type": "point", "x": 0.0, "y": 0.0}},
+            {"id": 2, "construction": false, "geometry": {"type": "point", "x": 40.0, "y": 0.0}},
+            {"id": 3, "construction": false, "geometry": {"type": "point", "x": 40.0, "y": 12.5}},
+            {"id": 4, "construction": false, "geometry": {"type": "point", "x": 0.0, "y": 12.5}},
+            {"id": 5, "construction": false, "geometry": {"type": "point", "x": 20.0, "y": 6.0}},
+            {"id": 6, "construction": false, "geometry": {"type": "line", "start": 1, "end": 2}},
+            {"id": 7, "construction": false, "geometry": {"type": "line", "start": 2, "end": 3}},
+            {"id": 8, "construction": true, "geometry": {"type": "line", "start": 3, "end": 4}},
+            {"id": 9, "construction": false, "geometry": {"type": "circle", "center": 5, "radius": 2.5}},
+            {"id": 10, "construction": false, "geometry": {"type": "arc", "center": 5, "start": 2, "end": 4}},
+            {"id": 12, "construction": false, "geometry": {"type": "point", "x": -1.5e-7, "y": 1e6}},
+        ])
+    );
+    assert_eq!(
+        kind["constraints"],
+        serde_json::json!([
+            {"id": 1, "kind": {"type": "coincident", "a": 1, "b": 5}},
+            {"id": 2, "kind": {"type": "pointOn", "point": 5, "curve": 8}},
+            {"id": 3, "kind": {"type": "horizontal", "a": 6, "b": null}},
+            {"id": 4, "kind": {"type": "vertical", "a": 2, "b": 3}},
+            {"id": 5, "kind": {"type": "parallel", "a": 6, "b": 8}},
+            {"id": 6, "kind": {"type": "perpendicular", "a": 6, "b": 7}},
+            {"id": 7, "kind": {"type": "tangent", "a": 8, "b": 9}},
+            {"id": 8, "kind": {"type": "equal", "a": 9, "b": 10}},
+            {"id": 9, "kind": {"type": "concentric", "a": 9, "b": 10}},
+            {"id": 10, "kind": {"type": "symmetric", "a": 1, "b": 4, "about": 8}},
+            {"id": 11, "kind": {"type": "midpoint", "point": 5, "line": 6}},
+            {"id": 12, "kind": {"type": "fixed", "point": 1}},
+            {"id": 13, "kind": {"type": "distance", "a": 6, "b": null, "direction": "direct", "value": "width"}},
+            {"id": 14, "kind": {"type": "distance", "a": 1, "b": 3, "direction": "vertical", "value": "half / 2"}},
+            {"id": 15, "kind": {"type": "angle", "a": 6, "b": 7, "value": "90 deg"}},
+            {"id": 16, "kind": {"type": "radius", "curve": 10, "value": "width / 16"}},
+            {"id": 17, "kind": {"type": "diameter", "curve": 9, "value": "5 mm"}},
+        ])
+    );
+    assert_eq!(kind["next_entity_id"], 13);
+    assert_eq!(kind["next_constraint_id"], 19);
+    // Coordinates survive bit for bit: they are the stored solution.
+    let back = from_bytes(&to_bytes(&doc).unwrap()).unwrap();
+    assert_eq!(back, doc);
+    assert_eq!(to_manifest_json(&back).unwrap(), json);
+}
+
+#[test]
+fn a_sketch_that_breaks_the_rules_is_not_loaded() {
+    let mut doc = small();
+    doc.add_feature(None, FeatureKind::Sketch(sketch()))
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_str(&to_manifest_json(&doc).unwrap()).unwrap();
+    type Damage = fn(&mut serde_json::Value);
+    let broken: [(&str, Damage); 9] = [
+        ("a line on a point that is not there", |k| {
+            k["entities"][5]["geometry"]["start"] = 99.into()
+        }),
+        ("a constraint on the wrong kind of entity", |k| {
+            k["constraints"][11]["kind"]["point"] = 6.into()
+        }),
+        ("an entity id that is not below the next", |k| {
+            k["next_entity_id"] = 3.into()
+        }),
+        ("a negative radius", |k| {
+            k["entities"][8]["geometry"]["radius"] = (-2.5).into()
+        }),
+        ("an unknown plane", |k| k["plane"]["plane"] = "xz".into()),
+        ("an unknown constraint type", |k| {
+            k["constraints"][1]["kind"]["type"] = "pointUnder".into()
+        }),
+        ("an unknown direction", |k| {
+            k["constraints"][13]["kind"]["direction"] = "diagonal".into()
+        }),
+        ("a coordinate that is text", |k| {
+            k["entities"][1]["geometry"]["x"] = "40".into()
+        }),
+        ("an unknown field", |k| {
+            k["entities"][0]["colour"] = "red".into()
+        }),
+    ];
+    for (what, damage) in broken {
+        let mut value = value.clone();
+        damage(&mut value["document"]["features"][1]["kind"]);
+        let json = serde_json::to_string(&value).unwrap();
+        assert!(from_manifest_json(json.as_bytes()).is_err(), "{what}");
+    }
+    // Undamaged, the same route loads.
+    let json = serde_json::to_string(&value).unwrap();
+    assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+}
+
+/// A version-2 file, as written before sketches existed. Never edit this.
+#[test]
+fn a_version_2_file_opens_unchanged_and_is_saved_as_version_3() {
+    let v2 = r#"{"format": "3dcraft", "format_version": 2, "document": {
+        "units": {"length": "mm", "angle": "deg"},
+        "tolerance": {"linear": 1e-6, "angular": 1e-9},
+        "variables": [{"name": "r", "expr": "4 mm"}],
+        "features": [
+          {"id": 1, "name": "Ring", "suppressed": false, "kind":
+            {"type": "torus", "position": ["0", "0", "0"], "major": "20 mm", "minor": "r",
+             "orientation": {"axis": ["1", "0", "0"], "angle": "15 deg"}}},
+          {"id": 2, "name": "Tip", "kind":
+            {"type": "cone", "position": ["0", "0", "0"], "radius": "r", "height": "9 mm"}}],
+        "rollback": null, "next_feature_id": 3}}"#;
+    let doc = from_manifest_json(v2.as_bytes()).unwrap();
+    let FeatureKind::Torus(ring) = &doc.features[0].kind else {
+        panic!()
+    };
+    assert_eq!(ring.minor.source(), "r");
+    assert_eq!(ring.orientation.angle.source(), "15 deg");
+    assert_eq!(doc.features[1].kind.type_name(), "cone");
+    let saved = to_manifest_json(&doc).unwrap();
+    assert!(saved.contains("\"format_version\": 3"), "{saved}");
+    assert_eq!(from_manifest_json(saved.as_bytes()).unwrap(), doc);
 }

@@ -8,7 +8,7 @@
 
 **MCP** (`craft3d-cli mcp`): `initialize`, `ping`, `tools/list`, `tools/call`; protocol versions 2025-11-25, 2025-06-18, 2025-03-26 and 2024-11-05. Tools: `command_list`, `command_run`, `command_batch`, `doc_inspect` (returns `{"document": null}` when nothing is open), `doc_render_preview` (an image block plus a text block). No resources, no `doc_new`/`doc_open`/`doc_save`/`doc_export` tools (use `command_run` with `file.new`, `file.open`, `file.save`, `file.export`), no bridge mode. Tested against the specification, not yet against a real MCP client.
 
-**Commands** (25): `craft3d-cli commands` prints the registry with parameters and summaries; it is the source of truth.
+**Commands** (35): `craft3d-cli commands` prints the registry with parameters and summaries; it is the source of truth.
 
 **Limits enforced:** 1 MiB per request line, 8 MiB per reply, 256 steps per batch, previews at most 2048 px on the long side, renders 16 to 4096 px per side. Not enforced yet: the triangle budget for tessellation.
 

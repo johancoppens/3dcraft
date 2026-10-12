@@ -137,6 +137,221 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 minor: expr_to_manifest(minor),
                 orientation: orientation_to_manifest(orientation),
             },
+            doc::FeatureKind::Sketch(doc::Sketch {
+                plane,
+                entities,
+                constraints,
+                next_entity_id,
+                next_constraint_id,
+            }) => manifest::FeatureKind::Sketch {
+                plane: match plane {
+                    doc::SketchPlane::World { plane, offset } => manifest::SketchPlane::World {
+                        plane: match plane {
+                            doc::WorldPlane::Xy => manifest::WorldPlane::Xy,
+                            doc::WorldPlane::Yz => manifest::WorldPlane::Yz,
+                            doc::WorldPlane::Zx => manifest::WorldPlane::Zx,
+                        },
+                        offset: expr_to_manifest(offset),
+                    },
+                },
+                entities: entities.iter().map(entity_to_manifest).collect(),
+                constraints: constraints.iter().map(constraint_to_manifest).collect(),
+                next_entity_id: *next_entity_id,
+                next_constraint_id: *next_constraint_id,
+            },
+        },
+    }
+}
+
+fn entity_to_manifest(entity: &doc::Entity) -> manifest::SketchEntity {
+    let doc::Entity {
+        id: doc::EntityId(id),
+        construction,
+        geometry,
+    } = entity;
+    let raw = |doc::EntityId(id): &doc::EntityId| *id;
+    manifest::SketchEntity {
+        id: *id,
+        construction: *construction,
+        geometry: match geometry {
+            doc::Geometry::Point { x, y } => manifest::SketchGeometry::Point { x: *x, y: *y },
+            doc::Geometry::Line { start, end } => manifest::SketchGeometry::Line {
+                start: raw(start),
+                end: raw(end),
+            },
+            doc::Geometry::Circle { center, radius } => manifest::SketchGeometry::Circle {
+                center: raw(center),
+                radius: *radius,
+            },
+            doc::Geometry::Arc { center, start, end } => manifest::SketchGeometry::Arc {
+                center: raw(center),
+                start: raw(start),
+                end: raw(end),
+            },
+        },
+    }
+}
+
+fn constraint_to_manifest(constraint: &doc::Constraint) -> manifest::SketchConstraint {
+    use doc::ConstraintKind as D;
+    use manifest::SketchConstraintKind as M;
+    let doc::Constraint {
+        id: doc::ConstraintId(id),
+        kind,
+    } = constraint;
+    let raw = |doc::EntityId(id): &doc::EntityId| *id;
+    let opt = |id: &Option<doc::EntityId>| id.as_ref().map(raw);
+    let (a, b) = (raw, raw);
+    manifest::SketchConstraint {
+        id: *id,
+        kind: match kind {
+            D::Coincident { a: p, b: q } => M::Coincident { a: a(p), b: b(q) },
+            D::PointOn { point, curve } => M::PointOn {
+                point: raw(point),
+                curve: raw(curve),
+            },
+            D::Horizontal { a: p, b: q } => M::Horizontal { a: a(p), b: opt(q) },
+            D::Vertical { a: p, b: q } => M::Vertical { a: a(p), b: opt(q) },
+            D::Parallel { a: p, b: q } => M::Parallel { a: a(p), b: b(q) },
+            D::Perpendicular { a: p, b: q } => M::Perpendicular { a: a(p), b: b(q) },
+            D::Tangent { a: p, b: q } => M::Tangent { a: a(p), b: b(q) },
+            D::Equal { a: p, b: q } => M::Equal { a: a(p), b: b(q) },
+            D::Concentric { a: p, b: q } => M::Concentric { a: a(p), b: b(q) },
+            D::Symmetric { a: p, b: q, about } => M::Symmetric {
+                a: a(p),
+                b: b(q),
+                about: raw(about),
+            },
+            D::Midpoint { point, line } => M::Midpoint {
+                point: raw(point),
+                line: raw(line),
+            },
+            D::Fixed { point } => M::Fixed { point: raw(point) },
+            D::Distance {
+                a: p,
+                b: q,
+                direction,
+                value,
+            } => M::Distance {
+                a: a(p),
+                b: opt(q),
+                direction: match direction {
+                    doc::DistanceDirection::Direct => manifest::DistanceDirection::Direct,
+                    doc::DistanceDirection::Horizontal => manifest::DistanceDirection::Horizontal,
+                    doc::DistanceDirection::Vertical => manifest::DistanceDirection::Vertical,
+                },
+                value: expr_to_manifest(value),
+            },
+            D::Angle { a: p, b: q, value } => M::Angle {
+                a: a(p),
+                b: b(q),
+                value: expr_to_manifest(value),
+            },
+            D::Radius { curve, value } => M::Radius {
+                curve: raw(curve),
+                value: expr_to_manifest(value),
+            },
+            D::Diameter { curve, value } => M::Diameter {
+                curve: raw(curve),
+                value: expr_to_manifest(value),
+            },
+        },
+    }
+}
+
+fn entity_to_doc(entity: manifest::SketchEntity) -> doc::Entity {
+    use doc::EntityId as Id;
+    let manifest::SketchEntity {
+        id,
+        construction,
+        geometry,
+    } = entity;
+    doc::Entity {
+        id: Id(id),
+        construction,
+        geometry: match geometry {
+            manifest::SketchGeometry::Point { x, y } => doc::Geometry::Point { x, y },
+            manifest::SketchGeometry::Line { start, end } => doc::Geometry::Line {
+                start: Id(start),
+                end: Id(end),
+            },
+            manifest::SketchGeometry::Circle { center, radius } => doc::Geometry::Circle {
+                center: Id(center),
+                radius,
+            },
+            manifest::SketchGeometry::Arc { center, start, end } => doc::Geometry::Arc {
+                center: Id(center),
+                start: Id(start),
+                end: Id(end),
+            },
+        },
+    }
+}
+
+fn constraint_to_doc(constraint: manifest::SketchConstraint) -> doc::Constraint {
+    use doc::ConstraintKind as D;
+    use doc::EntityId as Id;
+    use manifest::SketchConstraintKind as M;
+    let manifest::SketchConstraint { id, kind } = constraint;
+    doc::Constraint {
+        id: doc::ConstraintId(id),
+        kind: match kind {
+            M::Coincident { a, b } => D::Coincident { a: Id(a), b: Id(b) },
+            M::PointOn { point, curve } => D::PointOn {
+                point: Id(point),
+                curve: Id(curve),
+            },
+            M::Horizontal { a, b } => D::Horizontal {
+                a: Id(a),
+                b: b.map(Id),
+            },
+            M::Vertical { a, b } => D::Vertical {
+                a: Id(a),
+                b: b.map(Id),
+            },
+            M::Parallel { a, b } => D::Parallel { a: Id(a), b: Id(b) },
+            M::Perpendicular { a, b } => D::Perpendicular { a: Id(a), b: Id(b) },
+            M::Tangent { a, b } => D::Tangent { a: Id(a), b: Id(b) },
+            M::Equal { a, b } => D::Equal { a: Id(a), b: Id(b) },
+            M::Concentric { a, b } => D::Concentric { a: Id(a), b: Id(b) },
+            M::Symmetric { a, b, about } => D::Symmetric {
+                a: Id(a),
+                b: Id(b),
+                about: Id(about),
+            },
+            M::Midpoint { point, line } => D::Midpoint {
+                point: Id(point),
+                line: Id(line),
+            },
+            M::Fixed { point } => D::Fixed { point: Id(point) },
+            M::Distance {
+                a,
+                b,
+                direction,
+                value,
+            } => D::Distance {
+                a: Id(a),
+                b: b.map(Id),
+                direction: match direction {
+                    manifest::DistanceDirection::Direct => doc::DistanceDirection::Direct,
+                    manifest::DistanceDirection::Horizontal => doc::DistanceDirection::Horizontal,
+                    manifest::DistanceDirection::Vertical => doc::DistanceDirection::Vertical,
+                },
+                value: doc::Expr(value),
+            },
+            M::Angle { a, b, value } => D::Angle {
+                a: Id(a),
+                b: Id(b),
+                value: doc::Expr(value),
+            },
+            M::Radius { curve, value } => D::Radius {
+                curve: Id(curve),
+                value: doc::Expr(value),
+            },
+            M::Diameter { curve, value } => D::Diameter {
+                curve: Id(curve),
+                value: doc::Expr(value),
+            },
         },
     }
 }
@@ -257,6 +472,28 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
                 major: doc::Expr(major),
                 minor: doc::Expr(minor),
                 orientation: orientation_to_doc(orientation),
+            }),
+            manifest::FeatureKind::Sketch {
+                plane,
+                entities,
+                constraints,
+                next_entity_id,
+                next_constraint_id,
+            } => doc::FeatureKind::Sketch(doc::Sketch {
+                plane: match plane {
+                    manifest::SketchPlane::World { plane, offset } => doc::SketchPlane::World {
+                        plane: match plane {
+                            manifest::WorldPlane::Xy => doc::WorldPlane::Xy,
+                            manifest::WorldPlane::Yz => doc::WorldPlane::Yz,
+                            manifest::WorldPlane::Zx => doc::WorldPlane::Zx,
+                        },
+                        offset: doc::Expr(offset),
+                    },
+                },
+                entities: entities.into_iter().map(entity_to_doc).collect(),
+                constraints: constraints.into_iter().map(constraint_to_doc).collect(),
+                next_entity_id,
+                next_constraint_id,
             }),
         },
     }

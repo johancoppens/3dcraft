@@ -26,7 +26,7 @@ use serde_json::Value;
 type Step = fn(Value) -> Result<Value, String>;
 
 /// `STEPS[n]` brings a manifest from version `n + 1` to version `n + 2`.
-const STEPS: &[Step] = &[v1_to_v2];
+const STEPS: &[Step] = &[v1_to_v2, v2_to_v3];
 
 /// Version 2 adds the `cone` and `torus` feature kinds and an optional
 /// `orientation` on block, cylinder, cone and torus. Nothing a version-1
@@ -35,6 +35,13 @@ const STEPS: &[Step] = &[v1_to_v2];
 /// so that a build which only knows version 1 says "a newer 3DCraft is
 /// needed" instead of stumbling over an unknown field or kind.
 fn v1_to_v2(manifest: Value) -> Result<Value, String> {
+    Ok(manifest)
+}
+
+/// Version 3 adds the `sketch` feature kind. Nothing a version-2 file
+/// contains changes meaning; the version was raised for the same reason as
+/// version 2, so an older build reports the version and not an unknown kind.
+fn v2_to_v3(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
 }
 

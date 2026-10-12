@@ -6,10 +6,17 @@
 //! text the user wrote. This crate is pure data with serde; it contains no
 //! geometry.
 //!
-//! So far: variables and primitive features. Sketches, constraints and the
-//! other feature kinds of docs/architecture.md §4 arrive with their
-//! milestones; `craft3d-format` fails to compile when a field is added
+//! So far: variables, primitive features and sketches with their
+//! constraints ([`sketch`]). The other feature kinds of
+//! docs/architecture.md §4 arrive with their milestones; `craft3d-format` fails to compile when a field is added
 //! here without being saved (AGENTS.md §8).
+
+pub mod sketch;
+
+pub use sketch::{
+    Constraint, ConstraintId, ConstraintKind, DistanceDirection, Entity, EntityId, Geometry,
+    Sketch, SketchError, SketchPlane, WorldPlane,
+};
 
 use craft3d_expr::{VariableError, VariableTable};
 use serde::{Deserialize, Serialize};
@@ -206,7 +213,7 @@ pub struct Torus {
     pub orientation: Orientation,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum FeatureKind {
     Block(Block),
@@ -214,6 +221,7 @@ pub enum FeatureKind {
     Sphere(Sphere),
     Cone(Cone),
     Torus(Torus),
+    Sketch(Sketch),
 }
 
 impl FeatureKind {
@@ -225,6 +233,7 @@ impl FeatureKind {
             FeatureKind::Sphere(_) => "sphere",
             FeatureKind::Cone(_) => "cone",
             FeatureKind::Torus(_) => "torus",
+            FeatureKind::Sketch(_) => "sketch",
         }
     }
 
@@ -270,6 +279,7 @@ impl FeatureKind {
                 out.extend([named("major", &t.major), named("minor", &t.minor)]);
                 out.extend(turned(&t.orientation));
             }
+            FeatureKind::Sketch(s) => out = s.exprs(),
         }
         out
     }
@@ -304,11 +314,12 @@ impl FeatureKind {
                 .chain([&mut t.major, &mut t.minor])
                 .chain(turned(&mut t.orientation))
                 .collect(),
+            FeatureKind::Sketch(s) => s.exprs_mut(),
         }
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Feature {
     pub id: FeatureId,
     pub name: String,
@@ -331,6 +342,10 @@ pub enum DocError {
         position: usize,
         len: usize,
     },
+    /// The feature is not a sketch.
+    NotASketch(FeatureId),
+    /// A change to a sketch that cannot be made, with the sketch it is in.
+    Sketch(FeatureId, SketchError),
     /// The document breaks one of its own rules (a file edited by hand, or
     /// written by something else).
     Invalid(String),
@@ -355,6 +370,8 @@ impl fmt::Display for DocError {
                     "position {position} is past the end of the {len} features"
                 )
             }
+            DocError::NotASketch(id) => write!(f, "feature {id} is not a sketch"),
+            DocError::Sketch(id, e) => write!(f, "sketch {id}: {e}"),
             DocError::Invalid(what) => write!(f, "invalid document: {what}"),
         }
     }
@@ -453,6 +470,11 @@ impl Document {
                     feature.id.0, self.next_feature_id
                 )));
             }
+            if let FeatureKind::Sketch(sketch) = &feature.kind {
+                sketch
+                    .validate()
+                    .map_err(|e| DocError::Sketch(feature.id, e))?;
+            }
         }
         match self.rollback {
             Some(id) if !ids.contains(&id) => Err(DocError::UnknownFeature(id)),
@@ -544,6 +566,28 @@ impl Document {
 
     pub fn feature_by_name(&self, name: &str) -> Option<&Feature> {
         self.features.iter().find(|f| f.name == name)
+    }
+
+    /// The sketch of a sketch feature.
+    pub fn sketch(&self, id: FeatureId) -> Result<&Sketch, DocError> {
+        match self.feature(id).map(|f| &f.kind) {
+            Some(FeatureKind::Sketch(sketch)) => Ok(sketch),
+            Some(_) => Err(DocError::NotASketch(id)),
+            None => Err(DocError::UnknownFeature(id)),
+        }
+    }
+
+    /// Changes a sketch. The change is all or nothing: when `change` fails
+    /// the sketch is as it was.
+    pub fn edit_sketch<T>(
+        &mut self,
+        id: FeatureId,
+        change: impl FnOnce(&mut Sketch) -> Result<T, SketchError>,
+    ) -> Result<T, DocError> {
+        let mut sketch = self.sketch(id)?.clone();
+        let out = change(&mut sketch).map_err(|e| DocError::Sketch(id, e))?;
+        self.feature_mut(id)?.kind = FeatureKind::Sketch(sketch);
+        Ok(out)
     }
 
     /// Appends a feature and returns its id. Without a name it is called
@@ -754,6 +798,81 @@ mod tests {
         assert!(doc.rename_variable("h", "mm").is_err());
         assert!(doc.rename_variable("missing", "x").is_err());
         assert_eq!(doc, before);
+    }
+
+    fn sketched() -> (Document, FeatureId) {
+        let mut doc = sample();
+        let id = doc
+            .add_feature(None, FeatureKind::Sketch(Sketch::default()))
+            .unwrap();
+        doc.edit_sketch(id, |s| {
+            let a = s.add_point(0.0, 0.0)?;
+            let b = s.add_point(30.0, 0.0)?;
+            let line = s.add_line(a, b, false)?;
+            s.add_constraint(ConstraintKind::Distance {
+                a: line,
+                b: None,
+                direction: DistanceDirection::Direct,
+                value: Expr::new("half + 10 mm"),
+            })
+        })
+        .unwrap();
+        (doc, id)
+    }
+
+    #[test]
+    fn a_sketch_is_a_feature_whose_dimensions_follow_variables() {
+        let (mut doc, id) = sketched();
+        assert_eq!(doc.feature(id).unwrap().name, "Sketch1");
+        assert_eq!(doc.validate(), Ok(()));
+        doc.rename_variable("half", "h").unwrap();
+        let sketch = doc.sketch(id).unwrap();
+        assert_eq!(
+            sketch.constraints[0].kind.value().unwrap().source(),
+            "h + 10 mm"
+        );
+        let names: Vec<String> = doc
+            .feature(id)
+            .unwrap()
+            .kind
+            .exprs()
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        assert_eq!(names, ["plane.offset", "c1.value"]);
+        // Not a sketch, and not there.
+        assert_eq!(
+            doc.sketch(FeatureId(1)).unwrap_err(),
+            DocError::NotASketch(FeatureId(1))
+        );
+        assert_eq!(
+            doc.sketch(FeatureId(99)).unwrap_err(),
+            DocError::UnknownFeature(FeatureId(99))
+        );
+    }
+
+    #[test]
+    fn a_failed_sketch_edit_changes_nothing() {
+        let (mut doc, id) = sketched();
+        let before = doc.clone();
+        let error = doc
+            .edit_sketch(id, |s| {
+                s.add_point(5.0, 5.0)?;
+                s.add_line(EntityId(1), EntityId(77), false)
+            })
+            .unwrap_err();
+        assert_eq!(
+            error,
+            DocError::Sketch(id, SketchError::UnknownEntity(EntityId(77)))
+        );
+        assert_eq!(error.to_string(), "sketch F3: the sketch has no entity e77");
+        assert_eq!(doc, before);
+        // A sketch damaged behind the API makes the document invalid.
+        let FeatureKind::Sketch(sketch) = &mut doc.features[2].kind else {
+            panic!()
+        };
+        sketch.next_entity_id = 1;
+        assert!(matches!(doc.validate(), Err(DocError::Sketch(..))));
     }
 
     #[test]

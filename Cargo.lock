@@ -133,6 +133,7 @@ dependencies = [
  "craft3d-expr",
  "craft3d-kernel",
  "craft3d-math",
+ "craft3d-solve",
  "craft3d-topo",
 ]
 
@@ -149,6 +150,9 @@ dependencies = [
 [[package]]
 name = "craft3d-solve"
 version = "0.0.1"
+dependencies = [
+ "craft3d-math",
+]
 
 [[package]]
 name = "craft3d-step"

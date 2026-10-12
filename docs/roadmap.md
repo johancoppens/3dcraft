@@ -1,6 +1,6 @@
 # Roadmap
 
-> **Last updated:** 2026-10-12 · **Stage:** M3 done: any B-rep body the kernel can describe is tessellated, rendered and exported · **Change:** minor (M3 done)
+> **Last updated:** 2026-10-12 · **Stage:** M5 done: sketches are drawn, constrained and solved through commands; nothing is built from them yet · **Change:** minor (M5 done)
 
 Forward-looking plan: milestones with a definition of done, and the **Current focus** list agents pick from. There is no parity percentage: 3DCraft is AI-first with a minimal UI and has no target app ([`decisions.md`](decisions.md)). Progress is measured by milestones whose acceptance tests pass.
 
@@ -14,10 +14,11 @@ Phase 1 is M0–M8. Its acceptance scenario, run entirely by an agent over MCP w
 
 ## Current focus
 
-1. **M5 Sketches and the constraint solver**, then **M6 extrude and revolve**: the first features that are not primitives. This is where persistent names have to be designed, and where regeneration gets its per-feature cache.
-2. **M4 Viewer** when the developer wants to watch live: the desktop app with the control server. The CPU renderer already gives pictures (`craft3d-cli render`), so this does not block modelling work.
-3. **Gaps found during M3,** to close before booleans (M7) can produce such faces: `mass_properties` for a torus face bounded by loops around the tube and for a boundary through a pole or apex (both are refused today, with ignored tests that hold the expected values); `Surface::project` near a collapsed patch edge (returns a coarse sample; the tessellator works around it); a self-intersection check.
-4. Small things left open: a real MCP client test, `thumb.png` in `.3dcraft`, autosave and crash recovery, an `enabled` predicate per command, thread scaling of the tessellator on a body with many faces (unmeasured).
+1. **M6 Extrude and revolve**: the first bodies that are not primitives. Starts with profile detection (closed regions from a sketch's entities, moved here from M5 by the developer), then extrude with oracle 1 (volume = profile area × height). This is where persistent names have to be designed, and where regeneration gets its per-feature cache (today every edit solves every sketch again, twice).
+2. **Left open by M5,** in order of weight: (a) which constraint is blamed in a nonlinear conflict is the solver's heuristic, not a proof, and about 8% of dense random sketches (up to 40 arbitrary constraints) end as "did not converge" instead of a diagnosis; to be judged again on real models; (b) there is no picture of a sketch: `view.render` draws bodies only; (c) `panic_hunt` now takes 2.5 minutes; (d) two seeded breakages of the solver's rank test are caught only by unit tests or the random run, not by a small natural sketch.
+3. **M4 Viewer** when the developer wants to watch live: the desktop app with the control server. The CPU renderer already gives pictures (`craft3d-cli render`), so this does not block modelling work.
+4. **Gaps found during M3,** to close before booleans (M7) can produce such faces: `mass_properties` for a torus face bounded by loops around the tube and for a boundary through a pole or apex (both are refused today, with ignored tests that hold the expected values); `Surface::project` near a collapsed patch edge (returns a coarse sample; the tessellator works around it); a self-intersection check.
+5. Small things left open: a real MCP client test, `thumb.png` in `.3dcraft`, autosave and crash recovery, an `enabled` predicate per command, thread scaling of the tessellator on a body with many faces (unmeasured).
 
 ## Milestones
 
@@ -30,8 +31,8 @@ Phase 1 is M0–M8. Its acceptance scenario, run entirely by an agent over MCP w
 | **M2** | Document, format, engine, CLI | ✅ 2026-10-12 (with the start of M3: primitives as features, regeneration, B-rep tessellation for the five primitives. Deviations: synchronous engine without jobs or events; undo as snapshots; no autosave or crash recovery) | `doc` (variables, feature list, sketch and constraint data), `ops` (undo), `format` (`.3dcraft`, atomic save, migrations scaffold), `engine` (Session, registry, snapshots), `craft3d-cli` (`info`, `run`, `commands`, `serve`), `automation` (MCP headless), `panic_hunt` | Load/save round trip of every doc type; a document built by commands over MCP saves and reopens identically; every command survives `panic_hunt` |
 | **M3** | Primitives, tessellator, mesh export | ✅ 2026-10-12 (deviation: regeneration is still a full rebuild per revision; the per-feature cache moves to M6, where features first depend on each other) | `kernel` primitives as features; `regen` v1 (linear, full); `tess` (edge-first, CDT in parameter space, refinement); `meshio` + `io` (STL, 3MF, OBJ); `document.measure` | Oracle 1 and 4 for all primitives at three scales; exported meshes closed and oriented; mesh volume converges to the analytic value; byte-identical output for 1/2/N threads |
 | **M4** | Renderers and viewer | ⬜ | `render` (CPU: shaded, edges, depth, id buffer), `gpu` (wgpu), `ui-egui` + `apps/craft3d` (viewport with orbit/pan/zoom, feature tree read-only, open/save), desktop control server, `ui.screenshot`, MCP bridge, offscreen snapshot example, CPU fallback | CPU goldens blessed by the developer; GPU vs CPU parity within tolerance on lavapipe; the developer watches an agent build a primitive scene live; app starts without a GPU |
-| **M5** | Sketches and constraint solver | ⬜ | Sketch entities and constraints as commands; `solve` (Newton-type, DOF analysis, redundancy/conflict diagnosis, stored solution); expressions in dimensions; profile detection | Oracle 6; a catalogue of 20 sketches solves to hand-checked coordinates; changing a variable re-solves without flipping; no sketch makes the solver hang |
-| **M6** | Extrude, revolve, persistent names | ⬜ | `kernel` extrude/revolve from profiles; origin maps; `PersistentName` scheme and resolution; incremental `regen` with per-feature cache; datums on faces; transform, mirror, pattern | Oracle 1 for extrusions and revolutions (Pappus); incremental = full regeneration; topological naming suite v1 passes |
+| **M5** | Sketches and constraint solver | ✅ 2026-10-12 (deviations: profile detection moved to M6 by the developer; sketches lie on world planes with an offset until datum planes exist; no splines) | Sketch entities and constraints as commands; `solve` (Newton-type, DOF analysis, redundancy/conflict diagnosis, stored solution); expressions in dimensions | Oracle 6; a catalogue of 20 sketches solves to hand-checked coordinates; changing a variable re-solves without flipping; no sketch makes the solver hang |
+| **M6** | Extrude, revolve, persistent names | ⬜ | Profile detection (closed regions from sketch entities); `kernel` extrude/revolve from profiles; origin maps; `PersistentName` scheme and resolution; incremental `regen` with per-feature cache; datums on faces; transform, mirror, pattern | Oracle 1 for extrusions and revolutions (Pappus); incremental = full regeneration; topological naming suite v1 passes |
 | **M7** | Booleans | ⬜ | Surface/surface intersection for analytic pairs; imprint, classify, sew; union/subtract/intersect; cut-extrude and holes; tolerant handling of coincident and tangent cases, or a clear `Unsupported` | Oracle 3 on generated inputs; box-minus-cylinder family exact; naming suite extended through booleans; no invalid body ever returned (proptest) |
 | **M8** | STEP export | ⬜ | `step` Part 21 writer/reader core, typed B-rep entities, `io` mapping, units and uncertainty | Parse-back equality; external validator opens every test model and reports matching volume; **phase 1 acceptance scenario passes** |
 | **M9** | Local operations and sweeps | ⬜ | Fillet and chamfer (constant radius), shell, draft, sweep, loft; NURBS in booleans | Oracle 1 where closed forms exist (filleted box edges); validity on generated inputs |
@@ -51,6 +52,7 @@ Phase 1 is M0–M8. Its acceptance scenario, run entirely by an agent over MCP w
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-12 | minor | M5 done (sketches, constraints, own solver, hardened so that solving twice gives the same verdict); profile detection moved to M6; current focus is extrude |
 | 2026-10-12 | minor | M3 done; current focus is sketches (M5) and extrude (M6) |
 | 2026-10-12 | minor | M2 done, M3 partly; current focus rewritten |
 | 2026-10-12 | minor | Undo follow-ups recorded: shared blobs before M10, reversible operations as an M12+ candidate |

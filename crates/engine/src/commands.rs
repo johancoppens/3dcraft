@@ -20,13 +20,13 @@ use craft3d_tess::{Mesh, TessParams, tessellate_body};
 use craft3d_topo::{BodyKind, mass_properties};
 use serde_json::{Value, json};
 
-type Run = Result<Value, CommandError>;
+pub(crate) type Run = Result<Value, CommandError>;
 
-fn fail<T>(message: impl Into<String>) -> Result<T, CommandError> {
+pub(crate) fn fail<T>(message: impl Into<String>) -> Result<T, CommandError> {
     Err(CommandError::new(message))
 }
 
-fn doc_error(command: &str) -> impl Fn(DocError) -> CommandError + '_ {
+pub(crate) fn doc_error(command: &str) -> impl Fn(DocError) -> CommandError + '_ {
     move |e| CommandError::new(format!("{command}: {e}"))
 }
 
@@ -42,6 +42,7 @@ macro_rules! spec {
         }
     };
 }
+pub(crate) use spec;
 
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("file.new", "New Document", r#"{"units": "um|mm|cm|m|in|ft" = "mm", "tolerance": number = 1e-6}"#,
@@ -112,7 +113,7 @@ pub(crate) fn closest(id: &str) -> Option<&'static str> {
             .count();
         prefix + suffix
     };
-    SPECS
+    Session::commands()
         .iter()
         .map(|c| (score(c.id), c.id))
         .filter(|&(s, _)| s * 2 >= id.len().max(4))
@@ -123,21 +124,28 @@ pub(crate) fn closest(id: &str) -> Option<&'static str> {
 // ---------------------------------------------------------------- helpers
 
 /// Applies an edit to the active document as one undo step.
-fn edit<T>(
+pub(crate) fn edit<T>(
     session: &mut Session,
     command: &'static str,
     label: &str,
     change: impl FnOnce(&mut Document) -> Result<T, DocError>,
 ) -> Result<T, CommandError> {
+    // Every edit ends with the sketches solved and their solution stored,
+    // in the same undo step: a changed variable moves the sketches that
+    // use it, and the next solve starts from where they are now.
     session
         .document_mut()?
         .history
-        .apply(label, change)
+        .apply(label, |doc| {
+            let out = change(doc)?;
+            craft3d_regen::settle_sketches(doc);
+            Ok(out)
+        })
         .map_err(doc_error(command))
 }
 
 /// Finds a feature by id (`3` or `"F3"`) or by name.
-fn feature_ref(
+pub(crate) fn feature_ref(
     doc: &Document,
     p: &Params,
     command: &str,
@@ -214,7 +222,7 @@ fn add_feature(
 
 /// What a feature command returns: the feature and how it regenerated, so
 /// the caller sees at once whether the change worked.
-fn feature_result(session: &mut Session, id: FeatureId) -> Run {
+pub(crate) fn feature_result(session: &mut Session, id: FeatureId) -> Run {
     let open = session.document_mut()?;
     let regen = open.regen();
     let doc = open.history.current();
@@ -652,6 +660,11 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
     // Each kind lists the parameters it has; a given one outside the list
     // is an error rather than ignored.
     let (name, own): (&str, Vec<(&str, Slot)>) = match &mut kind {
+        FeatureKind::Sketch(_) => {
+            return fail(
+                "feature.edit: a sketch is changed with the sketch.* commands (sketch.edit, sketch.constrain, ...)",
+            );
+        }
         FeatureKind::Block(b) => (
             "block",
             vec![
@@ -854,6 +867,13 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
         });
         if let (Some(map), Some(error)) = (entry.as_object_mut(), error) {
             map.insert("error".into(), error.into());
+        }
+        // A sketch: how far it is constrained. sketch.inspect has the rest.
+        if let (Some(map), Some(solved)) = (
+            entry.as_object_mut(),
+            outcome.and_then(|o| o.sketch.as_ref()),
+        ) {
+            map.insert("dof".into(), solved.dof.map_or(Value::Null, Value::from));
         }
         features.push(entry);
         if let Some(body) = outcome.and_then(|o| o.body.as_ref()) {

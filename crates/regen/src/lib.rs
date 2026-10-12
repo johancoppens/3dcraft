@@ -6,8 +6,16 @@
 //! be evaluated gets a status that says why, and everything that does not
 //! depend on it is still built.
 //!
-//! Not here yet: caching per feature (every call rebuilds everything),
-//! features that consume other features' bodies, persistent names.
+//! Sketches are solved here too ([`sketch`]): a sketch feature has no body,
+//! its result is the solved sketch placed in space.
+//!
+//! Not here yet: caching per feature (every call rebuilds everything and
+//! solves every sketch), features that consume other features' bodies or
+//! sketches, persistent names.
+
+mod sketch;
+
+pub use sketch::{ConstraintResult, ConstraintState, SketchResult, settle_sketches};
 
 use craft3d_doc::{Document, Expr, Feature, FeatureId, FeatureKind, Orientation};
 use craft3d_expr::{Dimension, Evaluation, Quantity};
@@ -50,6 +58,9 @@ pub struct FeatureResult {
     pub status: Status,
     /// The body this feature made, when it is `Ok`.
     pub body: Option<Arc<Body>>,
+    /// For a sketch: how it solved. Present for a failed sketch too, unless
+    /// its plane could not be evaluated.
+    pub sketch: Option<Arc<SketchResult>>,
 }
 
 /// Everything derived from one document.
@@ -228,6 +239,8 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
             }
             primitives::torus(&frame, major, minor)
         }
+        // Solved in `features`; a sketch is not a body.
+        FeatureKind::Sketch(_) => return Err("a sketch has no body".to_string()),
     }
     .map_err(|e| e.to_string())?;
 
@@ -288,10 +301,15 @@ fn features(doc: &Document, variables: &Evaluation) -> Vec<FeatureResult> {
     let mut results = Vec::with_capacity(doc.features.len());
     let mut rolled_back = false;
     for feature in &doc.features {
+        let mut solved = None;
         let (status, body) = if rolled_back {
             (Status::RolledBack, None)
         } else if feature.suppressed {
             (Status::Suppressed, None)
+        } else if let FeatureKind::Sketch(sketch) = &feature.kind {
+            let (status, result) = sketch::solve_sketch(doc, variables, sketch);
+            solved = result.map(Arc::new);
+            (status, None)
         } else {
             match build(doc, variables, feature) {
                 Ok(body) => (Status::Ok, Some(Arc::new(body))),
@@ -302,6 +320,7 @@ fn features(doc: &Document, variables: &Evaluation) -> Vec<FeatureResult> {
             id: feature.id,
             status,
             body,
+            sketch: solved,
         });
         if doc.rollback == Some(feature.id) {
             rolled_back = true;

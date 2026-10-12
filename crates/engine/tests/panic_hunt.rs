@@ -40,6 +40,22 @@ fn adversarial() -> Vec<Value> {
         json!("Plate"),
         json!("F1"),
         json!("F0"),
+        json!("Profile"),
+        json!("e1"),
+        json!("e7"),
+        json!("e0"),
+        json!("c1"),
+        json!("c18446744073709551615"),
+        json!("distance"),
+        json!("tangent"),
+        json!("zx"),
+        json!(["e1", "e2"]),
+        json!(["e7", "e8"]),
+        json!(["e7"]),
+        json!(["e1", "e1"]),
+        json!([[0, 0], [1, 0], [1, 1]]),
+        json!([[0, 0], [0, 0], [0, 0]]),
+        json!([[1e308, -1e308], "e1", [0, 5e-324]]),
         json!("F18446744073709551615"),
         json!("F99999999999999999999999"),
         json!("width"),
@@ -140,6 +156,31 @@ fn session(dir: &std::path::Path, state: usize) -> Session {
                 "feature.torus",
                 json!({"major": 10, "minor": 2, "angle": "30 deg"}),
             );
+            // A constrained rectangle with a circle in it.
+            run("sketch.create", json!({"name": "Profile"}));
+            run(
+                "sketch.polyline",
+                json!({"sketch": "Profile", "closed": true, "points": [[0, 0], [9, 1], [10, 6], [1, 5]]}),
+            );
+            run(
+                "sketch.circle",
+                json!({"sketch": "Profile", "center": [5, 3], "radius": 1}),
+            );
+            for (kind, entities) in [
+                ("fixed", json!(["e1"])),
+                ("horizontal", json!(["e5"])),
+                ("vertical", json!(["e6"])),
+                ("parallel", json!(["e5", "e7"])),
+            ] {
+                run(
+                    "sketch.constrain",
+                    json!({"sketch": "Profile", "type": kind, "entities": entities}),
+                );
+            }
+            run(
+                "sketch.constrain",
+                json!({"sketch": "Profile", "type": "distance", "entities": ["e5"], "value": "width / 4"}),
+            );
         }
         // A document full of things that fail: bad formulas, a cycle, a
         // suppressed and a rolled-back feature, undo and redo stacks.
@@ -156,6 +197,26 @@ fn session(dir: &std::path::Path, state: usize) -> Session {
             run("feature.block", json!({"size": [1e-300, 1e300, 1]}));
             run("feature.sphere", json!({"radius": "30 deg"}));
             run("feature.cylinder", json!({"radius": 1, "height": 1}));
+            // A sketch that cannot be solved: a dimension that does not
+            // evaluate, two that contradict each other, a degenerate line.
+            run(
+                "sketch.create",
+                json!({"name": "Profile", "offset": "zero"}),
+            );
+            run(
+                "sketch.polyline",
+                json!({"sketch": "Profile", "points": [[0, 0], [1, 0], [1, 0], [1e-300, 1e300]]}),
+            );
+            for value in ["broken", "1 in", "2 in"] {
+                run(
+                    "sketch.constrain",
+                    json!({"sketch": "Profile", "type": "distance", "entities": ["e5"], "value": value}),
+                );
+            }
+            run(
+                "sketch.constrain",
+                json!({"sketch": "Profile", "type": "angle", "entities": ["e6", "e7"], "value": "a"}),
+            );
             run("feature.suppress", json!({"feature": "Cylinder1"}));
             run("history.rollback", json!({"feature": "Plate"}));
             run("edit.undo", json!({}));
@@ -214,6 +275,11 @@ fn no_command_panics_on_adversarial_parameters() {
                 check(state, spec.id, &Value::Object(all.clone()));
                 for (key, valid) in [
                     ("feature", json!("Plate")),
+                    ("sketch", json!("Profile")),
+                    ("type", json!("distance")),
+                    ("entities", json!(["e1", "e2"])),
+                    ("entity", json!("e1")),
+                    ("constraint", json!("c1")),
                     ("name", json!("width")),
                     ("path", json!("hunt.stl")),
                     ("size", json!([1, 2, 3])),

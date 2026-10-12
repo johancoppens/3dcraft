@@ -95,7 +95,7 @@ pub struct Variable {
     pub expr: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Feature {
     pub id: u64,
@@ -129,7 +129,7 @@ impl Default for Orientation {
 
 /// The parameters of a feature, tagged with `"type"`. Every parameter is an
 /// expression, stored as its source text; triples are x, y, z.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
 pub enum FeatureKind {
     Block {
@@ -162,5 +162,163 @@ pub enum FeatureKind {
         minor: String,
         #[serde(default)]
         orientation: Orientation,
+    },
+    /// A 2D sketch. The coordinates of its points and the radii of its
+    /// circles are the last solution, in the document's length unit: the
+    /// solver starts from them, so a reopened sketch does not flip.
+    Sketch {
+        plane: SketchPlane,
+        /// In the order they were drawn.
+        entities: Vec<SketchEntity>,
+        /// In the order they were added.
+        constraints: Vec<SketchConstraint>,
+        next_entity_id: u64,
+        next_constraint_id: u64,
+    },
+}
+
+/// What a sketch lies on.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum SketchPlane {
+    /// A plane through the world origin, moved by `offset` (an expression)
+    /// along its normal.
+    World { plane: WorldPlane, offset: String },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WorldPlane {
+    Xy,
+    Yz,
+    Zx,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchEntity {
+    /// Unique within the sketch, never reused.
+    pub id: u64,
+    /// Always written; absent means not construction geometry.
+    #[serde(default)]
+    pub construction: bool,
+    pub geometry: SketchGeometry,
+}
+
+/// Lines, circles and arcs refer to point entities by id.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum SketchGeometry {
+    Point {
+        x: f64,
+        y: f64,
+    },
+    Line {
+        start: u64,
+        end: u64,
+    },
+    Circle {
+        center: u64,
+        radius: f64,
+    },
+    /// Counter-clockwise from `start` to `end`.
+    Arc {
+        center: u64,
+        start: u64,
+        end: u64,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchConstraint {
+    /// Unique within the sketch, never reused.
+    pub id: u64,
+    pub kind: SketchConstraintKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DistanceDirection {
+    #[default]
+    Direct,
+    Horizontal,
+    Vertical,
+}
+
+/// A constraint, tagged with `"type"`. The other fields are entity ids,
+/// except `value` (an expression) and `direction`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum SketchConstraintKind {
+    Coincident {
+        a: u64,
+        b: u64,
+    },
+    PointOn {
+        point: u64,
+        curve: u64,
+    },
+    /// `b` is null for a line, a second point otherwise.
+    Horizontal {
+        a: u64,
+        b: Option<u64>,
+    },
+    Vertical {
+        a: u64,
+        b: Option<u64>,
+    },
+    Parallel {
+        a: u64,
+        b: u64,
+    },
+    Perpendicular {
+        a: u64,
+        b: u64,
+    },
+    Tangent {
+        a: u64,
+        b: u64,
+    },
+    Equal {
+        a: u64,
+        b: u64,
+    },
+    Concentric {
+        a: u64,
+        b: u64,
+    },
+    Symmetric {
+        a: u64,
+        b: u64,
+        about: u64,
+    },
+    Midpoint {
+        point: u64,
+        line: u64,
+    },
+    Fixed {
+        point: u64,
+    },
+    /// `b` is null for the length of line `a`.
+    Distance {
+        a: u64,
+        b: Option<u64>,
+        #[serde(default)]
+        direction: DistanceDirection,
+        value: String,
+    },
+    Angle {
+        a: u64,
+        b: u64,
+        value: String,
+    },
+    Radius {
+        curve: u64,
+        value: String,
+    },
+    Diameter {
+        curve: u64,
+        value: String,
     },
 }

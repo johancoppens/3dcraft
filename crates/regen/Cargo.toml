@@ -14,3 +14,4 @@ craft3d-expr.workspace = true
 craft3d-topo.workspace = true
 craft3d-doc.workspace = true
 craft3d-kernel.workspace = true
+craft3d-solve.workspace = true

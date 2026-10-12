@@ -1,12 +1,12 @@
 # AGENTS.md: guide for AI agents and contributors
 
-3DCraft is an open-source, native, parametric 3D CAD modeller built for AI: every action is a command, so the same engine is driven from the UI, the CLI, a JSON control channel or an MCP server. It is written in **Rust only** (no JavaScript or TypeScript), with its **own CAD kernel and tessellator**: no OpenCascade, Parasolid, ACIS, CGAL or other C/C++ geometry kernel, in any form. **No Tauri, Electron or webview shells:** the desktop app is native egui/eframe on wgpu, and a later web build is the same Rust compiled to WebAssembly. Never add Tauri (or any webview/JS UI framework) as a dependency, build step or packaging target.
+3DCraft is an open-source, native, parametric 3D CAD modeller built for AI: every action is a command, so the same engine is driven from the UI, the CLI, a JSON control channel or an MCP server. It is written in **Rust only** (no JavaScript or TypeScript), with its **own CAD kernel, sketch constraint solver and tessellator**: no OpenCascade, Parasolid, ACIS, CGAL or other C/C++ geometry kernel, and no third-party constraint solver (SolveSpace, PlaneGCS, …), in any form. **No Tauri, Electron or webview shells:** the desktop app is native egui/eframe on wgpu, and a later web build is the same Rust compiled to WebAssembly. Never add Tauri (or any webview/JS UI framework) as a dependency, build step or packaging target.
 
 3DCraft follows the principles of the storytold `*Craft` apps (PhotoCraft, VectorCraft, …). The product name is always written **3DCraft** in user-facing text: UI, window titles, docs prose. Machine names are lowercase and use the prefix **`craft3d`**, because a Rust crate name cannot start with a digit: crates (`craft3d-*`), binaries (`craft3d`, `craft3d-cli`), environment variables (`CRAFT3D_*`). The native file extension is `.3dcraft`.
 
 **Language.** The developer prompts in Dutch. Answer the developer in Dutch, but write everything that lands in the repository in English: code, comments, identifiers, commit messages, docs, the dev log, test names and error messages.
 
-**Status: M3 done (2026-10-12).** One path works end to end for primitive solids: a command edits the document, regeneration builds checked B-rep bodies, the tessellator meshes them (any face: trimmed, with holes, freeform), and they are rendered on the CPU or exported as STL/3MF/OBJ. Documents save and load as `.3dcraft`. 25 commands are reachable through `craft3d-cli` (`run`, `info`, `render`, `convert`, `commands`, `serve`, `mcp`). What does not exist yet: sketches, constraints, any feature beyond the five primitives (block, cylinder, sphere, cone, torus), booleans, STEP, the GPU renderer and the desktop app (`step`, `solve`, `gpu`, `ui-egui` are empty stubs). Everything else in this file and in `docs/` is the target design. Commands and paths marked *(planned)* do not exist until the milestone that creates them (`docs/roadmap.md`); when you build one, remove its marker here and in the docs. Licence: MIT. Remote: https://github.com/johancoppens/3dcraft (use the `gh` CLI).
+**Status: M5 in progress (2026-10-12); M0–M3 done.** One path works end to end for primitive solids: a command edits the document, regeneration builds checked B-rep bodies, the tessellator meshes them (any face: trimmed, with holes, freeform), and they are rendered on the CPU or exported as STL/3MF/OBJ. Documents save and load as `.3dcraft`. Sketches exist as features: entities and constraints are added by commands, a 2D solver (`solve`) solves them with degrees of freedom and a diagnosis of redundant and conflicting constraints, and dimensions follow variables. 35 commands are reachable through `craft3d-cli` (`run`, `info`, `render`, `convert`, `commands`, `serve`, `mcp`). What does not exist yet: anything built from a sketch (profiles, extrude, revolve), any body beyond the five primitives (block, cylinder, sphere, cone, torus), booleans, STEP, the GPU renderer and the desktop app (`step`, `gpu`, `ui-egui` are empty stubs). Everything else in this file and in `docs/` is the target design. Commands and paths marked *(planned)* do not exist until the milestone that creates them (`docs/roadmap.md`); when you build one, remove its marker here and in the docs. Licence: MIT. Remote: https://github.com/johancoppens/3dcraft (use the `gh` CLI).
 
 Read this file first, then `docs/`.
 
@@ -28,7 +28,7 @@ Read this file first, then `docs/`.
 
 ## 2. Workspace map
 
-Every crate below exists; `step`, `solve`, `gpu` and `ui-egui` are still stubs with a doc comment. `apps/craft3d` and `apps/craft3d-web` are *(planned)*.
+Every crate below exists; `step`, `gpu` and `ui-egui` are still stubs with a doc comment. `apps/craft3d` and `apps/craft3d-web` are *(planned)*.
 
 ```text
 crates/
@@ -67,7 +67,7 @@ People trust 3DCraft with their designs, and a crash loses them. A malformed fil
 - **Prove it.** Every crash fix comes with a small synthetic regression test that panicked before the fix.
 - **Enforced by clippy.** The workspace denies `unwrap_used`, `expect_used`, `panic`, `unimplemented`, `todo`, `unreachable` and `indexing_slicing` (`[workspace.lints.clippy]` in the root `Cargo.toml`); `clippy.toml` allows them in tests only. Every crate opts in with `[lints] workspace = true`; `cargo xtask layers` fails for a crate that does not.
 
-1. **Everything is a command.** New user-visible behaviour = a command in the engine (a `CommandSpec` in `SPECS` in `crates/engine/src/commands.rs`; split into `<area>_cmds.rs` modules when that file gets long) with id, label, params doc, summary and `run`, plus tests. The UI, CLI, control channel and MCP all dispatch commands by id. In phase 1 there are (almost) no menus: a command needs no menu path to exist. Only pure view state (camera, panels) belongs to the shell.
+1. **Everything is a command.** New user-visible behaviour = a command in the engine (a `CommandSpec` in the `SPECS` of `crates/engine/src/commands.rs` or of an `<area>_cmds.rs` module such as `sketch_cmds.rs`; a new module's `SPECS` is added to the list in `Session::commands`) with id, label, params doc, summary and `run`, plus tests. The UI, CLI, control channel and MCP all dispatch commands by id. In phase 1 there are (almost) no menus: a command needs no menu path to exist. Only pure view state (camera, panels) belongs to the shell.
 2. **The design history is the source of truth.** A document is variables, sketches, constraints, formulas and an ordered list of features. Bodies (B-rep) and meshes are *derived* from it by regeneration and may be thrown away at any time. Never store a result that cannot be recomputed from the history, and never let a command edit a body behind the history's back.
 3. **No geometry, tolerance or unit assumptions.** Tolerance and length unit are runtime data carried by the document, never a global constant. Kernel maths is `f64`; `f32` exists only at the GPU boundary. Curves and surfaces are open enums that include NURBS from day one: no code path may assume "all faces are planar" or "all edges are lines or arcs" in a public API. Test with analytic *and* freeform geometry, at several scales (1e-3 to 1e6 model units).
 4. **Stable references.** Features refer to faces, edges and vertices through persistent names derived from how the entity was created, never through an index into the current B-rep. An edit upstream must not silently retarget a downstream fillet. This is designed in from the first feature, not retrofitted (`docs/architecture.md` §1.1).
@@ -100,7 +100,7 @@ cargo clippy -p <crates> --all-targets -- -D warnings
 cargo xtask layers
 cargo xtask wasm            # if you touched L0–L7
 cargo xtask freecad         # if you touched tess, meshio or io: FreeCAD reads our exports (needs CRAFT3D_FREECAD)
-cargo test -p craft3d-engine --test panic_hunt                # if you added/changed commands (about 25 s; also part of the full test run)
+cargo test -p craft3d-engine --test panic_hunt                # if you added/changed commands (about 2.5 min; also part of the full test run)
 ```
 
 `cargo xtask ci` runs fmt, clippy, tests, layers and wasm in one go. It is the gate: CI on GitHub (which adds macOS and Windows) runs only weekly and on demand (`gh workflow run CI`), so a commit is never checked there automatically. If `cargo` is not on `PATH` in your shell, it is in `~/.cargo/bin`.
@@ -113,8 +113,8 @@ Then append a terse entry to `log/devlog.md` (what landed, numbers, what's still
 
 ## 6. Parallel agents
 
-- Use your own target dir (`CARGO_TARGET_DIR=target/agent-<name>`) to avoid the Cargo build lock, and edit only the files you own. Shared files (`engine/src/lib.rs`, the `v.extend(...)` list in `engine/src/commands.rs`, `ui-egui/src/state.rs`) get small, surgical edits; re-read before editing.
-- Put new commands in a **new module** (`engine/src/<area>_cmds.rs` with a `specs()` function) rather than growing a shared file.
+- Use your own target dir (`CARGO_TARGET_DIR=target/agent-<name>`) to avoid the Cargo build lock, and edit only the files you own. Shared files (`engine/src/lib.rs` with the list of `SPECS` in `Session::commands`, `engine/src/commands.rs`, `ui-egui/src/state.rs`) get small, surgical edits; re-read before editing.
+- Put new commands in a **new module** (`engine/src/<area>_cmds.rs` with its own `SPECS`) rather than growing a shared file.
 - If someone else's in-progress edit breaks the build, wait and retry; don't fix their files.
 - Keep every `Cargo.toml` valid at all times: the `crates/*` glob means one broken manifest breaks everyone's build. **Create or rewrite manifests atomically**: write to a temp file outside `crates/`, then `mv` it into place.
 - Disk space: target dirs grow to several GB each. Delete `target/agent-*` dirs of finished agents.

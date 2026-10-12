@@ -1,6 +1,6 @@
 # Testing: the AI loop and its oracles
 
-> **Last updated:** 2026-10-12 · **Status:** the loop is in use. In place: oracle 1 (closed-form mass properties, `testkit::solids`), oracle 2 (validity checker with seeded defects), oracle 4 (tessellation against the exact body, for patches), oracle 7 (CPU side) and oracle 8 (FreeCAD). The rest is design
+> **Last updated:** 2026-10-12 · **Status:** the loop is in use. In place: oracle 1 (closed-form mass properties, `testkit::solids`), oracle 2 (validity checker with seeded defects), oracle 4 (tessellation against the exact body, for patches), oracle 6 (constraint solver), oracle 7 (CPU side) and oracle 8 (FreeCAD). The rest is design
 
 3DCraft is written by AI agents while the developer watches. That only works if an agent can tell, without a human, whether what it built is right. This document says how.
 
@@ -85,6 +85,8 @@ Checked on generated inputs (proptest), by comparing mass properties and validit
 ### Oracle 6: constraint solver
 
 After a solve, every constraint residual is within tolerance; the reported degrees of freedom match a hand count for known sketches (a fully constrained rectangle has 0); redundant and conflicting constraints are identified on purpose-built cases; re-solving a solved sketch moves nothing.
+
+In place since M5, at two levels that were written independently of each other. `crates/solve/tests` has a catalogue of 26 sketches with coordinates and degrees of freedom worked out by hand in a comment at each case, solved at scales 1e-3, 1 and 1e6, plus every constraint kind alone, purpose-built redundant and conflicting cases, branch stepping and a seeded robustness run. `crates/engine/tests/sketch.rs` drives the same solver through the commands with its own hand-computed sketches (an L profile, a 3-4-5 triangle drawn on either side, a circle on a line), through a change of a variable, undo, and save and reopen.
 
 ### Oracle 7: renderers against each other
 

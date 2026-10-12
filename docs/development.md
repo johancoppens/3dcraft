@@ -169,7 +169,7 @@ A typical agent loop:
 
 1. `doc_new {units:"mm"}`
 2. `command_list {filter:"sketch"}`
-3. `command_run {id:"sketch.create", params:{plane:"XY"}}`, then entities and constraints
+3. `command_run {id:"sketch.create", params:{plane:"xy"}}`, then entities and constraints
 4. `command_run {id:"feature.extrude", params:{sketch:"Sketch1", distance:"25 mm"}}`
 5. `doc_inspect` to verify feature status, volume and face count; `doc_render_preview` to look
 6. `doc_save {path:"bracket.3dcraft"}`, `doc_export {path:"bracket.step"}`

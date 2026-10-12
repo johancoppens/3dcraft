@@ -1,6 +1,6 @@
 # 3DCraft
 
-A parametric 3D CAD modeller for AI, in pure Rust, with its own kernel, tessellator and renderers.
+A parametric 3D CAD modeller for AI, in pure Rust, with its own kernel, constraint solver, tessellator and renderers.
 Every action is a command, so the same engine can be driven from a UI, the CLI, a JSON control
 channel or an MCP server.
 
@@ -9,7 +9,10 @@ channel or an MCP server.
 **Status: early.** A part can be modelled from primitive solids (block, cylinder, sphere, cone, torus), placed and turned freely, with
 variables and formulas, saved as `.3dcraft`, reopened, changed, rendered on the CPU and exported as
 STL, 3MF or OBJ, all through commands: from the command line, a JSON-lines server or an MCP server.
-There are no sketches, no booleans, no STEP and no desktop app yet;
+Sketches can be drawn and constrained (lines, circles and arcs; sixteen kinds of constraint, with
+dimensions that follow variables) and are solved by 3DCraft's own solver, which reports the degrees of
+freedom left and which constraints are redundant or in conflict. Nothing is built from a sketch yet:
+there is no extrude, no booleans, no STEP and no desktop app;
 [`docs/roadmap.md`](docs/roadmap.md) says what comes next.
 
 ```sh

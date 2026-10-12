@@ -6,6 +6,25 @@ Decisions that shape the project, newest first, each with its reason. An agent t
 
 ## Taken
 
+### 2026-10-12: Sketches (start of M5)
+
+Decided by the developer, from options the agent put forward:
+
+- **A sketch lies on a world plane with an offset.** `xy`, `yz` or `zx`, moved along the normal by an expression. The plane is stored as a tagged enum, so datum planes and planar faces of bodies can join it in M6 without breaking files. On `xy` the sketch axes are world X and Y, on `yz` they are Y and Z, on `zx` they are Z and X: always right-handed, with the normal as the third axis.
+- **The full constraint list from the first version:** coincident, point on curve, horizontal, vertical, parallel, perpendicular, tangent, equal, concentric, symmetric, midpoint, fixed, distance (also horizontal and vertical), angle, radius, diameter. One format version (3), no later migration for the missing ones.
+- **Profile detection moves to M6,** next to extrude, its first user. M5 ends at a solved sketch with degrees of freedom and diagnosis.
+
+- **The sketch constraint solver is our own** (`craft3d-solve`), like the kernel and the tessellator: no SolveSpace, PlaneGCS or other solver library, and its linear algebra is written in the crate (the default of D-open-5). The brainstorm named only the kernel and the tessellator; the developer confirmed on 2026-10-12 that the solver belongs in the same list.
+
+Made by the agent while building it; the developer can overturn any of them:
+
+- **Coordinates in a sketch are plain numbers,** in the document's length unit, not expressions: they say where something was drawn and are overwritten by the solver. Only dimensions (and the plane offset) are expressions.
+- **The stored coordinates are the last solution.** Every edit ends by solving all sketches and storing the result in the same undo step, so a changed variable moves the sketches that use it, a saved file holds the solved shape, and the next solve starts from where the sketch is (no flip to a mirror solution).
+- **A constraint that conflicts is stored, not refused,** like a feature whose parameter cannot be evaluated: the sketch's status is `failed` and names the constraint; the rest of the sketch stays solved. A redundant constraint is reported but is not an error. While a sketch has a conflict its stored coordinates stay as they last were without one, so it comes back the way it was (same side, same branch) when the conflict is removed.
+- **Horizontal and vertical distances are not signed:** the points keep the side of each other they are on.
+- **Lines, circles and arcs are built on point entities** (a shared corner is one point), so "coincident" is rarely needed for a closed profile and a point cannot be deleted while something is built on it.
+- **Unconstrained parts move as little as possible** (minimum-norm step), so adding a constraint to a rough drawing disturbs only what it has to.
+
 ### 2026-10-12: CI weekly and on demand
 
 Decided by the developer: while nobody uses the software, the GitHub workflow runs on Mondays and when started by hand, not on every push. The local `cargo xtask ci` is the gate. Revisit when there are users or outside contributors.

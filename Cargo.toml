@@ -16,6 +16,7 @@ craft3d-expr = { path = "crates/expr" }
 craft3d-doc = { path = "crates/doc" }
 craft3d-ops = { path = "crates/ops" }
 craft3d-kernel = { path = "crates/kernel" }
+craft3d-solve = { path = "crates/solve" }
 craft3d-regen = { path = "crates/regen" }
 craft3d-format = { path = "crates/format" }
 craft3d-engine = { path = "crates/engine" }
