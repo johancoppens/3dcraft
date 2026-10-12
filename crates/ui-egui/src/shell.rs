@@ -892,7 +892,10 @@ impl Shell {
             self.worker = None;
             self.scheduler.set_mode(Mode::Inline);
         }
-        if self.texture.is_none() {
+        if self.texture.is_none() && self.scheduler.shown().is_some() {
+            // The texture was lost: what the scheduler believes to be on
+            // screen is not. (Only then: forgetting every frame while no
+            // image can be made would ask for the sharp one every frame.)
             self.scheduler.forget();
         }
         let job = |quality: Quality| RenderJob {

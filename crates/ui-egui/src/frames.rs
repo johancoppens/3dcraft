@@ -585,6 +585,10 @@ mod tests {
                 |_| {},
             )
             .unwrap();
+            // Declared after the worker, so dropped before it: when an
+            // assertion below fails, the gate opens and the worker's
+            // thread ends, instead of the test hanging in its join.
+            let go = go;
             let t = tickets(4);
             assert!(worker.submit(t[0], 0).is_ok());
             // The thread is busy with job 0 from here on.
