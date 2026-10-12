@@ -1,9 +1,16 @@
-//! Curves and surfaces for 3DCraft.
-//!
-//! First surface kind: the tensor-product Bézier patch, the building block of
-//! NURBS surfaces (a NURBS surface is a grid of rational Bézier patches).
+//! Curves and surfaces for 3DCraft: the [`Curve3`] and [`Surface`] enums,
+//! their analytic kinds, NURBS, and (in this file) the tensor-product Bézier
+//! patch.
 //! Reference: Piegl & Tiller, *The NURBS Book*, 2nd ed., ch. 1 (Bernstein
 //! polynomials, Bézier surfaces).
+
+mod curve;
+mod nurbs;
+mod surface;
+
+pub use curve::{Circle, Curve3, Ellipse, Line};
+pub use nurbs::{MAX_CONTROL_POINTS, NurbsCurve, NurbsSurface};
+pub use surface::{Cone, Cylinder, Plane, Sphere, Surface, Torus};
 
 use craft3d_math::{Bbox3, Vec3};
 use std::fmt;
@@ -14,9 +21,22 @@ pub const MAX_DEGREE: usize = 32;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum GeomError {
-    DegreeTooHigh { degree: usize, max: usize },
-    ControlPointCount { expected: usize, actual: usize },
-    NonFiniteControlPoint { index: usize },
+    DegreeTooHigh {
+        degree: usize,
+        max: usize,
+    },
+    ControlPointCount {
+        expected: usize,
+        actual: usize,
+    },
+    NonFiniteControlPoint {
+        index: usize,
+    },
+    /// A dimension, direction, knot vector or weight that cannot describe a
+    /// curve or surface; the text says which rule was broken.
+    InvalidParameter(&'static str),
+    /// Valid input that this kind of geometry cannot handle yet.
+    Unsupported(&'static str),
 }
 
 impl fmt::Display for GeomError {
@@ -32,6 +52,8 @@ impl fmt::Display for GeomError {
             GeomError::NonFiniteControlPoint { index } => {
                 write!(f, "control point {index} is not finite (NaN or infinity)")
             }
+            GeomError::InvalidParameter(rule) => write!(f, "invalid geometry: {rule}"),
+            GeomError::Unsupported(what) => write!(f, "not supported yet: {what}"),
         }
     }
 }

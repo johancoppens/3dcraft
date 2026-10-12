@@ -6,7 +6,7 @@
 
 **Language.** The developer prompts in Dutch. Answer the developer in Dutch, but write everything that lands in the repository in English: code, comments, identifiers, commit messages, docs, the dev log, test names and error messages.
 
-**Status: M0 done (2026-10-12).** The workspace has all planned crates, most of them still empty stubs. Real code exists in `math`, `geom`, `tess`, `render`, `meshio`, `io` and `testkit` (together they tessellate the Utah teapot, render it on the CPU and export it as STL, 3MF and OBJ) and in `xtask` (`layers`, `wasm`, `ci`, `stats`, `freecad`). `craft3d-cli` only answers `--version` and `--help`. CI runs on GitHub on every push and pull request. Everything else in this file and in `docs/` is the target design. Commands and paths marked *(planned)* do not exist until the milestone that creates them (`docs/roadmap.md`); when you build one, remove its marker here and in the docs. Licence: MIT. Remote: https://github.com/johancoppens/3dcraft (use the `gh` CLI).
+**Status: M1 done (2026-10-12).** The workspace has all planned crates; eleven are still empty stubs. Real code exists in `math`, `geom` (curves, analytic surfaces, NURBS), `topo` (B-rep, validity checker, mass properties), `expr` (units, formulas, variables), `tess`, `render`, `meshio`, `io` and `testkit`, and in `xtask` (`layers`, `wasm`, `ci`, `stats`, `freecad`). There is no kernel, document or engine yet: bodies exist only as hand-built test fixtures. `craft3d-cli` only answers `--version` and `--help`. CI runs on GitHub on every push and pull request. Everything else in this file and in `docs/` is the target design. Commands and paths marked *(planned)* do not exist until the milestone that creates them (`docs/roadmap.md`); when you build one, remove its marker here and in the docs. Licence: MIT. Remote: https://github.com/johancoppens/3dcraft (use the `gh` CLI).
 
 Read this file first, then `docs/`.
 
@@ -28,7 +28,7 @@ Read this file first, then `docs/`.
 
 ## 2. Workspace map
 
-Every crate below exists; `math`, `geom`, `tess`, `render`, `meshio`, `io`, `testkit` and `xtask` have code, the others are stubs with a doc comment. `apps/craft3d` and `apps/craft3d-web` are *(planned)*.
+Every crate below exists; `math`, `geom`, `topo`, `expr`, `tess`, `render`, `meshio`, `io`, `testkit` and `xtask` have code, the others are stubs with a doc comment. `apps/craft3d` and `apps/craft3d-web` are *(planned)*.
 
 ```text
 crates/

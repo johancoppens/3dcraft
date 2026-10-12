@@ -1,6 +1,6 @@
 # Roadmap
 
-> **Last updated:** 2026-10-12 · **Stage:** M0 done; teapot renders and exports · **Change:** minor (teapot track done, decisions settled)
+> **Last updated:** 2026-10-12 · **Stage:** M1 done (foundation: maths, geometry, B-rep, formulas) · **Change:** minor (teapot track done, decisions settled)
 
 Forward-looking plan: milestones with a definition of done, and the **Current focus** list agents pick from. There is no parity percentage: 3DCraft is AI-first with a minimal UI and has no target app ([`decisions.md`](decisions.md)). Progress is measured by milestones whose acceptance tests pass.
 
@@ -14,8 +14,8 @@ Phase 1 is M0–M8. Its acceptance scenario, run entirely by an agent over MCP w
 
 ## Current focus
 
-1. **M1 Foundation.** `math` (transforms, tolerance type, predicates), `geom` (curves; analytic surfaces; the `Curve`/`Surface` enums; NURBS with knots and weights on top of the Bézier code), `topo` with the validity checker and mass properties, `expr`.
-2. **`craft3d-cli render` and `convert`** once there is a document to load (M2); until then pictures and exports come from the cargo examples.
+1. **M2 Document, format, engine, CLI.** `doc` (variables, feature list, sketch and constraint data), `ops` (undo), `format` (`.3dcraft`, atomic save), `engine` (Session, command registry, snapshots), `craft3d-cli` (`info`, `run`, `commands`, `serve`), `automation` (MCP headless), `panic_hunt`. This is where the first *commands* appear and where an agent can first drive 3DCraft.
+2. **Primitives as features** (start of M3): `kernel` builds the reference solids that are now test fixtures, `regen` evaluates a feature list into bodies, and `tess` learns to mesh B-rep faces (edge-first), so `craft3d-cli render` and `convert` have something to load.
 
 ## Milestones
 
@@ -24,7 +24,7 @@ Phase 1 is M0–M8. Its acceptance scenario, run entirely by an agent over MCP w
 | **T0** | Teapot (fast track) | ✅ 2026-10-12 | The shortest path to a picture, cutting across M0, M1, M3 and M4: Bézier patches in `geom`, a uniform-grid tessellator in `tess`, the CPU reference renderer in `render`, the Utah teapot fixture in `testkit` | `cargo run --release -p craft3d-render --example teapot` writes a correct teapot; 35 tests green (deviation within tolerance at three scales, seam vertices identical, no pinholes, deterministic output); clippy, layers and wasm pass |
 | **T1** | Mesh export (pulled forward from M3) | ✅ 2026-10-12 | `meshio`: binary/ASCII STL, 3MF with its own ZIP writer, OBJ; `io`: exact welding, solid/surface classification, `export_mesh`; exact seam and collapsed-edge vertices in `tess` | FreeCAD reads a box as a solid of volume 24 and the teapot with identical facet and point counts, area and bounding box, in all four encodings (`cargo xtask freecad`) |
 | **M0** | Skeleton | ✅ 2026-10-12 | Workspace, all crate stubs, lints, `xtask` (layers, wasm, ci, stats), CI matrix, testkit stub | `cargo test --workspace` green; `cargo xtask layers` and `cargo xtask wasm` pass; every crate carries the deny-panic attribute |
-| **M1** | Foundation | ⬜ | `math` (vectors, transforms, tolerance, predicates), `geom` (line, circle, ellipse, NURBS curves; plane, cylinder, cone, sphere, torus, NURBS surfaces: evaluate, derive, project), `topo` (B-rep arena, checker, mass properties), `expr` (units, parser, evaluator, dependency order) | Closed-form tests for every kind; checker detects each seeded defect; hand-built box/cylinder/sphere bodies give analytic volume and area to 1e-12 relative; expression fuzz target runs clean |
+| **M1** | Foundation | ✅ 2026-10-12 (deviations: robust predicates moved to M7 where they are first needed; a seeded random robustness test stands in for a cargo-fuzz target; no inertia tensor, no parameter-space curves yet) | `math` (vectors, transforms, tolerance, predicates), `geom` (line, circle, ellipse, NURBS curves; plane, cylinder, cone, sphere, torus, NURBS surfaces: evaluate, derive, project), `topo` (B-rep arena, checker, mass properties), `expr` (units, parser, evaluator, dependency order) | Closed-form tests for every kind; checker detects each seeded defect; hand-built box/cylinder/sphere bodies give analytic volume and area to 1e-12 relative; expression fuzz target runs clean |
 | **M2** | Document, format, engine, CLI | ⬜ | `doc` (variables, feature list, sketch and constraint data), `ops` (undo), `format` (`.3dcraft`, atomic save, migrations scaffold), `engine` (Session, registry, snapshots), `craft3d-cli` (`info`, `run`, `commands`, `serve`), `automation` (MCP headless), `panic_hunt` | Load/save round trip of every doc type; a document built by commands over MCP saves and reopens identically; every command survives `panic_hunt` |
 | **M3** | Primitives, tessellator, mesh export | ⬜ | `kernel` primitives as features; `regen` v1 (linear, full); `tess` (edge-first, CDT in parameter space, refinement); `meshio` + `io` (STL, 3MF, OBJ); `document.measure` | Oracle 1 and 4 for all primitives at three scales; exported meshes closed and oriented; mesh volume converges to the analytic value; byte-identical output for 1/2/N threads |
 | **M4** | Renderers and viewer | ⬜ | `render` (CPU: shaded, edges, depth, id buffer), `gpu` (wgpu), `ui-egui` + `apps/craft3d` (viewport with orbit/pan/zoom, feature tree read-only, open/save), desktop control server, `ui.screenshot`, MCP bridge, offscreen snapshot example, CPU fallback | CPU goldens blessed by the developer; GPU vs CPU parity within tolerance on lavapipe; the developer watches an agent build a primitive scene live; app starts without a GPU |
@@ -48,6 +48,7 @@ Phase 1 is M0–M8. Its acceptance scenario, run entirely by an agent over MCP w
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-12 | minor | M1 done; current focus is M2 |
 | 2026-10-12 | minor | T1 mesh export done and validated with FreeCAD |
 | 2026-10-12 | minor | M0 done: all crate stubs, full layer table, lint opt-in check, `xtask stats`, pinned toolchain, CI on GitHub |
 | 2026-10-12 | minor | T0 teapot track done; M0 in progress; current focus rewritten after the developer's decisions (MIT, AI-first, FreeCAD as oracle) |

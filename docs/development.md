@@ -1,11 +1,11 @@
 # Development guide
 
-> **Last updated:** 2026-10-12 · **Status:** M0 done. *Works today:* everything under [What works today](#what-works-today). Every other section is *(planned)*: it describes what M0–M4 must deliver. Move commands up as they start to exist.
+> **Last updated:** 2026-10-12 · **Status:** M1 done. *Works today:* everything under [What works today](#what-works-today). Every other section is *(planned)*: it describes what M0–M4 must deliver. Move commands up as they start to exist.
 
 ## What works today
 
 ```sh
-cargo test --workspace                          # 57 tests
+cargo test --workspace                          # 201 tests
 cargo xtask ci                                  # fmt --check + clippy -D warnings + tests + layers + wasm
 cargo xtask layers                              # dependency layering, and that every crate opts in to the never-crash lints
 cargo xtask stats                               # lines and tests per crate

@@ -11,6 +11,7 @@ repository = "https://github.com/johancoppens/3dcraft"
 [workspace.dependencies]
 craft3d-math = { path = "crates/math" }
 craft3d-geom = { path = "crates/geom" }
+craft3d-topo = { path = "crates/topo" }
 craft3d-tess = { path = "crates/tess" }
 craft3d-render = { path = "crates/render" }
 craft3d-testkit = { path = "crates/testkit" }

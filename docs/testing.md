@@ -1,6 +1,6 @@
 # Testing: the AI loop and its oracles
 
-> **Last updated:** 2026-10-12 · **Status:** the loop is in use; oracles 4 (partly) and 7 (CPU side) have their first tests, the rest is design
+> **Last updated:** 2026-10-12 · **Status:** the loop is in use. In place: oracle 1 (closed-form mass properties, `testkit::solids`), oracle 2 (validity checker with seeded defects), oracle 4 (tessellation against the exact body, for patches), oracle 7 (CPU side) and oracle 8 (FreeCAD). The rest is design
 
 3DCraft is written by AI agents while the developer watches. That only works if an agent can tell, without a human, whether what it built is right. This document says how.
 

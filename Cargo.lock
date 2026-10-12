@@ -109,6 +109,7 @@ version = "0.0.1"
 dependencies = [
  "craft3d-geom",
  "craft3d-math",
+ "craft3d-topo",
 ]
 
 [[package]]
@@ -117,11 +118,17 @@ version = "0.0.1"
 dependencies = [
  "craft3d-geom",
  "craft3d-math",
+ "craft3d-topo",
 ]
 
 [[package]]
 name = "craft3d-topo"
 version = "0.0.1"
+dependencies = [
+ "craft3d-geom",
+ "craft3d-math",
+ "craft3d-testkit",
+]
 
 [[package]]
 name = "craft3d-ui-egui"

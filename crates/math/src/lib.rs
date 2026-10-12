@@ -1,7 +1,17 @@
-//! Foundation maths for 3DCraft: `f64` vectors and bounding boxes.
+//! Foundation maths for 3DCraft: `f64` vectors, bounding boxes, frames,
+//! transforms, tolerances and quadrature.
 //!
 //! Kernel maths is `f64` throughout (AGENTS.md rule 3). Operations that can
 //! fail on degenerate input (normalising a zero vector) return `Option`.
+
+mod frame;
+pub mod quadrature;
+mod tolerance;
+mod transform;
+
+pub use frame::Frame;
+pub use tolerance::Tolerance;
+pub use transform::Transform;
 
 use std::ops::{Add, AddAssign, Mul, Neg, Sub};
 
