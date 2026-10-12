@@ -442,11 +442,13 @@ fn overlaps_in_one_plane_are_found() {
                         "{c:?}"
                     );
                 }
-                // The deepest point of the common square is half a unit
-                // from the borders of both faces.
+                // The common square is one unit wide, so no part of it is
+                // wider than half a unit; the halves the triangles cut it
+                // into are 0.29 wide (legs of 1: twice the area, 1, over
+                // the perimeter, 2 + sqrt 2) or wider where it is slanted.
                 let deepest = found.iter().map(|c| c.depth).fold(0.0, f64::max);
                 assert!(
-                    deepest > 0.3 * scale && deepest <= 0.5 * scale * (1.0 + 1e-9),
+                    deepest > 0.29 * scale && deepest <= 0.5 * scale,
                     "{what}: {deepest}"
                 );
 

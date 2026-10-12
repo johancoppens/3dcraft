@@ -73,7 +73,8 @@ pub struct SelfCheckParams {
     /// `tolerance`.
     pub relative_chord: f64,
     /// How many times findings within the margin are looked at again with
-    /// a mesh four times finer.
+    /// a mesh four times finer. Also how many times a finer mesh is tried
+    /// when the tessellator refuses a face at the first.
     pub refinements: u32,
     /// The most crossings to report; the certain ones come first.
     pub limit: usize,
@@ -167,7 +168,7 @@ pub struct SelfCheck {
     pub chordal_tolerance: f64,
     /// The margin between two curved faces at that tolerance.
     pub margin: f64,
-    /// Meshes made: one, plus the refinements that were needed.
+    /// Meshes tried: one, plus the refinements that were needed.
     pub passes: u32,
     pub triangles: usize,
     /// Triangles without area, which were left out.
@@ -490,7 +491,24 @@ pub fn body_self_intersections(
     }
     let floor = 4.0 * tolerance;
     let mut chord = (params.relative_chord * size).max(floor);
-    let (mut check, mut unsettled) = one_pass(body, params, chord)?;
+    // A face can be too narrow for the first mesh: the polygon of a curved
+    // edge then crosses a neighbouring edge that the curve itself only
+    // comes near, and the tessellator refuses the face. A finer polygon
+    // does not cross; that is not a finding about the body.
+    let mut retries = 0_u32;
+    let (mut check, mut unsettled) = loop {
+        match one_pass(body, params, chord) {
+            Ok(found) => break found,
+            Err(TessError::Face { .. })
+                if retries < params.refinements && chord / 4.0 >= floor && chord / 4.0 > 0.0 =>
+            {
+                retries += 1;
+                chord /= 4.0;
+            }
+            Err(error) => return Err(error),
+        }
+    };
+    check.passes = retries.saturating_add(1);
     while unsettled && check.passes <= params.refinements {
         chord /= 4.0;
         if chord < floor || chord.is_nan() || chord <= 0.0 {

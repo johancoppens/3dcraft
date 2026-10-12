@@ -51,9 +51,8 @@
 //! The column is taken a hair wider than `Y` (1e-9 of its size), so that
 //! a surface standing exactly on an edge of `Y` is in it.
 //!
-//! For an overlap the depth is how far inside both triangles a point of
-//! the common area can be from the nearest edge on the boundary of either
-//! face (an edge with no triangle of the same face on the other side).
+//! For an overlap the depth is how wide the common area of the two
+//! triangles is: twice its area over its perimeter.
 //!
 //! Candidates come from a bounding-volume hierarchy over the triangles,
 //! searched on several threads; results are merged in triangle order, so
@@ -1013,18 +1012,6 @@ struct Depths<'a, 'm> {
 }
 
 impl Depths<'_, '_> {
-    /// Per edge of triangle `t`: is it on the boundary of its face?
-    fn boundary(&self, t: u32) -> [bool; 3] {
-        let names = self.mesh.names(t);
-        let face = self.mesh.face(t);
-        EDGES.map(|(i, j)| {
-            !self
-                .edges
-                .on(pick(&names, i), pick(&names, j))
-                .any(|other| other != t && self.mesh.face(other) == face)
-        })
-    }
-
     /// The column over triangle `t`, a hair wider than the triangle: what
     /// stands exactly on one of its edges is inside.
     fn column(&self, t: u32) -> Option<Column> {
@@ -1084,50 +1071,32 @@ impl Depths<'_, '_> {
         above.min(below)
     }
 
-    /// How far into both triangles their common area reaches, measured
-    /// from the edges that bound their faces: the best of the corners and
-    /// the centre of the common area. A lower bound.
+    /// How wide the common area of two triangles in one plane is: twice
+    /// its area over its perimeter, which for a disc is its radius and for
+    /// a strip its width. Two triangles that share a corner or an edge
+    /// and no area have a common "area" that is a rounding error wide.
     fn overlap(&self, i: u32, j: u32) -> f64 {
         let (Some(a), Some(b)) = (self.mesh.points(i), self.mesh.points(j)) else {
             return 0.0;
         };
-        let (Some(column_a), Some(column_b)) =
-            (Column::new(&a, [0.0; 3]), Column::new(&b, [0.0; 3]))
-        else {
+        let Some(column) = Column::new(&b, [0.0; 3]) else {
             return 0.0;
         };
-        let common = column_b.clip(&a);
+        let common = column.clip(&a);
         let area = double_area(&common);
-        if common.len() < 3 || !positive(area) {
+        let Some(&last) = common.last() else {
+            return 0.0;
+        };
+        let mut perimeter = 0.0;
+        let mut previous = last;
+        for &p in &common {
+            perimeter += previous.distance(p);
+            previous = p;
+        }
+        if common.len() < 3 || !positive(area) || !positive(perimeter) {
             return 0.0;
         }
-        let mut walls = Vec::new();
-        for (column, bounds) in [(&column_a, self.boundary(i)), (&column_b, self.boundary(j))] {
-            for (wall, bound) in column.walls.iter().zip(bounds) {
-                if bound {
-                    walls.push(*wall);
-                }
-            }
-        }
-        if walls.is_empty() {
-            return (0.5 * area).sqrt();
-        }
-        let mut centre = Vec3::ZERO;
-        for &p in &common {
-            centre += p * (1.0 / common.len() as f64);
-        }
-        let reach = |p: Vec3| {
-            walls
-                .iter()
-                .map(|&(on, inward, _)| (p - on).dot(inward))
-                .fold(f64::INFINITY, f64::min)
-        };
-        common
-            .iter()
-            .copied()
-            .chain([centre])
-            .map(reach)
-            .fold(0.0, f64::max)
+        area / perimeter
     }
 
     /// A point where two crossing triangles meet: the mean of where the

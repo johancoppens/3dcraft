@@ -549,6 +549,22 @@ fn shells_in_the_wrong_place_are_caught() {
             (2, ShellDefect::OuterInsideSolid)
         );
         assert_eq!(found.shells[0].inside, [0]);
+
+        // A lump in the cavity whose largest face is a tolerance into the
+        // cavity's floor. The middle of that face is in the material, by
+        // less than any mesh could tell; the lump is not. What is wrong
+        // here is the two faces lying on each other, and that is what is
+        // found.
+        let sunk = boxed_in(&frame, k, [1.2, 1.2, 1.0 - 1e-6], [2.8, 2.8, 1.5]);
+        let found = assert_caught(&joined(&[&hollow, &sunk]), k, "a lump sunk in the floor");
+        assert!(found.shells.iter().all(|s| !s.certain), "{found}");
+        assert!(
+            found
+                .crossings
+                .iter()
+                .any(|c| c.certain && c.kind == CrossingKind::CoplanarOverlap),
+            "{found}"
+        );
     }
 }
 
@@ -800,6 +816,8 @@ struct Tally {
     empty: usize,
     /// What was found for certain: the bugs.
     caught: Vec<String>,
+    /// Bodies the tessellator refused, with its reason.
+    unmeshed: Vec<String>,
 }
 
 impl Tally {
@@ -812,7 +830,12 @@ impl Tally {
                 assert_eq!(check(&result.body, &tol), [], "{what}");
                 let found = match body_self_intersections(&result.body, &params(k)) {
                     Ok(found) => found,
-                    Err(e) => panic!("{what}: cannot be looked at: {e}"),
+                    Err(e) => {
+                        // A body that passes the checker and cannot be
+                        // meshed: not a verdict, but not nothing either.
+                        self.unmeshed.push(format!("{what}: {e}"));
+                        return Some(result.body);
+                    }
                 };
                 self.bodies += 1;
                 if !found.is_clean() {
@@ -857,6 +880,12 @@ impl Tally {
         );
         for line in &self.caught {
             println!("{line}");
+        }
+        if !self.unmeshed.is_empty() {
+            println!("{} bodies could not be meshed:", self.unmeshed.len());
+        }
+        for line in &self.unmeshed {
+            println!("  {line}");
         }
     }
 }
@@ -1084,6 +1113,7 @@ fn the_boolean_scenarios_give_bodies_that_do_not_cross_themselves() {
         }
     }
     tally.report("boolean scenarios");
+    assert!(tally.unmeshed.is_empty(), "{:#?}", tally.unmeshed);
     // The run means something only when most booleans gave a body.
     assert!(tally.bodies > 800, "{}", tally.bodies);
     assert!(tally.caught.is_empty(), "{:#?}", tally.caught);
@@ -1152,16 +1182,22 @@ fn random_shape(rng: &mut Rng, placement: Placement, shared: &Frame, k: f64) -> 
     }
 }
 
+/// The pair of a seed, as the runs make it.
+fn random_pair(seed: u64, placement: Placement, k: f64) -> (Body, Body) {
+    let mut rng = Rng(seed);
+    let shared = random_frame(&mut rng, Placement::General, &Frame::WORLD, k);
+    let a = random_shape(&mut rng, placement, &shared, k);
+    let b = random_shape(&mut rng, placement, &shared, k);
+    (a, b)
+}
+
 fn random_run(pairs_per_cell: u64, first_seed: u64) -> Tally {
     let mut total = Tally::default();
     for k in SCALES {
         for placement in [Placement::General, Placement::Parallel, Placement::Grid] {
             let mut tally = Tally::default();
             for seed in first_seed..first_seed + pairs_per_cell {
-                let mut rng = Rng(seed);
-                let shared = random_frame(&mut rng, Placement::General, &Frame::WORLD, k);
-                let a = random_shape(&mut rng, placement, &shared, k);
-                let b = random_shape(&mut rng, placement, &shared, k);
+                let (a, b) = random_pair(seed, placement, k);
                 let what = format!("seed {seed} {placement:?}");
                 tally.all(&a, &b, k, &what);
                 // What two results give together: their pieces meet in
@@ -1192,6 +1228,7 @@ fn random_run(pairs_per_cell: u64, first_seed: u64) -> Tally {
             total.refused += tally.refused;
             total.empty += tally.empty;
             total.caught.extend(tally.caught);
+            total.unmeshed.extend(tally.unmeshed);
         }
     }
     total.report("random booleans");
@@ -1206,6 +1243,46 @@ fn random_run(pairs_per_cell: u64, first_seed: u64) -> Tally {
 fn random_booleans_give_bodies_that_do_not_cross_themselves() {
     let total = random_run(40, 1);
     assert!(total.caught.is_empty(), "{:#?}", total.caught);
+    assert!(total.unmeshed.is_empty(), "{:#?}", total.unmeshed);
+}
+
+/// Pairs of the long run that once gave a wrong answer here, each a fault
+/// of the detector and not of the kernel.
+#[test]
+fn pairs_that_once_fooled_the_detector() {
+    // Two blocks, turned: the piece of a face of A outside B and the
+    // piece inside B end up as two faces side by side in one plane. Two of
+    // their triangles share a corner and no area; the "common area" was
+    // a rounding error wide and was measured by how far that corner is
+    // from the borders of the two faces. Found as a certain overlap, 0.6
+    // deep, in a body whose area is that of A to the last digit.
+    for (seed, k) in [
+        (1_000_775, 1e-3),
+        (1_000_775, 1.0),
+        (1_000_292, 1e6),
+        (1_000_386, 1e6),
+    ] {
+        let (a, b) = random_pair(seed, Placement::General, k);
+        let tol = tolerance(k);
+        let less = boolean(&a, &b, Subtract, &tol).unwrap().body;
+        let common = boolean(&a, &b, Intersect, &tol).unwrap().body;
+        let whole = boolean(&less, &common, Union, &tol).unwrap().body;
+        let (is, should) = (
+            craft3d_topo::mass_properties(&whole).unwrap(),
+            craft3d_topo::mass_properties(&a).unwrap(),
+        );
+        assert!((is.area - should.area).abs() < 1e-9 * should.area);
+        assert_spotless(&whole, k, &format!("seed {seed}, put together"));
+    }
+    // A block and a slot with a hole, united: a flat face with a neck
+    // narrower than the first mesh is fine. The polygon of the hole's rim
+    // crossed the face's border and the tessellator refused the face; a
+    // finer mesh is tried now.
+    let (a, b) = random_pair(1_000_370, Placement::General, 1e-3);
+    let union = boolean(&a, &b, Union, &tolerance(1e-3)).unwrap().body;
+    let found = inspect(&union, 1e-3);
+    assert!(found.is_spotless(), "{found}");
+    assert_eq!(found.passes, 2, "{found}");
 }
 
 /// The long run: `cargo test --release -p craft3d-testkit --test
@@ -1215,6 +1292,7 @@ fn random_booleans_give_bodies_that_do_not_cross_themselves() {
 fn random_booleans_long_run() {
     let total = random_run(1000, 1_000_000);
     assert!(total.caught.is_empty(), "{:#?}", total.caught);
+    assert!(total.unmeshed.is_empty(), "{:#?}", total.unmeshed);
 }
 
 /// One pair, to look at: `SELF_PAIR="seed placement scale"` with the
@@ -1231,11 +1309,124 @@ fn one_pair() {
         panic!("SELF_PAIR needs a seed, a placement and a scale");
     };
     let placement = [Placement::General, Placement::Parallel, Placement::Grid][*placement as usize];
-    let mut rng = Rng(*seed as u64);
-    let shared = random_frame(&mut rng, Placement::General, &Frame::WORLD, *k);
-    let a = random_shape(&mut rng, placement, &shared, *k);
-    let b = random_shape(&mut rng, placement, &shared, *k);
+    let (a, b) = random_pair(*seed as u64, placement, *k);
     let mut tally = Tally::default();
     tally.all(&a, &b, *k, &format!("seed {seed} {placement:?}"));
     tally.report("one pair");
+    // And a closer look at each result: its faces, and whether they can
+    // be meshed at chords from coarse to fine.
+    let tol = tolerance(*k);
+    println!("A: {a:?}");
+    println!("B: {b:?}");
+    let describe = |name: &str, body: &Body| {
+        let kinds: Vec<&str> = body.faces.iter().map(|f| f.surface.kind()).collect();
+        println!(
+            "{name}: {} faces {kinds:?}, {} shells, box {:?}",
+            body.faces.len(),
+            body.shells.len(),
+            body.bbox().ok().and_then(|b| b.corners())
+        );
+    };
+    describe("A", &a);
+    describe("B", &b);
+    // (A - B) and (A n B) put together again, which is A: with its mass
+    // against that of A, and the faces of every certain finding.
+    if let (Ok(less), Ok(common)) = (
+        boolean(&a, &b, Subtract, &tol),
+        boolean(&a, &b, Intersect, &tol),
+    ) && let Ok(whole) = boolean(&less.body, &common.body, Union, &tol)
+    {
+        describe("A - B", &less.body);
+        describe("A n B", &common.body);
+        describe("(A - B) u (A n B)", &whole.body);
+        let mass = |body: &Body| craft3d_topo::mass_properties(body).unwrap();
+        let (is, should) = (mass(&whole.body), mass(&a));
+        println!(
+            "  volume {:e} (A: {:e}), area {:e} (A: {:e}, more by {:e})",
+            is.volume,
+            should.volume,
+            is.area,
+            should.area,
+            is.area - should.area
+        );
+        println!("  checker: {:?}", check(&whole.body, &tol));
+        let found = inspect(&whole.body, *k);
+        println!("  {found}");
+        let mut faces: Vec<u32> = found
+            .crossings
+            .iter()
+            .filter(|c| c.certain)
+            .flat_map(|c| c.faces)
+            .collect();
+        faces.sort_unstable();
+        faces.dedup();
+        for f in faces {
+            let face = &whole.body.faces[f as usize];
+            let Surface::Plane(plane) = &face.surface else {
+                println!("  face {f}: {}", face.surface.kind());
+                continue;
+            };
+            let normal = plane.frame().z() * if face.reversed { -1.0 } else { 1.0 };
+            println!(
+                "  face {f}: a plane through {:?}, outward {:?}, from {:?}",
+                plane.frame().origin(),
+                normal,
+                whole.faces[f as usize]
+            );
+            for &l in &face.loops {
+                let points: Vec<Vec3> = whole.body.loops[l.0 as usize]
+                    .coedges
+                    .iter()
+                    .map(|&c| {
+                        let (from, _) = whole.body.coedge_ends(c).unwrap();
+                        whole.body.vertices[from.0 as usize].point
+                    })
+                    .collect();
+                println!("    loop {}: {points:?}", l.0);
+                // The area the loop encloses, against that of the mesh of
+                // the face.
+                let mut twice = Vec3::ZERO;
+                for (i, p) in points.iter().enumerate() {
+                    twice += (*p - points[0]).cross(points[(i + 1) % points.len()] - points[0]);
+                }
+                println!("    encloses {:e}", 0.5 * twice.dot(normal));
+            }
+            let params = craft3d_tess::TessParams {
+                chordal_tolerance: found.chordal_tolerance,
+                ..Default::default()
+            };
+            let mesh = craft3d_tess::tessellate_body(&whole.body, &params).unwrap();
+            let mut area = 0.0;
+            for (t, &id) in mesh.face_ids.iter().enumerate() {
+                if id == f {
+                    let [a, b, c] = mesh.corners(t).unwrap();
+                    area += 0.5 * (b - a).cross(c - a).length();
+                    println!("    triangle {t}: {a:?} {b:?} {c:?}");
+                }
+            }
+            println!("    its mesh has an area of {area:e}");
+        }
+    }
+    for (x, y, name) in [(&a, &b, "A, B"), (&b, &a, "B, A")] {
+        for op in [Union, Intersect, Subtract] {
+            let Ok(result) = boolean(x, y, op, &tol) else {
+                continue;
+            };
+            describe(&format!("{op:?} of {name}"), &result.body);
+            let size = result.body.bbox().unwrap().diagonal();
+            for fraction in [1e-2, 1e-3, 1e-4, 1e-5] {
+                let params = craft3d_tess::TessParams {
+                    chordal_tolerance: fraction * size,
+                    ..Default::default()
+                };
+                match craft3d_tess::tessellate_body(&result.body, &params) {
+                    Ok(mesh) => println!(
+                        "  chord {fraction:e} of the size: {} triangles",
+                        mesh.triangles.len()
+                    ),
+                    Err(e) => println!("  chord {fraction:e} of the size: {e}"),
+                }
+            }
+        }
+    }
 }
