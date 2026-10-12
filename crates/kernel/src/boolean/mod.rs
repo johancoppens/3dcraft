@@ -49,7 +49,6 @@
 mod chart;
 mod classify;
 mod hits;
-mod meet;
 mod merge;
 mod outline;
 mod regions;
@@ -64,9 +63,6 @@ use outline::locate;
 use regions::Half;
 use section::Solid;
 use std::collections::{BTreeMap, BTreeSet};
-
-#[doc(hidden)]
-pub use meet::approximate_circles;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum BooleanOp {
@@ -204,7 +200,9 @@ impl Stop {
 
 fn geometry(error: GeomError, faces: &[(Operand, FaceId)]) -> Stop {
     match error {
-        GeomError::Unsupported(reason) => Stop::Unsupported {
+        // What geometry cannot give, or could not find: refused, with its
+        // reason.
+        GeomError::Unsupported(reason) | GeomError::NoConvergence(reason) => Stop::Unsupported {
             reason,
             faces: faces.to_vec(),
         },

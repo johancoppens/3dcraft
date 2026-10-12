@@ -560,34 +560,10 @@ fn what_is_not_supported_says_so() {
     assert!(why.contains("freeform"), "{why}");
     assert_eq!(faces, [(Operand::A, FaceId(1))]);
     assert!(reason(&ball, &patched, Subtract).0.contains("freeform"));
-    // Crossing cylinders: until the general surface intersection is in.
     let upright = rod(k, [0.0, 0.0, -2.0], 1.0, 4.0);
-    let lying = primitives::cylinder(
-        &Frame::new(Vec3::new(-2.0, 0.0, 0.0), Vec3::X, Vec3::Y).unwrap(),
-        0.5,
-        4.0,
-    )
-    .unwrap();
-    let (why, faces) = reason(&upright, &lying, Union);
-    assert!(why.contains("not parallel"), "{why}");
-    assert_eq!(faces, [(Operand::A, FaceId(0)), (Operand::B, FaceId(0))]);
-    // Likewise a cone cut by a plane along its axis but not through it
-    // (a hyperbola), and a ball through the side of a cylinder.
-    let cone = primitives::cone(
-        &Frame::WORLD.at(Vec3::new(0.5, 1.5, 0.0)).unwrap(),
-        1.0,
-        2.0,
-    )
-    .unwrap();
-    let (why, _) = reason(&plate, &cone, Union);
-    assert!(why.contains("not a line or a circle"), "{why}");
-    let side =
-        primitives::sphere(&Frame::WORLD.at(Vec3::new(1.0, 0.0, 0.0)).unwrap(), 0.75).unwrap();
-    assert!(
-        reason(&upright, &side, Subtract)
-            .0
-            .contains("not a line or a circle")
-    );
+    // (Until the general surface intersection came in, crossing cylinders,
+    // a cone cut along its axis and a ball through the side of a cylinder
+    // were refused here. See boolean_surfaces.rs.)
     // Features below the tolerance.
     let nearly = boxed(k, [4.0 - 1.2e-6, 0.0, 0.0], [6.0, 3.0, 2.0]);
     assert!(
@@ -676,13 +652,13 @@ fn what_is_not_supported_says_so() {
         }
     }
     // The message names the faces.
-    let message = boolean(&upright, &lying, Union, &tol)
+    let message = boolean(&patched, &ball, Union, &tol)
         .unwrap_err()
         .to_string();
-    assert_eq!(
-        message,
-        "boolean does not support this: cylinders whose axes are not parallel (the intersection \
-         is a quartic curve) (face 0 of the first body, face 0 of the second body)"
+    assert!(
+        message.starts_with("boolean does not support this: a freeform")
+            && message.ends_with("(face 1 of the first body)"),
+        "{message}"
     );
     let diagonal = boxed(k, [4.0, 3.0, 0.0], [5.0, 4.0, 2.0]);
     assert_eq!(

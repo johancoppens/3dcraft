@@ -168,15 +168,24 @@ fn curved_cases() -> Vec<(&'static str, Body, f64)> {
     )
     .unwrap();
     let dimpled = run(&plate, &sink, BooleanOp::Subtract);
-    // The circles in which the surfaces meet, as splines of 16 pieces.
-    craft3d_kernel::boolean::approximate_circles(16);
-    let splined_cap = run(&ball, &above, BooleanOp::Intersect);
-    let splined_hole = run(
-        &plate,
-        &rod([1.5, 1.25, -1.0], 0.75, 3.0),
-        BooleanOp::Subtract,
-    );
-    craft3d_kernel::boolean::approximate_circles(0);
+    // Curves without a closed form: splines.
+    let upright = rod([0.0, 0.0, -2.0], 1.0, 4.0);
+    let lying = primitives::cylinder(
+        &Frame::new(Vec3::new(-3.0, 0.0, 0.0), Vec3::X, Vec3::Y).unwrap(),
+        1.0,
+        6.0,
+    )
+    .unwrap();
+    let steinmetz = run(&upright, &lying, BooleanOp::Intersect);
+    let slanted = Frame::new(Vec3::ZERO, Vec3::new(0.3, 0.2, 1.0), Vec3::X).unwrap();
+    let half_space = primitives::block(
+        &slanted.at(slanted.point(-8.0, -8.0, 0.0)).unwrap(),
+        16.0,
+        16.0,
+        8.0,
+    )
+    .unwrap();
+    let slanted_ring = run(&ring, &half_space, BooleanOp::Intersect);
     vec![
         (
             "the cap of a ball",
@@ -293,15 +302,11 @@ fn curved_cases() -> Vec<(&'static str, Body, f64)> {
             PI * 0.5 + sphere(0.5) / 2.0,
         ),
         (
-            "the cap of a ball, its rim a spline",
-            splined_cap,
-            cap(2.0, 1.25),
+            "what two equal cylinders at right angles share",
+            steinmetz,
+            16.0 / 3.0,
         ),
-        (
-            "a plate with a hole whose rims are splines",
-            splined_hole,
-            12.0 - PI * 0.5625,
-        ),
+        ("a ring cut at a slant", slanted_ring, PI * PI * 3.0),
     ]
 }
 
@@ -313,9 +318,9 @@ fn meshes_of_curved_boolean_results_are_closed_and_converge() {
     for (name, body, volume) in curved_cases() {
         assert_eq!(check(&body, &tol), [], "{name}");
         let exact = mass_properties(&body).unwrap();
-        // A spline that approximates a circle is off by 1e-7 of its size.
+        // An edge that is a spline is off by up to the tolerance.
         assert!(
-            (exact.volume - volume).abs() < 1e-6 * volume,
+            (exact.volume - volume).abs() < 1e-5 * volume,
             "{name}: {} is not {volume}",
             exact.volume
         );

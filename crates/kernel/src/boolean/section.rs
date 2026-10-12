@@ -3,7 +3,6 @@
 //! both faces.
 
 use super::hits::{curve_hits, signed_distance};
-use super::meet::{MeetingCurve, SurfaceMeeting, meet_surfaces};
 use super::outline::{Hull, Outline, Seg, Side, boxes_meet, locate, nearest, surface_distance};
 use super::{
     AMBIGUOUS, LOST, Meeting, NEAR, NEARLY_COINCIDENT, Operand, Stop, Vertices, face_id, geometry,
@@ -11,6 +10,7 @@ use super::{
 use crate::{KernelError, MAX_REPORTED};
 use craft3d_geom::Surface;
 use craft3d_geom::intersect::CurveIntersection;
+use craft3d_geom::intersect::{MeetingCurve, SurfaceMeeting, meet_surfaces};
 use craft3d_math::{Bbox3, Tolerance, Vec3};
 use craft3d_topo::{Body, BodyKind, EdgeId, FaceId, VertexId, check};
 use std::collections::{BTreeMap, BTreeSet};

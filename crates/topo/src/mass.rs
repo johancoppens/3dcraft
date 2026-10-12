@@ -193,8 +193,43 @@ fn panels(curve: &Curve3, range: (f64, f64)) -> usize {
         Curve3::Circle(_) | Curve3::Ellipse(_) => {
             ((length / FRAC_PI_4).ceil() as usize).clamp(1, 64)
         }
-        Curve3::Nurbs(c) => (c.control_points().len() * 2).clamp(4, 4096),
+        Curve3::Nurbs(_) => 4,
     }
+}
+
+/// Where the quadrature panels of a piece of an edge begin and end. A
+/// spline is only as smooth as its knots allow: a panel across a knot
+/// integrates a function with a kink in it, so the panels end at the knots
+/// and divide each span between them.
+fn panel_ends(curve: &Curve3, low: f64, high: f64) -> Vec<f64> {
+    let mut ends = vec![low];
+    if let Curve3::Nurbs(c) = curve {
+        const PER_SPAN: usize = 4;
+        let mut stops: Vec<f64> = c
+            .knots()
+            .iter()
+            .copied()
+            .filter(|&k| k > low && k < high)
+            .collect();
+        stops.push(high);
+        stops.dedup();
+        if stops.len() > 4096 {
+            stops = vec![high];
+        }
+        let mut from = low;
+        for stop in stops {
+            for k in 1..=PER_SPAN {
+                ends.push(from + (stop - from) * k as f64 / PER_SPAN as f64);
+            }
+            from = stop;
+        }
+        return ends;
+    }
+    let count = panels(curve, (low, high));
+    for k in 1..=count {
+        ends.push(low + (high - low) * k as f64 / count as f64);
+    }
+    ends
 }
 
 /// An angle wrapped to `[0, 2π)`.
@@ -456,12 +491,10 @@ fn boundary(body: &Body, face: &Face, index: usize, rule: &Rule) -> Result<Bound
         for (piece, next) in pieces.iter().zip(after) {
             let (low, high) = (piece.start.min(piece.end), piece.start.max(piece.end));
             let direction = if piece.end < piece.start { -1.0 } else { 1.0 };
-            let count = panels(piece.curve, (low, high));
-            let width = (high - low) / count as f64;
+            let ends = panel_ends(piece.curve, low, high);
             let first = samples.len();
-            for k in 0..count {
-                let start = low + width * k as f64;
-                for (t, w) in rule.points(start, start + width) {
+            for (&start, &stop) in ends.iter().zip(ends.iter().skip(1)) {
+                for (t, w) in rule.points(start, stop) {
                     let (point, tangent) = piece.curve.derivatives(t);
                     let (u, v) = surface
                         .project(point)
