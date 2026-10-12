@@ -20,6 +20,7 @@ mod boolean;
 mod cache;
 mod derive;
 mod extrude;
+mod query;
 mod revolve;
 mod sketch;
 
@@ -27,6 +28,7 @@ pub use cache::RegenCache;
 pub use craft3d_kernel::extrude::{Origin, Origins, Role};
 pub use derive::{MAX_PATTERN_FACES, MAX_PATTERN_INSTANCES};
 pub use extrude::name_of;
+pub use query::{edges_between, faces_named, faces_of_edges};
 pub use sketch::{
     ConstraintResult, ConstraintState, SketchResult, settle_sketches, settle_sketches_cached,
 };

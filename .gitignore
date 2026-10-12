@@ -7,3 +7,4 @@
 /docs_photocraft/
 # Worktrees of parallel agents; local only.
 /.claude/worktrees/
+__pycache__/

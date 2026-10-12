@@ -8,8 +8,9 @@
 use crate::params::Params;
 use crate::{CommandError, CommandSpec, OpenDocument, Session, base64};
 use craft3d_doc::{
-    Block, Cone, Cylinder, DocError, Document, Expr, Extrude, Feature, FeatureId, FeatureKind,
-    LengthUnit, Orientation, PatternLayout, Sphere, Tolerance, Torus, Units,
+    Block, Boolean, BooleanOp, Cone, Cylinder, DocError, Document, Expr, Extrude, Feature,
+    FeatureId, FeatureKind, LengthUnit, Orientation, PatternLayout, Sphere, Tolerance, Torus,
+    Units,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use craft3d_io::MeshFormat;
@@ -73,8 +74,8 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Adds a cone along axis: its base circle is centred at position, its apex is height further along the axis.", doc: true, feature_cone),
     spec!("feature.torus", "Torus", r#"{"major": expr, "minor": expr, "position": [expr, expr, expr] = [0, 0, 0], "axis": [number, number, number] = [0, 0, 1], "angle": expr = "0 deg", "name": string = automatic}"#,
         "Adds a ring torus about axis, centred at position: major is the radius of the ring, minor of the tube.", doc: true, feature_torus),
-    spec!("feature.extrude", "Extrude", r#"{"sketch": id or name, "distance": expr, "symmetric": boolean = false, "name": string = automatic}"#,
-        "Adds a solid by sweeping the closed profiles of a sketch along its normal: loops of lines and arcs, and circles; a loop inside another is a hole. A negative distance goes the other way; symmetric puts half on each side of the sketch plane.", doc: true, feature_extrude),
+    spec!("feature.extrude", "Extrude", r#"{"sketch": id or name, "distance": expr, "symmetric": boolean = false, "cut": id or name, "join": id or name, "intersect": id or name, "name": string = automatic}"#,
+        "Adds a solid by sweeping the closed profiles of a sketch along its normal: loops of lines and arcs, and circles; a loop inside another is a hole. A negative distance goes the other way; symmetric puts half on each side of the sketch plane. With cut, join or intersect (a feature with a body) the solid is combined with that body at once: two features are added in one undo step, the extrusion and a boolean, and the result is the boolean's (the one to build on; name applies to it) with the extrusion under sweep. A hole in a plate: sketch a circle on its top, extrude by a negative distance with cut.", doc: true, feature_extrude),
     spec!("feature.edit", "Edit Feature", r#"{"feature": id or name, "size": [expr; 3], "position": [expr; 3], "axis": [number; 3], "angle": expr, "radius": expr, "height": expr, "major": expr, "minor": expr, "distance": expr, "symmetric": boolean, "translate": [expr; 3], "pivot": [expr; 3], "point": [expr; 3], "normal": [number; 3], "step": [expr; 3], "count": expr, "keep": boolean, "keepTool": boolean}"#,
         "Changes parameters of a feature; give only the ones to change. Which ones a feature has depends on its kind (document.inspect shows them under params).", doc: true, feature_edit),
     spec!("feature.rename", "Rename Feature", r#"{"feature": id or name, "name": string}"#,
@@ -93,8 +94,8 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Checks every body for validity and lists every problem: failed variables, failed features, defects of bodies. ok is true when there is none.", doc: true, document_check),
     spec!("document.measure", "Measure", r#"{"feature": id or name = all bodies}"#,
         "Returns volume, area and centroid, per body and in total, in document units.", doc: true, document_measure),
-    spec!("view.render", "Render", r#"{"path": string, "width": integer = 800, "height": integer = 600, "view": "iso|front|back|left|right|top|bottom" = "iso", "mode": "shaded|ids" = "shaded", "tolerance": number = automatic}"#,
-        "Renders the bodies with the CPU renderer. Writes a PNG under the write root when path is given, otherwise returns it as base64.", doc: true, view_render),
+    spec!("view.render", "Render", r#"{"path": string, "width": integer = 800, "height": integer = 600, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the whole model, "mode": "shaded|ids" = "shaded", "tolerance": number = automatic}"#,
+        "Renders the bodies with the CPU renderer. Writes a PNG under the write root when path is given, otherwise returns it as base64. orthographic shows lengths across the view to scale. box frames the region between two opposite corners (document units) instead of the whole model, seen from outside the model. zoom magnifies about the centre of the picture (2 shows half as much, twice as large; from 0.01 to 1000).", doc: true, view_render),
 ];
 
 /// The command id most like `id`, for "did you mean".
@@ -220,6 +221,70 @@ pub(crate) fn add_feature(
     let label = format!("Add {}", kind.type_name());
     let id = edit(session, command, &label, |doc| doc.add_feature(name, kind))?;
     feature_result(session, id)
+}
+
+/// The `cut`, `join` and `intersect` parameters of a sweep: the body the
+/// swept solid is combined with at once, and how.
+pub(crate) const COMBINE: [(&str, BooleanOp); 3] = [
+    ("cut", BooleanOp::Subtract),
+    ("join", BooleanOp::Union),
+    ("intersect", BooleanOp::Intersect),
+];
+
+pub(crate) fn combine_param(
+    doc: &Document,
+    p: &Params,
+    command: &str,
+) -> Result<Option<(BooleanOp, FeatureId)>, CommandError> {
+    let mut found = None;
+    for (key, op) in COMBINE {
+        if !p.has(key) {
+            continue;
+        }
+        if found.is_some() {
+            return fail(format!(
+                "{command}: give one of `cut`, `join` and `intersect`, not several"
+            ));
+        }
+        found = Some((op, feature_ref(doc, p, command, key)?));
+    }
+    Ok(found)
+}
+
+/// Adds a sweep (an extrusion, a revolution) and, when it is to be
+/// combined with a body at once, the boolean that does it, as one undo
+/// step. The name goes to what the caller builds on: the boolean when
+/// there is one, else the sweep.
+pub(crate) fn add_sweep(
+    session: &mut Session,
+    command: &'static str,
+    name: Option<&str>,
+    kind: FeatureKind,
+    combine: Option<(BooleanOp, FeatureId)>,
+) -> Run {
+    let Some((op, target)) = combine else {
+        return add_feature(session, command, name, kind);
+    };
+    let label = format!("Add {} and {}", kind.type_name(), op.name());
+    let (sweep, combined) = edit(session, command, &label, |doc| {
+        let sweep = doc.add_feature(None, kind)?;
+        let combined = doc.add_feature(
+            name,
+            FeatureKind::Boolean(Boolean {
+                op,
+                target,
+                tool: sweep,
+                keep_tool: false,
+            }),
+        )?;
+        Ok((sweep, combined))
+    })?;
+    let mut result = feature_result(session, combined)?;
+    let swept = feature_result(session, sweep)?;
+    if let Some(map) = result.as_object_mut() {
+        map.insert("sweep".into(), swept);
+    }
+    Ok(result)
 }
 
 /// What a feature command returns: the feature and how it regenerated, so
@@ -630,17 +695,26 @@ fn feature_extrude(session: &mut Session, params: &Value) -> Run {
     let p = Params::new(
         "feature.extrude",
         params,
-        &["sketch", "distance", "symmetric", "name"],
+        &[
+            "sketch",
+            "distance",
+            "symmetric",
+            "cut",
+            "join",
+            "intersect",
+            "name",
+        ],
     )?;
     let doc = session.document()?.history.current();
     let sketch = feature_ref(doc, &p, "feature.extrude", "sketch")?;
     doc.sketch(sketch).map_err(doc_error("feature.extrude"))?;
+    let combine = combine_param(doc, &p, "feature.extrude")?;
     let kind = FeatureKind::Extrude(Extrude {
         sketch,
         distance: required(&p, "distance")?,
         symmetric: p.bool("symmetric")?.unwrap_or(false),
     });
-    add_feature(session, "feature.extrude", p.str("name")?, kind)
+    add_sweep(session, "feature.extrude", p.str("name")?, kind, combine)
 }
 
 /// The parameters `feature.edit` can change, by name.
@@ -1151,11 +1225,44 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
 
 // ------------------------------------------------------------------- view
 
+/// The `box` of `view.render`: two opposite corners, in any order.
+fn view_box(value: &Value) -> Result<craft3d_math::Bbox3, CommandError> {
+    const SHAPE: &str = "view.render: `box` must be two opposite corners, [[x, y, z], [x, y, z]], \
+                         of numbers within ±1e12 that are not the same point";
+    let corner = |value: &Value| -> Option<Vec3> {
+        let [x, y, z] = value.as_array()?.as_slice() else {
+            return None;
+        };
+        let number = |v: &Value| v.as_f64().filter(|n| n.is_finite() && n.abs() <= 1e12);
+        Some(Vec3::new(number(x)?, number(y)?, number(z)?))
+    };
+    let corners = value
+        .as_array()
+        .and_then(|corners| match corners.as_slice() {
+            [a, b] => Some((corner(a)?, corner(b)?)),
+            _ => None,
+        });
+    match corners {
+        Some((a, b)) if a != b => Ok(craft3d_math::Bbox3::from_points([a, b])),
+        _ => fail(SHAPE),
+    }
+}
+
 fn view_render(session: &mut Session, params: &Value) -> Run {
     let p = Params::new(
         "view.render",
         params,
-        &["path", "width", "height", "view", "mode", "tolerance"],
+        &[
+            "path",
+            "width",
+            "height",
+            "view",
+            "projection",
+            "zoom",
+            "box",
+            "mode",
+            "tolerance",
+        ],
     )?;
     let width = p.integer("width", 16, 4096)?.unwrap_or(800);
     let height = p.integer("height", 16, 4096)?.unwrap_or(600);
@@ -1183,6 +1290,21 @@ fn view_render(session: &mut Session, params: &Value) -> Run {
             ));
         }
     };
+    let orthographic = match p.str("projection")?.unwrap_or("perspective") {
+        "perspective" => false,
+        "orthographic" => true,
+        other => {
+            return fail(format!(
+                "view.render: unknown projection `{other}`; use perspective or orthographic"
+            ));
+        }
+    };
+    let zoom = match p.number("zoom")? {
+        None => 1.0,
+        Some(zoom) if (0.01..=1000.0).contains(&zoom) => zoom,
+        Some(_) => return fail("view.render: `zoom` must be a number from 0.01 to 1000"),
+    };
+    let look_at = p.get("box").map(view_box).transpose()?;
     let path = p.str("path")?;
     let resolved = path
         .map(|path| session.workspace.resolve_write(path))
@@ -1213,8 +1335,22 @@ fn view_render(session: &mut Session, params: &Value) -> Run {
         ..RenderParams::default()
     };
     let aspect = width as f64 / height as f64;
-    let camera = Camera::framing(&all.bbox(), toward_eye, up, 30.0, aspect)
-        .ok_or_else(|| CommandError::new("view.render: cannot frame the model"))?;
+    let model = all.bbox();
+    let framed = look_at.unwrap_or(model);
+    let camera = if orthographic {
+        Camera::framing_orthographic(&framed, toward_eye, up, aspect)
+    } else {
+        // A close-up is taken from outside the whole model.
+        Camera::framing_clear_of(&framed, &model, toward_eye, up, 30.0, aspect)
+    }
+    .and_then(|camera| camera.zoomed(zoom))
+    .ok_or_else(|| {
+        CommandError::new(if look_at.is_some() {
+            "view.render: cannot frame this `box` from this view: seen from there it has no size"
+        } else {
+            "view.render: cannot frame the model"
+        })
+    })?;
     let frame = craft3d_render::render(&all, &camera, &render_params)
         .map_err(|e| CommandError::new(format!("view.render: {e}")))?;
     let png = if ids {
@@ -1226,6 +1362,9 @@ fn view_render(session: &mut Session, params: &Value) -> Run {
 
     let mut result = json!({
         "width": width, "height": height, "view": view,
+        "projection": if orthographic { "orthographic" } else { "perspective" },
+        "zoom": zoom,
+        "box": framed.corners().map(|(lo, hi)| json!([vec3(lo), vec3(hi)])),
         "triangles": all.triangles.len(),
         "coverage": frame.coverage(),
         "bodies": legend,

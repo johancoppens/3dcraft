@@ -783,6 +783,49 @@ fn unknown_tools_and_bad_arguments_are_invalid_params_naming_the_key() {
 }
 
 #[test]
+fn the_preview_takes_the_options_of_the_render_command() {
+    // Field test 2026-10-12, finding 6: only perspective views of the
+    // whole model could be asked for over MCP.
+    let mut s = session();
+    run(&mut s, "file.new", json!({}));
+    run(&mut s, "feature.block", json!({"size": [40, 20, 5]}));
+    let preview = |s: &mut Session, arguments: Value| {
+        let result = tool(s, "doc_render_preview", arguments.clone());
+        assert_eq!(result["isError"], false, "{arguments}: {result}");
+        let text = result["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|block| block["type"] == "text")
+            .unwrap()["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        serde_json::from_str::<Value>(&text).unwrap()
+    };
+    let whole = preview(&mut s, json!({"view": "top", "max_side": 256}));
+    assert_eq!(whole["projection"], "perspective");
+    let detail = preview(
+        &mut s,
+        json!({"view": "top", "max_side": 256, "projection": "orthographic",
+               "zoom": 2, "box": [[0, 0, 0], [10, 10, 5]], "tolerance": 0.01}),
+    );
+    assert_eq!(detail["projection"], "orthographic");
+    assert_eq!(detail["zoom"], 2.0);
+    assert_ne!(detail["coverage"], whole["coverage"]);
+    // What the command refuses comes back as the tool's failure, with the
+    // command's own message.
+    for arguments in [
+        json!({"projection": "fisheye"}),
+        json!({"zoom": -1}),
+        json!({"box": "all"}),
+    ] {
+        let failed = tool(&mut s, "doc_render_preview", arguments.clone());
+        assert_eq!(failed["isError"], true, "{arguments}: {failed}");
+    }
+}
+
+#[test]
 fn a_terse_batch_reports_the_failures_and_the_last_result() {
     // Field test 2026-10-12, finding 8: every step's result is a lot to
     // send back for a batch of hundreds of sketch entities.

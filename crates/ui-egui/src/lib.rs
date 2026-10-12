@@ -11,6 +11,8 @@
 //! - [`theme`]: the design tokens every colour and radius comes from.
 //! - [`camera`]: orbit, pan, zoom, fit, and projecting like the renderer.
 //! - [`viewport`]: the CPU-rendered image and the lines drawn over it.
+//! - [`frames`]: which image is on screen, and the thread that makes the
+//!   sharp one.
 //! - [`shell`]: the panels and the mouse.
 //! - [`control`]: the `ui.*` methods of the control protocol.
 //!
@@ -19,12 +21,13 @@
 
 pub mod camera;
 pub mod control;
+pub mod frames;
 pub mod shell;
 pub mod state;
 pub mod theme;
 pub mod viewport;
 
 pub use control::{UI_METHODS, UiMethod};
-pub use shell::{CommandReport, RenderStats, Shell, TreeRow};
+pub use shell::{CommandReport, FileAction, RenderStats, Shell, TreeRow, window_title};
 pub use state::{CameraState, Panels, ProjectionKind, UiState};
 pub use theme::Tokens;

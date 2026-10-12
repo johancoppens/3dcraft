@@ -407,6 +407,181 @@ fn scenario_a_cut_splits_or_removes_a_referenced_face() {
 }
 
 #[test]
+fn an_extrusion_cuts_or_joins_a_body_in_one_command() {
+    // The phase 1 scenario: sketch on the top of a plate, cut two holes,
+    // change the plate, and everything follows.
+    let mut s = plate();
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"name": "Holes", "face": "F2:endCap()"}),
+    );
+    for x in [15, 45] {
+        run(
+            &mut s,
+            "sketch.circle",
+            json!({"sketch": "Holes", "center": [x, 20], "radius": 4}),
+        );
+    }
+    let made = run(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "Holes", "distance": -8, "cut": "Plate", "name": "Drilled"}),
+    );
+    assert_eq!(made["status"], "ok", "{made}");
+    assert_eq!(made["name"], "Drilled");
+    assert_eq!(made["sweep"]["status"], "ok", "{made}");
+    assert_volume(&mut s, "Drilled", 19200.0 - 2.0 * PI * 16.0 * 8.0);
+    assert_eq!(body_names(&mut s), ["Drilled"]);
+    // One undo step for both features.
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(body_names(&mut s), ["Plate"]);
+    run(&mut s, "edit.redo", json!({}));
+    // Blind pockets instead: half as deep.
+    let sweep = made["sweep"]["name"].as_str().unwrap().to_string();
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": sweep, "distance": -4}),
+    );
+    assert_volume(&mut s, "Drilled", 19200.0 - 2.0 * PI * 16.0 * 4.0);
+    // A boss joined on, on the top of the drilled plate.
+    let top = format!("{}:copy(0)/F2:endCap()", made["id"].as_str().unwrap());
+    run(&mut s, "sketch.create", json!({"name": "Pad", "face": top}));
+    run(
+        &mut s,
+        "sketch.circle",
+        json!({"sketch": "Pad", "center": [30, 20], "radius": 5}),
+    );
+    let joined = run(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "Pad", "distance": 10, "join": "Drilled", "name": "Part"}),
+    );
+    assert_eq!(joined["status"], "ok", "{joined}");
+    let pockets = 2.0 * PI * 16.0 * 4.0;
+    assert_volume(&mut s, "Part", 19200.0 - pockets + PI * 25.0 * 10.0);
+    // The plate gets longer: everything follows.
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "length", "expr": "90 mm"}),
+    );
+    assert_volume(&mut s, "Part", 28800.0 - pockets + PI * 25.0 * 10.0);
+    // Malformed: two targets, or one that is not there. Nothing is added.
+    let before = run(&mut s, "document.inspect", json!({}));
+    for (params, word) in [
+        (
+            json!({"sketch": "Pad", "distance": 1, "cut": "Part", "join": "Part"}),
+            "not several",
+        ),
+        (
+            json!({"sketch": "Pad", "distance": 1, "cut": "Nope"}),
+            "no feature named `Nope`",
+        ),
+    ] {
+        let e = s
+            .execute("feature.extrude", &params)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains(word), "{params}: {e}");
+    }
+    assert_eq!(run(&mut s, "document.inspect", json!({})), before);
+}
+
+#[test]
+fn an_edge_is_referred_to_by_the_faces_it_lies_between() {
+    let mut s = plate();
+    run(
+        &mut s,
+        "feature.cylinder",
+        json!({"name": "Drill", "radius": 5, "height": 20, "position": [30, 20, -6]}),
+    );
+    boolean(&mut s, "subtract", "Plate", "Drill", "Part");
+    let (top, bottom) = (
+        "F4:copy(0)/F2:endCap(e5,e6,e7,e8)",
+        "F4:copy(0)/F2:startCap(e5,e6,e7,e8)",
+    );
+    let (wall, front) = ("F4:copy(1)/F3:face(0)", "F4:copy(0)/F2:side(e5)");
+    let between = |s: &mut Session, a: &str, b: &str| {
+        run(
+            s,
+            "document.edges",
+            json!({"feature": "Part", "between": [a, b]}),
+        )
+    };
+    // The rim of the hole in the top: a new edge, where the plate's top
+    // crosses the drill's wall. A circle of radius 5 at height 8.
+    let rim = between(&mut s, top, wall);
+    assert!(rim["count"].as_u64().unwrap() >= 1, "{rim}");
+    for edge in rim["edges"].as_array().unwrap() {
+        assert_eq!(edge["curve"], "circle", "{edge}");
+        assert_eq!(edge["start"][2], 8.0, "{edge}");
+        let (x, y) = (
+            edge["start"][0].as_f64().unwrap() - 30.0,
+            edge["start"][1].as_f64().unwrap() - 20.0,
+        );
+        assert!((x.hypot(y) - 5.0).abs() < 1e-9, "{edge}");
+    }
+    // The order of the two names does not matter.
+    assert_eq!(between(&mut s, wall, top)["edges"], rim["edges"]);
+    // The bottom rim is another edge; top and bottom share none.
+    assert_eq!(between(&mut s, bottom, wall)["edges"][0]["start"][2], 0.0);
+    assert_eq!(between(&mut s, top, bottom)["count"], 0);
+    // An edge of the plate that the cut left alone: one line, 60 long.
+    let kept = between(&mut s, top, front);
+    assert_eq!(kept["count"], 1, "{kept}");
+    assert_eq!(kept["edges"][0]["curve"], "line");
+    // The plate changes: the same question finds the same edges.
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "length", "expr": "90 mm"}),
+    );
+    assert_eq!(between(&mut s, top, wall)["count"], rim["count"]);
+    assert_eq!(between(&mut s, top, front)["count"], 1);
+    // Every edge of the part lies between two named faces (or is a seam).
+    let all = run(&mut s, "document.edges", json!({"feature": "Part"}));
+    assert_eq!(all["count"], body(&mut s, "Part")["edges"]);
+    for edge in all["edges"].as_array().unwrap() {
+        let faces = edge["faces"].as_array().unwrap().len();
+        assert!(faces == 1 || faces == 2, "{edge}");
+    }
+    // What is not there, or not a face, is an error.
+    for (params, word) in [
+        (
+            json!({"feature": "Part", "between": [top, "F4:copy(1)/F3:face(1)"]}),
+            "has no face",
+        ),
+        (
+            json!({"feature": "Part", "between": [top]}),
+            "two face names",
+        ),
+        (
+            json!({"feature": "Part", "between": [top, 7]}),
+            "two face names",
+        ),
+        (
+            json!({"feature": "Part", "between": [top, "roof"]}),
+            "is not a name",
+        ),
+        (
+            json!({"feature": "Part", "between": [top, "F2:lateralEdge(e5,e6)"]}),
+            "is not a face",
+        ),
+        (json!({"feature": "Plate"}), "went into F4"),
+        (json!({"feature": "Outline"}), "has no body"),
+        (json!({}), "missing parameter `feature`"),
+    ] {
+        let e = s
+            .execute("document.edges", &params)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains(word), "{params}: `{word}` is not in: {e}");
+    }
+}
+
+#[test]
 fn the_three_operations_obey_the_volume_identities() {
     // Two blocks that overlap in a 10 x 10 x 10 corner.
     let build = |op: &str| {

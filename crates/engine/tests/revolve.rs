@@ -346,7 +346,29 @@ fn what_cannot_be_revolved_fails_with_the_reason() {
         json!({"sketch": "Profile", "from": [15, -3], "to": [15, 9], "construction": true}),
     );
     revolve(&mut s, json!({"axis": "e11"}));
-    assert_failed(&mut s, &["axis"]);
+    assert_failed(&mut s, &["axis", "Profile", "both sides", "e5"]);
+    // An arc whose circle reaches the axis without being centred on it
+    // would sweep a spindle torus.
+    run(&mut s, "feature.delete", json!({"feature": "Turned"}));
+    run(
+        &mut s,
+        "sketch.delete",
+        json!({"sketch": "Profile", "entity": "e6"}),
+    );
+    run(
+        &mut s,
+        "sketch.arc",
+        json!({"sketch": "Profile", "center": [16, 2.5], "start": "e2", "end": "e3"}),
+    );
+    revolve(&mut s, json!({"axis": "y"}));
+    let state = feature(&mut s, "Turned");
+    assert_eq!(
+        state["status"], "ok",
+        "an arc clear of the axis is a torus: {state}"
+    );
+    run(&mut s, "feature.delete", json!({"feature": "Turned"}));
+    revolve(&mut s, json!({"axis": "e11"}));
+    assert_failed(&mut s, &["Profile"]);
     run(&mut s, "feature.delete", json!({"feature": "Turned"}));
 
     // Malformed requests are refused.

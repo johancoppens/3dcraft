@@ -182,6 +182,7 @@ impl Shell {
                 "ssaa": stats.ssaa,
                 "triangles": stats.triangles,
                 "milliseconds": stats.milliseconds,
+                "sharp": stats.sharp,
                 "count": self.render_count(),
             })
         });

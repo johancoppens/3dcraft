@@ -366,7 +366,7 @@ fn tools() -> Value {
         },
         {
             "name": "doc_render_preview",
-            "description": "Renders the active document's bodies to a PNG image (4:3, CPU renderer) and returns it with the coverage, triangle count and body list.",
+            "description": "Renders the active document's bodies to a PNG image (4:3, CPU renderer) and returns it with the coverage, triangle count and body list. For a detail: projection orthographic with a box or a zoom.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -379,6 +379,23 @@ fn tools() -> Value {
                         "type": "string",
                         "enum": ["shaded", "ids"],
                         "description": "shaded (default), or ids: one flat colour per face."
+                    },
+                    "projection": {
+                        "type": "string",
+                        "enum": ["perspective", "orthographic"],
+                        "description": "Default perspective. orthographic shows lengths across the view to scale: use it to check a detail or a top view."
+                    },
+                    "zoom": {
+                        "type": "number",
+                        "description": "Magnifies about the centre of the picture. Default 1."
+                    },
+                    "box": {
+                        "type": "array",
+                        "description": "Two opposite corners [[x, y, z], [x, y, z]] in document units: frame this box instead of the whole model."
+                    },
+                    "tolerance": {
+                        "type": "number",
+                        "description": "Chordal tolerance of the mesh in document units. Default automatic; give a small one when round faces look polygonal."
                     },
                     "max_side": {
                         "type": "integer",
@@ -546,7 +563,15 @@ fn tool_doc_render_preview(
         "doc_render_preview",
         "argument",
         arguments,
-        &["view", "mode", "max_side"],
+        &[
+            "view",
+            "mode",
+            "max_side",
+            "projection",
+            "zoom",
+            "box",
+            "tolerance",
+        ],
     )?;
     let side = a
         .integer("max_side", PREVIEW_MIN_SIDE, PREVIEW_MAX_SIDE)?
@@ -558,9 +583,16 @@ fn tool_doc_render_preview(
     params.insert("height".into(), height.into());
     // Which views and modes exist is the command's business: it names the
     // valid ones in its error.
-    for key in ["view", "mode"] {
+    for key in ["view", "mode", "projection"] {
         if let Some(value) = a.str(key)? {
             params.insert(key.into(), value.into());
+        }
+    }
+    // Passed on as they are: the command checks them and names what is
+    // wrong.
+    for key in ["zoom", "box", "tolerance"] {
+        if let Some(value) = arguments.and_then(|a| a.get(key)).filter(|v| !v.is_null()) {
+            params.insert(key.into(), value.clone());
         }
     }
     // Without `path` the command returns the PNG as base64.

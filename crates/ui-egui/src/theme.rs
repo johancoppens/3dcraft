@@ -22,6 +22,10 @@ pub struct Tokens {
     pub sketch_selected: Rgb,
     /// The world axes at the origin: X, Y, Z.
     pub axes: [Rgb; 3],
+    /// The edges of a body.
+    pub edge: Rgb,
+    /// Opacity of sketch lines and points behind a body, 0 to 255.
+    pub hidden_opacity: u8,
     pub panel_fill: Rgb,
     pub text: Rgb,
     pub text_dim: Rgb,
@@ -44,6 +48,8 @@ pub struct Tokens {
     pub sketch_width: f32,
     pub construction_width: f32,
     pub axis_width: f32,
+    /// Width of a body's edges, in points.
+    pub edge_width: f32,
     /// Radius of a sketch point's dot, in points.
     pub point_radius: f32,
     /// Space between the viewport's edge and what floats over it.
@@ -66,6 +72,8 @@ impl Tokens {
             sketch_construction: [110, 170, 235],
             sketch_selected: [255, 120, 80],
             axes: [[226, 82, 82], [96, 190, 96], [86, 136, 240]],
+            edge: [22, 24, 30],
+            hidden_opacity: 70,
             panel_fill: [38, 41, 49],
             text: [222, 226, 232],
             text_dim: [140, 147, 160],
@@ -81,6 +89,7 @@ impl Tokens {
             sketch_width: 1.75,
             construction_width: 1.0,
             axis_width: 1.25,
+            edge_width: 1.0,
             point_radius: 2.25,
             inset: 10.0,
         }
