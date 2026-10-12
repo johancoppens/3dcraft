@@ -14,7 +14,7 @@
 pub mod name;
 pub mod sketch;
 
-pub use name::{NameRole, PersistentName};
+pub use name::{MAX_NAME_DEPTH, MAX_NAME_SOURCES, NameRole, PersistentName};
 
 pub use sketch::{
     Constraint, ConstraintId, ConstraintKind, DistanceDirection, Entity, EntityId, Geometry,
@@ -232,6 +232,118 @@ pub struct Extrude {
     pub symmetric: bool,
 }
 
+/// What a revolution turns about: a line in the plane of its sketch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum RevolveAxis {
+    /// The sketch's own x axis.
+    X,
+    /// The sketch's own y axis.
+    Y,
+    /// A line of the sketch (usually a construction line), from its start
+    /// to its end.
+    Line { entity: EntityId },
+}
+
+fn full_turn() -> Expr {
+    Expr::new("360 deg")
+}
+
+/// A solid swept by turning the closed profiles of a sketch about an axis
+/// in the sketch's plane.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Revolve {
+    /// The sketch feature the profiles come from, as for [`Extrude`].
+    pub sketch: FeatureId,
+    pub axis: RevolveAxis,
+    /// How far round, counter-clockwise seen from the tip of the axis; a
+    /// negative angle goes the other way. A full turn closes the body.
+    #[serde(default = "full_turn")]
+    pub angle: Expr,
+    /// Half of `angle` to each side of the sketch plane.
+    #[serde(default)]
+    pub symmetric: bool,
+}
+
+fn zero3() -> [Expr; 3] {
+    [Expr::new("0"), Expr::new("0"), Expr::new("0")]
+}
+
+fn z_axis() -> [Expr; 3] {
+    [Expr::new("0"), Expr::new("0"), Expr::new("1")]
+}
+
+fn no_angle() -> Expr {
+    Expr::new("0 deg")
+}
+
+/// The body of an earlier feature, moved: turned by `angle` about the line
+/// through `pivot` along `axis`, then shifted by `translate`. The moved
+/// body is this feature's; the source feature no longer shows one, unless
+/// `keep` is set.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Transform {
+    /// The feature whose body is moved. It has to come before this
+    /// feature in the history and have a body nothing else has taken.
+    pub source: FeatureId,
+    #[serde(default = "zero3")]
+    pub translate: [Expr; 3],
+    #[serde(default = "zero3")]
+    pub pivot: [Expr; 3],
+    /// Direction of the rotation axis: three plain numbers, any length.
+    #[serde(default = "z_axis")]
+    pub axis: [Expr; 3],
+    /// Counter-clockwise seen from the tip of `axis`.
+    #[serde(default = "no_angle")]
+    pub angle: Expr,
+    /// The source keeps its body: this feature makes a moved copy.
+    #[serde(default)]
+    pub keep: bool,
+}
+
+/// The body of an earlier feature, mirrored in the plane through `point`
+/// with normal `normal`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mirror {
+    pub source: FeatureId,
+    #[serde(default = "zero3")]
+    pub point: [Expr; 3],
+    /// Three plain numbers, any length.
+    pub normal: [Expr; 3],
+    /// The source keeps its body: this feature makes a mirrored copy.
+    #[serde(default)]
+    pub keep: bool,
+}
+
+/// How the instances of a pattern are laid out. Instance 0 is the source
+/// where it is; instance `i` is moved `i` steps.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum PatternLayout {
+    /// Each instance is shifted by `step` from the one before.
+    Linear { step: [Expr; 3] },
+    /// Each instance is turned by `angle` from the one before, about the
+    /// line through `point` along `axis`.
+    Circular {
+        #[serde(default = "zero3")]
+        point: [Expr; 3],
+        #[serde(default = "z_axis")]
+        axis: [Expr; 3],
+        angle: Expr,
+    },
+}
+
+/// The body of an earlier feature, repeated `count` times (the source
+/// included) into one body.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pattern {
+    pub source: FeatureId,
+    /// A whole number of instances, at least 1: a plain number or a
+    /// formula of plain numbers.
+    pub count: Expr,
+    pub layout: PatternLayout,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum FeatureKind {
@@ -242,6 +354,10 @@ pub enum FeatureKind {
     Torus(Torus),
     Sketch(Sketch),
     Extrude(Extrude),
+    Revolve(Revolve),
+    Transform(Transform),
+    Mirror(Mirror),
+    Pattern(Pattern),
 }
 
 impl FeatureKind {
@@ -255,6 +371,43 @@ impl FeatureKind {
             FeatureKind::Torus(_) => "torus",
             FeatureKind::Sketch(_) => "sketch",
             FeatureKind::Extrude(_) => "extrude",
+            FeatureKind::Revolve(_) => "revolve",
+            FeatureKind::Transform(_) => "transform",
+            FeatureKind::Mirror(_) => "mirror",
+            FeatureKind::Pattern(_) => "pattern",
+        }
+    }
+
+    /// The feature whose body this feature is made from, and whether that
+    /// feature keeps its own body. `None` for a feature that makes its
+    /// body from nothing or from a sketch.
+    pub fn source(&self) -> Option<(FeatureId, bool)> {
+        match self {
+            FeatureKind::Transform(t) => Some((t.source, t.keep)),
+            FeatureKind::Mirror(m) => Some((m.source, m.keep)),
+            FeatureKind::Pattern(p) => Some((p.source, false)),
+            FeatureKind::Block(_)
+            | FeatureKind::Cylinder(_)
+            | FeatureKind::Sphere(_)
+            | FeatureKind::Cone(_)
+            | FeatureKind::Torus(_)
+            | FeatureKind::Sketch(_)
+            | FeatureKind::Extrude(_)
+            | FeatureKind::Revolve(_) => None,
+        }
+    }
+
+    /// Every feature this one is made from, in a fixed order: the body it
+    /// moves, the sketch it sweeps, the feature whose face it lies on.
+    pub fn inputs(&self) -> Vec<FeatureId> {
+        match self {
+            FeatureKind::Extrude(e) => vec![e.sketch],
+            FeatureKind::Revolve(r) => vec![r.sketch],
+            FeatureKind::Sketch(sketch) => match &sketch.plane {
+                SketchPlane::Face { face, .. } => vec![face.feature],
+                SketchPlane::World { .. } => Vec::new(),
+            },
+            other => other.source().map(|(id, _)| id).into_iter().collect(),
         }
     }
 
@@ -302,6 +455,28 @@ impl FeatureKind {
             }
             FeatureKind::Sketch(s) => out = s.exprs(),
             FeatureKind::Extrude(e) => out = vec![named("distance", &e.distance)],
+            FeatureKind::Revolve(r) => out = vec![named("angle", &r.angle)],
+            FeatureKind::Transform(t) => {
+                out = triple("translate", &t.translate);
+                out.extend(triple("pivot", &t.pivot));
+                out.extend(triple("axis", &t.axis));
+                out.push(named("angle", &t.angle));
+            }
+            FeatureKind::Mirror(m) => {
+                out = triple("point", &m.point);
+                out.extend(triple("normal", &m.normal));
+            }
+            FeatureKind::Pattern(p) => {
+                out = vec![named("count", &p.count)];
+                match &p.layout {
+                    PatternLayout::Linear { step } => out.extend(triple("step", step)),
+                    PatternLayout::Circular { point, axis, angle } => {
+                        out.extend(triple("point", point));
+                        out.extend(triple("axis", axis));
+                        out.push(named("angle", angle));
+                    }
+                }
+            }
         }
         out
     }
@@ -338,6 +513,27 @@ impl FeatureKind {
                 .collect(),
             FeatureKind::Sketch(s) => s.exprs_mut(),
             FeatureKind::Extrude(e) => vec![&mut e.distance],
+            FeatureKind::Revolve(r) => vec![&mut r.angle],
+            FeatureKind::Transform(t) => t
+                .translate
+                .iter_mut()
+                .chain(t.pivot.iter_mut())
+                .chain(t.axis.iter_mut())
+                .chain([&mut t.angle])
+                .collect(),
+            FeatureKind::Mirror(m) => m.point.iter_mut().chain(m.normal.iter_mut()).collect(),
+            FeatureKind::Pattern(p) => {
+                let mut out = vec![&mut p.count];
+                match &mut p.layout {
+                    PatternLayout::Linear { step } => out.extend(step.iter_mut()),
+                    PatternLayout::Circular { point, axis, angle } => {
+                        out.extend(point.iter_mut());
+                        out.extend(axis.iter_mut());
+                        out.push(angle);
+                    }
+                }
+                out
+            }
         }
     }
 }
@@ -497,6 +693,14 @@ impl Document {
                 sketch
                     .validate()
                     .map_err(|e| DocError::Sketch(feature.id, e))?;
+                if let SketchPlane::Face { face, .. } = &sketch.plane {
+                    face.check().map_err(|reason| {
+                        DocError::Invalid(format!(
+                            "the face `{}` lies on is not a name: {reason}",
+                            feature.name
+                        ))
+                    })?;
+                }
             }
         }
         match self.rollback {

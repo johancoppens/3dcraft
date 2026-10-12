@@ -9,7 +9,7 @@ use crate::params::Params;
 use crate::{CommandError, CommandSpec, OpenDocument, Session, base64};
 use craft3d_doc::{
     Block, Cone, Cylinder, DocError, Document, Expr, Extrude, Feature, FeatureId, FeatureKind,
-    LengthUnit, Orientation, Sphere, Tolerance, Torus, Units,
+    LengthUnit, Orientation, PatternLayout, Sphere, Tolerance, Torus, Units,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use craft3d_io::MeshFormat;
@@ -75,8 +75,8 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Adds a ring torus about axis, centred at position: major is the radius of the ring, minor of the tube.", doc: true, feature_torus),
     spec!("feature.extrude", "Extrude", r#"{"sketch": id or name, "distance": expr, "symmetric": boolean = false, "name": string = automatic}"#,
         "Adds a solid by sweeping the closed profiles of a sketch along its normal: loops of lines and arcs, and circles; a loop inside another is a hole. A negative distance goes the other way; symmetric puts half on each side of the sketch plane.", doc: true, feature_extrude),
-    spec!("feature.edit", "Edit Feature", r#"{"feature": id or name, "size": [expr; 3], "position": [expr; 3], "axis": [number; 3], "angle": expr, "radius": expr, "height": expr, "major": expr, "minor": expr, "distance": expr, "symmetric": boolean}"#,
-        "Changes parameters of a feature; give only the ones to change.", doc: true, feature_edit),
+    spec!("feature.edit", "Edit Feature", r#"{"feature": id or name, "size": [expr; 3], "position": [expr; 3], "axis": [number; 3], "angle": expr, "radius": expr, "height": expr, "major": expr, "minor": expr, "distance": expr, "symmetric": boolean, "translate": [expr; 3], "pivot": [expr; 3], "point": [expr; 3], "normal": [number; 3], "step": [expr; 3], "count": expr, "keep": boolean}"#,
+        "Changes parameters of a feature; give only the ones to change. Which ones a feature has depends on its kind (document.inspect shows them under params).", doc: true, feature_edit),
     spec!("feature.rename", "Rename Feature", r#"{"feature": id or name, "name": string}"#,
         "Renames a feature.", doc: true, feature_rename),
     spec!("feature.suppress", "Suppress Feature", r#"{"feature": id or name, "suppressed": boolean = true}"#,
@@ -135,12 +135,12 @@ pub(crate) fn edit<T>(
     // Every edit ends with the sketches solved and their solution stored,
     // in the same undo step: a changed variable moves the sketches that
     // use it, and the next solve starts from where they are now.
-    session
-        .document_mut()?
-        .history
+    let open = session.document_mut()?;
+    let cache = &mut open.cache;
+    open.history
         .apply(label, |doc| {
             let out = change(doc)?;
-            craft3d_regen::settle_sketches(doc);
+            craft3d_regen::settle_sketches_cached(doc, cache);
             Ok(out)
         })
         .map_err(doc_error(command))
@@ -199,11 +199,11 @@ pub(crate) fn feature_ref(
     }
 }
 
-fn exprs(values: [String; 3]) -> [Expr; 3] {
+pub(crate) fn exprs(values: [String; 3]) -> [Expr; 3] {
     values.map(Expr::new)
 }
 
-fn origin() -> [String; 3] {
+pub(crate) fn origin() -> [String; 3] {
     ["0".to_string(), "0".to_string(), "0".to_string()]
 }
 
@@ -211,7 +211,7 @@ fn feature_json(feature: &Feature) -> Value {
     json!({ "id": feature.id.to_string(), "name": feature.name })
 }
 
-fn add_feature(
+pub(crate) fn add_feature(
     session: &mut Session,
     command: &'static str,
     name: Option<&str>,
@@ -549,7 +549,7 @@ fn orientation(p: &Params) -> Result<Orientation, CommandError> {
     })
 }
 
-fn required(p: &Params, key: &str) -> Result<Expr, CommandError> {
+pub(crate) fn required(p: &Params, key: &str) -> Result<Expr, CommandError> {
     Ok(Expr::new(p.expr(key)?.ok_or_else(|| p.missing(key))?))
 }
 
@@ -644,7 +644,7 @@ fn feature_extrude(session: &mut Session, params: &Value) -> Run {
 }
 
 /// The parameters `feature.edit` can change, by name.
-const EDITABLE: [&str; 10] = [
+const EDITABLE: [&str; 17] = [
     "size",
     "position",
     "axis",
@@ -655,6 +655,13 @@ const EDITABLE: [&str; 10] = [
     "angle",
     "distance",
     "symmetric",
+    "translate",
+    "pivot",
+    "point",
+    "normal",
+    "step",
+    "count",
+    "keep",
 ];
 
 fn feature_edit(session: &mut Session, params: &Value) -> Run {
@@ -668,13 +675,26 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
         "feature",
     )?;
     // Validate the shape of everything given before touching anything.
-    for key in ["size", "position", "axis"] {
+    for key in [
+        "size",
+        "position",
+        "axis",
+        "translate",
+        "pivot",
+        "point",
+        "normal",
+        "step",
+    ] {
         p.expr3(key)?;
     }
-    for key in ["radius", "height", "major", "minor", "angle", "distance"] {
+    for key in [
+        "radius", "height", "major", "minor", "angle", "distance", "count",
+    ] {
         p.expr(key)?;
     }
-    let symmetric = p.bool("symmetric")?;
+    for key in ["symmetric", "keep"] {
+        p.bool(key)?;
+    }
     let given: Vec<&str> = EDITABLE
         .into_iter()
         .filter(|key| p.get(key).is_some())
@@ -753,6 +773,46 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
                 ("symmetric", Slot::Flag(&mut e.symmetric)),
             ],
         ),
+        FeatureKind::Revolve(r) => (
+            "revolve",
+            vec![
+                ("angle", Slot::One(&mut r.angle)),
+                ("symmetric", Slot::Flag(&mut r.symmetric)),
+            ],
+        ),
+        FeatureKind::Transform(t) => (
+            "transform",
+            vec![
+                ("translate", Slot::Triple(&mut t.translate)),
+                ("pivot", Slot::Triple(&mut t.pivot)),
+                ("axis", Slot::Triple(&mut t.axis)),
+                ("angle", Slot::One(&mut t.angle)),
+                ("keep", Slot::Flag(&mut t.keep)),
+            ],
+        ),
+        FeatureKind::Mirror(m) => (
+            "mirror",
+            vec![
+                ("point", Slot::Triple(&mut m.point)),
+                ("normal", Slot::Triple(&mut m.normal)),
+                ("keep", Slot::Flag(&mut m.keep)),
+            ],
+        ),
+        FeatureKind::Pattern(pattern) => {
+            let mut slots = vec![("count", Slot::One(&mut pattern.count))];
+            match &mut pattern.layout {
+                PatternLayout::Linear { step } => {
+                    slots.push(("step", Slot::Triple(step)));
+                    ("linear pattern", slots)
+                }
+                PatternLayout::Circular { point, axis, angle } => {
+                    slots.push(("point", Slot::Triple(point)));
+                    slots.push(("axis", Slot::Triple(axis)));
+                    slots.push(("angle", Slot::One(angle)));
+                    ("circular pattern", slots)
+                }
+            }
+        }
     };
     let names: Vec<&str> = own.iter().map(|(key, _)| *key).collect();
     if let Some(unused) = given.iter().find(|key| !names.contains(key)) {
@@ -774,7 +834,7 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
                 }
             }
             Slot::Flag(target) => {
-                if let Some(value) = symmetric {
+                if let Some(value) = p.bool(key)? {
                     *target = value;
                 }
             }
@@ -923,8 +983,15 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
         ) {
             map.insert("dof".into(), solved.dof.map_or(Value::Null, Value::from));
         }
+        // A body that went into a later feature is no longer listed under
+        // bodies; this says where it went.
+        if let (Some(map), Some(taker)) =
+            (entry.as_object_mut(), outcome.and_then(|o| o.consumed_by))
+        {
+            map.insert("bodyUsedBy".into(), taker.to_string().into());
+        }
         features.push(entry);
-        if let Some(body) = outcome.and_then(|o| o.body.as_ref()) {
+        if let Some(body) = outcome.and_then(|o| o.own_body()) {
             let mut entry = json!({
                 "feature": feature.id.to_string(),
                 "name": feature.name,
@@ -941,15 +1008,11 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
             }
             // What each face is called by the features that come after:
             // a name made of where the face came from, not of its index.
-            if let (Some(map), Some(origins)) = (
+            if let (Some(map), Some(names)) = (
                 entry.as_object_mut(),
-                outcome.and_then(|o| o.origins.as_ref()),
+                outcome.and_then(|o| o.names.as_ref()),
             ) {
-                let names: Vec<String> = origins
-                    .faces
-                    .iter()
-                    .map(|origin| craft3d_regen::name_of(feature.id, origin).to_string())
-                    .collect();
+                let names: Vec<String> = names.faces.iter().map(ToString::to_string).collect();
                 map.insert("faceNames".into(), names.into());
             }
             // From a tessellation: exact for flat-faced bodies, inside the
@@ -1066,7 +1129,7 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
                 json!({ "feature": outcome.id.to_string(), "name": name, "problem": reason }),
             );
         }
-        if let Some(body) = &outcome.body {
+        if let Some(body) = outcome.own_body() {
             checked += 1;
             for defect in craft3d_topo::check(body, &tolerance) {
                 problems.push(json!({

@@ -75,7 +75,7 @@ Checked on generated inputs (proptest), by comparing mass properties and validit
 ### Oracle 5: determinism and round trips
 
 - regenerate twice → byte-identical bodies
-- incremental regeneration after an edit = full regeneration from scratch
+- incremental regeneration after an edit = full regeneration from scratch (built: `Session::regeneration_matches_a_full_one()`; the `run` helper of the engine suites asserts it after every command, and `crates/engine/tests/regen_cache.rs` adds a seeded random walk of edits and the counts of rebuilt features)
 - save → load → regenerate → same bodies (compared by a canonical hash) and same feature statuses
 - strip every cache from a `.3dcraft` → still opens to the same model
 - replay a recorded command script → same document

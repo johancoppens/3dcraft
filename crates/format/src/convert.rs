@@ -172,56 +172,171 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 distance: expr_to_manifest(distance),
                 symmetric: *symmetric,
             },
+            doc::FeatureKind::Revolve(doc::Revolve {
+                sketch: doc::FeatureId(sketch),
+                axis,
+                angle,
+                symmetric,
+            }) => manifest::FeatureKind::Revolve {
+                sketch: *sketch,
+                axis: match axis {
+                    doc::RevolveAxis::X => manifest::RevolveAxis::X,
+                    doc::RevolveAxis::Y => manifest::RevolveAxis::Y,
+                    doc::RevolveAxis::Line {
+                        entity: doc::EntityId(entity),
+                    } => manifest::RevolveAxis::Line { entity: *entity },
+                },
+                angle: expr_to_manifest(angle),
+                symmetric: *symmetric,
+            },
+            doc::FeatureKind::Transform(doc::Transform {
+                source: doc::FeatureId(source),
+                translate,
+                pivot,
+                axis,
+                angle,
+                keep,
+            }) => manifest::FeatureKind::Transform {
+                source: *source,
+                translate: exprs_to_manifest(translate),
+                pivot: exprs_to_manifest(pivot),
+                axis: exprs_to_manifest(axis),
+                angle: expr_to_manifest(angle),
+                keep: *keep,
+            },
+            doc::FeatureKind::Mirror(doc::Mirror {
+                source: doc::FeatureId(source),
+                point,
+                normal,
+                keep,
+            }) => manifest::FeatureKind::Mirror {
+                source: *source,
+                point: exprs_to_manifest(point),
+                normal: exprs_to_manifest(normal),
+                keep: *keep,
+            },
+            doc::FeatureKind::Pattern(doc::Pattern {
+                source: doc::FeatureId(source),
+                count,
+                layout,
+            }) => manifest::FeatureKind::Pattern {
+                source: *source,
+                count: expr_to_manifest(count),
+                layout: match layout {
+                    doc::PatternLayout::Linear { step } => manifest::PatternLayout::Linear {
+                        step: exprs_to_manifest(step),
+                    },
+                    doc::PatternLayout::Circular { point, axis, angle } => {
+                        manifest::PatternLayout::Circular {
+                            point: exprs_to_manifest(point),
+                            axis: exprs_to_manifest(axis),
+                            angle: expr_to_manifest(angle),
+                        }
+                    }
+                },
+            },
         },
     }
 }
 
-fn name_to_manifest(name: &doc::PersistentName) -> manifest::Name {
+fn role_to_manifest(role: doc::NameRole) -> manifest::NameRole {
     use doc::NameRole as D;
     use manifest::NameRole as M;
-    let doc::PersistentName {
-        feature: doc::FeatureId(feature),
-        role,
-        sources,
-    } = name;
-    manifest::Name {
-        feature: *feature,
-        role: match role {
-            D::StartCap => M::StartCap,
-            D::EndCap => M::EndCap,
-            D::Side => M::Side,
-            D::StartEdge => M::StartEdge,
-            D::EndEdge => M::EndEdge,
-            D::LateralEdge => M::LateralEdge,
-            D::StartVertex => M::StartVertex,
-            D::EndVertex => M::EndVertex,
-        },
-        sources: sources.clone(),
+    match role {
+        D::StartCap => M::StartCap,
+        D::EndCap => M::EndCap,
+        D::Side => M::Side,
+        D::StartEdge => M::StartEdge,
+        D::EndEdge => M::EndEdge,
+        D::LateralEdge => M::LateralEdge,
+        D::StartVertex => M::StartVertex,
+        D::EndVertex => M::EndVertex,
+        D::Copy => M::Copy,
+        D::Face => M::Face,
+        D::Edge => M::Edge,
+        D::Vertex => M::Vertex,
     }
+}
+
+fn role_to_doc(role: manifest::NameRole) -> doc::NameRole {
+    use doc::NameRole as D;
+    use manifest::NameRole as M;
+    match role {
+        M::StartCap => D::StartCap,
+        M::EndCap => D::EndCap,
+        M::Side => D::Side,
+        M::StartEdge => D::StartEdge,
+        M::EndEdge => D::EndEdge,
+        M::LateralEdge => D::LateralEdge,
+        M::StartVertex => D::StartVertex,
+        M::EndVertex => D::EndVertex,
+        M::Copy => D::Copy,
+        M::Face => D::Face,
+        M::Edge => D::Edge,
+        M::Vertex => D::Vertex,
+    }
+}
+
+// A name is a chain (a copy of a copy of a face), walked in a loop so a
+// hostile file cannot overflow the stack; `Document::validate` refuses a
+// chain longer than `doc::MAX_NAME_DEPTH`.
+fn name_to_manifest(name: &doc::PersistentName) -> manifest::Name {
+    let mut links = Vec::new();
+    let mut next = Some(name);
+    while let Some(link) = next {
+        let doc::PersistentName {
+            feature: doc::FeatureId(feature),
+            role,
+            sources,
+            of,
+        } = link;
+        links.push(manifest::Name {
+            feature: *feature,
+            role: role_to_manifest(*role),
+            sources: sources.clone(),
+            of: None,
+        });
+        next = of.as_deref();
+    }
+    let mut built: Option<manifest::Name> = None;
+    while let Some(mut link) = links.pop() {
+        link.of = built.take().map(Box::new);
+        built = Some(link);
+    }
+    built.unwrap_or(manifest::Name {
+        feature: name.feature.0,
+        role: role_to_manifest(name.role),
+        sources: name.sources.clone(),
+        of: None,
+    })
 }
 
 fn name_to_doc(name: manifest::Name) -> doc::PersistentName {
-    use doc::NameRole as D;
-    use manifest::NameRole as M;
-    let manifest::Name {
-        feature,
-        role,
-        sources,
-    } = name;
-    doc::PersistentName {
-        feature: doc::FeatureId(feature),
-        role: match role {
-            M::StartCap => D::StartCap,
-            M::EndCap => D::EndCap,
-            M::Side => D::Side,
-            M::StartEdge => D::StartEdge,
-            M::EndEdge => D::EndEdge,
-            M::LateralEdge => D::LateralEdge,
-            M::StartVertex => D::StartVertex,
-            M::EndVertex => D::EndVertex,
-        },
-        sources,
+    let mut links = Vec::new();
+    let mut next = Some(name);
+    while let Some(link) = next {
+        let manifest::Name {
+            feature,
+            role,
+            sources,
+            of,
+        } = link;
+        links.push(doc::PersistentName::new(
+            doc::FeatureId(feature),
+            role_to_doc(role),
+            sources,
+        ));
+        next = of.map(|boxed| *boxed);
     }
+    let mut built: Option<doc::PersistentName> = None;
+    while let Some(mut link) = links.pop() {
+        link.of = built.take().map(Box::new);
+        built = Some(link);
+    }
+    // There is always at least one link; the fallback is never used.
+    built.unwrap_or_else(|| {
+        doc::PersistentName::new(doc::FeatureId(0), doc::NameRole::Side, Vec::new())
+    })
 }
 
 fn entity_to_manifest(entity: &doc::Entity) -> manifest::SketchEntity {
@@ -568,6 +683,69 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
                 sketch: doc::FeatureId(sketch),
                 distance: doc::Expr(distance),
                 symmetric,
+            }),
+            manifest::FeatureKind::Revolve {
+                sketch,
+                axis,
+                angle,
+                symmetric,
+            } => doc::FeatureKind::Revolve(doc::Revolve {
+                sketch: doc::FeatureId(sketch),
+                axis: match axis {
+                    manifest::RevolveAxis::X => doc::RevolveAxis::X,
+                    manifest::RevolveAxis::Y => doc::RevolveAxis::Y,
+                    manifest::RevolveAxis::Line { entity } => doc::RevolveAxis::Line {
+                        entity: doc::EntityId(entity),
+                    },
+                },
+                angle: doc::Expr(angle),
+                symmetric,
+            }),
+            manifest::FeatureKind::Transform {
+                source,
+                translate,
+                pivot,
+                axis,
+                angle,
+                keep,
+            } => doc::FeatureKind::Transform(doc::Transform {
+                source: doc::FeatureId(source),
+                translate: exprs_to_doc(translate),
+                pivot: exprs_to_doc(pivot),
+                axis: exprs_to_doc(axis),
+                angle: doc::Expr(angle),
+                keep,
+            }),
+            manifest::FeatureKind::Mirror {
+                source,
+                point,
+                normal,
+                keep,
+            } => doc::FeatureKind::Mirror(doc::Mirror {
+                source: doc::FeatureId(source),
+                point: exprs_to_doc(point),
+                normal: exprs_to_doc(normal),
+                keep,
+            }),
+            manifest::FeatureKind::Pattern {
+                source,
+                count,
+                layout,
+            } => doc::FeatureKind::Pattern(doc::Pattern {
+                source: doc::FeatureId(source),
+                count: doc::Expr(count),
+                layout: match layout {
+                    manifest::PatternLayout::Linear { step } => doc::PatternLayout::Linear {
+                        step: exprs_to_doc(step),
+                    },
+                    manifest::PatternLayout::Circular { point, axis, angle } => {
+                        doc::PatternLayout::Circular {
+                            point: exprs_to_doc(point),
+                            axis: exprs_to_doc(axis),
+                            angle: doc::Expr(angle),
+                        }
+                    }
+                },
             }),
         },
     }

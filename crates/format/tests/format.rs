@@ -166,7 +166,7 @@ fn saving_twice_gives_the_same_bytes() {
 fn the_manifest_of_a_small_document_is_exactly_this() {
     let expected = r#"{
   "format": "3dcraft",
-  "format_version": 4,
+  "format_version": 5,
   "document": {
     "units": {
       "length": "mm",
@@ -1110,7 +1110,7 @@ fn an_extrusion_is_written_like_this_and_round_trips() {
     let doc = full(Units::default());
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 4);
+    assert_eq!(value["format_version"], 5);
     assert_eq!(
         value["document"]["features"][4],
         serde_json::json!({
@@ -1187,11 +1187,7 @@ fn a_version_3_file_opens_unchanged_and_is_saved_as_the_current_version() {
 fn a_sketch_on_a_face_is_written_like_this_and_round_trips() {
     use craft3d_doc::{NameRole, PersistentName};
     let mut doc = full(Units::default());
-    let face = PersistentName {
-        feature: FeatureId(6),
-        role: NameRole::EndCap,
-        sources: vec![6, 7, 8],
-    };
+    let face = PersistentName::new(FeatureId(6), NameRole::EndCap, vec![6, 7, 8]);
     doc.add_feature(
         Some("Seat"),
         FeatureKind::Sketch(Sketch::new(SketchPlane::Face {
@@ -1218,9 +1214,15 @@ fn a_sketch_on_a_face_is_written_like_this_and_round_trips() {
             panic!()
         };
         sketch.plane = SketchPlane::Face {
-            face: PersistentName {
-                role,
-                ..face.clone()
+            face: if role.is_derived() {
+                PersistentName::copy(FeatureId(6), 3, face.clone())
+            } else if role.is_numbered() {
+                PersistentName::new(FeatureId(6), role, vec![3])
+            } else {
+                PersistentName {
+                    role,
+                    ..face.clone()
+                }
             },
             offset: Expr::new("0"),
         };
@@ -1239,4 +1241,193 @@ fn a_sketch_on_a_face_is_written_like_this_and_round_trips() {
     assert!(damaged("\"role\": \"endCap\"", "\"role\": \"roof\"").is_err());
     assert!(damaged("\"feature\": 6,", "\"feature\": \"F6\",").is_err());
     assert!(damaged("\"feature\": 6,", "\"feature\": 6, \"index\": 0,").is_err());
+}
+
+/// Version 5: the features that make a body out of another body, as they
+/// are written, and a name that is a copy of a name.
+#[test]
+fn moved_mirrored_and_repeated_bodies_are_written_like_this_and_round_trip() {
+    use craft3d_doc::{Mirror, NameRole, Pattern, PatternLayout, PersistentName, Transform};
+    let mut doc = full(Units::default());
+    let body = doc.feature_by_name("Body").unwrap().id;
+    let moved = doc
+        .add_feature(
+            Some("Moved"),
+            FeatureKind::Transform(Transform {
+                source: body,
+                translate: exprs(["width", "0", "-half"]),
+                pivot: exprs(["1 mm", "2 mm", "3 mm"]),
+                axis: exprs(["0", "1", "0"]),
+                angle: Expr::new("30 deg"),
+                keep: true,
+            }),
+        )
+        .unwrap();
+    let mirrored = doc
+        .add_feature(
+            Some("Mirrored"),
+            FeatureKind::Mirror(Mirror {
+                source: moved,
+                point: exprs(["half", "0", "0"]),
+                normal: exprs(["1", "0", "0"]),
+                keep: false,
+            }),
+        )
+        .unwrap();
+    doc.add_feature(
+        Some("Row"),
+        FeatureKind::Pattern(Pattern {
+            source: mirrored,
+            count: Expr::new("4"),
+            layout: PatternLayout::Linear {
+                step: exprs(["2 * width", "0", "0"]),
+            },
+        }),
+    )
+    .unwrap();
+    let ring = doc
+        .add_feature(
+            Some("Ring"),
+            FeatureKind::Pattern(Pattern {
+                source: body,
+                count: Expr::new("teeth"),
+                layout: PatternLayout::Circular {
+                    point: exprs(["0", "0", "0"]),
+                    axis: exprs(["0", "0", "1"]),
+                    angle: Expr::new("360 deg / teeth"),
+                },
+            }),
+        )
+        .unwrap();
+    let face = PersistentName::copy(
+        ring,
+        3,
+        PersistentName::new(body, NameRole::EndCap, vec![6, 7, 8]),
+    );
+    doc.add_feature(
+        Some("Seat"),
+        FeatureKind::Sketch(Sketch::new(SketchPlane::Face {
+            face,
+            offset: Expr::new("0"),
+        })),
+    )
+    .unwrap();
+    doc.validate().unwrap();
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["format_version"], 5);
+    let kinds: Vec<&serde_json::Value> = (5..10)
+        .map(|i| &value["document"]["features"][i]["kind"])
+        .collect();
+    assert_eq!(
+        kinds[0],
+        &serde_json::json!({"type": "transform", "source": 6,
+            "translate": ["width", "0", "-half"], "pivot": ["1 mm", "2 mm", "3 mm"],
+            "axis": ["0", "1", "0"], "angle": "30 deg", "keep": true})
+    );
+    assert_eq!(
+        kinds[1],
+        &serde_json::json!({"type": "mirror", "source": 7,
+            "point": ["half", "0", "0"], "normal": ["1", "0", "0"], "keep": false})
+    );
+    assert_eq!(
+        kinds[2],
+        &serde_json::json!({"type": "pattern", "source": 8, "count": "4",
+            "layout": {"type": "linear", "step": ["2 * width", "0", "0"]}})
+    );
+    assert_eq!(
+        kinds[3],
+        &serde_json::json!({"type": "pattern", "source": 6, "count": "teeth",
+            "layout": {"type": "circular", "point": ["0", "0", "0"], "axis": ["0", "0", "1"],
+                       "angle": "360 deg / teeth"}})
+    );
+    assert_eq!(
+        kinds[4]["plane"]["face"],
+        serde_json::json!({"feature": 10, "role": "copy", "sources": [3],
+            "of": {"feature": 6, "role": "endCap", "sources": [6, 7, 8]}})
+    );
+    assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+    assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
+
+    // Damaged: unknown fields, missing ones, and names that cannot be.
+    let with = |index: usize, pointer: &str, replacement: serde_json::Value| {
+        let mut value = value.clone();
+        *value["document"]["features"][index]
+            .pointer_mut(pointer)
+            .unwrap() = replacement;
+        from_manifest_json(serde_json::to_string(&value).unwrap().as_bytes())
+    };
+    assert!(with(5, "/kind", serde_json::json!({"type": "transform"})).is_err());
+    assert!(with(5, "/kind/source", serde_json::json!("Body")).is_err());
+    assert!(with(5, "/kind/axis", serde_json::json!(["0", "1"])).is_err());
+    assert!(
+        with(
+            6,
+            "/kind",
+            serde_json::json!({"type": "mirror", "source": 7, "point": ["0", "0", "0"],
+                "normal": ["1", "0", "0"], "scale": 2})
+        )
+        .is_err()
+    );
+    assert!(with(7, "/kind/layout/type", serde_json::json!("spiral")).is_err());
+    assert!(
+        with(
+            8,
+            "/kind/layout",
+            serde_json::json!({"type": "circular", "point": ["0", "0", "0"],
+                "axis": ["0", "0", "1"], "angle": "1 deg", "radius": "1"})
+        )
+        .is_err()
+    );
+    // A copy without what it is a copy of, a copy of nothing, a side that
+    // claims to be a copy, and a chain deeper than a name may be.
+    assert!(with(9, "/kind/plane/face/of", serde_json::Value::Null).is_err());
+    assert!(with(9, "/kind/plane/face/sources", serde_json::json!([])).is_err());
+    assert!(with(9, "/kind/plane/face/role", serde_json::json!("side")).is_err());
+    let mut deep = serde_json::json!({"feature": 6, "role": "endCap", "sources": [1]});
+    for _ in 0..40 {
+        deep = serde_json::json!({"feature": 10, "role": "copy", "sources": [0], "of": deep});
+    }
+    assert!(with(9, "/kind/plane/face", deep).is_err());
+}
+
+/// A version-4 file, as written before bodies could be moved. Never edit
+/// this.
+#[test]
+fn a_version_4_file_opens_unchanged_and_is_saved_as_the_current_version() {
+    let v4 = r#"{"format": "3dcraft", "format_version": 4, "document": {
+        "units": {"length": "mm", "angle": "deg"},
+        "tolerance": {"linear": 1e-6, "angular": 1e-9},
+        "variables": [{"name": "d", "expr": "8 mm"}],
+        "features": [
+          {"id": 1, "name": "Profile", "suppressed": false, "kind": {"type": "sketch",
+            "plane": {"type": "world", "plane": "xy", "offset": "0"},
+            "entities": [
+              {"id": 1, "construction": false, "geometry": {"type": "point", "x": 0.0, "y": 0.0}},
+              {"id": 2, "construction": false, "geometry": {"type": "circle", "center": 1, "radius": 1.5}}],
+            "constraints": [],
+            "next_entity_id": 3, "next_constraint_id": 1}},
+          {"id": 2, "name": "Body", "suppressed": false,
+            "kind": {"type": "extrude", "sketch": 1, "distance": "d", "symmetric": false}},
+          {"id": 3, "name": "Seat", "suppressed": false, "kind": {"type": "sketch",
+            "plane": {"type": "face", "face": {"feature": 2, "role": "endCap", "sources": [2]},
+                      "offset": "1 mm"},
+            "entities": [], "constraints": [],
+            "next_entity_id": 1, "next_constraint_id": 1}}],
+        "rollback": null, "next_feature_id": 4}}"#;
+    let doc = from_manifest_json(v4.as_bytes()).unwrap();
+    let FeatureKind::Sketch(seat) = &doc.features[2].kind else {
+        panic!()
+    };
+    let SketchPlane::Face { face, offset } = &seat.plane else {
+        panic!()
+    };
+    assert_eq!(face.to_string(), "F2:endCap(e2)");
+    assert_eq!(offset, &Expr::new("1 mm"));
+    assert!(matches!(&doc.features[1].kind, FeatureKind::Extrude(e) if e.sketch == FeatureId(1)));
+    let saved = to_manifest_json(&doc).unwrap();
+    assert!(saved.contains(&version_field()), "{saved}");
+    // A name that is not a copy is written as it was: no `of`.
+    assert!(!saved.contains("\"of\""), "{saved}");
+    assert_eq!(from_manifest_json(saved.as_bytes()).unwrap(), doc);
 }

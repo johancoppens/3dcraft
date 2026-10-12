@@ -43,8 +43,8 @@ pub const METHODS: &[Method] = &[
     },
     Method {
         name: "batch",
-        params: r#"{"steps": [{"command": string, "params": object = {}}], "stopOnError": boolean = true}"#,
-        summary: "Runs up to 256 commands in order and returns {completed, failed, results: [{ok, result | error}]}. Not a transaction: earlier steps stay applied.",
+        params: r#"{"steps": [{"command": string, "params": object = {}}], "stopOnError": boolean = true, "terse": boolean = false}"#,
+        summary: "Runs up to 256 commands in order and returns {completed, failed, results: [{ok, result | error}]}; with terse, {completed, failed, errors: [{step, error}], last: {step, result}}. Not a transaction: earlier steps stay applied.",
     },
     Method {
         name: "methods",
@@ -234,10 +234,16 @@ fn dispatch(
             Ok(registry::command_list(session, p.str("filter")?, false))
         }
         "batch" => {
-            let p = Fields::new(method, "parameter", params, &["steps", "stopOnError"])?;
+            let p = Fields::new(
+                method,
+                "parameter",
+                params,
+                &["steps", "stopOnError", "terse"],
+            )?;
             let stop_on_error = p.bool("stopOnError")?.unwrap_or(true);
+            let terse = p.bool("terse")?.unwrap_or(false);
             let steps = registry::parse_steps(method, "parameter", &p, "command")?;
-            Ok(registry::run_batch(session, &steps, stop_on_error).report)
+            Ok(registry::run_batch(session, &steps, stop_on_error, terse).report)
         }
         "methods" => {
             Fields::new(method, "parameter", params, &[])?;

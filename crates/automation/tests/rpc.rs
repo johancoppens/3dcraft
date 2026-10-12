@@ -272,6 +272,37 @@ fn batch_continues_past_errors_when_asked() {
 
     let empty = call(&mut s, "batch", json!({"steps": []}));
     assert_eq!(empty, json!({"completed": 0, "failed": 0, "results": []}));
+
+    // Terse: the failures with the number of their step, and the result
+    // of the last step that succeeded.
+    let mut s = session();
+    let report = call(
+        &mut s,
+        "batch",
+        json!({"stopOnError": false, "terse": true, "steps": [
+            {"command": "file.new"},
+            {"command": "edit.undo"},
+            {"command": "no.such.command"},
+            {"command": "feature.sphere", "params": {"radius": 1}},
+        ]}),
+    );
+    assert_eq!(report["completed"], 2);
+    assert_eq!(report["failed"], 2);
+    assert!(report.get("results").is_none(), "{report}");
+    let steps: Vec<u64> = report["errors"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["step"].as_u64().unwrap())
+        .collect();
+    assert_eq!(steps, [1, 2]);
+    assert_eq!(report["last"]["step"], 3);
+    assert_eq!(report["last"]["result"]["status"], "ok");
+    let empty = call(&mut s, "batch", json!({"steps": [], "terse": true}));
+    assert_eq!(
+        empty,
+        json!({"completed": 0, "failed": 0, "errors": [], "last": null})
+    );
 }
 
 #[test]

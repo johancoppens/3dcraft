@@ -9,21 +9,34 @@
 //! Sketches are solved here too ([`sketch`]): a sketch feature has no body,
 //! its result is the solved sketch placed in space.
 //!
-//! Not here yet: caching per feature (every call rebuilds everything and
-//! solves every sketch), features that consume other features' bodies or
-//! sketches, persistent names.
+//! A feature can make its body out of the body of an earlier one
+//! ([`derive`]: transform, mirror, pattern). The earlier feature's result
+//! stays, marked as taken: its body is no longer one of the document's.
+//!
+//! Regeneration with a [`RegenCache`] rebuilds only the features an edit
+//! touches, and gives exactly what a full regeneration gives ([`cache`]).
 
+mod cache;
+mod derive;
 mod extrude;
+mod pending;
+mod revolve;
 mod sketch;
 
+pub use cache::RegenCache;
 pub use craft3d_kernel::extrude::{Origin, Origins, Role};
+pub use derive::{MAX_PATTERN_FACES, MAX_PATTERN_INSTANCES};
 pub use extrude::name_of;
-pub use sketch::{ConstraintResult, ConstraintState, SketchResult, settle_sketches};
+pub use sketch::{
+    ConstraintResult, ConstraintState, SketchResult, settle_sketches, settle_sketches_cached,
+};
 
-use craft3d_doc::{Document, Expr, Feature, FeatureId, FeatureKind, Orientation};
+use craft3d_doc::{
+    Document, Expr, Feature, FeatureId, FeatureKind, NameRole, Orientation, PersistentName,
+};
 use craft3d_expr::{Dimension, Evaluation, Quantity};
 use craft3d_kernel::primitives;
-use craft3d_math::{Frame, Tolerance, Vec3};
+use craft3d_math::{Frame, Tolerance, Transform, Vec3};
 use craft3d_topo::Body;
 use std::sync::Arc;
 
@@ -55,6 +68,44 @@ pub enum Status {
     Failed(String),
 }
 
+/// What every entity of a body is called: `faces[i]` is the name of face
+/// `FaceId(i)`, and so on. Names are unique within a body.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct Names {
+    pub faces: Vec<PersistentName>,
+    pub edges: Vec<PersistentName>,
+    pub vertices: Vec<PersistentName>,
+}
+
+impl Names {
+    /// The names of the entities of a primitive: each by its number. A
+    /// primitive is built in a fixed order (`craft3d_kernel::primitives`),
+    /// so for it the number is where the entity came from.
+    pub fn numbered(feature: FeatureId, body: &Body) -> Self {
+        let named = |role, count: usize| {
+            (0..count as u64)
+                .map(|i| PersistentName::new(feature, role, vec![i]))
+                .collect()
+        };
+        Self {
+            faces: named(NameRole::Face, body.faces.len()),
+            edges: named(NameRole::Edge, body.edges.len()),
+            vertices: named(NameRole::Vertex, body.vertices.len()),
+        }
+    }
+
+    /// The names an extrusion (or another operation that reports where
+    /// its entities came from) gives the entities of feature `feature`.
+    pub fn of_origins(feature: FeatureId, origins: &Origins) -> Self {
+        let named = |list: &[Origin]| list.iter().map(|o| name_of(feature, o)).collect();
+        Self {
+            faces: named(&origins.faces),
+            edges: named(&origins.edges),
+            vertices: named(&origins.vertices),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct FeatureResult {
     pub id: FeatureId,
@@ -64,9 +115,28 @@ pub struct FeatureResult {
     /// For a sketch: how it solved. Present for a failed sketch too, unless
     /// its plane could not be evaluated.
     pub sketch: Option<Arc<SketchResult>>,
-    /// Where each face, edge and vertex of `body` came from, for features
-    /// that report it (extrusions): what persistent names are made of.
-    pub origins: Option<Arc<Origins>>,
+    /// What each face, edge and vertex of `body` is called by the features
+    /// that come after, for features that name what they make (not the
+    /// primitives yet).
+    pub names: Option<Arc<Names>>,
+    /// For a feature made from another feature's body: the maps from that
+    /// body onto each instance of this one (one map, unless a pattern).
+    pub instances: Option<Arc<Vec<Transform>>>,
+    /// The later feature this feature's body went into. The body is then
+    /// no longer one of the document's bodies; it stays here because names
+    /// are resolved against it.
+    pub consumed_by: Option<FeatureId>,
+}
+
+impl FeatureResult {
+    /// The body, when it is this feature's still: not taken by a later
+    /// feature.
+    pub fn own_body(&self) -> Option<&Arc<Body>> {
+        match self.consumed_by {
+            None => self.body.as_ref(),
+            Some(_) => None,
+        }
+    }
 }
 
 /// Everything derived from one document.
@@ -80,11 +150,11 @@ pub struct Regen {
 
 impl Regen {
     /// The bodies that exist, with the feature that made each, in history
-    /// order.
+    /// order. A body that went into a later feature is not one of them.
     pub fn bodies(&self) -> impl Iterator<Item = (FeatureId, &Arc<Body>)> {
         self.features
             .iter()
-            .filter_map(|f| Some((f.id, f.body.as_ref()?)))
+            .filter_map(|f| Some((f.id, f.own_body()?)))
     }
 
     /// True when no variable and no feature failed.
@@ -249,6 +319,14 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
         FeatureKind::Sketch(_) => return Err("a sketch has no body".to_string()),
         // Built in `features`, which knows the sketch's result.
         FeatureKind::Extrude(_) => return Err("an extrusion needs its sketch".to_string()),
+        FeatureKind::Revolve(_) => return Err("a revolution needs its sketch".to_string()),
+        // Built in `features`, which knows the earlier bodies.
+        FeatureKind::Transform(_) | FeatureKind::Mirror(_) | FeatureKind::Pattern(_) => {
+            return Err(format!(
+                "a {} needs the body it is made from",
+                feature.kind.type_name()
+            ));
+        }
     }
     .map_err(|e| e.to_string())?;
 
@@ -265,8 +343,15 @@ fn checked(doc: &Document, body: Body) -> Result<Body, String> {
     }
 }
 
-/// Regenerates the whole document.
+/// Regenerates the whole document, from nothing.
 pub fn regenerate(doc: &Document) -> Regen {
+    regenerate_cached(doc, &mut RegenCache::default())
+}
+
+/// Regenerates the document, rebuilding only the features whose result
+/// can differ from what `cache` remembers of the last regeneration. The
+/// result is exactly that of [`regenerate`].
+pub fn regenerate_cached(doc: &Document, cache: &mut RegenCache) -> Regen {
     let evaluation = match doc.variable_table() {
         Ok(table) => table.evaluate(),
         // An invalid table (a hand-edited file): every variable fails the
@@ -284,7 +369,7 @@ pub fn regenerate(doc: &Document) -> Regen {
                 .collect();
             return Regen {
                 variables,
-                features: features(doc, &craft3d_expr::VariableTable::new().evaluate()),
+                features: features(doc, &craft3d_expr::VariableTable::new().evaluate(), cache),
             };
         }
     };
@@ -305,53 +390,107 @@ pub fn regenerate(doc: &Document) -> Regen {
         .collect();
     Regen {
         variables,
-        features: features(doc, &evaluation),
+        features: features(doc, &evaluation, cache),
     }
 }
 
-fn features(doc: &Document, variables: &Evaluation) -> Vec<FeatureResult> {
-    let mut results = Vec::with_capacity(doc.features.len());
-    let mut rolled_back = false;
-    for feature in &doc.features {
-        let mut solved = None;
-        let mut origins = None;
-        let (status, body) = if rolled_back {
-            (Status::RolledBack, None)
-        } else if feature.suppressed {
-            (Status::Suppressed, None)
-        } else if let FeatureKind::Sketch(sketch) = &feature.kind {
-            let placement = sketch::place(doc, variables, sketch, &results);
-            let (status, result) = sketch::solve_sketch(doc, variables, sketch, placement);
-            solved = result.map(Arc::new);
-            (status, None)
-        } else if let FeatureKind::Extrude(extrusion) = &feature.kind {
-            match extrude::build(doc, variables, extrusion, &results)
-                .and_then(|(body, names)| checked(doc, body).map(|body| (body, names)))
-            {
-                Ok((body, names)) => {
-                    origins = Some(Arc::new(names));
-                    (Status::Ok, Some(Arc::new(body)))
-                }
-                Err(reason) => (Status::Failed(reason), None),
+fn features(doc: &Document, variables: &Evaluation, cache: &mut RegenCache) -> Vec<FeatureResult> {
+    cache::features(
+        doc,
+        variables,
+        cache,
+        |feature, rolled_back, earlier, cache| {
+            build_feature(doc, variables, feature, rolled_back, earlier, cache)
+        },
+    )
+}
+
+/// Builds one feature from the results of the ones before it. Also
+/// returns the earlier feature whose body it took, if any.
+fn build_feature(
+    doc: &Document,
+    variables: &Evaluation,
+    feature: &Feature,
+    rolled_back: bool,
+    earlier: &[FeatureResult],
+    cache: &mut RegenCache,
+) -> (FeatureResult, Option<FeatureId>) {
+    let mut solved = None;
+    let mut names = None;
+    let mut instances = None;
+    let mut taken = None;
+    let (status, body) = if rolled_back {
+        (Status::RolledBack, None)
+    } else if feature.suppressed {
+        (Status::Suppressed, None)
+    } else if let FeatureKind::Sketch(sketch) = &feature.kind {
+        // Where a sketch lies does not change how it solves: it is solved
+        // flat (and that is remembered), then put in its place.
+        match sketch::place(doc, variables, sketch, earlier) {
+            Err(reason) => (Status::Failed(reason), None),
+            Ok(placement) => {
+                let (status, flat) = cache.solve(feature.id, doc, variables, sketch);
+                solved = flat.map(|flat| {
+                    Arc::new(SketchResult {
+                        origin: placement.origin,
+                        x_axis: placement.x_axis,
+                        y_axis: placement.y_axis,
+                        normal: placement.normal,
+                        ..flat
+                    })
+                });
+                (status, None)
             }
-        } else {
-            match build(doc, variables, feature) {
-                Ok(body) => (Status::Ok, Some(Arc::new(body))),
-                Err(reason) => (Status::Failed(reason), None),
-            }
+        }
+    } else if let FeatureKind::Extrude(_) | FeatureKind::Revolve(_) = &feature.kind {
+        let swept = match &feature.kind {
+            FeatureKind::Revolve(revolution) => revolve::build(doc, variables, revolution, earlier),
+            FeatureKind::Extrude(extrusion) => extrude::build(doc, variables, extrusion, earlier),
+            _ => Err("not a sweep".to_string()),
         };
-        results.push(FeatureResult {
+        match swept.and_then(|(body, origins)| checked(doc, body).map(|body| (body, origins))) {
+            Ok((body, origins)) => {
+                names = Some(Arc::new(Names::of_origins(feature.id, &origins)));
+                (Status::Ok, Some(Arc::new(body)))
+            }
+            Err(reason) => (Status::Failed(reason), None),
+        }
+    } else if let Some((source, keep)) = feature.kind.source() {
+        match derive::build(doc, variables, feature, earlier).and_then(|made| {
+            let body = checked(doc, made.body)?;
+            Ok((body, made.names, made.instances))
+        }) {
+            Ok((body, made_names, maps)) => {
+                names = made_names.map(Arc::new);
+                instances = Some(Arc::new(maps));
+                if !keep {
+                    taken = Some(source);
+                }
+                (Status::Ok, Some(Arc::new(body)))
+            }
+            Err(reason) => (Status::Failed(reason), None),
+        }
+    } else {
+        match build(doc, variables, feature) {
+            Ok(body) => {
+                names = Some(Arc::new(Names::numbered(feature.id, &body)));
+                (Status::Ok, Some(Arc::new(body)))
+            }
+            Err(reason) => (Status::Failed(reason), None),
+        }
+    };
+    (
+        FeatureResult {
             id: feature.id,
             status,
             body,
             sketch: solved,
-            origins,
-        });
-        if doc.rollback == Some(feature.id) {
-            rolled_back = true;
-        }
-    }
-    results
+            names,
+            instances,
+            consumed_by: None,
+        },
+        taken,
+    )
 }
 
 #[cfg(test)]

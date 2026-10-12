@@ -1,6 +1,6 @@
 # File formats
 
-> **Last updated:** 2026-10-12 · **Status:** `.3dcraft` (version 4) and mesh export (STL, 3MF, OBJ) work and are tested; STEP is the plan.
+> **Last updated:** 2026-10-12 · **Status:** `.3dcraft` (version 5) and mesh export (STL, 3MF, OBJ) work and are tested; STEP is the plan.
 
 | Format | Read | Write | Carries | Crates | Milestone |
 |---|---|---|---|---|---|
@@ -14,7 +14,7 @@ Formats live in standalone crates with their own format-level model and no works
 
 ## Native format: `.3dcraft`
 
-**Implemented today (format version 4; version 1, 2 and 3 files open unchanged):** a ZIP of stored entries with one entry, `manifest.json` (below). Unknown extra entries are ignored on load and not preserved on save. `blobs/`, `thumb.png`, the directory layout, autosave and crash recovery are the plan, not built.
+**Implemented today (format version 5; version 1 to 4 files open unchanged; 5 added the `transform`, `mirror` and `pattern` feature kinds and names that are copies of names):** a ZIP of stored entries with one entry, `manifest.json` (below). Unknown extra entries are ignored on load and not preserved on save. `blobs/`, `thumb.png`, the directory layout, autosave and crash recovery are the plan, not built.
 
 A `.3dcraft` file is a ZIP of STORE (uncompressed) entries, or a directory with the same layout (useful in git and for debugging):
 

@@ -367,13 +367,13 @@ fn command_list_returns_the_registry_and_filters() {
         .collect();
     assert_eq!(
         without_document,
-        ["file.new", "file.open"],
+        ["file.new", "file.open", "file.list"],
         "the fixture of this test"
     );
     assert_eq!(ids(&mut s, json!({"enabled_only": true})), without_document);
     assert_eq!(
         ids(&mut s, json!({"enabled_only": true, "filter": "open"})),
-        ["file.open"]
+        ["file.open", "file.list"]
     );
     assert_eq!(
         ids(&mut s, json!({"enabled_only": true, "filter": "feature"})),
@@ -780,6 +780,94 @@ fn unknown_tools_and_bad_arguments_are_invalid_params_naming_the_key() {
     // Arguments are checked before execution: `file.new` appeared in
     // several refused calls, and no document is open.
     assert!(!s.has_document());
+}
+
+#[test]
+fn a_terse_batch_reports_the_failures_and_the_last_result() {
+    // Field test 2026-10-12, finding 8: every step's result is a lot to
+    // send back for a batch of hundreds of sketch entities.
+    let mut s = session();
+    let steps = json!([
+        {"id": "file.new"},
+        {"id": "feature.block", "params": {"size": [2, 3, 4]}},
+        {"id": "feature.sphere", "params": {}},
+        {"id": "document.measure"},
+        {"id": "feature.nope"},
+    ]);
+    let terse = tool(
+        &mut s,
+        "command_batch",
+        json!({"steps": steps, "terse": true, "stop_on_error": false}),
+    );
+    assert_eq!(
+        terse["isError"], true,
+        "a failed step still flags the batch"
+    );
+    let report: Value =
+        serde_json::from_str(terse["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        (&report["completed"], &report["failed"]),
+        (&json!(3), &json!(2))
+    );
+    assert!(report.get("results").is_none(), "{report}");
+    let errors = report["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 2);
+    assert_eq!(errors[0]["step"], 2);
+    assert!(
+        errors[0]["error"].as_str().unwrap().contains("radius"),
+        "{report}"
+    );
+    assert_eq!(errors[1]["step"], 4);
+    assert_eq!(report["last"]["step"], 3);
+    assert!(close(&report["last"]["result"]["volume"], 24.0), "{report}");
+
+    // Stopping at the first failure: the last result is from before it.
+    let mut s = session();
+    let stopped = tool(
+        &mut s,
+        "command_batch",
+        json!({"steps": steps, "terse": true}),
+    );
+    assert_eq!(stopped["isError"], true);
+    let report: Value =
+        serde_json::from_str(stopped["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        (&report["completed"], &report["failed"]),
+        (&json!(2), &json!(1))
+    );
+    assert_eq!(report["errors"].as_array().unwrap().len(), 1);
+    assert_eq!(report["errors"][0]["step"], 2);
+    assert_eq!(report["last"]["step"], 1);
+    // Nothing succeeded: there is no last result. The same steps without
+    // terse give the full list, as before.
+    let nothing = tool(
+        &mut s,
+        "command_batch",
+        json!({"steps": [{"id": "feature.nope"}], "terse": true}),
+    );
+    let report: Value =
+        serde_json::from_str(nothing["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(report["last"], Value::Null);
+    let full = tool_json(
+        &mut s,
+        "command_batch",
+        json!({"steps": [{"id": "document.measure"}]}),
+    );
+    assert!(
+        full.get("errors").is_none() && full["results"].is_array(),
+        "{full}"
+    );
+    // The flag is a boolean.
+    let (code, message) = rpc_error(
+        &mut s,
+        "tools/call",
+        json!({"name": "command_batch", "arguments": {"steps": [], "terse": "yes"}}),
+    );
+    assert_eq!(code, -32602);
+    assert!(
+        message.contains("`terse` must be true or false"),
+        "{message}"
+    );
 }
 
 #[test]

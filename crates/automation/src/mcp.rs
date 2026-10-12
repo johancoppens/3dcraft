@@ -325,7 +325,7 @@ fn tools() -> Value {
         },
         {
             "name": "command_batch",
-            "description": "Runs up to 256 commands in order and returns {completed, failed, results: [{ok, result | error}]}. Not atomic: steps that ran stay applied when a later one fails; recover with edit.undo once per applied step.",
+            "description": "Runs up to 256 commands in order and returns {completed, failed, results: [{ok, result | error}]}. Not atomic: steps that ran stay applied when a later one fails; recover with edit.undo once per applied step. For long batches pass terse: the report is then {completed, failed, errors: [{step, error}], last: {step, result}}, the failures and the result of the last step that succeeded.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -345,6 +345,10 @@ fn tools() -> Value {
                     "stop_on_error": {
                         "type": "boolean",
                         "description": "Stop at the first failing step. Default true."
+                    },
+                    "terse": {
+                        "type": "boolean",
+                        "description": "Report only the failures and the last result. Default false."
                     }
                 },
                 "required": ["steps"],
@@ -505,11 +509,12 @@ fn tool_command_batch(
         "command_batch",
         "argument",
         arguments,
-        &["steps", "stop_on_error"],
+        &["steps", "stop_on_error", "terse"],
     )?;
     let stop_on_error = a.bool("stop_on_error")?.unwrap_or(true);
+    let terse = a.bool("terse")?.unwrap_or(false);
     let steps = registry::parse_steps("command_batch", "argument", &a, "id")?;
-    let outcome = registry::run_batch(session, &steps, stop_on_error);
+    let outcome = registry::run_batch(session, &steps, stop_on_error, terse);
     // The report is the content either way: it says which steps ran. The
     // flag makes sure a model does not read a failed batch as done.
     Ok(ToolOutput {

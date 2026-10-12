@@ -6,15 +6,18 @@
 //! (AGENTS.md rule 1).
 //!
 //! Deviations from the plan, for now: commands run synchronously on the
-//! caller's thread (no job pool, no events), and regeneration is redone in
-//! full after every edit, cached per document revision.
+//! caller's thread (no job pool, no events). Regeneration runs after every
+//! edit and rebuilds only the features the edit touches
+//! (`craft3d_regen::RegenCache`).
 
 mod base64;
+mod body_cmds;
 mod commands;
 mod file_cmds;
 mod params;
 mod scene;
 mod sketch_cmds;
+mod sweep_cmds;
 mod workspace;
 
 pub use scene::{
@@ -77,6 +80,9 @@ pub(crate) struct OpenDocument {
     pub saved_revision: Option<u64>,
     /// Regeneration of `history.revision()`.
     regen: Option<(u64, Arc<Regen>)>,
+    /// What the last regeneration found per feature, so the next one
+    /// rebuilds only what changed.
+    pub(crate) cache: craft3d_regen::RegenCache,
 }
 
 impl OpenDocument {
@@ -88,6 +94,7 @@ impl OpenDocument {
             path,
             saved_revision,
             regen: None,
+            cache: craft3d_regen::RegenCache::default(),
         }
     }
 
@@ -101,7 +108,10 @@ impl OpenDocument {
         match &self.regen {
             Some((cached, regen)) if *cached == revision => Arc::clone(regen),
             _ => {
-                let regen = Arc::new(craft3d_regen::regenerate(self.history.current()));
+                let regen = Arc::new(craft3d_regen::regenerate_cached(
+                    self.history.current(),
+                    &mut self.cache,
+                ));
                 self.regen = Some((revision, Arc::clone(&regen)));
                 regen
             }
@@ -134,11 +144,35 @@ impl Session {
     /// The command registry, in a fixed order.
     pub fn commands() -> &'static [CommandSpec] {
         static ALL: std::sync::OnceLock<Vec<CommandSpec>> = std::sync::OnceLock::new();
-        ALL.get_or_init(|| [commands::SPECS, file_cmds::SPECS, sketch_cmds::SPECS].concat())
+        ALL.get_or_init(|| {
+            [
+                commands::SPECS,
+                file_cmds::SPECS,
+                sketch_cmds::SPECS,
+                sweep_cmds::SPECS,
+                body_cmds::SPECS,
+            ]
+            .concat()
+        })
     }
 
     pub fn command(id: &str) -> Option<&'static CommandSpec> {
         Self::commands().iter().find(|c| c.id == id)
+    }
+
+    /// Regenerates the active document from nothing and compares it with
+    /// what the session holds, which was built up edit by edit. `None`
+    /// when no document is open. For tests: the two must never differ.
+    pub fn regeneration_matches_a_full_one(&mut self) -> Option<bool> {
+        let open = self.documents.get_mut(self.active)?;
+        let held = open.regen();
+        Some(*held == craft3d_regen::regenerate(open.history.current()))
+    }
+
+    /// How many features the last regeneration of the active document
+    /// rebuilt, and how many it reused.
+    pub fn last_regeneration(&self) -> Option<(usize, usize)> {
+        Some(self.documents.get(self.active)?.cache.last_run())
     }
 
     pub fn has_document(&self) -> bool {

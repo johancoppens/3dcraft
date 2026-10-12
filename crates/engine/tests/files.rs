@@ -37,10 +37,7 @@ fn an_empty_session_lists_nothing_and_has_no_active_document() {
         json!({"active": null, "documents": []})
     );
     let e = error(&mut s, "file.activate", json!({"document": 0}));
-    assert!(
-        e.contains("no document 0") && e.contains("0 are open"),
-        "{e}"
-    );
+    assert!(e.contains("no document is open"), "{e}");
 }
 
 #[test]

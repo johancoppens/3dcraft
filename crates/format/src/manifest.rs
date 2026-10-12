@@ -184,6 +184,68 @@ pub enum FeatureKind {
         #[serde(default)]
         symmetric: bool,
     },
+    /// A solid swept by turning the closed profiles of sketch `sketch` by
+    /// `angle` about `axis`, a line in the sketch's plane.
+    Revolve {
+        sketch: u64,
+        axis: RevolveAxis,
+        angle: String,
+        /// Always written; absent means one-sided.
+        #[serde(default)]
+        symmetric: bool,
+    },
+    /// The body of feature `source`, turned by `angle` about the line
+    /// through `pivot` along `axis` (three plain numbers), then shifted by
+    /// `translate`. With `keep` the source keeps its own body.
+    Transform {
+        source: u64,
+        translate: [String; 3],
+        pivot: [String; 3],
+        axis: [String; 3],
+        angle: String,
+        #[serde(default)]
+        keep: bool,
+    },
+    /// The body of feature `source`, mirrored in the plane through `point`
+    /// with normal `normal` (three plain numbers).
+    Mirror {
+        source: u64,
+        point: [String; 3],
+        normal: [String; 3],
+        #[serde(default)]
+        keep: bool,
+    },
+    /// The body of feature `source`, `count` times in one body.
+    Pattern {
+        source: u64,
+        count: String,
+        layout: PatternLayout,
+    },
+}
+
+/// The axis of a revolution: the sketch's x or y axis, or one of its
+/// lines by entity id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum RevolveAxis {
+    X,
+    Y,
+    Line { entity: u64 },
+}
+
+/// Where the instances of a pattern go: instance `i` is the source moved
+/// `i` steps.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum PatternLayout {
+    Linear {
+        step: [String; 3],
+    },
+    Circular {
+        point: [String; 3],
+        axis: [String; 3],
+        angle: String,
+    },
 }
 
 /// What a sketch lies on. (Declared after [`FeatureKind`], which uses it.)
@@ -207,6 +269,10 @@ pub struct Name {
     pub feature: u64,
     pub role: NameRole,
     pub sources: Vec<u64>,
+    /// For a `copy`: the name of the entity it is the image of. Absent for
+    /// every other role.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub of: Option<Box<Name>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -220,6 +286,12 @@ pub enum NameRole {
     LateralEdge,
     StartVertex,
     EndVertex,
+    /// The image of an entity of another body; `sources` is the instance.
+    Copy,
+    /// An entity of a primitive; `sources` is its number.
+    Face,
+    Edge,
+    Vertex,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

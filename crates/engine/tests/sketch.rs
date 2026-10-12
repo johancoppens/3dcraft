@@ -34,9 +34,17 @@ fn session() -> Session {
 }
 
 fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    session
+    let result = session
         .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"))
+        .unwrap_or_else(|e| panic!("{id} {params}: {e}"));
+    // Built up edit by edit, the document is what regenerating it from
+    // nothing gives (docs/testing.md: incremental = full regeneration).
+    assert_ne!(
+        session.regeneration_matches_a_full_one(),
+        Some(false),
+        "after {id} {params}"
+    );
+    result
 }
 
 fn error(session: &mut Session, id: &str, params: Value) -> String {

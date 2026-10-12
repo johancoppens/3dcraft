@@ -12,7 +12,7 @@
 
 **MCP bridge** (`craft3d-cli mcp --bridge PORT --control-token-file FILE`): an MCP server on stdin/stdout without a session of its own. Each message is passed unchanged to the window's `mcp.message`, answered there by the same MCP code as `craft3d-cli mcp` on the window's document, and the reply is passed back: same tools, same limits, and the viewport shows every change. One short connection per message. `PORT` may be `127.0.0.1:PORT`; an address that is not this machine is refused, because the token is sent as it is. The file roots are the window's. When the window is not running, every request gets a JSON-RPC error (code -32000) that says how to start it, and the bridge keeps serving. The bridge-only tools of the table further down (`ui_screenshot`, …) do not exist: use `doc_render_preview`.
 
-**Commands** (38): `craft3d-cli commands` prints the registry with parameters and summaries; it is the source of truth.
+**Commands** (41): `craft3d-cli commands` prints the registry with parameters and summaries; it is the source of truth.
 
 **Limits enforced:** 1 MiB per request line, 8 MiB per reply, 256 steps per batch, previews at most 2048 px on the long side, renders 16 to 4096 px per side. Not enforced yet: the triangle budget for tessellation.
 
@@ -74,7 +74,7 @@ Automation never gets ambient filesystem access. Paths in requests are relative 
 | `doc.export` | `{path, format?, tolerance?, bodies?, index?}`: by extension: `.step`/`.stp`, `.stl`, `.3mf`, `.obj` |
 | `doc.inspect` | `{index?, detail?}`: same JSON as the command `document.inspect` |
 | `doc.render` | `{index?, view?, size?, mode?, path?}`: PNG to `path`, else `{mime, base64}`; CPU renderer in headless mode |
-| `batch` | `{steps: [{command, params?} \| {method, params?}], stopOnError? (true)}` → `{completed, failed, results}`. Not a transaction: earlier steps stay applied |
+| `batch` | `{steps: [{command, params?} \| {method, params?}], stopOnError? (true), terse? (false)}` → `{completed, failed, results}`, or with `terse` `{completed, failed, errors: [{step, error}], last: {step, result}}`. Not a transaction: earlier steps stay applied |
 | `methods` | this list |
 
 ```sh
@@ -137,7 +137,7 @@ The contract that lets an agent verify its work without a picture:
 | `doc_render_preview` | PNG image content; `view`, `max_side` (default 1024, maximum 2048), `mode` (`shaded`, `shadedEdges`, `wireframe`, `ids`) |
 | `command_list` | `filter`, `enabled_only` |
 | `command_run` | `id`, `params`, `wait` |
-| `command_batch` | ordered `steps`, `stop_on_error` (default true); not atomic |
+| `command_batch` | ordered `steps`, `stop_on_error` (default true), `terse` (default false: only the failures and the last result come back); not atomic |
 | `jobs_list`, `jobs_cancel` | Background jobs |
 | bridge only: `ui_inspect`, `ui_screenshot`, `ui_set`, `control_call` | Need a running desktop app |
 

@@ -26,9 +26,17 @@ fn session() -> Session {
 }
 
 fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    session
+    let result = session
         .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"))
+        .unwrap_or_else(|e| panic!("{id} {params}: {e}"));
+    // Built up edit by edit, the document is what regenerating it from
+    // nothing gives (docs/testing.md: incremental = full regeneration).
+    assert_ne!(
+        session.regeneration_matches_a_full_one(),
+        Some(false),
+        "after {id} {params}"
+    );
+    result
 }
 
 fn constrain(session: &mut Session, kind: &str, entities: Value, value: Option<&str>) {
@@ -569,6 +577,108 @@ fn a_sketch_on_a_side_face_is_measured_from_the_origin_of_the_extruded_sketch() 
 }
 
 #[test]
+fn the_faces_of_a_primitive_are_named_by_their_number() {
+    // A primitive is built in a fixed order, so for it the number of a
+    // face says where the face came from: for a block 0 bottom, 1 top,
+    // 2 front (-y), 3 back (+y), 4 left (-x), 5 right (+x).
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(&mut s, "variable.set", json!({"name": "t", "expr": "5 mm"}));
+    let made = run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Plate", "size": [40, 20, "t"]}),
+    );
+    assert_eq!(made["id"], "F1");
+    let document = run(&mut s, "document.inspect", json!({}));
+    assert_eq!(
+        document["bodies"][0]["faceNames"],
+        json!([
+            "F1:face(0)",
+            "F1:face(1)",
+            "F1:face(2)",
+            "F1:face(3)",
+            "F1:face(4)",
+            "F1:face(5)"
+        ])
+    );
+    // The top: the block's own x and y, at its height.
+    boss(&mut s, "F1:face(1)", 0.0, 10.0, 5.0);
+    assert_boss_at(&mut s, [10.0, 5.0, 7.0]);
+    let frame =
+        |s: &mut Session| run(s, "sketch.inspect", json!({"sketch": "Seat"}))["frame"].clone();
+    assert_eq!(
+        frame(&mut s),
+        json!({"origin": [0.0, 0.0, 5.0], "x": [1.0, 0.0, 0.0], "y": [0.0, 1.0, 0.0]})
+    );
+    // Thicker, and moved: the seat stays on the top.
+    run(&mut s, "variable.set", json!({"name": "t", "expr": "8 mm"}));
+    assert_boss_at(&mut s, [10.0, 5.0, 10.0]);
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Plate", "position": [100, 0, 0]}),
+    );
+    assert_boss_at(&mut s, [110.0, 5.0, 10.0]);
+    run(&mut s, "edit.undo", json!({}));
+    // The right side (+x) and the bottom, each seen from outside.
+    for (face, expected) in [
+        (
+            "F1:face(5)",
+            json!({"origin": [40.0, 0.0, 0.0], "x": [0.0, 1.0, 0.0], "y": [0.0, 0.0, 1.0]}),
+        ),
+        (
+            "F1:face(0)",
+            json!({"origin": [0.0, 0.0, 0.0], "x": [0.0, 1.0, 0.0], "y": [1.0, 0.0, 0.0]}),
+        ),
+        (
+            "F1:face(4)",
+            json!({"origin": [0.0, 0.0, 0.0], "x": [0.0, 0.0, 1.0], "y": [0.0, 1.0, 0.0]}),
+        ),
+    ] {
+        run(
+            &mut s,
+            "sketch.edit",
+            json!({"sketch": "Seat", "face": face}),
+        );
+        assert_eq!(frame(&mut s), expected, "{face}");
+    }
+    // A cylinder: 0 the wall, 1 the bottom, 2 the top.
+    run(
+        &mut s,
+        "feature.cylinder",
+        json!({"name": "Post", "radius": 5, "height": 10, "position": [0, 50, 0]}),
+    );
+    run(
+        &mut s,
+        "sketch.edit",
+        json!({"sketch": "Seat", "face": "F4:face(2)"}),
+    );
+    assert_seat_lost(&mut s, &["Post", "comes after"]);
+    run(
+        &mut s,
+        "feature.move",
+        json!({"feature": "Post", "position": 1}),
+    );
+    assert_boss_at(&mut s, [10.0, 55.0, 12.0]);
+    run(
+        &mut s,
+        "sketch.edit",
+        json!({"sketch": "Seat", "face": "F4:face(1)"}),
+    );
+    assert_eq!(
+        frame(&mut s),
+        json!({"origin": [0.0, 50.0, 0.0], "x": [1.0, 0.0, 0.0], "y": [0.0, -1.0, 0.0]})
+    );
+    run(
+        &mut s,
+        "sketch.edit",
+        json!({"sketch": "Seat", "face": "F4:face(0)"}),
+    );
+    assert_seat_lost(&mut s, &["cylinder", "flat"]);
+}
+
+#[test]
 fn names_that_cannot_carry_a_sketch_are_refused_with_a_reason() {
     let mut s = session();
     bracket(&mut s);
@@ -605,7 +715,15 @@ fn names_that_cannot_carry_a_sketch_are_refused_with_a_reason() {
         ("F2:side(e14)", vec!["cylinder", "flat"]),
         ("F2:lateralEdge(e7,e8)", vec!["is not a face"]),
         ("F2:side(e99)", vec!["no longer has a face", "F2:side(e7)"]),
-        ("F3:side(e1)", vec!["Plate", "no names yet"]),
+        (
+            "F3:side(e1)",
+            vec!["Plate", "no longer has a face", "F3:face(0)"],
+        ),
+        (
+            "F3:face(6)",
+            vec!["Plate", "no longer has a face", "F3:face(5)"],
+        ),
+        ("F3:edge(0)", vec!["is not a face"]),
         ("F1:side(e7)", vec!["Profile", "no names yet"]),
         ("F77:side(e7)", vec!["no feature F77"]),
     ] {

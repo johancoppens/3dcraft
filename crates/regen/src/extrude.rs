@@ -15,9 +15,9 @@ use craft3d_topo::Body;
 /// `F2:side(e7)` or `F2:lateralEdge(e7,e8)`. It does not depend on the order
 /// or number of entities in the body (docs/architecture.md §4.1).
 pub fn name_of(feature: FeatureId, origin: &Origin) -> PersistentName {
-    PersistentName {
+    PersistentName::new(
         feature,
-        role: match origin.role {
+        match origin.role {
             Role::StartCap => NameRole::StartCap,
             Role::EndCap => NameRole::EndCap,
             Role::Side => NameRole::Side,
@@ -27,8 +27,8 @@ pub fn name_of(feature: FeatureId, origin: &Origin) -> PersistentName {
             Role::StartVertex => NameRole::StartVertex,
             Role::EndVertex => NameRole::EndVertex,
         },
-        sources: origin.sources.clone(),
-    }
+        origin.sources.clone(),
+    )
 }
 
 /// Why a sketch has no usable profile, with its curves called what the
@@ -63,13 +63,26 @@ fn profile_error(error: &KernelError) -> String {
     }
 }
 
-pub(crate) fn build(
-    doc: &Document,
-    variables: &Evaluation,
-    feature: &Extrude,
-    earlier: &[FeatureResult],
-) -> Result<(Body, Origins), String> {
-    let id = feature.sketch;
+/// What a sketch gives a sweep: its closed profiles and where it lies.
+pub(crate) struct Swept<'a> {
+    /// The sketch's name, for messages.
+    pub name: &'a str,
+    pub sketch: &'a craft3d_doc::Sketch,
+    pub solved: &'a crate::SketchResult,
+    pub profiles: Vec<craft3d_kernel::profile::Profile>,
+    pub plane: Frame,
+    pub tolerance: Tolerance,
+}
+
+/// The profiles of sketch `id`, for a feature that sweeps them: the
+/// sketch has to exist, come earlier, have solved, and hold at least one
+/// closed profile. `verb` is what the feature does with them ("extrude").
+pub(crate) fn swept<'a>(
+    doc: &'a Document,
+    earlier: &'a [FeatureResult],
+    id: FeatureId,
+    verb: &str,
+) -> Result<Swept<'a>, String> {
     let Some(source) = doc.feature(id) else {
         return Err(format!(
             "sketch: there is no feature {id} (was the sketch deleted?)"
@@ -134,9 +147,61 @@ pub(crate) fn build(
     }
     if curves.is_empty() {
         return Err(format!(
-            "sketch `{name}` has nothing to extrude: draw a closed profile of lines, arcs or circles"
+            "sketch `{name}` has nothing to {verb}: draw a closed profile of lines, arcs or circles"
         ));
     }
+    let tolerance = Tolerance::new(doc.tolerance.linear, doc.tolerance.angular)
+        .ok_or("the document's tolerance is not positive and finite".to_string())?;
+    let plane = Frame::new(solved.origin, solved.normal, solved.x_axis)
+        .ok_or_else(|| format!("sketch `{name}`: its plane is not finite"))?;
+    let profiles = detect_profiles(&curves, &tolerance)
+        .map_err(|e| format!("sketch `{name}`: {}", profile_error(&e)))?;
+    Ok(Swept {
+        name,
+        sketch,
+        solved,
+        profiles,
+        plane,
+        tolerance,
+    })
+}
+
+/// The kernel calls the lower offset (or angle) the start. For the names,
+/// a sweep starts in the sketch plane and ends at the far side, whichever
+/// way it goes; this swaps the two for a sweep against the positive
+/// direction.
+pub(crate) fn swap_start_and_end(origins: &mut Origins) {
+    for origin in origins
+        .faces
+        .iter_mut()
+        .chain(&mut origins.edges)
+        .chain(&mut origins.vertices)
+    {
+        origin.role = match origin.role {
+            Role::StartCap => Role::EndCap,
+            Role::EndCap => Role::StartCap,
+            Role::StartEdge => Role::EndEdge,
+            Role::EndEdge => Role::StartEdge,
+            Role::StartVertex => Role::EndVertex,
+            Role::EndVertex => Role::StartVertex,
+            Role::Side => Role::Side,
+            Role::LateralEdge => Role::LateralEdge,
+        };
+    }
+}
+
+pub(crate) fn build(
+    doc: &Document,
+    variables: &Evaluation,
+    feature: &Extrude,
+    earlier: &[FeatureResult],
+) -> Result<(Body, Origins), String> {
+    let Swept {
+        profiles,
+        plane,
+        tolerance,
+        ..
+    } = swept(doc, earlier, feature.sketch, "extrude")?;
 
     let distance = length(doc, variables, "distance", &feature.distance)?;
     if !distance.is_finite() || distance == 0.0 {
@@ -152,37 +217,11 @@ pub(crate) fn build(
     } else {
         (distance, 0.0)
     };
-    let tolerance = Tolerance::new(doc.tolerance.linear, doc.tolerance.angular)
-        .ok_or("the document's tolerance is not positive and finite".to_string())?;
-    let plane = Frame::new(solved.origin, solved.normal, solved.x_axis)
-        .ok_or_else(|| format!("sketch `{name}`: its plane is not finite"))?;
-    let profiles = detect_profiles(&curves, &tolerance)
-        .map_err(|e| format!("sketch `{name}`: {}", profile_error(&e)))?;
     let mut result = extrude(&profiles, &plane, from, to, &tolerance).map_err(|e| e.to_string())?;
-    // For the names, the extrusion starts in the sketch plane and ends at
-    // the far side, whichever way it goes. The kernel calls the lower
-    // offset the start, so an extrusion against the normal has the two
-    // swapped. (A symmetric one starts on the side the normal points
-    // away from.)
+    // "Start" is the cap in the sketch plane. (A symmetric extrusion
+    // starts on the side the normal points away from.)
     if !feature.symmetric && distance < 0.0 {
-        let origins = &mut result.origins;
-        for origin in origins
-            .faces
-            .iter_mut()
-            .chain(&mut origins.edges)
-            .chain(&mut origins.vertices)
-        {
-            origin.role = match origin.role {
-                Role::StartCap => Role::EndCap,
-                Role::EndCap => Role::StartCap,
-                Role::StartEdge => Role::EndEdge,
-                Role::EndEdge => Role::StartEdge,
-                Role::StartVertex => Role::EndVertex,
-                Role::EndVertex => Role::StartVertex,
-                Role::Side => Role::Side,
-                Role::LateralEdge => Role::LateralEdge,
-            };
-        }
+        swap_start_and_end(&mut result.origins);
     }
     Ok((result.body, result.origins))
 }

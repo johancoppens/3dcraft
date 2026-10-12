@@ -352,30 +352,36 @@ impl Placement {
     };
 }
 
-/// The face a name points at, among the features regenerated so far.
-/// A name that points at nothing is an error that says what is there
-/// instead; it never resolves to another face.
-fn resolve_face(
-    doc: &Document,
-    earlier: &[FeatureResult],
+/// The feature a name says made the entity, with its result: it has to
+/// exist, come earlier, and have a body (taken by a later feature or not).
+fn maker<'a>(
+    doc: &'a Document,
+    earlier: &'a [FeatureResult],
+    feature: craft3d_doc::FeatureId,
     name: &PersistentName,
-) -> Result<Frame, String> {
-    let Some(source) = doc.feature(name.feature) else {
+) -> Result<
+    (
+        &'a craft3d_doc::Feature,
+        &'a FeatureResult,
+        &'a craft3d_topo::Body,
+    ),
+    String,
+> {
+    let Some(source) = doc.feature(feature) else {
         return Err(format!(
-            "plane: there is no feature {} for the face {name} (was it deleted?)",
-            name.feature
+            "plane: there is no feature {feature} for the face {name} (was it deleted?)"
         ));
     };
     let made_by = &source.name;
-    let Some(outcome) = earlier.iter().find(|r| r.id == name.feature) else {
+    let Some(outcome) = earlier.iter().find(|r| r.id == feature) else {
         return Err(format!(
             "plane: `{made_by}`, which makes the face {name}, comes after this sketch in the history; move it before (feature.move)"
         ));
     };
-    let (Some(body), Some(origins)) = (&outcome.body, &outcome.origins) else {
+    let Some(body) = &outcome.body else {
         return Err(match &outcome.status {
             Status::Ok => format!(
-                "plane: `{made_by}` is a {}, whose faces have no names yet; only extrusions name their faces",
+                "plane: `{made_by}` is a {}, whose faces have no names yet",
                 source.kind.type_name()
             ),
             Status::Suppressed => {
@@ -389,54 +395,120 @@ fn resolve_face(
             }
         });
     };
-    if !name.role.is_face() {
+    Ok((source, outcome, body))
+}
+
+/// "`Plate` no longer has a face X; its faces are: ...".
+fn no_such_face(made_by: &str, name: &PersistentName, names: &[PersistentName]) -> String {
+    let there: Vec<String> = names.iter().take(12).map(ToString::to_string).collect();
+    format!(
+        "plane: `{made_by}` no longer has a face {name}; its faces are: {}{}",
+        there.join(", "),
+        if names.len() > there.len() {
+            ", ..."
+        } else {
+            ""
+        }
+    )
+}
+
+/// The frame of the face a name points at, among the features regenerated
+/// so far. A name that points at nothing is an error that says what is
+/// there instead; it never resolves to another face.
+fn resolve_face(
+    doc: &Document,
+    earlier: &[FeatureResult],
+    name: &PersistentName,
+) -> Result<Frame, String> {
+    if !name.is_face() {
         return Err(format!(
             "plane: {name} is not a face; a sketch lies on a startCap, an endCap or a side"
         ));
     }
-    let made = |origin| crate::extrude::name_of(name.feature, origin);
-    let exact = origins
-        .faces
-        .iter()
-        .position(|origin| made(origin) == *name);
+    // A copy of a face lies where the face it is a copy of lies, moved by
+    // the feature that copied it. So the chain of copies is walked down to
+    // the face as it was first made, and its frame is carried back up.
+    let mut maps = Vec::new();
+    let mut link = name;
+    while link.role == NameRole::Copy {
+        if maps.len() >= craft3d_doc::MAX_NAME_DEPTH {
+            return Err(format!("plane: {name} is made of too many names"));
+        }
+        let (source, outcome, _) = maker(doc, earlier, link.feature, name)?;
+        let made_by = &source.name;
+        let listed = outcome.names.as_ref().map_or(&[][..], |n| &n.faces[..]);
+        let (Some(of), Some(instances)) = (&link.of, &outcome.instances) else {
+            return Err(no_such_face(made_by, link, listed));
+        };
+        // The face has to be one of the body this feature was made from.
+        if source.kind.source().map(|(id, _)| id) != Some(of.feature) {
+            return Err(no_such_face(made_by, link, listed));
+        }
+        let instance = link
+            .sources
+            .first()
+            .and_then(|i| usize::try_from(*i).ok())
+            .and_then(|i| instances.get(i));
+        let Some(map) = instance else {
+            return Err(format!(
+                "plane: `{made_by}` has {} instance(s), numbered from 0; there is no {link}",
+                instances.len()
+            ));
+        };
+        maps.push(*map);
+        link = of;
+    }
+    let mut frame = made_face(doc, earlier, link, name)?;
+    for map in maps.iter().rev() {
+        // Seen from outside the moved body: z is the image of the normal
+        // and x the image of x. After a mirror that leaves y pointing the
+        // other way than the image of y, as a right-handed frame must.
+        frame = Frame::new(
+            map.point(frame.origin()),
+            map.vector(frame.z()),
+            map.vector(frame.x()),
+        )
+        .ok_or_else(|| format!("plane: the face {name} has a degenerate plane"))?;
+    }
+    Ok(frame)
+}
+
+/// The frame of a face of the feature that first made it: `link` is the
+/// end of the chain of `whole`.
+fn made_face(
+    doc: &Document,
+    earlier: &[FeatureResult],
+    link: &PersistentName,
+    whole: &PersistentName,
+) -> Result<Frame, String> {
+    let (source, outcome, body) = maker(doc, earlier, link.feature, whole)?;
+    let made_by = &source.name;
+    let Some(names) = &outcome.names else {
+        return Err(format!(
+            "plane: `{made_by}` is a {}, whose faces have no names yet (the primitives do not name their faces)",
+            source.kind.type_name()
+        ));
+    };
+    let exact = names.faces.iter().position(|face| face == link);
     // The caps of one role all lie in one plane and share one frame (that
     // of the extruded sketch), whatever their outlines are. So when the
     // outline a cap was named after has changed, the sketch still knows
     // its plane: that of any cap of the same role of the same feature.
     // A side face has no such fallback: its plane is its own.
     let same_plane = || {
-        matches!(name.role, NameRole::StartCap | NameRole::EndCap)
-            .then(|| {
-                origins
-                    .faces
-                    .iter()
-                    .position(|origin| made(origin).role == name.role)
-            })
+        matches!(link.role, NameRole::StartCap | NameRole::EndCap)
+            .then(|| names.faces.iter().position(|face| face.role == link.role))
             .flatten()
     };
     let Some(index) = exact.or_else(same_plane) else {
-        let there: Vec<String> = origins
-            .faces
-            .iter()
-            .take(12)
-            .map(|origin| made(origin).to_string())
-            .collect();
-        return Err(format!(
-            "plane: `{made_by}` no longer has a face {name}; its faces are: {}{}",
-            there.join(", "),
-            if origins.faces.len() > there.len() {
-                ", ..."
-            } else {
-                ""
-            }
-        ));
+        return Err(no_such_face(made_by, link, &names.faces));
     };
     let Some(face) = body.faces.get(index) else {
-        return Err(format!("plane: the face {name} is missing from its body"));
+        return Err(format!("plane: the face {link} is missing from its body"));
     };
     let craft3d_geom::Surface::Plane(plane) = &face.surface else {
         return Err(format!(
-            "plane: the face {name} is a {} face; a sketch needs a flat one",
+            "plane: the face {link} is a {} face; a sketch needs a flat one",
             face.surface.kind()
         ));
     };
@@ -448,7 +520,7 @@ fn resolve_face(
     // straight onto the face: a point that only moves when the face itself
     // moves along its normal.
     let mut origin = frame.origin();
-    if name.role == NameRole::Side
+    if link.role == NameRole::Side
         && let FeatureKind::Extrude(extrusion) = &source.kind
         && let Some(base) = earlier
             .iter()
@@ -462,7 +534,7 @@ fn resolve_face(
     } else {
         frame.at(origin)
     }
-    .ok_or_else(|| format!("plane: the face {name} has a degenerate plane"))
+    .ok_or_else(|| format!("plane: the face {link} has a degenerate plane"))
 }
 
 /// Where the sketch lies: its plane with the offset applied.
@@ -620,6 +692,12 @@ pub(crate) fn solve_sketch(
 /// a constraint left out as conflicting, keeps its coordinates. Returns
 /// true when anything moved.
 pub fn settle_sketches(doc: &mut Document) -> bool {
+    settle_sketches_cached(doc, &mut crate::RegenCache::default())
+}
+
+/// [`settle_sketches`], solving only the sketches that have changed since
+/// `cache` last saw them solved. The outcome is the same.
+pub fn settle_sketches_cached(doc: &mut Document, cache: &mut crate::RegenCache) -> bool {
     let Ok(table) = doc.variable_table() else {
         return false;
     };
@@ -629,7 +707,7 @@ pub fn settle_sketches(doc: &mut Document) -> bool {
         if let FeatureKind::Sketch(sketch) = &feature.kind
             && !feature.suppressed
             // Where the sketch lies does not change how it solves.
-            && let (_, Some(result)) = solve_sketch(doc, &variables, sketch, Ok(Placement::FLAT))
+            && let (_, Some(result)) = cache.solve(feature.id, doc, &variables, sketch)
             && result.dof.is_some()
             // A solution with a conflict in it is not a place to start
             // from: it may have lost what the sketch looked like (a line

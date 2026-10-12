@@ -92,32 +92,50 @@ pub(crate) struct BatchOutcome {
 /// Runs the steps in order. Not a transaction: steps that ran stay applied
 /// when a later one fails. With `stop_on_error` the first failure ends the
 /// batch, and `results` is shorter than `steps`.
+///
+/// `terse` is for long batches, where the results of every step would be
+/// a lot to send and to read: the report then holds the failures only,
+/// each with the number of its step, and the result of the last step that
+/// succeeded.
 pub(crate) fn run_batch(
     session: &mut Session,
     steps: &[Step],
     stop_on_error: bool,
+    terse: bool,
 ) -> BatchOutcome {
-    let mut results = Vec::with_capacity(steps.len());
+    let mut results = Vec::with_capacity(if terse { 0 } else { steps.len() });
+    let mut errors = Vec::new();
+    let mut last = Value::Null;
     let (mut completed, mut failed) = (0_usize, 0_usize);
-    for step in steps {
+    for (index, step) in steps.iter().enumerate() {
         match session.execute(step.command, step.params) {
             Ok(result) => {
                 completed = completed.saturating_add(1);
-                results.push(json!({ "ok": true, "result": result }));
+                if terse {
+                    last = json!({ "step": index, "result": result });
+                } else {
+                    results.push(json!({ "ok": true, "result": result }));
+                }
             }
             Err(error) => {
                 failed = failed.saturating_add(1);
-                results.push(json!({ "ok": false, "error": error.message() }));
+                if terse {
+                    errors.push(json!({ "step": index, "error": error.message() }));
+                } else {
+                    results.push(json!({ "ok": false, "error": error.message() }));
+                }
                 if stop_on_error {
                     break;
                 }
             }
         }
     }
-    BatchOutcome {
-        failed,
-        report: json!({ "completed": completed, "failed": failed, "results": results }),
-    }
+    let report = if terse {
+        json!({ "completed": completed, "failed": failed, "errors": errors, "last": last })
+    } else {
+        json!({ "completed": completed, "failed": failed, "results": results })
+    };
+    BatchOutcome { failed, report }
 }
 
 /// What a caught panic said, for the error that replaces it.

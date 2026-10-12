@@ -428,7 +428,7 @@ fn build(doc: &Document, regen: &Regen, revision: u64, tolerance: f64) -> Scene 
                 .sketches
                 .push(scene_sketch(feature, sketch, solved, tolerance));
         }
-        let Some(body) = outcome.and_then(|o| o.body.as_ref()) else {
+        let Some(body) = outcome.and_then(|o| o.own_body()) else {
             continue;
         };
         let mesh = match tessellate_body(body, &tess) {
