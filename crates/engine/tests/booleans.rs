@@ -111,7 +111,7 @@ fn assert_volume(session: &mut Session, name: &str, expected: f64) {
         (actual - expected).abs() <= 1e-9 * expected,
         "{name}: volume {actual}, expected {expected}"
     );
-    let check = run(session, "document.check", json!({}));
+    let check = run(session, "document.check", json!({"deep": true}));
     assert_eq!(check["ok"], true, "{check}");
 }
 

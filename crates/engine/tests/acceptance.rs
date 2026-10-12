@@ -52,7 +52,7 @@ fn part_volume(s: &mut Session) -> f64 {
     let bodies = document["bodies"].as_array().unwrap();
     assert_eq!(bodies.len(), 1, "one part: {bodies:?}");
     assert_eq!(bodies[0]["name"], "Part");
-    let check = run(s, "document.check", json!({}));
+    let check = run(s, "document.check", json!({"deep": true}));
     assert_eq!(check["ok"], true, "{check}");
     bodies[0]["volume"].as_f64().unwrap()
 }

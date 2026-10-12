@@ -87,7 +87,7 @@ fn assert_turned(session: &mut Session, volume: f64, centroid: [f64; 3]) {
             found["centroid"]
         );
     }
-    let check = run(session, "document.check", json!({}));
+    let check = run(session, "document.check", json!({"deep": true}));
     assert_eq!(check["ok"], true, "{check}");
 }
 

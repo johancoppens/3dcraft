@@ -241,6 +241,76 @@ fn copied(
     Ok(())
 }
 
+/// Whether any two instances of a pattern come near each other: touch or
+/// share volume, as far as their boxes can tell.
+///
+/// Every instance is the first one moved by a multiple of one step, so
+/// two instances are near exactly when the first is near some other one:
+/// it is enough to look at the first against each of the others.
+fn instances_meet(doc: &Document, placed: &[Body]) -> Result<bool, String> {
+    let Some((first, others)) = placed.split_first() else {
+        return Ok(false);
+    };
+    let slack = doc.tolerance.linear;
+    let corners = |body: &Body| {
+        body.bbox()
+            .map_err(|e| e.to_string())
+            .map(|bbox| bbox.corners())
+    };
+    let Some((lo, hi)) = corners(first)? else {
+        return Ok(false);
+    };
+    for other in others {
+        let Some((other_lo, other_hi)) = corners(other)? else {
+            continue;
+        };
+        let apart =
+            |a_lo: f64, a_hi: f64, b_lo: f64, b_hi: f64| a_hi < b_lo - slack || b_hi < a_lo - slack;
+        if !(apart(lo.x, hi.x, other_lo.x, other_hi.x)
+            || apart(lo.y, hi.y, other_lo.y, other_hi.y)
+            || apart(lo.z, hi.z, other_lo.z, other_hi.z))
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// The instances joined into one body by the kernel's union, one after
+/// the other: where they touch or overlap they become one piece, and no
+/// face is left inside the material. Returns the body and, for each of
+/// its faces, the instance and the face of the source it came from.
+fn joined(doc: &Document, placed: &[Body]) -> Result<(Body, Vec<(u64, usize)>), String> {
+    use craft3d_kernel::boolean::{BooleanOp, Operand, boolean};
+    let tolerance = craft3d_math::Tolerance::new(doc.tolerance.linear, doc.tolerance.angular)
+        .ok_or("the document's tolerance is not positive and finite".to_string())?;
+    let Some((first, others)) = placed.split_first() else {
+        return Err("there is no instance".to_string());
+    };
+    let mut body = first.clone();
+    let mut sources: Vec<(u64, usize)> = (0..body.faces.len()).map(|face| (0, face)).collect();
+    for (index, other) in others.iter().enumerate() {
+        let instance = index.saturating_add(1) as u64;
+        let result = boolean(&body, other, BooleanOp::Union, &tolerance).map_err(|e| {
+            format!("instance {instance} touches or overlaps the ones before it and cannot be joined to them: {e}")
+        })?;
+        let mut next = Vec::with_capacity(result.faces.len());
+        for source in &result.faces {
+            let face = source.face.0 as usize;
+            next.push(match source.operand {
+                Operand::A => sources
+                    .get(face)
+                    .copied()
+                    .ok_or("the union lost track of a face".to_string())?,
+                Operand::B => (instance, face),
+            });
+        }
+        body = result.body;
+        sources = next;
+    }
+    Ok((body, sources))
+}
+
 pub(crate) fn build(
     doc: &Document,
     variables: &Evaluation,
@@ -268,6 +338,41 @@ pub(crate) fn build(
     let mut placed = Vec::with_capacity(maps.len());
     for map in &maps {
         placed.push(body.transformed(map).map_err(|e| e.to_string())?);
+    }
+    // A pattern whose instances touch or overlap is joined by the kernel:
+    // put side by side in one body they would leave faces inside the
+    // material, a solid that passes through itself.
+    if matches!(feature.kind, FeatureKind::Pattern(_)) && instances_meet(doc, &placed)? {
+        let (result, sources) = joined(doc, &placed)?;
+        let names = match &source.names {
+            None => None,
+            Some(names) => {
+                let mut faces = Vec::with_capacity(sources.len());
+                for (instance, face) in sources {
+                    let Some(name) = names.faces.get(face) else {
+                        return Err("the union lost track of a face".to_string());
+                    };
+                    if name.depth() >= MAX_NAME_DEPTH {
+                        return Err(format!(
+                            "more than {MAX_NAME_DEPTH} features in a row each make their body from the one before"
+                        ));
+                    }
+                    faces.push(PersistentName::copy(feature.id, instance, name.clone()));
+                }
+                // As after a boolean: edges are referred to by the faces
+                // they lie between.
+                Some(Names {
+                    faces,
+                    edges: Vec::new(),
+                    vertices: Vec::new(),
+                })
+            }
+        };
+        return Ok(Derived {
+            body: result,
+            names,
+            instances: maps,
+        });
     }
     let merged = match placed.len() {
         1 => placed.pop(),

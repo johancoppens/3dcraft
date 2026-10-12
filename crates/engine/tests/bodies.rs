@@ -105,7 +105,7 @@ fn assert_body(session: &mut Session, name: &str, volume: f64, centroid: [f64; 3
             found["centroid"]
         );
     }
-    let check = run(session, "document.check", json!({}));
+    let check = run(session, "document.check", json!({"deep": true}));
     assert_eq!(check["ok"], true, "{check}");
 }
 
@@ -708,6 +708,82 @@ fn malformed_requests_are_refused_and_change_nothing() {
         e.contains("`translate` is not a parameter of a extrude"),
         "{e}"
     );
+}
+
+#[test]
+fn instances_that_touch_or_overlap_are_joined() {
+    // Side by side in one body, instances that touch would leave their
+    // touching faces inside the material, and instances that overlap would
+    // pass through each other: the plain check sees neither. So a pattern
+    // joins them, as a union would.
+    let mut s = bar(0.0, 0.0);
+    run(
+        &mut s,
+        "feature.pattern",
+        json!({"source": "Bar", "count": 3, "step": [4, 1, 0], "name": "Row"}),
+    );
+    // Three bars of 80, each shifted by (4, 1): neighbours share
+    // 6 x 3 x 2 = 36, the first and third 2 x 2 x 2 = 8, and that 8 lies
+    // in the second as well. 240 - (36 + 36 + 8) + 8 = 168.
+    let found = body(&mut s, "Row").unwrap();
+    assert!(
+        (found["volume"].as_f64().unwrap() - 168.0).abs() < 1e-9,
+        "{found}"
+    );
+    let deep = run(&mut s, "document.check", json!({"deep": true}));
+    assert_eq!(
+        (&deep["ok"], &deep["deep"]),
+        (&json!(true), &json!(true)),
+        "{deep}"
+    );
+    // Every face is still named after the instance and the face it came
+    // from.
+    let names = found["faceNames"].as_array().unwrap();
+    assert!(
+        names.contains(&json!("F3:copy(2)/F2:endCap(e5,e6,e7,e8)")),
+        "{names:?}"
+    );
+    assert!(
+        names
+            .iter()
+            .all(|n| n.as_str().unwrap().starts_with("F3:copy("))
+    );
+    // Touching: bars end to end, side by side, stacked. One piece each.
+    for (step, centroid) in [
+        ([10, 0, 0], [15.0, 2.0, 1.0]),
+        ([0, 4, 0], [5.0, 6.0, 1.0]),
+        ([0, 0, 2], [5.0, 2.0, 3.0]),
+    ] {
+        run(
+            &mut s,
+            "feature.edit",
+            json!({"feature": "Row", "step": step}),
+        );
+        assert_body(&mut s, "Row", 240.0, centroid);
+    }
+    // Apart: nothing to join, and every edge keeps its name.
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Row", "step": [14, 0, 0]}),
+    );
+    assert_body(&mut s, "Row", 240.0, [19.0, 2.0, 1.0]);
+    let edges = run(&mut s, "document.edges", json!({"feature": "Row"}));
+    assert!(edges["edges"][0].get("name").is_some(), "{edges}");
+    // Boxes that overlap although the bodies do not: bars turned about a
+    // far axis, close together.
+    run(&mut s, "feature.delete", json!({"feature": "Row"}));
+    run(
+        &mut s,
+        "feature.pattern",
+        json!({"source": "Bar", "count": 12, "angle": "30 deg", "point": [-12, 2, 0], "name": "Ring"}),
+    );
+    assert_body(&mut s, "Ring", 960.0, [-12.0, 2.0, 1.0]);
+    let e = s
+        .execute("document.check", &json!({"deep": "yes"}))
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("`deep` must be"), "{e}");
 }
 
 #[test]

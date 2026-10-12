@@ -90,8 +90,8 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Regenerates only up to and including this feature; null removes the marker.", doc: true, history_rollback),
     spec!("document.inspect", "Inspect", "{}",
         "Returns the whole document state: units, variables with values, features with status, bodies with counts and mass properties, undo history.", doc: true, document_inspect),
-    spec!("document.check", "Check", "{}",
-        "Checks every body for validity and lists every problem: failed variables, failed features, defects of bodies. ok is true when there is none.", doc: true, document_check),
+    spec!("document.check", "Check", r#"{"deep": boolean = false}"#,
+        "Checks every body for validity and lists every problem: failed variables, failed features, defects of bodies. ok is true when there is none. deep also looks for bodies that pass through themselves (faces crossing, shells overlapping or nested the wrong way), on a fine mesh: slower, and what it reports is certain (deeper than the mesh could be off); doubts are counted under marginal.", doc: true, document_check),
     spec!("document.measure", "Measure", r#"{"feature": id or name = all bodies}"#,
         "Returns volume, area and centroid, per body and in total, in document units.", doc: true, document_measure),
     spec!("view.render", "Render", r#"{"path": string, "width": integer = 800, "height": integer = 600, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the whole model, "mode": "shaded|ids" = "shaded", "tolerance": number = automatic}"#,
@@ -1181,7 +1181,8 @@ fn document_measure(session: &mut Session, params: &Value) -> Run {
 }
 
 fn document_check(session: &mut Session, params: &Value) -> Run {
-    Params::new("document.check", params, &[])?;
+    let p = Params::new("document.check", params, &["deep"])?;
+    let deep = p.bool("deep")?.unwrap_or(false);
     let open = session.document_mut()?;
     let regen = open.regen();
     let doc = open.history.current();
@@ -1196,6 +1197,7 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
         }
     }
     let mut checked = 0;
+    let mut marginal = 0_usize;
     for outcome in &regen.features {
         let name = doc
             .feature(outcome.id)
@@ -1218,9 +1220,35 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
                     "feature": outcome.id.to_string(), "name": name, "problem": format!("cannot be measured: {error}"),
                 }));
             }
+            if deep {
+                let params = craft3d_tess::SelfCheckParams::new(doc.tolerance.linear);
+                match craft3d_tess::body_self_intersections(body, &params) {
+                    Ok(found) => {
+                        marginal = marginal
+                            .saturating_add(found.marginal_crossings)
+                            .saturating_add(found.shells.iter().filter(|s| !s.certain).count());
+                        if !found.is_clean() {
+                            problems.push(json!({
+                                "feature": outcome.id.to_string(), "name": name,
+                                "problem": format!("the body passes through itself: {found}"),
+                            }));
+                        }
+                    }
+                    Err(error) => problems.push(json!({
+                        "feature": outcome.id.to_string(), "name": name,
+                        "problem": format!("cannot be searched for self-intersections: {error}"),
+                    })),
+                }
+            }
         }
     }
-    Ok(json!({ "ok": problems.is_empty(), "bodiesChecked": checked, "problems": problems }))
+    let mut result =
+        json!({ "ok": problems.is_empty(), "bodiesChecked": checked, "problems": problems });
+    if let (true, Some(map)) = (deep, result.as_object_mut()) {
+        map.insert("deep".into(), true.into());
+        map.insert("marginal".into(), marginal.into());
+    }
+    Ok(result)
 }
 
 // ------------------------------------------------------------------- view
