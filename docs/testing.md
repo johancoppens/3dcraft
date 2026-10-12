@@ -160,3 +160,18 @@ A test that renders writes its images under `target/evidence/<crate>/<test>/` (a
 ## Performance tests
 
 Benchmarks (criterion or simple timed examples) start with the first heavy algorithm: tessellation of a body with thousands of faces, a boolean between two such bodies, full and incremental regeneration of a 100-feature history. Numbers are recorded in the dev log with the machine and its load. Budgets and a generated scorecard follow PhotoCraft's model once there is a baseline (M4+).
+
+
+## Geometry: intersections (`crates/geom/tests/`)
+
+What holds `geom::intersect` to its contract, as built (2026-10-13):
+
+- **On both surfaces.** Every returned curve is sampled at 241 places; each sample is within the curve's stated `deviation` of both surfaces by their own `project`, inside the box, and the `tangent` flag agrees with the angle between the normals (`common::check_meeting`).
+- **Closed forms against independent formulas** at scales 1e-3, 1 and 1e6: radius and centre of plane/sphere and sphere/sphere circles (Pythagoras, Heron), eccentricity of plane/cone ellipses, the hyperbola's equation in the cone's frame, circles about a shared axis from the profiles, the semi-axes of the ellipses of equal crossing cylinders (`meet_exact.rs`).
+- **The marcher against the closed forms** (`meet_surfaces_numeric`, a test-only entry point that skips them): the same number of branches, along the exact curves, of the same length (`meet_numeric.rs`).
+- **Known curves**: two closed quartics of unequal crossing cylinders, Viviani's curve, Villarceau circles, each against its parametrisation; Bézier and NURBS patches and the teapot's 32 patches against root finding along iso-lines (`meet_shapes.rs`, `meet_teapot.rs`).
+- **Completeness on random pairs** of all 28 combinations of kinds (own SplitMix64, no dependency): one surface is sampled on a grid, the sign of the distance to the other is taken at every node from formulas in the test, and every change of sign must lie by a returned curve and every returned curve by changes of sign. The test prints, per pair, how many cases crossed, were apart and were refused (with the reason) and the slowest (`meet_random.rs`, `--nocapture`).
+- **Curve/surface**: every hit list against a brute-force search for sign changes along the curve, for fixed cases and for random pairs of all 4 x 7 kinds (`curve_surface.rs`).
+- **Determinism and symmetry**: the same call twice and with the surfaces swapped gives equal results (`==` on the values, so bit for bit). **Hostile input** (empty or unbounded box, bad tolerances, collapsed patches, surfaces tangent along a line, a line lying on a patch for a stretch) is an error or a plain answer within a time limit.
+
+A curve near a point where the surfaces are tangent is well defined across both surfaces but not along them: a point within the tolerance of both can be much further from the exact curve there. Tests compare positions with the exact curve only as tightly as that allows.

@@ -10,3 +10,8 @@ workspace = true
 
 [dependencies]
 craft3d-math.workspace = true
+
+[dev-dependencies]
+# The Utah teapot's patches, for the intersection tests. Integration tests
+# only: unit tests would see two copies of this crate's types.
+craft3d-testkit.workspace = true

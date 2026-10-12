@@ -1,7 +1,12 @@
-//! Intersections in closed form, for the pairs that have one: planes and
-//! cylinders with each other, and lines, circles and ellipses with planes
-//! and cylinders. Everything else is `GeomError::Unsupported`, never a
-//! guess.
+//! Intersections of surfaces with surfaces and of curves with surfaces.
+//!
+//! [`meet_surfaces`] and [`intersect_curve_surface`] cover every kind: in
+//! closed form where there is one, numerically otherwise (the submodules
+//! say how, and what is proved about completeness). A numeric result is
+//! within the tolerance or an error, never a guess.
+//!
+//! [`intersect_surfaces`] is the older interface for planes and cylinders
+//! only, in closed form, without a box; it refuses everything else.
 //!
 //! Derived from first principles (analytic geometry of quadrics; see for
 //! instance Mortenson, *Geometric Modeling*, the chapters on intersections).
@@ -14,6 +19,15 @@
 //! parallel nor safely apart from parallel ([`NEARLY_PARALLEL`]) has an
 //! intersection whose position amplifies rounding by a million or more and
 //! is refused.
+
+mod clip;
+mod curves;
+mod exact;
+mod field;
+mod march;
+mod meet;
+
+pub use meet::{Meeting, MeetingCurve, SurfaceMeeting, meet_surfaces, meet_surfaces_numeric};
 
 use crate::{Circle, Curve3, Ellipse, GeomError, Line, Surface};
 use craft3d_math::{Frame, Tolerance, Vec3};
@@ -242,9 +256,18 @@ fn cylinder_cylinder(
     ]))
 }
 
-/// Where a curve meets a surface. The curve is taken whole: a line is
-/// infinite, a circle or ellipse closed; the caller keeps the hits in the
-/// range it cares about.
+/// Where a curve meets a surface, for every kind of curve and surface. The
+/// curve is taken whole: a line is infinite, a circle or ellipse closed, a
+/// NURBS curve its domain; the caller keeps the hits in the range it cares
+/// about.
+///
+/// Closed form: a line with a plane, cylinder, sphere or cone; a circle or
+/// ellipse with a plane, and with a cylinder it is a section of a parallel
+/// cylinder to; a circle with a sphere, and with any surface of revolution
+/// about the circle's axis. Everything else is found numerically
+/// (`intersect/curves.rs`), and fails with [`GeomError::NoConvergence`]
+/// where the curve runs along the surface for a stretch without lying on
+/// it everywhere. A line along a ruling of a cone is `OnSurface`.
 pub fn intersect_curve_surface(
     curve: &Curve3,
     surface: &Surface,
@@ -261,11 +284,16 @@ pub fn intersect_curve_surface(
         }
         (Curve3::Circle(_) | Curve3::Ellipse(_), Surface::Cylinder(c)) => {
             let (center, x, y) = conic(curve).ok_or_else(degenerate)?;
-            conic_cylinder(center, x, y, c.frame(), c.radius(), tolerance)
+            match conic_cylinder(center, x, y, c.frame(), c.radius(), tolerance) {
+                // Not a section of a parallel cylinder: no closed form.
+                Err(GeomError::Unsupported(_)) => curves::numeric(curve, surface, tolerance),
+                other => other,
+            }
         }
-        _ => Err(unsupported(
-            "intersections other than lines, circles and ellipses with planes and cylinders",
-        )),
+        (Curve3::Line(l), Surface::Sphere(s)) => Ok(curves::line_sphere(l, s, tolerance)),
+        (Curve3::Line(l), Surface::Cone(c)) => curves::line_cone(l, c, tolerance),
+        (Curve3::Circle(c), Surface::Sphere(s)) => Ok(curves::circle_sphere(c, s, tolerance)),
+        _ => curves::numeric(curve, surface, tolerance),
     }
 }
 
@@ -659,11 +687,9 @@ mod tests {
             intersect_surfaces(&sphere, &plane, &tol()),
             Err(GeomError::Unsupported(_))
         ));
+        // Curves meet every kind of surface now: a diameter of the sphere.
         let line = Curve3::Line(Line::new(Vec3::ZERO, Vec3::X).unwrap());
-        assert!(matches!(
-            intersect_curve_surface(&line, &sphere, &tol()),
-            Err(GeomError::Unsupported(_))
-        ));
+        assert_hits_are_exact(&line, &sphere, 2, false);
     }
 
     fn hits(curve: &Curve3, surface: &Surface) -> Vec<CurveHit> {
@@ -771,16 +797,15 @@ mod tests {
             CurveIntersection::OnSurface
         );
 
-        // Another axis direction: apart, inside, or refused.
+        // Another axis direction: apart, inside, or found numerically
+        // (2 sin t = ±1: four hits).
         let crossing = Frame::new(f.origin(), f.x(), f.z()).unwrap();
-        assert!(matches!(
-            intersect_curve_surface(
-                &circle,
-                &Surface::Cylinder(Cylinder::new(crossing, 1.0).unwrap()),
-                &tol()
-            ),
-            Err(GeomError::Unsupported(_))
-        ));
+        assert_hits_are_exact(
+            &circle,
+            &Surface::Cylinder(Cylinder::new(crossing, 1.0).unwrap()),
+            4,
+            false,
+        );
         let far = Frame::new(f.point(0.0, 0.0, 10.0), f.x(), f.z()).unwrap();
         assert_hits_are_exact(
             &circle,
