@@ -309,9 +309,19 @@ pub(super) fn curve_hits(
     surface: &Surface,
     tolerance: &Tolerance,
 ) -> Result<CurveIntersection, GeomError> {
-    match intersect_curve_surface(curve, surface, tolerance) {
-        Err(GeomError::Unsupported(_)) => {}
-        other => return other,
+    // TEMPORARY (until the booleans are moved onto geom's intersections
+    // for every kind, in progress): geom is asked only for the pairs it
+    // answered when this module was written, lines, circles and ellipses
+    // against planes and cylinders. For the others its answers are for the
+    // whole curve and differ at the ends of a piece (a hit at an end is a
+    // crossing there, a touch here) and where a curve grazes a surface.
+    let as_before = matches!(surface, Surface::Plane(_) | Surface::Cylinder(_))
+        && !matches!(curve, Curve3::Nurbs(_));
+    if as_before {
+        match intersect_curve_surface(curve, surface, tolerance) {
+            Err(GeomError::Unsupported(_) | GeomError::NoConvergence(_)) => {}
+            other => return other,
+        }
     }
     if signed_distance(surface, Vec3::ZERO).is_none() {
         return Err(GeomError::Unsupported(FREEFORM));
