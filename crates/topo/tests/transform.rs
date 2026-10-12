@@ -960,3 +960,55 @@ fn merge_says_plainly_that_it_does_not_unite() {
     let mass = mass_properties(&merged).unwrap();
     assert!((mass.volume - 16.0).abs() < 1e-12, "not the union's 12");
 }
+
+#[test]
+fn a_freeform_face_that_bulges_past_its_edges_is_inside_the_box() {
+    // A bicubic patch over the unit square with straight edges in z = 0 and
+    // its four inner control points lifted: the middle of the face is well
+    // above every edge, and only the surface itself can say so.
+    let mut net = [[Vec3::ZERO; 4]; 4];
+    for (i, row) in net.iter_mut().enumerate() {
+        for (j, p) in row.iter_mut().enumerate() {
+            let inner = (1..3).contains(&i) && (1..3).contains(&j);
+            *p = Vec3::new(
+                i as f64 / 3.0,
+                j as f64 / 3.0,
+                if inner { 4.0 } else { 0.0 },
+            );
+        }
+    }
+    let patch = craft3d_geom::BezierPatch::bicubic(net).unwrap();
+    let top = patch.eval(0.5, 0.5);
+    assert!((top.z - 2.25).abs() < 1e-12, "9/16 of the lift");
+    let surfaces = [
+        Surface::Nurbs(craft3d_geom::NurbsSurface::from_bezier(&patch).unwrap()),
+        Surface::Bezier(patch),
+    ];
+    for surface in surfaces {
+        let mut body = square_sheet(&Frame::WORLD, 1.0);
+        body.faces[0].surface = surface;
+        for (name, t) in isometries(1.0) {
+            let image = body.transformed(&t).unwrap();
+            let bbox = image.bbox().unwrap();
+            let face = &image.faces[0];
+            for a in 0..=16 {
+                for b in 0..=16 {
+                    let p = face.surface.eval(f64::from(a) / 16.0, f64::from(b) / 16.0);
+                    assert!(
+                        bbox.contains(p, 0.0),
+                        "{} under {name}: {p:?} is outside {bbox:?}",
+                        face.surface.kind()
+                    );
+                }
+            }
+            assert!(bbox.contains(t.point(top), 1e-12), "{name}");
+            // No looser than the box of the control net, whose top is at 4.
+            let net = match &face.surface {
+                Surface::Bezier(s) => box_of(s.control_points().iter().copied()),
+                Surface::Nurbs(s) => box_of(s.control_points().iter().copied()),
+                _ => panic!("the face is freeform"),
+            };
+            assert!(within(&bbox, &net, 1e-9), "{name}: {bbox:?} vs {net:?}");
+        }
+    }
+}
