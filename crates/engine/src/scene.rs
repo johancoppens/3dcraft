@@ -11,7 +11,7 @@ use crate::{CommandError, Session, Workspace};
 use craft3d_doc::{AngleUnit, Document, Entity, FeatureKind, Geometry, Sketch};
 use craft3d_math::{Bbox3, Vec3};
 use craft3d_regen::{Regen, SketchResult, Status};
-use craft3d_tess::{Mesh, TessParams, tessellate_body};
+use craft3d_tess::{Mesh, TessParams, tessellate_body, tessellate_edges};
 use craft3d_topo::mass_properties;
 use std::sync::Arc;
 
@@ -36,6 +36,11 @@ pub struct SceneBody {
     pub mesh: Mesh,
     /// The body's face ids in [`Scene::mesh`] start here.
     pub first_face_id: u32,
+    /// The body's edges as polylines in space, one per edge in the order
+    /// of the B-rep, sampled with the scene's tolerance. They are the
+    /// points the mesh has along each edge, so a line drawn through them
+    /// lies on the border between the faces it separates.
+    pub edges: Vec<Vec<Vec3>>,
 }
 
 /// What a polyline of a sketch stands for.
@@ -438,6 +443,17 @@ fn build(doc: &Document, regen: &Regen, revision: u64, tolerance: f64) -> Scene 
                 continue;
             }
         };
+        // The mesh was made from these same points, so this cannot fail
+        // where that did not; if it does, the body is shown without edges.
+        let edges = match tessellate_edges(body, &tess) {
+            Ok(edges) => edges,
+            Err(e) => {
+                scene
+                    .problems
+                    .push(format!("{}: its edges cannot be drawn: {e}", feature.name));
+                Vec::new()
+            }
+        };
         let Ok(vertex_base) = u32::try_from(scene.mesh.positions.len()) else {
             scene
                 .problems
@@ -468,6 +484,7 @@ fn build(doc: &Document, regen: &Regen, revision: u64, tolerance: f64) -> Scene 
             name: feature.name.clone(),
             mesh,
             first_face_id,
+            edges,
         });
     }
     let mut bbox = scene.mesh.bbox();

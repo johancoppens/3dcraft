@@ -10,9 +10,10 @@
 
 use craft3d_engine::{FeatureState, Session, Workspace};
 use craft3d_ui_egui::camera::{ORBIT_DEGREES_PER_POINT, Projector};
+use craft3d_ui_egui::shell::image_quality;
 use craft3d_ui_egui::state::{CameraState, ProjectionKind};
 use craft3d_ui_egui::viewport::{self, LineKind, Quality};
-use craft3d_ui_egui::{Shell, Tokens};
+use craft3d_ui_egui::{FileAction, Shell, Tokens, window_title};
 use egui::{Event, PointerButton, Pos2, pos2, vec2};
 use serde_json::{Value, json};
 
@@ -59,6 +60,9 @@ struct Window {
     ctx: egui::Context,
     size: egui::Vec2,
     time: f64,
+    /// The images the last frame uploaded as whole textures: width,
+    /// height and RGB bytes.
+    uploads: Vec<(usize, usize, Vec<u8>)>,
 }
 
 impl Window {
@@ -67,7 +71,17 @@ impl Window {
             ctx: egui::Context::default(),
             size: vec2(width, height),
             time: 0.0,
+            uploads: Vec::new(),
         }
+    }
+
+    /// The image of `width` x `height` the last frame put on screen.
+    fn uploaded(&self, width: u32, height: u32) -> Option<&[u8]> {
+        self.uploads
+            .iter()
+            .rev()
+            .find(|(w, h, _)| (*w, *h) == (width as usize, height as usize))
+            .map(|(_, _, rgb)| rgb.as_slice())
     }
 
     fn frame(&mut self, shell: &mut Shell, session: &mut Session, events: Vec<Event>) -> usize {
@@ -81,6 +95,24 @@ impl Window {
         let mut output = self.ctx.run_ui(input, |ui| shell.ui(ui, session));
         // What a backend would upload: how many textures were set.
         let uploads = output.textures_delta.set.len();
+        self.uploads = output
+            .textures_delta
+            .set
+            .values()
+            .flat_map(|deltas| deltas.iter())
+            .filter(|delta| delta.pos.is_none())
+            .map(|delta| match &delta.image {
+                egui::ImageData::Color(image) => (
+                    image.width(),
+                    image.height(),
+                    image
+                        .pixels
+                        .iter()
+                        .flat_map(|p| [p.r(), p.g(), p.b()])
+                        .collect(),
+                ),
+            })
+            .collect();
         output.textures_delta.clear();
         uploads
     }
@@ -171,11 +203,13 @@ fn a_few_frames_show_the_tree_and_render_the_viewport_once() {
     assert!(error.contains("missing"), "{error}");
     assert!(shell.tree_rows().iter().all(|r| !r.selected));
 
-    // The viewport is the window minus the tree on the left and the status
-    // bar at the bottom, and the image has its size in pixels.
+    // The viewport is the window minus the menu bar at the top, the tree
+    // on the left and the status bar at the bottom, and the image has its
+    // size in pixels.
     let rect = shell.viewport_rect().unwrap();
     assert!(rect.left() > 150.0 && rect.left() < 450.0, "{rect:?}");
-    assert_eq!((rect.top(), rect.right()), (0.0, 1000.0));
+    assert!(rect.top() > 12.0 && rect.top() < 40.0, "{rect:?}");
+    assert_eq!(rect.right(), 1000.0);
     assert!(rect.bottom() < 700.0 && rect.bottom() > 640.0, "{rect:?}");
     let [w, h] = shell.viewport_size();
     assert_eq!(
@@ -466,7 +500,7 @@ fn clicking_a_row_selects_the_feature_and_its_sketch_is_highlighted() {
             .lines
             .iter()
             .map(|l| l.kind)
-            .filter(|k| !matches!(k, LineKind::Axis(_)))
+            .filter(|k| !matches!(k, LineKind::Axis(_) | LineKind::Edge))
             .collect()
     };
     assert_eq!(kinds(Some("F3")), [LineKind::Selected; 4]);
@@ -551,6 +585,9 @@ fn panels_can_be_closed_and_the_viewport_takes_their_place() {
     window.idle(&mut shell, &mut session, 3);
     let both = shell.viewport_rect().unwrap();
     assert!(both.left() > 0.0 && both.bottom() < 600.0);
+    // The menu bar stays: one row of text high.
+    let menu = both.top();
+    assert!(menu > 12.0 && menu < 40.0, "{menu}");
 
     shell.state.panels.tree = false;
     window.idle(&mut shell, &mut session, 3);
@@ -568,9 +605,9 @@ fn panels_can_be_closed_and_the_viewport_takes_their_place() {
             neither.right(),
             neither.bottom()
         ),
-        (0.0, 0.0, 800.0, 600.0)
+        (0.0, menu, 800.0, 600.0)
     );
-    assert_eq!(shell.viewport_size(), [800, 600]);
+    assert_eq!(shell.viewport_size(), [800, (600.0 - menu).round() as u32]);
     // The rows are kept up to date whether or not they are shown.
     assert_eq!(shell.tree_rows().len(), 4);
 }
@@ -805,4 +842,324 @@ fn the_overlay_projects_where_the_renderer_draws() {
             }
         }
     }
+}
+
+/// How long a test waits for the render thread before it fails. The wait
+/// ends when the image is there: this is a limit, not a pause.
+const LONG: std::time::Duration = std::time::Duration::from_secs(120);
+
+fn direct(
+    session: &mut Session,
+    shell: &Shell,
+    camera: &CameraState,
+    moving: bool,
+) -> viewport::Composed {
+    let scene = session.scene(None).unwrap();
+    viewport::compose(
+        scene.as_deref(),
+        camera,
+        image_quality(shell.viewport_size(), moving, 8192),
+        &shell.tokens,
+        shell.state.selected_feature.as_deref(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn with_a_render_thread_a_preview_is_shown_first_and_the_sharp_image_when_it_is_ready() {
+    let mut session = part();
+    let mut shell = Shell::threaded();
+    assert!(shell.renders_in_background());
+    assert!(!Shell::new().renders_in_background());
+    let mut window = Window::new(1000.0, 700.0);
+    // Two frames: the first lays the panels out, so the viewport has its
+    // size from the second on.
+    window.idle(&mut shell, &mut session, 2);
+    let [w, h] = shell.viewport_size();
+    let camera = shell.state.camera;
+
+    // Before the thread's image is taken in, the preview is on screen:
+    // half the size, one sample, made on this thread.
+    let preview = shell.render_stats().unwrap();
+    if !preview.sharp {
+        assert_eq!(
+            (preview.width, preview.height, preview.ssaa),
+            (w / 2, h / 2, 1)
+        );
+    }
+    // The sharp image arrives; the next frame shows it, and it is exactly
+    // the image of this camera.
+    assert!(shell.wait_for_sharp(LONG));
+    let _ = window.frame(&mut shell, &mut session, Vec::new());
+    let sharp = shell.render_stats().unwrap();
+    assert!(sharp.sharp);
+    assert_eq!((sharp.width, sharp.height, sharp.ssaa), (w, h, 2));
+    let expected = direct(&mut session, &shell, &camera, false);
+    assert_eq!(window.uploaded(w, h).unwrap(), expected.rgb.as_slice());
+    // Nothing more is rendered while nothing changes, and there is nothing
+    // to wait for.
+    let rendered = shell.render_count();
+    window.idle(&mut shell, &mut session, 5);
+    assert!(shell.wait_for_sharp(std::time::Duration::ZERO));
+    assert_eq!(shell.render_count(), rendered);
+    assert!(shell.problem().is_none());
+}
+
+#[test]
+fn a_sharp_image_of_an_old_camera_or_an_old_document_is_never_put_on_screen() {
+    let mut session = part();
+    let mut shell = Shell::threaded();
+    let mut window = Window::new(1000.0, 700.0);
+    window.idle(&mut shell, &mut session, 2);
+    assert!(shell.wait_for_sharp(LONG));
+    let _ = window.frame(&mut shell, &mut session, Vec::new());
+    assert!(shell.render_stats().unwrap().sharp);
+    let [w, h] = shell.viewport_size();
+    let first = shell.state.camera;
+
+    // The camera turns: a preview at once, the sharp image is being made.
+    shell.state.camera.yaw += 40.0;
+    let turned = shell.state.camera;
+    let _ = window.frame(&mut shell, &mut session, Vec::new());
+    assert!(!shell.render_stats().unwrap().sharp);
+    let preview = direct(&mut session, &shell, &turned, true);
+    assert_eq!(
+        window.uploaded(preview.width, preview.height).unwrap(),
+        preview.rgb.as_slice()
+    );
+    // That image is finished, but before a frame takes it in the camera
+    // turns back and further: it is now the image of an old camera.
+    assert!(shell.wait_for_sharp(LONG));
+    shell.state.camera.yaw -= 90.0;
+    let now = shell.state.camera;
+    assert!(now != first && now != turned);
+    let _ = window.frame(&mut shell, &mut session, Vec::new());
+    let stats = shell.render_stats().unwrap();
+    assert!(!stats.sharp, "the stale sharp image was shown: {stats:?}");
+    assert!(
+        window.uploaded(w, h).is_none(),
+        "nothing of the full size went on screen"
+    );
+    let preview = direct(&mut session, &shell, &now, true);
+    assert_eq!(
+        window.uploaded(preview.width, preview.height).unwrap(),
+        preview.rgb.as_slice(),
+        "the preview of the camera as it is now"
+    );
+    // The image of the camera as it is now follows.
+    assert!(shell.wait_for_sharp(LONG));
+    let _ = window.frame(&mut shell, &mut session, Vec::new());
+    assert!(shell.render_stats().unwrap().sharp);
+    let expected = direct(&mut session, &shell, &now, false);
+    assert_eq!(window.uploaded(w, h).unwrap(), expected.rgb.as_slice());
+
+    // The same with the document: an edit while its image is being made.
+    shell.state.camera.auto_fit = false;
+    shell.state.camera.pitch = 10.0;
+    let camera = shell.state.camera;
+    let _ = window.frame(&mut shell, &mut session, Vec::new());
+    assert!(shell.wait_for_sharp(LONG));
+    let before_edit = direct(&mut session, &shell, &camera, false);
+    run(
+        &mut session,
+        "feature.edit",
+        json!({"feature": "Post", "height": 12}),
+    );
+    let _ = window.frame(&mut shell, &mut session, Vec::new());
+    assert!(!shell.render_stats().unwrap().sharp);
+    assert!(window.uploaded(w, h).is_none());
+    assert!(shell.wait_for_sharp(LONG));
+    let _ = window.frame(&mut shell, &mut session, Vec::new());
+    let after_edit = direct(&mut session, &shell, &camera, false);
+    assert_ne!(before_edit.rgb, after_edit.rgb, "the edit is visible");
+    assert_eq!(window.uploaded(w, h).unwrap(), after_edit.rgb.as_slice());
+    assert!(shell.render_stats().unwrap().sharp);
+}
+
+#[test]
+fn dragging_with_a_render_thread_shows_previews_only_and_ends_sharp() {
+    let mut session = part();
+    let mut shell = Shell::threaded();
+    let mut window = Window::new(1000.0, 700.0);
+    window.idle(&mut shell, &mut session, 2);
+    assert!(shell.wait_for_sharp(LONG));
+    window.idle(&mut shell, &mut session, 1);
+    let [w, h] = shell.viewport_size();
+    let from = shell.viewport_rect().unwrap().center();
+    let held = window.drag(
+        &mut shell,
+        &mut session,
+        PointerButton::Primary,
+        from,
+        from + vec2(60.0, 10.0),
+        6,
+    );
+    assert!(!held.sharp);
+    assert_eq!((held.width, held.height, held.ssaa), (w / 2, h / 2, 1));
+    // Let go: the frames after it ask for the sharp image of where the
+    // camera stopped.
+    window.idle(&mut shell, &mut session, 1);
+    assert!(shell.wait_for_sharp(LONG));
+    window.idle(&mut shell, &mut session, 1);
+    let rest = shell.render_stats().unwrap();
+    assert!(rest.sharp);
+    let camera = shell.state.camera;
+    let expected = direct(&mut session, &shell, &camera, false);
+    assert_eq!(window.uploaded(w, h).unwrap(), expected.rgb.as_slice());
+}
+
+fn key(key: egui::Key, modifiers: egui::Modifiers) -> Vec<Event> {
+    vec![Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
+    }]
+}
+
+#[test]
+fn the_file_shortcuts_ask_the_host_and_do_nothing_themselves() {
+    let mut session = part();
+    let mut shell = Shell::new();
+    let mut window = Window::new(1000.0, 700.0);
+    window.idle(&mut shell, &mut session, 2);
+    assert_eq!(shell.take_file_action(), None);
+    let before = session.scene_revision();
+    let ctrl = egui::Modifiers::COMMAND;
+    for (pressed, modifiers, action) in [
+        (egui::Key::O, ctrl, FileAction::Open),
+        (egui::Key::S, ctrl, FileAction::Save),
+        (
+            egui::Key::S,
+            ctrl | egui::Modifiers::SHIFT,
+            FileAction::SaveAs,
+        ),
+        (egui::Key::N, ctrl, FileAction::New),
+    ] {
+        let _ = window.frame(&mut shell, &mut session, key(pressed, modifiers));
+        assert_eq!(shell.take_file_action(), Some(action), "{action:?}");
+        // Taken once.
+        assert_eq!(shell.take_file_action(), None);
+        assert_eq!(action.shortcut().logical_key, pressed);
+    }
+    // The keys alone, or with another modifier, are not shortcuts.
+    for (pressed, modifiers) in [
+        (egui::Key::S, egui::Modifiers::NONE),
+        (egui::Key::O, egui::Modifiers::SHIFT),
+        (egui::Key::S, egui::Modifiers::ALT),
+        (egui::Key::P, ctrl),
+    ] {
+        let _ = window.frame(&mut shell, &mut session, key(pressed, modifiers));
+        assert_eq!(shell.take_file_action(), None, "{pressed:?} {modifiers:?}");
+    }
+    // The shell asked; it did not open, save or change anything.
+    assert_eq!(session.scene_revision(), before);
+    assert!(session.document_status().unwrap().dirty);
+
+    // Without a document there is nothing to save: those two are not
+    // asked for; New and Open are.
+    let mut empty = Session::new(Workspace::none());
+    let mut shell = Shell::new();
+    window.idle(&mut shell, &mut empty, 2);
+    for (pressed, modifiers, action) in [
+        (egui::Key::S, ctrl, None),
+        (egui::Key::S, ctrl | egui::Modifiers::SHIFT, None),
+        (egui::Key::O, ctrl, Some(FileAction::Open)),
+        (egui::Key::N, ctrl, Some(FileAction::New)),
+    ] {
+        let _ = window.frame(&mut shell, &mut empty, key(pressed, modifiers));
+        assert_eq!(shell.take_file_action(), action, "{pressed:?}");
+    }
+    // What the menu shows.
+    let labels: Vec<&str> = FileAction::ALL.iter().map(|a| a.label()).collect();
+    assert_eq!(labels, ["New", "Open…", "Save", "Save As…"]);
+    shell.request_file_action(FileAction::SaveAs);
+    assert_eq!(shell.take_file_action(), Some(FileAction::SaveAs));
+}
+
+#[test]
+fn clicking_file_then_an_entry_asks_for_that_action() {
+    let mut session = part();
+    let mut shell = Shell::new();
+    let mut window = Window::new(1000.0, 700.0);
+    window.idle(&mut shell, &mut session, 2);
+    let click = |window: &mut Window, shell: &mut Shell, session: &mut Session, at: Pos2| {
+        let _ = window.frame(shell, session, vec![Event::PointerMoved(at)]);
+        window.button(shell, session, at, PointerButton::Primary, true);
+        window.button(shell, session, at, PointerButton::Primary, false);
+        window.idle(shell, session, 2);
+    };
+    // "File" is the first thing in the bar at the top.
+    click(&mut window, &mut shell, &mut session, pos2(20.0, 10.0));
+    assert_eq!(shell.take_file_action(), None, "the menu is only open");
+    // Its entries are below it, a row each: find the one that asks for
+    // Save by trying the rows down the menu.
+    let mut found = Vec::new();
+    for row in 0..12 {
+        let at = pos2(40.0, 30.0 + 10.0 * row as f32);
+        click(&mut window, &mut shell, &mut session, at);
+        if let Some(action) = shell.take_file_action() {
+            found.push(action);
+            // The menu closed with the click: open it again.
+            click(&mut window, &mut shell, &mut session, pos2(20.0, 10.0));
+        }
+    }
+    found.dedup();
+    assert_eq!(found, FileAction::ALL, "the entries, from the top down");
+}
+
+#[test]
+fn the_title_names_the_file_and_marks_unsaved_changes() {
+    use craft3d_engine::DocumentStatus;
+    let status = |path: Option<&str>, dirty: bool| DocumentStatus {
+        index: 0,
+        open: 1,
+        path: path.map(str::to_string),
+        dirty,
+        length_unit: "mm",
+        angle_unit: "deg",
+    };
+    let title = |path: Option<&str>, dirty: bool| window_title(Some(&status(path, dirty)));
+    assert_eq!(window_title(None), "3DCraft");
+    assert_eq!(title(None, false), "untitled – 3DCraft");
+    assert_eq!(title(None, true), "untitled* – 3DCraft");
+    assert_eq!(
+        title(Some("/home/me/parts/gear.3dcraft"), false),
+        "gear.3dcraft – 3DCraft"
+    );
+    assert_eq!(
+        title(Some("/home/me/parts/gear.3dcraft"), true),
+        "gear.3dcraft* – 3DCraft"
+    );
+    assert_eq!(
+        title(Some("work/gear.3dcraft"), true),
+        "gear.3dcraft* – 3DCraft"
+    );
+    assert_eq!(
+        title(Some(r"C:\parts\gear.3dcraft"), false),
+        "gear.3dcraft – 3DCraft"
+    );
+    assert_eq!(title(Some("gear.3dcraft"), false), "gear.3dcraft – 3DCraft");
+    // Odd paths still give a title, on one line and not endless.
+    assert_eq!(title(Some(""), true), "untitled* – 3DCraft");
+    assert_eq!(title(Some("/"), false), "untitled – 3DCraft");
+    assert_eq!(title(Some("dir/"), false), "dir – 3DCraft");
+    assert_eq!(title(Some("a\nb.3dcraft"), false), "ab.3dcraft – 3DCraft");
+    let long = title(Some(&"x".repeat(5000)), true);
+    assert_eq!(long.chars().count(), 120 + "* – 3DCraft".chars().count());
+
+    // On a real session it follows the active document. A document that
+    // was never saved is not on disk, so the engine counts it as changed
+    // from the moment it is made. (Saved documents: apps/craft3d, files.)
+    let mut session = Session::new(Workspace::none());
+    assert_eq!(window_title(session.document_status().as_ref()), "3DCraft");
+    run(&mut session, "file.new", json!({}));
+    assert!(session.document_status().unwrap().dirty);
+    assert_eq!(
+        window_title(session.document_status().as_ref()),
+        "untitled* – 3DCraft"
+    );
+    run(&mut session, "file.close", json!({"discard": true}));
+    assert_eq!(window_title(session.document_status().as_ref()), "3DCraft");
 }

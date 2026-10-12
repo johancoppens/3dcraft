@@ -39,6 +39,9 @@ eframe = { version = "0.36", default-features = false, features = ["default_font
 wgpu = "30.0.1"
 # Blocks on wgpu's futures in the native entry points of craft3d-gpu only.
 pollster = "1.0.1"
+# The desktop app's open and save dialogs only: the system's own dialog
+# (xdg-desktop-portal on Linux, no GTK), MIT.
+rfd = "0.17"
 # The control token only (docs/control-protocol.md, Authentication).
 getrandom = "0.4"
 serde = { version = "1", features = ["derive"] }

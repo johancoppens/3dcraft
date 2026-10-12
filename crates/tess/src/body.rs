@@ -42,6 +42,7 @@
 use crate::edge::edge_points;
 use crate::face::{FaceMesh, tessellate_face};
 use crate::{Mesh, TessError, TessParams};
+use craft3d_math::Vec3;
 use craft3d_topo::Body;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -67,7 +68,7 @@ type FaceResult = Result<FaceMesh, TessError>;
 /// Every face of `body`, on up to `threads` threads, in face order.
 fn all_faces(
     body: &Body,
-    edges: &[Vec<craft3d_math::Vec3>],
+    edges: &[Vec<Vec3>],
     params: &TessParams,
     threads: usize,
 ) -> Result<Vec<FaceResult>, TessError> {
@@ -176,4 +177,19 @@ pub fn tessellate_body_with_threads(
         mesh.normals.extend(patch.normals);
     }
     Ok(mesh)
+}
+
+/// The edges of `body` as polylines: one per edge, in edge order, from the
+/// edge's start vertex to its end vertex, within the chordal tolerance of
+/// its curve. For a viewer that draws the edges of a body.
+///
+/// These are the very points [`tessellate_body`] puts along the edge for
+/// every face that uses it, so the lines lie exactly on the borders of the
+/// mesh's faces. The result depends on the body and the parameters only.
+pub fn tessellate_edges(body: &Body, params: &TessParams) -> Result<Vec<Vec<Vec3>>, TessError> {
+    let tol = params.chordal_tolerance;
+    if !(tol.is_finite() && tol > 0.0) {
+        return Err(TessError::InvalidTolerance(tol));
+    }
+    edge_points(body, params)
 }

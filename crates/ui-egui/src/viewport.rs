@@ -1,12 +1,18 @@
 //! The picture in the viewport: the scene's bodies shaded by the CPU
-//! reference renderer, and the lines drawn over that image (sketches, the
-//! world axes) projected with the same camera.
+//! reference renderer, and the lines drawn over that image (the edges of
+//! the bodies, sketches, the world axes) projected with the same camera.
+//!
+//! The lines are tested against the renderer's depth buffer, a pixel at a
+//! time: the part of a body's edge that lies behind a body is left out,
+//! and the part of a sketch behind a body is marked hidden, which is
+//! drawn dimmed, so a sketch inside or behind a part can still be found.
+//! The world axes are a gizmo and always drawn in full.
 //!
 //! No egui here: the window paints the [`Overlay`] with its painter, and
 //! `ui.screenshot` rasterises the same overlay into the same image, so the
 //! two show the same thing.
 
-use crate::camera::Projector;
+use crate::camera::{Projected, Projector};
 use crate::state::CameraState;
 use crate::theme::{Rgb, Tokens};
 use craft3d_engine::Scene;
@@ -32,6 +38,8 @@ pub enum LineKind {
     Selected,
     /// A world axis at the origin: 0 is X, 1 is Y, 2 is Z.
     Axis(usize),
+    /// An edge of a body.
+    Edge,
 }
 
 /// A line in image pixels (x right, y down, from the top-left corner).
@@ -40,6 +48,17 @@ pub struct OverlayLine {
     pub from: [f64; 2],
     pub to: [f64; 2],
     pub kind: LineKind,
+    /// Behind a body: drawn dimmed.
+    pub hidden: bool,
+}
+
+/// A dot in image pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OverlayPoint {
+    pub at: [f64; 2],
+    pub kind: LineKind,
+    /// Behind a body: drawn dimmed.
+    pub hidden: bool,
 }
 
 /// Everything drawn over the rendered image.
@@ -47,7 +66,13 @@ pub struct OverlayLine {
 pub struct Overlay {
     pub lines: Vec<OverlayLine>,
     /// The point entities of sketches, as dots.
-    pub points: Vec<([f64; 2], LineKind)>,
+    pub points: Vec<OverlayPoint>,
+}
+
+/// How opaque a line or dot is drawn, 0 to 255: full, or the theme's
+/// opacity for what is hidden behind a body.
+pub fn opacity(hidden: bool, tokens: &Tokens) -> u8 {
+    if hidden { tokens.hidden_opacity } else { 255 }
 }
 
 impl LineKind {
@@ -57,6 +82,7 @@ impl LineKind {
             LineKind::Construction => tokens.sketch_construction,
             LineKind::Selected => tokens.sketch_selected,
             LineKind::Axis(axis) => tokens.axes.get(axis).copied().unwrap_or(tokens.text_dim),
+            LineKind::Edge => tokens.edge,
         }
     }
 
@@ -66,13 +92,144 @@ impl LineKind {
             LineKind::Sketch | LineKind::Selected => tokens.sketch_width,
             LineKind::Construction => tokens.construction_width,
             LineKind::Axis(_) => tokens.axis_width,
+            LineKind::Edge => tokens.edge_width,
         }
     }
 }
 
-/// The lines over an image of `width` × `height` pixels seen with `camera`.
-/// `selected` is the id of the selected feature, whose sketch is
-/// highlighted. A camera that looks nowhere gives an empty overlay.
+/// The longest line is cut into at most this many pieces for the depth
+/// test: more than the diagonal of the largest image.
+const MAX_DEPTH_STEPS: f64 = 8192.0;
+
+/// How much further than the surface under it a line may be and still
+/// count as lying on that surface, as a fraction of the camera's distance
+/// to its target. A sketch on a face and an edge between two faces are at
+/// the very depth of the surface, give or take rounding.
+pub const DEPTH_SLACK: f64 = 1e-6;
+
+/// The renderer's depth buffer, as the lines are tested against it.
+#[derive(Clone, Copy)]
+struct DepthMap<'a> {
+    width: usize,
+    height: usize,
+    /// Distance along the view direction per pixel, row-major; infinite
+    /// where there is no body.
+    depth: &'a [f64],
+    slack: f64,
+}
+
+impl<'a> DepthMap<'a> {
+    /// `None` when the buffer is not the size it says: nothing is hidden
+    /// then, rather than the wrong thing.
+    fn new(frame: &'a Frame, camera: &CameraState) -> Option<Self> {
+        let (width, height) = (frame.width as usize, frame.height as usize);
+        let slack = camera.distance.abs() * DEPTH_SLACK;
+        (width.checked_mul(height) == Some(frame.depth.len()) && slack.is_finite()).then_some(
+            Self {
+                width,
+                height,
+                depth: &frame.depth,
+                slack,
+            },
+        )
+    }
+
+    /// True when a body is in front of the point at pixel (`x`, `y`) and
+    /// `depth`. The point is compared with the surface under its own
+    /// pixel and under the eight around it, and is hidden only when all
+    /// of them are nearer: an edge on a surface that slopes away from the
+    /// viewer is further than the surface one pixel towards the viewer,
+    /// and still on it.
+    fn covers(&self, x: f64, y: f64, depth: f64) -> bool {
+        if !(x.is_finite() && y.is_finite() && depth.is_finite()) {
+            return false;
+        }
+        let (px, py) = (x.floor(), y.floor());
+        if px < 0.0 || py < 0.0 || px >= self.width as f64 || py >= self.height as f64 {
+            return false;
+        }
+        // Within the image by the check above.
+        let (px, py) = (px as usize, py as usize);
+        for ny in py.saturating_sub(1)..=(py + 1).min(self.height.saturating_sub(1)) {
+            for nx in px.saturating_sub(1)..=(px + 1).min(self.width.saturating_sub(1)) {
+                let surface = self
+                    .depth
+                    .get(ny * self.width + nx)
+                    .copied()
+                    .unwrap_or(f64::INFINITY);
+                // A surface at or behind the point does not hide it; nor
+                // does a depth that is not a number.
+                let nearer = surface + self.slack < depth;
+                if !nearer {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+}
+
+/// The stretches of the segment `a`-`b` that are in front of every body
+/// and behind one, as `(from, to, hidden)` with `from` and `to` fractions
+/// of the segment, in order and covering 0 to 1.
+fn stretches(
+    map: Option<&DepthMap<'_>>,
+    projector: &Projector,
+    a: &Projected,
+    b: &Projected,
+) -> Vec<(f64, f64, bool)> {
+    let whole = vec![(0.0, 1.0, false)];
+    let Some(map) = map else {
+        return whole;
+    };
+    // Only what is over the image can be behind something in it.
+    let Some((first, last)) = clip_range(
+        [a.x, a.y],
+        [b.x, b.y],
+        [0.0, 0.0],
+        [map.width as f64, map.height as f64],
+    ) else {
+        return whole;
+    };
+    let pixels = ((b.x - a.x).abs().max((b.y - a.y).abs()) * (last - first)).ceil();
+    if !(pixels.is_finite() && last > first) {
+        // A dot: one test decides.
+        let hidden = map.covers(a.x, a.y, a.depth);
+        return vec![(0.0, 1.0, hidden)];
+    }
+    // At least one, at most MAX_DEPTH_STEPS: fits an integer.
+    let steps = pixels.clamp(1.0, MAX_DEPTH_STEPS) as usize;
+    let mut out: Vec<(f64, f64, bool)> = Vec::new();
+    let mut push = |from: f64, to: f64, hidden: bool| {
+        if to <= from {
+            return;
+        }
+        match out.last_mut() {
+            Some(last) if last.2 == hidden => last.1 = to,
+            _ => out.push((from, to, hidden)),
+        }
+    };
+    push(0.0, first, false);
+    for step in 0..steps {
+        let at = |k: usize| first + (last - first) * (k as f64 / steps as f64);
+        let (from, to) = (at(step), at(step + 1));
+        // Tested at the middle of the piece.
+        let t = 0.5 * (from + to);
+        let hidden = map.covers(
+            a.x + (b.x - a.x) * t,
+            a.y + (b.y - a.y) * t,
+            projector.depth_between(a, b, t),
+        );
+        push(from, to, hidden);
+    }
+    push(last, 1.0, false);
+    if out.is_empty() { whole } else { out }
+}
+
+/// The lines over an image of `width` × `height` pixels seen with
+/// `camera`, with nothing hidden: every edge of every body shows, as in a
+/// wireframe. `selected` is the id of the selected feature, whose sketch
+/// is highlighted. A camera that looks nowhere gives an empty overlay.
 pub fn overlay(
     scene: Option<&Scene>,
     camera: &CameraState,
@@ -80,24 +237,87 @@ pub fn overlay(
     height: u32,
     selected: Option<&str>,
 ) -> Overlay {
+    build_overlay(scene, camera, width, height, selected, None)
+}
+
+/// The lines over `frame`, the image of the scene's bodies seen with
+/// `camera`: what [`overlay`] gives, tested against the frame's depth
+/// buffer. Edges of bodies are cut where a body is in front of them;
+/// sketch lines and points are marked hidden there.
+pub fn overlay_on(
+    scene: Option<&Scene>,
+    camera: &CameraState,
+    frame: &Frame,
+    selected: Option<&str>,
+) -> Overlay {
+    let map = DepthMap::new(frame, camera);
+    build_overlay(
+        scene,
+        camera,
+        frame.width,
+        frame.height,
+        selected,
+        map.as_ref(),
+    )
+}
+
+fn build_overlay(
+    scene: Option<&Scene>,
+    camera: &CameraState,
+    width: u32,
+    height: u32,
+    selected: Option<&str>,
+    map: Option<&DepthMap<'_>>,
+) -> Overlay {
     let mut out = Overlay::default();
     let Some(projector) = Projector::new(&camera.to_render(), f64::from(width), f64::from(height))
     else {
         return out;
     };
-    let mut line = |a: Vec3, b: Vec3, kind: LineKind| {
-        if let Some((from, to)) = projector.segment(a, b) {
+    // `tested`: against the depth buffer; `dimmed`: what is hidden is
+    // kept and marked, not left out.
+    let mut line = |a: Vec3, b: Vec3, kind: LineKind, tested: bool, dimmed: bool| {
+        let Some((from, to)) = projector.segment(a, b) else {
+            return;
+        };
+        let at = |t: f64| [from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t];
+        for (start, end, hidden) in stretches(map.filter(|_| tested), &projector, &from, &to) {
+            if hidden && !dimmed {
+                continue;
+            }
             out.lines.push(OverlayLine {
-                from: [from.x, from.y],
-                to: [to.x, to.y],
+                // The ends themselves, not the ends computed back.
+                from: if start <= 0.0 {
+                    [from.x, from.y]
+                } else {
+                    at(start)
+                },
+                to: if end >= 1.0 { [to.x, to.y] } else { at(end) },
                 kind,
+                hidden,
             });
         }
     };
-    // The world axes first, so sketch lines are drawn over them.
+    // The edges of the bodies first, then the world axes over them (an
+    // edge along an axis must not paint it out), then the sketches.
+    for body in scene.into_iter().flat_map(|scene| &scene.bodies) {
+        for edge in &body.edges {
+            for pair in edge.windows(2) {
+                if let [a, b] = *pair {
+                    line(a, b, LineKind::Edge, true, false);
+                }
+            }
+        }
+    }
     let length = camera.distance * AXIS_LENGTH;
     for (axis, direction) in [Vec3::X, Vec3::Y, Vec3::Z].into_iter().enumerate() {
-        line(Vec3::ZERO, direction * length, LineKind::Axis(axis));
+        line(
+            Vec3::ZERO,
+            direction * length,
+            LineKind::Axis(axis),
+            false,
+            false,
+        );
     }
     let Some(scene) = scene else {
         return out;
@@ -112,7 +332,7 @@ pub fn overlay(
             };
             for pair in polyline.points.windows(2) {
                 if let [a, b] = *pair {
-                    line(a, b, kind);
+                    line(a, b, kind, true, true);
                 }
             }
         }
@@ -125,7 +345,11 @@ pub fn overlay(
         };
         for point in &sketch.points {
             if let Some(p) = projector.project(*point) {
-                out.points.push(([p.x, p.y], kind));
+                out.points.push(OverlayPoint {
+                    at: [p.x, p.y],
+                    kind,
+                    hidden: map.is_some_and(|map| map.covers(p.x, p.y, p.depth)),
+                });
             }
         }
     }
@@ -161,6 +385,43 @@ pub fn render_bodies(
     craft3d_render::render(mesh, &camera.to_render(), &params).map_err(|e| e.to_string())
 }
 
+/// One image of the viewport as the window shows it: the bodies as
+/// pixels, and what is drawn over them as lines in the image's pixels.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Composed {
+    pub width: u32,
+    pub height: u32,
+    /// 3 bytes per pixel, row-major from the top-left.
+    pub rgb: Vec<u8>,
+    pub overlay: Overlay,
+    /// Fraction of the pixels covered by a body.
+    pub coverage: f64,
+    pub triangles: usize,
+}
+
+/// Renders the bodies and works out the overlay for the same camera and
+/// image size. No egui and no shared state: the window calls it on its
+/// render thread.
+pub fn compose(
+    scene: Option<&Scene>,
+    camera: &CameraState,
+    quality: Quality,
+    tokens: &Tokens,
+    selected: Option<&str>,
+) -> Result<Composed, String> {
+    let frame = render_bodies(scene, camera, quality, tokens)?;
+    let coverage = frame.coverage();
+    let overlay = overlay_on(scene, camera, &frame, selected);
+    Ok(Composed {
+        width: frame.width,
+        height: frame.height,
+        rgb: frame.rgb,
+        overlay,
+        coverage,
+        triangles: scene.map_or(0, Scene::triangles),
+    })
+}
+
 /// A finished picture of the viewport: bodies and overlay.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Picture {
@@ -186,17 +447,27 @@ pub fn picture(
     selected: Option<&str>,
     scale: f64,
 ) -> Result<Picture, String> {
-    let frame = render_bodies(scene, camera, quality, tokens)?;
-    let coverage = frame.coverage();
-    let (width, height) = (frame.width, frame.height);
-    let mut rgb = frame.rgb;
+    let composed = compose(scene, camera, quality, tokens, selected)?;
+    Ok(rasterise(composed, tokens, scale))
+}
+
+/// Draws the overlay of `composed` into its pixels. `scale` is the number
+/// of pixels per point, for the widths of the lines.
+pub fn rasterise(composed: Composed, tokens: &Tokens, scale: f64) -> Picture {
+    let Composed {
+        width,
+        height,
+        mut rgb,
+        overlay,
+        coverage,
+        triangles,
+    } = composed;
     let before = rgb.clone();
     let scale = if scale.is_finite() && scale > 0.0 {
         scale.min(16.0)
     } else {
         1.0
     };
-    let overlay = overlay(scene, camera, width, height, selected);
     for line in &overlay.lines {
         draw_line(
             &mut rgb,
@@ -206,18 +477,20 @@ pub fn picture(
             line.to,
             f64::from(line.kind.width(tokens)) * scale,
             line.kind.color(tokens),
+            opacity(line.hidden, tokens),
         );
     }
-    for (at, kind) in &overlay.points {
+    for point in &overlay.points {
         // A dot is a line without length.
         draw_line(
             &mut rgb,
             width,
             height,
-            *at,
-            *at,
+            point.at,
+            point.at,
             f64::from(tokens.point_radius) * 2.0 * scale,
-            kind.color(tokens),
+            point.kind.color(tokens),
+            opacity(point.hidden, tokens),
         );
     }
     let changed = rgb
@@ -228,24 +501,27 @@ pub fn picture(
         .filter(|(a, b)| a != b)
         .count();
     let pixels = (rgb.len() / 3).max(1);
-    Ok(Picture {
+    Picture {
         width,
         height,
         rgb,
         coverage,
         overlay_coverage: changed as f64 / pixels as f64,
-        triangles: scene.map_or(0, Scene::triangles),
-    })
+        triangles,
+    }
 }
 
 /// The part of the segment inside the box `[lo, hi]` on both axes
 /// (Liang–Barsky), or `None` when it misses the box.
-fn clip(
-    mut a: [f64; 2],
-    mut b: [f64; 2],
-    lo: [f64; 2],
-    hi: [f64; 2],
-) -> Option<([f64; 2], [f64; 2])> {
+fn clip(a: [f64; 2], b: [f64; 2], lo: [f64; 2], hi: [f64; 2]) -> Option<([f64; 2], [f64; 2])> {
+    let (t0, t1) = clip_range(a, b, lo, hi)?;
+    let at = |t: f64| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+    Some((at(t0), at(t1)))
+}
+
+/// The same as fractions of the segment: it is inside the box from the
+/// first to the second.
+fn clip_range(a: [f64; 2], b: [f64; 2], lo: [f64; 2], hi: [f64; 2]) -> Option<(f64, f64)> {
     let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
     let (mut t0, mut t1) = (0.0_f64, 1.0_f64);
     for (delta, start, low, high) in [(dx, a[0], lo[0], hi[0]), (dy, a[1], lo[1], hi[1])] {
@@ -265,13 +541,13 @@ fn clip(
             return None;
         }
     }
-    let at = |t: f64| [a[0] + dx * t, a[1] + dy * t];
-    (a, b) = (at(t0), at(t1));
-    Some((a, b))
+    (t0.is_finite() && t1.is_finite()).then_some((t0, t1))
 }
 
 /// Draws an anti-aliased line of `width` pixels with round ends into an RGB
-/// image. Coordinates may be anything, the image is never indexed outside.
+/// image, `opacity` (0 to 255) opaque. Coordinates may be anything, the
+/// image is never indexed outside.
+#[allow(clippy::too_many_arguments)]
 pub fn draw_line(
     rgb: &mut [u8],
     width: u32,
@@ -280,6 +556,7 @@ pub fn draw_line(
     to: [f64; 2],
     line_width: f64,
     color: Rgb,
+    opacity: u8,
 ) {
     let finite = from.iter().chain(&to).all(|c| c.is_finite());
     if !finite || !line_width.is_finite() || width == 0 || height == 0 {
@@ -330,7 +607,7 @@ pub fn draw_line(
                 0.0
             };
             let distance = (su - (a[0] + du * along)).hypot(sv - (a[1] + dv * along));
-            let alpha = (half + 0.5 - distance).clamp(0.0, 1.0);
+            let alpha = (half + 0.5 - distance).clamp(0.0, 1.0) * f64::from(opacity) / 255.0;
             if alpha <= 0.0 {
                 continue;
             }
@@ -370,7 +647,7 @@ mod tests {
         let (w, h) = (40, 20);
         let mut rgb = canvas(w, h);
         // Along the middle of row 10, two pixels wide.
-        draw_line(&mut rgb, w, h, [5.0, 10.5], [30.0, 10.5], 2.0, WHITE);
+        draw_line(&mut rgb, w, h, [5.0, 10.5], [30.0, 10.5], 2.0, WHITE, 255);
         for x in 6..30 {
             assert_eq!(pixel(&rgb, w, x, 10), WHITE, "x {x}");
             // Half covered above and below: the line is 2 wide about the
@@ -403,7 +680,7 @@ mod tests {
             ([40.0, 10.0], [40.0 - 20.0 * s, 10.0 + 20.0 * c]),
         ] {
             let mut rgb = canvas(w, h);
-            draw_line(&mut rgb, w, h, from, to, 2.0, WHITE);
+            draw_line(&mut rgb, w, h, from, to, 2.0, WHITE, 255);
             let ink: f64 = rgb
                 .as_chunks::<3>()
                 .0
@@ -437,7 +714,7 @@ mod tests {
             for &ay in &ends {
                 for &b in &ends {
                     for width in [0.0, 1.5, 1e9, f64::NAN, -2.0] {
-                        draw_line(&mut rgb, w, h, [ax, ay], [b, 12.0], width, WHITE);
+                        draw_line(&mut rgb, w, h, [ax, ay], [b, 12.0], width, WHITE, 255);
                     }
                 }
             }
@@ -445,15 +722,15 @@ mod tests {
         assert_eq!(rgb.len(), (w * h * 3) as usize);
         // A line from far outside to far outside still crosses the image.
         let mut rgb = canvas(w, h);
-        draw_line(&mut rgb, w, h, [-1e9, 12.5], [1e9, 12.5], 1.0, WHITE);
+        draw_line(&mut rgb, w, h, [-1e9, 12.5], [1e9, 12.5], 1.0, WHITE, 255);
         for x in 0..w {
             assert_eq!(pixel(&rgb, w, x, 12), WHITE, "x {x}");
         }
         // No image, no drawing.
-        draw_line(&mut [], 0, 0, [0.0, 0.0], [5.0, 5.0], 1.0, WHITE);
+        draw_line(&mut [], 0, 0, [0.0, 0.0], [5.0, 5.0], 1.0, WHITE, 255);
         // A buffer shorter than its claimed size is not indexed past.
         let mut short = vec![0; 10];
-        draw_line(&mut short, w, h, [0.0, 0.0], [31.0, 23.0], 3.0, WHITE);
+        draw_line(&mut short, w, h, [0.0, 0.0], [31.0, 23.0], 3.0, WHITE, 255);
     }
 
     #[test]

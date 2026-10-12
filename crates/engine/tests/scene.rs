@@ -630,3 +630,68 @@ fn the_document_status_follows_saving() {
     assert_eq!(craft3d_engine::encode_base64(b"foobar"), "Zm9vYmFy");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn bodies_carry_their_edges_as_polylines_on_the_mesh() {
+    let mut s = session();
+    part(&mut s);
+    let coarse = scene(&mut s, Some(0.01));
+    assert!(coarse.problems.is_empty(), "{:?}", coarse.problems);
+    let [plate, post] = coarse.bodies.as_slice() else {
+        panic!("two bodies expected");
+    };
+
+    // The plate: twelve straight edges, the outline of a 60 × 40 × 8 box.
+    assert_eq!(plate.edges.len(), 12);
+    assert!(plate.edges.iter().all(|edge| edge.len() == 2));
+    let length = |edge: &[Vec3]| -> f64 { edge.windows(2).map(|w| w[0].distance(w[1])).sum() };
+    let total: f64 = plate.edges.iter().map(|e| length(e)).sum();
+    assert!((total - 4.0 * (60.0 + 40.0 + 8.0)).abs() < 1e-9, "{total}");
+    for point in plate.edges.iter().flatten() {
+        // Every end is a corner of the box.
+        assert!([0.0, 60.0].contains(&point.x), "{point:?}");
+        assert!([0.0, 40.0].contains(&point.y), "{point:?}");
+        assert!([0.0, 8.0].contains(&point.z), "{point:?}");
+    }
+
+    // The post: two circles of radius 6 about (15, 20), at z = 8 and 38.
+    assert_eq!(post.edges.len(), 2);
+    let mut heights = Vec::new();
+    for circle in &post.edges {
+        let z = circle[0].z;
+        heights.push(z);
+        assert!(near(circle[0], *circle.last().unwrap()), "closed");
+        for point in circle {
+            assert_eq!(point.z, z);
+            let r = (point.x - 15.0).hypot(point.y - 20.0);
+            assert!((r - 6.0).abs() < 1e-9, "{r}");
+        }
+        // Within the tolerance of the circle: the polygon is shorter than
+        // it by less than a polygon with a sag of 0.01 can be.
+        let around = length(circle);
+        assert!(
+            around < TAU * 6.0 && around > TAU * 6.0 * (1.0 - 2.0 * 0.01 / 6.0),
+            "{around}"
+        );
+    }
+    heights.sort_by(f64::total_cmp);
+    assert_eq!(heights, vec![8.0, 38.0]);
+
+    // The edge points are vertices of the body's own mesh, bit for bit:
+    // a line through them lies on the border of the shaded faces.
+    let bits = |p: &Vec3| [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()];
+    for body in &coarse.bodies {
+        let vertices: std::collections::BTreeSet<_> =
+            body.mesh.positions.iter().map(bits).collect();
+        for point in body.edges.iter().flatten() {
+            assert!(vertices.contains(&bits(point)), "{}: {point:?}", body.name);
+        }
+    }
+
+    // A finer tolerance gives finer circles and the same straight edges;
+    // asking twice gives the same scene.
+    let fine = scene(&mut s, Some(0.0005));
+    assert!(fine.bodies[1].edges[0].len() > post.edges[0].len());
+    assert_eq!(fine.bodies[0].edges, plate.edges);
+    assert_eq!(scene(&mut s, Some(0.0005)).bodies, fine.bodies);
+}

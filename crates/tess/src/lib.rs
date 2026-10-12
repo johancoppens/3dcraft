@@ -13,7 +13,7 @@ mod edge;
 mod face;
 mod weld;
 
-pub use body::{tessellate_body, tessellate_body_with_threads};
+pub use body::{tessellate_body, tessellate_body_with_threads, tessellate_edges};
 pub use weld::Welded;
 
 use craft3d_geom::BezierPatch;
