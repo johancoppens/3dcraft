@@ -236,7 +236,6 @@ fn random_shape(rng: &mut Rng, placement: Placement, shared: &Frame, k: f64) -> 
 /// The volume common to both shapes, by sampling: the estimate and five
 /// standard deviations of it (three would fail a correct pair now and then
 /// over the thousands of pairs of a long run).
-
 fn sampled_overlap(a: &Shape, b: &Shape, rng: &mut Rng) -> (f64, f64) {
     let lo = a.lo.max(b.lo);
     let hi = a.hi.min(b.hi);
