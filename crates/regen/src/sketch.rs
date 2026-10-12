@@ -394,16 +394,32 @@ fn resolve_face(
             "plane: {name} is not a face; a sketch lies on a startCap, an endCap or a side"
         ));
     }
-    let Some(index) = origins
+    let made = |origin| crate::extrude::name_of(name.feature, origin);
+    let exact = origins
         .faces
         .iter()
-        .position(|origin| crate::extrude::name_of(name.feature, origin) == *name)
-    else {
+        .position(|origin| made(origin) == *name);
+    // The caps of one role all lie in one plane and share one frame (that
+    // of the extruded sketch), whatever their outlines are. So when the
+    // outline a cap was named after has changed, the sketch still knows
+    // its plane: that of any cap of the same role of the same feature.
+    // A side face has no such fallback: its plane is its own.
+    let same_plane = || {
+        matches!(name.role, NameRole::StartCap | NameRole::EndCap)
+            .then(|| {
+                origins
+                    .faces
+                    .iter()
+                    .position(|origin| made(origin).role == name.role)
+            })
+            .flatten()
+    };
+    let Some(index) = exact.or_else(same_plane) else {
         let there: Vec<String> = origins
             .faces
             .iter()
             .take(12)
-            .map(|origin| crate::extrude::name_of(name.feature, origin).to_string())
+            .map(|origin| made(origin).to_string())
             .collect();
         return Err(format!(
             "plane: `{made_by}` no longer has a face {name}; its faces are: {}{}",
@@ -425,11 +441,12 @@ fn resolve_face(
         ));
     };
     let frame = plane.frame();
-    // A side face of an extrusion starts wherever the extrusion starts,
-    // which moves with its distance and direction. The sketch's origin is
-    // put back in the plane of the extruded sketch, so a sketch on a side
-    // keeps its place when the extrusion gets deeper, is turned round or
-    // made symmetric.
+    // The kernel puts the origin of a side face where its line starts, at
+    // the offset the extrusion starts. Both move with upstream dimensions
+    // (a corner radius, the distance, the direction). A sketch on a side
+    // is measured from the origin of the extruded sketch instead, dropped
+    // straight onto the face: a point that only moves when the face itself
+    // moves along its normal.
     let mut origin = frame.origin();
     if name.role == NameRole::Side
         && let FeatureKind::Extrude(extrusion) = &source.kind
@@ -438,7 +455,7 @@ fn resolve_face(
             .find(|r| r.id == extrusion.sketch)
             .and_then(|r| r.sketch.as_ref())
     {
-        origin = origin - base.normal * (origin - base.origin).dot(base.normal);
+        origin = base.origin - frame.z() * (base.origin - origin).dot(frame.z());
     }
     if face.reversed {
         frame.reversed_at(origin)

@@ -6,6 +6,14 @@ Decisions that shape the project, newest first, each with its reason. An agent t
 
 ## Taken
 
+### 2026-10-13: Made during the night of 12 to 13 October (the developer was asleep)
+
+Made by the agent on the developer's instruction to decide by recommendation; the developer can overturn any of them.
+
+- **A sketch on a cap survives a change of the cap's outline** (field test, finding 1). All caps of one role of one extrusion lie in one plane with one frame, so for the plane of a sketch a cap name resolves to that plane as long as the feature has a cap of that role, also when the outline in the name is gone. `F2:endCap()` is accepted as "where F2 ends". This is not a retarget: the sketch lands exactly where it was. It replaces "a cap is named after all curves of its outer loop, and a reference then fails" below, for sketch planes only; a later consumer that needs the face itself (not its plane) still gets the exact match or nothing. The stored name is not rewritten.
+- **A sketch on a side face is measured from the origin of the extruded sketch, dropped onto the face** (field test, finding 2), not from the start of the line that made the face. Files written on 12 October with a sketch on a side face whose line does not start at that point place the sketch differently now; format 4 was never released.
+- **`file.list` and `file.activate`** (field test, finding 5): a document is referred to by its number in the list of open documents, which is what `file.new` and `file.open` already returned, or by its path. Numbers shift when a document before it is closed; a stable document id was not introduced.
+
 ### 2026-10-12: Persistent names, first version (M6)
 
 Made by the agent while building the first consumer (a sketch on a face); the developer can overturn any of them. The scheme itself is described in [`architecture.md`](architecture.md) §4.1.

@@ -11,6 +11,7 @@
 
 mod base64;
 mod commands;
+mod file_cmds;
 mod params;
 mod scene;
 mod sketch_cmds;
@@ -133,7 +134,7 @@ impl Session {
     /// The command registry, in a fixed order.
     pub fn commands() -> &'static [CommandSpec] {
         static ALL: std::sync::OnceLock<Vec<CommandSpec>> = std::sync::OnceLock::new();
-        ALL.get_or_init(|| [commands::SPECS, sketch_cmds::SPECS].concat())
+        ALL.get_or_init(|| [commands::SPECS, file_cmds::SPECS, sketch_cmds::SPECS].concat())
     }
 
     pub fn command(id: &str) -> Option<&'static CommandSpec> {

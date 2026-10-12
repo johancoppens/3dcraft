@@ -326,13 +326,17 @@ fn scenario_the_feature_that_made_the_face_goes_away() {
 }
 
 #[test]
-fn scenario_the_face_itself_goes_away() {
+fn scenario_the_outline_of_a_cap_changes() {
+    // Field test 2026-10-12, finding 1: rounding the corners of a plate
+    // renamed its end cap and broke every sketch on it. All caps of one
+    // role of one extrusion lie in one plane with one frame (the extruded
+    // sketch's), so a sketch on a cap keeps its place whatever happens to
+    // the outline the cap was named after.
     let mut s = session();
     bracket(&mut s);
     boss(&mut s, END_CAP, 0.0, 10.0, 2.5);
     // A frame drawn around the L turns the L into a hole of a new outer
-    // profile. There still is an end cap, but it is another face (the
-    // frame's, named after the frame's sides): the name does not follow.
+    // profile: the end cap is now named after the frame's sides.
     run(
         &mut s,
         "sketch.polyline",
@@ -340,11 +344,9 @@ fn scenario_the_face_itself_goes_away() {
                "points": [[-10, -10], [70, -10], [70, 50], [-10, 50]]}),
     );
     assert_eq!(feature(&mut s, "Bracket")["status"], "ok");
-    assert_seat_lost(&mut s, &["no longer has a face", END_CAP, "endCap(e"]);
-    run(&mut s, "edit.undo", json!({}));
     assert_boss_at(&mut s, [10.0, 2.5, 10.0]);
-    // A side of the L replaced by two: the cap is now named after seven
-    // sides, and the old name points at nothing.
+    run(&mut s, "edit.undo", json!({}));
+    // A side of the L replaced by two: the cap is named after seven sides.
     run(
         &mut s,
         "sketch.delete",
@@ -356,7 +358,67 @@ fn scenario_the_face_itself_goes_away() {
         json!({"sketch": "Profile", "points": ["e5", [2.5, 33], "e6"]}),
     );
     assert_eq!(feature(&mut s, "Bracket")["status"], "ok");
-    assert_seat_lost(&mut s, &["no longer has a face", END_CAP]);
+    assert_boss_at(&mut s, [10.0, 2.5, 10.0]);
+    // The stored name is the user's and is not rewritten.
+    let inspected = run(&mut s, "sketch.inspect", json!({"sketch": "Seat"}));
+    assert_eq!(inspected["plane"]["face"], END_CAP);
+    // Two separate profiles, so two end caps, neither with the old name:
+    // still one plane.
+    run(
+        &mut s,
+        "sketch.polyline",
+        json!({"sketch": "Profile", "closed": true, "points": [[50, -20], [60, -20], [55, -11]]}),
+    );
+    assert_eq!(feature(&mut s, "Bracket")["status"], "ok");
+    assert_boss_at(&mut s, [10.0, 2.5, 10.0]);
+    // The plane still follows the extrusion.
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "depth", "expr": "20 mm"}),
+    );
+    assert_boss_at(&mut s, [10.0, 2.5, 22.0]);
+}
+
+#[test]
+fn a_cap_can_be_named_without_its_outline() {
+    // `F2:endCap()` is "the plane where F2 ends".
+    let mut s = session();
+    bracket(&mut s);
+    boss(&mut s, "F2:endCap()", 0.0, 10.0, 2.5);
+    assert_boss_at(&mut s, [10.0, 2.5, 10.0]);
+    run(
+        &mut s,
+        "sketch.edit",
+        json!({"sketch": "Seat", "face": "F2:startCap()"}),
+    );
+    // Seen from below y is reversed; the boss hangs under z = 0.
+    assert_boss_at(&mut s, [10.0, -2.5, -2.0]);
+}
+
+#[test]
+fn the_looser_match_is_for_caps_of_the_same_feature_and_role_only() {
+    let mut s = session();
+    bracket(&mut s);
+    run(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "Profile", "distance": 50, "name": "Decoy"}),
+    );
+    // A cap name with a stale outline never lands on another feature, on
+    // the other cap, or on a side.
+    boss(&mut s, "F2:endCap(e99)", 0.0, 10.0, 2.5);
+    assert_boss_at(&mut s, [10.0, 2.5, 10.0]);
+    run(&mut s, "feature.suppress", json!({"feature": "Bracket"}));
+    assert_seat_lost(&mut s, &["Bracket", "suppressed"]);
+    run(&mut s, "edit.undo", json!({}));
+    // A side has a plane of its own: a stale side name points at nothing.
+    run(
+        &mut s,
+        "sketch.edit",
+        json!({"sketch": "Seat", "face": "F2:side(e99)"}),
+    );
+    assert_seat_lost(&mut s, &["no longer has a face", "F2:side(e99)"]);
 }
 
 #[test]
@@ -465,6 +527,48 @@ fn a_sketch_on_a_side_face_follows_the_side() {
 }
 
 #[test]
+fn a_sketch_on_a_side_face_is_measured_from_the_origin_of_the_extruded_sketch() {
+    // Field test 2026-10-12, finding 2: the origin of a side-face sketch
+    // was the start of the line that made the face, which moves with
+    // upstream dimensions. It is the extruded sketch's origin dropped
+    // straight onto the face.
+    let mut s = session();
+    bracket(&mut s);
+    // e10 runs from e4 (5, 5) up to e5 (5, 30): the inner wall of the
+    // upright, facing +X. The sketch origin (0, 0) dropped onto x = 5 is
+    // (5, 0, 0), not the corner e4.
+    boss(&mut s, "F2:side(e10)", 0.0, 20.0, 4.0);
+    let inspected = run(&mut s, "sketch.inspect", json!({"sketch": "Seat"}));
+    assert_eq!(
+        inspected["frame"],
+        json!({"origin": [5.0, 0.0, 0.0], "x": [0.0, 1.0, 0.0], "y": [0.0, 0.0, 1.0]})
+    );
+    assert_boss_at(&mut s, [7.0, 20.0, 4.0]);
+    // Thicker: e4 moves to (9, 9). The wall moves out to x = 9 and the
+    // boss with it, but it does not climb with the corner.
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "thickness", "expr": "9 mm"}),
+    );
+    assert_boss_at(&mut s, [11.0, 20.0, 4.0]);
+    // The side replaced by a new line: its own name is gone, and a side
+    // has no other face in its plane to fall back on.
+    run(
+        &mut s,
+        "sketch.delete",
+        json!({"sketch": "Profile", "entity": "e10"}),
+    );
+    run(
+        &mut s,
+        "sketch.polyline",
+        json!({"sketch": "Profile", "points": ["e4", "e5"]}),
+    );
+    assert_eq!(feature(&mut s, "Bracket")["status"], "ok");
+    assert_seat_lost(&mut s, &["no longer has a face", "F2:side(e10)"]);
+}
+
+#[test]
 fn names_that_cannot_carry_a_sketch_are_refused_with_a_reason() {
     let mut s = session();
     bracket(&mut s);
@@ -501,7 +605,6 @@ fn names_that_cannot_carry_a_sketch_are_refused_with_a_reason() {
         ("F2:side(e14)", vec!["cylinder", "flat"]),
         ("F2:lateralEdge(e7,e8)", vec!["is not a face"]),
         ("F2:side(e99)", vec!["no longer has a face", "F2:side(e7)"]),
-        ("F2:endCap(e7,e8)", vec!["no longer has a face"]),
         ("F3:side(e1)", vec!["Plate", "no names yet"]),
         ("F1:side(e7)", vec!["Profile", "no names yet"]),
         ("F77:side(e7)", vec!["no feature F77"]),
