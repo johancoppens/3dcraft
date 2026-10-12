@@ -1,2 +1,303 @@
-//! Import and export orchestration: bodies to STEP, meshes to STL, 3MF and OBJ.
-//! Planned from M3.
+//! Import and export orchestration.
+//!
+//! So far: 3DCraft meshes to STL, 3MF and OBJ through `craft3d-meshio`.
+//! STEP and bodies arrive with the kernel (docs/file-formats.md).
+
+use craft3d_meshio::{self as meshio, MeshError, Model, Object, ObjectKind, Unit};
+use craft3d_tess::Mesh;
+use std::collections::BTreeMap;
+use std::fmt;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MeshFormat {
+    StlBinary,
+    StlAscii,
+    ThreeMf,
+    Obj,
+}
+
+impl MeshFormat {
+    /// The format for a file extension (without the dot, any case). `stl`
+    /// means binary STL.
+    pub fn from_extension(extension: &str) -> Option<Self> {
+        match extension.to_ascii_lowercase().as_str() {
+            "stl" => Some(MeshFormat::StlBinary),
+            "3mf" => Some(MeshFormat::ThreeMf),
+            "obj" => Some(MeshFormat::Obj),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum IoError {
+    /// The mesh's arrays do not fit together.
+    InvalidMesh {
+        triangle: usize,
+    },
+    Format(MeshError),
+}
+
+impl fmt::Display for IoError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            IoError::InvalidMesh { triangle } => {
+                write!(
+                    f,
+                    "mesh is inconsistent: triangle {triangle} refers to a vertex that does not exist"
+                )
+            }
+            IoError::Format(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for IoError {}
+
+impl From<MeshError> for IoError {
+    fn from(e: MeshError) -> Self {
+        IoError::Format(e)
+    }
+}
+
+/// True when the triangles form a closed, consistently oriented manifold:
+/// every directed edge occurs once, and so does its reverse.
+pub fn is_closed(triangles: &[[u32; 3]]) -> bool {
+    let mut edges: BTreeMap<(u32, u32), u32> = BTreeMap::new();
+    for &[a, b, c] in triangles {
+        for edge in [(a, b), (b, c), (c, a)] {
+            *edges.entry(edge).or_insert(0) += 1;
+        }
+    }
+    !edges.is_empty()
+        && edges
+            .iter()
+            .all(|(&(a, b), &n)| n == 1 && edges.get(&(b, a)) == Some(&1))
+}
+
+/// Converts a tessellated mesh to an exchange object.
+///
+/// Vertices at bit-identical positions are merged, which joins surfaces
+/// along the seams the tessellator made exact, and triangles that collapse
+/// by it are dropped. Vertex normals are not carried over: none of the
+/// formats needs them. The object is a [`ObjectKind::Solid`] only when the
+/// merged mesh is closed and consistently oriented.
+pub fn to_object(mesh: &Mesh, name: &str) -> Result<Object, IoError> {
+    let mut index_of: BTreeMap<[u64; 3], u32> = BTreeMap::new();
+    let mut positions = Vec::new();
+    let mut remap = Vec::with_capacity(mesh.positions.len());
+    for p in &mesh.positions {
+        // -0.0 and 0.0 are the same place.
+        let key = [p.x + 0.0, p.y + 0.0, p.z + 0.0].map(f64::to_bits);
+        let next = u32::try_from(positions.len())
+            .map_err(|_| MeshError::TooLarge("more than 2^32 vertices"))?;
+        let index = *index_of.entry(key).or_insert_with(|| {
+            positions.push([p.x, p.y, p.z]);
+            next
+        });
+        remap.push(index);
+    }
+    let mut triangles = Vec::with_capacity(mesh.triangles.len());
+    for (t, tri) in mesh.triangles.iter().enumerate() {
+        let [a, b, c] = tri.map(|k| remap.get(k as usize).copied());
+        let (Some(a), Some(b), Some(c)) = (a, b, c) else {
+            return Err(IoError::InvalidMesh { triangle: t });
+        };
+        if a != b && b != c && c != a {
+            triangles.push([a, b, c]);
+        }
+    }
+    let kind = if is_closed(&triangles) {
+        ObjectKind::Solid
+    } else {
+        ObjectKind::Surface
+    };
+    Ok(Object {
+        name: name.to_string(),
+        kind,
+        positions,
+        triangles,
+    })
+}
+
+/// Encodes `mesh` as a file of the given format. `unit` is recorded where
+/// the format can (3MF); coordinates are written as they are.
+pub fn export_mesh(
+    mesh: &Mesh,
+    name: &str,
+    unit: Unit,
+    format: MeshFormat,
+) -> Result<Vec<u8>, IoError> {
+    let model = Model {
+        unit,
+        objects: vec![to_object(mesh, name)?],
+    };
+    Ok(match format {
+        MeshFormat::StlBinary => meshio::write_stl_binary(&model)?,
+        MeshFormat::StlAscii => meshio::write_stl_ascii(&model)?.into_bytes(),
+        MeshFormat::ThreeMf => meshio::write_3mf(&model)?,
+        MeshFormat::Obj => meshio::write_obj(&model)?.into_bytes(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use craft3d_math::Vec3;
+    use craft3d_tess::{TessParams, tessellate_patches};
+    use craft3d_testkit::teapot::teapot;
+
+    /// An axis-aligned cube of the given side with one corner at the origin,
+    /// as six separate outward-facing quads: 24 vertices, 12 triangles.
+    pub(crate) fn cube(side: f64) -> Mesh {
+        let s = side;
+        let faces = [
+            [[0.0, 0.0, 0.0], [0.0, s, 0.0], [s, s, 0.0], [s, 0.0, 0.0]], // -z
+            [[0.0, 0.0, s], [s, 0.0, s], [s, s, s], [0.0, s, s]],         // +z
+            [[0.0, 0.0, 0.0], [s, 0.0, 0.0], [s, 0.0, s], [0.0, 0.0, s]], // -y
+            [[0.0, s, 0.0], [0.0, s, s], [s, s, s], [s, s, 0.0]],         // +y
+            [[0.0, 0.0, 0.0], [0.0, 0.0, s], [0.0, s, s], [0.0, s, 0.0]], // -x
+            [[s, 0.0, 0.0], [s, s, 0.0], [s, s, s], [s, 0.0, s]],         // +x
+        ];
+        let mut mesh = Mesh::default();
+        for (face, quad) in faces.iter().enumerate() {
+            let base = mesh.positions.len() as u32;
+            for [x, y, z] in quad {
+                mesh.positions.push(Vec3::new(*x, *y, *z));
+                mesh.normals.push(Vec3::ZERO);
+            }
+            mesh.triangles.push([base, base + 1, base + 2]);
+            mesh.triangles.push([base, base + 2, base + 3]);
+            mesh.face_ids.extend([face as u32; 2]);
+        }
+        mesh
+    }
+
+    fn signed_volume(o: &Object) -> f64 {
+        o.triangles
+            .iter()
+            .map(|t| {
+                let [a, b, c] = t.map(|k| o.positions[k as usize]);
+                (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
+                    + a[2] * (b[0] * c[1] - b[1] * c[0]))
+                    / 6.0
+            })
+            .sum()
+    }
+
+    #[test]
+    fn a_cube_of_separate_faces_welds_into_a_closed_solid() {
+        let object = to_object(&cube(2.0), "cube").unwrap();
+        assert_eq!(object.positions.len(), 8);
+        assert_eq!(object.triangles.len(), 12);
+        assert_eq!(object.kind, ObjectKind::Solid);
+        // Outward orientation: positive volume, side³ up to the rounding of
+        // twelve terms divided by six.
+        assert!((signed_volume(&object) - 8.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn closedness_needs_every_edge_matched_in_the_opposite_direction() {
+        let tetra = [[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]];
+        assert!(is_closed(&tetra));
+        assert!(!is_closed(&tetra[..3]), "a missing face leaves open edges");
+        let mut flipped = tetra;
+        flipped[3] = [1, 3, 2];
+        assert!(!is_closed(&flipped), "one face wound the wrong way");
+        let mut doubled = tetra.to_vec();
+        doubled.push([1, 2, 3]);
+        assert!(!is_closed(&doubled), "an edge used three times");
+        assert!(!is_closed(&[]));
+        let mut open = cube(1.0);
+        open.triangles.truncate(10);
+        assert_eq!(to_object(&open, "open").unwrap().kind, ObjectKind::Surface);
+    }
+
+    #[test]
+    fn the_teapot_welds_along_its_seams_but_stays_open() {
+        let mesh = tessellate_patches(&teapot().unwrap(), &TessParams::default()).unwrap();
+        let object = to_object(&mesh, "teapot").unwrap();
+        // Seams and the collapsed lid and bottom centres merge.
+        assert!(object.positions.len() < mesh.positions.len());
+        assert!(object.triangles.len() <= mesh.triangles.len());
+        // The dataset has a gap between lid and rim and an open spout.
+        assert_eq!(object.kind, ObjectKind::Surface);
+        // Welding moves no vertex: the bounding box is unchanged.
+        let (lo, hi) = mesh.bbox().corners().unwrap();
+        for (axis, (min, max)) in [(lo.x, hi.x), (lo.y, hi.y), (lo.z, hi.z)]
+            .into_iter()
+            .enumerate()
+        {
+            let values = object.positions.iter().map(|p| p[axis]);
+            assert_eq!(values.clone().fold(f64::INFINITY, f64::min), min);
+            assert_eq!(values.fold(f64::NEG_INFINITY, f64::max), max);
+        }
+    }
+
+    #[test]
+    fn negative_zero_welds_with_zero() {
+        let mut mesh = Mesh::default();
+        for p in [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::X,
+            Vec3::Y,
+            Vec3::new(-0.0, 0.0, -0.0),
+            Vec3::Y,
+            Vec3::Z,
+        ] {
+            mesh.positions.push(p);
+            mesh.normals.push(Vec3::ZERO);
+        }
+        mesh.triangles = vec![[0, 1, 2], [3, 4, 5]];
+        mesh.face_ids = vec![0, 1];
+        assert_eq!(to_object(&mesh, "").unwrap().positions.len(), 4);
+    }
+
+    #[test]
+    fn every_format_exports_and_is_reproducible() {
+        let mesh = cube(1.0);
+        for (format, magic) in [
+            (MeshFormat::StlBinary, &b"3DCraft binary STL"[..]),
+            (MeshFormat::StlAscii, b"solid cube"),
+            (MeshFormat::ThreeMf, b"PK\x03\x04"),
+            (MeshFormat::Obj, b"# 3DCraft\no cube"),
+        ] {
+            let bytes = export_mesh(&mesh, "cube", Unit::Millimeter, format).unwrap();
+            assert!(bytes.starts_with(magic), "{format:?}");
+            assert_eq!(
+                bytes,
+                export_mesh(&mesh, "cube", Unit::Millimeter, format).unwrap()
+            );
+        }
+        assert_eq!(
+            MeshFormat::from_extension("STL"),
+            Some(MeshFormat::StlBinary)
+        );
+        assert_eq!(MeshFormat::from_extension("3mf"), Some(MeshFormat::ThreeMf));
+        assert_eq!(MeshFormat::from_extension("Obj"), Some(MeshFormat::Obj));
+        assert_eq!(MeshFormat::from_extension("step"), None);
+    }
+
+    #[test]
+    fn bad_meshes_are_errors() {
+        let mut bad = cube(1.0);
+        bad.triangles[5] = [0, 1, 999];
+        for format in [
+            MeshFormat::StlBinary,
+            MeshFormat::StlAscii,
+            MeshFormat::ThreeMf,
+            MeshFormat::Obj,
+        ] {
+            assert_eq!(
+                export_mesh(&bad, "bad", Unit::Millimeter, format),
+                Err(IoError::InvalidMesh { triangle: 5 })
+            );
+        }
+        let mut nan = cube(1.0);
+        nan.positions[2].x = f64::NAN;
+        assert!(matches!(
+            export_mesh(&nan, "nan", Unit::Millimeter, MeshFormat::Obj),
+            Err(IoError::Format(MeshError::NonFinitePosition { .. }))
+        ));
+    }
+}

@@ -1,13 +1,13 @@
 # File formats
 
-> **Last updated:** 2026-10-12 · **Status:** design, pre-M0. Nothing is implemented; the table is the plan.
+> **Last updated:** 2026-10-12 · **Status:** mesh export (STL, 3MF, OBJ) works for tessellated meshes and is validated with FreeCAD; everything else is the plan.
 
 | Format | Read | Write | Carries | Crates | Milestone |
 |---|---|---|---|---|---|
 | `.3dcraft` (native) | yes | yes | The design history: units, tolerance, variables, formulas, sketches, constraints, features, their order; imported bodies; optional caches | `format` | M2 |
-| STL (binary, ASCII) | later | yes | Triangles only; no units, no colour | `meshio`, `io` | M3 |
-| 3MF | later | yes | Indexed mesh per body, units, names, colours | `meshio`, `io` | M3 |
-| OBJ | later | yes | Indexed mesh, normals, groups per body/face | `meshio`, `io` | M3 |
+| STL (binary, ASCII) | later | **yes (2026-10-12)** | Triangles only; no units, no colour | `meshio`, `io` | M3 |
+| 3MF | later | **yes (2026-10-12)** | Indexed mesh per body, units, names, colours | `meshio`, `io` | M3 |
+| OBJ | later | **yes (2026-10-12)** | Indexed mesh, normals, groups per body/face | `meshio`, `io` | M3 |
 | STEP (`.step`, `.stp`) | M10 | yes | Exact B-rep geometry and topology, units, names; **no history** | `step`, `io` | M8 |
 
 Formats live in standalone crates with their own format-level model and no workspace dependencies; the mapping to bodies and documents lives in `io` ([`architecture.md`](architecture.md) §3).
@@ -52,7 +52,9 @@ The body blob encoding (how a B-rep is serialised) is defined in M2 alongside `t
 
 ## Meshes: STL, 3MF, OBJ
 
-All three are written from the tessellator's output for the selected bodies at a caller-chosen chordal tolerance (default from the document, overridable per export). Because the tessellator is watertight by construction, exported solids are closed manifolds; the exporter asserts this and fails with an error rather than writing a leaky mesh.
+All three are written from the tessellator's output at a caller-chosen chordal tolerance. `io` merges vertices at bit-identical positions (the tessellator makes shared edges exact, so no distance tolerance is involved) and marks the object a solid only when the merged mesh is closed and consistently oriented; an open mesh is exported as a surface (3MF `type="surface"`). *Planned with bodies:* a body that claims to be a solid but tessellates open is an error rather than a leaky file.
+
+Today: one object per file, no colours or materials, OBJ without normals (`vn`) or groups per face.
 
 | Format | Notes | Spec |
 |---|---|---|
@@ -60,9 +62,9 @@ All three are written from the tessellator's output for the selected bodies at a
 | 3MF | An OPC (ZIP) package with `[Content_Types].xml`, `_rels/.rels` and `3D/3dmodel.model` (XML): indexed vertices and triangles per object, explicit unit, object names, base-material colours. Preferred mesh format: it has units and guarantees an indexed mesh | 3MF Core Specification (3MF Consortium, freely available) |
 | OBJ | `v`, `vn`, `f` with one `o` per body and `g` per face; optional `.mtl` for colours. No units | Wavefront OBJ format description (public) |
 
-The ZIP and XML writing needed for 3MF is part of `meshio` (STORE and DEFLATE writing is small; a permissively licensed pure-Rust compression crate is acceptable here, since it is not modelling code).
+The ZIP and XML writing needed for 3MF is part of `meshio`: a stored (uncompressed) ZIP writer with CRC-32, no dependency. Files are larger than they need to be (the teapot at tolerance 0.002 is 11.9 MB as 3MF, 6.5 MB as STL); DEFLATE is a later improvement.
 
-Tests: byte-exact expected files for a tetrahedron and a box; parse-back of our own output (minimal readers in tests) giving the same vertex/triangle counts and volume; closedness and orientation asserted; 3MF package structure validated against the spec's required parts; f32 rounding in STL does not open cracks (vertices shared in our mesh still compare equal after conversion).
+Tests (in place): exact expected text for ASCII STL, OBJ and the 3MF model part; binary STL and the ZIP container parsed back by minimal readers in the tests; FreeCAD reading a box (solid, volume 24) and the teapot in all four encodings. *Originally planned wording:* byte-exact expected files for a tetrahedron and a box; parse-back of our own output (minimal readers in tests) giving the same vertex/triangle counts and volume; closedness and orientation asserted; 3MF package structure validated against the spec's required parts; f32 rounding in STL does not open cracks (vertices shared in our mesh still compare equal after conversion).
 
 ## Later candidates
 

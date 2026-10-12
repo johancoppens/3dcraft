@@ -58,6 +58,12 @@ version = "0.0.1"
 [[package]]
 name = "craft3d-io"
 version = "0.0.1"
+dependencies = [
+ "craft3d-math",
+ "craft3d-meshio",
+ "craft3d-tess",
+ "craft3d-testkit",
+]
 
 [[package]]
 name = "craft3d-kernel"

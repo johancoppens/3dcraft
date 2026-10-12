@@ -1,4 +1,4 @@
-//! Build tasks: `cargo xtask layers | wasm | ci | stats`.
+//! Build tasks: `cargo xtask layers | wasm | ci | stats | freecad`.
 
 mod layers;
 mod stats;
@@ -48,6 +48,26 @@ fn ci() -> Result<(), String> {
     wasm()
 }
 
+/// Runs the opt-in tests that let FreeCAD read our exports (docs/testing.md,
+/// oracle 8). Needs `CRAFT3D_FREECAD`.
+fn freecad() -> Result<(), String> {
+    if std::env::var_os("CRAFT3D_FREECAD").is_none() {
+        return Err(
+            "set CRAFT3D_FREECAD to a FreeCAD AppImage or FreeCADCmd executable".to_string(),
+        );
+    }
+    cargo(&[
+        "test",
+        "--release",
+        "-p",
+        "craft3d-io",
+        "--test",
+        "freecad",
+        "--",
+        "--ignored",
+    ])
+}
+
 fn main() -> ExitCode {
     let task = std::env::args().nth(1).unwrap_or_default();
     let result = match task.as_str() {
@@ -55,8 +75,9 @@ fn main() -> ExitCode {
         "wasm" => wasm(),
         "ci" => ci(),
         "stats" => stats::run(),
+        "freecad" => freecad(),
         other => Err(format!(
-            "unknown task `{other}`; tasks: layers, wasm, ci, stats"
+            "unknown task `{other}`; tasks: layers, wasm, ci, stats, freecad"
         )),
     };
     match result {

@@ -1,0 +1,193 @@
+//! Oracle 8 (docs/testing.md): an independent program reads our exports.
+//!
+//! Opt-in, because it needs FreeCAD:
+//!
+//! ```sh
+//! CRAFT3D_FREECAD=/path/to/FreeCAD.AppImage cargo test -p craft3d-io --test freecad -- --ignored
+//! ```
+//!
+//! `CRAFT3D_FREECAD` is a FreeCAD AppImage or a `FreeCADCmd` executable.
+//! When opted in, a missing or failing FreeCAD is a test failure, never a
+//! skip. FreeCAD runs as a separate program; nothing of it is linked.
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
+
+use craft3d_io::{MeshFormat, export_mesh, to_object};
+use craft3d_math::Vec3;
+use craft3d_meshio::Unit;
+use craft3d_tess::{Mesh, TessParams, tessellate_patches};
+use craft3d_testkit::teapot::teapot;
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::process::Command;
+
+/// What FreeCAD reports for a file.
+#[derive(Debug)]
+struct Report {
+    facets: usize,
+    points: usize,
+    area: f64,
+    volume: f64,
+    solid: bool,
+    bbox: [f64; 6],
+}
+
+fn freecad_reads(file_name: &str, bytes: &[u8]) -> Report {
+    let freecad = std::env::var("CRAFT3D_FREECAD").expect(
+        "set CRAFT3D_FREECAD to a FreeCAD AppImage or FreeCADCmd executable to run these tests",
+    );
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("freecad");
+    std::fs::create_dir_all(&dir).unwrap();
+    let input = dir.join(file_name);
+    let output = dir.join(format!("{file_name}.report"));
+    std::fs::write(&input, bytes).unwrap();
+    let _ = std::fs::remove_file(&output);
+
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/mesh_report.py");
+    let mut command = Command::new(&freecad);
+    if freecad.ends_with(".AppImage") {
+        command.arg("freecadcmd");
+    }
+    let run = command
+        .arg(&script)
+        .env("CRAFT3D_FC_IN", &input)
+        .env("CRAFT3D_FC_OUT", &output)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap_or_else(|e| panic!("cannot run {freecad}: {e}"));
+    let text = std::fs::read_to_string(&output).unwrap_or_else(|_| {
+        panic!(
+            "FreeCAD wrote no report for {file_name} ({}):\n{}\n{}",
+            run.status,
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr)
+        )
+    });
+    let fields: BTreeMap<&str, &str> = text.lines().filter_map(|l| l.split_once('=')).collect();
+    let number = |key: &str| -> f64 { fields[key].parse().unwrap() };
+    let bbox: Vec<f64> = fields["bbox"]
+        .split(' ')
+        .map(|v| v.parse().unwrap())
+        .collect();
+    Report {
+        facets: number("facets") as usize,
+        points: number("points") as usize,
+        area: number("area"),
+        volume: number("volume"),
+        solid: fields["solid"] == "1",
+        bbox: bbox.try_into().unwrap(),
+    }
+}
+
+/// FreeCAD's mesh kernel stores 32-bit floats.
+fn close(a: f64, b: f64) -> bool {
+    (a - b).abs() <= 2e-5 * a.abs().max(b.abs()).max(1.0)
+}
+
+const FORMATS: [(&str, MeshFormat); 4] = [
+    ("stl", MeshFormat::StlBinary),
+    ("ascii.stl", MeshFormat::StlAscii),
+    ("3mf", MeshFormat::ThreeMf),
+    ("obj", MeshFormat::Obj),
+];
+
+/// A 2 × 3 × 4 box at an offset, as six separate quads.
+fn cuboid() -> Mesh {
+    let (o, d) = (Vec3::new(10.0, -5.0, 1.5), Vec3::new(2.0, 3.0, 4.0));
+    let corner = |i: u32| {
+        Vec3::new(
+            o.x + if i & 1 != 0 { d.x } else { 0.0 },
+            o.y + if i & 2 != 0 { d.y } else { 0.0 },
+            o.z + if i & 4 != 0 { d.z } else { 0.0 },
+        )
+    };
+    // Corner indices per face, counter-clockwise seen from outside.
+    let faces = [
+        [0, 2, 3, 1],
+        [4, 5, 7, 6],
+        [0, 1, 5, 4],
+        [2, 6, 7, 3],
+        [0, 4, 6, 2],
+        [1, 3, 7, 5],
+    ];
+    let mut mesh = Mesh::default();
+    for (face, quad) in faces.iter().enumerate() {
+        let base = mesh.positions.len() as u32;
+        for &i in quad {
+            mesh.positions.push(corner(i));
+            mesh.normals.push(Vec3::ZERO);
+        }
+        mesh.triangles
+            .extend([[base, base + 1, base + 2], [base, base + 2, base + 3]]);
+        mesh.face_ids.extend([face as u32; 2]);
+    }
+    mesh
+}
+
+#[test]
+#[ignore = "needs FreeCAD: set CRAFT3D_FREECAD and run with --ignored"]
+fn freecad_reads_a_box_as_a_solid_of_the_right_volume() {
+    let mesh = cuboid();
+    for (extension, format) in FORMATS {
+        let bytes = export_mesh(&mesh, "box", Unit::Millimeter, format).unwrap();
+        let report = freecad_reads(&format!("box.{extension}"), &bytes);
+        println!("box.{extension}: {report:?}");
+        assert_eq!(report.facets, 12, "{extension}");
+        assert_eq!(report.points, 8, "{extension}");
+        assert!(
+            report.solid,
+            "{extension}: FreeCAD does not see a closed solid"
+        );
+        // Positive: our triangles face outward.
+        assert!(
+            close(report.volume, 24.0),
+            "{extension}: volume {}",
+            report.volume
+        );
+        assert!(
+            close(report.area, 52.0),
+            "{extension}: area {}",
+            report.area
+        );
+        for (got, want) in report.bbox.iter().zip([10.0, -5.0, 1.5, 12.0, -2.0, 5.5]) {
+            assert!(close(*got, want), "{extension}: bbox {:?}", report.bbox);
+        }
+    }
+}
+
+#[test]
+#[ignore = "needs FreeCAD: set CRAFT3D_FREECAD and run with --ignored"]
+fn freecad_reads_the_teapot_as_we_wrote_it() {
+    let params = TessParams {
+        chordal_tolerance: 0.01,
+        ..TessParams::default()
+    };
+    let mesh = tessellate_patches(&teapot().unwrap(), &params).unwrap();
+    let object = to_object(&mesh, "teapot").unwrap();
+    let (lo, hi) = mesh.bbox().corners().unwrap();
+    for (extension, format) in FORMATS {
+        let bytes = export_mesh(&mesh, "teapot", Unit::Millimeter, format).unwrap();
+        let report = freecad_reads(&format!("teapot.{extension}"), &bytes);
+        println!("teapot.{extension}: {report:?}");
+        assert_eq!(report.facets, object.triangles.len(), "{extension}");
+        assert_eq!(report.points, object.positions.len(), "{extension}");
+        assert!(
+            !report.solid,
+            "{extension}: the teapot dataset is not closed"
+        );
+        assert!(
+            close(report.area, mesh.area()),
+            "{extension}: area {} vs {}",
+            report.area,
+            mesh.area()
+        );
+        for (got, want) in report.bbox.iter().zip([lo.x, lo.y, lo.z, hi.x, hi.y, hi.z]) {
+            assert!(close(*got, want), "{extension}: bbox {:?}", report.bbox);
+        }
+    }
+}

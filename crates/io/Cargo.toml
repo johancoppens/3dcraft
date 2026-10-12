@@ -9,3 +9,9 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+craft3d-math.workspace = true
+craft3d-tess.workspace = true
+craft3d-meshio.workspace = true
+
+[dev-dependencies]
+craft3d-testkit.workspace = true

@@ -85,7 +85,7 @@ The CPU renderer has golden images for a small set of scenes (reviewed by the de
 
 ### Oracle 8: external tools (optional, never a dependency)
 
-For file formats the final judge is another program. Where available on the machine, test helpers may shell out to an independent tool to validate an exported file and read back its volume and bounding box (for example an open-source CAD kernel's command line for STEP, a slicer or mesh checker for 3MF/STL). These tests are opt-in (a cargo feature), skipped with a clear message when the tool is missing, and the tool is never linked, vendored or read for implementation ideas. FreeCAD is the approved tool ([`decisions.md`](decisions.md)); tests find it through the `CRAFT3D_FREECAD` environment variable.
+For file formats the final judge is another program. Where available on the machine, test helpers may shell out to an independent tool to validate an exported file and read back its volume and bounding box (for example an open-source CAD kernel's command line for STEP, a slicer or mesh checker for 3MF/STL). These tests are opt-in (`#[ignore]`, run by `cargo xtask freecad`), fail with a clear message when opted in without the tool, and the tool is never linked, vendored or read for implementation ideas. In use since the first mesh export: on its first run FreeCAD's point count exposed near-duplicate vertices on collapsed and reversed patch edges that our own tests had not caught. FreeCAD is the approved tool ([`decisions.md`](decisions.md)); tests find it through the `CRAFT3D_FREECAD` environment variable.
 
 ## Test kinds per crate
 

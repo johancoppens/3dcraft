@@ -125,6 +125,76 @@ fn segments_for(patch: &BezierPatch, index: usize, params: &TessParams) -> Resul
     Ok((needed as u32).max(1))
 }
 
+/// One boundary edge of a patch, prepared so that every patch sharing the
+/// edge computes the same vertices along it, bit for bit.
+struct BoundaryEdge {
+    /// The edge's control points, in an order that does not depend on which
+    /// way the patch runs along the edge.
+    ctrl: Vec<Vec3>,
+    /// True when that order is the reverse of the patch's own.
+    reversed: bool,
+    /// The point the edge is collapsed to, when all control points coincide.
+    collapsed: Option<Vec3>,
+}
+
+impl BoundaryEdge {
+    /// `ctrl` in the patch's parameter order along the edge.
+    fn new(ctrl: Vec<Vec3>) -> Self {
+        let key = |p: &Vec3| [p.x, p.y, p.z];
+        // Control points are finite, so the comparison is total.
+        let reversed = ctrl.iter().rev().map(key).lt(ctrl.iter().map(key));
+        let collapsed = ctrl
+            .first()
+            .copied()
+            .filter(|first| ctrl.iter().all(|p| p == first));
+        let ctrl = if reversed {
+            ctrl.into_iter().rev().collect()
+        } else {
+            ctrl
+        };
+        Self {
+            ctrl,
+            reversed,
+            collapsed,
+        }
+    }
+
+    /// Vertex `k` of `n` segments along the edge, counted in the patch's
+    /// direction. Evaluated by de Casteljau on the edge's own control
+    /// points in their canonical order, so the result depends on nothing
+    /// else of the patch; on a collapsed edge it is the control point
+    /// itself, where evaluating would scatter the vertices by rounding.
+    fn vertex(&self, k: u32, n: u32) -> Vec3 {
+        if let Some(point) = self.collapsed {
+            return point;
+        }
+        let k = if self.reversed { n - k.min(n) } else { k };
+        let t = f64::from(k) / f64::from(n);
+        let mut points = self.ctrl.clone();
+        while points.len() > 1 {
+            points = points
+                .iter()
+                .zip(points.iter().skip(1))
+                .map(|(a, b)| a.lerp(*b, t))
+                .collect();
+        }
+        points.first().copied().unwrap_or(Vec3::ZERO)
+    }
+}
+
+/// The boundary edges u = 0, u = 1, v = 0 and v = 1 of `patch`.
+fn boundary_edges(patch: &BezierPatch) -> [BoundaryEdge; 4] {
+    let (m, n) = (patch.degree_u(), patch.degree_v());
+    let along_v = |i: usize| (0..=n).filter_map(|j| patch.control_point(i, j)).collect();
+    let along_u = |j: usize| (0..=m).filter_map(|i| patch.control_point(i, j)).collect();
+    [
+        BoundaryEdge::new(along_v(0)),
+        BoundaryEdge::new(along_v(m)),
+        BoundaryEdge::new(along_u(0)),
+        BoundaryEdge::new(along_u(n)),
+    ]
+}
+
 /// Tessellates `patches` into one mesh. Triangle `face_ids` are the patch
 /// indices. Triangles are wound so their geometric normal agrees with the
 /// patch normal `∂u × ∂v`.
@@ -133,7 +203,8 @@ pub fn tessellate_patches(patches: &[BezierPatch], params: &TessParams) -> Resul
     if !(tol.is_finite() && tol > 0.0) {
         return Err(TessError::InvalidTolerance(tol));
     }
-    // One segment count for all patches, the finest any of them needs:
+    // One segment count for all patches, the finest any of them needs, and
+    // boundary vertices computed from the edge alone (`BoundaryEdge`):
     // patches that share a whole edge then get the same vertices along it,
     // bit for bit, so the seams have no T-junctions. (Wasteful on flat
     // patches; the B-rep tessellator will discretise each edge once instead.)
@@ -151,11 +222,25 @@ pub fn tessellate_patches(patches: &[BezierPatch], params: &TessParams) -> Resul
         if end > u64::from(u32::MAX) {
             return Err(TessError::TooManyVertices);
         }
+        let [u0, u1, v0, v1] = boundary_edges(patch);
         for i in 0..side {
             for j in 0..side {
                 let u = f64::from(i) / f64::from(n);
                 let v = f64::from(j) / f64::from(n);
-                mesh.positions.push(patch.eval(u, v));
+                // Boundary vertices come from the edge alone, so patches
+                // sharing it agree exactly; corners are control points.
+                let position = if i == 0 {
+                    u0.vertex(j, n)
+                } else if i == n {
+                    u1.vertex(j, n)
+                } else if j == 0 {
+                    v0.vertex(i, n)
+                } else if j == n {
+                    v1.vertex(i, n)
+                } else {
+                    patch.eval(u, v)
+                };
+                mesh.positions.push(position);
                 mesh.normals.push(patch.normal(u, v).unwrap_or(Vec3::ZERO));
             }
         }
@@ -312,41 +397,76 @@ mod tests {
         }
     }
 
+    /// Regression: along a collapsed edge the vertices came out a rounding
+    /// error apart instead of identical, leaving slivers of area ~1e-16 and
+    /// near-duplicate points (FreeCAD merged 67 more points than we did when
+    /// it read the teapot).
+    #[test]
+    fn a_collapsed_edge_becomes_one_exact_point() {
+        let apex = Vec3::new(0.1, 0.2, 3.15);
+        let mut net = [[apex; 4]; 4];
+        for (i, row) in net.iter_mut().enumerate() {
+            for (j, p) in row.iter_mut().enumerate().skip(1) {
+                let r = j as f64 * 0.7;
+                *p = apex + Vec3::new(r * (i as f64 - 1.5), r, -0.3 * r * r);
+            }
+        }
+        // The v = 0 edge (j = 0 for every i) is the apex.
+        let patch = BezierPatch::bicubic(net).unwrap();
+        let params = TessParams {
+            chordal_tolerance: 1e-3,
+            ..TessParams::default()
+        };
+        let mesh = tessellate_patches(&[patch], &params).unwrap();
+        let near: Vec<&Vec3> = mesh
+            .positions
+            .iter()
+            .filter(|p| p.distance(apex) < 1e-9)
+            .collect();
+        assert!(near.len() > 4);
+        assert!(
+            near.iter().all(|p| **p == apex),
+            "apex vertices differ: {near:?}"
+        );
+        for t in 0..mesh.triangles.len() {
+            let [a, b, c] = mesh.corners(t).unwrap();
+            assert!((b - a).cross(c - a).length() > 1e-12, "sliver triangle {t}");
+        }
+    }
+
     /// Regression: patches that share an edge were meshed with different
-    /// segment counts, leaving T-junctions (pinholes along teapot seams).
+    /// segment counts, leaving T-junctions (pinholes along teapot seams); and
+    /// an edge shared in opposite parameter directions (the teapot's body
+    /// and bottom) evaluated to points a rounding error apart.
     #[test]
     fn patches_sharing_an_edge_get_the_same_vertices_along_it() {
         let curved = dome(1.0);
-        // A ruled strip continuing from the dome's v = 1 edge: much flatter.
-        let mut net = [[Vec3::ZERO; 4]; 4];
-        for (i, row) in net.iter_mut().enumerate() {
-            let start = curved.control_point(i, 3).unwrap();
-            for (j, p) in row.iter_mut().enumerate() {
-                *p = start + Vec3::new(0.0, j as f64 / 3.0, 0.0);
-            }
-        }
-        let strip = BezierPatch::bicubic(net).unwrap();
-        let mesh =
-            tessellate_patches(&[curved.clone(), strip.clone()], &TessParams::default()).unwrap();
-        let bits = |p: &Vec3| [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()];
-        let on_edge = |face: u32, edge_v: f64, patch: &BezierPatch| {
-            let mut pts = std::collections::BTreeSet::new();
-            for (tri, &id) in mesh.triangles.iter().zip(&mesh.face_ids) {
-                for &k in tri {
-                    let p = mesh.positions[k as usize];
-                    // Vertices of this face that lie on its v = edge_v curve.
-                    let on_curve =
-                        (0..=4096).any(|s| patch.eval(f64::from(s) / 4096.0, edge_v) == p);
-                    if id == face && on_curve {
-                        pts.insert(bits(&p));
-                    }
+        for reversed in [false, true] {
+            // A ruled strip continuing from the dome's v = 1 edge: much
+            // flatter, and optionally running the other way along the edge.
+            let mut net = [[Vec3::ZERO; 4]; 4];
+            for (i, row) in net.iter_mut().enumerate() {
+                let along = if reversed { 3 - i } else { i };
+                let start = curved.control_point(along, 3).unwrap();
+                for (j, p) in row.iter_mut().enumerate() {
+                    *p = start + Vec3::new(0.0, j as f64 / 3.0, 0.0);
                 }
             }
-            pts
-        };
-        let (a, b) = (on_edge(0, 1.0, &curved), on_edge(1, 0.0, &strip));
-        assert!(a.len() > 2);
-        assert_eq!(a, b, "seam vertices differ: {} vs {}", a.len(), b.len());
+            let strip = BezierPatch::bicubic(net).unwrap();
+            let mesh =
+                tessellate_patches(&[curved.clone(), strip], &TessParams::default()).unwrap();
+            let side = ((mesh.positions.len() / 2) as f64).sqrt() as usize;
+            let bits = |p: &Vec3| [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()];
+            // Dome: vertices (i, j = last). Strip: vertices (i, j = 0).
+            let dome_edge: std::collections::BTreeSet<_> = (0..side)
+                .map(|i| bits(&mesh.positions[i * side + side - 1]))
+                .collect();
+            let strip_edge: std::collections::BTreeSet<_> = (0..side)
+                .map(|i| bits(&mesh.positions[side * side + i * side]))
+                .collect();
+            assert!(side > 3 && dome_edge.len() == side);
+            assert_eq!(dome_edge, strip_edge, "reversed = {reversed}");
+        }
     }
 
     #[test]

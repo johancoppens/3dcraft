@@ -6,9 +6,10 @@
 
 What exists on `main` today; where the code differs from the plan below, this summary wins.
 
-- **Workspace:** all 20 library crates of the plan exist and are registered in `xtask/src/layers.rs`; `math`, `geom`, `tess`, `render` and `testkit` have code, the other 15 are empty stubs. `apps/craft3d-cli` answers `--version` and `--help` only. `xtask` has `layers` (layering and lint opt-in), `wasm`, `ci` and `stats`. No engine, no document model yet.
+- **Workspace:** all 20 library crates of the plan exist and are registered in `xtask/src/layers.rs`; `math`, `geom`, `tess`, `render`, `meshio`, `io` and `testkit` have code, the other 13 are empty stubs. `apps/craft3d-cli` answers `--version` and `--help` only. `xtask` has `layers` (layering and lint opt-in), `wasm`, `ci`, `stats` and `freecad`. No engine, no document model yet.
 - **Geometry:** `geom` has one surface kind, the polynomial tensor-product Bézier patch (evaluation, derivatives, normals with degenerate-edge handling, second-derivative bounds). No curves, no NURBS knots or weights, no `Surface` enum yet.
-- **Tessellation:** `tess` meshes untrimmed patches on one uniform grid sized from the chordal tolerance. Seams between patches that share a whole edge match vertex for vertex, but the mesh has no connectivity across patches. No B-rep, no trimming.
+- **Tessellation:** `tess` meshes untrimmed patches on one uniform grid sized from the chordal tolerance. Boundary vertices are computed from the edge's own control points in a direction-independent order, so patches that share a whole edge get bit-identical vertices along it, whichever way each runs; collapsed edges become one exact point. The mesh itself has no connectivity across patches (`io` welds identical positions on export). No B-rep, no trimming.
+- **Mesh export:** `meshio` writes binary and ASCII STL, 3MF (its own stored-ZIP writer) and OBJ; `io` welds a tessellated mesh, classifies it as solid or surface and encodes it. FreeCAD reads all four formats back with the same counts, area, volume and bounding box (`cargo xtask freecad`). No readers, no colours, one object per file.
 - **Rendering:** `render` is the CPU reference renderer (perspective and orthographic, depth buffer, smooth two-sided shading, id buffer, supersampling, PNG). No edge overlay yet, no near-plane clipping. `gpu` does not exist.
 - **Demo:** `cargo run --release -p craft3d-render --example teapot` renders the Utah teapot (32 patches) to `target/evidence/teapot.png`.
 
