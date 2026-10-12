@@ -15,12 +15,12 @@ mod boolean_common;
 
 use boolean_common::*;
 use craft3d_kernel::KernelError;
-use craft3d_kernel::boolean::{BooleanOp, boolean};
+use craft3d_kernel::boolean::{BooleanOp, BooleanOptions, boolean, boolean_with};
 use craft3d_kernel::extrude::extrude;
 use craft3d_kernel::primitives;
 use craft3d_kernel::profile::{Curve2, SketchCurve, detect_profiles};
 use craft3d_math::{Frame, Vec3};
-use craft3d_topo::{Body, check, mass_properties};
+use craft3d_topo::{Body, check, genus, mass_properties};
 use std::collections::BTreeMap;
 
 use BooleanOp::{Intersect, Subtract, Union};
@@ -127,7 +127,23 @@ fn size(rng: &mut Rng, placement: Placement, k: f64) -> f64 {
     }
 }
 
-fn random_shape(rng: &mut Rng, placement: Placement, shared: &Frame, k: f64) -> Shape {
+/// Which shapes a run draws from.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Shapes {
+    /// Blocks, cylinders, L-shaped extrusions and slots with a hole: what
+    /// the first boolean kernel handled, with the seeds of its runs.
+    Flat,
+    /// Those and cones, balls and rings.
+    All,
+}
+
+fn random_shape(
+    rng: &mut Rng,
+    placement: Placement,
+    shared: &Frame,
+    k: f64,
+    shapes: Shapes,
+) -> Shape {
     let frame = random_frame(rng, placement, shared, k);
     let tol = tolerance(k);
     let (a, b, c) = (
@@ -135,7 +151,49 @@ fn random_shape(rng: &mut Rng, placement: Placement, shared: &Frame, k: f64) -> 
         size(rng, placement, k),
         size(rng, placement, k),
     );
-    match rng.below(6) {
+    let kinds = if shapes == Shapes::All { 12 } else { 6 };
+    match rng.below(kinds) {
+        6 | 7 => {
+            // A cone on the frame's plane.
+            let (r, h) = (a * 0.5, c);
+            let (lo, hi) = bounds(&frame, [-r, -r, 0.0], [r, r, h]);
+            Shape {
+                body: primitives::cone(&frame, r, h).unwrap(),
+                contains: Box::new(move |p| {
+                    let (x, y, z) = frame.local(p);
+                    (0.0..=h).contains(&z) && x.hypot(y) <= r * (1.0 - z / h)
+                }),
+                lo,
+                hi,
+                aligned: None,
+            }
+        }
+        8 | 9 => {
+            let r = a * 0.5;
+            let (lo, hi) = bounds(&frame, [-r, -r, -r], [r, r, r]);
+            Shape {
+                body: primitives::sphere(&frame, r).unwrap(),
+                contains: Box::new(move |p| p.distance(frame.origin()) <= r),
+                lo,
+                hi,
+                aligned: None,
+            }
+        }
+        10 | 11 => {
+            let (major, minor) = (0.5 * (a + b), 0.25 * a);
+            let reach = major + minor;
+            let (lo, hi) = bounds(&frame, [-reach, -reach, -minor], [reach, reach, minor]);
+            Shape {
+                body: primitives::torus(&frame, major, minor).unwrap(),
+                contains: Box::new(move |p| {
+                    let (x, y, z) = frame.local(p);
+                    (x.hypot(y) - major).hypot(z) <= minor
+                }),
+                lo,
+                hi,
+                aligned: None,
+            }
+        }
         0 | 1 => {
             let (lo, hi) = bounds(&frame, [0.0; 3], [a, b, c]);
             let aligned = (frame.z() == Vec3::Z && frame.x() == Vec3::X).then_some((lo, hi));
@@ -285,6 +343,38 @@ fn volume_of(
                 Err(e) => panic!("{what}: {op:?}: mass properties: {e}"),
             };
             assert!(m.volume > 0.0, "{what}: {op:?}: volume {}", m.volume);
+            // Merging changes how the solid is divided into faces, not
+            // the solid: without it the same volume, area and genus, and
+            // never fewer faces, edges or vertices.
+            let plain = BooleanOptions { merge: false };
+            match boolean_with(a, b, op, &tol, &plain) {
+                Ok(unmerged) => {
+                    assert_eq!(
+                        check(&unmerged.body, &tol),
+                        [],
+                        "{what}: {op:?}, not merged"
+                    );
+                    let u = match mass_properties(&unmerged.body) {
+                        Ok(u) => u,
+                        Err(e) => panic!("{what}: {op:?}, not merged: mass properties: {e}"),
+                    };
+                    assert!(
+                        (u.volume - m.volume).abs() <= 1e-9 * m.volume
+                            && (u.area - m.area).abs() <= 1e-9 * m.area,
+                        "{what}: {op:?}: merging changed volume {} to {} or area {} to {}",
+                        u.volume,
+                        m.volume,
+                        u.area,
+                        m.area
+                    );
+                    assert_eq!(genus(&unmerged.body), genus(&result.body), "{what}: {op:?}");
+                    assert_eq!(unmerged.body.shells.len(), result.body.shells.len());
+                    assert!(unmerged.body.faces.len() >= result.body.faces.len());
+                    assert!(unmerged.body.edges.len() >= result.body.edges.len());
+                    assert!(unmerged.body.vertices.len() >= result.body.vertices.len());
+                }
+                Err(e) => panic!("{what}: {op:?} works merged but not unmerged: {e}"),
+            }
             Ok((m.volume, m.area, Some(result.body)))
         }
         Err(KernelError::EmptyResult { .. }) => Ok((0.0, 0.0, None)),
@@ -305,12 +395,12 @@ struct Tally {
     recombine_unsupported: BTreeMap<&'static str, usize>,
 }
 
-fn run_pair(seed: u64, placement: Placement, k: f64, tally: &mut Tally) {
+fn run_pair(seed: u64, placement: Placement, k: f64, shapes: Shapes, tally: &mut Tally) {
     let mut rng = Rng(seed);
     let shared = random_frame(&mut rng, Placement::General, &Frame::WORLD, k);
-    let a = random_shape(&mut rng, placement, &shared, k);
-    let b = random_shape(&mut rng, placement, &shared, k);
-    let what = format!("seed {seed} {placement:?} scale {k}");
+    let a = random_shape(&mut rng, placement, &shared, k, shapes);
+    let b = random_shape(&mut rng, placement, &shared, k, shapes);
+    let what = format!("seed {seed} {placement:?} {shapes:?} scale {k}");
     tally.pairs += 1;
 
     let (va, aa) = {
@@ -410,16 +500,16 @@ fn run_pair(seed: u64, placement: Placement, k: f64, tally: &mut Tally) {
     }
 }
 
-fn hunt(pairs_per_cell: u64, first_seed: u64) {
+fn hunt(pairs_per_cell: u64, first_seed: u64, shapes: Shapes) {
     for k in SCALES {
         for placement in [Placement::General, Placement::Parallel, Placement::Grid] {
             let mut tally = Tally::default();
             for i in 0..pairs_per_cell {
-                run_pair(first_seed + i, placement, k, &mut tally);
+                run_pair(first_seed + i, placement, k, shapes, &mut tally);
             }
             let refused: usize = tally.unsupported.values().sum();
             println!(
-                "scale {k:e} {placement:?}: {} pairs, {} solved ({} overlapping), {} unsupported; \
+                "{shapes:?} scale {k:e} {placement:?}: {} pairs, {} solved ({} overlapping), {} unsupported; \
                  recombined {} of them, {} refused",
                 tally.pairs,
                 tally.solved,
@@ -436,8 +526,11 @@ fn hunt(pairs_per_cell: u64, first_seed: u64) {
             }
             // The run means something only when most pairs are solved and
             // a fair share of them overlap.
+            // (With every shape most general pairs wait for the general
+            // surface intersection; a fifth is asked of them until then.)
+            let least = if shapes == Shapes::All { 5 } else { 2 };
             assert!(
-                tally.solved * 2 >= tally.pairs,
+                tally.solved * least >= tally.pairs,
                 "{placement:?} at {k}: only {} of {} solved",
                 tally.solved,
                 tally.pairs
@@ -452,11 +545,17 @@ fn hunt(pairs_per_cell: u64, first_seed: u64) {
 
 #[test]
 fn random_pairs_satisfy_the_identities() {
-    hunt(120, 1);
+    hunt(120, 1, Shapes::Flat);
+}
+
+#[test]
+fn random_pairs_with_cones_balls_and_rings_satisfy_the_identities() {
+    hunt(120, 1, Shapes::All);
 }
 
 /// One pair, to look at: `BOOLEAN_PAIR="seed placement scale"` with the
-/// placement as 0 (general), 1 (parallel) or 2 (grid).
+/// placement as 0 (general), 1 (parallel) or 2 (grid); with
+/// `BOOLEAN_ALL_SHAPES` set, a pair of the runs with every shape.
 #[test]
 #[ignore = "a tool for reproducing one pair of a run"]
 fn one_pair() {
@@ -471,8 +570,13 @@ fn one_pair() {
     let placement = [Placement::General, Placement::Parallel, Placement::Grid][*placement as usize];
     let mut rng = Rng(*seed as u64);
     let shared = random_frame(&mut rng, Placement::General, &Frame::WORLD, *k);
-    let a = random_shape(&mut rng, placement, &shared, *k);
-    let b = random_shape(&mut rng, placement, &shared, *k);
+    let shapes = if std::env::var_os("BOOLEAN_ALL_SHAPES").is_some() {
+        Shapes::All
+    } else {
+        Shapes::Flat
+    };
+    let a = random_shape(&mut rng, placement, &shared, *k, shapes);
+    let b = random_shape(&mut rng, placement, &shared, *k, shapes);
     let tol = tolerance(*k);
     let describe =
         |name: &str, r: &Result<craft3d_kernel::boolean::BooleanResult, KernelError>| match r {
@@ -553,5 +657,12 @@ fn one_pair() {
 #[test]
 #[ignore = "thousands of pairs; run in release"]
 fn random_pairs_long_run() {
-    hunt(1500, 1_000_000);
+    hunt(1500, 1_000_000, Shapes::Flat);
+}
+
+/// The long run with every shape.
+#[test]
+#[ignore = "thousands of pairs; run in release"]
+fn random_pairs_with_every_shape_long_run() {
+    hunt(1500, 2_000_000, Shapes::All);
 }

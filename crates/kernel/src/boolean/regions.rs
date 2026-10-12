@@ -478,9 +478,8 @@ fn group(
                 return Err(LOST);
             }
         }
-        match inner {
-            Some(home) => holes.entry(home).or_default().append(&mut open),
-            None => {}
+        if let Some(home) = inner {
+            holes.entry(home).or_default().append(&mut open);
         }
     }
 

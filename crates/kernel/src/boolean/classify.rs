@@ -84,7 +84,7 @@ pub(super) fn inside(solid: &Solid, p: Vec3, tolerance: &Tolerance) -> Result<bo
             // face, so that neither end of it is a place where the ray
             // is found near the surface without having crossed it.
             let from = -2.0 * tol;
-            if !(leave > from) {
+            if !(leave.is_finite() && leave > from) {
                 continue;
             }
             let leave = leave + 16.0 * tol + 0.01 * (leave - enter.max(from));

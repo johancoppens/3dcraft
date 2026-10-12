@@ -118,7 +118,7 @@ fn pair_up(
     let stop =
         |reason| Stop::of(reason).at(&all.iter().flat_map(|&f| named(f)).collect::<Vec<_>>());
     let against = uses.iter().filter(|u| u.reversed).count();
-    if uses.len() % 2 != 0 || 2 * against != uses.len() {
+    if 2 * against != uses.len() {
         return Err(stop(NON_MANIFOLD));
     }
     let middle = 0.5 * (arc.range.0 + arc.range.1);

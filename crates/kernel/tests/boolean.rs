@@ -800,6 +800,41 @@ fn a_hundred_holes() {
     }
 }
 
+/// Timing with a body of more than a thousand faces: a plate with 32 by 32
+/// holes, cut by one more cylinder and joined to a block.
+#[test]
+#[ignore = "a benchmark; run in release"]
+fn a_thousand_faces() {
+    let n = 32;
+    let start = std::time::Instant::now();
+    let plate = drilled(n, 1.0, false);
+    let drilling = start.elapsed();
+    assert_eq!(plate.faces.len(), 6 + n * n);
+    let side = 2.0 * n as f64;
+    let start = std::time::Instant::now();
+    let big = rod(1.0, [side / 2.0, side / 2.0, -1.0], side / 3.0, 3.0);
+    let cut = solve(&plate, &big, Subtract, 1.0);
+    let cutting = start.elapsed();
+    let start = std::time::Instant::now();
+    let block = boxed(1.0, [side, 0.0, 0.0], [side + 5.0, side, 1.0]);
+    let joined = solve(&plate, &block, Union, 1.0);
+    let joining = start.elapsed();
+    println!(
+        "{} holes one by one: {drilling:?}; a cylinder through the {}-face plate: {cutting:?} \
+         ({} faces left); a flush block joined to it: {joining:?} ({} faces)",
+        n * n,
+        plate.faces.len(),
+        cut.body.faces.len(),
+        joined.body.faces.len()
+    );
+    assert_eq!(joined.body.faces.len(), 6 + n * n);
+    assert_close(
+        mass(&joined.body).volume,
+        side * side - (n * n) as f64 * PI * 0.25 + 5.0 * side,
+        "volume",
+    );
+}
+
 #[test]
 fn a_post_over_a_hole() {
     for k in SCALES {

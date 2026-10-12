@@ -324,7 +324,7 @@ impl Chart {
             Chart::Cylinder { frame, radius } => {
                 let (x, y, z) = frame.local(q);
                 let reach = x.hypot(y);
-                if !(reach > 0.0) {
+                if !(reach.is_finite() && reach > 0.0) {
                     return None;
                 }
                 Target {
@@ -379,7 +379,7 @@ impl Chart {
                 // overflows.
                 let (x, y, z) = frame.local(p);
                 let reach = x.hypot(y);
-                if !(reach > 0.0) {
+                if !(reach.is_finite() && reach > 0.0) {
                     return (0.0, 0.0);
                 }
                 let (ux, uy) = (x / reach, y / reach);
