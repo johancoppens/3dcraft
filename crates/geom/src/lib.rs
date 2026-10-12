@@ -5,6 +5,7 @@
 //! polynomials, Bézier surfaces).
 
 mod curve;
+pub mod intersect;
 mod nurbs;
 mod surface;
 
