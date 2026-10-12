@@ -1,13 +1,12 @@
 //! STL, 3MF and OBJ writers with their own mesh model.
 //!
-//! Standalone: depends on no workspace crate (docs/architecture.md §3). The
-//! mapping from 3DCraft meshes lives in `craft3d-io`.
+//! Standalone: depends on no workspace crate (docs/architecture.md §3)
+//! except the equally standalone `craft3d-zipstore`, the ZIP container of
+//! 3MF. The mapping from 3DCraft meshes lives in `craft3d-io`.
 //!
 //! Sources: the 3D Systems StereoLithography interface description (1989)
 //! for STL; the 3MF Core Specification and the Open Packaging Conventions it
 //! builds on (a ZIP container) for 3MF; the Wavefront OBJ format description.
-
-mod zip;
 
 use std::fmt::{self, Write as _};
 
@@ -339,11 +338,13 @@ pub fn model_xml_3mf(model: &Model) -> Result<String, MeshError> {
 /// relationship and the model part. Entries are stored uncompressed.
 pub fn write_3mf(model: &Model) -> Result<Vec<u8>, MeshError> {
     let xml = model_xml_3mf(model)?;
-    zip::write_stored(&[
+    craft3d_zipstore::write_stored(&[
         ("[Content_Types].xml", CONTENT_TYPES.as_bytes()),
         ("_rels/.rels", RELS.as_bytes()),
         ("3D/3dmodel.model", xml.as_bytes()),
     ])
+    // The names are fixed and valid, so size is the only way this fails.
+    .map_err(|_| MeshError::TooLarge("a 3MF package of 4 GiB or more (ZIP64 is not supported)"))
 }
 
 #[cfg(test)]
@@ -499,15 +500,15 @@ f 4 5 6
     fn a_3mf_package_has_the_three_required_parts() {
         let m = model(vec![tetrahedron()]);
         let bytes = write_3mf(&m).unwrap();
-        let entries = zip::tests::read_stored(&bytes);
-        let names: Vec<&str> = entries.iter().map(|e| e.0.as_str()).collect();
+        let entries = craft3d_zipstore::read_stored(&bytes).unwrap();
+        let names: Vec<&str> = entries.iter().map(|e| e.name).collect();
         assert_eq!(
             names,
             ["[Content_Types].xml", "_rels/.rels", "3D/3dmodel.model"]
         );
-        assert_eq!(entries[0].1, CONTENT_TYPES.as_bytes());
-        assert_eq!(entries[1].1, RELS.as_bytes());
-        assert_eq!(entries[2].1, model_xml_3mf(&m).unwrap().as_bytes());
+        assert_eq!(entries[0].data, CONTENT_TYPES.as_bytes());
+        assert_eq!(entries[1].data, RELS.as_bytes());
+        assert_eq!(entries[2].data, model_xml_3mf(&m).unwrap().as_bytes());
         // The relationship points at the model part, whose extension has a
         // registered content type.
         assert!(RELS.contains("Target=\"/3D/3dmodel.model\""));
@@ -592,7 +593,12 @@ f 4 5 6
         assert_eq!(write_stl_binary(&m).unwrap().len(), 84);
         assert_eq!(write_stl_ascii(&m).unwrap(), "");
         assert_eq!(write_obj(&m).unwrap(), "# 3DCraft\n");
-        assert_eq!(zip::tests::read_stored(&write_3mf(&m).unwrap()).len(), 3);
+        assert_eq!(
+            craft3d_zipstore::read_stored(&write_3mf(&m).unwrap())
+                .unwrap()
+                .len(),
+            3
+        );
     }
 
     #[test]

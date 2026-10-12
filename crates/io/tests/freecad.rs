@@ -191,3 +191,55 @@ fn freecad_reads_the_teapot_as_we_wrote_it() {
         }
     }
 }
+
+/// The full path for solids: exact B-rep → tessellator → file → FreeCAD.
+/// FreeCAD must see a closed solid whose volume is the mesh's, and that
+/// volume must be within `area × tolerance` of the closed form.
+#[test]
+#[ignore = "needs FreeCAD: set CRAFT3D_FREECAD and run with --ignored"]
+fn freecad_reads_tessellated_solids_as_solids_of_the_right_volume() {
+    use craft3d_math::Frame;
+    use craft3d_tess::tessellate_body;
+    use craft3d_testkit::solids;
+
+    let frame = Frame::new(Vec3::new(3.0, -1.0, 2.0), Vec3::new(0.2, 0.3, 1.0), Vec3::X).unwrap();
+    let tolerance = 0.01;
+    let params = TessParams {
+        chordal_tolerance: tolerance,
+        ..TessParams::default()
+    };
+    for solid in solids::all(&frame, 1.0).unwrap() {
+        if solid.name == "hemisphere" {
+            continue; // Trimmed sphere faces cannot be tessellated yet.
+        }
+        let mesh = tessellate_body(&solid.body, &params).unwrap();
+        let welded = mesh.weld().unwrap();
+        for (extension, format) in [("stl", MeshFormat::StlBinary), ("3mf", MeshFormat::ThreeMf)] {
+            let bytes = export_mesh(&mesh, solid.name, Unit::Millimeter, format).unwrap();
+            let report = freecad_reads(&format!("{}.{extension}", solid.name), &bytes);
+            println!("{}.{extension}: {report:?}", solid.name);
+            let what = format!("{}.{extension}", solid.name);
+            assert!(report.solid, "{what}: FreeCAD does not see a closed solid");
+            assert_eq!(report.facets, welded.triangles.len(), "{what}");
+            assert_eq!(report.points, welded.positions.len(), "{what}");
+            assert!(
+                close(report.volume, welded.volume()),
+                "{what}: {} vs {}",
+                report.volume,
+                welded.volume()
+            );
+            assert!(
+                (report.volume - solid.volume).abs() <= solid.area * tolerance,
+                "{what}: FreeCAD's volume {} is not within area x tolerance of the exact {}",
+                report.volume,
+                solid.volume
+            );
+            assert!(
+                close(report.area, mesh.area()),
+                "{what}: area {} vs {}",
+                report.area,
+                mesh.area()
+            );
+        }
+    }
+}

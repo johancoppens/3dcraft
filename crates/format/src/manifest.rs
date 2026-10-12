@@ -1,0 +1,127 @@
+//! The types of `manifest.json`, the file's own description of a document.
+//!
+//! They mirror `craft3d-doc` but are deliberately separate: the document
+//! model is free to change shape, the file is not. What is written here is
+//! what agents and humans read and diff, so every rename or reorder in this
+//! module is a format change (bump [`crate::FORMAT_VERSION`] and add a
+//! migration, AGENTS.md §8).
+//!
+//! Rules:
+//! - every struct has `deny_unknown_fields`: a field this version does not
+//!   know is an error on load, not something that silently disappears on
+//!   the next save;
+//! - `#[serde(default)]` only on fields that are optional by design, so a
+//!   file that lost a required field is an error and not a default;
+//! - fields are written in declaration order, so the order here is the
+//!   order in the file.
+
+use serde::{Deserialize, Serialize};
+
+/// The value of the `format` field: tells a `.3dcraft` manifest from any
+/// other JSON that happens to be called `manifest.json`.
+pub const FORMAT_NAME: &str = "3dcraft";
+
+/// The root of `manifest.json`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Manifest {
+    pub format: String,
+    pub format_version: u32,
+    pub document: Document,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Document {
+    pub units: Units,
+    pub tolerance: Tolerance,
+    /// In the order they were defined.
+    pub variables: Vec<Variable>,
+    /// The design history, in order of application.
+    pub features: Vec<Feature>,
+    /// The id of the feature regeneration stops after; `null` or absent
+    /// regenerates everything.
+    #[serde(default)]
+    pub rollback: Option<u64>,
+    pub next_feature_id: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Units {
+    pub length: LengthUnit,
+    pub angle: AngleUnit,
+}
+
+/// Written as the unit's symbol in the expression language.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LengthUnit {
+    #[serde(rename = "um")]
+    Micrometre,
+    #[serde(rename = "mm")]
+    Millimetre,
+    #[serde(rename = "cm")]
+    Centimetre,
+    #[serde(rename = "m")]
+    Metre,
+    #[serde(rename = "in")]
+    Inch,
+    #[serde(rename = "ft")]
+    Foot,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AngleUnit {
+    #[serde(rename = "deg")]
+    Degree,
+    #[serde(rename = "rad")]
+    Radian,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Tolerance {
+    /// In the document's length unit.
+    pub linear: f64,
+    /// In radians.
+    pub angular: f64,
+}
+
+/// `expr` is the source text the user wrote, never an evaluated number.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Variable {
+    pub name: String,
+    pub expr: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Feature {
+    pub id: u64,
+    pub name: String,
+    /// Always written; absent means not suppressed.
+    #[serde(default)]
+    pub suppressed: bool,
+    pub kind: FeatureKind,
+}
+
+/// The parameters of a feature, tagged with `"type"`. Every parameter is an
+/// expression, stored as its source text; triples are x, y, z.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum FeatureKind {
+    Block {
+        position: [String; 3],
+        size: [String; 3],
+    },
+    Cylinder {
+        position: [String; 3],
+        radius: String,
+        height: String,
+    },
+    Sphere {
+        position: [String; 3],
+        radius: String,
+    },
+}

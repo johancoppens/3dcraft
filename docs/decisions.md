@@ -6,6 +6,19 @@ Decisions that shape the project, newest first, each with its reason. An agent t
 
 ## Taken
 
+### 2026-10-12: Decisions made while building M2
+
+Made by the agent; the developer can overturn any of them.
+
+- **A bare number in a length parameter is in the document's unit.** `{"size": [40, 20, 5]}` in a millimetre document means millimetres, as typing a dimension does in any CAD system. Inside a formula the expression language stays strict: `10 mm + 5` is still a dimension error.
+- **A feature whose parameters cannot be evaluated is stored, not refused.** `feature.block` with an unknown variable succeeds and returns `"status": "failed"` with the reason; the recipe is the user's, and fixing the variable fixes the feature. A command is refused only when the request itself is malformed.
+- **Undo history is snapshots,** not reversible operations (see `crates/ops`). Chosen because the document is a small recipe, and because an edit applied to a copy cannot leave the document half-changed. Two known limits, both on the [roadmap](roadmap.md): each step copies the whole document, so large imported bodies must be shared between snapshots before M10; and snapshots cannot merge concurrent edits, which would need reversible operations (M12+ candidate). The developer agreed to this on 2026-10-12.
+- **Saving validates.** `.3dcraft` files are only written from documents that pass `Document::validate()`, so everything written can be read back. A document made invalid by a bug can therefore not be saved; that is preferred over writing a file that will not open.
+- **`craft3d-zipstore`** is a new standalone crate: the ZIP code is shared by 3MF export (`meshio`) and the native format. `meshio` → `zipstore` is the one listed exception to "standalone crates depend on no workspace crate".
+- **`serde` and `serde_json`** are workspace dependencies (document model, file format, command parameters).
+- **Default export and render tolerance** is a thousandth of the side of a square with the bodies' total area, so it follows the size of the model; `tolerance` overrides it.
+- **The roadmap's M2 and the start of M3 were built together** (primitives as features, regeneration, B-rep tessellation), because a document without bodies could not be checked by any oracle.
+
 ### 2026-10-12: Developer's answers to the first open questions
 
 - **Licence: MIT** (`LICENSE`). (was D-open-2)

@@ -5,7 +5,6 @@
 
 use craft3d_meshio::{self as meshio, MeshError, Model, Object, ObjectKind, Unit};
 use craft3d_tess::Mesh;
-use std::collections::BTreeMap;
 use std::fmt;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,54 +59,18 @@ impl From<MeshError> for IoError {
     }
 }
 
-/// True when the triangles form a closed, consistently oriented manifold:
-/// every directed edge occurs once, and so does its reverse.
-pub fn is_closed(triangles: &[[u32; 3]]) -> bool {
-    let mut edges: BTreeMap<(u32, u32), u32> = BTreeMap::new();
-    for &[a, b, c] in triangles {
-        for edge in [(a, b), (b, c), (c, a)] {
-            *edges.entry(edge).or_insert(0) += 1;
-        }
-    }
-    !edges.is_empty()
-        && edges
-            .iter()
-            .all(|(&(a, b), &n)| n == 1 && edges.get(&(b, a)) == Some(&1))
-}
-
 /// Converts a tessellated mesh to an exchange object.
 ///
-/// Vertices at bit-identical positions are merged, which joins surfaces
-/// along the seams the tessellator made exact, and triangles that collapse
-/// by it are dropped. Vertex normals are not carried over: none of the
-/// formats needs them. The object is a [`ObjectKind::Solid`] only when the
-/// merged mesh is closed and consistently oriented.
+/// Vertices at bit-identical positions are merged (`Mesh::weld`), which
+/// joins faces along the edges the tessellator made exact; triangles that
+/// collapse by it are dropped. Vertex normals are not carried over: none of
+/// the formats needs them. The object is a [`ObjectKind::Solid`] only when
+/// the merged mesh is closed and consistently oriented.
 pub fn to_object(mesh: &Mesh, name: &str) -> Result<Object, IoError> {
-    let mut index_of: BTreeMap<[u64; 3], u32> = BTreeMap::new();
-    let mut positions = Vec::new();
-    let mut remap = Vec::with_capacity(mesh.positions.len());
-    for p in &mesh.positions {
-        // -0.0 and 0.0 are the same place.
-        let key = [p.x + 0.0, p.y + 0.0, p.z + 0.0].map(f64::to_bits);
-        let next = u32::try_from(positions.len())
-            .map_err(|_| MeshError::TooLarge("more than 2^32 vertices"))?;
-        let index = *index_of.entry(key).or_insert_with(|| {
-            positions.push([p.x, p.y, p.z]);
-            next
-        });
-        remap.push(index);
-    }
-    let mut triangles = Vec::with_capacity(mesh.triangles.len());
-    for (t, tri) in mesh.triangles.iter().enumerate() {
-        let [a, b, c] = tri.map(|k| remap.get(k as usize).copied());
-        let (Some(a), Some(b), Some(c)) = (a, b, c) else {
-            return Err(IoError::InvalidMesh { triangle: t });
-        };
-        if a != b && b != c && c != a {
-            triangles.push([a, b, c]);
-        }
-    }
-    let kind = if is_closed(&triangles) {
+    let welded = mesh
+        .weld()
+        .map_err(|triangle| IoError::InvalidMesh { triangle })?;
+    let kind = if welded.is_closed() {
         ObjectKind::Solid
     } else {
         ObjectKind::Surface
@@ -115,8 +78,18 @@ pub fn to_object(mesh: &Mesh, name: &str) -> Result<Object, IoError> {
     Ok(Object {
         name: name.to_string(),
         kind,
-        positions,
-        triangles,
+        positions: welded.positions,
+        triangles: welded.triangles,
+    })
+}
+
+/// Encodes a model as a file of the given format.
+pub fn encode(model: &Model, format: MeshFormat) -> Result<Vec<u8>, IoError> {
+    Ok(match format {
+        MeshFormat::StlBinary => meshio::write_stl_binary(model)?,
+        MeshFormat::StlAscii => meshio::write_stl_ascii(model)?.into_bytes(),
+        MeshFormat::ThreeMf => meshio::write_3mf(model)?,
+        MeshFormat::Obj => meshio::write_obj(model)?.into_bytes(),
     })
 }
 
@@ -132,19 +105,14 @@ pub fn export_mesh(
         unit,
         objects: vec![to_object(mesh, name)?],
     };
-    Ok(match format {
-        MeshFormat::StlBinary => meshio::write_stl_binary(&model)?,
-        MeshFormat::StlAscii => meshio::write_stl_ascii(&model)?.into_bytes(),
-        MeshFormat::ThreeMf => meshio::write_3mf(&model)?,
-        MeshFormat::Obj => meshio::write_obj(&model)?.into_bytes(),
-    })
+    encode(&model, format)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use craft3d_math::Vec3;
-    use craft3d_tess::{TessParams, tessellate_patches};
+    use craft3d_tess::{TessParams, Welded, tessellate_patches};
     use craft3d_testkit::teapot::teapot;
 
     /// An axis-aligned cube of the given side with one corner at the origin,
@@ -194,6 +162,14 @@ mod tests {
         // Outward orientation: positive volume, side³ up to the rounding of
         // twelve terms divided by six.
         assert!((signed_volume(&object) - 8.0).abs() < 1e-12);
+    }
+
+    fn is_closed(triangles: &[[u32; 3]]) -> bool {
+        Welded {
+            positions: Vec::new(),
+            triangles: triangles.to_vec(),
+        }
+        .is_closed()
     }
 
     #[test]

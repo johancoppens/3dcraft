@@ -1,25 +1,46 @@
 # Development guide
 
-> **Last updated:** 2026-10-12 · **Status:** M1 done. *Works today:* everything under [What works today](#what-works-today). Every other section is *(planned)*: it describes what M0–M4 must deliver. Move commands up as they start to exist.
+> **Last updated:** 2026-10-12 · **Status:** M2 done. *Works today:* everything under [What works today](#what-works-today). Every other section is *(planned)*: it describes what M0–M4 must deliver. Move commands up as they start to exist.
 
 ## What works today
 
 ```sh
-cargo test --workspace                          # 201 tests
+cargo test --workspace                          # about 380 tests, a little over a minute
 cargo xtask ci                                  # fmt --check + clippy -D warnings + tests + layers + wasm
 cargo xtask layers                              # dependency layering, and that every crate opts in to the never-crash lints
 cargo xtask stats                               # lines and tests per crate
-cargo xtask wasm                                # every library crate checks for wasm32-unknown-unknown
-cargo run --release -p craft3d-render --example teapot -- \
-    --out target/evidence/teapot.png --ids target/evidence/teapot-ids.png \
-    --size 1280x800 --tolerance 0.002 --ssaa 2  # the Utah teapot on the CPU renderer; prints a JSON summary
-cargo run --release -p craft3d-io --example export_teapot -- target/evidence   # teapot.stl, teapot.3mf, teapot.obj
-CRAFT3D_FREECAD=/path/to/FreeCAD.AppImage cargo xtask freecad                  # FreeCAD reads our exports back
+CRAFT3D_FREECAD=/path/to/FreeCAD.AppImage cargo xtask freecad   # FreeCAD reads our exports back
+cargo build --release -p craft3d-cli            # the CLI: target/release/craft3d-cli
 ```
 
-The toolchain is pinned in `rust-toolchain.toml` (version, `rustfmt`, `clippy`, the `wasm32-unknown-unknown` target); rustup installs it on first use. If `cargo` is not on `PATH`, it is in `~/.cargo/bin`.
+Model a part from the command line, look at it, export it:
 
-CI (`.github/workflows/ci.yml`) runs `cargo xtask ci` on Linux and `cargo test --workspace` on macOS and Windows, on every push to `main` and every pull request. Check a run with `gh run list` / `gh run watch`.
+```sh
+craft3d-cli commands --filter feature           # what can I do? ids, params, summaries
+craft3d-cli run --new '{"units":"mm"}' \
+    --cmd variable.set     --params '{"name":"width","expr":"60 mm"}' \
+    --cmd feature.block    --params '{"name":"Plate","size":["width","width * 2 / 3","8 mm"]}' \
+    --cmd feature.cylinder --params '{"name":"Post","position":["width / 4","width / 3","8 mm"],"radius":"width / 10","height":"30 mm"}' \
+    --cmd document.measure \
+    --out part.3dcraft                          # one JSON line per command
+craft3d-cli info part.3dcraft                   # the whole state as JSON: features with status, bodies with volume
+craft3d-cli render part.3dcraft --out part.png --size 1000x700 --view iso
+craft3d-cli convert part.3dcraft part.3mf       # or .stl, .obj
+craft3d-cli run part.3dcraft --cmd variable.set --params '{"name":"width","expr":"80 mm"}' --out wider.3dcraft
+```
+
+Drive it as a server (see [`control-protocol.md`](control-protocol.md)):
+
+```sh
+craft3d-cli serve --automation-read-root work --automation-write-root work     # JSON lines on stdin/stdout
+craft3d-cli mcp   --automation-read-root work --automation-write-root work     # MCP on stdin/stdout
+claude mcp add craft3d -- "$PWD/target/release/craft3d-cli" mcp \
+    --automation-read-root "$PWD/work" --automation-write-root "$PWD/work"
+```
+
+The teapot (Bézier patches, outside the document path) still has its own examples: `cargo run --release -p craft3d-render --example teapot` and `cargo run --release -p craft3d-io --example export_teapot`.
+
+The toolchain is pinned in `rust-toolchain.toml`; rustup installs it on first use. If `cargo` is not on `PATH`, it is in `~/.cargo/bin`. CI (`.github/workflows/ci.yml`) runs `cargo xtask ci` on Linux and `cargo test --workspace` on macOS and Windows, on every push to `main` and every pull request.
 
 External oracle: FreeCAD runs as a separate program to check exported files ([`testing.md`](testing.md) oracle 8). Point `CRAFT3D_FREECAD` at a FreeCAD AppImage (run as `<AppImage> freecadcmd <script>`) or a `FreeCADCmd` executable. The tests (`crates/io/tests/freecad.rs`) are `#[ignore]`d, so plain `cargo test` and CI skip them; `cargo xtask freecad` runs them and fails if FreeCAD is missing. A script handed to FreeCAD must not be called `freecad.py`: that name shadows FreeCAD's own module and the script silently does nothing.
 

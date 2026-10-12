@@ -6,7 +6,7 @@
 
 **Language.** The developer prompts in Dutch. Answer the developer in Dutch, but write everything that lands in the repository in English: code, comments, identifiers, commit messages, docs, the dev log, test names and error messages.
 
-**Status: M1 done (2026-10-12).** The workspace has all planned crates; eleven are still empty stubs. Real code exists in `math`, `geom` (curves, analytic surfaces, NURBS), `topo` (B-rep, validity checker, mass properties), `expr` (units, formulas, variables), `tess`, `render`, `meshio`, `io` and `testkit`, and in `xtask` (`layers`, `wasm`, `ci`, `stats`, `freecad`). There is no kernel, document or engine yet: bodies exist only as hand-built test fixtures. `craft3d-cli` only answers `--version` and `--help`. CI runs on GitHub on every push and pull request. Everything else in this file and in `docs/` is the target design. Commands and paths marked *(planned)* do not exist until the milestone that creates them (`docs/roadmap.md`); when you build one, remove its marker here and in the docs. Licence: MIT. Remote: https://github.com/johancoppens/3dcraft (use the `gh` CLI).
+**Status: M2 done (2026-10-12).** One path works end to end for primitive solids: a command edits the document, regeneration builds checked B-rep bodies, the tessellator meshes them, and they are rendered on the CPU or exported as STL/3MF/OBJ. Documents save and load as `.3dcraft`. 22 commands are reachable through `craft3d-cli` (`run`, `info`, `render`, `convert`, `commands`, `serve`, `mcp`). What does not exist yet: sketches, constraints, any feature beyond block, cylinder and sphere, booleans, STEP, the GPU renderer and the desktop app (`step`, `solve`, `gpu`, `ui-egui` are empty stubs). Everything else in this file and in `docs/` is the target design. Commands and paths marked *(planned)* do not exist until the milestone that creates them (`docs/roadmap.md`); when you build one, remove its marker here and in the docs. Licence: MIT. Remote: https://github.com/johancoppens/3dcraft (use the `gh` CLI).
 
 Read this file first, then `docs/`.
 
@@ -28,12 +28,12 @@ Read this file first, then `docs/`.
 
 ## 2. Workspace map
 
-Every crate below exists; `math`, `geom`, `topo`, `expr`, `tess`, `render`, `meshio`, `io`, `testkit` and `xtask` have code, the others are stubs with a doc comment. `apps/craft3d` and `apps/craft3d-web` are *(planned)*.
+Every crate below exists; `step`, `solve`, `gpu` and `ui-egui` are still stubs with a doc comment. `apps/craft3d` and `apps/craft3d-web` are *(planned)*.
 
 ```text
 crates/
   math geom                  L0 foundation (f64 vectors, transforms, tolerances; curves and surfaces incl. NURBS)
-  step meshio                L0 standalone format crates (no workspace deps; publishable): STEP Part 21, STL/3MF/OBJ
+  step meshio zipstore       L0 standalone format crates (publishable): STEP Part 21, STL/3MF/OBJ, stored ZIP
   topo expr                  L1 B-rep topology (pure data + validity checks); units, variables, formulas
   doc                        L2 document model (variables, sketches, constraints, feature history: pure data)
   ops solve kernel tess      L3 history/undo, sketch constraint solver, modelling operations, tessellator
@@ -67,19 +67,19 @@ People trust 3DCraft with their designs, and a crash loses them. A malformed fil
 - **Prove it.** Every crash fix comes with a small synthetic regression test that panicked before the fix.
 - **Enforced by clippy.** The workspace denies `unwrap_used`, `expect_used`, `panic`, `unimplemented`, `todo`, `unreachable` and `indexing_slicing` (`[workspace.lints.clippy]` in the root `Cargo.toml`); `clippy.toml` allows them in tests only. Every crate opts in with `[lints] workspace = true`; `cargo xtask layers` fails for a crate that does not.
 
-1. **Everything is a command.** New user-visible behaviour = a command in the engine (`crates/engine/src/*_cmds.rs`, registered in `commands.rs`) with id, label, params doc, `enabled` and `run`, plus tests. The UI, CLI, control channel and MCP all dispatch commands by id. In phase 1 there are (almost) no menus: a command needs no menu path to exist. Only pure view state (camera, panels) belongs to the shell.
+1. **Everything is a command.** New user-visible behaviour = a command in the engine (a `CommandSpec` in `SPECS` in `crates/engine/src/commands.rs`; split into `<area>_cmds.rs` modules when that file gets long) with id, label, params doc, summary and `run`, plus tests. The UI, CLI, control channel and MCP all dispatch commands by id. In phase 1 there are (almost) no menus: a command needs no menu path to exist. Only pure view state (camera, panels) belongs to the shell.
 2. **The design history is the source of truth.** A document is variables, sketches, constraints, formulas and an ordered list of features. Bodies (B-rep) and meshes are *derived* from it by regeneration and may be thrown away at any time. Never store a result that cannot be recomputed from the history, and never let a command edit a body behind the history's back.
 3. **No geometry, tolerance or unit assumptions.** Tolerance and length unit are runtime data carried by the document, never a global constant. Kernel maths is `f64`; `f32` exists only at the GPU boundary. Curves and surfaces are open enums that include NURBS from day one: no code path may assume "all faces are planar" or "all edges are lines or arcs" in a public API. Test with analytic *and* freeform geometry, at several scales (1e-3 to 1e6 model units).
 4. **Stable references.** Features refer to faces, edges and vertices through persistent names derived from how the entity was created, never through an index into the current B-rep. An edit upstream must not silently retarget a downstream fillet. This is designed in from the first feature, not retrofitted (`docs/architecture.md` §1.1).
 5. **Determinism.** The same document gives bit-identical bodies and meshes across runs, thread counts and platforms: ordered iteration (no `HashMap` order in results), no fast-math, seeded randomness only, parallel work merged in a fixed order.
 6. **Clean-room.** Implement from public specs (ISO 10303 STEP, the 3MF core specification, the STL and OBJ format descriptions), textbooks and papers, and observed behaviour of other modellers. Never copy code, shaders or assets from proprietary software. Do not copy from copyleft kernels either (OpenCascade is LGPL, CGAL is GPL/LGPL): reading their documentation to learn what an operation should do is fine, pasting or transliterating their code is not. Third-party assets must be permissively licensed, keep their licence file next to them, and get a row in `ATTRIBUTION.md` in the same change. Never commit font files.
-7. **Tests are the gate, and agents close the loop.** Every change comes with tests. The working cycle is: write the test, run it, read the result, improve, repeat, until green (`docs/testing.md`). Prefer oracles a machine can check: closed-form volumes and areas, topological invariants, watertight meshes, boolean identities, round trips, CPU against GPU. Never weaken or delete a failing test to get green; fix the code, or record the limitation and return an "unsupported" error.
+7. **Tests are the gate, and agents close the loop.** Every change comes with tests. The working cycle is: write the test, run it, read the result, improve, repeat, until green (`docs/testing.md`). Prefer oracles a machine can check: closed-form volumes and areas, topological invariants, watertight meshes, boolean identities, round trips, CPU against GPU. Never weaken or delete a failing test to get green; fix the code, or record the limitation and return an "unsupported" error. You wrote both the code and the test, so when they disagree do not assume the test is the one that is wrong: an expectation may change only under the four conditions in `docs/testing.md` › *Changing an expectation* (a reason that is a fact, not weaker than needed, still pinned by something independent of the code, and logged in the dev log for the developer to review).
 8. **Two renderers, one oracle.** The CPU renderer (`render`) is the reference; the wgpu renderer (`gpu`) must match it within the documented tolerance. Kernel and tessellator have no GPU path at all.
 9. **The UI is thin and data-driven.** UI state lives in `ui-egui/src/state.rs` (serde), so the control channel can read and drive it. Colours and radii come from `theme::Tokens`, never hard-coded.
 10. **Let the developer watch.** The developer follows development and automated testing live. Anything visual is verified by looking at a picture: render offscreen, or launch with `--control` and take `ui.screenshot`, then actually read the PNG. Leave evidence where the developer can see it (`docs/development.md` › Watching along) and say in Dutch what you are about to do before a long run.
 11. **Never break wasm.** L0–L7 must `cargo check --target wasm32-unknown-unknown` (run `cargo xtask wasm`). File-system code is `cfg(not(target_arch = "wasm32"))` or goes through the platform services.
 12. **Performance is a feature.** Benchmark heavy operations in release on a model of realistic size (thousands of faces, a million triangles). Regenerate only the features downstream of an edit, tessellate faces in parallel (rayon), cache per feature revision, and record before/after timings in the dev log.
-13. **Never panic on input** (see *Never crash* above). A command's `run` closure and anything it calls must return `Err`, never panic, for *any* params or document state. The `panic_hunt` integration test *(planned, M2)* fuzzes every command with adversarial params and must stay green.
+13. **Never panic on input** (see *Never crash* above). A command's `run` closure and anything it calls must return `Err`, never panic, for *any* params or document state. The `panic_hunt` integration test (`crates/engine/tests/panic_hunt.rs`) runs every command of the registry with adversarial params in four document states and must stay green; a new command is picked up automatically from its `params` string.
 
 ## 4. Picking work
 
@@ -100,7 +100,7 @@ cargo clippy -p <crates> --all-targets -- -D warnings
 cargo xtask layers
 cargo xtask wasm            # if you touched L0–L7
 cargo xtask freecad         # if you touched tess, meshio or io: FreeCAD reads our exports (needs CRAFT3D_FREECAD)
-cargo test -p craft3d-engine --test panic_hunt -- --ignored   # if you added/changed commands (planned, M2)
+cargo test -p craft3d-engine --test panic_hunt                # if you added/changed commands (about 25 s; also part of the full test run)
 ```
 
 `cargo xtask ci` runs fmt, clippy, tests, layers and wasm in one go. If `cargo` is not on `PATH` in your shell, it is in `~/.cargo/bin`.

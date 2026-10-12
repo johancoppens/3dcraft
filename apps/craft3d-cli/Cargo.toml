@@ -9,3 +9,6 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+craft3d-engine.workspace = true
+craft3d-automation.workspace = true
+serde_json.workspace = true

@@ -12,13 +12,23 @@ repository = "https://github.com/johancoppens/3dcraft"
 craft3d-math = { path = "crates/math" }
 craft3d-geom = { path = "crates/geom" }
 craft3d-topo = { path = "crates/topo" }
+craft3d-expr = { path = "crates/expr" }
+craft3d-doc = { path = "crates/doc" }
+craft3d-ops = { path = "crates/ops" }
+craft3d-kernel = { path = "crates/kernel" }
+craft3d-regen = { path = "crates/regen" }
+craft3d-format = { path = "crates/format" }
+craft3d-engine = { path = "crates/engine" }
+craft3d-automation = { path = "crates/automation" }
 craft3d-tess = { path = "crates/tess" }
 craft3d-render = { path = "crates/render" }
 craft3d-testkit = { path = "crates/testkit" }
 craft3d-meshio = { path = "crates/meshio" }
+craft3d-zipstore = { path = "crates/zipstore" }
 craft3d-io = { path = "crates/io" }
 # Not modelling code: image encoding only (decisions.md, D10).
 png = "0.17"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [workspace.lints.rust]

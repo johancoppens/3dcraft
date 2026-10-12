@@ -7,6 +7,12 @@
 //! with them watertight solids) arrive with the B-rep tessellator
 //! (docs/architecture.md §6).
 
+mod body;
+mod weld;
+
+pub use body::tessellate_body;
+pub use weld::Welded;
+
 use craft3d_geom::BezierPatch;
 use craft3d_math::{Bbox3, Vec3};
 use std::fmt;
@@ -76,6 +82,13 @@ pub enum TessError {
         max_segments: u32,
     },
     TooManyVertices,
+    /// The body refers to something that does not exist; run the checker.
+    InvalidBody(String),
+    /// A face or edge this tessellator cannot handle yet.
+    Unsupported {
+        face: usize,
+        what: String,
+    },
 }
 
 impl fmt::Display for TessError {
@@ -97,6 +110,10 @@ impl fmt::Display for TessError {
                  tolerance, above the limit of {max_segments}; use a larger tolerance"
             ),
             TessError::TooManyVertices => write!(f, "mesh would exceed 2^32 vertices"),
+            TessError::InvalidBody(what) => write!(f, "invalid body: {what}"),
+            TessError::Unsupported { face, what } => {
+                write!(f, "face {face} cannot be tessellated yet: {what}")
+            }
         }
     }
 }

@@ -10,6 +10,7 @@ pub const LAYERS: &[(&str, u32)] = &[
     ("geom", 0),
     ("step", 0),
     ("meshio", 0),
+    ("zipstore", 0),
     ("topo", 1),
     ("expr", 1),
     ("doc", 2),
@@ -40,7 +41,10 @@ const TESTKIT: u32 = 100;
 const SAME_LAYER: &[(&str, &str)] = &[("geom", "math")];
 
 /// Format crates that must not depend on any workspace crate.
-const STANDALONE: &[&str] = &["step", "meshio"];
+const STANDALONE: &[&str] = &["step", "meshio", "zipstore"];
+
+/// The documented exceptions to that: (crate, depends on), both standalone.
+const STANDALONE_EXCEPTIONS: &[(&str, &str)] = &[("meshio", "zipstore")];
 
 /// UI crates no library below the UI layer may use.
 const UI_CRATES: &[&str] = &["egui", "eframe", "winit", "rfd"];
@@ -127,6 +131,9 @@ pub fn check() -> Result<(), String> {
             let Some(dep_short) = dep_name.strip_prefix("craft3d-") else {
                 continue;
             };
+            if STANDALONE_EXCEPTIONS.contains(&(short, dep_short)) {
+                continue;
+            }
             if STANDALONE.contains(&short) {
                 errors.push(format!(
                     "{name} is standalone and must not depend on {dep_name}"

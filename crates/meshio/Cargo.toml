@@ -9,3 +9,4 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+craft3d-zipstore.workspace = true

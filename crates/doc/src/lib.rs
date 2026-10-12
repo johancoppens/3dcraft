@@ -1,2 +1,789 @@
-//! The document model: variables, sketches, constraints and the ordered feature
-//! history. Pure data; no geometry algorithms. Planned for M2.
+//! The document model: the recipe a model is built from.
+//!
+//! A document is variables and an ordered list of features. Bodies are not
+//! stored here: they are derived by regeneration and can be thrown away
+//! (AGENTS.md rule 2). Every numeric parameter is an [`Expr`], kept as the
+//! text the user wrote. This crate is pure data with serde; it contains no
+//! geometry.
+//!
+//! So far: variables and primitive features. Sketches, constraints and the
+//! other feature kinds of docs/architecture.md §4 arrive with their
+//! milestones; `craft3d-format` fails to compile when a field is added
+//! here without being saved (AGENTS.md §8).
+
+use craft3d_expr::{VariableError, VariableTable};
+use serde::{Deserialize, Serialize};
+use std::fmt;
+
+/// Largest number of features in a document.
+pub const MAX_FEATURES: usize = 100_000;
+/// Longest feature name, in bytes.
+pub const MAX_NAME_LEN: usize = 256;
+
+/// Identifies a feature for the lifetime of a document. Never reused, even
+/// after the feature is deleted: persistent names will be built on it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct FeatureId(pub u64);
+
+impl fmt::Display for FeatureId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "F{}", self.0)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum LengthUnit {
+    #[serde(rename = "um")]
+    Micrometre,
+    #[default]
+    #[serde(rename = "mm")]
+    Millimetre,
+    #[serde(rename = "cm")]
+    Centimetre,
+    #[serde(rename = "m")]
+    Metre,
+    #[serde(rename = "in")]
+    Inch,
+    #[serde(rename = "ft")]
+    Foot,
+}
+
+impl LengthUnit {
+    pub const ALL: [LengthUnit; 6] = [
+        LengthUnit::Micrometre,
+        LengthUnit::Millimetre,
+        LengthUnit::Centimetre,
+        LengthUnit::Metre,
+        LengthUnit::Inch,
+        LengthUnit::Foot,
+    ];
+
+    /// The same unit in the expression language.
+    pub fn as_expr_unit(self) -> craft3d_expr::Unit {
+        use craft3d_expr::Unit;
+        match self {
+            LengthUnit::Micrometre => Unit::Micrometre,
+            LengthUnit::Millimetre => Unit::Millimetre,
+            LengthUnit::Centimetre => Unit::Centimetre,
+            LengthUnit::Metre => Unit::Metre,
+            LengthUnit::Inch => Unit::Inch,
+            LengthUnit::Foot => Unit::Foot,
+        }
+    }
+
+    pub fn symbol(self) -> &'static str {
+        self.as_expr_unit().symbol()
+    }
+
+    pub fn from_symbol(symbol: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|u| u.symbol() == symbol)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum AngleUnit {
+    #[default]
+    #[serde(rename = "deg")]
+    Degree,
+    #[serde(rename = "rad")]
+    Radian,
+}
+
+/// The units a document's numbers are shown and modelled in. The kernel
+/// works in the document's length unit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Units {
+    pub length: LengthUnit,
+    pub angle: AngleUnit,
+}
+
+/// Modelling tolerance, as data (docs/architecture.md §1.1).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Tolerance {
+    /// In the document's length unit.
+    pub linear: f64,
+    /// In radians.
+    pub angular: f64,
+}
+
+impl Default for Tolerance {
+    fn default() -> Self {
+        Self {
+            linear: 1e-6,
+            angular: 1e-9,
+        }
+    }
+}
+
+/// An expression as the user wrote it, such as `"width / 2 + 3 mm"`.
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Expr(pub String);
+
+impl Expr {
+    pub fn new(source: impl Into<String>) -> Self {
+        Self(source.into())
+    }
+
+    pub fn source(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Variable {
+    pub name: String,
+    pub expr: Expr,
+}
+
+/// A rectangular block with one corner at `position` and edges along the
+/// world axes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Block {
+    pub position: [Expr; 3],
+    pub size: [Expr; 3],
+}
+
+/// A cylinder along the world z axis, its base centred at `position`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Cylinder {
+    pub position: [Expr; 3],
+    pub radius: Expr,
+    pub height: Expr,
+}
+
+/// A sphere centred at `position`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Sphere {
+    pub position: [Expr; 3],
+    pub radius: Expr,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum FeatureKind {
+    Block(Block),
+    Cylinder(Cylinder),
+    Sphere(Sphere),
+}
+
+impl FeatureKind {
+    /// The kind's name, as in files and command results.
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            FeatureKind::Block(_) => "block",
+            FeatureKind::Cylinder(_) => "cylinder",
+            FeatureKind::Sphere(_) => "sphere",
+        }
+    }
+
+    /// Every expression of the feature with the name of its parameter, in a
+    /// fixed order.
+    pub fn exprs(&self) -> Vec<(String, &Expr)> {
+        fn triple<'a>(
+            name: &str,
+            exprs: &'a [Expr; 3],
+        ) -> impl Iterator<Item = (String, &'a Expr)> {
+            let name = name.to_string();
+            exprs
+                .iter()
+                .zip(["x", "y", "z"])
+                .map(move |(e, axis)| (format!("{name}.{axis}"), e))
+        }
+        match self {
+            FeatureKind::Block(b) => triple("position", &b.position)
+                .chain(triple("size", &b.size))
+                .collect(),
+            FeatureKind::Cylinder(c) => triple("position", &c.position)
+                .chain([
+                    ("radius".to_string(), &c.radius),
+                    ("height".to_string(), &c.height),
+                ])
+                .collect(),
+            FeatureKind::Sphere(s) => triple("position", &s.position)
+                .chain([("radius".to_string(), &s.radius)])
+                .collect(),
+        }
+    }
+
+    fn exprs_mut(&mut self) -> Vec<&mut Expr> {
+        match self {
+            FeatureKind::Block(b) => b.position.iter_mut().chain(b.size.iter_mut()).collect(),
+            FeatureKind::Cylinder(c) => c
+                .position
+                .iter_mut()
+                .chain([&mut c.radius, &mut c.height])
+                .collect(),
+            FeatureKind::Sphere(s) => s.position.iter_mut().chain([&mut s.radius]).collect(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Feature {
+    pub id: FeatureId,
+    pub name: String,
+    #[serde(default)]
+    pub suppressed: bool,
+    pub kind: FeatureKind,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum DocError {
+    Variable(VariableError),
+    UnknownFeature(FeatureId),
+    /// No feature has this name.
+    UnknownFeatureName(String),
+    InvalidFeatureName(&'static str),
+    DuplicateFeatureName(String),
+    TooManyFeatures,
+    /// A reorder position past the end of the feature list.
+    PositionOutOfRange {
+        position: usize,
+        len: usize,
+    },
+    /// The document breaks one of its own rules (a file edited by hand, or
+    /// written by something else).
+    Invalid(String),
+}
+
+impl fmt::Display for DocError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DocError::Variable(e) => write!(f, "{e}"),
+            DocError::UnknownFeature(id) => write!(f, "there is no feature {id}"),
+            DocError::UnknownFeatureName(name) => write!(f, "there is no feature named `{name}`"),
+            DocError::InvalidFeatureName(rule) => write!(f, "invalid feature name: {rule}"),
+            DocError::DuplicateFeatureName(name) => {
+                write!(f, "a feature named `{name}` already exists")
+            }
+            DocError::TooManyFeatures => {
+                write!(f, "a document holds at most {MAX_FEATURES} features")
+            }
+            DocError::PositionOutOfRange { position, len } => {
+                write!(
+                    f,
+                    "position {position} is past the end of the {len} features"
+                )
+            }
+            DocError::Invalid(what) => write!(f, "invalid document: {what}"),
+        }
+    }
+}
+
+impl std::error::Error for DocError {}
+
+impl From<VariableError> for DocError {
+    fn from(e: VariableError) -> Self {
+        DocError::Variable(e)
+    }
+}
+
+/// The whole design: what is saved, and what regeneration starts from.
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+pub struct Document {
+    pub units: Units,
+    pub tolerance: Tolerance,
+    /// In the order they were defined; evaluation order follows dependencies.
+    pub variables: Vec<Variable>,
+    /// The design history, in order of application.
+    pub features: Vec<Feature>,
+    /// Regenerate up to and including this feature only.
+    #[serde(default)]
+    pub rollback: Option<FeatureId>,
+    /// The id the next feature gets.
+    pub next_feature_id: u64,
+}
+
+fn check_feature_name(name: &str) -> Result<(), DocError> {
+    if name.is_empty() || name.trim() != name {
+        return Err(DocError::InvalidFeatureName(
+            "it must not be empty or start or end with a space",
+        ));
+    }
+    if name.len() > MAX_NAME_LEN {
+        return Err(DocError::InvalidFeatureName("it is too long"));
+    }
+    if name.chars().any(char::is_control) {
+        return Err(DocError::InvalidFeatureName(
+            "it must not contain control characters",
+        ));
+    }
+    Ok(())
+}
+
+impl Document {
+    pub fn new(units: Units) -> Self {
+        Self {
+            units,
+            next_feature_id: 1,
+            ..Self::default()
+        }
+    }
+
+    /// Checks the rules every document built through this API satisfies,
+    /// for documents that come from elsewhere (a file): tolerances are
+    /// positive and finite, variable and feature names are valid and
+    /// unique, feature ids are unique and below `next_feature_id`, the
+    /// rollback marker points at a feature, and the caps hold. Expressions
+    /// are not evaluated: a formula that fails is a regeneration result,
+    /// not an invalid document.
+    pub fn validate(&self) -> Result<(), DocError> {
+        let positive = |v: f64| v.is_finite() && v > 0.0;
+        if !(positive(self.tolerance.linear) && positive(self.tolerance.angular)) {
+            return Err(DocError::Invalid(
+                "tolerances must be positive and finite".to_string(),
+            ));
+        }
+        self.variable_table()?;
+        let mut names = std::collections::BTreeSet::new();
+        if !self.variables.iter().all(|v| names.insert(v.name.as_str())) {
+            return Err(DocError::Invalid(
+                "two variables have the same name".to_string(),
+            ));
+        }
+        if self.features.len() > MAX_FEATURES {
+            return Err(DocError::TooManyFeatures);
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        let mut names = std::collections::BTreeSet::new();
+        for feature in &self.features {
+            check_feature_name(&feature.name)?;
+            if !names.insert(feature.name.as_str()) {
+                return Err(DocError::DuplicateFeatureName(feature.name.clone()));
+            }
+            if !ids.insert(feature.id) {
+                return Err(DocError::Invalid(format!(
+                    "two features have the id {}",
+                    feature.id
+                )));
+            }
+            if feature.id.0 == 0 || feature.id.0 >= self.next_feature_id {
+                return Err(DocError::Invalid(format!(
+                    "feature id {} is not below the next free id {}",
+                    feature.id.0, self.next_feature_id
+                )));
+            }
+        }
+        match self.rollback {
+            Some(id) if !ids.contains(&id) => Err(DocError::UnknownFeature(id)),
+            _ => Ok(()),
+        }
+    }
+
+    /// The variables as an expression table, for evaluation.
+    pub fn variable_table(&self) -> Result<VariableTable, VariableError> {
+        let mut table = VariableTable::new();
+        for v in &self.variables {
+            table.set(&v.name, v.expr.source())?;
+        }
+        Ok(table)
+    }
+
+    pub fn variable(&self, name: &str) -> Option<&Variable> {
+        self.variables.iter().find(|v| v.name == name)
+    }
+
+    /// Defines a variable or replaces its expression. The expression is not
+    /// evaluated here: a formula that does not parse or refers to a missing
+    /// variable is stored, and reported by regeneration.
+    pub fn set_variable(&mut self, name: &str, expr: &str) -> Result<(), DocError> {
+        // The table validates the name and the caps.
+        let mut table = self.variable_table()?;
+        table.set(name, expr)?;
+        match self.variables.iter_mut().find(|v| v.name == name) {
+            Some(v) => v.expr = Expr::new(expr),
+            None => self.variables.push(Variable {
+                name: name.to_string(),
+                expr: Expr::new(expr),
+            }),
+        }
+        Ok(())
+    }
+
+    /// Removes a variable. Expressions that still refer to it fail at the
+    /// next regeneration with "unknown variable".
+    pub fn remove_variable(&mut self, name: &str) -> Result<(), DocError> {
+        let index = self
+            .variables
+            .iter()
+            .position(|v| v.name == name)
+            .ok_or_else(|| VariableError::UnknownVariable {
+                name: name.to_string(),
+            })?;
+        self.variables.remove(index);
+        Ok(())
+    }
+
+    /// Renames a variable everywhere: in the table, in other variables'
+    /// expressions and in feature parameters. All or nothing.
+    pub fn rename_variable(&mut self, old: &str, new: &str) -> Result<(), DocError> {
+        let mut table = self.variable_table()?;
+        table.rename(old, new)?;
+        let mut renamed_features = Vec::with_capacity(self.features.len());
+        for feature in &self.features {
+            let mut kind = feature.kind.clone();
+            for expr in kind.exprs_mut() {
+                *expr = Expr::new(craft3d_expr::rename_variable(expr.source(), old, new)?);
+            }
+            renamed_features.push(kind);
+        }
+        self.variables = table
+            .variables()
+            .iter()
+            .map(|v| Variable {
+                name: v.name().to_string(),
+                expr: Expr::new(v.source()),
+            })
+            .collect();
+        for (feature, kind) in self.features.iter_mut().zip(renamed_features) {
+            feature.kind = kind;
+        }
+        Ok(())
+    }
+
+    pub fn feature(&self, id: FeatureId) -> Option<&Feature> {
+        self.features.iter().find(|f| f.id == id)
+    }
+
+    pub fn feature_mut(&mut self, id: FeatureId) -> Result<&mut Feature, DocError> {
+        self.features
+            .iter_mut()
+            .find(|f| f.id == id)
+            .ok_or(DocError::UnknownFeature(id))
+    }
+
+    pub fn feature_by_name(&self, name: &str) -> Option<&Feature> {
+        self.features.iter().find(|f| f.name == name)
+    }
+
+    /// Appends a feature and returns its id. Without a name it is called
+    /// after its kind and the first free number (`Block1`, `Block2`, …).
+    pub fn add_feature(
+        &mut self,
+        name: Option<&str>,
+        kind: FeatureKind,
+    ) -> Result<FeatureId, DocError> {
+        if self.features.len() >= MAX_FEATURES {
+            return Err(DocError::TooManyFeatures);
+        }
+        let name = match name {
+            Some(name) => {
+                check_feature_name(name)?;
+                if self.feature_by_name(name).is_some() {
+                    return Err(DocError::DuplicateFeatureName(name.to_string()));
+                }
+                name.to_string()
+            }
+            None => {
+                let mut base = kind.type_name().to_string();
+                if let Some(first) = base.get_mut(0..1) {
+                    first.make_ascii_uppercase();
+                }
+                // At most len + 1 candidates can be taken.
+                (1..=self.features.len() + 1)
+                    .map(|n| format!("{base}{n}"))
+                    .find(|candidate| self.feature_by_name(candidate).is_none())
+                    .ok_or(DocError::TooManyFeatures)?
+            }
+        };
+        let id = FeatureId(self.next_feature_id);
+        self.next_feature_id = self
+            .next_feature_id
+            .checked_add(1)
+            .ok_or(DocError::TooManyFeatures)?;
+        self.features.push(Feature {
+            id,
+            name,
+            suppressed: false,
+            kind,
+        });
+        Ok(id)
+    }
+
+    pub fn rename_feature(&mut self, id: FeatureId, name: &str) -> Result<(), DocError> {
+        check_feature_name(name)?;
+        if self.features.iter().any(|f| f.name == name && f.id != id) {
+            return Err(DocError::DuplicateFeatureName(name.to_string()));
+        }
+        self.feature_mut(id)?.name = name.to_string();
+        Ok(())
+    }
+
+    /// Removes a feature. Its id is not reused.
+    pub fn remove_feature(&mut self, id: FeatureId) -> Result<Feature, DocError> {
+        let index = self
+            .features
+            .iter()
+            .position(|f| f.id == id)
+            .ok_or(DocError::UnknownFeature(id))?;
+        if self.rollback == Some(id) {
+            self.rollback = None;
+        }
+        Ok(self.features.remove(index))
+    }
+
+    /// Moves a feature to `position` in the history (0 is first).
+    pub fn move_feature(&mut self, id: FeatureId, position: usize) -> Result<(), DocError> {
+        let index = self
+            .features
+            .iter()
+            .position(|f| f.id == id)
+            .ok_or(DocError::UnknownFeature(id))?;
+        if position >= self.features.len() {
+            return Err(DocError::PositionOutOfRange {
+                position,
+                len: self.features.len(),
+            });
+        }
+        let feature = self.features.remove(index);
+        self.features.insert(position, feature);
+        Ok(())
+    }
+
+    /// Sets the rollback marker; `None` regenerates everything.
+    pub fn set_rollback(&mut self, id: Option<FeatureId>) -> Result<(), DocError> {
+        if let Some(id) = id
+            && self.feature(id).is_none()
+        {
+            return Err(DocError::UnknownFeature(id));
+        }
+        self.rollback = id;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn exprs(values: [&str; 3]) -> [Expr; 3] {
+        values.map(Expr::new)
+    }
+
+    fn block(size: [&str; 3]) -> FeatureKind {
+        FeatureKind::Block(Block {
+            position: exprs(["0 mm", "0 mm", "0 mm"]),
+            size: exprs(size),
+        })
+    }
+
+    fn sample() -> Document {
+        let mut doc = Document::new(Units::default());
+        doc.set_variable("width", "40 mm").unwrap();
+        doc.set_variable("half", "width / 2").unwrap();
+        doc.add_feature(None, block(["width", "half", "10 mm"]))
+            .unwrap();
+        doc.add_feature(
+            Some("Pin"),
+            FeatureKind::Cylinder(Cylinder {
+                position: exprs(["half", "0 mm", "10 mm"]),
+                radius: Expr::new("width / 8"),
+                height: Expr::new("2 * half"),
+            }),
+        )
+        .unwrap();
+        doc
+    }
+
+    #[test]
+    fn features_get_stable_ids_and_readable_names() {
+        let mut doc = sample();
+        assert_eq!(doc.features[0].id, FeatureId(1));
+        assert_eq!(doc.features[0].name, "Block1");
+        assert_eq!(doc.features[1].name, "Pin");
+        let third = doc
+            .add_feature(None, block(["1 mm", "1 mm", "1 mm"]))
+            .unwrap();
+        assert_eq!(
+            (third, doc.feature(third).unwrap().name.as_str()),
+            (FeatureId(3), "Block2")
+        );
+        // Ids are never reused, names are.
+        doc.remove_feature(third).unwrap();
+        let fourth = doc
+            .add_feature(None, block(["1 mm", "1 mm", "1 mm"]))
+            .unwrap();
+        assert_eq!(
+            (fourth, doc.feature(fourth).unwrap().name.as_str()),
+            (FeatureId(4), "Block2")
+        );
+        assert_eq!(FeatureId(4).to_string(), "F4");
+        assert!(matches!(
+            doc.remove_feature(third),
+            Err(DocError::UnknownFeature(FeatureId(3)))
+        ));
+    }
+
+    #[test]
+    fn feature_names_are_validated_and_unique() {
+        let mut doc = sample();
+        let kind = || block(["1 mm", "1 mm", "1 mm"]);
+        assert!(matches!(
+            doc.add_feature(Some("Pin"), kind()),
+            Err(DocError::DuplicateFeatureName(_))
+        ));
+        for bad in ["", " x", "x ", "a\nb"] {
+            assert!(
+                matches!(
+                    doc.add_feature(Some(bad), kind()),
+                    Err(DocError::InvalidFeatureName(_))
+                ),
+                "`{bad}`"
+            );
+        }
+        assert!(
+            doc.add_feature(Some(&"n".repeat(MAX_NAME_LEN + 1)), kind())
+                .is_err()
+        );
+        assert!(doc.rename_feature(FeatureId(1), "Pin").is_err());
+        doc.rename_feature(FeatureId(1), "Base plate").unwrap();
+        doc.rename_feature(FeatureId(1), "Base plate").unwrap();
+        assert_eq!(doc.feature_by_name("Base plate").unwrap().id, FeatureId(1));
+        assert_eq!(doc.features.len(), 2, "failed adds add nothing");
+        assert_eq!(doc.next_feature_id, 3, "and use up no ids");
+    }
+
+    #[test]
+    fn renaming_a_variable_follows_it_into_features() {
+        let mut doc = sample();
+        doc.rename_variable("half", "h").unwrap();
+        assert_eq!(doc.variable("h").unwrap().expr.source(), "width / 2");
+        let FeatureKind::Block(b) = &doc.features[0].kind else {
+            panic!()
+        };
+        assert_eq!(b.size[1].source(), "h");
+        let FeatureKind::Cylinder(c) = &doc.features[1].kind else {
+            panic!()
+        };
+        assert_eq!((c.position[0].source(), c.height.source()), ("h", "2 * h"));
+        // A failed rename changes nothing.
+        let before = doc.clone();
+        assert!(doc.rename_variable("h", "width").is_err());
+        assert!(doc.rename_variable("h", "mm").is_err());
+        assert!(doc.rename_variable("missing", "x").is_err());
+        assert_eq!(doc, before);
+    }
+
+    #[test]
+    fn variables_can_be_set_replaced_and_removed() {
+        let mut doc = sample();
+        doc.set_variable("width", "2 in").unwrap();
+        assert_eq!(doc.variables.len(), 2);
+        assert_eq!(doc.variables[0].expr.source(), "2 in");
+        // Stored even when it does not evaluate: regeneration reports it.
+        doc.set_variable("broken", "width +").unwrap();
+        assert!(doc.set_variable("sin", "1").is_err());
+        assert!(doc.set_variable("1x", "1").is_err());
+        doc.remove_variable("half").unwrap();
+        assert!(doc.remove_variable("half").is_err());
+        assert_eq!(
+            doc.variables
+                .iter()
+                .map(|v| v.name.as_str())
+                .collect::<Vec<_>>(),
+            ["width", "broken"]
+        );
+    }
+
+    #[test]
+    fn features_can_be_reordered_and_rolled_back() {
+        let mut doc = sample();
+        doc.move_feature(FeatureId(2), 0).unwrap();
+        assert_eq!(
+            doc.features.iter().map(|f| f.id.0).collect::<Vec<_>>(),
+            [2, 1]
+        );
+        assert!(matches!(
+            doc.move_feature(FeatureId(2), 2),
+            Err(DocError::PositionOutOfRange { .. })
+        ));
+        assert!(doc.move_feature(FeatureId(9), 0).is_err());
+        doc.set_rollback(Some(FeatureId(2))).unwrap();
+        assert!(doc.set_rollback(Some(FeatureId(9))).is_err());
+        assert_eq!(doc.rollback, Some(FeatureId(2)));
+        // Deleting the marked feature clears the marker.
+        doc.remove_feature(FeatureId(2)).unwrap();
+        assert_eq!(doc.rollback, None);
+    }
+
+    #[test]
+    fn every_expression_of_a_feature_is_listed_with_its_parameter() {
+        let doc = sample();
+        let names: Vec<String> = doc.features[1]
+            .kind
+            .exprs()
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        assert_eq!(
+            names,
+            ["position.x", "position.y", "position.z", "radius", "height"]
+        );
+        assert_eq!(doc.features[0].kind.exprs().len(), 6);
+    }
+
+    #[test]
+    fn validation_accepts_built_documents_and_rejects_broken_ones() {
+        let doc = sample();
+        assert_eq!(doc.validate(), Ok(()));
+        assert_eq!(Document::new(Units::default()).validate(), Ok(()));
+        type Damage = fn(&mut Document);
+        let broken: [(&str, Damage); 9] = [
+            ("zero tolerance", |d| d.tolerance.linear = 0.0),
+            ("NaN tolerance", |d| d.tolerance.angular = f64::NAN),
+            ("reserved variable name", |d| {
+                d.variables[0].name = "mm".into()
+            }),
+            ("duplicate variable", |d| {
+                d.variables[1].name = "width".into()
+            }),
+            ("duplicate feature id", |d| d.features[1].id = FeatureId(1)),
+            ("id not below next", |d| d.next_feature_id = 2),
+            ("id zero", |d| d.features[0].id = FeatureId(0)),
+            ("duplicate feature name", |d| {
+                d.features[1].name = "Block1".into()
+            }),
+            ("dangling rollback", |d| d.rollback = Some(FeatureId(7))),
+        ];
+        for (what, damage) in broken {
+            let mut doc = sample();
+            damage(&mut doc);
+            assert!(doc.validate().is_err(), "{what}");
+        }
+        let mut bad_name = sample();
+        bad_name.features[0].name = String::new();
+        assert!(bad_name.validate().is_err());
+    }
+
+    #[test]
+    fn the_json_form_is_stable_and_round_trips() {
+        let doc = sample();
+        let json = serde_json::to_value(&doc).unwrap();
+        assert_eq!(
+            json["units"],
+            serde_json::json!({"length": "mm", "angle": "deg"})
+        );
+        assert_eq!(
+            json["variables"][1],
+            serde_json::json!({"name": "half", "expr": "width / 2"})
+        );
+        assert_eq!(
+            json["features"][0],
+            serde_json::json!({
+                "id": 1, "name": "Block1", "suppressed": false,
+                "kind": {"type": "block", "position": ["0 mm", "0 mm", "0 mm"], "size": ["width", "half", "10 mm"]}
+            })
+        );
+        let back: Document = serde_json::from_value(json).unwrap();
+        assert_eq!(back, doc);
+        for unit in LengthUnit::ALL {
+            assert_eq!(LengthUnit::from_symbol(unit.symbol()), Some(unit));
+            assert_eq!(
+                serde_json::to_value(unit).unwrap(),
+                serde_json::json!(unit.symbol())
+            );
+        }
+    }
+}

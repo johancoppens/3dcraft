@@ -1,0 +1,253 @@
+//! Rule 13 of AGENTS.md: no command may panic, whatever its parameters and
+//! whatever the document. Every command of the registry is run with
+//! adversarial values for each of its parameters, alone and combined, with
+//! and without a document. A panic inside a command is caught by
+//! `Session::execute` and reported as "internal error", which fails here.
+
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
+
+use craft3d_engine::{Access, Session, Workspace};
+use serde_json::{Map, Value, json};
+use std::path::PathBuf;
+
+fn adversarial() -> Vec<Value> {
+    let mut deep = json!(1);
+    for _ in 0..500 {
+        deep = json!([deep]);
+    }
+    vec![
+        Value::Null,
+        json!(true),
+        json!(false),
+        json!(0),
+        json!(-1),
+        json!(1),
+        json!(0.5),
+        json!(-0.0),
+        json!(1e308),
+        json!(-1e308),
+        json!(5e-324),
+        json!(u64::MAX),
+        json!(i64::MIN),
+        json!(""),
+        json!(" "),
+        json!("a"),
+        json!("Plate"),
+        json!("F1"),
+        json!("F0"),
+        json!("F18446744073709551615"),
+        json!("F99999999999999999999999"),
+        json!("width"),
+        json!("width / 0"),
+        json!("1 mm"),
+        json!("0 mm"),
+        json!("-1 mm"),
+        json!("1e999"),
+        json!("1e308 m * 1e308 m"),
+        json!("30 deg"),
+        json!("nope + 1"),
+        json!("sin"),
+        json!("mm"),
+        json!("💥"),
+        json!("a\0b"),
+        json!("a\nb"),
+        json!("../../etc/passwd"),
+        json!("/etc/passwd"),
+        json!("x.stl"),
+        json!("x.3dcraft"),
+        json!("."),
+        json!("stl"),
+        json!("ids"),
+        json!("(".repeat(10_000)),
+        json!("9".repeat(10_000)),
+        json!("ab ".repeat(5_000)),
+        json!([]),
+        json!([1]),
+        json!([1, 2, 3]),
+        json!([0, 0, 0]),
+        json!([-1, -1, -1]),
+        json!([1e308, 1e308, 1e308]),
+        json!(["a", "b", "c"]),
+        json!(["width", "width / 0", "1 +"]),
+        json!([null, null, null]),
+        json!([[], [], []]),
+        json!([1, 2, 3, 4]),
+        json!({}),
+        json!({"a": 1}),
+        deep,
+    ]
+}
+
+/// The parameter names a command documents: the quoted words before a
+/// colon in its params string.
+fn keys(params: &str) -> Vec<String> {
+    let mut keys = Vec::new();
+    let mut rest = params;
+    while let Some(start) = rest.find('"') {
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('"') else { break };
+        let (word, tail) = (&after[..end], &after[end + 1..]);
+        if tail.trim_start().starts_with(':') {
+            keys.push(word.to_string());
+        }
+        rest = tail;
+    }
+    keys
+}
+
+fn workdir() -> PathBuf {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("panic-hunt");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// A session in one of the states commands must survive.
+fn session(dir: &std::path::Path, state: usize) -> Session {
+    let mut s = Session::new(Workspace {
+        read: Access::Root(dir.to_path_buf()),
+        write: Access::Root(dir.to_path_buf()),
+    });
+    let mut run = |id: &str, params: Value| {
+        s.execute(id, &params)
+            .unwrap_or_else(|e| panic!("setup {id}: {e}"));
+    };
+    match state {
+        // No document at all.
+        0 => {}
+        // An empty document.
+        1 => run("file.new", json!({})),
+        // A healthy part.
+        2 => {
+            run("file.new", json!({}));
+            run("variable.set", json!({"name": "width", "expr": "40 mm"}));
+            run(
+                "feature.block",
+                json!({"name": "Plate", "size": ["width", 20, 5]}),
+            );
+            run("feature.cylinder", json!({"radius": 2, "height": 10}));
+            run("feature.sphere", json!({"radius": "width / 4"}));
+        }
+        // A document full of things that fail: bad formulas, a cycle, a
+        // suppressed and a rolled-back feature, undo and redo stacks.
+        _ => {
+            run("file.new", json!({"units": "in", "tolerance": 1e-9}));
+            run("variable.set", json!({"name": "a", "expr": "b + 1"}));
+            run("variable.set", json!({"name": "b", "expr": "a * 2"}));
+            run("variable.set", json!({"name": "broken", "expr": "1 +"}));
+            run("variable.set", json!({"name": "zero", "expr": "1 mm / 0"}));
+            run(
+                "feature.block",
+                json!({"name": "Plate", "size": ["a", "broken", "zero"]}),
+            );
+            run("feature.block", json!({"size": [1e-300, 1e300, 1]}));
+            run("feature.sphere", json!({"radius": "30 deg"}));
+            run("feature.cylinder", json!({"radius": 1, "height": 1}));
+            run("feature.suppress", json!({"feature": "Cylinder1"}));
+            run("history.rollback", json!({"feature": "Plate"}));
+            run("edit.undo", json!({}));
+            run("edit.undo", json!({}));
+        }
+    }
+    s
+}
+
+#[test]
+fn no_command_panics_on_adversarial_parameters() {
+    let dir = workdir();
+    let values = adversarial();
+    let mut runs = 0_usize;
+    let mut check = |state: usize, id: &str, params: &Value| {
+        let mut s = session(&dir, state);
+        let outcome = s.execute(id, params);
+        runs += 1;
+        if let Err(e) = &outcome {
+            let shown: String = params.to_string().chars().take(200).collect();
+            assert!(
+                !e.message().contains("internal error"),
+                "{id} panicked in state {state} on {shown}: {e}"
+            );
+            assert!(!e.message().is_empty(), "{id}: empty error message");
+        }
+        // Whatever happened, the session still answers.
+        if s.has_document() {
+            let inspected = s.execute("document.inspect", &Value::Null);
+            assert!(
+                inspected.is_ok(),
+                "document.inspect broke after {id} in state {state}: {inspected:?}"
+            );
+        }
+    };
+
+    for spec in Session::commands() {
+        let keys = keys(spec.params);
+        for state in 0..4 {
+            // The params value itself, in every shape.
+            for value in &values {
+                check(state, spec.id, value);
+            }
+            // Each parameter in turn, the others absent.
+            for key in &keys {
+                for value in &values {
+                    check(state, spec.id, &json!({ key.as_str(): value }));
+                }
+            }
+            // Every parameter at once with the same value, so the checks
+            // behind the first failing parameter are reached as well: also
+            // with one parameter left valid in turn.
+            for value in &values {
+                let all: Map<String, Value> =
+                    keys.iter().map(|k| (k.clone(), value.clone())).collect();
+                check(state, spec.id, &Value::Object(all.clone()));
+                for (key, valid) in [
+                    ("feature", json!("Plate")),
+                    ("name", json!("width")),
+                    ("path", json!("hunt.stl")),
+                    ("size", json!([1, 2, 3])),
+                    ("radius", json!(1)),
+                ] {
+                    if all.contains_key(key) {
+                        let mut mixed = all.clone();
+                        mixed.insert(key.to_string(), valid);
+                        check(state, spec.id, &Value::Object(mixed));
+                    }
+                }
+            }
+        }
+    }
+    println!(
+        "panic_hunt: {runs} command runs over {} commands",
+        Session::commands().len()
+    );
+    assert!(runs > 20_000);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_parameter_names_are_read_from_the_registry() {
+    assert_eq!(
+        keys(r#"{"units": "um|mm" = "mm", "tolerance": number = 1e-6}"#),
+        ["units", "tolerance"]
+    );
+    assert_eq!(keys("{}"), Vec::<String>::new());
+    // Every documented parameter is one the command accepts: none is
+    // answered with "unknown parameter".
+    let dir = workdir();
+    for spec in Session::commands() {
+        for key in keys(spec.params) {
+            let mut s = session(&dir, 2);
+            if let Err(e) = s.execute(spec.id, &json!({ key.as_str(): Value::Null })) {
+                assert!(
+                    !e.message().contains("unknown parameter"),
+                    "{}: `{key}` is documented but refused: {e}",
+                    spec.id
+                );
+            }
+        }
+    }
+}

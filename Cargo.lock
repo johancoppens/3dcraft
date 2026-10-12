@@ -23,18 +23,45 @@ checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 [[package]]
 name = "craft3d-automation"
 version = "0.0.1"
+dependencies = [
+ "craft3d-engine",
+ "serde_json",
+]
 
 [[package]]
 name = "craft3d-cli"
 version = "0.0.1"
+dependencies = [
+ "craft3d-automation",
+ "craft3d-engine",
+ "serde_json",
+]
 
 [[package]]
 name = "craft3d-doc"
 version = "0.0.1"
+dependencies = [
+ "craft3d-expr",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "craft3d-engine"
 version = "0.0.1"
+dependencies = [
+ "craft3d-doc",
+ "craft3d-format",
+ "craft3d-io",
+ "craft3d-math",
+ "craft3d-meshio",
+ "craft3d-ops",
+ "craft3d-regen",
+ "craft3d-render",
+ "craft3d-tess",
+ "craft3d-topo",
+ "serde_json",
+]
 
 [[package]]
 name = "craft3d-expr"
@@ -43,6 +70,12 @@ version = "0.0.1"
 [[package]]
 name = "craft3d-format"
 version = "0.0.1"
+dependencies = [
+ "craft3d-doc",
+ "craft3d-zipstore",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "craft3d-geom"
@@ -68,6 +101,11 @@ dependencies = [
 [[package]]
 name = "craft3d-kernel"
 version = "0.0.1"
+dependencies = [
+ "craft3d-geom",
+ "craft3d-math",
+ "craft3d-topo",
+]
 
 [[package]]
 name = "craft3d-math"
@@ -76,14 +114,27 @@ version = "0.0.1"
 [[package]]
 name = "craft3d-meshio"
 version = "0.0.1"
+dependencies = [
+ "craft3d-zipstore",
+]
 
 [[package]]
 name = "craft3d-ops"
 version = "0.0.1"
+dependencies = [
+ "craft3d-doc",
+]
 
 [[package]]
 name = "craft3d-regen"
 version = "0.0.1"
+dependencies = [
+ "craft3d-doc",
+ "craft3d-expr",
+ "craft3d-kernel",
+ "craft3d-math",
+ "craft3d-topo",
+]
 
 [[package]]
 name = "craft3d-render"
@@ -109,6 +160,7 @@ version = "0.0.1"
 dependencies = [
  "craft3d-geom",
  "craft3d-math",
+ "craft3d-testkit",
  "craft3d-topo",
 ]
 
@@ -117,6 +169,7 @@ name = "craft3d-testkit"
 version = "0.0.1"
 dependencies = [
  "craft3d-geom",
+ "craft3d-kernel",
  "craft3d-math",
  "craft3d-topo",
 ]
@@ -132,6 +185,10 @@ dependencies = [
 
 [[package]]
 name = "craft3d-ui-egui"
+version = "0.0.1"
+
+[[package]]
+name = "craft3d-zipstore"
 version = "0.0.1"
 
 [[package]]
@@ -233,6 +290,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4148590afebada386688f18773da617792bf2ef03ffc1e4cbd2b1d45b023e0ba"
 dependencies = [
  "serde_core",
+ "serde_derive",
 ]
 
 [[package]]

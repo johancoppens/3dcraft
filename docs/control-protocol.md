@@ -1,6 +1,18 @@
 # Control protocol and MCP
 
-> **Last updated:** 2026-10-12 · **Status:** specification, pre-M0. The headless server and MCP are built in M2, the desktop control server in M4. Method tables grow with the code; a method not listed here does not exist.
+> **Last updated:** 2026-10-12 · **Status:** the headless JSON-lines server (`craft3d-cli serve`) and the MCP server (`craft3d-cli mcp`) exist; the desktop control server is M4. The sections below describe the target; **what is implemented today is listed first and wins where they differ.**
+
+## Implemented today (2026-10-12)
+
+**JSON lines** (`craft3d-cli serve`): the envelope below, on stdin/stdout only (no TCP, so no auth). Methods: `engine.execute {command, params?}`, `engine.commands {filter?}` → `{"commands": [...]}`, `batch {steps: [{command, params?}], stopOnError?}` → `{completed, failed, results}`, `methods`. Everything else goes through `engine.execute` with a command id: there are no `doc.*`, `session.*` or `jobs.*` methods, no `wait`, and batch steps are commands only. Unknown keys are refused, also at the top level of a request. A batch is checked as a whole before its first step runs.
+
+**MCP** (`craft3d-cli mcp`): `initialize`, `ping`, `tools/list`, `tools/call`; protocol versions 2025-11-25, 2025-06-18, 2025-03-26 and 2024-11-05. Tools: `command_list`, `command_run`, `command_batch`, `doc_inspect` (returns `{"document": null}` when nothing is open), `doc_render_preview` (an image block plus a text block). No resources, no `doc_new`/`doc_open`/`doc_save`/`doc_export` tools (use `command_run` with `file.new`, `file.open`, `file.save`, `file.export`), no bridge mode. Tested against the specification, not yet against a real MCP client.
+
+**Commands** (22): `craft3d-cli commands` prints the registry with parameters and summaries; it is the source of truth.
+
+**Limits enforced:** 1 MiB per request line, 8 MiB per reply, 256 steps per batch, previews at most 2048 px on the long side, renders 16 to 4096 px per side. Not enforced yet: the triangle budget for tessellation.
+
+**`document.inspect`** returns the shape shown further down with these differences: feature parameters are under `"params"` with a `"type"` field; a failed feature carries `"error"`; bodies are listed per feature with `"feature"` and `"name"` and have no `"bbox"` yet; `"history"` holds the undo and redo labels as arrays; `"path"`, `"dirty"`, `"ok"` and `"document"` (its index) are added.
 
 Three transports, one command registry:
 

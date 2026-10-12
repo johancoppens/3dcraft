@@ -1,10 +1,10 @@
 # File formats
 
-> **Last updated:** 2026-10-12 · **Status:** mesh export (STL, 3MF, OBJ) works for tessellated meshes and is validated with FreeCAD; everything else is the plan.
+> **Last updated:** 2026-10-12 · **Status:** `.3dcraft` (version 1) and mesh export (STL, 3MF, OBJ) work and are tested; STEP is the plan.
 
 | Format | Read | Write | Carries | Crates | Milestone |
 |---|---|---|---|---|---|
-| `.3dcraft` (native) | yes | yes | The design history: units, tolerance, variables, formulas, sketches, constraints, features, their order; imported bodies; optional caches | `format` | M2 |
+| `.3dcraft` (native) | **yes (2026-10-12)** | **yes (2026-10-12)** | The design history: units, tolerance, variables, formulas, sketches, constraints, features, their order; imported bodies; optional caches | `format` | M2 |
 | STL (binary, ASCII) | later | **yes (2026-10-12)** | Triangles only; no units, no colour | `meshio`, `io` | M3 |
 | 3MF | later | **yes (2026-10-12)** | Indexed mesh per body, units, names, colours | `meshio`, `io` | M3 |
 | OBJ | later | **yes (2026-10-12)** | Indexed mesh, normals, groups per body/face | `meshio`, `io` | M3 |
@@ -13,6 +13,8 @@
 Formats live in standalone crates with their own format-level model and no workspace dependencies; the mapping to bodies and documents lives in `io` ([`architecture.md`](architecture.md) §3).
 
 ## Native format: `.3dcraft`
+
+**Implemented today (format version 1):** a ZIP of stored entries with one entry, `manifest.json` (below). Unknown extra entries are ignored on load and not preserved on save. `blobs/`, `thumb.png`, the directory layout, autosave and crash recovery are the plan, not built.
 
 A `.3dcraft` file is a ZIP of STORE (uncompressed) entries, or a directory with the same layout (useful in git and for debugging):
 
