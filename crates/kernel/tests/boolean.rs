@@ -532,20 +532,35 @@ fn what_is_not_supported_says_so() {
     let plate = boxed(k, [0.0, 0.0, 0.0], [4.0, 3.0, 2.0]);
     let reason = |a, b, op| match boolean(a, b, op, &tol) {
         Err(KernelError::Unsupported { reason, faces, .. }) => (reason, faces),
-        other => panic!("expected Unsupported, got {other:?}"),
+        other => panic!("expected Unsupported, got {:?}", other.map(|r| counts(&r))),
     };
-    // Other surfaces.
-    let ball = primitives::sphere(&Frame::WORLD, 1.0).unwrap();
-    let (why, faces) = reason(&plate, &ball, Union);
-    assert!(why.contains("not planar or cylindrical"), "{why}");
-    assert_eq!(faces, [(Operand::B, FaceId(0))]);
-    let cone = primitives::cone(&Frame::WORLD, 1.0, 2.0).unwrap();
-    assert!(
-        reason(&cone, &plate, Subtract)
-            .0
-            .contains("not planar or cylindrical")
+    // (Until 2026-10-13 this test also held cones and spheres, faces that
+    // touch along a line, and boxes that share only an edge to be
+    // unsupported. They are supported now: see boolean_surfaces.rs and
+    // boolean_contact.rs.)
+    // A freeform face: the top of a block as a flat Bézier patch.
+    let mut patched = plate.clone();
+    let corner = |x: f64, y: f64| Vec3::new(x, y, 2.0);
+    patched.faces[1].surface = Surface::Bezier(
+        craft3d_geom::BezierPatch::new(
+            1,
+            1,
+            vec![
+                corner(0.0, 0.0),
+                corner(0.0, 3.0),
+                corner(4.0, 0.0),
+                corner(4.0, 3.0),
+            ],
+        )
+        .unwrap(),
     );
-    // Crossing cylinders.
+    assert_eq!(craft3d_topo::check(&patched, &tol), []);
+    let ball = primitives::sphere(&Frame::WORLD, 1.0).unwrap();
+    let (why, faces) = reason(&patched, &ball, Union);
+    assert!(why.contains("freeform"), "{why}");
+    assert_eq!(faces, [(Operand::A, FaceId(1))]);
+    assert!(reason(&ball, &patched, Subtract).0.contains("freeform"));
+    // Crossing cylinders: until the general surface intersection is in.
     let upright = rod(k, [0.0, 0.0, -2.0], 1.0, 4.0);
     let lying = primitives::cylinder(
         &Frame::new(Vec3::new(-2.0, 0.0, 0.0), Vec3::X, Vec3::Y).unwrap(),
@@ -556,24 +571,23 @@ fn what_is_not_supported_says_so() {
     let (why, faces) = reason(&upright, &lying, Union);
     assert!(why.contains("not parallel"), "{why}");
     assert_eq!(faces, [(Operand::A, FaceId(0)), (Operand::B, FaceId(0))]);
-    // A cylinder lying on the plate touches it along a line; one standing
-    // against a wall likewise.
-    let on_top = primitives::cylinder(
-        &Frame::new(Vec3::new(1.0, 1.5, 2.5), Vec3::X, Vec3::Y).unwrap(),
-        0.5,
+    // Likewise a cone cut by a plane along its axis but not through it
+    // (a hyperbola), and a ball through the side of a cylinder.
+    let cone = primitives::cone(
+        &Frame::WORLD.at(Vec3::new(0.5, 1.5, 0.0)).unwrap(),
+        1.0,
         2.0,
     )
     .unwrap();
-    assert!(reason(&plate, &on_top, Union).0.contains("tangent"));
-    let wall = boxed(k, [1.0, -3.0, -1.0], [2.0, 3.0, 5.0]);
-    assert!(reason(&upright, &wall, Union).0.contains("tangent"));
-    // Kissing cylinders.
-    let beside = rod(k, [2.0, 0.0, -2.0], 1.0, 4.0);
-    assert!(reason(&upright, &beside, Union).0.contains("tangent"));
-    // Boxes that share only an edge.
-    let diagonal = boxed(k, [4.0, 3.0, 0.0], [5.0, 4.0, 2.0]);
-    let (why, _) = reason(&plate, &diagonal, Union);
-    assert!(why.contains("touch along an edge"), "{why}");
+    let (why, _) = reason(&plate, &cone, Union);
+    assert!(why.contains("not a line or a circle"), "{why}");
+    let side =
+        primitives::sphere(&Frame::WORLD.at(Vec3::new(1.0, 0.0, 0.0)).unwrap(), 0.75).unwrap();
+    assert!(
+        reason(&upright, &side, Subtract)
+            .0
+            .contains("not a line or a circle")
+    );
     // Features below the tolerance.
     let nearly = boxed(k, [4.0 - 1.2e-6, 0.0, 0.0], [6.0, 3.0, 2.0]);
     assert!(
@@ -581,6 +595,53 @@ fn what_is_not_supported_says_so() {
             .0
             .contains("edge of tolerance")
     );
+    // Faces that are neither on one plane nor safely on two: a gap or an
+    // overlap between half and twice the tolerance. Closer they are the
+    // same face, further they are apart.
+    // An overlap of a few tolerances is a sliver that cannot be told
+    // from nothing either: that is refused as well.
+    for (gap, unsure) in [
+        (0.4e-6, false),
+        (0.6e-6, true),
+        (1.0e-6, true),
+        (1.9e-6, true),
+        (2.1e-6, false),
+        (-0.4e-6, false),
+        (-0.6e-6, true),
+        (-1.0e-6, true),
+        (-2.1e-6, true),
+        (-20e-6, false),
+    ] {
+        {
+            let beside = boxed(k, [4.0 + gap, 0.5, 0.5], [6.0, 2.5, 1.5]);
+            match boolean(&plate, &beside, Union, &tol) {
+                Err(KernelError::Unsupported { reason, .. }) => {
+                    assert!(unsure, "{gap}: {reason}");
+                    assert!(reason.contains("edge of tolerance"), "{reason}");
+                }
+                Ok(result) => {
+                    assert!(!unsure, "{gap}");
+                    // One body when touching or overlapping, two apart.
+                    let apart = gap > 1e-6;
+                    assert_eq!(result.body.shells.len(), if apart { 2 } else { 1 });
+                    // Exact when apart or overlapping. As one face the
+                    // two are joined where they are, not moved: the
+                    // volume is right to the area in contact times the
+                    // gap.
+                    let volume = mass(&result.body).volume;
+                    let slack = if gap.abs() < 1e-6 {
+                        2.0 * gap.abs()
+                    } else {
+                        1e-9
+                    };
+                    // (What overlaps counts once.)
+                    let expected = 24.0 + (2.0 - gap.max(0.0)) * 2.0;
+                    assert!((volume - expected).abs() <= slack, "{gap}: {volume}");
+                }
+                Err(other) => panic!("{gap}: {other}"),
+            }
+        }
+    }
     // The message names the faces.
     let message = boolean(&upright, &lying, Union, &tol)
         .unwrap_err()
@@ -590,6 +651,7 @@ fn what_is_not_supported_says_so() {
         "boolean does not support this: cylinders whose axes are not parallel (the intersection \
          is a quartic curve) (face 0 of the first body, face 0 of the second body)"
     );
+    let diagonal = boxed(k, [4.0, 3.0, 0.0], [5.0, 4.0, 2.0]);
     assert_eq!(
         boolean(&plate, &diagonal, Intersect, &tol)
             .unwrap_err()

@@ -496,6 +496,13 @@ fn one_pair() {
         b.lo,
         b.hi
     );
+    if std::env::var_os("BOOLEAN_VERBOSE").is_some() {
+        for (name, body) in [("A", &a.body), ("B", &b.body)] {
+            for (i, face) in body.faces.iter().enumerate() {
+                println!("{name} face {i}: {:?}", face.surface);
+            }
+        }
+    }
     println!("A: {:?}", mass_properties(&a.body));
     println!("B: {:?}", mass_properties(&b.body));
     // A closer look than the run takes: a hundred times the samples.
@@ -506,6 +513,15 @@ fn one_pair() {
     println!("A ∩ B by sampling: {}", total / 100.0);
     let less = boolean(&a.body, &b.body, Subtract, &tol);
     let common = boolean(&a.body, &b.body, Intersect, &tol);
+    let plain = craft3d_kernel::boolean::BooleanOptions { merge: false };
+    describe(
+        "A ∪ B, not merged",
+        &craft3d_kernel::boolean::boolean_with(&a.body, &b.body, Union, &tol, &plain),
+    );
+    describe(
+        "A ∩ B, not merged",
+        &craft3d_kernel::boolean::boolean_with(&a.body, &b.body, Intersect, &tol, &plain),
+    );
     describe("A ∪ B", &boolean(&a.body, &b.body, Union, &tol));
     describe("A − B", &less);
     describe("A ∩ B", &common);

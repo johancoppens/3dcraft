@@ -124,3 +124,48 @@ impl Rng {
         lo + (hi - lo) * self.unit()
     }
 }
+
+fn at(k: f64, p: [f64; 3]) -> Vec3 {
+    Vec3::new(p[0] * k, p[1] * k, p[2] * k)
+}
+
+/// A ball about `center`, times `k`.
+pub fn ball(k: f64, center: [f64; 3], radius: f64) -> Body {
+    primitives::sphere(&Frame::WORLD.at(at(k, center)).unwrap(), radius * k).unwrap()
+}
+
+/// An upright cone standing on `base` with its apex `height` above it (or
+/// below it, for a negative height), times `k`.
+pub fn spike(k: f64, base: [f64; 3], radius: f64, height: f64) -> Body {
+    let frame = if height > 0.0 {
+        Frame::WORLD.at(at(k, base)).unwrap()
+    } else {
+        Frame::new(at(k, base), -Vec3::Z, Vec3::X).unwrap()
+    };
+    primitives::cone(&frame, radius * k, height.abs() * k).unwrap()
+}
+
+/// A ring about the vertical through `center`, times `k`.
+pub fn ring(k: f64, center: [f64; 3], major: f64, minor: f64) -> Body {
+    primitives::torus(
+        &Frame::WORLD.at(at(k, center)).unwrap(),
+        major * k,
+        minor * k,
+    )
+    .unwrap()
+}
+
+/// A cylinder lying along x from `base`, times `k`.
+pub fn log(k: f64, base: [f64; 3], radius: f64, length: f64) -> Body {
+    let frame = Frame::new(at(k, base), Vec3::X, Vec3::Y).unwrap();
+    primitives::cylinder(&frame, radius * k, length * k).unwrap()
+}
+
+/// How many faces of the body lie on each kind of surface, by name.
+pub fn kinds(body: &Body) -> std::collections::BTreeMap<&'static str, usize> {
+    let mut found = std::collections::BTreeMap::new();
+    for face in &body.faces {
+        *found.entry(face.surface.kind()).or_default() += 1;
+    }
+    found
+}
