@@ -347,6 +347,18 @@ fn lines_meet_spheres_cones_and_tori() {
             false,
             "line through the hole",
         );
+        // Dipping in by less than the tolerance is one touch, by more two
+        // crossings: the rule of the closed forms.
+        let dip = |depth: f64| line(f.point(0.0, 5.0 * s - depth * tol(s).linear, 0.0), f.x());
+        count(&dip(0.3), &ring, s, 1, true, "line grazing the torus");
+        count(
+            &dip(30.0),
+            &ring,
+            s,
+            2,
+            false,
+            "line just through the torus",
+        );
         count(
             &line(f.point(0.0, 9.0 * s, 0.0), f.x()),
             &ring,
