@@ -2,6 +2,9 @@
 //! result passes the checker and has the volume, area and counts that
 //! follow from the sizes.
 
+// Test code: a failure in a helper is a failed test.
+#![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
+
 mod boolean_common;
 
 use boolean_common::*;
@@ -642,4 +645,95 @@ fn bad_input_is_an_error_not_a_crash() {
     ));
     let same = boolean(&plate, &empty, Union, &tol).unwrap();
     assert_eq!(same.body.faces.len(), 6);
+}
+
+/// A plate with a grid of `n` by `n` round holes, by subtracting cylinders
+/// one at a time.
+fn drilled(n: usize, k: f64, flush: bool) -> craft3d_topo::Body {
+    let side = 2.0 * n as f64;
+    let mut plate = boxed(k, [0.0, 0.0, 0.0], [side, side, 1.0]);
+    for i in 0..n {
+        for j in 0..n {
+            let (z, h) = if flush { (0.0, 1.0) } else { (-0.5, 2.0) };
+            let cutter = rod(k, [2.0 * i as f64 + 1.0, 2.0 * j as f64 + 1.0, z], 0.5, h);
+            plate = solve(&plate, &cutter, Subtract, k).body;
+        }
+    }
+    plate
+}
+
+#[test]
+fn drilling_holes_gives_the_plate_extruded_with_holes() {
+    use craft3d_kernel::extrude::extrude;
+    use craft3d_kernel::profile::{Curve2, SketchCurve, detect_profiles};
+    for k in SCALES {
+        let n = 3;
+        let side = 2.0 * n as f64 * k;
+        let mut curves = Vec::new();
+        let corners = [[0.0, 0.0], [side, 0.0], [side, side], [0.0, side]];
+        for i in 0..4 {
+            curves.push(SketchCurve {
+                id: i as u64 + 1,
+                curve: Curve2::Line {
+                    start: corners[i],
+                    end: corners[(i + 1) % 4],
+                },
+            });
+        }
+        for i in 0..n {
+            for j in 0..n {
+                curves.push(SketchCurve {
+                    id: 10 + (i * n + j) as u64,
+                    curve: Curve2::Circle {
+                        center: [(2.0 * i as f64 + 1.0) * k, (2.0 * j as f64 + 1.0) * k],
+                        radius: 0.5 * k,
+                    },
+                });
+            }
+        }
+        let tol = tolerance(k);
+        let profiles = detect_profiles(&curves, &tol).unwrap();
+        let extruded = extrude(&profiles, &Frame::WORLD, 0.0, k, &tol)
+            .unwrap()
+            .body;
+        let expected = mass(&extruded);
+        for flush in [false, true] {
+            let plate = drilled(n, k, flush);
+            let m = mass(&plate);
+            assert_close(m.volume, expected.volume, "volume");
+            assert_close(m.area, expected.area, "area");
+            assert!(m.centroid.unwrap().distance(expected.centroid.unwrap()) < 1e-9 * k);
+            assert_eq!(genus(&plate), genus(&extruded));
+            assert_eq!(genus(&plate), Some(9));
+            assert_eq!(plate.faces.len(), extruded.faces.len());
+            assert_eq!(plate.edges.len(), extruded.edges.len());
+            assert_eq!(plate.vertices.len(), extruded.vertices.len());
+            assert_eq!(plate.shells.len(), 1);
+        }
+        // And in closed form.
+        let holes = 9.0 * PI * 0.25;
+        assert_close(expected.volume, (36.0 - holes) * k * k * k, "volume");
+    }
+}
+
+/// Timing: `cargo test --release -p craft3d-kernel --test boolean --
+/// --ignored --nocapture a_hundred_holes`.
+#[test]
+#[ignore = "a benchmark; run in release"]
+fn a_hundred_holes() {
+    let start = std::time::Instant::now();
+    let plate = drilled(10, 1.0, false);
+    let through = start.elapsed();
+    let start = std::time::Instant::now();
+    let flush = drilled(10, 1.0, true);
+    println!(
+        "100 holes one by one: {through:?} (cutters through), {:?} (cutters flush); {} faces",
+        start.elapsed(),
+        plate.faces.len()
+    );
+    for body in [&plate, &flush] {
+        assert_close(mass(body).volume, 400.0 - 25.0 * PI, "volume");
+        assert_eq!(genus(body), Some(100));
+        assert_eq!(body.faces.len(), 106);
+    }
 }

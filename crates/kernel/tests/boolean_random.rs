@@ -8,6 +8,9 @@
 //! and for every other pair the volume of the intersection is estimated by
 //! sampling points against the operands' own definitions.
 
+// Test code: a failure in a helper is a failed test.
+#![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
+
 mod boolean_common;
 
 use boolean_common::*;
