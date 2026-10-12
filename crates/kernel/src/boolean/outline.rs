@@ -215,6 +215,32 @@ fn crossing(seg: &Seg, frame: &Frame, radius: f64, u: f64) -> Result<Option<f64>
     }
 }
 
+/// An angle as far as can be from the ends of all pieces of the loops: the
+/// middle of the widest gap between them.
+pub(super) fn clear_angle(surface: &Surface, loops: &[&[Seg]]) -> f64 {
+    let Surface::Cylinder(cylinder) = surface else {
+        return 0.0;
+    };
+    let mut angles: Vec<f64> = loops
+        .iter()
+        .flat_map(|l| l.iter())
+        .flat_map(|seg| [seg.a, seg.b])
+        .map(|p| angle_height(cylinder.frame(), p).0)
+        .collect();
+    angles.sort_by(f64::total_cmp);
+    let (Some(&first), Some(&last)) = (angles.first(), angles.last()) else {
+        return 0.0;
+    };
+    // The gap across the seam first, then those between neighbours.
+    let mut best = (first + TAU - last, wrap(last + 0.5 * (first + TAU - last)));
+    for (a, b) in angles.iter().zip(angles.iter().skip(1)) {
+        if b - a > best.0 {
+            best = (b - a, a + 0.5 * (b - a));
+        }
+    }
+    best.1
+}
+
 /// The highest crossing of a loop with the ruling at angle `u`.
 pub(super) fn top_crossing(
     surface: &Surface,
@@ -316,7 +342,8 @@ pub(super) fn side_of(
     p: Vec3,
     tol: f64,
 ) -> Result<Side, Reason> {
-    if clearance(loops, p) <= tol {
+    let clear = clearance(loops, p);
+    if clear <= tol {
         return Ok(Side::On);
     }
     match surface {
@@ -336,13 +363,28 @@ pub(super) fn side_of(
         Surface::Cylinder(cylinder) => {
             let frame = cylinder.frame();
             let (u, v) = angle_height(frame, p);
-            let mut above = 0_usize;
-            for seg in loops.iter().flatten() {
-                if crossing(seg, frame, cylinder.radius(), u)?.is_some_and(|at| at > v) {
-                    above += 1;
+            // The point may be in line with a ruling of the boundary (it
+            // often is: on the continuation of an edge). The two ends of
+            // a ruling do not have the same angle to the last bit, so
+            // which pieces span a ruling through them is not reliable.
+            // Everything within `clear` of the point is on the same side
+            // as the point: ask on either side of it, halfway there.
+            let nudge = (0.5 * clear / cylinder.radius()).min(0.5);
+            let mut sides = [false, false];
+            for (side, u) in sides.iter_mut().zip([wrap(u - nudge), wrap(u + nudge)]) {
+                let mut above = 0_usize;
+                for seg in loops.iter().flatten() {
+                    if crossing(seg, frame, cylinder.radius(), u)?.is_some_and(|at| at > v) {
+                        above += 1;
+                    }
                 }
+                *side = above % 2 == 1;
             }
-            Ok(if above % 2 == 1 { Side::In } else { Side::Out })
+            match sides {
+                [true, true] => Ok(Side::In),
+                [false, false] => Ok(Side::Out),
+                _ => Err(TOO_CLOSE),
+            }
         }
         _ => Err(NOT_PLANE_OR_CYLINDER),
     }

@@ -128,9 +128,9 @@ const AMBIGUOUS: Reason =
     "a curve that is partly on and partly off a face boundary (at the edge of tolerance)";
 const INCONSISTENT: Reason = "an imprinted curve that does not fit the edges it should coincide with (at the edge of tolerance)";
 const TANGENT_SURFACES: Reason = "two faces touch along a curve without crossing (tangent contact)";
-const TANGENT_EDGE: Reason = "an edge touches a face without crossing it (tangent contact)";
 const NON_MANIFOLD: Reason =
     "the result would have an edge shared by more than two faces (the bodies touch along an edge)";
+const PINCHED: Reason = "the result would touch itself at a point (the bodies touch at a vertex)";
 const ON_A_FACE: Reason = "a piece of a face lies within tolerance of a face it is not coincident with (at the edge of tolerance)";
 const NO_RAY: Reason = "could not tell inside from outside: every ray tried grazes the other body";
 const LOST: Reason = "the boolean lost track of an entity; this is a bug";
@@ -415,13 +415,11 @@ struct Cut {
     b_edge: Option<EdgeId>,
 }
 
-/// Adds to `cuts` where the edges of `face` of `own` meet `surface`, the
-/// surface of `other_face`.
+/// Adds to `cuts` where the edges of `face` of `own` meet `surface`.
 fn edge_cuts(
     own: &Solid,
     face: usize,
     surface: &Surface,
-    other: &Outline,
     named: &[(Operand, FaceId)],
     tolerance: &Tolerance,
     cuts: &mut Vec<Cut>,
@@ -473,14 +471,10 @@ fn edge_cuts(
                     if locate(&edge.curve, edge.range, hit.point, tol).is_none() {
                         continue;
                     }
-                    if hit.tangent {
-                        let side = side_of(&other.surface, &other.loops, hit.point, tol)
-                            .map_err(|r| Stop::of(r).at(named))?;
-                        if side != Side::Out {
-                            return Err(Stop::of(TANGENT_EDGE).at(named));
-                        }
-                        continue;
-                    }
+                    // A touch is a cut like any other: the stretches on
+                    // either side of it are judged on their own, and
+                    // curves that leave a vertex in one direction are
+                    // refused when the regions are made.
                     cut(hit.point, true);
                 }
             }
@@ -491,9 +485,15 @@ fn edge_cuts(
 
 /// The stretches of `curve`, an intersection curve of the surfaces of face
 /// `fa` of A and `fb` of B, that are within both faces.
+///
+/// `touching` says the surfaces touch along the curve without crossing. A
+/// stretch along the boundary of either face is then an edge like any
+/// other (a smooth edge of one body lying on a face of the other); one
+/// inside both is two faces in contact along a line, which is refused.
 #[allow(clippy::too_many_arguments)]
 fn clip(
     curve: &Curve3,
+    touching: bool,
     a: &Solid,
     fa: usize,
     b: &Solid,
@@ -508,8 +508,8 @@ fn clip(
         return Err(Stop::of(LOST));
     };
     let mut found = Vec::new();
-    edge_cuts(a, fa, &ob.surface, ob, &named, tolerance, &mut found)?;
-    edge_cuts(b, fb, &oa.surface, oa, &named, tolerance, &mut found)?;
+    edge_cuts(a, fa, &ob.surface, &named, tolerance, &mut found)?;
+    edge_cuts(b, fb, &oa.surface, &named, tolerance, &mut found)?;
 
     // Those on this curve (the surfaces may cross in another one too), in
     // order along it, each place once.
@@ -612,6 +612,9 @@ fn clip(
         if !keep {
             continue;
         }
+        if touching && inside == [true, true] {
+            return Err(Stop::of(TANGENT_SURFACES).at(&named));
+        }
         let start = vertices.find_or_add(from.point).map_err(|s| s.at(&named))?;
         let end = vertices.find_or_add(to.point).map_err(|s| s.at(&named))?;
         let whole = closed && cuts.len() <= 1;
@@ -691,23 +694,33 @@ fn section(
                         .push((fa, same_normal));
                 }
                 SurfaceIntersection::Tangent(curves) => {
-                    // Refused when the line of contact may reach both
-                    // faces.
                     for curve in curves {
-                        let reaches = match &curve {
-                            Curve3::Line(l) => [box_a, box_b]
-                                .iter()
-                                .all(|b| line_meets_box(l.origin(), l.direction(), b, 2.0 * tol)),
-                            _ => true,
-                        };
-                        if reaches {
-                            return Err(Stop::of(TANGENT_SURFACES).at(&named));
-                        }
+                        clip(
+                            &curve,
+                            true,
+                            a,
+                            fa,
+                            b,
+                            fb,
+                            vertices,
+                            tolerance,
+                            &mut sections,
+                        )?;
                     }
                 }
                 SurfaceIntersection::Curves(curves) => {
                     for curve in curves {
-                        clip(&curve, a, fa, b, fb, vertices, tolerance, &mut sections)?;
+                        clip(
+                            &curve,
+                            false,
+                            a,
+                            fa,
+                            b,
+                            fb,
+                            vertices,
+                            tolerance,
+                            &mut sections,
+                        )?;
                     }
                 }
             }
@@ -1090,6 +1103,35 @@ fn sew(kept: Vec<Kept>, arcs: &Arcs, vertices: &Vertices) -> Result<BooleanResul
         }
         body.add_face(region.surface, region.reversed, loops);
         faces.push(region.source);
+    }
+
+    // Around a vertex of a manifold the faces form one fan: going from an
+    // edge end across a face corner to the next edge end reaches all of
+    // them. Edge ends are numbered 2 × edge, plus 1 for the end.
+    let end_of = |coedge: &Coedge, leaving: bool| {
+        2 * coedge.edge.0 as usize + usize::from(coedge.reversed == leaving)
+    };
+    let mut fans: Vec<usize> = (0..2 * body.edges.len()).collect();
+    for loop_ in &body.loops {
+        let after = loop_.coedges.iter().cycle().skip(1);
+        for (arriving, leaving) in loop_.coedges.iter().zip(after) {
+            let (x, y) = (
+                root(&mut fans, end_of(arriving, false)),
+                root(&mut fans, end_of(leaving, true)),
+            );
+            if let Some(slot) = fans.get_mut(x.max(y)) {
+                *slot = x.min(y);
+            }
+        }
+    }
+    let mut fan_of: BTreeMap<VertexId, usize> = BTreeMap::new();
+    for (index, edge) in body.edges.iter().enumerate() {
+        for (vertex, end) in [(edge.start, 2 * index), (edge.end, 2 * index + 1)] {
+            let fan = root(&mut fans, end);
+            if *fan_of.entry(vertex).or_insert(fan) != fan {
+                return Err(Stop::of(PINCHED));
+            }
+        }
     }
 
     // Shells: faces connected through edges, in the order of their first

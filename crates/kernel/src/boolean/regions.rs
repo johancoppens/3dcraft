@@ -14,7 +14,9 @@
 //! axis: such loops are sorted along the axis and paired, lower with upper,
 //! into bands.
 
-use super::outline::{Seg, Side, side_of, signed_area, surface_normal, top_crossing, turns};
+use super::outline::{
+    Seg, Side, clear_angle, side_of, signed_area, surface_normal, top_crossing, turns,
+};
 use super::{Arc, NEAR, Reason};
 use craft3d_geom::Surface;
 use craft3d_math::{Frame, Vec3};
@@ -238,9 +240,15 @@ fn group(
     // height (the two sides of one imprinted circle) the upper rim of the
     // band below comes first.
     let mut rims: Vec<(f64, i32, usize)> = Vec::new();
+    let winding: Vec<&[Seg]> = measured
+        .iter()
+        .filter(|m| m.around != 0)
+        .map(|m| m.segs.as_slice())
+        .collect();
+    let ruling = clear_angle(surface, &winding);
     for (index, m) in measured.iter().enumerate() {
         if m.around != 0 {
-            let height = top_crossing(surface, &m.segs, 0.0)?.ok_or(UNBOUNDED)?;
+            let height = top_crossing(surface, &m.segs, ruling)?.ok_or(UNBOUNDED)?;
             rims.push((height, m.around, index));
         }
     }
