@@ -631,3 +631,246 @@ pub(super) fn line_meets_box(origin: Vec3, direction: Vec3, b: &Bbox3, margin: f
     }
     enter <= leave
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use craft3d_geom::{Circle, Cylinder, Line, Plane};
+
+    fn line(a: Vec3, b: Vec3, reversed: bool) -> Seg {
+        Seg {
+            curve: Curve3::Line(Line::through(a, b).unwrap()),
+            range: (0.0, a.distance(b)),
+            a,
+            b,
+            closed: false,
+            reversed,
+        }
+    }
+
+    fn arc(frame: Frame, radius: f64, range: (f64, f64), reversed: bool) -> Seg {
+        let curve = Curve3::Circle(Circle::new(frame, radius).unwrap());
+        Seg {
+            a: curve.eval(range.0),
+            b: curve.eval(range.1),
+            closed: range.1 - range.0 >= TAU,
+            curve,
+            range,
+            reversed,
+        }
+    }
+
+    /// A 4 by 2 rectangle in the plane of `frame` with a half-disc bulging
+    /// out of its right side and a round hole.
+    fn plate(frame: Frame) -> (Surface, Vec<Vec<Seg>>) {
+        let p = |x: f64, y: f64| frame.point(x, y, 0.0);
+        let bulge = frame.at(p(4.0, 1.0)).unwrap();
+        let hole = frame.at(p(1.0, 1.0)).unwrap();
+        let outer = vec![
+            line(p(0.0, 0.0), p(4.0, 0.0), false),
+            arc(bulge, 1.0, (-FRAC_PI_2, FRAC_PI_2), false),
+            line(p(4.0, 2.0), p(0.0, 2.0), false),
+            line(p(0.0, 2.0), p(0.0, 0.0), false),
+        ];
+        let inner = vec![arc(hole, 0.5, (0.0, TAU), true)];
+        (Surface::Plane(Plane::new(frame)), vec![outer, inner])
+    }
+
+    fn tilted() -> Frame {
+        Frame::new(
+            Vec3::new(3.0, -1.0, 2.0),
+            Vec3::new(0.2, -0.5, 1.0),
+            Vec3::new(1.0, 0.3, 0.0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn inside_on_and_outside_of_a_planar_outline() {
+        for frame in [Frame::WORLD, tilted()] {
+            let (surface, loops) = plate(frame);
+            let side = |x: f64, y: f64| side_of(&surface, &loops, frame.point(x, y, 0.0), 1e-6);
+            for (x, y) in [(2.5, 1.0), (4.9, 1.0), (0.1, 0.1), (1.0, 1.6), (4.5, 1.8)] {
+                assert_eq!(side(x, y), Ok(Side::In), "({x}, {y})");
+            }
+            // In the hole, beyond the edges, beside the bulge, and level
+            // with vertices (which a ray would have to step around).
+            for (x, y) in [
+                (1.0, 1.0),
+                (1.2, 0.8),
+                (-0.5, 1.0),
+                (5.5, 1.0),
+                (4.8, 1.9),
+                (6.0, 0.0),
+                (-1.0, 2.0),
+                (2.0, -3.0),
+            ] {
+                assert_eq!(side(x, y), Ok(Side::Out), "({x}, {y})");
+            }
+            for (x, y) in [(2.0, 0.0), (5.0, 1.0), (1.5, 1.0), (0.0, 0.0), (0.0, 2.0)] {
+                assert_eq!(side(x, y), Ok(Side::On), "({x}, {y})");
+            }
+            // A hair inside the boundary is inside, at any distance scale.
+            assert_eq!(side(2.0, 3e-6), Ok(Side::In));
+            assert_eq!(side(4.999_997, 1.0), Ok(Side::In));
+            assert_eq!(side(1.500_003, 1.0), Ok(Side::In));
+            assert_eq!(side(1.499_997, 1.0), Ok(Side::Out));
+            // Counter-clockwise outside, clockwise hole; exact areas.
+            let area = signed_area(&surface, false, &loops[0]).unwrap();
+            assert!((area - (8.0 + FRAC_PI_2)).abs() < 1e-12, "{area}");
+            let hole = signed_area(&surface, false, &loops[1]).unwrap();
+            assert!((hole + FRAC_PI_4).abs() < 1e-12, "{hole}");
+            assert!(signed_area(&surface, true, &loops[0]).unwrap() < 0.0);
+            let outline = Outline {
+                surface: surface.clone(),
+                reversed: false,
+                loops: loops.clone(),
+            };
+            let inside = interior_point(&outline, 1e-6, 4e-6).unwrap();
+            assert_eq!(side_of(&surface, &loops, inside, 1e-6), Ok(Side::In));
+            assert!(clearance(&loops, inside) >= 4e-6);
+        }
+    }
+
+    /// A patch of a cylinder between two rulings and two circles, with a
+    /// step in its upper rim: the rulings of the step are in line with
+    /// points further up and down the cylinder.
+    fn patch(frame: Frame) -> (Surface, Vec<Vec<Seg>>) {
+        let r = 2.0;
+        let at = |u: f64, v: f64| frame.point(r * u.cos(), r * u.sin(), v);
+        let ring = |v: f64| frame.at(frame.point(0.0, 0.0, v)).unwrap();
+        let outer = vec![
+            arc(ring(0.0), r, (0.5, 2.5), false),
+            line(at(2.5, 0.0), at(2.5, 2.0), false),
+            arc(ring(2.0), r, (1.5, 2.5), true),
+            line(at(1.5, 1.0), at(1.5, 2.0), true),
+            arc(ring(1.0), r, (0.5, 1.5), true),
+            line(at(0.5, 0.0), at(0.5, 1.0), true),
+        ];
+        (
+            Surface::Cylinder(Cylinder::new(frame, r).unwrap()),
+            vec![outer],
+        )
+    }
+
+    #[test]
+    fn inside_on_and_outside_of_a_cylindrical_outline() {
+        for frame in [Frame::WORLD, tilted()] {
+            let (surface, loops) = patch(frame);
+            let r = 2.0;
+            let side = |u: f64, v: f64| {
+                let p = frame.point(r * u.cos(), r * u.sin(), v);
+                side_of(&surface, &loops, p, 1e-6)
+            };
+            for (u, v) in [
+                (1.0, 0.5),
+                (2.0, 1.5),
+                (2.0, 0.5),
+                (1.5, 0.5),
+                (2.5 - 1e-5, 1.0),
+            ] {
+                assert_eq!(side(u, v), Ok(Side::In), "({u}, {v})");
+            }
+            // Beside, above and below it; on the other side of the
+            // cylinder; and in line with each of the three rulings.
+            for (u, v) in [
+                (1.0, 1.5),
+                (0.2, 0.5),
+                (3.0, 0.5),
+                (4.5, 0.5),
+                (1.0, -0.5),
+                (2.0, 2.5),
+                (1.5, 2.5),
+                (1.5, -1.0),
+                (0.5, 1.5),
+                (0.5, -1.0),
+                (2.5, 3.0),
+                (2.5, -0.5),
+            ] {
+                assert_eq!(side(u, v), Ok(Side::Out), "({u}, {v})");
+            }
+            for (u, v) in [(1.0, 0.0), (1.5, 1.5), (2.5, 1.0), (2.0, 2.0), (0.5, 0.0)] {
+                assert_eq!(side(u, v), Ok(Side::On), "({u}, {v})");
+            }
+            assert_eq!(turns(&surface, &loops[0]), Ok(0));
+            // In (angle, height) times the radius: 2 x 1 and 1 x 1, by r.
+            let area = signed_area(&surface, false, &loops[0]).unwrap();
+            assert!((area - 6.0).abs() < 1e-12, "{area}");
+            assert!(signed_area(&surface, true, &loops[0]).unwrap() < 0.0);
+            let outline = Outline {
+                surface: surface.clone(),
+                reversed: false,
+                loops: loops.clone(),
+            };
+            let inside = interior_point(&outline, 1e-6, 4e-6).unwrap();
+            assert_eq!(side_of(&surface, &loops, inside, 1e-6), Ok(Side::In));
+
+            // The whole wall between two circles: each rim goes around
+            // once, the lower one with the wall above it.
+            let ring = |v: f64| frame.at(frame.point(0.0, 0.0, v)).unwrap();
+            let wall = vec![
+                vec![arc(ring(0.0), r, (0.0, TAU), false)],
+                vec![arc(ring(3.0), r, (0.0, TAU), true)],
+            ];
+            assert_eq!(turns(&surface, &wall[0]), Ok(1));
+            assert_eq!(turns(&surface, &wall[1]), Ok(-1));
+            for u in [0.0_f64, 1.0, 3.0, 6.0] {
+                let p = |v: f64| frame.point(r * u.cos(), r * u.sin(), v);
+                assert_eq!(side_of(&surface, &wall, p(1.0), 1e-6), Ok(Side::In));
+                assert_eq!(side_of(&surface, &wall, p(-1.0), 1e-6), Ok(Side::Out));
+                assert_eq!(side_of(&surface, &wall, p(4.0), 1e-6), Ok(Side::Out));
+                assert_eq!(side_of(&surface, &wall, p(3.0), 1e-6), Ok(Side::On));
+            }
+            let top = |loop_: &[Seg]| top_crossing(&surface, loop_, 2.0).unwrap().unwrap();
+            assert!((top(&wall[1]) - 3.0).abs() < 1e-12);
+            assert!((top(&loops[0]) - 2.0).abs() < 1e-12);
+            assert_eq!(top_crossing(&surface, &loops[0], 4.0), Ok(None));
+        }
+    }
+
+    #[test]
+    fn the_nearest_point_of_a_long_ellipse_arc_is_the_nearest() {
+        // 40 to 1: around its tips the curve doubles back on itself.
+        let ellipse = Ellipse::new(tilted(), 20.0, 0.5).unwrap();
+        let curve = Curve3::Ellipse(ellipse);
+        let mut seed = 7_u64;
+        let mut unit = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for _ in 0..200 {
+            let t0 = unit() * TAU;
+            let range = (t0, t0 + 0.05 + unit() * 3.0);
+            let p = tilted().point(
+                (unit() - 0.5) * 44.0,
+                (unit() - 0.5) * 2.0,
+                (unit() - 0.5) * 0.5,
+            );
+            let (t, d) = nearest(&curve, range, p).unwrap();
+            assert!(t >= range.0 && t <= range.1);
+            assert!((curve.eval(t).distance(p) - d).abs() < 1e-12);
+            let mut brute = f64::INFINITY;
+            for k in 0..=20_000 {
+                let s = range.0 + (range.1 - range.0) * f64::from(k) / 20_000.0;
+                brute = brute.min(curve.eval(s).distance(p));
+            }
+            assert!(d <= brute + 1e-12, "{d} is not the nearest: {brute}");
+            assert!(d >= brute - 1e-2, "{d} is closer than any sample: {brute}");
+        }
+        // And on a circle or a line the range is respected too.
+        let circle = Curve3::Circle(Circle::new(Frame::WORLD, 1.0).unwrap());
+        let (t, d) = nearest(&circle, (0.0, 1.0), Vec3::new(-2.0, 0.1, 0.0)).unwrap();
+        assert_eq!(t, 1.0);
+        assert!((d - circle.eval(1.0).distance(Vec3::new(-2.0, 0.1, 0.0))).abs() < 1e-15);
+        assert_eq!(
+            locate(&circle, (5.0, 7.0), Vec3::new(1.0, 0.0, 0.0), 1e-6),
+            Some(TAU)
+        );
+        assert_eq!(
+            locate(&circle, (0.5, 1.0), Vec3::new(1.0, 0.0, 0.0), 1e-6),
+            None
+        );
+    }
+}

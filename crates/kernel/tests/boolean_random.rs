@@ -233,8 +233,10 @@ fn random_shape(rng: &mut Rng, placement: Placement, shared: &Frame, k: f64) -> 
     }
 }
 
-/// The volume common to both shapes, by sampling: the estimate and three
-/// standard deviations of it.
+/// The volume common to both shapes, by sampling: the estimate and five
+/// standard deviations of it (three would fail a correct pair now and then
+/// over the thousands of pairs of a long run).
+
 fn sampled_overlap(a: &Shape, b: &Shape, rng: &mut Rng) -> (f64, f64) {
     let lo = a.lo.max(b.lo);
     let hi = a.hi.min(b.hi);
@@ -259,7 +261,7 @@ fn sampled_overlap(a: &Shape, b: &Shape, rng: &mut Rng) -> (f64, f64) {
     // With no sample inside the overlap may still be a sliver.
     (
         cell * fraction,
-        cell * (3.0 * deviation + 3.0 / SAMPLES as f64),
+        cell * (5.0 * deviation + 5.0 / SAMPLES as f64),
     )
 }
 
@@ -497,6 +499,12 @@ fn one_pair() {
     );
     println!("A: {:?}", mass_properties(&a.body));
     println!("B: {:?}", mass_properties(&b.body));
+    // A closer look than the run takes: a hundred times the samples.
+    let mut total = 0.0;
+    for _ in 0..100 {
+        total += sampled_overlap(&a, &b, &mut rng).0;
+    }
+    println!("A ∩ B by sampling: {}", total / 100.0);
     let less = boolean(&a.body, &b.body, Subtract, &tol);
     let common = boolean(&a.body, &b.body, Intersect, &tol);
     describe("A ∪ B", &boolean(&a.body, &b.body, Union, &tol));
