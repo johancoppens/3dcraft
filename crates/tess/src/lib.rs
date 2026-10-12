@@ -10,10 +10,19 @@
 mod body;
 mod cdt;
 mod edge;
+mod exact;
 mod face;
+mod intersections;
+mod selfcheck;
 mod weld;
 
 pub use body::{tessellate_body, tessellate_body_with_threads};
+pub use intersections::{
+    Crossing, CrossingKind, SelfIntersections, self_intersection_report, self_intersections,
+};
+pub use selfcheck::{
+    FaceCrossing, SelfCheck, SelfCheckParams, ShellDefect, ShellFinding, body_self_intersections,
+};
 pub use weld::Welded;
 
 use craft3d_geom::BezierPatch;

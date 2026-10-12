@@ -1,6 +1,6 @@
 # Testing: the AI loop and its oracles
 
-> **Last updated:** 2026-10-12 · **Status:** the loop is in use. In place: oracle 1 (closed-form mass properties, `testkit::solids`), oracle 2 (validity checker with seeded defects), oracle 3 (boolean identities on seeded random pairs), oracle 4 (tessellation against the exact body, for patches), oracle 6 (constraint solver), oracle 7 (CPU side) and oracle 8 (FreeCAD). The rest is design
+> **Last updated:** 2026-10-12 · **Status:** the loop is in use. In place: oracle 1 (closed-form mass properties, `testkit::solids`), oracle 2 (validity checker with seeded defects), oracle 3 (boolean identities on seeded random pairs), oracle 4 (tessellation against the exact body, for patches), oracle 6 (constraint solver), oracle 7 (CPU side), oracle 8 (FreeCAD) and oracle 9 (no body passes through itself). The rest is design
 
 3DCraft is written by AI agents while the developer watches. That only works if an agent can tell, without a human, whether what it built is right. This document says how.
 
@@ -101,6 +101,22 @@ In place since M4 for the GPU half (`crates/gpu/tests`). `parity.rs` renders 75 
 ### Oracle 8: external tools (optional, never a dependency)
 
 For file formats the final judge is another program. Where available on the machine, test helpers may shell out to an independent tool to validate an exported file and read back its volume and bounding box (for example an open-source CAD kernel's command line for STEP, a slicer or mesh checker for 3MF/STL). These tests are opt-in (`#[ignore]`, run by `cargo xtask freecad`), fail with a clear message when opted in without the tool, and the tool is never linked, vendored or read for implementation ideas. In use since the first mesh export: on its first run FreeCAD's point count exposed near-duplicate vertices on collapsed and reversed patch edges that our own tests had not caught. FreeCAD is the approved tool ([`decisions.md`](decisions.md)); tests find it through the `CRAFT3D_FREECAD` environment variable.
+
+### Oracle 9: no body passes through itself
+
+`topo::check` (oracle 2) looks at how a body hangs together, not at whether two of its faces pass through each other or two of its shells overlap: `topo::merge` of two overlapping blocks passes it. `tess::body_self_intersections` looks, on the mesh and without the kernel's help ([`architecture.md`](architecture.md) §5.2 and §6), and every body an operation returns must come out of it without a *certain* finding (`SelfCheck::is_clean`).
+
+What "certain" means is stated, not tuned. The mesh of a face is within the chordal tolerance `c` of the face (0 for a plane bounded by straight edges), and the face is within the modelling tolerance `t` of its geometry, so the meshes of two faces that only touch can go through each other by `c + c + 2t` at most. Deeper than that margin, the faces themselves cross. Depth is how far each surface could be moved along its own normal without undoing the crossing, measured on the mesh. What stays within the margin after two refinements of the mesh is reported as marginal: contact, or an overlap too shallow to tell from it.
+
+In place (`crates/testkit/tests/self_intersection.rs`, there because `kernel` and `tess` share a layer): the fourteen reference solids and the pipe elbow, the primitives, extrusions with holes and tangent faces, moved, mirrored and merged bodies, every boolean of the scenarios of `crates/kernel/tests/boolean.rs` (549 bodies) and of a seeded random run (the generator of oracle 3; 1578 bodies in the test run, `-- --ignored random_booleans_long_run` for 1000 pairs per placement and scale) must be without certain findings; today they are without any. Seeded defects that must be caught, at scales 1e-3, 1 and 1e6: a face pushed through the opposite face and through a neighbour, shells that overlap partly (block, cylinder, sphere, torus), a shell wholly inside another, a cavity outside every shell or inside another cavity, a body inside out, faces lying on each other facing the same way and facing each other, and a crossing three tolerances deep where one tolerance deep is within the margin. The search itself (`crates/tess/tests/self_intersections.rs`) is held to a brute-force search with plain arithmetic on random triangles, to the same answer on any number of threads, and to the known crossings of the Utah teapot (handle and spout go into the body). Sixteen breakages seeded into the detector were each caught by these tests.
+
+What it cannot see, so that a clean result is not read as more than it is:
+
+- **Shallow overlaps of curved faces.** After the refinements the chordal tolerance is 1/16000 of the body's diagonal; an overlap of curved faces shallower than about six times that (four in most places) stays marginal.
+- **Curved faces lying on each other.** A pin in a hole of its own size that is not united with it is caught when both happen to be meshed alike (their triangles are then coplanar, which no approximation brings about) and is only marginal when the pin is turned about its axis.
+- **Faces lying on each other in a plane that is not a coordinate plane,** where rounding leaves them a hair out of one plane: they weave through each other by a rounding error, which is marginal at best. Exactly coplanar faces (along the axes, or with corners at the same coordinates) are caught.
+- **Contact without overlap** (shells touching in a face's edge, a vertex on a face) is not a finding beyond a marginal one; `topo::check` and the boolean's own refusals cover non-manifold results.
+- **Anything the tessellator cannot mesh** is an error, not a verdict.
 
 ## Test kinds per crate
 
