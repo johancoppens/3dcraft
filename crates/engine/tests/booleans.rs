@@ -320,6 +320,93 @@ fn a_pattern_of_cutters_cuts_a_row_of_holes() {
 }
 
 #[test]
+fn scenario_a_cut_splits_or_removes_a_referenced_face() {
+    // The naming suite through booleans: a sketch on the top of a cut
+    // plate, then the cut changes under it.
+    let mut s = plate();
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Cutter", "size": [4, 10, 4], "position": [28, 0, 4]}),
+    );
+    boolean(&mut s, "subtract", "Plate", "Cutter", "Part");
+    // A notch 4 wide, 10 long, 4 deep in the front edge of the top.
+    assert_volume(&mut s, "Part", 19200.0 - 160.0);
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"name": "Seat", "face": "F4:copy(0)/F2:endCap(e5,e6,e7,e8)"}),
+    );
+    run(
+        &mut s,
+        "sketch.circle",
+        json!({"sketch": "Seat", "center": [10, 30], "radius": 2}),
+    );
+    run(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "Seat", "distance": 4, "name": "Boss"}),
+    );
+    let boss_at = |s: &mut Session| {
+        let boss = body(s, "Boss");
+        [0, 1, 2].map(|i| boss["centroid"][i].as_f64().unwrap())
+    };
+    let near = |a: [f64; 3], b: [f64; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-6);
+    assert!(
+        near(boss_at(&mut s), [10.0, 30.0, 10.0]),
+        "{:?}",
+        boss_at(&mut s)
+    );
+    let count = |s: &mut Session| {
+        body(s, "Part")["faceNames"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|n| *n == "F4:copy(0)/F2:endCap(e5,e6,e7,e8)")
+            .count()
+    };
+    assert_eq!(count(&mut s), 1);
+    // The notch becomes a slot right across: the top is in two pieces
+    // with one name. They lie in one plane, so the seat stays put.
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Cutter", "size": [4, 40, 4]}),
+    );
+    assert_volume(&mut s, "Part", 19200.0 - 640.0);
+    assert_eq!(count(&mut s), 2);
+    assert_eq!(feature(&mut s, "Seat")["status"], "ok");
+    assert!(near(boss_at(&mut s), [10.0, 30.0, 10.0]));
+    // The cutter takes the whole top layer off: that face is gone, and
+    // the seat says so instead of landing on the new top.
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Cutter", "size": [80, 60, 4], "position": [-10, -10, 4]}),
+    );
+    assert!((volume(&mut s, "Part") - 9600.0).abs() < 1e-6);
+    assert_eq!(count(&mut s), 0);
+    assert_failed(
+        &mut s,
+        "Seat",
+        &["Part", "no longer has a face", "F4:copy(1)/F3:face(0)"],
+    );
+    assert_failed(&mut s, "Boss", &["Seat"]);
+    // The new top is the cutter's bottom, and can be named as such.
+    run(
+        &mut s,
+        "sketch.edit",
+        json!({"sketch": "Seat", "face": "F4:copy(1)/F3:face(0)"}),
+    );
+    assert_eq!(feature(&mut s, "Seat")["status"], "ok");
+    let top = boss_at(&mut s)[2];
+    assert!(
+        (top - 2.0).abs() < 1e-6 || (top - 6.0).abs() < 1e-6,
+        "{top}"
+    );
+}
+
+#[test]
 fn the_three_operations_obey_the_volume_identities() {
     // Two blocks that overlap in a 10 x 10 x 10 corner.
     let build = |op: &str| {

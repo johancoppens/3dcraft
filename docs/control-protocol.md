@@ -12,7 +12,7 @@
 
 **MCP bridge** (`craft3d-cli mcp --bridge PORT --control-token-file FILE`): an MCP server on stdin/stdout without a session of its own. Each message is passed unchanged to the window's `mcp.message`, answered there by the same MCP code as `craft3d-cli mcp` on the window's document, and the reply is passed back: same tools, same limits, and the viewport shows every change. One short connection per message. `PORT` may be `127.0.0.1:PORT`; an address that is not this machine is refused, because the token is sent as it is. The file roots are the window's. When the window is not running, every request gets a JSON-RPC error (code -32000) that says how to start it, and the bridge keeps serving. The bridge-only tools of the table further down (`ui_screenshot`, …) do not exist: use `doc_render_preview`.
 
-**Commands** (41): `craft3d-cli commands` prints the registry with parameters and summaries; it is the source of truth.
+**Commands** (43): `craft3d-cli commands` prints the registry with parameters and summaries; it is the source of truth.
 
 **Limits enforced:** 1 MiB per request line, 8 MiB per reply, 256 steps per batch, previews at most 2048 px on the long side, renders 16 to 4096 px per side. Not enforced yet: the triangle budget for tessellation.
 
