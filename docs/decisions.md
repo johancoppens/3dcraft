@@ -15,7 +15,6 @@ Decisions that shape the project, newest first, each with its reason. An agent t
 - **Fast track to a first picture.** The developer asked for a teapot render as soon as possible, so a vertical slice (Bézier patches → tessellator → CPU renderer) was built ahead of the milestone order. It lives in the planned crates and follows the planned layering; it did not add throw-away code.
 - **Toolchain:** Rust stable installed with rustup on the developer's machine.
 - **`png` crate** for PNG encoding in `render` (pure Rust, MIT OR Apache-2.0): image encoding is not modelling code. (settles D-open-10 for PNG; compression for `.3dcraft`/3MF follows the same reasoning)
-- **`docs_photocraft/` is gitignored:** it is another project's documentation and stays a local reference.
 
 ### 2026-10-12: Starting points from the brainstorm
 
@@ -40,8 +39,7 @@ Proposed by the agent that wrote the first docs; the developer can overturn any 
 - **Persistent topological names from the first feature** ([`architecture.md`](architecture.md) §1.1, §4.1).
 - **Tolerance and units are document data,** kernel maths is `f64`, NURBS are in the geometry enums from M1.
 - **UI toolkit: egui/eframe on wgpu,** as in PhotoCraft, for the phase-1 viewer. The engine seam keeps it replaceable.
-- **`docs_photocraft/` stays as a read-only reference** until the developer removes it.
-- **Not adopted from the storytold apps for now:** the private `craftrules` standards (not available next to this checkout), `craft-libs`, `craft-fonts`, the contributor-credits machinery, release packaging and the parity/scorecard documents ([`README.md`](README.md)).
+- **Not adopted from the storytold apps for now:** the private `craftrules` standards (not available next to this checkout), `craft-libs`, `craft-fonts`, the contributor-credits machinery, release packaging and the parity/scorecard documents.
 
 ## Open decisions
 

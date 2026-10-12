@@ -1,6 +1,6 @@
 # Roadmap
 
-> **Last updated:** 2026-10-12 · **Stage:** M0 in progress; teapot renders · **Change:** minor (teapot track done, decisions settled)
+> **Last updated:** 2026-10-12 · **Stage:** M0 done; teapot renders · **Change:** minor (teapot track done, decisions settled)
 
 Forward-looking plan: milestones with a definition of done, and the **Current focus** list agents pick from. There is no parity percentage: 3DCraft is AI-first with a minimal UI and has no target app ([`decisions.md`](decisions.md)). Progress is measured by milestones whose acceptance tests pass.
 
@@ -14,17 +14,16 @@ Phase 1 is M0–M8. Its acceptance scenario, run entirely by an agent over MCP w
 
 ## Current focus
 
-1. **Finish M0.** Still open: a CI workflow on GitHub (fmt, clippy, tests, layers, wasm), `xtask stats`, stubs for the remaining crates as each is first needed (not all up front).
-2. **Mesh export of what we can already tessellate** (pulled forward from M3): `meshio` with STL, 3MF and OBJ writers, and the first FreeCAD-validated export test (the teapot mesh opens in FreeCAD with the same bounding box and area).
-3. **M1 Foundation.** `math` (transforms, tolerance type, predicates), `geom` (curves; analytic surfaces; the `Curve`/`Surface` enums; NURBS with knots and weights on top of the Bézier code), `topo` with the validity checker and mass properties, `expr`.
-4. **A `craft3d-cli render`** so a picture no longer needs a cargo example (small; can ride along with 2).
+1. **Mesh export of what we can already tessellate** (pulled forward from M3): `meshio` with STL, 3MF and OBJ writers, and the first FreeCAD-validated export test (the teapot mesh opens in FreeCAD with the same bounding box and area).
+2. **M1 Foundation.** `math` (transforms, tolerance type, predicates), `geom` (curves; analytic surfaces; the `Curve`/`Surface` enums; NURBS with knots and weights on top of the Bézier code), `topo` with the validity checker and mass properties, `expr`.
+3. **A `craft3d-cli render`** so a picture no longer needs a cargo example (small; can ride along with 1).
 
 ## Milestones
 
 | M | Name | Status | Scope (key items) | DoD / acceptance |
 |---|---|---|---|---|
 | **T0** | Teapot (fast track) | ✅ 2026-10-12 | The shortest path to a picture, cutting across M0, M1, M3 and M4: Bézier patches in `geom`, a uniform-grid tessellator in `tess`, the CPU reference renderer in `render`, the Utah teapot fixture in `testkit` | `cargo run --release -p craft3d-render --example teapot` writes a correct teapot; 35 tests green (deviation within tolerance at three scales, seam vertices identical, no pinholes, deterministic output); clippy, layers and wasm pass |
-| **M0** | Skeleton | 🟡 2026-10-12 (workspace, never-crash lints, `xtask layers`/`wasm`/`ci`, git + GitHub remote; CI workflow and `stats` open) | Workspace, all crate stubs, lints, `xtask` (layers, wasm, ci, stats), CI matrix, testkit stub | `cargo test --workspace` green; `cargo xtask layers` and `cargo xtask wasm` pass; every crate carries the deny-panic attribute |
+| **M0** | Skeleton | ✅ 2026-10-12 | Workspace, all crate stubs, lints, `xtask` (layers, wasm, ci, stats), CI matrix, testkit stub | `cargo test --workspace` green; `cargo xtask layers` and `cargo xtask wasm` pass; every crate carries the deny-panic attribute |
 | **M1** | Foundation | ⬜ | `math` (vectors, transforms, tolerance, predicates), `geom` (line, circle, ellipse, NURBS curves; plane, cylinder, cone, sphere, torus, NURBS surfaces: evaluate, derive, project), `topo` (B-rep arena, checker, mass properties), `expr` (units, parser, evaluator, dependency order) | Closed-form tests for every kind; checker detects each seeded defect; hand-built box/cylinder/sphere bodies give analytic volume and area to 1e-12 relative; expression fuzz target runs clean |
 | **M2** | Document, format, engine, CLI | ⬜ | `doc` (variables, feature list, sketch and constraint data), `ops` (undo), `format` (`.3dcraft`, atomic save, migrations scaffold), `engine` (Session, registry, snapshots), `craft3d-cli` (`info`, `run`, `commands`, `serve`), `automation` (MCP headless), `panic_hunt` | Load/save round trip of every doc type; a document built by commands over MCP saves and reopens identically; every command survives `panic_hunt` |
 | **M3** | Primitives, tessellator, mesh export | ⬜ | `kernel` primitives as features; `regen` v1 (linear, full); `tess` (edge-first, CDT in parameter space, refinement); `meshio` + `io` (STL, 3MF, OBJ); `document.measure` | Oracle 1 and 4 for all primitives at three scales; exported meshes closed and oriented; mesh volume converges to the analytic value; byte-identical output for 1/2/N threads |
@@ -49,5 +48,6 @@ Phase 1 is M0–M8. Its acceptance scenario, run entirely by an agent over MCP w
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-12 | minor | M0 done: all crate stubs, full layer table, lint opt-in check, `xtask stats`, pinned toolchain, CI on GitHub |
 | 2026-10-12 | minor | T0 teapot track done; M0 in progress; current focus rewritten after the developer's decisions (MIT, AI-first, FreeCAD as oracle) |
 | 2026-10-12 | major | First version, from `BRAINSTORM.md` |

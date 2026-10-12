@@ -1,6 +1,7 @@
-//! Build tasks: `cargo xtask layers | wasm | ci`.
+//! Build tasks: `cargo xtask layers | wasm | ci | stats`.
 
 mod layers;
+mod stats;
 
 use std::process::{Command, ExitCode};
 
@@ -23,6 +24,7 @@ fn wasm() -> Result<(), String> {
     let mut args = vec!["check", "--target", "wasm32-unknown-unknown"];
     let packages: Vec<String> = layers::LAYERS
         .iter()
+        .filter(|(_, layer)| *layer != layers::APP_LAYER)
         .map(|(name, _)| format!("craft3d-{name}"))
         .collect();
     for p in &packages {
@@ -52,7 +54,10 @@ fn main() -> ExitCode {
         "layers" => layers::check(),
         "wasm" => wasm(),
         "ci" => ci(),
-        other => Err(format!("unknown task `{other}`; tasks: layers, wasm, ci")),
+        "stats" => stats::run(),
+        other => Err(format!(
+            "unknown task `{other}`; tasks: layers, wasm, ci, stats"
+        )),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

@@ -21,6 +21,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
+name = "craft3d-automation"
+version = "0.0.1"
+
+[[package]]
+name = "craft3d-cli"
+version = "0.0.1"
+
+[[package]]
+name = "craft3d-doc"
+version = "0.0.1"
+
+[[package]]
+name = "craft3d-engine"
+version = "0.0.1"
+
+[[package]]
+name = "craft3d-expr"
+version = "0.0.1"
+
+[[package]]
+name = "craft3d-format"
+version = "0.0.1"
+
+[[package]]
 name = "craft3d-geom"
 version = "0.0.1"
 dependencies = [
@@ -28,7 +52,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft3d-gpu"
+version = "0.0.1"
+
+[[package]]
+name = "craft3d-io"
+version = "0.0.1"
+
+[[package]]
+name = "craft3d-kernel"
+version = "0.0.1"
+
+[[package]]
 name = "craft3d-math"
+version = "0.0.1"
+
+[[package]]
+name = "craft3d-meshio"
+version = "0.0.1"
+
+[[package]]
+name = "craft3d-ops"
+version = "0.0.1"
+
+[[package]]
+name = "craft3d-regen"
 version = "0.0.1"
 
 [[package]]
@@ -40,6 +88,14 @@ dependencies = [
  "craft3d-testkit",
  "png",
 ]
+
+[[package]]
+name = "craft3d-solve"
+version = "0.0.1"
+
+[[package]]
+name = "craft3d-step"
+version = "0.0.1"
 
 [[package]]
 name = "craft3d-tess"
@@ -56,6 +112,14 @@ dependencies = [
  "craft3d-geom",
  "craft3d-math",
 ]
+
+[[package]]
+name = "craft3d-topo"
+version = "0.0.1"
+
+[[package]]
+name = "craft3d-ui-egui"
+version = "0.0.1"
 
 [[package]]
 name = "crc32fast"

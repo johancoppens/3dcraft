@@ -6,7 +6,7 @@
 
 What exists on `main` today; where the code differs from the plan below, this summary wins.
 
-- **Workspace:** five library crates (`math`, `geom`, `tess`, `render`, `testkit`) and `xtask` (`layers`, `wasm`, `ci`). No apps, no engine, no document model yet.
+- **Workspace:** all 20 library crates of the plan exist and are registered in `xtask/src/layers.rs`; `math`, `geom`, `tess`, `render` and `testkit` have code, the other 15 are empty stubs. `apps/craft3d-cli` answers `--version` and `--help` only. `xtask` has `layers` (layering and lint opt-in), `wasm`, `ci` and `stats`. No engine, no document model yet.
 - **Geometry:** `geom` has one surface kind, the polynomial tensor-product Bézier patch (evaluation, derivatives, normals with degenerate-edge handling, second-derivative bounds). No curves, no NURBS knots or weights, no `Surface` enum yet.
 - **Tessellation:** `tess` meshes untrimmed patches on one uniform grid sized from the chordal tolerance. Seams between patches that share a whole edge match vertex for vertex, but the mesh has no connectivity across patches. No B-rep, no trimming.
 - **Rendering:** `render` is the CPU reference renderer (perspective and orthographic, depth buffer, smooth two-sided shading, id buffer, supersampling, PNG). No edge overlay yet, no near-plane clipping. `gpu` does not exist.
@@ -116,7 +116,6 @@ The test is simple: **adding a surface kind, a feature type, or a file format sh
 ├─ fuzz/                       cargo-fuzz targets (step, format, expr)
 ├─ xtask/                      build tasks: layers, wasm, ci, stats
 ├─ docs/                       this directory
-├─ docs_photocraft/            reference only (see docs/README.md)
 ├─ plan/  log/  corpus/        local, gitignored
 ```
 

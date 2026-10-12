@@ -1,20 +1,23 @@
 # Development guide
 
-> **Last updated:** 2026-10-12 · **Status:** M0 in progress. *Works today:* everything under [What works today](#what-works-today). Every other section is *(planned)*: it describes what M0–M4 must deliver. Move commands up as they start to exist.
+> **Last updated:** 2026-10-12 · **Status:** M0 done. *Works today:* everything under [What works today](#what-works-today). Every other section is *(planned)*: it describes what M0–M4 must deliver. Move commands up as they start to exist.
 
 ## What works today
 
 ```sh
-cargo test --workspace                          # 35 tests
+cargo test --workspace                          # 37 tests
 cargo xtask ci                                  # fmt --check + clippy -D warnings + tests + layers + wasm
-cargo xtask layers                              # dependency layering
+cargo xtask layers                              # dependency layering, and that every crate opts in to the never-crash lints
+cargo xtask stats                               # lines and tests per crate
 cargo xtask wasm                                # every library crate checks for wasm32-unknown-unknown
 cargo run --release -p craft3d-render --example teapot -- \
     --out target/evidence/teapot.png --ids target/evidence/teapot-ids.png \
     --size 1280x800 --tolerance 0.002 --ssaa 2  # the Utah teapot on the CPU renderer; prints a JSON summary
 ```
 
-Rust is installed with rustup (stable, with `rustfmt`, `clippy` and the `wasm32-unknown-unknown` target); if `cargo` is not on `PATH`, it is in `~/.cargo/bin`.
+The toolchain is pinned in `rust-toolchain.toml` (version, `rustfmt`, `clippy`, the `wasm32-unknown-unknown` target); rustup installs it on first use. If `cargo` is not on `PATH`, it is in `~/.cargo/bin`.
+
+CI (`.github/workflows/ci.yml`) runs `cargo xtask ci` on Linux and `cargo test --workspace` on macOS and Windows, on every push to `main` and every pull request. Check a run with `gh run list` / `gh run watch`.
 
 External oracle: FreeCAD may be run as a separate program to check exported files ([`testing.md`](testing.md) oracle 8). Point `CRAFT3D_FREECAD` at the executable or AppImage; tests that need it are opt-in and skip with a message when it is unset.
 

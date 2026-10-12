@@ -1,20 +1,40 @@
-//! Dependency layering check (docs/architecture.md §3).
+//! Dependency layering and lint opt-in checks (docs/architecture.md §3).
 
 use std::process::Command;
 
-/// Layer of every workspace library crate, by directory name. A crate may
-/// depend only on crates in lower layers. Register new crates here.
+/// Layer of every workspace crate, by its name without the `craft3d-`
+/// prefix. A crate may depend only on crates in lower layers. Register new
+/// crates here.
 pub const LAYERS: &[(&str, u32)] = &[
     ("math", 0),
     ("geom", 0),
+    ("step", 0),
+    ("meshio", 0),
+    ("topo", 1),
+    ("expr", 1),
+    ("doc", 2),
+    ("ops", 3),
+    ("solve", 3),
+    ("kernel", 3),
     ("tess", 3),
+    ("regen", 4),
     ("render", 4),
+    ("gpu", 4),
+    ("format", 4),
+    ("io", 5),
+    ("engine", 6),
+    ("ui-egui", UI_LAYER),
+    ("automation", UI_LAYER),
+    ("cli", APP_LAYER),
     ("testkit", TESTKIT),
 ];
 
+const UI_LAYER: u32 = 7;
+/// Binaries: may use every library crate, are used by none.
+pub const APP_LAYER: u32 = 8;
 /// `testkit` may use any library crate, and may itself only be a
 /// dev-dependency.
-const TESTKIT: u32 = u32::MAX;
+const TESTKIT: u32 = 100;
 
 /// Dependencies allowed inside one layer: (crate, depends on).
 const SAME_LAYER: &[(&str, &str)] = &[("geom", "math")];
@@ -24,7 +44,6 @@ const STANDALONE: &[&str] = &["step", "meshio"];
 
 /// UI crates no library below the UI layer may use.
 const UI_CRATES: &[&str] = &["egui", "eframe", "winit", "rfd"];
-const UI_LAYER: u32 = 7;
 
 fn layer_of(short: &str) -> Option<u32> {
     LAYERS
@@ -33,7 +52,8 @@ fn layer_of(short: &str) -> Option<u32> {
         .map(|&(_, layer)| layer)
 }
 
-pub fn check() -> Result<(), String> {
+/// The workspace's packages as cargo reports them.
+pub fn packages() -> Result<Vec<serde_json::Value>, String> {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
     let output = Command::new(cargo)
         .args(["metadata", "--format-version", "1", "--no-deps"])
@@ -47,20 +67,48 @@ pub fn check() -> Result<(), String> {
     }
     let metadata: serde_json::Value = serde_json::from_slice(&output.stdout)
         .map_err(|e| format!("cannot parse cargo metadata: {e}"))?;
-    let packages = metadata
+    metadata
         .get("packages")
         .and_then(|p| p.as_array())
-        .ok_or("cargo metadata has no `packages` array")?;
+        .cloned()
+        .ok_or_else(|| "cargo metadata has no `packages` array".to_string())
+}
 
+/// True when the manifest opts in to the workspace lints (the never-crash
+/// rules of AGENTS.md §3).
+fn inherits_workspace_lints(manifest: &str) -> bool {
+    let mut in_lints = false;
+    for line in manifest.lines().map(str::trim) {
+        if line.starts_with('[') {
+            in_lints = line == "[lints]";
+        } else if in_lints && line.replace(' ', "") == "workspace=true" {
+            return true;
+        }
+    }
+    false
+}
+
+pub fn check() -> Result<(), String> {
     let mut errors = Vec::new();
     let mut checked = 0;
-    for package in packages {
+    for package in packages()? {
         let name = package
             .get("name")
             .and_then(|n| n.as_str())
             .unwrap_or_default();
+        let manifest_path = package
+            .get("manifest_path")
+            .and_then(|p| p.as_str())
+            .unwrap_or_default();
+        match std::fs::read_to_string(manifest_path) {
+            Ok(manifest) if inherits_workspace_lints(&manifest) => {}
+            Ok(_) => errors.push(format!(
+                "{name} does not opt in to the workspace lints (`[lints] workspace = true`)"
+            )),
+            Err(e) => errors.push(format!("cannot read {manifest_path}: {e}")),
+        }
         let Some(short) = name.strip_prefix("craft3d-") else {
-            continue; // xtask and, later, the apps.
+            continue; // xtask
         };
         let Some(layer) = layer_of(short) else {
             errors.push(format!("{name} is not registered in xtask/src/layers.rs"));
@@ -108,5 +156,44 @@ pub fn check() -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("layering violations:\n  {}", errors.join("\n  ")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lint_opt_in_is_detected() {
+        assert!(inherits_workspace_lints(
+            "[package]\nname = \"x\"\n\n[lints]\nworkspace = true\n"
+        ));
+        assert!(inherits_workspace_lints("[lints]\nworkspace=true"));
+        assert!(!inherits_workspace_lints("[package]\nname = \"x\"\n"));
+        // `workspace = true` under another table does not count.
+        assert!(!inherits_workspace_lints(
+            "[package]\nversion.workspace = true\n[dependencies]\nworkspace = true\n"
+        ));
+        assert!(!inherits_workspace_lints("[lints]\nworkspace = false\n"));
+    }
+
+    #[test]
+    fn the_layer_table_is_consistent() {
+        for (i, (name, _)) in LAYERS.iter().enumerate() {
+            assert!(
+                LAYERS[..i].iter().all(|(other, _)| other != name),
+                "{name} registered twice"
+            );
+        }
+        for (a, b) in SAME_LAYER {
+            assert_eq!(
+                layer_of(a),
+                layer_of(b),
+                "{a} -> {b} is not a same-layer pair"
+            );
+        }
+        for name in STANDALONE {
+            assert_eq!(layer_of(name), Some(0));
+        }
     }
 }

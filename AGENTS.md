@@ -6,9 +6,7 @@
 
 **Language.** The developer prompts in Dutch. Answer the developer in Dutch, but write everything that lands in the repository in English: code, comments, identifiers, commit messages, docs, the dev log, test names and error messages.
 
-**Status: M0 in progress (2026-10-12).** The workspace exists with the first five crates (`math`, `geom`, `tess`, `render`, `testkit`) and `xtask` (`layers`, `wasm`, `ci`); together they tessellate and render the Utah teapot on the CPU. Everything else in this file and in `docs/` is the target design. Commands and paths marked *(planned)* do not exist until the milestone that creates them (`docs/roadmap.md`); when you build one, remove its marker here and in the docs. Licence: MIT. Remote: https://github.com/johancoppens/3dcraft (use the `gh` CLI).
-
-`docs_photocraft/` is a local copy of PhotoCraft's docs (gitignored, not in the repository), kept **for reference only**. It describes another app; never treat it as documentation of 3DCraft, never edit it and never commit it. What we took from it and what we left out is listed in `docs/README.md`.
+**Status: M0 done (2026-10-12).** The workspace has all planned crates, most of them still empty stubs. Real code exists in `math`, `geom`, `tess`, `render` and `testkit` (together they tessellate and render the Utah teapot on the CPU) and in `xtask` (`layers`, `wasm`, `ci`, `stats`). `craft3d-cli` only answers `--version` and `--help`. CI runs on GitHub on every push and pull request. Everything else in this file and in `docs/` is the target design. Commands and paths marked *(planned)* do not exist until the milestone that creates them (`docs/roadmap.md`); when you build one, remove its marker here and in the docs. Licence: MIT. Remote: https://github.com/johancoppens/3dcraft (use the `gh` CLI).
 
 Read this file first, then `docs/`.
 
@@ -17,7 +15,7 @@ Read this file first, then `docs/`.
 | Read | Why |
 |---|---|
 | `BRAINSTORM.md` | The developer's original intent, in a dozen lines |
-| `docs/README.md` | Index of the docs, and what was adopted from PhotoCraft |
+| `docs/README.md` | Index of the docs |
 | `docs/architecture.md` | Crate map, dependency layers, document model, kernel, tessellator, renderers, the engine/UI seam |
 | `docs/development.md` | Build, test, run, drive the app programmatically, let the developer watch along |
 | `docs/testing.md` | The AI test loop and the oracles that make a CAD kernel checkable without a human |
@@ -30,7 +28,7 @@ Read this file first, then `docs/`.
 
 ## 2. Workspace map
 
-Exists today: `math`, `geom`, `tess`, `render`, `testkit`, `xtask`. The rest is *(planned)*.
+Every crate below exists; `math`, `geom`, `tess`, `render`, `testkit` and `xtask` have code, the others are stubs with a doc comment. `apps/craft3d` and `apps/craft3d-web` are *(planned)*.
 
 ```text
 crates/
@@ -48,7 +46,7 @@ apps/
   craft3d                    desktop app (eframe/wgpu): viewer in phase 1, TCP control server
   craft3d-cli                headless CLI (convert/info/run/commands/serve/mcp)
   craft3d-web                the same app in the browser (later milestone)
-xtask/                       cargo xtask layers | wasm | ci   (stats: planned)
+xtask/                       cargo xtask layers | wasm | ci | stats
 ```
 
 **Layering is enforced** by `cargo xtask layers`. A crate may depend only on lower layers (the few same-layer exceptions, such as `geom` → `math`, are listed in `xtask/src/layers.rs`). `testkit` may only be a dev-dependency. `step` and `meshio` depend on nothing in the workspace. Nothing below `ui-egui` may use egui, eframe, winit or rfd. A new crate must be registered in `xtask/src/layers.rs`.
@@ -67,7 +65,7 @@ People trust 3DCraft with their designs, and a crash loses them. A malformed fil
 - **Don't cascade.** Handle lock poisoning (`lock().unwrap_or_else(PoisonError::into_inner)`) and treat thread joins as `Result`s.
 - **Last-resort guard.** The app shell and the automation servers catch an escaped panic around command dispatch and file import/export, report it as an error and keep the document. It's a safety net, not a licence to panic. Keep `panic = "unwind"`.
 - **Prove it.** Every crash fix comes with a small synthetic regression test that panicked before the fix.
-- **Enforced by clippy.** The workspace denies `unwrap_used`, `expect_used`, `panic`, `unimplemented`, `todo`, `unreachable` and `indexing_slicing` (`[workspace.lints.clippy]` in the root `Cargo.toml`); `clippy.toml` allows them in tests only. Every crate opts in with `[lints] workspace = true`; a new crate without it is a bug.
+- **Enforced by clippy.** The workspace denies `unwrap_used`, `expect_used`, `panic`, `unimplemented`, `todo`, `unreachable` and `indexing_slicing` (`[workspace.lints.clippy]` in the root `Cargo.toml`); `clippy.toml` allows them in tests only. Every crate opts in with `[lints] workspace = true`; `cargo xtask layers` fails for a crate that does not.
 
 1. **Everything is a command.** New user-visible behaviour = a command in the engine (`crates/engine/src/*_cmds.rs`, registered in `commands.rs`) with id, label, params doc, `enabled` and `run`, plus tests. The UI, CLI, control channel and MCP all dispatch commands by id. In phase 1 there are (almost) no menus: a command needs no menu path to exist. Only pure view state (camera, panels) belongs to the shell.
 2. **The design history is the source of truth.** A document is variables, sketches, constraints, formulas and an ordered list of features. Bodies (B-rep) and meshes are *derived* from it by regeneration and may be thrown away at any time. Never store a result that cannot be recomputed from the history, and never let a command edit a body behind the history's back.
