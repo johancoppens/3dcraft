@@ -29,6 +29,77 @@ pub const REST_SSAA: u32 = 2;
 pub const REST_SAMPLES: u64 = 4_000_000;
 pub const MOVING_SAMPLES: u64 = 600_000;
 
+/// The product's name, as the window's title ends with it.
+pub const PRODUCT: &str = "3DCraft";
+
+/// What the File menu and its shortcuts ask for. The shell only asks: the
+/// host runs the command, after showing its file dialog where one is
+/// needed (`file.new`, `file.open`, `file.save`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileAction {
+    New,
+    Open,
+    /// To the document's own file; like `SaveAs` when it has none.
+    Save,
+    SaveAs,
+}
+
+impl FileAction {
+    /// In menu order.
+    pub const ALL: [FileAction; 4] = [
+        FileAction::New,
+        FileAction::Open,
+        FileAction::Save,
+        FileAction::SaveAs,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            FileAction::New => "New",
+            FileAction::Open => "Open…",
+            FileAction::Save => "Save",
+            FileAction::SaveAs => "Save As…",
+        }
+    }
+
+    /// Ctrl (⌘ on a Mac) with N, O, S, and Shift+S.
+    pub fn shortcut(self) -> egui::KeyboardShortcut {
+        let command = egui::Modifiers::COMMAND;
+        let (modifiers, key) = match self {
+            FileAction::New => (command, egui::Key::N),
+            FileAction::Open => (command, egui::Key::O),
+            FileAction::Save => (command, egui::Key::S),
+            FileAction::SaveAs => (command | egui::Modifiers::SHIFT, egui::Key::S),
+        };
+        egui::KeyboardShortcut::new(modifiers, key)
+    }
+
+    /// Saving needs a document to save.
+    pub fn needs_document(self) -> bool {
+        matches!(self, FileAction::Save | FileAction::SaveAs)
+    }
+}
+
+/// The window's title for a document: its file's name (`untitled` when it
+/// has none), a `*` when it has changes that are not on disk, and the
+/// product's name. Just the product's name without a document.
+pub fn window_title(status: Option<&DocumentStatus>) -> String {
+    let Some(status) = status else {
+        return PRODUCT.to_string();
+    };
+    // The name, not the folders it is in. Either separator: a file saved
+    // on another system keeps its path as it was written.
+    let name = status
+        .path
+        .as_deref()
+        .and_then(|path| path.rsplit(['/', '\\']).find(|part| !part.is_empty()))
+        .unwrap_or("untitled");
+    // No control characters in a title bar.
+    let name: String = name.chars().filter(|c| !c.is_control()).take(120).collect();
+    let dirty = if status.dirty { "*" } else { "" };
+    format!("{name}{dirty} – {PRODUCT}")
+}
+
 /// One row of the feature tree, as it is shown.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TreeRow {
@@ -159,6 +230,8 @@ pub struct Shell {
     themed: bool,
     quit: bool,
     rows: Vec<TreeRow>,
+    /// What the File menu or a shortcut asked for, until the host takes it.
+    file_action: Option<FileAction>,
     /// Why the scene could not be made.
     problem: Option<String>,
     /// Why the image could not be made; cleared by the next image.
@@ -217,6 +290,7 @@ impl Shell {
             themed: false,
             quit: false,
             rows: Vec::new(),
+            file_action: None,
             problem: None,
             render_problem: None,
         }
@@ -340,6 +414,18 @@ impl Shell {
         self.quit = true;
     }
 
+    /// What the File menu or a shortcut asked for since the last call.
+    /// The host takes it and does it: the shell has no file dialog and
+    /// does not touch files.
+    pub fn take_file_action(&mut self) -> Option<FileAction> {
+        self.file_action.take()
+    }
+
+    /// Asks for a file action, as the menu does.
+    pub fn request_file_action(&mut self, action: FileAction) {
+        self.file_action = Some(action);
+    }
+
     fn aspect(&self) -> f64 {
         let [w, h] = self.size;
         f64::from(w.max(1)) / f64::from(h.max(1))
@@ -422,6 +508,14 @@ impl Shell {
         }
         let scene = self.sync(session);
         let status = session.document_status();
+        self.file_shortcuts(ui, status.is_some());
+        egui::Panel::top("craft3d-menu")
+            .resizable(false)
+            .show(ui, |ui| self.menu_bar(ui, status.is_some()));
+        if self.file_action.is_some() {
+            // The host does it between frames: have one come.
+            ui.ctx().request_repaint();
+        }
         if self.state.panels.status {
             egui::Panel::bottom("craft3d-status")
                 .resizable(false)
@@ -434,6 +528,39 @@ impl Shell {
                 .show(ui, |ui| self.tree(ui, status.is_some()));
         }
         egui::CentralPanel::no_frame().show(ui, |ui| self.viewport(ui, scene.as_ref()));
+    }
+
+    /// The File shortcuts, wherever the pointer is.
+    fn file_shortcuts(&mut self, ui: &egui::Ui, has_document: bool) {
+        // Shift+S before S: the longer shortcut would also match the
+        // shorter one.
+        for action in [
+            FileAction::SaveAs,
+            FileAction::Save,
+            FileAction::Open,
+            FileAction::New,
+        ] {
+            let pressed = ui.input_mut(|i| i.consume_shortcut(&action.shortcut()));
+            if pressed && (has_document || !action.needs_document()) {
+                self.file_action = Some(action);
+            }
+        }
+    }
+
+    fn menu_bar(&mut self, ui: &mut egui::Ui, has_document: bool) {
+        egui::MenuBar::new().ui(ui, |ui| {
+            ui.menu_button("File", |ui| {
+                for action in FileAction::ALL {
+                    let shortcut = ui.ctx().format_shortcut(&action.shortcut());
+                    let button = egui::Button::new(action.label()).shortcut_text(shortcut);
+                    let enabled = has_document || !action.needs_document();
+                    if ui.add_enabled(enabled, button).clicked() {
+                        self.file_action = Some(action);
+                        ui.close();
+                    }
+                }
+            });
+        });
     }
 
     fn status_bar(&self, ui: &mut egui::Ui, status: Option<&DocumentStatus>) {

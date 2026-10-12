@@ -14,8 +14,10 @@ Usage: craft3d [FILE] [--control PORT --control-token-file FILE]
        craft3d --version | --help
 
 Opens FILE (a .3dcraft file) when one is given, and shows the active
-document: bodies shaded, sketches as lines. The window edits nothing; the
-document changes through commands, sent over the control channel.
+document: bodies shaded with their edges, sketches as lines. The window
+does not model; the document changes through commands, sent over the
+control channel. It does open and save files: the File menu, with the
+system's file dialog, wherever you may read and write.
 
 Options:
   --control PORT              Listen on 127.0.0.1:PORT for JSON-lines requests
@@ -33,7 +35,8 @@ CRAFT3D_AUTOMATION_READ_ROOT and CRAFT3D_AUTOMATION_WRITE_ROOT stand in for
 the flags of the same name.
 
 Mouse: drag to orbit, right-drag or shift-drag to pan, wheel to zoom, F to
-frame everything.";
+frame everything.
+Keys: Ctrl+N new, Ctrl+O open, Ctrl+S save, Ctrl+Shift+S save as.";
 
 /// What to start with.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]

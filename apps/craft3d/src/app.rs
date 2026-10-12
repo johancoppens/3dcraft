@@ -3,10 +3,11 @@
 
 use crate::args::Options;
 use crate::control::{ControlConfig, ControlServer, Wake};
+use crate::files::{Picker, SystemDialogs};
 use crate::host::{Host, Request};
 use crate::token;
 use craft3d_engine::{Access, Session, Workspace};
-use craft3d_ui_egui::Shell;
+use craft3d_ui_egui::{Shell, window_title};
 use eframe::egui;
 use serde_json::json;
 use std::sync::mpsc::{self, Receiver};
@@ -73,6 +74,10 @@ pub fn control(
 struct Viewer {
     host: Host,
     requests: Receiver<Request>,
+    /// The open and save dialogs.
+    picker: Picker,
+    /// The title the window has now.
+    title: String,
     /// Kept so the listener lives as long as the window.
     _server: Option<ControlServer>,
 }
@@ -84,6 +89,16 @@ impl eframe::App for Viewer {
         if self.host.pump(&self.requests) > 0 {
             // Show what the requests changed, and look for more.
             ctx.request_repaint();
+        }
+        // What the File menu asked for in the last frame, and what a
+        // dialog answered since.
+        if self.host.pump_files(&mut self.picker) {
+            ctx.request_repaint();
+        }
+        let title = window_title(self.host.session.document_status().as_ref());
+        if title != self.title {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.title = title;
         }
         if self.host.shell.quit_requested() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -109,7 +124,7 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
             ctx.request_repaint();
         }
     });
-    let (server, requests) = control(options, wake)?;
+    let (server, requests) = control(options, Arc::clone(&wake))?;
     if let (Some(server), Some(token_file)) = (&server, &options.token_file) {
         announce(&format!(
             "control channel on {} (token in {})",
@@ -121,14 +136,17 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
     // The window never waits for the CPU renderer: sharp images are made
     // on the shell's own thread.
     host.shell = Shell::threaded();
+    let title = window_title(host.session.document_status().as_ref());
     let viewer = Viewer {
         host,
         requests,
+        picker: Picker::new(Arc::new(SystemDialogs), wake),
+        title: title.clone(),
         _server: server,
     };
     let native = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title(TITLE)
+            .with_title(&title)
             .with_app_id("craft3d")
             .with_inner_size([1280.0, 800.0])
             .with_min_inner_size([480.0, 320.0]),

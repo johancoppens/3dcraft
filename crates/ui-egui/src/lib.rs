@@ -28,6 +28,6 @@ pub mod theme;
 pub mod viewport;
 
 pub use control::{UI_METHODS, UiMethod};
-pub use shell::{CommandReport, RenderStats, Shell, TreeRow};
+pub use shell::{CommandReport, FileAction, RenderStats, Shell, TreeRow, window_title};
 pub use state::{CameraState, Panels, ProjectionKind, UiState};
 pub use theme::Tokens;
