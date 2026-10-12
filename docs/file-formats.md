@@ -64,7 +64,7 @@ Today: one object per file, no colours or materials, OBJ without normals (`vn`) 
 
 The ZIP and XML writing needed for 3MF is part of `meshio`: a stored (uncompressed) ZIP writer with CRC-32, no dependency. Files are larger than they need to be (the teapot at tolerance 0.002 is 11.9 MB as 3MF, 6.5 MB as STL); DEFLATE is a later improvement.
 
-Tests (in place): exact expected text for ASCII STL, OBJ and the 3MF model part; binary STL and the ZIP container parsed back by minimal readers in the tests; FreeCAD reading a box (solid, volume 24) and the teapot in all four encodings. *Originally planned wording:* byte-exact expected files for a tetrahedron and a box; parse-back of our own output (minimal readers in tests) giving the same vertex/triangle counts and volume; closedness and orientation asserted; 3MF package structure validated against the spec's required parts; f32 rounding in STL does not open cracks (vertices shared in our mesh still compare equal after conversion).
+Tests (in place): exact expected text for ASCII STL, OBJ and the 3MF model part; binary STL and the ZIP container parsed back by minimal readers in the tests; FreeCAD reading a box (solid, volume 24) and the teapot in all four encodings. The FreeCAD test also covers 32-bit rounding in STL: FreeCAD merges the rounded points to exactly the vertex count of our welded mesh.
 
 ## Later candidates
 
