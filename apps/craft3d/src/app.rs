@@ -6,6 +6,7 @@ use crate::control::{ControlConfig, ControlServer, Wake};
 use crate::host::{Host, Request};
 use crate::token;
 use craft3d_engine::{Access, Session, Workspace};
+use craft3d_ui_egui::Shell;
 use eframe::egui;
 use serde_json::json;
 use std::sync::mpsc::{self, Receiver};
@@ -116,8 +117,12 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
             token_file.display()
         ));
     }
+    let mut host = Host::new(session);
+    // The window never waits for the CPU renderer: sharp images are made
+    // on the shell's own thread.
+    host.shell = Shell::threaded();
     let viewer = Viewer {
-        host: Host::new(session),
+        host,
         requests,
         _server: server,
     };

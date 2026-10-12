@@ -3,9 +3,10 @@
 //! view state. It never edits a document; that takes a command
 //! (`Session::execute`), from whoever drives the session.
 
+use crate::frames::{Mode, Scheduler, Ticket};
 use crate::state::{CameraState, ProjectionKind, UiState, VIEWS};
 use crate::theme::{Tokens, color, color_alpha};
-use crate::viewport::{self, LineKind, MAX_SIDE, MIN_SIDE, Overlay, Quality};
+use crate::viewport::{self, Composed, LineKind, MAX_SIDE, MIN_SIDE, Overlay, Quality};
 use craft3d_engine::{DocumentStatus, FeatureState, Scene, Session};
 use craft3d_math::Bbox3;
 use std::sync::Arc;
@@ -62,18 +63,70 @@ pub struct RenderStats {
     pub height: u32,
     pub ssaa: u32,
     pub triangles: usize,
-    /// `None` where there is no clock (a browser).
+    /// How long rendering it took, on whichever thread did it. `None`
+    /// where there is no clock (a browser).
     pub milliseconds: Option<f64>,
+    /// False for the quick preview shown while the camera moves and until
+    /// the sharp image is ready.
+    pub sharp: bool,
 }
 
-/// What the image in the viewport was rendered from: it is rendered again
+/// What the image in the viewport is made from: another image is made
 /// only when one of these changes.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct ImageKey {
+#[derive(Clone, Debug, PartialEq)]
+struct FrameKey {
     revision: Option<u64>,
     camera: CameraState,
-    quality: Quality,
+    /// The viewport, in pixels.
+    size: [u32; 2],
+    /// The backend's largest texture side.
+    largest: usize,
+    selected: Option<String>,
+    tokens: Tokens,
 }
+
+/// One image to make.
+struct RenderJob {
+    scene: Option<Arc<Scene>>,
+    camera: CameraState,
+    quality: Quality,
+    tokens: Tokens,
+    selected: Option<String>,
+    /// Asked to repaint when the image is ready.
+    #[cfg(not(target_arch = "wasm32"))]
+    wake: Option<egui::Context>,
+}
+
+/// An image that was made.
+struct Rendered {
+    composed: Composed,
+    quality: Quality,
+    milliseconds: Option<f64>,
+}
+
+impl RenderJob {
+    fn render(&self) -> Result<Rendered, String> {
+        let elapsed = stopwatch();
+        let composed = viewport::compose(
+            self.scene.as_deref(),
+            &self.camera,
+            self.quality,
+            &self.tokens,
+            self.selected.as_deref(),
+        )?;
+        Ok(Rendered {
+            composed,
+            quality: self.quality,
+            milliseconds: elapsed(),
+        })
+    }
+}
+
+/// A sharp image that arrived, or why it did not.
+type Arrived = (Ticket, Result<Rendered, String>);
+
+#[cfg(not(target_arch = "wasm32"))]
+type RenderWorker = crate::frames::Worker<RenderJob, Rendered>;
 
 pub struct Shell {
     pub state: UiState,
@@ -85,7 +138,17 @@ pub struct Shell {
     /// Where the viewport is in the window, in points.
     rect: Option<egui::Rect>,
     texture: Option<egui::TextureHandle>,
-    drawn: Option<ImageKey>,
+    /// What is drawn over the texture, in the pixels of its image.
+    overlay: Overlay,
+    /// The size of that image.
+    overlay_size: [u32; 2],
+    /// Which image is on screen and which is being made.
+    scheduler: Scheduler<FrameKey>,
+    /// The thread sharp images are made on; `None` makes them here.
+    #[cfg(not(target_arch = "wasm32"))]
+    worker: Option<RenderWorker>,
+    /// Sharp images that are ready and not on screen yet.
+    arrived: Vec<Arrived>,
     stats: Option<RenderStats>,
     /// How many times the image was rendered.
     renders: u64,
@@ -96,8 +159,10 @@ pub struct Shell {
     themed: bool,
     quit: bool,
     rows: Vec<TreeRow>,
-    /// Why the scene or the image could not be made.
+    /// Why the scene could not be made.
     problem: Option<String>,
+    /// Why the image could not be made; cleared by the next image.
+    render_problem: Option<String>,
 }
 
 impl Default for Shell {
@@ -139,7 +204,12 @@ impl Shell {
             pixels_per_point: 1.0,
             rect: None,
             texture: None,
-            drawn: None,
+            overlay: Overlay::default(),
+            overlay_size: DEFAULT_VIEWPORT,
+            scheduler: Scheduler::new(Mode::Inline),
+            #[cfg(not(target_arch = "wasm32"))]
+            worker: None,
+            arrived: Vec::new(),
             stats: None,
             renders: 0,
             drag_from: None,
@@ -148,7 +218,84 @@ impl Shell {
             quit: false,
             rows: Vec::new(),
             problem: None,
+            render_problem: None,
         }
+    }
+
+    /// A shell that has its sharp images made on a thread of its own, so
+    /// the thread that draws the window only ever makes quick previews:
+    /// what a window uses. [`Self::new`] makes every image where it is
+    /// drawn, which is what a host without threads needs and what makes a
+    /// frame's outcome independent of timing.
+    ///
+    /// When the thread cannot be started this is the same as `new`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn threaded() -> Self {
+        let mut shell = Self::new();
+        let worker = RenderWorker::start(RenderJob::render, |job: &RenderJob| {
+            if let Some(ctx) = &job.wake {
+                ctx.request_repaint();
+            }
+        });
+        if let Ok(worker) = worker {
+            shell.worker = Some(worker);
+            shell.scheduler.set_mode(Mode::Background);
+        }
+        shell
+    }
+
+    /// There are no threads here: the same as [`Self::new`].
+    #[cfg(target_arch = "wasm32")]
+    pub fn threaded() -> Self {
+        Self::new()
+    }
+
+    /// True when sharp images are made on a thread of their own.
+    pub fn renders_in_background(&self) -> bool {
+        self.scheduler.mode() == Mode::Background
+    }
+
+    /// Waits until the sharp image that is being made has been made, for
+    /// at most `timeout`. The next frame puts it on screen (if it is still
+    /// the image of what that frame shows). True when nothing is being
+    /// made any more; false when the time ran out.
+    ///
+    /// For hosts that need the finished picture now (a recording, a test):
+    /// the window itself never waits.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn wait_for_sharp(&mut self, timeout: std::time::Duration) -> bool {
+        let Some(ticket) = self.scheduler.pending() else {
+            return true;
+        };
+        if self.arrived.iter().any(|(arrived, _)| *arrived == ticket) {
+            return true;
+        }
+        let Some(worker) = &self.worker else {
+            return false;
+        };
+        let deadline = std::time::Instant::now().checked_add(timeout);
+        loop {
+            let left = deadline.map_or(timeout, |deadline| {
+                deadline.saturating_duration_since(std::time::Instant::now())
+            });
+            let Some(done) = worker.wait(left) else {
+                return false;
+            };
+            let found = done.ticket == ticket;
+            self.arrived.push((done.ticket, done.result));
+            if found {
+                return true;
+            }
+            if left.is_zero() {
+                return false;
+            }
+        }
+    }
+
+    /// Nothing is made elsewhere here, so there is nothing to wait for.
+    #[cfg(target_arch = "wasm32")]
+    pub fn wait_for_sharp(&mut self, _timeout: std::time::Duration) -> bool {
+        true
     }
 
     /// The viewport's size in pixels.
@@ -179,9 +326,9 @@ impl Shell {
         self.renders
     }
 
-    /// Why there is no picture, when there is none.
+    /// Why there is no picture, or not the right one, when that is so.
     pub fn problem(&self) -> Option<&str> {
-        self.problem.as_deref()
+        self.problem.as_deref().or(self.render_problem.as_deref())
     }
 
     /// True once something asked the application to close.
@@ -286,7 +433,7 @@ impl Shell {
                 .default_size(260.0)
                 .show(ui, |ui| self.tree(ui, status.is_some()));
         }
-        egui::CentralPanel::no_frame().show(ui, |ui| self.viewport(ui, scene.as_deref()));
+        egui::CentralPanel::no_frame().show(ui, |ui| self.viewport(ui, scene.as_ref()));
     }
 
     fn status_bar(&self, ui: &mut egui::Ui, status: Option<&DocumentStatus>) {
@@ -386,7 +533,8 @@ impl Shell {
         }
     }
 
-    fn viewport(&mut self, ui: &mut egui::Ui, scene: Option<&Scene>) {
+    fn viewport(&mut self, ui: &mut egui::Ui, shared: Option<&Arc<Scene>>) {
+        let scene = shared.map(Arc::as_ref);
         let tokens = self.tokens;
         let (rect, response) = ui.allocate_exact_size(ui.available_size(), egui::Sense::drag());
         let scale = ui.pixels_per_point();
@@ -404,7 +552,7 @@ impl Shell {
         let size = [side(rect.width()), side(rect.height())];
         // A window being resized changes size every frame: those frames are
         // drawn like a moving camera, and the sharp image follows.
-        let resized = size != self.size && self.drawn.is_some();
+        let resized = size != self.size && self.texture.is_some();
         if size != self.size {
             self.size = size;
             // The model was framed for another shape of viewport.
@@ -420,18 +568,18 @@ impl Shell {
 
         let moving = self.pointer(ui, &response, rect, scene) || resized;
 
-        // Full quality at rest; smaller and unfiltered while the camera
-        // moves.
+        // A quick preview whenever what is shown changes, and the sharp
+        // image once the camera rests (see `frames`).
         let largest = ui.input(|i| i.max_texture_side);
-        let quality = image_quality(size, moving, largest);
-        let key = ImageKey {
+        let key = FrameKey {
             revision: scene.map(|s| s.revision),
             camera: self.state.camera,
-            quality,
+            size,
+            largest,
+            selected: self.state.selected_feature.clone(),
+            tokens,
         };
-        if self.drawn != Some(key) || self.texture.is_none() {
-            self.render(ui.ctx(), scene, key);
-        }
+        self.refresh(ui.ctx(), shared, &key, moving);
         if moving {
             // One more frame after the last movement, for the sharp image.
             ui.ctx().request_repaint();
@@ -443,14 +591,7 @@ impl Shell {
             let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
             painter.image(texture.id(), rect, uv, egui::Color32::WHITE);
         }
-        let overlay = viewport::overlay(
-            scene,
-            &self.state.camera,
-            size[0],
-            size[1],
-            self.state.selected_feature.as_deref(),
-        );
-        paint_overlay(&painter, rect, size, &overlay, &tokens);
+        paint_overlay(&painter, rect, self.overlay_size, &self.overlay, &tokens);
 
         let inset = tokens.inset;
         let inner = rect.shrink(inset);
@@ -463,12 +604,12 @@ impl Shell {
                 color(tokens.text_dim),
             );
         };
-        match (scene, &self.problem) {
+        match (scene, self.problem()) {
             (None, None) => hint("No document. Run file.new or file.open."),
             (Some(scene), _) if scene.bbox.is_empty() => hint("Empty document."),
             _ => {}
         }
-        if let Some(problem) = &self.problem {
+        if let Some(problem) = self.problem() {
             painter.text(
                 inner.left_bottom(),
                 egui::Align2::LEFT_BOTTOM,
@@ -607,25 +748,113 @@ impl Shell {
         moving
     }
 
-    fn render(&mut self, ctx: &egui::Context, scene: Option<&Scene>, key: ImageKey) {
-        let elapsed = stopwatch();
-        let frame = match viewport::render_bodies(scene, &key.camera, key.quality, &self.tokens) {
-            Ok(frame) => frame,
-            Err(e) => {
-                self.problem = Some(format!("the viewport cannot be rendered: {e}"));
-                return;
-            }
+    /// Brings the image on screen up to date with `key`: makes a preview
+    /// here when nothing of the key is on screen, starts the sharp image,
+    /// and shows the sharp images that arrived and are still current.
+    fn refresh(
+        &mut self,
+        ctx: &egui::Context,
+        scene: Option<&Arc<Scene>>,
+        key: &FrameKey,
+        moving: bool,
+    ) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.worker.as_ref().is_some_and(|worker| !worker.alive()) {
+            // The thread is gone (it cannot be, but if): go on without it
+            // rather than wait for images that will not come.
+            self.worker = None;
+            self.scheduler.set_mode(Mode::Inline);
+        }
+        if self.texture.is_none() {
+            self.scheduler.forget();
+        }
+        let job = |quality: Quality| RenderJob {
+            scene: scene.cloned(),
+            camera: key.camera,
+            quality,
+            tokens: key.tokens,
+            selected: key.selected.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            wake: Some(ctx.clone()),
         };
+        let plan = self.scheduler.plan(key, moving);
+        if plan.preview {
+            match job(image_quality(key.size, true, key.largest)).render() {
+                Ok(rendered) => {
+                    self.show(ctx, rendered, false);
+                    self.scheduler.preview_shown(key);
+                }
+                Err(e) => {
+                    self.render_problem = Some(format!("the viewport cannot be rendered: {e}"));
+                }
+            }
+        }
+        if let Some(ticket) = plan.sharp {
+            let job = job(image_quality(key.size, false, key.largest));
+            if let Some(job) = self.hand_over(ticket, job) {
+                // No thread to do it: here and now.
+                self.arrived.push((ticket, job.render()));
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(worker) = &self.worker {
+            while let Some(done) = worker.poll() {
+                self.arrived.push((done.ticket, done.result));
+            }
+        }
+        for (ticket, result) in std::mem::take(&mut self.arrived) {
+            match result {
+                // Stale images are dropped here: `deliver` accepts only
+                // the image of what this frame shows.
+                Ok(rendered) => {
+                    if self.scheduler.deliver(ticket) {
+                        self.show(ctx, rendered, true);
+                    }
+                }
+                Err(e) => {
+                    if self.scheduler.fail(ticket) {
+                        self.render_problem = Some(format!("the viewport cannot be rendered: {e}"));
+                    }
+                }
+            }
+        }
+    }
+
+    /// Gives the job to the render thread. Hands it back when there is no
+    /// thread to take it.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn hand_over(&mut self, ticket: Ticket, job: RenderJob) -> Option<RenderJob> {
+        match &self.worker {
+            Some(worker) => worker.submit(ticket, job).err(),
+            None => Some(job),
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn hand_over(&mut self, _ticket: Ticket, job: RenderJob) -> Option<RenderJob> {
+        Some(job)
+    }
+
+    /// Puts an image on screen.
+    fn show(&mut self, ctx: &egui::Context, rendered: Rendered, sharp: bool) {
+        let Rendered {
+            composed,
+            quality,
+            milliseconds,
+        } = rendered;
         self.renders = self.renders.saturating_add(1);
         self.stats = Some(RenderStats {
-            width: frame.width,
-            height: frame.height,
-            ssaa: key.quality.ssaa,
-            triangles: scene.map_or(0, Scene::triangles),
-            milliseconds: elapsed(),
+            width: composed.width,
+            height: composed.height,
+            ssaa: quality.ssaa,
+            triangles: composed.triangles,
+            milliseconds,
+            sharp,
         });
-        let image =
-            egui::ColorImage::from_rgb([frame.width as usize, frame.height as usize], &frame.rgb);
+        let image = egui::ColorImage::from_rgb(
+            [composed.width as usize, composed.height as usize],
+            &composed.rgb,
+        );
         match &mut self.texture {
             Some(texture) => texture.set(image, egui::TextureOptions::LINEAR),
             None => {
@@ -633,7 +862,9 @@ impl Shell {
                     Some(ctx.load_texture("craft3d-viewport", image, egui::TextureOptions::LINEAR));
             }
         }
-        self.drawn = Some(key);
+        self.overlay = composed.overlay;
+        self.overlay_size = [composed.width, composed.height];
+        self.render_problem = None;
     }
 }
 

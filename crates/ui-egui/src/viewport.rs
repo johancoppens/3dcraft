@@ -161,6 +161,43 @@ pub fn render_bodies(
     craft3d_render::render(mesh, &camera.to_render(), &params).map_err(|e| e.to_string())
 }
 
+/// One image of the viewport as the window shows it: the bodies as
+/// pixels, and what is drawn over them as lines in the image's pixels.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Composed {
+    pub width: u32,
+    pub height: u32,
+    /// 3 bytes per pixel, row-major from the top-left.
+    pub rgb: Vec<u8>,
+    pub overlay: Overlay,
+    /// Fraction of the pixels covered by a body.
+    pub coverage: f64,
+    pub triangles: usize,
+}
+
+/// Renders the bodies and works out the overlay for the same camera and
+/// image size. No egui and no shared state: the window calls it on its
+/// render thread.
+pub fn compose(
+    scene: Option<&Scene>,
+    camera: &CameraState,
+    quality: Quality,
+    tokens: &Tokens,
+    selected: Option<&str>,
+) -> Result<Composed, String> {
+    let frame = render_bodies(scene, camera, quality, tokens)?;
+    let coverage = frame.coverage();
+    let overlay = overlay(scene, camera, frame.width, frame.height, selected);
+    Ok(Composed {
+        width: frame.width,
+        height: frame.height,
+        rgb: frame.rgb,
+        overlay,
+        coverage,
+        triangles: scene.map_or(0, Scene::triangles),
+    })
+}
+
 /// A finished picture of the viewport: bodies and overlay.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Picture {
@@ -186,17 +223,27 @@ pub fn picture(
     selected: Option<&str>,
     scale: f64,
 ) -> Result<Picture, String> {
-    let frame = render_bodies(scene, camera, quality, tokens)?;
-    let coverage = frame.coverage();
-    let (width, height) = (frame.width, frame.height);
-    let mut rgb = frame.rgb;
+    let composed = compose(scene, camera, quality, tokens, selected)?;
+    Ok(rasterise(composed, tokens, scale))
+}
+
+/// Draws the overlay of `composed` into its pixels. `scale` is the number
+/// of pixels per point, for the widths of the lines.
+pub fn rasterise(composed: Composed, tokens: &Tokens, scale: f64) -> Picture {
+    let Composed {
+        width,
+        height,
+        mut rgb,
+        overlay,
+        coverage,
+        triangles,
+    } = composed;
     let before = rgb.clone();
     let scale = if scale.is_finite() && scale > 0.0 {
         scale.min(16.0)
     } else {
         1.0
     };
-    let overlay = overlay(scene, camera, width, height, selected);
     for line in &overlay.lines {
         draw_line(
             &mut rgb,
@@ -228,14 +275,14 @@ pub fn picture(
         .filter(|(a, b)| a != b)
         .count();
     let pixels = (rgb.len() / 3).max(1);
-    Ok(Picture {
+    Picture {
         width,
         height,
         rgb,
         coverage,
         overlay_coverage: changed as f64 / pixels as f64,
-        triangles: scene.map_or(0, Scene::triangles),
-    })
+        triangles,
+    }
 }
 
 /// The part of the segment inside the box `[lo, hi]` on both axes

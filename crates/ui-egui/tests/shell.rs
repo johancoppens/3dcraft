@@ -10,6 +10,7 @@
 
 use craft3d_engine::{FeatureState, Session, Workspace};
 use craft3d_ui_egui::camera::{ORBIT_DEGREES_PER_POINT, Projector};
+use craft3d_ui_egui::shell::image_quality;
 use craft3d_ui_egui::state::{CameraState, ProjectionKind};
 use craft3d_ui_egui::viewport::{self, LineKind, Quality};
 use craft3d_ui_egui::{Shell, Tokens};
@@ -59,6 +60,9 @@ struct Window {
     ctx: egui::Context,
     size: egui::Vec2,
     time: f64,
+    /// The images the last frame uploaded as whole textures: width,
+    /// height and RGB bytes.
+    uploads: Vec<(usize, usize, Vec<u8>)>,
 }
 
 impl Window {
@@ -67,7 +71,17 @@ impl Window {
             ctx: egui::Context::default(),
             size: vec2(width, height),
             time: 0.0,
+            uploads: Vec::new(),
         }
+    }
+
+    /// The image of `width` x `height` the last frame put on screen.
+    fn uploaded(&self, width: u32, height: u32) -> Option<&[u8]> {
+        self.uploads
+            .iter()
+            .rev()
+            .find(|(w, h, _)| (*w, *h) == (width as usize, height as usize))
+            .map(|(_, _, rgb)| rgb.as_slice())
     }
 
     fn frame(&mut self, shell: &mut Shell, session: &mut Session, events: Vec<Event>) -> usize {
@@ -81,6 +95,24 @@ impl Window {
         let mut output = self.ctx.run_ui(input, |ui| shell.ui(ui, session));
         // What a backend would upload: how many textures were set.
         let uploads = output.textures_delta.set.len();
+        self.uploads = output
+            .textures_delta
+            .set
+            .values()
+            .flat_map(|deltas| deltas.iter())
+            .filter(|delta| delta.pos.is_none())
+            .map(|delta| match &delta.image {
+                egui::ImageData::Color(image) => (
+                    image.width(),
+                    image.height(),
+                    image
+                        .pixels
+                        .iter()
+                        .flat_map(|p| [p.r(), p.g(), p.b()])
+                        .collect(),
+                ),
+            })
+            .collect();
         output.textures_delta.clear();
         uploads
     }
@@ -805,4 +837,168 @@ fn the_overlay_projects_where_the_renderer_draws() {
             }
         }
     }
+}
+
+/// How long a test waits for the render thread before it fails. The wait
+/// ends when the image is there: this is a limit, not a pause.
+const LONG: std::time::Duration = std::time::Duration::from_secs(120);
+
+fn direct(
+    session: &mut Session,
+    shell: &Shell,
+    camera: &CameraState,
+    moving: bool,
+) -> viewport::Composed {
+    let scene = session.scene(None).unwrap();
+    viewport::compose(
+        scene.as_deref(),
+        camera,
+        image_quality(shell.viewport_size(), moving, 8192),
+        &shell.tokens,
+        shell.state.selected_feature.as_deref(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn with_a_render_thread_a_preview_is_shown_first_and_the_sharp_image_when_it_is_ready() {
+    let mut session = part();
+    let mut shell = Shell::threaded();
+    assert!(shell.renders_in_background());
+    assert!(!Shell::new().renders_in_background());
+    let mut window = Window::new(1000.0, 700.0);
+    // Two frames: the first lays the panels out, so the viewport has its
+    // size from the second on.
+    window.idle(&mut shell, &mut session, 2);
+    let [w, h] = shell.viewport_size();
+    let camera = shell.state.camera;
+
+    // Before the thread's image is taken in, the preview is on screen:
+    // half the size, one sample, made on this thread.
+    let preview = shell.render_stats().unwrap();
+    if !preview.sharp {
+        assert_eq!(
+            (preview.width, preview.height, preview.ssaa),
+            (w / 2, h / 2, 1)
+        );
+    }
+    // The sharp image arrives; the next frame shows it, and it is exactly
+    // the image of this camera.
+    assert!(shell.wait_for_sharp(LONG));
+    let _ = window.frame(&mut shell, &mut session, Vec::new());
+    let sharp = shell.render_stats().unwrap();
+    assert!(sharp.sharp);
+    assert_eq!((sharp.width, sharp.height, sharp.ssaa), (w, h, 2));
+    let expected = direct(&mut session, &shell, &camera, false);
+    assert_eq!(window.uploaded(w, h).unwrap(), expected.rgb.as_slice());
+    // Nothing more is rendered while nothing changes, and there is nothing
+    // to wait for.
+    let rendered = shell.render_count();
+    window.idle(&mut shell, &mut session, 5);
+    assert!(shell.wait_for_sharp(std::time::Duration::ZERO));
+    assert_eq!(shell.render_count(), rendered);
+    assert!(shell.problem().is_none());
+}
+
+#[test]
+fn a_sharp_image_of_an_old_camera_or_an_old_document_is_never_put_on_screen() {
+    let mut session = part();
+    let mut shell = Shell::threaded();
+    let mut window = Window::new(1000.0, 700.0);
+    window.idle(&mut shell, &mut session, 2);
+    assert!(shell.wait_for_sharp(LONG));
+    let _ = window.frame(&mut shell, &mut session, Vec::new());
+    assert!(shell.render_stats().unwrap().sharp);
+    let [w, h] = shell.viewport_size();
+    let first = shell.state.camera;
+
+    // The camera turns: a preview at once, the sharp image is being made.
+    shell.state.camera.yaw += 40.0;
+    let turned = shell.state.camera;
+    let _ = window.frame(&mut shell, &mut session, Vec::new());
+    assert!(!shell.render_stats().unwrap().sharp);
+    let preview = direct(&mut session, &shell, &turned, true);
+    assert_eq!(
+        window.uploaded(preview.width, preview.height).unwrap(),
+        preview.rgb.as_slice()
+    );
+    // That image is finished, but before a frame takes it in the camera
+    // turns back and further: it is now the image of an old camera.
+    assert!(shell.wait_for_sharp(LONG));
+    shell.state.camera.yaw -= 90.0;
+    let now = shell.state.camera;
+    assert!(now != first && now != turned);
+    let _ = window.frame(&mut shell, &mut session, Vec::new());
+    let stats = shell.render_stats().unwrap();
+    assert!(!stats.sharp, "the stale sharp image was shown: {stats:?}");
+    assert!(
+        window.uploaded(w, h).is_none(),
+        "nothing of the full size went on screen"
+    );
+    let preview = direct(&mut session, &shell, &now, true);
+    assert_eq!(
+        window.uploaded(preview.width, preview.height).unwrap(),
+        preview.rgb.as_slice(),
+        "the preview of the camera as it is now"
+    );
+    // The image of the camera as it is now follows.
+    assert!(shell.wait_for_sharp(LONG));
+    let _ = window.frame(&mut shell, &mut session, Vec::new());
+    assert!(shell.render_stats().unwrap().sharp);
+    let expected = direct(&mut session, &shell, &now, false);
+    assert_eq!(window.uploaded(w, h).unwrap(), expected.rgb.as_slice());
+
+    // The same with the document: an edit while its image is being made.
+    shell.state.camera.auto_fit = false;
+    shell.state.camera.pitch = 10.0;
+    let camera = shell.state.camera;
+    let _ = window.frame(&mut shell, &mut session, Vec::new());
+    assert!(shell.wait_for_sharp(LONG));
+    let before_edit = direct(&mut session, &shell, &camera, false);
+    run(
+        &mut session,
+        "feature.edit",
+        json!({"feature": "Post", "height": 12}),
+    );
+    let _ = window.frame(&mut shell, &mut session, Vec::new());
+    assert!(!shell.render_stats().unwrap().sharp);
+    assert!(window.uploaded(w, h).is_none());
+    assert!(shell.wait_for_sharp(LONG));
+    let _ = window.frame(&mut shell, &mut session, Vec::new());
+    let after_edit = direct(&mut session, &shell, &camera, false);
+    assert_ne!(before_edit.rgb, after_edit.rgb, "the edit is visible");
+    assert_eq!(window.uploaded(w, h).unwrap(), after_edit.rgb.as_slice());
+    assert!(shell.render_stats().unwrap().sharp);
+}
+
+#[test]
+fn dragging_with_a_render_thread_shows_previews_only_and_ends_sharp() {
+    let mut session = part();
+    let mut shell = Shell::threaded();
+    let mut window = Window::new(1000.0, 700.0);
+    window.idle(&mut shell, &mut session, 2);
+    assert!(shell.wait_for_sharp(LONG));
+    window.idle(&mut shell, &mut session, 1);
+    let [w, h] = shell.viewport_size();
+    let from = shell.viewport_rect().unwrap().center();
+    let held = window.drag(
+        &mut shell,
+        &mut session,
+        PointerButton::Primary,
+        from,
+        from + vec2(60.0, 10.0),
+        6,
+    );
+    assert!(!held.sharp);
+    assert_eq!((held.width, held.height, held.ssaa), (w / 2, h / 2, 1));
+    // Let go: the frames after it ask for the sharp image of where the
+    // camera stopped.
+    window.idle(&mut shell, &mut session, 1);
+    assert!(shell.wait_for_sharp(LONG));
+    window.idle(&mut shell, &mut session, 1);
+    let rest = shell.render_stats().unwrap();
+    assert!(rest.sharp);
+    let camera = shell.state.camera;
+    let expected = direct(&mut session, &shell, &camera, false);
+    assert_eq!(window.uploaded(w, h).unwrap(), expected.rgb.as_slice());
 }
