@@ -18,15 +18,25 @@
 //! Deviations from docs/control-protocol.md, for now: there are no
 //! background jobs (`wait`, `jobs.*`), no `session.*`/`doc.*` methods and
 //! tools (the `file.*` commands do the same through `engine.execute` and
-//! `command_run`), no MCP resources and no bridge to a running desktop app.
+//! `command_run`) and no MCP resources.
+//!
+//! [`bridge`] is the MCP server without a session: it passes every message
+//! to a running desktop app, which answers it on the document in its
+//! window.
 //!
 //! [`Session`]: craft3d_engine::Session
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod bridge;
 mod fields;
 mod lines;
 pub mod mcp;
 mod registry;
 pub mod rpc;
+
+/// Reading one request line with a size cap, for a host that serves the
+/// protocol on a transport of its own (the desktop app's TCP listener).
+pub use lines::{Line, read_line};
 
 /// Longest request line a server reads, in bytes. A longer line is skipped
 /// up to its newline and answered with an error.

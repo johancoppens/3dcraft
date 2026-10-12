@@ -9,3 +9,13 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+craft3d-math.workspace = true
+craft3d-tess.workspace = true
+craft3d-render.workspace = true
+craft3d-engine.workspace = true
+egui.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+png.workspace = true

@@ -263,13 +263,6 @@ fn an_unknown_flag_is_a_usage_error_that_names_the_flag() {
             ran.stderr
         );
     }
-    // The bridge of docs/control-protocol.md does not exist yet.
-    let ran = cli(&["mcp", "--bridge", "127.0.0.1:7878"]).failed(2);
-    assert!(
-        ran.stderr.contains("unknown flag `--bridge`"),
-        "{}",
-        ran.stderr
-    );
 }
 
 #[test]
@@ -955,4 +948,128 @@ fn mcp_answers_json_rpc_on_stdin() {
         replies[10],
         json!({"jsonrpc": "2.0", "id": 10, "result": {}})
     );
+}
+
+/// `mcp --bridge` passes messages to a running window. Without one, the
+/// agent is told so in the protocol, and the process keeps serving.
+#[test]
+fn mcp_bridge_checks_its_flags_and_reports_a_window_that_is_not_there() {
+    let dir = workdir("bridge");
+    let token = path(&dir, "control.token");
+    std::fs::write(&token, format!("{}\n", "ab".repeat(32))).unwrap();
+    // A port nothing listens on: bound once to find a free one, then
+    // closed again.
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+        .to_string();
+
+    let request = r#"{"jsonrpc":"2.0","id":4,"method":"tools/list"}"#;
+    let notification = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+    let input = format!("{request}\n{notification}\n{request}\n");
+    let ran = cli_in(
+        &dir,
+        &["mcp", "--bridge", &port, "--control-token-file", &token],
+        Some(&input),
+    )
+    .ok();
+    let replies = ran.json_lines();
+    assert_eq!(replies.len(), 2, "{}", ran.stdout);
+    for reply in &replies {
+        assert_eq!(reply["id"], 4);
+        let message = reply["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains("not reachable") && message.contains(&format!("--control {port}")),
+            "{message}"
+        );
+    }
+
+    let wrong = path(&dir, "wrong.token");
+    std::fs::write(&wrong, "not a token").unwrap();
+    for (args, code, word) in [
+        (vec!["mcp", "--bridge", &port], 2, "go together"),
+        (
+            vec!["mcp", "--control-token-file", &token],
+            2,
+            "go together",
+        ),
+        (
+            vec![
+                "mcp",
+                "--bridge",
+                "8.8.8.8:7878",
+                "--control-token-file",
+                &token,
+            ],
+            2,
+            "only connects to this machine",
+        ),
+        (
+            vec!["mcp", "--bridge", "0", "--control-token-file", &token],
+            2,
+            "not a port",
+        ),
+        (
+            vec!["mcp", "--bridge", "seven", "--control-token-file", &token],
+            2,
+            "not an address",
+        ),
+        (
+            vec![
+                "mcp",
+                "--bridge",
+                &port,
+                "--bridge",
+                &port,
+                "--control-token-file",
+                &token,
+            ],
+            2,
+            "given twice",
+        ),
+        (
+            vec![
+                "mcp",
+                "--bridge",
+                &port,
+                "--control-token-file",
+                &path(&dir, "none.token"),
+            ],
+            1,
+            "cannot read it",
+        ),
+        (
+            vec!["mcp", "--bridge", &port, "--control-token-file", &wrong],
+            1,
+            "does not hold a control token",
+        ),
+        (
+            vec![
+                "mcp",
+                "--bridge",
+                &port,
+                "--control-token-file",
+                &token,
+                "--automation-write-root",
+                dir.to_str().unwrap(),
+            ],
+            2,
+            "the window's",
+        ),
+        // The bridge is for MCP only.
+        (
+            vec!["serve", "--bridge", &port, "--control-token-file", &token],
+            2,
+            "unknown flag",
+        ),
+    ] {
+        let ran = cli_in(&dir, &args, Some("")).failed(code);
+        assert!(ran.stderr.contains(word), "{args:?}: {}", ran.stderr);
+        assert_eq!(ran.stdout, "", "{args:?}");
+    }
+    let help = cli(&["mcp", "--help"]).ok();
+    assert!(help.stdout.contains("--bridge PORT"), "{}", help.stdout);
+    let _ = std::fs::remove_dir_all(&dir);
 }

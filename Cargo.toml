@@ -21,6 +21,7 @@ craft3d-regen = { path = "crates/regen" }
 craft3d-format = { path = "crates/format" }
 craft3d-engine = { path = "crates/engine" }
 craft3d-automation = { path = "crates/automation" }
+craft3d-ui-egui = { path = "crates/ui-egui" }
 craft3d-tess = { path = "crates/tess" }
 craft3d-render = { path = "crates/render" }
 craft3d-testkit = { path = "crates/testkit" }
@@ -29,6 +30,12 @@ craft3d-zipstore = { path = "crates/zipstore" }
 craft3d-io = { path = "crates/io" }
 # Not modelling code: image encoding only (decisions.md, D10).
 png = "0.17"
+# The shell: native egui/eframe on wgpu (AGENTS.md). Default features are
+# trimmed: no accesskit, no link opening, no persistence.
+egui = { version = "0.36", default-features = false, features = ["default_fonts"] }
+eframe = { version = "0.36", default-features = false, features = ["default_fonts", "wayland", "x11", "wgpu"] }
+# The control token only (docs/control-protocol.md, Authentication).
+getrandom = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

@@ -144,6 +144,7 @@ Options:
 const HELP_MCP: &str = "\
 Usage: craft3d-cli mcp [--automation-read-root DIR]
                        [--automation-write-root DIR]
+       craft3d-cli mcp --bridge PORT --control-token-file FILE
 
 Serves the Model Context Protocol on stdin and stdout (JSON-RPC 2.0, one
 message per line), for agent clients. Tools: command_list, command_run,
@@ -153,9 +154,17 @@ The session reads files only beneath the read root and writes only beneath
 the write root. Each is optional and independent: without one, that
 direction is denied.
 
+With --bridge there is no session here: every message is passed to a
+running 3DCraft window (started with `craft3d --control PORT
+--control-token-file FILE`) and answered on the document that window shows,
+so an agent models where you can watch. The files a command may touch are
+then the ones that window was given.
+
 Options:
   --automation-read-root DIR    An existing directory commands may read from
-  --automation-write-root DIR   An existing directory commands may write to";
+  --automation-write-root DIR   An existing directory commands may write to
+  --bridge PORT                 Port (or 127.0.0.1:PORT) of a running window
+  --control-token-file FILE     The token file that window was started with";
 
 const SUBCOMMANDS: &[(&str, &str)] = &[
     ("commands", HELP_COMMANDS),

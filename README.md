@@ -12,7 +12,8 @@ STL, 3MF or OBJ, all through commands: from the command line, a JSON-lines serve
 Sketches can be drawn and constrained (lines, circles and arcs; sixteen kinds of constraint, with
 dimensions that follow variables) and are solved by 3DCraft's own solver, which reports the degrees of
 freedom left and which constraints are redundant or in conflict. A sketch's closed profiles, holes
-included, can be extruded into a solid. There are no booleans, no revolve, no STEP and no desktop app yet;
+included, can be extruded into a solid, and a sketch can lie on a face of it. A native window shows
+the model while an agent builds it, also over MCP. There are no booleans, no revolve and no STEP yet;
 [`docs/roadmap.md`](docs/roadmap.md) says what comes next.
 
 ```sh
@@ -24,6 +25,17 @@ target/release/craft3d-cli run --new '{}' \
 target/release/craft3d-cli render part.3dcraft --out part.png
 target/release/craft3d-cli convert part.3dcraft part.3mf
 target/release/craft3d-cli commands          # everything it can do
+```
+
+The viewer, after an agent built this bracket in it through the MCP bridge (36 commands):
+
+![The 3DCraft window showing an L bracket with a tab, its sketches drawn over it](docs/img/viewer.png)
+
+```sh
+cargo build --release -p craft3d -p craft3d-cli
+target/release/craft3d --control 7878 --control-token-file .private/control.token &
+claude mcp add craft3d -- "$PWD/target/release/craft3d-cli" mcp \
+    --bridge 7878 --control-token-file "$PWD/.private/control.token"
 ```
 
 The tessellator handles any face the kernel can describe. These are the reference solids of the test

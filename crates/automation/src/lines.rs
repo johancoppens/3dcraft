@@ -7,7 +7,7 @@ use std::io::{self, BufRead, ErrorKind, Write};
 
 /// What one read from the input produced.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum Line {
+pub enum Line {
     /// The input has ended.
     End,
     /// A line, without its line ending.
@@ -22,7 +22,7 @@ pub(crate) enum Line {
 /// `BufRead::read_line` would buffer a whole line first, so a peer that
 /// never sends a newline could exhaust memory. This keeps at most `cap`
 /// bytes and discards the rest of an over-long line as it streams past.
-pub(crate) fn read_line(input: &mut impl BufRead, cap: usize) -> io::Result<Line> {
+pub fn read_line(input: &mut impl BufRead, cap: usize) -> io::Result<Line> {
     let mut line = Vec::new();
     let mut too_long = false;
     let mut read_any = false;

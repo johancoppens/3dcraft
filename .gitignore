@@ -5,3 +5,5 @@
 /.private/
 # Reference copy of another project's docs; local only (docs/README.md).
 /docs_photocraft/
+# Worktrees of parallel agents; local only.
+/.claude/worktrees/
