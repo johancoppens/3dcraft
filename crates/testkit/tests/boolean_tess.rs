@@ -149,6 +149,231 @@ fn cases() -> Vec<(&'static str, Body, f64)> {
     ]
 }
 
+/// Booleans with cones, spheres and tori, and with edges that are splines.
+fn curved_cases() -> Vec<(&'static str, Body, f64)> {
+    let tol = Tolerance::default();
+    let run = |a: &Body, b: &Body, op| boolean(a, b, op, &tol).unwrap().body;
+    let at = |x: f64, y: f64, z: f64| Frame::WORLD.at(Vec3::new(x, y, z)).unwrap();
+    let ball = primitives::sphere(&at(1.0, -0.5, 3.0), 2.0).unwrap();
+    let cap = |r: f64, h: f64| PI * h * h * (3.0 * r - h) / 3.0;
+    let sphere = |r: f64| 4.0 / 3.0 * PI * r * r * r;
+    let above = boxed([-4.0, -4.0, 3.75], [6.0, 5.0, 9.0]);
+    let cone = primitives::cone(&at(1.0, 2.0, 0.0), 1.5, 3.0).unwrap();
+    let ring = primitives::torus(&at(0.0, 0.0, 0.0), 3.0, 1.0).unwrap();
+    let plate = boxed([0.0, 0.0, 0.0], [4.0, 3.0, 1.0]);
+    let sink = primitives::cone(
+        &Frame::new(Vec3::new(2.0, 1.5, 1.0), -Vec3::Z, Vec3::X).unwrap(),
+        1.0,
+        0.75,
+    )
+    .unwrap();
+    let dimpled = run(&plate, &sink, BooleanOp::Subtract);
+    // The circles in which the surfaces meet, as splines of 16 pieces.
+    craft3d_kernel::boolean::approximate_circles(16);
+    let splined_cap = run(&ball, &above, BooleanOp::Intersect);
+    let splined_hole = run(
+        &plate,
+        &rod([1.5, 1.25, -1.0], 0.75, 3.0),
+        BooleanOp::Subtract,
+    );
+    craft3d_kernel::boolean::approximate_circles(0);
+    vec![
+        (
+            "the cap of a ball",
+            run(&ball, &above, BooleanOp::Intersect),
+            cap(2.0, 1.25),
+        ),
+        (
+            "a ball without its cap",
+            run(&ball, &above, BooleanOp::Subtract),
+            sphere(2.0) - cap(2.0, 1.25),
+        ),
+        (
+            "an eighth of a ball",
+            run(
+                &ball,
+                &boxed([1.0, -0.5, 3.0], [5.0, 4.0, 8.0]),
+                BooleanOp::Intersect,
+            ),
+            sphere(2.0) / 8.0,
+        ),
+        (
+            "the lens of two balls",
+            run(
+                &primitives::sphere(&Frame::WORLD, 2.0).unwrap(),
+                &primitives::sphere(&at(1.5, 2.0, 0.0), 1.5).unwrap(),
+                BooleanOp::Intersect,
+            ),
+            cap(2.0, 0.4) + cap(1.5, 0.6),
+        ),
+        (
+            "a ball with a hole through it",
+            run(
+                &primitives::sphere(&at(0.0, 0.0, 3.0), 2.0).unwrap(),
+                &rod([0.0, 0.0, 0.0], 1.0, 6.0),
+                BooleanOp::Subtract,
+            ),
+            PI * (2.0 * 3.0_f64.sqrt()).powi(3) / 6.0,
+        ),
+        (
+            "a frustum",
+            run(
+                &cone,
+                &boxed([-4.0, -4.0, 1.0], [6.0, 8.0, 9.0]),
+                BooleanOp::Subtract,
+            ),
+            PI * (2.25 + 1.5 + 1.0) / 3.0,
+        ),
+        (
+            "the tip of a cone",
+            run(
+                &cone,
+                &boxed([-4.0, -4.0, 1.0], [6.0, 8.0, 9.0]),
+                BooleanOp::Intersect,
+            ),
+            PI * 2.0 / 3.0,
+        ),
+        (
+            "half a cone, cut through its apex",
+            run(
+                &cone,
+                &boxed([1.0, -4.0, -1.0], [6.0, 8.0, 9.0]),
+                BooleanOp::Intersect,
+            ),
+            PI * 2.25 * 3.0 / 6.0,
+        ),
+        (
+            "a plate with a conical dimple",
+            dimpled.clone(),
+            12.0 - PI * 0.75 / 3.0,
+        ),
+        (
+            "a countersunk hole",
+            run(
+                &dimpled,
+                &rod([2.0, 1.5, -1.0], 0.25, 3.0),
+                BooleanOp::Subtract,
+            ),
+            12.0 - PI * 0.5625 * (1.0 + 0.25 + 0.0625) / 3.0 - PI * 0.0625 * 0.4375,
+        ),
+        (
+            "half a ring, cut through its axis",
+            run(
+                &ring,
+                &boxed([0.0, -6.0, -3.0], [6.0, 6.0, 3.0]),
+                BooleanOp::Intersect,
+            ),
+            PI * PI * 3.0,
+        ),
+        (
+            "the upper half of a ring",
+            run(
+                &ring,
+                &boxed([-6.0, -6.0, 0.0], [6.0, 6.0, 3.0]),
+                BooleanOp::Intersect,
+            ),
+            PI * PI * 3.0,
+        ),
+        (
+            "a dome on a plate",
+            run(
+                &plate,
+                &primitives::sphere(&at(2.0, 1.5, 1.0), 1.0).unwrap(),
+                BooleanOp::Union,
+            ),
+            12.0 + sphere(1.0) / 2.0,
+        ),
+        (
+            "a pin with a round end",
+            run(
+                &rod([2.0, 1.5, 1.0], 0.5, 2.0),
+                &primitives::sphere(&at(2.0, 1.5, 1.0), 0.5).unwrap(),
+                BooleanOp::Union,
+            ),
+            PI * 0.5 + sphere(0.5) / 2.0,
+        ),
+        (
+            "the cap of a ball, its rim a spline",
+            splined_cap,
+            cap(2.0, 1.25),
+        ),
+        (
+            "a plate with a hole whose rims are splines",
+            splined_hole,
+            12.0 - PI * 0.5625,
+        ),
+    ]
+}
+
+#[test]
+fn meshes_of_curved_boolean_results_are_closed_and_converge() {
+    let tol = Tolerance::default();
+    let mut refused = Vec::new();
+    let mut meshed = 0;
+    for (name, body, volume) in curved_cases() {
+        assert_eq!(check(&body, &tol), [], "{name}");
+        let exact = mass_properties(&body).unwrap();
+        // A spline that approximates a circle is off by 1e-7 of its size.
+        assert!(
+            (exact.volume - volume).abs() < 1e-6 * volume,
+            "{name}: {} is not {volume}",
+            exact.volume
+        );
+        let mut previous = f64::INFINITY;
+        for chord in [1e-1, 1e-2, 1e-3] {
+            let params = TessParams {
+                chordal_tolerance: chord,
+                ..TessParams::default()
+            };
+            let mesh = match tessellate_body(&body, &params) {
+                Ok(mesh) => mesh,
+                Err(e) => {
+                    // The tessellator says what it cannot mesh; that is
+                    // its limit, recorded below, not a wrong body.
+                    refused.push(format!("{name}: {e:?}"));
+                    break;
+                }
+            };
+            let welded = mesh.weld().unwrap();
+            assert!(welded.is_closed(), "{name}: the mesh is not closed");
+            let error = (welded.volume() - volume).abs();
+            assert!(
+                error <= exact.area * chord,
+                "{name} at {chord}: volume {} is not {volume}",
+                welded.volume()
+            );
+            assert!(
+                error <= previous + 1e-9 * volume,
+                "{name} at {chord}: not converging"
+            );
+            previous = error;
+            if chord == 1e-3 {
+                meshed += 1;
+            }
+        }
+    }
+    for line in &refused {
+        println!("not meshed: {line}");
+    }
+    println!(
+        "{meshed} meshed, {} refused by the tessellator",
+        refused.len()
+    );
+    // What the tessellator refuses today, by name: a change either way
+    // shows up here.
+    let names: Vec<&str> = refused
+        .iter()
+        .filter_map(|line| line.split(':').next())
+        .collect();
+    assert_eq!(names, EXPECTED_REFUSALS, "{refused:#?}");
+}
+
+/// Boolean results the tessellator does not mesh yet: the zone of a sphere
+/// between two circles about its axis (it says the loops do not bound a
+/// region). The body is right: it passes the checker and its volume and
+/// area are the closed form's, in crates/kernel/tests/boolean_surfaces.rs.
+const EXPECTED_REFUSALS: [&str; 1] = ["a ball with a hole through it"];
+
 #[test]
 fn meshes_of_boolean_results_are_closed_and_converge() {
     let tol = Tolerance::default();

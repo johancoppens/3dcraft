@@ -1,26 +1,19 @@
-//! A face, or a piece of one, as the booleans see it: a planar or
-//! cylindrical surface and the loops of curve pieces that bound it, with
-//! the questions asked of it: is this point of the surface inside, which
-//! way round does a loop go, where is a point safely inside.
+//! A face, or a piece of one, as the booleans see it: a surface and the
+//! loops of curve pieces that bound it, with the questions asked of it: is
+//! this point of the surface inside, where is a point safely inside, what
+//! box holds it.
 //!
-//! Inside or outside on a plane is the winding number of the boundary about
-//! the point, summed as the angle each piece turns through; it has no
-//! special cases for a point level with a vertex. On a cylinder it is the
-//! parity of the boundary pieces met going up the ruling through the point;
-//! which pieces span that ruling is decided by comparing angles computed
-//! once per vertex, so two pieces that share a vertex never both claim, or
-//! both miss, a ruling through it.
-//!
-//! On a cylinder a circle or ellipse piece is a section of that cylinder,
-//! on which the curve parameter and the cylinder's angle run at the same
-//! rate (one way or the other); `craft3d_geom::intersect` makes them so and
-//! tests it.
+//! Inside or outside is a winding number in a chart of the surface
+//! ([`super::chart`]), for every analytic surface kind and every curve
+//! kind alike. A face without loops is its whole surface (a sphere, a
+//! torus).
 
 use super::Reason;
+use super::chart::{About, Chart, TOO_CLOSE};
+use super::hits::speed_bound;
 use craft3d_geom::{Curve3, Ellipse, Surface};
-use craft3d_math::quadrature::Rule;
-use craft3d_math::{Bbox3, Frame, Vec3};
-use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, TAU};
+use craft3d_math::{Bbox3, Vec3};
+use std::f64::consts::FRAC_PI_2;
 
 /// A piece of a curve in a loop.
 #[derive(Clone, Debug)]
@@ -30,8 +23,6 @@ pub(super) struct Seg {
     /// The vertex positions at `range.0` and `range.1`.
     pub a: Vec3,
     pub b: Vec3,
-    /// Both ends are one vertex: a whole closed curve.
-    pub closed: bool,
     /// The loop runs against the curve.
     pub reversed: bool,
 }
@@ -41,23 +32,21 @@ impl Seg {
         0.5 * (self.range.0 + self.range.1)
     }
 
+    /// The point a fraction `k` of the way along the piece's range.
+    pub fn at(&self, k: f64) -> Vec3 {
+        self.curve
+            .eval(self.range.0 + (self.range.1 - self.range.0) * k)
+    }
+
     /// The direction the loop runs in at the middle of the piece.
     pub fn travel(&self) -> (Vec3, Vec3) {
         let (point, tangent) = self.curve.derivatives(self.middle());
         (point, if self.reversed { -tangent } else { tangent })
     }
 
-    fn sign(&self) -> f64 {
+    pub fn sign(&self) -> f64 {
         if self.reversed { -1.0 } else { 1.0 }
     }
-}
-
-#[derive(Clone, Debug)]
-pub(super) struct Outline {
-    pub surface: Surface,
-    /// The outward normal is opposite to the surface's.
-    pub reversed: bool,
-    pub loops: Vec<Vec<Seg>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,17 +57,9 @@ pub(super) enum Side {
     Out,
 }
 
-pub(super) const NOT_PLANE_OR_CYLINDER: Reason =
-    "a face that is not planar or cylindrical; booleans handle planes and cylinders so far";
-const NOT_A_SECTION: Reason =
-    "an edge of a cylindrical face that is not a ruling or a plane section of the cylinder";
-const TOO_CLOSE: Reason =
-    "a point too close to a face boundary to tell inside from outside (at the edge of tolerance)";
-
-fn wrap(a: f64) -> f64 {
-    let w = a.rem_euclid(TAU);
-    if w >= TAU { 0.0 } else { w }
-}
+const SLIVER: Reason =
+    "a piece of a face too thin to find a point inside it (at the edge of tolerance)";
+const UNBOUNDED: Reason = "a face without a boundary on a surface that is not closed";
 
 /// `t` moved by whole periods to where it is closest to `range`.
 pub(super) fn lift(curve: &Curve3, range: (f64, f64), t: f64) -> f64 {
@@ -96,8 +77,10 @@ pub(super) fn lift(curve: &Curve3, range: (f64, f64), t: f64) -> f64 {
 /// The parameter within `range` of the point of the curve piece nearest to
 /// `p`, and its distance from `p`.
 pub(super) fn nearest(curve: &Curve3, range: (f64, f64), p: Vec3) -> Option<(f64, f64)> {
-    if let Curve3::Ellipse(ellipse) = curve {
-        return nearest_on_ellipse(ellipse, range, p);
+    match curve {
+        Curve3::Ellipse(ellipse) => return nearest_on_ellipse(ellipse, range, p),
+        Curve3::Nurbs(_) => return nearest_on_spline(curve, range, p),
+        Curve3::Line(_) | Curve3::Circle(_) => {}
     }
     // On a line or a circle the distance grows with the parameter's
     // distance from the nearest point of the whole curve, so clamping
@@ -187,6 +170,63 @@ fn nearest_on_ellipse(ellipse: &Ellipse, range: (f64, f64), p: Vec3) -> Option<(
     distance.is_finite().then_some((t, distance))
 }
 
+/// [`nearest`] for a piece of a spline: branch and bound as for an ellipse,
+/// with the curve's speed bound, then Newton's method.
+fn nearest_on_spline(curve: &Curve3, range: (f64, f64), p: Vec3) -> Option<(f64, f64)> {
+    let speed = speed_bound(curve);
+    let (t0, t1) = range;
+    if !(speed.is_finite() && t0.is_finite() && t1.is_finite() && p.is_finite()) {
+        return None;
+    }
+    let distance = |t: f64| curve.eval(t).distance(p);
+    let (d0, d1) = (distance(t0), distance(t1));
+    let mut best = if d0 <= d1 { (d0, t0) } else { (d1, t1) };
+    let shortest = 1e-9 * speed * (t1 - t0);
+    let mut stack = vec![(t0, d0, t1, d1)];
+    let mut steps = 0_usize;
+    while let Some((ta, da, tb, db)) = stack.pop() {
+        steps += 1;
+        let length = speed * (tb - ta);
+        if steps > 20_000
+            || da.min(db) - 0.5 * length >= best.0
+            || length <= (1e-3 * best.0).max(shortest)
+        {
+            continue;
+        }
+        let tm = 0.5 * (ta + tb);
+        if !(tm > ta && tm < tb) {
+            continue;
+        }
+        let dm = distance(tm);
+        if dm < best.0 {
+            best = (dm, tm);
+        }
+        stack.push((ta, da, tm, dm));
+        stack.push((tm, dm, tb, db));
+    }
+    // Newton on (C - p) · C', its slope by a central difference of C'.
+    let h = (t1 - t0) * 1e-6;
+    let mut t = best.1;
+    for _ in 0..40 {
+        let (c, d1) = curve.derivatives(t);
+        let g = (c - p).dot(d1);
+        let d2 = (curve.derivatives(t + h).1 - curve.derivatives(t - h).1) * (0.5 / h);
+        let slope = d1.length_squared() + (c - p).dot(d2);
+        if !(slope.is_finite() && slope > 0.0) {
+            break;
+        }
+        let next = (t - g / slope).max(t0).min(t1);
+        let moved = (next - t).abs();
+        t = next;
+        if moved <= 1e-15 * (t1 - t0) {
+            break;
+        }
+    }
+    let d = distance(t);
+    let (d, t) = if d <= best.0 { (d, t) } else { best };
+    d.is_finite().then_some((t, d))
+}
+
 /// The parameter of `p` on the curve piece, when it is within `tol` of it.
 pub(super) fn locate(curve: &Curve3, range: (f64, f64), p: Vec3, tol: f64) -> Option<f64> {
     nearest(curve, range, p)
@@ -206,211 +246,36 @@ pub(super) fn surface_distance(surface: &Surface, p: Vec3) -> f64 {
 }
 
 /// The point of the surface nearest to `p`.
-fn onto(surface: &Surface, p: Vec3) -> Option<Vec3> {
+pub(super) fn onto(surface: &Surface, p: Vec3) -> Option<Vec3> {
     let (u, v) = surface.project(p).ok()?;
     let q = surface.eval(u, v);
     q.is_finite().then_some(q)
 }
 
-/// The surface normal at (the projection of) `p`.
-pub(super) fn surface_normal(surface: &Surface, p: Vec3) -> Option<Vec3> {
+/// The outward normal of a face on `surface` at (the projection of) `p`.
+///
+/// At the apex of a cone, where the surface has no normal, the direction
+/// along the axis on the outward side: curves that leave the apex are told
+/// apart by their directions seen along the axis.
+pub(super) fn outward_normal(surface: &Surface, reversed: bool, p: Vec3) -> Option<Vec3> {
     let (u, v) = surface.project(p).ok()?;
-    surface.normal(u, v)
-}
-
-/// A cylinder's angle and height of `p`.
-fn angle_height(frame: &Frame, p: Vec3) -> (f64, f64) {
-    let (x, y, z) = frame.local(p);
-    let u = if x == 0.0 && y == 0.0 {
-        0.0
-    } else {
-        wrap(y.atan2(x))
-    };
-    (u, z)
-}
-
-/// True when `u` is in the stretch that runs counter-clockwise from `lo` up
-/// to, not including, `hi`. Comparisons only, so that stretches which share
-/// an end never overlap or leave a gap.
-fn within(u: f64, lo: f64, hi: f64) -> bool {
-    if lo < hi {
-        lo <= u && u < hi
-    } else if lo > hi {
-        u >= lo || u < hi
-    } else {
-        false
-    }
-}
-
-/// A piece of a cylindrical face's boundary, seen in the cylinder's (u, v).
-struct Section {
-    /// +1 when the curve parameter runs with u, −1 against.
-    with_u: f64,
-    /// The plane of the circle or ellipse.
-    center: Vec3,
-    normal: Vec3,
-}
-
-fn section(seg: &Seg, frame: &Frame) -> Result<Option<Section>, Reason> {
-    let plane = match &seg.curve {
-        Curve3::Line(_) => return Ok(None), // a ruling
-        Curve3::Circle(c) => c.frame(),
-        Curve3::Ellipse(e) => e.frame(),
-        Curve3::Nurbs(_) => return Err(NOT_A_SECTION),
-    };
-    let (point, tangent) = seg.curve.derivatives(seg.middle());
-    let (x, y, _) = frame.local(point);
-    let around = frame.vector(-y, x, 0.0);
-    let rate = tangent.dot(around);
-    let rise = plane.z().dot(frame.z());
-    if !(rate.abs() > 1e-9 * tangent.length() * around.length() && rise.abs() > 1e-9) {
-        return Err(NOT_A_SECTION);
-    }
-    Ok(Some(Section {
-        with_u: rate.signum(),
-        center: plane.origin(),
-        normal: plane.z(),
-    }))
-}
-
-/// The height at which the piece crosses the ruling at angle `u`, when it
-/// spans that ruling.
-fn crossing(seg: &Seg, frame: &Frame, radius: f64, u: f64) -> Result<Option<f64>, Reason> {
-    let Some(section) = section(seg, frame)? else {
-        return Ok(None);
-    };
-    if !seg.closed {
-        let (ua, ub) = (angle_height(frame, seg.a).0, angle_height(frame, seg.b).0);
-        let (lo, hi) = if section.with_u > 0.0 {
-            (ua, ub)
-        } else {
-            (ub, ua)
-        };
-        if !within(u, lo, hi) {
-            return Ok(None);
-        }
-    }
-    let (s, c) = u.sin_cos();
-    let foot = frame.point(radius * c, radius * s, 0.0);
-    let v = (section.center - foot).dot(section.normal) / frame.z().dot(section.normal);
-    if v.is_finite() {
-        Ok(Some(v))
-    } else {
-        Err(NOT_A_SECTION)
-    }
-}
-
-/// An angle as far as can be from the ends of all pieces of the loops: the
-/// middle of the widest gap between them.
-pub(super) fn clear_angle(surface: &Surface, loops: &[&[Seg]]) -> f64 {
-    let Surface::Cylinder(cylinder) = surface else {
-        return 0.0;
-    };
-    let mut angles: Vec<f64> = loops
-        .iter()
-        .flat_map(|l| l.iter())
-        .flat_map(|seg| [seg.a, seg.b])
-        .map(|p| angle_height(cylinder.frame(), p).0)
-        .collect();
-    angles.sort_by(f64::total_cmp);
-    let (Some(&first), Some(&last)) = (angles.first(), angles.last()) else {
-        return 0.0;
-    };
-    // The gap across the seam first, then those between neighbours.
-    let mut best = (first + TAU - last, wrap(last + 0.5 * (first + TAU - last)));
-    for (a, b) in angles.iter().zip(angles.iter().skip(1)) {
-        if b - a > best.0 {
-            best = (b - a, a + 0.5 * (b - a));
-        }
-    }
-    best.1
-}
-
-/// The highest crossing of a loop with the ruling at angle `u`.
-pub(super) fn top_crossing(
-    surface: &Surface,
-    loop_: &[Seg],
-    u: f64,
-) -> Result<Option<f64>, Reason> {
-    let Surface::Cylinder(cylinder) = surface else {
-        return Err(NOT_PLANE_OR_CYLINDER);
-    };
-    let mut top: Option<f64> = None;
-    for seg in loop_ {
-        if let Some(v) = crossing(seg, cylinder.frame(), cylinder.radius(), u)? {
-            top = Some(top.map_or(v, |t| t.max(v)));
-        }
-    }
-    Ok(top)
-}
-
-/// How many times a loop on a cylinder goes around the axis, in the sense
-/// of the cylinder's angle.
-pub(super) fn turns(surface: &Surface, loop_: &[Seg]) -> Result<i32, Reason> {
-    let Surface::Cylinder(cylinder) = surface else {
-        return Ok(0);
-    };
-    let mut total = 0.0;
-    for seg in loop_ {
-        if let Some(section) = section(seg, cylinder.frame())? {
-            total += seg.sign() * section.with_u * (seg.range.1 - seg.range.0);
-        }
-    }
-    let turns = (total / TAU).round();
-    if turns.abs() <= 1.0 {
-        Ok(turns as i32)
-    } else {
-        Err("a loop that winds around a cylinder more than once")
-    }
-}
-
-/// The most evaluations the winding sum spends on one curve piece.
-const MAX_TURN_STEPS: usize = 4096;
-
-/// The angle the direction from `q` to a point moving along the piece (in
-/// the curve's own direction) turns through, in the plane's coordinates.
-fn turn(seg: &Seg, frame: &Frame, q: (f64, f64)) -> Result<f64, Reason> {
-    let flat = |p: Vec3| {
-        let (x, y, _) = frame.local(p);
-        (x - q.0, y - q.1)
-    };
-    let angle = |a: (f64, f64), b: (f64, f64)| (a.0 * b.1 - a.1 * b.0).atan2(a.0 * b.0 + a.1 * b.1);
-    let reach = match &seg.curve {
-        Curve3::Line(_) => return Ok(angle(flat(seg.a), flat(seg.b))),
-        Curve3::Circle(c) => c.radius(),
-        Curve3::Ellipse(e) => e.semi_axes().0.max(e.semi_axes().1),
-        Curve3::Nurbs(_) => {
-            return Err("a NURBS edge; booleans handle lines, circles and ellipses");
-        }
-    };
-    // A stretch that stays within a disc that does not contain `q` turns
-    // by less than half a turn, which is what `angle` assumes. Halve the
-    // stretches until they do.
-    let mut total = 0.0;
-    let mut stack = vec![(seg.range.0, flat(seg.a), seg.range.1, flat(seg.b))];
-    let mut steps = 0_usize;
-    while let Some((t0, p0, t1, p1)) = stack.pop() {
-        steps += 1;
-        if steps > MAX_TURN_STEPS {
-            return Err(TOO_CLOSE);
-        }
-        let length = reach * (t1 - t0);
-        if p0.0.hypot(p0.1) > length {
-            total += angle(p0, p1);
-        } else {
-            let mid = 0.5 * (t0 + t1);
-            if !(mid > t0 && mid < t1) {
-                return Err(TOO_CLOSE);
+    let normal = match (surface.normal(u, v), surface) {
+        (Some(normal), _) => normal,
+        (None, Surface::Cone(cone)) => {
+            // The normal is (cos u, sin u, -tan α) scaled: it leans
+            // against the axis where the cone widens along it.
+            if cone.half_angle() > 0.0 {
+                -cone.frame().z()
+            } else {
+                cone.frame().z()
             }
-            let pm = flat(seg.curve.eval(mid));
-            stack.push((mid, pm, t1, p1));
-            stack.push((t0, p0, mid, pm));
         }
-    }
-    Ok(total)
+        (None, _) => return None,
+    };
+    Some(if reversed { -normal } else { normal })
 }
 
-/// The smallest distance from `p` to the loops.
+/// The smallest distance from `p` to the loops; infinite without loops.
 pub(super) fn clearance(loops: &[Vec<Seg>], p: Vec3) -> f64 {
     let mut least = f64::INFINITY;
     for seg in loops.iter().flatten() {
@@ -420,153 +285,52 @@ pub(super) fn clearance(loops: &[Vec<Seg>], p: Vec3) -> f64 {
     least
 }
 
-/// Where a point of the surface is with respect to the loops.
-pub(super) fn side_of(
+/// A point of the surface just to the left of one of the pieces `of`, seen
+/// from outside: on the side of it that the face it bounds is on, and with
+/// nothing of `all` between it and that piece. At least `margin` away from
+/// everything.
+pub(super) fn left_of(
     surface: &Surface,
-    loops: &[Vec<Seg>],
-    p: Vec3,
-    tol: f64,
-) -> Result<Side, Reason> {
-    let clear = clearance(loops, p);
-    if clear <= tol {
-        return Ok(Side::On);
-    }
-    match surface {
-        Surface::Plane(plane) => {
-            let frame = plane.frame();
-            let (x, y, _) = frame.local(p);
-            let mut total = 0.0;
-            for seg in loops.iter().flatten() {
-                total += seg.sign() * turn(seg, frame, (x, y))?;
-            }
-            let winding = (total / TAU).round();
-            if !winding.is_finite() {
-                return Err(TOO_CLOSE);
-            }
-            Ok(if winding == 0.0 { Side::Out } else { Side::In })
-        }
-        Surface::Cylinder(cylinder) => {
-            let frame = cylinder.frame();
-            let (u, v) = angle_height(frame, p);
-            // The point may be in line with a ruling of the boundary (it
-            // often is: on the continuation of an edge). The two ends of
-            // a ruling do not have the same angle to the last bit, so
-            // which pieces span a ruling through them is not reliable.
-            // Everything within `clear` of the point is on the same side
-            // as the point: ask on either side of it, halfway there.
-            let nudge = (0.5 * clear / cylinder.radius()).min(0.5);
-            let mut sides = [false, false];
-            for (side, u) in sides.iter_mut().zip([wrap(u - nudge), wrap(u + nudge)]) {
-                let mut above = 0_usize;
-                for seg in loops.iter().flatten() {
-                    if crossing(seg, frame, cylinder.radius(), u)?.is_some_and(|at| at > v) {
-                        above += 1;
-                    }
-                }
-                *side = above % 2 == 1;
-            }
-            match sides {
-                [true, true] => Ok(Side::In),
-                [false, false] => Ok(Side::Out),
-                _ => Err(TOO_CLOSE),
-            }
-        }
-        _ => Err(NOT_PLANE_OR_CYLINDER),
-    }
-}
-
-fn panels(seg: &Seg) -> usize {
-    (((seg.range.1 - seg.range.0) / FRAC_PI_4).ceil() as usize).clamp(1, 16)
-}
-
-/// The area a loop encloses, positive when it runs counter-clockwise seen
-/// from outside the face. On a cylinder the area is taken in (angle,
-/// height) and is meaningful for loops that do not go around the axis.
-pub(super) fn signed_area(surface: &Surface, reversed: bool, loop_: &[Seg]) -> Result<f64, Reason> {
-    let rule = Rule::new(8);
-    let Some(origin) = loop_.first().map(|s| s.a) else {
-        return Ok(0.0);
-    };
-    let mut area = 0.0;
-    match surface {
-        Surface::Plane(plane) => {
-            let frame = plane.frame();
-            let flat = |p: Vec3| {
-                let (x, y, _) = frame.local(p);
-                let (ox, oy, _) = frame.local(origin);
-                (x - ox, y - oy)
-            };
-            for seg in loop_ {
-                let part = match &seg.curve {
-                    Curve3::Line(_) => {
-                        let (a, b) = (flat(seg.a), flat(seg.b));
-                        0.5 * (a.0 * b.1 - a.1 * b.0)
-                    }
-                    _ => rule.integrate(seg.range.0, seg.range.1, panels(seg), |t| {
-                        let (point, tangent) = seg.curve.derivatives(t);
-                        let (x, y) = flat(point);
-                        let (dx, dy) = (tangent.dot(frame.x()), tangent.dot(frame.y()));
-                        0.5 * (x * dy - y * dx)
-                    }),
-                };
-                area += seg.sign() * part;
-            }
-        }
-        Surface::Cylinder(cylinder) => {
-            let frame = cylinder.frame();
-            let base = angle_height(frame, origin).1;
-            for seg in loop_ {
-                let Some(section) = section(seg, frame)? else {
-                    continue;
-                };
-                // −∮ v du, with du = ±dt along a section.
-                let part = rule.integrate(seg.range.0, seg.range.1, panels(seg), |t| {
-                    angle_height(frame, seg.curve.eval(t)).1 - base
-                });
-                area -= seg.sign() * section.with_u * part * cylinder.radius();
-            }
-        }
-        _ => return Err(NOT_PLANE_OR_CYLINDER),
-    }
-    if !area.is_finite() {
-        return Err("a loop whose area is not finite");
-    }
-    Ok(if reversed { -area } else { area })
-}
-
-/// A point of the face well inside the loops: at least `margin` from all of
-/// them. Tried from the middle of each boundary piece, stepping into the
-/// face by ever smaller amounts.
-pub(super) fn interior_point(outline: &Outline, tol: f64, margin: f64) -> Result<Vec3, Reason> {
-    const SLIVER: Reason =
-        "a piece of a face too thin to find a point inside it (at the edge of tolerance)";
-    for seg in outline.loops.iter().flatten() {
+    reversed: bool,
+    all: &[Vec<Seg>],
+    of: &[Seg],
+    margin: f64,
+) -> Result<Vec3, Reason> {
+    for seg in of {
         let (point, travel) = seg.travel();
-        let Some(normal) = surface_normal(&outline.surface, point) else {
+        let Some(outward) = outward_normal(surface, reversed, point) else {
             continue;
         };
-        let outward = if outline.reversed { -normal } else { normal };
         // Seen from outside the face lies to the left of its boundary.
         let Some(inward) = outward.cross(travel).normalized() else {
             continue;
         };
-        let quarter = |k: f64| {
-            seg.curve
-                .eval(seg.range.0 + (seg.range.1 - seg.range.0) * k)
-        };
-        let mut step = quarter(0.25).distance(quarter(0.75));
+        let mut step = seg.at(0.25).distance(seg.at(0.75));
         for _ in 0..64 {
             step *= 0.5;
             if !(step.is_finite() && step > margin) {
                 break;
             }
-            let Some(candidate) = onto(&outline.surface, point + inward * step) else {
+            let Some(candidate) = onto(surface, point + inward * step) else {
                 continue;
             };
-            if clearance(&outline.loops, candidate) < margin {
+            // The nearest thing to it must be this piece, away from its
+            // ends: then nothing lies between the two, and the candidate
+            // is right next to the piece there. On which side, the
+            // direction from that nearest point says.
+            let Some((t, reach)) = nearest(&seg.curve, seg.range, candidate) else {
+                continue;
+            };
+            let edge = 1e-6 * (seg.range.1 - seg.range.0);
+            if !(reach > margin && t > seg.range.0 + edge && t < seg.range.1 - edge)
+                || clearance(all, candidate) < reach * (1.0 - 1e-9)
+            {
                 continue;
             }
-            if side_of(&outline.surface, &outline.loops, candidate, tol)? == Side::In {
+            let (foot, tangent) = seg.curve.derivatives(t);
+            let travel = if seg.reversed { -tangent } else { tangent };
+            let left = outward_normal(surface, reversed, foot).map(|n| n.cross(travel));
+            if left.is_some_and(|left| left.dot(candidate - foot) > 0.0) {
                 return Ok(candidate);
             }
         }
@@ -574,23 +338,268 @@ pub(super) fn interior_point(outline: &Outline, tol: f64, margin: f64) -> Result
     Err(SLIVER)
 }
 
-/// A box around everything the loops reach. An arc counts as its whole
-/// circle or ellipse, which also covers the bulge of a cylindrical face.
-pub(super) fn bbox(loops: &[Vec<Seg>]) -> Bbox3 {
-    let mut b = Bbox3::EMPTY;
-    for seg in loops.iter().flatten() {
-        b.add(seg.a);
-        b.add(seg.b);
-        let (center, reach) = match &seg.curve {
-            Curve3::Line(_) | Curve3::Nurbs(_) => continue,
-            Curve3::Circle(c) => (c.frame().origin(), c.radius()),
-            Curve3::Ellipse(e) => (e.frame().origin(), e.semi_axes().0.max(e.semi_axes().1)),
+#[derive(Clone, Debug)]
+pub(super) struct Outline {
+    pub surface: Surface,
+    /// The outward normal is opposite to the surface's.
+    pub reversed: bool,
+    pub loops: Vec<Vec<Seg>>,
+    chart: Chart,
+    /// The face contains the place its chart leaves out (the centre of
+    /// projection of a sphere, the cut of a torus). Its loops then wind
+    /// about the points outside it, and not about those inside.
+    infinite: bool,
+}
+
+impl Outline {
+    /// `margin` is the least distance from the boundary at which a point is
+    /// looked for to tell which side of its loops a face on a sphere or a
+    /// torus is on.
+    pub fn new(
+        surface: Surface,
+        reversed: bool,
+        loops: Vec<Vec<Seg>>,
+        margin: f64,
+    ) -> Result<Outline, Reason> {
+        let chart = Chart::new(&surface, &loops)?;
+        if loops.is_empty() && !chart.is_closed() {
+            return Err(UNBOUNDED);
+        }
+        let infinite = if chart.is_closed() && !loops.is_empty() {
+            // The loops go around a point just inside the face once, or
+            // not at all when the face is the outside of them.
+            let mut found = None;
+            for loop_ in &loops {
+                if let Ok(witness) = left_of(&surface, reversed, &loops, loop_, margin) {
+                    found = Some(witness);
+                    break;
+                }
+            }
+            let witness = found.ok_or(SLIVER)?;
+            match chart.winding(loops.iter().map(Vec::as_slice), About::Point(witness))? {
+                0 => true,
+                1 | -1 => false,
+                _ => return Err(TOO_CLOSE),
+            }
+        } else {
+            false
         };
-        let reach = Vec3::new(reach, reach, reach);
-        b.add(center - reach);
-        b.add(center + reach);
+        Ok(Outline {
+            surface,
+            reversed,
+            loops,
+            chart,
+            infinite,
+        })
     }
-    b
+
+    /// Where a point of the surface is with respect to the loops.
+    pub fn side(&self, p: Vec3, tol: f64) -> Result<Side, Reason> {
+        if clearance(&self.loops, p) <= tol {
+            return Ok(Side::On);
+        }
+        if self.loops.is_empty() {
+            return Ok(Side::In);
+        }
+        let winding = self
+            .chart
+            .winding(self.loops.iter().map(Vec::as_slice), About::Point(p))?;
+        Ok(if (winding == 0) == self.infinite {
+            Side::In
+        } else {
+            Side::Out
+        })
+    }
+
+    /// Up to `want` points of the face well inside the loops: at least
+    /// `margin` from all of them. Tried from the middle of each boundary
+    /// piece, stepping into the face by ever smaller amounts; on a face
+    /// without loops, fixed places of the surface.
+    pub fn interior_points(&self, tol: f64, margin: f64, want: usize) -> Result<Vec<Vec3>, Reason> {
+        let mut found = Vec::new();
+        if self.loops.is_empty() {
+            for (u, v) in [(0.7, 0.3), (2.9, -0.8), (4.6, 1.0), (5.5, -0.2)] {
+                let p = self.surface.eval(u, v);
+                if p.is_finite() && found.len() < want {
+                    found.push(p);
+                }
+            }
+            return if found.is_empty() {
+                Err(SLIVER)
+            } else {
+                Ok(found)
+            };
+        }
+        let mut failure = None;
+        for seg in self.loops.iter().flatten() {
+            if found.len() >= want {
+                break;
+            }
+            let (point, travel) = seg.travel();
+            let Some(outward) = outward_normal(&self.surface, self.reversed, point) else {
+                continue;
+            };
+            // Seen from outside the face lies to the left of its boundary.
+            let Some(inward) = outward.cross(travel).normalized() else {
+                continue;
+            };
+            let mut step = seg.at(0.25).distance(seg.at(0.75));
+            let mut taken = 0;
+            for _ in 0..64 {
+                step *= 0.5;
+                if !(step.is_finite() && step > margin) {
+                    break;
+                }
+                let Some(candidate) = onto(&self.surface, point + inward * step) else {
+                    continue;
+                };
+                if clearance(&self.loops, candidate) < margin {
+                    continue;
+                }
+                match self.side(candidate, tol) {
+                    // Two from each piece, at different depths: where the
+                    // first is of no use (it is just where the other
+                    // body touches), the next is somewhere else.
+                    Ok(Side::In) => {
+                        found.push(candidate);
+                        taken += 1;
+                        if taken == 2 || found.len() >= want {
+                            break;
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(reason) => failure = failure.or(Some(reason)),
+                }
+            }
+        }
+        if found.is_empty() {
+            Err(failure.unwrap_or(SLIVER))
+        } else {
+            Ok(found)
+        }
+    }
+
+    /// Points, circles and balls that the face lies within the convex
+    /// hull of. Conservative: an arc counts as its whole circle or
+    /// ellipse, a face on a cylinder or a cone as the whole stretch of
+    /// the surface between the ends of its boundary along the axis (to
+    /// the apex when the face reaches it), a face on a sphere or a torus
+    /// as a ball around the whole surface.
+    pub fn hull(&self, tol: f64) -> Hull {
+        let mut hull = Hull::default();
+        for seg in self.loops.iter().flatten() {
+            hull.points.push(seg.a);
+            hull.points.push(seg.b);
+            match &seg.curve {
+                Curve3::Line(_) => {}
+                Curve3::Circle(c) => {
+                    let f = c.frame();
+                    hull.conics
+                        .push((f.origin(), f.x() * c.radius(), f.y() * c.radius()));
+                }
+                Curve3::Ellipse(e) => {
+                    let f = e.frame();
+                    let (a, b) = e.semi_axes();
+                    hull.conics.push((f.origin(), f.x() * a, f.y() * b));
+                }
+                Curve3::Nurbs(c) => hull.points.extend_from_slice(c.control_points()),
+            }
+        }
+        let (frame, radius, slope, apex) = match &self.surface {
+            Surface::Plane(_) | Surface::Bezier(_) | Surface::Nurbs(_) => return hull,
+            Surface::Sphere(s) => {
+                hull.balls.push((s.frame().origin(), s.radius()));
+                return hull;
+            }
+            Surface::Torus(s) => {
+                hull.balls
+                    .push((s.frame().origin(), s.radii().0 + s.radii().1));
+                return hull;
+            }
+            Surface::Cylinder(s) => (*s.frame(), s.radius(), 0.0, None),
+            Surface::Cone(s) => (
+                *s.frame(),
+                s.radius(),
+                s.half_angle().tan(),
+                Some(s.apex_v()),
+            ),
+        };
+        // The stretch of the axis that the boundary spans.
+        let (mut low, mut high) = hull.span(frame.z());
+        let base = frame.origin().dot(frame.z());
+        (low, high) = (low - base, high - base);
+        if let Some(apex) = apex {
+            // A face that may contain the apex reaches it.
+            let tip = frame.point(0.0, 0.0, apex);
+            if !matches!(self.side(tip, tol), Ok(Side::Out)) {
+                low = low.min(apex);
+                high = high.max(apex);
+            }
+            // Nothing of a cone lies beyond its apex.
+            if slope > 0.0 {
+                low = low.max(apex);
+            } else {
+                high = high.min(apex);
+            }
+        }
+        for along in [low, high] {
+            if along.is_finite() {
+                // The circle of the surface at that height.
+                let reach = (radius + along * slope).max(0.0);
+                hull.conics.push((
+                    frame.point(0.0, 0.0, along),
+                    frame.x() * reach,
+                    frame.y() * reach,
+                ));
+            }
+        }
+        hull
+    }
+}
+
+/// What a face lies within the convex hull of.
+#[derive(Clone, Debug, Default)]
+pub(super) struct Hull {
+    points: Vec<Vec3>,
+    /// `center + x cos t + y sin t`, whole.
+    conics: Vec<(Vec3, Vec3, Vec3)>,
+    /// Centre and radius.
+    balls: Vec<(Vec3, f64)>,
+}
+
+impl Hull {
+    /// The least and greatest of `p · direction` over the hull; an empty
+    /// stretch (least above greatest) for an empty hull.
+    pub fn span(&self, direction: Vec3) -> (f64, f64) {
+        let (mut low, mut high) = (f64::INFINITY, f64::NEG_INFINITY);
+        let mut add = |middle: f64, reach: f64| {
+            low = low.min(middle - reach);
+            high = high.max(middle + reach);
+        };
+        for &p in &self.points {
+            add(p.dot(direction), 0.0);
+        }
+        for &(center, x, y) in &self.conics {
+            add(
+                center.dot(direction),
+                x.dot(direction).hypot(y.dot(direction)),
+            );
+        }
+        for &(center, radius) in &self.balls {
+            add(center.dot(direction), radius * direction.length());
+        }
+        (low, high)
+    }
+
+    pub fn bbox(&self) -> Bbox3 {
+        let mut b = Bbox3::EMPTY;
+        let (x, y, z) = (self.span(Vec3::X), self.span(Vec3::Y), self.span(Vec3::Z));
+        if x.0 <= x.1 {
+            b.add(Vec3::new(x.0, y.0, z.0));
+            b.add(Vec3::new(x.1, y.1, z.1));
+        }
+        b
+    }
 }
 
 /// True when two boxes come within `margin` of each other.
@@ -606,12 +615,15 @@ pub(super) fn boxes_meet(a: &Bbox3, b: &Bbox3, margin: f64) -> bool {
         && blo.z <= ahi.z + margin
 }
 
-/// True when the infinite line through `origin` along `direction` passes
-/// within `margin` of the box.
-pub(super) fn line_meets_box(origin: Vec3, direction: Vec3, b: &Bbox3, margin: f64) -> bool {
-    let Some((lo, hi)) = b.corners() else {
-        return false;
-    };
+/// The stretch of the infinite line through `origin` along `direction`
+/// that is within `margin` of the box, as parameters along it.
+pub(super) fn line_in_box(
+    origin: Vec3,
+    direction: Vec3,
+    b: &Bbox3,
+    margin: f64,
+) -> Option<(f64, f64)> {
+    let (lo, hi) = b.corners()?;
     let (mut enter, mut leave) = (f64::NEG_INFINITY, f64::INFINITY);
     for (o, d, l, h) in [
         (origin.x, direction.x, lo.x, hi.x),
@@ -621,7 +633,7 @@ pub(super) fn line_meets_box(origin: Vec3, direction: Vec3, b: &Bbox3, margin: f
         let (l, h) = (l - margin, h + margin);
         if d == 0.0 {
             if o < l || o > h {
-                return false;
+                return None;
             }
         } else {
             let (t0, t1) = ((l - o) / d, (h - o) / d);
@@ -629,13 +641,15 @@ pub(super) fn line_meets_box(origin: Vec3, direction: Vec3, b: &Bbox3, margin: f
             leave = leave.min(t0.max(t1));
         }
     }
-    enter <= leave
+    (enter <= leave).then_some((enter, leave))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use craft3d_geom::{Circle, Cylinder, Line, Plane};
+    use craft3d_geom::{Circle, Cone, Cylinder, Line, NurbsCurve, Plane, Sphere, Torus};
+    use craft3d_math::Frame;
+    use std::f64::consts::{PI, TAU};
 
     fn line(a: Vec3, b: Vec3, reversed: bool) -> Seg {
         Seg {
@@ -643,7 +657,6 @@ mod tests {
             range: (0.0, a.distance(b)),
             a,
             b,
-            closed: false,
             reversed,
         }
     }
@@ -653,16 +666,19 @@ mod tests {
         Seg {
             a: curve.eval(range.0),
             b: curve.eval(range.1),
-            closed: range.1 - range.0 >= TAU,
             curve,
             range,
             reversed,
         }
     }
 
+    fn outline(surface: Surface, reversed: bool, loops: Vec<Vec<Seg>>) -> Outline {
+        Outline::new(surface, reversed, loops, 4e-6).unwrap()
+    }
+
     /// A 4 by 2 rectangle in the plane of `frame` with a half-disc bulging
     /// out of its right side and a round hole.
-    fn plate(frame: Frame) -> (Surface, Vec<Vec<Seg>>) {
+    fn plate(frame: Frame) -> Outline {
         let p = |x: f64, y: f64| frame.point(x, y, 0.0);
         let bulge = frame.at(p(4.0, 1.0)).unwrap();
         let hole = frame.at(p(1.0, 1.0)).unwrap();
@@ -673,7 +689,7 @@ mod tests {
             line(p(0.0, 2.0), p(0.0, 0.0), false),
         ];
         let inner = vec![arc(hole, 0.5, (0.0, TAU), true)];
-        (Surface::Plane(Plane::new(frame)), vec![outer, inner])
+        outline(Surface::Plane(Plane::new(frame)), false, vec![outer, inner])
     }
 
     fn tilted() -> Frame {
@@ -688,8 +704,8 @@ mod tests {
     #[test]
     fn inside_on_and_outside_of_a_planar_outline() {
         for frame in [Frame::WORLD, tilted()] {
-            let (surface, loops) = plate(frame);
-            let side = |x: f64, y: f64| side_of(&surface, &loops, frame.point(x, y, 0.0), 1e-6);
+            let face = plate(frame);
+            let side = |x: f64, y: f64| face.side(frame.point(x, y, 0.0), 1e-6);
             for (x, y) in [(2.5, 1.0), (4.9, 1.0), (0.1, 0.1), (1.0, 1.6), (4.5, 1.8)] {
                 assert_eq!(side(x, y), Ok(Side::In), "({x}, {y})");
             }
@@ -715,27 +731,24 @@ mod tests {
             assert_eq!(side(4.999_997, 1.0), Ok(Side::In));
             assert_eq!(side(1.500_003, 1.0), Ok(Side::In));
             assert_eq!(side(1.499_997, 1.0), Ok(Side::Out));
-            // Counter-clockwise outside, clockwise hole; exact areas.
-            let area = signed_area(&surface, false, &loops[0]).unwrap();
-            assert!((area - (8.0 + FRAC_PI_2)).abs() < 1e-12, "{area}");
-            let hole = signed_area(&surface, false, &loops[1]).unwrap();
-            assert!((hole + FRAC_PI_4).abs() < 1e-12, "{hole}");
-            assert!(signed_area(&surface, true, &loops[0]).unwrap() < 0.0);
-            let outline = Outline {
-                surface: surface.clone(),
-                reversed: false,
-                loops: loops.clone(),
-            };
-            let inside = interior_point(&outline, 1e-6, 4e-6).unwrap();
-            assert_eq!(side_of(&surface, &loops, inside, 1e-6), Ok(Side::In));
-            assert!(clearance(&loops, inside) >= 4e-6);
+            let inside = face.interior_points(1e-6, 4e-6, 3).unwrap();
+            assert_eq!(inside.len(), 3);
+            for p in inside {
+                assert_eq!(face.side(p, 1e-6), Ok(Side::In));
+                assert!(clearance(&face.loops, p) >= 4e-6);
+            }
+            // Just left of the hole's rim is in the plate, not in the hole.
+            let beside = left_of(&face.surface, false, &face.loops, &face.loops[1], 4e-6).unwrap();
+            assert_eq!(face.side(beside, 1e-6), Ok(Side::In));
+            let (x, y, _) = frame.local(beside);
+            assert!((x - 1.0).hypot(y - 1.0) > 0.5);
         }
     }
 
     /// A patch of a cylinder between two rulings and two circles, with a
     /// step in its upper rim: the rulings of the step are in line with
     /// points further up and down the cylinder.
-    fn patch(frame: Frame) -> (Surface, Vec<Vec<Seg>>) {
+    fn patch(frame: Frame) -> Outline {
         let r = 2.0;
         let at = |u: f64, v: f64| frame.point(r * u.cos(), r * u.sin(), v);
         let ring = |v: f64| frame.at(frame.point(0.0, 0.0, v)).unwrap();
@@ -747,8 +760,9 @@ mod tests {
             arc(ring(1.0), r, (0.5, 1.5), true),
             line(at(0.5, 0.0), at(0.5, 1.0), true),
         ];
-        (
+        outline(
             Surface::Cylinder(Cylinder::new(frame, r).unwrap()),
+            false,
             vec![outer],
         )
     }
@@ -756,12 +770,10 @@ mod tests {
     #[test]
     fn inside_on_and_outside_of_a_cylindrical_outline() {
         for frame in [Frame::WORLD, tilted()] {
-            let (surface, loops) = patch(frame);
+            let face = patch(frame);
             let r = 2.0;
-            let side = |u: f64, v: f64| {
-                let p = frame.point(r * u.cos(), r * u.sin(), v);
-                side_of(&surface, &loops, p, 1e-6)
-            };
+            let at = |u: f64, v: f64| frame.point(r * u.cos(), r * u.sin(), v);
+            let side = |u: f64, v: f64| face.side(at(u, v), 1e-6);
             for (u, v) in [
                 (1.0, 0.5),
                 (2.0, 1.5),
@@ -772,7 +784,8 @@ mod tests {
                 assert_eq!(side(u, v), Ok(Side::In), "({u}, {v})");
             }
             // Beside, above and below it; on the other side of the
-            // cylinder; and in line with each of the three rulings.
+            // cylinder; in line with each of the three rulings; and far
+            // along the axis, where an exponential would overflow.
             for (u, v) in [
                 (1.0, 1.5),
                 (0.2, 0.5),
@@ -786,57 +799,300 @@ mod tests {
                 (0.5, -1.0),
                 (2.5, 3.0),
                 (2.5, -0.5),
+                (1.0, 1e5),
+                (1.0, -1e5),
             ] {
                 assert_eq!(side(u, v), Ok(Side::Out), "({u}, {v})");
             }
             for (u, v) in [(1.0, 0.0), (1.5, 1.5), (2.5, 1.0), (2.0, 2.0), (0.5, 0.0)] {
                 assert_eq!(side(u, v), Ok(Side::On), "({u}, {v})");
             }
-            assert_eq!(turns(&surface, &loops[0]), Ok(0));
-            // In (angle, height) times the radius: 2 x 1 and 1 x 1, by r.
-            let area = signed_area(&surface, false, &loops[0]).unwrap();
-            assert!((area - 6.0).abs() < 1e-12, "{area}");
-            assert!(signed_area(&surface, true, &loops[0]).unwrap() < 0.0);
-            let outline = Outline {
-                surface: surface.clone(),
-                reversed: false,
-                loops: loops.clone(),
-            };
-            let inside = interior_point(&outline, 1e-6, 4e-6).unwrap();
-            assert_eq!(side_of(&surface, &loops, inside, 1e-6), Ok(Side::In));
+            let inside = face.interior_points(1e-6, 4e-6, 1).unwrap();
+            assert_eq!(face.side(inside[0], 1e-6), Ok(Side::In));
 
             // The whole wall between two circles: each rim goes around
             // once, the lower one with the wall above it.
             let ring = |v: f64| frame.at(frame.point(0.0, 0.0, v)).unwrap();
-            let wall = vec![
-                vec![arc(ring(0.0), r, (0.0, TAU), false)],
-                vec![arc(ring(3.0), r, (0.0, TAU), true)],
-            ];
-            assert_eq!(turns(&surface, &wall[0]), Ok(1));
-            assert_eq!(turns(&surface, &wall[1]), Ok(-1));
-            for u in [0.0_f64, 1.0, 3.0, 6.0] {
-                let p = |v: f64| frame.point(r * u.cos(), r * u.sin(), v);
-                assert_eq!(side_of(&surface, &wall, p(1.0), 1e-6), Ok(Side::In));
-                assert_eq!(side_of(&surface, &wall, p(-1.0), 1e-6), Ok(Side::Out));
-                assert_eq!(side_of(&surface, &wall, p(4.0), 1e-6), Ok(Side::Out));
-                assert_eq!(side_of(&surface, &wall, p(3.0), 1e-6), Ok(Side::On));
+            for reversed in [false, true] {
+                // Seen from inside (a hole's wall) the rims run the other
+                // way round.
+                let wall = outline(
+                    Surface::Cylinder(Cylinder::new(frame, r).unwrap()),
+                    reversed,
+                    vec![
+                        vec![arc(ring(0.0), r, (0.0, TAU), reversed)],
+                        vec![arc(ring(3.0), r, (0.0, TAU), !reversed)],
+                    ],
+                );
+                for u in [0.0_f64, 1.0, 3.0, 6.0] {
+                    assert_eq!(wall.side(at(u, 1.0), 1e-6), Ok(Side::In));
+                    assert_eq!(wall.side(at(u, 2.999), 1e-6), Ok(Side::In));
+                    assert_eq!(wall.side(at(u, -1.0), 1e-6), Ok(Side::Out));
+                    assert_eq!(wall.side(at(u, 4.0), 1e-6), Ok(Side::Out));
+                    assert_eq!(wall.side(at(u, 3000.0), 1e-6), Ok(Side::Out));
+                    assert_eq!(wall.side(at(u, 3.0), 1e-6), Ok(Side::On));
+                }
             }
-            let top = |loop_: &[Seg]| top_crossing(&surface, loop_, 2.0).unwrap().unwrap();
-            assert!((top(&wall[1]) - 3.0).abs() < 1e-12);
-            assert!((top(&loops[0]) - 2.0).abs() < 1e-12);
-            assert_eq!(top_crossing(&surface, &loops[0], 4.0), Ok(None));
         }
     }
 
     #[test]
-    fn a_stretch_of_angles_has_its_start_and_not_its_end() {
-        // Up to, not including: two stretches that share an end never
-        // both have it. Also across the seam at a full turn.
-        assert!(within(1.0, 1.0, 2.0) && within(1.5, 1.0, 2.0));
-        assert!(!within(2.0, 1.0, 2.0) && !within(0.5, 1.0, 2.0) && !within(2.5, 1.0, 2.0));
-        assert!(within(6.0, 5.0, 1.0) && within(0.5, 5.0, 1.0) && within(5.0, 5.0, 1.0));
-        assert!(!within(1.0, 5.0, 1.0) && !within(3.0, 5.0, 1.0));
-        assert!(!within(1.0, 1.0, 1.0));
+    fn inside_and_outside_on_a_cone_through_its_apex() {
+        for (frame, k) in [(Frame::WORLD, 1.0), (tilted(), 1e-3), (tilted(), 1e6)] {
+            let frame = frame.at(frame.origin() * k).unwrap();
+            // Radius 2 at the base, apex at height 4.
+            let slope: f64 = -0.5;
+            let cone = Surface::Cone(Cone::new(frame, 2.0 * k, slope.atan()).unwrap());
+            let at = |u: f64, v: f64| {
+                let r = (2.0 + v * slope) * k;
+                frame.point(r * u.cos(), r * u.sin(), v * k)
+            };
+            let tol = 1e-6 * k;
+            // The whole side: one rim, the apex inside.
+            let side = outline(
+                cone.clone(),
+                false,
+                vec![vec![arc(frame, 2.0 * k, (0.0, TAU), false)]],
+            );
+            for (u, v) in [(0.3, 0.5), (4.0, 3.9), (2.0, 4.0), (5.9, 1e-4)] {
+                assert_eq!(side.side(at(u, v), tol), Ok(Side::In), "({u}, {v})");
+            }
+            assert_eq!(side.side(at(1.0, 0.0), tol), Ok(Side::On));
+            assert_eq!(side.side(at(1.0, -0.5), tol), Ok(Side::Out));
+            assert!(side.hull(tol).bbox().contains(at(0.0, 4.0), 0.0));
+            // A frustum between heights 1 and 2: the apex is outside.
+            let ring = |v: f64| frame.at(frame.point(0.0, 0.0, v * k)).unwrap();
+            let frustum = outline(
+                cone.clone(),
+                false,
+                vec![
+                    vec![arc(ring(1.0), 1.5 * k, (0.0, TAU), false)],
+                    vec![arc(ring(2.0), k, (0.0, TAU), true)],
+                ],
+            );
+            for (u, v, expected) in [
+                (0.3, 1.5, Side::In),
+                (3.3, 1.01, Side::In),
+                (0.3, 0.5, Side::Out),
+                (0.3, 2.5, Side::Out),
+                (0.3, 4.0, Side::Out),
+                (2.0, 2.0, Side::On),
+            ] {
+                assert_eq!(frustum.side(at(u, v), tol), Ok(expected), "({u}, {v})");
+            }
+            assert!(!frustum.hull(tol).bbox().contains(at(0.0, 4.0), 1e-9 * k));
+            assert!(frustum.hull(tol).bbox().contains(at(1.0, 1.5), 1e-9 * k));
+            // Half of it, cut through the axis: two rulings that meet at
+            // the apex, where the boundary turns a corner.
+            let half = outline(
+                cone,
+                false,
+                vec![vec![
+                    arc(frame, 2.0 * k, (0.0, PI), false),
+                    line(at(PI, 0.0), at(PI, 4.0), false),
+                    line(at(0.0, 0.0), at(0.0, 4.0), true),
+                ]],
+            );
+            for (u, v, expected) in [
+                (1.0, 1.0, Side::In),
+                (3.0, 3.99, Side::In),
+                (4.0, 1.0, Side::Out),
+                (6.2, 3.99, Side::Out),
+                (0.0, 2.0, Side::On),
+                (0.0, 4.0, Side::On),
+            ] {
+                assert_eq!(half.side(at(u, v), tol), Ok(expected), "({u}, {v})");
+            }
+            let inside = half.interior_points(tol, 4.0 * tol, 3).unwrap();
+            assert!(!inside.is_empty());
+        }
+    }
+
+    #[test]
+    fn just_beyond_the_rim_of_a_cone_is_outside() {
+        // The surface goes on past the rim, widening slowly: a point of it
+        // a few tolerances beyond the rim is hardly further from the axis
+        // than the rim is.
+        let frame = tilted();
+        let slope: f64 = -0.278;
+        let cone = Surface::Cone(Cone::new(frame, 0.625, slope.atan()).unwrap());
+        let side = outline(
+            cone,
+            false,
+            vec![vec![arc(frame, 0.625, (0.0, TAU), false)]],
+        );
+        for u in [0.0, 9.3e-6, 1.0, 3.0, TAU - 1e-5] {
+            for (v, expected) in [
+                (-2.9e-6, Side::Out),
+                (-1e-3, Side::Out),
+                (2.9e-6, Side::In),
+                (1e-3, Side::In),
+                (0.5e-6, Side::On),
+            ] {
+                let r = 0.625 + v * slope;
+                let p = frame.point(r * u.cos(), r * u.sin(), v);
+                assert_eq!(side.side(p, 1e-6), Ok(expected), "({u}, {v})");
+            }
+        }
+    }
+
+    #[test]
+    fn caps_bands_and_their_outsides_on_a_sphere() {
+        for (frame, k) in [(Frame::WORLD, 1.0), (tilted(), 1e-3), (tilted(), 1e6)] {
+            let frame = frame.at(frame.origin() * k).unwrap();
+            let r = 2.0 * k;
+            let tol = 1e-6 * k;
+            let sphere = Surface::Sphere(Sphere::new(frame, r).unwrap());
+            let at = |u: f64, v: f64| sphere.eval(u, v);
+            // The circle of latitude at height h, counter-clockwise about
+            // the axis.
+            let parallel = |h: f64, reversed: bool| {
+                let ring = frame.at(frame.point(0.0, 0.0, h * r)).unwrap();
+                arc(ring, r * (1.0 - h * h).sqrt(), (0.0, TAU), reversed)
+            };
+            let latitude = |h: f64| h.asin();
+            let build = |loops: Vec<Vec<Seg>>| {
+                Outline::new(sphere.clone(), false, loops, 4.0 * tol).unwrap()
+            };
+            // Above the circle at 0.5; below it; between two circles; and
+            // the two caps beyond them as one would-be face each.
+            let top = build(vec![vec![parallel(0.5, false)]]);
+            let bottom = build(vec![vec![parallel(0.5, true)]]);
+            let band = build(vec![vec![parallel(-0.3, false)], vec![parallel(0.5, true)]]);
+            for u in [0.0, 1.0, 2.5, 4.0, 6.0] {
+                for h in [-1.0, -0.9, -0.31, -0.29, 0.0, 0.49, 0.51, 0.9, 1.0_f64] {
+                    let p = at(u, latitude(h));
+                    let expect = |inside: bool| Ok(if inside { Side::In } else { Side::Out });
+                    assert_eq!(top.side(p, tol), expect(h > 0.5), "top at {h}");
+                    assert_eq!(bottom.side(p, tol), expect(h < 0.5), "bottom at {h}");
+                    assert_eq!(
+                        band.side(p, tol),
+                        expect(h > -0.3 && h < 0.5),
+                        "band at {h}"
+                    );
+                }
+                assert_eq!(top.side(at(u, latitude(0.5)), tol), Ok(Side::On));
+            }
+            // A circle through both poles (a plane through the axis): the
+            // half towards +y.
+            let upright = Frame::new(frame.origin(), frame.y(), frame.x()).unwrap();
+            let half = build(vec![vec![arc(upright, r, (0.0, TAU), false)]]);
+            for (u, v, inside) in [
+                (1.0, 0.3, true),
+                (2.0, -1.2, true),
+                (4.0, 0.3, false),
+                (5.0, 1.5, false),
+            ] {
+                let expected = if inside { Side::In } else { Side::Out };
+                assert_eq!(half.side(at(u, v), tol), Ok(expected), "({u}, {v})");
+            }
+            assert_eq!(half.side(at(0.0, FRAC_PI_2), tol), Ok(Side::On));
+            // The whole sphere.
+            let whole = build(Vec::new());
+            assert_eq!(whole.side(at(1.0, 1.0), tol), Ok(Side::In));
+            assert_eq!(whole.interior_points(tol, 4.0 * tol, 2).unwrap().len(), 2);
+            for face in [&top, &bottom, &band, &half] {
+                for p in face.interior_points(tol, 4.0 * tol, 2).unwrap() {
+                    assert_eq!(face.side(p, tol), Ok(Side::In));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn faces_on_a_torus_around_the_tube_around_the_axis_and_neither() {
+        for (frame, k) in [(Frame::WORLD, 1.0), (tilted(), 1e-3), (tilted(), 1e6)] {
+            let frame = frame.at(frame.origin() * k).unwrap();
+            let (major, minor) = (4.0 * k, k);
+            let tol = 1e-6 * k;
+            let torus = Surface::Torus(Torus::new(frame, major, minor).unwrap());
+            let at = |u: f64, v: f64| torus.eval(u, v);
+            let build = |loops: Vec<Vec<Seg>>| {
+                Outline::new(torus.clone(), false, loops, 4.0 * tol).unwrap()
+            };
+            // The circle around the tube at angle u about the axis, running
+            // with v; and the circle about the axis at angle v around the
+            // tube, running with u.
+            let meridian = |u: f64, reversed: bool| {
+                let center = frame.point(major * u.cos(), major * u.sin(), 0.0);
+                let out = frame.vector(u.cos(), u.sin(), 0.0);
+                let around = Frame::new(center, out.cross(frame.z()), out).unwrap();
+                arc(around, minor, (0.0, TAU), reversed)
+            };
+            let parallel = |v: f64, reversed: bool| {
+                let ring = frame.at(frame.point(0.0, 0.0, minor * v.sin())).unwrap();
+                arc(ring, major + minor * v.cos(), (0.0, TAU), reversed)
+            };
+            // The face is to the left of its boundary seen from outside:
+            // beyond a meridian running with v lies lower u.
+            let elbow = build(vec![vec![meridian(1.0, true)], vec![meridian(2.5, false)]]);
+            let rest = build(vec![vec![meridian(1.0, false)], vec![meridian(2.5, true)]]);
+            // Beyond a parallel running with u lies higher v.
+            let outer = build(vec![vec![parallel(-1.0, false)], vec![parallel(1.0, true)]]);
+            let inner = build(vec![vec![parallel(-1.0, true)], vec![parallel(1.0, false)]]);
+            let wrap = |a: f64| a.rem_euclid(TAU);
+            for i in 0..12 {
+                for j in 0..12 {
+                    let (u, v) = (0.11 + f64::from(i) * 0.52, 0.07 + f64::from(j) * 0.52);
+                    let p = at(u, v);
+                    let expect = |inside: bool| Ok(if inside { Side::In } else { Side::Out });
+                    let between = wrap(u) > 1.0 && wrap(u) < 2.5;
+                    assert_eq!(elbow.side(p, tol), expect(between), "elbow ({u}, {v})");
+                    assert_eq!(rest.side(p, tol), expect(!between), "rest ({u}, {v})");
+                    let outside = wrap(v) < 1.0 || wrap(v) > TAU - 1.0;
+                    assert_eq!(outer.side(p, tol), expect(outside), "outer ({u}, {v})");
+                    assert_eq!(inner.side(p, tol), expect(!outside), "inner ({u}, {v})");
+                }
+            }
+            for face in [&elbow, &rest, &outer, &inner] {
+                for p in face.interior_points(tol, 4.0 * tol, 2).unwrap() {
+                    assert_eq!(face.side(p, tol), Ok(Side::In));
+                }
+            }
+            assert_eq!(elbow.side(at(1.0, 2.0), tol), Ok(Side::On));
+            assert_eq!(build(Vec::new()).side(at(1.0, 2.0), tol), Ok(Side::In));
+        }
+    }
+
+    #[test]
+    fn a_spline_boundary_is_a_boundary_like_any_other() {
+        let frame = tilted();
+        let rim = Curve3::Nurbs(NurbsCurve::circle(&frame, 2.0).unwrap());
+        let seg = Seg {
+            a: rim.eval(0.0),
+            b: rim.eval(1.0),
+            curve: rim,
+            range: (0.0, 1.0),
+            reversed: false,
+        };
+        let disc = outline(Surface::Plane(Plane::new(frame)), false, vec![vec![seg]]);
+        assert_eq!(disc.side(frame.point(1.9, 0.0, 0.0), 1e-6), Ok(Side::In));
+        assert_eq!(disc.side(frame.point(-1.4, 1.4, 0.0), 1e-6), Ok(Side::In));
+        assert_eq!(disc.side(frame.point(1.5, 1.5, 0.0), 1e-6), Ok(Side::Out));
+        assert_eq!(disc.side(frame.point(0.0, -2.0, 0.0), 1e-6), Ok(Side::On));
+        // The nearest point of a spline piece is the nearest.
+        let curve = &disc.loops[0][0].curve;
+        let mut seed = 3_u64;
+        let mut unit = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for _ in 0..100 {
+            let t0 = unit() * 0.7;
+            let range = (t0, t0 + 0.05 + unit() * 0.25);
+            let p = frame.point((unit() - 0.5) * 6.0, (unit() - 0.5) * 6.0, unit() - 0.5);
+            let (t, d) = nearest(curve, range, p).unwrap();
+            assert!(t >= range.0 && t <= range.1);
+            let mut brute = f64::INFINITY;
+            for k in 0..=5000 {
+                let s = range.0 + (range.1 - range.0) * f64::from(k) / 5000.0;
+                brute = brute.min(curve.eval(s).distance(p));
+            }
+            assert!(d <= brute + 1e-12, "{d} is not the nearest: {brute}");
+            assert!(d >= brute - 1e-2);
+        }
     }
 
     #[test]
