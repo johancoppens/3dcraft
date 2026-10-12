@@ -32,6 +32,7 @@ fn small() -> Document {
         FeatureKind::Block(Block {
             position: exprs(["0 mm", "0 mm", "0 mm"]),
             size: exprs(["width", "width / 2", "10 mm"]),
+            orientation: Default::default(),
         }),
     )
     .unwrap();
@@ -55,6 +56,7 @@ fn full(units: Units) -> Document {
                 position: exprs(["half", "0 mm", "10 mm"]),
                 radius: Expr::new("width / 8"),
                 height: Expr::new("2 * half"),
+                orientation: Default::default(),
             }),
         )
         .unwrap();
@@ -146,7 +148,7 @@ fn saving_twice_gives_the_same_bytes() {
 fn the_manifest_of_a_small_document_is_exactly_this() {
     let expected = r#"{
   "format": "3dcraft",
-  "format_version": 1,
+  "format_version": 2,
   "document": {
     "units": {
       "length": "mm",
@@ -178,7 +180,15 @@ fn the_manifest_of_a_small_document_is_exactly_this() {
             "width",
             "width / 2",
             "10 mm"
-          ]
+          ],
+          "orientation": {
+            "axis": [
+              "0",
+              "0",
+              "1"
+            ],
+            "angle": "0 deg"
+          }
         }
       }
     ],
@@ -222,7 +232,8 @@ fn the_other_feature_kinds_are_written_like_this() {
             "id": 2, "name": "Pin \u{2300}5", "suppressed": true,
             "kind": {
                 "type": "cylinder", "position": ["half", "0 mm", "10 mm"],
-                "radius": "width / 8", "height": "2 * half"
+                "radius": "width / 8", "height": "2 * half",
+                "orientation": {"axis": ["0", "0", "1"], "angle": "0 deg"}
             }
         })
     );
@@ -309,7 +320,7 @@ fn fix_trailing_commas(json: &str) -> String {
 
 #[test]
 fn a_newer_format_version_says_a_newer_3dcraft_is_needed() {
-    let error = load_error(&edited("\"format_version\": 1", "\"format_version\": 7"));
+    let error = load_error(&edited("\"format_version\": 2", "\"format_version\": 7"));
     assert!(matches!(
         error,
         FormatError::NewerVersion {
@@ -327,16 +338,16 @@ fn a_newer_format_version_says_a_newer_3dcraft_is_needed() {
     // A newer file is likely to have fields this build does not know; the
     // version is what gets reported, not the fields.
     let newer = edited(
-        "\"format_version\": 1",
-        "\"format_version\": 2, \"sketches\": []",
+        "\"format_version\": 2",
+        "\"format_version\": 3, \"sketches\": []",
     );
     assert!(matches!(
         load_error(&newer),
-        FormatError::NewerVersion { file: 2, .. }
+        FormatError::NewerVersion { file: 3, .. }
     ));
     // Far beyond 32 bits.
     let huge = edited(
-        "\"format_version\": 1",
+        "\"format_version\": 2",
         "\"format_version\": 18446744073709551615",
     );
     assert!(matches!(
@@ -347,13 +358,13 @@ fn a_newer_format_version_says_a_newer_3dcraft_is_needed() {
 
 #[test]
 fn a_missing_or_unusable_format_version_is_an_error() {
-    let missing = load_error(&edited("  \"format_version\": 1,\n", ""));
+    let missing = load_error(&edited("  \"format_version\": 2,\n", ""));
     assert!(matches!(&missing, FormatError::BadVersion(_)), "{missing}");
     assert!(missing.to_string().contains("format_version"), "{missing}");
     assert!(missing.to_string().contains("missing"), "{missing}");
     for bad in ["0", "-1", "1.5", "\"1\"", "null", "[1]", "1e400"] {
         let json = edited(
-            "\"format_version\": 1",
+            "\"format_version\": 2",
             &format!("\"format_version\": {bad}"),
         );
         let error = from_manifest_json(json.as_bytes()).unwrap_err();
@@ -362,7 +373,7 @@ fn a_missing_or_unusable_format_version_is_an_error() {
             "{bad}: {error}"
         );
     }
-    let zero = load_error(&edited("\"format_version\": 1", "\"format_version\": 0"));
+    let zero = load_error(&edited("\"format_version\": 2", "\"format_version\": 0"));
     assert!(matches!(zero, FormatError::BadVersion(_)), "{zero}");
 }
 
@@ -482,9 +493,9 @@ fn wrong_types_are_errors_that_say_where() {
         ),
         (
             "\"type\": \"block\"",
-            "\"type\": \"cone\"",
+            "\"type\": \"wedge\"",
             "document.features[0].kind",
-            "unknown variant `cone`",
+            "unknown variant `wedge`",
         ),
         (
             "\"width / 2\",\n",
@@ -807,4 +818,78 @@ fn every_error_reads_as_a_sentence() {
         );
         assert_eq!(text, text.trim());
     }
+}
+
+/// Version 2: cones, tori and orientations (written by hand, as a user
+/// or an agent would see them in the file).
+#[test]
+fn cones_tori_and_orientations_round_trip() {
+    use craft3d_doc::{Cone, Expr, Orientation, Torus};
+    let mut doc = Document::new(Units::default());
+    let turned = Orientation {
+        axis: ["1", "0", "tilt"].map(Expr::new),
+        angle: Expr::new("30 deg"),
+    };
+    doc.set_variable("tilt", "0.5").unwrap();
+    doc.add_feature(
+        None,
+        FeatureKind::Cone(Cone {
+            position: ["0", "0", "0"].map(Expr::new),
+            radius: Expr::new("10 mm"),
+            height: Expr::new("25 mm"),
+            orientation: turned.clone(),
+        }),
+    )
+    .unwrap();
+    doc.add_feature(
+        None,
+        FeatureKind::Torus(Torus {
+            position: ["0", "0", "40 mm"].map(Expr::new),
+            major: Expr::new("20 mm"),
+            minor: Expr::new("4 mm"),
+            orientation: Orientation::default(),
+        }),
+    )
+    .unwrap();
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["format_version"], 2);
+    assert_eq!(
+        value["document"]["features"][0]["kind"],
+        serde_json::json!({
+            "type": "cone", "position": ["0", "0", "0"], "radius": "10 mm", "height": "25 mm",
+            "orientation": {"axis": ["1", "0", "tilt"], "angle": "30 deg"}
+        })
+    );
+    assert_eq!(
+        value["document"]["features"][1]["kind"],
+        serde_json::json!({
+            "type": "torus", "position": ["0", "0", "40 mm"], "major": "20 mm", "minor": "4 mm",
+            "orientation": {"axis": ["0", "0", "1"], "angle": "0 deg"}
+        })
+    );
+    assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
+}
+
+/// A version-1 file has no orientations and no cones or tori; it opens as
+/// the same upright part, and is written back as version 2.
+#[test]
+fn a_version_1_file_opens_upright_and_is_saved_as_version_2() {
+    let v1 = r#"{"format": "3dcraft", "format_version": 1, "document": {
+        "units": {"length": "mm", "angle": "deg"},
+        "tolerance": {"linear": 1e-6, "angular": 1e-9},
+        "variables": [],
+        "features": [{"id": 1, "name": "Block1", "suppressed": false, "kind":
+            {"type": "block", "position": ["0", "0", "0"], "size": ["1", "2", "3"]}}],
+        "rollback": null, "next_feature_id": 2}}"#;
+    let doc = craft3d_format::from_manifest_json(v1.as_bytes()).unwrap();
+    let FeatureKind::Block(block) = &doc.features[0].kind else {
+        panic!()
+    };
+    assert_eq!(block.orientation, craft3d_doc::Orientation::default());
+    assert!(
+        to_manifest_json(&doc)
+            .unwrap()
+            .contains("\"format_version\": 2")
+    );
 }

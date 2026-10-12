@@ -266,6 +266,18 @@ fn every_edit_is_one_undo_step_that_restores_the_document_exactly() {
             json!({"feature": "Pin", "radius": "3 mm", "position": [1, 2, 3]}),
         ),
         ("feature.edit", json!({"feature": "F1", "size": [9, 9, 9]})),
+        (
+            "feature.cone",
+            json!({"radius": 3, "height": "width", "axis": [1, 0, 0]}),
+        ),
+        (
+            "feature.torus",
+            json!({"major": "width", "minor": 2, "angle": "30 deg"}),
+        ),
+        (
+            "feature.edit",
+            json!({"feature": "Pin", "axis": [0, 1, 0], "angle": 45}),
+        ),
         ("feature.rename", json!({"feature": 1, "name": "Base"})),
         ("feature.suppress", json!({"feature": "Plate"})),
         ("feature.move", json!({"feature": "Pin", "position": 0})),
@@ -640,5 +652,175 @@ fn the_registry_describes_every_command() {
         needs,
         commands.len() - 2,
         "all but file.new and file.open need a document"
+    );
+}
+
+#[test]
+fn cones_tori_and_orientations_are_modelled_and_measured() {
+    let mut session = Session::new(Workspace::none());
+    run(&mut session, "file.new", json!({}));
+    assert_eq!(
+        run(
+            &mut session,
+            "feature.cone",
+            json!({"radius": 3, "height": 9})
+        )["name"],
+        "Cone1"
+    );
+    run(
+        &mut session,
+        "feature.torus",
+        json!({"major": 10, "minor": 2, "position": [0, 0, 20]}),
+    );
+    // A cylinder lying along +x from the point (5, 0, 0).
+    run(
+        &mut session,
+        "feature.cylinder",
+        json!({"name": "Axle", "radius": 1, "height": 8, "position": [5, 0, 0], "axis": [2, 0, 0]}),
+    );
+    let measured = run(&mut session, "document.measure", json!({}));
+    let volume = |i: usize| measured["bodies"][i]["volume"].as_f64().unwrap();
+    assert!(close(volume(0), PI * 9.0 * 9.0 / 3.0));
+    assert!(close(volume(1), 2.0 * PI * PI * 10.0 * 4.0));
+    assert!(close(volume(2), PI * 8.0));
+    let centroid = measured["bodies"][2]["centroid"].as_array().unwrap();
+    assert!(
+        close(centroid[0].as_f64().unwrap(), 9.0) && centroid[1].as_f64().unwrap().abs() < 1e-9
+    );
+
+    // Turning it about its own axis changes nothing measurable; pointing it
+    // along +y moves the centroid there.
+    run(
+        &mut session,
+        "feature.edit",
+        json!({"feature": "Axle", "angle": "33 deg"}),
+    );
+    let turned = run(&mut session, "document.measure", json!({"feature": "Axle"}));
+    assert!(close(turned["centroid"][0].as_f64().unwrap(), 9.0));
+    run(
+        &mut session,
+        "feature.edit",
+        json!({"feature": "Axle", "axis": [0, 1, 0]}),
+    );
+    let moved = run(&mut session, "document.measure", json!({"feature": "Axle"}));
+    assert!(
+        close(moved["centroid"][0].as_f64().unwrap(), 5.0)
+            && close(moved["centroid"][1].as_f64().unwrap(), 4.0)
+    );
+    let state = run(&mut session, "document.inspect", json!({}));
+    assert_eq!(
+        state["features"][2]["params"]["orientation"]["axis"],
+        json!(["0", "1", "0"])
+    );
+
+    // Parameters that do not belong to a kind are refused by name.
+    let message = error(
+        &mut session,
+        "feature.edit",
+        json!({"feature": "Cone1", "major": 3}),
+    );
+    assert!(
+        message.contains("`major` is not a parameter of a cone"),
+        "{message}"
+    );
+    let message = error(
+        &mut session,
+        "feature.edit",
+        json!({"feature": "Torus1", "radius": 3}),
+    );
+    assert!(
+        message.contains("its parameters are: position, major, minor, axis, angle"),
+        "{message}"
+    );
+    let message = error(
+        &mut session,
+        "feature.sphere",
+        json!({"radius": 1, "axis": [1, 0, 0]}),
+    );
+    assert!(message.contains("unknown parameter `axis`"), "{message}");
+    // A failed orientation is a failed feature with the reason.
+    let bad = run(
+        &mut session,
+        "feature.cone",
+        json!({"radius": 1, "height": 1, "axis": [0, 0, 0]}),
+    );
+    assert_eq!(bad["status"], "failed");
+    assert!(
+        bad["error"]
+            .as_str()
+            .unwrap()
+            .contains("axis must be a direction")
+    );
+}
+
+#[test]
+fn inspect_reports_a_bounding_box_per_body() {
+    let mut session = Session::new(Workspace::none());
+    run(&mut session, "file.new", json!({}));
+    run(
+        &mut session,
+        "feature.block",
+        json!({"size": [4, 2, 1], "position": [10, 20, 30]}),
+    );
+    run(&mut session, "feature.sphere", json!({"radius": 5}));
+    let state = run(&mut session, "document.inspect", json!({}));
+    // Exact for a block.
+    assert_eq!(
+        state["bodies"][0]["bbox"],
+        json!([[10.0, 20.0, 30.0], [14.0, 22.0, 31.0]])
+    );
+    // Within the stated tolerance, and never outside, for a sphere.
+    let tolerance = state["bodies"][1]["bboxTolerance"].as_f64().unwrap();
+    for (corner, sign) in [(0, -1.0), (1, 1.0)] {
+        for axis in 0..3 {
+            let value = state["bodies"][1]["bbox"][corner][axis].as_f64().unwrap() * sign;
+            assert!(
+                value <= 5.0 + 1e-12 && value >= 5.0 - tolerance,
+                "{value} vs 5 +/- {tolerance}"
+            );
+        }
+    }
+}
+
+#[test]
+fn check_lists_every_problem_or_says_ok() {
+    let mut session = Session::new(Workspace::none());
+    build(&mut session);
+    assert_eq!(
+        run(&mut session, "document.check", json!({})),
+        json!({"ok": true, "bodiesChecked": 2, "problems": []})
+    );
+    run(
+        &mut session,
+        "variable.set",
+        json!({"name": "loop_a", "expr": "loop_b"}),
+    );
+    run(
+        &mut session,
+        "variable.set",
+        json!({"name": "loop_b", "expr": "loop_a"}),
+    );
+    run(
+        &mut session,
+        "feature.sphere",
+        json!({"name": "Ball", "radius": "loop_a"}),
+    );
+    let report = run(&mut session, "document.check", json!({}));
+    assert_eq!(report["ok"], false);
+    assert_eq!(report["bodiesChecked"], 2);
+    let problems = report["problems"].as_array().unwrap();
+    assert_eq!(problems.len(), 3, "{report}");
+    assert_eq!(problems[0]["variable"], "loop_a");
+    assert_eq!(
+        (
+            problems[2]["feature"].as_str(),
+            problems[2]["name"].as_str()
+        ),
+        (Some("F3"), Some("Ball"))
+    );
+    assert!(problems[2]["problem"].as_str().unwrap().contains("radius"));
+    assert!(
+        error(&mut session, "document.check", json!({"deep": true}))
+            .contains("takes no parameters")
     );
 }

@@ -1,6 +1,6 @@
 # File formats
 
-> **Last updated:** 2026-10-12 · **Status:** `.3dcraft` (version 1) and mesh export (STL, 3MF, OBJ) work and are tested; STEP is the plan.
+> **Last updated:** 2026-10-12 · **Status:** `.3dcraft` (version 2) and mesh export (STL, 3MF, OBJ) work and are tested; STEP is the plan.
 
 | Format | Read | Write | Carries | Crates | Milestone |
 |---|---|---|---|---|---|
@@ -14,7 +14,7 @@ Formats live in standalone crates with their own format-level model and no works
 
 ## Native format: `.3dcraft`
 
-**Implemented today (format version 1):** a ZIP of stored entries with one entry, `manifest.json` (below). Unknown extra entries are ignored on load and not preserved on save. `blobs/`, `thumb.png`, the directory layout, autosave and crash recovery are the plan, not built.
+**Implemented today (format version 2; version 1 files open unchanged, upright):** a ZIP of stored entries with one entry, `manifest.json` (below). Unknown extra entries are ignored on load and not preserved on save. `blobs/`, `thumb.png`, the directory layout, autosave and crash recovery are the plan, not built.
 
 A `.3dcraft` file is a ZIP of STORE (uncompressed) entries, or a directory with the same layout (useful in git and for debugging):
 
@@ -31,6 +31,7 @@ thumb.png                preview (CPU renderer)
 - **Ids are stable.** Feature and sketch-entity ids are never reused within a document, because persistent names are built from them.
 - **Caches are optional.** A cached body is keyed by the hash of everything it was derived from. Loading verifies the key; a missing, stale or damaged cache is regenerated silently. Deleting `blobs/` of a document without imports must not change the model.
 - **Imported bodies are data.** A STEP import becomes an `Import` feature whose body is a blob: it cannot be regenerated, so it is not a cache and is never garbage-collected while referenced.
+- **Version history.** 1 (2026-10-12): variables; block, cylinder, sphere. 2 (2026-10-12): adds cone and torus, and an optional `orientation` (`axis`, `angle`) on block, cylinder, cone and torus. Nothing in a version-1 file changed meaning; the number was raised so that an older build reports "a newer 3DCraft is needed" instead of an unknown field.
 - **Versioning.** Every change to the meaning of existing fields bumps `format_version` and adds a migration (`format/src/migrate.rs`) with a fixture of the old version in the tests. New optional fields use `#[serde(default)]`. A file from a *newer* version opens with an error that says so, never with silent data loss.
 - **Completeness is enforced at compile time:** `format` destructures every `doc` struct exhaustively, so a new document field cannot be forgotten ([`AGENTS.md`](../AGENTS.md) §8).
 - **Atomic saves:** write to a temporary file in the same directory, fsync, rename over the target. A crash or a full disk leaves the previous file intact.

@@ -2,3 +2,4 @@
 
 pub mod solids;
 pub mod teapot;
+pub mod trimmed;

@@ -141,6 +141,8 @@ fn panels(curve: &Curve3, range: (f64, f64)) -> usize {
 /// One boundary sample: surface parameters, and how fast they change along
 /// the edge, times the quadrature weight and the traversal direction.
 struct Sample {
+    /// Which loop of the face it belongs to.
+    loop_index: usize,
     u: f64,
     v: f64,
     du: f64,
@@ -152,14 +154,29 @@ fn boundary_samples(
     face: &Face,
     index: usize,
     rule: &Rule,
-) -> Result<Vec<Sample>, MassError> {
+) -> Result<(Vec<Sample>, bool), MassError> {
     let mut samples = Vec::new();
-    for loop_id in &face.loops {
+    // Whether the boundary touches a point where the parametrisation
+    // collapses (a pole, an apex, a collapsed patch edge).
+    let mut singular = false;
+    for (loop_index, loop_id) in face.loops.iter().enumerate() {
         let loop_ = body
             .loop_(*loop_id)
             .ok_or(MassError::Invalid { face: index })?;
         for &Coedge { edge, reversed } in &loop_.coedges {
             let edge = body.edge(edge).ok_or(MassError::Invalid { face: index })?;
+            for end in [edge.range.0, edge.range.1] {
+                let point = edge.curve.eval(end);
+                let (u, v) = face
+                    .surface
+                    .project(point)
+                    .map_err(|error| MassError::Geometry { face: index, error })?;
+                let (_, su, sv) = face.surface.derivatives(u, v);
+                let scale = su.length() + sv.length();
+                if su.length() <= 1e-9 * scale || sv.length() <= 1e-9 * scale {
+                    singular = true;
+                }
+            }
             let (t0, t1) = edge.range;
             let direction = if reversed { -1.0 } else { 1.0 };
             let count = panels(&edge.curve, edge.range);
@@ -191,6 +208,7 @@ fn boundary_samples(
                         (0.0, 0.0)
                     };
                     samples.push(Sample {
+                        loop_index,
                         u,
                         v,
                         du: du * w * direction,
@@ -200,7 +218,7 @@ fn boundary_samples(
             }
         }
     }
-    Ok(samples)
+    Ok((samples, singular))
 }
 
 /// `∬ f du dv` over a whole closed surface.
@@ -227,19 +245,29 @@ fn face_integrals(body: &Body, face: &Face, index: usize, rule: &Rule) -> Result
     if face.loops.is_empty() {
         return whole_surface(&face.surface, index, rule);
     }
-    let samples = boundary_samples(body, face, index, rule)?;
+    let (samples, singular) = boundary_samples(body, face, index, rule)?;
     // Loops run counter-clockwise around the face seen from outside, which
     // is clockwise in parameter space when the face is reversed.
     let sense = if face.reversed { -1.0 } else { 1.0 };
     let ((_, _), (v_min, v_max)) = face.surface.domain();
 
     if let Some(period) = face.surface.period_v() {
-        let turns = samples.iter().map(|s| s.dv).sum::<f64>() / period;
-        if turns.abs() > 0.5 {
-            return Err(MassError::Unsupported {
-                face: index,
-                what: "a loop that winds around the tube of a torus",
-            });
+        // Per loop, not in total: the two ends of a pipe elbow wind around
+        // the tube in opposite senses and would cancel, and along them
+        // du = 0, so the integral below would silently come out as zero.
+        for loop_index in 0..face.loops.len() {
+            let turns = samples
+                .iter()
+                .filter(|s| s.loop_index == loop_index)
+                .map(|s| s.dv)
+                .sum::<f64>()
+                / period;
+            if turns.abs() > 0.5 {
+                return Err(MassError::Unsupported {
+                    face: index,
+                    what: "a loop that winds around the tube of a torus",
+                });
+            }
         }
     }
     let v_ref = match face.surface.period_u() {
@@ -269,6 +297,20 @@ fn face_integrals(body: &Body, face: &Face, index: usize, rule: &Rule) -> Result
     };
     if !v_ref.is_finite() {
         return Err(MassError::UnboundedFace { face: index });
+    }
+    // A boundary that runs through a pole or apex without circling it (an
+    // octant of a sphere): in parameter space the pole is a whole edge of
+    // the region, which the loops do not contain, so the boundary integral
+    // would leave it out. Refused until that edge is added.
+    let circles_the_axis = face
+        .surface
+        .period_u()
+        .is_some_and(|period| (samples.iter().map(|s| s.du).sum::<f64>() / period).abs() > 0.5);
+    if singular && !circles_the_axis {
+        return Err(MassError::Unsupported {
+            face: index,
+            what: "a boundary that passes through a pole, an apex or a collapsed edge of its surface",
+        });
     }
 
     let mut sum = Sums::default();

@@ -13,7 +13,10 @@
 //! 3. add a test with a fixture of the old version, written as a string
 //!    literal, and never edit the fixtures of earlier versions.
 //!
-//! A new optional field needs none of this: `#[serde(default)]` is enough.
+//! A new optional field on its own needs no step, only `#[serde(default)]`;
+//! raise the version anyway when older builds could not read what the
+//! field or a new kind writes, so they report the version rather than an
+//! unknown field (as version 2 did).
 
 use crate::{FORMAT_VERSION, FormatError};
 use serde_json::Value;
@@ -23,8 +26,17 @@ use serde_json::Value;
 type Step = fn(Value) -> Result<Value, String>;
 
 /// `STEPS[n]` brings a manifest from version `n + 1` to version `n + 2`.
-/// Version 1 is the first, so there is nothing here yet.
-const STEPS: &[Step] = &[];
+const STEPS: &[Step] = &[v1_to_v2];
+
+/// Version 2 adds the `cone` and `torus` feature kinds and an optional
+/// `orientation` on block, cylinder, cone and torus. Nothing a version-1
+/// file contains changes meaning: its features are upright, which is what
+/// a missing `orientation` reads as. The version was raised all the same,
+/// so that a build which only knows version 1 says "a newer 3DCraft is
+/// needed" instead of stumbling over an unknown field or kind.
+fn v1_to_v2(manifest: Value) -> Result<Value, String> {
+    Ok(manifest)
+}
 
 // One step per version after the first: forgetting either half of a
 // version bump does not compile.

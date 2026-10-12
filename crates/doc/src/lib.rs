@@ -137,20 +137,44 @@ pub struct Variable {
     pub expr: Expr,
 }
 
-/// A rectangular block with one corner at `position` and edges along the
-/// world axes.
+/// How a primitive is turned: its local z axis points along `axis`, and it
+/// is then rotated by `angle` about that axis. The default leaves it along
+/// the world axes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Orientation {
+    /// Direction of the local z axis: three plain numbers, any length.
+    pub axis: [Expr; 3],
+    /// Rotation about `axis`, counter-clockwise seen from its tip.
+    pub angle: Expr,
+}
+
+impl Default for Orientation {
+    fn default() -> Self {
+        Self {
+            axis: [Expr::new("0"), Expr::new("0"), Expr::new("1")],
+            angle: Expr::new("0 deg"),
+        }
+    }
+}
+
+/// A rectangular block with one corner at `position` and edges along its
+/// local axes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Block {
     pub position: [Expr; 3],
     pub size: [Expr; 3],
+    #[serde(default)]
+    pub orientation: Orientation,
 }
 
-/// A cylinder along the world z axis, its base centred at `position`.
+/// A cylinder along its local z axis, its base centred at `position`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Cylinder {
     pub position: [Expr; 3],
     pub radius: Expr,
     pub height: Expr,
+    #[serde(default)]
+    pub orientation: Orientation,
 }
 
 /// A sphere centred at `position`.
@@ -160,12 +184,36 @@ pub struct Sphere {
     pub radius: Expr,
 }
 
+/// A cone along its local z axis: its base circle is centred at `position`
+/// and its apex is `height` above it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Cone {
+    pub position: [Expr; 3],
+    pub radius: Expr,
+    pub height: Expr,
+    #[serde(default)]
+    pub orientation: Orientation,
+}
+
+/// A ring torus about its local z axis, centred at `position`: `major` is
+/// the radius of the ring, `minor` that of the tube.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Torus {
+    pub position: [Expr; 3],
+    pub major: Expr,
+    pub minor: Expr,
+    #[serde(default)]
+    pub orientation: Orientation,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum FeatureKind {
     Block(Block),
     Cylinder(Cylinder),
     Sphere(Sphere),
+    Cone(Cone),
+    Torus(Torus),
 }
 
 impl FeatureKind {
@@ -175,47 +223,87 @@ impl FeatureKind {
             FeatureKind::Block(_) => "block",
             FeatureKind::Cylinder(_) => "cylinder",
             FeatureKind::Sphere(_) => "sphere",
+            FeatureKind::Cone(_) => "cone",
+            FeatureKind::Torus(_) => "torus",
         }
     }
 
     /// Every expression of the feature with the name of its parameter, in a
     /// fixed order.
     pub fn exprs(&self) -> Vec<(String, &Expr)> {
-        fn triple<'a>(
-            name: &str,
-            exprs: &'a [Expr; 3],
-        ) -> impl Iterator<Item = (String, &'a Expr)> {
-            let name = name.to_string();
+        fn triple<'a>(name: &str, exprs: &'a [Expr; 3]) -> Vec<(String, &'a Expr)> {
             exprs
                 .iter()
                 .zip(["x", "y", "z"])
-                .map(move |(e, axis)| (format!("{name}.{axis}"), e))
+                .map(|(e, axis)| (format!("{name}.{axis}"), e))
+                .collect()
         }
+        fn turned(o: &Orientation) -> Vec<(String, &Expr)> {
+            let mut out = triple("axis", &o.axis);
+            out.push(("angle".to_string(), &o.angle));
+            out
+        }
+        let named = |name: &str, e| (name.to_string(), e);
+        let mut out;
         match self {
-            FeatureKind::Block(b) => triple("position", &b.position)
-                .chain(triple("size", &b.size))
-                .collect(),
-            FeatureKind::Cylinder(c) => triple("position", &c.position)
-                .chain([
-                    ("radius".to_string(), &c.radius),
-                    ("height".to_string(), &c.height),
-                ])
-                .collect(),
-            FeatureKind::Sphere(s) => triple("position", &s.position)
-                .chain([("radius".to_string(), &s.radius)])
-                .collect(),
+            FeatureKind::Block(b) => {
+                out = triple("position", &b.position);
+                out.extend(triple("size", &b.size));
+                out.extend(turned(&b.orientation));
+            }
+            FeatureKind::Cylinder(c) => {
+                out = triple("position", &c.position);
+                out.extend([named("radius", &c.radius), named("height", &c.height)]);
+                out.extend(turned(&c.orientation));
+            }
+            FeatureKind::Sphere(s) => {
+                out = triple("position", &s.position);
+                out.push(named("radius", &s.radius));
+            }
+            FeatureKind::Cone(c) => {
+                out = triple("position", &c.position);
+                out.extend([named("radius", &c.radius), named("height", &c.height)]);
+                out.extend(turned(&c.orientation));
+            }
+            FeatureKind::Torus(t) => {
+                out = triple("position", &t.position);
+                out.extend([named("major", &t.major), named("minor", &t.minor)]);
+                out.extend(turned(&t.orientation));
+            }
         }
+        out
     }
 
     fn exprs_mut(&mut self) -> Vec<&mut Expr> {
+        fn turned(o: &mut Orientation) -> impl Iterator<Item = &mut Expr> {
+            o.axis.iter_mut().chain([&mut o.angle])
+        }
         match self {
-            FeatureKind::Block(b) => b.position.iter_mut().chain(b.size.iter_mut()).collect(),
+            FeatureKind::Block(b) => b
+                .position
+                .iter_mut()
+                .chain(b.size.iter_mut())
+                .chain(turned(&mut b.orientation))
+                .collect(),
             FeatureKind::Cylinder(c) => c
                 .position
                 .iter_mut()
                 .chain([&mut c.radius, &mut c.height])
+                .chain(turned(&mut c.orientation))
                 .collect(),
             FeatureKind::Sphere(s) => s.position.iter_mut().chain([&mut s.radius]).collect(),
+            FeatureKind::Cone(c) => c
+                .position
+                .iter_mut()
+                .chain([&mut c.radius, &mut c.height])
+                .chain(turned(&mut c.orientation))
+                .collect(),
+            FeatureKind::Torus(t) => t
+                .position
+                .iter_mut()
+                .chain([&mut t.major, &mut t.minor])
+                .chain(turned(&mut t.orientation))
+                .collect(),
         }
     }
 }
@@ -566,6 +654,7 @@ mod tests {
         FeatureKind::Block(Block {
             position: exprs(["0 mm", "0 mm", "0 mm"]),
             size: exprs(size),
+            orientation: Orientation::default(),
         })
     }
 
@@ -581,6 +670,7 @@ mod tests {
                 position: exprs(["half", "0 mm", "10 mm"]),
                 radius: Expr::new("width / 8"),
                 height: Expr::new("2 * half"),
+                orientation: Orientation::default(),
             }),
         )
         .unwrap();
@@ -719,9 +809,19 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            ["position.x", "position.y", "position.z", "radius", "height"]
+            [
+                "position.x",
+                "position.y",
+                "position.z",
+                "radius",
+                "height",
+                "axis.x",
+                "axis.y",
+                "axis.z",
+                "angle"
+            ]
         );
-        assert_eq!(doc.features[0].kind.exprs().len(), 6);
+        assert_eq!(doc.features[0].kind.exprs().len(), 10);
     }
 
     #[test]
@@ -773,11 +873,19 @@ mod tests {
             json["features"][0],
             serde_json::json!({
                 "id": 1, "name": "Block1", "suppressed": false,
-                "kind": {"type": "block", "position": ["0 mm", "0 mm", "0 mm"], "size": ["width", "half", "10 mm"]}
+                "kind": {"type": "block", "position": ["0 mm", "0 mm", "0 mm"], "size": ["width", "half", "10 mm"],
+                         "orientation": {"axis": ["0", "0", "1"], "angle": "0 deg"}}
             })
         );
-        let back: Document = serde_json::from_value(json).unwrap();
+        let back: Document = serde_json::from_value(json.clone()).unwrap();
         assert_eq!(back, doc);
+        // A feature written before orientations existed still reads, upright.
+        let mut older = json;
+        older["features"][0]["kind"]
+            .as_object_mut()
+            .unwrap()
+            .remove("orientation");
+        assert_eq!(serde_json::from_value::<Document>(older).unwrap(), doc);
         for unit in LengthUnit::ALL {
             assert_eq!(LengthUnit::from_symbol(unit.symbol()), Some(unit));
             assert_eq!(

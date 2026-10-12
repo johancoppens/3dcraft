@@ -132,6 +132,14 @@ fn session(dir: &std::path::Path, state: usize) -> Session {
             );
             run("feature.cylinder", json!({"radius": 2, "height": 10}));
             run("feature.sphere", json!({"radius": "width / 4"}));
+            run(
+                "feature.cone",
+                json!({"radius": 3, "height": 9, "axis": [1, 1, 0]}),
+            );
+            run(
+                "feature.torus",
+                json!({"major": 10, "minor": 2, "angle": "30 deg"}),
+            );
         }
         // A document full of things that fail: bad formulas, a cycle, a
         // suppressed and a rolled-back feature, undo and redo stacks.
@@ -210,6 +218,8 @@ fn no_command_panics_on_adversarial_parameters() {
                     ("path", json!("hunt.stl")),
                     ("size", json!([1, 2, 3])),
                     ("radius", json!(1)),
+                    ("major", json!(5)),
+                    ("axis", json!([0, 0, 1])),
                 ] {
                     if all.contains_key(key) {
                         let mut mixed = all.clone();

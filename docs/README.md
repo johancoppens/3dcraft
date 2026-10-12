@@ -1,6 +1,6 @@
 # 3DCraft documentation
 
-> **Last updated:** 2026-10-12 · **Status:** M2 done; see [`roadmap.md`](roadmap.md) for the milestones and `architecture.md` › Current state for what exists
+> **Last updated:** 2026-10-12 · **Status:** M3 done; see [`roadmap.md`](roadmap.md) for the milestones and `architecture.md` › Current state for what exists
 
 Start with [`AGENTS.md`](../AGENTS.md), then read in this order.
 

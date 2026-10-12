@@ -9,7 +9,7 @@
 //! Not here yet: caching per feature (every call rebuilds everything),
 //! features that consume other features' bodies, persistent names.
 
-use craft3d_doc::{Document, Expr, Feature, FeatureId, FeatureKind};
+use craft3d_doc::{Document, Expr, Feature, FeatureId, FeatureKind, Orientation};
 use craft3d_expr::{Dimension, Evaluation, Quantity};
 use craft3d_kernel::primitives;
 use craft3d_math::{Frame, Tolerance, Vec3};
@@ -115,6 +115,42 @@ fn length(doc: &Document, variables: &Evaluation, name: &str, expr: &Expr) -> Re
     }
 }
 
+/// Evaluates a plain number: a direction component.
+fn number(variables: &Evaluation, name: &str, expr: &Expr) -> Result<f64, String> {
+    let quantity = craft3d_expr::evaluate(expr.source(), |variable| variables.value(variable))
+        .map_err(|e| format!("{name}: `{}`: {e}", expr.source()))?;
+    if quantity.dimension.is_dimensionless() {
+        Ok(quantity.value)
+    } else {
+        Err(format!(
+            "{name}: `{}` is a {}, but a plain number is needed",
+            expr.source(),
+            quantity.dimension
+        ))
+    }
+}
+
+/// Evaluates an angle, in radians. A bare number is taken in the
+/// document's angle unit.
+fn angle(doc: &Document, variables: &Evaluation, name: &str, expr: &Expr) -> Result<f64, String> {
+    let quantity = craft3d_expr::evaluate(expr.source(), |variable| variables.value(variable))
+        .map_err(|e| format!("{name}: `{}`: {e}", expr.source()))?;
+    if quantity.dimension == Dimension::ANGLE {
+        Ok(quantity.value)
+    } else if quantity.dimension.is_dimensionless() {
+        Ok(match doc.units.angle {
+            craft3d_doc::AngleUnit::Degree => quantity.value.to_radians(),
+            craft3d_doc::AngleUnit::Radian => quantity.value,
+        })
+    } else {
+        Err(format!(
+            "{name}: `{}` is a {}, but an angle is needed",
+            expr.source(),
+            quantity.dimension
+        ))
+    }
+}
+
 fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Body, String> {
     let get = |name: &str, expr: &Expr| length(doc, variables, name, expr);
     let point = |exprs: &[Expr; 3]| -> Result<Vec3, String> {
@@ -125,9 +161,32 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
             get("position.z", z)?,
         ))
     };
-    let at = |origin: Vec3| {
-        Frame::new(origin, Vec3::Z, Vec3::X).ok_or("position is not finite".to_string())
-    };
+    // The frame of a primitive: its z axis along `axis`, then turned by
+    // `angle` about it. With the default orientation this is the world
+    // frame moved to `position`.
+    let placed =
+        |position: &[Expr; 3], orientation: Option<&Orientation>| -> Result<Frame, String> {
+            let origin = point(position)?;
+            let Some(orientation) = orientation else {
+                return Frame::new(origin, Vec3::Z, Vec3::X)
+                    .ok_or("position is not finite".to_string());
+            };
+            let [ax, ay, az] = &orientation.axis;
+            let axis = Vec3::new(
+                number(variables, "axis.x", ax)?,
+                number(variables, "axis.y", ay)?,
+                number(variables, "axis.z", az)?,
+            );
+            let turn = angle(doc, variables, "angle", &orientation.angle)?;
+            let upright = Frame::from_z(origin, axis).ok_or_else(|| {
+                format!(
+                    "axis must be a direction, but it is ({}, {}, {})",
+                    axis.x, axis.y, axis.z
+                )
+            })?;
+            let x = upright.x() * turn.cos() + upright.y() * turn.sin();
+            Frame::new(origin, axis, x).ok_or("orientation is not finite".to_string())
+        };
     // Sizes are checked here, where the parameter has the name the user
     // knows it by; the kernel would report its own argument name.
     let size = |name: &str, expr: &Expr| -> Result<f64, String> {
@@ -144,25 +203,30 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
     let body = match &feature.kind {
         FeatureKind::Block(b) => {
             let [dx, dy, dz] = &b.size;
-            let frame = at(point(&b.position)?)?;
-            primitives::block(
-                &frame,
-                size("size.x", dx)?,
-                size("size.y", dy)?,
-                size("size.z", dz)?,
-            )
+            let frame = placed(&b.position, Some(&b.orientation))?;
+            primitives::block(&frame, size("size.x", dx)?, size("size.y", dy)?, size("size.z", dz)?)
         }
         FeatureKind::Cylinder(c) => {
-            let frame = at(point(&c.position)?)?;
-            primitives::cylinder(
-                &frame,
-                size("radius", &c.radius)?,
-                size("height", &c.height)?,
-            )
+            let frame = placed(&c.position, Some(&c.orientation))?;
+            primitives::cylinder(&frame, size("radius", &c.radius)?, size("height", &c.height)?)
         }
         FeatureKind::Sphere(s) => {
-            let frame = at(point(&s.position)?)?;
+            let frame = placed(&s.position, None)?;
             primitives::sphere(&frame, size("radius", &s.radius)?)
+        }
+        FeatureKind::Cone(c) => {
+            let frame = placed(&c.position, Some(&c.orientation))?;
+            primitives::cone(&frame, size("radius", &c.radius)?, size("height", &c.height)?)
+        }
+        FeatureKind::Torus(t) => {
+            let frame = placed(&t.position, Some(&t.orientation))?;
+            let (major, minor) = (size("major", &t.major)?, size("minor", &t.minor)?);
+            if major <= minor {
+                return Err(format!(
+                    "major ({major}) must be larger than minor ({minor}): the tube would reach the axis"
+                ));
+            }
+            primitives::torus(&frame, major, minor)
         }
     }
     .map_err(|e| e.to_string())?;
@@ -266,6 +330,7 @@ mod tests {
             FeatureKind::Block(Block {
                 position: exprs(["0", "0", "0"]),
                 size: exprs(["width", "half", "10 mm"]),
+                orientation: Default::default(),
             }),
         )
         .unwrap();
@@ -275,6 +340,7 @@ mod tests {
                 position: exprs(["half", "10 mm", "10 mm"]),
                 radius: Expr::new("width / 8"),
                 height: Expr::new("2 cm"),
+                orientation: Default::default(),
             }),
         )
         .unwrap();
@@ -347,6 +413,7 @@ mod tests {
             FeatureKind::Block(Block {
                 position: exprs(["0", "0", "0"]),
                 size: exprs(["1", "25.4 mm", "1 in"]),
+                orientation: Default::default(),
             }),
         )
         .unwrap();
@@ -421,6 +488,7 @@ mod tests {
                 FeatureKind::Block(Block {
                     position: exprs(["0", "0", "0"]),
                     size: exprs([source, "1", "1"]),
+                    orientation: Default::default(),
                 }),
             )
             .unwrap();
@@ -429,6 +497,133 @@ mod tests {
                 panic!("`{source}` should fail")
             };
             assert!(reason.contains(expected), "`{source}`: {reason}");
+        }
+    }
+
+    fn turned(axis: [&str; 3], angle: &str) -> Orientation {
+        Orientation {
+            axis: exprs(axis),
+            angle: Expr::new(angle),
+        }
+    }
+
+    fn single(kind: FeatureKind) -> (Regen, Document) {
+        let mut doc = Document::new(Units::default());
+        doc.add_feature(None, kind).unwrap();
+        (regenerate(&doc), doc)
+    }
+
+    #[test]
+    fn cones_and_tori_have_their_closed_form_volumes() {
+        let (regen, _) = single(FeatureKind::Cone(craft3d_doc::Cone {
+            position: exprs(["1", "2", "3"]),
+            radius: Expr::new("2 mm"),
+            height: Expr::new("6 mm"),
+            orientation: Orientation::default(),
+        }));
+        let mass = mass_properties(regen.features[0].body.as_ref().unwrap()).unwrap();
+        assert!(close(mass.volume, PI * 4.0 * 6.0 / 3.0));
+        // The centroid of a cone is a quarter of the way up.
+        assert!(mass.centroid.unwrap().distance(Vec3::new(1.0, 2.0, 4.5)) < 1e-10);
+
+        let (regen, _) = single(FeatureKind::Torus(craft3d_doc::Torus {
+            position: exprs(["0", "0", "0"]),
+            major: Expr::new("5 mm"),
+            minor: Expr::new("1 mm"),
+            orientation: Orientation::default(),
+        }));
+        assert!(close(volumes(&regen)[0], 2.0 * PI * PI * 5.0));
+        let (regen, _) = single(FeatureKind::Torus(craft3d_doc::Torus {
+            position: exprs(["0", "0", "0"]),
+            major: Expr::new("1 mm"),
+            minor: Expr::new("1 mm"),
+            orientation: Orientation::default(),
+        }));
+        let Status::Failed(reason) = &regen.features[0].status else {
+            panic!()
+        };
+        assert!(
+            reason.contains("major (1) must be larger than minor (1)"),
+            "{reason}"
+        );
+    }
+
+    #[test]
+    fn orientation_turns_a_primitive_without_changing_its_size() {
+        let cylinder = |orientation| {
+            FeatureKind::Cylinder(Cylinder {
+                position: exprs(["10 mm", "0", "0"]),
+                radius: Expr::new("1 mm"),
+                height: Expr::new("8 mm"),
+                orientation,
+            })
+        };
+        // Lying along +x: the centroid is 4 mm along x from the base.
+        let (regen, _) = single(cylinder(turned(["1", "0", "0"], "0")));
+        let mass = mass_properties(regen.features[0].body.as_ref().unwrap()).unwrap();
+        assert!(close(mass.volume, PI * 8.0));
+        assert!(mass.centroid.unwrap().distance(Vec3::new(14.0, 0.0, 0.0)) < 1e-10);
+        // Along a diagonal, with an axis of any length.
+        let (regen, _) = single(cylinder(turned(["0", "3", "3"], "45 deg")));
+        let s = 4.0 / 2.0_f64.sqrt();
+        let mass = mass_properties(regen.features[0].body.as_ref().unwrap()).unwrap();
+        assert!(mass.centroid.unwrap().distance(Vec3::new(10.0, s, s)) < 1e-10);
+
+        // A block turned a quarter about z: its far corner moves from
+        // (+x, +y) to (-y side): centroid of a 4 x 2 x 1 block at (2, 1, .5)
+        // goes to (-1, 2, .5).
+        let block = |angle: &str| {
+            FeatureKind::Block(Block {
+                position: exprs(["0", "0", "0"]),
+                size: exprs(["4", "2", "1"]),
+                orientation: turned(["0", "0", "1"], angle),
+            })
+        };
+        for (angle, expected) in [
+            ("0", Vec3::new(2.0, 1.0, 0.5)),
+            ("90 deg", Vec3::new(-1.0, 2.0, 0.5)),
+            ("90", Vec3::new(-1.0, 2.0, 0.5)),
+            ("pi / 2 * 1 rad", Vec3::new(-1.0, 2.0, 0.5)),
+            ("180 deg", Vec3::new(-2.0, -1.0, 0.5)),
+        ] {
+            let (regen, _) = single(block(angle));
+            let mass = mass_properties(regen.features[0].body.as_ref().unwrap()).unwrap();
+            assert!(close(mass.volume, 8.0), "angle {angle}");
+            assert!(
+                mass.centroid.unwrap().distance(expected) < 1e-10,
+                "angle {angle}: {:?}",
+                mass.centroid
+            );
+        }
+    }
+
+    #[test]
+    fn a_bad_orientation_is_a_failure_that_names_the_parameter() {
+        for (axis, angle, expected) in [
+            (["0", "0", "0"], "0", "axis must be a direction"),
+            (
+                ["1 mm", "0", "0"],
+                "0",
+                "axis.x: `1 mm` is a length, but a plain number is needed",
+            ),
+            (["0", "nope", "1"], "0", "axis.y"),
+            (
+                ["0", "0", "1"],
+                "5 mm",
+                "angle: `5 mm` is a length, but an angle is needed",
+            ),
+            (["0", "0", "1"], "1 / 0", "angle"),
+        ] {
+            let (regen, _) = single(FeatureKind::Cylinder(Cylinder {
+                position: exprs(["0", "0", "0"]),
+                radius: Expr::new("1"),
+                height: Expr::new("1"),
+                orientation: turned(axis, angle),
+            }));
+            let Status::Failed(reason) = &regen.features[0].status else {
+                panic!("axis {axis:?} angle {angle} should fail")
+            };
+            assert!(reason.contains(expected), "{reason}");
         }
     }
 

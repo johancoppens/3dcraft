@@ -89,20 +89,25 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
         name: name.clone(),
         suppressed: *suppressed,
         kind: match kind {
-            doc::FeatureKind::Block(doc::Block { position, size }) => {
-                manifest::FeatureKind::Block {
-                    position: exprs_to_manifest(position),
-                    size: exprs_to_manifest(size),
-                }
-            }
+            doc::FeatureKind::Block(doc::Block {
+                position,
+                size,
+                orientation,
+            }) => manifest::FeatureKind::Block {
+                position: exprs_to_manifest(position),
+                size: exprs_to_manifest(size),
+                orientation: orientation_to_manifest(orientation),
+            },
             doc::FeatureKind::Cylinder(doc::Cylinder {
                 position,
                 radius,
                 height,
+                orientation,
             }) => manifest::FeatureKind::Cylinder {
                 position: exprs_to_manifest(position),
                 radius: expr_to_manifest(radius),
                 height: expr_to_manifest(height),
+                orientation: orientation_to_manifest(orientation),
             },
             doc::FeatureKind::Sphere(doc::Sphere { position, radius }) => {
                 manifest::FeatureKind::Sphere {
@@ -110,7 +115,45 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                     radius: expr_to_manifest(radius),
                 }
             }
+            doc::FeatureKind::Cone(doc::Cone {
+                position,
+                radius,
+                height,
+                orientation,
+            }) => manifest::FeatureKind::Cone {
+                position: exprs_to_manifest(position),
+                radius: expr_to_manifest(radius),
+                height: expr_to_manifest(height),
+                orientation: orientation_to_manifest(orientation),
+            },
+            doc::FeatureKind::Torus(doc::Torus {
+                position,
+                major,
+                minor,
+                orientation,
+            }) => manifest::FeatureKind::Torus {
+                position: exprs_to_manifest(position),
+                major: expr_to_manifest(major),
+                minor: expr_to_manifest(minor),
+                orientation: orientation_to_manifest(orientation),
+            },
         },
+    }
+}
+
+fn orientation_to_manifest(orientation: &doc::Orientation) -> manifest::Orientation {
+    let doc::Orientation { axis, angle } = orientation;
+    manifest::Orientation {
+        axis: exprs_to_manifest(axis),
+        angle: expr_to_manifest(angle),
+    }
+}
+
+fn orientation_to_doc(orientation: manifest::Orientation) -> doc::Orientation {
+    let manifest::Orientation { axis, angle } = orientation;
+    doc::Orientation {
+        axis: exprs_to_doc(axis),
+        angle: doc::Expr(angle),
     }
 }
 
@@ -167,20 +210,25 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
         name,
         suppressed,
         kind: match kind {
-            manifest::FeatureKind::Block { position, size } => {
-                doc::FeatureKind::Block(doc::Block {
-                    position: exprs_to_doc(position),
-                    size: exprs_to_doc(size),
-                })
-            }
+            manifest::FeatureKind::Block {
+                position,
+                size,
+                orientation,
+            } => doc::FeatureKind::Block(doc::Block {
+                position: exprs_to_doc(position),
+                size: exprs_to_doc(size),
+                orientation: orientation_to_doc(orientation),
+            }),
             manifest::FeatureKind::Cylinder {
                 position,
                 radius,
                 height,
+                orientation,
             } => doc::FeatureKind::Cylinder(doc::Cylinder {
                 position: exprs_to_doc(position),
                 radius: doc::Expr(radius),
                 height: doc::Expr(height),
+                orientation: orientation_to_doc(orientation),
             }),
             manifest::FeatureKind::Sphere { position, radius } => {
                 doc::FeatureKind::Sphere(doc::Sphere {
@@ -188,6 +236,28 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
                     radius: doc::Expr(radius),
                 })
             }
+            manifest::FeatureKind::Cone {
+                position,
+                radius,
+                height,
+                orientation,
+            } => doc::FeatureKind::Cone(doc::Cone {
+                position: exprs_to_doc(position),
+                radius: doc::Expr(radius),
+                height: doc::Expr(height),
+                orientation: orientation_to_doc(orientation),
+            }),
+            manifest::FeatureKind::Torus {
+                position,
+                major,
+                minor,
+                orientation,
+            } => doc::FeatureKind::Torus(doc::Torus {
+                position: exprs_to_doc(position),
+                major: doc::Expr(major),
+                minor: doc::Expr(minor),
+                orientation: orientation_to_doc(orientation),
+            }),
         },
     }
 }

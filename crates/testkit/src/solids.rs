@@ -50,7 +50,7 @@ fn backward(edge: EdgeId) -> Coedge {
 
 /// A frame at `origin` looking the other way: its z axis is `-frame.z`.
 fn flipped(frame: &Frame, origin: Vec3) -> Result<Frame, GeomError> {
-    Frame::new(origin, -frame.z(), frame.x()).ok_or(invalid("degenerate frame"))
+    frame.reversed_at(origin).ok_or(invalid("degenerate frame"))
 }
 
 /// A full circle of `radius` about the z axis of `frame`, with its one

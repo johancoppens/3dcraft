@@ -208,10 +208,11 @@ fn freecad_reads_tessellated_solids_as_solids_of_the_right_volume() {
         chordal_tolerance: tolerance,
         ..TessParams::default()
     };
-    for solid in solids::all(&frame, 1.0).unwrap() {
-        if solid.name == "hemisphere" {
-            continue; // Trimmed sphere faces cannot be tessellated yet.
-        }
+    // The primitives, the hemisphere, and the solids with trimmed faces
+    // (holes, half walls, an ellipse edge, freeform roofs).
+    let mut all = solids::all(&frame, 1.0).unwrap();
+    all.extend(craft3d_testkit::trimmed::all(&frame, 1.0).unwrap());
+    for solid in all {
         let mesh = tessellate_body(&solid.body, &params).unwrap();
         let welded = mesh.weld().unwrap();
         for (extension, format) in [("stl", MeshFormat::StlBinary), ("3mf", MeshFormat::ThreeMf)] {

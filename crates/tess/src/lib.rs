@@ -1,16 +1,19 @@
 //! Tessellator: surfaces to triangle meshes within a chordal tolerance.
 //!
-//! This first version handles untrimmed Bézier patches on a uniform parameter
-//! grid, the same grid for every patch. Vertices on a seam between two
-//! patches that share a whole edge coincide exactly, but are separate entries
-//! in the mesh: it has no connectivity across patches yet. Shared edges (and
-//! with them watertight solids) arrive with the B-rep tessellator
-//! (docs/architecture.md §6).
+//! Two entry points. [`tessellate_patches`] handles untrimmed Bézier
+//! patches on a uniform parameter grid, the same grid for every patch;
+//! vertices on a seam between two patches that share a whole edge coincide
+//! exactly, but are separate entries in the mesh. [`tessellate_body`]
+//! handles B-rep bodies, edges first, so that the mesh of a valid solid is
+//! watertight (docs/architecture.md §6); see `body.rs` for what it covers.
 
 mod body;
+mod cdt;
+mod edge;
+mod face;
 mod weld;
 
-pub use body::tessellate_body;
+pub use body::{tessellate_body, tessellate_body_with_threads};
 pub use weld::Welded;
 
 use craft3d_geom::BezierPatch;
@@ -76,6 +79,9 @@ impl Default for TessParams {
 #[derive(Clone, Debug, PartialEq)]
 pub enum TessError {
     InvalidTolerance(f64),
+    /// The tolerance asks for more points than `TessParams::max_segments`
+    /// allows. `patch` is the index of the patch, the face or (when the
+    /// edges are being turned into points) the edge.
     TooFine {
         patch: usize,
         needed_segments: f64,
@@ -89,6 +95,14 @@ pub enum TessError {
         face: usize,
         what: String,
     },
+    /// A face that cannot be tessellated as it is given: its loops do not
+    /// close, do not bound a region, or cross.
+    Face {
+        face: usize,
+        reason: String,
+    },
+    /// The tessellator itself went wrong (a bug); nothing was produced.
+    Internal(String),
 }
 
 impl fmt::Display for TessError {
@@ -114,6 +128,10 @@ impl fmt::Display for TessError {
             TessError::Unsupported { face, what } => {
                 write!(f, "face {face} cannot be tessellated yet: {what}")
             }
+            TessError::Face { face, reason } => {
+                write!(f, "face {face} cannot be tessellated: {reason}")
+            }
+            TessError::Internal(what) => write!(f, "internal tessellator error: {what}"),
         }
     }
 }

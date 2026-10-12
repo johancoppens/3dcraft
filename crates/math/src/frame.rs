@@ -54,6 +54,26 @@ impl Frame {
         Frame::new(origin, z, hint)
     }
 
+    /// The same axes, bit for bit, at another origin. `None` when the
+    /// origin is not finite. (Rebuilding a frame with [`Frame::new`] from
+    /// its own axes re-orthonormalises them and may change the last bit,
+    /// which is enough to make two parallel circles disagree about where
+    /// their angle 0 is.)
+    pub fn at(&self, origin: Vec3) -> Option<Frame> {
+        origin.is_finite().then_some(Frame { origin, ..*self })
+    }
+
+    /// The frame seen from the other side: the same x axis, y and z
+    /// negated, at `origin`. Still right-handed.
+    pub fn reversed_at(&self, origin: Vec3) -> Option<Frame> {
+        origin.is_finite().then_some(Frame {
+            origin,
+            x: self.x,
+            y: -self.y,
+            z: -self.z,
+        })
+    }
+
     pub fn origin(&self) -> Vec3 {
         self.origin
     }
@@ -118,6 +138,22 @@ mod tests {
         let (a, b, c) = f.local(p);
         assert!((a - 0.5).abs() < 1e-14 && (b + 2.0).abs() < 1e-14 && (c - 7.0).abs() < 1e-14);
         assert_eq!(Frame::WORLD.point(1.0, 2.0, 3.0), Vec3::new(1.0, 2.0, 3.0));
+    }
+
+    #[test]
+    fn moving_and_reversing_keep_the_axes_exactly() {
+        let f = Frame::from_z(Vec3::new(0.0, 0.0, 20.0), Vec3::new(1.0, 0.0, 0.4)).unwrap();
+        let moved = f.at(f.point(0.0, 0.0, 40.0)).unwrap();
+        assert_eq!((moved.x(), moved.y(), moved.z()), (f.x(), f.y(), f.z()));
+        assert_eq!(moved.origin(), f.point(0.0, 0.0, 40.0));
+        let back = f.reversed_at(f.origin()).unwrap();
+        assert_eq!((back.x(), back.y(), back.z()), (f.x(), -f.y(), -f.z()));
+        assert!(
+            back.x().cross(back.y()).distance(back.z()) < 1e-15,
+            "still right-handed"
+        );
+        assert!(f.at(Vec3::new(f64::NAN, 0.0, 0.0)).is_none());
+        assert!(f.reversed_at(Vec3::new(0.0, f64::INFINITY, 0.0)).is_none());
     }
 
     #[test]

@@ -9,9 +9,11 @@
     clippy::indexing_slicing
 )]
 
+use craft3d_geom::{Circle, Curve3, Surface, Torus};
 use craft3d_math::{Frame, Vec3};
 use craft3d_tess::{TessError, TessParams, tessellate_body};
 use craft3d_testkit::solids::{self, Reference};
+use craft3d_topo::{Body, BodyKind, Coedge};
 
 fn params(tolerance: f64) -> TessParams {
     TessParams {
@@ -32,13 +34,10 @@ fn frames(scale: f64) -> [Frame; 2] {
     ]
 }
 
-/// The solids the tessellator supports so far.
+/// The solids the tessellator supports: all of them, the hemisphere (a
+/// trimmed sphere face) included.
 fn supported(frame: &Frame, scale: f64) -> Vec<Reference> {
-    solids::all(frame, scale)
-        .unwrap()
-        .into_iter()
-        .filter(|s| s.name != "hemisphere")
-        .collect()
+    solids::all(frame, scale).unwrap()
 }
 
 #[test]
@@ -179,14 +178,41 @@ fn output_is_reproducible() {
 
 #[test]
 fn what_cannot_be_tessellated_yet_is_an_error_that_says_so() {
-    // A sphere face bounded by a loop.
-    let hemisphere = solids::hemisphere(&Frame::WORLD, 2.0).unwrap();
-    let error = tessellate_body(&hemisphere.body, &params(1e-2)).unwrap_err();
+    // A loop that winds around both the axis and the tube of a torus: a
+    // Villarceau circle, cut from the torus by a plane through its centre
+    // that touches it twice (tilted by asin(r / R); the circle has radius
+    // R and its centre is r off the axis).
+    let (major, minor) = (3.0_f64, 1.0_f64);
+    let tilt = (minor / major).asin();
+    let plane = Frame::new(
+        Vec3::new(0.0, minor, 0.0),
+        Vec3::new(-tilt.sin(), 0.0, tilt.cos()),
+        Vec3::new(tilt.cos(), 0.0, tilt.sin()),
+    )
+    .unwrap();
+    let circle = Curve3::Circle(Circle::new(plane, major).unwrap());
+    let torus = Surface::Torus(Torus::new(Frame::WORLD, major, minor).unwrap());
+    for k in 0..16 {
+        // The circle does lie on the torus.
+        let p = circle.eval(std::f64::consts::TAU * f64::from(k) / 16.0);
+        let (u, v) = torus.project(p).unwrap();
+        assert!(torus.eval(u, v).distance(p) < 1e-12);
+    }
+    let mut sheet = Body::new(BodyKind::Sheet);
+    let vertex = sheet.add_vertex(circle.eval(0.0));
+    let edge = sheet.add_edge(circle, (0.0, std::f64::consts::TAU), vertex, vertex);
+    let loop_ = sheet.add_loop(vec![Coedge {
+        edge,
+        reversed: false,
+    }]);
+    let face = sheet.add_face(torus, false, vec![loop_]);
+    sheet.add_shell(vec![face]);
+    let error = tessellate_body(&sheet, &params(1e-2)).unwrap_err();
     assert!(
         matches!(error, TessError::Unsupported { face: 0, .. }),
         "{error}"
     );
-    assert!(error.to_string().contains("sphere"), "{error}");
+    assert!(error.to_string().contains("torus"), "{error}");
 
     let cylinder = solids::cylinder(&Frame::WORLD, 1.0, 2.0).unwrap().body;
     for tolerance in [0.0, -1.0, f64::NAN] {

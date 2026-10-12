@@ -38,11 +38,14 @@ fn backward(edge: EdgeId) -> Coedge {
 
 /// A frame at `origin` looking the other way: its z axis is `-frame.z`.
 fn flipped(frame: &Frame, origin: Vec3) -> Result<Frame, GeomError> {
-    Frame::new(origin, -frame.z(), frame.x()).ok_or(invalid("degenerate frame"))
+    frame.reversed_at(origin).ok_or(invalid("degenerate frame"))
 }
 
 fn lifted(frame: &Frame, height: f64) -> Result<Frame, GeomError> {
-    Frame::new(frame.point(0.0, 0.0, height), frame.z(), frame.x())
+    // The same axes exactly, so the circles at both ends start at the
+    // same angle.
+    frame
+        .at(frame.point(0.0, 0.0, height))
         .ok_or(invalid("degenerate frame"))
 }
 

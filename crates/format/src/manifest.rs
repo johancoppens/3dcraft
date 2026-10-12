@@ -106,6 +106,27 @@ pub struct Feature {
     pub kind: FeatureKind,
 }
 
+/// How a primitive is turned: `axis` is the direction of its local z axis
+/// (three plain numbers), `angle` the rotation about it. Optional in the
+/// file: features written before orientations existed are upright.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Orientation {
+    pub axis: [String; 3],
+    pub angle: String,
+}
+
+impl Default for Orientation {
+    /// The document model's default, so the two cannot drift apart.
+    fn default() -> Self {
+        let craft3d_doc::Orientation { axis, angle } = craft3d_doc::Orientation::default();
+        Self {
+            axis: axis.map(|e| e.0),
+            angle: angle.0,
+        }
+    }
+}
+
 /// The parameters of a feature, tagged with `"type"`. Every parameter is an
 /// expression, stored as its source text; triples are x, y, z.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,14 +135,32 @@ pub enum FeatureKind {
     Block {
         position: [String; 3],
         size: [String; 3],
+        #[serde(default)]
+        orientation: Orientation,
     },
     Cylinder {
         position: [String; 3],
         radius: String,
         height: String,
+        #[serde(default)]
+        orientation: Orientation,
     },
     Sphere {
         position: [String; 3],
         radius: String,
+    },
+    Cone {
+        position: [String; 3],
+        radius: String,
+        height: String,
+        #[serde(default)]
+        orientation: Orientation,
+    },
+    Torus {
+        position: [String; 3],
+        major: String,
+        minor: String,
+        #[serde(default)]
+        orientation: Orientation,
     },
 }

@@ -8,8 +8,8 @@
 use crate::params::Params;
 use crate::{CommandError, CommandSpec, OpenDocument, Session, base64};
 use craft3d_doc::{
-    Block, Cylinder, DocError, Document, Expr, Feature, FeatureId, FeatureKind, LengthUnit, Sphere,
-    Tolerance, Units,
+    Block, Cone, Cylinder, DocError, Document, Expr, Feature, FeatureId, FeatureKind, LengthUnit,
+    Orientation, Sphere, Tolerance, Torus, Units,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use craft3d_io::MeshFormat;
@@ -62,13 +62,17 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Deletes a variable. Expressions that still use it fail at regeneration.", doc: true, variable_delete),
     spec!("variable.rename", "Rename Variable", r#"{"name": string, "to": string}"#,
         "Renames a variable and every reference to it in variables and features.", doc: true, variable_rename),
-    spec!("feature.block", "Block", r#"{"size": [expr, expr, expr], "position": [expr, expr, expr] = [0, 0, 0], "name": string = automatic}"#,
-        "Adds a rectangular block with one corner at position and edges along the world axes.", doc: true, feature_block),
-    spec!("feature.cylinder", "Cylinder", r#"{"radius": expr, "height": expr, "position": [expr, expr, expr] = [0, 0, 0], "name": string = automatic}"#,
-        "Adds a cylinder along the world z axis with its base centred at position.", doc: true, feature_cylinder),
+    spec!("feature.block", "Block", r#"{"size": [expr, expr, expr], "position": [expr, expr, expr] = [0, 0, 0], "axis": [number, number, number] = [0, 0, 1], "angle": expr = "0 deg", "name": string = automatic}"#,
+        "Adds a rectangular block with one corner at position. axis is the direction of its local z, angle a turn about that axis.", doc: true, feature_block),
+    spec!("feature.cylinder", "Cylinder", r#"{"radius": expr, "height": expr, "position": [expr, expr, expr] = [0, 0, 0], "axis": [number, number, number] = [0, 0, 1], "angle": expr = "0 deg", "name": string = automatic}"#,
+        "Adds a cylinder along axis with its base centred at position.", doc: true, feature_cylinder),
     spec!("feature.sphere", "Sphere", r#"{"radius": expr, "position": [expr, expr, expr] = [0, 0, 0], "name": string = automatic}"#,
         "Adds a sphere centred at position.", doc: true, feature_sphere),
-    spec!("feature.edit", "Edit Feature", r#"{"feature": id or name, "size": [expr; 3], "position": [expr; 3], "radius": expr, "height": expr}"#,
+    spec!("feature.cone", "Cone", r#"{"radius": expr, "height": expr, "position": [expr, expr, expr] = [0, 0, 0], "axis": [number, number, number] = [0, 0, 1], "angle": expr = "0 deg", "name": string = automatic}"#,
+        "Adds a cone along axis: its base circle is centred at position, its apex is height further along the axis.", doc: true, feature_cone),
+    spec!("feature.torus", "Torus", r#"{"major": expr, "minor": expr, "position": [expr, expr, expr] = [0, 0, 0], "axis": [number, number, number] = [0, 0, 1], "angle": expr = "0 deg", "name": string = automatic}"#,
+        "Adds a ring torus about axis, centred at position: major is the radius of the ring, minor of the tube.", doc: true, feature_torus),
+    spec!("feature.edit", "Edit Feature", r#"{"feature": id or name, "size": [expr; 3], "position": [expr; 3], "axis": [number; 3], "angle": expr, "radius": expr, "height": expr, "major": expr, "minor": expr}"#,
         "Changes parameters of a feature; give only the ones to change.", doc: true, feature_edit),
     spec!("feature.rename", "Rename Feature", r#"{"feature": id or name, "name": string}"#,
         "Renames a feature.", doc: true, feature_rename),
@@ -82,6 +86,8 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Regenerates only up to and including this feature; null removes the marker.", doc: true, history_rollback),
     spec!("document.inspect", "Inspect", "{}",
         "Returns the whole document state: units, variables with values, features with status, bodies with counts and mass properties, undo history.", doc: true, document_inspect),
+    spec!("document.check", "Check", "{}",
+        "Checks every body for validity and lists every problem: failed variables, failed features, defects of bodies. ok is true when there is none.", doc: true, document_check),
     spec!("document.measure", "Measure", r#"{"feature": id or name = all bodies}"#,
         "Returns volume, area and centroid, per body and in total, in document units.", doc: true, document_measure),
     spec!("view.render", "Render", r#"{"path": string, "width": integer = 800, "height": integer = 600, "view": "iso|front|back|left|right|top|bottom" = "iso", "mode": "shaded|ids" = "shaded", "tolerance": number = automatic}"#,
@@ -517,12 +523,35 @@ fn variable_rename(session: &mut Session, params: &Value) -> Run {
 
 // --------------------------------------------------------------- features
 
+/// The `axis` and `angle` parameters shared by the primitives that can be
+/// turned; absent means upright.
+fn orientation(p: &Params) -> Result<Orientation, CommandError> {
+    let default = Orientation::default();
+    Ok(Orientation {
+        axis: p.expr3("axis")?.map(exprs).unwrap_or(default.axis),
+        angle: p.expr("angle")?.map(Expr::new).unwrap_or(default.angle),
+    })
+}
+
+fn required(p: &Params, key: &str) -> Result<Expr, CommandError> {
+    Ok(Expr::new(p.expr(key)?.ok_or_else(|| p.missing(key))?))
+}
+
+fn position(p: &Params) -> Result<[Expr; 3], CommandError> {
+    Ok(exprs(p.expr3("position")?.unwrap_or_else(origin)))
+}
+
 fn feature_block(session: &mut Session, params: &Value) -> Run {
-    let p = Params::new("feature.block", params, &["size", "position", "name"])?;
+    let p = Params::new(
+        "feature.block",
+        params,
+        &["size", "position", "axis", "angle", "name"],
+    )?;
     let size = p.expr3("size")?.ok_or_else(|| p.missing("size"))?;
     let kind = FeatureKind::Block(Block {
-        position: exprs(p.expr3("position")?.unwrap_or_else(origin)),
+        position: position(&p)?,
         size: exprs(size),
+        orientation: orientation(&p)?,
     });
     add_feature(session, "feature.block", p.str("name")?, kind)
 }
@@ -531,12 +560,13 @@ fn feature_cylinder(session: &mut Session, params: &Value) -> Run {
     let p = Params::new(
         "feature.cylinder",
         params,
-        &["radius", "height", "position", "name"],
+        &["radius", "height", "position", "axis", "angle", "name"],
     )?;
     let kind = FeatureKind::Cylinder(Cylinder {
-        position: exprs(p.expr3("position")?.unwrap_or_else(origin)),
-        radius: Expr::new(p.expr("radius")?.ok_or_else(|| p.missing("radius"))?),
-        height: Expr::new(p.expr("height")?.ok_or_else(|| p.missing("height"))?),
+        position: position(&p)?,
+        radius: required(&p, "radius")?,
+        height: required(&p, "height")?,
+        orientation: orientation(&p)?,
     });
     add_feature(session, "feature.cylinder", p.str("name")?, kind)
 }
@@ -544,30 +574,73 @@ fn feature_cylinder(session: &mut Session, params: &Value) -> Run {
 fn feature_sphere(session: &mut Session, params: &Value) -> Run {
     let p = Params::new("feature.sphere", params, &["radius", "position", "name"])?;
     let kind = FeatureKind::Sphere(Sphere {
-        position: exprs(p.expr3("position")?.unwrap_or_else(origin)),
-        radius: Expr::new(p.expr("radius")?.ok_or_else(|| p.missing("radius"))?),
+        position: position(&p)?,
+        radius: required(&p, "radius")?,
     });
     add_feature(session, "feature.sphere", p.str("name")?, kind)
 }
 
-fn feature_edit(session: &mut Session, params: &Value) -> Run {
+fn feature_cone(session: &mut Session, params: &Value) -> Run {
     let p = Params::new(
-        "feature.edit",
+        "feature.cone",
         params,
-        &["feature", "size", "position", "radius", "height"],
+        &["radius", "height", "position", "axis", "angle", "name"],
     )?;
+    let kind = FeatureKind::Cone(Cone {
+        position: position(&p)?,
+        radius: required(&p, "radius")?,
+        height: required(&p, "height")?,
+        orientation: orientation(&p)?,
+    });
+    add_feature(session, "feature.cone", p.str("name")?, kind)
+}
+
+fn feature_torus(session: &mut Session, params: &Value) -> Run {
+    let p = Params::new(
+        "feature.torus",
+        params,
+        &["major", "minor", "position", "axis", "angle", "name"],
+    )?;
+    let kind = FeatureKind::Torus(Torus {
+        position: position(&p)?,
+        major: required(&p, "major")?,
+        minor: required(&p, "minor")?,
+        orientation: orientation(&p)?,
+    });
+    add_feature(session, "feature.torus", p.str("name")?, kind)
+}
+
+/// The parameters `feature.edit` can change, by name.
+const EDITABLE: [&str; 8] = [
+    "size", "position", "axis", "radius", "height", "major", "minor", "angle",
+];
+
+fn feature_edit(session: &mut Session, params: &Value) -> Run {
+    let mut allowed = vec!["feature"];
+    allowed.extend(EDITABLE);
+    let p = Params::new("feature.edit", params, &allowed)?;
     let id = feature_ref(
         session.document()?.history.current(),
         &p,
         "feature.edit",
         "feature",
     )?;
-    let (size, position) = (p.expr3("size")?, p.expr3("position")?);
-    let (radius, height) = (p.expr("radius")?, p.expr("height")?);
-    if size.is_none() && position.is_none() && radius.is_none() && height.is_none() {
-        return fail(
-            "feature.edit: give at least one parameter to change (size, position, radius, height)",
-        );
+    // Validate the shape of everything given before touching anything.
+    for key in ["size", "position", "axis"] {
+        p.expr3(key)?;
+    }
+    for key in ["radius", "height", "major", "minor", "angle"] {
+        p.expr(key)?;
+    }
+    let given: Vec<&str> = EDITABLE
+        .into_iter()
+        .filter(|key| p.get(key).is_some())
+        .collect();
+    if given.is_empty() {
+        return fail(format!(
+            "feature.edit: give at least one parameter to change ({})",
+            EDITABLE.join(", ")
+        ));
     }
     let mut kind = session
         .document()?
@@ -576,56 +649,88 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
         .feature(id)
         .map(|f| f.kind.clone())
         .ok_or_else(|| CommandError::new(format!("feature.edit: there is no feature {id}")))?;
-    // Each kind takes what applies to it; anything left over is an error.
-    let (mut size, mut position, mut radius, mut height) = (size, position, radius, height);
-    let (allowed, name) = match &mut kind {
-        FeatureKind::Block(b) => {
-            if let Some(v) = size.take() {
-                b.size = exprs(v);
-            }
-            if let Some(v) = position.take() {
-                b.position = exprs(v);
-            }
-            ("position, size", "block")
-        }
-        FeatureKind::Cylinder(c) => {
-            if let Some(v) = position.take() {
-                c.position = exprs(v);
-            }
-            if let Some(v) = radius.take() {
-                c.radius = Expr::new(v);
-            }
-            if let Some(v) = height.take() {
-                c.height = Expr::new(v);
-            }
-            ("position, radius, height", "cylinder")
-        }
-        FeatureKind::Sphere(s) => {
-            if let Some(v) = position.take() {
-                s.position = exprs(v);
-            }
-            if let Some(v) = radius.take() {
-                s.radius = Expr::new(v);
-            }
-            ("position, radius", "sphere")
-        }
+    // Each kind lists the parameters it has; a given one outside the list
+    // is an error rather than ignored.
+    let (name, own): (&str, Vec<(&str, Slot)>) = match &mut kind {
+        FeatureKind::Block(b) => (
+            "block",
+            vec![
+                ("position", Slot::Triple(&mut b.position)),
+                ("size", Slot::Triple(&mut b.size)),
+                ("axis", Slot::Triple(&mut b.orientation.axis)),
+                ("angle", Slot::One(&mut b.orientation.angle)),
+            ],
+        ),
+        FeatureKind::Cylinder(c) => (
+            "cylinder",
+            vec![
+                ("position", Slot::Triple(&mut c.position)),
+                ("radius", Slot::One(&mut c.radius)),
+                ("height", Slot::One(&mut c.height)),
+                ("axis", Slot::Triple(&mut c.orientation.axis)),
+                ("angle", Slot::One(&mut c.orientation.angle)),
+            ],
+        ),
+        FeatureKind::Sphere(s) => (
+            "sphere",
+            vec![
+                ("position", Slot::Triple(&mut s.position)),
+                ("radius", Slot::One(&mut s.radius)),
+            ],
+        ),
+        FeatureKind::Cone(c) => (
+            "cone",
+            vec![
+                ("position", Slot::Triple(&mut c.position)),
+                ("radius", Slot::One(&mut c.radius)),
+                ("height", Slot::One(&mut c.height)),
+                ("axis", Slot::Triple(&mut c.orientation.axis)),
+                ("angle", Slot::One(&mut c.orientation.angle)),
+            ],
+        ),
+        FeatureKind::Torus(t) => (
+            "torus",
+            vec![
+                ("position", Slot::Triple(&mut t.position)),
+                ("major", Slot::One(&mut t.major)),
+                ("minor", Slot::One(&mut t.minor)),
+                ("axis", Slot::Triple(&mut t.orientation.axis)),
+                ("angle", Slot::One(&mut t.orientation.angle)),
+            ],
+        ),
     };
-    let leftover = [
-        ("size", size.is_some()),
-        ("position", position.is_some()),
-        ("radius", radius.is_some()),
-        ("height", height.is_some()),
-    ];
-    if let Some((unused, _)) = leftover.iter().find(|(_, left)| *left) {
+    let names: Vec<&str> = own.iter().map(|(key, _)| *key).collect();
+    if let Some(unused) = given.iter().find(|key| !names.contains(key)) {
         return fail(format!(
-            "feature.edit: `{unused}` is not a parameter of a {name}; its parameters are: {allowed}"
+            "feature.edit: `{unused}` is not a parameter of a {name}; its parameters are: {}",
+            names.join(", ")
         ));
+    }
+    for (key, slot) in own {
+        match slot {
+            Slot::Triple(target) => {
+                if let Some(value) = p.expr3(key)? {
+                    *target = exprs(value);
+                }
+            }
+            Slot::One(target) => {
+                if let Some(value) = p.expr(key)? {
+                    *target = Expr::new(value);
+                }
+            }
+        }
     }
     edit(session, "feature.edit", "Edit feature", |doc| {
         doc.feature_mut(id)?.kind = kind;
         Ok(())
     })?;
     feature_result(session, id)
+}
+
+/// Where a parameter of a feature lives.
+enum Slot<'a> {
+    One(&'a mut Expr),
+    Triple(&'a mut [Expr; 3]),
 }
 
 fn feature_rename(session: &mut Session, params: &Value) -> Run {
@@ -731,6 +836,10 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
         .iter()
         .map(|v| variable_json(&regen, &v.name, unit))
         .collect();
+    let bbox_tess = TessParams {
+        chordal_tolerance: automatic_tolerance(&regen),
+        ..TessParams::default()
+    };
     let mut features = Vec::new();
     let mut bodies = Vec::new();
     for feature in &doc.features {
@@ -761,6 +870,15 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
                 map.insert("volume".into(), mass.volume.into());
                 map.insert("area".into(), mass.area.into());
                 map.insert("centroid".into(), mass.centroid.map_or(Value::Null, vec3));
+            }
+            // From a tessellation: exact for flat-faced bodies, inside the
+            // true box by at most the tolerance for curved ones.
+            if let (Some(map), Ok(mesh)) =
+                (entry.as_object_mut(), tessellate_body(body, &bbox_tess))
+                && let Some((lo, hi)) = mesh.bbox().corners()
+            {
+                map.insert("bbox".into(), json!([vec3(lo), vec3(hi)]));
+                map.insert("bboxTolerance".into(), bbox_tess.chordal_tolerance.into());
             }
             bodies.push(entry);
         }
@@ -840,6 +958,49 @@ fn document_measure(session: &mut Session, params: &Value) -> Run {
         "areaUnit": format!("{unit}^2"),
         "volumeUnit": format!("{unit}^3"),
     }))
+}
+
+fn document_check(session: &mut Session, params: &Value) -> Run {
+    Params::new("document.check", params, &[])?;
+    let open = session.document_mut()?;
+    let regen = open.regen();
+    let doc = open.history.current();
+    let tolerance = craft3d_math::Tolerance::new(doc.tolerance.linear, doc.tolerance.angular)
+        .ok_or_else(|| {
+            CommandError::new("document.check: the document's tolerance is not positive and finite")
+        })?;
+    let mut problems = Vec::new();
+    for variable in &regen.variables {
+        if let Err(error) = &variable.value {
+            problems.push(json!({ "variable": variable.name, "problem": error }));
+        }
+    }
+    let mut checked = 0;
+    for outcome in &regen.features {
+        let name = doc
+            .feature(outcome.id)
+            .map_or_else(|| outcome.id.to_string(), |f| f.name.clone());
+        if let Status::Failed(reason) = &outcome.status {
+            problems.push(
+                json!({ "feature": outcome.id.to_string(), "name": name, "problem": reason }),
+            );
+        }
+        if let Some(body) = &outcome.body {
+            checked += 1;
+            for defect in craft3d_topo::check(body, &tolerance) {
+                problems.push(json!({
+                    "feature": outcome.id.to_string(), "name": name, "problem": format!("invalid body: {defect}"),
+                }));
+            }
+            // An unbounded or otherwise unmeasurable face shows up here.
+            if let Err(error) = mass_properties(body) {
+                problems.push(json!({
+                    "feature": outcome.id.to_string(), "name": name, "problem": format!("cannot be measured: {error}"),
+                }));
+            }
+        }
+    }
+    Ok(json!({ "ok": problems.is_empty(), "bodiesChecked": checked, "problems": problems }))
 }
 
 // ------------------------------------------------------------------- view

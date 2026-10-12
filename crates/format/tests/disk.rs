@@ -22,6 +22,7 @@ fn document(width: &str) -> Document {
         FeatureKind::Block(Block {
             position: ["0 mm", "0 mm", "0 mm"].map(Expr::new),
             size: ["width", "width", "width"].map(Expr::new),
+            orientation: Default::default(),
         }),
     )
     .unwrap();

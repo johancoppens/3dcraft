@@ -1,11 +1,11 @@
 # Development guide
 
-> **Last updated:** 2026-10-12 · **Status:** M2 done. *Works today:* everything under [What works today](#what-works-today). Every other section is *(planned)*: it describes what M0–M4 must deliver. Move commands up as they start to exist.
+> **Last updated:** 2026-10-12 · **Status:** M3 done. *Works today:* everything under [What works today](#what-works-today). Every other section is *(planned)*: it describes what M0–M4 must deliver. Move commands up as they start to exist.
 
 ## What works today
 
 ```sh
-cargo test --workspace                          # about 380 tests, a little over a minute
+cargo test --workspace                          # about 430 tests, three to four minutes (the tessellator's oracle tests take two)
 cargo xtask ci                                  # fmt --check + clippy -D warnings + tests + layers + wasm
 cargo xtask layers                              # dependency layering, and that every crate opts in to the never-crash lints
 cargo xtask stats                               # lines and tests per crate
@@ -37,6 +37,8 @@ craft3d-cli mcp   --automation-read-root work --automation-write-root work     #
 claude mcp add craft3d -- "$PWD/target/release/craft3d-cli" mcp \
     --automation-read-root "$PWD/work" --automation-write-root "$PWD/work"
 ```
+
+A contact sheet of every reference solid, to look at what the tessellator makes of them: `cargo run --release -p craft3d-render --example solids -- target/evidence/solids.png`.
 
 The teapot (Bézier patches, outside the document path) still has its own examples: `cargo run --release -p craft3d-render --example teapot` and `cargo run --release -p craft3d-io --example export_teapot`.
 

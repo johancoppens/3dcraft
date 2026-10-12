@@ -338,7 +338,9 @@ fn other_usage_errors_exit_with_2() {
 fn commands_prints_the_registry_and_filters_it() {
     let all = cli(&["commands"]).ok().stdout;
     let blocks: Vec<&str> = all.trim_end().split("\n\n").collect();
-    assert_eq!(blocks.len(), 22, "one block per command:\n{all}");
+    // One block per command of the registry, whatever their number.
+    let registered = craft3d_engine::Session::commands().len();
+    assert_eq!(blocks.len(), registered, "one block per command:\n{all}");
     for block in &blocks {
         let lines: Vec<&str> = block.lines().collect();
         assert_eq!(lines.len(), 3, "{block}");
