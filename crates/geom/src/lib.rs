@@ -7,10 +7,12 @@
 mod curve;
 mod nurbs;
 mod surface;
+mod transform;
 
 pub use curve::{Circle, Curve3, Ellipse, Line};
 pub use nurbs::{MAX_CONTROL_POINTS, NurbsCurve, NurbsSurface};
 pub use surface::{Cone, Cylinder, Plane, Sphere, Surface, Torus};
+pub use transform::{ISOMETRY_EPSILON, MirrorRule};
 
 use craft3d_math::{Bbox3, Vec3};
 use std::fmt;
