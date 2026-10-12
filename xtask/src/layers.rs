@@ -27,8 +27,24 @@ pub const LAYERS: &[(&str, u32)] = &[
     ("ui-egui", UI_LAYER),
     ("automation", UI_LAYER),
     ("cli", APP_LAYER),
+    (APP, APP_LAYER),
     ("testkit", TESTKIT),
 ];
+
+/// The desktop app's package is the bare machine name, without a suffix;
+/// it is registered under this name.
+const APP: &str = "app";
+const APP_PACKAGE: &str = "craft3d";
+
+/// A workspace package's name in [`LAYERS`]; `None` for one that is not a
+/// 3DCraft crate (xtask).
+fn short_name(package: &str) -> Option<&str> {
+    if package == APP_PACKAGE {
+        Some(APP)
+    } else {
+        package.strip_prefix("craft3d-")
+    }
+}
 
 const UI_LAYER: u32 = 7;
 /// Binaries: may use every library crate, are used by none.
@@ -111,7 +127,7 @@ pub fn check() -> Result<(), String> {
             )),
             Err(e) => errors.push(format!("cannot read {manifest_path}: {e}")),
         }
-        let Some(short) = name.strip_prefix("craft3d-") else {
+        let Some(short) = short_name(name) else {
             continue; // xtask
         };
         let Some(layer) = layer_of(short) else {
@@ -202,5 +218,14 @@ mod tests {
         for name in STANDALONE {
             assert_eq!(layer_of(name), Some(0));
         }
+    }
+
+    #[test]
+    fn the_desktop_app_is_a_registered_binary() {
+        assert_eq!(short_name("craft3d"), Some("app"));
+        assert_eq!(layer_of("app"), Some(APP_LAYER));
+        assert_eq!(short_name("craft3d-cli"), Some("cli"));
+        assert_eq!(short_name("craft3d-ui-egui"), Some("ui-egui"));
+        assert_eq!(short_name("xtask"), None);
     }
 }

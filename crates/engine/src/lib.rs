@@ -12,9 +12,14 @@
 mod base64;
 mod commands;
 mod params;
+mod scene;
 mod sketch_cmds;
 mod workspace;
 
+pub use scene::{
+    DocumentStatus, FeatureState, MAX_ARC_SEGMENTS, MIN_CIRCLE_SEGMENTS, Scene, SceneBody,
+    SceneFeature, ScenePolyline, SceneSketch, SketchCurve, arc_segments, base64 as encode_base64,
+};
 pub use workspace::{Access, Workspace};
 
 use craft3d_doc::Document;
@@ -108,6 +113,8 @@ pub struct Session {
     pub(crate) documents: Vec<OpenDocument>,
     pub(crate) active: usize,
     pub(crate) workspace: Workspace,
+    /// What a viewer draws for the active document (`scene.rs`).
+    pub(crate) scene: scene::SceneCache,
 }
 
 /// Most documents open at once.
@@ -119,6 +126,7 @@ impl Session {
             documents: Vec::new(),
             active: 0,
             workspace,
+            scene: scene::SceneCache::default(),
         }
     }
 

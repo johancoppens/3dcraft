@@ -28,6 +28,10 @@ pub mod mcp;
 mod registry;
 pub mod rpc;
 
+/// Reading one request line with a size cap, for a host that serves the
+/// protocol on a transport of its own (the desktop app's TCP listener).
+pub use lines::{Line, read_line};
+
 /// Longest request line a server reads, in bytes. A longer line is skipped
 /// up to its newline and answered with an error.
 pub const MAX_REQUEST_BYTES: usize = 1 << 20;

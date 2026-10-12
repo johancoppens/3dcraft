@@ -59,6 +59,49 @@ pub fn handle_line(session: &mut Session, line: &str) -> Option<String> {
     handle_line_capped(session, line, MAX_REPLY_BYTES)
 }
 
+/// What a host's own method returned: `None` when the method is not one of
+/// the host's, so the request is an unknown method.
+pub type ExtensionResult = Option<Result<Value, String>>;
+
+/// Methods a host adds to the protocol: the desktop app's `ui.*`, which act
+/// on its window rather than on the session.
+pub struct Extension<'a> {
+    /// Listed by `methods` after the protocol's own.
+    pub methods: &'a [Method],
+    /// Gets every method the protocol does not know, with its params.
+    pub handle: &'a mut dyn FnMut(&mut Session, &str, Option<&Value>) -> ExtensionResult,
+}
+
+/// [`handle_line`] for a host with methods of its own: the same envelope,
+/// the same checks and limits, the same guard against a panic.
+pub fn handle_line_with(
+    session: &mut Session,
+    line: &str,
+    extension: &mut Extension<'_>,
+) -> Option<String> {
+    handle_line_extended(session, line, MAX_REPLY_BYTES, Some(extension))
+}
+
+/// The reply to a request that failed, as one line.
+pub fn error_reply(id: &Value, error: &str) -> String {
+    failure(id, error)
+}
+
+/// The reply to a request that succeeded, as one line.
+pub fn ok_reply(id: &Value, result: &Value) -> String {
+    serialize(&json!({ "id": id, "ok": true, "result": result }))
+}
+
+/// The reply to a line longer than [`MAX_REQUEST_BYTES`].
+pub fn too_long_reply() -> String {
+    failure(&Value::Null, &Rejected::TooLong.message())
+}
+
+/// The reply to a line that is not UTF-8.
+pub fn not_utf8_reply() -> String {
+    failure(&Value::Null, &Rejected::NotUtf8.message())
+}
+
 /// Serves requests from `input` until it ends, writing each reply to
 /// `output` and flushing it before the next request is read. Returns early
 /// only when reading or writing fails.
@@ -77,6 +120,15 @@ pub fn serve(session: &mut Session, input: impl BufRead, output: impl Write) -> 
 /// [`handle_line`] with the reply cap as a parameter, so tests can reach it
 /// with a small one.
 fn handle_line_capped(session: &mut Session, line: &str, max_reply: usize) -> Option<String> {
+    handle_line_extended(session, line, max_reply, None)
+}
+
+fn handle_line_extended(
+    session: &mut Session,
+    line: &str,
+    max_reply: usize,
+    mut extension: Option<&mut Extension<'_>>,
+) -> Option<String> {
     if line.trim().is_empty() {
         return None;
     }
@@ -134,7 +186,7 @@ fn handle_line_capped(session: &mut Session, line: &str, max_reply: usize) -> Op
     // Last-resort guard (AGENTS.md, never crash). `Session::execute` already
     // catches a panic inside a command; this one covers this module.
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        dispatch(session, method, params)
+        dispatch(session, method, params, extension.as_deref_mut())
     }))
     .unwrap_or_else(|payload| {
         Err(format!(
@@ -161,7 +213,13 @@ fn handle_line_capped(session: &mut Session, line: &str, max_reply: usize) -> Op
     Some(reply)
 }
 
-fn dispatch(session: &mut Session, method: &str, params: Option<&Value>) -> Result<Value, String> {
+fn dispatch(
+    session: &mut Session,
+    method: &str,
+    params: Option<&Value>,
+    extension: Option<&mut Extension<'_>>,
+) -> Result<Value, String> {
+    let extra: &[Method] = extension.as_ref().map_or(&[], |e| e.methods);
     match method {
         "engine.execute" => {
             let p = Fields::new(method, "parameter", params, &["command", "params"])?;
@@ -185,6 +243,7 @@ fn dispatch(session: &mut Session, method: &str, params: Option<&Value>) -> Resu
             Fields::new(method, "parameter", params, &[])?;
             let methods: Vec<Value> = METHODS
                 .iter()
+                .chain(extra)
                 .map(|m| json!({ "name": m.name, "params": m.params, "summary": m.summary }))
                 .collect();
             Ok(json!({
@@ -197,7 +256,12 @@ fn dispatch(session: &mut Session, method: &str, params: Option<&Value>) -> Resu
             }))
         }
         other => {
-            let names: Vec<&str> = METHODS.iter().map(|m| m.name).collect();
+            if let Some(extension) = extension
+                && let Some(outcome) = (extension.handle)(session, other, params)
+            {
+                return outcome;
+            }
+            let names: Vec<&str> = METHODS.iter().chain(extra).map(|m| m.name).collect();
             Err(format!(
                 "unknown method `{}`; the methods are: {}",
                 shorten(other),

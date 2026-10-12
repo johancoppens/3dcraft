@@ -1,0 +1,502 @@
+//! The shell's own state: the camera, which panels are open, what is
+//! selected and the caption. Plain serde data, so the control channel reads
+//! it (`ui.get`) and drives it (`ui.set`) exactly as the mouse does
+//! (AGENTS.md rule 9). Nothing here belongs to a document.
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+/// Largest coordinate of the camera target, and largest distance, in model
+/// units. Larger values are clamped: beyond this `f64` has no precision left
+/// for a picture anyway.
+pub const MAX_EXTENT: f64 = 1e12;
+/// Smallest distance from the eye to the target.
+pub const MIN_DISTANCE: f64 = 1e-9;
+/// Vertical field of view, in degrees.
+pub const MIN_FOV: f64 = 1.0;
+pub const MAX_FOV: f64 = 120.0;
+/// Longest caption, in characters. A longer one is cut.
+pub const MAX_NOTICE_CHARS: usize = 200;
+/// Longest feature reference kept as the selection.
+pub const MAX_SELECTION_CHARS: usize = 128;
+
+/// The named views, with the yaw and pitch each one is.
+pub const VIEWS: [(&str, f64, f64); 7] = [
+    // The direction `view.render` calls iso: (1, -1, 0.8) towards the eye.
+    ("iso", -45.0, 29.496_208_496_566_43),
+    ("front", -90.0, 0.0),
+    ("back", 90.0, 0.0),
+    ("right", 0.0, 0.0),
+    ("left", 180.0, 0.0),
+    ("top", -90.0, 90.0),
+    ("bottom", -90.0, -90.0),
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProjectionKind {
+    #[default]
+    Perspective,
+    Orthographic,
+}
+
+/// An orbit camera: it looks at `target` from `distance` away.
+///
+/// `yaw` turns the eye about the world Z axis, counter-clockwise seen from
+/// above, measured from +X; `pitch` lifts it above the XY plane. Both are in
+/// degrees. The eye is at
+/// `target + distance · (cos pitch · cos yaw, cos pitch · sin yaw, sin pitch)`.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct CameraState {
+    pub target: [f64; 3],
+    pub distance: f64,
+    pub yaw: f64,
+    pub pitch: f64,
+    pub projection: ProjectionKind,
+    /// Vertical field of view in degrees. An orthographic camera shows what
+    /// a perspective one with this angle shows at the target's depth.
+    pub fov_y: f64,
+    /// Frame everything again whenever the size of the model changes.
+    /// Panning or zooming by hand switches it off; fitting switches it on.
+    pub auto_fit: bool,
+}
+
+impl Default for CameraState {
+    fn default() -> Self {
+        Self {
+            target: [0.0; 3],
+            distance: 100.0,
+            yaw: -45.0,
+            pitch: 29.496_208_496_566_43,
+            projection: ProjectionKind::Perspective,
+            fov_y: 30.0,
+            auto_fit: true,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct Panels {
+    /// The feature tree, on the left.
+    pub tree: bool,
+    /// The status bar, at the bottom.
+    pub status: bool,
+}
+
+impl Default for Panels {
+    fn default() -> Self {
+        Self {
+            tree: true,
+            status: true,
+        }
+    }
+}
+
+/// Everything the shell remembers that is not in a document.
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct UiState {
+    pub camera: CameraState,
+    pub panels: Panels,
+    /// The feature highlighted in the tree and the viewport, by id (`F2`).
+    pub selected_feature: Option<String>,
+    /// A one-line caption shown over the viewport, for narrated demos.
+    pub notice: String,
+}
+
+fn finite(name: &str, value: f64) -> Result<f64, String> {
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        Err(format!("`{name}` must be a finite number"))
+    }
+}
+
+/// Brings an angle into (-180, 180].
+fn wrap_degrees(angle: f64) -> f64 {
+    let wrapped = angle.rem_euclid(360.0);
+    if wrapped > 180.0 {
+        wrapped - 360.0
+    } else {
+        wrapped
+    }
+}
+
+fn cut(text: &str, max_chars: usize) -> String {
+    text.chars().take(max_chars).collect()
+}
+
+/// One line: control characters (a newline in a caption) become spaces.
+fn one_line(text: &str, max_chars: usize) -> String {
+    text.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .take(max_chars)
+        .collect()
+}
+
+impl CameraState {
+    /// The same camera with every number in range: angles wrapped and
+    /// clamped, lengths clamped. A number that is not finite is an error,
+    /// because there is nothing sensible to clamp it to.
+    pub fn validated(mut self) -> Result<Self, String> {
+        for (axis, value) in ["x", "y", "z"].iter().zip(self.target.iter_mut()) {
+            *value =
+                finite(&format!("camera.target.{axis}"), *value)?.clamp(-MAX_EXTENT, MAX_EXTENT);
+        }
+        self.distance = finite("camera.distance", self.distance)?.clamp(MIN_DISTANCE, MAX_EXTENT);
+        self.yaw = wrap_degrees(finite("camera.yaw", self.yaw)?);
+        self.pitch = finite("camera.pitch", self.pitch)?.clamp(-90.0, 90.0);
+        self.fov_y = finite("camera.fovY", self.fov_y)?.clamp(MIN_FOV, MAX_FOV);
+        Ok(self)
+    }
+
+    /// Turns the camera to a named view; the target and distance stay.
+    pub fn set_view(&mut self, name: &str) -> Result<(), String> {
+        let Some(&(_, yaw, pitch)) = VIEWS.iter().find(|(view, ..)| *view == name) else {
+            let names: Vec<&str> = VIEWS.iter().map(|(view, ..)| *view).collect();
+            return Err(format!(
+                "unknown view `{}`; use {}",
+                cut(name, 40),
+                names.join(", ")
+            ));
+        };
+        self.yaw = yaw;
+        self.pitch = pitch;
+        Ok(())
+    }
+}
+
+impl UiState {
+    /// The same state with everything in range (see
+    /// [`CameraState::validated`]); texts are cut to their limits.
+    pub fn validated(mut self) -> Result<Self, String> {
+        self.camera = self.camera.validated()?;
+        self.notice = one_line(&self.notice, MAX_NOTICE_CHARS);
+        self.selected_feature = self
+            .selected_feature
+            .map(|id| cut(&id, MAX_SELECTION_CHARS))
+            .filter(|id| !id.is_empty());
+        Ok(self)
+    }
+
+    /// Changes the fields `patch` names and leaves the rest: the body of
+    /// `ui.set`. `patch` is a JSON object shaped like the state itself,
+    /// plus `"view"` for a named view. An unknown field or a value of the
+    /// wrong type is an error, and then nothing has changed.
+    pub fn apply_patch(&mut self, patch: &Value) -> Result<(), String> {
+        let Value::Object(patch) = patch else {
+            return Err("the state to set must be a JSON object".to_string());
+        };
+        // The view first: named together with explicit angles, the angles
+        // win, as the more specific request.
+        let mut turned = self.clone();
+        if let Some(view) = patch.get("view") {
+            let Value::String(name) = view else {
+                return Err("`view` must be a string".to_string());
+            };
+            turned.camera.set_view(name)?;
+        }
+        let mut merged = serde_json::to_value(&turned).map_err(|e| e.to_string())?;
+        let mut moved_by_hand = false;
+        for (key, value) in patch.iter().filter(|(key, _)| *key != "view") {
+            if key == "camera"
+                && let Value::Object(camera) = value
+            {
+                moved_by_hand = (camera.contains_key("target") || camera.contains_key("distance"))
+                    && !camera.contains_key("autoFit");
+            }
+            merge(&mut merged, key, value);
+        }
+        let mut next: UiState = serde_json::from_value(merged).map_err(|e| e.to_string())?;
+        if moved_by_hand {
+            // Placing the camera by hand and having it refit at the next
+            // edit would undo the request.
+            next.camera.auto_fit = false;
+        }
+        *self = next.validated()?;
+        Ok(())
+    }
+}
+
+/// Puts `value` at `key` of the object `into`; an object is merged key by
+/// key into the object already there, anything else replaces it.
+fn merge(into: &mut Value, key: &str, value: &Value) {
+    let Value::Object(map) = into else {
+        return;
+    };
+    match (map.get_mut(key), value) {
+        (Some(existing @ Value::Object(_)), Value::Object(fields)) => {
+            for (inner_key, inner_value) in fields {
+                merge(existing, inner_key, inner_value);
+            }
+        }
+        _ => {
+            map.insert(key.to_string(), value.clone());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn the_state_round_trips_through_json() {
+        let state = UiState {
+            camera: CameraState {
+                target: [1.5, -2.0, 3.25],
+                distance: 42.0,
+                yaw: 135.0,
+                pitch: -20.0,
+                projection: ProjectionKind::Orthographic,
+                fov_y: 45.0,
+                auto_fit: false,
+            },
+            panels: Panels {
+                tree: false,
+                status: true,
+            },
+            selected_feature: Some("F3".to_string()),
+            notice: "Step 2: the post".to_string(),
+        };
+        let json = serde_json::to_value(&state).unwrap();
+        assert_eq!(
+            json,
+            json!({
+                "camera": {"target": [1.5, -2.0, 3.25], "distance": 42.0, "yaw": 135.0,
+                           "pitch": -20.0, "projection": "orthographic", "fovY": 45.0,
+                           "autoFit": false},
+                "panels": {"tree": false, "status": true},
+                "selectedFeature": "F3",
+                "notice": "Step 2: the post",
+            })
+        );
+        let back: UiState = serde_json::from_value(json).unwrap();
+        assert_eq!(back, state);
+        assert_eq!(back.clone().validated().unwrap(), state, "already in range");
+        // The default state round-trips too, and an empty object is the
+        // default.
+        let default = UiState::default();
+        let text = serde_json::to_string(&default).unwrap();
+        assert_eq!(serde_json::from_str::<UiState>(&text).unwrap(), default);
+        assert_eq!(serde_json::from_str::<UiState>("{}").unwrap(), default);
+    }
+
+    #[test]
+    fn a_patch_changes_only_what_it_names() {
+        let mut state = UiState::default();
+        state
+            .apply_patch(&json!({"camera": {"yaw": 10, "distance": 250.5}}))
+            .unwrap();
+        assert_eq!((state.camera.yaw, state.camera.distance), (10.0, 250.5));
+        assert_eq!(state.camera.pitch, CameraState::default().pitch);
+        assert_eq!(state.camera.fov_y, 30.0);
+        assert_eq!(state.panels, Panels::default());
+        // Placing the camera by hand stops the automatic refit, unless the
+        // same request asks to keep it.
+        assert!(!state.camera.auto_fit);
+        state
+            .apply_patch(&json!({"camera": {"target": [1, 2, 3], "autoFit": true}}))
+            .unwrap();
+        assert_eq!(state.camera.target, [1.0, 2.0, 3.0]);
+        assert!(state.camera.auto_fit);
+        // Turning the camera does not.
+        state.apply_patch(&json!({"camera": {"pitch": 5}})).unwrap();
+        assert!(state.camera.auto_fit);
+
+        state
+            .apply_patch(&json!({"panels": {"tree": false}, "notice": "hello",
+                                 "selectedFeature": "F2"}))
+            .unwrap();
+        assert!(!state.panels.tree && state.panels.status);
+        assert_eq!(state.notice, "hello");
+        assert_eq!(state.selected_feature.as_deref(), Some("F2"));
+        state
+            .apply_patch(&json!({"selectedFeature": null}))
+            .unwrap();
+        assert_eq!(state.selected_feature, None);
+        // An empty patch is no change.
+        let before = state.clone();
+        state.apply_patch(&json!({})).unwrap();
+        assert_eq!(state, before);
+    }
+
+    #[test]
+    fn named_views_are_the_directions_view_render_uses() {
+        // (view, the direction towards the eye in view.render)
+        let directions = [
+            ("iso", [1.0, -1.0, 0.8]),
+            ("front", [0.0, -1.0, 0.0]),
+            ("back", [0.0, 1.0, 0.0]),
+            ("right", [1.0, 0.0, 0.0]),
+            ("left", [-1.0, 0.0, 0.0]),
+            ("top", [0.0, 0.0, 1.0]),
+            ("bottom", [0.0, 0.0, -1.0]),
+        ];
+        for (view, toward) in directions {
+            let mut state = UiState::default();
+            state.apply_patch(&json!({"view": view})).unwrap();
+            let (yaw, pitch) = (
+                state.camera.yaw.to_radians(),
+                state.camera.pitch.to_radians(),
+            );
+            let d = [
+                pitch.cos() * yaw.cos(),
+                pitch.cos() * yaw.sin(),
+                pitch.sin(),
+            ];
+            let length = toward.iter().map(|c| c * c).sum::<f64>().sqrt();
+            for (got, want) in d.iter().zip(toward) {
+                assert!((got - want / length).abs() < 1e-12, "{view}: {d:?}");
+            }
+        }
+        let mut state = UiState::default();
+        let error = state.apply_patch(&json!({"view": "sideways"})).unwrap_err();
+        assert!(
+            error.contains("sideways") && error.contains("iso"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn garbage_is_refused_and_changes_nothing() {
+        let original = UiState {
+            notice: "keep me".to_string(),
+            ..UiState::default()
+        };
+        let garbage = [
+            json!(null),
+            json!(7),
+            json!("camera"),
+            json!([1, 2, 3]),
+            json!({"camrea": {}}),
+            json!({"camera": 5}),
+            json!({"camera": "iso"}),
+            json!({"camera": [1, 2, 3]}),
+            json!({"camera": {"yaw": "ninety"}}),
+            json!({"camera": {"yaw": null}}),
+            json!({"camera": {"yaw": true}}),
+            json!({"camera": {"yaw": [90]}}),
+            json!({"camera": {"zoom": 2}}),
+            json!({"camera": {"target": [1, 2]}}),
+            json!({"camera": {"target": [1, 2, 3, 4]}}),
+            json!({"camera": {"target": "origin"}}),
+            json!({"camera": {"target": [1, "2", 3]}}),
+            json!({"camera": {"target": {"x": 1}}}),
+            json!({"camera": {"projection": "isometric"}}),
+            json!({"camera": {"projection": 1}}),
+            json!({"camera": {"autoFit": "yes"}}),
+            json!({"panels": {"tree": 1}}),
+            json!({"panels": {"inspector": true}}),
+            json!({"panels": true}),
+            json!({"notice": 5}),
+            json!({"notice": ["a"]}),
+            json!({"selectedFeature": 3}),
+            json!({"selectedFeature": {"id": "F1"}}),
+            json!({"view": 3}),
+            json!({"view": "upside-down"}),
+            json!({"view": null}),
+            // One good field does not let a bad one through.
+            json!({"notice": "changed", "camera": {"yaw": "x"}}),
+            json!({"camera": {"yaw": 1}, "bogus": 1}),
+            // Nor does a good view: the camera is not turned either.
+            json!({"view": "top", "panels": {"tree": 3}}),
+            json!({"view": "front", "bogus": 1}),
+        ];
+        for patch in &garbage {
+            let mut state = original.clone();
+            let error = state.apply_patch(patch).unwrap_err();
+            assert!(!error.is_empty(), "{patch}");
+            assert_eq!(state, original, "{patch} changed the state");
+        }
+    }
+
+    #[test]
+    fn huge_numbers_are_clamped_and_angles_wrapped() {
+        let mut state = UiState::default();
+        state
+            .apply_patch(&json!({"camera": {
+                "target": [1e300, -1e300, 5],
+                "distance": 1e308,
+                "yaw": 725,
+                "pitch": 1e9,
+                "fovY": 1e9,
+            }}))
+            .unwrap();
+        assert_eq!(state.camera.target, [MAX_EXTENT, -MAX_EXTENT, 5.0]);
+        assert_eq!(state.camera.distance, MAX_EXTENT);
+        assert_eq!(state.camera.yaw, 5.0);
+        assert_eq!(state.camera.pitch, 90.0);
+        assert_eq!(state.camera.fov_y, MAX_FOV);
+        state
+            .apply_patch(
+                &json!({"camera": {"distance": -3, "yaw": -190, "pitch": -1e9, "fovY": 0}}),
+            )
+            .unwrap();
+        assert_eq!(state.camera.distance, MIN_DISTANCE);
+        assert_eq!(state.camera.yaw, 170.0);
+        assert_eq!(state.camera.pitch, -90.0);
+        assert_eq!(state.camera.fov_y, MIN_FOV);
+        state.apply_patch(&json!({"camera": {"yaw": 180}})).unwrap();
+        assert_eq!(state.camera.yaw, 180.0);
+        state
+            .apply_patch(&json!({"camera": {"yaw": -180}}))
+            .unwrap();
+        assert_eq!(state.camera.yaw, 180.0);
+
+        // Texts are cut, not refused, and stay one line.
+        let long = "é".repeat(5000);
+        state
+            .apply_patch(&json!({"notice": long, "selectedFeature": "F".repeat(5000)}))
+            .unwrap();
+        assert_eq!(state.notice.chars().count(), MAX_NOTICE_CHARS);
+        assert_eq!(
+            state.selected_feature.as_ref().unwrap().len(),
+            MAX_SELECTION_CHARS
+        );
+        state
+            .apply_patch(&json!({"notice": "two\nlines\tand a tab", "selectedFeature": ""}))
+            .unwrap();
+        assert_eq!(state.notice, "two lines and a tab");
+        assert_eq!(state.selected_feature, None);
+    }
+
+    /// JSON cannot carry NaN, but Rust code can hand one over.
+    #[test]
+    fn numbers_that_are_not_finite_are_an_error() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let fields: [fn(&mut CameraState, f64); 5] = [
+                |c, v| c.target[1] = v,
+                |c, v| c.distance = v,
+                |c, v| c.yaw = v,
+                |c, v| c.pitch = v,
+                |c, v| c.fov_y = v,
+            ];
+            for set in fields {
+                let mut camera = CameraState::default();
+                set(&mut camera, bad);
+                let error = camera.validated().unwrap_err();
+                assert!(error.contains("finite"), "{error}");
+                let state = UiState {
+                    camera,
+                    ..UiState::default()
+                };
+                assert!(state.validated().is_err());
+            }
+        }
+        // Text that looks like a number is still text.
+        let mut state = UiState::default();
+        for text in ["NaN", "Infinity", "1e999"] {
+            assert!(
+                state
+                    .apply_patch(&json!({"camera": {"distance": text}}))
+                    .is_err()
+            );
+        }
+        // And a number too large for f64 never becomes a request at all.
+        assert!(serde_json::from_str::<Value>(r#"{"camera": {"distance": 1e999}}"#).is_err());
+    }
+}

@@ -1,0 +1,124 @@
+//! Design tokens: every colour, radius and width the shell draws with
+//! (AGENTS.md rule 9). Widgets take them from [`Tokens`]; nothing else in
+//! this crate spells out a colour.
+//!
+//! Colours are plain sRGB bytes, so the offscreen picture (`ui.screenshot`,
+//! drawn without egui) uses the very same values as the window.
+
+/// An opaque sRGB colour.
+pub type Rgb = [u8; 3];
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Tokens {
+    /// Behind the model.
+    pub viewport_background: Rgb,
+    /// The base colour of a shaded body.
+    pub body: Rgb,
+    /// Sketch geometry that is part of a profile.
+    pub sketch: Rgb,
+    /// Construction geometry of a sketch.
+    pub sketch_construction: Rgb,
+    /// The sketch of the selected feature.
+    pub sketch_selected: Rgb,
+    /// The world axes at the origin: X, Y, Z.
+    pub axes: [Rgb; 3],
+    pub panel_fill: Rgb,
+    pub text: Rgb,
+    pub text_dim: Rgb,
+    /// Feature states in the tree.
+    pub ok: Rgb,
+    pub failed: Rgb,
+    pub inactive: Rgb,
+    /// The row of the selected feature.
+    pub selection_fill: Rgb,
+    /// The caption over the viewport.
+    pub notice_fill: Rgb,
+    pub notice_text: Rgb,
+    /// Opacity of the caption's background, 0 to 255.
+    pub notice_opacity: u8,
+    /// Corner radius of buttons and rows, in points.
+    pub radius: u8,
+    /// Corner radius of the caption.
+    pub notice_radius: u8,
+    /// Width of sketch lines, in points.
+    pub sketch_width: f32,
+    pub construction_width: f32,
+    pub axis_width: f32,
+    /// Radius of a sketch point's dot, in points.
+    pub point_radius: f32,
+    /// Space between the viewport's edge and what floats over it.
+    pub inset: f32,
+}
+
+impl Default for Tokens {
+    fn default() -> Self {
+        Self::dark()
+    }
+}
+
+impl Tokens {
+    /// The one theme of phase 1.
+    pub fn dark() -> Self {
+        Self {
+            viewport_background: [30, 33, 40],
+            body: [198, 204, 214],
+            sketch: [255, 196, 64],
+            sketch_construction: [110, 170, 235],
+            sketch_selected: [255, 120, 80],
+            axes: [[226, 82, 82], [96, 190, 96], [86, 136, 240]],
+            panel_fill: [38, 41, 49],
+            text: [222, 226, 232],
+            text_dim: [140, 147, 160],
+            ok: [104, 190, 120],
+            failed: [236, 96, 88],
+            inactive: [120, 126, 138],
+            selection_fill: [58, 72, 104],
+            notice_fill: [16, 18, 22],
+            notice_text: [245, 246, 248],
+            notice_opacity: 215,
+            radius: 4,
+            notice_radius: 6,
+            sketch_width: 1.75,
+            construction_width: 1.0,
+            axis_width: 1.25,
+            point_radius: 2.25,
+            inset: 10.0,
+        }
+    }
+
+    /// Makes egui's own widgets (panels, labels, buttons) use the tokens.
+    pub fn apply(&self, ctx: &egui::Context) {
+        let tokens = *self;
+        ctx.set_theme(egui::Theme::Dark);
+        ctx.all_styles_mut(move |style| {
+            let visuals = &mut style.visuals;
+            visuals.dark_mode = true;
+            visuals.panel_fill = color(tokens.panel_fill);
+            visuals.window_fill = color(tokens.panel_fill);
+            visuals.override_text_color = Some(color(tokens.text));
+            visuals.selection.bg_fill = color(tokens.selection_fill);
+            let radius = egui::CornerRadius::same(tokens.radius);
+            for widget in [
+                &mut visuals.widgets.noninteractive,
+                &mut visuals.widgets.inactive,
+                &mut visuals.widgets.hovered,
+                &mut visuals.widgets.active,
+                &mut visuals.widgets.open,
+            ] {
+                widget.corner_radius = radius;
+            }
+        });
+    }
+}
+
+/// A token colour as egui takes it.
+pub fn color(rgb: Rgb) -> egui::Color32 {
+    let [r, g, b] = rgb;
+    egui::Color32::from_rgb(r, g, b)
+}
+
+/// A token colour with an opacity.
+pub fn color_alpha(rgb: Rgb, alpha: u8) -> egui::Color32 {
+    let [r, g, b] = rgb;
+    egui::Color32::from_rgba_unmultiplied(r, g, b, alpha)
+}
