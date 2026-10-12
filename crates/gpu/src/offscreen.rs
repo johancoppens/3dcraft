@@ -49,9 +49,32 @@ pub struct Offscreen {
     uncaptured: Arc<Mutex<Option<String>>>,
 }
 
+/// The descriptor of the instance: WGPU_BACKEND, WGPU_VALIDATION and the
+/// backend options from the environment.
+///
+/// Debug names (`InstanceFlags::DEBUG`) are off unless `WGPU_DEBUG` asks
+/// for them, in debug builds too. With them wgpu names objects through
+/// `vkSetDebugUtilsObjectNameEXT` (its own internal ones as well, so
+/// discarding our labels is not enough), and the Vulkan loader walks its
+/// list of devices for that without a lock: a second thread making or
+/// dropping a device at that moment crashes the process (SIGSEGV in
+/// `loader_get_icd_and_device`; four in ten runs of the tests under load).
+/// No code of ours can catch that, so the call is not made.
+fn descriptor() -> wgpu::InstanceDescriptor {
+    let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
+    let asked = std::env::var("WGPU_DEBUG").is_ok_and(|value| value != "0");
+    if !asked {
+        descriptor.flags.remove(wgpu::InstanceFlags::DEBUG);
+    }
+    descriptor
+}
+
+// One instance per caller, not one for the process: wgpu's OpenGL backend
+// ties an instance's EGL context to the thread that uses it, and a shared
+// one fails with `BadAccess` (a panic inside wgpu-hal) when two threads
+// render at once.
 fn instance() -> wgpu::Instance {
-    // WGPU_BACKEND, WGPU_DEBUG, WGPU_VALIDATION and the backend options.
-    wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env())
+    wgpu::Instance::new(descriptor())
 }
 
 /// The adapter `WGPU_ADAPTER_NAME` asks for, if it is set.
