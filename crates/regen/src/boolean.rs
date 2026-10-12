@@ -19,8 +19,25 @@ fn combine(
     op: BooleanOp,
     tolerance: &Tolerance,
 ) -> Result<(Body, Vec<(u64, usize)>), String> {
-    // TEMPORARY, see pending.rs.
-    crate::pending::boolean(target, tool, op, tolerance)
+    use craft3d_kernel::boolean::{BooleanOp as Op, Operand, boolean};
+    let op = match op {
+        BooleanOp::Union => Op::Union,
+        BooleanOp::Subtract => Op::Subtract,
+        BooleanOp::Intersect => Op::Intersect,
+    };
+    let result = boolean(target, tool, op, tolerance).map_err(|e| e.to_string())?;
+    let sources = result
+        .faces
+        .iter()
+        .map(|source| {
+            let operand = match source.operand {
+                Operand::A => 0,
+                Operand::B => 1,
+            };
+            (operand, source.face.0 as usize)
+        })
+        .collect();
+    Ok((result.body, sources))
 }
 
 pub(crate) fn build(

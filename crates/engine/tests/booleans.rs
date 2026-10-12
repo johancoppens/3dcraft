@@ -264,6 +264,62 @@ fn holes_cut_by_subtraction_follow_the_plate() {
 }
 
 #[test]
+fn a_pattern_of_cutters_cuts_a_row_of_holes() {
+    // What a gear or a bolt circle needs: one tool, repeated, then cut.
+    let mut s = plate();
+    run(&mut s, "variable.set", json!({"name": "n", "expr": "4"}));
+    run(
+        &mut s,
+        "feature.cylinder",
+        json!({"name": "Drill", "radius": 3, "height": 20, "position": [10, 20, -6]}),
+    );
+    run(
+        &mut s,
+        "feature.pattern",
+        json!({"source": "Drill", "count": "n", "step": ["(length - 20 mm) / (n - 1)", 0, 0],
+               "name": "Drills"}),
+    );
+    boolean(&mut s, "subtract", "Plate", "Drills", "Part");
+    let expected = |length: f64, n: f64| length * 320.0 - n * PI * 9.0 * 8.0;
+    assert_volume(&mut s, "Part", expected(60.0, 4.0));
+    assert_eq!(body_names(&mut s), ["Part"]);
+    // Count and length are variables: the holes follow both.
+    run(&mut s, "variable.set", json!({"name": "n", "expr": "6"}));
+    assert_volume(&mut s, "Part", expected(60.0, 6.0));
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "length", "expr": "90 mm"}),
+    );
+    assert_volume(&mut s, "Part", expected(90.0, 6.0));
+    // The wall of the fifth hole, by name.
+    let names = body(&mut s, "Part")["faceNames"].clone();
+    assert!(
+        names
+            .as_array()
+            .unwrap()
+            .contains(&json!("F5:copy(1)/F4:copy(4)/F3:face(0)")),
+        "{names}"
+    );
+    // A ring of posts joined to the plate.
+    run(&mut s, "feature.delete", json!({"feature": "Part"}));
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Drill", "position": [45, 32, 8], "height": 5}),
+    );
+    run(&mut s, "feature.delete", json!({"feature": "Drills"}));
+    run(
+        &mut s,
+        "feature.pattern",
+        json!({"source": "Drill", "count": 5, "angle": "72 deg", "point": [45, 20, 0],
+               "name": "Posts"}),
+    );
+    boolean(&mut s, "union", "Plate", "Posts", "Part");
+    assert_volume(&mut s, "Part", 90.0 * 320.0 + 5.0 * PI * 9.0 * 5.0);
+}
+
+#[test]
 fn the_three_operations_obey_the_volume_identities() {
     // Two blocks that overlap in a 10 x 10 x 10 corner.
     let build = |op: &str| {
