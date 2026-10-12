@@ -524,15 +524,13 @@ fn curves_are_clipped_to_the_box() {
             check_meeting(&m, &a, &ball, &within, &t);
             assert!(m.curves.iter().all(|c| !c.closed));
             let mut inside = 0;
+            let lines = Lines::of(&m, 400);
             for k in 0..3600 {
                 let angle = TAU * f64::from(k) / 3600.0;
                 let p = f.point(3.0 * s * angle.cos(), 3.0 * s * angle.sin(), 0.0);
                 if cube(center, half - 0.01 * s).contains(p, 0.0) {
                     inside += 1;
-                    assert!(
-                        distance_to_meeting(&m, p, 400) <= 1e-3 * s,
-                        "missing at {angle}"
-                    );
+                    assert!(lines.distance(p) <= 1e-3 * s, "missing at {angle}");
                 }
             }
             let length: f64 = m

@@ -45,9 +45,59 @@ pub fn torus(f: Frame, major: f64, minor: f64) -> Surface {
 }
 
 /// Distance from `p` to a surface, through its own `project`.
+///
+/// `project` on a freeform surface is Gauss-Newton and gives up where the
+/// tangent plane is degenerate (the collapsed edges of the teapot's lid
+/// and bottom), so from its answer a pattern search goes on downhill: try
+/// a step each way, keep any improvement, halve the step.
 pub fn distance(surface: &Surface, p: Vec3) -> f64 {
-    let (u, v) = surface.project(p).unwrap();
-    surface.eval(u, v).distance(p)
+    let (mut u, mut v) = surface.project(p).unwrap();
+    let mut best = surface.eval(u, v).distance(p);
+    if !matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_)) || best <= 1e-12 {
+        return best;
+    }
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    // At a collapsed edge every v is the same point and no step helps:
+    // start again from the nearest of a grid of samples.
+    for i in 0..=48 {
+        for j in 0..=48 {
+            let (a, b) = (
+                u0 + (u1 - u0) * f64::from(i) / 48.0,
+                v0 + (v1 - v0) * f64::from(j) / 48.0,
+            );
+            let d = surface.eval(a, b).distance(p);
+            if d < best {
+                (u, v, best) = (a, b, d);
+            }
+        }
+    }
+    let mut step = 1.0 / 48.0;
+    while step > 1e-14 {
+        let mut improved = false;
+        for (du, dv) in [
+            (1.0, 0.0),
+            (-1.0, 0.0),
+            (0.0, 1.0),
+            (0.0, -1.0),
+            (1.0, 1.0),
+            (-1.0, 1.0),
+            (1.0, -1.0),
+            (-1.0, -1.0),
+        ] {
+            let (a, b) = (
+                (u + du * step * (u1 - u0)).clamp(u0, u1),
+                (v + dv * step * (v1 - v0)).clamp(v0, v1),
+            );
+            let d = surface.eval(a, b).distance(p);
+            if d < best {
+                (u, v, best, improved) = (a, b, d, true);
+            }
+        }
+        if !improved {
+            step *= 0.5;
+        }
+    }
+    best
 }
 
 pub fn normal_at(surface: &Surface, p: Vec3) -> Option<Vec3> {
@@ -133,27 +183,40 @@ pub fn check_meeting(m: &Meeting, a: &Surface, b: &Surface, within: &Bbox3, t: &
     }
 }
 
-/// Distance from `p` to the nearest of the meeting's curves and points
-/// (curves as polylines of `per_curve` chords).
-pub fn distance_to_meeting(m: &Meeting, p: Vec3, per_curve: usize) -> f64 {
-    let mut best = f64::INFINITY;
-    for curve in &m.curves {
-        let points = samples(curve, per_curve);
-        for w in points.windows(2) {
-            let d = w[1] - w[0];
-            let l2 = d.length_squared();
-            let s = if l2 > 0.0 {
-                ((p - w[0]).dot(d) / l2).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            best = best.min((w[0] + d * s).distance(p));
+/// A meeting as polylines, to measure distances to it.
+pub struct Lines {
+    curves: Vec<Vec<Vec3>>,
+    points: Vec<Vec3>,
+}
+
+impl Lines {
+    pub fn of(m: &Meeting, per_curve: usize) -> Self {
+        Self {
+            curves: m.curves.iter().map(|c| samples(c, per_curve)).collect(),
+            points: m.points.clone(),
         }
     }
-    for q in &m.points {
-        best = best.min(q.distance(p));
+
+    /// Distance from `p` to the nearest curve or point.
+    pub fn distance(&self, p: Vec3) -> f64 {
+        let mut best = f64::INFINITY;
+        for points in &self.curves {
+            for w in points.windows(2) {
+                let d = w[1] - w[0];
+                let l2 = d.length_squared();
+                let s = if l2 > 0.0 {
+                    ((p - w[0]).dot(d) / l2).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                best = best.min((w[0] + d * s).distance(p));
+            }
+        }
+        for q in &self.points {
+            best = best.min(q.distance(p));
+        }
+        best
     }
-    best
 }
 
 /// A small deterministic generator (SplitMix64): no dependency, the same

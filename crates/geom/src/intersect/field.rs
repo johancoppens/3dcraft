@@ -117,7 +117,9 @@ impl Projector {
             let next_v = (v + dv).clamp(self.v.0, self.v.1);
             let moved = (next_u - u).abs() / span_u + (next_v - v).abs() / span_v;
             (u, v) = (next_u, next_v);
-            if !(moved > 1e-15) {
+            // The distance is stationary at the foot: its error is the
+            // square of what is left here.
+            if !(moved > 1e-11) {
                 break;
             }
         }

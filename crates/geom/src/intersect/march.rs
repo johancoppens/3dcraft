@@ -259,6 +259,16 @@ impl Marcher {
             && (self.chart.periodic_v || (v >= self.chart.v.0 && v <= self.chart.v.1))
     }
 
+    /// True when a point is on the border of the chart's rectangle.
+    fn on_border(&self, p: &Pt) -> bool {
+        let c = &self.chart;
+        let at = |x: f64, (lo, hi): (f64, f64)| {
+            let slack = 1e-12 * (hi - lo);
+            x <= lo + slack || x >= hi - slack
+        };
+        (!c.periodic_u && at(p.u, c.u)) || (!c.periodic_v && at(p.v, c.v))
+    }
+
     /// Newton back onto `f = 0`, moving the shortest way in space.
     fn correct(&mut self, mut u: f64, mut v: f64) -> Option<(Eval, f64, f64)> {
         for _ in 0..16 {
@@ -400,8 +410,9 @@ impl Marcher {
             } else {
                 (lo * fhi - hi * flo) / (fhi - flo)
             };
+            let s = if s > lo && s < hi { s } else { 0.5 * (lo + hi) };
             if !(s > lo && s < hi) {
-                break;
+                break; // The bracket is down to rounding.
             }
             let (u, v) = place(s);
             let f = self.eval(u, v)?.f;
@@ -668,6 +679,11 @@ impl Marcher {
         Ok(None)
     }
 
+    /// How far from a crossing point its arms are seeded.
+    fn arm_radius(&self) -> f64 {
+        (64.0 * self.tol.linear).max(1e-2 * self.hmax)
+    }
+
     /// Seeds on the four arms that leave a crossing point: along the
     /// directions in which the Hessian vanishes.
     fn arms(&mut self, s: &Singular, seeds: &mut Vec<(f64, f64)>) {
@@ -682,7 +698,7 @@ impl Marcher {
         } else {
             [(1.0, 0.0), (0.0, 1.0)]
         };
-        let radius = (64.0 * self.tol.linear).max(1e-2 * self.hmax);
+        let radius = self.arm_radius();
         for (du, dv) in directions {
             let len = (e.su * du + e.sv * dv).length();
             if !(len > 0.0) {
@@ -736,6 +752,7 @@ impl Marcher {
         }
         bounds.sort_by(|a, b| a.0.total_cmp(&b.0));
         let (range_u, range_v) = (c.u, c.v);
+        let (periodic_u, periodic_v) = (c.periodic_u, c.periodic_v);
         for (fraction, on_u, bound) in bounds {
             // Newton along the border from the straight guess.
             let mut y = if on_u {
@@ -749,10 +766,12 @@ impl Marcher {
                 if e.f.abs() <= self.on {
                     let slack_u = 1e-9 * (range_u.1 - range_u.0);
                     let slack_v = 1e-9 * (range_v.1 - range_v.0);
+                    // The other parameter stays in its range, unless it
+                    // goes round.
                     let ok = if on_u {
-                        y >= range_v.0 - slack_v && y <= range_v.1 + slack_v
+                        periodic_v || (y >= range_v.0 - slack_v && y <= range_v.1 + slack_v)
                     } else {
-                        y >= range_u.0 - slack_u && y <= range_u.1 + slack_u
+                        periodic_u || (y >= range_u.0 - slack_u && y <= range_u.1 + slack_u)
                     };
                     if !ok || e.dist > self.cut {
                         break;
@@ -845,11 +864,14 @@ impl Marcher {
             let Some((e, u, v)) = self.correct(pu, pv) else {
                 // Past the border of the chart there may be nothing to
                 // correct onto: end on the border if the curve reaches it.
-                if !self.inside(pu, pv)
-                    && let Some(end) = self.exit(&cur, pu, pv, sign)
-                {
-                    pts.push(end);
-                    return Ok((pts, End::Open));
+                if !self.inside(pu, pv) {
+                    if let Some(end) = self.exit(&cur, pu, pv, sign) {
+                        pts.push(end);
+                        return Ok((pts, End::Open));
+                    }
+                    if self.on_border(&cur) {
+                        return Ok((pts, End::Open));
+                    }
                 }
                 h = halved(h, hmin)?;
                 continue;
@@ -891,6 +913,9 @@ impl Marcher {
                 if let Some(end) = self.exit(&cur, u, v, sign) {
                     pts.push(end);
                     return Ok((pts, End::Open));
+                }
+                if self.on_border(&cur) {
+                    return Ok((pts, End::Open)); // It started on the border.
                 }
                 h = halved(h, hmin)?;
                 continue;
@@ -1026,6 +1051,13 @@ impl Marcher {
             self.evals += 2;
             worst = worst.max(other).max(own);
         }
+        // Where the surfaces are nearly tangent a curve can be close to
+        // both and still far from where they meet: hold the middle of the
+        // span against a point of the intersection itself.
+        if let Some(m) = self.between(a, b) {
+            let off = Self::bezier(&c, 0.5) - m.p;
+            worst = worst.max((off - m.t * off.dot(m.t)).length());
+        }
         worst
     }
 
@@ -1050,8 +1082,27 @@ impl Marcher {
     fn refine(&mut self, pts: &mut Vec<Pt>) -> Result<(), GeomError> {
         let target = 0.5 * self.tol.linear;
         let mut i = 0;
-        while let (Some(a), Some(b)) = (pts.get(i).copied(), pts.get(i + 1).copied()) {
+        while let (Some(mut a), Some(mut b)) = (pts.get(i).copied(), pts.get(i + 1).copied()) {
             self.spent()?;
+            // An end on a crossing point or an apex has no tangent of its
+            // own: it gets the one a circle through its neighbour would
+            // have there (the neighbour's, mirrored in the chord).
+            let mirrored = |from: &Pt, at: &Pt| {
+                (at.p - from.p)
+                    .normalized()
+                    .map(|chord| chord * (2.0 * chord.dot(from.t)) - from.t)
+            };
+            if b.du == 0.0 && b.dv == 0.0 && !(a.du == 0.0 && a.dv == 0.0) {
+                b.t = mirrored(&a, &b).unwrap_or(b.t);
+                if let Some(slot) = pts.get_mut(i + 1) {
+                    *slot = b;
+                }
+            } else if a.du == 0.0 && a.dv == 0.0 && !(b.du == 0.0 && b.dv == 0.0) {
+                a.t = mirrored(&b, &a).unwrap_or(a.t);
+                if let Some(slot) = pts.get_mut(i) {
+                    *slot = a;
+                }
+            }
             if self.deviation(&a, &b) <= target {
                 i += 1;
                 continue;
@@ -1069,8 +1120,7 @@ impl Marcher {
     }
 
     /// True when `p` lies on the branch.
-    fn on_branch(&self, p: Vec3, pts: &[Pt]) -> bool {
-        let slack = 100.0 * self.on;
+    fn on_branch(&self, p: Vec3, pts: &[Pt], slack: f64) -> bool {
         for (k, end) in [pts.first(), pts.last()].into_iter().flatten().enumerate() {
             // A seed just past an end is the same branch.
             let ahead = (p - end.p).dot(end.t) * if k == 0 { -1.0 } else { 1.0 };
@@ -1269,13 +1319,31 @@ impl Marcher {
         let mut branches: Vec<Branch> = Vec::new();
         for seed in seeds {
             self.spent()?;
-            let p = self.chart.surface.eval(seed.0, seed.1);
-            if branches.iter().any(|b| self.on_branch(p, &b.pts))
-                || singular.iter().any(|s| p.distance(s.p) <= 2.0 * merge)
+            // On the curve first: a seed is only as good as its bracket.
+            let Some((e, u, v)) = self.correct(seed.0, seed.1) else {
+                continue;
+            };
+            // Where the surfaces are nearly tangent a point with `f = 0`
+            // within `on` is only that well placed across the curve.
+            let sine =
+                e.su.cross(e.sv)
+                    .normalized()
+                    .map_or(0.0, |n| n.cross(e.n).length());
+            let slack = self.tol.linear + 16.0 * self.on / sine.max(1e-12);
+            // Close to a crossing point every arm has its own seed.
+            let covered = |s: &Singular| {
+                let radius = match s.kind {
+                    SingularKind::Cross => 0.5 * self.arm_radius(),
+                    _ => 2.0 * merge,
+                };
+                e.p.distance(s.p) <= radius.max(2.0 * merge)
+            };
+            if branches.iter().any(|b| self.on_branch(e.p, &b.pts, slack))
+                || singular.iter().any(covered)
             {
                 continue;
             }
-            if let Some(branch) = self.trace(seed, &singular)? {
+            if let Some(branch) = self.trace((u, v), &singular)? {
                 if branches.len() >= MAX_BRANCHES {
                     return Err(GeomError::NoConvergence(
                         "the intersection has more branches than the cap allows",
