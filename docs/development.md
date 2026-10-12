@@ -116,6 +116,12 @@ printf '%s\n' "{\"id\":\"auth\",\"method\":\"auth\",\"params\":{\"token\":\"$TOK
 
 See [`control-protocol.md`](control-protocol.md) for every method. `.private/` is gitignored.
 
+## The viewer today
+
+`craft3d [FILE]` shows the active document: bodies shaded by the CPU renderer with their edges, sketches as lines (dimmed where a body is in front of them), the feature tree and a status bar. Drag to orbit, right-drag or shift-drag to pan, wheel to zoom, F to frame everything. File menu: New (Ctrl+N), Open (Ctrl+O), Save (Ctrl+S), Save As (Ctrl+Shift+S), with the system's file dialog (on Linux through xdg-desktop-portal, so a portal backend has to be running, as it is on GNOME and KDE); the title shows the file's name and a `*` for unsaved changes. Everything else is done with commands over the control channel.
+
+The window never waits for the renderer: the sharp image is made on a render thread while a quick preview is on screen. `cargo run --release -p craft3d-ui-egui --example frame_time` times whole frames on the drawing thread (`-- --inline` for the old behaviour); the status bar's milliseconds are the render thread's.
+
 ## Watching along
 
 The developer follows development and automated testing live. Three ways, cheapest first:
@@ -182,6 +188,8 @@ See [`file-formats.md`](file-formats.md). In short: a ZIP of STORE entries (or a
 
 `--safe-gpu` starts with the CPU renderer for one launch. If the wgpu device cannot be created, or is lost while running, the viewport switches to the CPU renderer for the rest of the session and a notice says so. The app must start and show a model on a machine with no usable GPU.
 
+Today (2026-10-12): the model is always rendered on the CPU, but the window itself is drawn by eframe on wgpu, and eframe 0.36 can only present through wgpu or OpenGL. So the window needs *some* adapter: a GPU, or a software implementation, which wgpu takes when it is the only one. With Mesa's lavapipe (`mesa-vulkan-drivers`) or llvmpipe installed the app runs without a GPU; try it with `VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json WGPU_BACKEND=vulkan craft3d`. With no adapter at all the app does not start: it prints what to install and exits with code 1. A window that needs no adapter would take a presentation path of our own (a CPU rasteriser for egui's output and a software surface), which is a second windowing stack and was not built. Nothing else needs an adapter: `craft3d-cli render`, `run`, `serve` and `mcp` work on any machine. `--safe-gpu` and device-loss handling do not exist yet.
+
 ## Logs
 
 The desktop app writes `log` records to standard error and to `logs/craft3d.log` in the settings directory (Linux `~/.config/craft3d/logs/`), rotating the previous two runs. `RUST_LOG` takes env_logger-style directives (`RUST_LOG=warn,craft3d_kernel=trace`). The crash guard's panic report lands there.
@@ -205,6 +213,7 @@ The desktop app writes `log` records to standard error and to `logs/craft3d.log`
 - `craft3d-cli info --check model.3dcraft` prints the validity report of every body (which check failed on which entity).
 - `document.inspect {body, detail:"topology"}` dumps faces, loops, edges and vertices with their persistent names, surface kinds and tolerances as JSON.
 - `view.render` with `mode:"ids"` writes a false-colour image where each face has its own colour, with a legend in the JSON result: the quickest way to see which face a name refers to.
+- `view.render` with `projection:"orthographic"` gives a picture to scale; `box:[[x,y,z],[x,y,z]]` frames a region instead of the whole model, and `zoom` magnifies about the centre: for looking at a detail.
 - Export the smallest failing case as a test in the crate that owns the bug (`crates/<name>/tests/regressions.rs`), not as a file in the repo.
 
 ## Web build *(later milestone)*
