@@ -374,6 +374,51 @@ mod tests {
         }
     }
 
+    /// Three points on the line y = x, far apart, and the first of them a
+    /// few units of its last place off it: the differences do not fit in
+    /// an `f64`, so the plain determinant cannot know.
+    #[test]
+    fn orient2d_is_right_where_rounding_decides() {
+        let (b, c) = (3.0 * 2f64.powi(55), 3.0 * 2f64.powi(56));
+        let mut undecided = 0;
+        for i in -8..=8_i32 {
+            for j in -8..=8_i32 {
+                let a = [2f64.powi(52) + f64::from(i), 2f64.powi(52) + f64::from(j)];
+                // (ax - cx)(b - c) - (ay - cy)(b - c) = (b - c)(i - j),
+                // and b < c.
+                let expected = -(i - j).signum() as i8;
+                assert_eq!(orient2d(a, [b, b], [c, c]), expected, "{i} {j}");
+                let plain = (a[0] - c) * (b - c) - (a[1] - c) * (b - c);
+                undecided += usize::from(sign_of(plain) != expected);
+            }
+        }
+        assert!(undecided > 100, "{undecided}");
+
+        // And where the plain determinant is not zero but wrong. (With
+        // exact differences it never is: rounding two products keeps
+        // their order.) Two far points nearly in line with a near one:
+        // the differences themselves round.
+        let mut rng = Rng(19);
+        let mut wrong = 0;
+        for _ in 0..4000 {
+            let u = [rng.int(28), rng.int(28)];
+            let (m, n) = (rng.int(30), rng.int(30));
+            // Whatever these round to is the point, exactly.
+            let a = [(m * u[0]) as f64, (m * u[1]) as f64];
+            let b = [(n * u[0]) as f64, (n * u[1]) as f64];
+            let c = [rng.int(3) as f64, rng.int(3) as f64];
+            let wide = |p: [f64; 2], q: [f64; 2]| {
+                [p[0] as i128 - q[0] as i128, p[1] as i128 - q[1] as i128]
+            };
+            let (ac, bc) = (wide(a, c), wide(b, c));
+            let expected = (ac[0] * bc[1] - ac[1] * bc[0]).signum() as i8;
+            assert_eq!(orient2d(a, b, c), expected, "{a:?} {b:?} {c:?}");
+            let plain = (a[0] - c[0]) * (b[1] - c[1]) - (a[1] - c[1]) * (b[0] - c[0]);
+            wrong += usize::from(plain != 0.0 && sign_of(plain) != expected);
+        }
+        assert!(wrong > 0, "the plain determinant was never wrong");
+    }
+
     /// Swapping two points flips the sign; a point twice gives zero.
     #[test]
     fn orient3d_is_antisymmetric() {

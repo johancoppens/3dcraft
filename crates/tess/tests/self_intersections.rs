@@ -330,6 +330,23 @@ fn a_crossing_along_an_edge_of_the_triangulation_is_found() {
             // half its diagonal or more to either side of the wall.
             let deepest = found.iter().map(|c| c.depth).fold(0.0, f64::max);
             assert!(deepest > 0.5 * scale, "{what}: {deepest}");
+            // The same turned out of the coordinate planes, where rounding
+            // puts the wall a hair to one side of the diagonal or the
+            // other.
+            if skew == 0.0 {
+                for turn in [0.83, 1.7, 2.9, 4.1] {
+                    let by = Transform::rotation(v(0.3, -0.7, 0.4), turn)
+                        .unwrap()
+                        .then(&Transform::translation(v(0.123, -4.56, 7.89)));
+                    let mut mesh = soup.moved(&by);
+                    for q in &mut mesh.positions {
+                        *q = *q * scale;
+                    }
+                    let found = all_crossings(&mesh);
+                    let deepest = found.iter().map(|c| c.depth).fold(0.0, f64::max);
+                    assert!(deepest > 0.5 * scale, "{what}, turned {turn}: {deepest}");
+                }
+            }
             // The wall beside the square instead: nothing.
             let mut beside = soup.clone();
             for q in beside.mesh.positions.iter_mut().skip(6) {

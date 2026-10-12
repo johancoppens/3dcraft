@@ -1416,6 +1416,46 @@ mod tests {
         empty.search(&boxes[0], &mut stack, |_| panic!("found something"));
     }
 
+    /// No more pairs are kept than the cap, per chunk and in all.
+    #[test]
+    fn the_cap_on_pairs_is_kept() {
+        // A hundred triangles through one line: every pair meets.
+        let mut mesh = Mesh::default();
+        for k in 0..100 {
+            let angle = f64::from(k) * 0.03;
+            let base = mesh.positions.len() as u32;
+            mesh.positions.extend([
+                Vec3::new(0.0, 0.0, -1.0),
+                Vec3::new(0.0, 0.0, 1.0),
+                Vec3::new(angle.cos(), angle.sin(), 0.1),
+            ]);
+            // Not neighbours: each a little further along the line.
+            for p in mesh.positions.iter_mut().skip(base as usize).take(2) {
+                p.z += f64::from(k) * 1e-3;
+            }
+            mesh.normals.extend([Vec3::ZERO; 3]);
+            mesh.triangles.push([base, base + 1, base + 2]);
+            mesh.face_ids.push(0);
+        }
+        let prepared = Prepared::new(&mesh).unwrap();
+        let rules = Rules {
+            margin: &|_, _| 0.0,
+            near: &|_, _| 0.0,
+            reach: 0.0,
+        };
+        let (all, more) = prepared.pairs(1, 1_000_000, &rules).unwrap();
+        assert!(all.len() > 1000 && !more, "{}", all.len());
+        for cap in [0, 1, 10, 999] {
+            let (some, more) = prepared.pairs(1, cap, &rules).unwrap();
+            assert_eq!(some.len(), cap);
+            assert!(more);
+            assert!(some == all[..cap]);
+            let (chunk, more) = prepared.pairs_in(0..100, cap, &rules);
+            assert_eq!(chunk.len(), cap);
+            assert!(more);
+        }
+    }
+
     #[test]
     fn a_column_clips() {
         let column = Column::new(&GROUND.map(|p| vector(&p)), [0.0, 0.0, 0.5]).unwrap();
