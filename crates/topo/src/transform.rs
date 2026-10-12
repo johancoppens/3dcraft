@@ -649,3 +649,122 @@ pub fn merge(bodies: &[&Body]) -> Result<(Body, Vec<Offsets>), TransformError> {
     }
     Ok((merged, offsets))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn coedge(edge: u32, reversed: bool) -> Coedge {
+        Coedge {
+            edge: EdgeId(edge),
+            reversed,
+        }
+    }
+
+    #[test]
+    fn a_loop_turned_round_starts_with_the_same_edge() {
+        let loop_ = Loop {
+            coedges: vec![
+                coedge(7, false),
+                coedge(3, true),
+                coedge(5, false),
+                coedge(9, false),
+            ],
+        };
+        let turned = turned_round(&loop_);
+        assert_eq!(
+            turned.coedges,
+            [
+                coedge(7, true),
+                coedge(9, true),
+                coedge(5, true),
+                coedge(3, false)
+            ]
+        );
+        assert_eq!(turned_round(&turned), loop_);
+        // One coedge (a full circle) and none at all.
+        let single = Loop {
+            coedges: vec![coedge(1, false)],
+        };
+        assert_eq!(turned_round(&single).coedges, [coedge(1, true)]);
+        assert_eq!(turned_round(&Loop::default()), Loop::default());
+    }
+
+    #[test]
+    fn offsets_that_no_longer_fit_an_id_are_refused() {
+        // A body with 2^32 entities cannot be built in a test; the
+        // arithmetic that would meet it can.
+        let mut body = Body::new(crate::BodyKind::Solid);
+        body.add_vertex(Vec3::ZERO);
+        let room = Offsets {
+            vertices: u32::MAX - 1,
+            ..Offsets::default()
+        };
+        assert_eq!(
+            room.after(&body),
+            Some(Offsets {
+                vertices: u32::MAX,
+                ..Offsets::default()
+            })
+        );
+        for field in 0..5 {
+            let mut at = Offsets::default();
+            let mut body = Body::new(crate::BodyKind::Solid);
+            match field {
+                0 => {
+                    at.vertices = u32::MAX;
+                    body.add_vertex(Vec3::ZERO);
+                }
+                1 => {
+                    at.edges = u32::MAX;
+                    body.add_edge(
+                        Curve3::Line(craft3d_geom::Line::new(Vec3::ZERO, Vec3::X).unwrap()),
+                        (0.0, 1.0),
+                        VertexId(0),
+                        VertexId(0),
+                    );
+                }
+                2 => {
+                    at.loops = u32::MAX;
+                    body.add_loop(Vec::new());
+                }
+                3 => {
+                    at.faces = u32::MAX;
+                    body.add_face(
+                        Surface::Plane(craft3d_geom::Plane::new(Frame::WORLD)),
+                        false,
+                        Vec::new(),
+                    );
+                }
+                _ => {
+                    at.shells = u32::MAX;
+                    body.add_shell(Vec::new());
+                }
+            }
+            assert_eq!(at.after(&body), None, "field {field}");
+        }
+    }
+
+    #[test]
+    fn extents_remember_anything_not_finite() {
+        let mut extent = Extent::EMPTY;
+        assert!(extent.padded().is_empty());
+        extent.add(Vec3::new(1.0, 2.0, 3.0));
+        extent.add(Vec3::new(f64::NAN, 0.0, 0.0));
+        extent.add(Vec3::new(-1.0, 0.0, 0.0));
+        assert!(!extent.finite);
+        let mut extent = Extent::EMPTY;
+        extent.add_axis(1, f64::INFINITY);
+        assert!(!extent.finite);
+        // An axis that does not exist is ignored, not indexed.
+        let mut extent = Extent::EMPTY;
+        extent.add_axis(7, 1.0);
+        assert!(extent.finite && extent.padded().is_empty());
+        // At the edge of the representable range the padding is dropped
+        // rather than overflowing.
+        let mut extent = Extent::EMPTY;
+        extent.add(Vec3::new(f64::MAX, 0.0, 0.0));
+        let (lo, hi) = extent.padded().corners().unwrap();
+        assert!(lo.is_finite() && hi.is_finite());
+    }
+}
