@@ -1,27 +1,5 @@
-//! TEMPORARY: stands in for `Body::transformed`, `craft3d_topo::merge`,
-//! `Transform::mirror` and `Transform::rotation_about` until they are
-//! merged from their own branch. Delete this file then.
-
-use craft3d_math::{Transform, Vec3};
-use craft3d_topo::Body;
-
-pub(crate) trait BodyExt {
-    fn transformed(&self, t: &Transform) -> Result<Body, String>;
-}
-
-impl BodyExt for Body {
-    fn transformed(&self, t: &Transform) -> Result<Body, String> {
-        if *t == Transform::IDENTITY {
-            Ok(self.clone())
-        } else {
-            Err("moving a body is not built yet".to_string())
-        }
-    }
-}
-
-pub(crate) fn merge(_bodies: &[&Body]) -> Result<(Body, ()), String> {
-    Err("joining bodies is not built yet".to_string())
-}
+//! TEMPORARY: stands in for `craft3d_kernel::revolve::revolve` until it is
+//! merged from its own branch. Delete this file then.
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn revolve(
@@ -34,23 +12,4 @@ pub(crate) fn revolve(
     _tolerance: &craft3d_math::Tolerance,
 ) -> Result<craft3d_kernel::extrude::OpResult, String> {
     Err("revolving is not built yet".to_string())
-}
-
-pub(crate) trait TransformExt: Sized {
-    fn mirror(point: Vec3, normal: Vec3) -> Option<Self>;
-    fn rotation_about(point: Vec3, axis: Vec3, angle: f64) -> Option<Self>;
-}
-
-impl TransformExt for Transform {
-    fn mirror(_point: Vec3, _normal: Vec3) -> Option<Transform> {
-        None
-    }
-
-    fn rotation_about(point: Vec3, axis: Vec3, angle: f64) -> Option<Transform> {
-        Some(
-            Transform::translation(point * -1.0)
-                .then(&Transform::rotation(axis, angle)?)
-                .then(&Transform::translation(point)),
-        )
-    }
 }

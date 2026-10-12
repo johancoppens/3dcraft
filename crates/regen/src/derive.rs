@@ -14,9 +14,6 @@ use craft3d_math::{Transform, Vec3};
 use craft3d_topo::Body;
 use std::f64::consts::TAU;
 
-// TEMPORARY, see pending.rs.
-use crate::pending::{BodyExt, TransformExt, merge};
-
 /// Most instances one pattern makes.
 pub const MAX_PATTERN_INSTANCES: u64 = 10_000;
 
@@ -275,7 +272,7 @@ pub(crate) fn build(
         1 => placed.pop(),
         _ => {
             let parts: Vec<&Body> = placed.iter().collect();
-            Some(merge(&parts).map_err(|e| e.to_string())?.0)
+            Some(craft3d_topo::merge(&parts).map_err(|e| e.to_string())?.0)
         }
     };
     let Some(result) = merged else {

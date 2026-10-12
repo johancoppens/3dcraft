@@ -42,6 +42,10 @@ fn bits(tolerance: Tolerance) -> (u64, u64) {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Input {
     id: FeatureId,
+    /// Its name and kind, which the messages of a failure quote: also
+    /// when it comes later in the history, where it has no stamp that a
+    /// rename would change. `None` when there is no such feature.
+    named: Option<(String, &'static str)>,
     /// The stamp of its result; `None` when it did not come earlier in the
     /// history (or does not exist).
     stamp: Option<u64>,
@@ -181,6 +185,9 @@ pub(crate) fn features(
             .into_iter()
             .map(|id| Input {
                 id,
+                named: doc
+                    .feature(id)
+                    .map(|f| (f.name.clone(), f.kind.type_name())),
                 stamp: stamps.get(&id).copied(),
                 taken_by: results
                     .iter()

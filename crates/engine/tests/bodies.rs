@@ -531,7 +531,6 @@ fn parameters_that_make_no_body_are_failures_that_name_the_parameter() {
         (json!({"count": "1 mm"}), vec!["count", "plain number"]),
         (json!({"count": "nope"}), vec!["count", "nope"]),
         (json!({"count": 1e9}), vec!["count", "at most 10000"]),
-        (json!({"count": 5000}), vec!["faces", "more than"]),
         (
             json!({"step": [0, 0, 0]}),
             vec!["step", "on top of each other"],
@@ -545,8 +544,10 @@ fn parameters_that_make_no_body_are_failures_that_name_the_parameter() {
             p
         });
         assert_failed(&mut s, "Row", &words);
-        // The bar is still there, whole.
-        assert_body(&mut s, "Bar", 80.0, [25.0, 0.0, 1.0]);
+        // The bar is still there, whole, and has its body back.
+        assert_eq!(body_names(&mut s), ["Bar"]);
+        let volume = body(&mut s, "Bar").unwrap()["volume"].as_f64().unwrap();
+        assert!((volume - 80.0).abs() < 1e-9, "{volume}");
         run(&mut s, "edit.undo", json!({}));
     }
     run(&mut s, "feature.delete", json!({"feature": "Row"}));

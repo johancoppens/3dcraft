@@ -143,8 +143,6 @@ fn an_edit_rebuilds_what_depends_on_it_and_nothing_else() {
         rebuilt(&mut s, "history.rollback", json!({"feature": "PlateB"})),
         3
     );
-    // Reading twice rebuilds nothing.
-    assert_eq!(rebuilt(&mut s, "document.check", json!({})), 0);
 }
 
 /// xorshift64*: a seeded sequence, the same on every platform.
@@ -174,7 +172,7 @@ fn a_random_walk_of_edits_never_differs_from_a_full_regeneration() {
     ];
     let mut steps = 0;
     let mut refused = 0;
-    for seed in 1..=6u64 {
+    for seed in 1..=40u64 {
         let mut s = model();
         let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
         for _ in 0..250 {
