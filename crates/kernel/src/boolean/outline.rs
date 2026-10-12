@@ -17,10 +17,10 @@
 //! tests it.
 
 use super::Reason;
-use craft3d_geom::{Curve3, Surface};
+use craft3d_geom::{Curve3, Ellipse, Surface};
 use craft3d_math::quadrature::Rule;
 use craft3d_math::{Bbox3, Frame, Vec3};
-use std::f64::consts::{FRAC_PI_4, TAU};
+use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, TAU};
 
 /// A piece of a curve in a loop.
 #[derive(Clone, Debug)]
@@ -96,10 +96,95 @@ pub(super) fn lift(curve: &Curve3, range: (f64, f64), t: f64) -> f64 {
 /// The parameter within `range` of the point of the curve piece nearest to
 /// `p`, and its distance from `p`.
 pub(super) fn nearest(curve: &Curve3, range: (f64, f64), p: Vec3) -> Option<(f64, f64)> {
+    if let Curve3::Ellipse(ellipse) = curve {
+        return nearest_on_ellipse(ellipse, range, p);
+    }
+    // On a line or a circle the distance grows with the parameter's
+    // distance from the nearest point of the whole curve, so clamping
+    // that into the range gives the nearest point of the piece.
     let t = lift(curve, range, curve.project(p).ok()?);
     let t = t.max(range.0).min(range.1);
     let d = curve.eval(t).distance(p);
     d.is_finite().then_some((t, d))
+}
+
+/// [`nearest`] for a piece of an ellipse, where the nearest point of the
+/// whole curve says little about the nearest point of a piece, and where a
+/// long ellipse has several near points close together around its tips.
+///
+/// Branch and bound: a stretch of the curve of length `l` between two
+/// points at distances `d0` and `d1` comes no closer than
+/// `min(d0, d1) − l / 2`. Stretches that cannot beat the best point found
+/// are dropped, the others halved; Newton's method polishes the result.
+fn nearest_on_ellipse(ellipse: &Ellipse, range: (f64, f64), p: Vec3) -> Option<(f64, f64)> {
+    let (a, b) = ellipse.semi_axes();
+    let (x, y, z) = ellipse.frame().local(p);
+    if !(x.is_finite() && y.is_finite() && z.is_finite()) {
+        return None;
+    }
+    let distance = |t: f64| {
+        let (s, c) = t.sin_cos();
+        (a * c - x).hypot(b * s - y)
+    };
+    let speed = |t: f64| {
+        let (s, c) = t.sin_cos();
+        (a * s).hypot(b * c)
+    };
+    // The speed is monotone between multiples of a quarter turn.
+    let fastest = |t0: f64, t1: f64| {
+        if (t0 / FRAC_PI_2).floor() != (t1 / FRAC_PI_2).floor() {
+            a.max(b)
+        } else {
+            speed(t0).max(speed(t1))
+        }
+    };
+    let (t0, t1) = range;
+    let (d0, d1) = (distance(t0), distance(t1));
+    let mut best = if d0 <= d1 { (d0, t0) } else { (d1, t1) };
+    let mut stack = vec![(t0, d0, t1, d1)];
+    let mut steps = 0_usize;
+    while let Some((ta, da, tb, db)) = stack.pop() {
+        steps += 1;
+        let length = fastest(ta, tb) * (tb - ta);
+        // Not worth looking at: cannot be closer, or as short as rounding.
+        if steps > 20_000
+            || da.min(db) - 0.5 * length >= best.0
+            || length <= (1e-3 * best.0).max(1e-7 * a.max(b))
+        {
+            continue;
+        }
+        let tm = 0.5 * (ta + tb);
+        if !(tm > ta && tm < tb) {
+            continue;
+        }
+        let dm = distance(tm);
+        if dm < best.0 {
+            best = (dm, tm);
+        }
+        stack.push((ta, da, tm, dm));
+        stack.push((tm, dm, tb, db));
+    }
+    let mut t = best.1;
+    for _ in 0..40 {
+        let (s, c) = t.sin_cos();
+        let (dx, dy) = (a * c - x, b * s - y);
+        // Half the derivative of the squared distance, and its slope.
+        let g = -dx * a * s + dy * b * c;
+        let slope = a * a * s * s + b * b * c * c - dx * a * c - dy * b * s;
+        if !(slope.is_finite() && slope > 0.0) {
+            break;
+        }
+        let next = (t - g / slope).max(t0).min(t1);
+        let moved = (next - t).abs();
+        t = next;
+        if moved <= 1e-15 {
+            break;
+        }
+    }
+    let d = distance(t);
+    let (d, t) = if d <= best.0 { (d, t) } else { best };
+    let distance = d.hypot(z);
+    distance.is_finite().then_some((t, distance))
 }
 
 /// The parameter of `p` on the curve piece, when it is within `tol` of it.

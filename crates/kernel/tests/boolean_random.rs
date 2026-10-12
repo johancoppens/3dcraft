@@ -480,6 +480,18 @@ fn one_pair() {
             ),
             Err(e) => println!("{name}: {e}"),
         };
+    println!(
+        "A: {} faces, box {:?} .. {:?}",
+        a.body.faces.len(),
+        a.lo,
+        a.hi
+    );
+    println!(
+        "B: {} faces, box {:?} .. {:?}",
+        b.body.faces.len(),
+        b.lo,
+        b.hi
+    );
     println!("A: {:?}", mass_properties(&a.body));
     println!("B: {:?}", mass_properties(&b.body));
     let less = boolean(&a.body, &b.body, Subtract, &tol);
