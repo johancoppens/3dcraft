@@ -1,6 +1,6 @@
 # Roadmap
 
-> **Last updated:** 2026-10-12 · **Stage:** M2 done: a part can be modelled from primitives by commands, saved, reopened, rendered and exported · **Change:** minor (teapot track done, decisions settled)
+> **Last updated:** 2026-10-12 · **Stage:** M2 done: a part can be modelled from primitives by commands, saved, reopened, rendered and exported · **Change:** minor (M2 done, M3 partly done)
 
 Forward-looking plan: milestones with a definition of done, and the **Current focus** list agents pick from. There is no parity percentage: 3DCraft is AI-first with a minimal UI and has no target app ([`decisions.md`](decisions.md)). Progress is measured by milestones whose acceptance tests pass.
 

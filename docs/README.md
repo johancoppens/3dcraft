@@ -1,6 +1,6 @@
 # 3DCraft documentation
 
-> **Last updated:** 2026-10-12 · **Status:** M0 in progress; the first crates exist (see `architecture.md` › Current state)
+> **Last updated:** 2026-10-12 · **Status:** M2 done; see [`roadmap.md`](roadmap.md) for the milestones and `architecture.md` › Current state for what exists
 
 Start with [`AGENTS.md`](../AGENTS.md), then read in this order.
 
@@ -15,4 +15,4 @@ Start with [`AGENTS.md`](../AGENTS.md), then read in this order.
 | [`roadmap.md`](roadmap.md) | Milestones with definition of done, current focus |
 | [`decisions.md`](decisions.md) | Decisions taken and open |
 
-Everything here describes the **target design** until the code exists. A doc that says *(planned)* is a specification for the milestone that builds it, not a description of something you can run.
+The docs describe the **target design**, and each says at its top what is built today. Where a doc says *(planned)*, it is a specification for the milestone that builds it, not a description of something you can run.
