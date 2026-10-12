@@ -642,6 +642,39 @@ fn what_is_not_supported_says_so() {
             }
         }
     }
+    // The same for the end of a cylinder on the end of a wider one, whose
+    // rim does not come near any vertex or edge: only the rule for faces
+    // decides.
+    let lower = rod(k, [0.0, 0.0, 0.0], 1.0, 2.0);
+    for (gap, shells) in [
+        (0.4e-6, Some(1)),
+        (0.6e-6, None),
+        (1.0e-6, None),
+        (1.9e-6, None),
+        (2.1e-6, Some(2)),
+        (-0.4e-6, Some(1)),
+        (-1.0e-6, None),
+    ] {
+        let upper = rod(k, [0.2, 0.1, 2.0 + gap], 0.5, 1.0);
+        match (boolean(&lower, &upper, Union, &tol), shells) {
+            (Ok(result), Some(shells)) => assert_eq!(result.body.shells.len(), shells, "{gap}"),
+            (Err(KernelError::Unsupported { reason, .. }), None) => {
+                assert!(
+                    reason.contains("half and twice the tolerance"),
+                    "{gap}: {reason}"
+                );
+            }
+            (other, _) => panic!("{gap}: {:?}", other.map(|r| counts(&r))),
+        }
+        // An overlap of a tolerance is not nothing: the intersection is
+        // refused too, not called empty.
+        if shells.is_none() {
+            assert!(matches!(
+                boolean(&lower, &upper, Intersect, &tol),
+                Err(KernelError::Unsupported { .. })
+            ));
+        }
+    }
     // The message names the faces.
     let message = boolean(&upright, &lying, Union, &tol)
         .unwrap_err()

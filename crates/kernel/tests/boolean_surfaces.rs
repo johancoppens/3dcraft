@@ -258,6 +258,24 @@ fn a_cone_cut_across_and_through_its_axis() {
             0.25 * PI * radius * radius + 0.25 * slant(radius, 0.0, height) + radius * height,
             k,
         );
+        // The half cut again through its axis: three rulings meet at the
+        // apex, two of the boundary and one across the face, and which
+        // side of the new one is kept depends on their order there.
+        let behind = boxed(k, [-4.0, 2.0, -1.0], [6.0, 8.0, 9.0]);
+        let again = solve(&half.body, &behind, Intersect, k);
+        assert_mass(
+            &again,
+            PI * radius * radius * height / 12.0,
+            0.25 * PI * radius * radius + 0.25 * slant(radius, 0.0, height) + radius * height,
+            k,
+        );
+        let rest = solve(&half.body, &behind, Subtract, k);
+        assert_mass(
+            &rest,
+            PI * radius * radius * height / 12.0,
+            0.25 * PI * radius * radius + 0.25 * slant(radius, 0.0, height) + radius * height,
+            k,
+        );
         // The frustum is an operand like any other: its top comes off.
         let lower = boxed(k, [-4.0, -4.0, 0.5], [6.0, 8.0, 9.0]);
         let shorter = solve(&frustum.body, &lower, Subtract, k);
