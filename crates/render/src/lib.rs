@@ -131,6 +131,76 @@ impl Camera {
     }
 }
 
+/// Ambient term of the shading model: `intensity = AMBIENT + DIFFUSE * n·l`.
+pub const SHADE_AMBIENT: f64 = 0.2;
+/// Diffuse weight of the shading model.
+pub const SHADE_DIFFUSE: f64 = 0.8;
+/// Weight of the white specular highlight, as a fraction of 255.
+pub const SHADE_SPECULAR: f64 = 0.35;
+/// Exponent of the specular highlight.
+pub const SHADE_SHININESS: i32 = 48;
+
+/// A camera resolved to an orthonormal basis and a projection scale. Both
+/// renderers take their projection from here, so there is one definition of
+/// where a point lands: with `rel = p - eye` and `dist = rel·forward`, the
+/// normalised image coordinates (x right, y up, both in -1..=1) are
+/// `rel·right * scale / aspect` and `rel·up * scale`, where `scale` is
+/// `1 / (dist * half)` in perspective and `1 / half` in orthographic.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ViewAxes {
+    pub eye: Vec3,
+    pub right: Vec3,
+    pub up: Vec3,
+    pub forward: Vec3,
+    pub projection: Projection,
+    /// Model units per half image height at distance 1 (perspective) or in
+    /// total (orthographic).
+    pub half: f64,
+}
+
+impl ViewAxes {
+    /// Unit vector towards the one light, which is fixed to the camera:
+    /// above and to the left of the viewer.
+    pub fn light(&self) -> Option<Vec3> {
+        (self.up * 0.6 - self.right * 0.45 - self.forward).normalized()
+    }
+}
+
+impl Camera {
+    /// The camera's basis and projection scale, or
+    /// [`RenderError::DegenerateCamera`].
+    pub fn axes(&self) -> Result<ViewAxes, RenderError> {
+        let forward = (self.target - self.eye)
+            .normalized()
+            .ok_or(RenderError::DegenerateCamera)?;
+        let right = forward
+            .cross(self.up)
+            .normalized()
+            .ok_or(RenderError::DegenerateCamera)?;
+        let up = right.cross(forward);
+        let half = match self.projection {
+            Projection::Perspective { fov_y_deg } => {
+                if !(fov_y_deg > 0.0 && fov_y_deg < 180.0) {
+                    return Err(RenderError::DegenerateCamera);
+                }
+                (fov_y_deg.to_radians() * 0.5).tan()
+            }
+            Projection::Orthographic { half_height } => half_height,
+        };
+        if !(half.is_finite() && half > 0.0 && self.eye.is_finite()) {
+            return Err(RenderError::DegenerateCamera);
+        }
+        Ok(ViewAxes {
+            eye: self.eye,
+            right,
+            up,
+            forward,
+            projection: self.projection,
+            half,
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RenderParams {
     pub width: u32,
@@ -259,6 +329,8 @@ struct View {
     /// Model units per half image height at distance 1 (perspective) or in
     /// total (orthographic).
     half: f64,
+    /// Unit vector towards the light ([`ViewAxes::light`]).
+    light: Option<Vec3>,
     aspect: f64,
     w: f64,
     h: f64,
@@ -266,33 +338,15 @@ struct View {
 
 impl View {
     fn new(camera: &Camera, w: usize, h: usize) -> Result<Self, RenderError> {
-        let forward = (camera.target - camera.eye)
-            .normalized()
-            .ok_or(RenderError::DegenerateCamera)?;
-        let right = forward
-            .cross(camera.up)
-            .normalized()
-            .ok_or(RenderError::DegenerateCamera)?;
-        let up = right.cross(forward);
-        let half = match camera.projection {
-            Projection::Perspective { fov_y_deg } => {
-                if !(fov_y_deg > 0.0 && fov_y_deg < 180.0) {
-                    return Err(RenderError::DegenerateCamera);
-                }
-                (fov_y_deg.to_radians() * 0.5).tan()
-            }
-            Projection::Orthographic { half_height } => half_height,
-        };
-        if !(half.is_finite() && half > 0.0 && camera.eye.is_finite()) {
-            return Err(RenderError::DegenerateCamera);
-        }
+        let axes = camera.axes()?;
         Ok(Self {
-            eye: camera.eye,
-            right,
-            up,
-            forward,
-            projection: camera.projection,
-            half,
+            eye: axes.eye,
+            right: axes.right,
+            up: axes.up,
+            forward: axes.forward,
+            projection: axes.projection,
+            half: axes.half,
+            light: axes.light(),
             aspect: w as f64 / h as f64,
             w: w as f64,
             h: h as f64,
@@ -372,17 +426,15 @@ fn shade(base: [u8; 3], normal: Vec3, to_viewer: Vec3, view: &View) -> [u8; 3] {
         normal
     };
     // One light fixed to the camera, above and to the left of the viewer.
-    let light = (view.up * 0.6 - view.right * 0.45 - view.forward)
-        .normalized()
-        .unwrap_or(to_viewer);
+    let light = view.light.unwrap_or(to_viewer);
     let diffuse = n.dot(light).max(0.0);
     let specular = (light + to_viewer)
         .normalized()
-        .map_or(0.0, |half| n.dot(half).max(0.0).powi(48));
-    let intensity = 0.2 + 0.8 * diffuse;
+        .map_or(0.0, |half| n.dot(half).max(0.0).powi(SHADE_SHININESS));
+    let intensity = SHADE_AMBIENT + SHADE_DIFFUSE * diffuse;
     // Clamped to 0..=255 before the cast.
     base.map(|c| {
-        (f64::from(c) * intensity + 255.0 * 0.35 * specular)
+        (f64::from(c) * intensity + 255.0 * SHADE_SPECULAR * specular)
             .round()
             .clamp(0.0, 255.0) as u8
     })
