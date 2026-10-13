@@ -119,6 +119,60 @@ fn an_edge_ten_tolerances_into_a_face_cuts_a_prism_with_triangles_for_ends() {
     }
 }
 
+/// The wall of one cylinder a tenth of a tolerance into the flat end of
+/// another, set askew (the corpus case `near/cylinder-cylinder/013`):
+/// within the tolerance the wall touches the end along a line, and that
+/// line runs on over the rim of the end, where nothing cuts it (it stays
+/// within the tolerance of the end's plane well past the rim). A touch
+/// divides nothing, so the stretch is left out and the bodies are two,
+/// as given. Until 2026-10-13 it was refused as "a curve that is partly
+/// on and partly off a face boundary" (6 outcomes of the corpus).
+#[test]
+fn a_wall_resting_on_a_flat_end_and_running_out_over_its_rim() {
+    for k in SCALES {
+        let (ra, ha) = (0.7976633717168998, 2.6006253467445015);
+        let (rb, hb) = (0.7151438995597648, 2.2660460767868686);
+        let a = primitives::cylinder(
+            &Frame::new(
+                Vec3::new(0.9373047290398198, 0.05085573121677456, 0.6520801475880722) * k,
+                Vec3::new(0.1607880012726928, -0.4739471989417119, 0.8657489654986819),
+                Vec3::new(-0.8403641405872511, 0.394286482079714, 0.3719224129630456),
+            )
+            .unwrap(),
+            ra * k,
+            ha * k,
+        )
+        .unwrap();
+        let b = primitives::cylinder(
+            &Frame::new(
+                Vec3::new(
+                    -0.07674963000655788,
+                    -1.028157745308485,
+                    -0.5763261031704922,
+                ) * k,
+                Vec3::new(0.5176246998181051, 0.7873450467644465, 0.334891695139948),
+                Vec3::new(
+                    -0.31737359369436347,
+                    0.5401704051564817,
+                    -0.7794164069472796,
+                ),
+            )
+            .unwrap(),
+            rb * k,
+            hb * k,
+        )
+        .unwrap();
+        let (va, vb) = (PI * ra * ra * ha, PI * rb * rb * hb);
+        let (aa, ab) = (2.0 * PI * ra * (ra + ha), 2.0 * PI * rb * (rb + hb));
+        let both = solve(&a, &b, Union, k);
+        assert_eq!(both.body.shells.len(), 2, "scale {k}");
+        assert_mass(&both, va + vb, aa + ab, k);
+        let less = solve(&a, &b, Subtract, k);
+        assert_mass(&less, va, aa, k);
+        assert_empty(&a, &b, Intersect, k);
+    }
+}
+
 /// A rod standing on an edge of a block that passes under the middle of
 /// its base: the bodies touch along a stretch of that edge and nowhere
 /// else, so nothing is imprinted on the base, and the point that says

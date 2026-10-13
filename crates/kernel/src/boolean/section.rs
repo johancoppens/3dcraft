@@ -552,6 +552,15 @@ fn clip(
                 .iter()
                 .any(|&q| q != here)
             {
+                // A curve along which the surfaces only touch divides
+                // nothing: where it runs over a face's boundary without
+                // a cut there (it is within the tolerance of the surface
+                // well past where it leaves it), it is left out. A
+                // crossing in that state is refused.
+                if meeting.tangent {
+                    keep = false;
+                    break;
+                }
                 return Err(Stop::of(AMBIGUOUS).at(&named));
             }
         }
