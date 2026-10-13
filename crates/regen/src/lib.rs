@@ -28,7 +28,7 @@ mod sketch;
 
 pub use cache::RegenCache;
 pub use craft3d_kernel::extrude::{Origin, Origins, Role};
-pub use datum::Datum;
+pub use datum::{Datum, EdgeReference, References, references};
 pub use derive::{MAX_PATTERN_FACES, MAX_PATTERN_INSTANCES};
 pub use extrude::name_of;
 pub use query::{edges_between, faces_named, faces_of_edges};
@@ -418,7 +418,7 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
         FeatureKind::Extrude(_) => return Err("an extrusion needs its sketch".to_string()),
         FeatureKind::Revolve(_) => return Err("a revolution needs its sketch".to_string()),
         // Placed in `features`; reference geometry is not a body.
-        FeatureKind::DatumPlane(_) | FeatureKind::DatumAxis(_) => {
+        FeatureKind::DatumPlane(_) | FeatureKind::DatumAxis(_) | FeatureKind::DatumPoint(_) => {
             return Err("a datum has no body".to_string());
         }
         // Built in `features`, which knows the earlier bodies.
@@ -551,6 +551,14 @@ fn build_feature(
         match datum::plane(doc, variables, plane, earlier) {
             Ok(frame) => {
                 placed = Some(Datum::Plane(frame));
+                (Status::Ok, None)
+            }
+            Err(reason) => (Status::Failed(reason), None),
+        }
+    } else if let FeatureKind::DatumPoint(point) = &feature.kind {
+        match datum::point(doc, variables, point, earlier) {
+            Ok(at) => {
+                placed = Some(Datum::Point(at));
                 (Status::Ok, None)
             }
             Err(reason) => (Status::Failed(reason), None),

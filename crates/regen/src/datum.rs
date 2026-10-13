@@ -1,6 +1,6 @@
 //! Reference geometry in regeneration: where a datum lies.
 //!
-//! A datum makes no body. Its result is a plane or a line in space, worked out
+//! A datum makes no body. Its result is a plane, a line or a point in space, worked out
 //! from what it is placed relative to: a base plane, an earlier datum (by
 //! the result of that feature), a face, an edge or a vertex of an earlier
 //! body (by its persistent name, against the body of the feature that
@@ -10,8 +10,8 @@
 use crate::query::{edges_between, faces_named};
 use crate::{FeatureResult, Status, angle, length};
 use craft3d_doc::{
-    AxisBy, AxisRef, DatumAxis, DatumPlane, Document, Expr, FeatureId, PersistentName, PlaneBy,
-    PlaneRef, PointRef, WorldAxis, WorldPlane,
+    AxisBy, AxisRef, DatumAxis, DatumPlane, DatumPoint, Document, Expr, FeatureId, PersistentName,
+    PlaneBy, PlaneRef, PointRef, WorldAxis, WorldPlane,
 };
 use craft3d_expr::Evaluation;
 use craft3d_geom::{Curve3, Surface};
@@ -24,7 +24,11 @@ pub enum Datum {
     /// A plane with an origin and axes: z is its normal.
     Plane(Frame),
     /// A straight line: a point on it and its unit direction.
-    Axis { origin: Vec3, direction: Vec3 },
+    Axis {
+        origin: Vec3,
+        direction: Vec3,
+    },
+    Point(Vec3),
 }
 
 impl Datum {
@@ -33,6 +37,7 @@ impl Datum {
         match self {
             Datum::Plane(_) => "datum plane",
             Datum::Axis { .. } => "datum axis",
+            Datum::Point(_) => "datum point",
         }
     }
 }
@@ -485,6 +490,90 @@ fn point_ref(
     match point {
         PointRef::At { position } => lengths(doc, variables, role, position),
         PointRef::Vertex { vertex: name } => vertex(doc, earlier, name, role),
+        PointRef::Center { between } => center(doc, earlier, between, role),
+        PointRef::Datum { feature } => {
+            match datum_of(doc, earlier, *feature, role, "datum point")? {
+                Datum::Point(point) => Ok(point),
+                other => Err(not_a(doc, *feature, role, &other, "datum point")),
+            }
+        }
+    }
+}
+
+/// The centre of the circular edge two faces of one body meet in.
+fn center(
+    doc: &Document,
+    earlier: &[FeatureResult],
+    between: &[PersistentName; 2],
+    role: &str,
+) -> Result<Vec3, String> {
+    let tolerance = document_tolerance(doc)?;
+    let [a, b] = between;
+    for face in between {
+        if !face.is_face() {
+            return Err(format!(
+                "{role}: {face} is not a face; an edge is referred to by the two faces it lies between"
+            ));
+        }
+    }
+    if a.feature != b.feature {
+        return Err(format!(
+            "{role}: {a} and {b} are faces of two features ({} and {}); an edge lies between two faces of one body",
+            a.feature, b.feature
+        ));
+    }
+    let (body, names, made_by) = named_body(doc, earlier, a, role)?;
+    for face in between {
+        if faces_named(names, face).is_empty() {
+            return Err(format!(
+                "{role}: `{made_by}` no longer has a face {face}; its faces are: {}",
+                listed(&names.faces)
+            ));
+        }
+    }
+    let edges = edges_between(body, names, a, b);
+    let mut found: Option<Vec3> = None;
+    for id in &edges {
+        let Some(edge) = body.edges.get(id.0 as usize) else {
+            continue;
+        };
+        let Curve3::Circle(circle) = &edge.curve else {
+            return Err(format!(
+                "{role}: the edge between {a} and {b} of `{made_by}` is a {}, not a circle or an arc of one",
+                edge.curve.kind()
+            ));
+        };
+        let centre = circle.frame().origin();
+        match found {
+            None => found = Some(centre),
+            // The arcs a boolean cut a circle into have one centre;
+            // circles about different centres do not say which is meant.
+            Some(first) if first.distance(centre) > tolerance.linear => {
+                return Err(format!(
+                    "{role}: {a} and {b} of `{made_by}` meet in {} circular edges that do not have one centre",
+                    edges.len()
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+    found.ok_or_else(|| {
+        format!("{role}: the faces {a} and {b} of `{made_by}` do not meet in an edge")
+    })
+}
+
+/// Where a datum point lies.
+pub(crate) fn point(
+    doc: &Document,
+    variables: &Evaluation,
+    datum: &DatumPoint,
+    earlier: &[FeatureResult],
+) -> Result<Vec3, String> {
+    let at = point_ref(doc, variables, earlier, &datum.at, "at")?;
+    if at.is_finite() {
+        Ok(at)
+    } else {
+        Err("the point is not finite".to_string())
     }
 }
 
@@ -575,4 +664,89 @@ pub(crate) fn plane(
             Frame::new(a, ab.cross(ac), ab).ok_or_else(degenerate)
         }
     }
+}
+
+/// An edge as a datum refers to it: by the two faces it lies between.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EdgeReference {
+    /// The names of the two faces; twice the same for a seam.
+    pub between: [PersistentName; 2],
+    /// What the edge's curve is: `line`, `circle`, ...
+    pub kind: &'static str,
+    /// For a straight edge: its two ends.
+    pub line: Option<(Vec3, Vec3)>,
+    /// For a circular edge: its centre and radius.
+    pub circle: Option<(Vec3, f64)>,
+}
+
+/// What a datum can be placed by on one body, each with the name it is
+/// referred to by.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct References {
+    /// The named vertices and where they are. Empty for a body whose
+    /// vertices have no names (after a boolean).
+    pub vertices: Vec<(PersistentName, Vec3)>,
+    pub edges: Vec<EdgeReference>,
+    /// The faces that have an axis (cylinder, cone, torus): the face, a
+    /// point on the axis and its direction.
+    pub axes: Vec<(PersistentName, Vec3, Vec3)>,
+    /// True when a list was cut off at `limit`.
+    pub truncated: bool,
+}
+
+/// Lists what a datum can be placed by on `body`, at most `limit` of each
+/// kind.
+pub fn references(body: &Body, names: &crate::Names, limit: usize) -> References {
+    let mut out = References::default();
+    for (name, vertex) in names.vertices.iter().zip(&body.vertices) {
+        if out.vertices.len() >= limit {
+            out.truncated = true;
+            break;
+        }
+        out.vertices.push((name.clone(), vertex.point));
+    }
+    for (edge, faces) in body.edges.iter().zip(crate::query::faces_of_edges(body)) {
+        let named = |index: usize| {
+            faces
+                .get(index)
+                .or(faces.first())
+                .and_then(|face| names.faces.get(face.0 as usize))
+                .cloned()
+        };
+        let (Some(a), Some(b)) = (named(0), named(1)) else {
+            continue;
+        };
+        if out.edges.len() >= limit {
+            out.truncated = true;
+            break;
+        }
+        let (line, circle) = match &edge.curve {
+            Curve3::Line(line) => {
+                let at = |t: f64| line.origin() + line.direction() * t;
+                (Some((at(edge.range.0), at(edge.range.1))), None)
+            }
+            Curve3::Circle(circle) => (None, Some((circle.frame().origin(), circle.radius()))),
+            _ => (None, None),
+        };
+        out.edges.push(EdgeReference {
+            between: [a, b],
+            kind: edge.curve.kind(),
+            line,
+            circle,
+        });
+    }
+    for (name, face) in names.faces.iter().zip(&body.faces) {
+        let frame = match &face.surface {
+            Surface::Cylinder(surface) => surface.frame(),
+            Surface::Cone(surface) => surface.frame(),
+            Surface::Torus(surface) => surface.frame(),
+            _ => continue,
+        };
+        if out.axes.len() >= limit {
+            out.truncated = true;
+            break;
+        }
+        out.axes.push((name.clone(), frame.origin(), frame.z()));
+    }
+    out
 }

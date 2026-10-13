@@ -1,6 +1,7 @@
-//! Reference geometry: planes and axes that are features of the history.
+//! Reference geometry: planes, axes and points that are features of the
+//! history.
 //!
-//! A datum makes no body. It is a plane or a line placed relative to something
+//! A datum makes no body. It is a plane, a line or a point placed relative to something
 //! else, and that something is referred to the way every feature refers
 //! to another: a base plane by its name, a datum by the id of its
 //! feature, a face of a body by its persistent name, an edge by the two
@@ -72,6 +73,38 @@ pub enum PointRef {
     /// A vertex of a body made earlier in the history, by its persistent
     /// name.
     Vertex { vertex: PersistentName },
+    /// The centre of the circular edge two faces of one body meet in (the
+    /// rim of a cylinder: between its wall and its top), by the names of
+    /// the two faces.
+    Center { between: [PersistentName; 2] },
+    /// A datum point made earlier in the history.
+    Datum { feature: FeatureId },
+}
+
+/// A point as a feature: something a datum plane or axis goes through.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DatumPoint {
+    pub at: PointRef,
+}
+
+impl DatumPoint {
+    /// Every persistent name the point refers to, in a fixed order.
+    pub fn names(&self) -> Vec<&PersistentName> {
+        self.at.names()
+    }
+
+    /// Every feature the point is placed relative to, in a fixed order.
+    pub fn inputs(&self) -> Vec<FeatureId> {
+        self.at.inputs()
+    }
+
+    pub fn exprs(&self) -> Vec<(String, &Expr)> {
+        self.at.exprs("at")
+    }
+
+    pub(crate) fn exprs_mut(&mut self) -> Vec<&mut Expr> {
+        self.at.exprs_mut()
+    }
 }
 
 /// How a datum plane is placed.
@@ -231,8 +264,9 @@ impl AxisRef {
 impl PointRef {
     pub(crate) fn names(&self) -> Vec<&PersistentName> {
         match self {
-            PointRef::At { .. } => Vec::new(),
+            PointRef::At { .. } | PointRef::Datum { .. } => Vec::new(),
             PointRef::Vertex { vertex } => vec![vertex],
+            PointRef::Center { between } => between.iter().collect(),
         }
     }
 
@@ -240,6 +274,8 @@ impl PointRef {
         match self {
             PointRef::At { .. } => Vec::new(),
             PointRef::Vertex { vertex } => vec![vertex.feature],
+            PointRef::Center { between } => between.iter().map(|face| face.feature).collect(),
+            PointRef::Datum { feature } => vec![*feature],
         }
     }
 
@@ -251,14 +287,18 @@ impl PointRef {
                 .zip(["x", "y", "z"])
                 .map(|(e, axis)| (format!("{name}.{axis}"), e))
                 .collect(),
-            PointRef::Vertex { .. } => Vec::new(),
+            PointRef::Vertex { .. } | PointRef::Center { .. } | PointRef::Datum { .. } => {
+                Vec::new()
+            }
         }
     }
 
     pub(crate) fn exprs_mut(&mut self) -> Vec<&mut Expr> {
         match self {
             PointRef::At { position } => position.iter_mut().collect(),
-            PointRef::Vertex { .. } => Vec::new(),
+            PointRef::Vertex { .. } | PointRef::Center { .. } | PointRef::Datum { .. } => {
+                Vec::new()
+            }
         }
     }
 }

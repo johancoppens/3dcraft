@@ -1936,3 +1936,80 @@ fn datum_axes_are_written_like_this_and_round_trip() {
         "a face of a primitive has one number"
     );
 }
+
+#[test]
+fn datum_points_are_written_like_this_and_round_trip() {
+    use craft3d_doc::{AxisBy, DatumAxis, DatumPoint, NameRole, PersistentName, PointRef};
+    let mut doc = small();
+    let face = |n: u64| PersistentName::new(FeatureId(1), NameRole::Face, vec![n]);
+    let point = |doc: &mut Document, at: PointRef| {
+        doc.add_feature(None, FeatureKind::DatumPoint(DatumPoint { at }))
+            .unwrap()
+    };
+    let free = point(
+        &mut doc,
+        PointRef::At {
+            position: exprs(["width", "0", "1 in"]),
+        },
+    );
+    point(
+        &mut doc,
+        PointRef::Vertex {
+            vertex: PersistentName::new(FeatureId(1), NameRole::Vertex, vec![6]),
+        },
+    );
+    point(
+        &mut doc,
+        PointRef::Center {
+            between: [face(0), face(2)],
+        },
+    );
+    doc.add_feature(
+        None,
+        FeatureKind::DatumAxis(DatumAxis {
+            by: AxisBy::TwoPoints {
+                points: [
+                    PointRef::Datum { feature: free },
+                    PointRef::Center {
+                        between: [face(0), face(1)],
+                    },
+                ],
+            },
+        }),
+    )
+    .unwrap();
+    assert_eq!(doc.validate(), Ok(()));
+    assert_eq!(doc.features[1].name, "Point1");
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["format_version"], 6);
+    let face_json = |n: u64| serde_json::json!({"feature": 1, "role": "face", "sources": [n]});
+    let written = [
+        serde_json::json!({"type": "datumPoint",
+            "at": {"type": "at", "position": ["width", "0", "1 in"]}}),
+        serde_json::json!({"type": "datumPoint", "at": {"type": "vertex",
+            "vertex": {"feature": 1, "role": "vertex", "sources": [6]}}}),
+        serde_json::json!({"type": "datumPoint", "at": {"type": "center",
+            "between": [face_json(0), face_json(2)]}}),
+        serde_json::json!({"type": "datumAxis", "by": {"type": "twoPoints", "points": [
+            {"type": "datum", "feature": 2},
+            {"type": "center", "between": [face_json(0), face_json(1)]}]}}),
+    ];
+    for (index, expected) in written.iter().enumerate() {
+        assert_eq!(&value["document"]["features"][index + 1]["kind"], expected);
+    }
+    assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+    assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
+
+    let with = |at: &str| {
+        let mut value = value.clone();
+        value["document"]["features"][1]["kind"]["at"] = serde_json::from_str(at).unwrap();
+        from_manifest_json(serde_json::to_string(&value).unwrap().as_bytes())
+    };
+    assert!(with(r#"{"type": "at", "position": ["0", "0", "0"]}"#).is_ok());
+    assert!(with(r#"{"type": "at", "position": ["0", "0"]}"#).is_err());
+    assert!(with(r#"{"type": "at", "position": [0, 0, 0]}"#).is_err());
+    assert!(with(r#"{"type": "midpoint", "between": []}"#).is_err());
+    assert!(with(r#"{"type": "datum", "feature": 2, "offset": "1"}"#).is_err());
+    assert!(with(r#"["0", "0", "0"]"#).is_err());
+}

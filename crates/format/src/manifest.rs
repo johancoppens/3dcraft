@@ -250,6 +250,8 @@ pub enum FeatureKind {
     DatumPlane { by: PlaneBy },
     /// A straight line to place other features by; it makes no body.
     DatumAxis { by: AxisBy },
+    /// A point to place other features by; it makes no body.
+    DatumPoint { at: PointRef },
 }
 
 /// How a datum axis is placed: through two points, along the straight
@@ -306,12 +308,16 @@ pub enum AxisRef {
 }
 
 /// A point a datum is placed relative to: coordinates (three
-/// expressions), or a vertex by its persistent name.
+/// expressions), a vertex by its persistent name, the centre of the
+/// circular edge between two faces of one body, or a datum point by the
+/// id of its feature.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
 pub enum PointRef {
     At { position: [String; 3] },
     Vertex { vertex: Name },
+    Center { between: [Name; 2] },
+    Datum { feature: u64 },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

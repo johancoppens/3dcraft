@@ -237,6 +237,11 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 plane: plane.map(|doc::FeatureId(id)| id),
                 keep: *keep,
             },
+            doc::FeatureKind::DatumPoint(doc::DatumPoint { at }) => {
+                manifest::FeatureKind::DatumPoint {
+                    at: point_ref_to_manifest(at),
+                }
+            }
             doc::FeatureKind::DatumAxis(doc::DatumAxis { by }) => {
                 manifest::FeatureKind::DatumAxis {
                     by: match by {
@@ -423,6 +428,15 @@ fn point_ref_to_manifest(point: &doc::PointRef) -> manifest::PointRef {
         doc::PointRef::Vertex { vertex } => manifest::PointRef::Vertex {
             vertex: name_to_manifest(vertex),
         },
+        doc::PointRef::Center { between } => {
+            let [a, b] = between;
+            manifest::PointRef::Center {
+                between: [name_to_manifest(a), name_to_manifest(b)],
+            }
+        }
+        doc::PointRef::Datum {
+            feature: doc::FeatureId(feature),
+        } => manifest::PointRef::Datum { feature: *feature },
     }
 }
 
@@ -433,6 +447,12 @@ fn point_ref_to_doc(point: manifest::PointRef) -> doc::PointRef {
         },
         manifest::PointRef::Vertex { vertex } => doc::PointRef::Vertex {
             vertex: name_to_doc(vertex),
+        },
+        manifest::PointRef::Center { between } => doc::PointRef::Center {
+            between: between.map(name_to_doc),
+        },
+        manifest::PointRef::Datum { feature } => doc::PointRef::Datum {
+            feature: doc::FeatureId(feature),
         },
     }
 }
@@ -952,6 +972,11 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
                 plane: plane.map(doc::FeatureId),
                 keep,
             }),
+            manifest::FeatureKind::DatumPoint { at } => {
+                doc::FeatureKind::DatumPoint(doc::DatumPoint {
+                    at: point_ref_to_doc(at),
+                })
+            }
             manifest::FeatureKind::DatumAxis { by } => {
                 doc::FeatureKind::DatumAxis(doc::DatumAxis {
                     by: match by {

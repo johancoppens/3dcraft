@@ -1394,8 +1394,13 @@ fn bad_parameters_are_refused() {
             "three coordinates",
         ),
         (
-            json!({"through": [7, [1, 0, 0], [0, 1, 0]]}),
+            json!({"through": [true, [1, 0, 0], [0, 1, 0]]}),
             "a point is [x, y, z]",
+        ),
+        // A number is the id of a datum point.
+        (
+            json!({"through": [7, [1, 0, 0], [0, 1, 0]]}),
+            "there is no feature F7",
         ),
         (
             json!({"through": ["zzz", [1, 0, 0], [0, 1, 0]]}),
@@ -2388,6 +2393,619 @@ fn datum_axes_are_saved_and_reopened_as_the_same_bodies() {
         "\"about\": 3",
         "\"axis\": 3",
     ] {
+        assert!(text.contains(expected), "{expected} is not in the file");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// -------------------------------------------------------------------- points
+
+fn point(session: &mut Session, params: Value) -> V {
+    let made = built(session, "datum.point", params);
+    assert_eq!(made["datum"]["kind"], "point", "{made}");
+    vector(&made["datum"]["at"])
+}
+
+/// Every way of placing a datum point puts it where the closed form
+/// says, a plane and an axis go through datum points, and all of it
+/// follows what the points are placed by.
+#[test]
+fn a_datum_point_lies_where_its_definition_puts_it() {
+    for k in SCALES {
+        let mut s = session();
+        new_document(&mut s, k);
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "up", "expr": 3.0 * k}),
+        );
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "tall", "expr": 5.0 * k}),
+        );
+        built(
+            &mut s,
+            "feature.block",
+            json!({"size": [10.0 * k, 8.0 * k, 6.0 * k], "name": "Base"}),
+        );
+        built(
+            &mut s,
+            "feature.cylinder",
+            json!({"radius": 3.0 * k, "height": "tall", "position": [50.0 * k, 20.0 * k, 0],
+                   "name": "Rod"}),
+        );
+        let slack = 1e-12 * k;
+        let at = point(&mut s, json!({"at": [k, 2.0 * k, "up"], "name": "Free"}));
+        assert_near(at, [k, 2.0 * k, 3.0 * k], 0.0, "free");
+        let at = point(&mut s, json!({"vertex": "F1:vertex(7)", "name": "Corner"}));
+        assert_near(at, [10.0 * k, 8.0 * k, 6.0 * k], 0.0, "corner");
+        // The rims of the rod: its wall (0) against its top (2) and its
+        // bottom (1).
+        let at = point(
+            &mut s,
+            json!({"center": ["F2:face(0)", "F2:face(2)"], "name": "Rim"}),
+        );
+        assert_near(at, [50.0 * k, 20.0 * k, 5.0 * k], slack, "rim");
+        let at = point(
+            &mut s,
+            json!({"center": ["F2:face(1)", "F2:face(0)"], "name": "Foot"}),
+        );
+        assert_near(at, [50.0 * k, 20.0 * k, 0.0], slack, "foot");
+        // A plane through three datum points is the plane through where
+        // they are.
+        built(
+            &mut s,
+            "datum.plane",
+            json!({"through": ["Free", "Corner", "Rim"], "name": "Slant"}),
+        );
+        let frame = |up: f64, tall: f64| -> (V, V, V, V) {
+            let (a, b, c) = (
+                [k, 2.0 * k, up],
+                [10.0 * k, 8.0 * k, 6.0 * k],
+                [50.0 * k, 20.0 * k, tall],
+            );
+            let x = unit(sub(b, a));
+            let n = unit(cross(sub(b, a), sub(c, a)));
+            (a, x, cross(n, x), n)
+        };
+        let size = [2.0 * k, 3.0 * k, 1.5 * k];
+        box_on(&mut s, "Slant", "Chip", size);
+        let expect = |s: &mut Session, up: f64, tall: f64| {
+            let (a, x, y, n) = frame(up, tall);
+            let lies = datum(s, "Slant");
+            assert_near(vector(&lies["origin"]), a, slack, "origin");
+            assert_near(vector(&lies["normal"]), n, 1e-13, "normal");
+            assert_near(vector(&lies["x"]), x, 1e-13, "x");
+            let chip = body(s, "Chip");
+            box_measures(&chip, size, "chip");
+            assert_bbox(&chip, box_corners(a, x, y, n, size), 1e-9 * k, "chip");
+        };
+        expect(&mut s, 3.0 * k, 5.0 * k);
+        assert_sound(&mut s, "chip");
+        // An axis through two datum points, and through a centre given
+        // in place.
+        let lies = axis(&mut s, json!({"through": ["Rim", "Foot"], "name": "Down"}));
+        assert_near(vector(&lies["direction"]), [0.0, 0.0, -1.0], 1e-15, "down");
+        let lies = axis(
+            &mut s,
+            json!({"through": [{"center": ["F2:face(0)", "F2:face(1)"]}, "F1:vertex(0)"],
+                   "name": "Home"}),
+        );
+        assert_near(
+            vector(&lies["origin"]),
+            [50.0 * k, 20.0 * k, 0.0],
+            slack,
+            "home",
+        );
+        assert_near(
+            vector(&lies["direction"]),
+            unit([-50.0, -20.0, 0.0]),
+            1e-15,
+            "home",
+        );
+        // The variable moves the free point, the rod's height its rim:
+        // the plane and the box on it follow both.
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "up", "expr": -4.0 * k}),
+        );
+        expect(&mut s, -4.0 * k, 5.0 * k);
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "tall", "expr": 9.0 * k}),
+        );
+        assert_close(&datum(&mut s, "Rim")["at"][2], 9.0 * k, 1e-12, "rim");
+        expect(&mut s, -4.0 * k, 9.0 * k);
+        assert_sound(&mut s, "moved chip");
+        // The coordinates of a point are a parameter of the feature.
+        built(
+            &mut s,
+            "feature.edit",
+            json!({"feature": "Free", "position": [k, 2.0 * k, "up + 0"]}),
+        );
+        expect(&mut s, -4.0 * k, 9.0 * k);
+        assert_eq!(inspect(&mut s)["ok"], true);
+    }
+}
+
+/// `datum.references` lists what a body offers with the names to use,
+/// and what it lists is what the datums resolve.
+#[test]
+fn the_references_of_a_body_are_listed_with_their_names() {
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    built(
+        &mut s,
+        "feature.block",
+        json!({"size": [10, 8, 6], "name": "Base"}),
+    );
+    built(
+        &mut s,
+        "feature.cylinder",
+        json!({"radius": 3, "height": 5, "position": [50, 20, 0], "name": "Rod"}),
+    );
+    let before = inspect(&mut s);
+    let base = run(&mut s, "datum.references", json!({"feature": "Base"}));
+    assert_eq!(base["vertices"].as_array().unwrap().len(), 8);
+    assert_eq!(base["edges"].as_array().unwrap().len(), 12);
+    assert_eq!(base["axes"], json!([]));
+    assert_eq!(base["truncated"], false);
+    assert_eq!(
+        base["vertices"][6],
+        json!({"name": "F1:vertex(6)", "at": [0.0, 8.0, 6.0]})
+    );
+    assert!(
+        base["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e["kind"] == "line")
+    );
+    let rod = run(&mut s, "datum.references", json!({"feature": "Rod"}));
+    assert_eq!(
+        rod["axes"],
+        json!([{"face": "F2:face(0)", "origin": [50.0, 20.0, 0.0], "direction": [0.0, 0.0, 1.0]}])
+    );
+    let rims: Vec<&Value> = rod["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["kind"] == "circle")
+        .collect();
+    assert_eq!(rims.len(), 2, "{rod}");
+    // Every listed vertex, edge and axis is one a datum finds again,
+    // where the listing says it is.
+    for vertex in base["vertices"].as_array().unwrap() {
+        let at = point(&mut s, json!({"vertex": vertex["name"]}));
+        assert_near(at, vector(&vertex["at"]), 0.0, "vertex");
+    }
+    for rim in rims {
+        let at = point(&mut s, json!({"center": rim["between"]}));
+        assert_near(at, vector(&rim["center"]), 1e-12, "rim");
+        assert_eq!(rim["radius"], 3.0);
+    }
+    for edge in base["edges"].as_array().unwrap() {
+        let lies = axis(&mut s, json!({"edge": edge["between"]}));
+        assert!(off_axis(&lies, vector(&edge["from"])) <= 1e-12, "{edge}");
+        assert!(off_axis(&lies, vector(&edge["to"])) <= 1e-12, "{edge}");
+    }
+    // A swept body names its vertices after the sketch points they came
+    // from.
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"name": "Profile", "plane": "yz", "offset": 30}),
+    );
+    rectangle(&mut s, "Profile", (0.0, 4.0), (0.0, 3.0));
+    built(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "Profile", "distance": 7, "name": "Bar"}),
+    );
+    let bar = run(&mut s, "datum.references", json!({"feature": "Bar"}));
+    let corners = bar["vertices"].as_array().unwrap();
+    assert_eq!(corners.len(), 8);
+    for vertex in corners {
+        let name = vertex["name"].as_str().unwrap();
+        assert!(name.contains("Vertex("), "{name}");
+        let at = point(&mut s, json!({"vertex": name}));
+        assert_near(at, vector(&vertex["at"]), 0.0, name);
+    }
+    // After a boolean only faces have names: no vertices are listed, a
+    // vertex of an operand is refused with the reason, and what is
+    // referred to by faces is still found.
+    built(
+        &mut s,
+        "feature.block",
+        json!({"size": [20, 20, 2], "position": [40, 10, 0], "name": "Plate"}),
+    );
+    let plate = feature(&mut s, "Plate")["id"].as_str().unwrap().to_string();
+    let joined = built(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "union", "target": "Plate", "tool": "Rod", "name": "Stand"}),
+    );
+    let stand = joined["id"].as_str().unwrap().to_string();
+    let listed = run(&mut s, "datum.references", json!({"feature": "Stand"}));
+    assert_eq!(listed["vertices"], json!([]));
+    let reason = failed(
+        &mut s,
+        "datum.point",
+        json!({"vertex": format!("{stand}:copy(0)/{plate}:vertex(7)"), "name": "Lost corner"}),
+    );
+    assert_eq!(
+        reason,
+        "at: the vertices of `Stand` have no names: a boolean and a pattern whose instances are joined name only their faces"
+    );
+    let wall = format!("{stand}:copy(1)/F2:face(0)");
+    let top = format!("{stand}:copy(1)/F2:face(2)");
+    let at = point(&mut s, json!({"center": [wall, top], "name": "Top rim"}));
+    assert_near(at, [50.0, 20.0, 5.0], 1e-12, "the rim after the union");
+    let lies = axis(&mut s, json!({"face": wall, "name": "Stand axis"}));
+    assert!(off_axis(&lies, [50.0, 20.0, 3.0]) <= 1e-12);
+    // The top of the plate and its right side still meet in an edge.
+    let lies = axis(
+        &mut s,
+        json!({"edge": [format!("{stand}:copy(0)/{plate}:face(1)"),
+                        format!("{stand}:copy(0)/{plate}:face(5)")]}),
+    );
+    assert!(off_axis(&lies, [60.0, 10.0, 2.0]) <= 1e-12);
+    assert_near(
+        vector(&lies["direction"]),
+        [0.0, 1.0, 0.0],
+        0.0,
+        "z cross x",
+    );
+    // What has no body lists nothing.
+    for (params, expected) in [
+        (json!({"feature": "Profile"}), "`Profile` has no body"),
+        (json!({"feature": "Top rim"}), "`Top rim` has no body"),
+        (
+            json!({"feature": "Nope"}),
+            "there is no feature named `Nope`",
+        ),
+        (json!({}), "missing parameter `feature`"),
+    ] {
+        let reason = refused(&mut s, "datum.references", params.clone());
+        assert!(reason.contains(expected), "{params}: {reason}");
+    }
+    let _ = before;
+}
+
+/// A lost point fails what goes through it, with the point's name.
+#[test]
+fn a_lost_point_fails_what_goes_through_it_and_nothing_else() {
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    built(
+        &mut s,
+        "feature.cylinder",
+        json!({"radius": 3, "height": 5, "position": [50, 20, 0], "name": "Rod"}),
+    );
+    built(
+        &mut s,
+        "datum.point",
+        json!({"center": ["F1:face(0)", "F1:face(2)"], "name": "Rim"}),
+    );
+    built(
+        &mut s,
+        "datum.point",
+        json!({"at": [0, 0, 1], "name": "Free"}),
+    );
+    built(
+        &mut s,
+        "datum.plane",
+        json!({"through": ["Free", "Rim", [10, 0, 0]], "name": "Slant"}),
+    );
+    built(
+        &mut s,
+        "datum.axis",
+        json!({"through": ["Free", "Rim"], "name": "Line"}),
+    );
+    box_on(&mut s, "Slant", "Chip", [2.0, 3.0, 1.0]);
+    built(
+        &mut s,
+        "feature.block",
+        json!({"size": [1, 1, 1], "position": [-20, 0, 0], "name": "Other"}),
+    );
+    let before = inspect(&mut s);
+    run(&mut s, "feature.delete", json!({"feature": "Rod"}));
+    let error = |s: &mut Session, name: &str| -> String {
+        let found = feature(s, name);
+        assert_eq!(found["status"], "failed", "{found}");
+        found["error"].as_str().unwrap().to_string()
+    };
+    assert_eq!(
+        error(&mut s, "Rim"),
+        "at: there is no feature F1 for F1:face(0) (was it deleted?)"
+    );
+    assert_eq!(
+        error(&mut s, "Slant"),
+        "through.1: `Rim` failed; fix it first"
+    );
+    assert_eq!(
+        error(&mut s, "Line"),
+        "through.1: `Rim` failed; fix it first"
+    );
+    assert_eq!(
+        error(&mut s, "Chip profile"),
+        "plane: `Slant` failed; fix it first"
+    );
+    assert!(error(&mut s, "Chip").contains("`Chip profile` failed"));
+    for name in ["Free", "Other"] {
+        assert_eq!(feature(&mut s, name)["status"], "ok");
+    }
+    // Repaired with coordinates: the same point, the same chip.
+    built(
+        &mut s,
+        "datum.point",
+        json!({"replace": "Rim", "at": [50, 20, 5]}),
+    );
+    let after = inspect(&mut s);
+    assert_eq!(after["ok"], true, "{after}");
+    let chip = |document: &Value| {
+        document["bodies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["name"] == "Chip")
+            .unwrap()
+            .clone()
+    };
+    // (All but the fineness of the mesh its box was measured on, which
+    // follows the size of the whole model.)
+    for key in ["volume", "area", "centroid", "bbox", "faceNames"] {
+        assert_eq!(chip(&after)[key], chip(&before)[key], "{key}");
+    }
+    assert_sound(&mut s, "repaired");
+}
+
+/// What gives no point fails with the reason; what makes no sense is
+/// refused.
+#[test]
+fn what_gives_no_point_fails_or_is_refused() {
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    built(
+        &mut s,
+        "feature.block",
+        json!({"size": [20, 20, 10], "name": "Base"}),
+    );
+    built(
+        &mut s,
+        "feature.cylinder",
+        json!({"radius": 3, "height": 5, "position": [50, 0, 0], "axis": [1, 0, 1],
+               "name": "Rod"}),
+    );
+    built(
+        &mut s,
+        "datum.plane",
+        json!({"from": "xy", "distance": 4, "name": "Shelf"}),
+    );
+    built(
+        &mut s,
+        "datum.point",
+        json!({"at": [1, 2, 3], "name": "Dot"}),
+    );
+    let mut count = 0;
+    let mut fails = |s: &mut Session, command: &str, params: Value, expected: &str| {
+        count += 1;
+        let mut params = params;
+        params["name"] = json!(format!("Bad {count}"));
+        let reason = failed(s, command, params.clone());
+        assert!(reason.contains(expected), "{params}: {reason}");
+    };
+    fails(
+        &mut s,
+        "datum.point",
+        json!({"at": ["1 / 0", 0, 0]}),
+        "at.x",
+    );
+    fails(
+        &mut s,
+        "datum.point",
+        json!({"at": [0, "45 deg", 0]}),
+        "at.y: `45 deg` is a",
+    );
+    fails(
+        &mut s,
+        "datum.point",
+        json!({"at": [0, 0, "1e200 * 1e200"]}),
+        "at",
+    );
+    fails(
+        &mut s,
+        "datum.point",
+        json!({"vertex": "F1:face(1)"}),
+        "F1:face(1) is not a vertex",
+    );
+    fails(
+        &mut s,
+        "datum.point",
+        json!({"vertex": "F1:vertex(8)"}),
+        "`Base` no longer has a vertex F1:vertex(8)",
+    );
+    fails(
+        &mut s,
+        "datum.point",
+        json!({"vertex": "F3:vertex(0)"}),
+        "`Shelf` is a datumPlane, which has no named faces, edges or vertices",
+    );
+    fails(
+        &mut s,
+        "datum.point",
+        json!({"center": ["F1:face(1)", "F1:face(5)"]}),
+        "is a line, not a circle or an arc of one",
+    );
+    fails(
+        &mut s,
+        "datum.point",
+        json!({"center": ["F1:face(0)", "F1:face(1)"]}),
+        "do not meet in an edge",
+    );
+    fails(
+        &mut s,
+        "datum.point",
+        json!({"center": ["F1:face(0)", "F2:face(1)"]}),
+        "are faces of two features (F1 and F2)",
+    );
+    // The same point twice gives no plane and no axis.
+    fails(
+        &mut s,
+        "datum.plane",
+        json!({"through": ["Dot", [1, 2, 3], [9, 9, 9]]}),
+        "points 0 and 1 are the same point",
+    );
+    fails(
+        &mut s,
+        "datum.axis",
+        json!({"through": ["Dot", "Dot"]}),
+        "the two points are the same point",
+    );
+    // On a tilted cylinder the rim is still a circle with a centre.
+    let at = point(
+        &mut s,
+        json!({"center": ["F2:face(0)", "F2:face(2)"], "name": "Tilted rim"}),
+    );
+    let along = mul(unit([1.0, 0.0, 1.0]), 5.0);
+    assert_near(at, add([50.0, 0.0, 0.0], along), 1e-12, "tilted rim");
+    let before = inspect(&mut s);
+    for (command, params, expected) in [
+        (
+            "datum.point",
+            json!({}),
+            "give one of `at`, `vertex`, `center`",
+        ),
+        (
+            "datum.point",
+            json!({"at": [0, 0, 0], "vertex": "F1:vertex(1)"}),
+            "not several",
+        ),
+        ("datum.point", json!({"at": [0, 0]}), "three expressions"),
+        ("datum.point", json!({"at": "Dot"}), "three expressions"),
+        ("datum.point", json!({"vertex": 5}), "must be a vertex name"),
+        ("datum.point", json!({"vertex": "abc"}), "is not a name"),
+        (
+            "datum.point",
+            json!({"center": ["F1:face(1)"]}),
+            "two face names",
+        ),
+        (
+            "datum.point",
+            json!({"at": [0, 0, 0], "replace": "Shelf"}),
+            "`Shelf` is a datumPlane, not a datumPoint",
+        ),
+        (
+            "datum.plane",
+            json!({"through": ["Shelf", [0, 0, 0], [1, 0, 0]]}),
+            "`Shelf` is a datumPlane, not a datumPoint",
+        ),
+        (
+            "datum.plane",
+            json!({"through": [{"centre": []}, [0, 0, 0], [1, 0, 0]]}),
+            "a point given as an object is",
+        ),
+        (
+            "datum.axis",
+            json!({"through": [3, [0, 0, 0]]}),
+            "`Shelf` is a datumPlane, not a datumPoint",
+        ),
+        (
+            "datum.axis",
+            json!({"through": [true, [0, 0, 0]]}),
+            "a point is [x, y, z]",
+        ),
+        (
+            "feature.edit",
+            json!({"feature": "Tilted rim", "position": [0, 0, 0]}),
+            "a datum point at a vertex or a centre has no parameter to change here",
+        ),
+        (
+            "feature.edit",
+            json!({"feature": "Dot", "distance": 1}),
+            "`distance` is not a parameter of a datum point",
+        ),
+        (
+            "sketch.create",
+            json!({"plane": "Dot"}),
+            "`Dot` is a datumPoint, not a datum plane",
+        ),
+    ] {
+        let reason = refused(&mut s, command, params.clone());
+        assert!(reason.contains(expected), "{command} {params}: {reason}");
+    }
+    assert_eq!(inspect(&mut s), before, "a refused command changes nothing");
+    assert_sound_bodies(&mut s);
+}
+
+/// Every kind of datum point, and a plane and an axis through them,
+/// saved and reopened: the same bodies and the same datums.
+#[test]
+fn datum_points_are_saved_and_reopened_as_the_same_bodies() {
+    let dir = workdir("points");
+    let mut s = Session::new(Workspace {
+        read: Access::Root(dir.clone()),
+        write: Access::Root(dir.clone()),
+    });
+    new_document(&mut s, 1.0);
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "up", "expr": "3 mm"}),
+    );
+    built(
+        &mut s,
+        "feature.block",
+        json!({"size": [10, 8, 6], "name": "Base"}),
+    );
+    built(
+        &mut s,
+        "feature.cylinder",
+        json!({"radius": 3, "height": 5, "position": [50, 20, 0], "name": "Rod"}),
+    );
+    built(
+        &mut s,
+        "datum.point",
+        json!({"at": [1, 2, "up"], "name": "Free"}),
+    );
+    built(
+        &mut s,
+        "datum.point",
+        json!({"vertex": "F1:vertex(7)", "name": "Corner"}),
+    );
+    built(
+        &mut s,
+        "datum.point",
+        json!({"center": ["F2:face(0)", "F2:face(2)"], "name": "Rim"}),
+    );
+    built(
+        &mut s,
+        "datum.plane",
+        json!({"through": ["Free", "Corner", {"center": ["F2:face(0)", "F2:face(1)"]}],
+               "name": "Slant"}),
+    );
+    built(
+        &mut s,
+        "datum.axis",
+        json!({"through": ["Rim", "Free"], "name": "Line"}),
+    );
+    box_on(&mut s, "Slant", "Chip", [2.0, 3.0, 1.5]);
+    assert_sound(&mut s, "all points");
+    let before = inspect(&mut s);
+    assert_eq!(before["ok"], true, "{before}");
+    run(&mut s, "file.save", json!({"path": "points.3dcraft"}));
+    run(&mut s, "file.close", json!({}));
+    run(&mut s, "file.open", json!({"path": "points.3dcraft"}));
+    let after = inspect(&mut s);
+    assert_eq!(after["bodies"], before["bodies"]);
+    assert_eq!(after["features"], before["features"]);
+    assert_eq!(before["bodies"].as_array().unwrap().len(), 3);
+    let text =
+        String::from_utf8_lossy(&std::fs::read(dir.join("points.3dcraft")).unwrap()).to_string();
+    for expected in ["\"datumPoint\"", "\"center\"", "\"vertex\"", "\"at\""] {
         assert!(text.contains(expected), "{expected} is not in the file");
     }
     let _ = std::fs::remove_dir_all(&dir);

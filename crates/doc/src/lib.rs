@@ -15,7 +15,9 @@ pub mod datum;
 pub mod name;
 pub mod sketch;
 
-pub use datum::{AxisBy, AxisRef, DatumAxis, DatumPlane, PlaneBy, PlaneRef, PointRef, WorldAxis};
+pub use datum::{
+    AxisBy, AxisRef, DatumAxis, DatumPlane, DatumPoint, PlaneBy, PlaneRef, PointRef, WorldAxis,
+};
 pub use name::{MAX_NAME_DEPTH, MAX_NAME_SOURCES, NameRole, PersistentName};
 
 pub use sketch::{
@@ -454,6 +456,7 @@ pub enum FeatureKind {
     Boolean(Boolean),
     DatumPlane(DatumPlane),
     DatumAxis(DatumAxis),
+    DatumPoint(DatumPoint),
 }
 
 impl FeatureKind {
@@ -474,6 +477,7 @@ impl FeatureKind {
             FeatureKind::Boolean(_) => "boolean",
             FeatureKind::DatumPlane(_) => "datumPlane",
             FeatureKind::DatumAxis(_) => "datumAxis",
+            FeatureKind::DatumPoint(_) => "datumPoint",
         }
     }
 
@@ -483,6 +487,7 @@ impl FeatureKind {
         match self {
             FeatureKind::DatumPlane(_) => "Plane".to_string(),
             FeatureKind::DatumAxis(_) => "Axis".to_string(),
+            FeatureKind::DatumPoint(_) => "Point".to_string(),
             other => {
                 let mut base = other.type_name().to_string();
                 if let Some(first) = base.get_mut(0..1) {
@@ -496,7 +501,10 @@ impl FeatureKind {
     /// True for reference geometry: a feature that makes no body and no
     /// sketch, only something to place other features by.
     pub fn is_datum(&self) -> bool {
-        matches!(self, FeatureKind::DatumPlane(_) | FeatureKind::DatumAxis(_))
+        matches!(
+            self,
+            FeatureKind::DatumPlane(_) | FeatureKind::DatumAxis(_) | FeatureKind::DatumPoint(_)
+        )
     }
 
     /// The features whose bodies this feature is made from, each with
@@ -528,7 +536,8 @@ impl FeatureKind {
             | FeatureKind::Revolve(_)
             | FeatureKind::Boolean(_)
             | FeatureKind::DatumPlane(_)
-            | FeatureKind::DatumAxis(_) => None,
+            | FeatureKind::DatumAxis(_)
+            | FeatureKind::DatumPoint(_) => None,
         }
     }
 
@@ -552,6 +561,7 @@ impl FeatureKind {
             },
             FeatureKind::DatumPlane(datum) => datum.inputs(),
             FeatureKind::DatumAxis(datum) => datum.inputs(),
+            FeatureKind::DatumPoint(datum) => datum.inputs(),
             FeatureKind::Pattern(p) => {
                 let about = match &p.layout {
                     PatternLayout::Circular { about, .. } => *about,
@@ -634,6 +644,7 @@ impl FeatureKind {
             FeatureKind::Boolean(_) => out = Vec::new(),
             FeatureKind::DatumPlane(d) => out = d.exprs(),
             FeatureKind::DatumAxis(d) => out = d.exprs(),
+            FeatureKind::DatumPoint(d) => out = d.exprs(),
             FeatureKind::Pattern(p) => {
                 out = vec![named("count", &p.count)];
                 match &p.layout {
@@ -695,6 +706,7 @@ impl FeatureKind {
             FeatureKind::Boolean(_) => Vec::new(),
             FeatureKind::DatumPlane(d) => d.exprs_mut(),
             FeatureKind::DatumAxis(d) => d.exprs_mut(),
+            FeatureKind::DatumPoint(d) => d.exprs_mut(),
             FeatureKind::Pattern(p) => {
                 let mut out = vec![&mut p.count];
                 match &mut p.layout {
@@ -879,6 +891,7 @@ impl Document {
             let referred = match &feature.kind {
                 FeatureKind::DatumPlane(datum) => datum.names(),
                 FeatureKind::DatumAxis(datum) => datum.names(),
+                FeatureKind::DatumPoint(datum) => datum.names(),
                 _ => Vec::new(),
             };
             for name in referred {
