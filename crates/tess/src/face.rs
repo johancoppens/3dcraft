@@ -2304,6 +2304,11 @@ fn to_plane(uv: Uv, centre: Uv, scale: Uv) -> P2 {
 
 /// The distance from `p` to the segment from `a` to `b`.
 fn distance_to_chord(p: Vec3, a: Vec3, b: Vec3) -> f64 {
+    p.distance(nearest_on_chord(p, a, b))
+}
+
+/// The point of the segment from `a` to `b` nearest to `p`.
+fn nearest_on_chord(p: Vec3, a: Vec3, b: Vec3) -> Vec3 {
     let along = b - a;
     let whole = along.length_squared();
     let s = if positive(whole) {
@@ -2311,8 +2316,16 @@ fn distance_to_chord(p: Vec3, a: Vec3, b: Vec3) -> f64 {
     } else {
         0.0
     };
-    p.distance(a + along * s)
+    a + along * s
 }
+
+/// How many times its own bulge (how far the surface over the middle of a
+/// chord lies beside the chord, along the surface) another part of the
+/// boundary must keep away from the chord, along the surface, for the
+/// chord to do.
+const NEAR_BULGE: f64 = 4.0;
+/// The part of a chord's length below which a bulge is rounding.
+const SIDE_NOISE: f64 = 1e-9;
 
 impl Boundary<'_> {
     /// The chords of edges that this face needs cut in two, because the
@@ -2330,6 +2343,11 @@ impl Boundary<'_> {
     ///   parallel where the chord cuts across. The limit is twice the
     ///   chordal tolerance: one for the chord's own sag from its curve,
     ///   and one more that the segment's image may be from the curve.
+    /// - chords on a curved surface that another part of the boundary
+    ///   comes nearer to, along the surface, than [`NEAR_BULGE`] times
+    ///   what the chord cuts off beside it: across a strip narrower than
+    ///   that the chord passes the other side of the strip, the first
+    ///   case again, where the parameters show nothing of it.
     ///
     /// In no particular order, and a chord may be named more than once.
     /// Empty for a boundary that is fine, and for what finer chords cannot
@@ -2350,6 +2368,19 @@ impl Boundary<'_> {
             high: P2,
             ends: [P2; 2],
             chord: Option<Chord>,
+            /// In space: the ends, and for a chord on a curved surface
+            /// what it cuts off.
+            pos: [Vec3; 2],
+            bulge: Option<Bulge>,
+        }
+        /// The surface point over the middle of a chord's segment in
+        /// parameter space, the unit normal there, and how far the point
+        /// lies beside the chord, measured along the surface.
+        #[derive(Clone, Copy)]
+        struct Bulge {
+            image: Vec3,
+            normal: Vec3,
+            aside: f64,
         }
         let mut segments: Vec<Segment> = Vec::with_capacity(region.segs.len());
         let mut wanted: Vec<Chord> = Vec::new();
@@ -2360,22 +2391,46 @@ impl Boundary<'_> {
             };
             let chord = curable(region.chords.get(n).copied().flatten());
             any_curable |= chord.is_some();
+            let mut bulge = None;
             if let Some(chord) = chord
                 && !self.param.is_plane()
             {
                 let ([pa, pb], [qa, qb]) = (p.uv, q.uv);
-                let image = self.param.eval([0.5 * (pa + qa), 0.5 * (pb + qb)]);
-                if exceeds(distance_to_chord(image, p.pos, q.pos), 2.0 * tolerance) {
+                let middle = [0.5 * (pa + qa), 0.5 * (pb + qb)];
+                let image = self.param.eval(middle);
+                let off = distance_to_chord(image, p.pos, q.pos);
+                if exceeds(off, 2.0 * tolerance) {
                     wanted.push(chord);
+                }
+                // How far the surface there lies beside the chord, along
+                // the surface: a chord of a rim is off a cylinder by its
+                // sag, towards the axis, and beside nothing; one that
+                // cuts the corner of a curve in the surface is beside it.
+                let (_, [da, db]) = self.param.derivatives(middle);
+                if let Some(normal) = da.cross(db).normalized() {
+                    let along = |v: Vec3| (v - normal * v.dot(normal)).length();
+                    let aside = along(image - nearest_on_chord(image, p.pos, q.pos));
+                    if aside.is_finite() && aside > SIDE_NOISE * p.pos.distance(q.pos) {
+                        bulge = Some(Bulge {
+                            image,
+                            normal,
+                            aside,
+                        });
+                    }
                 }
             }
             let a = to_plane(p.uv, self.centre, self.scale);
             let b = to_plane(q.uv, self.centre, self.scale);
+            // (The plane is scaled to lengths in space, so the reach of a
+            // bulge there is about its reach in space.)
+            let reach = bulge.map_or(0.0, |bulge| NEAR_BULGE * bulge.aside);
             segments.push(Segment {
-                low: (a.0.min(b.0), a.1.min(b.1)),
-                high: (a.0.max(b.0), a.1.max(b.1)),
+                low: (a.0.min(b.0) - reach, a.1.min(b.1) - reach),
+                high: (a.0.max(b.0) + reach, a.1.max(b.1) + reach),
                 ends: [a, b],
                 chord,
+                pos: [p.pos, q.pos],
+                bulge,
             });
         }
         if any_curable {
@@ -2399,6 +2454,27 @@ impl Boundary<'_> {
                     if seam_blocked([a.0, a.1], [b.0, b.1], [c.0, c.1], [d.0, d.1]) {
                         wanted.extend(first.chord);
                         wanted.extend(second.chord);
+                    }
+                    // The same in space. A chord that cuts across a strip
+                    // narrower than its own bulge passes the other side
+                    // of the strip, and the triangles between the two
+                    // face backwards, however the two lie in parameter
+                    // space (straight and apart, on a strip along a
+                    // border of a patch). Measured along the surface:
+                    // what lies beside the chord there, not over it.
+                    let apart = [a, b].iter().all(|end| !c.eq(end) && !d.eq(end));
+                    if apart {
+                        for (one, other) in [(first, second), (second, first)] {
+                            let (Some(bulge), [from, to]) = (one.bulge, other.pos) else {
+                                continue;
+                            };
+                            let across = nearest_on_chord(bulge.image, from, to) - bulge.image;
+                            let beside =
+                                (across - bulge.normal * across.dot(bulge.normal)).length();
+                            if beside < NEAR_BULGE * bulge.aside {
+                                wanted.extend(one.chord);
+                            }
+                        }
                     }
                 }
             }

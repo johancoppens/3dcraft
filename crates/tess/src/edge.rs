@@ -137,14 +137,16 @@ pub(crate) struct EdgeSamples {
 }
 
 /// How many points an edge may grow to by cutting chords, given how many
-/// it had for its own curve: four times as many (every chord cut twice,
-/// which is what a loop close to a pole may need) and 32 more (one chord
-/// cut again and again, which is what an edge needs where another comes
-/// near). It keeps the work on a body that makes no sense within a small
-/// multiple of the work on one that does: there, cutting cures nothing
-/// and every face would ask for every chord in every round.
+/// it had for its own curve: sixteen times as many (every chord cut four
+/// times: twice is what a loop close to a pole may need, four times what
+/// a strip a thousandth of the tolerance wide needs along its whole
+/// length, each cut bringing a chord four times nearer to its curve) and
+/// 32 more (one chord cut again and again, which is what an edge needs
+/// where another comes near). It keeps the work on a body that makes no
+/// sense within a multiple of the work on one that does: there, cutting
+/// cures nothing and every face would ask for every chord in every round.
 fn most_points(first: usize) -> usize {
-    first.saturating_mul(4).saturating_add(32)
+    first.saturating_mul(16).saturating_add(32)
 }
 
 impl EdgeSamples {
@@ -551,8 +553,8 @@ mod tests {
             assert_eq!(samples.points[1].len(), 3);
             assert!(samples.points[1][1].distance(a.lerp(b, 0.5)) < 1e-12);
 
-            // Asking for every chord again and again stops at four times
-            // the first number of points and 32 more.
+            // Asking for every chord again and again stops at sixteen
+            // times the first number of points and 32 more.
             let mut rounds = 0;
             loop {
                 let all: Vec<Chord> = (0..samples.points[0].len() as u32)
@@ -564,7 +566,7 @@ mod tests {
                 rounds += 1;
                 assert!(rounds < 100);
             }
-            assert_eq!(samples.points[0].len(), 4 * n + 32);
+            assert_eq!(samples.points[0].len(), 16 * n + 32);
             assert_eq!(samples.points[0][0], before[0][0]);
             assert_eq!(samples.points[0].last(), before[0].last());
             // And at what `max_segments` allows, when that is less.

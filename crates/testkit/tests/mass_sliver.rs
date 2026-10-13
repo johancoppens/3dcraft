@@ -143,3 +143,55 @@ fn a_small_solid_far_from_the_origin_is_measured_as_well_as_at_it() {
         }
     }
 }
+
+/// The sliver and the cone it was cut from are meshed at any tolerance,
+/// also one ten thousand times the sliver's thickness. Its face on the
+/// roof is a strip 1e-5 wide along a border of the patch: straight and
+/// 5e-6 apart in the patch's parameters, where nothing crosses, and
+/// curved in space, where a chord of one side passes the other side by
+/// 2.6e-4 at a tolerance of 1e-2. The triangles between the two then
+/// faced backwards, cutting them cured nothing, and the tessellator gave
+/// up as "needs about 2050 segments" at every tolerance but 1e-5 (until
+/// 2026-10-13). A chord now also asks to be cut when another part of the
+/// boundary is nearer to it in space than four times its own bulge.
+#[test]
+fn a_sliver_is_meshed_at_tolerances_far_above_its_thickness() {
+    use craft3d_tess::{TessParams, tessellate_body};
+    let tol = Tolerance::new(1e-6, 1e-9).unwrap();
+    let cone = primitives::cone(
+        &Frame::new(Vec3::new(2.0, 1.625, 0.0), Vec3::Z, Vec3::X).unwrap(),
+        1.5,
+        1.625,
+    )
+    .unwrap();
+    let frame = Frame::new(
+        Vec3::new(2.75, 1.0125000000000002, -1.99999),
+        Vec3::Y,
+        -Vec3::X,
+    )
+    .unwrap();
+    for nurbs in [false, true] {
+        let dome = domed_block(&frame, 1.5, 2.0, 1.75, nurbs).unwrap();
+        for op in [BooleanOp::Intersect, BooleanOp::Subtract] {
+            let body = boolean(&cone, &dome.body, op, &tol).unwrap().body;
+            let mass = mass_properties(&body).unwrap();
+            for chord in [1e-1, 1e-2, 1e-3, 1e-4, 1e-5] {
+                let params = TessParams {
+                    chordal_tolerance: chord,
+                    ..TessParams::default()
+                };
+                let mesh = tessellate_body(&body, &params)
+                    .unwrap_or_else(|e| panic!("{op:?} nurbs {nurbs} at {chord:e}: {e}"));
+                let welded = mesh.weld().unwrap();
+                assert!(welded.is_closed(), "{op:?} nurbs {nurbs} at {chord:e}");
+                // A mesh within `chord` of the faces encloses their
+                // volume to within their area times that.
+                let off = (welded.volume() - mass.volume).abs();
+                assert!(
+                    off <= chord * mass.area,
+                    "{op:?} nurbs {nurbs} at {chord:e}: volume off by {off:e}"
+                );
+            }
+        }
+    }
+}
