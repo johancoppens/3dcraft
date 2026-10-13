@@ -468,6 +468,30 @@ fn run_builds_a_part_that_info_render_and_convert_read() {
         "{exported}"
     );
 
+    // convert to STEP: the exact geometry, as text.
+    let step = path(&dir, "part.step");
+    let exported = cli(&["convert", &part, &step]).ok().json_lines().remove(0);
+    assert_eq!(exported["format"], "step", "{exported}");
+    assert_eq!(exported["bodies"], exported["solids"], "{exported}");
+    let text = std::fs::read_to_string(&step).unwrap();
+    assert!(text.starts_with("ISO-10303-21;\nHEADER;"));
+    assert!(text.ends_with("ENDSEC;\nEND-ISO-10303-21;\n"));
+    assert_eq!(
+        text.matches("MANIFOLD_SOLID_BREP(").count() as u64,
+        exported["solids"].as_u64().unwrap()
+    );
+    assert_eq!(
+        exported["bytes"].as_u64().unwrap() as usize,
+        text.len(),
+        "{exported}"
+    );
+    let ran = cli(&["convert", &part, &step, "--tolerance", "0.1"]).failed(2);
+    assert!(
+        ran.stderr.contains("not to .3dcraft or STEP"),
+        "{}",
+        ran.stderr
+    );
+
     // convert to .3dcraft: the same document again.
     let copy = path(&dir, "copy.3dcraft");
     cli(&["convert", &part, &copy]).ok();
@@ -640,9 +664,10 @@ fn files_that_cannot_be_read_or_written_fail_with_exit_code_1() {
     std::fs::write(&junk, b"PK\x03\x04 this is not a document").unwrap();
     cli(&["info", &junk]).failed(1);
     // An extension no exporter knows: the engine names the ones it does.
-    let ran = cli(&["convert", &part, &path(&dir, "part.step")]).failed(1);
+    let ran = cli(&["convert", &part, &path(&dir, "part.dxf")]).failed(1);
     assert!(ran.stderr.contains(".stl"), "{}", ran.stderr);
-    assert!(!dir.join("part.step").exists());
+    assert!(ran.stderr.contains(".step"), "{}", ran.stderr);
+    assert!(!dir.join("part.dxf").exists());
     // A directory that does not exist.
     cli(&["convert", &part, &path(&dir, "no/such/dir/part.stl")]).failed(1);
     // Values the engine refuses.

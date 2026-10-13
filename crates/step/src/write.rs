@@ -305,7 +305,11 @@ pub fn write(file: &StepFile) -> Result<String, WriteError> {
                 }
                 out.text.push('(');
                 for (i, record) in records.iter().enumerate() {
-                    if i > 0 {
+                    // A new line once the line is well filled.
+                    if i > 0 && out.text.len().saturating_sub(out.line_start) > 48 {
+                        out.end_line();
+                        out.text.push_str("  ");
+                    } else if i > 0 {
                         out.text.push(' ');
                     }
                     push_record(&mut out, record, id)?;
