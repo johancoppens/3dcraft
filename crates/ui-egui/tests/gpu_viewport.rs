@@ -1148,3 +1148,233 @@ fn a_window_without_a_render_state_or_asking_for_the_cpu_does_not_draw_directly(
     assert!(direct.renderer_report().direct);
     assert!(direct.renderer_report().describe().contains("direct"));
 }
+
+// ------------------------------------------------------- pointing (M8.5)
+
+/// The faces of `scene` a view shows, with a pixel well inside each.
+fn visible_faces(frame: &Frame) -> Vec<(u32, [u32; 2])> {
+    let (w, h) = (frame.width as i64, frame.height as i64);
+    let at = |x: i64, y: i64| frame.ids[(y * w + x) as usize];
+    let mut inside: std::collections::BTreeMap<u32, Vec<[u32; 2]>> = Default::default();
+    for y in 3..h - 3 {
+        for x in 3..w - 3 {
+            let id = at(x, y);
+            if id != NO_FACE && (-3..=3).all(|dy| (-3..=3).all(|dx| at(x + dx, y + dy) == id)) {
+                inside.entry(id).or_default().push([x as u32, y as u32]);
+            }
+        }
+    }
+    inside
+        .into_iter()
+        .map(|(id, pixels)| (id, pixels[pixels.len() / 2]))
+        .collect()
+}
+
+/// A highlighted face is the same face, in the same colour, whichever
+/// renderer shades the viewport: the read-back GPU path against the CPU
+/// path, within the tolerance of docs/architecture.md §7.2.
+#[test]
+fn a_highlighted_face_looks_the_same_from_the_gpu_and_from_the_cpu() {
+    let mut session = part();
+    let scene = scene(&mut session, SceneQuality::Automatic);
+    let tokens = Tokens::default();
+    let quality = image_quality_for(Backend::Gpu, [640, 480], false, 8192);
+    let mut gpu = gpu();
+    let adapter = gpu.report().adapter.clone().unwrap();
+    let mut cpu = BodyRenderer::cpu();
+    let camera = camera(&scene, ProjectionKind::Perspective, quality);
+    let (plain, _) = cpu.render(Some(&scene), &camera, quality, &tokens).unwrap();
+    let faces = visible_faces(&plain);
+    assert!(faces.len() >= 6, "{} faces in view", faces.len());
+    let mut log = format!("adapter: {adapter}\n");
+    for (round, &(id, [x, y])) in faces.iter().enumerate() {
+        let (body, index) = scene.face_of(id).unwrap();
+        let name = &body.face_names[index];
+        let highlight = viewport::face_highlight(Some(&scene), Some(&body.feature), name, &tokens);
+        assert!(highlight.contains(id), "{name}");
+        cpu.set_highlight(highlight);
+        gpu.set_highlight(highlight);
+        let (cpu_frame, _) = cpu.render(Some(&scene), &camera, quality, &tokens).unwrap();
+        let (gpu_frame, made_by) = gpu.render(Some(&scene), &camera, quality, &tokens).unwrap();
+        assert_eq!(made_by, Backend::Gpu, "{}", gpu.report().describe());
+        let (parity, _) = compare(&scene.mesh, &camera.to_render(), &cpu_frame, &gpu_frame);
+        let label = format!("highlight of {name} of {} on {adapter}", body.name);
+        log.push_str(&format!("{label}: {parity:?}\n"));
+        parity.check(&label);
+        // The highlight is in both pictures, where the face is: there the
+        // picture is not the plain one, and it is the token's hue.
+        let i = ((y * quality.width + x) * 3) as usize;
+        for (which, frame) in [("cpu", &cpu_frame), ("gpu", &gpu_frame)] {
+            let [r, g, b] = [frame.rgb[i], frame.rgb[i + 1], frame.rgb[i + 2]].map(i32::from);
+            assert!(
+                g > 2 * r && b > 2 * r,
+                "{label}: {which} has ({r}, {g}, {b})"
+            );
+            assert_ne!(frame.rgb[i..i + 3], plain.rgb[i..i + 3], "{label}: {which}");
+        }
+        if round == 1 {
+            for (suffix, frame) in [("cpu", &cpu_frame), ("gpu", &gpu_frame)] {
+                let path = evidence(&format!("pointing-highlight-{suffix}.png"));
+                write_png(&path, quality.width, quality.height, &frame.rgb);
+                println!("evidence: {}", path.display());
+            }
+        }
+    }
+    // And without one the GPU draws the plain picture again.
+    cpu.set_highlight(craft3d_render::Highlight::NONE);
+    gpu.set_highlight(craft3d_render::Highlight::NONE);
+    let (gpu_plain, _) = gpu.render(Some(&scene), &camera, quality, &tokens).unwrap();
+    compare(&scene.mesh, &camera.to_render(), &plain, &gpu_plain)
+        .0
+        .check("no highlight");
+    std::fs::write(evidence("pointing-highlight-parity.txt"), log).unwrap();
+}
+
+/// The window's own path: a click in a viewport drawn directly by the GPU
+/// picks the face the id buffer has there, and the face is highlighted in
+/// the picture on the window's device as it is in the oracle's.
+#[test]
+fn a_click_in_the_direct_viewport_picks_and_highlights_what_the_oracle_shows() {
+    let state = headless_render_state()
+        .unwrap_or_else(|e| panic!("the direct path cannot be tested: {e}; {ADAPTER_HINT}"));
+    let mut session = part();
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let tokens = shell.tokens;
+    shell.attach_gpu(&state).unwrap();
+    assert!(shell.draws_directly());
+    let mut window = Window::new(1000.0, 700.0);
+    window.frame(&mut shell, &mut session, Vec::new());
+    window.frame(&mut shell, &mut session, Vec::new());
+    let [w, h] = shell.viewport_size();
+    let rect = shell.viewport_rect().unwrap();
+    let scene = scene(&mut session, shell.scene_quality());
+    let camera = shell.state.camera;
+    let quality = Quality {
+        width: w,
+        height: h,
+        ssaa: 1,
+    };
+    let plain = viewport::render_bodies(Some(&scene), &camera, quality, &tokens).unwrap();
+    let (_, _, direct_plain) = shell.direct_picture().unwrap().unwrap();
+    let render_camera = camera.to_render();
+    let band = common::band(&scene.mesh, &render_camera, &plain);
+    let lines = near_lines(
+        &viewport::overlay(Some(&scene), &camera, w, h, None),
+        w,
+        h,
+        3.5,
+    );
+    let faces = visible_faces(&plain);
+    assert!(faces.len() >= 6, "{} faces in view", faces.len());
+    let mut renders = shell.render_count();
+    for (round, &(id, [x, y])) in faces.iter().enumerate() {
+        let (body, index) = scene.face_of(id).unwrap();
+        let name = body.face_names[index].clone();
+        let at = pos2(rect.left() + x as f32 + 0.5, rect.top() + y as f32 + 0.5);
+        window.frame(&mut shell, &mut session, vec![Event::PointerMoved(at)]);
+        for pressed in [true, false] {
+            window.frame(
+                &mut shell,
+                &mut session,
+                vec![Event::PointerButton {
+                    pos: at,
+                    button: PointerButton::Primary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+        }
+        window.frame(&mut shell, &mut session, Vec::new());
+        window.frame(&mut shell, &mut session, Vec::new());
+        assert_eq!(shell.state.camera, camera);
+        // The pick is the id buffer's face, by the name inspect gives it.
+        let picked = shell.state.picked.clone().unwrap();
+        assert_eq!(picked.face.as_deref(), Some(name.as_str()), "({x}, {y})");
+        assert_eq!(picked.feature.as_deref(), Some(body.feature.as_str()));
+        let inspect = run(&mut session, "document.inspect", json!({}));
+        let listed = inspect["bodies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["feature"] == body.feature.as_str())
+            .unwrap();
+        assert_eq!(listed["faceNames"][index], name.as_str());
+        // The viewport was drawn again, by the GPU, with the highlight.
+        assert!(
+            shell.render_count() > renders,
+            "the click redrew the viewport"
+        );
+        renders = shell.render_count();
+        assert_eq!(shell.render_stats().unwrap().renderer, Backend::Gpu);
+        let (_, _, direct) = shell.direct_picture().unwrap().unwrap();
+        // The oracle: the CPU picture of the same state with the same
+        // highlight, one sample per pixel.
+        let highlight = shell.face_highlight(Some(&scene));
+        assert!(highlight.contains(id));
+        let mut cpu = BodyRenderer::cpu();
+        cpu.set_highlight(highlight);
+        let (oracle, _) = cpu.render(Some(&scene), &camera, quality, &tokens).unwrap();
+        // Away from every edge and line the two pictures agree to a level
+        // plus a pixel of gradient (a multisampled pixel on a seam mixes
+        // two fragments), and what the highlight changed, it changed in
+        // both.
+        let (wu, hu) = (w as usize, h as usize);
+        let (mut compared, mut over, mut marked, mut marked_both) = (0, 0, 0, 0);
+        for i in 0..wu * hu {
+            if band[i] || lines[i] {
+                continue;
+            }
+            let p = [(i % wu) as f64, (i / wu) as f64];
+            let mut gradient = 0;
+            for (dx, dy) in [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)] {
+                let n = [p[0] + dx, p[1] + dy];
+                if n[0] >= 0.0 && n[1] >= 0.0 && n[0] < w as f64 && n[1] < h as f64 {
+                    gradient =
+                        gradient.max(levels(pixel(&oracle.rgb, w, p), pixel(&oracle.rgb, w, n)));
+                }
+            }
+            compared += 1;
+            let diff = levels(pixel(&oracle.rgb, w, p), pixel(&direct, w, p));
+            over += usize::from(u32::from(diff) > 1 + u32::from(gradient));
+            if pixel(&oracle.rgb, w, p) != pixel(&plain.rgb, w, p) {
+                marked += 1;
+                marked_both +=
+                    usize::from(levels(pixel(&direct, w, p), pixel(&direct_plain, w, p)) > 4);
+            } else {
+                // What the highlight left alone on the CPU is what the GPU
+                // drew before the click.
+                assert!(
+                    levels(pixel(&direct, w, p), pixel(&direct_plain, w, p)) <= 1,
+                    "{name}: pixel {p:?} changed on the GPU only"
+                );
+            }
+        }
+        assert!(compared > wu * hu / 3, "{compared}");
+        assert_eq!(
+            over, 0,
+            "{name}: colours differ away from every edge and line"
+        );
+        assert!(marked > 20, "{name}: {marked} pixels are highlighted");
+        assert!(
+            marked_both * 100 >= marked * 98,
+            "{name}: {marked_both} of {marked} highlighted pixels are highlighted on the GPU"
+        );
+        if round == 1 {
+            for (suffix, rgb) in [("direct", &direct), ("oracle", &oracle.rgb)] {
+                let path = evidence(&format!("pointing-click-{suffix}.png"));
+                write_png(&path, w, h, rgb);
+                println!("evidence: {}", path.display());
+            }
+        }
+    }
+    // ui.highlight with null clears it on the device too.
+    call(
+        &mut shell,
+        &mut session,
+        "ui.highlight",
+        json!({"face": null}),
+    );
+    window.frame(&mut shell, &mut session, Vec::new());
+    let (_, _, cleared) = shell.direct_picture().unwrap().unwrap();
+    assert_eq!(cleared, direct_plain);
+}

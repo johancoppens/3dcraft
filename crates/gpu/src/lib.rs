@@ -74,7 +74,9 @@ pub use renderer::Renderer;
 pub use offscreen::{adapters, render};
 
 // The types of the shared interface, so a caller needs one import.
-pub use craft3d_render::{Camera, Frame, NO_FACE, Projection, RenderError, RenderParams};
+pub use craft3d_render::{
+    Camera, Frame, Highlight, NO_FACE, Projection, RenderError, RenderParams,
+};
 pub use craft3d_tess::Mesh;
 
 use std::fmt;

@@ -14,6 +14,10 @@ pub struct Tokens {
     pub viewport_background: Rgb,
     /// The base colour of a shaded body.
     pub body: Rgb,
+    /// The base colour of a highlighted face: the one that was clicked,
+    /// or the one an agent points at (`ui.highlight`). Shaded like the
+    /// body, so the face keeps its shape.
+    pub face_highlight: Rgb,
     /// Sketch geometry that is part of a profile.
     pub sketch: Rgb,
     /// Construction geometry of a sketch.
@@ -71,6 +75,7 @@ impl Tokens {
         Self {
             viewport_background: [30, 33, 40],
             body: [198, 204, 214],
+            face_highlight: [64, 196, 212],
             sketch: [255, 196, 64],
             sketch_construction: [110, 170, 235],
             sketch_selected: [255, 120, 80],

@@ -20,6 +20,10 @@ pub const MAX_FOV: f64 = 120.0;
 pub const MAX_NOTICE_CHARS: usize = 200;
 /// Longest feature reference kept as the selection.
 pub const MAX_SELECTION_CHARS: usize = 128;
+/// Longest persistent name kept in a highlight or a pick. A name is a
+/// chain of where the face came from and grows with every copy and
+/// boolean it went through.
+pub const MAX_FACE_NAME_CHARS: usize = 4096;
 /// The display quality's chordal tolerance, as a fraction of the model's
 /// size, is clamped to this range: at 1e-7 of the size a circle the size
 /// of the model needs more segments than the tessellator allows on an
@@ -154,6 +158,44 @@ impl Default for Panels {
     }
 }
 
+/// A face of a body, the way `document.inspect` says it: the feature that
+/// made the body and the face's persistent name.
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct FaceRef {
+    /// The feature of the body, by id (`F3`) or by name. `None` looks in
+    /// every body, which works while only one has a face of that name.
+    pub feature: Option<String>,
+    /// The persistent name (`faceNames` of `document.inspect`), or one of
+    /// the face's aliases.
+    pub face: String,
+}
+
+/// The last click in the viewport, or the last `ui.pick` that asked to be
+/// taken as one: where it was and what was under it. An agent reads here
+/// what the developer pointed at.
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct Picked {
+    /// How many picks there have been in this window, this one included:
+    /// it moves with every click, also one that hits the same face or
+    /// nothing.
+    pub serial: u64,
+    /// Where, in viewport pixels from the top-left corner.
+    pub x: f64,
+    pub y: f64,
+    /// The feature of the body under it (`F3`) and that feature's name;
+    /// `None` when nothing was under it.
+    pub feature: Option<String>,
+    pub name: Option<String>,
+    /// The face's persistent name, as `document.inspect` lists it.
+    pub face: Option<String>,
+    /// The face's place in `faceNames` of its body.
+    pub face_index: Option<u64>,
+    /// The point under it, in model coordinates.
+    pub point: Option<[f64; 3]>,
+}
+
 /// Everything the shell remembers that is not in a document.
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields, default)]
@@ -166,6 +208,14 @@ pub struct UiState {
     pub notice: String,
     /// How finely the viewport's mesh follows the model.
     pub quality: DisplayQuality,
+    /// The face shown highlighted in the viewport: the one that was
+    /// clicked last, or the one an agent pointed at (`ui.highlight`, or
+    /// `ui.set`). It is dropped when no body has a face of that name any
+    /// more.
+    pub highlight: Option<FaceRef>,
+    /// The last click in the viewport. Read-only over the control channel:
+    /// `ui.pick` with `select` makes one.
+    pub picked: Option<Picked>,
 }
 
 fn finite(name: &str, value: f64) -> Result<f64, String> {
@@ -241,6 +291,16 @@ impl UiState {
             .selected_feature
             .map(|id| cut(&id, MAX_SELECTION_CHARS))
             .filter(|id| !id.is_empty());
+        self.highlight = self
+            .highlight
+            .map(|face| FaceRef {
+                feature: face
+                    .feature
+                    .map(|id| cut(&id, MAX_SELECTION_CHARS))
+                    .filter(|id| !id.is_empty()),
+                face: cut(&face.face, MAX_FACE_NAME_CHARS),
+            })
+            .filter(|face| !face.face.is_empty());
         Ok(self)
     }
 
@@ -261,6 +321,12 @@ impl UiState {
             };
             turned.camera.set_view(name)?;
         }
+        if patch.contains_key("picked") {
+            return Err(
+                "`picked` is what was clicked in the viewport and cannot be set; ui.pick with `select` makes a pick, ui.highlight (or `highlight` here) points at a face"
+                    .to_string(),
+            );
+        }
         let mut merged = serde_json::to_value(&turned).map_err(|e| e.to_string())?;
         let mut moved_by_hand = false;
         for (key, value) in patch.iter().filter(|(key, _)| *key != "view") {
@@ -270,7 +336,15 @@ impl UiState {
                 moved_by_hand = (camera.contains_key("target") || camera.contains_key("distance"))
                     && !camera.contains_key("autoFit");
             }
-            merge(&mut merged, key, value);
+            if key == "highlight" {
+                // Another face, not the same one with a field changed: a
+                // highlight without `feature` looks in every body.
+                if let Value::Object(map) = &mut merged {
+                    map.insert(key.clone(), value.clone());
+                }
+            } else {
+                merge(&mut merged, key, value);
+            }
         }
         let mut next: UiState = serde_json::from_value(merged).map_err(|e| e.to_string())?;
         if moved_by_hand {
@@ -329,6 +403,20 @@ mod tests {
                 chordal: 1e-4,
                 max_triangles: 500_000,
             },
+            highlight: Some(FaceRef {
+                feature: Some("F3".to_string()),
+                face: "F3:face(2)".to_string(),
+            }),
+            picked: Some(Picked {
+                serial: 4,
+                x: 120.5,
+                y: 80.25,
+                feature: Some("F3".to_string()),
+                name: Some("Post".to_string()),
+                face: Some("F3:face(2)".to_string()),
+                face_index: Some(2),
+                point: Some([1.0, 2.0, 3.5]),
+            }),
         };
         let json = serde_json::to_value(&state).unwrap();
         assert_eq!(
@@ -341,6 +429,10 @@ mod tests {
                 "selectedFeature": "F3",
                 "notice": "Step 2: the post",
                 "quality": {"chordal": 1e-4, "maxTriangles": 500_000},
+                "highlight": {"feature": "F3", "face": "F3:face(2)"},
+                "picked": {"serial": 4, "x": 120.5, "y": 80.25, "feature": "F3",
+                           "name": "Post", "face": "F3:face(2)", "faceIndex": 2,
+                           "point": [1.0, 2.0, 3.5]},
             })
         );
         let back: UiState = serde_json::from_value(json).unwrap();
@@ -644,5 +736,74 @@ mod tests {
         }
         // And a number too large for f64 never becomes a request at all.
         assert!(serde_json::from_str::<Value>(r#"{"camera": {"distance": 1e999}}"#).is_err());
+    }
+
+    #[test]
+    fn a_highlight_is_set_whole_and_a_pick_cannot_be_set() {
+        let mut state = UiState::default();
+        assert_eq!(
+            serde_json::to_value(&state).unwrap()["highlight"],
+            json!(null)
+        );
+        assert_eq!(serde_json::to_value(&state).unwrap()["picked"], json!(null));
+        state
+            .apply_patch(&json!({"highlight": {"feature": "Box", "face": "F1:face(1)"}}))
+            .unwrap();
+        assert_eq!(
+            state.highlight,
+            Some(FaceRef {
+                feature: Some("Box".to_string()),
+                face: "F1:face(1)".to_string()
+            })
+        );
+        // Another face without a feature is not the old feature's.
+        state
+            .apply_patch(&json!({"highlight": {"face": "F2:face(0)"}}))
+            .unwrap();
+        assert_eq!(
+            state.highlight,
+            Some(FaceRef {
+                feature: None,
+                face: "F2:face(0)".to_string()
+            })
+        );
+        // Cleared with null; a face without a name is no highlight.
+        state.apply_patch(&json!({"highlight": null})).unwrap();
+        assert_eq!(state.highlight, None);
+        state
+            .apply_patch(&json!({"highlight": {"feature": "", "face": ""}}))
+            .unwrap();
+        assert_eq!(state.highlight, None);
+        // Texts are cut to their limits.
+        state
+            .apply_patch(
+                &json!({"highlight": {"feature": "f".repeat(9000), "face": "n".repeat(9000)}}),
+            )
+            .unwrap();
+        let kept = state.highlight.clone().unwrap();
+        assert_eq!(kept.feature.unwrap().chars().count(), MAX_SELECTION_CHARS);
+        assert_eq!(kept.face.chars().count(), MAX_FACE_NAME_CHARS);
+        // Wrong shapes are refused and change nothing.
+        let before = state.clone();
+        for bad in [
+            json!({"highlight": "F1:face(1)"}),
+            json!({"highlight": 3}),
+            json!({"highlight": {"face": 3}}),
+            json!({"highlight": {"face": "F1:face(1)", "body": "Box"}}),
+            json!({"highlight": {"feature": 1, "face": "F1:face(1)"}}),
+            json!({"picked": null}),
+            json!({"picked": {"x": 1, "y": 2}}),
+            json!({"notice": "x", "picked": {"serial": 9}}),
+        ] {
+            let error = state.apply_patch(&bad).unwrap_err();
+            assert!(!error.is_empty(), "{bad}");
+            assert_eq!(state, before, "{bad}");
+        }
+        assert!(
+            state
+                .apply_patch(&json!({"picked": null}))
+                .unwrap_err()
+                .contains("cannot be set")
+        );
     }
 }

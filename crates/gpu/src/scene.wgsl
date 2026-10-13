@@ -20,6 +20,15 @@ struct Scene {
     base: vec4<f32>,
     // ambient, diffuse, specular * 255, shininess.
     shade: vec4<f32>,
+    // rgb: the base colour of a highlighted face in 0..255
+    // (`RenderParams::highlight`).
+    highlight: vec4<f32>,
+    // x, y: the ambient term and the diffuse weight of a highlighted face.
+    highlight_shade: vec4<f32>,
+    // The highlighted faces: eight runs of face ids, two per vector, each
+    // as first and last. A run whose first is above its last is empty.
+    // Ids as floats: the renderer refuses a highlight above 2^24.
+    runs: array<vec4<f32>, 4>,
 }
 
 @group(0) @binding(0) var<uniform> scene: Scene;
@@ -109,8 +118,29 @@ fn data_of(in: VertexOut) -> vec2<u32> {
     return vec2<u32>(in.face, bitcast<u32>(in.dist_w * in.clip.w));
 }
 
+// True when the face is one of the highlighted ones.
+fn highlighted(face: u32) -> bool {
+    let id = f32(face);
+    var found = false;
+    for (var k = 0; k < 4; k++) {
+        let run = scene.runs[k];
+        if (id >= run.x && id <= run.y) || (id >= run.z && id <= run.w) {
+            found = true;
+        }
+    }
+    return found;
+}
+
 // The shaded colour of a fragment, as the bytes of the picture over 255.
 fn shade_of(in: VertexOut) -> vec4<f32> {
+    // render(): a highlighted face is shaded from its own base colour.
+    var base = scene.base.rgb;
+    var weights = scene.shade.xy;
+    if highlighted(in.face) {
+        base = scene.highlight.rgb;
+        weights = scene.highlight_shade.xy;
+    }
+
     // View::toward_viewer.
     var to_viewer = -scene.forward.xyz;
     if scene.forward.w > 0.5 {
@@ -135,7 +165,7 @@ fn shade_of(in: VertexOut) -> vec4<f32> {
         }
     }
 
-    var rgb = scene.base.rgb;
+    var rgb = base;
     if has_normal {
         // shade(): two-sided, one light fixed to the camera.
         if dot(n, to_viewer) < 0.0 {
@@ -152,8 +182,8 @@ fn shade_of(in: VertexOut) -> vec4<f32> {
         if len_h > 0.0 {
             specular = powi(max(dot(n, half_vector / len_h), 0.0), u32(scene.shade.w));
         }
-        let intensity = scene.shade.x + scene.shade.y * diffuse;
-        rgb = scene.base.rgb * intensity + vec3<f32>(scene.shade.z * specular);
+        let intensity = weights.x + weights.y * diffuse;
+        rgb = base * intensity + vec3<f32>(scene.shade.z * specular);
     }
     // Rounded here, so the target stores exactly this integer whatever the
     // driver's float-to-unorm conversion does with fractions.

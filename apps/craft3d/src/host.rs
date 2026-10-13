@@ -55,8 +55,31 @@ fn methods() -> &'static [Method] {
     })
 }
 
-/// One MCP message, answered on the window's own session.
-fn mcp_message(session: &mut Session, params: Option<&Value>) -> Result<Value, String> {
+/// The window's methods an MCP client reaches through the tool
+/// `control_call`: the `ui.*` ones, without `ui.quit` (closing the window
+/// the developer is working in is not for a model to decide).
+fn mcp_methods() -> &'static [Method] {
+    static ALL: std::sync::OnceLock<Vec<Method>> = std::sync::OnceLock::new();
+    ALL.get_or_init(|| {
+        UI_METHODS
+            .iter()
+            .filter(|m| m.name != "ui.quit")
+            .map(|m| Method {
+                name: m.name,
+                params: m.params,
+                summary: m.summary,
+            })
+            .collect()
+    })
+}
+
+/// One MCP message, answered on the window's own session and, for the
+/// tool `control_call`, by the window's shell.
+fn mcp_message(
+    session: &mut Session,
+    shell: &mut Shell,
+    params: Option<&Value>,
+) -> Result<Value, String> {
     let line = match params {
         Some(Value::Object(map)) if map.len() == 1 => map.get("line").and_then(Value::as_str),
         _ => None,
@@ -66,7 +89,14 @@ fn mcp_message(session: &mut Session, params: Option<&Value>) -> Result<Value, S
             "mcp.message: its one parameter is `line`, a string holding one MCP message".into(),
         );
     };
-    let reply = craft3d_automation::mcp::handle_line(session, line);
+    let mut handle = |session: &mut Session, method: &str, params: Option<&Value>| {
+        shell.handle_method(session, method, params)
+    };
+    let mut extension = Extension {
+        methods: mcp_methods(),
+        handle: &mut handle,
+    };
+    let reply = craft3d_automation::mcp::handle_line_with(session, line, &mut extension);
     Ok(serde_json::json!({ "reply": reply }))
 }
 
@@ -84,8 +114,13 @@ fn mcp_label(request: &Value) -> Option<String> {
         .get("arguments")
         .and_then(|a| a.get("id"))
         .and_then(Value::as_str);
-    Some(match (tool, command) {
-        ("command_run", Some(command)) => command.to_string(),
+    let method = call
+        .get("arguments")
+        .and_then(|a| a.get("method"))
+        .and_then(Value::as_str);
+    Some(match (tool, command, method) {
+        ("command_run", Some(command), _) => command.to_string(),
+        ("control_call", _, Some(method)) => method.to_string(),
         _ => tool.to_string(),
     })
 }
@@ -218,7 +253,7 @@ impl Host {
                 "auth" => Some(Ok(serde_json::json!({ "authenticated": true }))),
                 #[cfg(test)]
                 "debug.panic" => crate::tests::fall_over(),
-                "mcp.message" => Some(mcp_message(session, params)),
+                "mcp.message" => Some(mcp_message(session, shell, params)),
                 _ => shell.handle_method(session, method, params),
             }
         };

@@ -27,8 +27,18 @@ pub const UI_METHODS: &[UiMethod] = &[
     },
     UiMethod {
         name: "ui.set",
-        params: r#"{"view": "iso|front|back|right|left|top|bottom", "camera": {"target": [x, y, z], "distance": number, "yaw": degrees, "pitch": degrees, "projection": "perspective|orthographic", "fovY": degrees, "autoFit": boolean}, "panels": {"tree": boolean, "status": boolean, "recovery": boolean}, "selectedFeature": id or null, "notice": string, "quality": {"chordal": fraction of the model's size = 3e-5, "maxTriangles": integer = 1000000}}"#,
-        summary: "Changes the fields given and leaves the rest. An unknown field or a wrong type is an error, and then nothing has changed. Numbers out of range are clamped. quality is how finely the viewport's mesh follows the model: a chordal tolerance of chordal times the model's size, coarsened until the scene has at most maxTriangles triangles but never beyond the automatic tolerance view.render uses.",
+        params: r#"{"view": "iso|front|back|right|left|top|bottom", "camera": {"target": [x, y, z], "distance": number, "yaw": degrees, "pitch": degrees, "projection": "perspective|orthographic", "fovY": degrees, "autoFit": boolean}, "panels": {"tree": boolean, "status": boolean, "recovery": boolean}, "selectedFeature": id or null, "notice": string, "quality": {"chordal": fraction of the model's size = 3e-5, "maxTriangles": integer = 1000000}, "highlight": {"feature": id or name, "face": face name} or null}"#,
+        summary: "Changes the fields given and leaves the rest. An unknown field or a wrong type is an error, and then nothing has changed. Numbers out of range are clamped. quality is how finely the viewport's mesh follows the model: a chordal tolerance of chordal times the model's size, coarsened until the scene has at most maxTriangles triangles but never beyond the automatic tolerance view.render uses. highlight is the face shown highlighted (ui.highlight sets it too, and says whether the face exists); picked, the last click, cannot be set.",
+    },
+    UiMethod {
+        name: "ui.pick",
+        params: r#"{"x": number, "y": number, "width": integer = the viewport's, "height": integer = the viewport's, "select": boolean = false}"#,
+        summary: "Says what the viewport shows at a position: the body (feature, name), the face's persistent name as document.inspect lists it under faceNames (with faceIndex and aliases) and the point in space, as the command view.pick does, for the viewport's mesh and camera. x and y are in pixels from the top-left corner of the viewport (the picture ui.screenshot makes; width and height when that picture was made at another size), the centre of pixel (i, j) at (i + 0.5, j + 0.5). hit is false when nothing is there, with outside true when the position is not in the viewport. With select it counts as a click of the mouse: state.picked becomes this pick and the face is highlighted (a pick on nothing clears the highlight). A click in the viewport does the same, so state.picked of ui.get is what the developer pointed at last.",
+    },
+    UiMethod {
+        name: "ui.highlight",
+        params: r#"{"face": face name or null, "feature": id or name = the body that has the face}"#,
+        summary: "Shows a face highlighted in the viewport: face is its persistent name from document.inspect (faceNames, or an alias), feature says which body when several have a face of that name. null removes the highlight. Returns the highlight as it was set (the feature by id), the name of the body and how many faces carry the name (faces; a boolean can cut a face into pieces that keep its name). A name no body has is an error and changes nothing.",
     },
     UiMethod {
         name: "ui.fit",
@@ -120,6 +130,8 @@ impl Shell {
             "ui.set" => self.ui_set(session, params),
             "ui.fit" => self.ui_fit(session, params),
             "ui.screenshot" => self.ui_screenshot(session, params),
+            "ui.pick" => self.ui_pick(session, params),
+            "ui.highlight" => self.ui_highlight(session, params),
             "ui.notice" => self.ui_notice(params),
             "ui.quit" => fields(method, params, &[]).map(|_| {
                 self.request_quit();
@@ -262,6 +274,155 @@ impl Shell {
         Ok(json!({ "notice": self.state.notice }))
     }
 
+    fn ui_pick(&mut self, session: &mut Session, params: Option<&Value>) -> Result<Value, String> {
+        let method = "ui.pick";
+        let map = fields(method, params, &["x", "y", "width", "height", "select"])?;
+        let number = |key: &str| match map.get(key) {
+            None | Some(Value::Null) => Err(format!("{method}: missing parameter `{key}`")),
+            Some(value) => value
+                .as_f64()
+                .filter(|n| n.is_finite())
+                .ok_or_else(|| format!("{method}: `{key}` must be a finite number")),
+        };
+        let (x, y) = (number("x")?, number("y")?);
+        let [viewport_width, viewport_height] = self.viewport_size();
+        let width = side(method, map, "width")?.unwrap_or(viewport_width);
+        let height = side(method, map, "height")?.unwrap_or(viewport_height);
+        let select = match map.get("select") {
+            None | Some(Value::Null) => false,
+            Some(Value::Bool(select)) => *select,
+            Some(_) => return Err(format!("{method}: `select` must be true or false")),
+        };
+        let scene = self.sync(session);
+        let Some(scene) = scene else {
+            return Err(match self.problem() {
+                Some(problem) => format!("{method}: {problem}"),
+                None => format!("{method}: no document is open; run file.new or file.open first"),
+            });
+        };
+        // A click is in the viewport's own pixels.
+        let (px, py) = if select {
+            (
+                x * f64::from(viewport_width) / f64::from(width),
+                y * f64::from(viewport_height) / f64::from(height),
+            )
+        } else {
+            (x, y)
+        };
+        let size = if select {
+            [viewport_width, viewport_height]
+        } else {
+            [width, height]
+        };
+        let picked = self
+            .pick(Some(&scene), px, py, Some(size), select)
+            .map_err(|e| format!("{method}: {e}"))?;
+        let outside = !(x >= 0.0 && y >= 0.0 && x < f64::from(width) && y < f64::from(height));
+        let mut result = json!({
+            "hit": picked.is_some(),
+            "x": x,
+            "y": y,
+            "width": width,
+            "height": height,
+        });
+        if let Some(map) = result.as_object_mut() {
+            match picked {
+                None => {
+                    map.insert("outside".into(), outside.into());
+                }
+                Some(pick) => {
+                    map.insert("feature".into(), pick.feature.into());
+                    map.insert("name".into(), pick.body.into());
+                    map.insert("face".into(), pick.face.map_or(Value::Null, Value::from));
+                    map.insert("faceIndex".into(), pick.face_index.into());
+                    if !pick.aliases.is_empty() {
+                        map.insert("aliases".into(), json!(pick.aliases));
+                    }
+                    map.insert(
+                        "point".into(),
+                        json!([pick.point.x, pick.point.y, pick.point.z]),
+                    );
+                    map.insert("depth".into(), pick.depth.into());
+                }
+            }
+            if select {
+                let state = self.state_json()?;
+                map.insert(
+                    "picked".into(),
+                    state.get("picked").cloned().unwrap_or(Value::Null),
+                );
+                map.insert(
+                    "highlight".into(),
+                    state.get("highlight").cloned().unwrap_or(Value::Null),
+                );
+            }
+        }
+        Ok(result)
+    }
+
+    fn ui_highlight(
+        &mut self,
+        session: &mut Session,
+        params: Option<&Value>,
+    ) -> Result<Value, String> {
+        let method = "ui.highlight";
+        let map = fields(method, params, &["face", "feature"])?;
+        let feature = match map.get("feature") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(feature)) => Some(feature.clone()),
+            // An id may be given as a number, as the commands take it.
+            Some(Value::Number(id)) if id.is_u64() => Some(id.to_string()),
+            Some(_) => {
+                return Err(format!(
+                    "{method}: `feature` must be a feature id (3 or \"F3\") or name"
+                ));
+            }
+        };
+        let face = match map.get("face") {
+            None => {
+                return Err(format!(
+                    "{method}: missing parameter `face`: a face name from document.inspect, or null to remove the highlight"
+                ));
+            }
+            Some(Value::Null) => {
+                if feature.is_some() {
+                    return Err(format!(
+                        "{method}: `feature` says which body has `face`; without a face there is nothing to highlight"
+                    ));
+                }
+                self.state.highlight = None;
+                return Ok(json!({ "highlight": null, "faces": 0 }));
+            }
+            Some(Value::String(face)) => face,
+            Some(_) => return Err(format!("{method}: `face` must be a face name or null")),
+        };
+        let Some(scene) = self.sync(session) else {
+            return Err(match self.problem() {
+                Some(problem) => format!("{method}: {problem}"),
+                None => format!("{method}: no document is open; run file.new or file.open first"),
+            });
+        };
+        let found = scene
+            .faces_named(feature.as_deref(), face)
+            .map_err(|e| format!("{method}: {e}"))?;
+        let shown =
+            craft3d_render::Highlight::new(self.tokens.face_highlight, found.ids.iter().copied());
+        self.state.highlight = Some(crate::state::FaceRef {
+            feature: Some(found.feature.clone()),
+            face: found.face.clone(),
+        });
+        let mut result = json!({
+            "highlight": { "feature": found.feature, "face": found.face },
+            "name": found.body,
+            "faces": found.ids.len(),
+        });
+        // More pieces than the renderers take runs of: said, not hidden.
+        if let (Some(map), (_, left_out @ 1..)) = (result.as_object_mut(), shown) {
+            map.insert("facesNotShown".into(), left_out.into());
+        }
+        Ok(result)
+    }
+
     fn ui_screenshot(
         &mut self,
         session: &mut Session,
@@ -292,7 +453,7 @@ impl Shell {
                 .map_err(|e| format!("{method}: {e}"))?;
         }
         let scene = self.sync(session);
-        let picture = viewport::picture(
+        let picture = viewport::picture_with(
             scene.as_deref(),
             &self.state.camera,
             Quality {
@@ -302,6 +463,7 @@ impl Shell {
             },
             &self.tokens,
             self.state.selected_feature.as_deref(),
+            self.face_highlight(scene.as_deref()),
             scale,
         )
         .map_err(|e| format!("{method}: {e}"))?;

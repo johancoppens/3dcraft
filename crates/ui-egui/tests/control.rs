@@ -171,6 +171,8 @@ fn only_ui_methods_are_handled_and_each_listed_one_exists() {
         [
             "ui.get",
             "ui.set",
+            "ui.pick",
+            "ui.highlight",
             "ui.fit",
             "ui.screenshot",
             "ui.notice",

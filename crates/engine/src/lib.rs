@@ -19,6 +19,7 @@ mod commands;
 mod drawing_cmds;
 mod file_cmds;
 mod params;
+mod pick_cmds;
 mod query_cmds;
 mod recovery;
 mod recovery_cmds;
@@ -33,6 +34,7 @@ mod step_cmds;
 mod sweep_cmds;
 mod workspace;
 
+pub use pick_cmds::{SceneFaces, ScenePick};
 #[cfg(not(target_arch = "wasm32"))]
 pub use recovery::SystemClock;
 pub use recovery::{
@@ -213,6 +215,7 @@ impl Session {
                 sweep_cmds::SPECS,
                 body_cmds::SPECS,
                 query_cmds::SPECS,
+                pick_cmds::SPECS,
                 recovery_cmds::SPECS,
             ]
             .concat()
