@@ -49,7 +49,10 @@ rfd = "0.17"
 # The control token only (docs/control-protocol.md, Authentication).
 getrandom = "0.4"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# float_roundtrip: a number read back from a file is the number that was
+# written, bit for bit; the default parser may be one unit in the last place
+# off, and a reopened document would regenerate to slightly different bodies.
+serde_json = { version = "1", features = ["float_roundtrip"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
