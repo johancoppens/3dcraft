@@ -386,9 +386,11 @@ dependencies = [
  "craft3d-ui-egui",
  "eframe",
  "getrandom 0.4.3",
+ "log",
  "png 0.17.16",
  "rfd",
  "serde_json",
+ "winit",
 ]
 
 [[package]]
