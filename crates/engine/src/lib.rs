@@ -13,6 +13,7 @@
 //! (`recovery.rs`).
 
 mod base64;
+mod blend_cmds;
 mod body_cmds;
 mod commands;
 mod datum_cmds;
@@ -218,6 +219,7 @@ impl Session {
                 sketch_spline_cmds::SPECS,
                 sweep_cmds::SPECS,
                 body_cmds::SPECS,
+                blend_cmds::SPECS,
                 datum_cmds::SPECS,
                 query_cmds::SPECS,
                 pick_cmds::SPECS,

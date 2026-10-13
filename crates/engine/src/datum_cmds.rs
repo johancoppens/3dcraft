@@ -100,7 +100,7 @@ fn face_value(command: &str, key: &str, value: &Value) -> Result<PersistentName,
 }
 
 /// Two faces of one body: the edge between them.
-fn between_value(
+pub(crate) fn between_value(
     command: &str,
     key: &str,
     value: &Value,
