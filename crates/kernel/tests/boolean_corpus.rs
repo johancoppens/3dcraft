@@ -65,7 +65,18 @@ use std::path::PathBuf;
 /// the kernel learns something, the test prints the new count: put it
 /// here, in the same commit. Never lower it to get green: a lower count
 /// means booleans that used to be right are now refused or wrong.
-const AGREEING_FLOOR: usize = 6082;
+///
+/// Lowered once, from 6082 to 6064, on purpose (2026-10-13): six `near`
+/// cases with a gap of -1 (a ball or a torus one tolerance deep in a
+/// block, a cylinder, a ball or a torus) were answered as touching,
+/// because geometry reports a touch point for surfaces within the
+/// tolerance of each other, and agreed through the slack that such a
+/// case has. The tolerance rule for faces of different kinds (through
+/// each other by between half and twice the tolerance: refused) now
+/// applies to those touch points as it does to the 48 outcomes of the
+/// same category where the surfaces meet in a curve. The developer may
+/// overturn the rule; then this goes back up.
+const AGREEING_FLOOR: usize = 6064;
 
 /// Mismatches the kernel is known to have: `(case id, operation, why)`.
 /// They are bugs, listed so that the test is green while they are open and

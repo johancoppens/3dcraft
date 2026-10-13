@@ -777,6 +777,27 @@ pub(super) fn section(
                 }
                 // Points where the surfaces only touch divide nothing.
                 SurfaceMeeting::Meets(meeting) => {
+                    // A point where geometry says the surfaces touch is
+                    // one where they are within the tolerance of each
+                    // other. Where one face is through the other there
+                    // by more than half the tolerance (its nearest point
+                    // lies inside the other body), the faces neither
+                    // touch nor safely cross.
+                    for &p in &meeting.points {
+                        let (Some(qa), Some(qb)) = (onto(&oa.surface, p), onto(&ob.surface, p))
+                        else {
+                            continue;
+                        };
+                        let through = outward_normal(&oa.surface, oa.reversed, qa)
+                            .is_some_and(|outward| (qb - qa).dot(outward) < 0.0);
+                        if qa.distance(qb) > 0.5 * tol
+                            && through
+                            && oa.side(qa, tol).map_err(|r| Stop::of(r).at(&named))? != Side::Out
+                            && ob.side(qb, tol).map_err(|r| Stop::of(r).at(&named))? != Side::Out
+                        {
+                            return Err(Stop::of(NEARLY_TOUCHING).at(&named));
+                        }
+                    }
                     if meeting.curves.is_empty() {
                         continue;
                     }

@@ -12,6 +12,7 @@
 mod boolean_common;
 
 use boolean_common::*;
+use craft3d_kernel::KernelError;
 use craft3d_kernel::boolean::{
     BooleanOp, BooleanOptions, EdgeSource, FaceSource, Operand, VertexSource, boolean_with,
 };
@@ -371,5 +372,59 @@ fn what_a_boolean_split_is_merged_again() {
                 .iter()
                 .any(|v| v.point.distance(Vec3::new(2.0 * k, 0.0, 0.0)) < 1e-9 * k)
         );
+    }
+}
+
+/// The tolerance rule for faces of different kinds, on a ball of radius 2
+/// that dips into the top of a block: by less than half the tolerance the
+/// two touch; by between half and twice the tolerance the operation
+/// refuses; by twice the tolerance or more they overlap, exactly as given,
+/// in a cap whose two faces have area 2πRh + π(2Rh − h²).
+#[test]
+fn a_ball_that_dips_into_a_block_by_about_the_tolerance() {
+    for k in SCALES {
+        let block = boxed(k, [-4.0, -4.0, -3.0], [4.0, 4.0, 0.0]);
+        let dipped = |tolerances: f64| ball(k, [0.5, -0.25, 2.0 - tolerances * 1e-6], 2.0);
+        for tolerances in [0.05, 0.3, 0.45] {
+            let ball = dipped(tolerances);
+            assert_empty(&block, &ball, Intersect, k);
+            assert_empty(&ball, &block, Intersect, k);
+            let both = solve(&block, &ball, Union, k);
+            assert_eq!(both.body.shells.len(), 2, "{tolerances} at {k}");
+            assert_eq!(both.body.edges.len(), 12);
+            let less = solve(&block, &ball, Subtract, k);
+            assert_mass(&less, 192.0, 224.0, k);
+        }
+        for tolerances in [0.6, 1.0, 1.7] {
+            let ball = dipped(tolerances);
+            for (a, b, op) in [
+                (&block, &ball, Union),
+                (&block, &ball, Intersect),
+                (&block, &ball, Subtract),
+                (&ball, &block, Subtract),
+            ] {
+                match craft3d_kernel::boolean::boolean(a, b, op, &tolerance(k)) {
+                    Err(KernelError::Unsupported { reason, .. }) => assert!(
+                        reason.contains("between half and twice the tolerance"),
+                        "{reason}"
+                    ),
+                    other => panic!("{tolerances} tolerances at {k}: {op:?}: {other:?}"),
+                }
+            }
+        }
+        for tolerances in [2.5, 10.0, 1000.0] {
+            let ball = dipped(tolerances);
+            let h = tolerances * 1e-6;
+            let cap = solve(&block, &ball, Intersect, k);
+            assert_eq!(cap.body.shells.len(), 1);
+            assert_eq!(cap.body.faces.len(), 2);
+            let expected = 2.0 * PI * 2.0 * h + PI * (4.0 * h - h * h);
+            let area = mass(&cap.body).area / (k * k);
+            assert!(
+                (area - expected).abs() <= 1e-6 * expected,
+                "{tolerances} tolerances at {k}: area {area}, expected {expected}"
+            );
+            assert_eq!(solve(&block, &ball, Union, k).body.shells.len(), 1);
+        }
     }
 }
