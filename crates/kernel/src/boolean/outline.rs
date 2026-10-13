@@ -30,10 +30,6 @@ pub(super) struct Seg {
 }
 
 impl Seg {
-    pub fn middle(&self) -> f64 {
-        0.5 * (self.range.0 + self.range.1)
-    }
-
     /// The point a fraction `k` of the way along the piece's range.
     pub fn at(&self, k: f64) -> Vec3 {
         self.curve
@@ -42,7 +38,15 @@ impl Seg {
 
     /// The direction the loop runs in at the middle of the piece.
     pub fn travel(&self) -> (Vec3, Vec3) {
-        let (point, tangent) = self.curve.derivatives(self.middle());
+        self.travel_at(0.5)
+    }
+
+    /// The point a fraction `k` of the way along the piece's range, and
+    /// the direction the loop runs in there.
+    pub fn travel_at(&self, k: f64) -> (Vec3, Vec3) {
+        let (point, tangent) = self
+            .curve
+            .derivatives(self.range.0 + (self.range.1 - self.range.0) * k);
         (point, if self.reversed { -tangent } else { tangent })
     }
 
@@ -61,6 +65,11 @@ pub(super) enum Side {
 
 const SLIVER: Reason =
     "a piece of a face too thin to find a point inside it (at the edge of tolerance)";
+/// Where along a boundary piece [`Outline::interior_points`] steps into
+/// the face, the part of the piece's width the first step starts from (it
+/// is shrunk before use), and how many points are taken there. Every
+/// piece is tried at one place before any at the next.
+const STATIONS: [(f64, f64, usize); 3] = [(0.5, 1.0, 2), (0.2764, 0.618, 1), (0.7236, 0.382, 1)];
 const UNBOUNDED: Reason = "a face without a boundary on a surface that is not closed";
 
 /// `t` moved by whole periods to where it is closest to `range`.
@@ -491,42 +500,49 @@ pub(super) fn left_of(
     of: &[Seg],
     margin: f64,
 ) -> Result<Vec3, Reason> {
-    for seg in of {
-        let (point, travel) = seg.travel();
-        let Some(outward) = outward_normal(sheet, reversed, point) else {
-            continue;
-        };
-        // Seen from outside the face lies to the left of its boundary.
-        let Some(inward) = outward.cross(travel).normalized() else {
-            continue;
-        };
-        let mut step = seg.at(0.25).distance(seg.at(0.75));
-        for _ in 0..64 {
-            step *= 0.5;
-            if !(step.is_finite() && step > margin) {
-                break;
-            }
-            let Some(candidate) = onto(sheet, point + inward * step) else {
+    // Steps that halve find a face of ordinary width at once. In a strip
+    // ten tolerances wide the candidate must be more than the margin (four
+    // tolerances) from its piece and less than half the strip (five), a
+    // window halving steps hit only by chance: where they find nothing the
+    // steps shrink by a twelfth of an octave instead.
+    for (shrink, most) in [(0.5, 64), (0.5_f64.powf(1.0 / 12.0), 768)] {
+        for seg in of {
+            let (point, travel) = seg.travel();
+            let Some(outward) = outward_normal(sheet, reversed, point) else {
                 continue;
             };
-            // The nearest thing to it must be this piece, away from its
-            // ends: then nothing lies between the two, and the candidate
-            // is right next to the piece there. On which side, the
-            // direction from that nearest point says.
-            let Some((t, reach)) = nearest(&seg.curve, seg.range, candidate) else {
+            // Seen from outside the face lies to the left of its boundary.
+            let Some(inward) = outward.cross(travel).normalized() else {
                 continue;
             };
-            let edge = 1e-6 * (seg.range.1 - seg.range.0);
-            if !(reach > margin && t > seg.range.0 + edge && t < seg.range.1 - edge)
-                || all_boxes.nearer(all, candidate, reach * (1.0 - 1e-9), false)
-            {
-                continue;
-            }
-            let (foot, tangent) = seg.curve.derivatives(t);
-            let travel = if seg.reversed { -tangent } else { tangent };
-            let left = outward_normal(sheet, reversed, foot).map(|n| n.cross(travel));
-            if left.is_some_and(|left| left.dot(candidate - foot) > 0.0) {
-                return Ok(candidate);
+            let mut step = seg.at(0.25).distance(seg.at(0.75));
+            for _ in 0..most {
+                step *= shrink;
+                if !(step.is_finite() && step > margin) {
+                    break;
+                }
+                let Some(candidate) = onto(sheet, point + inward * step) else {
+                    continue;
+                };
+                // The nearest thing to it must be this piece, away from its
+                // ends: then nothing lies between the two, and the candidate
+                // is right next to the piece there. On which side, the
+                // direction from that nearest point says.
+                let Some((t, reach)) = nearest(&seg.curve, seg.range, candidate) else {
+                    continue;
+                };
+                let edge = 1e-6 * (seg.range.1 - seg.range.0);
+                if !(reach > margin && t > seg.range.0 + edge && t < seg.range.1 - edge)
+                    || all_boxes.nearer(all, candidate, reach * (1.0 - 1e-9), false)
+                {
+                    continue;
+                }
+                let (foot, tangent) = seg.curve.derivatives(t);
+                let travel = if seg.reversed { -tangent } else { tangent };
+                let left = outward_normal(sheet, reversed, foot).map(|n| n.cross(travel));
+                if left.is_some_and(|left| left.dot(candidate - foot) > 0.0) {
+                    return Ok(candidate);
+                }
             }
         }
     }
@@ -670,7 +686,7 @@ impl Outline {
 
     /// Up to `want` points of the face well inside the loops: at least
     /// `margin` from all of them. Tried from the middle of each boundary
-    /// piece, stepping into the face by ever smaller amounts; on a face
+    /// piece, then from two other places of each, stepping into the face by ever smaller amounts; on a face
     /// without loops, fixed places of the surface.
     pub fn interior_points(&self, tol: f64, margin: f64, want: usize) -> Result<Vec<Vec3>, Reason> {
         let mut found = Vec::new();
@@ -688,51 +704,85 @@ impl Outline {
             };
         }
         let mut failure = None;
-        for seg in self.loops.iter().flatten() {
-            if found.len() >= want {
+        // Steps that halve find a face of ordinary width at once; a strip
+        // only a little wider than twice the margin (a sliver ten
+        // tolerances thick, with room for a point between four and six
+        // tolerances in) is hit by them only by chance, so where they find
+        // nothing the steps shrink by a twelfth of an octave instead.
+        for (shrink, most) in [(0.5, 64), (0.5_f64.powf(1.0 / 12.0), 768)] {
+            if !found.is_empty() {
                 break;
             }
-            let (point, travel) = seg.travel();
-            let Some(outward) = outward_normal(self.sheet(), self.reversed, point) else {
-                continue;
-            };
-            // Seen from outside the face lies to the left of its boundary.
-            let Some(inward) = outward.cross(travel).normalized() else {
-                continue;
-            };
-            let mut step = seg.at(0.25).distance(seg.at(0.75));
-            let mut taken = 0;
-            for _ in 0..64 {
-                step *= 0.5;
-                if !(step.is_finite() && step > margin) {
-                    break;
-                }
-                let Some(candidate) = onto(self.sheet(), point + inward * step) else {
-                    continue;
-                };
-                if self.boxes.nearer(&self.loops, candidate, margin, false) {
-                    continue;
-                }
-                match self.side(candidate, tol) {
-                    // Two from each piece, at different depths: where the
-                    // first is of no use (it is just where the other
-                    // body touches), the next is somewhere else.
-                    Ok(Side::In) => {
-                        found.push(candidate);
-                        taken += 1;
-                        if taken == 2 || found.len() >= want {
-                            break;
-                        }
-                    }
-                    Ok(_) => {}
-                    Err(reason) => failure = failure.or(Some(reason)),
-                }
-            }
+            self.points_inwards(tol, margin, want, shrink, most, &mut found, &mut failure);
         }
         if found.is_empty() {
             Err(failure.unwrap_or(SLIVER))
         } else {
             Ok(found)
+        }
+    }
+
+    /// The search of [`Outline::interior_points`] with steps into the face
+    /// that shrink by `shrink` each time, at most `most` of them per
+    /// boundary piece.
+    #[allow(clippy::too_many_arguments)]
+    fn points_inwards(
+        &self,
+        tol: f64,
+        margin: f64,
+        want: usize,
+        shrink: f64,
+        most: usize,
+        found: &mut Vec<Vec3>,
+        failure: &mut Option<Reason>,
+    ) {
+        // First from the middle of each piece, two at different depths:
+        // where the first is of no use (it is just where the other body
+        // touches), the next is somewhere else. Then, while more are
+        // wanted, from other places along each piece and from other
+        // depths: an edge of the other body through the middle of a disc
+        // lies on every step in from the middle of its one piece, and
+        // half the width in from anywhere on its rim is that middle.
+        for (station, depth, take) in STATIONS {
+            for seg in self.loops.iter().flatten() {
+                if found.len() >= want {
+                    return;
+                }
+                let (point, travel) = seg.travel_at(station);
+                let Some(outward) = outward_normal(self.sheet(), self.reversed, point) else {
+                    continue;
+                };
+                // Seen from outside the face lies to the left of its
+                // boundary.
+                let Some(inward) = outward.cross(travel).normalized() else {
+                    continue;
+                };
+                let mut step = depth * seg.at(0.25).distance(seg.at(0.75));
+                let mut taken = 0;
+                for _ in 0..most {
+                    step *= shrink;
+                    if !(step.is_finite() && step > margin) {
+                        break;
+                    }
+                    let Some(candidate) = onto(self.sheet(), point + inward * step) else {
+                        continue;
+                    };
+                    if self.boxes.nearer(&self.loops, candidate, margin, false) {
+                        continue;
+                    }
+                    match self.side(candidate, tol) {
+                        Ok(Side::In) => {
+                            found.push(candidate);
+                            taken += 1;
+                            if taken == take || found.len() >= want {
+                                break;
+                            }
+                        }
+                        Ok(_) => {}
+                        Err(reason) => *failure = failure.or(Some(reason)),
+                    }
+                }
+            }
         }
     }
 

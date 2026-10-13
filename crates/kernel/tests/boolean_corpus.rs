@@ -83,7 +83,7 @@ use std::path::PathBuf;
 /// Raised to 11062 on 2026-10-13 when freeform faces came in: 4998 of the
 /// 5613 outcomes with a domed block agree (the rest are refused, none
 /// wrong), and the 6064 of the primitives are unchanged.
-const AGREEING_FLOOR: usize = 11384;
+const AGREEING_FLOOR: usize = 11492;
 
 /// Mismatches the kernel is known to have: `(case id, operation, why)`.
 /// They are bugs, listed so that the test is green while they are open and
@@ -196,7 +196,18 @@ const REFERENCE_OFF: &[(&str, &str)] = &[
 /// reference is off, not that ours is right: nothing independent measures
 /// our sliver, and `mass_properties` does not resolve it at this scale (it
 /// reports -2.4e-10 of a body of 23; its area is 2.98e-7).
-const UNDECIDED: &[&str] = &["near/cylinder-torus/009"];
+///
+/// `near/cylinder-cylinder/009` and `near/cone-torus/009` (2026-10-13,
+/// when slivers ten tolerances thick began to be built): the same
+/// construction and the same disagreement. In the first FreeCAD's fuse is
+/// two solids whose volume and area are ours plus our sliver's (6.38e-8
+/// and 0.0193) to 1e-9, so the two kernels agree on the sliver and differ
+/// only in whether an overlap of ten tolerances is one.
+const UNDECIDED: &[&str] = &[
+    "near/cylinder-torus/009",
+    "near/cylinder-cylinder/009",
+    "near/cone-torus/009",
+];
 
 /// The linear tolerance at scale 1, as in the corpus header.
 const TOLERANCE: f64 = 1e-6;
