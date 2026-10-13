@@ -10,6 +10,16 @@ Decisions that shape the project, newest first, each with its reason. An agent t
 
 - **The boolean kernel is the first priority:** it is what makes 3DCraft a professional tool. A case the kernel refuses is work owed, not an end state; the checklist is in [`roadmap.md`](roadmap.md).
 - **The kernel's tests may use the tessellator** (a dev-dependency inside one layer, listed as `SAME_LAYER_DEV` in `xtask/src/layers.rs`): every body an operation makes is also meshed as an independent check. The kernel's own code still does not depend on `tess`.
+- **Where FreeCAD and the kernel disagree in the boolean corpus:** eleven cases stay in `REFERENCE_OFF` (the reference is off, with a closed form, a direct integration or an identity as evidence); `near/cylinder-torus/009` is `UNDECIDED`, because nothing independent measures our result there. Building that measurement is not worth the time now.
+
+### 2026-10-13: Waiting for the developer (presented, not yet decided)
+
+Each stands as described until the developer says otherwise.
+
+- **A ball that dips half a tolerance to two tolerances into a block is refused.** "Touches" is also defensible; the refusal costs 18 corpus cases.
+- **Meshes are bit-identical under scaling by powers of two, not by powers of ten** (Delaunay ties on cocircular points fall differently; the triangle count stays within 10%). A wider tie band in `in_circle` would remove most of it but changes the meshes at scale 1.
+- **Pinched solids pass the check:** parts of one body that meet only along an edge or at a vertex.
+- **Two tests that pinned a refusal were replaced by stricter tests of the value** when the refusal was lifted (the developer agreed to the layer exception that goes with it; the replacement itself was explained, not explicitly approved).
 
 ### 2026-10-13: Made during the night of 12 to 13 October (the developer was asleep)
 

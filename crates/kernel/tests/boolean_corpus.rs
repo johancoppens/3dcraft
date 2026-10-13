@@ -145,10 +145,10 @@ const REFERENCE_OFF: &[(&str, &str)] = &[
          11.347961215. FreeCAD 1.007568665, 4.734154604, 11.347233441; ours 1.006761617, \
          4.734977259, 11.347961209",
     ),
-    // The next four are of the `near` category with a gap of -10: by
+    // The next three are of the `near` category with a gap of -10: by
     // their construction the solids overlap ten tolerances deep, which by
     // the kernel's rule (twice the tolerance or more: as given) is an
-    // overlap. FreeCAD reads three of them as apart or touching, and its
+    // overlap. FreeCAD reads two of them as apart or touching, and its
     // three results contradict each other or the construction.
     (
         "near/torus-torus/002",
@@ -173,22 +173,23 @@ const REFERENCE_OFF: &[(&str, &str)] = &[
          5.61985e-5 together. Ours 5.62000e-5, one shell in the fuse; FreeCAD: no common \
          volume and a fuse of two shells",
     ),
-    (
-        "near/cylinder-torus/009",
-        "the rim of a cylinder ten tolerances inside a torus, by construction (gap -10): the \
-         fuse is one shell and the common a sliver. FreeCAD: two shells and nothing in \
-         common. (The sliver's volume is below what mass_properties resolves at this scale: \
-         it reports -2.4e-10 of a body of 23; its area is 2.98e-7)",
-    ),
 ];
 
 /// Cases where our result and the reference differ by more than the
 /// reference's bound and nothing independent has decided between them
-/// yet: none. (There were seven; all were settled for our result, by a
-/// direct integration or by the reference contradicting itself, and are
-/// in [`REFERENCE_OFF`] with the evidence.) A new entry is an OPEN
-/// question: not scored, listed in every report, to be settled.
-const UNDECIDED: &[&str] = &[];
+/// yet. An entry is an OPEN question: not scored, listed in every
+/// report, to be settled. (There were seven others; all were settled for
+/// our result, by a direct integration or by the reference contradicting
+/// itself, and are in [`REFERENCE_OFF`] with the evidence.)
+///
+/// `near/cylinder-torus/009` (the developer, 2026-10-13): the rim of a
+/// cylinder ten tolerances inside a torus, by construction (gap -10). Ours:
+/// the fuse is one shell and the common a sliver. FreeCAD: two shells and
+/// nothing in common, which contradicts the construction. That shows the
+/// reference is off, not that ours is right: nothing independent measures
+/// our sliver, and `mass_properties` does not resolve it at this scale (it
+/// reports -2.4e-10 of a body of 23; its area is 2.98e-7).
+const UNDECIDED: &[&str] = &["near/cylinder-torus/009"];
 
 /// The linear tolerance at scale 1, as in the corpus header.
 const TOLERANCE: f64 = 1e-6;
