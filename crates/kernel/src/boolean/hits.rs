@@ -112,17 +112,61 @@ fn bend_bound(curve: &Curve3, surface: &Surface) -> Option<(f64, f64)> {
         }
         Surface::Cone(_) | Surface::Bezier(_) | Surface::Nurbs(_) => return None,
     };
-    let (speed, turn) = match curve {
-        Curve3::Line(_) => (1.0, 0.0),
-        Curve3::Circle(c) => (c.radius(), c.radius()),
-        Curve3::Ellipse(e) => {
-            let reach = e.semi_axes().0.max(e.semi_axes().1);
-            (reach, reach)
-        }
-        Curve3::Nurbs(_) => return None,
-    };
+    let speed = speed_bound(curve);
+    let turn = turn_bound(curve)?;
     let bound = speed * speed * curvature + turn;
     (bound.is_finite() && zone > 0.0).then_some((bound, zone))
+}
+
+/// How much the curve bends, at most: its second derivative per unit of
+/// parameter squared. `None` for a rational spline.
+fn turn_bound(curve: &Curve3) -> Option<f64> {
+    match curve {
+        Curve3::Line(_) => Some(0.0),
+        Curve3::Circle(c) => Some(c.radius()),
+        Curve3::Ellipse(e) => Some(e.semi_axes().0.max(e.semi_axes().1)),
+        Curve3::Nurbs(c) => {
+            // The second derivative of a polynomial spline is a spline
+            // over the second differences of its control points, each
+            // scaled by the knot spans it straddles (*The NURBS Book*
+            // 3.3), and lies in their hull.
+            if c.weights().iter().any(|&w| (w - 1.0).abs() > 1e-12) {
+                return None;
+            }
+            let (degree, knots, points) = (c.degree(), c.knots(), c.control_points());
+            if degree < 2 {
+                return Some(0.0);
+            }
+            let first: Vec<Vec3> = points
+                .windows(2)
+                .enumerate()
+                .map(|(i, pair)| {
+                    let (Some(&lo), Some(&hi), &[a, b]) =
+                        (knots.get(i + 1), knots.get(i + degree + 1), pair)
+                    else {
+                        return Vec3::ZERO;
+                    };
+                    if hi > lo {
+                        (b - a) * (degree as f64 / (hi - lo))
+                    } else {
+                        Vec3::ZERO
+                    }
+                })
+                .collect();
+            let mut bound = 0.0_f64;
+            for (i, pair) in first.windows(2).enumerate() {
+                let (Some(&lo), Some(&hi), &[a, b]) =
+                    (knots.get(i + 2), knots.get(i + degree + 1), pair)
+                else {
+                    continue;
+                };
+                if hi > lo {
+                    bound = bound.max((b - a).length() * ((degree - 1) as f64) / (hi - lo));
+                }
+            }
+            bound.is_finite().then_some(bound)
+        }
+    }
 }
 
 /// What a stretch of the curve is with respect to the surface.
@@ -187,14 +231,41 @@ fn closest(f: &dyn Fn(f64) -> f64, lo: f64, hi: f64) -> f64 {
 /// overestimates it (an index of a freeform surface has one, and the
 /// distance it reports is only as near as its search got): a stretch is
 /// called clear of the surface by the bound, never by the distance alone.
+/// What the root isolation can ask of a surface, beyond the signed
+/// distance to it: bounds that let it judge a whole stretch of the curve
+/// at once. Each is optional; without them a stretch is judged by its
+/// middle and how far the curve can travel from it.
+struct Probe<'a> {
+    /// The signed distance from a point to the surface; `None` where the
+    /// surface has none (then the root isolation fails as unsupported).
+    distance: &'a dyn Fn(Vec3) -> Option<f64>,
+    /// A bound below the distance from a point, capped at a threshold
+    /// (the second argument) that is all the asker needs it to exceed.
+    lower: Option<&'a dyn Fn(Vec3, f64) -> f64>,
+    /// A bound below the distance from every point of a stretch of the
+    /// curve between two parameters, capped likewise.
+    lower_stretch: Option<&'a dyn Fn(f64, f64, f64) -> f64>,
+    /// Near the surface, how much the signed distance along the curve can
+    /// bend per unit of parameter squared, and how near "near" is.
+    bend: Option<(f64, f64)>,
+    /// A proof that a stretch between two parameters is within the
+    /// tolerance of the surface throughout.
+    within: Option<&'a dyn Fn(f64, f64) -> bool>,
+}
+
 fn numeric(
     curve: &Curve3,
     range: (f64, f64),
-    distance: &dyn Fn(Vec3) -> Option<f64>,
-    lower: Option<&dyn Fn(Vec3) -> f64>,
-    bend: Option<(f64, f64)>,
+    probe: Probe<'_>,
     tol: f64,
 ) -> Result<CurveIntersection, GeomError> {
+    let Probe {
+        distance,
+        lower,
+        lower_stretch,
+        bend,
+        within,
+    } = probe;
     let (start, end) = range;
     let speed = speed_bound(curve);
     if !(start.is_finite() && end.is_finite() && speed.is_finite() && speed > 0.0) {
@@ -234,10 +305,6 @@ fn numeric(
         }
         let mid = 0.5 * (a + b);
         let value = f(mid);
-        let certain = match lower {
-            Some(bound) => bound(curve.eval(mid)).min(value.abs()),
-            None => value.abs(),
-        };
         // How far the distance can stray from its value in the middle:
         // by the length travelled, or, near the surface, by the slope
         // across the stretch and how much that slope can change.
@@ -250,11 +317,46 @@ fn numeric(
             let slope = (f(b) - f(a)).abs() / (b - a) + 2.0 * bend * half;
             stray = stray.min(slope * half);
         }
-        let kind = if certain - stray > tol {
+        // The bound below the distance is asked for only where it can
+        // prove the stretch clear, which the value in the middle must
+        // already allow: near the surface it would be refined to the
+        // finest resolution for nothing.
+        let certain = match lower {
+            Some(bound) if value.abs() - stray > tol => {
+                bound(curve.eval(mid), 1.001 * (tol + stray)).min(value.abs())
+            }
+            _ => value.abs(),
+        };
+        // Clear: by its middle and how far the curve can travel from
+        // there, or, off the surface in the middle, by a bound below the
+        // whole stretch at once (a stretch that runs beside the surface
+        // is then proven clear in one piece rather than in pieces the
+        // size of its distance). Only a stretch clear at its ends and
+        // quarters can be clear throughout, and looking there is far
+        // cheaper than bounding a stretch that touches the surface
+        // somewhere.
+        let clear = certain - stray > tol
+            || (value.abs() > tol
+                && lower_stretch.is_some_and(|bound| {
+                    [a, 0.5 * (a + mid), 0.5 * (mid + b), b]
+                        .into_iter()
+                        .all(|t| f(t).abs() > tol)
+                        && bound(a, b, tol) > tol
+                }));
+        // Near: within the tolerance by its middle and the travel, too
+        // short to divide, or, on the surface in the middle, proven to
+        // stay within the tolerance over the whole stretch (a stretch
+        // that lies on the surface is then found in one piece rather
+        // than in pieces the size of the tolerance).
+        let near = value.abs() + stray <= tol
+            || b - a <= finest
+            || !(mid > a && mid < b)
+            || (value.abs() <= tol && within.is_some_and(|proven| proven(a, b)));
+        let kind = if clear {
             Kind::Clear {
                 positive: value > 0.0,
             }
-        } else if value.abs() + stray <= tol || b - a <= finest || !(mid > a && mid < b) {
+        } else if near {
             Kind::Near
         } else {
             stack.push((mid, b));
@@ -346,21 +448,68 @@ pub(super) fn curve_hits(
         let Some(tree) = sheet.tree else {
             return Err(GeomError::Unsupported(FREEFORM));
         };
-        return numeric(
-            curve,
-            range,
-            &|p| tree.signed_distance(p),
-            Some(&|p| tree.lower_bound(p, 0.25 * tolerance.linear)),
-            None,
-            tolerance.linear,
-        );
+        return curve_hits_freeform(curve, range, tree, tolerance);
     }
     numeric(
         curve,
         range,
-        &|p| signed_distance(sheet, p),
-        None,
-        bend_bound(curve, surface),
+        Probe {
+            distance: &|p| signed_distance(sheet, p),
+            lower: None,
+            lower_stretch: None,
+            bend: bend_bound(curve, surface),
+            within: None,
+        },
+        tolerance.linear,
+    )
+}
+
+/// The root isolation against an indexed freeform surface.
+fn curve_hits_freeform(
+    curve: &Curve3,
+    range: (f64, f64),
+    tree: &std::sync::Arc<super::freeform::PatchTree>,
+    tolerance: &Tolerance,
+) -> Result<CurveIntersection, GeomError> {
+    // Where the curve's bend is bounded, a whole stretch is judged at
+    // once: one beside the surface by the distance from its chord to
+    // the surface less how far the curve can leave the chord, and
+    // one on the surface by its ends and how much it and the surface
+    // can bend between them.
+    let turn = turn_bound(curve);
+    let lower_stretch = turn.map(|turn| {
+        move |a: f64, b: f64, needed: f64| {
+            let fat = 0.125 * turn * (b - a) * (b - a);
+            tree.segment_lower_bound(
+                curve.eval(a),
+                curve.eval(b),
+                0.25 * tolerance.linear,
+                1.001 * (needed + fat),
+            ) - fat
+        }
+    });
+    let within = turn.map(|turn| {
+        move |a: f64, b: f64| {
+            tree.stretch_within(
+                curve.eval(a),
+                curve.eval(b),
+                turn * (b - a) * (b - a),
+                tolerance.linear,
+            )
+        }
+    });
+    numeric(
+        curve,
+        range,
+        Probe {
+            distance: &|p| tree.signed_distance(p),
+            lower: Some(&|p, threshold| tree.lower_bound(p, 0.25 * tolerance.linear, threshold)),
+            lower_stretch: lower_stretch
+                .as_ref()
+                .map(|l| l as &dyn Fn(f64, f64, f64) -> f64),
+            bend: None,
+            within: within.as_ref().map(|w| w as &dyn Fn(f64, f64) -> bool),
+        },
         tolerance.linear,
     )
 }
@@ -625,5 +774,131 @@ mod tests {
             // Not uselessly loose either.
             assert!(bound <= 40.0 * fastest, "{}: {bound}", curve.kind());
         }
+    }
+
+    #[test]
+    fn a_line_that_runs_on_a_flat_patch_and_beyond_it_is_found_in_one_piece() {
+        use super::super::freeform::PatchTree;
+        use craft3d_geom::BezierPatch;
+        use std::sync::Arc;
+        // z = 0 over [0, 1]²; beyond its border the surface ends.
+        let patch = BezierPatch::new(
+            1,
+            1,
+            vec![
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(1.0, 1.0, 0.0),
+            ],
+        )
+        .unwrap();
+        let surface = Surface::Bezier(patch);
+        let tree = Arc::new(PatchTree::new(&surface).unwrap());
+        let sheet = Sheet {
+            surface: &surface,
+            tree: Some(&tree),
+        };
+        let line = Curve3::Line(Line::new(Vec3::new(-1.0, 0.5, 0.0), Vec3::X).unwrap());
+        let tol = Tolerance::new(1e-6, 1e-9).unwrap();
+        // On the surface for a third of its range and clear of it on both
+        // sides of that: a touch. Taken a tolerance at a time the stretch
+        // on the surface would be a million pieces, and used to be refused
+        // as running along the surface.
+        let result = curve_hits(&line, (0.0, 3.0), sheet, &tol).unwrap();
+        let CurveIntersection::Hits(hits) = result else {
+            panic!("expected one touch, got {result:?}");
+        };
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert!(hits[0].tangent);
+        assert!((0.99..=2.01).contains(&hits[0].t), "{}", hits[0].t);
+    }
+
+    #[test]
+    fn a_line_grazing_a_flat_patch_is_proven_clear_in_one_piece() {
+        use super::super::freeform::PatchTree;
+        use craft3d_geom::BezierPatch;
+        use std::sync::Arc;
+        let patch = BezierPatch::new(
+            1,
+            1,
+            vec![
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(1.0, 1.0, 0.0),
+            ],
+        )
+        .unwrap();
+        let surface = Surface::Bezier(patch);
+        let tree = Arc::new(PatchTree::new(&surface).unwrap());
+        let sheet = Sheet {
+            surface: &surface,
+            tree: Some(&tree),
+        };
+        let tol = Tolerance::new(1e-6, 1e-9).unwrap();
+        // Three tolerances above the patch, across all of it: clear, and
+        // found to be in a few stretches rather than a million.
+        let graze = Curve3::Line(Line::new(Vec3::new(-1.0, 0.5, 3e-6), Vec3::X).unwrap());
+        assert_eq!(
+            curve_hits(&graze, (0.0, 3.0), sheet, &tol).unwrap(),
+            CurveIntersection::Hits(Vec::new())
+        );
+        // And a crossing beside the grazing stretch is still found.
+        let dip = Curve3::Line(
+            Line::new(Vec3::new(-1.0, 0.5, 3e-6), Vec3::new(1.0, 0.0, -2e-6)).unwrap(),
+        );
+        let CurveIntersection::Hits(hits) = curve_hits(&dip, (0.0, 3.0), sheet, &tol).unwrap()
+        else {
+            panic!("expected a crossing");
+        };
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert!(!hits[0].tangent);
+        assert!((hits[0].t - 1.5).abs() < 1e-3, "{}", hits[0].t);
+    }
+
+    #[test]
+    fn the_turn_bound_of_a_spline_holds_at_samples() {
+        let curve = NurbsCurve::new(
+            3,
+            vec![0.0, 0.0, 0.0, 0.0, 0.3, 0.3, 1.0, 1.0, 1.0, 1.0],
+            vec![
+                Vec3::ZERO,
+                Vec3::new(3.0, 1.0, 0.0),
+                Vec3::new(1.0, 4.0, 2.0),
+                Vec3::new(5.0, 5.0, -1.0),
+                Vec3::new(6.0, 0.0, 3.0),
+                Vec3::new(8.0, 2.0, 2.0),
+            ],
+            vec![1.0; 6],
+        )
+        .unwrap();
+        let bound = turn_bound(&Curve3::Nurbs(curve.clone())).unwrap();
+        assert!(bound > 0.0);
+        let h = 1e-5;
+        let mut steepest = 0.0_f64;
+        for k in 1..1000 {
+            let t = f64::from(k) / 1000.0;
+            let second = (curve.derivatives(t + h).1 - curve.derivatives(t - h).1) * (0.5 / h);
+            steepest = steepest.max(second.length());
+        }
+        assert!(steepest <= bound * (1.0 + 1e-6), "{steepest} > {bound}");
+        assert!(
+            steepest > 0.2 * bound,
+            "a bound {bound} far above {steepest}"
+        );
+        // A rational spline has no such bound here.
+        let rational = NurbsCurve::new(
+            2,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![
+                Vec3::ZERO,
+                Vec3::new(1.0, 1.0, 0.0),
+                Vec3::new(2.0, 0.0, 0.0),
+            ],
+            vec![1.0, 0.5, 1.0],
+        )
+        .unwrap();
+        assert!(turn_bound(&Curve3::Nurbs(rational)).is_none());
     }
 }

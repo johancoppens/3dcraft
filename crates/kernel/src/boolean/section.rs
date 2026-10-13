@@ -726,7 +726,8 @@ fn clear_of(sheet: Sheet, hull: &Hull, margin: f64) -> bool {
     // proof of clearance needs.)
     let middle = lo.lerp(hi, 0.5);
     if let Some(tree) = sheet.tree {
-        return tree.lower_bound(middle, 0.5 * margin) > 0.5 * lo.distance(hi) + margin;
+        let needed = 0.5 * lo.distance(hi) + margin;
+        return tree.lower_bound(middle, 0.5 * margin, 1.001 * needed) > needed;
     }
     signed_distance(sheet, middle)
         .is_some_and(|middle| middle.abs() > 0.5 * lo.distance(hi) + margin)

@@ -12,6 +12,10 @@
 //!   are nearer than the best point found, so that a nearer-looking local
 //!   minimum is not taken for the nearest point;
 //! - the signed distance, by the side of the surface the point is on;
+//! - for a polynomial surface, a proof that a stretch of a curve stays
+//!   within a tolerance of it (`stretch_within`), from the distances at
+//!   its ends and a bound on the second derivatives of the surface over
+//!   its domain, again from the hull of a net;
 //! - for a polynomial surface, how fast its parameters can change per
 //!   length travelled on it (`chart.rs` needs that to follow a loop in the
 //!   chart of the parameters), from the Bézier nets of the derivatives and
@@ -24,7 +28,7 @@
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
 use super::Reason;
-use craft3d_geom::{NurbsSurface, RationalBezierPatch, Surface};
+use craft3d_geom::{BezierPatch, NurbsSurface, RationalBezierPatch, Surface};
 use craft3d_math::{Bbox3, Vec3};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -65,6 +69,10 @@ pub(super) struct PatchTree {
     nodes: Vec<Node>,
     roots: Vec<usize>,
     polynomial: bool,
+    /// An upper bound on the lengths of the second partial derivatives of
+    /// the surface over its whole domain, in its own parameters; `None`
+    /// for a rational surface.
+    second: Option<f64>,
 }
 
 /// The nearest point of the surface to a point.
@@ -91,6 +99,139 @@ fn box_distance(bbox: &Bbox3, p: Vec3) -> f64 {
         (lo.z - p.z).max(p.z - hi.z).max(0.0),
     );
     d.length()
+}
+
+/// The distance from the segment `a`–`b` to the box; zero where they
+/// meet. Between the parameters where a coordinate of the segment crosses
+/// a side of the box, each coordinate stays on one side of it, so the
+/// squared distance is one quadratic there: the least over the segment
+/// is at such a parameter, at an end, or at the vertex of a quadratic.
+fn segment_box_distance(bbox: &Bbox3, a: Vec3, b: Vec3) -> f64 {
+    let Some((lo, hi)) = bbox.corners() else {
+        return f64::INFINITY;
+    };
+    if !(a.is_finite() && b.is_finite()) {
+        return 0.0;
+    }
+    let d = b - a;
+    let (a3, d3) = ([a.x, a.y, a.z], [d.x, d.y, d.z]);
+    let (lo3, hi3) = ([lo.x, lo.y, lo.z], [hi.x, hi.y, hi.z]);
+    let mut cuts = vec![0.0, 1.0];
+    for ((&start, &step), (&low, &high)) in a3.iter().zip(&d3).zip(lo3.iter().zip(&hi3)) {
+        if step != 0.0 {
+            for side in [low, high] {
+                let t = (side - start) / step;
+                if t > 0.0 && t < 1.0 {
+                    cuts.push(t);
+                }
+            }
+        }
+    }
+    cuts.sort_by(f64::total_cmp);
+    let mut best = f64::INFINITY;
+    for pair in cuts.windows(2) {
+        let &[t0, t1] = pair else {
+            continue;
+        };
+        let mid = 0.5 * (t0 + t1);
+        // The offset of each coordinate from the box, linear in t on
+        // this piece: alpha + beta t, with the side taken in the middle.
+        let (mut qa, mut qb, mut qc) = (0.0_f64, 0.0_f64, 0.0_f64);
+        for ((&start, &step), (&low, &high)) in a3.iter().zip(&d3).zip(lo3.iter().zip(&hi3)) {
+            let x = start + step * mid;
+            let (alpha, beta) = if x < low {
+                (low - start, -step)
+            } else if x > high {
+                (start - high, step)
+            } else {
+                (0.0, 0.0)
+            };
+            qa += beta * beta;
+            qb += 2.0 * alpha * beta;
+            qc += alpha * alpha;
+        }
+        let mut candidates = vec![t0, t1];
+        if qa > 0.0 {
+            let vertex = -qb / (2.0 * qa);
+            if vertex > t0 && vertex < t1 {
+                candidates.push(vertex);
+            }
+        }
+        for t in candidates {
+            best = best.min((qa * t * t + qb * t + qc).max(0.0));
+        }
+    }
+    best.sqrt()
+}
+
+/// A box around a piece of the surface in a frame along the piece: its
+/// third axis is the piece's normal, near enough, so that the box is as
+/// thick as the piece bends, not as it tilts. The box around the control
+/// points in any frame holds the piece, so the distance to it is below the
+/// distance to the piece, and short of it by no more than the thickness
+/// and the bulge of the net's sides.
+#[derive(Clone, Debug)]
+struct Slab {
+    origin: Vec3,
+    axes: [Vec3; 3],
+    local: Bbox3,
+}
+
+impl Slab {
+    /// A box as it is, in the world's axes.
+    fn axis_aligned(bbox: Bbox3) -> Self {
+        Slab {
+            origin: Vec3::ZERO,
+            axes: [Vec3::X, Vec3::Y, Vec3::Z],
+            local: bbox,
+        }
+    }
+
+    /// The box around a piece's control points, in the frame of its
+    /// corners; in the world's axes when the corners give no frame.
+    fn around(patch: &RationalBezierPatch) -> Self {
+        let points = patch.control_points();
+        let (m, n) = patch.degrees();
+        let at = |i: usize, j: usize| points.get(i * (n + 1) + j).copied();
+        let frame = (|| {
+            let (p00, pm0, p0n, pmn) = (at(0, 0)?, at(m, 0)?, at(0, n)?, at(m, n)?);
+            let along_u = (pm0 - p00) + (pmn - p0n);
+            let along_v = (p0n - p00) + (pmn - pm0);
+            let first = along_u.normalized()?;
+            let third = along_u.cross(along_v).normalized()?;
+            Some([first, third.cross(first), third])
+        })();
+        let (Some(axes), Some(&origin)) = (frame, points.first()) else {
+            return Slab::axis_aligned(patch.control_bbox());
+        };
+        let slab = Slab {
+            origin,
+            axes,
+            local: Bbox3::EMPTY,
+        };
+        let local = Bbox3::from_points(points.iter().map(|&p| slab.to_local(p)));
+        Slab { local, ..slab }
+    }
+
+    fn to_local(&self, p: Vec3) -> Vec3 {
+        let d = p - self.origin;
+        Vec3::new(
+            d.dot(self.axes[0]),
+            d.dot(self.axes[1]),
+            d.dot(self.axes[2]),
+        )
+    }
+
+    fn diagonal(&self) -> f64 {
+        self.local.diagonal()
+    }
+
+    /// The extent along the piece's normal.
+    fn thickness(&self) -> f64 {
+        self.local
+            .corners()
+            .map_or(f64::INFINITY, |(lo, hi)| hi.z - lo.z)
+    }
 }
 
 /// The distance from the origin to the box around some vectors; zero when
@@ -120,32 +261,73 @@ fn sigma_bound(patch: &RationalBezierPatch) -> f64 {
     least.max(0.0).sqrt()
 }
 
+/// An upper bound on the second partial derivatives of polynomial spans
+/// over all of them, in the surface's own parameters: each span's bound
+/// comes from the differences of its net over `[0, 1]²`, and is scaled by
+/// the part of the domain the span covers. `None` when a span is rational
+/// or degenerate.
+fn second_bound(spans: &[Span]) -> Option<f64> {
+    let mut bound = 0.0_f64;
+    for (u, v, patch) in spans {
+        let (m, n) = patch.degrees();
+        let bezier = BezierPatch::new(m, n, patch.control_points()).ok()?;
+        let (uu, uv, vv) = bezier.second_derivative_bounds();
+        let (wu, wv) = (u.1 - u.0, v.1 - v.0);
+        if !(wu > 0.0 && wv > 0.0) {
+            return None;
+        }
+        bound = bound
+            .max(uu / (wu * wu))
+            .max(uv / (wu * wv))
+            .max(vv / (wv * wv));
+    }
+    bound.is_finite().then_some(bound)
+}
+
 /// How many times a leaf may be quartered for one query.
 const EXTRA_DEPTH: usize = 40;
+/// How many pieces a query for a segment may split: a segment that runs
+/// on the surface would otherwise split every piece along it down to the
+/// resolution.
+const SEGMENT_BUDGET: usize = 4096;
 
 /// Splits the pieces on `pending` until their boxes are within
 /// `resolution`, keeping only the pieces nearer than the best bound so far;
 /// returns the bound.
 fn refine(
-    pending: &mut Vec<(RationalBezierPatch, Bbox3, usize)>,
-    p: Vec3,
+    pending: &mut Vec<(RationalBezierPatch, Slab, usize)>,
+    distance: &dyn Fn(&Slab) -> f64,
     resolution: f64,
+    budget: usize,
+    threshold: f64,
     mut best: f64,
 ) -> f64 {
     let mut steps = 0_usize;
-    while let Some((patch, bbox, depth)) = pending.pop() {
+    while let Some((patch, slab, depth)) = pending.pop() {
         steps += 1;
-        let d = box_distance(&bbox, p);
+        let d = distance(&slab);
         if d >= best {
             continue;
         }
-        // Small enough: within `resolution`, or within a quarter of the
-        // distance itself (a bound a quarter short still proves a far
-        // stretch clear; splitting on would visit every piece within a
-        // disc that grows as the pieces shrink).
-        let size = bbox.diagonal();
-        if size <= resolution || size <= 0.25 * d || depth >= EXTRA_DEPTH || steps > MAX_LEAVES {
+        // Small enough: within `resolution`; or, for a bound as tight as
+        // can be, thin against the distance itself (a bound a little
+        // short still proves a far stretch clear; splitting on would visit
+        // every piece within a disc that grows as the pieces shrink). A
+        // query up to a threshold splits on instead until the piece
+        // passes the threshold, or is as small as the resolution.
+        let size = slab.diagonal();
+        let tight = !threshold.is_finite();
+        if size <= resolution
+            || (tight && (slab.thickness() <= 0.1 * d || size <= 0.25 * d))
+            || depth >= EXTRA_DEPTH
+            || steps > budget
+        {
             best = best.min(d);
+            // Below a finite threshold already: the asker learns nothing
+            // more from a tighter bound.
+            if threshold.is_finite() && best < threshold {
+                return best;
+            }
             continue;
         }
         let (left, right) = patch.split_u(0.5);
@@ -156,12 +338,12 @@ fn refine(
             quarters.push(high);
         }
         // Nearest last: it is popped first and narrows the bound soonest.
-        let mut boxed: Vec<(RationalBezierPatch, Bbox3, f64)> = quarters
+        let mut boxed: Vec<(RationalBezierPatch, Slab, f64)> = quarters
             .into_iter()
             .map(|q| {
-                let b = q.control_bbox();
-                let d = box_distance(&b, p);
-                (q, b, d)
+                let slab = Slab::around(&q);
+                let d = distance(&slab);
+                (q, slab, d)
             })
             .filter(|(_, _, d)| *d < best)
             .collect();
@@ -211,6 +393,7 @@ impl PatchTree {
             return Err(IRREGULAR);
         }
         let polynomial = spans.iter().all(|s| s.2.is_polynomial());
+        let second = polynomial.then(|| second_bound(&spans)).flatten();
         // Quarter each span until its pieces are small, within a budget
         // of leaves for the whole surface.
         let mut depth = MAX_DEPTH;
@@ -225,6 +408,7 @@ impl PatchTree {
             nodes: Vec::new(),
             roots: Vec::new(),
             polynomial,
+            second,
         };
         let whole = spans
             .iter()
@@ -315,17 +499,60 @@ impl PatchTree {
     /// that small is as far from `p` as the piece in it, to within its
     /// size). Nearest
     /// first, so that the bound is tight after the first leaf and every
-    /// farther piece is dropped unsplit. The splits are not kept.
-    pub fn lower_bound(&self, p: Vec3, resolution: f64) -> f64 {
+    /// farther piece is dropped unsplit. The splits are not kept. The
+    /// bound is capped at `threshold` (see [`Self::segment_lower_bound`]).
+    pub fn lower_bound(&self, p: Vec3, resolution: f64, threshold: f64) -> f64 {
+        self.bound_by(
+            &|slab| box_distance(&slab.local, slab.to_local(p)),
+            resolution,
+            MAX_LEAVES,
+            threshold,
+        )
+    }
+
+    /// A distance no larger than the distance from any point of the
+    /// straight segment `a`–`b` to the surface, as [`Self::lower_bound`]
+    /// is for a point, within a budget of pieces split for it: past the
+    /// budget the bound is what the pieces so far allow, which is still
+    /// below the distance, only less tight. It is what proves a whole
+    /// stretch of a curve clear of the surface at once, where a point and
+    /// how far the curve can travel from it would need pieces the size
+    /// of the tolerance.
+    pub fn segment_lower_bound(&self, a: Vec3, b: Vec3, resolution: f64, threshold: f64) -> f64 {
+        self.bound_by(
+            &|slab| segment_box_distance(&slab.local, slab.to_local(a), slab.to_local(b)),
+            resolution,
+            SEGMENT_BUDGET,
+            threshold,
+        )
+    }
+
+    /// The bound, no larger than `threshold`: a piece farther than that
+    /// is dropped unsplit, so that a query that only asks whether the
+    /// distance exceeds the threshold (the answer is then the threshold
+    /// itself) splits nothing beyond it. Pass infinity for the bound as
+    /// tight as the resolution allows.
+    fn bound_by(
+        &self,
+        distance: &dyn Fn(&Slab) -> f64,
+        resolution: f64,
+        budget: usize,
+        threshold: f64,
+    ) -> f64 {
         let resolution = resolution.max(0.0);
-        let mut best = f64::INFINITY;
+        let threshold = if threshold.is_nan() {
+            f64::INFINITY
+        } else {
+            threshold
+        };
+        let mut best = threshold;
         let mut heap = BinaryHeap::new();
         for &root in &self.roots {
             if let Some(node) = self.nodes.get(root) {
-                heap.push(Pending(box_distance(&node.bbox, p), root));
+                heap.push(Pending(distance(&Slab::axis_aligned(node.bbox)), root));
             }
         }
-        let mut pending: Vec<(RationalBezierPatch, Bbox3, usize)> = Vec::new();
+        let mut pending: Vec<(RationalBezierPatch, Slab, usize)> = Vec::new();
         while let Some(Pending(d, index)) = heap.pop() {
             if d >= best {
                 break;
@@ -337,17 +564,28 @@ impl PatchTree {
                 Some(kids) => {
                     for k in kids {
                         if let Some(child) = self.nodes.get(k) {
-                            heap.push(Pending(box_distance(&child.bbox, p), k));
+                            heap.push(Pending(distance(&Slab::axis_aligned(child.bbox)), k));
                         }
                     }
                 }
                 None => match &node.patch {
-                    Some(patch) if node.bbox.diagonal() > resolution => {
-                        pending.push((patch.clone(), node.bbox, 0));
-                        best = refine(&mut pending, p, resolution, best);
+                    Some(patch) => {
+                        // The leaf's own box is in its frame, thinner than
+                        // the box of the tree that found it.
+                        let slab = Slab::around(patch);
+                        if node.bbox.diagonal() > resolution {
+                            pending.push((patch.clone(), slab, 0));
+                            best =
+                                refine(&mut pending, distance, resolution, budget, threshold, best);
+                        } else {
+                            best = best.min(distance(&slab));
+                        }
                     }
-                    _ => best = best.min(d),
+                    None => best = best.min(d),
                 },
+            }
+            if threshold.is_finite() && best < threshold {
+                break;
             }
         }
         best
@@ -503,6 +741,35 @@ impl PatchTree {
             near.distance
         })
     }
+
+    /// Whether every point of a stretch of a curve from `pa` to `pb` is
+    /// within `tol` of the surface: proven, not sampled. The stretch is
+    /// compared with the surface along the straight path in the
+    /// parameters between the feet of its ends; their difference is
+    /// small at both ends (the distances there) and bends by no more than
+    /// `turn` (the curve's second derivative over the stretch, with the
+    /// stretch as the unit of parameter) plus what the second derivatives
+    /// of the surface allow over the path, so it is within an eighth of
+    /// that of the larger end. `false` where that cannot be shown, which
+    /// is not a disproof.
+    pub fn stretch_within(&self, pa: Vec3, pb: Vec3, turn: f64, tol: f64) -> bool {
+        let Some(second) = self.second else {
+            return false;
+        };
+        if !(turn >= 0.0 && tol > 0.0) {
+            return false;
+        }
+        let (Some(a), Some(b)) = (self.nearest(pa), self.nearest(pb)) else {
+            return false;
+        };
+        let ends = a.distance.max(b.distance);
+        if !(ends <= tol) {
+            return false;
+        }
+        let step = (b.u - a.u).abs() + (b.v - a.v).abs();
+        let bend = turn + second * step * step;
+        bend.is_finite() && ends + 0.125 * bend <= tol
+    }
 }
 
 #[cfg(test)]
@@ -553,7 +820,7 @@ mod tests {
         for _ in 0..200 {
             let p = Vec3::new(next() * 6.0 - 1.0, next() * 5.0 - 1.0, next() * 6.0 - 1.0);
             let (brute, _) = brute_force(&surface, p);
-            let lower = tree.lower_bound(p, 1e-9);
+            let lower = tree.lower_bound(p, 1e-9, f64::INFINITY);
             let near = tree.nearest(p).unwrap();
             assert!(lower <= brute + 1e-12, "{p:?}: bound {lower} above {brute}");
             assert!(lower <= near.distance + 1e-12, "{p:?}");
@@ -654,7 +921,7 @@ mod tests {
                     "{} vs {brute}",
                     near.distance
                 );
-                assert!(tree.lower_bound(p, 1e-9) <= near.distance + 1e-12);
+                assert!(tree.lower_bound(p, 1e-9, f64::INFINITY) <= near.distance + 1e-12);
             }
         }
         // The lid's top and the bottom patches collapse to a point: no
@@ -693,6 +960,142 @@ mod tests {
         assert!(tree.parameter_speed().is_none());
         let d = tree.signed_distance(Vec3::new(3.0, 0.0, 1.0)).unwrap();
         assert!((d.abs() - 2.0).abs() < 1e-9, "{d}");
-        assert!(tree.lower_bound(Vec3::new(3.0, 0.0, 1.0), 1e-9) <= 2.0);
+        assert!(tree.lower_bound(Vec3::new(3.0, 0.0, 1.0), 1e-9, f64::INFINITY) <= 2.0);
+    }
+
+    #[test]
+    fn a_short_chord_of_the_dome_is_proven_within_tolerance_and_a_long_one_is_not() {
+        let surface = dome();
+        let tree = PatchTree::new(&surface).unwrap();
+        let second = tree.second.unwrap();
+        assert!(second > 0.0, "the dome bends");
+        let tol = 1e-4;
+        let from = surface.eval(0.3, 0.4);
+        // Short: a step over which the surface's bend stays at half the
+        // tolerance; the proof holds, and what it proves is true.
+        let step = (4.0 * tol / second).sqrt().min(0.1);
+        let near = surface.eval(0.3 + step, 0.4);
+        assert!(
+            tree.stretch_within(from, near, 0.0, tol),
+            "step {step}, second {second}"
+        );
+        for k in 0..=16 {
+            let p = from + (near - from) * (f64::from(k) / 16.0);
+            let distance = tree.nearest(p).unwrap().distance;
+            assert!(distance <= tol, "{distance} at {k}");
+        }
+        // Long: the chord really leaves the tolerance, and the proof
+        // does not pretend otherwise.
+        let far = surface.eval(0.8, 0.4);
+        assert!(!tree.stretch_within(from, far, 0.0, tol));
+        let middle = (from + far) * 0.5;
+        assert!(tree.nearest(middle).unwrap().distance > tol);
+        // An end off the surface: nothing to prove.
+        let lifted = near + Vec3::new(0.0, 0.0, 10.0 * tol);
+        assert!(!tree.stretch_within(from, lifted, 0.0, tol));
+        // A curve that bends more than the tolerance allows over the
+        // stretch is not proven either.
+        assert!(!tree.stretch_within(from, near, 9.0 * tol, tol));
+        // Garbage in, no proof out.
+        assert!(!tree.stretch_within(from, near, f64::NAN, tol));
+        assert!(!tree.stretch_within(from, near, 0.0, 0.0));
+    }
+
+    #[test]
+    fn the_distance_from_a_segment_to_a_box_is_the_least_over_the_segment() {
+        let bbox = Bbox3::from_points([Vec3::new(-1.0, -2.0, 0.0), Vec3::new(1.0, 2.0, 3.0)]);
+        let segments = [
+            (Vec3::new(-5.0, 0.0, 1.0), Vec3::new(5.0, 0.0, 1.0)),
+            (Vec3::new(2.0, 3.0, 4.0), Vec3::new(6.0, 7.0, 8.0)),
+            (Vec3::new(-3.0, -3.0, -1.0), Vec3::new(3.0, 3.0, -1.0)),
+            (Vec3::new(2.0, -5.0, 1.5), Vec3::new(2.0, 5.0, 1.5)),
+            (Vec3::new(0.2, 0.3, 1.0), Vec3::new(0.4, 0.1, 2.0)),
+            (Vec3::new(-4.0, 5.0, -2.0), Vec3::new(4.0, -5.0, 7.0)),
+        ];
+        for (a, b) in segments {
+            let exact = segment_box_distance(&bbox, a, b);
+            let n = 100_000;
+            let sampled = (0..=n)
+                .map(|k| box_distance(&bbox, a + (b - a) * (k as f64 / n as f64)))
+                .fold(f64::INFINITY, f64::min);
+            // Sampling never finds a point nearer than the least, and
+            // misses it by no more than a sample step.
+            let step = (b - a).length() / n as f64;
+            assert!(
+                exact <= sampled + 1e-12,
+                "{exact} > {sampled} for {a:?}-{b:?}"
+            );
+            assert!(
+                exact >= sampled - step,
+                "{exact} < {sampled} - {step} for {a:?}-{b:?}"
+            );
+        }
+        assert_eq!(segment_box_distance(&bbox, Vec3::ZERO, Vec3::ZERO), 0.0);
+        assert_eq!(
+            segment_box_distance(&bbox, Vec3::new(f64::NAN, 0.0, 0.0), Vec3::ZERO),
+            0.0
+        );
+    }
+
+    #[test]
+    fn a_segment_grazing_the_dome_is_bounded_below_at_once() {
+        let surface = dome();
+        let tree = PatchTree::new(&surface).unwrap();
+        let tol = 1e-6;
+        // A chord of a curve on the roof, lifted a little: nearer than
+        // the lift nowhere, and the bound says so to within the
+        // resolution (the lift itself is the distance at the ends).
+        let (from, to) = (surface.eval(0.3, 0.4), surface.eval(0.32, 0.4));
+        let normal = surface.normal(0.31, 0.4).unwrap();
+        let lift = 20.0 * tol;
+        let bound = tree.segment_lower_bound(
+            from + normal * lift,
+            to + normal * lift,
+            0.25 * tol,
+            f64::INFINITY,
+        );
+        // Asked only whether it exceeds a threshold, the answer is the
+        // threshold, after far fewer splits.
+        let capped = tree.segment_lower_bound(
+            from + normal * lift,
+            to + normal * lift,
+            0.25 * tol,
+            2.0 * tol,
+        );
+        assert_eq!(capped, 2.0 * tol);
+        assert!(bound > 2.0 * tol, "{bound}");
+        let least = (0..=64)
+            .map(|k| {
+                let p = (from + normal * lift) + (to - from) * (f64::from(k) / 64.0);
+                tree.nearest(p).unwrap().distance
+            })
+            .fold(f64::INFINITY, f64::min);
+        assert!(bound <= least + 1e-12, "{bound} > {least}");
+        // A chord through the roof: no distance to bound.
+        let through = tree.segment_lower_bound(from - normal, to + normal, 0.25 * tol, 2.0 * tol);
+        assert!(through <= 0.25 * tol, "{through}");
+    }
+
+    #[test]
+    fn a_tilted_flat_patch_is_bounded_tightly_however_coarse_the_resolution() {
+        // A flat square tilted out of every axis: its axis-aligned box is
+        // thick, the box in its own frame is not.
+        let (o, a, b) = (
+            Vec3::new(1.0, 2.0, 3.0),
+            Vec3::new(3.0, 1.0, 2.0),
+            Vec3::new(-1.0, 2.0, 0.5),
+        );
+        let patch = BezierPatch::new(1, 1, vec![o, o + b, o + a, o + a + b]).unwrap();
+        let surface = Surface::Bezier(patch);
+        let tree = PatchTree::new(&surface).unwrap();
+        let normal = a.cross(b).normalized().unwrap();
+        let p = o + (a + b) * 0.5 + normal * 0.3;
+        for resolution in [1e-9, 0.1, 1.0, 10.0] {
+            let bound = tree.lower_bound(p, resolution, f64::INFINITY);
+            assert!(bound <= 0.3 + 1e-12, "{bound} at {resolution}");
+            assert!(bound >= 0.3 - 1e-9, "{bound} at {resolution}");
+        }
+        let chord = tree.segment_lower_bound(p, p + a * 0.2, 10.0, f64::INFINITY);
+        assert!((chord - 0.3).abs() <= 1e-9, "{chord}");
     }
 }
