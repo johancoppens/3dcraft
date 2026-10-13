@@ -248,6 +248,20 @@ pub enum FeatureKind {
     /// A plane to place other features by; it makes no body. `by` says
     /// how it is placed.
     DatumPlane { by: PlaneBy },
+    /// A straight line to place other features by; it makes no body.
+    DatumAxis { by: AxisBy },
+}
+
+/// How a datum axis is placed: through two points, along the straight
+/// edge between two faces, the axis of a cylinder, cone or torus face,
+/// or the line two planes meet in.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum AxisBy {
+    TwoPoints { points: [PointRef; 2] },
+    Edge { between: [Name; 2] },
+    Face { face: Name },
+    TwoPlanes { planes: [PlaneRef; 2] },
 }
 
 /// How a datum plane is placed: `from` moved by `distance` along its
@@ -281,12 +295,14 @@ pub enum PlaneRef {
 }
 
 /// A straight line a datum is placed relative to: an axis of the world,
-/// or the straight edge between two faces of one body.
+/// the straight edge between two faces of one body, or a datum axis by
+/// the id of its feature.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
 pub enum AxisRef {
     World { axis: WorldAxis },
     Edge { between: [Name; 2] },
+    Datum { feature: u64 },
 }
 
 /// A point a datum is placed relative to: coordinates (three
@@ -314,14 +330,15 @@ pub enum BooleanOp {
     Intersect,
 }
 
-/// The axis of a revolution: the sketch's x or y axis, or one of its
-/// lines by entity id.
+/// The axis of a revolution: the sketch's x or y axis, one of its lines
+/// by entity id, or a datum axis by the id of its feature.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
 pub enum RevolveAxis {
     X,
     Y,
     Line { entity: u64 },
+    Datum { axis: u64 },
 }
 
 /// Where the instances of a pattern go: instance `i` is the source moved
@@ -336,6 +353,10 @@ pub enum PatternLayout {
         point: [String; 3],
         axis: [String; 3],
         angle: String,
+        /// The id of a datum axis to turn about instead; `point` and
+        /// `axis` are then kept, unused. Written only when set.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        about: Option<u64>,
     },
 }
 

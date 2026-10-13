@@ -15,7 +15,7 @@ pub mod datum;
 pub mod name;
 pub mod sketch;
 
-pub use datum::{AxisRef, DatumPlane, PlaneBy, PlaneRef, PointRef, WorldAxis};
+pub use datum::{AxisBy, AxisRef, DatumAxis, DatumPlane, PlaneBy, PlaneRef, PointRef, WorldAxis};
 pub use name::{MAX_NAME_DEPTH, MAX_NAME_SOURCES, NameRole, PersistentName};
 
 pub use sketch::{
@@ -282,6 +282,9 @@ pub enum RevolveAxis {
     /// A line of the sketch (usually a construction line), from its start
     /// to its end.
     Line { entity: EntityId },
+    /// A datum axis made earlier in the history; it has to lie in the
+    /// sketch's plane.
+    Datum { axis: FeatureId },
 }
 
 fn full_turn() -> Expr {
@@ -374,6 +377,12 @@ pub enum PatternLayout {
         #[serde(default = "z_axis")]
         axis: [Expr; 3],
         angle: Expr,
+        /// A datum axis made earlier in the history to turn about,
+        /// instead of the line through `point` along `axis`. Those two
+        /// are kept, unused, so that going back to them brings the old
+        /// line back.
+        #[serde(default)]
+        about: Option<FeatureId>,
     },
 }
 
@@ -444,6 +453,7 @@ pub enum FeatureKind {
     Pattern(Pattern),
     Boolean(Boolean),
     DatumPlane(DatumPlane),
+    DatumAxis(DatumAxis),
 }
 
 impl FeatureKind {
@@ -463,6 +473,7 @@ impl FeatureKind {
             FeatureKind::Pattern(_) => "pattern",
             FeatureKind::Boolean(_) => "boolean",
             FeatureKind::DatumPlane(_) => "datumPlane",
+            FeatureKind::DatumAxis(_) => "datumAxis",
         }
     }
 
@@ -471,6 +482,7 @@ impl FeatureKind {
     pub fn default_name(&self) -> String {
         match self {
             FeatureKind::DatumPlane(_) => "Plane".to_string(),
+            FeatureKind::DatumAxis(_) => "Axis".to_string(),
             other => {
                 let mut base = other.type_name().to_string();
                 if let Some(first) = base.get_mut(0..1) {
@@ -484,7 +496,7 @@ impl FeatureKind {
     /// True for reference geometry: a feature that makes no body and no
     /// sketch, only something to place other features by.
     pub fn is_datum(&self) -> bool {
-        matches!(self, FeatureKind::DatumPlane(_))
+        matches!(self, FeatureKind::DatumPlane(_) | FeatureKind::DatumAxis(_))
     }
 
     /// The features whose bodies this feature is made from, each with
@@ -515,7 +527,8 @@ impl FeatureKind {
             | FeatureKind::Extrude(_)
             | FeatureKind::Revolve(_)
             | FeatureKind::Boolean(_)
-            | FeatureKind::DatumPlane(_) => None,
+            | FeatureKind::DatumPlane(_)
+            | FeatureKind::DatumAxis(_) => None,
         }
     }
 
@@ -528,13 +541,24 @@ impl FeatureKind {
                 ExtrudeEnd::UpToFace { face } => vec![e.sketch, face.feature],
                 ExtrudeEnd::Distance | ExtrudeEnd::ThroughAll => vec![e.sketch],
             },
-            FeatureKind::Revolve(r) => vec![r.sketch],
+            FeatureKind::Revolve(r) => match r.axis {
+                RevolveAxis::Datum { axis } => vec![r.sketch, axis],
+                RevolveAxis::X | RevolveAxis::Y | RevolveAxis::Line { .. } => vec![r.sketch],
+            },
             FeatureKind::Sketch(sketch) => match &sketch.plane {
                 SketchPlane::Face { face, .. } => vec![face.feature],
                 SketchPlane::Datum { plane, .. } => vec![*plane],
                 SketchPlane::World { .. } => Vec::new(),
             },
             FeatureKind::DatumPlane(datum) => datum.inputs(),
+            FeatureKind::DatumAxis(datum) => datum.inputs(),
+            FeatureKind::Pattern(p) => {
+                let about = match &p.layout {
+                    PatternLayout::Circular { about, .. } => *about,
+                    PatternLayout::Linear { .. } => None,
+                };
+                std::iter::once(p.source).chain(about).collect()
+            }
             FeatureKind::Mirror(m) => std::iter::once(m.source).chain(m.plane).collect(),
             other => other.sources().into_iter().map(|(id, _)| id).collect(),
         }
@@ -609,11 +633,14 @@ impl FeatureKind {
             }
             FeatureKind::Boolean(_) => out = Vec::new(),
             FeatureKind::DatumPlane(d) => out = d.exprs(),
+            FeatureKind::DatumAxis(d) => out = d.exprs(),
             FeatureKind::Pattern(p) => {
                 out = vec![named("count", &p.count)];
                 match &p.layout {
                     PatternLayout::Linear { step } => out.extend(triple("step", step)),
-                    PatternLayout::Circular { point, axis, angle } => {
+                    PatternLayout::Circular {
+                        point, axis, angle, ..
+                    } => {
                         out.extend(triple("point", point));
                         out.extend(triple("axis", axis));
                         out.push(named("angle", angle));
@@ -667,11 +694,14 @@ impl FeatureKind {
             FeatureKind::Mirror(m) => m.point.iter_mut().chain(m.normal.iter_mut()).collect(),
             FeatureKind::Boolean(_) => Vec::new(),
             FeatureKind::DatumPlane(d) => d.exprs_mut(),
+            FeatureKind::DatumAxis(d) => d.exprs_mut(),
             FeatureKind::Pattern(p) => {
                 let mut out = vec![&mut p.count];
                 match &mut p.layout {
                     PatternLayout::Linear { step } => out.extend(step.iter_mut()),
-                    PatternLayout::Circular { point, axis, angle } => {
+                    PatternLayout::Circular {
+                        point, axis, angle, ..
+                    } => {
                         out.extend(point.iter_mut());
                         out.extend(axis.iter_mut());
                         out.push(angle);
@@ -846,15 +876,18 @@ impl Document {
                     ))
                 })?;
             }
-            if let FeatureKind::DatumPlane(datum) = &feature.kind {
-                for name in datum.names() {
-                    name.check().map_err(|reason| {
-                        DocError::Invalid(format!(
-                            "a reference of `{}` is not a name: {reason}",
-                            feature.name
-                        ))
-                    })?;
-                }
+            let referred = match &feature.kind {
+                FeatureKind::DatumPlane(datum) => datum.names(),
+                FeatureKind::DatumAxis(datum) => datum.names(),
+                _ => Vec::new(),
+            };
+            for name in referred {
+                name.check().map_err(|reason| {
+                    DocError::Invalid(format!(
+                        "a reference of `{}` is not a name: {reason}",
+                        feature.name
+                    ))
+                })?;
             }
             if let FeatureKind::Sketch(sketch) = &feature.kind {
                 sketch

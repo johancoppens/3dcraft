@@ -1,4 +1,4 @@
-//! Reference geometry: datum planes as features of the history.
+//! Reference geometry: datum planes and axes as features of the history.
 //!
 //! A datum makes no body. It is placed relative to a base plane, another
 //! datum, or a face, an edge or a vertex of a body, and what it is placed
@@ -11,16 +11,18 @@ use crate::commands::{Run, edit, exprs, fail, feature_ref, feature_result, spec}
 use crate::params::Params;
 use crate::{CommandError, CommandSpec, Session};
 use craft3d_doc::{
-    AxisRef, DatumPlane, Document, Expr, FeatureId, FeatureKind, PersistentName, PlaneBy, PlaneRef,
-    PointRef, WorldAxis, WorldPlane,
+    AxisBy, AxisRef, DatumAxis, DatumPlane, Document, Expr, FeatureId, FeatureKind, PersistentName,
+    PlaneBy, PlaneRef, PointRef, WorldAxis, WorldPlane,
 };
 use craft3d_math::Vec3;
 use craft3d_regen::Datum;
 use serde_json::{Value, json};
 
 pub(crate) static SPECS: &[CommandSpec] = &[
-    spec!("datum.plane", "Datum Plane", r#"{"from": "xy|yz|zx" or face name or datum plane, "distance": expr, "angle": expr, "about": "x|y|z" or [face name, face name], "through": [point, point, point], "replace": id or name, "name": string = automatic}"#,
-        "Adds a datum plane: a plane to sketch on (sketch.create, plane) and to mirror in (feature.mirror, plane). It makes no body. Three ways. At a distance: from and distance; from is a base plane, a flat face by its name from document.inspect (faceNames; its normal points out of the body) or an earlier datum plane (id or name), and the plane keeps the origin and axes of from, moved along its normal. At an angle: from, about and angle; about is a world axis or the straight edge between two faces of one body ([face name, face name]; between two flat faces it points along the cross product of their outward normals in that order), it has to be parallel to from, and the plane is from turned by angle about it (counter-clockwise seen from the tip of the axis) and goes through it. Through three points: through, each point [x, y, z] (expressions) or a vertex name such as \"F1:vertex(6)\" (the vertices of a block are numbered x + 2 y + 4 z, each 0 on the low and 1 on the high side in its own axes: 6 is the corner at low x, high y, high z); the origin is the first point, x points at the second and the three go counter-clockwise round the normal. distance and angle are expressions and follow variables. A reference that is lost after an upstream edit fails the datum with the reason and the name it lost, and what is placed by the datum fails naming it; everything else is still built. replace gives an existing datum plane this definition instead of adding one. The result has the plane under datum: origin, normal, x.", doc: true, datum_plane),
+    spec!("datum.plane", "Datum Plane", r#"{"from": "xy|yz|zx" or face name or datum plane, "distance": expr, "angle": expr, "about": "x|y|z" or [face name, face name] or datum axis, "through": [point, point, point], "replace": id or name, "name": string = automatic}"#,
+        "Adds a datum plane: a plane to sketch on (sketch.create, plane) and to mirror in (feature.mirror, plane). It makes no body. Three ways. At a distance: from and distance; from is a base plane, a flat face by its name from document.inspect (faceNames; its normal points out of the body) or an earlier datum plane (id or name), and the plane keeps the origin and axes of from, moved along its normal. At an angle: from, about and angle; about is a world axis, the straight edge between two faces of one body ([face name, face name]; between two flat faces it points along the cross product of their outward normals in that order) or a datum axis (id or name), it has to be parallel to from, and the plane is from turned by angle about it (counter-clockwise seen from the tip of the axis) and goes through it. Through three points: through, each point [x, y, z] (expressions) or a vertex name such as \"F1:vertex(6)\" (the vertices of a block are numbered x + 2 y + 4 z, each 0 on the low and 1 on the high side in its own axes: 6 is the corner at low x, high y, high z); the origin is the first point, x points at the second and the three go counter-clockwise round the normal. distance and angle are expressions and follow variables. A reference that is lost after an upstream edit fails the datum with the reason and the name it lost, and what is placed by the datum fails naming it; everything else is still built. replace gives an existing datum plane this definition instead of adding one. The result has the plane under datum: origin, normal, x.", doc: true, datum_plane),
+    spec!("datum.axis", "Datum Axis", r#"{"through": [point, point], "edge": [face name, face name], "face": face name, "planes": [plane, plane], "replace": id or name, "name": string = automatic}"#,
+        "Adds a datum axis: a straight line with a direction, to revolve about (feature.revolve, axis), to pattern about (feature.pattern, axis) and to turn a datum plane about (datum.plane, about). It makes no body. Give one of four. through: two points, each [x, y, z] (expressions) or a vertex name; it points from the first to the second. edge: the straight edge between two faces of one body, by the names of the two faces from document.inspect (between two flat faces it points along the cross product of their outward normals in that order). face: the axis of a cylinder, cone or torus face, by its name; it points the way the surface's own axis does. planes: the line two planes meet in, each a base plane (xy, yz, zx), a flat face by its name or a datum plane; it points along the cross product of their normals in that order, and the planes must not be parallel. A reference that is lost after an upstream edit fails the datum with the reason and the name it lost. replace gives an existing datum axis this definition instead of adding one. The result has the line under datum: origin, direction.", doc: true, datum_axis),
 ];
 
 /// A feature that has to be reference geometry of one kind (`wanted` is
@@ -147,13 +149,29 @@ pub(crate) fn plane_value(
     }
 }
 
-/// An axis: a world axis, or the straight edge between two faces.
-fn axis_value(command: &str, key: &str, value: &Value) -> Result<AxisRef, CommandError> {
+/// An axis: a world axis, the straight edge between two faces, or a
+/// datum axis by id or name. A world axis's name wins over a feature of
+/// the same name.
+fn axis_value(
+    doc: &Document,
+    command: &str,
+    key: &str,
+    value: &Value,
+) -> Result<AxisRef, CommandError> {
+    let by_id = |id: FeatureId| -> Result<AxisRef, CommandError> {
+        datum_kind(doc, id, command, key, "datumAxis")?;
+        Ok(AxisRef::Datum { feature: id })
+    };
     match value {
-        Value::String(text) => match WorldAxis::from_name(text) {
-            Some(axis) => Ok(AxisRef::World { axis }),
-            None => fail(format!(
-                "{command}: `{key}`: there is no axis `{}`; give x, y or z, or two face names [face, face] for the edge between them",
+        Value::Number(n) => match n.as_u64().map(FeatureId) {
+            Some(id) => by_id(id),
+            None => fail(format!("{command}: `{key}` must be an axis, got {n}")),
+        },
+        Value::String(text) => match (WorldAxis::from_name(text), feature_named(doc, text)) {
+            (Some(axis), _) => Ok(AxisRef::World { axis }),
+            (None, Some(id)) => by_id(id),
+            (None, None) => fail(format!(
+                "{command}: `{key}`: there is no axis `{}`; give x, y or z, two face names [face, face] for the edge between them, or a datum axis",
                 shown(text)
             )),
         },
@@ -161,7 +179,7 @@ fn axis_value(command: &str, key: &str, value: &Value) -> Result<AxisRef, Comman
             between: between_value(command, key, value)?,
         }),
         _ => fail(format!(
-            "{command}: `{key}` must be an axis: x, y or z, or two face names [face, face] for the edge between them"
+            "{command}: `{key}` must be an axis: x, y or z, two face names [face, face] for the edge between them, or a datum axis"
         )),
     }
 }
@@ -206,6 +224,11 @@ pub(crate) fn datum_json(datum: &Datum) -> Value {
             "origin": vec3(frame.origin()),
             "normal": vec3(frame.z()),
             "x": vec3(frame.x()),
+        }),
+        Datum::Axis { origin, direction } => json!({
+            "kind": "axis",
+            "origin": vec3(*origin),
+            "direction": vec3(*direction),
         }),
     }
 }
@@ -261,7 +284,7 @@ fn datum_plane(session: &mut Session, params: &Value) -> Run {
     let angle = p.expr("angle")?.map(Expr::new);
     let about = match p.get("about") {
         None => None,
-        Some(value) => Some(axis_value(ID, "about", value)?),
+        Some(value) => Some(axis_value(doc, ID, "about", value)?),
     };
     let from = match p.get("from") {
         None => None,
@@ -322,4 +345,69 @@ fn datum_plane(session: &mut Session, params: &Value) -> Run {
         },
     };
     store(session, ID, &p, FeatureKind::DatumPlane(DatumPlane { by }))
+}
+
+/// The one way of placing a datum that is given, of the parameters that
+/// each stand for one.
+fn one_of<'a>(
+    p: &Params<'a>,
+    keys: &[&'static str],
+) -> Result<(&'static str, &'a Value), CommandError> {
+    let command = p.command();
+    let list = || {
+        keys.iter()
+            .map(|key| format!("`{key}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut given = keys.iter().filter_map(|key| Some((*key, p.get(key)?)));
+    match (given.next(), given.next()) {
+        (Some(one), None) => Ok(one),
+        (None, _) => fail(format!(
+            "{command}: missing parameter: give one of {}",
+            list()
+        )),
+        (Some(_), Some(_)) => fail(format!("{command}: give one of {}, not several", list())),
+    }
+}
+
+fn datum_axis(session: &mut Session, params: &Value) -> Run {
+    const ID: &str = "datum.axis";
+    let p = Params::new(
+        ID,
+        params,
+        &["through", "edge", "face", "planes", "replace", "name"],
+    )?;
+    let doc = session.document()?.history.current();
+    let by = match one_of(&p, &["through", "edge", "face", "planes"])? {
+        ("through", value) => {
+            let Some([a, b]) = value.as_array().map(Vec::as_slice) else {
+                return fail(format!("{ID}: `through` must be two points [point, point]"));
+            };
+            AxisBy::TwoPoints {
+                points: [
+                    point_value(&p, "through", a)?,
+                    point_value(&p, "through", b)?,
+                ],
+            }
+        }
+        ("edge", value) => AxisBy::Edge {
+            between: between_value(ID, "edge", value)?,
+        },
+        ("face", value) => AxisBy::Face {
+            face: face_value(ID, "face", value)?,
+        },
+        (_, value) => {
+            let Some([a, b]) = value.as_array().map(Vec::as_slice) else {
+                return fail(format!("{ID}: `planes` must be two planes [plane, plane]"));
+            };
+            AxisBy::TwoPlanes {
+                planes: [
+                    plane_value(doc, ID, "planes", a)?,
+                    plane_value(doc, ID, "planes", b)?,
+                ],
+            }
+        }
+    };
+    store(session, ID, &p, FeatureKind::DatumAxis(DatumAxis { by }))
 }

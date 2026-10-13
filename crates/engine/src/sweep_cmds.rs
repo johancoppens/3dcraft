@@ -4,23 +4,40 @@
 use crate::commands::{Run, add_sweep, combine_param, doc_error, fail, feature_ref, spec};
 use crate::params::Params;
 use crate::{CommandSpec, Session};
-use craft3d_doc::{EntityId, Expr, FeatureKind, Revolve, RevolveAxis};
+use craft3d_doc::{Document, EntityId, Expr, FeatureId, FeatureKind, Revolve, RevolveAxis};
 use serde_json::Value;
 
 pub(crate) static SPECS: &[CommandSpec] = &[
-    spec!("feature.revolve", "Revolve", r#"{"sketch": id or name, "axis": "x" | "y" | line id, "angle": expr = "360 deg", "symmetric": boolean = false, "cut": id or name, "join": id or name, "intersect": id or name, "name": string = automatic}"#,
-        "Adds a solid by turning the closed profiles of a sketch about an axis in the sketch's plane: its x or y axis, or one of its lines (\"e7\"; a construction line does not become part of the profile). The profiles may touch the axis but not cross it. angle is counter-clockwise seen from the tip of the axis (for a line: from its start to its end); a negative angle goes the other way, symmetric puts half on each side of the sketch plane, and 360 deg closes the body. cut, join and intersect combine the solid with a body at once, as for feature.extrude.", doc: true, feature_revolve),
+    spec!("feature.revolve", "Revolve", r#"{"sketch": id or name, "axis": "x" | "y" | line id | datum axis, "angle": expr = "360 deg", "symmetric": boolean = false, "cut": id or name, "join": id or name, "intersect": id or name, "name": string = automatic}"#,
+        "Adds a solid by turning the closed profiles of a sketch about an axis in the sketch's plane: its x or y axis, one of its lines (\"e7\"; a construction line does not become part of the profile), or a datum axis that lies in the sketch's plane (its name or id; the solid follows the datum). The profiles may touch the axis but not cross it. angle is counter-clockwise seen from the tip of the axis (for a line: from its start to its end; for a datum axis: along its direction); a negative angle goes the other way, symmetric puts half on each side of the sketch plane, and 360 deg closes the body. cut, join and intersect combine the solid with a body at once, as for feature.extrude.", doc: true, feature_revolve),
 ];
 
-/// `"x"`, `"y"`, or a line of the sketch as `"e7"` or `7`.
+/// `"x"`, `"y"`, a line of the sketch as `"e7"` or `7`, or a datum axis
+/// by its name or id (`"F3"`). The sketch's own axes and lines win over a
+/// feature of the same name.
 pub(crate) fn revolve_axis(
+    doc: &Document,
     command: &str,
     value: &Value,
 ) -> Result<RevolveAxis, crate::CommandError> {
     let wrong = || {
         fail(format!(
-            "{command}: `axis` must be \"x\", \"y\" or a line of the sketch such as \"e7\""
+            "{command}: `axis` must be \"x\", \"y\", a line of the sketch such as \"e7\", or a datum axis"
         ))
+    };
+    let datum = |text: &str| {
+        let feature = doc.feature_by_name(text).or_else(|| {
+            let id = text.strip_prefix('F')?.parse().ok()?;
+            doc.feature(FeatureId(id))
+        })?;
+        Some(match feature.kind {
+            FeatureKind::DatumAxis(_) => Ok(RevolveAxis::Datum { axis: feature.id }),
+            _ => fail(format!(
+                "{command}: `axis`: `{}` is a {}, not a datum axis",
+                feature.name,
+                feature.kind.type_name()
+            )),
+        })
     };
     match value {
         Value::String(text) => match text.as_str() {
@@ -30,7 +47,7 @@ pub(crate) fn revolve_axis(
                 Some(id) => Ok(RevolveAxis::Line {
                     entity: EntityId(id),
                 }),
-                None => wrong(),
+                None => datum(other).unwrap_or_else(wrong),
             },
         },
         Value::Number(n) => match n.as_u64() {
@@ -62,7 +79,7 @@ fn feature_revolve(session: &mut Session, params: &Value) -> Run {
     let doc = session.document()?.history.current();
     let sketch = feature_ref(doc, &p, ID, "sketch")?;
     doc.sketch(sketch).map_err(doc_error(ID))?;
-    let axis = revolve_axis(ID, p.get("axis").ok_or_else(|| p.missing("axis"))?)?;
+    let axis = revolve_axis(doc, ID, p.get("axis").ok_or_else(|| p.missing("axis"))?)?;
     let combine = combine_param(doc, &p, ID)?;
     let kind = FeatureKind::Revolve(Revolve {
         sketch,

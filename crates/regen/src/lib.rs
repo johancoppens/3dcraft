@@ -418,7 +418,9 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
         FeatureKind::Extrude(_) => return Err("an extrusion needs its sketch".to_string()),
         FeatureKind::Revolve(_) => return Err("a revolution needs its sketch".to_string()),
         // Placed in `features`; reference geometry is not a body.
-        FeatureKind::DatumPlane(_) => return Err("a datum has no body".to_string()),
+        FeatureKind::DatumPlane(_) | FeatureKind::DatumAxis(_) => {
+            return Err("a datum has no body".to_string());
+        }
         // Built in `features`, which knows the earlier bodies.
         FeatureKind::Transform(_)
         | FeatureKind::Mirror(_)
@@ -549,6 +551,17 @@ fn build_feature(
         match datum::plane(doc, variables, plane, earlier) {
             Ok(frame) => {
                 placed = Some(Datum::Plane(frame));
+                (Status::Ok, None)
+            }
+            Err(reason) => (Status::Failed(reason), None),
+        }
+    } else if let FeatureKind::DatumAxis(axis) = &feature.kind {
+        match datum::axis(doc, variables, axis, earlier) {
+            Ok(line) => {
+                placed = Some(Datum::Axis {
+                    origin: line.origin,
+                    direction: line.direction,
+                });
                 (Status::Ok, None)
             }
             Err(reason) => (Status::Failed(reason), None),

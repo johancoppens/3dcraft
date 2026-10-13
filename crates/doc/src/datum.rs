@@ -1,6 +1,6 @@
-//! Reference geometry: planes that are features of the history.
+//! Reference geometry: planes and axes that are features of the history.
 //!
-//! A datum makes no body. It is a plane placed relative to something
+//! A datum makes no body. It is a plane or a line placed relative to something
 //! else, and that something is referred to the way every feature refers
 //! to another: a base plane by its name, a datum by the id of its
 //! feature, a face of a body by its persistent name, an edge by the two
@@ -59,6 +59,8 @@ pub enum AxisRef {
     /// the two faces. When both faces are flat the line points along the
     /// cross product of their outward normals, in the order given.
     Edge { between: [PersistentName; 2] },
+    /// A datum axis made earlier in the history.
+    Datum { feature: FeatureId },
 }
 
 /// A point something is placed relative to.
@@ -111,6 +113,87 @@ pub struct DatumPlane {
     pub by: PlaneBy,
 }
 
+/// How a datum axis is placed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum AxisBy {
+    /// Through two different points, from the first to the second.
+    TwoPoints { points: [PointRef; 2] },
+    /// Along the straight edge two faces of one body meet in; see
+    /// [`AxisRef::Edge`] for which way it points.
+    Edge { between: [PersistentName; 2] },
+    /// The axis of a face that has one: a cylinder, a cone or a torus,
+    /// by the face's persistent name. It points the way the surface's own
+    /// axis does: for a primitive along its `axis`, for a face swept from
+    /// a circle along the sketch's normal, for a revolved face along the
+    /// revolution's axis.
+    Face { face: PersistentName },
+    /// The line two planes meet in, along the cross product of their
+    /// normals in the order given. The planes must not be parallel.
+    TwoPlanes { planes: [PlaneRef; 2] },
+}
+
+impl AxisBy {
+    /// The definition's name, as in command results.
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            AxisBy::TwoPoints { .. } => "twoPoints",
+            AxisBy::Edge { .. } => "edge",
+            AxisBy::Face { .. } => "face",
+            AxisBy::TwoPlanes { .. } => "twoPlanes",
+        }
+    }
+}
+
+/// A straight line as a feature: something to revolve and to pattern
+/// about, and to turn a datum plane about. It has a direction.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DatumAxis {
+    pub by: AxisBy,
+}
+
+impl DatumAxis {
+    /// Every persistent name the axis refers to, in a fixed order.
+    pub fn names(&self) -> Vec<&PersistentName> {
+        match &self.by {
+            AxisBy::TwoPoints { points } => points.iter().flat_map(PointRef::names).collect(),
+            AxisBy::Edge { between } => between.iter().collect(),
+            AxisBy::Face { face } => vec![face],
+            AxisBy::TwoPlanes { planes } => planes.iter().flat_map(PlaneRef::names).collect(),
+        }
+    }
+
+    /// Every feature the axis is placed relative to, in a fixed order.
+    pub fn inputs(&self) -> Vec<FeatureId> {
+        match &self.by {
+            AxisBy::TwoPoints { points } => points.iter().flat_map(PointRef::inputs).collect(),
+            AxisBy::Edge { between } => between.iter().map(|face| face.feature).collect(),
+            AxisBy::Face { face } => vec![face.feature],
+            AxisBy::TwoPlanes { planes } => planes.iter().flat_map(PlaneRef::inputs).collect(),
+        }
+    }
+
+    pub fn exprs(&self) -> Vec<(String, &Expr)> {
+        match &self.by {
+            AxisBy::TwoPoints { points } => points
+                .iter()
+                .enumerate()
+                .flat_map(|(i, point)| point.exprs(&format!("through.{i}")))
+                .collect(),
+            AxisBy::Edge { .. } | AxisBy::Face { .. } | AxisBy::TwoPlanes { .. } => Vec::new(),
+        }
+    }
+
+    pub(crate) fn exprs_mut(&mut self) -> Vec<&mut Expr> {
+        match &mut self.by {
+            AxisBy::TwoPoints { points } => {
+                points.iter_mut().flat_map(PointRef::exprs_mut).collect()
+            }
+            AxisBy::Edge { .. } | AxisBy::Face { .. } | AxisBy::TwoPlanes { .. } => Vec::new(),
+        }
+    }
+}
+
 impl PlaneRef {
     pub(crate) fn names(&self) -> Vec<&PersistentName> {
         match self {
@@ -131,7 +214,7 @@ impl PlaneRef {
 impl AxisRef {
     pub(crate) fn names(&self) -> Vec<&PersistentName> {
         match self {
-            AxisRef::World { .. } => Vec::new(),
+            AxisRef::World { .. } | AxisRef::Datum { .. } => Vec::new(),
             AxisRef::Edge { between } => between.iter().collect(),
         }
     }
@@ -140,6 +223,7 @@ impl AxisRef {
         match self {
             AxisRef::World { .. } => Vec::new(),
             AxisRef::Edge { between } => between.iter().map(|face| face.feature).collect(),
+            AxisRef::Datum { feature } => vec![*feature],
         }
     }
 }

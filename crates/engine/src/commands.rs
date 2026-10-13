@@ -77,7 +77,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("feature.extrude", "Extrude", r#"{"sketch": id or name, "distance": expr, "throughAll": boolean = false, "upTo": face name, "symmetric": boolean = false, "reversed": boolean = false, "cut": id or name, "join": id or name, "intersect": id or name, "name": string = automatic}"#,
         "Adds a solid by sweeping the closed profiles of a sketch along its normal: loops of lines and arcs, and circles; a loop inside another is a hole. Give one end: distance (a negative one goes the other way; symmetric puts half on each side of the sketch plane), throughAll (past every body the features before this one have built that lies in the way; symmetric goes through on both sides) or upTo (a face name from document.inspect: the solid ends on that face's surface, flat or curved, and follows it when the face moves). reversed goes against the sketch's normal. With cut, join or intersect (a feature with a body) the solid is combined with that body at once: two features are added in one undo step, the extrusion and a boolean, and the result is the boolean's (the one to build on; name applies to it) with the extrusion under sweep. A hole through a plate: sketch a circle on its top, extrude with throughAll, reversed and cut.", doc: true, feature_extrude),
     spec!("feature.edit", "Edit Feature", r#"{"feature": id or name, "size": [expr; 3], "position": [expr; 3], "axis": [number; 3], "angle": expr, "radius": expr, "height": expr, "major": expr, "minor": expr, "distance": expr, "throughAll": boolean, "upTo": face name, "symmetric": boolean, "reversed": boolean, "translate": [expr; 3], "pivot": [expr; 3], "point": [expr; 3], "normal": [number; 3], "plane": datum plane id or name, "step": [expr; 3], "count": expr, "keep": boolean, "keepTool": boolean}"#,
-        "Changes parameters of a feature; give only the ones to change. Which ones a feature has depends on its kind (document.inspect shows them under params). The end of an extrusion is changed by giving the new one: distance, throughAll or upTo. A mirror is pointed at a datum plane with plane, and back at a plane of its own with normal or point. A datum plane's distance or angle is changed here; what it is placed by, with datum.plane and replace.", doc: true, feature_edit),
+        "Changes parameters of a feature; give only the ones to change. Which ones a feature has depends on its kind (document.inspect shows them under params). The end of an extrusion is changed by giving the new one: distance, throughAll or upTo. A mirror is pointed at a datum plane with plane, and back at a plane of its own with normal or point; a circular pattern at a datum axis with axis (its name or id), and back at a line of its own with axis as a direction or point. A datum plane's distance or angle is changed here; what it is placed by, with datum.plane and replace.", doc: true, feature_edit),
     spec!("feature.rename", "Rename Feature", r#"{"feature": id or name, "name": string}"#,
         "Renames a feature.", doc: true, feature_rename),
     spec!("feature.suppress", "Suppress Feature", r#"{"feature": id or name, "suppressed": boolean = true}"#,
@@ -865,6 +865,31 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
         "feature",
     )?;
     // Validate the shape of everything given before touching anything.
+    // An axis given as a string is a datum axis, for a circular pattern.
+    // (For every other kind an axis is a direction, and a string is
+    // refused as one.)
+    let circular = matches!(
+        session
+            .document()?
+            .history
+            .current()
+            .feature(id)
+            .map(|f| &f.kind),
+        Some(FeatureKind::Pattern(craft3d_doc::Pattern {
+            layout: PatternLayout::Circular { .. },
+            ..
+        }))
+    );
+    let new_axis = match p.get("axis") {
+        Some(Value::String(_)) if circular => Some(crate::datum_cmds::datum_ref(
+            session.document()?.history.current(),
+            &p,
+            "feature.edit",
+            "axis",
+            "datumAxis",
+        )?),
+        _ => None,
+    };
     for key in [
         "size",
         "position",
@@ -875,6 +900,9 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
         "normal",
         "step",
     ] {
+        if key == "axis" && new_axis.is_some() {
+            continue;
+        }
         p.expr3(key)?;
     }
     for key in [
@@ -1006,6 +1034,11 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
                 ("keep", Slot::Flag(&mut m.keep)),
             ],
         ),
+        FeatureKind::DatumAxis(_) => {
+            return fail(
+                "feature.edit: a datum axis has no parameter to change here; give it another definition with datum.axis and replace",
+            );
+        }
         FeatureKind::DatumPlane(datum) => (
             "datum plane",
             match &mut datum.by {
@@ -1025,7 +1058,9 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
                     slots.push(("step", Slot::Triple(step)));
                     ("linear pattern", slots)
                 }
-                PatternLayout::Circular { point, axis, angle } => {
+                PatternLayout::Circular {
+                    point, axis, angle, ..
+                } => {
                     slots.push(("point", Slot::Triple(point)));
                     slots.push(("axis", Slot::Triple(axis)));
                     slots.push(("angle", Slot::One(angle)));
@@ -1043,6 +1078,8 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
     }
     for (key, slot) in own {
         match slot {
+            // Applied below: a datum axis instead of point and axis.
+            Slot::Triple(_) if key == "axis" && new_axis.is_some() => {}
             Slot::Triple(target) => {
                 if let Some(value) = p.expr3(key)? {
                     *target = exprs(value);
@@ -1060,6 +1097,31 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
             }
             Slot::Elsewhere => {}
         }
+    }
+    match (&mut kind, new_axis) {
+        (
+            FeatureKind::Pattern(craft3d_doc::Pattern {
+                layout: PatternLayout::Circular { about, .. },
+                ..
+            }),
+            new_axis,
+        ) => match new_axis {
+            Some(_) if p.get("point").is_some() => {
+                return fail(
+                    "feature.edit: give either `axis` as a datum axis or `axis` as a direction and `point`, not both",
+                );
+            }
+            Some(axis) => *about = Some(axis),
+            // A line of its own again when a direction or point is given.
+            None if p.get("axis").is_some() || p.get("point").is_some() => *about = None,
+            None => {}
+        },
+        (_, Some(_)) => {
+            return fail(
+                "feature.edit: `axis` as a datum axis goes with a circular pattern; this feature's `axis` is a direction [x, y, z]",
+            );
+        }
+        (_, None) => {}
     }
     if let FeatureKind::Mirror(mirror) = &mut kind {
         // A plane of its own again when point or normal is given.

@@ -192,6 +192,7 @@ fn instances(
                     point,
                     axis,
                     angle: step,
+                    about,
                 } => {
                     let step = angle(doc, variables, "angle", step)?;
                     if !step.is_finite() {
@@ -215,8 +216,18 @@ fn instances(
                             ));
                         }
                     }
-                    let point = lengths(doc, variables, "point", point)?;
-                    let axis = direction(variables, "axis", axis)?;
+                    // About a datum axis, or about the line through a
+                    // point along a direction.
+                    let (point, axis) = match about {
+                        Some(about) => {
+                            let line = crate::datum::datum_axis(doc, earlier, *about, "axis")?;
+                            (line.origin, line.direction)
+                        }
+                        None => (
+                            lengths(doc, variables, "point", point)?,
+                            direction(variables, "axis", axis)?,
+                        ),
+                    };
                     for i in 0..n {
                         maps.push(if i == 0 {
                             Transform::IDENTITY

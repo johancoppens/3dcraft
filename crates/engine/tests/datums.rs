@@ -1371,8 +1371,13 @@ fn bad_parameters_are_refused() {
             "there is no axis `w`",
         ),
         (
-            json!({"from": "xy", "about": 7, "angle": 1}),
+            json!({"from": "xy", "about": {}, "angle": 1}),
             "`about` must be an axis",
+        ),
+        // A number is the id of a datum axis.
+        (
+            json!({"from": "xy", "about": 7, "angle": 1}),
+            "there is no feature F7",
         ),
         (
             json!({"from": "xy", "about": ["F1:face(1)"], "angle": 1}),
@@ -1495,4 +1500,895 @@ fn bad_parameters_are_refused() {
     );
     let flat = run(&mut s, "sketch.inspect", json!({"sketch": "Flat"}));
     assert_eq!(flat["plane"]["type"], "world");
+}
+
+// ---------------------------------------------------------------------- axes
+
+/// How far `point` is from the line a datum axis reports.
+fn off_axis(lies: &Value, point: V) -> f64 {
+    let to = sub(point, vector(&lies["origin"]));
+    let d = cross(to, vector(&lies["direction"]));
+    dot(d, d).sqrt()
+}
+
+fn axis(session: &mut Session, params: Value) -> Value {
+    built(session, "datum.axis", params)["datum"].clone()
+}
+
+/// Every way of placing a datum axis puts it where the closed form says:
+/// the points it goes through and the way it points.
+#[test]
+fn a_datum_axis_lies_where_its_definition_puts_it() {
+    for k in SCALES {
+        let mut s = session();
+        new_document(&mut s, k);
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "up", "expr": 3.0 * k}),
+        );
+        built(
+            &mut s,
+            "feature.block",
+            json!({"size": [10.0 * k, 8.0 * k, 6.0 * k], "name": "Base"}),
+        );
+        built(
+            &mut s,
+            "feature.cylinder",
+            json!({"radius": 3.0 * k, "height": 5.0 * k, "position": [50.0 * k, 20.0 * k, 0],
+                   "axis": [0, 1, 0], "name": "Rod"}),
+        );
+        built(
+            &mut s,
+            "feature.cone",
+            json!({"radius": 2.0 * k, "height": 4.0 * k, "position": [0, -30.0 * k, 0],
+                   "name": "Cone"}),
+        );
+        built(
+            &mut s,
+            "feature.torus",
+            json!({"major": 5.0 * k, "minor": k, "position": [-40.0 * k, 0, 0],
+                   "axis": [1, 0, 0], "name": "Tyre"}),
+        );
+        let slack = 1e-12 * k;
+        // Through two points, from the first to the second.
+        let lies = axis(
+            &mut s,
+            json!({"through": [[k, 2.0 * k, "up"], [k, 2.0 * k, 7.0 * k]], "name": "Post"}),
+        );
+        assert_near(vector(&lies["origin"]), [k, 2.0 * k, 3.0 * k], 0.0, "from");
+        assert_near(vector(&lies["direction"]), [0.0, 0.0, 1.0], 0.0, "to");
+        // Through two corners of the block: its long diagonal.
+        let lies = axis(
+            &mut s,
+            json!({"through": ["F1:vertex(0)", "F1:vertex(7)"], "name": "Diagonal"}),
+        );
+        assert_near(
+            vector(&lies["direction"]),
+            unit([10.0, 8.0, 6.0]),
+            1e-15,
+            "diagonal",
+        );
+        assert!(off_axis(&lies, [5.0 * k, 4.0 * k, 3.0 * k]) <= slack);
+        // Along the edge between the top and the right face: z cross x.
+        let lies = axis(
+            &mut s,
+            json!({"edge": ["F1:face(1)", "F1:face(5)"], "name": "Hinge"}),
+        );
+        assert_near(vector(&lies["direction"]), [0.0, 1.0, 0.0], 0.0, "hinge");
+        assert!(off_axis(&lies, [10.0 * k, 0.0, 6.0 * k]) <= slack);
+        let lies = axis(
+            &mut s,
+            json!({"edge": ["F1:face(5)", "F1:face(1)"], "name": "Hinge back"}),
+        );
+        assert_near(vector(&lies["direction"]), [0.0, -1.0, 0.0], 0.0, "back");
+        // The axes of a cylinder, a cone and a torus.
+        let lies = axis(&mut s, json!({"face": "F2:face(0)", "name": "Rod axis"}));
+        assert_near(vector(&lies["direction"]), [0.0, 1.0, 0.0], 1e-15, "rod");
+        assert!(off_axis(&lies, [50.0 * k, 0.0, 0.0]) <= slack);
+        let lies = axis(&mut s, json!({"face": "F3:face(0)", "name": "Cone axis"}));
+        assert_near(vector(&lies["direction"]), [0.0, 0.0, 1.0], 1e-15, "cone");
+        assert!(off_axis(&lies, [0.0, -30.0 * k, 9.0 * k]) <= slack);
+        let lies = axis(&mut s, json!({"face": "F4:face(0)", "name": "Tyre axis"}));
+        assert_near(vector(&lies["direction"]), [1.0, 0.0, 0.0], 1e-15, "tyre");
+        assert!(off_axis(&lies, [0.0; 3]) <= slack);
+        // Where two planes meet: along the cross product of their normals.
+        let lies = axis(&mut s, json!({"planes": ["xy", "yz"], "name": "World y"}));
+        assert_near(
+            vector(&lies["direction"]),
+            [0.0, 1.0, 0.0],
+            0.0,
+            "z cross x",
+        );
+        assert_near(vector(&lies["origin"]), [0.0; 3], 0.0, "through the origin");
+        built(
+            &mut s,
+            "datum.plane",
+            json!({"from": "xy", "distance": "up + 4 * 1", "name": "Shelf"}),
+        );
+        // z = up + 4 and the right face x = 10: nearest the shelf's origin.
+        let lies = axis(
+            &mut s,
+            json!({"planes": ["Shelf", "F1:face(5)"], "name": "Rail"}),
+        );
+        assert_near(vector(&lies["direction"]), [0.0, 1.0, 0.0], 0.0, "rail");
+        let rail = |up: f64| [10.0 * k, 0.0, up + 4.0];
+        assert_near(vector(&lies["origin"]), rail(3.0 * k), slack, "rail");
+        // Two planes at an angle: the tilted plane through x meets the
+        // plane y = 2 along x, at height 2 tan 40.
+        built(
+            &mut s,
+            "datum.plane",
+            json!({"from": "xy", "about": "x", "angle": "40 deg", "name": "Ramp"}),
+        );
+        built(
+            &mut s,
+            "datum.plane",
+            json!({"from": "zx", "distance": 2.0 * k, "name": "Fence"}),
+        );
+        let lies = axis(
+            &mut s,
+            json!({"planes": ["Ramp", "Fence"], "name": "Ridge"}),
+        );
+        // (0, -sin, cos) cross (0, 1, 0) = (-cos, 0, 0).
+        assert_near(vector(&lies["direction"]), [-1.0, 0.0, 0.0], 1e-15, "ridge");
+        let height = 2.0 * k * 40.0_f64.to_radians().tan();
+        assert!(off_axis(&lies, [0.0, 2.0 * k, height]) <= slack);
+        assert!(off_axis(&lies, [7.0 * k, 2.0 * k, height]) <= slack);
+        // A plane turned about a datum axis goes through it: xy stood up
+        // on the rail.
+        built(
+            &mut s,
+            "datum.plane",
+            json!({"from": "xy", "about": "Rail", "angle": "90 deg", "name": "Wall"}),
+        );
+        let wall = datum(&mut s, "Wall");
+        // z turned a quarter counter-clockwise about +y is +x.
+        assert_near(vector(&wall["normal"]), [1.0, 0.0, 0.0], 1e-15, "wall");
+        assert_close(&wall["origin"][0], 10.0 * k, 1e-12, "through the rail");
+        // The variable moves the post and the shelf, the rail with the
+        // shelf and the wall stays on the rail.
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "up", "expr": 5.0 * k}),
+        );
+        assert_close(&datum(&mut s, "Post")["origin"][2], 5.0 * k, 1e-15, "post");
+        assert_near(
+            vector(&datum(&mut s, "Rail")["origin"]),
+            rail(5.0 * k),
+            slack,
+            "moved rail",
+        );
+        assert_close(&datum(&mut s, "Wall")["origin"][0], 10.0 * k, 1e-12, "wall");
+        assert_eq!(inspect(&mut s)["ok"], true);
+        assert_sound(&mut s, "axes");
+    }
+}
+
+/// A ring turned about a datum axis: Pappus, the axis is where the datum
+/// is, and a part turn goes counter-clockwise seen from its tip.
+#[test]
+fn a_revolve_about_a_datum_axis_is_a_known_ring() {
+    for k in SCALES {
+        let mut s = session();
+        new_document(&mut s, k);
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "far", "expr": 20.0 * k}),
+        );
+        // The line x = far in the xy plane, pointing along +y.
+        built(
+            &mut s,
+            "datum.axis",
+            json!({"through": [["far", 0, 0], ["far", k, 0]], "name": "Spindle"}),
+        );
+        run(&mut s, "sketch.create", json!({"name": "Section"}));
+        let (r1, r2, h) = (2.0 * k, 5.0 * k, 3.0 * k);
+        rectangle(
+            &mut s,
+            "Section",
+            (20.0 * k + r1, 20.0 * k + r2),
+            (k, k + h),
+        );
+        built(
+            &mut s,
+            "feature.revolve",
+            json!({"sketch": "Section", "axis": "Spindle", "name": "Ring"}),
+        );
+        let tube = |r1: f64, r2: f64| {
+            (
+                PI * (r2 * r2 - r1 * r1) * h,
+                2.0 * PI * (r2 * r2 - r1 * r1) + 2.0 * PI * (r1 + r2) * h,
+            )
+        };
+        let (volume, area) = tube(r1, r2);
+        let ring = body(&mut s, "Ring");
+        assert_measures(&ring, volume, area, 1e-11, "ring");
+        assert_near(
+            vector(&ring["centroid"]),
+            [20.0 * k, k + h / 2.0, 0.0],
+            1e-9 * k,
+            "about the spindle",
+        );
+        assert_sound(&mut s, "ring");
+        // A quarter turn: a quarter of the volume, and its centre where a
+        // quarter of an annulus has it, turned from +x towards -z (counter-
+        // clockwise seen from the tip of +y).
+        built(
+            &mut s,
+            "feature.edit",
+            json!({"feature": "Ring", "angle": "90 deg"}),
+        );
+        let quarter = body(&mut s, "Ring");
+        assert_close(&quarter["volume"], volume / 4.0, 1e-11, "quarter");
+        assert_close(
+            &quarter["area"],
+            area / 4.0 + 2.0 * (r2 - r1) * h,
+            1e-11,
+            "quarter area",
+        );
+        let alpha = PI / 2.0;
+        let radial = 2.0 / 3.0 * (r2.powi(3) - r1.powi(3)) / (r2 * r2 - r1 * r1)
+            * (alpha / 2.0).sin()
+            / (alpha / 2.0);
+        let root = 0.5_f64.sqrt();
+        assert_near(
+            vector(&quarter["centroid"]),
+            [20.0 * k + radial * root, k + h / 2.0, -radial * root],
+            1e-9 * k,
+            "quarter centre",
+        );
+        assert_sound(&mut s, "quarter");
+        built(
+            &mut s,
+            "feature.edit",
+            json!({"feature": "Ring", "angle": "360 deg"}),
+        );
+        // The spindle moves towards the section: the ring gets thinner
+        // round a nearer axis.
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "far", "expr": 18.0 * k}),
+        );
+        let (volume, area) = tube(r1 + 2.0 * k, r2 + 2.0 * k);
+        let ring = body(&mut s, "Ring");
+        assert_measures(&ring, volume, area, 1e-11, "moved ring");
+        assert_near(
+            vector(&ring["centroid"]),
+            [18.0 * k, k + h / 2.0, 0.0],
+            1e-9 * k,
+            "about the moved spindle",
+        );
+        assert_sound(&mut s, "moved ring");
+        // About an edge of a block that lies in the sketch plane: the top
+        // right edge of a block whose top is at z = 0.
+        built(
+            &mut s,
+            "feature.block",
+            json!({"size": [10.0 * k, 10.0 * k, 5.0 * k],
+                   "position": [-60.0 * k, 0, -5.0 * k], "name": "Base"}),
+        );
+        let base = feature(&mut s, "Base")["id"].as_str().unwrap().to_string();
+        built(
+            &mut s,
+            "datum.axis",
+            json!({"edge": [format!("{base}:face(1)"), format!("{base}:face(5)")], "name": "Hinge"}),
+        );
+        run(&mut s, "sketch.create", json!({"name": "Beside"}));
+        rectangle(
+            &mut s,
+            "Beside",
+            (-50.0 * k + r1, -50.0 * k + r2),
+            (k, k + h),
+        );
+        built(
+            &mut s,
+            "feature.revolve",
+            json!({"sketch": "Beside", "axis": "Hinge", "name": "Collar"}),
+        );
+        let (volume, area) = tube(r1, r2);
+        let collar = body(&mut s, "Collar");
+        assert_measures(&collar, volume, area, 1e-11, "collar");
+        assert_near(
+            vector(&collar["centroid"]),
+            [-50.0 * k, k + h / 2.0, 0.0],
+            1e-9 * k,
+            "about the edge",
+        );
+        // An axis that leaves the sketch plane cannot be turned about.
+        built(
+            &mut s,
+            "datum.axis",
+            json!({"replace": "Spindle", "through": [["far", 0, k], ["far", k, k]]}),
+        );
+        let reason = feature(&mut s, "Ring")["error"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            reason.starts_with(
+                "axis: `Spindle` does not lie in the plane of sketch `Section` (it is "
+            ) && reason.contains("beside it"),
+            "{reason}"
+        );
+        built(
+            &mut s,
+            "datum.axis",
+            json!({"replace": "Spindle", "through": [["far", 0, 0], ["far", k, k]]}),
+        );
+        let reason = feature(&mut s, "Ring")["error"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            reason.contains("does not lie in the plane of sketch `Section` (it makes 4")
+                && reason.contains(" deg with it)"),
+            "{reason}"
+        );
+        // Nothing else is touched by it, and putting the axis back
+        // brings the ring back.
+        assert_eq!(feature(&mut s, "Collar")["status"], "ok");
+        built(
+            &mut s,
+            "datum.axis",
+            json!({"replace": "Spindle", "through": [["far", 0, 0], ["far", k, 0]]}),
+        );
+        assert_eq!(body(&mut s, "Ring")["volume"], ring["volume"]);
+    }
+}
+
+/// Instances turned about a datum axis go round it: the whole has its
+/// centre on the axis.
+#[test]
+fn a_pattern_about_a_datum_axis_goes_round_it() {
+    for k in SCALES {
+        let mut s = session();
+        new_document(&mut s, k);
+        built(
+            &mut s,
+            "feature.cylinder",
+            json!({"radius": 2.0 * k, "height": 3.0 * k, "position": [10.0 * k, 5.0 * k, 0],
+                   "name": "Hub"}),
+        );
+        built(
+            &mut s,
+            "datum.axis",
+            json!({"face": "F1:face(0)", "name": "Centre"}),
+        );
+        // A unit cube whose centre is 4.5 from the hub's axis.
+        built(
+            &mut s,
+            "feature.block",
+            json!({"size": [k, k, k], "position": [14.0 * k, 4.5 * k, 0], "name": "Tooth"}),
+        );
+        built(
+            &mut s,
+            "feature.pattern",
+            json!({"source": "Tooth", "count": 4, "angle": "90 deg", "axis": "Centre",
+                   "name": "Teeth"}),
+        );
+        let teeth = body(&mut s, "Teeth");
+        assert_measures(&teeth, 4.0 * k * k * k, 24.0 * k * k, 1e-11, "teeth");
+        assert_near(
+            vector(&teeth["centroid"]),
+            [10.0 * k, 5.0 * k, 0.5 * k],
+            1e-9 * k,
+            "on the axis",
+        );
+        assert_bbox(
+            &teeth,
+            ([5.0 * k, 0.0, 0.0], [15.0 * k, 10.0 * k, k]),
+            1e-9 * k,
+            "round the hub",
+        );
+        assert_sound(&mut s, "teeth");
+        // Three of them a third of a turn apart.
+        built(
+            &mut s,
+            "feature.edit",
+            json!({"feature": "Teeth", "count": 3, "angle": "120 deg"}),
+        );
+        let teeth = body(&mut s, "Teeth");
+        assert_measures(&teeth, 3.0 * k * k * k, 18.0 * k * k, 1e-11, "three");
+        assert_near(
+            vector(&teeth["centroid"]),
+            [10.0 * k, 5.0 * k, 0.5 * k],
+            1e-9 * k,
+            "three on the axis",
+        );
+        built(
+            &mut s,
+            "feature.edit",
+            json!({"feature": "Teeth", "count": 4, "angle": "90 deg"}),
+        );
+        // The hub moves: its axis with it, and the teeth go round where
+        // it is now (the first tooth stays where it was drawn).
+        built(
+            &mut s,
+            "feature.edit",
+            json!({"feature": "Hub", "position": [20.0 * k, 5.0 * k, 0]}),
+        );
+        let teeth = body(&mut s, "Teeth");
+        assert_measures(&teeth, 4.0 * k * k * k, 24.0 * k * k, 1e-11, "moved");
+        assert_near(
+            vector(&teeth["centroid"]),
+            [20.0 * k, 5.0 * k, 0.5 * k],
+            1e-9 * k,
+            "on the moved axis",
+        );
+        assert_sound(&mut s, "moved teeth");
+        // Back to a line of its own (the world z axis), and to the datum.
+        built(
+            &mut s,
+            "feature.edit",
+            json!({"feature": "Teeth", "axis": [0, 0, 1], "point": [0, 0, 0]}),
+        );
+        assert_eq!(
+            feature(&mut s, "Teeth")["params"]["layout"]["about"],
+            Value::Null
+        );
+        assert_near(
+            vector(&body(&mut s, "Teeth")["centroid"]),
+            [0.0, 0.0, 0.5 * k],
+            1e-9 * k,
+            "about the world axis",
+        );
+        built(
+            &mut s,
+            "feature.edit",
+            json!({"feature": "Teeth", "axis": "Centre"}),
+        );
+        assert_near(
+            vector(&body(&mut s, "Teeth")["centroid"]),
+            [20.0 * k, 5.0 * k, 0.5 * k],
+            1e-9 * k,
+            "about the datum again",
+        );
+    }
+}
+
+/// Removing what a datum axis is placed by fails the axis, and what
+/// turns about it with the axis's name; nothing else. A new definition
+/// repairs it.
+#[test]
+fn a_lost_axis_fails_what_turns_about_it_and_nothing_else() {
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    built(
+        &mut s,
+        "feature.cylinder",
+        json!({"radius": 2, "height": 3, "position": [10, 0, 0], "name": "Hub"}),
+    );
+    built(
+        &mut s,
+        "datum.axis",
+        json!({"face": "F1:face(0)", "name": "Centre"}),
+    );
+    built(
+        &mut s,
+        "feature.block",
+        json!({"size": [1, 1, 1], "position": [14, -0.5, 0], "name": "Tooth"}),
+    );
+    built(
+        &mut s,
+        "feature.pattern",
+        json!({"source": "Tooth", "count": 4, "angle": "90 deg", "axis": "Centre",
+               "name": "Teeth"}),
+    );
+    // zx holds every line along z through y = 0: turned about the hub.
+    built(
+        &mut s,
+        "datum.plane",
+        json!({"from": "zx", "about": "Centre", "angle": "30 deg", "name": "Tilted"}),
+    );
+    // On zx sketch x is world z and sketch y is world x.
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"name": "Section", "plane": "zx"}),
+    );
+    rectangle(&mut s, "Section", (5.0, 8.0), (13.0, 15.0));
+    built(
+        &mut s,
+        "feature.revolve",
+        json!({"sketch": "Section", "axis": "Centre", "name": "Ring"}),
+    );
+    let ring = body(&mut s, "Ring");
+    assert_measures(
+        &ring,
+        PI * (25.0 - 9.0) * 3.0,
+        2.0 * PI * (25.0 - 9.0) + 2.0 * PI * 8.0 * 3.0,
+        1e-11,
+        "ring",
+    );
+    assert_near(vector(&ring["centroid"]), [10.0, 0.0, 6.5], 1e-9, "ring");
+    let before = inspect(&mut s);
+    assert_eq!(before["ok"], true);
+    run(&mut s, "feature.delete", json!({"feature": "Hub"}));
+    let error = |s: &mut Session, name: &str| -> String {
+        let found = feature(s, name);
+        assert_eq!(found["status"], "failed", "{found}");
+        found["error"].as_str().unwrap().to_string()
+    };
+    assert_eq!(
+        error(&mut s, "Centre"),
+        "face: there is no feature F1 for F1:face(0) (was it deleted?)"
+    );
+    for (name, expected) in [
+        ("Teeth", "axis: `Centre` failed; fix it first"),
+        ("Tilted", "about: `Centre` failed; fix it first"),
+        ("Ring", "axis: `Centre` failed; fix it first"),
+    ] {
+        assert_eq!(error(&mut s, name), expected);
+    }
+    assert_eq!(feature(&mut s, "Tooth")["status"], "ok");
+    assert_eq!(feature(&mut s, "Section")["status"], "ok");
+    assert_eq!(inspect(&mut s)["bodies"].as_array().unwrap().len(), 1);
+    // Repaired: the same line by two points.
+    built(
+        &mut s,
+        "datum.axis",
+        json!({"replace": "Centre", "through": [[10, 0, 0], [10, 0, 1]]}),
+    );
+    let after = inspect(&mut s);
+    assert_eq!(after["ok"], true, "{after}");
+    let named = |document: &Value, name: &str| {
+        document["bodies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["name"] == name)
+            .unwrap()
+            .clone()
+    };
+    for name in ["Ring", "Teeth"] {
+        for key in ["volume", "area", "centroid", "faceNames"] {
+            assert_eq!(
+                named(&after, name)[key],
+                named(&before, name)[key],
+                "{name} {key}"
+            );
+        }
+    }
+    assert_sound(&mut s, "repaired");
+}
+
+/// What gives no line is a failed datum with the reason.
+#[test]
+fn what_gives_no_axis_fails_with_the_reason() {
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    built(
+        &mut s,
+        "feature.block",
+        json!({"size": [20, 20, 10], "name": "Base"}),
+    );
+    built(
+        &mut s,
+        "feature.cylinder",
+        json!({"radius": 3, "height": 5, "position": [50, 0, 0], "name": "Rod"}),
+    );
+    built(
+        &mut s,
+        "feature.sphere",
+        json!({"radius": 3, "position": [-50, 0, 0], "name": "Ball"}),
+    );
+    built(
+        &mut s,
+        "datum.plane",
+        json!({"from": "xy", "distance": 4, "name": "Shelf"}),
+    );
+    let mut count = 0;
+    let mut fails = |s: &mut Session, params: Value, expected: &str| {
+        count += 1;
+        let mut params = params;
+        params["name"] = json!(format!("Bad {count}"));
+        let reason = failed(s, "datum.axis", params.clone());
+        assert!(reason.contains(expected), "{params}: {reason}");
+    };
+    fails(
+        &mut s,
+        json!({"through": [[1, 2, 3], [1, 2, 3]]}),
+        "the two points are the same point",
+    );
+    fails(
+        &mut s,
+        json!({"through": ["F1:vertex(3)", "F1:vertex(3)"]}),
+        "the two points are the same point",
+    );
+    fails(
+        &mut s,
+        json!({"through": [[0, 0, 0], [0, "1 / 0", 0]]}),
+        "through.1.y",
+    );
+    fails(
+        &mut s,
+        json!({"through": [[0, 0, 0], "F1:vertex(9)"]}),
+        "`Base` no longer has a vertex F1:vertex(9)",
+    );
+    fails(
+        &mut s,
+        json!({"planes": ["xy", "Shelf"]}),
+        "the two planes are parallel (4 apart); they do not meet",
+    );
+    fails(
+        &mut s,
+        json!({"planes": ["xy", "xy"]}),
+        "the two planes are the same plane",
+    );
+    fails(
+        &mut s,
+        json!({"planes": ["F1:face(0)", "F1:face(1)"]}),
+        "the two planes are parallel (10 apart)",
+    );
+    fails(
+        &mut s,
+        json!({"planes": ["xy", "F2:face(0)"]}),
+        "planes.1: the face F2:face(0) is a cylinder face",
+    );
+    fails(
+        &mut s,
+        json!({"planes": ["F99:face(0)", "xy"]}),
+        "planes.0: there is no feature F99",
+    );
+    fails(
+        &mut s,
+        json!({"face": "F1:face(1)"}),
+        "the face F1:face(1) is a plane face, which has no axis",
+    );
+    fails(
+        &mut s,
+        json!({"face": "F3:face(0)"}),
+        "is a sphere face, which has no axis",
+    );
+    fails(
+        &mut s,
+        json!({"face": "F2:face(7)"}),
+        "`Rod` no longer has a face F2:face(7); its faces are: F2:face(0), F2:face(1), F2:face(2)",
+    );
+    fails(
+        &mut s,
+        json!({"edge": ["F2:face(0)", "F2:face(1)"]}),
+        "is a circle, not a straight line",
+    );
+    fails(
+        &mut s,
+        json!({"edge": ["F1:face(2)", "F1:face(3)"]}),
+        "do not meet in an edge",
+    );
+    // An axis placed by planes that are placed by it cannot be: the
+    // later one is not there yet.
+    built(
+        &mut s,
+        "datum.axis",
+        json!({"planes": ["Shelf", "yz"], "name": "Rail"}),
+    );
+    let reason = failed(
+        &mut s,
+        "datum.plane",
+        json!({"replace": "Shelf", "from": "xy", "about": "Rail", "angle": "10 deg"}),
+    );
+    assert_eq!(
+        reason,
+        "about: `Rail` comes after this feature in the history; move it before (feature.move)"
+    );
+    assert_eq!(
+        feature(&mut s, "Rail")["error"],
+        "planes.0: `Shelf` failed; fix it first"
+    );
+    assert_eq!(inspect(&mut s)["bodies"].as_array().unwrap().len(), 3);
+    assert_sound_bodies(&mut s);
+}
+
+#[test]
+fn bad_axis_parameters_are_refused() {
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    built(
+        &mut s,
+        "feature.block",
+        json!({"size": [20, 20, 10], "name": "Base"}),
+    );
+    built(
+        &mut s,
+        "datum.plane",
+        json!({"from": "xy", "distance": 1, "name": "Shelf"}),
+    );
+    built(
+        &mut s,
+        "datum.axis",
+        json!({"planes": ["xy", "yz"], "name": "Rail"}),
+    );
+    run(&mut s, "sketch.create", json!({"name": "Flat"}));
+    let before = inspect(&mut s);
+    for (command, params, expected) in [
+        (
+            "datum.axis",
+            json!({}),
+            "give one of `through`, `edge`, `face`, `planes`",
+        ),
+        (
+            "datum.axis",
+            json!({"face": "F1:face(1)", "planes": ["xy", "yz"]}),
+            "not several",
+        ),
+        ("datum.axis", json!({"through": [[0, 0, 0]]}), "two points"),
+        ("datum.axis", json!({"through": 3}), "two points"),
+        (
+            "datum.axis",
+            json!({"edge": "F1:face(1)"}),
+            "two face names",
+        ),
+        (
+            "datum.axis",
+            json!({"edge": ["F1:face(1)", 5]}),
+            "must be a face name",
+        ),
+        ("datum.axis", json!({"face": 5}), "must be a face name"),
+        ("datum.axis", json!({"face": "F1:edge(1)"}), "is not a face"),
+        ("datum.axis", json!({"planes": ["xy"]}), "two planes"),
+        (
+            "datum.axis",
+            json!({"planes": ["xy", "Rail"]}),
+            "`Rail` is a datumAxis, not a datumPlane",
+        ),
+        (
+            "datum.axis",
+            json!({"planes": ["xy", "yz"], "replace": "Shelf"}),
+            "`Shelf` is a datumPlane, not a datumAxis",
+        ),
+        (
+            "datum.plane",
+            json!({"from": "xy", "about": "Shelf", "angle": 1}),
+            "`Shelf` is a datumPlane, not a datumAxis",
+        ),
+        (
+            "datum.plane",
+            json!({"from": "Rail", "distance": 1}),
+            "`Rail` is a datumAxis, not a datumPlane",
+        ),
+        (
+            "feature.revolve",
+            json!({"sketch": "Flat", "axis": "Shelf"}),
+            "`Shelf` is a datumPlane, not a datum axis",
+        ),
+        (
+            "feature.revolve",
+            json!({"sketch": "Flat", "axis": "Nope"}),
+            "`axis` must be",
+        ),
+        (
+            "feature.pattern",
+            json!({"source": "Base", "count": 2, "angle": "90 deg", "axis": "Shelf"}),
+            "`Shelf` is a datumPlane, not a datumAxis",
+        ),
+        (
+            "feature.pattern",
+            json!({"source": "Base", "count": 2, "angle": "90 deg", "axis": "Rail", "point": [0, 0, 0]}),
+            "`point` goes with an `axis` that is a direction",
+        ),
+        (
+            "feature.pattern",
+            json!({"source": "Base", "count": 2, "step": [30, 0, 0], "axis": "Rail"}),
+            "`axis` belongs to a circular pattern",
+        ),
+        (
+            "feature.mirror",
+            json!({"source": "Base", "plane": "Rail"}),
+            "`Rail` is a datumAxis, not a datumPlane",
+        ),
+        (
+            "sketch.create",
+            json!({"plane": "Rail"}),
+            "`Rail` is a datumAxis, not a datum plane",
+        ),
+        (
+            "feature.edit",
+            json!({"feature": "Rail", "angle": 1}),
+            "a datum axis has no parameter to change here",
+        ),
+        (
+            "feature.edit",
+            json!({"feature": "Base", "axis": "Rail"}),
+            "`axis` must be an array of three expressions",
+        ),
+    ] {
+        let reason = refused(&mut s, command, params.clone());
+        assert!(reason.contains(expected), "{command} {params}: {reason}");
+    }
+    assert_eq!(inspect(&mut s), before, "a refused command changes nothing");
+}
+
+/// Every kind of datum axis, a revolve and a pattern about one, saved
+/// and reopened: the same bodies and the same datums.
+#[test]
+fn datum_axes_are_saved_and_reopened_as_the_same_bodies() {
+    let dir = workdir("axes");
+    let mut s = Session::new(Workspace {
+        read: Access::Root(dir.clone()),
+        write: Access::Root(dir.clone()),
+    });
+    new_document(&mut s, 1.0);
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "far", "expr": "20 mm"}),
+    );
+    built(
+        &mut s,
+        "feature.cylinder",
+        json!({"radius": 2, "height": 3, "position": [10, 0, 0], "name": "Hub"}),
+    );
+    built(
+        &mut s,
+        "feature.block",
+        json!({"size": [1, 1, 1], "position": [14, -0.5, 0], "name": "Tooth"}),
+    );
+    built(
+        &mut s,
+        "datum.axis",
+        json!({"face": "F1:face(0)", "name": "Centre"}),
+    );
+    built(
+        &mut s,
+        "datum.axis",
+        json!({"through": [["far", 0, 0], "F2:vertex(7)"], "name": "Slanted"}),
+    );
+    built(
+        &mut s,
+        "datum.axis",
+        json!({"edge": ["F2:face(1)", "F2:face(5)"], "name": "Edge"}),
+    );
+    built(
+        &mut s,
+        "datum.plane",
+        json!({"from": "zx", "about": "Centre", "angle": "30 deg", "name": "Tilted"}),
+    );
+    built(
+        &mut s,
+        "datum.axis",
+        json!({"planes": ["Tilted", "F2:face(1)"], "name": "Meet"}),
+    );
+    built(
+        &mut s,
+        "feature.pattern",
+        json!({"source": "Tooth", "count": 4, "angle": "90 deg", "axis": "Centre",
+               "name": "Teeth"}),
+    );
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"name": "Section", "plane": "zx"}),
+    );
+    rectangle(&mut s, "Section", (5.0, 8.0), (13.0, 15.0));
+    built(
+        &mut s,
+        "feature.revolve",
+        json!({"sketch": "Section", "axis": "Centre", "angle": "200 deg", "name": "Ring"}),
+    );
+    assert_sound(&mut s, "all axes");
+    let before = inspect(&mut s);
+    assert_eq!(before["ok"], true, "{before}");
+    run(&mut s, "file.save", json!({"path": "axes.3dcraft"}));
+    run(&mut s, "file.close", json!({}));
+    run(&mut s, "file.open", json!({"path": "axes.3dcraft"}));
+    let after = inspect(&mut s);
+    assert_eq!(after["bodies"], before["bodies"]);
+    assert_eq!(after["features"], before["features"]);
+    assert_eq!(before["bodies"].as_array().unwrap().len(), 3);
+    let text =
+        String::from_utf8_lossy(&std::fs::read(dir.join("axes.3dcraft")).unwrap()).to_string();
+    for expected in [
+        "\"datumAxis\"",
+        "\"twoPoints\"",
+        "\"twoPlanes\"",
+        "\"about\": 3",
+        "\"axis\": 3",
+    ] {
+        assert!(text.contains(expected), "{expected} is not in the file");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }

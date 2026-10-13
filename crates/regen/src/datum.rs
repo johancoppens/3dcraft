@@ -1,6 +1,6 @@
 //! Reference geometry in regeneration: where a datum lies.
 //!
-//! A datum makes no body. Its result is a plane in space, worked out
+//! A datum makes no body. Its result is a plane or a line in space, worked out
 //! from what it is placed relative to: a base plane, an earlier datum (by
 //! the result of that feature), a face, an edge or a vertex of an earlier
 //! body (by its persistent name, against the body of the feature that
@@ -10,8 +10,8 @@
 use crate::query::{edges_between, faces_named};
 use crate::{FeatureResult, Status, angle, length};
 use craft3d_doc::{
-    AxisRef, DatumPlane, Document, Expr, FeatureId, PersistentName, PlaneBy, PlaneRef, PointRef,
-    WorldAxis, WorldPlane,
+    AxisBy, AxisRef, DatumAxis, DatumPlane, Document, Expr, FeatureId, PersistentName, PlaneBy,
+    PlaneRef, PointRef, WorldAxis, WorldPlane,
 };
 use craft3d_expr::Evaluation;
 use craft3d_geom::{Curve3, Surface};
@@ -23,6 +23,8 @@ use craft3d_topo::Body;
 pub enum Datum {
     /// A plane with an origin and axes: z is its normal.
     Plane(Frame),
+    /// A straight line: a point on it and its unit direction.
+    Axis { origin: Vec3, direction: Vec3 },
 }
 
 impl Datum {
@@ -30,6 +32,7 @@ impl Datum {
     pub fn kind(&self) -> &'static str {
         match self {
             Datum::Plane(_) => "datum plane",
+            Datum::Axis { .. } => "datum axis",
         }
     }
 }
@@ -84,14 +87,17 @@ pub(crate) fn datum_of(
         Status::RolledBack => return Err(format!("{role}: `{name}` is rolled back")),
         Status::Failed(_) => return Err(format!("{role}: `{name}` failed; fix it first")),
     }
-    match outcome.datum {
-        Some(datum) if datum.kind() == wanted => Ok(datum),
-        Some(datum) => Err(format!(
-            "{role}: `{name}` is a {}, not a {wanted}",
-            datum.kind()
-        )),
-        None => Err(format!("{role}: `{name}` has no result")),
-    }
+    outcome
+        .datum
+        .ok_or_else(|| format!("{role}: `{name}` has no result"))
+}
+
+/// "`Shelf` is a datum plane, not a datum axis".
+fn not_a(doc: &Document, id: FeatureId, role: &str, found: &Datum, wanted: &str) -> String {
+    let name = doc
+        .feature(id)
+        .map_or_else(|| id.to_string(), |f| f.name.clone());
+    format!("{role}: `{name}` is a {}, not a {wanted}", found.kind())
 }
 
 /// The frame of the datum plane `id`.
@@ -103,6 +109,20 @@ pub(crate) fn datum_plane(
 ) -> Result<Frame, String> {
     match datum_of(doc, earlier, id, role, "datum plane")? {
         Datum::Plane(frame) => Ok(frame),
+        other => Err(not_a(doc, id, role, &other, "datum plane")),
+    }
+}
+
+/// The line of the datum axis `id`.
+pub(crate) fn datum_axis(
+    doc: &Document,
+    earlier: &[FeatureResult],
+    id: FeatureId,
+    role: &str,
+) -> Result<Line, String> {
+    match datum_of(doc, earlier, id, role, "datum axis")? {
+        Datum::Axis { origin, direction } => Ok(Line { origin, direction }),
+        other => Err(not_a(doc, id, role, &other, "datum axis")),
     }
 }
 
@@ -292,6 +312,114 @@ fn axis_ref(
             },
         }),
         AxisRef::Edge { between } => edge_line(doc, earlier, between, tolerance, role),
+        AxisRef::Datum { feature } => datum_axis(doc, earlier, *feature, role),
+    }
+}
+
+/// The axis of a face that has one: a cylinder, a cone or a torus.
+fn face_axis(
+    doc: &Document,
+    earlier: &[FeatureResult],
+    name: &PersistentName,
+    role: &str,
+) -> Result<Line, String> {
+    if !name.is_face() {
+        return Err(format!("{role}: {name} is not a face"));
+    }
+    let (body, names, made_by) = named_body(doc, earlier, name, role)?;
+    // The pieces a boolean cut a face into lie on one surface: the first
+    // says where the axis is.
+    let found = faces_named(names, name)
+        .first()
+        .and_then(|face| body.faces.get(face.0 as usize));
+    let Some(face) = found else {
+        return Err(format!(
+            "{role}: `{made_by}` no longer has a face {name}; its faces are: {}",
+            listed(&names.faces)
+        ));
+    };
+    let frame = match &face.surface {
+        Surface::Cylinder(cylinder) => cylinder.frame(),
+        Surface::Cone(cone) => cone.frame(),
+        Surface::Torus(torus) => torus.frame(),
+        other => {
+            return Err(format!(
+                "{role}: the face {name} is a {} face, which has no axis; a cylinder, a cone and a torus have one",
+                other.kind()
+            ));
+        }
+    };
+    Ok(Line {
+        origin: frame.origin(),
+        direction: frame.z(),
+    })
+}
+
+/// Where a datum axis lies.
+pub(crate) fn axis(
+    doc: &Document,
+    variables: &Evaluation,
+    datum: &DatumAxis,
+    earlier: &[FeatureResult],
+) -> Result<Line, String> {
+    let tolerance = document_tolerance(doc)?;
+    let line = match &datum.by {
+        AxisBy::TwoPoints { points } => {
+            let [a, b] = points;
+            let a = point_ref(doc, variables, earlier, a, "through.0")?;
+            let b = point_ref(doc, variables, earlier, b, "through.1")?;
+            let apart = (b - a).length();
+            if apart.is_nan() || apart <= tolerance.linear {
+                return Err(
+                    "through: the two points are the same point; they give no direction"
+                        .to_string(),
+                );
+            }
+            Line {
+                origin: a,
+                direction: (b - a)
+                    .normalized()
+                    .ok_or_else(|| "through: the points are not finite".to_string())?,
+            }
+        }
+        AxisBy::Edge { between } => edge_line(doc, earlier, between, &tolerance, "edge")?,
+        AxisBy::Face { face } => face_axis(doc, earlier, face, "face")?,
+        AxisBy::TwoPlanes { planes } => {
+            let [a, b] = planes;
+            let a = plane_ref(doc, earlier, a, "planes.0")?;
+            let b = plane_ref(doc, earlier, b, "planes.1")?;
+            let along = a.z().cross(b.z());
+            // The sine of the angle between the planes.
+            let sine = along.length();
+            if sine.is_nan() || sine <= tolerance.angular {
+                let apart = (b.origin() - a.origin()).dot(a.z()).abs();
+                return Err(if apart <= tolerance.linear {
+                    "planes: the two planes are the same plane; they meet everywhere".to_string()
+                } else {
+                    format!("planes: the two planes are parallel ({apart} apart); they do not meet")
+                });
+            }
+            let direction = along
+                .normalized()
+                .ok_or_else(|| "planes: the planes are not finite".to_string())?;
+            // From the first plane's origin, straight across that plane
+            // to the second: the point of the line nearest that origin.
+            let across = direction.cross(a.z());
+            let slope = across.dot(b.z());
+            if slope.abs() <= f64::MIN_POSITIVE {
+                return Err("planes: the two planes are parallel; they do not meet".to_string());
+            }
+            let reach = (b.origin() - a.origin()).dot(b.z()) / slope;
+            Line {
+                origin: a.origin() + across * reach,
+                direction,
+            }
+        }
+    };
+    if line.origin.is_finite() && line.direction.is_finite() {
+        Ok(line)
+    } else {
+        Err("the axis is not finite".to_string())
     }
 }
 
