@@ -96,6 +96,15 @@ pub(crate) fn check_params(params: &RenderParams, max_texture_side: u32) -> Resu
     if samples > MAX_SAMPLES {
         return Err(RenderError::TooManySamples { samples }.into());
     }
+    // The see-through picture needs the surface behind the front one,
+    // which this renderer does not draw yet: refused, so that whoever
+    // asked draws that frame with the CPU renderer instead of getting an
+    // opaque picture that is not the oracle's.
+    if params.opacity() < 1.0 {
+        return Err(GpuError::OutOfRange(
+            "a see-through picture (opacity below 1; the CPU renderer draws it)",
+        ));
+    }
     let side = u64::from(width.max(height)) * u64::from(ssaa);
     if side > u64::from(max_texture_side) {
         return Err(GpuError::TargetTooLarge {

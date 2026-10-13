@@ -465,6 +465,10 @@ pub struct RenderParams {
     pub color: [u8; 3],
     /// The faces shaded from another base colour.
     pub highlight: Highlight,
+    /// How opaque the bodies are, 0 to 1 (see [`render`], *See-through*).
+    /// 1, the default, is the opaque picture, bit for bit. A number that
+    /// is not one counts as 1; one outside 0 to 1 is clamped.
+    pub opacity: f64,
 }
 
 impl Default for RenderParams {
@@ -476,6 +480,18 @@ impl Default for RenderParams {
             background: [30, 33, 40],
             color: [198, 204, 214],
             highlight: Highlight::NONE,
+            opacity: 1.0,
+        }
+    }
+}
+
+impl RenderParams {
+    /// [`Self::opacity`] as the renderer uses it: within 0 to 1.
+    pub fn opacity(&self) -> f64 {
+        if self.opacity.is_finite() {
+            self.opacity.clamp(0.0, 1.0)
+        } else {
+            1.0
         }
     }
 }
@@ -708,6 +724,20 @@ fn shade(
 ///
 /// Triangles with a vertex at or behind the eye plane are skipped (there is
 /// no near-plane clipping yet); put the camera outside the model.
+///
+/// **See-through** ([`RenderParams::opacity`] below 1). Per sample, two
+/// surfaces count: the nearest one (the *front*, what the opaque picture
+/// shows) and the nearest one that is strictly further away than it (the
+/// one *behind*; the background when there is none). The sample's colour
+/// is `opacity` times the front's shaded colour plus `1 - opacity` times
+/// the shaded colour of the one behind, rounded. Both are the minimum of
+/// something over all triangles, so the picture does not depend on the
+/// order of the triangles (ties go to the first triangle, as in the opaque
+/// picture). What is behind is drawn opaque: one layer shows through, not
+/// every layer, which keeps a cavity readable and the definition exact. A
+/// highlighted face in front is not seen through, so that it stands out;
+/// behind, it shows in its own colour. The id and depth buffers are the
+/// front's: a pick gives the front-most face whatever the opacity.
 pub fn render(mesh: &Mesh, camera: &Camera, params: &RenderParams) -> Result<Frame, RenderError> {
     let (width, height, ssaa) = (params.width, params.height, params.ssaa);
     if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
@@ -734,6 +764,15 @@ pub fn render(mesh: &Mesh, camera: &Camera, params: &RenderParams) -> Result<Fra
     let mut ids = vec![NO_FACE; w * h];
     let mut depth_key = vec![f64::INFINITY; w * h];
     let mut depth = vec![f64::INFINITY; w * h];
+    let opacity = params.opacity();
+    let see_through = opacity < 1.0;
+    // Per sample, the depth key and the colour of the surface behind the
+    // front one: only for a see-through picture.
+    let mut behind: Vec<(f64, [u8; 3])> = if see_through {
+        vec![(f64::INFINITY, params.background); w * h]
+    } else {
+        Vec::new()
+    };
 
     for (t, (tri, &face)) in mesh.triangles.iter().zip(&mesh.face_ids).enumerate() {
         let vertex = |k: u32| {
@@ -777,15 +816,23 @@ pub fn render(mesh: &Mesh, camera: &Camera, params: &RenderParams) -> Result<Fra
                 let (wa, wb, wc) = (wa / sum, wb / sum, wc / sum);
                 let key = wa * a.key + wb * b.key + wc * c.key;
                 let i = y * w + x;
-                let Some(slot) = depth_key.get_mut(i) else {
+                let Some(&nearest) = depth_key.get(i) else {
                     continue;
                 };
                 // Strict: on a tie the triangle drawn first wins, which
                 // keeps the result independent of anything but mesh order.
-                if key >= *slot {
-                    continue;
+                // Negated, so that a key that is not a number is no front.
+                let front = key < nearest;
+                if !front {
+                    // Strictly further than the front, and nearer than
+                    // what was behind it so far: the new one behind.
+                    let nearer_behind = see_through
+                        && key > nearest
+                        && behind.get(i).is_some_and(|&(second, _)| key < second);
+                    if !nearer_behind {
+                        continue;
+                    }
                 }
-                *slot = key;
                 // Perspective-correct weights for attributes.
                 let (qa, qb, qc) = (wa * a.inv_w, wb * b.inv_w, wc * c.inv_w);
                 let q = qa + qb + qc;
@@ -802,13 +849,43 @@ pub fn render(mesh: &Mesh, camera: &Camera, params: &RenderParams) -> Result<Fra
                     (params.color, (SHADE_AMBIENT, SHADE_DIFFUSE))
                 };
                 let rgb = normal.map_or(base, |n| shade(base, light, n, to_viewer, &view));
-                if let (Some(c_slot), Some(id_slot), Some(d_slot)) =
-                    (color.get_mut(i), ids.get_mut(i), depth.get_mut(i))
-                {
+                if !front {
+                    if let Some(slot) = behind.get_mut(i) {
+                        *slot = (key, rgb);
+                    }
+                    continue;
+                }
+                if let (Some(k_slot), Some(c_slot), Some(id_slot), Some(d_slot)) = (
+                    depth_key.get_mut(i),
+                    color.get_mut(i),
+                    ids.get_mut(i),
+                    depth.get_mut(i),
+                ) {
+                    // What was in front is now the one behind.
+                    if nearest.is_finite()
+                        && let Some(slot) = behind.get_mut(i)
+                    {
+                        *slot = (nearest, *c_slot);
+                    }
+                    *k_slot = key;
                     *c_slot = rgb;
                     *id_slot = face;
                     *d_slot = wa * a.dist + wb * b.dist + wc * c.dist;
                 }
+            }
+        }
+    }
+
+    // See-through: the front over the one behind, per sample.
+    if see_through {
+        for ((front, &(_, back)), &face) in color.iter_mut().zip(&behind).zip(&ids) {
+            if face == NO_FACE || params.highlight.contains(face) {
+                continue;
+            }
+            for (channel, under) in front.iter_mut().zip(back) {
+                let mixed = f64::from(*channel) * opacity + f64::from(under) * (1.0 - opacity);
+                // Between two bytes: within 0..=255.
+                *channel = mixed.round().clamp(0.0, 255.0) as u8;
             }
         }
     }
@@ -1953,6 +2030,203 @@ mod tests {
         broken.triangles.push([0, 1, 99]);
         broken.face_ids.push(1);
         assert!(Neighbourhood::new(&broken, &camera, 100, 100, 50.0, 50.0, 4.0).is_err());
+    }
+
+    /// Three unit squares over one another seen from above, in an order.
+    fn stack(order: &[(f64, u32)]) -> Mesh {
+        let mut mesh = Mesh::default();
+        for &(z, face) in order {
+            unit_square(z, face, &mut mesh);
+        }
+        // A normal that leans differently per square, so that each has a
+        // shade of its own (a flat stack would be one colour).
+        // (By the square's face, not by its place in the mesh.)
+        for (k, normal) in mesh.normals.iter_mut().enumerate() {
+            let face = order.get(k / 4).map_or(0, |&(_, face)| face);
+            let lean = 0.25 * f64::from(face);
+            *normal = Vec3::new(lean, 0.3 - lean, 1.0);
+        }
+        mesh
+    }
+
+    #[test]
+    fn see_through_is_the_front_over_the_one_behind_whatever_the_order() {
+        let levels = [(2.0, 1_u32), (1.0, 2), (0.0, 3)];
+        let camera = top_down(1.0);
+        let opaque = |mesh: &Mesh| render(mesh, &camera, &params(40, 40, 1)).unwrap();
+        let at = |frame: &Frame| -> [u8; 3] {
+            let i = (20 * 40 + 20) * 3;
+            [frame.rgb[i], frame.rgb[i + 1], frame.rgb[i + 2]]
+        };
+        // What each square looks like alone, and the top two together.
+        let alone: Vec<[u8; 3]> = levels
+            .iter()
+            .map(|&level| {
+                // In the stack's place, so that it has the stack's normal.
+                let all = stack(&levels);
+                let k = levels.iter().position(|l| *l == level).unwrap();
+                let one = Mesh {
+                    positions: all.positions[k * 4..k * 4 + 4].to_vec(),
+                    normals: all.normals[k * 4..k * 4 + 4].to_vec(),
+                    triangles: vec![[0, 1, 2], [0, 2, 3]],
+                    face_ids: vec![level.1; 2],
+                };
+                at(&opaque(&one))
+            })
+            .collect();
+        assert!(alone[0] != alone[1] && alone[1] != alone[2], "{alone:?}");
+        let plain = opaque(&stack(&levels));
+        assert_eq!(at(&plain), alone[0]);
+        for opacity in [0.9, 0.5, 0.25, 0.1, 0.0] {
+            let mut first: Option<Frame> = None;
+            for order in [
+                [0, 1, 2],
+                [2, 1, 0],
+                [1, 2, 0],
+                [1, 0, 2],
+                [0, 2, 1],
+                [2, 0, 1],
+            ] {
+                let mesh = stack(&order.map(|k| levels[k]));
+                let frame = render(
+                    &mesh,
+                    &camera,
+                    &RenderParams {
+                        opacity,
+                        ..params(40, 40, 1)
+                    },
+                )
+                .unwrap();
+                // The front over the second, by the formula; the third
+                // square does not show.
+                let expected: Vec<u8> = (0..3)
+                    .map(|c| {
+                        (f64::from(alone[0][c]) * opacity
+                            + f64::from(alone[1][c]) * (1.0 - opacity))
+                            .round() as u8
+                    })
+                    .collect();
+                assert_eq!(
+                    at(&frame).to_vec(),
+                    expected,
+                    "opacity {opacity}, {order:?}"
+                );
+                // The id and the depth are the front's, as in the opaque
+                // picture.
+                assert_eq!(frame.ids, plain.ids);
+                assert_eq!(frame.depth, plain.depth);
+                // Beside the squares: the background, untouched.
+                assert_eq!(&frame.rgb[0..3], &RenderParams::default().background);
+                // And every order gives the same picture, byte for byte.
+                match &first {
+                    None => first = Some(frame),
+                    Some(first) => assert_eq!(first.rgb, frame.rgb, "{order:?}"),
+                }
+            }
+        }
+        // One square alone is seen through to the background.
+        let mut one = Mesh::default();
+        unit_square(0.0, 1, &mut one);
+        let solid = at(&opaque(&one));
+        let half = render(
+            &one,
+            &camera,
+            &RenderParams {
+                opacity: 0.5,
+                ..params(40, 40, 1)
+            },
+        )
+        .unwrap();
+        let background = RenderParams::default().background;
+        for c in 0..3 {
+            let mixed = (f64::from(solid[c]) * 0.5 + f64::from(background[c]) * 0.5).round();
+            assert_eq!(f64::from(at(&half)[c]), mixed);
+        }
+        // Two squares at the very same place are one surface: what is
+        // behind is the background, not the twin.
+        let twins = stack(&[(1.0, 1), (1.0, 2)]);
+        let seen = render(
+            &twins,
+            &camera,
+            &RenderParams {
+                opacity: 0.5,
+                ..params(40, 40, 1)
+            },
+        )
+        .unwrap();
+        let front = at(&opaque(&twins));
+        for c in 0..3 {
+            let mixed = (f64::from(front[c]) * 0.5 + f64::from(background[c]) * 0.5).round();
+            assert_eq!(f64::from(at(&seen)[c]), mixed);
+        }
+    }
+
+    #[test]
+    fn at_opacity_one_the_picture_is_the_opaque_one_and_a_highlight_is_not_seen_through() {
+        for perspective in [true, false] {
+            let (mesh, camera) = teapot_mesh_and_camera(96, 72, perspective);
+            let plain = render(&mesh, &camera, &params(96, 72, 2)).unwrap();
+            // 1, above 1 and what is not a number: the opaque picture.
+            for opacity in [1.0, 7.0, f64::NAN, f64::INFINITY] {
+                let same = render(
+                    &mesh,
+                    &camera,
+                    &RenderParams {
+                        opacity,
+                        ..params(96, 72, 2)
+                    },
+                )
+                .unwrap();
+                assert_eq!(same, plain, "opacity {opacity}");
+            }
+            // Below 1 the picture changes where there is a body, and only
+            // there; ids and depth stay.
+            for opacity in [0.6, -3.0] {
+                let seen = render(
+                    &mesh,
+                    &camera,
+                    &RenderParams {
+                        opacity,
+                        ..params(96, 72, 1)
+                    },
+                )
+                .unwrap();
+                let plain = render(&mesh, &camera, &params(96, 72, 1)).unwrap();
+                assert_eq!((&seen.ids, &seen.depth), (&plain.ids, &plain.depth));
+                let mut changed = 0;
+                for (i, &id) in plain.ids.iter().enumerate() {
+                    let differs = seen.rgb[i * 3..i * 3 + 3] != plain.rgb[i * 3..i * 3 + 3];
+                    assert!(!differs || id != NO_FACE, "the background changed");
+                    changed += usize::from(differs);
+                }
+                assert!(changed > 500, "{changed}");
+            }
+            // A highlighted face in front keeps its opaque colour.
+            let face = plain.ids[plain.ids.len() / 2 + 48];
+            assert_ne!(face, NO_FACE);
+            let (highlight, _) = Highlight::new([64, 196, 212], [face]);
+            let marked = |opacity: f64| {
+                render(
+                    &mesh,
+                    &camera,
+                    &RenderParams {
+                        opacity,
+                        highlight,
+                        ..params(96, 72, 1)
+                    },
+                )
+                .unwrap()
+            };
+            let (solid, seen) = (marked(1.0), marked(0.3));
+            let mut kept = 0;
+            for (i, &id) in solid.ids.iter().enumerate() {
+                if id == face {
+                    assert_eq!(seen.rgb[i * 3..i * 3 + 3], solid.rgb[i * 3..i * 3 + 3]);
+                    kept += 1;
+                }
+            }
+            assert!(kept > 20, "{kept}");
+        }
     }
 
     #[test]

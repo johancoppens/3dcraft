@@ -124,6 +124,8 @@ pub struct BodyRenderer {
     highlight: Highlight,
     /// The edges the overlay of the next frames points at.
     marks: crate::viewport::Marks,
+    /// How opaque the bodies of the next frames are.
+    opacity: f64,
 }
 
 impl BodyRenderer {
@@ -135,6 +137,23 @@ impl BodyRenderer {
 
     pub fn marks(&self) -> &crate::viewport::Marks {
         &self.marks
+    }
+
+    /// How opaque the bodies of the frames made from now on are, 0 to 1
+    /// (`RenderParams::opacity`). Below 1 the frame is the CPU renderer's
+    /// whatever this renderer is: the wgpu renderer does not draw the
+    /// surface behind the front one yet and refuses, rather than show a
+    /// picture that is not the oracle's.
+    pub fn set_opacity(&mut self, opacity: f64) {
+        self.opacity = opacity;
+    }
+
+    pub fn opacity(&self) -> f64 {
+        if self.opacity.is_finite() {
+            self.opacity.clamp(0.0, 1.0)
+        } else {
+            1.0
+        }
     }
 
     /// Which faces the frames made from now on show highlighted, and in
@@ -161,6 +180,7 @@ impl BodyRenderer {
             },
             highlight: Highlight::NONE,
             marks: crate::viewport::Marks::default(),
+            opacity: 1.0,
         }
     }
 
@@ -197,6 +217,7 @@ impl BodyRenderer {
                 gpu: Some(gpu),
                 highlight: Highlight::NONE,
                 marks: crate::viewport::Marks::default(),
+                opacity: 1.0,
             },
             Err(why) => {
                 let mut renderer = Self::cpu();
@@ -227,6 +248,7 @@ impl BodyRenderer {
     ) -> Result<(Frame, Backend), String> {
         let params = RenderParams {
             highlight: self.highlight,
+            opacity: self.opacity(),
             ..render_params(quality, tokens)
         };
         #[cfg(not(target_arch = "wasm32"))]

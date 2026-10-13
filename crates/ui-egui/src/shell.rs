@@ -194,6 +194,8 @@ struct FrameKey {
     highlight_edge: Option<EdgeRef>,
     /// The vertex shown highlighted.
     highlight_vertex: Option<VertexRef>,
+    /// How opaque the bodies are.
+    opacity: f64,
     tokens: Tokens,
 }
 
@@ -206,6 +208,7 @@ struct RenderJob {
     selected: Option<String>,
     highlight: Highlight,
     marks: viewport::Marks,
+    opacity: f64,
     /// Asked to repaint when the image is ready.
     #[cfg(not(target_arch = "wasm32"))]
     wake: Option<egui::Context>,
@@ -225,6 +228,7 @@ impl RenderJob {
         let elapsed = stopwatch();
         renderer.set_highlight(self.highlight);
         renderer.set_marks(self.marks.clone());
+        renderer.set_opacity(self.opacity);
         let composed = viewport::compose_with(
             renderer,
             self.scene.as_deref(),
@@ -371,6 +375,8 @@ pub struct Shell {
     gizmo_drag_from: Option<CameraState>,
     /// Where the orbit gizmo was drawn.
     gizmo_rect: Option<egui::Rect>,
+    /// Where the see-through slider was drawn.
+    transparency_rect: Option<egui::Rect>,
     /// The box the camera was last fitted to automatically.
     framed: Bbox3,
     themed: bool,
@@ -452,6 +458,7 @@ impl Shell {
             drag_from: None,
             gizmo_drag_from: None,
             gizmo_rect: None,
+            transparency_rect: None,
             framed: Bbox3::EMPTY,
             themed: false,
             quit: false,
@@ -736,6 +743,23 @@ impl Shell {
             self.state.highlight_edge.as_ref(),
             self.state.highlight_vertex.as_ref(),
         )
+    }
+
+    /// How opaque the viewport draws the bodies, 0.1 to 1: one minus
+    /// [`UiState::transparency`].
+    pub fn opacity(&self) -> f64 {
+        let transparency = self.state.transparency;
+        if transparency.is_finite() {
+            1.0 - transparency.clamp(0.0, crate::state::MAX_TRANSPARENCY)
+        } else {
+            1.0
+        }
+    }
+
+    /// Where the see-through slider is in the window, in points, once the
+    /// viewport was drawn.
+    pub fn transparency_rect(&self) -> Option<egui::Rect> {
+        self.transparency_rect
     }
 
     /// How near to an edge a click counts as a click on it, in pixels of
@@ -1350,6 +1374,7 @@ impl Shell {
             highlight: self.face_highlight(scene),
             highlight_edge: self.state.highlight_edge.clone(),
             highlight_vertex: self.state.highlight_vertex.clone(),
+            opacity: self.opacity(),
             tokens,
         };
         // The direct path draws the whole picture, lines included, on the
@@ -1445,6 +1470,29 @@ impl Shell {
                     view = Some("iso");
                 }
                 fit = ui.small_button("Fit").clicked();
+                // How see-through the bodies are: view state, like the
+                // camera. Its own widget, so a drag on it is not a drag
+                // in the viewport.
+                ui.add_space(8.0);
+                let mut transparency = self.state.transparency;
+                ui.spacing_mut().slider_width = tokens.slider_width;
+                let slider = ui
+                    .add(
+                        egui::Slider::new(&mut transparency, 0.0..=crate::state::MAX_TRANSPARENCY)
+                            .show_value(false),
+                    )
+                    .on_hover_text("See-through: how much of what is behind a surface shows");
+                self.transparency_rect = Some(slider.rect);
+                if slider.changed() && transparency.is_finite() {
+                    self.state.transparency =
+                        transparency.clamp(0.0, crate::state::MAX_TRANSPARENCY);
+                    ui.ctx().request_repaint();
+                }
+                ui.label(
+                    egui::RichText::new("See-through")
+                        .color(color(tokens.text_dim))
+                        .small(),
+                );
             });
         });
         let side = tokens
@@ -1680,6 +1728,7 @@ impl Shell {
             return false;
         };
         direct.set_highlight(key.highlight);
+        direct.set_opacity(key.opacity);
         direct.set_marks(marks_of(
             scene,
             key.highlight_edge.as_ref(),
@@ -1766,6 +1815,7 @@ impl Shell {
                 key.highlight_edge.as_ref(),
                 key.highlight_vertex.as_ref(),
             ),
+            opacity: key.opacity,
             #[cfg(not(target_arch = "wasm32"))]
             wake: Some(ctx.clone()),
         };

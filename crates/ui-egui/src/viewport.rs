@@ -400,6 +400,22 @@ pub fn overlay_marked(
     slack: f64,
     marks: &Marks,
 ) -> Overlay {
+    overlay_see_through(scene, camera, frame, selected, slack, marks, false)
+}
+
+/// [`overlay_marked`] for a picture whose bodies are see-through or not:
+/// through see-through bodies the hidden part of a body's edge is drawn
+/// too, dimmed as a hidden sketch is, so that the edges of a hole or a
+/// cavity inside show and the shape stays readable.
+pub fn overlay_see_through(
+    scene: Option<&Scene>,
+    camera: &CameraState,
+    frame: &Frame,
+    selected: Option<&str>,
+    slack: f64,
+    marks: &Marks,
+    see_through: bool,
+) -> Overlay {
     let map = DepthMap::new(frame, slack);
     build_overlay(
         scene,
@@ -408,7 +424,7 @@ pub fn overlay_marked(
         frame.height,
         selected,
         map.as_ref(),
-        Some(marks),
+        Some((marks, see_through)),
     )
 }
 
@@ -419,8 +435,10 @@ fn build_overlay(
     height: u32,
     selected: Option<&str>,
     map: Option<&DepthMap<'_>>,
-    marks: Option<&Marks>,
+    marked: Option<(&Marks, bool)>,
 ) -> Overlay {
+    let marks = marked.map(|(marks, _)| marks);
+    let see_through = marked.is_some_and(|(_, see_through)| see_through);
     let mut out = Overlay::default();
     let Some(projector) = Projector::new(&camera.to_render(), f64::from(width), f64::from(height))
     else {
@@ -456,7 +474,7 @@ fn build_overlay(
         for edge in &body.edges {
             for pair in edge.windows(2) {
                 if let [a, b] = *pair {
-                    line(a, b, LineKind::Edge, true, false);
+                    line(a, b, LineKind::Edge, true, see_through);
                 }
             }
         }
@@ -537,6 +555,7 @@ pub fn render_params(quality: Quality, tokens: &Tokens) -> RenderParams {
         background: tokens.viewport_background,
         color: tokens.body,
         highlight: Highlight::NONE,
+        opacity: 1.0,
     }
 }
 
@@ -621,13 +640,14 @@ pub fn compose_with(
 ) -> Result<Composed, String> {
     let (frame, backend) = renderer.render(scene, camera, quality, tokens)?;
     let coverage = frame.coverage();
-    let overlay = overlay_marked(
+    let overlay = overlay_see_through(
         scene,
         camera,
         &frame,
         selected,
         depth_slack(backend, scene, camera),
         renderer.marks(),
+        renderer.opacity() < 1.0,
     );
     Ok(Composed {
         width: frame.width,
@@ -690,12 +710,14 @@ pub fn picture_with(
         selected,
         highlight,
         &Marks::default(),
+        1.0,
         scale,
     )
 }
 
-/// [`picture_with`] with `marks` drawn over the picture: what the window
-/// shows when an edge was clicked or pointed at.
+/// [`picture_with`] with `marks` drawn over the picture, and the bodies
+/// `opacity` opaque (1: as ever): what the window shows when an edge was
+/// clicked or pointed at, or the bodies were made see-through.
 #[allow(clippy::too_many_arguments)]
 pub fn picture_marked(
     scene: Option<&Scene>,
@@ -705,11 +727,13 @@ pub fn picture_marked(
     selected: Option<&str>,
     highlight: Highlight,
     marks: &Marks,
+    opacity: f64,
     scale: f64,
 ) -> Result<Picture, String> {
     let mut renderer = BodyRenderer::cpu();
     renderer.set_highlight(highlight);
     renderer.set_marks(marks.clone());
+    renderer.set_opacity(opacity);
     let composed = compose_with(&mut renderer, scene, camera, quality, tokens, selected)?;
     Ok(rasterise(composed, tokens, scale))
 }

@@ -58,6 +58,7 @@ Phase 1 is M0–M8. Its acceptance scenario, run entirely by an agent over MCP w
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-13 | minor | Splines in sketches, the first step of M9's sweeps: drawn, constrained by their points, extruded; loft and sweep are not started |
+| 2026-10-13 | minor | The viewport has a see-through slider (the developer's request): done in the CPU renderer and the shell; open: the wgpu renderer's second depth layer, until then a see-through frame is drawn on the CPU |
 | 2026-10-13 | minor | The viewport has an orbit gizmo instead of the view buttons (the developer's request) |
 | 2026-10-13 | minor | M8.5: pointing at vertices done; the section plane open |
 | 2026-10-13 | minor | M8.5: pointing at edges done; vertices and the section plane open |

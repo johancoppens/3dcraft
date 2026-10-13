@@ -31,6 +31,9 @@ pub const MAX_FACE_NAME_CHARS: usize = 4096;
 /// is a mesh that is not the model.
 pub const MIN_CHORDAL: f64 = 1e-7;
 pub const MAX_CHORDAL: f64 = 1e-1;
+/// The most see-through the bodies get: nearly clear, with a tenth of the
+/// front surface left so that it is still there.
+pub const MAX_TRANSPARENCY: f64 = 0.9;
 /// The display quality's triangle budget is clamped to this range.
 pub const MIN_TRIANGLES: u64 = 1_000;
 pub const MAX_TRIANGLES: u64 = 1 << 26;
@@ -292,6 +295,12 @@ pub struct UiState {
     pub highlight_edge: Option<EdgeRef>,
     /// The vertex shown highlighted, likewise.
     pub highlight_vertex: Option<VertexRef>,
+    /// How see-through the bodies are drawn, 0 (opaque, the default) to
+    /// [`MAX_TRANSPARENCY`]: the front surface is blended over the one
+    /// behind it, so that inner faces, holes and cavities show
+    /// (`craft3d_render::render`, *See-through*). The slider in the
+    /// viewport sets it; `ui.set` too.
+    pub transparency: f64,
     /// The last click in the viewport. Read-only over the control channel:
     /// `ui.pick` with `select` makes one.
     pub picked: Option<Picked>,
@@ -365,6 +374,7 @@ impl UiState {
     pub fn validated(mut self) -> Result<Self, String> {
         self.camera = self.camera.validated()?;
         self.quality = self.quality.validated()?;
+        self.transparency = finite("transparency", self.transparency)?.clamp(0.0, MAX_TRANSPARENCY);
         self.notice = one_line(&self.notice, MAX_NOTICE_CHARS);
         self.selected_feature = self
             .selected_feature
@@ -536,6 +546,7 @@ mod tests {
                 vertex: Some("F3:vertex(1)".to_string()),
                 corner: Vec::new(),
             }),
+            transparency: 0.5,
             picked: Some(Picked {
                 serial: 4,
                 x: 120.5,
@@ -572,6 +583,7 @@ mod tests {
                 "highlightEdge": {"feature": "F3", "edge": null,
                                   "between": ["F3:face(0)", "F3:face(2)"]},
                 "highlightVertex": {"feature": null, "vertex": "F3:vertex(1)", "corner": []},
+                "transparency": 0.5,
                 "picked": {"serial": 4, "x": 120.5, "y": 80.25, "feature": "F3",
                            "name": "Post", "face": "F3:face(2)", "faceIndex": 2,
                            "point": [1.0, 2.0, 3.5], "kind": "edge",

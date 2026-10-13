@@ -73,6 +73,8 @@ pub struct Tokens {
     pub gizmo_end_radius: f32,
     /// Opacity of the gizmo's backdrop, 0 to 255.
     pub gizmo_opacity: u8,
+    /// The length of the see-through slider, in points.
+    pub slider_width: f32,
     /// Space between the viewport's edge and what floats over it.
     pub inset: f32,
 }
@@ -120,6 +122,7 @@ impl Tokens {
             gizmo_size: 92.0,
             gizmo_end_radius: 9.0,
             gizmo_opacity: 110,
+            slider_width: 90.0,
             inset: 10.0,
         }
     }

@@ -75,6 +75,7 @@ struct Shown {
     scale: f32,
     highlight: Highlight,
     marks: Marks,
+    opacity: f64,
 }
 
 pub struct Direct {
@@ -92,6 +93,9 @@ pub struct Direct {
     highlight: Highlight,
     /// The edges the frames point at.
     marks: Marks,
+    /// How opaque the bodies are. Below 1 the device refuses the frame
+    /// (`GpuError::OutOfRange`), which is drawn another way.
+    opacity: f64,
 }
 
 fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
@@ -312,6 +316,7 @@ impl Direct {
             largest,
             highlight: Highlight::NONE,
             marks: Marks::default(),
+            opacity: 1.0,
         })
     }
 
@@ -341,6 +346,12 @@ impl Direct {
         self.marks = marks;
     }
 
+    /// How opaque the bodies of the frames drawn from now on are, as
+    /// [`crate::backend::BodyRenderer::set_opacity`].
+    pub fn set_opacity(&mut self, opacity: f64) {
+        self.opacity = opacity;
+    }
+
     /// The egui texture that shows the picture, once one was drawn.
     pub fn texture_id(&self) -> Option<egui::TextureId> {
         self.texture.map(|(id, _)| id)
@@ -368,6 +379,7 @@ impl Direct {
             scale,
             highlight: self.highlight,
             marks: self.marks.clone(),
+            opacity: self.opacity,
         };
         if self.shown.as_ref() == Some(&wanted) && self.texture.is_some() {
             return Ok(None);
@@ -465,6 +477,7 @@ impl Direct {
             background: wanted.tokens.viewport_background,
             color: wanted.tokens.body,
             highlight: wanted.highlight,
+            opacity: wanted.opacity,
         };
         let overlay = OverlayParams {
             slack: depth_slack(Backend::Gpu, scene, &wanted.camera),
