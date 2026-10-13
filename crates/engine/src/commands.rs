@@ -89,7 +89,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("history.rollback", "Roll Back", r#"{"feature": id or name or null}"#,
         "Regenerates only up to and including this feature; null removes the marker.", doc: true, history_rollback),
     spec!("document.inspect", "Inspect", "{}",
-        "Returns the whole document state: units, variables with values, features with status, bodies with counts and mass properties, undo history.", doc: true, document_inspect),
+        "Returns the whole document state: units, variables with values, features with status, bodies with counts, mass properties and faceNames (and, per face, faceAliases: the other names a face answers to when a boolean or a pattern merged faces of several operands into it), undo history.", doc: true, document_inspect),
     spec!("document.check", "Check", r#"{"deep": boolean = false}"#,
         "Checks every body for validity and lists every problem: failed variables, failed features, defects of bodies. ok is true when there is none. deep also looks for bodies that pass through themselves (faces crossing, shells overlapping or nested the wrong way), on a fine mesh: slower, and what it reports is certain (deeper than the mesh could be off); doubts are counted under marginal.", doc: true, document_check),
     spec!("document.measure", "Measure", r#"{"feature": id or name = all bodies}"#,
@@ -1093,12 +1093,27 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
             }
             // What each face is called by the features that come after:
             // a name made of where the face came from, not of its index.
+            // A face a boolean merged from faces of both operands answers
+            // to the names of the others too: listed per face as aliases,
+            // only when there are any.
             if let (Some(map), Some(names)) = (
                 entry.as_object_mut(),
                 outcome.and_then(|o| o.names.as_ref()),
             ) {
-                let names: Vec<String> = names.faces.iter().map(ToString::to_string).collect();
-                map.insert("faceNames".into(), names.into());
+                let listed: Vec<String> = names.faces.iter().map(ToString::to_string).collect();
+                map.insert("faceNames".into(), listed.into());
+                if !names.aliases.is_empty() {
+                    let aliases: Vec<Vec<String>> = (0..names.faces.len())
+                        .map(|face| {
+                            names
+                                .aliases_of(face)
+                                .iter()
+                                .map(ToString::to_string)
+                                .collect()
+                        })
+                        .collect();
+                    map.insert("faceAliases".into(), json!(aliases));
+                }
             }
             // From a tessellation: exact for flat-faced bodies, inside the
             // true box by at most the tolerance for curved ones.

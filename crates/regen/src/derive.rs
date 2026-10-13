@@ -5,7 +5,7 @@
 //! against it); it is marked as taken, so its body is no longer one of the
 //! document's bodies, unless the feature keeps it.
 
-use crate::{FeatureResult, Names, Status, angle, length, number};
+use crate::{Contributors, FeatureResult, Names, Status, angle, length, number};
 use craft3d_doc::{
     Document, Expr, Feature, FeatureId, FeatureKind, MAX_NAME_DEPTH, PatternLayout, PersistentName,
 };
@@ -279,31 +279,50 @@ fn instances_meet(doc: &Document, placed: &[Body]) -> Result<bool, String> {
 /// The instances joined into one body by the kernel's union, one after
 /// the other: where they touch or overlap they become one piece, and no
 /// face is left inside the material. Returns the body and, for each of
-/// its faces, the instance and the face of the source it came from.
-fn joined(doc: &Document, placed: &[Body]) -> Result<(Body, Vec<(u64, usize)>), String> {
-    use craft3d_kernel::boolean::{BooleanOp, Operand, boolean};
+/// its faces, the instances and the faces of the source it has a piece
+/// of: one pair for a face that is a piece of one instance's face, more
+/// for a face the union merged from the faces of several (three bars end
+/// to end: one top), the one it is named after first.
+fn joined(doc: &Document, placed: &[Body]) -> Result<(Body, Contributors), String> {
+    use craft3d_kernel::boolean::{BooleanOp, FaceSource, Operand, boolean};
     let tolerance = craft3d_math::Tolerance::new(doc.tolerance.linear, doc.tolerance.angular)
         .ok_or("the document's tolerance is not positive and finite".to_string())?;
     let Some((first, others)) = placed.split_first() else {
         return Err("there is no instance".to_string());
     };
     let mut body = first.clone();
-    let mut sources: Vec<(u64, usize)> = (0..body.faces.len()).map(|face| (0, face)).collect();
+    let mut sources: Contributors = (0..body.faces.len()).map(|face| vec![(0, face)]).collect();
     for (index, other) in others.iter().enumerate() {
         let instance = index.saturating_add(1) as u64;
         let result = boolean(&body, other, BooleanOp::Union, &tolerance).map_err(|e| {
             format!("instance {instance} touches or overlaps the ones before it and cannot be joined to them: {e}")
         })?;
-        let mut next = Vec::with_capacity(result.faces.len());
-        for source in &result.faces {
-            let face = source.face.0 as usize;
-            next.push(match source.operand {
-                Operand::A => sources
-                    .get(face)
-                    .copied()
-                    .ok_or("the union lost track of a face".to_string())?,
-                Operand::B => (instance, face),
-            });
+        let mut next = Contributors::with_capacity(result.faces.len());
+        for (face, source) in result.faces.iter().enumerate() {
+            // A face of the body so far brings every instance it already
+            // had a piece of; a face of the new instance is its own. The
+            // kernel's source comes first, then what it merged in.
+            let mut pairs = Vec::new();
+            let mut add = |from: &FaceSource| -> Result<(), String> {
+                let face = from.face.0 as usize;
+                let earlier: &[(u64, usize)] = match from.operand {
+                    Operand::A => sources
+                        .get(face)
+                        .ok_or("the union lost track of a face".to_string())?,
+                    Operand::B => &[(instance, face)],
+                };
+                for pair in earlier {
+                    if !pairs.contains(pair) {
+                        pairs.push(*pair);
+                    }
+                }
+                Ok(())
+            };
+            add(source)?;
+            for from in result.merged.get(face).into_iter().flatten() {
+                add(from)?;
+            }
+            next.push(pairs);
         }
         body = result.body;
         sources = next;
@@ -343,29 +362,15 @@ pub(crate) fn build(
     // put side by side in one body they would leave faces inside the
     // material, a solid that passes through itself.
     if matches!(feature.kind, FeatureKind::Pattern(_)) && instances_meet(doc, &placed)? {
-        let (result, sources) = joined(doc, &placed)?;
+        let (result, contributors) = joined(doc, &placed)?;
+        // Every instance is a copy of the one source. As after a boolean,
+        // edges are referred to by the faces they lie between, and a face
+        // merged from the faces of several instances answers to each
+        // instance's name for it.
         let names = match &source.names {
             None => None,
             Some(names) => {
-                let mut faces = Vec::with_capacity(sources.len());
-                for (instance, face) in sources {
-                    let Some(name) = names.faces.get(face) else {
-                        return Err("the union lost track of a face".to_string());
-                    };
-                    if name.depth() >= MAX_NAME_DEPTH {
-                        return Err(format!(
-                            "more than {MAX_NAME_DEPTH} features in a row each make their body from the one before"
-                        ));
-                    }
-                    faces.push(PersistentName::copy(feature.id, instance, name.clone()));
-                }
-                // As after a boolean: edges are referred to by the faces
-                // they lie between.
-                Some(Names {
-                    faces,
-                    edges: Vec::new(),
-                    vertices: Vec::new(),
-                })
+                Names::copied_faces(feature.id, &contributors, |_, face| names.faces.get(face))?
             }
         };
         return Ok(Derived {

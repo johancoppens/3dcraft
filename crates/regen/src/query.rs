@@ -11,15 +11,13 @@ use crate::Names;
 use craft3d_doc::PersistentName;
 use craft3d_topo::{Body, EdgeId, FaceId};
 
-/// The faces of `body` called `name`: none, one, or several (the pieces a
-/// boolean cut a face into).
+/// The faces of `body` called `name`, by their own name or an alias (the
+/// name of another face a boolean merged into it): none, one, or several
+/// (the pieces a boolean cut a face into).
 pub fn faces_named(names: &Names, name: &PersistentName) -> Vec<FaceId> {
-    names
-        .faces
-        .iter()
-        .enumerate()
-        .filter(|(_, face)| *face == name)
-        .filter_map(|(index, _)| u32::try_from(index).ok().map(FaceId))
+    (0..names.faces.len())
+        .filter(|&face| names.face_answers_to(face, name))
+        .filter_map(|index| u32::try_from(index).ok().map(FaceId))
         .collect()
 }
 
@@ -49,9 +47,10 @@ pub fn faces_of_edges(body: &Body) -> Vec<Vec<FaceId>> {
 }
 
 /// The edges of `body` that lie between a face called `a` and a face
-/// called `b`, in ascending order. With `a == b`: the edges both of whose
-/// sides are faces of that name (a seam, or the cut between two pieces of
-/// one face).
+/// called `b`, in ascending order. When both names name the same faces
+/// (`a == b`, or an alias and the face's own name): the edges both of
+/// whose sides are faces of that name (a seam, or the cut between two
+/// pieces of one face).
 pub fn edges_between(
     body: &Body,
     names: &Names,
@@ -59,13 +58,14 @@ pub fn edges_between(
     b: &PersistentName,
 ) -> Vec<EdgeId> {
     let (first, second) = (faces_named(names, a), faces_named(names, b));
+    let same = first == second;
     faces_of_edges(body)
         .iter()
         .enumerate()
         .filter(|(_, users)| {
             let on = |set: &[FaceId]| users.iter().any(|face| set.contains(face));
             let only = |set: &[FaceId]| users.iter().all(|face| set.contains(face));
-            if a == b {
+            if same {
                 !users.is_empty() && only(&first)
             } else {
                 on(&first) && on(&second)
