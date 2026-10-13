@@ -491,42 +491,49 @@ pub(super) fn left_of(
     of: &[Seg],
     margin: f64,
 ) -> Result<Vec3, Reason> {
-    for seg in of {
-        let (point, travel) = seg.travel();
-        let Some(outward) = outward_normal(sheet, reversed, point) else {
-            continue;
-        };
-        // Seen from outside the face lies to the left of its boundary.
-        let Some(inward) = outward.cross(travel).normalized() else {
-            continue;
-        };
-        let mut step = seg.at(0.25).distance(seg.at(0.75));
-        for _ in 0..64 {
-            step *= 0.5;
-            if !(step.is_finite() && step > margin) {
-                break;
-            }
-            let Some(candidate) = onto(sheet, point + inward * step) else {
+    // Steps that halve find a face of ordinary width at once. In a strip
+    // ten tolerances wide the candidate must be more than the margin (four
+    // tolerances) from its piece and less than half the strip (five), a
+    // window halving steps hit only by chance: where they find nothing the
+    // steps shrink by a twelfth of an octave instead.
+    for (shrink, most) in [(0.5, 64), (0.5_f64.powf(1.0 / 12.0), 768)] {
+        for seg in of {
+            let (point, travel) = seg.travel();
+            let Some(outward) = outward_normal(sheet, reversed, point) else {
                 continue;
             };
-            // The nearest thing to it must be this piece, away from its
-            // ends: then nothing lies between the two, and the candidate
-            // is right next to the piece there. On which side, the
-            // direction from that nearest point says.
-            let Some((t, reach)) = nearest(&seg.curve, seg.range, candidate) else {
+            // Seen from outside the face lies to the left of its boundary.
+            let Some(inward) = outward.cross(travel).normalized() else {
                 continue;
             };
-            let edge = 1e-6 * (seg.range.1 - seg.range.0);
-            if !(reach > margin && t > seg.range.0 + edge && t < seg.range.1 - edge)
-                || all_boxes.nearer(all, candidate, reach * (1.0 - 1e-9), false)
-            {
-                continue;
-            }
-            let (foot, tangent) = seg.curve.derivatives(t);
-            let travel = if seg.reversed { -tangent } else { tangent };
-            let left = outward_normal(sheet, reversed, foot).map(|n| n.cross(travel));
-            if left.is_some_and(|left| left.dot(candidate - foot) > 0.0) {
-                return Ok(candidate);
+            let mut step = seg.at(0.25).distance(seg.at(0.75));
+            for _ in 0..most {
+                step *= shrink;
+                if !(step.is_finite() && step > margin) {
+                    break;
+                }
+                let Some(candidate) = onto(sheet, point + inward * step) else {
+                    continue;
+                };
+                // The nearest thing to it must be this piece, away from its
+                // ends: then nothing lies between the two, and the candidate
+                // is right next to the piece there. On which side, the
+                // direction from that nearest point says.
+                let Some((t, reach)) = nearest(&seg.curve, seg.range, candidate) else {
+                    continue;
+                };
+                let edge = 1e-6 * (seg.range.1 - seg.range.0);
+                if !(reach > margin && t > seg.range.0 + edge && t < seg.range.1 - edge)
+                    || all_boxes.nearer(all, candidate, reach * (1.0 - 1e-9), false)
+                {
+                    continue;
+                }
+                let (foot, tangent) = seg.curve.derivatives(t);
+                let travel = if seg.reversed { -tangent } else { tangent };
+                let left = outward_normal(sheet, reversed, foot).map(|n| n.cross(travel));
+                if left.is_some_and(|left| left.dot(candidate - foot) > 0.0) {
+                    return Ok(candidate);
+                }
             }
         }
     }
@@ -688,6 +695,38 @@ impl Outline {
             };
         }
         let mut failure = None;
+        // Steps that halve find a face of ordinary width at once; a strip
+        // only a little wider than twice the margin (a sliver ten
+        // tolerances thick, with room for a point between four and six
+        // tolerances in) is hit by them only by chance, so where they find
+        // nothing the steps shrink by a twelfth of an octave instead.
+        for (shrink, most) in [(0.5, 64), (0.5_f64.powf(1.0 / 12.0), 768)] {
+            if !found.is_empty() {
+                break;
+            }
+            self.points_inwards(tol, margin, want, shrink, most, &mut found, &mut failure);
+        }
+        if found.is_empty() {
+            Err(failure.unwrap_or(SLIVER))
+        } else {
+            Ok(found)
+        }
+    }
+
+    /// The search of [`Outline::interior_points`] with steps into the face
+    /// that shrink by `shrink` each time, at most `most` of them per
+    /// boundary piece.
+    #[allow(clippy::too_many_arguments)]
+    fn points_inwards(
+        &self,
+        tol: f64,
+        margin: f64,
+        want: usize,
+        shrink: f64,
+        most: usize,
+        found: &mut Vec<Vec3>,
+        failure: &mut Option<Reason>,
+    ) {
         for seg in self.loops.iter().flatten() {
             if found.len() >= want {
                 break;
@@ -702,8 +741,8 @@ impl Outline {
             };
             let mut step = seg.at(0.25).distance(seg.at(0.75));
             let mut taken = 0;
-            for _ in 0..64 {
-                step *= 0.5;
+            for _ in 0..most {
+                step *= shrink;
                 if !(step.is_finite() && step > margin) {
                     break;
                 }
@@ -725,14 +764,9 @@ impl Outline {
                         }
                     }
                     Ok(_) => {}
-                    Err(reason) => failure = failure.or(Some(reason)),
+                    Err(reason) => *failure = failure.or(Some(reason)),
                 }
             }
-        }
-        if found.is_empty() {
-            Err(failure.unwrap_or(SLIVER))
-        } else {
-            Ok(found)
         }
     }
 

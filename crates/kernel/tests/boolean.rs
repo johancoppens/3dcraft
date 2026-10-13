@@ -41,6 +41,44 @@ fn overlapping_boxes() {
     }
 }
 
+/// A box set ten tolerances deep into the side of a plate: by the
+/// tolerance rule (twice the tolerance or more is as given) an overlap,
+/// whose pieces are strips ten tolerances wide. A point inside such a
+/// strip, four tolerances clear of its boundary, lies between four and
+/// six tolerances in (to tell the loops of a region apart: between four
+/// and five); until 2026-10-13 the steps into the face halved from a
+/// quarter of the boundary piece and hit that window only by chance, and
+/// the booleans were refused as "a piece of a face too thin to find a
+/// point inside it" (36 cases of the corpus).
+#[test]
+fn an_overlap_ten_tolerances_deep_is_built_as_given() {
+    for k in SCALES {
+        let plate = boxed(k, [0.0, 0.0, 0.0], [4.0, 3.0, 2.0]);
+        for deep in [10e-6, 9e-6, 13e-6, 37e-6] {
+            let beside = boxed(k, [4.0 - deep, 0.5, 0.5], [6.0, 2.5, 1.5]);
+            let long = 2.0 + deep;
+            let beside_area = 2.0 * (long * 2.0 + long + 2.0);
+            // The sliver: 2 by 1 and `deep` thick.
+            let common = solve(&plate, &beside, Intersect, k);
+            assert_mass(&common, 2.0 * deep, 4.0 + 6.0 * deep, k);
+            assert_eq!(counts(&common), (8, 12, 6, 1));
+            // Together: the box's end and the strips around it are inside
+            // the plate, and the plate's side has lost the patch under it.
+            let both = solve(&plate, &beside, Union, k);
+            assert_mass(
+                &both,
+                24.0 + 4.0,
+                52.0 - 2.0 + beside_area - 2.0 - 6.0 * deep,
+                k,
+            );
+            assert_eq!(both.body.shells.len(), 1);
+            // The plate with a pocket ten tolerances deep.
+            let less = solve(&plate, &beside, Subtract, k);
+            assert_mass(&less, 24.0 - 2.0 * deep, 52.0 + 6.0 * deep, k);
+        }
+    }
+}
+
 #[test]
 fn crossing_boxes() {
     for k in SCALES {
