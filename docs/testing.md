@@ -55,7 +55,7 @@ In place for revolution (`crates/kernel/tests/revolve*.rs`): the profile catalog
 
 ### Oracle 2: topological invariants
 
-Every body an operation returns must pass `topo::check`: Euler–Poincaré (V − E + F − (L − F) = 2(S − G)), each edge of a solid used exactly twice in opposite directions, closed loops, curves on their surfaces and vertices on their curves within tolerance, consistent orientation. Expected entity counts are asserted where known (a box has 6 faces, 12 edges, 8 vertices; a box minus a through cylinder has 7 faces).
+Every body an operation returns must pass `topo::check`: Euler–Poincaré (V − E + F − (L − F) − 2H = 2(S − G), with H the faces that are a torus or a torus with holes in it; `crates/topo/tests/genus.rs` holds `topo::genus` to what hand-built bodies are, and `crates/kernel/tests/genus.rs` to what the booleans make of a torus), each edge of a solid used exactly twice in opposite directions, closed loops, curves on their surfaces and vertices on their curves within tolerance, consistent orientation. Expected entity counts are asserted where known (a box has 6 faces, 12 edges, 8 vertices; a box minus a through cylinder has 7 faces).
 
 ### Oracle 3: algebraic identities
 

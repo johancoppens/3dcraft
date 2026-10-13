@@ -1,6 +1,6 @@
 //! The validity checker: what must hold for a body to be a body.
 
-use crate::{Body, BodyKind, Coedge, EdgeId, FaceId, LoopId, VertexId};
+use crate::{Body, BodyKind, Coedge, EdgeId, Face, FaceId, LoopId, VertexId};
 use craft3d_geom::Surface;
 use craft3d_math::Tolerance;
 use std::collections::BTreeMap;
@@ -68,7 +68,8 @@ pub enum Defect {
         face: FaceId,
         edge: EdgeId,
     },
-    /// V − E + F − R is not 2 (shells − genus) for any whole genus ≥ 0.
+    /// V − E + F − R, less 2 for every face that is a torus or a torus
+    /// with holes in it, is not 2 (shells − genus) for any whole genus ≥ 0.
     Euler {
         vertices: usize,
         edges: usize,
@@ -158,22 +159,107 @@ impl fmt::Display for Defect {
     }
 }
 
-/// `(V, E, F, R, S)` and the Euler characteristic `V − E + F − R`.
+/// Points along each edge at which a loop on a surface closed both ways
+/// is followed to see whether it goes around.
+const HANDLE_STEPS: u32 = 32;
+
+/// Whether a face on a surface closed both ways (a torus) still has the
+/// surface's handle: it is the whole surface, or the surface less the
+/// discs inside its loops.
 ///
-/// `R` counts, per face, its loops beyond the first. A face without loops
-/// is a whole closed surface and counts −1, which makes a sphere come out
-/// at 2; a loopless face closed in both parameter directions (a torus) is
-/// a handle and takes 2 off.
+/// It has not when a loop goes around the axis or around the tube (the
+/// face is then a band between two such loops, cut open along them), nor
+/// when the face is the patch inside a loop rather than everything
+/// outside it. Counts cannot tell the last two apart: the hole a drill
+/// leaves in a torus and the plug it takes out have the same loops, walked
+/// the other way. Which way is read off in parameter space, where a face
+/// is to the left of its loops: the loops of a patch enclose a positive
+/// area in total, those of the surface less some discs a negative one.
+///
+/// `false` for anything that cannot be followed (a dangling reference, a
+/// number that is not finite): `check` reports those as what they are.
+fn keeps_handle(body: &Body, face: &Face) -> bool {
+    let (Some(period_u), Some(period_v)) = (face.surface.period_u(), face.surface.period_v())
+    else {
+        return false;
+    };
+    if face.loops.is_empty() {
+        return true;
+    }
+    let near =
+        |value: f64, target: f64, period: f64| value + ((target - value) / period).round() * period;
+    let mut enclosed = 0.0;
+    for loop_id in &face.loops {
+        let Some(loop_) = body.loop_(*loop_id) else {
+            return false;
+        };
+        // The loop in parameter space, unrolled: each point as near to
+        // the one before it as whole periods bring it.
+        let mut polygon: Vec<(f64, f64)> = Vec::new();
+        for coedge in &loop_.coedges {
+            let Some(edge) = body.edge(coedge.edge) else {
+                return false;
+            };
+            let (t0, t1) = edge.range;
+            for k in 0..HANDLE_STEPS {
+                let along = (f64::from(k) + 0.5) / f64::from(HANDLE_STEPS);
+                let t = if coedge.reversed {
+                    t1 + (t0 - t1) * along
+                } else {
+                    t0 + (t1 - t0) * along
+                };
+                let Ok((u, v)) = face.surface.project(edge.curve.eval(t)) else {
+                    return false;
+                };
+                polygon.push(match polygon.last() {
+                    Some(&(pu, pv)) => (near(u, pu, period_u), near(v, pv, period_v)),
+                    None => (u, v),
+                });
+            }
+        }
+        let (Some(&(first_u, first_v)), Some(&(last_u, last_v))) =
+            (polygon.first(), polygon.last())
+        else {
+            return false;
+        };
+        // Back at its start a loop that went around is a period off.
+        let around = (near(first_u, last_u, period_u) - first_u).abs() > 0.5 * period_u
+            || (near(first_v, last_v, period_v) - first_v).abs() > 0.5 * period_v;
+        // Not `around ||`: a NaN has not come back either.
+        if around || !(last_u.is_finite() && last_v.is_finite()) {
+            return false;
+        }
+        // Twice the area inside the polygon, counter-clockwise positive,
+        // about its first point so that the size of u and v does not
+        // enter.
+        let after = polygon.iter().skip(1);
+        for (&(u0, v0), &(u1, v1)) in polygon.iter().zip(after) {
+            enclosed += (u0 - first_u) * (v1 - first_v) - (u1 - first_u) * (v0 - first_v);
+        }
+    }
+    // Loops run the other way in parameter space on a reversed face.
+    if face.reversed {
+        enclosed = -enclosed;
+    }
+    enclosed < 0.0
+}
+
+/// `(V, E, F, R, S)` and the Euler characteristic `V − E + F − R − 2H`.
+///
+/// `V − E + F − R = 2 (S − G)` counts every face as a disc with holes:
+/// `R` is, per face, its loops beyond the first. A face that is not one
+/// enters with what it is instead. A face without loops is a whole closed
+/// surface, a sphere, and counts −1 in `R`, which makes a ball come out
+/// at 2. A face on a torus that still has the torus's handle (see
+/// [`keeps_handle`]: the whole torus, or one with holes in it) is a
+/// sphere with that handle added, and each such face takes 2 off (`H`).
 fn euler(body: &Body) -> (usize, usize, usize, i64, usize, i64) {
     let (v, e, f) = (body.vertices.len(), body.edges.len(), body.faces.len());
     let mut rings = 0_i64;
     let mut handles = 0_i64;
     for face in &body.faces {
         rings += face.loops.len() as i64 - 1;
-        if face.loops.is_empty()
-            && face.surface.period_u().is_some()
-            && face.surface.period_v().is_some()
-        {
+        if keeps_handle(body, face) {
             handles += 1;
         }
     }
@@ -182,7 +268,13 @@ fn euler(body: &Body) -> (usize, usize, usize, i64, usize, i64) {
 }
 
 /// The total genus (number of handles) of a solid, when its counts satisfy
-/// Euler–Poincaré: `V − E + F − R = 2 (S − G)`.
+/// Euler–Poincaré: `V − E + F − R − 2H = 2 (S − G)`, with `H` the faces
+/// that are a torus or a torus with holes in it. `None` when no whole
+/// `G ≥ 0` fits.
+///
+/// Faces are taken for what their surface and loops say they are: a
+/// spline surface that closes on itself both ways is not known to, and a
+/// face on one counts as a disc with holes.
 pub fn genus(body: &Body) -> Option<u32> {
     let (.., shells, chi) = euler(body);
     let twice = 2 * shells as i64 - chi;
