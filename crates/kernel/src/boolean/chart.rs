@@ -217,7 +217,20 @@ impl Chart {
                 let mut about_axis = Vec::new();
                 let mut around_tube = Vec::new();
                 for seg in loops.iter().flatten() {
-                    let step = (seg.range.1 - seg.range.0) / f64::from(CUT_SAMPLES);
+                    // Samples enough that a chord between two is a small
+                    // fraction of the tube's radius: the stretch of angle a
+                    // piece may cover between samples is then small too.
+                    // (With a fixed count, a circle around the axis strayed
+                    // by radians around the tube and covered every cut.)
+                    let length = speed_bound(&seg.curve) * (seg.range.1 - seg.range.0);
+                    let samples = if length.is_finite() && length > 0.0 {
+                        (length / (0.05 * minor))
+                            .ceil()
+                            .clamp(f64::from(CUT_SAMPLES), 4096.0)
+                    } else {
+                        f64::from(CUT_SAMPLES)
+                    };
+                    let step = (seg.range.1 - seg.range.0) / samples;
                     // Half a step of travel, as an angle: at most a quarter
                     // turn's worth of arc per chord.
                     let stray = 0.25 * PI * speed_bound(&seg.curve) * step;
@@ -227,7 +240,7 @@ impl Chart {
                     let (mut u, mut v) = (0.0_f64, 0.0_f64);
                     let (mut lo, mut hi) = ((0.0_f64, 0.0_f64), (0.0_f64, 0.0_f64));
                     let mut previous = (start_u, start_v);
-                    for k in 1..=CUT_SAMPLES {
+                    for k in 1..=(samples as u32) {
                         let p = seg.curve.eval(seg.range.0 + step * f64::from(k));
                         let here = torus_angles(&frame, major, p);
                         u += (here.0 - previous.0 + PI).rem_euclid(TAU) - PI;

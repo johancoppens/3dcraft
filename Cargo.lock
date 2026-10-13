@@ -533,6 +533,8 @@ dependencies = [
 name = "craft3d-render"
 version = "0.0.1"
 dependencies = [
+ "craft3d-geom",
+ "craft3d-kernel",
  "craft3d-math",
  "craft3d-tess",
  "craft3d-testkit",

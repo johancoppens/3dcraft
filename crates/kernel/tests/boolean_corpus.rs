@@ -54,6 +54,7 @@ use craft3d_kernel::KernelError;
 use craft3d_kernel::boolean::{BooleanOp, boolean, contains_points};
 use craft3d_kernel::primitives;
 use craft3d_math::{Bbox3, Frame, Tolerance, Vec3};
+use craft3d_testkit::parallel::map_parallel;
 use craft3d_topo::{Body, check, mass_properties};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -396,9 +397,20 @@ fn bounds(case: &Value, result: &Value, size: f64, gap: f64) -> Option<Bounds> {
         .max(off_volume);
     let mut volume = 1e-7 * v + (4.0 * off_volume).max(1e-9) * volumes;
     let mut area = 1e-7 * a + (4.0 * off_area).max(1e-9) * areas;
+    // FreeCAD's area of a spline face is numeric and off by up to about
+    // `FREEFORM_AREA` of it (see the operand check): a result with such a
+    // face carries that slack too.
+    if freeform(&case["a"]) || freeform(&case["b"]) {
+        area = area.max(FREEFORM_AREA * a);
+    }
     let mut slack = gap;
     if result.get("spl").and_then(Value::as_bool) == Some(true) {
         slack += number(result, &["t"])? + TOLERANCE;
+    }
+    // Where an operand is freeform, every curve in which the surfaces meet
+    // is an approximation within the tolerance on our side too.
+    if freeform(&case["a"]) || freeform(&case["b"]) {
+        slack += TOLERANCE;
     }
     if slack > 0.0 {
         volume += slack * a;
@@ -691,6 +703,8 @@ fn run_case(case: &Value, snap: Option<&Value>, verbose: bool) -> Vec<Outcome> {
     let tolerance = Tolerance::new(TOLERANCE * k, 1e-9).unwrap();
     let mut outcomes = Vec::new();
     for (op, name, field) in OPS {
+        let started = std::time::Instant::now();
+        let mut booleans_ms = 0.0;
         let result = catch_unwind(AssertUnwindSafe(|| boolean(&a, &b, op, &tolerance)));
         let mut ours = None;
         let outcome = match result {
@@ -702,6 +716,7 @@ fn run_case(case: &Value, snap: Option<&Value>, verbose: bool) -> Vec<Outcome> {
             Ok(Err(other)) => Outcome::Invalid(format!("error: {other}")),
             Ok(Ok(result)) => {
                 digest(&result);
+                booleans_ms = started.elapsed().as_secs_f64() * 1e3;
                 let defects = check(&result.body, &tolerance);
                 match measure(&result.body, k) {
                     _ if !defects.is_empty() => {
@@ -738,7 +753,10 @@ fn run_case(case: &Value, snap: Option<&Value>, verbose: bool) -> Vec<Outcome> {
             other => other,
         };
         if verbose {
-            println!("{id} {name}: {outcome:?}");
+            println!(
+                "{id} {name}: {outcome:?} ({booleans_ms:.0} ms boolean, {:.0} ms in all)",
+                started.elapsed().as_secs_f64() * 1e3
+            );
             println!("    ours      {ours:?}");
             println!(
                 "    reference {}",
@@ -905,31 +923,14 @@ fn the_kernel_agrees_with_the_reference_kernel() {
     assert!(!selected.is_empty(), "the filter selects no case");
     let verbose = only_case.is_some() || std::env::var_os("BOOLEAN_CORPUS_VERBOSE").is_some();
 
-    // In parallel, merged in the order of the file.
-    let workers = std::thread::available_parallelism().map_or(4, usize::from);
-    let chunk = selected.len().div_ceil(workers).max(1);
-    let outcomes: Vec<Vec<Outcome>> = std::thread::scope(|scope| {
-        let handles: Vec<_> = selected
-            .chunks(chunk)
-            .map(|part| {
-                let by_id = &by_id;
-                scope.spawn(move || {
-                    part.iter()
-                        .map(|case| {
-                            let snap = case
-                                .get("snap")
-                                .and_then(Value::as_str)
-                                .and_then(|id| by_id.get(id).copied());
-                            run_case(case, snap, verbose)
-                        })
-                        .collect::<Vec<_>>()
-                })
-            })
-            .collect();
-        handles
-            .into_iter()
-            .flat_map(|h| h.join().expect("a worker panicked outside a boolean"))
-            .collect()
+    // In parallel, each case a unit of work of its own (a slow case holds
+    // up no other), the outcomes in the order of the file.
+    let outcomes: Vec<Vec<Outcome>> = map_parallel(selected.clone(), |case| {
+        let snap = case
+            .get("snap")
+            .and_then(Value::as_str)
+            .and_then(|id| by_id.get(id).copied());
+        run_case(case, snap, verbose)
     });
 
     let mut rows: BTreeMap<(String, String), Row> = BTreeMap::new();

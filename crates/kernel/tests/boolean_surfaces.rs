@@ -748,3 +748,60 @@ fn a_rim_through_a_wall_at_the_seam_of_its_circle() {
         assert_eq!(genus(&common.body), Some(0));
     }
 }
+
+/// A torus bead in the corner where a boss stands on a plate: its tube
+/// dips into the plate and into the boss. Until 2026-10-13 the bead's face
+/// was refused ("boundary crosses every circle around its axis and every
+/// circle around its tube"): the chart sampled a circle around the axis at
+/// sixteen points and let it stray by radians around the tube between
+/// them. The volumes are Pappus on circular segments of the tube's
+/// cross-section, in closed form.
+#[test]
+fn a_torus_bead_in_the_corner_of_a_plate_and_a_boss() {
+    let (major, minor) = (22.0, 2.5);
+    // The tube's centre is 1 above the plate and 2 outside the boss.
+    let (below, inward) = (1.0, 2.0);
+    let r2 = minor * minor;
+    let segment = |d: f64| r2 * (d / minor).acos() - d * (r2 - d * d).sqrt();
+    // ∫ sqrt(r² − x²) dx and ∫ x sqrt(r² − x²) dx.
+    let arc = |x: f64| 0.5 * (x * (r2 - x * x).sqrt() + r2 * (x / minor).asin());
+    let moment = |x: f64| -(r2 - x * x).powf(1.5) / 3.0;
+    // The part of the tube below the plate's top: a segment symmetric
+    // about the tube's centre, so its centroid is at the major radius.
+    let in_plate = 2.0 * PI * major * segment(below);
+    // The part inside the boss: a segment towards the axis, whose first
+    // moment pulls its centroid inwards.
+    let in_boss = 2.0 * PI * (major * segment(inward) + 2.0 * (moment(-inward) - moment(-minor)));
+    // Both at once: the corner x < −inward, y < −below of the disc.
+    let edge = -(r2 - below * below).sqrt();
+    let corner_area = (arc(-inward) - arc(edge)) - below * (-inward - edge);
+    let corner_moment =
+        (moment(-inward) - moment(edge)) - below * 0.5 * (inward * inward - edge * edge);
+    let in_corner = 2.0 * PI * (major * corner_area + corner_moment);
+    let bead_volume = 2.0 * PI * PI * major * r2;
+    for k in SCALES {
+        let plate = boxed(k, [-50.0, -50.0, 0.0], [50.0, 50.0, 10.0]);
+        let boss = rod(k, [0.0, 0.0, 0.0], 20.0, 30.0);
+        let bead = ring(k, [0.0, 0.0, 10.0 + below], major, minor);
+        let on_plate = solve(&plate, &bead, Union, k);
+        assert_close(
+            mass(&on_plate.body).volume / (k * k * k),
+            100_000.0 + bead_volume - in_plate,
+            "bead on the plate",
+        );
+        let both = solve(&plate, &boss, Union, k);
+        let all = solve(&both.body, &bead, Union, k);
+        assert_close(
+            mass(&all.body).volume / (k * k * k),
+            100_000.0 + PI * 400.0 * 20.0 + bead_volume - (in_plate + in_boss - in_corner),
+            "bead in the corner",
+        );
+        assert_eq!(all.body.shells.len(), 1);
+        let only_boss = solve(&boss, &bead, Union, k);
+        assert_close(
+            mass(&only_boss.body).volume / (k * k * k),
+            PI * 400.0 * 30.0 + bead_volume - in_boss,
+            "bead around the boss",
+        );
+    }
+}

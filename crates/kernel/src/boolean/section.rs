@@ -2,6 +2,7 @@
 //! in which two surfaces meet, cut down to the stretches that are within
 //! both faces.
 
+use super::freeform::is_freeform;
 use super::hits::{curve_hits, signed_distance};
 use super::outline::{
     Hull, Outline, Seg, Sheet, Side, boxes_meet, locate, nearest, onto, outward_normal,
@@ -209,6 +210,12 @@ pub(super) fn passage(
     tol: f64,
 ) -> Passage {
     const STEPS: usize = 160;
+    // A freeform surface is taken as crossing: its index answers the walk
+    // below at a price, and a lens between it and another surface is a
+    // case the corpus has yet to show.
+    if is_freeform(surface.surface) || is_freeform(other.surface) {
+        return Passage::Crossing;
+    }
     let Some(across) =
         outward_normal(surface, false, p).and_then(|normal| normal.cross(tangent).normalized())
     else {

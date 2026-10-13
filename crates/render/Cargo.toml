@@ -15,3 +15,5 @@ png.workspace = true
 
 [dev-dependencies]
 craft3d-testkit.workspace = true
+craft3d-kernel.workspace = true
+craft3d-geom.workspace = true
