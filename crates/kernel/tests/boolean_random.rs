@@ -817,6 +817,11 @@ fn random_pairs_with_every_shape_long_run() {
 ///   the tolerance of the true one, and at its very end its direction was
 ///   off to the wrong side of the rim by a few millionths of a radian:
 ///   "an imprinted face could not be divided into regions".
+/// - Seed 2000516 with every shape: a cone whose apex lies on a ball. The
+///   curve in which they meet is a loop that begins and ends at the apex;
+///   its two ends were taken for one cut, no stretch was left, and the
+///   bodies were said to have nothing in common (the sampled overlap
+///   caught it).
 #[test]
 fn pairs_that_once_went_wrong() {
     for k in SCALES {
@@ -828,6 +833,7 @@ fn pairs_that_once_went_wrong() {
             (1_001_320, Shapes::Flat),
             (1_001_488, Shapes::Flat),
             (87, Shapes::All),
+            (2_000_516, Shapes::All),
         ] {
             let mut tally = Tally::default();
             run_pair(seed, Placement::Grid, k, shapes, &mut tally);

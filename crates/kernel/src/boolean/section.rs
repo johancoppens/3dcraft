@@ -55,7 +55,7 @@ impl Solid<'_> {
     }
 
     /// A box around the whole body.
-    fn bbox(&self) -> Bbox3 {
+    pub fn bbox(&self) -> Bbox3 {
         if let Ok(b) = self.body.bbox() {
             return b;
         }
@@ -460,8 +460,16 @@ fn clip(
             }
             Ok(d <= vertices.merge)
         };
+        // Two cuts in one place are one cut when the curve stays there
+        // between them. A curve that leaves and comes back (a loop
+        // through the apex of a cone that lies on a sphere begins and
+        // ends there) has two cuts in that place, with all of itself
+        // between them.
         let is_last = match cuts.last() {
-            Some(last) => same(last)?,
+            Some(last) => {
+                same(last)?
+                    && curve.eval(0.5 * (last.t + cut.t)).distance(cut.point) < vertices.guard
+            }
             None => false,
         };
         let is_first = match cuts.first() {
@@ -574,8 +582,12 @@ fn clip(
         }
         let start = vertices.find_or_add(from.point).map_err(|s| s.at(&named))?;
         let end = vertices.find_or_add(to.point).map_err(|s| s.at(&named))?;
+        // A stretch from a vertex back to itself is a loop when it goes
+        // somewhere on the way: the whole of a closed curve, or a curve
+        // that begins and ends in one place.
         let whole = closed && cuts.len() <= 1;
-        if start == end && !whole {
+        let looped = middle.distance(from.point) >= vertices.guard;
+        if start == end && !(whole || looped) {
             return Err(Stop::of(NEAR).at(&named));
         }
         for (vertex, cut) in [(start, &from), (end, &to)] {
@@ -593,7 +605,18 @@ fn clip(
                 (a, fa, &mut sections.splits_a),
                 (b, fb, &mut sections.splits_b),
             ] {
-                for id in solid.edges_of(face) {
+                // (Only the edges near the vertex are looked at: a face may
+                // have a thousand.)
+                let outline = solid.outlines.get(face).ok_or(Stop::of(LOST))?;
+                for (l, k) in outline.pieces_near(point, tol) {
+                    let id = solid
+                        .body
+                        .faces
+                        .get(face)
+                        .and_then(|f| f.loops.iter().filter_map(|&id| solid.body.loop_(id)).nth(l))
+                        .and_then(|loop_| loop_.coedges.get(k))
+                        .map(|coedge| coedge.edge)
+                        .ok_or(Stop::of(LOST))?;
                     let (Some(edge), Some(ends)) = (solid.body.edge(id), solid.ends(id)) else {
                         return Err(Stop::of(LOST));
                     };

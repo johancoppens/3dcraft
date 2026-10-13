@@ -2,7 +2,7 @@
 //! solid, and which of them the operation keeps.
 
 use super::hits::{curve_hits, signed_distance};
-use super::outline::{Outline, Side, line_in_box};
+use super::outline::{Outline, Side, boxes_meet, line_in_box};
 use super::regions::{self, Half};
 use super::section::Solid;
 use super::{
@@ -131,41 +131,52 @@ fn classify(
     tolerance: &Tolerance,
 ) -> Result<Class, Stop> {
     let tol = tolerance.linear;
-    let candidates = region
-        .interior_points(tol, 4.0 * tol, TRIES)
-        .map_err(Stop::of)?;
     let mut failure = None;
-    'points: for p in candidates {
-        for &(face, same_normal) in coincident {
-            let outline = other.outlines.get(face).ok_or(Stop::of(LOST))?;
-            match outline
-                .side(p, tol)
-                .map_err(|r| Stop::of(r).at(&[other.name(face)]))?
-            {
-                Side::Out => {}
-                // A boundary of the other body that was not imprinted
-                // here: no other point of the region would mean more.
-                Side::On => return Err(Stop::of(ON_A_FACE).at(&[other.name(face)])),
-                Side::In => {
-                    let same = same_normal == (region.reversed == outline.reversed);
-                    return Ok(if same {
-                        Class::OnSame
-                    } else {
-                        Class::OnOpposite
-                    });
+    // One point decides, nearly always: the others are looked for only
+    // when it does not. (The points for a greater number begin with those
+    // for a smaller one.)
+    let mut tried = 0;
+    'points: for want in [1, TRIES] {
+        let candidates = region
+            .interior_points(tol, 4.0 * tol, want)
+            .map_err(Stop::of)?;
+        let fresh: Vec<Vec3> = candidates.into_iter().skip(tried).collect();
+        tried += fresh.len();
+        for p in fresh {
+            for &(face, same_normal) in coincident {
+                let outline = other.outlines.get(face).ok_or(Stop::of(LOST))?;
+                match outline
+                    .side(p, tol)
+                    .map_err(|r| Stop::of(r).at(&[other.name(face)]))?
+                {
+                    Side::Out => {}
+                    // A boundary of the other body that was not imprinted
+                    // here: no other point of the region would mean more.
+                    Side::On => return Err(Stop::of(ON_A_FACE).at(&[other.name(face)])),
+                    Side::In => {
+                        let same = same_normal == (region.reversed == outline.reversed);
+                        return Ok(if same {
+                            Class::OnSame
+                        } else {
+                            Class::OnOpposite
+                        });
+                    }
                 }
             }
-        }
-        // A point may by chance be where the bodies touch without
-        // crossing, or have no usable ray: the next one decides as well.
-        match inside(other, p, tolerance) {
-            Ok(true) => return Ok(Class::In),
-            Ok(false) => return Ok(Class::Out),
-            Err(stop @ Stop::Unsupported { .. }) => {
-                failure = failure.or(Some(stop));
-                continue 'points;
+            // A point may by chance be where the bodies touch without
+            // crossing, or have no usable ray: the next one decides as
+            // well.
+            match inside(other, p, tolerance) {
+                Ok(true) => return Ok(Class::In),
+                Ok(false) => return Ok(Class::Out),
+                Err(stop @ Stop::Unsupported { .. }) => {
+                    failure = failure.or(Some(stop));
+                }
+                Err(stop) => return Err(stop),
             }
-            Err(stop) => return Err(stop),
+        }
+        if want == 1 && TRIES == 1 {
+            break 'points;
         }
     }
     Err(failure.unwrap_or(Stop::of(NO_RAY)))
@@ -217,6 +228,7 @@ pub(super) fn select(
 ) -> Result<(), Stop> {
     let tol = tolerance.linear;
     let none = BTreeSet::new();
+    let other_box = other.bbox();
     for (face, outline) in own.outlines.iter().enumerate() {
         let named = [own.name(face)];
         let loops = boundary(own, face, pieces)?;
@@ -270,7 +282,19 @@ pub(super) fn select(
                 &made
             };
             let coincident = coincident.get(&face).map_or(&[][..], Vec::as_slice);
-            let class = classify(region, other, coincident, tolerance).map_err(|s| s.at(&named))?;
+            // A whole face that is nowhere near the other solid's box is
+            // outside that solid, without looking for a point of it.
+            let apart = whole
+                && coincident.is_empty()
+                && own
+                    .boxes
+                    .get(face)
+                    .is_some_and(|own_box| !boxes_meet(own_box, &other_box, 4.0 * tol));
+            let class = if apart {
+                Class::Out
+            } else {
+                classify(region, other, coincident, tolerance).map_err(|s| s.at(&named))?
+            };
             // Of two coincident regions with the same normal A's is the
             // one kept; with opposite normals the solids lie on either
             // side and only A minus B has a face there, A's.

@@ -24,7 +24,7 @@
 //! out.
 
 use super::chart::{About, Chart, TOO_CLOSE};
-use super::outline::{Seg, left_of, outward_normal};
+use super::outline::{Seg, boxes, left_of, outward_normal};
 use super::{Arc, Reason};
 use craft3d_geom::Surface;
 use craft3d_math::{Frame, Vec3};
@@ -409,7 +409,16 @@ fn group(
             Err(UNBOUNDED)
         };
     }
+    let all_boxes = boxes(&all);
+    let flat = matches!(surface, Surface::Plane(_));
     let around = |loop_: usize, about: About| -> Result<bool, Reason> {
+        // In a plane a loop does not go around a point outside its box.
+        if let About::Point(p) = about
+            && flat
+            && !all_boxes.around(loop_, p, tol)
+        {
+            return Ok(false);
+        }
         let segs = all.get(loop_).ok_or(LOST)?;
         match chart.winding([segs.as_slice()], about)? {
             0 => Ok(false),
@@ -420,7 +429,7 @@ fn group(
     let mut measured = Vec::with_capacity(loops.len());
     for (index, halves) in loops.into_iter().enumerate() {
         let own = all.get(index).ok_or(LOST)?;
-        let witness = left_of(surface, reversed, &all, own, 4.0 * tol)?;
+        let witness = left_of(surface, reversed, &all, &all_boxes, own, 4.0 * tol)?;
         measured.push(Measured {
             halves,
             witness,
