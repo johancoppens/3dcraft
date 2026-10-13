@@ -1282,6 +1282,13 @@ fn a_sketch_on_a_face_is_written_like_this_and_round_trips() {
                 PersistentName::copy(FeatureId(6), 3, face.clone())
             } else if role.is_numbered() {
                 PersistentName::new(FeatureId(6), role, vec![3])
+            } else if role.is_by_faces() {
+                // An edge or a vertex by its faces: the faces it lies on,
+                // those near it, and a number.
+                PersistentName::new(FeatureId(6), role, vec![2]).with_faces(
+                    vec![face.clone(), face.clone()],
+                    vec![PersistentName::copy(FeatureId(6), 3, face.clone())],
+                )
             } else {
                 PersistentName {
                     role,
@@ -2012,4 +2019,95 @@ fn datum_points_are_written_like_this_and_round_trip() {
     assert!(with(r#"{"type": "midpoint", "between": []}"#).is_err());
     assert!(with(r#"{"type": "datum", "feature": 2, "offset": "1"}"#).is_err());
     assert!(with(r#"["0", "0", "0"]"#).is_err());
+}
+
+/// A vertex and an edge of a boolean are named by their faces: the name
+/// lists them, in the file as in the document.
+#[test]
+fn a_name_by_faces_is_written_like_this_and_round_trips() {
+    use craft3d_doc::{DatumPoint, PersistentName, PointRef};
+    let mut doc = small();
+    let name = |text: &str| text.parse::<PersistentName>().unwrap();
+    let corner = name(
+        "F1:corner[F1:copy(0)/F1:face(1),F1:copy(0)/F1:face(2)|F1:copy(1)/F1:endCap(e3,e4)](1)",
+    );
+    doc.add_feature(
+        None,
+        FeatureKind::DatumPoint(DatumPoint {
+            at: PointRef::Vertex {
+                vertex: PersistentName::copy(FeatureId(1), 2, corner.clone()),
+            },
+        }),
+    )
+    .unwrap();
+    assert_eq!(doc.validate(), Ok(()));
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let face = |n: u64| {
+        serde_json::json!({"feature": 1, "role": "copy", "sources": [0],
+            "of": {"feature": 1, "role": "face", "sources": [n]}})
+    };
+    let cap = serde_json::json!({"feature": 1, "role": "copy", "sources": [1],
+        "of": {"feature": 1, "role": "endCap", "sources": [3, 4]}});
+    let written = serde_json::json!({"feature": 1, "role": "copy", "sources": [2],
+        "of": {"feature": 1, "role": "corner", "sources": [1],
+               "faces": {"on": [face(1), face(2)], "near": [cap.clone()]}}});
+    let stored = &value["document"]["features"][1]["kind"]["at"]["vertex"];
+    assert_eq!(stored, &written);
+    assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+    assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
+
+    let with = |vertex: serde_json::Value| {
+        let mut value = value.clone();
+        value["document"]["features"][1]["kind"]["at"]["vertex"] = vertex;
+        from_manifest_json(serde_json::to_string(&value).unwrap().as_bytes())
+    };
+    let by = |faces: serde_json::Value| serde_json::json!({"feature": 1, "role": "corner", "sources": [], "faces": faces});
+    // The faces in another order are the same name.
+    let turned = with(by(serde_json::json!({"on": [face(2), face(1)]}))).unwrap();
+    let FeatureKind::DatumPoint(point) = &turned.features[1].kind else {
+        panic!()
+    };
+    assert_eq!(
+        point.at,
+        PointRef::Vertex {
+            vertex: name("F1:corner[F1:copy(0)/F1:face(1),F1:copy(0)/F1:face(2)]")
+        }
+    );
+    // A vertex on no face at all, and one with nothing near it, are names.
+    assert!(with(by(serde_json::json!({}))).is_ok());
+    assert!(with(serde_json::json!({"feature": 1, "role": "corner", "sources": []})).is_ok());
+    // What is not a name is refused, never read as another.
+    for (damaged, why) in [
+        (
+            by(serde_json::json!({"on": [by(serde_json::json!({"on": [face(1)]}))]})),
+            "nested",
+        ),
+        (
+            by(serde_json::json!({"on": [{"feature": 1, "role": "vertex", "sources": [1]}]})),
+            "not a face",
+        ),
+        (
+            by(serde_json::json!({"on": [face(1)], "far": []})),
+            "an unknown field",
+        ),
+        (by(serde_json::json!([face(1)])), "a list"),
+        (
+            serde_json::json!({"feature": 1, "role": "face", "sources": [1],
+                               "faces": {"on": [face(1)]}}),
+            "a face that lists faces",
+        ),
+        (
+            serde_json::json!({"feature": 1, "role": "corner", "sources": [1, 2],
+                               "faces": {"on": [face(1)]}}),
+            "two numbers",
+        ),
+        (
+            serde_json::json!({"feature": 1, "role": "copy", "sources": [0],
+                "of": face(1), "faces": {"on": [face(1)]}}),
+            "a copy that lists faces",
+        ),
+    ] {
+        assert!(with(damaged).is_err(), "{why}");
+    }
 }

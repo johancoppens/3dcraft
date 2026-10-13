@@ -473,6 +473,8 @@ fn role_to_manifest(role: doc::NameRole) -> manifest::NameRole {
         D::Face => M::Face,
         D::Edge => M::Edge,
         D::Vertex => M::Vertex,
+        D::Between => M::Between,
+        D::Corner => M::Corner,
     }
 }
 
@@ -492,13 +494,34 @@ fn role_to_doc(role: manifest::NameRole) -> doc::NameRole {
         M::Face => D::Face,
         M::Edge => D::Edge,
         M::Vertex => D::Vertex,
+        M::Between => D::Between,
+        M::Corner => D::Corner,
     }
 }
 
 // A name is a chain (a copy of a copy of a face), walked in a loop so a
 // hostile file cannot overflow the stack; `Document::validate` refuses a
-// chain longer than `doc::MAX_NAME_DEPTH`.
+// chain longer than `doc::MAX_NAME_DEPTH`. An edge or a vertex lists the
+// faces it lies on, which list none themselves: with `lists` those are
+// converted, each as a chain without, and never deeper. A list in a place
+// where there is none to be is kept as one empty name per entry on the way
+// in, so that validation refuses the name instead of the list being
+// dropped.
 fn name_to_manifest(name: &doc::PersistentName) -> manifest::Name {
+    name_to_manifest_with(name, true)
+}
+
+fn name_to_manifest_with(name: &doc::PersistentName, lists: bool) -> manifest::Name {
+    let listed = |names: &[doc::PersistentName]| -> Vec<manifest::Name> {
+        if lists {
+            names
+                .iter()
+                .map(|face| name_to_manifest_with(face, false))
+                .collect()
+        } else {
+            Vec::new()
+        }
+    };
     let mut links = Vec::new();
     let mut next = Some(name);
     while let Some(link) = next {
@@ -507,12 +530,20 @@ fn name_to_manifest(name: &doc::PersistentName) -> manifest::Name {
             role,
             sources,
             of,
+            by,
         } = link;
+        let faces = by.as_deref().map(|doc::FaceLists { on, near }| {
+            Box::new(manifest::NameFaces {
+                on: listed(on),
+                near: listed(near),
+            })
+        });
         links.push(manifest::Name {
             feature: *feature,
             role: role_to_manifest(*role),
             sources: sources.clone(),
             of: None,
+            faces,
         });
         next = of.as_deref();
     }
@@ -526,10 +557,31 @@ fn name_to_manifest(name: &doc::PersistentName) -> manifest::Name {
         role: role_to_manifest(name.role),
         sources: name.sources.clone(),
         of: None,
+        faces: None,
     })
 }
 
 fn name_to_doc(name: manifest::Name) -> doc::PersistentName {
+    name_to_doc_with(name, true)
+}
+
+fn name_to_doc_with(name: manifest::Name, lists: bool) -> doc::PersistentName {
+    // A face that lists faces is not a name: it is read as a face that
+    // lists as many names that are none, which validation refuses.
+    let not_a_name =
+        || doc::PersistentName::new(doc::FeatureId(0), doc::NameRole::Copy, Vec::new());
+    let listed = |names: Vec<manifest::Name>| -> Vec<doc::PersistentName> {
+        names
+            .into_iter()
+            .map(|face| {
+                if lists {
+                    name_to_doc_with(face, false)
+                } else {
+                    not_a_name()
+                }
+            })
+            .collect()
+    };
     let mut links = Vec::new();
     let mut next = Some(name);
     while let Some(link) = next {
@@ -538,12 +590,18 @@ fn name_to_doc(name: manifest::Name) -> doc::PersistentName {
             role,
             sources,
             of,
+            faces,
         } = link;
-        links.push(doc::PersistentName::new(
-            doc::FeatureId(feature),
-            role_to_doc(role),
-            sources,
-        ));
+        let (on, near) = match faces.map(|boxed| *boxed) {
+            Some(manifest::NameFaces { on, near }) => (listed(on), listed(near)),
+            None => (Vec::new(), Vec::new()),
+        };
+        // In the order names are compared in: a file with the faces of
+        // an edge the other way round names the same edge.
+        links.push(
+            doc::PersistentName::new(doc::FeatureId(feature), role_to_doc(role), sources)
+                .with_faces(on, near),
+        );
         next = of.map(|boxed| *boxed);
     }
     let mut built: Option<doc::PersistentName> = None;

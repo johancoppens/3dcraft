@@ -417,6 +417,23 @@ pub struct Name {
     /// every other role.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub of: Option<Box<Name>>,
+    /// For a `between` (an edge) and a `corner` (a vertex) that lists
+    /// any: the faces it is named by. Absent for every other role.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub faces: Option<Box<NameFaces>>,
+}
+
+/// The faces an edge or a vertex is named by.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NameFaces {
+    /// The names of the faces of the feature's body it lies on.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub on: Vec<Name>,
+    /// When several lie on the same faces: the names of the faces near it
+    /// that tell it apart.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub near: Vec<Name>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -436,6 +453,11 @@ pub enum NameRole {
     Face,
     Edge,
     Vertex,
+    /// An edge by the faces it lies between (`faces`); `sources` is empty
+    /// or the one number that tells it from others between the same faces.
+    Between,
+    /// A vertex by the faces that meet in it (`faces`).
+    Corner,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
