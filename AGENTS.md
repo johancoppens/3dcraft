@@ -100,7 +100,7 @@ cargo clippy -p <crates> --all-targets -- -D warnings
 cargo xtask layers
 cargo xtask wasm            # if you touched L0–L7
 cargo xtask freecad         # if you touched tess, meshio, step, io or file.export: FreeCAD reads our mesh and STEP exports (needs CRAFT3D_FREECAD)
-cargo test -p craft3d-engine --test panic_hunt                # if you added/changed commands (about 2.5 min; also part of the full test run)
+cargo test -p craft3d-engine --test panic_hunt                # if you added/changed commands (seconds; also part of the full test run)
 ```
 
 `cargo xtask ci` runs fmt, clippy, tests, layers and wasm in one go. It is the gate: CI on GitHub (which adds macOS and Windows) runs only weekly and on demand (`gh workflow run CI`), so a commit is never checked there automatically.

@@ -5,8 +5,8 @@
 ## What works today
 
 ```sh
-cargo test --workspace                          # about 430 tests, three to four minutes (the tessellator's oracle tests take two)
-cargo xtask ci                                  # fmt --check + clippy -D warnings + tests + layers + wasm
+cargo test --workspace                          # about 1100 tests, one binary after the other: about 8 minutes
+cargo xtask ci                                  # fmt --check + clippy -D warnings + tests (binaries side by side) + doctests + layers + wasm: about 6 minutes
 cargo xtask layers                              # dependency layering, and that every crate opts in to the never-crash lints
 cargo xtask stats                               # lines and tests per crate
 CRAFT3D_FREECAD=/path/to/FreeCAD.AppImage cargo xtask freecad   # FreeCAD reads our exports back
@@ -79,11 +79,10 @@ The dev profile builds with `debug = "line-tables-only"`: backtraces keep file a
 cargo test -p <crate> --lib --tests        # skip examples and doctests
 cargo test -p <crate> --test <file>        # one integration-test file
 cargo test -p <crate> <name> -- --nocapture
-cargo nextest run --workspace              # parallel across binaries
-cargo test --doc --workspace               # nextest does not run doctests
+cargo test --doc --workspace               # the doctests alone
 ```
 
-A full `cargo test` stays the final check. GPU tests each open their own wgpu device; when nextest is used they go in a group of limited size (`.config/nextest.toml`).
+`cargo xtask ci` builds the tests once (`cargo test --workspace --no-run`) and runs the test binaries side by side, slowest first by the durations of the previous run (`target/ci-durations.txt`), each binary's output printed in one piece when it is done; the doctests follow through cargo. `cargo test --workspace` runs the binaries one after the other and takes about twice as long. GPU tests each open their own wgpu device, so the binaries of `crates/gpu` run one after the other on one worker. The long random tests (`panic_hunt`, `boolean_random`, `meet_random`) run their cases on every core through `craft3d_testkit::parallel::map_parallel`: independent cases, each with its own seed, results in the order of the inputs. `panic_hunt` prints where its time goes per command with `--nocapture`.
 
 ## Headless CLI
 

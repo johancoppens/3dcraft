@@ -24,3 +24,4 @@ serde_json.workspace = true
 [dev-dependencies]
 png.workspace = true
 craft3d-step.workspace = true
+craft3d-testkit.workspace = true

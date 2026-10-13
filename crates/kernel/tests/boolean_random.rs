@@ -20,6 +20,7 @@ use craft3d_kernel::extrude::extrude;
 use craft3d_kernel::primitives;
 use craft3d_kernel::profile::{Curve2, SketchCurve, detect_profiles};
 use craft3d_math::{Frame, Vec3};
+use craft3d_testkit::parallel::map_parallel;
 use craft3d_topo::{Body, check, genus, mass_properties};
 use std::collections::BTreeMap;
 
@@ -465,6 +466,22 @@ struct Tally {
     recombine_unsupported: BTreeMap<&'static str, usize>,
 }
 
+impl Tally {
+    /// Adds the counts of another run to this one.
+    fn absorb(&mut self, other: Tally) {
+        self.pairs += other.pairs;
+        self.solved += other.solved;
+        self.overlapping += other.overlapping;
+        for (reason, count) in other.unsupported {
+            *self.unsupported.entry(reason).or_default() += count;
+        }
+        self.recombined += other.recombined;
+        for (reason, count) in other.recombine_unsupported {
+            *self.recombine_unsupported.entry(reason).or_default() += count;
+        }
+    }
+}
+
 fn run_pair(seed: u64, placement: Placement, k: f64, shapes: Shapes, tally: &mut Tally) {
     let mut rng = Rng(seed);
     let shared = random_frame(&mut rng, Placement::General, &Frame::WORLD, k);
@@ -579,45 +596,64 @@ fn run_pair(seed: u64, placement: Placement, k: f64, shapes: Shapes, tally: &mut
 }
 
 fn hunt(pairs_per_cell: u64, first_seed: u64, shapes: Shapes) {
+    // Every pair has its own seed, so the cases are the same whatever the
+    // thread count; all cells run side by side in one pool, so no cell's
+    // tail leaves cores idle, and the counts are added up per cell.
+    let mut cells = Vec::new();
     for k in SCALES {
         for placement in [Placement::General, Placement::Parallel, Placement::Grid] {
-            let mut tally = Tally::default();
-            for i in 0..pairs_per_cell {
-                run_pair(first_seed + i, placement, k, shapes, &mut tally);
-            }
-            let refused: usize = tally.unsupported.values().sum();
-            println!(
-                "{shapes:?} scale {k:e} {placement:?}: {} pairs, {} solved ({} overlapping), {} unsupported; \
-                 recombined {} of them, {} refused",
-                tally.pairs,
-                tally.solved,
-                tally.overlapping,
-                refused,
-                tally.recombined,
-                tally.recombine_unsupported.values().sum::<usize>(),
-            );
-            for (reason, count) in &tally.unsupported {
-                println!("    {count:5}  {reason}");
-            }
-            for (reason, count) in &tally.recombine_unsupported {
-                println!("    {count:5}  (recombining) {reason}");
-            }
-            // The run means something only when most pairs are solved and
-            // a fair share of them overlap.
-            // (With every shape most general pairs wait for the general
-            // surface intersection; a fifth is asked of them until then.)
-            let least = if shapes == Shapes::All { 5 } else { 2 };
-            assert!(
-                tally.solved * least >= tally.pairs,
-                "{placement:?} at {k}: only {} of {} solved",
-                tally.solved,
-                tally.pairs
-            );
-            assert!(
-                tally.overlapping * 8 >= tally.solved,
-                "{placement:?} at {k}"
-            );
+            cells.push((k, placement));
         }
+    }
+    let mut items = Vec::new();
+    for c in 0..cells.len() {
+        for i in 0..pairs_per_cell {
+            items.push((c, first_seed + i));
+        }
+    }
+    let parts = map_parallel(items, |(c, seed)| {
+        let (k, placement) = cells[c];
+        let mut tally = Tally::default();
+        run_pair(seed, placement, k, shapes, &mut tally);
+        (c, tally)
+    });
+    let mut tallies: Vec<Tally> = cells.iter().map(|_| Tally::default()).collect();
+    for (c, part) in parts {
+        tallies[c].absorb(part);
+    }
+    for (&(k, placement), tally) in cells.iter().zip(&tallies) {
+        let refused: usize = tally.unsupported.values().sum();
+        println!(
+            "{shapes:?} scale {k:e} {placement:?}: {} pairs, {} solved ({} overlapping), {} unsupported; \
+                 recombined {} of them, {} refused",
+            tally.pairs,
+            tally.solved,
+            tally.overlapping,
+            refused,
+            tally.recombined,
+            tally.recombine_unsupported.values().sum::<usize>(),
+        );
+        for (reason, count) in &tally.unsupported {
+            println!("    {count:5}  {reason}");
+        }
+        for (reason, count) in &tally.recombine_unsupported {
+            println!("    {count:5}  (recombining) {reason}");
+        }
+        // The run means something only when most pairs are solved and
+        // a fair share of them overlap.
+        // (With every shape most general pairs wait for the general
+        // surface intersection; a fifth is asked of them until then.)
+        let least = if shapes == Shapes::All { 5 } else { 2 };
+        assert!(
+            tally.solved * least >= tally.pairs,
+            "{placement:?} at {k}: only {} of {} solved",
+            tally.solved,
+            tally.pairs
+        );
+        assert!(
+            tally.overlapping * 8 >= tally.solved,
+            "{placement:?} at {k}"
+        );
     }
     println!(
         "digest of all results: {:016x}",

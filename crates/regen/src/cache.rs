@@ -63,6 +63,7 @@ struct Context {
     inputs: Vec<Input>,
 }
 
+#[derive(Clone)]
 struct Entry {
     feature: Feature,
     context: Context,
@@ -73,6 +74,7 @@ struct Entry {
 
 /// A sketch as it was solved, and how it solved on the flat plane (where a
 /// sketch lies does not change how it solves).
+#[derive(Clone)]
 struct Solve {
     sketch: Sketch,
     values: Vec<Evaluated>,
@@ -84,7 +86,7 @@ struct Solve {
 /// What one document's last regeneration found, per feature. Keep one per
 /// open document and pass it to every regeneration of that document; using
 /// it for another document is safe (everything is compared), only useless.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct RegenCache {
     entries: BTreeMap<FeatureId, Entry>,
     solves: BTreeMap<FeatureId, Solve>,

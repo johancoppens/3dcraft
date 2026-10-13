@@ -24,6 +24,7 @@ use common::*;
 use craft3d_geom::intersect::{Meeting, SurfaceMeeting, meet_surfaces};
 use craft3d_geom::{BezierPatch, NurbsSurface, Surface};
 use craft3d_math::{Bbox3, Vec3};
+use craft3d_testkit::parallel::map_parallel;
 use std::collections::BTreeMap;
 use std::f64::consts::TAU;
 use std::time::Instant;
@@ -264,64 +265,70 @@ struct Tally {
 fn every_kind_pair_is_complete_on_random_cases() {
     let within = cube(Vec3::ZERO, HALF);
     let t = tol(1.0);
-    let mut table: Vec<(String, Tally)> = Vec::new();
+    let mut pairs = Vec::new();
     for i in 0..KINDS.len() {
         for j in i..KINDS.len() {
-            // NURBS evaluation is slow: fewer cases where it dominates.
-            let cases = match (i >= 5, j) {
-                (true, 6) => 2,
-                (true, _) => 4,
-                (false, 6) => 5,
-                (false, 5) => 8,
-                _ => 12,
-            };
-            let mut tally = Tally::default();
-            let mut rng = Rng(0x3D_C4AF + 1000 * i as u64 + j as u64);
-            for case in 0..cases {
-                let (a, b) = (random_surface(i, &mut rng), random_surface(j, &mut rng));
-                let label = format!("{} / {} case {case}", KINDS[i], KINDS[j]);
-                let clock = Instant::now();
-                let found = meet_surfaces(&a, &b, &within, &t);
-                let ms = clock.elapsed().as_secs_f64() * 1e3;
-                tally.slowest_ms = tally.slowest_ms.max(ms);
-                assert_eq!(found, meet_surfaces(&b, &a, &within, &t), "{label}: order");
-                if case % 4 == 0 {
-                    assert_eq!(found, meet_surfaces(&a, &b, &within, &t), "{label}: repeat");
-                }
-                let m = match found {
-                    Ok(SurfaceMeeting::Meets(m)) => m,
-                    Ok(SurfaceMeeting::None) => Meeting {
-                        curves: Vec::new(),
-                        points: Vec::new(),
-                    },
-                    Ok(SurfaceMeeting::Coincident { .. }) => panic!("{label}: coincident"),
-                    Err(e) => {
-                        *tally.refused.entry(e.to_string()).or_default() += 1;
-                        continue;
-                    }
-                };
-                check_meeting(&m, &a, &b, &within, &t);
-                // Grid over one surface, then over the other.
-                // A freeform surface against an analytic one carries the
-                // grid: the analytic distance is exact and cheap.
-                let (g, o) = match (i >= 5, j >= 5) {
-                    (false, true) => (&b, &a),
-                    (true, false) => (&a, &b),
-                    _ if case % 2 == 0 => (&a, &b),
-                    _ => (&b, &a),
-                };
-                let changes = check_complete(&m, g, o, &within, &label);
-                if m.curves.is_empty() {
-                    assert_eq!(changes, 0, "{label}");
-                    tally.apart += 1;
-                } else {
-                    tally.crossing += 1;
-                    tally.curves += m.curves.len();
-                }
-            }
-            table.push((format!("{} / {}", KINDS[i], KINDS[j]), tally));
+            pairs.push((i, j));
         }
     }
+    // Every pair has its own seed, so the cases are the same whatever the
+    // thread count; the pairs run side by side and the table keeps their
+    // order.
+    let table: Vec<(String, Tally)> = map_parallel(pairs, |(i, j)| {
+        // NURBS evaluation is slow: fewer cases where it dominates.
+        let cases = match (i >= 5, j) {
+            (true, 6) => 2,
+            (true, _) => 4,
+            (false, 6) => 5,
+            (false, 5) => 8,
+            _ => 12,
+        };
+        let mut tally = Tally::default();
+        let mut rng = Rng(0x3D_C4AF + 1000 * i as u64 + j as u64);
+        for case in 0..cases {
+            let (a, b) = (random_surface(i, &mut rng), random_surface(j, &mut rng));
+            let label = format!("{} / {} case {case}", KINDS[i], KINDS[j]);
+            let clock = Instant::now();
+            let found = meet_surfaces(&a, &b, &within, &t);
+            let ms = clock.elapsed().as_secs_f64() * 1e3;
+            tally.slowest_ms = tally.slowest_ms.max(ms);
+            assert_eq!(found, meet_surfaces(&b, &a, &within, &t), "{label}: order");
+            if case % 4 == 0 {
+                assert_eq!(found, meet_surfaces(&a, &b, &within, &t), "{label}: repeat");
+            }
+            let m = match found {
+                Ok(SurfaceMeeting::Meets(m)) => m,
+                Ok(SurfaceMeeting::None) => Meeting {
+                    curves: Vec::new(),
+                    points: Vec::new(),
+                },
+                Ok(SurfaceMeeting::Coincident { .. }) => panic!("{label}: coincident"),
+                Err(e) => {
+                    *tally.refused.entry(e.to_string()).or_default() += 1;
+                    continue;
+                }
+            };
+            check_meeting(&m, &a, &b, &within, &t);
+            // Grid over one surface, then over the other.
+            // A freeform surface against an analytic one carries the
+            // grid: the analytic distance is exact and cheap.
+            let (g, o) = match (i >= 5, j >= 5) {
+                (false, true) => (&b, &a),
+                (true, false) => (&a, &b),
+                _ if case % 2 == 0 => (&a, &b),
+                _ => (&b, &a),
+            };
+            let changes = check_complete(&m, g, o, &within, &label);
+            if m.curves.is_empty() {
+                assert_eq!(changes, 0, "{label}");
+                tally.apart += 1;
+            } else {
+                tally.crossing += 1;
+                tally.curves += m.curves.len();
+            }
+        }
+        (format!("{} / {}", KINDS[i], KINDS[j]), tally)
+    });
     eprintln!("pair                  crossing  apart  refused  curves  slowest ms");
     let mut refused_total = 0;
     let mut total = 0;

@@ -167,6 +167,8 @@ What it cannot see, so that a clean result is not read as more than it is:
 | `engine` | per-command tests (behaviour, undo/redo, disabled states, bad params); `panic_hunt` |
 | `automation` | scripted agent tasks end to end over MCP (build a bracket, change a variable, export, verify volume) |
 
+A long test made of independent cases (every command with every adversarial value, seeded random pairs, every kind pair) runs them on every core through `craft3d_testkit::parallel::map_parallel` rather than one after the other: each case has its own seed or its own directory, the results come back in the order of the inputs, and a panic in one case fails the test with its own message. Keep a case independent of the others and of the order they run in, or it does not belong in such a test.
+
 ## The topological naming suite
 
 Because stable references are the property most likely to rot silently, they get a dedicated suite (version 1 since M6: `crates/engine/tests/naming.rs`, with a sketch on a face and a boss extruded from it as the downstream feature; the scenario with a cut waits for booleans). Each scenario builds a model, attaches a downstream feature to a face or edge, edits something upstream, and asserts the downstream feature still refers to the entity a human would expect, or fails with `Missing` (never silently moves). Scenarios: change an extrude distance; add a sketch entity before the referenced one; reorder two independent features; split a referenced face with a cut; delete the feature that made the referenced edge.

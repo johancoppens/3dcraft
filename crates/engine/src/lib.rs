@@ -75,6 +75,7 @@ pub struct CommandSpec {
 }
 
 /// An open document with its undo history and what was derived from it.
+#[derive(Clone)]
 pub(crate) struct OpenDocument {
     pub history: History,
     /// The path it was opened from or last saved to, as the request gave it.
@@ -122,7 +123,10 @@ impl OpenDocument {
     }
 }
 
-/// Open documents plus the rules for touching files.
+/// Open documents plus the rules for touching files. A clone is an
+/// independent session with the same documents (bodies and meshes are
+/// shared until one of them changes).
+#[derive(Clone)]
 pub struct Session {
     pub(crate) documents: Vec<OpenDocument>,
     pub(crate) active: usize,
@@ -142,6 +146,15 @@ impl Session {
             workspace,
             scene: scene::SceneCache::default(),
         }
+    }
+
+    /// The revision of the active document: it moves with every edit
+    /// applied to it, and stays when a command fails. `None` without a
+    /// document.
+    pub fn document_revision(&self) -> Option<u64> {
+        self.documents
+            .get(self.active)
+            .map(|d| d.history.revision())
     }
 
     /// The command registry, in a fixed order.

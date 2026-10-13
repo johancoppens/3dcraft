@@ -1,13 +1,19 @@
 //! Build tasks: `cargo xtask layers | wasm | ci | stats | freecad | boolean-corpus`.
 
 mod boolean_corpus;
+mod ci;
 mod layers;
 mod stats;
 
 use std::process::{Command, ExitCode};
 
+/// The cargo that runs this task.
+fn cargo_path() -> String {
+    std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string())
+}
+
 fn cargo(args: &[&str]) -> Result<(), String> {
-    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let cargo = cargo_path();
     eprintln!("$ cargo {}", args.join(" "));
     let status = Command::new(cargo)
         .args(args)
@@ -32,21 +38,6 @@ fn wasm() -> Result<(), String> {
         args.extend(["-p", p.as_str()]);
     }
     cargo(&args)
-}
-
-fn ci() -> Result<(), String> {
-    cargo(&["fmt", "--all", "--check"])?;
-    cargo(&[
-        "clippy",
-        "--workspace",
-        "--all-targets",
-        "--",
-        "-D",
-        "warnings",
-    ])?;
-    cargo(&["test", "--workspace"])?;
-    layers::check()?;
-    wasm()
 }
 
 /// Runs the opt-in tests that let FreeCAD read our exports (docs/testing.md,
@@ -86,7 +77,7 @@ fn main() -> ExitCode {
     let result = match task.as_str() {
         "layers" => layers::check(),
         "wasm" => wasm(),
-        "ci" => ci(),
+        "ci" => ci::run(),
         "stats" => stats::run(),
         "freecad" => freecad(),
         "boolean-corpus" => {

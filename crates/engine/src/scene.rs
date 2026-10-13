@@ -163,7 +163,7 @@ pub struct DocumentStatus {
 type Built = Result<Arc<Scene>, CommandError>;
 
 /// The scenes of the document last looked at.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct SceneCache {
     /// The document the revision and the scenes belong to. Holding the
     /// `Arc` keeps its address from being reused by another document.

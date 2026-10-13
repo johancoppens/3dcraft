@@ -16,3 +16,4 @@ craft3d-topo.workspace = true
 [dev-dependencies]
 craft3d-tess.workspace = true
 serde_json.workspace = true
+craft3d-testkit.workspace = true

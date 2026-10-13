@@ -431,6 +431,7 @@ dependencies = [
  "craft3d-render",
  "craft3d-step",
  "craft3d-tess",
+ "craft3d-testkit",
  "craft3d-topo",
  "png 0.17.16",
  "serde_json",
@@ -492,6 +493,7 @@ dependencies = [
  "craft3d-geom",
  "craft3d-math",
  "craft3d-tess",
+ "craft3d-testkit",
  "craft3d-topo",
  "serde_json",
 ]

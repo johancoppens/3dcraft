@@ -12,7 +12,9 @@
 )]
 
 use craft3d_engine::{Access, Session, Workspace};
+use craft3d_testkit::parallel::map_parallel;
 use serde_json::{Map, Value, json};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 fn adversarial() -> Vec<Value> {
@@ -123,19 +125,23 @@ fn keys(params: &str) -> Vec<String> {
     keys
 }
 
-fn workdir() -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("panic-hunt");
+fn workdir(name: &str) -> PathBuf {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("panic-hunt-{name}"));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
 
 /// A session in one of the states commands must survive.
-fn session(dir: &std::path::Path, state: usize) -> Session {
-    let mut s = Session::new(Workspace {
+fn workspace(dir: &std::path::Path) -> Workspace {
+    Workspace {
         read: Access::Root(dir.to_path_buf()),
         write: Access::Root(dir.to_path_buf()),
-    });
+    }
+}
+
+fn session(dir: &std::path::Path, state: usize) -> Session {
+    let mut s = Session::new(workspace(dir));
     let mut run = |id: &str, params: Value| {
         s.execute(id, &params)
             .unwrap_or_else(|e| panic!("setup {id}: {e}"));
@@ -261,82 +267,144 @@ fn session(dir: &std::path::Path, state: usize) -> Session {
 
 #[test]
 fn no_command_panics_on_adversarial_parameters() {
-    let dir = workdir();
+    let dir = workdir("hunt");
     let values = adversarial();
-    let mut runs = 0_usize;
-    let mut check = |state: usize, id: &str, params: &Value| {
-        let mut s = session(&dir, state);
-        let outcome = s.execute(id, params);
-        runs += 1;
-        if let Err(e) = &outcome {
-            let shown: String = params.to_string().chars().take(200).collect();
-            assert!(
-                !e.message().contains("internal error"),
-                "{id} panicked in state {state} on {shown}: {e}"
-            );
-            assert!(!e.message().is_empty(), "{id}: empty error message");
-        }
-        // Whatever happened, the session still answers.
-        if s.has_document() {
-            let inspected = s.execute("document.inspect", &Value::Null);
-            assert!(
-                inspected.is_ok(),
-                "document.inspect broke after {id} in state {state}: {inspected:?}"
-            );
-        }
-    };
-
-    for spec in Session::commands() {
-        let keys = keys(spec.params);
+    let commands = Session::commands();
+    let templates: Vec<Session> = (0..4).map(|state| session(&dir, state)).collect();
+    // One case per command, state and adversarial value: the value as the
+    // params itself, under each parameter, under all of them at once, and
+    // with one parameter left valid in turn. The cases are independent of
+    // each other, so they run on every core, each in its own directory for
+    // the files the commands write.
+    let mut cases = Vec::new();
+    for c in 0..commands.len() {
         for state in 0..4 {
-            // The params value itself, in every shape.
-            for value in &values {
-                check(state, spec.id, value);
-            }
-            // Each parameter in turn, the others absent.
-            for key in &keys {
-                for value in &values {
-                    check(state, spec.id, &json!({ key.as_str(): value }));
-                }
-            }
-            // Every parameter at once with the same value, so the checks
-            // behind the first failing parameter are reached as well: also
-            // with one parameter left valid in turn.
-            for value in &values {
-                let all: Map<String, Value> =
-                    keys.iter().map(|k| (k.clone(), value.clone())).collect();
-                check(state, spec.id, &Value::Object(all.clone()));
-                for (key, valid) in [
-                    ("feature", json!("Plate")),
-                    ("sketch", json!("Profile")),
-                    ("distance", json!(5)),
-                    ("face", json!("F7:side(e5)")),
-                    ("type", json!("distance")),
-                    ("entities", json!(["e1", "e2"])),
-                    ("entity", json!("e1")),
-                    ("constraint", json!("c1")),
-                    ("name", json!("width")),
-                    ("path", json!("hunt.stl")),
-                    ("size", json!([1, 2, 3])),
-                    ("radius", json!(1)),
-                    ("major", json!(5)),
-                    ("axis", json!([0, 0, 1])),
-                ] {
-                    if all.contains_key(key) {
-                        let mut mixed = all.clone();
-                        mixed.insert(key.to_string(), valid);
-                        check(state, spec.id, &Value::Object(mixed));
-                    }
-                }
+            for v in 0..values.len() {
+                cases.push((c, state, v));
             }
         }
     }
+    let timed = map_parallel(cases, |(c, state, v)| {
+        let clock = std::time::Instant::now();
+        let spec = &commands[c];
+        let value = &values[v];
+        let keys = keys(spec.params);
+        let dir = dir.join(format!("{c}-{state}-{v}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        // The first adversarial value runs in a session built from scratch
+        // (a cold regeneration cache, as after `file.open`); the others in
+        // a clone of a session built once per state, whose cache is warm,
+        // as in a session that has been working for a while. Both must
+        // hold, and the clone saves rebuilding the document a hundred
+        // thousand times.
+        let fresh = |dir: &std::path::Path| -> Session {
+            if v == 0 {
+                session(dir, state)
+            } else {
+                let mut s = templates[state].clone();
+                s.set_workspace(workspace(dir));
+                s
+            }
+        };
+        let mut runs = 0_usize;
+        let mut check = |params: &Value| {
+            runs += 1;
+            run_case(fresh(&dir), state, spec.id, params);
+        };
+        // The params value itself, in every shape.
+        check(value);
+        // Each parameter in turn, the others absent.
+        for key in &keys {
+            check(&json!({ key.as_str(): value }));
+        }
+        // Every parameter at once with the same value, so the checks
+        // behind the first failing parameter are reached as well: also
+        // with one parameter left valid in turn.
+        let all: Map<String, Value> = keys.iter().map(|k| (k.clone(), value.clone())).collect();
+        check(&Value::Object(all.clone()));
+        for (key, valid) in [
+            ("feature", json!("Plate")),
+            ("sketch", json!("Profile")),
+            ("distance", json!(5)),
+            ("face", json!("F7:side(e5)")),
+            ("type", json!("distance")),
+            ("entities", json!(["e1", "e2"])),
+            ("entity", json!("e1")),
+            ("constraint", json!("c1")),
+            ("name", json!("width")),
+            ("path", json!("hunt.stl")),
+            ("size", json!([1, 2, 3])),
+            ("radius", json!(1)),
+            ("major", json!(5)),
+            ("axis", json!([0, 0, 1])),
+        ] {
+            if all.contains_key(key) {
+                let mut mixed = all.clone();
+                mixed.insert(key.to_string(), valid);
+                check(&Value::Object(mixed));
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        (c, state, runs, clock.elapsed().as_secs_f64())
+    });
+    let runs: usize = timed.iter().map(|t| t.2).sum();
+    // Where the time goes, per command and state: `--nocapture` shows it.
+    let mut by_command: BTreeMap<(&str, usize), f64> = BTreeMap::new();
+    for (c, state, _, secs) in &timed {
+        *by_command.entry((commands[*c].id, *state)).or_default() += secs;
+    }
+    let mut slowest: Vec<_> = by_command.into_iter().collect();
+    slowest.sort_by(|a, b| b.1.total_cmp(&a.1));
+    let total: f64 = timed.iter().map(|t| t.3).sum();
     println!(
-        "panic_hunt: {runs} command runs over {} commands",
-        Session::commands().len()
+        "panic_hunt: {runs} command runs over {} commands, {total:.0} s of thread time; the slowest:",
+        commands.len()
     );
+    for ((id, state), secs) in slowest.iter().take(12) {
+        println!("    {secs:7.1} s  {id} in state {state}");
+    }
     assert!(runs > 20_000);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Runs one command in a fresh session in the given state: it must not
+/// have panicked, and the session must still answer afterwards.
+fn run_case(mut s: Session, state: usize, id: &str, params: &Value) {
+    let before = (s.document_revision(), s.document_status());
+    let outcome = s.execute(id, params);
+    let shown = || params.to_string().chars().take(200).collect::<String>();
+    match &outcome {
+        Err(e) => {
+            assert!(
+                !e.message().contains("internal error"),
+                "{id} panicked in state {state} on {}: {e}",
+                shown()
+            );
+            assert!(!e.message().is_empty(), "{id}: empty error message");
+            // A command that fails leaves the documents as they were
+            // (`Session::execute`): nothing changed, so there is nothing
+            // to look at again. (Looking anyway, with document.inspect,
+            // was 97% of this test's time.)
+            assert_eq!(
+                (s.document_revision(), s.document_status()),
+                before,
+                "{id} failed in state {state} on {} but changed the document: {e}",
+                shown()
+            );
+        }
+        Ok(_) => {
+            // The command did something: the session still answers, and
+            // the document still regenerates and reports.
+            if s.has_document() {
+                let inspected = s.execute("document.inspect", &Value::Null);
+                assert!(
+                    inspected.is_ok(),
+                    "document.inspect broke after {id} in state {state} on {}: {inspected:?}",
+                    shown()
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -348,7 +416,7 @@ fn the_parameter_names_are_read_from_the_registry() {
     assert_eq!(keys("{}"), Vec::<String>::new());
     // Every documented parameter is one the command accepts: none is
     // answered with "unknown parameter".
-    let dir = workdir();
+    let dir = workdir("names");
     for spec in Session::commands() {
         for key in keys(spec.params) {
             let mut s = session(&dir, 2);
