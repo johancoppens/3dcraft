@@ -135,7 +135,10 @@ fn sphere_sphere(s: &Sphere, t: &Sphere, tol: &Tolerance) -> Result<Closed, Geom
     };
     let toward = (c2 - c1) * (1.0 / distance);
     let center = c1 + toward * along;
-    if touching {
+    // A circle no wider than the tolerance is a touch as well: the
+    // spheres are apart by the tolerance to the last bit, which is neither
+    // "apart" nor "touching" above.
+    if touching || half <= tol.linear {
         return Ok(meets(Vec::new(), vec![center]));
     }
     let frame = Frame::from_z(center, toward).ok_or_else(degenerate)?;

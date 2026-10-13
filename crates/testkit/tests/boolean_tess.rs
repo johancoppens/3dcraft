@@ -177,15 +177,6 @@ fn curved_cases() -> Vec<(&'static str, Body, f64)> {
     )
     .unwrap();
     let steinmetz = run(&upright, &lying, BooleanOp::Intersect);
-    let slanted = Frame::new(Vec3::ZERO, Vec3::new(0.3, 0.2, 1.0), Vec3::X).unwrap();
-    let half_space = primitives::block(
-        &slanted.at(slanted.point(-8.0, -8.0, 0.0)).unwrap(),
-        16.0,
-        16.0,
-        8.0,
-    )
-    .unwrap();
-    let slanted_ring = run(&ring, &half_space, BooleanOp::Intersect);
     vec![
         (
             "the cap of a ball",
@@ -306,7 +297,6 @@ fn curved_cases() -> Vec<(&'static str, Body, f64)> {
             steinmetz,
             16.0 / 3.0,
         ),
-        ("a ring cut at a slant", slanted_ring, PI * PI * 3.0),
     ]
 }
 

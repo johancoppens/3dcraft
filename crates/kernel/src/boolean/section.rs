@@ -95,11 +95,16 @@ pub(super) fn prepare<'a>(
     operand: Operand,
     vertices: &mut Vertices,
     tolerance: &Tolerance,
+    trusted: bool,
 ) -> Result<Solid<'a>, Stop> {
     if body.kind != BodyKind::Solid {
         return Err(Stop::of("an operand that is a sheet; booleans need solids"));
     }
-    let mut defects = check(body, tolerance);
+    let mut defects = if trusted {
+        Vec::new()
+    } else {
+        check(body, tolerance)
+    };
     if !defects.is_empty() {
         defects.truncate(MAX_REPORTED);
         return Err(Stop::Error(KernelError::InvalidBody {
@@ -481,9 +486,9 @@ fn clip(
 /// each other: the greatest distance from a place on the boundary of
 /// either (or, without a boundary, on it) that is in or on the other face
 /// to the other's surface. `None` when no such place was found.
-fn gap(a: &Outline, b: &Outline, tol: f64) -> Result<Option<f64>, Stop> {
+fn gap(a: (&Outline, &Bbox3), b: (&Outline, &Bbox3), tol: f64) -> Result<Option<f64>, Stop> {
     let mut widest: Option<f64> = None;
-    for (own, other) in [(a, b), (b, a)] {
+    for ((own, _), (other, other_box)) in [(a, b), (b, a)] {
         let mut places: Vec<Vec3> = Vec::new();
         for seg in own.loops.iter().flatten() {
             places.extend([seg.a, seg.at(0.25), seg.at(0.5), seg.at(0.75), seg.b]);
@@ -492,6 +497,10 @@ fn gap(a: &Outline, b: &Outline, tol: f64) -> Result<Option<f64>, Stop> {
             places = own.interior_points(tol, 4.0 * tol, 4).map_err(Stop::of)?;
         }
         for p in places {
+            // Outside the other face's box it is not over that face.
+            if !other_box.contains(p, 2.0 * tol) {
+                continue;
+            }
             let Some(distance) = signed_distance(&other.surface, p).map(f64::abs) else {
                 continue;
             };
@@ -579,12 +588,12 @@ pub(super) fn section(
             // margin nobody asked for).
             let alike = std::mem::discriminant(&oa.surface) == std::mem::discriminant(&ob.surface);
             let unsure = match &met {
-                SurfaceMeeting::Coincident { .. } => gap(oa, ob, tol)
+                SurfaceMeeting::Coincident { .. } => gap((oa, box_a), (ob, box_b), tol)
                     .map_err(|s| s.at(&named))?
                     .is_some_and(|g| g > 0.5 * tol),
-                SurfaceMeeting::None if alike => {
-                    gap(oa, ob, tol).map_err(|s| s.at(&named))?.is_some()
-                }
+                SurfaceMeeting::None if alike => gap((oa, box_a), (ob, box_b), tol)
+                    .map_err(|s| s.at(&named))?
+                    .is_some(),
                 _ => false,
             };
             if unsure {

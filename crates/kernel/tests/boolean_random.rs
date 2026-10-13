@@ -322,6 +322,32 @@ fn sampled_overlap(a: &Shape, b: &Shape, rng: &mut Rng) -> (f64, f64) {
     )
 }
 
+/// How far the volume and the area of a body may be off because its
+/// spline edges are only within the tolerance of the curves they stand
+/// for: the tolerance times the area of the faces they bound (here: of the
+/// whole body) for the volume, and times the length of those edges for
+/// the area. Nothing for a body without spline edges.
+fn spline_slack(body: &Body, k: f64) -> (f64, f64) {
+    let tol = 1e-6 * k;
+    let mut length = 0.0;
+    for edge in &body.edges {
+        if matches!(edge.curve, craft3d_geom::Curve3::Nurbs(_)) {
+            let (t0, t1) = edge.range;
+            let mut previous = edge.curve.eval(t0);
+            for i in 1..=64 {
+                let p = edge.curve.eval(t0 + (t1 - t0) * f64::from(i) / 64.0);
+                length += p.distance(previous);
+                previous = p;
+            }
+        }
+    }
+    if length == 0.0 {
+        return (0.0, 0.0);
+    }
+    let area = mass_properties(body).map_or(0.0, |m| m.area);
+    (4.0 * tol * area, 4.0 * tol * length)
+}
+
 /// The volume of a boolean; 0 when it is empty; `Err` with the reason when
 /// it is not supported. Anything else fails the test.
 fn volume_of(
@@ -346,7 +372,10 @@ fn volume_of(
             // Merging changes how the solid is divided into faces, not
             // the solid: without it the same volume, area and genus, and
             // never fewer faces, edges or vertices.
-            let plain = BooleanOptions { merge: false };
+            let plain = BooleanOptions {
+                merge: false,
+                ..BooleanOptions::default()
+            };
             match boolean_with(a, b, op, &tol, &plain) {
                 Ok(unmerged) => {
                     assert_eq!(
@@ -359,8 +388,11 @@ fn volume_of(
                         Err(e) => panic!("{what}: {op:?}, not merged: mass properties: {e}"),
                     };
                     assert!(
-                        (u.volume - m.volume).abs() <= 1e-9 * m.volume
-                            && (u.area - m.area).abs() <= 1e-9 * m.area,
+                        // (The splines may be among what merging removes.)
+                        (u.volume - m.volume).abs()
+                            <= 1e-9 * m.volume + spline_slack(&unmerged.body, k).0
+                            && (u.area - m.area).abs()
+                                <= 1e-9 * m.area + spline_slack(&unmerged.body, k).1,
                         "{what}: {op:?}: merging changed volume {} to {} or area {} to {}",
                         u.volume,
                         m.volume,
@@ -436,9 +468,17 @@ fn run_pair(seed: u64, placement: Placement, k: f64, shapes: Shapes, tally: &mut
         panic!("{what}: six results");
     };
     let unit = va.max(vb);
+    // Where an edge is a spline (the surfaces meet in a curve without a
+    // closed form), it is within the tolerance of the true curve, and the
+    // identities hold to that: see `spline_slack`.
+    let slack = results
+        .iter()
+        .filter_map(|r| r.2.as_ref())
+        .map(|body| spline_slack(body, k))
+        .fold((0.0_f64, 0.0_f64), |a, b| (a.0.max(b.0), a.1.max(b.1)));
     let close = |x: f64, y: f64, name: &str| {
         assert!(
-            (x - y).abs() <= 1e-9 * unit,
+            (x - y).abs() <= 1e-9 * unit + slack.0,
             "{what}: {name}: {x} is not {y}"
         );
     };
@@ -458,7 +498,7 @@ fn run_pair(seed: u64, placement: Placement, k: f64, shapes: Shapes, tally: &mut
         let unit = aa.max(ab);
         let close = |x: f64, y: f64, name: &str| {
             assert!(
-                (x - y).abs() <= 1e-9 * unit,
+                (x - y).abs() <= 1e-9 * unit + slack.1,
                 "{what}: {name}: {x} is not {y}"
             );
         };
@@ -617,7 +657,10 @@ fn one_pair() {
     println!("A ∩ B by sampling: {}", total / 100.0);
     let less = boolean(&a.body, &b.body, Subtract, &tol);
     let common = boolean(&a.body, &b.body, Intersect, &tol);
-    let plain = craft3d_kernel::boolean::BooleanOptions { merge: false };
+    let plain = craft3d_kernel::boolean::BooleanOptions {
+        merge: false,
+        ..BooleanOptions::default()
+    };
     describe(
         "A ∪ B, not merged",
         &craft3d_kernel::boolean::boolean_with(&a.body, &b.body, Union, &tol, &plain),

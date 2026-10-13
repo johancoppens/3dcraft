@@ -134,6 +134,11 @@ pub enum VertexSource {
 pub struct BooleanResult {
     pub body: Body,
     pub faces: Vec<FaceSource>,
+    /// Per face, every face of the operands it has a piece of: one for a
+    /// face that is a piece of one face, several for a face merged from
+    /// pieces of several (the faces of A first, each list in order and
+    /// without repeats). `faces[i]` is `merged[i][0]`.
+    pub merged: Vec<Vec<FaceSource>>,
     pub edges: Vec<EdgeSource>,
     pub vertices: Vec<VertexSource>,
 }
@@ -145,11 +150,21 @@ pub struct BooleanOptions {
     /// needlessly (see [`boolean`]). Without it every imprint stays; the
     /// result is the same solid with more entities.
     pub merge: bool,
+    /// Skip the validity check of the operands. Only for bodies that a
+    /// kernel operation returned and that nothing has changed since: such
+    /// a body passed the check when it was made, and checking it again on
+    /// every one of a long row of booleans costs more than the booleans.
+    /// With an operand that would not pass, the result is an error or a
+    /// body that fails the check at the end, never a panic.
+    pub trust_operands: bool,
 }
 
 impl Default for BooleanOptions {
     fn default() -> Self {
-        BooleanOptions { merge: true }
+        BooleanOptions {
+            merge: true,
+            trust_operands: false,
+        }
     }
 }
 
@@ -230,15 +245,73 @@ struct Vertices {
     meetings: Vec<Meeting>,
     merge: f64,
     guard: f64,
+    /// The points by the cell of a grid they are in, so that a point's
+    /// neighbours are found without going through all of them. A cell is
+    /// wider than the guard: what is within the guard of a point is in its
+    /// cell or one next to it.
+    cells: BTreeMap<(i64, i64, i64), Vec<usize>>,
 }
 
 impl Vertices {
+    fn new(merge: f64, guard: f64) -> Vertices {
+        Vertices {
+            points: Vec::new(),
+            meetings: Vec::new(),
+            merge,
+            guard,
+            cells: BTreeMap::new(),
+        }
+    }
+
+    fn cell(&self, p: Vec3) -> Option<(i64, i64, i64)> {
+        // Much wider than the guard, so that coordinates stay well within
+        // an integer at any model size.
+        let width = 1024.0 * self.guard;
+        let index = |x: f64| {
+            let cell = (x / width).floor();
+            (cell.abs() < 4e18).then_some(cell as i64)
+        };
+        (width > 0.0)
+            .then(|| Some((index(p.x)?, index(p.y)?, index(p.z)?)))
+            .flatten()
+    }
+
     fn find_or_add(&mut self, p: Vec3) -> Result<usize, Stop> {
         let mut nearest: Option<(f64, usize)> = None;
-        for (index, q) in self.points.iter().enumerate() {
-            let d = p.distance(*q);
-            if d < self.guard && nearest.is_none_or(|(least, _)| d < least) {
+        let home = self.cell(p);
+        let mut consider = |index: usize, q: Vec3| {
+            let d = p.distance(q);
+            if d < self.guard
+                && nearest.is_none_or(|(least, at)| d < least || (d == least && index < at))
+            {
                 nearest = Some((d, index));
+            }
+        };
+        match home {
+            Some((x, y, z)) => {
+                for dx in -1..=1 {
+                    for dy in -1..=1 {
+                        for dz in -1..=1 {
+                            let key = (
+                                x.saturating_add(dx),
+                                y.saturating_add(dy),
+                                z.saturating_add(dz),
+                            );
+                            for &index in self.cells.get(&key).into_iter().flatten() {
+                                if let Some(&q) = self.points.get(index) {
+                                    consider(index, q);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // No grid (a degenerate tolerance or a coordinate beyond it):
+            // every point is looked at.
+            None => {
+                for (index, &q) in self.points.iter().enumerate() {
+                    consider(index, q);
+                }
             }
         }
         match nearest {
@@ -250,7 +323,11 @@ impl Vertices {
                 }
                 self.points.push(p);
                 self.meetings.push(Meeting::default());
-                Ok(self.points.len() - 1)
+                let index = self.points.len() - 1;
+                if let Some(key) = home {
+                    self.cells.entry(key).or_default().push(index);
+                }
+                Ok(index)
             }
         }
     }
@@ -369,14 +446,21 @@ fn run(
             value: tolerance.angular,
         }));
     }
-    let mut vertices = Vertices {
-        points: Vec::new(),
-        meetings: Vec::new(),
-        merge: 0.5 * tol,
-        guard: 2.0 * tol,
-    };
-    let a = section::prepare(a, Operand::A, &mut vertices, tolerance)?;
-    let b = section::prepare(b, Operand::B, &mut vertices, tolerance)?;
+    let mut vertices = Vertices::new(0.5 * tol, 2.0 * tol);
+    let a = section::prepare(
+        a,
+        Operand::A,
+        &mut vertices,
+        tolerance,
+        options.trust_operands,
+    )?;
+    let b = section::prepare(
+        b,
+        Operand::B,
+        &mut vertices,
+        tolerance,
+        options.trust_operands,
+    )?;
     let sections = section::section(&a, &b, &mut vertices, tolerance)?;
 
     let mut arcs = Arcs::default();
@@ -581,14 +665,9 @@ pub fn contains_points(
         });
     }
     // The vertices are not merged with anything here.
-    let mut vertices = Vertices {
-        points: Vec::new(),
-        meetings: Vec::new(),
-        merge: 0.0,
-        guard: 0.0,
-    };
+    let mut vertices = Vertices::new(0.0, 0.0);
     let solid =
-        section::prepare(body, Operand::A, &mut vertices, tolerance).map_err(unsupported)?;
+        section::prepare(body, Operand::A, &mut vertices, tolerance, false).map_err(unsupported)?;
     let mut found = Vec::with_capacity(points.len());
     for &point in points {
         found.push(match classify::inside(&solid, point, tolerance) {
@@ -606,12 +685,7 @@ mod tests {
 
     #[test]
     fn points_within_half_the_tolerance_are_one_vertex() {
-        let mut vertices = Vertices {
-            points: Vec::new(),
-            meetings: Vec::new(),
-            merge: 0.5e-6,
-            guard: 2e-6,
-        };
+        let mut vertices = Vertices::new(0.5e-6, 2e-6);
         let mut add = |x: f64| vertices.find_or_add(Vec3::new(x, 0.0, 0.0)).ok();
         assert_eq!(add(0.0), Some(0));
         assert_eq!(add(1.0), Some(1));

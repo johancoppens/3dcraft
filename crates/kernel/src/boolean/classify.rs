@@ -304,13 +304,8 @@ mod tests {
 
     fn prepared(body: &Body) -> Solid<'_> {
         let tolerance = Tolerance::default();
-        let mut vertices = Vertices {
-            points: Vec::new(),
-            meetings: Vec::new(),
-            merge: 0.5 * tolerance.linear,
-            guard: 2.0 * tolerance.linear,
-        };
-        match prepare(body, Operand::A, &mut vertices, &tolerance) {
+        let mut vertices = Vertices::new(0.5 * tolerance.linear, 2.0 * tolerance.linear);
+        match prepare(body, Operand::A, &mut vertices, &tolerance, false) {
             Ok(solid) => solid,
             Err(_) => panic!("a primitive is a valid operand"),
         }

@@ -114,6 +114,7 @@ fn merge_faces(
         // The lowest-numbered face of A, else of B: faces are in that
         // order already, and pieces of one face are together.
         let mut loops = Vec::new();
+        let mut contributors = Vec::new();
         let mut source = None;
         // Per edge the faces of the group that use it. An edge between
         // two of them has the merged face on both sides and goes; an edge
@@ -127,6 +128,7 @@ fn merge_faces(
                 users.entry(edge).or_default().insert(index);
             }
             loops.append(&mut face.loops);
+            contributors.append(&mut face.contributors);
             source = Some(source.map_or(face.source, |least: super::FaceSource| {
                 least.min(face.source)
             }));
@@ -149,6 +151,9 @@ fn merge_faces(
             return Err(Stop::of(LOST));
         }
         face.loops = loops;
+        contributors.sort();
+        contributors.dedup();
+        face.contributors = contributors;
         if let Some(source) = source {
             face.source = source;
         }

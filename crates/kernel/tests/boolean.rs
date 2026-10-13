@@ -560,7 +560,6 @@ fn what_is_not_supported_says_so() {
     assert!(why.contains("freeform"), "{why}");
     assert_eq!(faces, [(Operand::A, FaceId(1))]);
     assert!(reason(&ball, &patched, Subtract).0.contains("freeform"));
-    let upright = rod(k, [0.0, 0.0, -2.0], 1.0, 4.0);
     // (Until the general surface intersection came in, crossing cylinders,
     // a cone cut along its axis and a ball through the side of a cylinder
     // were refused here. See boolean_surfaces.rs.)

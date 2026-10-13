@@ -222,6 +222,23 @@ fn what_a_boolean_split_is_merged_again() {
                 }
             ]
         );
+        // Every face that went into a merged face is on record: the top
+        // is A's top and B's.
+        let from_b = |i: u32| FaceSource {
+            operand: Operand::B,
+            face: FaceId(i),
+        };
+        assert_eq!(joined.merged.len(), 6);
+        assert_eq!(joined.merged[1], [from_a(1), from_b(1)]);
+        assert_eq!(joined.merged[4], [from_a(4)]);
+        assert_eq!(joined.merged[5], [from_b(5)]);
+        assert!(
+            joined
+                .faces
+                .iter()
+                .zip(&joined.merged)
+                .all(|(source, all)| all.first() == Some(source))
+        );
         let of_b = |e: &&EdgeSource| {
             matches!(
                 e,
@@ -254,7 +271,10 @@ fn what_a_boolean_split_is_merged_again() {
             4
         );
         // Without the merge the seam stays: the same solid, more of it.
-        let plain = BooleanOptions { merge: false };
+        let plain = BooleanOptions {
+            merge: false,
+            ..BooleanOptions::default()
+        };
         let seamed = boolean_with(&a, &b, Union, &tol, &plain).unwrap();
         assert_eq!(counts(&seamed), (12, 20, 10, 1));
         let m = mass(&seamed.body);
