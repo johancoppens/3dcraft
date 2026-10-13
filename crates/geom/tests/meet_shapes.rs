@@ -390,7 +390,10 @@ fn touching_and_degenerate_configurations_do_not_hang() {
     assert!(m.curves.len() == 1 && m.curves[0].closed, "{}", brief(&m));
     assert!(length(&m.curves[0]) < 0.5);
 
-    // A plane tangent to a patch along a line (z = x²): refused.
+    // A plane tangent to a patch along a line (z = x²): the patch keeps
+    // to one side of it, so they touch, in points of that line, and meet
+    // in no curve. (Refused until 2026-10-13, when a contact the Hessian
+    // does not classify began to be tested for keeping one side.)
     let trough = Surface::Bezier(
         BezierPatch::new(
             2,
@@ -408,10 +411,15 @@ fn touching_and_degenerate_configurations_do_not_hang() {
     );
     let floor = plane(Frame::WORLD);
     let small = cube(Vec3::ZERO, 5.0);
-    assert!(matches!(
-        solve(&floor, &trough, &small, &t),
-        Err(GeomError::Unsupported(_) | GeomError::NoConvergence(_))
-    ));
+    let m = meeting(solve(&floor, &trough, &small, &t).unwrap());
+    assert!(m.curves.is_empty(), "{}", brief(&m));
+    assert!(!m.points.is_empty());
+    for p in &m.points {
+        assert!(
+            p.x.abs() <= 64.0 * t.linear && p.z.abs() <= t.linear && (0.0..=2.0).contains(&p.y),
+            "a touch at {p:?}"
+        );
+    }
     // Lifted a little, the plane cuts it in two lines.
     let above = plane(Frame::WORLD.at(Vec3::new(0.0, 0.0, 0.01)).unwrap());
     let m = meeting(solve(&above, &trough, &small, &t).unwrap());

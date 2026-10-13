@@ -760,7 +760,28 @@ impl Marcher {
                         && self.chart.surface.eval(u, v).distance(s.p) <= 2.0 * merge
                 });
                 let mut settled = false;
-                if !at_apex && let Some(found) = self.stationary(u, v) {
+                // A touch the Hessian does not classify (along a curve, or
+                // of higher order) that keeps to one side all around.
+                let found = if at_apex { None } else { self.stationary(u, v) };
+                let grazing = match found {
+                    Some(s) if s.flat && self.touches(&s, finest) => self.one_sided(&s, finest),
+                    _ => None,
+                };
+                if let (Some(found), Some(disc)) = (found, grazing) {
+                    if !singular.iter().any(|s| s.p.distance(found.e.p) <= merge) {
+                        singular.push(Singular {
+                            u: found.u,
+                            v: found.v,
+                            p: found.e.p,
+                            kind: SingularKind::Touch,
+                            arm: 0.0,
+                            turn: 0.0,
+                        });
+                    }
+                    settled = disc.covers(u, v, hu, hv);
+                    discs.push(disc);
+                    patience = FIRST_LOOK;
+                } else if let Some(found) = found {
                     if let Some(point) = self.singular_at(&found, finest)?
                         && !singular.iter().any(|s| s.p.distance(point.p) <= merge)
                     {
@@ -978,6 +999,75 @@ impl Marcher {
             arm: self.arm_radius().max(4.0 * turn),
             turn,
         }))
+    }
+
+    /// A disc around a point where the surfaces touch and the Hessian of
+    /// `f` is degenerate (they touch along a curve through it, or to more
+    /// than second order), in which `f` keeps to one side: on three rings
+    /// of samples it is nowhere on the other side by more than a quarter
+    /// of the tolerance, and on the outer ring mostly clear of zero. The
+    /// surfaces then touch there without crossing, which divides nothing:
+    /// the point is a touch, and the disc needs no cells. (Going through
+    /// each other by less than half the tolerance is a touch to a boolean
+    /// anyway.) `None` where `f` changes sign on every ring down to the
+    /// smallest: a crossing, which stays refused.
+    ///
+    /// The rings are a sample, and the radius shrinks until they agree: a
+    /// crossing in a wedge narrower than the gaps between the samples (a
+    /// cusp, `x² − y³`) passes at a small radius. Nothing is lost by it,
+    /// because a disc only keeps cells from being split: the arms of such
+    /// a crossing leave the disc, are found outside it and are marched to
+    /// the point (`a_degenerate_contact_that_crosses_in_a_cusp_is_not_a_touch`).
+    /// What a disc could hide is a closed curve wholly inside it that
+    /// every one of its 48 samples misses.
+    fn one_sided(&mut self, s: &Stationary, finest: f64) -> Option<Disc> {
+        let c = &self.chart;
+        let widest = 0.25 * ((c.u.1 - c.u.0) * s.lu).min((c.v.1 - c.v.0) * s.lv);
+        let least = 8.0 * finest;
+        let slack = self.cut;
+        let mut radius = widest;
+        'radius: while radius.is_finite() && radius >= least {
+            let (mut above, mut below, mut seen) = (0_u32, 0_u32, 0_u32);
+            for (ring, count) in [(1.0, 24_u32), (2.0 / 3.0, 16), (1.0 / 3.0, 8)] {
+                for k in 0..count {
+                    self.spent().ok()?;
+                    let angle =
+                        std::f64::consts::TAU * (f64::from(k) + 0.5 * ring) / f64::from(count);
+                    let (x, y) = (ring * radius * angle.cos(), ring * radius * angle.sin());
+                    let (u, v) = (s.u + x / s.lu, s.v + y / s.lv);
+                    if !self.inside(u, v) {
+                        continue; // No cell lies there.
+                    }
+                    let Some(e) = self.eval(u, v) else {
+                        radius *= 0.5;
+                        continue 'radius;
+                    };
+                    // Past the edge of the other surface the distance says
+                    // nothing about sides.
+                    if e.dist > e.f.abs() + self.on {
+                        radius *= 0.5;
+                        continue 'radius;
+                    }
+                    above += u32::from(e.f > slack);
+                    below += u32::from(e.f < -slack);
+                    seen += u32::from(ring == 1.0);
+                }
+            }
+            // One side only, and on the rim mostly away from the other
+            // surface (not two surfaces that coincide there).
+            let (most, least_side) = (above.max(below), above.min(below));
+            if least_side == 0 && seen > 0 && 2 * most >= seen {
+                return Some(Disc {
+                    u: s.u,
+                    v: s.v,
+                    lu: s.lu,
+                    lv: s.lv,
+                    radius: 0.9 * radius,
+                });
+            }
+            radius *= 0.5;
+        }
+        None
     }
 
     /// The largest disc around a stationary point on whose rim, and

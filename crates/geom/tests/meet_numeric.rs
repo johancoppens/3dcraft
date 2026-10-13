@@ -289,7 +289,6 @@ fn quadric_patch(
     lift: f64,
     nurbs: bool,
 ) -> Surface {
-    // The coefficient of x^p y^q.
     let mut coefficient = [[0.0_f64; 4]; 4];
     coefficient[0][0] = lift + a * cx * cx + b * cy * cy + c * cx * cy;
     coefficient[1][0] = -2.0 * a * cx - c * cy;
@@ -297,6 +296,13 @@ fn quadric_patch(
     coefficient[2][0] = a;
     coefficient[0][2] = b;
     coefficient[1][1] = c;
+    height_patch(frame, k, &coefficient, nurbs)
+}
+
+/// A bicubic patch that is the graph over the unit square of the frame's
+/// xy plane, times `k`, of the polynomial whose coefficient of `x^p y^q`
+/// is `coefficient[p][q]`.
+fn height_patch(frame: &Frame, k: f64, coefficient: &[[f64; 4]; 4], nurbs: bool) -> Surface {
     // The Bézier ordinate of x^p at control point i of a cubic: the
     // blossom of the monomial at i ones and 3 − i zeros.
     let blossom = |p: usize, i: usize| -> f64 {
@@ -567,6 +573,96 @@ fn a_crossing_a_tenth_of_a_tolerance_apart_is_drawn_to_the_point() {
                 quadrants[usize::from(x > 0.0) + 2 * usize::from(y > 0.0)] = true;
             }
             assert_eq!(quadrants, [true; 4], "scale {k} nurbs {nurbs}");
+        }
+    }
+}
+
+/// A cylinder that fits the hole of a torus touches it along the inner
+/// equator, and one that fits around it along the outer one: the surfaces
+/// are tangent all along a circle and keep to one side of each other, so
+/// they meet in points of that circle and in no curve. (The Hessian of
+/// the distance is degenerate there, which says neither touch nor
+/// crossing; until 2026-10-13 that was refused as "surfaces that touch
+/// along a curve, or with more than second-order contact". Now a contact
+/// around which the distance keeps one sign counts as the touch it is.)
+/// A cylinder a little wider than the hole cuts the torus in two circles.
+#[test]
+fn a_cylinder_that_fits_a_torus_touches_it_along_a_circle() {
+    for k in SCALES {
+        let frame = tilted(k);
+        let ring = torus(frame, 2.0 * k, 0.5 * k);
+        let t = tol(k);
+        let within = cube(frame.origin(), 4.0 * k);
+        for radius in [1.5, 2.5] {
+            let tube = cylinder(frame, radius * k);
+            for (chart, field) in [(&ring, &tube), (&tube, &ring)] {
+                let m = meeting(meet_surfaces_numeric(chart, field, &within, &t).unwrap());
+                assert!(m.curves.is_empty(), "scale {k} radius {radius}: {m:?}");
+                assert!(!m.points.is_empty(), "scale {k} radius {radius}");
+                for p in &m.points {
+                    let (x, y, z) = frame.local(*p);
+                    assert!(
+                        (x.hypot(y) - radius * k).abs() <= t.linear && z.abs() <= 64.0 * t.linear,
+                        "scale {k} radius {radius}: a touch at ({x}, {y}, {z})"
+                    );
+                }
+            }
+        }
+        let wider = cylinder(frame, 1.6 * k);
+        let m = meeting(meet_surfaces_numeric(&ring, &wider, &within, &t).unwrap());
+        check_meeting(&m, &ring, &wider, &within, &t);
+        assert_eq!(m.curves.len(), 2, "scale {k}");
+        assert!(m.points.is_empty(), "scale {k}: {:?}", m.points);
+    }
+}
+
+/// A contact the Hessian does not classify and that is a crossing all the
+/// same: the patch `0.8 (x − 0.45)² − 0.6 (y − 0.5)³` against the plane it
+/// is tangent to. The two meet in a cusp, `x − 0.45 = ± sqrt(0.75 (y −
+/// 0.5)³)`, whose two arms leave the point in the same direction; between
+/// them the patch is under the plane, in a wedge that narrows to nothing
+/// at the point. Rings of samples around the point miss that wedge once
+/// they are small, and the contact then passes for one-sided. That must
+/// not lose the cusp: a disc around a touch only keeps cells from being
+/// split, and the arms, found outside it, are marched into it. The answer
+/// is the cusp drawn to where its wedge is narrower than the tolerance
+/// (64 tolerances from the point at most; 19 measured), or a refusal,
+/// never a touch alone and never arms that end short of it.
+#[test]
+fn a_degenerate_contact_that_crosses_in_a_cusp_is_not_a_touch() {
+    for k in SCALES {
+        for nurbs in [false, true] {
+            let frame = tilted(k);
+            let (cx, cy) = (0.45, 0.5);
+            let mut coefficient = [[0.0_f64; 4]; 4];
+            coefficient[2][0] = 0.8;
+            coefficient[1][0] = -1.6 * cx;
+            coefficient[0][0] = 0.8 * cx * cx + 0.6 * cy * cy * cy;
+            coefficient[0][1] = -1.8 * cy * cy;
+            coefficient[0][2] = 1.8 * cy;
+            coefficient[0][3] = -0.6;
+            let patch = height_patch(&frame, k, &coefficient, nurbs);
+            let flat = plane(frame);
+            let t = tol(k);
+            let cusp = frame.point(k * cx, k * cy, 0.0);
+            let within = cube(cusp, 4.0 * k);
+            for (chart, field) in [(&patch, &flat), (&flat, &patch)] {
+                let m = match meet_surfaces_numeric(chart, field, &within, &t) {
+                    Ok(found) => meeting(found),
+                    Err(
+                        craft3d_geom::GeomError::Unsupported(_)
+                        | craft3d_geom::GeomError::NoConvergence(_),
+                    ) => continue,
+                    Err(other) => panic!("scale {k} nurbs {nurbs}: {other:?}"),
+                };
+                check_meeting(&m, chart, field, &within, &t);
+                assert!(!m.curves.is_empty(), "scale {k} nurbs {nurbs}: {m:?}");
+                let gap = Lines::of(&m, 400).distance(cusp);
+                assert!(
+                    gap <= 64.0 * t.linear,
+                    "scale {k} nurbs {nurbs}: the arms end {gap} short of the cusp"
+                );
+            }
         }
     }
 }

@@ -83,7 +83,7 @@ use std::path::PathBuf;
 /// Raised to 11062 on 2026-10-13 when freeform faces came in: 4998 of the
 /// 5613 outcomes with a domed block agree (the rest are refused, none
 /// wrong), and the 6064 of the primitives are unchanged.
-const AGREEING_FLOOR: usize = 11351;
+const AGREEING_FLOOR: usize = 11384;
 
 /// Mismatches the kernel is known to have: `(case id, operation, why)`.
 /// They are bugs, listed so that the test is green while they are open and
