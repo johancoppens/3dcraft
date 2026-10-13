@@ -57,7 +57,7 @@
 
 use super::field::{Chart, Field, Sample};
 use super::meet::{Meeting, MeetingCurve};
-use crate::{Curve3, GeomError, NurbsCurve, Surface};
+use crate::{Curve3, GeomError, NurbsCurve, NurbsSurface, Surface};
 use craft3d_math::{Bbox3, Tolerance, Vec3};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -190,6 +190,9 @@ pub(super) struct Marcher {
     hmax: f64,
     hmin: f64,
     evals: usize,
+    /// Borders of the chart's rectangle (u start, u end, v start, v end)
+    /// that lie on the field's surface: reported as curves, not marched.
+    lying: [bool; 4],
 }
 
 impl Marcher {
@@ -221,6 +224,7 @@ impl Marcher {
             hmax: scale / 32.0,
             hmin: 4.0 * on,
             evals: 0,
+            lying: [false; 4],
         })
     }
 
@@ -436,6 +440,130 @@ impl Marcher {
         Some(place(0.5 * (lo + hi)))
     }
 
+    /// The borders of a freeform chart that lie on the field's surface,
+    /// as curves. The intersection then runs along the edge of the
+    /// rectangle, where no cell edge shows a change of sign and every cell
+    /// along it would be split to the floor for nothing (a plane through
+    /// the edge of a patch, which is every patch standing on a plate). The
+    /// border is the surface's own iso-curve there, exact on the chart and
+    /// on the field to the sampled deviation.
+    fn border_curves(&mut self) -> Result<Vec<MeetingCurve>, GeomError> {
+        if self.chart.periodic_u || self.chart.periodic_v {
+            return Ok(Vec::new());
+        }
+        let spline = match &self.chart.surface {
+            Surface::Bezier(b) => NurbsSurface::from_bezier(b)?,
+            Surface::Nurbs(s) => s.clone(),
+            _ => return Ok(Vec::new()),
+        };
+        let ((u0, u1), (v0, v1)) = (self.chart.u, self.chart.v);
+        let (degree_u, degree_v) = spline.degrees();
+        let (count_u, count_v) = spline.counts();
+        let (knots_u, knots_v) = (spline.knots_u(), spline.knots_v());
+        let (ctrl, weights) = (spline.control_points(), spline.weights());
+        // A border is the iso-curve of its row of the net only where the
+        // knots are clamped at that end.
+        let clamped = |knots: &[f64], degree: usize, count: usize, at_end: bool| {
+            if at_end {
+                knots.get(count) == knots.get(count + degree)
+            } else {
+                knots.first() == knots.get(degree)
+            }
+        };
+        const SAMPLES: u32 = 64;
+        let mut curves = Vec::new();
+        for side in 0..4 {
+            let along_u = side >= 2;
+            let at_end = side % 2 == 1;
+            let fixed = match side {
+                0 => u0,
+                1 => u1,
+                2 => v0,
+                _ => v1,
+            };
+            let mut worst = 0.0_f64;
+            let mut on_field = true;
+            for k in 0..=SAMPLES {
+                self.spent()?;
+                let t = f64::from(k) / f64::from(SAMPLES);
+                let (u, v) = if along_u {
+                    (u0 + (u1 - u0) * t, fixed)
+                } else {
+                    (fixed, v0 + (v1 - v0) * t)
+                };
+                match self.eval(u, v) {
+                    Some(e) if e.dist <= self.tol.linear => worst = worst.max(e.dist),
+                    _ => {
+                        on_field = false;
+                        break;
+                    }
+                }
+            }
+            if !on_field {
+                continue;
+            }
+            let (points, curve_weights, knots, degree): (Vec<Vec3>, Vec<f64>, Vec<f64>, usize) =
+                if along_u {
+                    if !clamped(knots_v, degree_v, count_v, at_end) {
+                        continue;
+                    }
+                    let j = if at_end { count_v - 1 } else { 0 };
+                    let row = |i: usize| i * count_v + j;
+                    (
+                        (0..count_u)
+                            .filter_map(|i| ctrl.get(row(i)).copied())
+                            .collect(),
+                        (0..count_u)
+                            .filter_map(|i| weights.get(row(i)).copied())
+                            .collect(),
+                        knots_u.to_vec(),
+                        degree_u,
+                    )
+                } else {
+                    if !clamped(knots_u, degree_u, count_u, at_end) {
+                        continue;
+                    }
+                    let i = if at_end { count_u - 1 } else { 0 };
+                    (
+                        (0..count_v)
+                            .filter_map(|j| ctrl.get(i * count_v + j).copied())
+                            .collect(),
+                        (0..count_v)
+                            .filter_map(|j| weights.get(i * count_v + j).copied())
+                            .collect(),
+                        knots_v.to_vec(),
+                        degree_v,
+                    )
+                };
+            let Ok(curve) = NurbsCurve::new(degree, knots, points, curve_weights) else {
+                continue;
+            };
+            if let Some(flag) = self.lying.get_mut(side) {
+                *flag = true;
+            }
+            curves.push(MeetingCurve {
+                range: curve.domain(),
+                curve: Curve3::Nurbs(curve),
+                closed: false,
+                tangent: false,
+                exact: false,
+                deviation: worst.max(4.0 * self.on),
+            });
+        }
+        Ok(curves)
+    }
+
+    /// True when a seed sits on a border that lies on the field: the
+    /// branch it would start is the border curve, already reported.
+    fn on_lying_border(&self, u: f64, v: f64) -> bool {
+        let ((u0, u1), (v0, v1)) = (self.chart.u, self.chart.v);
+        let (hair_u, hair_v) = (1e-9 * (u1 - u0), 1e-9 * (v1 - v0));
+        (self.lying[0] && (u - u0).abs() <= hair_u)
+            || (self.lying[1] && (u - u1).abs() <= hair_u)
+            || (self.lying[2] && (v - v0).abs() <= hair_v)
+            || (self.lying[3] && (v - v1).abs() <= hair_v)
+    }
+
     /// Seeds on an edge that lies on the border of the chart's rectangle,
     /// where a branch may come in and go out between two nodes.
     fn border_seeds(
@@ -577,6 +705,16 @@ impl Marcher {
                 !self.chart.periodic_u && (fixed == 0 || fixed == grid.nu)
             };
             if border {
+                // A border that lies on the field is a curve already.
+                let side = match (along_u, fixed == 0) {
+                    (true, true) => 2,
+                    (true, false) => 3,
+                    (false, true) => 0,
+                    (false, false) => 1,
+                };
+                if self.lying.get(side).copied().unwrap_or(false) {
+                    continue;
+                }
                 self.border_seeds(&grid, &mut cache, along_u, fixed, (lo, hi), &mut seeds)?;
                 continue;
             }
@@ -1282,7 +1420,9 @@ impl Marcher {
     // ----- the whole intersection -----------------------------------------------
 
     pub(super) fn solve(&mut self, within: &Bbox3) -> Result<Meeting, GeomError> {
+        let lying = self.border_curves()?;
         let (mut seeds, floor) = self.seeds()?;
+        seeds.retain(|&(u, v)| !self.on_lying_border(u, v));
         let mut singular: Vec<Singular> = Vec::new();
         // The apex of a cone the chart passes through.
         if let Some(apex) = self.field.apex()
@@ -1352,7 +1492,7 @@ impl Marcher {
                 branches.push(branch);
             }
         }
-        let mut curves = Vec::new();
+        let mut curves = lying;
         for branch in &branches {
             for (pts, closed) in self.clip(branch, within) {
                 let (Some(first), Some(last)) = (pts.first(), pts.last()) else {

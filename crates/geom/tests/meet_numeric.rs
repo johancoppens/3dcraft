@@ -14,7 +14,7 @@ mod common;
 use common::*;
 use craft3d_geom::intersect::{Meeting, meet_surfaces, meet_surfaces_numeric};
 use craft3d_geom::{Curve3, Surface};
-use craft3d_math::{Bbox3, Frame, Tolerance};
+use craft3d_math::{Bbox3, Frame, Tolerance, Vec3};
 
 /// The length of a meeting curve (a polyline of 2000 chords).
 fn length(curve: &craft3d_geom::intersect::MeetingCurve) -> f64 {
@@ -190,6 +190,87 @@ fn clipped_marched_curves_end_on_the_box() {
         for curve in &m.curves {
             for p in samples(curve, 200) {
                 assert!(whole_lines.distance(p) <= 1e-5 * s);
+            }
+        }
+    }
+}
+
+/// A plane through the border of a patch (every wall of a domed block
+/// meets its roof so) meets it along that border: the surface's own
+/// iso-curve, found at once. Until 2026-10-13 the marcher split every
+/// cell along the border down to the floor, took half a minute at scale
+/// 1e-3, and found nothing, because no cell edge shows a change of sign
+/// along a zero set that lies on the rectangle's edge; and a B-spline
+/// chart had only sampled derivative bounds, which rarely let a cell be
+/// called simple.
+#[test]
+fn a_plane_through_the_border_of_a_patch_meets_it_along_the_border() {
+    for k in SCALES {
+        for nurbs in [false, true] {
+            let roof = craft3d_testkit::trimmed::domed_block(
+                &Frame::WORLD,
+                4.0 * k,
+                3.0 * k,
+                2.0 * k,
+                nurbs,
+            )
+            .unwrap()
+            .body
+            .faces
+            .iter()
+            .map(|f| f.surface.clone())
+            .find(|s| matches!(s, Surface::Bezier(_) | Surface::Nurbs(_)))
+            .unwrap();
+            let t = tol(k);
+            let within = Bbox3::from_points([
+                Vec3::new(-1.0, -1.0, -1.0) * k,
+                Vec3::new(5.0, 4.0, 4.0) * k,
+            ]);
+            // The wall x = 0 holds the roof's border u = 0; the wall y = 3
+            // its border v = 1.
+            for (origin, normal, from, to) in [
+                (
+                    Vec3::ZERO,
+                    Vec3::X,
+                    Vec3::new(0.0, 0.0, 0.0),
+                    Vec3::new(0.0, 3.0, 0.0),
+                ),
+                (
+                    Vec3::new(0.0, 3.0, 0.0),
+                    Vec3::Y,
+                    Vec3::new(0.0, 3.0, 0.0),
+                    Vec3::new(4.0, 3.0, 0.0),
+                ),
+            ] {
+                let wall = plane(Frame::new(origin * k, normal, Vec3::Z).unwrap());
+                let clock = std::time::Instant::now();
+                let m = meeting(meet_surfaces(&roof, &wall, &within, &t).unwrap());
+                let took = clock.elapsed();
+                assert_eq!(
+                    m.curves.len(),
+                    1,
+                    "scale {k} nurbs {nurbs}: {:?}",
+                    m.curves.len()
+                );
+                assert!(m.points.is_empty());
+                check_meeting(&m, &roof, &wall, &within, &t);
+                let curve = &m.curves[0];
+                // From one corner of the roof to the next, along the wall.
+                let ends = [start(curve), end(curve)];
+                let (from, to) = (from * k, to * k);
+                let at = |p: Vec3, q: Vec3| {
+                    (p.x - q.x).abs() <= t.linear && (p.y - q.y).abs() <= t.linear
+                };
+                assert!(
+                    (at(ends[0], from) && at(ends[1], to))
+                        || (at(ends[0], to) && at(ends[1], from)),
+                    "scale {k} nurbs {nurbs}: ends {ends:?}"
+                );
+                assert!(curve.deviation <= t.linear);
+                assert!(
+                    took.as_secs() < 10,
+                    "scale {k} nurbs {nurbs}: took {took:?}"
+                );
             }
         }
     }

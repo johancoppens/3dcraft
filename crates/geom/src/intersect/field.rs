@@ -11,7 +11,7 @@
 // for NaN.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
-use crate::{GeomError, Sphere, Surface};
+use crate::{BezierPatch, GeomError, NurbsSurface, Sphere, Surface};
 use craft3d_math::{Bbox3, Frame, Tolerance, Vec3};
 use std::f64::consts::{FRAC_PI_2, TAU};
 
@@ -611,7 +611,7 @@ impl Chart {
                     v,
                     periodic_u: false,
                     periodic_v: false,
-                    bounds: sampled_bounds(surface, u, v, count_u, count_v),
+                    bounds: nurbs_bounds(s, surface, u, v, count_u, count_v),
                 }
             }
         };
@@ -678,5 +678,73 @@ fn sampled_bounds(
         muu: 2.0 * b.muu,
         muv: 2.0 * b.muv,
         mvv: 2.0 * b.mvv,
+    }
+}
+
+/// Derivative bounds of a NURBS surface: proofs for a polynomial one (every
+/// weight 1), from the Bézier nets of its spans, each span's net bounding
+/// its derivatives as a Bézier patch's does, scaled by the span's width in
+/// the surface's own parameters; estimates from samples otherwise. (With
+/// the estimates, which carry a margin, the marcher could rarely call a
+/// cell simple on a B-spline and split down to the floor along the whole
+/// curve: a B-spline roof took seconds where the same roof as a Bézier
+/// patch took milliseconds.)
+fn nurbs_bounds(
+    s: &NurbsSurface,
+    surface: &Surface,
+    u: (f64, f64),
+    v: (f64, f64),
+    count_u: usize,
+    count_v: usize,
+) -> Bounds {
+    let estimate = || sampled_bounds(surface, u, v, count_u, count_v);
+    let Ok(spans) = s.bezier_spans() else {
+        return estimate();
+    };
+    if !spans.iter().all(|span| span.patch.is_polynomial()) {
+        return estimate();
+    }
+    let mut b = Bounds {
+        lu: 0.0,
+        lv: 0.0,
+        muu: 0.0,
+        muv: 0.0,
+        mvv: 0.0,
+    };
+    for span in &spans {
+        let (m, n) = span.patch.degrees();
+        let Ok(patch) = BezierPatch::new(m, n, span.patch.control_points()) else {
+            return estimate();
+        };
+        let (du, dv) = (span.u.1 - span.u.0, span.v.1 - span.v.0);
+        if !(du > 0.0 && dv > 0.0) {
+            return estimate();
+        }
+        let p = |i: usize, j: usize| patch.control_point(i, j).unwrap_or(Vec3::ZERO);
+        let (mut first_u, mut first_v) = (0.0_f64, 0.0_f64);
+        for i in 0..=m {
+            for j in 0..=n {
+                if i < m {
+                    first_u = first_u.max(p(i + 1, j).distance(p(i, j)));
+                }
+                if j < n {
+                    first_v = first_v.max(p(i, j + 1).distance(p(i, j)));
+                }
+            }
+        }
+        let (muu, muv, mvv) = patch.second_derivative_bounds();
+        b.lu = b.lu.max(m as f64 * first_u / du);
+        b.lv = b.lv.max(n as f64 * first_v / dv);
+        b.muu = b.muu.max(muu / (du * du));
+        b.muv = b.muv.max(muv / (du * dv));
+        b.mvv = b.mvv.max(mvv / (dv * dv));
+    }
+    if [b.lu, b.lv, b.muu, b.muv, b.mvv]
+        .iter()
+        .all(|x| x.is_finite())
+    {
+        b
+    } else {
+        estimate()
     }
 }
