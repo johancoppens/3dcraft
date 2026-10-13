@@ -246,16 +246,9 @@ fn the_bodies_are_valid_and_their_closed_forms_are_theirs() {
                 assert_eq!(check(&solid.body, &tolerance), vec![], "{what}");
                 // By another route than the tessellator: the integrals of
                 // `craft3d_topo` over the exact faces, sums of smooth
-                // integrands that are exact to rounding. Not where a loop
-                // that goes around the sphere's axis passes close to its
-                // pole: with the rim 8° from it they are off by up to
-                // 1.4e-6 of the volume (measured; a limit of those
-                // integrals, not of these bodies: the closed forms do not
-                // depend on where the axis is, and the meshes converge to
-                // them like those of the other bodies, see below).
-                if solid.name.contains("60° off") {
-                    continue;
-                }
+                // integrands that are exact to rounding, wherever the
+                // sphere's axis points (with the rim 8° from a pole they
+                // were once off by 1.4e-6 of the volume).
                 let mass = mass_properties(&solid.body).unwrap();
                 let area: f64 = solid.face_areas.iter().sum();
                 assert!(
