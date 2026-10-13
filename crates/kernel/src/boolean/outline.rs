@@ -397,7 +397,10 @@ impl Boxes {
             .filter(|(b, ..)| {
                 b.corners().is_some_and(|(lo, hi)| {
                     // (Not finite: not ruled out.)
-                    !((lo - p).max(p - hi).max(Vec3::ZERO).length() > room)
+                    {
+                        let away = (lo - p).max(p - hi).max(Vec3::ZERO).length();
+                        away <= room || away.is_nan()
+                    }
                 })
             })
             .map(|(_, l, k)| (l, k))
