@@ -708,9 +708,37 @@ fn pole(param: &Param, a: f64, b: f64, typical: f64, face: usize) -> Result<Bv, 
     })
 }
 
+/// How many places are tried for the seam of a face that goes around its
+/// surface.
+const SEAM_TRIES: usize = 16;
+
+/// Whether the surface closes all the way around parameter `a` and to a
+/// point at both ends of `b`, as a sphere does. It is then a closed
+/// surface, on which loops that run clockwise bound a face as well:
+/// everything outside them.
+fn closes_to_points(param: &Param) -> bool {
+    let [Some(_), None] = param.periods() else {
+        return false;
+    };
+    let [(a_low, _), (b_low, b_high)] = param.domain();
+    if !(a_low.is_finite() && b_low.is_finite() && b_high.is_finite()) {
+        return false;
+    }
+    let speed = |b: f64| {
+        let (_, [da, _]) = param.derivatives([a_low, b]);
+        da.length()
+    };
+    let typical = speed(0.5 * (b_low + b_high));
+    positive(typical)
+        && typical.is_finite()
+        && speed(b_low) <= 1e-9 * typical
+        && speed(b_high) <= 1e-9 * typical
+}
+
 /// The region of a face that goes all the way around parameter `a`:
 /// between two loops that wind around it, or between one and the end of
-/// the surface, or (without loops) the whole surface.
+/// the surface, or (without loops that wind) the whole surface; less the
+/// holes its other loops bound.
 fn band_region(
     param: &Param,
     rings: &[Ring],
@@ -860,16 +888,28 @@ fn band_region(
     let mut cut: Option<Cut> = None;
     match anchor {
         None => {
-            cut = Some(Cut {
-                a: a_low,
-                lower_start: None,
-                upper_start: None,
-                ends: [[a_low, b_low], [a_low, b_high]],
-            });
+            // From one end of the surface to the other, along the first
+            // of a few meridians that no hole lies on. Without holes that
+            // is the surface's own seam.
+            let tries = if holes.is_empty() { 1 } else { SEAM_TRIES };
+            for c in 0..tries {
+                let a = a_low + period * c as f64 / tries as f64;
+                let ends = [[a, b_low], [a, b_high]];
+                let [from, to] = ends;
+                if from.iter().chain(&to).all(|x| x.is_finite()) && !crosses_a_loop(from, to) {
+                    cut = Some(Cut {
+                        a,
+                        lower_start: None,
+                        upper_start: None,
+                        ends,
+                    });
+                    break;
+                }
+            }
         }
         Some(anchor) => {
             let n = anchor.verts.len();
-            let tries = n.min(16);
+            let tries = n.min(SEAM_TRIES);
             for c in 0..tries {
                 let s = c * n / tries;
                 let Some(v) = anchor.verts.get(s).filter(|v| v.free.is_none()) else {
@@ -1586,7 +1626,18 @@ pub(crate) fn tessellate_face(
         );
     };
     let winding = rings.iter().filter(|r| r.winding != [0, 0]).count();
-    let mut region = if rings.is_empty() || winding > 0 {
+    // Loops that all run clockwise bound nothing in a plane. On a closed
+    // surface they bound the rest of it: the face is the whole surface
+    // with those loops as holes (the zone left of a ball with a hole
+    // drilled through it across the sphere's axis).
+    let periods = param.periods();
+    let around_holes = winding == 0
+        && !rings.is_empty()
+        && rings
+            .iter()
+            .all(|r| positive(-r.twice_area(periods) * sense))
+        && closes_to_points(&param);
+    let mut region = if rings.is_empty() || winding > 0 || around_holes {
         if winding > 2 {
             return fail(
                 index,

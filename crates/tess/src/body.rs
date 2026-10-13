@@ -16,19 +16,24 @@
 //! of loops; loops that wind once around the axis of a cylinder, cone,
 //! sphere or torus, or once around the tube of a torus; faces that reach
 //! a pole, an apex or a collapsed edge of a patch; whole spheres and tori;
+//! a sphere but for holes whose loops do not go around its axis (the face
+//! is then everything *outside* its loops, which all run clockwise: a
+//! ball with a hole drilled through it across the sphere's axis);
 //! reversed faces.
 //!
 //! Not handled, each an `Unsupported` error that names the face:
 //! - a loop that winds around its surface more than once, or around both
 //!   the axis and the tube of a torus (a Villarceau circle);
 //! - a face around the axis of its surface that leaves no room for a
-//!   straight seam between its winding loops (16 places are tried).
+//!   straight seam between its winding loops, or between the poles of a
+//!   sphere past its holes (16 places are tried).
 //!
 //! Refused as a `TessError::Face`, because the loops bound no region or
 //! do not say which one is meant:
-//! - a face that is everything *outside* its loops on a closed surface (a
-//!   sphere with one hole whose loop does not go around the axis): the
-//!   loops then run clockwise, as they would on an invalid face;
+//! - a face that is everything *outside* its loops on a torus (a hole
+//!   whose loop goes around neither the axis nor the tube), or on any
+//!   surface that is not closed, where it would have no end: the loops
+//!   run clockwise, as they do on an invalid face;
 //! - a face on a freeform surface that closes on itself (a NURBS tube):
 //!   `craft3d-geom` reports no period for it, so its seam cannot be
 //!   followed;

@@ -203,10 +203,24 @@ fn faces_beyond_the_method_are_refused() {
     let cap = one_face(sphere(), vec![rim()], &[(0, false)]);
     let mesh = tessellate_body(&cap, &params(1e-3)).unwrap();
     assert!((mesh.area() - TAU * 2.0 * 1.0).abs() < 1e-3 * TAU * 2.0);
-    // ... and clockwise the face would be the rest of the sphere, with
-    // both poles and the seam in it.
+    // ... and clockwise the rest of the sphere, with both poles and the
+    // seam in it. (Until 2026-10-13 this was asserted to be refused, as a
+    // limit of the method. A sphere is a closed surface: a loop on it has
+    // two sides and its direction says which is the face, so this is a
+    // valid face, of area 4π r² − 2π r h. See closed_surface_holes.rs.)
     let outside = one_face(sphere(), vec![rim()], &[(0, true)]);
-    refused(&outside, "the outside of a cap");
+    for tolerance in [0.3, 1e-2, 1e-3] {
+        let mesh = tessellate_body(&outside, &params(tolerance)).unwrap();
+        let expected = 2.0 * TAU * 4.0 - TAU * 2.0 * 1.0;
+        // The mesh is inscribed: smaller, by the order of the tolerance
+        // over the radius.
+        let short = expected - mesh.area();
+        assert!(
+            short > 0.0 && short < tolerance * expected,
+            "the outside of a cap at {tolerance}: {} vs {expected}",
+            mesh.area()
+        );
+    }
     // (Through the poles there is no such doubt: two meridians walked the
     // other way round bound the larger lune, see tests/periodic.rs.)
     let quarter = (-FRAC_PI_2, FRAC_PI_2);
