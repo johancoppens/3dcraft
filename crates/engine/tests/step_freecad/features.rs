@@ -1326,6 +1326,119 @@ fn housing(s: &mut Session, k: f64) -> Forms {
     ])
 }
 
+/// A bored sleeve (a tube of radii 18 and 11, 60 long, lying along y)
+/// with one oil hole of radius `b` drilled along a radius: from 24 off the
+/// axis, on a datum plane turned by `degrees` about the sleeve's axis,
+/// `depth` deep, `along` from the middle of the sleeve.
+///
+/// The rim of such a hole on the sleeve is a closed spline edge with one
+/// vertex, and its knots in the body are lengths. These are the bodies
+/// FreeCAD called invalid at the scale 1e6 while the knots were written
+/// as they are ("self-intersecting wire" on the sleeve's wall; 57 of 144
+/// such sleeves at 1e6, 1 of 144 at 1e3, none at 1), and calls valid now
+/// that a curve's knots are written from 0 to 1 (`craft3d_io::step`,
+/// B-spline curve knots). The four here were among the 57.
+///
+/// The closed form, across the hole (x) and along it (z, from the axis):
+/// the tube's wall is where 11² ≤ x² + z² ≤ 18², the hole takes z from
+/// 24 − depth up, so over a point of its disc it removes the length
+/// `gone(x)` below, and of the tube's skin the patches it passes
+/// through, each larger than the disc under it by radius / height; its
+/// own wall is that length round its rim, and it has a flat bottom where
+/// it ends in the wall.
+fn oil_hole(degrees: f64, b: f64, depth: f64, along: f64) -> impl Fn(&mut Session, f64) -> Forms {
+    move |s, k| {
+        step(
+            s,
+            "feature.cylinder",
+            json!({"radius": 18.0 * k, "height": 60.0 * k, "position": [0, -30.0 * k, 40.0 * k],
+                   "axis": [0, 1, 0], "name": "Sleeve"}),
+        )?;
+        step(
+            s,
+            "feature.cylinder",
+            json!({"radius": 11.0 * k, "height": 70.0 * k, "position": [0, -35.0 * k, 40.0 * k],
+                   "axis": [0, 1, 0], "name": "Bore"}),
+        )?;
+        step(
+            s,
+            "feature.boolean",
+            json!({"op": "subtract", "target": "Sleeve", "tool": "Bore", "name": "Bored"}),
+        )?;
+        step(
+            s,
+            "datum.axis",
+            json!({"face": "F1:face(0)", "name": "SleeveAxis"}),
+        )?;
+        step(
+            s,
+            "datum.plane",
+            json!({"from": "xy", "distance": 40.0 * k, "name": "AxisLevel"}),
+        )?;
+        step(
+            s,
+            "datum.plane",
+            json!({"from": "AxisLevel", "about": "SleeveAxis",
+                   "angle": format!("{degrees} deg"), "name": "Slope"}),
+        )?;
+        sketch(s, "OilHole", json!("Slope"), 24.0 * k)?;
+        circle(s, "OilHole", [0.0, along * k], b * k)?;
+        step(
+            s,
+            "feature.extrude",
+            json!({"sketch": "OilHole", "distance": depth * k, "reversed": true, "cut": "Bored",
+                   "name": "Oiled"}),
+        )?;
+
+        let (outer, inner, length) = (18.0_f64, 11.0_f64, 60.0);
+        let end = 24.0 - depth;
+        // The stretches of z the wall has over x: above and below the bore.
+        let wall = move |x: f64| {
+            let (o, i) = (
+                (outer * outer - x * x).sqrt(),
+                (inner * inner - x * x).sqrt(),
+            );
+            [(i, o), (-o, -i)]
+        };
+        let gone = move |x: f64| -> f64 {
+            wall(x)
+                .iter()
+                .map(|&(low, high)| (high.min(24.0) - low.max(end)).max(0.0))
+                .sum()
+        };
+        // The skin the hole passes through: every end of a stretch above
+        // the hole's own end, as radius over height.
+        let skin = move |x: f64| -> f64 {
+            wall(x)
+                .iter()
+                .flat_map(|&(low, high)| [(low, low.abs()), (high, high.abs())])
+                .filter(|&(z, _)| z > end)
+                .map(|(_, height)| {
+                    let radius = (height * height + x * x).sqrt();
+                    radius / height
+                })
+                .sum()
+        };
+        // A flat bottom where the hole ends inside the wall (asked of the
+        // whole disc: the cases here end well inside it or well outside).
+        let ends_in_the_wall = wall(0.0).iter().any(|&(low, high)| low < end && end < high);
+        let bottom = if ends_in_the_wall { PI * b * b } else { 0.0 };
+        let rim = integral(|u| 2.0 * PI * b * gone(b * (2.0 * PI * u).cos()));
+        let tube = PI * (outer * outer - inner * inner);
+        Ok(vec![
+            closed(
+                "Oiled",
+                tube * length - over_disc([0.0, 0.0], b, |x, _| gone(x)),
+                2.0 * PI * (outer + inner) * length + 2.0 * tube
+                    - over_disc([0.0, 0.0], b, |x, _| skin(x))
+                    + rim
+                    + bottom,
+            )
+            .within(1e-7),
+        ])
+    }
+}
+
 // ---------------------------------------------------------------------
 // Slivers: overlaps ten tolerances deep (the document's tolerance is
 // 1e-6 of the scale), with the closed forms of
@@ -1549,28 +1662,7 @@ const BEYOND_THE_READER: &[(&str, &str)] = &[
     ),
     ("milli-far-small-block.step", SMALLER_THAN_ITS_PRECISION),
     ("milli-far-small-cylinder.step", SMALLER_THAN_ITS_PRECISION),
-    ("mega-housing.step", NOT_ALIKE_AT_EVERY_SCALE),
 ];
-/// The housing at the scale 1e6, which FreeCAD calls invalid ("self-
-/// intersecting wire", "unorientable shape": first of the sleeve's wall,
-/// with the pedestal's foot and the oil holes' rims in it, from the scale
-/// 1e3 up; then of the bore and the holes' walls too) while it calls the
-/// same document valid at the scales 1e-3 and 1. Measured on 2026-10-13
-/// with FreeCAD's own API on what it imported: every edge of those faces
-/// lies within the document's tolerance of its cylinder at every scale
-/// (4.8e-7 of the scale at most, where 1e-6 is allowed; also with a
-/// tolerance a thousand times tighter, where FreeCAD's verdict is the
-/// same); each wire of the faces is valid by itself and lies in the
-/// parameter plane as at the scale 1; FreeCAD's volume, area and centre
-/// of mass are those of the scale 1 to twelve digits (asked below); and at
-/// the scale 1e3 its own `fix` makes the shape valid without changing
-/// the volume in the fifteenth digit. A body that is valid at one size is
-/// valid at every size, so the verdict is the checker's: we write no
-/// parameter-space curves, FreeCAD makes its own on import, and on a
-/// cylinder those live in a plane of radians by lengths, which does not
-/// scale with the body.
-const NOT_ALIKE_AT_EVERY_SCALE: &str = "FreeCAD's validity check of faces on a cylinder with spline edges depends on the size: \
-     the same document is valid at the scales 1e-3 and 1, and its measures are the same at every scale";
 const SMALLER_THAN_ITS_PRECISION: &str = "a feature of 1e-8 mm, under FreeCAD's fixed precision of 1e-7 mm; \
      the same document in metres is read right";
 /// The documents of [`BEYOND_THE_READER`], built once more with the same
@@ -1775,6 +1867,29 @@ fn freecad_reads_extrusion_ends_datums_splines_and_slivers() {
         ("impeller", EXACT, Box::new(impeller)),
         ("spline-housing-base", ROUGH, Box::new(spline_housing_base)),
         ("housing", ROUGH, Box::new(housing)),
+        // Through the wall, along a radius.
+        (
+            "oil-hole-radial",
+            APPROX,
+            Box::new(oil_hole(0.0, 2.5, 24.0, -14.0)),
+        ),
+        // Blind: ends in the wall.
+        (
+            "oil-hole-blind",
+            APPROX,
+            Box::new(oil_hole(60.0, 1.5, 10.0, 3.0)),
+        ),
+        // Through both walls.
+        (
+            "oil-hole-across",
+            APPROX,
+            Box::new(oil_hole(45.0, 6.0, 60.0, 3.0)),
+        ),
+        (
+            "oil-hole-wide",
+            APPROX,
+            Box::new(oil_hole(135.0, 6.0, 24.0, -14.0)),
+        ),
         (
             "sliver-box-in-plate-union",
             FLAT,
@@ -1946,9 +2061,12 @@ fn freecad_reads_extrusion_ends_datums_splines_and_slivers() {
         }
     }
 
-    // FreeCAD measures the same housing at every scale: whatever it makes
-    // of the faces at 1e6 (`NOT_ALIKE_AT_EVERY_SCALE`), it has read the
-    // same solid.
+    // FreeCAD measures the same housing at every scale, and calls it
+    // valid at every scale (it called the one at 1e6 "self-intersecting"
+    // until 2026-10-14, while the knots of its spline edges were written
+    // as the lengths they are in the body: see `oil_hole`). Validity is
+    // asked of every row below, the housing's among them; this asks that
+    // what it measures does not depend on the scale either.
     let housings: Vec<&harness::Row> = rows
         .iter()
         .filter(|r| r.file.ends_with("-housing.step"))
