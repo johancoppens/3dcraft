@@ -10,7 +10,9 @@ use crate::frames::{Mode, Scheduler, Ticket};
 use crate::state::{CameraState, ProjectionKind, UiState, VIEWS};
 use crate::theme::{Tokens, color, color_alpha};
 use crate::viewport::{self, Composed, MAX_SIDE, MIN_SIDE, Overlay, Quality};
-use craft3d_engine::{DocumentStatus, FeatureState, Scene, SceneQuality, Session};
+use craft3d_engine::{
+    DocumentStatus, FeatureState, Recoverable, RecoveryOverview, Scene, SceneQuality, Session,
+};
 use craft3d_math::Bbox3;
 use std::sync::Arc;
 
@@ -230,10 +232,88 @@ type Arrived = (Ticket, Result<Rendered, String>);
 #[cfg(not(target_arch = "wasm32"))]
 type RenderWorker = crate::frames::Worker<RenderJob, Rendered>;
 
+/// What a button of the recovery bar asks for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RecoveryAction {
+    /// Open this recoverable document (`recovery.open`).
+    Open(String),
+    /// Remove this one's recovery file (`recovery.discard`).
+    Discard(String),
+    /// Remove all of them.
+    DiscardAll,
+    /// Hide the bar and leave everything where it is.
+    Later,
+}
+
+/// Most recoverable documents the bar lists; `recovery.list` has them all.
+pub const RECOVERY_ROWS: usize = 6;
+
+/// What the status bar says about autosave: the text, and whether it is a
+/// problem. `None` when there is nothing to say. `now` is the time in
+/// seconds since the Unix epoch, when the platform has a clock.
+pub fn autosave_text(overview: &RecoveryOverview, now: Option<u64>) -> Option<(String, bool)> {
+    if let Some(problem) = &overview.problem {
+        return Some((format!("autosave failed: {problem}"), true));
+    }
+    let at = overview.last_autosave?;
+    let Some(age) = now.map(|now| now.saturating_sub(at)) else {
+        return Some(("autosaved".to_string(), false));
+    };
+    let text = match age {
+        0..60 => "autosaved just now".to_string(),
+        60..3600 => format!("autosaved {} min ago", age / 60),
+        _ => format!("autosaved {} h ago", age / 3600),
+    };
+    Some((text, false))
+}
+
+/// One line about a recoverable document, after its name.
+fn recoverable_text(found: &Recoverable, now: Option<u64>) -> String {
+    let mut parts = Vec::new();
+    if let Some(features) = found.features {
+        parts.push(format!("{features} features"));
+    }
+    if let (Some(at), Some(now)) = (found.time, now) {
+        let age = now.saturating_sub(at);
+        parts.push(match age {
+            0..60 => "autosaved just now".to_string(),
+            60..3600 => format!("autosaved {} min ago", age / 60),
+            3600..172_800 => format!("autosaved {} h ago", age / 3600),
+            _ => format!("autosaved {} days ago", age / 86_400),
+        });
+    }
+    if let Some(path) = &found.path {
+        parts.push(path.clone());
+    }
+    if let Some(problem) = &found.problem {
+        parts.push(problem.clone());
+    }
+    parts.join(" · ")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn epoch_now() -> Option<u64> {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|since| since.as_secs())
+}
+
+#[cfg(target_arch = "wasm32")]
+fn epoch_now() -> Option<u64> {
+    None
+}
+
 pub struct Shell {
     pub state: UiState,
     pub tokens: Tokens,
     pub last_command: Option<CommandReport>,
+    /// Autosave and what can be recovered, as of the last `sync`.
+    recovery: RecoveryOverview,
+    /// Where the buttons of the recovery bar were drawn in the last frame.
+    recovery_hits: Vec<(RecoveryAction, egui::Rect)>,
+    /// The discard that was clicked once and waits for its second click.
+    discard_armed: Option<RecoveryAction>,
     /// Viewport size in pixels, and pixels per point.
     size: [u32; 2],
     pixels_per_point: f32,
@@ -325,6 +405,9 @@ impl Shell {
             state: UiState::default(),
             tokens: Tokens::default(),
             last_command: None,
+            recovery: RecoveryOverview::default(),
+            recovery_hits: Vec::new(),
+            discard_armed: None,
             size: DEFAULT_VIEWPORT,
             pixels_per_point: 1.0,
             rect: None,
@@ -618,6 +701,7 @@ impl Shell {
     /// active document, the tree rows, the selection, and the camera when
     /// it follows the model. Called every frame and after every request.
     pub fn sync(&mut self, session: &mut Session) -> Option<Arc<Scene>> {
+        self.recovery = session.recovery_overview();
         let scene = match session.scene_with(self.scene_quality()) {
             Ok(scene) => {
                 self.problem = None;
@@ -699,6 +783,19 @@ impl Shell {
             // The host does it between frames: have one come.
             ui.ctx().request_repaint();
         }
+        if self.state.panels.recovery && !self.recovery.found.is_empty() {
+            let clicked = egui::Panel::top("craft3d-recovery")
+                .resizable(false)
+                .show(ui, |ui| self.recovery_bar(ui))
+                .inner;
+            if let Some(action) = clicked {
+                self.recovery_act(session, action);
+                ui.ctx().request_repaint();
+            }
+        } else {
+            self.recovery_hits.clear();
+            self.discard_armed = None;
+        }
         if self.state.panels.status {
             egui::Panel::bottom("craft3d-status")
                 .resizable(false)
@@ -746,6 +843,134 @@ impl Shell {
         });
     }
 
+    /// Autosave and what the last look at the recovery directory found.
+    pub fn recovery(&self) -> &RecoveryOverview {
+        &self.recovery
+    }
+
+    /// The buttons of the recovery bar as the last frame drew them: what
+    /// each asks for and where it is, in points. Empty when the bar is
+    /// not shown.
+    pub fn recovery_hits(&self) -> &[(RecoveryAction, egui::Rect)] {
+        &self.recovery_hits
+    }
+
+    /// The discard that was asked for once and is done when asked again.
+    pub fn discard_armed(&self) -> Option<&RecoveryAction> {
+        self.discard_armed.as_ref()
+    }
+
+    /// Does what a button of the recovery bar asks for, through the
+    /// engine's commands. Discarding cannot be undone, so the first
+    /// request only arms it and the second one, for the same thing, does
+    /// it; anything else in between disarms it.
+    pub fn recovery_act(&mut self, session: &mut Session, action: RecoveryAction) {
+        let (command, params) = match &action {
+            RecoveryAction::Later => {
+                self.state.panels.recovery = false;
+                self.discard_armed = None;
+                return;
+            }
+            RecoveryAction::Open(id) => ("recovery.open", serde_json::json!({ "id": id })),
+            RecoveryAction::Discard(_) | RecoveryAction::DiscardAll
+                if self.discard_armed.as_ref() != Some(&action) =>
+            {
+                self.discard_armed = Some(action);
+                return;
+            }
+            RecoveryAction::Discard(id) => ("recovery.discard", serde_json::json!({ "id": id })),
+            RecoveryAction::DiscardAll => ("recovery.discard", serde_json::json!({ "all": true })),
+        };
+        self.discard_armed = None;
+        let outcome = session.execute(command, &params);
+        let (ok, text) = match &outcome {
+            Ok(result) => (true, result.to_string()),
+            Err(error) => (false, error.message().to_string()),
+        };
+        self.last_command = Some(CommandReport {
+            label: command.to_string(),
+            ok,
+            text: text.chars().take(160).collect(),
+        });
+        self.sync(session);
+    }
+
+    /// The bar under the menu that offers what a crashed 3DCraft left
+    /// behind. Returns the button that was clicked.
+    fn recovery_bar(&mut self, ui: &mut egui::Ui) -> Option<RecoveryAction> {
+        let tokens = self.tokens;
+        let dim = color(tokens.text_dim);
+        let now = epoch_now();
+        let mut hits = Vec::new();
+        let mut clicked = None;
+        let mut button = |ui: &mut egui::Ui, action: RecoveryAction, label: &str, enabled: bool| {
+            let response = ui.add_enabled(enabled, egui::Button::new(label));
+            if response.clicked() {
+                clicked = Some(action.clone());
+            }
+            hits.push((action, response.rect));
+        };
+        let armed = |action: &RecoveryAction| self.discard_armed.as_ref() == Some(action);
+        let count = self.recovery.found.len();
+        ui.add_space(tokens.inset * 0.3);
+        ui.horizontal(|ui| {
+            let what = if count == 1 {
+                "an unsaved document was".to_string()
+            } else {
+                format!("{count} unsaved documents were")
+            };
+            ui.label(
+                egui::RichText::new(format!(
+                    "3DCraft did not close properly: {what} autosaved and can be recovered."
+                ))
+                .strong()
+                .color(color(tokens.attention)),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                button(ui, RecoveryAction::Later, "Later", true);
+                let all = RecoveryAction::DiscardAll;
+                let label = if armed(&all) {
+                    "Discard all for good?"
+                } else {
+                    "Discard all"
+                };
+                button(ui, all, label, true);
+            });
+        });
+        for found in self.recovery.found.iter().take(RECOVERY_ROWS) {
+            ui.horizontal(|ui| {
+                button(
+                    ui,
+                    RecoveryAction::Open(found.id.clone()),
+                    "Recover",
+                    found.openable,
+                );
+                let discard = RecoveryAction::Discard(found.id.clone());
+                let label = if armed(&discard) {
+                    "Discard for good?"
+                } else {
+                    "Discard"
+                };
+                button(ui, discard, label, true);
+                ui.label(egui::RichText::new(&found.name).strong());
+                let detail = recoverable_text(found, now);
+                ui.add(egui::Label::new(egui::RichText::new(detail).color(dim)).truncate());
+            });
+        }
+        if count > RECOVERY_ROWS {
+            ui.colored_label(
+                dim,
+                format!(
+                    "and {} more (the command recovery.list shows them all)",
+                    count - RECOVERY_ROWS
+                ),
+            );
+        }
+        ui.add_space(tokens.inset * 0.3);
+        self.recovery_hits = hits;
+        clicked
+    }
+
     fn status_bar(&self, ui: &mut egui::Ui, status: Option<&DocumentStatus>) {
         let dim = color(self.tokens.text_dim);
         ui.horizontal(|ui| {
@@ -759,6 +984,22 @@ impl Shell {
                 }
                 None => {
                     ui.colored_label(dim, "no document");
+                }
+            }
+            if let Some((text, problem)) = autosave_text(&self.recovery, epoch_now()) {
+                ui.separator();
+                let tint = if problem {
+                    color(self.tokens.failed)
+                } else {
+                    dim
+                };
+                let label = egui::Label::new(egui::RichText::new(&text).color(tint)).truncate();
+                // The whole reason, when the bar is too narrow for it.
+                ui.add(label).on_hover_text(&text);
+                if !problem {
+                    // "3 min ago" grows old without anything else to draw.
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_secs(30));
                 }
             }
             if let Some(report) = &self.last_command {

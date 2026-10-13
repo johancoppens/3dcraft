@@ -23,11 +23,11 @@ pub const UI_METHODS: &[UiMethod] = &[
     UiMethod {
         name: "ui.get",
         params: "{}",
-        summary: "Returns the UI state (camera, panels, selectedFeature, notice, quality), the viewport size, what the scene holds (bodies, sketches, triangles, the chordal tolerance it was meshed with and whether the display quality was coarsened to fit its triangle budget), the feature tree rows, which renderer the viewport uses (gpu or cpu, the adapter, whether the GPU draws directly on the window's device and with how many samples, why it fell back) and how the viewport was last rendered.",
+        summary: "Returns the UI state (camera, panels, selectedFeature, notice, quality), autosave and recovery as recovery.list gives them but without looking at the disk again (recovery: the documents a crashed 3DCraft left behind, when a document was last autosaved, the autosave problem if there is one), the viewport size, what the scene holds (bodies, sketches, triangles, the chordal tolerance it was meshed with and whether the display quality was coarsened to fit its triangle budget), the feature tree rows, which renderer the viewport uses (gpu or cpu, the adapter, whether the GPU draws directly on the window's device and with how many samples, why it fell back) and how the viewport was last rendered.",
     },
     UiMethod {
         name: "ui.set",
-        params: r#"{"view": "iso|front|back|right|left|top|bottom", "camera": {"target": [x, y, z], "distance": number, "yaw": degrees, "pitch": degrees, "projection": "perspective|orthographic", "fovY": degrees, "autoFit": boolean}, "panels": {"tree": boolean, "status": boolean}, "selectedFeature": id or null, "notice": string, "quality": {"chordal": fraction of the model's size = 3e-5, "maxTriangles": integer = 1000000}}"#,
+        params: r#"{"view": "iso|front|back|right|left|top|bottom", "camera": {"target": [x, y, z], "distance": number, "yaw": degrees, "pitch": degrees, "projection": "perspective|orthographic", "fovY": degrees, "autoFit": boolean}, "panels": {"tree": boolean, "status": boolean, "recovery": boolean}, "selectedFeature": id or null, "notice": string, "quality": {"chordal": fraction of the model's size = 3e-5, "maxTriangles": integer = 1000000}}"#,
         summary: "Changes the fields given and leaves the rest. An unknown field or a wrong type is an error, and then nothing has changed. Numbers out of range are clamped. quality is how finely the viewport's mesh follows the model: a chordal tolerance of chordal times the model's size, coarsened until the scene has at most maxTriangles triangles but never beyond the automatic tolerance view.render uses.",
     },
     UiMethod {
@@ -211,6 +211,7 @@ impl Shell {
             "lastCommand": self.last_command.as_ref().map(|report| json!({
                 "label": report.label, "ok": report.ok, "text": report.text,
             })),
+            "recovery": self.recovery().to_json(),
             "problem": self.problem(),
         }))
     }

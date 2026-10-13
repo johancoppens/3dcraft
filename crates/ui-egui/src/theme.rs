@@ -33,6 +33,9 @@ pub struct Tokens {
     pub ok: Rgb,
     pub failed: Rgb,
     pub inactive: Rgb,
+    /// What waits for the person to decide: the heading of the recovery
+    /// bar.
+    pub attention: Rgb,
     /// The row of the selected feature.
     pub selection_fill: Rgb,
     /// The caption over the viewport.
@@ -80,6 +83,7 @@ impl Tokens {
             ok: [104, 190, 120],
             failed: [236, 96, 88],
             inactive: [120, 126, 138],
+            attention: [240, 180, 80],
             selection_fill: [58, 72, 104],
             notice_fill: [16, 18, 22],
             notice_text: [245, 246, 248],

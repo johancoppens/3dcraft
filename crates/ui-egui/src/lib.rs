@@ -39,6 +39,9 @@ pub mod viewport;
 
 pub use backend::{Backend, BodyRenderer, RendererChoice, RendererReport};
 pub use control::{UI_METHODS, UiMethod};
-pub use shell::{CommandReport, FileAction, RenderStats, Shell, TreeRow, window_title};
+pub use shell::{
+    CommandReport, FileAction, RecoveryAction, RenderStats, Shell, TreeRow, autosave_text,
+    window_title,
+};
 pub use state::{CameraState, Panels, ProjectionKind, UiState};
 pub use theme::Tokens;
