@@ -61,7 +61,7 @@ use crate::{Mesh, TessError, TessParams};
 use craft3d_geom::{Curve3, Surface};
 use craft3d_math::Vec3;
 use craft3d_topo::Body;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// No more threads than this by default; faces are small jobs.
 #[cfg(not(target_arch = "wasm32"))]
@@ -180,6 +180,70 @@ fn can_ask(body: &Body, face: &craft3d_topo::Face) -> bool {
             .any(|edge| !matches!(edge.curve, Curve3::Line(_)))
 }
 
+/// The triangles of a face's result: none for a face that failed or that
+/// was not triangulated.
+fn triangles_of(result: Option<&FaceResult>) -> usize {
+    match result {
+        Some(Ok(mesh)) => mesh.triangles.len(),
+        Some(Err(_)) | None => 0,
+    }
+}
+
+/// The triangle budget within one round of [`tessellate`].
+///
+/// A round is over the budget when the triangles of all faces at its end
+/// (those the round did not touch, and the round's own) are more than the
+/// budget: a function of the body, the parameters and the points of the
+/// round before. The faces of a round are done in parallel, and each adds
+/// its triangles to a count as it finishes; once that count is over the
+/// budget the round's verdict is certain (the faces still to come only
+/// add), so they are skipped. Which faces were skipped depends on timing;
+/// that the round is over the budget does not, and neither does what is
+/// reported: the first faces, in face order, whose triangles together
+/// exceed the budget, as a single thread finds them (a face among them
+/// that was skipped is done after all).
+struct Budget {
+    max_triangles: usize,
+    /// The triangles of the faces this round leaves alone, then also of
+    /// its faces that are done.
+    triangles: AtomicUsize,
+    over: AtomicBool,
+}
+
+impl Budget {
+    /// For a round that redoes the faces `todo` (sorted) of `results`.
+    fn for_round(max_triangles: usize, results: &[Option<FaceResult>], todo: &[usize]) -> Self {
+        let kept = results
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| todo.binary_search(index).is_err())
+            .fold(0_usize, |sum, (_, result)| {
+                sum.saturating_add(triangles_of(result.as_ref()))
+            });
+        Self {
+            max_triangles,
+            triangles: AtomicUsize::new(kept),
+            over: AtomicBool::new(kept > max_triangles),
+        }
+    }
+
+    /// True once the round is known to be over the budget: what is not
+    /// started yet need not be.
+    fn spent(&self) -> bool {
+        self.over.load(Ordering::Relaxed)
+    }
+
+    /// Counts a face that is done.
+    fn add(&self, result: Option<&FaceResult>) {
+        let more = triangles_of(result);
+        // No wrapping to fear: every triangle counted is in memory.
+        let before = self.triangles.fetch_add(more, Ordering::Relaxed);
+        if before.saturating_add(more) > self.max_triangles {
+            self.over.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
 /// The edges of `body` as points and, with `mesh`, its faces as triangles
 /// over them.
 ///
@@ -196,6 +260,12 @@ fn can_ask(body: &Body, face: &craft3d_topo::Face) -> bool {
 /// After [`MAX_ROUNDS`] rounds, or when no chord asked for can be cut,
 /// the faces are triangulated as they are: one whose boundary still
 /// crosses itself is the error it always was.
+///
+/// With a triangle budget (`TessParams::max_triangles`, when `mesh`), the
+/// first round at whose end the faces have more triangles than that ends
+/// the work with `TessError::OverBudget`, and ends itself as soon as that
+/// is certain (see [`Budget`]). It goes before the error of a face. When
+/// no round is over the budget, nothing is different.
 fn tessellate(
     body: &Body,
     params: &TessParams,
@@ -216,7 +286,12 @@ fn tessellate(
     let mut last = false;
     for round in 0..=MAX_ROUNDS {
         let points = &edges.points;
-        let one = |index: usize| -> (Vec<Chord>, Option<FaceResult>) {
+        let budget = params
+            .max_triangles
+            .filter(|_| mesh)
+            .map(|max| Budget::for_round(max, &results, &todo));
+        let budget = budget.as_ref();
+        let face_round = |index: usize| -> (Vec<Chord>, Option<FaceResult>) {
             let Some(face) = body.faces.get(index) else {
                 return (Vec::new(), None);
             };
@@ -242,9 +317,43 @@ fn tessellate(
                 .then(|| mesh_face(&boundary, face, index, params));
             (wanted, result)
         };
+        // Whether the face was looked at, what it asks for and its mesh.
+        let one = |index: usize| -> (bool, Vec<Chord>, Option<FaceResult>) {
+            if budget.is_some_and(Budget::spent) {
+                return (false, Vec::new(), None);
+            }
+            let (wanted, result) = face_round(index);
+            if let Some(budget) = budget {
+                budget.add(result.as_ref());
+            }
+            (true, wanted, result)
+        };
         let done = in_order(&todo, threads, one)?;
+        if let Some(budget) = budget.filter(|budget| budget.spent()) {
+            // In face order: the faces the round left alone as they were,
+            // its own as they are now, and a skipped one done after all.
+            let mut redone = todo.iter().zip(&done).peekable();
+            let (mut triangles, mut faces) = (0_usize, 0_usize);
+            for (index, kept) in results.iter().enumerate() {
+                let count = match redone.next_if(|(at, _)| **at == index) {
+                    Some((_, (true, _, result))) => triangles_of(result.as_ref()),
+                    Some((_, (false, ..))) => triangles_of(face_round(index).1.as_ref()),
+                    None => triangles_of(kept.as_ref()),
+                };
+                triangles = triangles.saturating_add(count);
+                faces = faces.saturating_add(1);
+                if triangles > budget.max_triangles {
+                    break;
+                }
+            }
+            return Err(TessError::OverBudget {
+                triangles,
+                faces,
+                max_triangles: budget.max_triangles,
+            });
+        }
         let mut wanted: Vec<Chord> = Vec::new();
-        for (&index, (more, result)) in todo.iter().zip(done) {
+        for (&index, (_, more, result)) in todo.iter().zip(done) {
             if let Some(flag) = asking.get_mut(index) {
                 *flag = !more.is_empty();
             }

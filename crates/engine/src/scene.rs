@@ -506,9 +506,18 @@ enum Stop {
 }
 
 /// Builds the scene at `tolerance`. With a `budget`, the build stops at the
-/// first body after which the scene has more triangles than that, or that
+/// first body with which the scene has more triangles than that, or that
 /// is too fine for the tessellator, and says so; without one it never
 /// stops, and a body the tessellator refuses is a problem of the scene.
+///
+/// The budget is the scene's: the bodies are tessellated one after the
+/// other, in feature order, and each is given what the bodies before it
+/// left (`TessParams::max_triangles`), so the body that goes over stops
+/// in the tessellator, at the first faces that show it, and is not
+/// tessellated in full first. A scene that is within the budget is the
+/// scene built without one, and where a build stops and what it reports
+/// depend on the document and the tolerance only, not on the number of
+/// threads: the tessellator's promise, kept here by the fixed order.
 fn build(
     doc: &Document,
     regen: &Regen,
@@ -581,10 +590,29 @@ fn build(
         };
         // The mesh and the edges in one go: the boundaries of the faces
         // are worked out once.
+        let left = budget.map(|max| max.saturating_sub(scene.mesh.triangles.len()));
+        let tess = TessParams {
+            max_triangles: left,
+            ..tess
+        };
         let meshed = tessellate_body_and_edges(body, &tess)
             .and_then(|both| both.mesh.map(|mesh| (mesh, both.edges)));
         let (mesh, edges) = match meshed {
             Ok(both) => both,
+            Err(TessError::OverBudget {
+                triangles, faces, ..
+            }) if budget.is_some() => {
+                // The scene so far and the first faces of this body.
+                let triangles = scene.mesh.triangles.len().saturating_add(triangles);
+                return (
+                    scene,
+                    Some(Stop::OverBudget {
+                        triangles,
+                        faces_done: faces_done.saturating_add(faces),
+                        faces_total,
+                    }),
+                );
+            }
             Err(TessError::TooFine {
                 needed_segments,
                 max_segments,

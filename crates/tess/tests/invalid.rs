@@ -325,6 +325,7 @@ fn a_tolerance_that_needs_too_many_points_is_an_error_not_a_coarser_mesh() {
     let few = |tolerance: f64, max_segments: u32| TessParams {
         chordal_tolerance: tolerance,
         max_segments,
+        ..TessParams::default()
     };
     // Faces: a sphere has no edges, so it is the face that says no.
     let sphere = solids::sphere(&Frame::WORLD, 1.0).unwrap().body;
