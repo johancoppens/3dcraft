@@ -10,9 +10,13 @@
 //! - [`state`]: the serde state the control channel reads and drives.
 //! - [`theme`]: the design tokens every colour and radius comes from.
 //! - [`camera`]: orbit, pan, zoom, fit, and projecting like the renderer.
-//! - [`backend`]: which renderer shades the bodies: the wgpu renderer on
-//!   a device of its own when there is an adapter, else the CPU reference
+//! - [`backend`]: which renderer shades the bodies when the window does
+//!   not lend the shell its device: the wgpu renderer on a device of its
+//!   own, read back, when there is an adapter, else the CPU reference
 //!   renderer, which is also the fallback when the GPU fails.
+//! - [`direct`]: the viewport drawn by the GPU on the window's own device
+//!   into the texture egui shows, multisampled, with the lines over it
+//!   drawn and depth-tested on the GPU: what the window uses.
 //! - [`viewport`]: the rendered image and the lines drawn over it.
 //! - [`frames`]: which image is on screen, and the thread that makes the
 //!   sharp one.
@@ -25,6 +29,8 @@
 pub mod backend;
 pub mod camera;
 pub mod control;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod direct;
 pub mod frames;
 pub mod shell;
 pub mod state;

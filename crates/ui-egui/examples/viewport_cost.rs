@@ -1,19 +1,24 @@
 //! Times the viewport's renderers: what one image costs at rest and while
 //! the camera moves, for a small and a large model, on the CPU and, where
-//! there is an adapter, on the GPU, where the cost is split into the upload
-//! of the mesh (once per document revision), the draw, and reading the
-//! frame back.
+//! there is an adapter, on the GPU: the direct path of the window (the
+//! bodies and the lines drawn on the window's device into the texture
+//! that is shown, split into the upload of the mesh and the lines, once
+//! per document revision, and the frame until the GPU is done), and the
+//! path that reads back, split into the upload, the draw and the readback.
 //!
 //! ```sh
 //! cargo run --release -p craft3d-ui-egui --example viewport_cost
 //! ```
 
 use craft3d_engine::{Scene, Session, Workspace};
+use craft3d_gpu::{DrawOptions, Onscreen, OverlayParams};
 use craft3d_ui_egui::Tokens;
 use craft3d_ui_egui::backend::{Backend, BodyRenderer, RendererChoice};
+use craft3d_ui_egui::direct::{direct_size, headless_render_state, segments};
 use craft3d_ui_egui::shell::{image_quality, image_quality_for};
 use craft3d_ui_egui::state::CameraState;
-use craft3d_ui_egui::viewport::{self, Quality};
+use craft3d_ui_egui::viewport::{self, AXIS_LENGTH, Quality, depth_slack};
+use egui_wgpu::wgpu;
 use serde_json::json;
 use std::process::ExitCode;
 use std::time::Instant;
@@ -118,6 +123,67 @@ fn time_gpu(
     Ok(())
 }
 
+/// The direct path's cost per frame, split into its parts, best of five:
+/// the uploads (once per document revision) and the frame, submitted and
+/// then waited for.
+fn time_direct(
+    label: &str,
+    onscreen: &mut Onscreen,
+    device: &wgpu::Device,
+    scene: &Scene,
+    camera: &CameraState,
+    size: [u32; 2],
+) -> Result<(), String> {
+    let tokens = Tokens::default();
+    let [width, height] = direct_size(size, device.limits().max_texture_dimension_2d);
+    let params = craft3d_render::RenderParams {
+        width,
+        height,
+        ssaa: 1,
+        background: tokens.viewport_background,
+        color: tokens.body,
+    };
+    let overlay = OverlayParams {
+        slack: depth_slack(Backend::Gpu, Some(scene), camera),
+        hidden_opacity: tokens.hidden_opacity,
+        axis_length: camera.distance * AXIS_LENGTH,
+    };
+    let render_camera = camera.to_render();
+    let (mut upload, mut submit, mut done) = (f64::INFINITY, f64::INFINITY, f64::INFINITY);
+    let mut segment_count = 0;
+    for _ in 0..5 {
+        let ms = |start: Instant| start.elapsed().as_secs_f64() * 1000.0;
+        let start = Instant::now();
+        let mesh = onscreen.upload(&scene.mesh).map_err(|e| e.to_string())?;
+        let lines = onscreen
+            .upload_lines(&segments(Some(scene), None, &tokens, 1.0))
+            .map_err(|e| e.to_string())?;
+        segment_count = lines.segment_count();
+        upload = upload.min(ms(start));
+        let start = Instant::now();
+        onscreen
+            .draw(
+                &mesh,
+                &lines,
+                &render_camera,
+                &params,
+                &overlay,
+                DrawOptions::default(),
+            )
+            .map_err(|e| e.to_string())?;
+        submit = submit.min(ms(start));
+        device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .map_err(|e| e.to_string())?;
+        done = done.min(ms(start));
+    }
+    println!(
+        "  {label:<22} {width:>4} x {height:<4} msaa {}  upload {upload:>6.1} ms ({segment_count} segments)  submit {submit:>6.1} ms  GPU done {done:>6.1} ms",
+        onscreen.samples()
+    );
+    Ok(())
+}
+
 /// What the viewport's own path costs with either renderer: shading and
 /// the overlay, as the window asks for it.
 fn time_path(
@@ -180,8 +246,32 @@ fn measure(large: bool, tolerance: Option<f64>) -> Result<(), String> {
             },
         )?;
     }
+    match headless_render_state() {
+        Ok(state) => {
+            let mut onscreen = Onscreen::new(&state.device, &state.queue, &state.adapter)
+                .map_err(|e| e.to_string())?;
+            println!(
+                "direct path on {} ({:?})",
+                state.adapter.get_info().name,
+                state.adapter.get_info().backend
+            );
+            for size in [[1020, 777], [1280, 800], [2560, 1400]] {
+                let mut camera = CameraState::default();
+                camera.fit(&scene.bbox, f64::from(size[0]) / f64::from(size[1]));
+                time_direct(
+                    "every frame",
+                    &mut onscreen,
+                    &state.device,
+                    &scene,
+                    &camera,
+                    size,
+                )?;
+            }
+        }
+        Err(why) => println!("no direct path: {why}"),
+    }
     let mut gpu = BodyRenderer::new(RendererChoice::Auto);
-    println!("viewport path, {}", gpu.report().describe());
+    println!("readback path, {}", gpu.report().describe());
     let mut cpu = BodyRenderer::cpu();
     for size in [[1020, 777], [2560, 1400]] {
         let mut camera = CameraState::default();

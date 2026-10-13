@@ -4,17 +4,26 @@
 //!
 //! ```sh
 //! cargo run --release -p craft3d-ui-egui --example frame_time
+//! cargo run --release -p craft3d-ui-egui --example frame_time -- --readback
 //! cargo run --release -p craft3d-ui-egui --example frame_time -- --inline
 //! cargo run --release -p craft3d-ui-egui --example frame_time -- --cpu
 //! ```
 //!
-//! `--inline` renders the sharp image on the drawing thread, as a host
-//! without threads does; without it the sharp image is rendered on the
-//! worker thread, as in the window. `--cpu` renders with the CPU
-//! reference renderer; without it the GPU is used when there is one, as
-//! in the window.
+//! Without flags the viewport is drawn as the window draws it: by the GPU
+//! on a device made as eframe makes the window's, directly into the
+//! texture that is shown (the direct path), every frame in full. The
+//! drawing thread's time per frame is printed, and separately the time
+//! until the GPU has finished the frame (the thread waits for the device
+//! after each frame, which the window never does; a window is bound by
+//! the display's refresh instead). `--readback` renders with the GPU on a
+//! device of the viewport's own, read back, as before the direct path
+//! existed; `--cpu` with the CPU reference renderer. `--inline` renders
+//! the sharp image of those two paths on the drawing thread, as a host
+//! without threads does; without it on the worker thread, as in the
+//! window.
 
 use craft3d_engine::{Session, Workspace};
+use craft3d_ui_egui::direct::headless_render_state;
 use craft3d_ui_egui::{RendererChoice, Shell};
 use egui::{Event, PointerButton, Pos2, pos2, vec2};
 use serde_json::json;
@@ -62,6 +71,11 @@ struct Window {
     ctx: egui::Context,
     size: egui::Vec2,
     time: f64,
+    /// The device the direct path draws on, waited for after each frame.
+    device: Option<egui_wgpu::wgpu::Device>,
+    /// Per frame: the drawing thread's time, and the time until the GPU
+    /// was done (the same without a device).
+    waited: Vec<f64>,
 }
 
 impl Window {
@@ -78,7 +92,19 @@ impl Window {
         let mut output = self.ctx.run_ui(input, |ui| shell.ui(ui, session));
         let elapsed = start.elapsed().as_secs_f64() * 1000.0;
         output.textures_delta.clear();
+        if let Some(device) = &self.device {
+            let _ = device.poll(egui_wgpu::wgpu::PollType::wait_indefinitely());
+        }
+        self.waited.push(start.elapsed().as_secs_f64() * 1000.0);
         elapsed
+    }
+
+    /// The waited times of the last `count` frames.
+    fn last_waited(&self, count: usize) -> Vec<f64> {
+        self.waited
+            .get(self.waited.len().saturating_sub(count)..)
+            .unwrap_or_default()
+            .to_vec()
     }
 }
 
@@ -91,12 +117,15 @@ fn summary(label: &str, times: &[f64]) {
     );
 }
 
-fn measure(
-    large: bool,
-    size: [f32; 2],
-    inline: bool,
-    choice: RendererChoice,
-) -> Result<(), String> {
+/// How the viewport is rendered.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Path {
+    Direct,
+    Readback,
+    Cpu,
+}
+
+fn measure(large: bool, size: [f32; 2], inline: bool, path: Path) -> Result<(), String> {
     let mut session = Session::new(Workspace::none());
     build(&mut session, large)?;
     let scene = session
@@ -115,16 +144,28 @@ fn measure(
             "on the worker thread"
         }
     );
+    let choice = match path {
+        Path::Direct | Path::Readback => RendererChoice::Auto,
+        Path::Cpu => RendererChoice::Cpu,
+    };
     let mut shell = if inline {
         Shell::with_renderer(choice)
     } else {
         Shell::threaded_with(choice)
     };
+    let mut device = None;
+    if path == Path::Direct {
+        let state = headless_render_state()?;
+        shell.attach_gpu(&state)?;
+        device = Some(state.device.clone());
+    }
     println!("renderer: {}", shell.renderer_report().describe());
     let mut window = Window {
         ctx: egui::Context::default(),
         size: vec2(size[0], size[1]),
         time: 0.0,
+        device,
+        waited: Vec::new(),
     };
     let settle = |shell: &mut Shell, window: &mut Window, session: &mut Session| -> Vec<f64> {
         // The frames until the sharp image is on screen. The wait for the
@@ -163,6 +204,9 @@ fn measure(
         orbit.push(window.frame(&mut shell, &mut session, vec![Event::PointerMoved(at)]));
     }
     summary("orbiting", &orbit);
+    if window.device.is_some() {
+        summary("orbiting, until the GPU is done", &window.last_waited(40));
+    }
     let to = from + vec2(160.0, 60.0);
     let release = window.frame(
         &mut shell,
@@ -177,18 +221,31 @@ fn measure(
     let mut stop = settle(&mut shell, &mut window, &mut session);
     stop.insert(0, release);
     summary("after the camera stops, until sharp", &stop);
+    if window.device.is_some() {
+        summary(
+            "  the same, until the GPU is done",
+            &window.last_waited(stop.len()),
+        );
+    }
 
     session
         .execute("feature.edit", &json!({"feature": "Post", "height": 20}))
         .map_err(|e| e.message().to_string())?;
     let edit = settle(&mut shell, &mut window, &mut session);
     summary("after an edit, until sharp", &edit);
+    if window.device.is_some() {
+        summary(
+            "  the same, until the GPU is done",
+            &window.last_waited(edit.len()),
+        );
+    }
     if let Some(stats) = shell.render_stats() {
         println!(
-            "  sharp image: {} x {} ssaa {} on the {}, rendered in {:.1} ms",
+            "  sharp image: {} x {} ssaa {} msaa {} on the {}, rendered in {:.1} ms",
             stats.width,
             stats.height,
             stats.ssaa,
+            stats.msaa,
             stats.renderer.name(),
             stats.milliseconds.unwrap_or(f64::NAN)
         );
@@ -198,14 +255,16 @@ fn measure(
 
 fn main() -> ExitCode {
     let inline = std::env::args().any(|a| a == "--inline");
-    let choice = if std::env::args().any(|a| a == "--cpu") {
-        RendererChoice::Cpu
+    let path = if std::env::args().any(|a| a == "--cpu") {
+        Path::Cpu
+    } else if std::env::args().any(|a| a == "--readback") {
+        Path::Readback
     } else {
-        RendererChoice::Auto
+        Path::Direct
     };
-    let outcome = measure(false, [1280.0, 800.0], inline, choice)
-        .and_then(|()| measure(true, [1280.0, 800.0], inline, choice))
-        .and_then(|()| measure(true, [2560.0, 1400.0], inline, choice));
+    let outcome = measure(false, [1280.0, 800.0], inline, path)
+        .and_then(|()| measure(true, [1280.0, 800.0], inline, path))
+        .and_then(|()| measure(true, [2560.0, 1400.0], inline, path));
     match outcome {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

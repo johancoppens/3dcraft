@@ -592,7 +592,9 @@ dependencies = [
  "craft3d-render",
  "craft3d-tess",
  "egui",
+ "egui-wgpu",
  "png 0.17.16",
+ "pollster 1.0.1",
  "serde",
  "serde_json",
 ]

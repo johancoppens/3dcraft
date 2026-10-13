@@ -133,23 +133,8 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
         ));
     }
     let mut host = Host::new(session);
-    // The window never waits for the renderer: sharp images are made on
-    // the shell's own thread. The viewport is rendered on the GPU when the
-    // machine has one, with the CPU reference renderer as the fallback
-    // (`--renderer cpu` asks for it outright).
-    host.shell = Shell::threaded_with(options.renderer);
-    announce(&format!(
-        "viewport renderer: {}",
-        host.shell.renderer_report().describe()
-    ));
     let title = window_title(host.session.document_status().as_ref());
-    let viewer = Viewer {
-        host,
-        requests,
-        picker: Picker::new(Arc::new(SystemDialogs), wake),
-        title: title.clone(),
-        _server: server,
-    };
+    let picker = Picker::new(Arc::new(SystemDialogs), wake);
     let native = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(&title)
@@ -158,10 +143,29 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
             .with_min_inner_size([480.0, 320.0]),
         ..Default::default()
     };
+    let renderer = options.renderer;
     eframe::run_native(
         TITLE,
         native,
         Box::new(move |creation| {
+            // The viewport is drawn by the GPU on the window's own wgpu
+            // device when the machine has one, into the texture that is
+            // shown; the CPU reference renderer is the fallback, and what
+            // `--renderer cpu` asks for outright. The window never waits
+            // for the CPU renderer: its sharp images are made on the
+            // shell's own thread.
+            host.shell = Shell::threaded_with_gpu(renderer, creation.wgpu_render_state.as_ref());
+            announce(&format!(
+                "viewport renderer: {}",
+                host.shell.renderer_report().describe()
+            ));
+            let viewer = Viewer {
+                host,
+                requests,
+                picker,
+                title,
+                _server: server,
+            };
             // Requests that arrived before the window existed are waiting
             // in the channel; the first frame's `logic` answers them.
             let _ = context.set(creation.egui_ctx.clone());

@@ -17,10 +17,15 @@ egui.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
-# The viewport's GPU renderer. Its blocking entry points exist on native
-# targets only; the browser renders the viewport on the CPU for now.
+# The viewport's GPU renderer, and egui-wgpu to draw it on the window's own
+# device. Their blocking entry points exist on native targets only; the
+# browser renders the viewport on the CPU for now.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 craft3d-gpu.workspace = true
+egui-wgpu.workspace = true
+# Blocks on wgpu's futures when a render state is made without a window
+# (`direct::headless_render_state`: tests and examples).
+pollster.workspace = true
 
 [dev-dependencies]
 png.workspace = true

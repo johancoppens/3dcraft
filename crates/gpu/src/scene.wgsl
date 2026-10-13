@@ -104,11 +104,13 @@ fn powi(x: f32, n: u32) -> f32 {
     return result;
 }
 
-@fragment
-fn fs_main(in: VertexOut) -> FragmentOut {
-    var out: FragmentOut;
-    out.data = vec2<u32>(in.face, bitcast<u32>(in.dist_w * in.clip.w));
+// The face id and the bits of the view distance of a fragment.
+fn data_of(in: VertexOut) -> vec2<u32> {
+    return vec2<u32>(in.face, bitcast<u32>(in.dist_w * in.clip.w));
+}
 
+// The shaded colour of a fragment, as the bytes of the picture over 255.
+fn shade_of(in: VertexOut) -> vec4<f32> {
     // View::toward_viewer.
     var to_viewer = -scene.forward.xyz;
     if scene.forward.w > 0.5 {
@@ -155,6 +157,27 @@ fn fs_main(in: VertexOut) -> FragmentOut {
     }
     // Rounded here, so the target stores exactly this integer whatever the
     // driver's float-to-unorm conversion does with fractions.
-    out.color = vec4<f32>(clamp(round(rgb), vec3<f32>(0.0), vec3<f32>(255.0)) / 255.0, 1.0);
+    return vec4<f32>(clamp(round(rgb), vec3<f32>(0.0), vec3<f32>(255.0)) / 255.0, 1.0);
+}
+
+// Colour and data: what the renderer that reads the frame back draws.
+@fragment
+fn fs_main(in: VertexOut) -> FragmentOut {
+    var out: FragmentOut;
+    out.data = data_of(in);
+    out.color = shade_of(in);
     return out;
+}
+
+// Colour only: the picture a viewport shows, into a multisampled target.
+@fragment
+fn fs_color(in: VertexOut) -> @location(0) vec4<f32> {
+    return shade_of(in);
+}
+
+// Data only: face ids and distances at one sample per pixel, for picking
+// and for the tests of the viewport's picture.
+@fragment
+fn fs_data(in: VertexOut) -> @location(0) vec2<u32> {
+    return data_of(in);
 }

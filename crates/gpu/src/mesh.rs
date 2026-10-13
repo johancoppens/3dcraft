@@ -147,6 +147,17 @@ impl GpuMesh {
         self.triangles
     }
 
+    /// The point the positions on the GPU are relative to: the centre of
+    /// the mesh.
+    pub fn origin(&self) -> Vec3 {
+        self.origin
+    }
+
+    /// The box around the triangles that are drawn.
+    pub fn bounds(&self) -> Bbox3 {
+        self.bounds
+    }
+
     pub(crate) fn upload(
         device: &wgpu::Device,
         queue: &wgpu::Queue,

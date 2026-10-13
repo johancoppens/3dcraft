@@ -270,8 +270,14 @@ pub fn band(mesh: &Mesh, camera: &Camera, cpu: &Frame) -> Vec<bool> {
 /// The probability, at most, that a pixel outside the band differs by a
 /// level, given the largest difference to its neighbours in the CPU picture
 /// (see the module docs).
-fn differ_probability(color_gradient: f64) -> f64 {
+pub fn differ_probability(color_gradient: f64) -> f64 {
     (2.0 * (2.0 * SNAP * color_gradient + SHADING_ERROR)).min(1.0)
+}
+
+/// The colour tolerance of a pixel outside the band, in levels, given the
+/// largest difference to its neighbours in the CPU picture.
+pub fn color_tolerance(color_gradient: f64) -> f64 {
+    COLOR_TOLERANCE + (2.0 * SNAP * color_gradient).floor()
 }
 
 /// What the comparison of one scene found.
@@ -438,4 +444,206 @@ pub fn write_evidence(name: &str, cpu: &Frame, gpu: &Frame, band: &[bool]) -> Pa
     let png = craft3d_render::encode_png(cpu.width * 3, cpu.height, &rgb).unwrap();
     std::fs::write(&path, png).unwrap();
     path
+}
+
+// ---------------------------------------------------------------------
+// The multisampled picture of the viewport renderer (`Onscreen`).
+//
+// Multisampling shades once per pixel, at its centre, exactly where the
+// CPU renderer takes its one sample for `ssaa = 1`; the samples only
+// decide coverage. So a pixel whose samples all lie in one triangle has
+// the very colour of the readback renderer, within the tolerance above.
+// Two kinds of pixel are different by design:
+//
+// - **In the band**, at a feature edge, the samples lie on both sides and
+//   the resolved colour is a blend: that is the anti-aliasing. Its colour
+//   is not compared with the CPU's hard edge; the number of pixels that
+//   differ is only measured.
+// - **On a seam**, within a pixel of an interior triangle edge of one
+//   face, the samples may lie in two triangles, each shaded at the pixel
+//   centre by extrapolating its own interpolated normal, and the resolved
+//   colour is their coverage-weighted mean. Each fragment is within one
+//   pixel of gradient of the centre value, so the pixel is allowed
+//   `COLOR_TOLERANCE + Gc` levels, with `Gc` the largest difference to its
+//   eight neighbours in the CPU picture.
+//
+// Face ids and distances come from the renderer's capture pass at one
+// sample per pixel and keep the tolerance above everywhere.
+
+/// `true` for a pixel within one pixel of any projected triangle edge:
+/// where a multisampled pixel may take its colour from two triangles.
+pub fn seams(mesh: &Mesh, camera: &Camera, width: u32, height: u32) -> Vec<bool> {
+    let (w, h) = (width as usize, height as usize);
+    let mut near = vec![false; w * h];
+    let mut mark = |x: f64, y: f64| {
+        let (cx, cy) = (x.floor() as i64, y.floor() as i64);
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                let (px, py) = (cx + dx, cy + dy);
+                if px >= 0 && py >= 0 && (px as usize) < w && (py as usize) < h {
+                    near[py as usize * w + px as usize] = true;
+                }
+            }
+        }
+    };
+    for t in 0..mesh.triangles.len() {
+        let corners = mesh.corners(t).unwrap();
+        let screen = corners.map(|p| project(camera, p, w as f64, h as f64));
+        for (p, q) in [(0, 1), (1, 2), (2, 0)] {
+            let (Some(a), Some(b)) = (screen[p], screen[q]) else {
+                continue;
+            };
+            let length = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
+            let steps = ((length * 2.0).ceil() as usize).clamp(1, 8 * (w + h));
+            for i in 0..=steps {
+                let t = i as f64 / steps as f64;
+                mark(a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
+            }
+        }
+    }
+    near
+}
+
+/// What the comparison of a multisampled picture found.
+#[derive(Debug, Default)]
+pub struct MsaaParity {
+    pub pixels: usize,
+    pub covered: usize,
+    pub band: usize,
+    /// Pixels outside the band: on a seam, and not.
+    pub seam: usize,
+    pub plain: usize,
+    /// Outside the band: different face ids, distances over the tolerance
+    /// and the largest distance error as a fraction of it.
+    pub id_outside: usize,
+    pub depth_outside: usize,
+    pub depth_ratio: f64,
+    /// Plain pixels over the colour tolerance of §7.2, their histogram of
+    /// the largest channel difference (0, 1, 2, 3 or more), and how many
+    /// of them rounding explains at most.
+    pub color_plain_over: usize,
+    pub color_plain_histogram: [usize; 4],
+    pub color_plain_allowed: f64,
+    /// Seam pixels over `COLOR_TOLERANCE + Gc`, and seam pixels that differ
+    /// by more than one level (measured, not bounded).
+    pub color_seam_over: usize,
+    pub color_seam_differ: usize,
+    /// Inside the band: different ids (bounded), and colours that differ
+    /// by more than one level (the anti-aliasing: measured only).
+    pub id_band: usize,
+    pub color_band: usize,
+}
+
+/// Compares the multisampled picture `gpu` (with ids and distances from
+/// the capture pass) with the CPU frame of the same scene at `ssaa = 1`.
+pub fn compare_msaa(
+    mesh: &Mesh,
+    camera: &Camera,
+    cpu: &Frame,
+    gpu: &Frame,
+) -> (MsaaParity, Vec<bool>) {
+    assert_eq!((cpu.width, cpu.height), (gpu.width, gpu.height));
+    assert_eq!(cpu.rgb.len(), gpu.rgb.len());
+    assert_eq!(cpu.ids.len(), gpu.ids.len());
+    assert_eq!(cpu.depth.len(), gpu.depth.len());
+    let (w, h) = (cpu.width as usize, cpu.height as usize);
+    let band = band(mesh, camera, cpu);
+    let seams = seams(mesh, camera, cpu.width, cpu.height);
+    let bbox = mesh.bbox();
+    let reach = bbox
+        .center()
+        .map_or(0.0, |c| (camera.eye - c).length() + bbox.diagonal());
+    let mut out = MsaaParity {
+        pixels: w * h,
+        ..MsaaParity::default()
+    };
+    for y in 0..h {
+        for x in 0..w {
+            let i = y * w + x;
+            let (id_c, id_g) = (cpu.ids[i], gpu.ids[i]);
+            out.covered += usize::from(id_c != NO_FACE);
+            let channel = |frame: &Frame, at: usize, c: usize| f64::from(frame.rgb[at * 3 + c]);
+            let color_diff = (0..3)
+                .map(|c| (channel(cpu, i, c) - channel(gpu, i, c)).abs())
+                .fold(0.0, f64::max);
+            if band[i] {
+                out.band += 1;
+                out.id_band += usize::from(id_c != id_g);
+                out.color_band += usize::from(color_diff > COLOR_TOLERANCE);
+                continue;
+            }
+            out.id_outside += usize::from(id_c != id_g);
+            let color_gradient = neighbours(x, y, w, h)
+                .flat_map(|n| (0..3).map(move |c| (n, c)))
+                .map(|(n, c)| (channel(cpu, i, c) - channel(cpu, n, c)).abs())
+                .fold(0.0, f64::max);
+            if seams[i] {
+                out.seam += 1;
+                out.color_seam_over += usize::from(color_diff > COLOR_TOLERANCE + color_gradient);
+                out.color_seam_differ += usize::from(color_diff > COLOR_TOLERANCE);
+            } else {
+                out.plain += 1;
+                let tolerance = COLOR_TOLERANCE + (2.0 * SNAP * color_gradient).floor();
+                out.color_plain_histogram[(color_diff as usize).min(3)] += 1;
+                out.color_plain_allowed += differ_probability(color_gradient);
+                out.color_plain_over += usize::from(color_diff > tolerance);
+            }
+            let (d_c, d_g) = (cpu.depth[i], gpu.depth[i]);
+            if d_c.is_infinite() || d_g.is_infinite() {
+                out.depth_outside += usize::from(d_c != d_g);
+                continue;
+            }
+            let gradient = neighbours(x, y, w, h)
+                .map(|n| (cpu.depth[n] - d_c).abs())
+                .filter(|g| g.is_finite())
+                .fold(0.0, f64::max);
+            let tolerance = F32_PATH * reach + 2.0 * SNAP * gradient;
+            let error = (d_c - d_g).abs();
+            if error.is_nan() || error > tolerance {
+                out.depth_outside += 1;
+            }
+            out.depth_ratio = out.depth_ratio.max(error / tolerance);
+        }
+    }
+    (out, band)
+}
+
+impl MsaaParity {
+    /// The assertions for a multisampled picture (see above).
+    pub fn check(&self, scene: &str) {
+        let report = format!("{scene}: {self:?}");
+        assert!(self.covered > self.pixels / 50, "nothing to see: {report}");
+        assert!(
+            self.band < self.pixels / 2,
+            "the band covers half the picture: {report}"
+        );
+        assert!(
+            self.plain > self.pixels / 4,
+            "too little of the picture is compared strictly: {report}"
+        );
+        assert_eq!(
+            self.id_outside, 0,
+            "face ids differ outside the band: {report}"
+        );
+        assert_eq!(self.depth_outside, 0, "distances differ: {report}");
+        assert_eq!(
+            self.color_plain_over, 0,
+            "colours differ away from every edge: {report}"
+        );
+        let differing: usize = self.color_plain_histogram.iter().skip(1).sum();
+        assert!(
+            differing as f64 <= self.color_plain_allowed.ceil(),
+            "{differing} colours differ by a level where rounding explains at most {}: {report}",
+            self.color_plain_allowed.ceil()
+        );
+        assert_eq!(
+            self.color_seam_over, 0,
+            "colours on a seam differ by more than a pixel of gradient: {report}"
+        );
+        let allowed = (self.band as f64 * BAND_MISMATCH).ceil() as usize;
+        assert!(
+            self.id_band <= allowed,
+            "more than {allowed} face ids differ inside the band: {report}"
+        );
+    }
 }

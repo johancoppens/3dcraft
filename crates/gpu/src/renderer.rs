@@ -19,10 +19,35 @@ pub(crate) const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8U
 /// integer target is renderable on every backend (a float one is not on
 /// OpenGL ES) and stores both without conversion.
 pub(crate) const DATA_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg32Uint;
-const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 /// Number of `f32` in the scene uniform block (eight `vec4`).
-const SCENE_FLOATS: usize = 32;
+pub(crate) const SCENE_FLOATS: usize = 32;
+
+/// The vertex layout of [`GpuMesh`]: position, normal, the triangle's own
+/// normal, the face id.
+pub(crate) const MESH_ATTRIBUTES: [wgpu::VertexAttribute; 4] = [
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x3,
+        offset: 0,
+        shader_location: 0,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x3,
+        offset: 12,
+        shader_location: 1,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x3,
+        offset: 24,
+        shader_location: 2,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Uint32,
+        offset: 36,
+        shader_location: 3,
+    },
+];
 
 /// Runs `work` with wgpu's validation, out-of-memory and internal errors
 /// captured instead of raised: without a scope wgpu's default is to panic.
@@ -53,7 +78,7 @@ pub(crate) fn guarded<T>(device: &wgpu::Device, work: impl FnOnce() -> T) -> Res
 }
 
 /// The CPU renderer's checks on the image size, then the device's.
-fn check_params(params: &RenderParams, max_texture_side: u32) -> Result<(), GpuError> {
+pub(crate) fn check_params(params: &RenderParams, max_texture_side: u32) -> Result<(), GpuError> {
     let (width, height, ssaa) = (params.width, params.height, params.ssaa);
     if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
         return Err(RenderError::InvalidSize { width, height }.into());
@@ -116,7 +141,7 @@ fn depth_range(axes: &ViewAxes, bounds: &Bbox3, perspective: bool) -> (f64, f64)
 
 /// The numbers of `scene.wgsl`'s uniform block, computed in `f64` and
 /// narrowed last.
-fn scene_uniforms(
+pub(crate) fn scene_uniforms(
     mesh: &GpuMesh,
     camera: &Camera,
     params: &RenderParams,
@@ -175,7 +200,7 @@ fn scene_uniforms(
     Ok(out)
 }
 
-fn float_bytes(values: &[f32]) -> Vec<u8> {
+pub(crate) fn float_bytes(values: &[f32]) -> Vec<u8> {
     values.iter().flat_map(|v| v.to_le_bytes()).collect()
 }
 
@@ -218,7 +243,10 @@ pub struct Renderer {
     token: Arc<()>,
 }
 
-fn texture_entry(binding: u32, sample_type: wgpu::TextureSampleType) -> wgpu::BindGroupLayoutEntry {
+pub(crate) fn texture_entry(
+    binding: u32,
+    sample_type: wgpu::TextureSampleType,
+) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::FRAGMENT,
@@ -231,7 +259,10 @@ fn texture_entry(binding: u32, sample_type: wgpu::TextureSampleType) -> wgpu::Bi
     }
 }
 
-fn uniform_entry(binding: u32, visibility: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
+pub(crate) fn uniform_entry(
+    binding: u32,
+    visibility: wgpu::ShaderStages,
+) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility,
@@ -244,7 +275,7 @@ fn uniform_entry(binding: u32, visibility: wgpu::ShaderStages) -> wgpu::BindGrou
     }
 }
 
-fn target(format: wgpu::TextureFormat) -> Option<wgpu::ColorTargetState> {
+pub(crate) fn target(format: wgpu::TextureFormat) -> Option<wgpu::ColorTargetState> {
     Some(wgpu::ColorTargetState {
         format,
         blend: None,
@@ -302,28 +333,7 @@ impl Renderer {
                 bind_group_layouts: &[Some(&scene_layout)],
                 immediate_size: 0,
             });
-        let attributes = [
-            wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Float32x3,
-                offset: 0,
-                shader_location: 0,
-            },
-            wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Float32x3,
-                offset: 12,
-                shader_location: 1,
-            },
-            wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Float32x3,
-                offset: 24,
-                shader_location: 2,
-            },
-            wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Uint32,
-                offset: 36,
-                shader_location: 3,
-            },
-        ];
+        let attributes = MESH_ATTRIBUTES;
         let scene_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("craft3d scene"),
             layout: Some(&scene_pipeline_layout),
@@ -518,7 +528,13 @@ impl Renderer {
             .ok_or(GpuError::NothingDrawn)?;
         let mut staging = self.staging.lock().unwrap_or_else(PoisonError::into_inner);
         guarded(&self.device, || {
-            readback::start(&self.device, &self.queue, targets, &mut staging)
+            readback::start(
+                &self.device,
+                &self.queue,
+                (&targets.color, Some(&targets.data)),
+                (targets.width, targets.height),
+                &mut staging,
+            )
         })?
     }
 

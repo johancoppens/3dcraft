@@ -6,15 +6,19 @@
 //! view distance per pixel. The CPU renderer is the oracle; `tests/parity.rs`
 //! compares the two pixel by pixel and states the tolerances.
 //!
-//! Two ways in:
+//! Three ways in:
 //!
 //! - [`Offscreen`] owns an adapter and a device, renders to textures and
 //!   reads them back: `Offscreen::new()?.render(&mesh, &camera, &params)`.
-//! - [`Renderer`] is built on a device and queue someone else owns (the
-//!   shell's). [`Renderer::upload`] puts a mesh on the GPU once,
-//!   [`Renderer::draw`] renders it into textures the renderer owns
-//!   ([`Renderer::color_view`]), and [`Renderer::draw_into`] also copies the
-//!   picture into a texture view the caller gives.
+//! - [`Renderer`] is built on a device and queue someone else owns.
+//!   [`Renderer::upload`] puts a mesh on the GPU once, [`Renderer::draw`]
+//!   renders it into textures the renderer owns ([`Renderer::color_view`]),
+//!   and [`Renderer::draw_into`] also copies the picture into a texture
+//!   view the caller gives. Both read the frame back.
+//! - [`Onscreen`] is the viewport's renderer on the window's own device:
+//!   the picture, multisampled, with the lines over it (edges, sketches,
+//!   axes: [`Segment`]) drawn and depth-tested on the GPU, into a texture
+//!   the window shows as it is. Nothing is read back for display.
 //!
 //! # How it mirrors the CPU renderer
 //!
@@ -55,11 +59,15 @@
 
 mod mesh;
 mod offscreen;
+mod onscreen;
 mod readback;
 mod renderer;
 
 pub use mesh::{GpuMesh, MAX_TRIANGLES};
 pub use offscreen::{AdapterSummary, Offscreen};
+pub use onscreen::{
+    DrawOptions, GpuLines, MAX_SEGMENTS, Onscreen, OverlayParams, Segment, WANTED_SAMPLES,
+};
 pub use renderer::Renderer;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -91,6 +99,11 @@ pub enum GpuError {
     TargetTooLarge { side: u64, limit: u32 },
     /// More triangles than [`MAX_TRIANGLES`].
     MeshTooLarge { triangles: usize },
+    /// More segments than [`MAX_SEGMENTS`], or more than the device's
+    /// buffers hold.
+    TooManyLines { segments: usize },
+    /// Something this renderer does not do.
+    Unsupported(&'static str),
     /// A camera or mesh number does not fit in `f32` at the GPU boundary.
     OutOfRange(&'static str),
     /// The mesh was uploaded by another renderer.
@@ -117,6 +130,11 @@ impl fmt::Display for GpuError {
                 f,
                 "{triangles} triangles exceed the limit of {MAX_TRIANGLES}"
             ),
+            GpuError::TooManyLines { segments } => write!(
+                f,
+                "{segments} line segments exceed the limit of {MAX_SEGMENTS} or the device's buffers"
+            ),
+            GpuError::Unsupported(what) => write!(f, "{what} is not supported by this renderer"),
             GpuError::OutOfRange(what) => {
                 write!(f, "{what} does not fit in single precision for the GPU")
             }

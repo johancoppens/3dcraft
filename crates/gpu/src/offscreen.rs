@@ -1,7 +1,9 @@
 //! The self-contained way in: find an adapter, make a device, render to
 //! textures and read them back.
 
-use crate::{GpuError, GpuMesh, Renderer};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::GpuMesh;
+use crate::{GpuError, Renderer};
 use craft3d_render::{Camera, Frame, RenderParams};
 use craft3d_tess::Mesh;
 use std::fmt;

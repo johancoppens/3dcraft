@@ -23,7 +23,7 @@ pub const UI_METHODS: &[UiMethod] = &[
     UiMethod {
         name: "ui.get",
         params: "{}",
-        summary: "Returns the UI state (camera, panels, selectedFeature, notice), the viewport size, what the scene holds, the feature tree rows, which renderer the viewport uses (gpu or cpu, the adapter, why it fell back) and how the viewport was last rendered.",
+        summary: "Returns the UI state (camera, panels, selectedFeature, notice), the viewport size, what the scene holds, the feature tree rows, which renderer the viewport uses (gpu or cpu, the adapter, whether the GPU draws directly on the window's device and with how many samples, why it fell back) and how the viewport was last rendered.",
     },
     UiMethod {
         name: "ui.set",
@@ -179,6 +179,8 @@ impl Shell {
             "backend": report.backend.name(),
             "adapter": report.adapter,
             "fallback": report.fallback,
+            "direct": report.direct,
+            "msaa": report.msaa,
         });
         let render = self.render_stats().map_or(Value::Null, |stats| {
             json!({
@@ -186,6 +188,7 @@ impl Shell {
                 "width": stats.width,
                 "height": stats.height,
                 "ssaa": stats.ssaa,
+                "msaa": stats.msaa,
                 "triangles": stats.triangles,
                 "milliseconds": stats.milliseconds,
                 "sharp": stats.sharp,

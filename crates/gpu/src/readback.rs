@@ -1,7 +1,6 @@
 //! From the resolved textures back to a [`Frame`].
 
 use crate::GpuError;
-use crate::renderer::Targets;
 use craft3d_render::Frame;
 use std::future::Future;
 use std::pin::Pin;
@@ -37,7 +36,8 @@ pub(crate) struct Staging {
     width: u32,
     height: u32,
     color: Stage,
-    data: Stage,
+    /// `None` for a renderer that reads only the picture back.
+    data: Option<Stage>,
 }
 
 /// One texture on its way to a mapped buffer.
@@ -71,11 +71,17 @@ pub(crate) struct Pending {
     width: u32,
     height: u32,
     color: Copy,
-    data: Copy,
+    data: Option<Copy>,
 }
 
-/// The staging buffers for an image of `width` × `height`.
-fn staging(device: &wgpu::Device, width: u32, height: u32) -> Result<Staging, GpuError> {
+/// The staging buffers for an image of `width` × `height`, with a buffer
+/// for the data target when `with_data`.
+fn staging(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+    with_data: bool,
+) -> Result<Staging, GpuError> {
     let too_large = || GpuError::Readback(format!("a {width}x{height} image is too large"));
     let stage = |pixel_bytes: u32| {
         let stride = width
@@ -102,30 +108,35 @@ fn staging(device: &wgpu::Device, width: u32, height: u32) -> Result<Staging, Gp
         width,
         height,
         color: stage(COLOR_BYTES)?,
-        data: stage(DATA_BYTES)?,
+        data: if with_data {
+            Some(stage(DATA_BYTES)?)
+        } else {
+            None
+        },
     })
 }
 
-/// Copies the two resolved textures into the staging buffers (made, or
-/// made again for a new image size, in `staging`) and asks for them to be
-/// mapped.
+/// Copies the colour texture, and the data texture when there is one,
+/// `width` × `height` each, into the staging buffers (made, or made again
+/// for a new image size, in `staging`) and asks for them to be mapped.
 pub(crate) fn start(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    targets: &Targets,
+    (color_texture, data_texture): (&wgpu::Texture, Option<&wgpu::Texture>),
+    (width, height): (u32, u32),
     staging: &mut Option<Staging>,
 ) -> Result<Pending, GpuError> {
-    let (width, height) = (targets.width, targets.height);
+    let with_data = data_texture.is_some();
     if staging
         .as_ref()
-        .is_some_and(|s| (s.width, s.height) != (width, height))
+        .is_some_and(|s| (s.width, s.height) != (width, height) || s.data.is_some() != with_data)
     {
         // The old buffers go before the new ones are made.
         *staging = None;
     }
     let staging = match staging {
         Some(staging) => staging,
-        None => staging.insert(self::staging(device, width, height)?),
+        None => staging.insert(self::staging(device, width, height, with_data)?),
     };
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("craft3d readback"),
@@ -159,10 +170,13 @@ pub(crate) fn start(
             state: Arc::new(Mutex::new(MapState::default())),
         }
     };
-    let color = copy(&targets.color, &staging.color);
-    let data = copy(&targets.data, &staging.data);
+    let color = copy(color_texture, &staging.color);
+    let data = match (data_texture, &staging.data) {
+        (Some(texture), Some(stage)) => Some(copy(texture, stage)),
+        _ => None,
+    };
     queue.submit([encoder.finish()]);
-    for copy in [&color, &data] {
+    for copy in [Some(&color), data.as_ref()].into_iter().flatten() {
         let state = Arc::clone(&copy.state);
         copy.buffer
             .map_async(wgpu::MapMode::Read, .., move |result| {
@@ -239,16 +253,44 @@ impl Copy {
 }
 
 impl Pending {
-    /// Waits until both buffers are mapped (or have failed to).
+    /// Waits until the buffers are mapped (or have failed to).
     pub(crate) async fn mapped(&self) {
-        for copy in [&self.color, &self.data] {
+        for copy in [Some(&self.color), self.data.as_ref()]
+            .into_iter()
+            .flatten()
+        {
             Mapped(&copy.state).await;
         }
+    }
+
+    /// The picture from the mapped colour buffer, 3 bytes per pixel. The
+    /// data buffer, if there is one, is unmapped unread.
+    pub(crate) fn finish_rgb(self) -> Result<Vec<u8>, GpuError> {
+        let (width, height) = (self.width, self.height);
+        let pixels = (width as usize).saturating_mul(height as usize);
+        let mut rgb = Vec::with_capacity(pixels.saturating_mul(3));
+        self.color.pixels(width, height, |pixel| {
+            if let [r, g, b, _] = *pixel {
+                rgb.extend([r, g, b]);
+            }
+        })?;
+        if let Some(data) = &self.data {
+            data.pixels(width, height, |_| {})?;
+        }
+        if rgb.len() != pixels.saturating_mul(3) {
+            return Err(GpuError::Readback(
+                "the mapped buffer does not hold the whole image".to_string(),
+            ));
+        }
+        Ok(rgb)
     }
 
     /// Builds the frame from the mapped buffers.
     pub(crate) fn finish(self) -> Result<Frame, GpuError> {
         let (width, height) = (self.width, self.height);
+        let Some(data) = &self.data else {
+            return Err(GpuError::NothingDrawn);
+        };
         // Bounded: the renderer accepts at most MAX_SIDE per side.
         let pixels = (width as usize).saturating_mul(height as usize);
         let mut frame = Frame {
@@ -263,7 +305,7 @@ impl Pending {
                 frame.rgb.extend([r, g, b]);
             }
         })?;
-        self.data.pixels(width, height, |pixel| {
+        data.pixels(width, height, |pixel| {
             if let [a, b, c, d, e, f, g, h] = *pixel {
                 frame.ids.push(u32::from_le_bytes([a, b, c, d]));
                 let dist = f32::from_bits(u32::from_le_bytes([e, f, g, h]));

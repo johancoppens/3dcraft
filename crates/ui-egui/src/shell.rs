@@ -4,6 +4,8 @@
 //! (`Session::execute`), from whoever drives the session.
 
 use crate::backend::{Backend, BodyRenderer, RendererChoice, RendererReport};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::direct::{Direct, DirectFailure};
 use crate::frames::{Mode, Scheduler, Ticket};
 use crate::state::{CameraState, ProjectionKind, UiState, VIEWS};
 use crate::theme::{Tokens, color, color_alpha};
@@ -18,6 +20,9 @@ pub const DEFAULT_VIEWPORT: [u32; 2] = [960, 640];
 
 /// While the camera moves the image is rendered this much smaller per side
 /// and without supersampling, so orbiting stays fluid on the CPU renderer.
+/// (None of the rules below apply to the direct GPU path of the window,
+/// [`crate::direct`]: there every frame is the viewport's full size, with
+/// multisampling, and nothing is read back.)
 pub const MOVING_DIVISOR: u32 = 2;
 /// Supersampling per axis of the image at rest, when the budget allows.
 pub const REST_SSAA: u32 = 2;
@@ -157,6 +162,8 @@ pub struct RenderStats {
     pub sharp: bool,
     /// Which renderer shaded the bodies.
     pub renderer: Backend,
+    /// Samples per pixel: 1 without multisampling.
+    pub msaa: u32,
 }
 
 /// What the image in the viewport is made from: another image is made
@@ -246,6 +253,14 @@ pub struct Shell {
     renderer: BodyRenderer,
     /// The renderer that made the image on screen, as it reported itself.
     shown_report: Option<RendererReport>,
+    /// The GPU on the window's own device, when the window lent it: the
+    /// path that draws every frame in full and reads nothing back.
+    #[cfg(not(target_arch = "wasm32"))]
+    direct: Option<Direct>,
+    /// Why the direct path is not used although the GPU was wanted.
+    direct_fallback: Option<String>,
+    /// True when the picture on screen is the direct path's texture.
+    direct_shown: bool,
     stats: Option<RenderStats>,
     /// How many times the image was rendered.
     renders: u64,
@@ -319,6 +334,10 @@ impl Shell {
             arrived: Vec::new(),
             renderer: BodyRenderer::new(choice),
             shown_report: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            direct: None,
+            direct_fallback: None,
+            direct_shown: false,
             stats: None,
             renders: 0,
             drag_from: None,
@@ -371,6 +390,50 @@ impl Shell {
         shell
     }
 
+    /// [`Self::threaded_with`] for a window that lends the shell its own
+    /// wgpu device (`state`): with [`RendererChoice::Auto`] the viewport
+    /// is then drawn on that device, directly into the texture that is
+    /// shown ([`crate::direct`]), and the CPU renderer stands by for the
+    /// frames that path cannot make. When the direct path cannot be set
+    /// up, or without a `state`, this is [`Self::threaded_with`], with the
+    /// reason kept for [`Self::renderer_report`].
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn threaded_with_gpu(
+        choice: RendererChoice,
+        state: Option<&egui_wgpu::RenderState>,
+    ) -> Self {
+        if choice == RendererChoice::Auto
+            && let Some(state) = state
+        {
+            match Direct::new(state) {
+                Ok(direct) => {
+                    let mut shell = Self::threaded_with(RendererChoice::Cpu);
+                    shell.direct = Some(direct);
+                    return shell;
+                }
+                Err(why) => {
+                    let mut shell = Self::threaded_with(choice);
+                    shell.direct_fallback = Some(why);
+                    return shell;
+                }
+            }
+        }
+        Self::threaded_with(choice)
+    }
+
+    /// Draws the viewport on the device of `state` from now on, directly
+    /// into the texture that is shown ([`crate::direct`]), with this
+    /// shell's renderer standing by for what that path cannot make. For a
+    /// host that drives the shell headlessly with a device of its own (a
+    /// test); the window uses [`Self::threaded_with_gpu`].
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn attach_gpu(&mut self, state: &egui_wgpu::RenderState) -> Result<(), String> {
+        let direct = Direct::new(state)?;
+        self.direct = Some(direct);
+        self.direct_fallback = None;
+        Ok(())
+    }
+
     /// There are no threads here: the same as [`Self::new`].
     #[cfg(target_arch = "wasm32")]
     pub fn threaded() -> Self {
@@ -383,12 +446,45 @@ impl Shell {
         Self::with_renderer(choice)
     }
 
-    /// What the viewport renders with: the renderer that made the image on
-    /// screen, or, before there is one, this thread's.
+    /// What the viewport renders with: the GPU on the window's device when
+    /// it draws directly; else the renderer that made the image on screen,
+    /// or, before there is one, this thread's.
     pub fn renderer_report(&self) -> RendererReport {
-        self.shown_report
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(direct) = &self.direct {
+            return direct.report();
+        }
+        let mut report = self
+            .shown_report
             .clone()
-            .unwrap_or_else(|| self.renderer.report().clone())
+            .unwrap_or_else(|| self.renderer.report().clone());
+        if report.fallback.is_none() {
+            report.fallback.clone_from(&self.direct_fallback);
+        }
+        report
+    }
+
+    /// The picture the direct path shows, read back from the device: for
+    /// tests, which compare it with the CPU reference renderer's. `None`
+    /// when the viewport is not drawn directly or nothing was drawn yet.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn direct_picture(&self) -> Option<Result<crate::direct::ReadBack, String>> {
+        self.direct
+            .as_ref()
+            .filter(|_| self.direct_shown)
+            .map(Direct::read_rgb)
+    }
+
+    /// True when the viewport is drawn directly on the window's device.
+    pub fn draws_directly(&self) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.direct.is_some()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            false
+        }
     }
 
     /// True when sharp images are made on a thread of their own.
@@ -460,7 +556,9 @@ impl Shell {
 
     /// What is drawn over the viewport's texture, in the pixels of the
     /// image that texture holds, and that image's size: for a host that
-    /// inks the picture itself (the `snapshot` example).
+    /// inks the picture itself (the `snapshot` example). On the direct
+    /// path the lines are in the texture already and this is what the
+    /// last frame of another path drew, if any.
     pub fn overlay(&self) -> (&Overlay, [u32; 2]) {
         (&self.overlay, self.overlay_size)
     }
@@ -783,7 +881,13 @@ impl Shell {
             selected: self.state.selected_feature.clone(),
             tokens,
         };
-        self.refresh(ui.ctx(), shared, &key, moving);
+        // The direct path draws the whole picture, lines included, on the
+        // window's device, every frame in full; the other paths make a
+        // preview here and the sharp image elsewhere.
+        self.direct_shown = self.direct_frame(scene, &key);
+        if !self.direct_shown {
+            self.refresh(ui.ctx(), shared, &key, moving);
+        }
         if moving {
             // One more frame after the last movement, for the sharp image.
             ui.ctx().request_repaint();
@@ -791,11 +895,15 @@ impl Shell {
 
         let painter = ui.painter_at(rect);
         painter.rect_filled(rect, 0.0, color(tokens.viewport_background));
-        if let Some(texture) = &self.texture {
-            let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-            painter.image(texture.id(), rect, uv, egui::Color32::WHITE);
+        let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+        if let Some(id) = self.direct_texture() {
+            painter.image(id, rect, uv, egui::Color32::WHITE);
+        } else {
+            if let Some(texture) = &self.texture {
+                painter.image(texture.id(), rect, uv, egui::Color32::WHITE);
+            }
+            paint_overlay(&painter, rect, self.overlay_size, &self.overlay, &tokens);
         }
-        paint_overlay(&painter, rect, self.overlay_size, &self.overlay, &tokens);
 
         let inset = tokens.inset;
         let inner = rect.shrink(inset);
@@ -952,6 +1060,75 @@ impl Shell {
         moving
     }
 
+    /// The direct path's texture, when the picture on screen is its.
+    fn direct_texture(&self) -> Option<egui::TextureId> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.direct
+                .as_ref()
+                .filter(|_| self.direct_shown)
+                .and_then(Direct::texture_id)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            None
+        }
+    }
+
+    /// Draws `key` on the window's device, when the shell has it. True
+    /// when the picture on screen is now the direct path's; false when
+    /// there is no direct path, or this frame has to be made another way.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn direct_frame(&mut self, scene: Option<&Scene>, key: &FrameKey) -> bool {
+        let Some(direct) = &mut self.direct else {
+            return false;
+        };
+        let outcome = direct.frame(
+            scene,
+            &key.camera,
+            key.size,
+            key.selected.as_deref(),
+            &key.tokens,
+            self.pixels_per_point,
+        );
+        match outcome {
+            Ok(None) => true,
+            Ok(Some(frame)) => {
+                self.renders = self.renders.saturating_add(1);
+                self.stats = Some(RenderStats {
+                    width: frame.width,
+                    height: frame.height,
+                    ssaa: 1,
+                    triangles: frame.triangles,
+                    milliseconds: Some(frame.milliseconds),
+                    sharp: true,
+                    renderer: Backend::Gpu,
+                    msaa: frame.msaa,
+                });
+                self.shown_report = Some(direct.report());
+                self.render_problem = None;
+                true
+            }
+            Err(DirectFailure::Frame(why)) => {
+                // The CPU would refuse it too: nothing to fall back to.
+                self.render_problem = Some(format!("the viewport cannot be rendered: {why}"));
+                true
+            }
+            // This frame the other way; the next one here again.
+            Err(DirectFailure::ThisFrame(_)) => false,
+            Err(DirectFailure::ForGood(why)) => {
+                self.direct = None;
+                self.direct_fallback = Some(why);
+                false
+            }
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn direct_frame(&mut self, _scene: Option<&Scene>, _key: &FrameKey) -> bool {
+        false
+    }
+
     /// Brings the image on screen up to date with `key`: makes a preview
     /// here when nothing of the key is on screen, starts the sharp image,
     /// and shows the sharp images that arrived and are still current.
@@ -1062,6 +1239,7 @@ impl Shell {
             milliseconds,
             sharp,
             renderer: composed.backend,
+            msaa: 1,
         });
         self.shown_report = Some(report);
         let image = egui::ColorImage::from_rgb(

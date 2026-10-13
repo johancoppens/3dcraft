@@ -24,7 +24,9 @@
 
 use crate::state::CameraState;
 use crate::theme::Tokens;
-use crate::viewport::{Quality, render_params};
+use crate::viewport::Quality;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::viewport::render_params;
 use craft3d_engine::Scene;
 use craft3d_render::Frame;
 
@@ -80,19 +82,36 @@ pub struct RendererReport {
     pub backend: Backend,
     /// The adapter the GPU renderer runs on.
     pub adapter: Option<String>,
-    /// Why it is the CPU renderer although the GPU was wanted; `None`
-    /// when the CPU was asked for or the GPU is in use.
+    /// Why it is not the GPU on the window's own device although that was
+    /// wanted: the reason the CPU renders, or the reason the GPU renders
+    /// on a device of its own and reads back. `None` when the CPU was
+    /// asked for or the GPU draws directly.
     pub fallback: Option<String>,
+    /// True when the GPU draws on the window's own device, into the
+    /// texture that is shown (`crate::direct`); false when the frame is
+    /// read back from a device of the viewport's own, or made on the CPU.
+    pub direct: bool,
+    /// Samples per pixel of the picture: 1 without multisampling.
+    pub msaa: u32,
 }
 
 impl RendererReport {
-    /// One line for the terminal: `gpu (Intel …)` or `cpu: no adapter …`.
+    /// One line for the terminal: `gpu (Intel …; direct, 4 samples)`,
+    /// `gpu (Intel …; read back)` or `cpu: no adapter …`.
     pub fn describe(&self) -> String {
-        match (self.backend, &self.adapter, &self.fallback) {
-            (Backend::Gpu, Some(adapter), _) => format!("gpu ({adapter})"),
-            (Backend::Gpu, None, _) => "gpu".to_string(),
-            (Backend::Cpu, _, Some(why)) => format!("cpu: {why}"),
-            (Backend::Cpu, _, None) => "cpu".to_string(),
+        let path = if self.direct {
+            format!("direct, {} samples", self.msaa)
+        } else {
+            "read back".to_string()
+        };
+        let why = self
+            .fallback
+            .as_ref()
+            .map_or_else(String::new, |why| format!(": {why}"));
+        match (self.backend, &self.adapter) {
+            (Backend::Gpu, Some(adapter)) => format!("gpu ({adapter}; {path}){why}"),
+            (Backend::Gpu, None) => format!("gpu ({path}){why}"),
+            (Backend::Cpu, _) => format!("cpu{why}"),
         }
     }
 }
@@ -115,6 +134,8 @@ impl BodyRenderer {
                 backend: Backend::Cpu,
                 adapter: None,
                 fallback: None,
+                direct: false,
+                msaa: 1,
             },
         }
     }
@@ -146,6 +167,8 @@ impl BodyRenderer {
                     backend: Backend::Gpu,
                     adapter: Some(gpu.adapter().to_string()),
                     fallback: None,
+                    direct: false,
+                    msaa: 1,
                 },
                 gpu: Some(gpu),
             },
@@ -189,6 +212,8 @@ impl BodyRenderer {
                         backend: Backend::Cpu,
                         adapter: None,
                         fallback: Some(why),
+                        direct: false,
+                        msaa: 1,
                     };
                 }
             }
@@ -292,12 +317,14 @@ mod gpu {
             GpuError::Render(_) => Failure::Frame(text),
             GpuError::TargetTooLarge { .. }
             | GpuError::MeshTooLarge { .. }
+            | GpuError::TooManyLines { .. }
             | GpuError::OutOfRange(_) => Failure::ThisFrame,
             GpuError::NoAdapter(_)
             | GpuError::Device(_)
             | GpuError::ForeignMesh
             | GpuError::NothingDrawn
-            | GpuError::Readback(_) => Failure::ForGood(text),
+            | GpuError::Readback(_)
+            | GpuError::Unsupported(_) => Failure::ForGood(text),
         }
     }
 
@@ -370,6 +397,8 @@ mod tests {
                 backend: Backend::Cpu,
                 adapter: None,
                 fallback: None,
+                direct: false,
+                msaa: 1,
             }
         );
         assert_eq!(renderer.report().describe(), "cpu");
@@ -392,12 +421,26 @@ mod tests {
             backend: Backend::Gpu,
             adapter: Some("Intel (Vulkan)".into()),
             fallback: None,
+            direct: true,
+            msaa: 4,
         };
-        assert_eq!(gpu.describe(), "gpu (Intel (Vulkan))");
+        assert_eq!(gpu.describe(), "gpu (Intel (Vulkan); direct, 4 samples)");
+        let read_back = RendererReport {
+            direct: false,
+            msaa: 1,
+            fallback: Some("the viewport texture could not be made".into()),
+            ..gpu.clone()
+        };
+        assert_eq!(
+            read_back.describe(),
+            "gpu (Intel (Vulkan); read back): the viewport texture could not be made"
+        );
         let fallen = RendererReport {
             backend: Backend::Cpu,
             adapter: None,
             fallback: Some("no GPU adapter: none".into()),
+            direct: false,
+            msaa: 1,
         };
         assert_eq!(fallen.describe(), "cpu: no GPU adapter: none");
         assert_eq!(Backend::Gpu.name(), "gpu");
