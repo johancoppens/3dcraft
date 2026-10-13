@@ -84,7 +84,9 @@
 //! computed twice, first with half the panels its edges need and then with
 //! all of them, and again with twice as many until two in a row agree to
 //! 1e-12 of the size of what was summed (or to the rounding of the face's
-//! coordinates, where that is more); a face for which they never do is an
+//! coordinates, where that is more: the rounding over how far the
+//! boundary reaches across, and for a strip over how wide it is, which
+//! is all its sums can agree to); a face for which they never do is an
 //! error ([`MassError::Unsupported`]), not a number. Only a plane face
 //! bounded by lines, circles and ellipses is exempt. There `G du` is a
 //! polynomial of degree four at most, in the parameter of a line or in
@@ -108,6 +110,21 @@
 //! the order, the panels across the face (the inner integrals) are
 //! doubled with every sum, so that the two sums that agree differ in
 //! everything that is refined.
+//!
+//! **The work is bounded.** Every doubling is four times the work of the
+//! one before on a spline surface (twice the boundary panels, each node
+//! with twice the inner panels), and all seven on a boundary of spline
+//! edges take minutes. So a face is also given up, with the same error,
+//! once it has taken [`BUDGET`] evaluations of the integrand, those on a
+//! spline surface counted for [`FREEFORM`] and the projection of a
+//! boundary point for [`PROJECTION`]. That is eight times what the
+//! slowest face that settles takes in the test suites of this crate, the
+//! test kit and the kernel (4.6 million on an analytic surface; 1.0
+//! million, counted for eight each, on a spline surface), and a hundred
+//! times what a face takes that goes through all seven doublings on an
+//! analytic surface. It is a count and not a clock, so that the same
+//! body is measured or refused alike on every machine; on a spline
+//! surface it comes to some twenty seconds unoptimised.
 //!
 //! **Following the boundary.** Every node of a boundary panel is a point
 //! of an edge curve, projected onto the surface for its parameters. On a
@@ -287,6 +304,56 @@ const ON_SURFACE: f64 = 1e-5;
 /// projection stops when its steps are four of them, and the residual of
 /// a true foot is computed to a few.
 const SQUARE: f64 = 64.0 * f64::EPSILON;
+/// The work one face may take before it is given up as one whose sums do
+/// not settle (see the module documentation), in evaluations of the
+/// integrand on an analytic surface.
+const BUDGET: u64 = 1 << 26;
+/// What the projection of a boundary point counts for in a face's work,
+/// in evaluations of the integrand.
+const PROJECTION: u64 = 8;
+/// What an evaluation on a Bézier or NURBS surface counts for: measured,
+/// it takes fifteen times as long as one on a cone.
+const FREEFORM: u64 = 8;
+
+/// The work one face has taken: evaluations of [`integrand`], and
+/// projections of boundary points at [`PROJECTION`] of them each, all
+/// [`FREEFORM`] times over on a freeform surface. A count, not a clock:
+/// the same face is given up at the same place on every machine.
+struct Work {
+    spent: u64,
+    /// What one evaluation on the face's surface counts for.
+    each: u64,
+}
+
+impl Work {
+    fn new(surface: &Surface) -> Self {
+        let freeform = matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_));
+        Work {
+            spent: 0,
+            each: if freeform { FREEFORM } else { 1 },
+        }
+    }
+
+    fn add(&mut self, evaluations: u64) {
+        self.spent = self
+            .spent
+            .saturating_add(evaluations.saturating_mul(self.each));
+    }
+
+    /// Whether the face has taken more than it may ([`BUDGET`]).
+    fn spent_up(&self) -> bool {
+        self.spent > BUDGET
+    }
+}
+
+/// The error of a face whose sums do not agree within the doublings, or
+/// within the work, it is given.
+fn unsettled(face: usize) -> MassError {
+    MassError::Unsupported {
+        face,
+        what: "a boundary integral that does not settle: the boundary is too intricate, or too close to where the surface's parametrisation collapses",
+    }
+}
 
 /// Projects a run of nearby points onto a surface, each from where the
 /// last one landed, taking the short way only where it is shown to give
@@ -395,9 +462,11 @@ fn inner(
     fixed: f64,
     (from, to): (f64, f64),
     doublings: u32,
+    work: &mut Work,
 ) -> Total {
     let mut sum = Total::default();
     let mut panel = |start: f64, end: f64, sign: f64| {
+        work.add(NODES as u64);
         for (t, w) in rule.points(start, end) {
             let (u, v) = match along {
                 Along::U => (t, fixed),
@@ -714,8 +783,14 @@ struct Outline<'a> {
     /// coordinates: four units in the last place of the largest of them,
     /// over how far the boundary reaches across. A face a million times
     /// smaller than it is far from the origin is known to ten digits, and
-    /// its sums cannot agree to more.
+    /// its sums cannot agree to more. Of a thin face it is not the whole
+    /// share: [`Outline::noise`].
     noise: f64,
+    /// The rounding of the boundary's coordinates: four units in the last
+    /// place of the largest of them.
+    rounding: f64,
+    /// How far the boundary reaches across.
+    across: f64,
     /// How far from the surface a boundary point may be found to count
     /// as on it, for the warm start of the projections ([`ON_SURFACE`] of
     /// the body's size).
@@ -858,8 +933,42 @@ fn outline<'a>(
         collapsed,
         conic,
         noise,
+        rounding: 4.0 * f64::EPSILON * furthest,
+        across,
         touch,
     })
+}
+
+impl Outline<'_> {
+    /// The share of a face's sums that is the rounding of its boundary's
+    /// coordinates, given what was summed for its area.
+    ///
+    /// Moving the boundary by its rounding changes the area by that times
+    /// the boundary's length: a share of the area that is the rounding
+    /// over how wide the face is, not over how far it reaches across. The
+    /// two are the same for a face about as wide as it is long, and
+    /// `noise` is that share. A strip is as wide as its area over its
+    /// length: one 1e-5 wide and 1.5 long, a few units from the origin,
+    /// is known to five digits less than `noise` says, and its sums
+    /// differ from one doubling to the next by that rounding however
+    /// fine the panels. Measured on such strips, as shares of the sums:
+    /// between 1e-13 and 4e-12 on a cone; on a spline surface 2e-12 with
+    /// two inner panels, and twice that with every doubling of them
+    /// (3.5e-10 with thirty-two: the ends of every inner panel are
+    /// rounded as well); this gives 3e-10 for both, and `noise` 2e-15.
+    /// So where the share by the width is more than what sums must agree
+    /// to anyway ([`CONVERGED`]) it is what counts; below that it is lost
+    /// in the criterion, and `noise` stands as the smaller allowance of
+    /// the two.
+    fn noise(&self, area: f64) -> f64 {
+        let by_width = self.rounding * self.across / area;
+        // Not `<=`: a NaN (nothing summed, nothing across) changes nothing.
+        if by_width > CONVERGED {
+            by_width.max(self.noise).min(1.0)
+        } else {
+            self.noise
+        }
+    }
 }
 
 /// One boundary sample: surface parameters, and how fast they change along
@@ -882,6 +991,7 @@ fn samples(
     index: usize,
     rules: (&Rule, &Rule),
     doublings: u32,
+    work: &mut Work,
 ) -> Result<Vec<Sample>, MassError> {
     let mut samples = Vec::new();
     for (loop_index, pieces) in outline.loops.iter().enumerate() {
@@ -893,6 +1003,10 @@ fn samples(
             let mut follow = Follow::new(surface, outline.touch);
             for panel in panels(piece.curve, (low, high), &piece.crossings, doublings) {
                 let rule = if panel.coarse { rules.1 } else { rules.0 };
+                work.add(PROJECTION * NODES as u64);
+                if work.spent_up() {
+                    return Err(unsettled(index));
+                }
                 for (t, w) in rule.points(panel.start, panel.end) {
                     let (point, tangent) = piece.curve.derivatives(t);
                     let ((u, v), (_, su, sv)) = follow
@@ -937,24 +1051,36 @@ fn samples(
 ///
 /// On a spline surface the panels in u end at its knots, like those in v
 /// ([`inner`]), and are doubled until two sums agree.
-fn whole_surface(surface: &Surface, index: usize, rule: &Rule) -> Result<Sums, MassError> {
+fn whole_surface(
+    surface: &Surface,
+    index: usize,
+    rule: &Rule,
+    work: &mut Work,
+) -> Result<Sums, MassError> {
     let ((u0, u1), (v0, v1)) = surface.domain();
     if ![u0, u1, v0, v1].iter().all(|x| x.is_finite()) {
         return Err(MassError::UnboundedFace { face: index });
     }
-    let across = |from: f64, to: f64, count: usize, doublings: u32, sum: &mut Total| {
+    let mut across = |from: f64, to: f64, count: usize, doublings: u32, sum: &mut Total| {
         let width = (to - from) / count as f64;
         for k in 0..count {
+            if work.spent_up() {
+                return Err(unsettled(index));
+            }
             let start = from + width * k as f64;
             for (u, w) in rule.points(start, start + width) {
-                sum.add(inner(surface, rule, Along::V, u, (v0, v1), doublings), w);
+                sum.add(
+                    inner(surface, rule, Along::V, u, (v0, v1), doublings, work),
+                    w,
+                );
             }
         }
+        Ok(())
     };
     if !matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_)) {
         const U_PANELS: usize = 8;
         let mut sum = Total::default();
-        across(u0, u1, U_PANELS, 0, &mut sum);
+        across(u0, u1, U_PANELS, 0, &mut sum)?;
         return Ok(sum.sum);
     }
     let (mut lines, _) = knot_lines(surface);
@@ -964,7 +1090,7 @@ fn whole_surface(surface: &Surface, index: usize, rule: &Rule) -> Result<Sums, M
         let mut sum = Total::default();
         let mut start = u0;
         for &line in &lines {
-            across(start, line, 1 << doublings, doublings, &mut sum);
+            across(start, line, 1 << doublings, doublings, &mut sum)?;
             start = line;
         }
         if coarser.is_some_and(|coarser| coarser.agrees_with(&sum, 0.0)) {
@@ -1170,7 +1296,9 @@ fn plan(
     Ok(Plan::From(v_ref))
 }
 
-/// The boundary integral `-∮ G du` (or `∮ H dv`) of a face by `plan`.
+/// The boundary integral `-∮ G du` (or `∮ H dv`) of a face by `plan`;
+/// `None` when the face has taken its budget on the way.
+#[allow(clippy::too_many_arguments)]
 fn boundary_integral(
     face: &Face,
     surface: &Surface,
@@ -1179,14 +1307,18 @@ fn boundary_integral(
     sense: f64,
     plan: &Plan,
     (unrolled, doublings): (bool, u32),
-) -> Total {
+    work: &mut Work,
+) -> Option<Total> {
     let mut total = Total::default();
     match plan {
         Plan::From(v_ref) => {
             for s in samples.iter() {
+                if work.spent_up() {
+                    return None;
+                }
                 if s.du != 0.0 {
                     total.add(
-                        inner(surface, rule, Along::V, s.u, (*v_ref, s.v), doublings),
+                        inner(surface, rule, Along::V, s.u, (*v_ref, s.v), doublings, work),
                         -sense * s.du,
                     );
                 }
@@ -1205,13 +1337,16 @@ fn boundary_integral(
             }
             let (u_ref, v_ref) = starts.first().copied().unwrap_or((0.0, 0.0));
             for s in samples.iter() {
+                if work.spent_up() {
+                    return None;
+                }
                 match along {
                     Along::V if s.du != 0.0 => total.add(
-                        inner(surface, rule, Along::V, s.u, (v_ref, s.v), doublings),
+                        inner(surface, rule, Along::V, s.u, (v_ref, s.v), doublings, work),
                         -sense * s.du,
                     ),
                     Along::U if s.dv != 0.0 => total.add(
-                        inner(surface, rule, Along::U, s.v, (u_ref, s.u), doublings),
+                        inner(surface, rule, Along::U, s.v, (u_ref, s.u), doublings, work),
                         sense * s.dv,
                     ),
                     _ => {}
@@ -1219,17 +1354,23 @@ fn boundary_integral(
             }
         }
     }
-    total
+    Some(total)
 }
 
 /// What a converged boundary integral says about the face.
-fn settle(surface: &Surface, index: usize, rule: &Rule, total: Total) -> Result<Sums, MassError> {
+fn settle(
+    surface: &Surface,
+    index: usize,
+    rule: &Rule,
+    total: Total,
+    work: &mut Work,
+) -> Result<Sums, MassError> {
     let mut sum = total.sum;
     let closed_both_ways = surface.period_u().is_some() && surface.period_v().is_some();
     if closed_both_ways {
         // Right up to a whole number of times the entire surface; the area
         // says which.
-        let whole = whole_surface(surface, index, rule)?;
+        let whole = whole_surface(surface, index, rule, work)?;
         let share = sum.area / whole.area;
         let times = share.floor();
         if times != 0.0 {
@@ -1253,7 +1394,7 @@ fn settle(surface: &Surface, index: usize, rule: &Rule, total: Total) -> Result<
             });
         }
         if sum.area < 0.0 {
-            sum.add_scaled(whole_surface(surface, index, rule)?, 1.0);
+            sum.add_scaled(whole_surface(surface, index, rule, work)?, 1.0);
         }
     } else if sum.area < 0.0 {
         // The loops run the wrong way around what they enclose: the face
@@ -1273,19 +1414,21 @@ fn face_integrals(
     size: f64,
 ) -> Result<Sums, MassError> {
     if face.loops.is_empty() {
-        return whole_surface(&face.surface, index, rule);
+        return whole_surface(&face.surface, index, rule, &mut Work::new(&face.surface));
     }
     let own = match &face.surface {
         Surface::Sphere(sphere) => own_sphere(body, face, sphere),
         _ => None,
     };
     let surface = own.as_ref().unwrap_or(&face.surface);
-    integrals_in(body, face, surface, index, rule, size)
+    let mut work = Work::new(surface);
+    integrals_in(body, face, surface, index, rule, size, &mut work)
 }
 
 /// [`face_integrals`] of a face with loops, with `surface` standing in for
 /// the face's own: the same surface, parametrised to suit the face.
-/// `size` is how big the body is ([`body_size`]).
+/// `size` is how big the body is ([`body_size`]), `work` what the face
+/// has taken so far: past [`BUDGET`] it is given up.
 fn integrals_in(
     body: &Body,
     face: &Face,
@@ -1293,6 +1436,7 @@ fn integrals_in(
     index: usize,
     rule: &Rule,
     size: f64,
+    work: &mut Work,
 ) -> Result<Sums, MassError> {
     let outline = outline(body, face, surface, index, size)?;
     // Loops run counter-clockwise around the face seen from outside, which
@@ -1305,7 +1449,7 @@ fn integrals_in(
     let mut set_up: Option<Plan> = None;
     let mut coarser: Option<Total> = None;
     for doublings in u32::from(exact)..=MAX_DOUBLINGS {
-        let mut samples = samples(&outline, surface, index, (rule, &coarse), doublings)?;
+        let mut samples = samples(&outline, surface, index, (rule, &coarse), doublings, work)?;
         let (plan, unrolled) = match set_up.take() {
             Some(plan) => (plan, false),
             None => {
@@ -1322,7 +1466,7 @@ fn integrals_in(
                 (plan, true)
             }
         };
-        let total = boundary_integral(
+        let Some(total) = boundary_integral(
             face,
             surface,
             rule,
@@ -1330,17 +1474,18 @@ fn integrals_in(
             sense,
             &plan,
             (unrolled, doublings),
-        );
-        if exact || coarser.is_some_and(|coarser| coarser.agrees_with(&total, outline.noise)) {
-            return settle(surface, index, rule, total);
+            work,
+        ) else {
+            break;
+        };
+        let noise = outline.noise(total.size.area);
+        if exact || coarser.is_some_and(|coarser| coarser.agrees_with(&total, noise)) {
+            return settle(surface, index, rule, total, work);
         }
         coarser = Some(total);
         set_up = Some(plan);
     }
-    Err(MassError::Unsupported {
-        face: index,
-        what: "a boundary integral that does not settle: the boundary is too intricate, or too close to where the surface's parametrisation collapses",
-    })
+    Err(unsettled(index))
 }
 
 /// How big the body is: the extent of its vertices and of the ends and
@@ -1375,8 +1520,10 @@ fn body_size(body: &Body) -> f64 {
 /// winds around an axis more than once, torus loops that wind around the
 /// axis and the tube at once, a face of a sphere or a torus too thin (or
 /// too nearly the whole surface) to tell which side of its loops it is
-/// on, and a face whose boundary integral does not settle. A face that is
-/// outside its own loops is [`MassError::UnboundedFace`].
+/// on, and a face whose boundary integral does not settle, or has not
+/// within the work a face may take (see the module documentation: the
+/// time is bounded). A face that is outside its own loops is
+/// [`MassError::UnboundedFace`].
 pub fn mass_properties(body: &Body) -> Result<MassProperties, MassError> {
     let rule = Rule::new(NODES);
     let size = body_size(body);
@@ -1419,7 +1566,7 @@ mod tests {
 
     use super::*;
     use crate::{Body, BodyKind, Coedge};
-    use craft3d_geom::Circle;
+    use craft3d_geom::{Circle, Cylinder, Ellipse};
     use std::f64::consts::{PI, TAU};
 
     const RADIUS: f64 = 2.0;
@@ -1461,7 +1608,9 @@ mod tests {
     fn area_in(body: &Body, surface: &Surface) -> Result<f64, MassError> {
         let rule = Rule::new(NODES);
         let face = body.faces.first().unwrap();
-        integrals_in(body, face, surface, 0, &rule, body_size(body)).map(|sums| sums.area)
+        let mut work = Work::new(surface);
+        integrals_in(body, face, surface, 0, &rule, body_size(body), &mut work)
+            .map(|sums| sums.area)
     }
 
     /// The pole `G` runs from may be anywhere: in the face, outside it,
@@ -1558,5 +1707,98 @@ mod tests {
                 assert_eq!(own.radius(), RADIUS);
             }
         }
+    }
+
+    /// A band of the cylinder of radius `RADIUS` about the z axis through
+    /// `CENTRE` between two parallel planes, which cut the axis at `level`
+    /// and `width` further up, as a sheet of one face. Its area is 2πr
+    /// times `width`, however the planes are tilted: by a quarter of
+    /// `width` (in radians), so that the rims wander across the band by
+    /// about its width and every boundary point has a height of its own.
+    fn band(level: f64, width: f64) -> Body {
+        let tilt = 0.25 * width;
+        let mut body = Body::new(BodyKind::Sheet);
+        let mut loops = Vec::new();
+        for (z, reversed) in [(level, false), (level + width, true)] {
+            let frame = Frame::new(
+                CENTRE + Vec3::new(0.0, 0.0, z),
+                Vec3::new(0.0, -tilt.sin(), tilt.cos()),
+                Vec3::X,
+            )
+            .unwrap();
+            let vertex = body.add_vertex(frame.point(RADIUS, 0.0, 0.0));
+            let edge = body.add_edge(
+                Curve3::Ellipse(Ellipse::new(frame, RADIUS, RADIUS / tilt.cos()).unwrap()),
+                (0.0, TAU),
+                vertex,
+                vertex,
+            );
+            loops.push(body.add_loop(vec![Coedge { edge, reversed }]));
+        }
+        let cylinder = Cylinder::new(Frame::WORLD.at(CENTRE).unwrap(), RADIUS).unwrap();
+        let face = body.add_face(Surface::Cylinder(cylinder), false, loops);
+        body.add_shell(vec![face]);
+        body
+    }
+
+    /// A strip is known to as many digits as its width is: its sums
+    /// agree to the rounding of its coordinates over the width, not over
+    /// its length, and it is measured to that instead of being doubled
+    /// until it is given up.
+    #[test]
+    fn a_strip_settles_to_the_rounding_over_its_width() {
+        for level in [0.0, 1.3, 40.0] {
+            for width in [1.0, 1e-3, 1e-5, 1e-7, 1e-9] {
+                let body = band(level, width);
+                let surface = body.faces[0].surface.clone();
+                let area = area_in(&body, &surface)
+                    .unwrap_or_else(|error| panic!("level {level}, width {width}: {error}"));
+                // The top of the band is `level + width` rounded.
+                let top = CENTRE.z + level + width;
+                let expected = TAU * RADIUS * (top - (CENTRE.z + level));
+                let known = 1e-11 + 8.0 * f64::EPSILON * top.abs().max(RADIUS) / width;
+                assert!(
+                    (area - expected).abs() <= known * expected,
+                    "level {level}, width {width}: {area} vs {expected}"
+                );
+            }
+        }
+    }
+
+    /// A face that has taken its budget is given up with the error of a
+    /// boundary integral that does not settle, wherever it is at.
+    #[test]
+    fn a_face_past_its_budget_is_refused() {
+        let body = cap(0.8);
+        let surface = turned(0.3);
+        let face = body.faces.first().unwrap();
+        let rule = Rule::new(NODES);
+        let run = |spent: u64| {
+            let mut work = Work { spent, each: 1 };
+            let sums = integrals_in(&body, face, &surface, 0, &rule, body_size(&body), &mut work);
+            (sums.map(|sums| sums.area), work.spent)
+        };
+        let (area, taken) = run(0);
+        let expected = TAU * RADIUS * (RADIUS - 0.8);
+        assert!((area.unwrap() - expected).abs() <= 1e-11 * expected);
+        assert!(taken > 0 && taken < BUDGET / 1000, "{taken}");
+        // With all but half of that left, it stops on the way.
+        let (refused, spent) = run(BUDGET - taken / 2);
+        match refused {
+            Err(MassError::Unsupported { what, .. }) => {
+                assert!(what.contains("does not settle"), "{what}")
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(spent > BUDGET && spent <= BUDGET + taken, "{spent}");
+        // And a whole surface likewise.
+        let mut work = Work {
+            spent: BUDGET + 1,
+            each: 1,
+        };
+        assert!(matches!(
+            whole_surface(&surface, 0, &rule, &mut work),
+            Err(MassError::Unsupported { .. })
+        ));
     }
 }
