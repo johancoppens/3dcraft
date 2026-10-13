@@ -335,12 +335,19 @@ fn numeric(
         // quarters can be clear throughout, and looking there is far
         // cheaper than bounding a stretch that touches the surface
         // somewhere.
+        // The look at the ends and quarters is by the bound below the
+        // distance where there is one (cheap: a few boxes), else by the
+        // distance itself.
+        let off = |t: f64| match lower {
+            Some(bound) => bound(curve.eval(t), 1.001 * tol) > tol,
+            None => f(t).abs() > tol,
+        };
         let clear = certain - stray > tol
             || (value.abs() > tol
                 && lower_stretch.is_some_and(|bound| {
                     [a, 0.5 * (a + mid), 0.5 * (mid + b), b]
                         .into_iter()
-                        .all(|t| f(t).abs() > tol)
+                        .all(off)
                         && bound(a, b, tol) > tol
                 }));
         // Near: within the tolerance by its middle and the travel, too

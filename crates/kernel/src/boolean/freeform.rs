@@ -55,8 +55,11 @@ struct Node {
     v: (f64, f64),
     children: Option<[usize; 4]>,
     /// A leaf keeps its piece, to split further when a query needs a
-    /// bound finer than its box.
+    /// bound finer than its box, and the box of the piece in its own
+    /// frame, thinner than `bbox`, by which the nearest-point search
+    /// prunes.
     patch: Option<RationalBezierPatch>,
+    slab: Option<Slab>,
     /// A lower bound on the smallest singular value of the Jacobian over
     /// this piece; zero when none is known.
     sigma: f64,
@@ -461,6 +464,7 @@ impl PatchTree {
                 .max(sigma),
             None => sigma,
         };
+        let slab = children.is_none().then(|| Slab::around(patch));
         let patch = children.is_none().then(|| patch.clone());
         self.nodes.push(Node {
             bbox,
@@ -468,6 +472,7 @@ impl PatchTree {
             v,
             children,
             patch,
+            slab,
             sigma,
         });
         self.nodes.len() - 1
@@ -693,8 +698,19 @@ impl PatchTree {
                 heap.push(Pending(box_distance(&node.bbox, p), root));
             }
         }
+        // (A root that is itself a leaf is queued by its world box, which
+        // is below its slab's distance: safe, only looser.)
         let mut best: Option<Nearest> = None;
         let mut visited = 0_usize;
+        // A leaf is queued by the distance to the box in its own frame,
+        // which is short of the distance to the piece by its bend only:
+        // far from the surface, the pieces whose boxes in the world's axes
+        // reach nearer than the nearest point found form a ring that
+        // would all be descended from.
+        let key = |node: &Node| match &node.slab {
+            Some(slab) => box_distance(&slab.local, slab.to_local(p)),
+            None => box_distance(&node.bbox, p),
+        };
         while let Some(Pending(d, index)) = heap.pop() {
             if best.is_some_and(|b| d >= b.distance) {
                 break;
@@ -706,7 +722,7 @@ impl PatchTree {
                 Some(kids) => {
                     for k in kids {
                         if let Some(child) = self.nodes.get(k) {
-                            heap.push(Pending(box_distance(&child.bbox, p), k));
+                            heap.push(Pending(key(child), k));
                         }
                     }
                 }
