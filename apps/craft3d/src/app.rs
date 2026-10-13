@@ -133,9 +133,15 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
         ));
     }
     let mut host = Host::new(session);
-    // The window never waits for the CPU renderer: sharp images are made
-    // on the shell's own thread.
-    host.shell = Shell::threaded();
+    // The window never waits for the renderer: sharp images are made on
+    // the shell's own thread. The viewport is rendered on the GPU when the
+    // machine has one, with the CPU reference renderer as the fallback
+    // (`--renderer cpu` asks for it outright).
+    host.shell = Shell::threaded_with(options.renderer);
+    announce(&format!(
+        "viewport renderer: {}",
+        host.shell.renderer_report().describe()
+    ));
     let title = window_title(host.session.document_status().as_ref());
     let viewer = Viewer {
         host,

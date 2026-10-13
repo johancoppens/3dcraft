@@ -4,6 +4,7 @@
 //! `--flag VALUE` or `--flag=VALUE`; `--` ends the flags, so a file name may
 //! start with a dash after it. A flag wins over its environment variable.
 
+use craft3d_ui_egui::RendererChoice;
 use std::path::PathBuf;
 
 pub const HELP: &str = "\
@@ -11,6 +12,7 @@ craft3d: the 3DCraft desktop viewer
 
 Usage: craft3d [FILE] [--control PORT --control-token-file FILE]
                [--automation-read-root DIR] [--automation-write-root DIR]
+               [--renderer auto|cpu]
        craft3d --version | --help
 
 Opens FILE (a .3dcraft file) when one is given, and shows the active
@@ -29,10 +31,14 @@ Options:
   --automation-read-root DIR  Requests may read files beneath DIR only
   --automation-write-root DIR Requests may write files beneath DIR only
                               Without a root, that direction is denied.
+  --renderer auto|cpu         What shades the model in the viewport: auto
+                              (the GPU when there is one, else the CPU; the
+                              default) or cpu (the reference renderer, to
+                              compare). The screenshot is always the CPU's.
 
 Environment: CRAFT3D_CONTROL_PORT, CRAFT3D_CONTROL_TOKEN_FILE,
-CRAFT3D_AUTOMATION_READ_ROOT and CRAFT3D_AUTOMATION_WRITE_ROOT stand in for
-the flags of the same name.
+CRAFT3D_AUTOMATION_READ_ROOT, CRAFT3D_AUTOMATION_WRITE_ROOT and
+CRAFT3D_RENDERER stand in for the flags of the same name.
 
 Mouse: drag to orbit, right-drag or shift-drag to pan, wheel to zoom, F to
 frame everything.
@@ -48,6 +54,8 @@ pub struct Options {
     pub token_file: Option<PathBuf>,
     pub read_root: Option<String>,
     pub write_root: Option<String>,
+    /// What renders the viewport.
+    pub renderer: RendererChoice,
 }
 
 /// What the command line asked for.
@@ -107,7 +115,8 @@ pub fn parse(
             "--control"
             | "--control-token-file"
             | "--automation-read-root"
-            | "--automation-write-root" => {
+            | "--automation-write-root"
+            | "--renderer" => {
                 if seen.contains(&name) {
                     return Err(format!("`{name}` was given twice"));
                 }
@@ -118,6 +127,10 @@ pub fn parse(
                     "--control" => options.control = Some(port(&value, "--control")?),
                     "--control-token-file" => options.token_file = Some(PathBuf::from(value)),
                     "--automation-read-root" => options.read_root = Some(value),
+                    "--renderer" => {
+                        options.renderer = RendererChoice::parse(&value)
+                            .map_err(|e| format!("--renderer: {e}"))?;
+                    }
                     _ => options.write_root = Some(value),
                 }
                 seen.push(name);
@@ -139,6 +152,12 @@ pub fn parse(
     }
     if options.write_root.is_none() {
         options.write_root = from_env("CRAFT3D_AUTOMATION_WRITE_ROOT");
+    }
+    if !seen.iter().any(|flag| flag == "--renderer")
+        && let Some(value) = from_env("CRAFT3D_RENDERER")
+    {
+        options.renderer =
+            RendererChoice::parse(&value).map_err(|e| format!("CRAFT3D_RENDERER: {e}"))?;
     }
     if options.control.is_some() && options.token_file.is_none() {
         return Err(
@@ -192,6 +211,7 @@ mod tests {
                 token_file: Some(PathBuf::from(".private/control.token")),
                 read_root: Some("work".to_string()),
                 write_root: Some("out dir".to_string()),
+                renderer: RendererChoice::Auto,
             }
         );
         // Port 0 asks for a free one.
@@ -204,6 +224,41 @@ mod tests {
             options(&["--", "--odd.3dcraft"]).file.as_deref(),
             Some("--odd.3dcraft")
         );
+    }
+
+    #[test]
+    fn the_renderer_is_chosen_by_flag_or_variable_and_is_the_gpu_by_default() {
+        assert_eq!(options(&[]).renderer, RendererChoice::Auto);
+        assert_eq!(
+            options(&["--renderer", "cpu"]).renderer,
+            RendererChoice::Cpu
+        );
+        assert_eq!(options(&["--renderer=CPU"]).renderer, RendererChoice::Cpu);
+        assert_eq!(options(&["--renderer=gpu"]).renderer, RendererChoice::Auto);
+        assert_eq!(
+            options(&["--renderer", "auto"]).renderer,
+            RendererChoice::Auto
+        );
+        let error = run(&["--renderer", "software"]).unwrap_err();
+        assert!(
+            error.starts_with("--renderer:") && error.contains("`software`"),
+            "{error}"
+        );
+        assert!(run(&["--renderer"]).unwrap_err().contains("needs a value"));
+        let env = |name: &str| (name == "CRAFT3D_RENDERER").then(|| "cpu".to_string());
+        let parse = |list: &[&str]| match parse(list.iter().map(|s| (*s).to_string()), &env) {
+            Ok(Parsed::Run(options)) => options,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(parse(&[]).renderer, RendererChoice::Cpu);
+        assert_eq!(
+            parse(&["--renderer", "auto"]).renderer,
+            RendererChoice::Auto
+        );
+        let bad = |name: &str| (name == "CRAFT3D_RENDERER").then(|| "metal".to_string());
+        let error = super::parse(Vec::new(), &bad).unwrap_err();
+        assert!(error.starts_with("CRAFT3D_RENDERER:"), "{error}");
+        assert!(HELP.contains("--renderer") && HELP.contains("CRAFT3D_RENDERER"));
     }
 
     #[test]

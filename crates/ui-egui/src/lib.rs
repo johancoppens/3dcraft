@@ -10,15 +10,19 @@
 //! - [`state`]: the serde state the control channel reads and drives.
 //! - [`theme`]: the design tokens every colour and radius comes from.
 //! - [`camera`]: orbit, pan, zoom, fit, and projecting like the renderer.
-//! - [`viewport`]: the CPU-rendered image and the lines drawn over it.
+//! - [`backend`]: which renderer shades the bodies: the wgpu renderer on
+//!   a device of its own when there is an adapter, else the CPU reference
+//!   renderer, which is also the fallback when the GPU fails.
+//! - [`viewport`]: the rendered image and the lines drawn over it.
 //! - [`frames`]: which image is on screen, and the thread that makes the
 //!   sharp one.
 //! - [`shell`]: the panels and the mouse.
 //! - [`control`]: the `ui.*` methods of the control protocol.
 //!
-//! The viewport shows the image of the CPU reference renderer for now; the
-//! wgpu renderer is a later slice.
+//! `ui.screenshot` always renders on the CPU: it is the oracle the GPU
+//! viewport is checked against (docs/architecture.md §7).
 
+pub mod backend;
 pub mod camera;
 pub mod control;
 pub mod frames;
@@ -27,6 +31,7 @@ pub mod state;
 pub mod theme;
 pub mod viewport;
 
+pub use backend::{Backend, BodyRenderer, RendererChoice, RendererReport};
 pub use control::{UI_METHODS, UiMethod};
 pub use shell::{CommandReport, FileAction, RenderStats, Shell, TreeRow, window_title};
 pub use state::{CameraState, Panels, ProjectionKind, UiState};

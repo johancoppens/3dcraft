@@ -1,6 +1,7 @@
-//! The picture in the viewport: the scene's bodies shaded by the CPU
-//! reference renderer, and the lines drawn over that image (the edges of
-//! the bodies, sketches, the world axes) projected with the same camera.
+//! The picture in the viewport: the scene's bodies shaded by a renderer
+//! (the GPU's or the CPU reference renderer, see [`crate::backend`]), and
+//! the lines drawn over that image (the edges of the bodies, sketches, the
+//! world axes) projected with the same camera.
 //!
 //! The lines are tested against the renderer's depth buffer, a pixel at a
 //! time: the part of a body's edge that lies behind a body is left out,
@@ -12,6 +13,7 @@
 //! `ui.screenshot` rasterises the same overlay into the same image, so the
 //! two show the same thing.
 
+use crate::backend::{Backend, BodyRenderer};
 use crate::camera::{Projected, Projector};
 use crate::state::CameraState;
 use crate::theme::{Rgb, Tokens};
@@ -107,6 +109,35 @@ const MAX_DEPTH_STEPS: f64 = 8192.0;
 /// the very depth of the surface, give or take rounding.
 pub const DEPTH_SLACK: f64 = 1e-6;
 
+/// The GPU renderer's distance is an `f32` computation: sixteen roundings
+/// of 2⁻²⁴ on numbers as large as the eye's distance to the model's centre
+/// plus the model's diagonal (the `reach` of docs/architecture.md §7.2).
+/// The depth test of the overlay allows a GPU frame that much more.
+pub const GPU_DEPTH_ERROR: f64 = 16.0 / 16_777_216.0;
+
+/// How far behind the surface under it a line may be and still count as
+/// lying on it, in model units: [`DEPTH_SLACK`] of the camera's distance,
+/// and for a frame the GPU made its [`GPU_DEPTH_ERROR`] of the reach too.
+pub fn depth_slack(backend: Backend, scene: Option<&Scene>, camera: &CameraState) -> f64 {
+    let base = camera.distance.abs() * DEPTH_SLACK;
+    match backend {
+        Backend::Cpu => base,
+        Backend::Gpu => {
+            let reach = scene
+                .and_then(|scene| scene.bbox.center().map(|c| (c, scene.bbox.diagonal())))
+                .map_or(0.0, |(center, diagonal)| {
+                    (camera.eye() - center).length() + diagonal
+                });
+            let extra = reach * GPU_DEPTH_ERROR;
+            if extra.is_finite() {
+                base + extra
+            } else {
+                base
+            }
+        }
+    }
+}
+
 /// The renderer's depth buffer, as the lines are tested against it.
 #[derive(Clone, Copy)]
 struct DepthMap<'a> {
@@ -119,11 +150,10 @@ struct DepthMap<'a> {
 }
 
 impl<'a> DepthMap<'a> {
-    /// `None` when the buffer is not the size it says: nothing is hidden
-    /// then, rather than the wrong thing.
-    fn new(frame: &'a Frame, camera: &CameraState) -> Option<Self> {
+    /// `None` when the buffer is not the size it says, or the slack is
+    /// not a number: nothing is hidden then, rather than the wrong thing.
+    fn new(frame: &'a Frame, slack: f64) -> Option<Self> {
         let (width, height) = (frame.width as usize, frame.height as usize);
-        let slack = camera.distance.abs() * DEPTH_SLACK;
         (width.checked_mul(height) == Some(frame.depth.len()) && slack.is_finite()).then_some(
             Self {
                 width,
@@ -241,16 +271,34 @@ pub fn overlay(
 }
 
 /// The lines over `frame`, the image of the scene's bodies seen with
-/// `camera`: what [`overlay`] gives, tested against the frame's depth
-/// buffer. Edges of bodies are cut where a body is in front of them;
-/// sketch lines and points are marked hidden there.
+/// `camera` as the CPU renderer made it: what [`overlay`] gives, tested
+/// against the frame's depth buffer. Edges of bodies are cut where a body
+/// is in front of them; sketch lines and points are marked hidden there.
 pub fn overlay_on(
     scene: Option<&Scene>,
     camera: &CameraState,
     frame: &Frame,
     selected: Option<&str>,
 ) -> Overlay {
-    let map = DepthMap::new(frame, camera);
+    overlay_on_with(
+        scene,
+        camera,
+        frame,
+        selected,
+        depth_slack(Backend::Cpu, scene, camera),
+    )
+}
+
+/// [`overlay_on`] with the depth test's slack given in model units (see
+/// [`depth_slack`]): for a frame another renderer made.
+pub fn overlay_on_with(
+    scene: Option<&Scene>,
+    camera: &CameraState,
+    frame: &Frame,
+    selected: Option<&str>,
+    slack: f64,
+) -> Overlay {
+    let map = DepthMap::new(frame, slack);
     build_overlay(
         scene,
         camera,
@@ -365,6 +413,18 @@ pub struct Quality {
     pub ssaa: u32,
 }
 
+/// What either renderer is given for an image of `quality` in the theme's
+/// colours.
+pub fn render_params(quality: Quality, tokens: &Tokens) -> RenderParams {
+    RenderParams {
+        width: quality.width,
+        height: quality.height,
+        ssaa: quality.ssaa,
+        background: tokens.viewport_background,
+        color: tokens.body,
+    }
+}
+
 /// The bodies of `scene` as the CPU reference renderer shades them, in the
 /// theme's colours. No scene, or a scene without bodies, is the background.
 pub fn render_bodies(
@@ -373,13 +433,7 @@ pub fn render_bodies(
     quality: Quality,
     tokens: &Tokens,
 ) -> Result<Frame, String> {
-    let params = RenderParams {
-        width: quality.width,
-        height: quality.height,
-        ssaa: quality.ssaa,
-        background: tokens.viewport_background,
-        color: tokens.body,
-    };
+    let params = render_params(quality, tokens);
     let empty = craft3d_tess::Mesh::default();
     let mesh = scene.map_or(&empty, |scene| &scene.mesh);
     craft3d_render::render(mesh, &camera.to_render(), &params).map_err(|e| e.to_string())
@@ -397,11 +451,13 @@ pub struct Composed {
     /// Fraction of the pixels covered by a body.
     pub coverage: f64,
     pub triangles: usize,
+    /// Which renderer shaded the bodies.
+    pub backend: Backend,
 }
 
-/// Renders the bodies and works out the overlay for the same camera and
-/// image size. No egui and no shared state: the window calls it on its
-/// render thread.
+/// Renders the bodies with the CPU reference renderer and works out the
+/// overlay for the same camera and image size: [`compose_with`] on the
+/// oracle.
 pub fn compose(
     scene: Option<&Scene>,
     camera: &CameraState,
@@ -409,9 +465,37 @@ pub fn compose(
     tokens: &Tokens,
     selected: Option<&str>,
 ) -> Result<Composed, String> {
-    let frame = render_bodies(scene, camera, quality, tokens)?;
+    compose_with(
+        &mut BodyRenderer::cpu(),
+        scene,
+        camera,
+        quality,
+        tokens,
+        selected,
+    )
+}
+
+/// Renders the bodies with `renderer` and works out the overlay for the
+/// same camera and image size, tested against the frame's depth buffer
+/// with the slack that renderer needs. No egui and no shared state: the
+/// window calls it on its render thread.
+pub fn compose_with(
+    renderer: &mut BodyRenderer,
+    scene: Option<&Scene>,
+    camera: &CameraState,
+    quality: Quality,
+    tokens: &Tokens,
+    selected: Option<&str>,
+) -> Result<Composed, String> {
+    let (frame, backend) = renderer.render(scene, camera, quality, tokens)?;
     let coverage = frame.coverage();
-    let overlay = overlay_on(scene, camera, &frame, selected);
+    let overlay = overlay_on_with(
+        scene,
+        camera,
+        &frame,
+        selected,
+        depth_slack(backend, scene, camera),
+    );
     Ok(Composed {
         width: frame.width,
         height: frame.height,
@@ -419,6 +503,7 @@ pub fn compose(
         overlay,
         coverage,
         triangles: scene.map_or(0, Scene::triangles),
+        backend,
     })
 }
 
@@ -436,8 +521,9 @@ pub struct Picture {
     pub triangles: usize,
 }
 
-/// Renders the bodies and draws the overlay into the image: what the
-/// window shows, without a window. `scale` is the number of pixels per
+/// Renders the bodies with the CPU reference renderer and draws the
+/// overlay into the image: what the window shows, without a window, from
+/// the oracle (`ui.screenshot`). `scale` is the number of pixels per
 /// point, for the widths of the lines.
 pub fn picture(
     scene: Option<&Scene>,
@@ -461,6 +547,7 @@ pub fn rasterise(composed: Composed, tokens: &Tokens, scale: f64) -> Picture {
         overlay,
         coverage,
         triangles,
+        backend: _,
     } = composed;
     let before = rgb.clone();
     let scale = if scale.is_finite() && scale > 0.0 {
