@@ -275,3 +275,244 @@ fn a_plane_through_the_border_of_a_patch_meets_it_along_the_border() {
         }
     }
 }
+
+/// A bicubic patch that is the graph over the unit square of the frame's
+/// xy plane, times `k`, of
+/// `lift + a (x − cx)² + b (y − cy)² + c (x − cx)(y − cy)`:
+/// a height field with one critical point, at `(cx, cy)`, whose Hessian is
+/// known. As a Bézier patch or as the same patch as a NURBS surface.
+fn quadric_patch(
+    frame: &Frame,
+    k: f64,
+    (cx, cy): (f64, f64),
+    (a, b, c): (f64, f64, f64),
+    lift: f64,
+    nurbs: bool,
+) -> Surface {
+    // The coefficient of x^p y^q.
+    let mut coefficient = [[0.0_f64; 4]; 4];
+    coefficient[0][0] = lift + a * cx * cx + b * cy * cy + c * cx * cy;
+    coefficient[1][0] = -2.0 * a * cx - c * cy;
+    coefficient[0][1] = -2.0 * b * cy - c * cx;
+    coefficient[2][0] = a;
+    coefficient[0][2] = b;
+    coefficient[1][1] = c;
+    // The Bézier ordinate of x^p at control point i of a cubic: the
+    // blossom of the monomial at i ones and 3 − i zeros.
+    let blossom = |p: usize, i: usize| -> f64 {
+        let i = i as f64;
+        match p {
+            0 => 1.0,
+            1 => i / 3.0,
+            2 => i * (i - 1.0) / 6.0,
+            _ => i * (i - 1.0) * (i - 2.0) / 6.0,
+        }
+    };
+    let mut net = [[Vec3::ZERO; 4]; 4];
+    for (i, row) in net.iter_mut().enumerate() {
+        for (j, point) in row.iter_mut().enumerate() {
+            let mut z = 0.0;
+            for (p, of_x) in coefficient.iter().enumerate() {
+                for (q, value) in of_x.iter().enumerate() {
+                    z += value * blossom(p, i) * blossom(q, j);
+                }
+            }
+            *point = frame.point(k * i as f64 / 3.0, k * j as f64 / 3.0, k * z);
+        }
+    }
+    let patch = craft3d_geom::BezierPatch::bicubic(net).unwrap();
+    if nurbs {
+        Surface::Nurbs(craft3d_geom::NurbsSurface::from_bezier(&patch).unwrap())
+    } else {
+        Surface::Bezier(patch)
+    }
+}
+
+/// The roof of a domed block.
+fn roof(frame: &Frame, size: (f64, f64, f64), nurbs: bool) -> Surface {
+    craft3d_testkit::trimmed::domed_block(frame, size.0, size.1, size.2, nurbs)
+        .unwrap()
+        .body
+        .faces
+        .iter()
+        .map(|f| f.surface.clone())
+        .find(|s| matches!(s, Surface::Bezier(_) | Surface::Nurbs(_)))
+        .unwrap()
+}
+
+/// Two roofs set against each other so that they touch at one point and
+/// cross elsewhere (tangent/dome-dome/005 of the boolean corpus). Around
+/// the touch the gradient of the distance is small over a wide area (the
+/// weaker eigenvalue of its Hessian is a seventeenth of the stronger), and
+/// a cell is called simple only where the gradient exceeds the bound on
+/// the second derivatives times the cell. Until 2026-10-13 that bound was
+/// four times the largest curvature anywhere on the other roof, the cells
+/// around the point were split down to the floor at every level, and the
+/// pair was refused after 400,000 cells and seven seconds as "tangent or
+/// nearly coincident over too large an area". Now the point is looked
+/// for as soon as cells pile up, the disc around it is settled by its
+/// second-order model, and the bound is taken from the curvature nearby.
+#[test]
+fn roofs_that_touch_at_a_point_and_cross_elsewhere_meet_in_both() {
+    for nurbs in [false, true] {
+        let lower = roof(
+            &Frame::new(Vec3::new(-0.625, -1.25, 0.125), Vec3::Z, Vec3::X).unwrap(),
+            (1.75, 1.0, 2.125),
+            nurbs,
+        );
+        let upper = roof(
+            &Frame::new(
+                Vec3::new(-0.9687694778582878, 0.14324144951977846, 3.056784691023382),
+                Vec3::new(0.0959496952727907, -0.0796694558935784, -0.9921927402348193),
+                Vec3::new(
+                    0.995371366868992,
+                    0.0022407034470068995,
+                    0.09607716307956281,
+                ),
+            )
+            .unwrap(),
+            (2.25, 1.625, 1.125),
+            nurbs,
+        );
+        let t = tol(1.0);
+        let within = cube(Vec3::new(0.0, -0.75, 2.2), 3.0);
+        let clock = std::time::Instant::now();
+        let m = meeting(meet_surfaces(&lower, &upper, &within, &t).unwrap());
+        let took = clock.elapsed();
+        check_meeting(&m, &lower, &upper, &within, &t);
+        assert_eq!(m.points.len(), 1, "nurbs {nurbs}: {:?}", m.points);
+        let touch = m.points[0];
+        assert!(distance(&lower, touch) <= t.linear && distance(&upper, touch) <= t.linear);
+        let (na, nb) = (
+            normal_at(&lower, touch).unwrap(),
+            normal_at(&upper, touch).unwrap(),
+        );
+        assert!(na.cross(nb).length() < 1e-5, "nurbs {nurbs}: {na:?} {nb:?}");
+        // The curves keep clear of the touch: it is a point of its own.
+        assert!(!m.curves.is_empty(), "nurbs {nurbs}");
+        for curve in &m.curves {
+            for p in samples(curve, 200) {
+                assert!(p.distance(touch) > 0.01, "nurbs {nurbs}: {p:?}");
+            }
+        }
+        assert!(took.as_secs() < 20, "nurbs {nurbs}: took {took:?}");
+    }
+}
+
+/// Two freeform patches that touch at one point, a bowl on a cap: the
+/// meeting is that point and nothing else. (The difference of the two
+/// height fields has a minimum there whose smaller eigenvalue is a tenth
+/// of the larger.)
+#[test]
+fn freeform_patches_that_touch_at_a_point_meet_in_that_point() {
+    for k in SCALES {
+        for nurbs in [false, true] {
+            let frame = tilted(k);
+            let at = (0.4, 0.55);
+            let bowl = quadric_patch(&frame, k, at, (0.9, 0.35, 0.2), 0.0, nurbs);
+            let cap = quadric_patch(&frame, k, at, (-0.6, 0.2, -0.1), 0.0, nurbs);
+            let t = tol(k);
+            let touch = frame.point(k * at.0, k * at.1, 0.0);
+            let within = cube(touch, 2.0 * k);
+            let clock = std::time::Instant::now();
+            let m = meeting(meet_surfaces(&bowl, &cap, &within, &t).unwrap());
+            let took = clock.elapsed();
+            assert!(m.curves.is_empty(), "scale {k} nurbs {nurbs}: {m:?}");
+            assert_eq!(m.points.len(), 1, "scale {k} nurbs {nurbs}: {m:?}");
+            assert!(
+                m.points[0].distance(touch) <= t.linear,
+                "scale {k} nurbs {nurbs}: {:?} against {touch:?}",
+                m.points[0]
+            );
+            assert!(
+                took.as_secs() < 10,
+                "scale {k} nurbs {nurbs}: took {took:?}"
+            );
+        }
+    }
+}
+
+/// Two freeform patches that are tangent at a point and cross there: the
+/// difference of the height fields is a saddle, `0.5 x² − 0.32 y²` about
+/// the point, so the meeting is two curves through it, along
+/// `y = ± 1.25 x` seen from above, each arm ending at the point.
+#[test]
+fn freeform_patches_that_cross_through_a_touch_meet_in_four_arms() {
+    for k in SCALES {
+        for nurbs in [false, true] {
+            let frame = tilted(k);
+            let at = (0.45, 0.5);
+            let upper = quadric_patch(&frame, k, at, (0.8, -0.12, 0.0), 0.0, nurbs);
+            let lower = quadric_patch(&frame, k, at, (0.3, 0.2, 0.0), 0.0, nurbs);
+            let t = tol(k);
+            let touch = frame.point(k * at.0, k * at.1, 0.0);
+            let within = cube(touch, 2.0 * k);
+            let clock = std::time::Instant::now();
+            let m = meeting(meet_surfaces(&upper, &lower, &within, &t).unwrap());
+            let took = clock.elapsed();
+            check_meeting(&m, &upper, &lower, &within, &t);
+            assert!(m.points.is_empty(), "scale {k} nurbs {nurbs}: {m:?}");
+            assert_eq!(
+                m.curves.len(),
+                4,
+                "scale {k} nurbs {nurbs}: {} curves",
+                m.curves.len()
+            );
+            let mut quadrants = [false; 4];
+            for curve in &m.curves {
+                let ends = [start(curve), end(curve)];
+                let inner = ends
+                    .iter()
+                    .filter(|p| p.distance(touch) <= t.linear)
+                    .count();
+                assert_eq!(inner, 1, "scale {k} nurbs {nurbs}: ends {ends:?}");
+                for p in samples(curve, 40) {
+                    let (x, y, _) = frame.local(p);
+                    let (x, y) = (x / k - at.0, y / k - at.1);
+                    // On y = ± 1.25 x: the patches are exact quadrics.
+                    assert!(
+                        (y.abs() - 1.25 * x.abs()).abs() <= 4.0 * t.linear / k,
+                        "scale {k} nurbs {nurbs}: ({x}, {y})"
+                    );
+                    if x.hypot(y) > 0.01 {
+                        quadrants[usize::from(x > 0.0) + 2 * usize::from(y > 0.0)] = true;
+                    }
+                }
+                // Out to the border of the patches.
+                let outer = ends.iter().map(|p| p.distance(touch)).fold(0.0, f64::max);
+                assert!(outer > 0.4 * k, "scale {k} nurbs {nurbs}: ends {ends:?}");
+            }
+            assert_eq!(quadrants, [true; 4], "scale {k} nurbs {nurbs}");
+            assert!(
+                took.as_secs() < 10,
+                "scale {k} nurbs {nurbs}: took {took:?}"
+            );
+        }
+    }
+}
+
+/// The bowl held ten tolerances above the cap: they do not meet.
+#[test]
+fn freeform_patches_that_nearly_touch_do_not_meet() {
+    for k in SCALES {
+        for nurbs in [false, true] {
+            let frame = tilted(k);
+            let at = (0.4, 0.55);
+            let bowl = quadric_patch(&frame, k, at, (0.9, 0.35, 0.2), 1e-5, nurbs);
+            let cap = quadric_patch(&frame, k, at, (-0.6, 0.2, -0.1), 0.0, nurbs);
+            let t = tol(k);
+            let within = cube(frame.point(k * at.0, k * at.1, 0.0), 2.0 * k);
+            let clock = std::time::Instant::now();
+            let met = meet_surfaces(&bowl, &cap, &within, &t).unwrap();
+            let took = clock.elapsed();
+            assert!(
+                matches!(met, craft3d_geom::intersect::SurfaceMeeting::None),
+                "scale {k} nurbs {nurbs}: {met:?}"
+            );
+            assert!(
+                took.as_secs() < 10,
+                "scale {k} nurbs {nurbs}: took {took:?}"
+            );
+        }
+    }
+}

@@ -31,10 +31,26 @@
 //! near points where the surfaces are tangent. There the critical point of
 //! `f` is found by Newton iteration and classified by the Hessian: a
 //! minimum or maximum is an isolated touch (reported as a point; a loop
-//! smaller than a floor cell, twice the linear tolerance across, is
-//! indistinguishable from it), a saddle is a point where two branches
-//! cross (every arm gets a seed, and the march stops there), anything
-//! flatter is refused.
+//! around it where the surfaces go through each other by no more than the
+//! linear tolerance is indistinguishable from it), a saddle is a point
+//! where two branches cross (every arm gets a seed, and the march stops
+//! there), anything flatter is refused.
+//!
+//! **Discs around critical points.** Around a critical point at distance
+//! `r` the gradient of `f` is about `λ r` (`λ` the smaller eigenvalue of
+//! the Hessian), and a cell of size `h` is simple only where that exceeds
+//! `M h`: at every level about `π (M/λ)²` cells around the point are
+//! neither empty nor simple, thousands when the bound `M` is loose or the
+//! contact nearly degenerate, down to the floor. So the critical point is
+//! looked for as soon as cells keep failing both tests (and from every
+//! floor cell), and where one is found whose second-order model
+//! `∇f(x) ≈ H (x − c)` holds within a quarter on two rings around it, the
+//! disc inside the outer ring is settled without cells: `f` has no other
+//! critical point there, so its zero set in the disc is the point itself
+//! (a touch), the two branches through it (a crossing, seeded by its
+//! arms), or nothing (a critical point off the other surface with `f` of
+//! the sign its Hessian keeps). The rings are samples, not a proof: the
+//! same standing as the sampled derivative bounds below.
 //!
 //! The derivative bounds are proofs for the analytic kinds and polynomial
 //! Bézier patches as chart, and for the analytic kinds as field; for NURBS
@@ -68,6 +84,13 @@ const MAX_FLOOR_CELLS: usize = 2_000;
 const MAX_POINTS: usize = 16_000;
 const MAX_BRANCHES: usize = 512;
 const MAX_EVALS: usize = 40_000_000;
+/// Cells that are neither empty nor simple before a critical point is
+/// looked for the first time; doubled after every look that settles
+/// nothing.
+const FIRST_LOOK: usize = 16;
+/// How far the gradient of `f` may stray from its second-order model on
+/// the rings of a disc, as a fraction of the model.
+const DISC_MODEL: f64 = 0.25;
 /// Deepest subdivision: the finest cell is `2^-MAX_LEVELS` of a base cell.
 const MAX_LEVELS: u32 = 40;
 /// Largest turn of the tangent in one step, in radians.
@@ -148,6 +171,49 @@ struct Singular {
     v: f64,
     p: Vec3,
     kind: SingularKind,
+}
+
+/// Where Newton on the gradient of `f` came to rest.
+#[derive(Clone, Copy, Debug)]
+struct Stationary {
+    u: f64,
+    v: f64,
+    e: Eval,
+    /// The lengths of the chart's derivatives there.
+    lu: f64,
+    lv: f64,
+    /// The gradient and the Hessian of `f` along the surface, in units of
+    /// length.
+    g: (f64, f64),
+    h: (f64, f64, f64),
+    /// No step was left to take: the Hessian is degenerate there.
+    flat: bool,
+}
+
+/// An ellipse in the chart's parameters around a critical point,
+/// `((u − cu) lu)² + ((v − cv) lv)² ≤ radius²`, inside which the zero set
+/// of `f` is known without cells.
+#[derive(Clone, Copy, Debug)]
+struct Disc {
+    u: f64,
+    v: f64,
+    lu: f64,
+    lv: f64,
+    radius: f64,
+}
+
+impl Disc {
+    fn holds(&self, u: f64, v: f64) -> bool {
+        ((u - self.u) * self.lu).hypot((v - self.v) * self.lv) <= self.radius
+    }
+
+    /// True when the cell around `(u, v)` of half sizes `(hu, hv)` lies in
+    /// the disc: an ellipse is convex, so its corners decide.
+    fn covers(&self, u: f64, v: f64, hu: f64, hv: f64) -> bool {
+        [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)]
+            .iter()
+            .all(|&(su, sv)| self.holds(u + su * hu, v + sv * hv))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -619,10 +685,9 @@ impl Marcher {
     }
 
     /// Divides the chart into cells; returns the seeds on the edges of the
-    /// cells that may hold a piece of the intersection, and the centres of
-    /// the floor cells.
-    #[allow(clippy::type_complexity)]
-    fn seeds(&mut self) -> Result<(Vec<(f64, f64)>, Vec<(f64, f64)>), GeomError> {
+    /// cells that may hold a piece of the intersection, and adds the
+    /// points where the surfaces are tangent and touch to `singular`.
+    fn seeds(&mut self, singular: &mut Vec<Singular>) -> Result<Vec<(f64, f64)>, GeomError> {
         let grid = self.grid();
         let b = self.chart.bounds;
         let mut stack: Vec<(i64, i64, i64)> = Vec::new();
@@ -632,8 +697,15 @@ impl Marcher {
             }
         }
         let mut leaves: Vec<(i64, i64, i64)> = Vec::new();
-        let mut floor: Vec<(f64, f64)> = Vec::new();
+        let mut floor = 0_usize;
         let mut cells = 0_usize;
+        let merge = 8.0 * self.tol.linear;
+        // The size of a floor cell in space.
+        let finest = 0.5 * (b.lu * grid.du + b.lv * grid.dv);
+        let mut discs: Vec<Disc> = Vec::new();
+        // Stationary points already looked at, in space.
+        let mut looked: Vec<Vec3> = Vec::new();
+        let (mut waiting, mut patience) = (0_usize, FIRST_LOOK);
         while let Some((i, j, size)) = stack.pop() {
             cells += 1;
             if cells > MAX_CELLS {
@@ -644,6 +716,9 @@ impl Marcher {
                 grid.u0 + grid.du * i as f64 + hu,
                 grid.v0 + grid.dv * j as f64 + hv,
             );
+            if discs.iter().any(|d| d.covers(u, v, hu, hv)) {
+                continue;
+            }
             let reach = b.lu * hu + b.lv * hv;
             let simple = match self.eval(u, v) {
                 Some(e) if e.dist > reach => continue,
@@ -660,10 +735,46 @@ impl Marcher {
             };
             if simple {
                 leaves.push((i, j, size));
-            } else if size == 1 {
+                continue;
+            }
+            // Neither empty nor simple: near a point where the surfaces are
+            // tangent, or the bounds are loose here. Every floor cell
+            // looks for the point; larger cells do when enough of them
+            // have piled up.
+            waiting += 1;
+            if size == 1 || waiting >= patience {
+                waiting = 0;
+                let at_apex = singular.iter().any(|s| {
+                    s.kind == SingularKind::Apex
+                        && self.chart.surface.eval(u, v).distance(s.p) <= 2.0 * merge
+                });
+                let mut settled = false;
+                if !at_apex && let Some(found) = self.stationary(u, v) {
+                    if let Some(point) = self.singular_at(&found, finest)?
+                        && !singular.iter().any(|s| s.p.distance(point.p) <= merge)
+                    {
+                        singular.push(point);
+                    }
+                    if !looked.iter().any(|p| p.distance(found.e.p) <= merge) {
+                        looked.push(found.e.p);
+                        if let Some(disc) = self.disc(&found, finest) {
+                            settled = disc.covers(u, v, hu, hv);
+                            discs.push(disc);
+                            patience = FIRST_LOOK;
+                        }
+                    }
+                }
+                if settled {
+                    continue;
+                }
+                if size > 1 {
+                    patience = patience.saturating_mul(2);
+                }
+            }
+            if size == 1 {
                 leaves.push((i, j, size));
-                floor.push((u, v));
-                if floor.len() > MAX_FLOOR_CELLS {
+                floor += 1;
+                if floor > MAX_FLOOR_CELLS {
                     return Err(too_many());
                 }
             } else {
@@ -727,7 +838,7 @@ impl Marcher {
                 seeds.extend(self.edge_root(&grid, along_u, fixed, (lo, hi), (fa, fb)));
             }
         }
-        Ok((seeds, floor))
+        Ok(seeds)
     }
 
     // ----- singular points ---------------------------------------------------
@@ -759,20 +870,18 @@ impl Marcher {
         (fuu.is_finite() && fuv.is_finite() && fvv.is_finite()).then_some((fuu, fuv, fvv))
     }
 
-    /// Newton on the gradient of `f` from a floor cell: the point where the
-    /// surfaces are tangent, if it is one where they also touch.
-    fn critical(&mut self, u0: f64, v0: f64) -> Result<Option<Singular>, GeomError> {
+    /// Newton on the gradient of `f`: the point near `(u0, v0)` where the
+    /// surfaces are tangent (their normals parallel), wherever the other
+    /// surface is.
+    fn stationary(&mut self, u0: f64, v0: f64) -> Option<Stationary> {
         let (mut u, mut v) = (u0, v0);
-        let Some(start) = self.eval(u0, v0) else {
-            return Ok(None);
-        };
+        let start = self.eval(u0, v0)?;
         for _ in 0..30 {
-            let (Some(e), Some((a, b, c))) = (self.eval(u, v), self.hessian(u, v)) else {
-                return Ok(None);
-            };
+            let e = self.eval(u, v)?;
+            let (a, b, c) = self.hessian(u, v)?;
             let (lu, lv) = (e.su.length(), e.sv.length());
             if !(lu > 0.0 && lv > 0.0) {
-                return Ok(None);
+                return None;
             }
             // In units of length: the Hessian of f along the surface.
             let (ha, hb, hc) = (a / (lu * lu), b / (lu * lv), c / (lv * lv));
@@ -788,33 +897,125 @@ impl Marcher {
             let moved = step_u.hypot(step_v);
             if flat || moved <= self.on {
                 // Converged (or no better step exists).
-                let tangent = gu.hypot(gv) <= 1e-6_f64.max(4.0 * size * self.tol.linear);
-                if !(tangent && e.dist <= self.tol.linear && self.inside(u, v)) {
-                    return Ok(None);
-                }
-                if flat {
-                    return Err(GeomError::Unsupported(
-                        "surfaces that touch along a curve, or with more than second-order contact, without a closed form",
-                    ));
-                }
-                return Ok(Some(Singular {
+                return Some(Stationary {
                     u,
                     v,
-                    p: e.p,
-                    kind: if det > 0.0 {
-                        SingularKind::Touch
-                    } else {
-                        SingularKind::Cross
-                    },
-                }));
+                    e,
+                    lu,
+                    lv,
+                    g: (gu, gv),
+                    h: (ha, hb, hc),
+                    flat,
+                });
             }
             u += step_u / lu;
             v += step_v / lv;
             if !(u.is_finite() && v.is_finite()) || e.p.distance(start.p) > 64.0 * self.hmax {
-                return Ok(None);
+                return None;
             }
         }
-        Ok(None)
+        None
+    }
+
+    /// True when the surfaces touch at the stationary point: nearer to
+    /// each other than the tolerance and than a floor cell reaches
+    /// (`finest`), which is where the cells alone would have come down to
+    /// the floor. Further apart the zero set of `f` keeps clear of the
+    /// point (a saddle one tolerance off the other surface has its two
+    /// branches thousands of tolerances apart), and cells find it.
+    fn touches(&self, s: &Stationary, finest: f64) -> bool {
+        let (ha, hb, hc) = s.h;
+        let size = ha.abs().max(hb.abs()).max(hc.abs());
+        let tangent = s.g.0.hypot(s.g.1) <= 1e-6_f64.max(4.0 * size * self.tol.linear);
+        tangent && s.e.dist <= self.tol.linear.min(finest) && self.inside(s.u, s.v)
+    }
+
+    /// The stationary point as a point of the intersection, if the
+    /// surfaces touch there.
+    fn singular_at(&self, s: &Stationary, finest: f64) -> Result<Option<Singular>, GeomError> {
+        let (ha, hb, hc) = s.h;
+        if !self.touches(s, finest) {
+            return Ok(None);
+        }
+        if s.flat {
+            return Err(GeomError::Unsupported(
+                "surfaces that touch along a curve, or with more than second-order contact, without a closed form",
+            ));
+        }
+        Ok(Some(Singular {
+            u: s.u,
+            v: s.v,
+            p: s.e.p,
+            kind: if ha * hc - hb * hb > 0.0 {
+                SingularKind::Touch
+            } else {
+                SingularKind::Cross
+            },
+        }))
+    }
+
+    /// The largest disc around a stationary point on whose rim, and
+    /// halfway to it, the gradient of `f` is what the Hessian at the point
+    /// says, within [`DISC_MODEL`]: `f` then has no other critical point
+    /// in it, and its zero set there is the point, the two branches
+    /// through it, or nothing. `None` where the zero set is not one of
+    /// those (a critical point off the other surface around which `f`
+    /// changes sign), or where no disc of at least a few floor cells
+    /// (`finest` is the size of one) passes.
+    fn disc(&mut self, s: &Stationary, finest: f64) -> Option<Disc> {
+        let (ha, hb, hc) = s.h;
+        let size = ha.abs().max(hb.abs()).max(hc.abs());
+        let tangent = s.g.0.hypot(s.g.1) <= 1e-6_f64.max(4.0 * size * self.tol.linear);
+        if s.flat || !tangent || !self.inside(s.u, s.v) {
+            return None;
+        }
+        // Off the other surface: only a minimum above it or a maximum
+        // below it leaves the disc without a zero. (Past the edge of a
+        // bounded surface the distance is to that edge, not a smooth
+        // function of the place.)
+        let touching = self.touches(s, finest);
+        let on = self.on;
+        let smooth = move |e: &Eval| e.dist <= e.f.abs() + on;
+        if !touching && !(ha * hc - hb * hb > 0.0 && s.e.f * ha > 0.0 && smooth(&s.e)) {
+            return None;
+        }
+        let c = &self.chart;
+        let widest = 0.25 * ((c.u.1 - c.u.0) * s.lu).min((c.v.1 - c.v.0) * s.lv);
+        let least = 8.0 * finest;
+        let mut radius = widest;
+        'radius: while radius.is_finite() && radius >= least {
+            for (ring, count) in [(1.0, 16_u32), (0.5, 8)] {
+                for k in 0..count {
+                    self.spent().ok()?;
+                    // The inner ring sits between the outer one's places.
+                    let angle =
+                        std::f64::consts::TAU * (f64::from(k) + 0.5 * ring) / f64::from(count);
+                    let (x, y) = (ring * radius * angle.cos(), ring * radius * angle.sin());
+                    let (u, v) = (s.u + x / s.lu, s.v + y / s.lv);
+                    if !self.inside(u, v) {
+                        continue; // No cell lies there.
+                    }
+                    let model = (ha * x + hb * y, hb * x + hc * y);
+                    let holds = self.eval(u, v).is_some_and(|e| {
+                        let off = (e.gu / s.lu - model.0).hypot(e.gv / s.lv - model.1);
+                        off <= DISC_MODEL * model.0.hypot(model.1)
+                            && (touching || (e.f * s.e.f > 0.0 && smooth(&e)))
+                    });
+                    if !holds {
+                        radius *= 0.5;
+                        continue 'radius;
+                    }
+                }
+            }
+            return Some(Disc {
+                u: s.u,
+                v: s.v,
+                lu: s.lu,
+                lv: s.lv,
+                radius: 0.9 * radius,
+            });
+        }
+        None
     }
 
     /// How far from a crossing point its arms are seeded.
@@ -1421,8 +1622,6 @@ impl Marcher {
 
     pub(super) fn solve(&mut self, within: &Bbox3) -> Result<Meeting, GeomError> {
         let lying = self.border_curves()?;
-        let (mut seeds, floor) = self.seeds()?;
-        seeds.retain(|&(u, v)| !self.on_lying_border(u, v));
         let mut singular: Vec<Singular> = Vec::new();
         // The apex of a cone the chart passes through.
         if let Some(apex) = self.field.apex()
@@ -1437,20 +1636,8 @@ impl Marcher {
             });
         }
         let merge = 8.0 * self.tol.linear;
-        for (u, v) in floor {
-            self.spent()?;
-            if singular.iter().any(|s| {
-                s.kind == SingularKind::Apex
-                    && self.chart.surface.eval(u, v).distance(s.p) <= 2.0 * merge
-            }) {
-                continue;
-            }
-            if let Some(found) = self.critical(u, v)?
-                && !singular.iter().any(|s| s.p.distance(found.p) <= merge)
-            {
-                singular.push(found);
-            }
-        }
+        let mut seeds = self.seeds(&mut singular)?;
+        seeds.retain(|&(u, v)| !self.on_lying_border(u, v));
         for s in singular.clone() {
             if s.kind == SingularKind::Cross {
                 self.arms(&s, &mut seeds);

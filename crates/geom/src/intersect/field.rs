@@ -35,6 +35,11 @@ pub(super) struct Projector {
     grid: Vec<(f64, f64, Vec3)>,
     /// An estimate of the largest normal curvature (not a bound).
     curvature: f64,
+    /// The same estimate per grid node: from how fast the normal turns
+    /// along the grid lines that meet there.
+    turning: Vec<f64>,
+    /// The longest step between neighbouring grid nodes.
+    spacing: f64,
 }
 
 const PROJECTOR_GRID: u32 = 24;
@@ -67,6 +72,8 @@ impl Projector {
         // Curvature from how fast the normal turns between neighbours.
         let stride = (n + 1) as usize;
         let mut curvature = 0.0_f64;
+        let mut turning = vec![0.0_f64; grid.len()];
+        let mut spacing = 0.0_f64;
         for (k, (&(_, _, p), n0)) in grid.iter().zip(&normals).enumerate() {
             for step in [1, stride] {
                 if step == 1 && (k + 1) % stride == 0 {
@@ -76,12 +83,19 @@ impl Projector {
                 else {
                     continue;
                 };
+                let apart = p.distance(q);
+                spacing = spacing.max(apart);
                 let (Some(n0), Some(n1)) = (n0, n1) else {
                     continue;
                 };
-                let apart = p.distance(q);
                 if apart > 0.0 {
-                    curvature = curvature.max(n0.distance(*n1) / apart);
+                    let turn = n0.distance(*n1) / apart;
+                    curvature = curvature.max(turn);
+                    for node in [k, k + step] {
+                        if let Some(slot) = turning.get_mut(node) {
+                            *slot = slot.max(turn);
+                        }
+                    }
                 }
             }
         }
@@ -91,7 +105,25 @@ impl Projector {
             v,
             grid,
             curvature: 2.0 * curvature,
+            turning,
+            spacing,
         })
+    }
+
+    /// The estimate of the largest normal curvature of the part of the
+    /// surface within `radius` of `p`: twice the fastest turn of the
+    /// normal along the grid lines there (every grid cell that reaches
+    /// into the ball has a corner within two steps of it), and the
+    /// estimate of the whole surface where no node is that near.
+    fn curvature_near(&self, p: Vec3, radius: f64) -> f64 {
+        let within = radius + 2.0 * self.spacing;
+        let mut most: Option<f64> = None;
+        for (&(_, _, q), &turn) in self.grid.iter().zip(&self.turning) {
+            if q.distance(p) <= within {
+                most = Some(most.map_or(turn, |m: f64| m.max(turn)));
+            }
+        }
+        most.map_or(self.curvature, |m| 2.0 * m)
     }
 
     /// Gauss–Newton from `(u, v)` towards the point closest to `p`.
@@ -348,8 +380,15 @@ impl Field {
                 let tube = within((rho - major).hypot(z))?;
                 Some(tube.max(within(rho)?))
             }
+            // The closest points of everything within `reach` of `p` lie
+            // within `2 (dist + reach)` of the closest point of `p`, so
+            // within `3 dist + 2 reach` of `p`. At a distance `d` from a
+            // surface of curvature `k` the field bends by `k / (1 − k d)`,
+            // at most `2 k` here; that factor is kept whole as the margin
+            // of an estimate (with `k / (1 − k d)` instead, a branch of
+            // parallel/dome-dome/001 of the boolean corpus was missed).
             Field::Free(projector) => {
-                let k = projector.curvature;
+                let k = projector.curvature_near(p, 3.0 * dist + 2.0 * reach);
                 let away = k * (dist + reach);
                 (away < 0.5).then_some(2.0 * k)
             }
