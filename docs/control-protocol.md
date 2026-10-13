@@ -14,7 +14,19 @@ The window makes its sharp image on a thread of its own and shows a quick previe
 
 **MCP bridge** (`craft3d-cli mcp --bridge PORT --control-token-file FILE`): an MCP server on stdin/stdout without a session of its own. Each message is passed unchanged to the window's `mcp.message`, answered there by the same MCP code as `craft3d-cli mcp` on the window's document, and the reply is passed back: same tools, same limits, and the viewport shows every change. One short connection per message. `PORT` may be `127.0.0.1:PORT`; an address that is not this machine is refused, because the token is sent as it is. The file roots are the window's. When the window is not running, every request gets a JSON-RPC error (code -32000) that says how to start it, and the bridge keeps serving. The bridge-only tools of the table further down (`ui_screenshot`, …) do not exist: use `doc_render_preview`.
 
-**Commands** (44): `craft3d-cli commands` prints the registry with parameters and summaries; it is the source of truth.
+**Commands** (45): `craft3d-cli commands` prints the registry with parameters and summaries; it is the source of truth.
+
+**A profile from coordinates alone** (`sketch.path`, 2026-10-13): one command draws a chain of lines and arcs through shared corners in one undo step, so a driver that does not read responses can still close a loop of lines and arcs. A slot, 30 between centres and 10 wide, tangent in all four corners:
+
+```json
+{"command": "sketch.path", "params": {"sketch": "Profile", "start": [0, -5], "segments": [
+  {"line": [30, -5], "tangent": true},
+  {"arc": [30, 5], "tangent": true},
+  {"line": [0, 5], "tangent": true},
+  {"arc": "start", "tangent": true}]}}
+```
+
+Each segment runs from the end of the one before it to its own end: a point id, coordinates, or `"start"`, the path's start point (which closes the loop with that segment; `"closed": true` adds a straight line back instead). An arc is given by `center` (counter-clockwise unless `"clockwise": true`), by a point it passes `through`, by `radius` (the shorter way round unless `"large": true`, counter-clockwise unless `"clockwise": true`), or by `"tangent": true` alone, which leaves in the direction the segment before it arrives. Arcs are stored as `sketch.arc` stores them, counter-clockwise from start to end about a centre point, so a segment walked clockwise is stored with its ends swapped. `"tangent": true` on any segment also adds a tangent constraint with the segment before it (on the first segment: with the last one, in a path that ends at its start), so the corner stays smooth when a dimension changes; without it the arc is only drawn where the numbers put it. Ids are handed out in the order of the path: the start point, then per segment its end point and its centre (each only when new) and the segment itself, then the closing line; the reply lists them as `points`, `entities`, `centers` and `constraints`. A segment that cannot be drawn (no length, a `through` point on the chord, a radius under half the chord, a tangent arc to a point straight ahead) is refused as `segments[i]: ...` and nothing is added.
 
 **Limits enforced:** 1 MiB per request line, 8 MiB per reply, 256 steps per batch, previews at most 2048 px on the long side, renders 16 to 4096 px per side. Not enforced yet: the triangle budget for tessellation.
 

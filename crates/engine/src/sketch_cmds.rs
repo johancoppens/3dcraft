@@ -45,7 +45,11 @@ pub(crate) static SPECS: &[CommandSpec] = &[
 // ---------------------------------------------------------------- helpers
 
 /// The sketch a command works on.
-fn sketch_ref(session: &Session, p: &Params, command: &str) -> Result<FeatureId, CommandError> {
+pub(crate) fn sketch_ref(
+    session: &Session,
+    p: &Params,
+    command: &str,
+) -> Result<FeatureId, CommandError> {
     let doc = session.document()?.history.current();
     let id = feature_ref(doc, p, command, "sketch")?;
     doc.sketch(id).map_err(doc_error(command))?;
@@ -80,7 +84,7 @@ fn constraint_id(command: &str, key: &str, value: &Value) -> Result<ConstraintId
 }
 
 /// Two finite numbers.
-fn coordinates(value: &Value) -> Option<(f64, f64)> {
+pub(crate) fn coordinates(value: &Value) -> Option<(f64, f64)> {
     let [x, y] = value.as_array()?.as_slice() else {
         return None;
     };
@@ -91,13 +95,13 @@ fn coordinates(value: &Value) -> Option<(f64, f64)> {
 /// Where a line, circle or arc is attached: a point that exists, or the
 /// place for a new one.
 #[derive(Clone, Copy)]
-enum PointArg {
+pub(crate) enum PointArg {
     Existing(EntityId),
     New(f64, f64),
 }
 
 impl PointArg {
-    fn parse(command: &str, key: &str, value: &Value) -> Result<Self, CommandError> {
+    pub(crate) fn parse(command: &str, key: &str, value: &Value) -> Result<Self, CommandError> {
         match value {
             Value::Array(_) => match coordinates(value) {
                 Some((x, y)) => Ok(PointArg::New(x, y)),
@@ -114,12 +118,12 @@ impl PointArg {
         }
     }
 
-    fn required(p: &Params, command: &str, key: &str) -> Result<Self, CommandError> {
+    pub(crate) fn required(p: &Params, command: &str, key: &str) -> Result<Self, CommandError> {
         Self::parse(command, key, p.get(key).ok_or_else(|| p.missing(key))?)
     }
 
     /// The point's id, adding it to the sketch when it is new.
-    fn place(self, sketch: &mut Sketch) -> Result<EntityId, SketchError> {
+    pub(crate) fn place(self, sketch: &mut Sketch) -> Result<EntityId, SketchError> {
         match self {
             PointArg::Existing(id) => sketch.point(id).map(|_| id),
             PointArg::New(x, y) => sketch.add_point(x, y),
@@ -150,7 +154,7 @@ fn face_param(p: &Params, command: &str) -> Result<Option<PersistentName>, Comma
     }
 }
 
-fn ids(list: &[EntityId]) -> Vec<String> {
+pub(crate) fn ids(list: &[EntityId]) -> Vec<String> {
     list.iter().map(|id| id.to_string()).collect()
 }
 
@@ -188,7 +192,7 @@ fn solve_summary(map: &mut Map<String, Value>, result: &SketchResult) {
 
 /// What a sketch command returns: the sketch feature, how it regenerated
 /// and solved, and the command's own fields.
-fn sketch_result(session: &mut Session, id: FeatureId, own: Value) -> Run {
+pub(crate) fn sketch_result(session: &mut Session, id: FeatureId, own: Value) -> Run {
     let mut result = feature_result(session, id)?;
     let regen = session.document_mut()?.regen();
     if let Some(map) = result.as_object_mut() {
@@ -202,7 +206,7 @@ fn sketch_result(session: &mut Session, id: FeatureId, own: Value) -> Run {
     Ok(result)
 }
 
-fn change<T>(
+pub(crate) fn change<T>(
     session: &mut Session,
     command: &'static str,
     label: &str,
