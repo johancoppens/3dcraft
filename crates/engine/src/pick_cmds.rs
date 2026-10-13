@@ -1,5 +1,20 @@
-//! Pointing: which face is under a position of a picture, and which faces
-//! of the scene a persistent name means.
+//! Pointing: which face is under a position of a picture and which edge is
+//! near it, and which faces and edges of the scene a name means.
+//!
+//! The rule for what a position points at ([`Scene::point_at`]), the same
+//! for `view.pick`, `ui.pick` and a click in the viewport:
+//!
+//! 1. The face is the one the picture has under the position (the
+//!    renderer's own arithmetic), whatever else is near.
+//! 2. An edge is near when a point of it is within the pick radius of the
+//!    position in the picture (pixels of the picture) and in sight: no
+//!    face is in front of that point. An edge is looked at every half
+//!    pixel along the part of it within the radius, starting from its
+//!    nearest point. The nearest point in sight of all edges wins; at the
+//!    same distance the one nearer to the eye, then the earlier body, then
+//!    the earlier edge.
+//! 3. An edge that is near is what the position points at; otherwise the
+//!    face under it; otherwise nothing.
 //!
 //! Both are questions about a [`Scene`], so that a viewer asks them of the
 //! very mesh it draws: the window of the scene in its viewport, with the
@@ -14,13 +29,31 @@ use crate::scene::{Scene, SceneBody};
 use crate::{CommandError, CommandSpec, Session};
 use craft3d_doc::PersistentName;
 use craft3d_math::Vec3;
-use craft3d_render::{Camera, Projection};
+use craft3d_render::{Camera, Neighbourhood, Projection, Viewpoint};
 use serde_json::{Value, json};
 
 pub(crate) static SPECS: &[CommandSpec] = &[
-    spec!("view.pick", "Pick", r#"{"x": number, "y": number, "width": integer = 800, "height": integer = 600, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the whole model, "camera": {eye, target, up, projection, fovY, height}, "tolerance": number = automatic}"#,
-        "Says what is at a position of a picture: the body (feature, name), the face's persistent name as document.inspect lists it under faceNames (with faceIndex, its place in that list, and aliases), and the point in space. x and y are in pixels from the top-left corner of a picture of width by height, x to the right and y down; the centre of pixel (i, j) is (i + 0.5, j + 0.5). The picture is the one view.render makes with the same view, projection, zoom, box and tolerance, or the one seen by camera when that is given: an object with eye and target ([x, y, z]), up ([x, y, z], default [0, 0, 1]), projection (perspective, the default, or orthographic) and, for a perspective camera, fovY (the vertical field of view in degrees, default 30) or, for an orthographic one, height (the model units from the top of the picture to its bottom). hit is false when nothing is there, with outside true when the position is not in the picture: an answer, not an error. The result repeats the camera, so a second pick can pass it back.", doc: true, view_pick),
+    spec!("view.pick", "Pick", r#"{"x": number, "y": number, "width": integer = 800, "height": integer = 600, "radius": number = 4, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the whole model, "camera": {eye, target, up, projection, fovY, height}, "tolerance": number = automatic}"#,
+        "Says what is at a position of a picture. kind says what the position points at: an edge when one is near, otherwise the face under it. The face under the position, when there is one: the body (feature, name), the face's persistent name as document.inspect lists it under faceNames (with faceIndex, its place in that list, and aliases), and the point in space (point, depth). An edge is near when its point nearest to the position in the picture is within radius pixels (0 to 64; 0 looks at faces only) and not behind a face; the nearest one wins. It is given as edge: its body (feature, body), name (the edge's own persistent name as document.edges gives it, null when it has none, as after a boolean), faces (the names of the faces it lies between, which is how document.edges refers to an edge), index (its place in document.edges), point (the point of the edge nearest to the position), depth and distance (pixels from the position). x and y are in pixels from the top-left corner of a picture of width by height, x to the right and y down; the centre of pixel (i, j) is (i + 0.5, j + 0.5). The picture is the one view.render makes with the same view, projection, zoom, box and tolerance, or the one seen by camera when that is given: an object with eye and target ([x, y, z]), up ([x, y, z], default [0, 0, 1]), projection (perspective, the default, or orthographic) and, for a perspective camera, fovY (the vertical field of view in degrees, default 30) or, for an orthographic one, height (the model units from the top of the picture to its bottom). hit is false when nothing is there, with outside true when the position is not in the picture: an answer, not an error. The result repeats the camera, so a second pick can pass it back.", doc: true, view_pick),
 ];
+
+/// The pick radius when none is given, in pixels: an edge this near to a
+/// position is what the position points at.
+pub const DEFAULT_PICK_RADIUS: f64 = 4.0;
+/// The largest pick radius, in pixels. A larger one is clamped.
+pub const MAX_PICK_RADIUS: f64 = 64.0;
+/// An edge is looked at every this many pixels along it, where it is
+/// within the pick radius.
+const SAMPLE_STEP: f64 = 0.5;
+/// Most points of edges near a position that are looked at. A picture
+/// with more of them within the radius (thousands of edges through one
+/// spot) is answered from the first ones, in the order of the scene.
+const MAX_CANDIDATES: usize = 1 << 16;
+/// How much nearer than a point the surface in front of it may be while
+/// the point still counts as lying on it, as a fraction of the point's
+/// distance plus the size of the scene. An edge's points are points of the
+/// mesh, so this is rounding only.
+const SIGHT_SLACK: f64 = 1e-7;
 
 /// What is under a position of a picture of a scene.
 #[derive(Clone, Debug, PartialEq)]
@@ -42,6 +75,131 @@ pub struct ScenePick {
     pub point: Vec3,
     /// Its distance from the eye along the view direction.
     pub depth: f64,
+}
+
+/// What a position of a picture points at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PickKind {
+    Face,
+    Edge,
+}
+
+impl PickKind {
+    /// The word the commands use.
+    pub fn name(self) -> &'static str {
+        match self {
+            PickKind::Face => "face",
+            PickKind::Edge => "edge",
+        }
+    }
+}
+
+/// An edge near a position of a picture of a scene.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SceneNear {
+    /// The feature that made the body (`F3`) and its name.
+    pub feature: String,
+    pub body: String,
+    /// The entity's own persistent name, as `document.edges` gives it;
+    /// `None` when the body's edges have none (after a boolean).
+    pub name: Option<String>,
+    /// Its place among the edges of its body, the order of
+    /// `document.edges`.
+    pub index: usize,
+    /// The names of the faces it lies between: how an edge is referred to
+    /// when it has no name of its own.
+    pub faces: Vec<String>,
+    /// The point of the entity nearest to the position, in model
+    /// coordinates.
+    pub point: Vec3,
+    /// Its distance from the eye along the view direction.
+    pub depth: f64,
+    /// How far from the position it is in the picture, in pixels.
+    pub distance: f64,
+}
+
+impl SceneNear {
+    /// As `view.pick` and `ui.pick` return it.
+    pub fn json(&self) -> Value {
+        json!({
+            "feature": self.feature,
+            "body": self.body,
+            "name": self.name,
+            "index": self.index,
+            "faces": self.faces,
+            "point": vec3(self.point),
+            "depth": self.depth,
+            "distance": self.distance,
+        })
+    }
+}
+
+/// What a position of a picture of a scene points at
+/// ([`Scene::point_at`]).
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct ScenePointed {
+    /// The face under the position.
+    pub face: Option<ScenePick>,
+    /// The edge near it, which is then what the position points at.
+    pub edge: Option<SceneNear>,
+}
+
+impl ScenePointed {
+    /// What the position points at: `None` for nothing.
+    pub fn kind(&self) -> Option<PickKind> {
+        if self.edge.is_some() {
+            Some(PickKind::Edge)
+        } else if self.face.is_some() {
+            Some(PickKind::Face)
+        } else {
+            None
+        }
+    }
+
+    /// The fields `view.pick` and `ui.pick` have in common, put into
+    /// `map`: `hit`, and for a hit `kind`, the face under the position
+    /// and the edge near it.
+    pub fn describe(&self, map: &mut serde_json::Map<String, Value>) {
+        let kind = self.kind();
+        map.insert("hit".into(), kind.is_some().into());
+        if let Some(kind) = kind {
+            map.insert("kind".into(), kind.name().into());
+        }
+        if let Some(pick) = &self.face {
+            map.insert("feature".into(), pick.feature.clone().into());
+            map.insert("name".into(), pick.body.clone().into());
+            map.insert(
+                "face".into(),
+                pick.face.clone().map_or(Value::Null, Value::from),
+            );
+            map.insert("faceIndex".into(), pick.face_index.into());
+            if !pick.aliases.is_empty() {
+                map.insert("aliases".into(), json!(pick.aliases));
+            }
+            map.insert("point".into(), vec3(pick.point));
+            map.insert("depth".into(), pick.depth.into());
+        }
+        if let Some(edge) = &self.edge {
+            map.insert("edge".into(), edge.json());
+        }
+    }
+}
+
+/// The edges of a scene a name, or the faces they lie between, mean.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SceneEdges {
+    /// The feature that made the body (`F3`) and its name.
+    pub feature: String,
+    pub body: String,
+    /// The body's place in [`Scene::bodies`].
+    pub body_index: usize,
+    /// The edge's own name, when that is what was asked for, written the
+    /// way names are written.
+    pub edge: Option<String>,
+    /// The two face names, when those were asked for.
+    pub between: Vec<String>,
+    /// The places of the edges among the edges of the body, ascending.
+    pub edges: Vec<usize>,
 }
 
 /// The faces of a scene a persistent name means.
@@ -193,6 +351,262 @@ impl Scene {
         Ok(found(body, ids))
     }
 
+    /// What a position of a picture of this scene points at, by the rule
+    /// at the top of this module: the face under (`x`, `y`) as
+    /// [`Self::pick`] gives it, and the edge near it within `radius`
+    /// pixels, if any. A radius that is not a positive number looks at
+    /// faces only; one above [`MAX_PICK_RADIUS`] is that. Errors as
+    /// [`Self::pick`].
+    pub fn point_at(
+        &self,
+        camera: &Camera,
+        width: u32,
+        height: u32,
+        x: f64,
+        y: f64,
+        radius: f64,
+    ) -> Result<ScenePointed, String> {
+        let face = self.pick(camera, width, height, x, y)?;
+        let inside = x >= 0.0 && y >= 0.0 && x < f64::from(width) && y < f64::from(height);
+        let radius = if radius.is_finite() {
+            radius.min(MAX_PICK_RADIUS)
+        } else {
+            0.0
+        };
+        if !inside || radius <= 0.0 {
+            return Ok(ScenePointed { face, edge: None });
+        }
+        let view = Viewpoint::new(camera, width, height).map_err(|e| e.to_string())?;
+        // A point within the radius lands within the radius, give or take
+        // rounding: one pixel more.
+        let near = Neighbourhood::new(&self.mesh, camera, width, height, x, y, radius + 1.0)
+            .map_err(|e| e.to_string())?;
+        let sight = Sight {
+            scene: self,
+            view: &view,
+            near: &near,
+            size: [f64::from(width), f64::from(height)],
+        };
+        let edge = self.edge_near(&sight, x, y, radius);
+        Ok(ScenePointed { face, edge })
+    }
+
+    /// The edge with a point in sight within `radius` pixels of (`x`,
+    /// `y`), and that point: the nearest such point of all edges.
+    fn edge_near(&self, sight: &Sight<'_>, x: f64, y: f64, radius: f64) -> Option<SceneNear> {
+        let perspective = sight.view.is_perspective();
+        let mut candidates: Vec<Candidate> = Vec::new();
+        'bodies: for (body_index, body) in self.bodies.iter().enumerate() {
+            for (index, polyline) in body.edges.iter().enumerate() {
+                let mut before: Option<(Vec3, Option<[f64; 3]>)> = None;
+                for &p in polyline {
+                    let at = sight.view.project(p);
+                    if let (Some((q, Some(a))), Some(b)) = (before, at)
+                        && q != p
+                    {
+                        for (distance, s) in samples_near(a, b, x, y, radius, perspective) {
+                            let point = q + (p - q) * s;
+                            if !point.is_finite() {
+                                continue;
+                            }
+                            if candidates.len() >= MAX_CANDIDATES {
+                                break 'bodies;
+                            }
+                            candidates.push(Candidate {
+                                distance,
+                                depth: sight.view.distance(point),
+                                body: body_index,
+                                index,
+                                point,
+                            });
+                        }
+                    }
+                    before = Some((p, at));
+                }
+            }
+        }
+        candidates.sort_by(Candidate::order);
+        let nearest = candidates.iter().find(|c| sight.sees(c.point))?;
+        let body = self.bodies.get(nearest.body)?;
+        let faces = body
+            .edge_faces
+            .get(nearest.index)
+            .into_iter()
+            .flatten()
+            .filter_map(|&face| body.face_names.get(face).cloned())
+            .collect();
+        Some(SceneNear {
+            feature: body.feature.clone(),
+            body: body.name.clone(),
+            name: body.edge_names.get(nearest.index).cloned(),
+            index: nearest.index,
+            faces,
+            point: nearest.point,
+            depth: nearest.depth,
+            distance: nearest.distance,
+        })
+    }
+
+    /// The places, among the faces of `body`, of the faces called
+    /// `wanted`: by their own name or by an alias.
+    fn faces_answering(body: &SceneBody, wanted: &str) -> Vec<usize> {
+        (0..body.face_names.len())
+            .filter(|&k| {
+                body.face_names.get(k).is_some_and(|name| name == wanted)
+                    || body
+                        .face_aliases
+                        .get(k)
+                        .is_some_and(|aliases| aliases.iter().any(|alias| alias == wanted))
+            })
+            .collect()
+    }
+
+    /// The one body that has what `find` looks for: the body `feature`
+    /// says (by the id of its feature, `F3` or `3`, or by its name), or
+    /// the only body `find` gives anything for. `what` names the thing in
+    /// an error ("edge F1:edge(2)", after "no" or "an") and `hint` says
+    /// where its names are listed.
+    fn body_having(
+        &self,
+        feature: Option<&str>,
+        what: &str,
+        hint: &str,
+        find: impl Fn(&SceneBody) -> Vec<usize>,
+    ) -> Result<(usize, Vec<usize>), String> {
+        if let Some(feature) = feature {
+            let shown: String = feature.chars().take(60).collect();
+            let by_id = || {
+                let digits = feature.strip_prefix('F').unwrap_or(feature);
+                let id = digits.parse::<u64>().ok()?;
+                self.bodies
+                    .iter()
+                    .position(|body| body.feature == format!("F{id}"))
+            };
+            let index = self
+                .bodies
+                .iter()
+                .position(|body| body.name == feature)
+                .or_else(by_id)
+                .ok_or_else(|| {
+                    format!(
+                        "there is no body of a feature `{shown}`; the bodies: {}",
+                        self.body_list()
+                    )
+                })?;
+            let (found, name) = self
+                .bodies
+                .get(index)
+                .map(|body| (find(body), body.name.as_str()))
+                .unwrap_or_default();
+            if found.is_empty() {
+                return Err(format!("`{name}` has no {what} ({hint})"));
+            }
+            return Ok((index, found));
+        }
+        let mut having = self
+            .bodies
+            .iter()
+            .enumerate()
+            .map(|(index, body)| (index, body, find(body)))
+            .filter(|(_, _, found)| !found.is_empty());
+        let Some((index, body, found)) = having.next() else {
+            return Err(format!("no body has an {what} ({hint})"));
+        };
+        if let Some((_, other, _)) = having.next() {
+            return Err(format!(
+                "several bodies have an {what} (`{}` and `{}` among them); say which with `feature`",
+                body.name, other.name
+            ));
+        }
+        Ok((index, found))
+    }
+
+    /// The edges that `edge` names (an edge's own persistent name, `name`
+    /// of `document.edges`) or that lie `between` two faces (two face
+    /// names from `document.inspect`, as `document.edges` takes them; the
+    /// same name twice means the seams of that face and the cuts between
+    /// its pieces): one or the other. `feature` says which body, as for
+    /// [`Self::faces_named`]. The error is a sentence for whoever asked.
+    pub fn edges_named(
+        &self,
+        feature: Option<&str>,
+        edge: Option<&str>,
+        between: &[String],
+    ) -> Result<SceneEdges, String> {
+        const HINT: &str = "document.edges lists the edges of a body";
+        let found = |(body_index, edges): (usize, Vec<usize>),
+                     edge: Option<String>,
+                     between: Vec<String>| {
+            let body = self.bodies.get(body_index);
+            SceneEdges {
+                feature: body.map(|b| b.feature.clone()).unwrap_or_default(),
+                body: body.map(|b| b.name.clone()).unwrap_or_default(),
+                body_index,
+                edge,
+                between,
+                edges,
+            }
+        };
+        match (edge, between) {
+            (Some(_), [_, ..]) => Err(
+                "give the edge's own name or the two faces it lies between, not both".to_string(),
+            ),
+            (Some(edge), []) => {
+                let name: PersistentName = edge.parse()?;
+                if name.is_face() {
+                    return Err(format!(
+                        "{name} is a face; an edge is named by `edge` (its own name) or by `between` (two faces)"
+                    ));
+                }
+                let wanted = name.to_string();
+                let at = self.body_having(feature, &format!("edge {wanted}"), HINT, |body| {
+                    (0..body.edge_names.len())
+                        .filter(|&k| body.edge_names.get(k) == Some(&wanted))
+                        .collect()
+                })?;
+                Ok(found(at, Some(wanted), Vec::new()))
+            }
+            (None, [a, b]) => {
+                let mut wanted = Vec::with_capacity(2);
+                for face in [a, b] {
+                    let name: PersistentName = face.parse()?;
+                    if !name.is_face() {
+                        return Err(format!("{name} is not a face"));
+                    }
+                    wanted.push(name.to_string());
+                }
+                let (first, second) = match wanted.as_slice() {
+                    [first, second] => (first.clone(), second.clone()),
+                    _ => return Err("`between` takes two face names".to_string()),
+                };
+                let what = format!("edge between {first} and {second}");
+                let at = self.body_having(feature, &what, HINT, |body| {
+                    let on_a = Self::faces_answering(body, &first);
+                    let on_b = Self::faces_answering(body, &second);
+                    let same = on_a == on_b;
+                    body.edge_faces
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, users)| {
+                            if same {
+                                !users.is_empty() && users.iter().all(|face| on_a.contains(face))
+                            } else {
+                                users.iter().any(|face| on_a.contains(face))
+                                    && users.iter().any(|face| on_b.contains(face))
+                            }
+                        })
+                        .map(|(index, _)| index)
+                        .collect()
+                })?;
+                Ok(found(at, None, wanted))
+            }
+            (None, []) => Err(
+                "an edge is named by `edge` (its own name) or by `between` (two faces)".to_string(),
+            ),
+            (None, _) => Err("`between` takes two face names".to_string()),
+        }
+    }
+
     /// The bodies as an error message lists them.
     fn body_list(&self) -> String {
         if self.bodies.is_empty() {
@@ -205,6 +619,116 @@ impl Scene {
             .map(|body| format!("{} ({})", body.name, body.feature))
             .collect();
         listed.join(", ")
+    }
+}
+
+/// A point of an edge near a position, before it is known to be in sight.
+struct Candidate {
+    distance: f64,
+    depth: f64,
+    body: usize,
+    index: usize,
+    point: Vec3,
+}
+
+impl Candidate {
+    /// Nearest in the picture first, then nearest to the eye, then the
+    /// order of the scene: a total order, so the winner does not depend on
+    /// anything else.
+    fn order(a: &Candidate, b: &Candidate) -> std::cmp::Ordering {
+        a.distance
+            .total_cmp(&b.distance)
+            .then(a.depth.total_cmp(&b.depth))
+            .then(a.body.cmp(&b.body))
+            .then(a.index.cmp(&b.index))
+    }
+}
+
+/// The points of the straight line in the picture from `a` to `b` (the
+/// projections, as x, y and distance, of the ends of a segment in space)
+/// that are within `radius` pixels of (`x`, `y`): the nearest one, and
+/// from it every [`SAMPLE_STEP`] pixels along the line both ways. Each as
+/// its distance from the position, in pixels, and the fraction of the
+/// segment in space it is at. Nothing when the line is further away.
+fn samples_near(
+    a: [f64; 3],
+    b: [f64; 3],
+    x: f64,
+    y: f64,
+    radius: f64,
+    perspective: bool,
+) -> Vec<(f64, f64)> {
+    let [ax, ay, da] = a;
+    let [bx, by, db] = b;
+    let (dx, dy) = (bx - ax, by - ay);
+    let length = dx.hypot(dy);
+    let at = |t: f64| -> Option<(f64, f64)> {
+        let distance = (x - (ax + dx * t)).hypot(y - (ay + dy * t));
+        // Along a line in the picture of a perspective camera it is the
+        // reciprocal of the distance that changes evenly: the fraction in
+        // space follows from it.
+        let along = db - t * (db - da);
+        let s = if perspective && along > 0.0 {
+            t * da / along
+        } else {
+            t
+        };
+        (distance <= radius && s.is_finite()).then_some((distance, s.clamp(0.0, 1.0)))
+    };
+    // Negated, so that a length that is not a number is no length.
+    if !(length > 0.0 && length.is_finite()) {
+        return at(0.0).into_iter().collect();
+    }
+    let nearest = (((x - ax) * dx + (y - ay) * dy) / (length * length)).clamp(0.0, 1.0);
+    let Some(first) = at(nearest) else {
+        return Vec::new();
+    };
+    let mut out = vec![first];
+    let step = SAMPLE_STEP / length;
+    // The part of a line within a circle is at most its diameter long.
+    let most = (2.0 * radius / SAMPLE_STEP).ceil().clamp(0.0, 1024.0) as usize;
+    for direction in [-1.0, 1.0] {
+        for k in 1..=most {
+            let t = nearest + direction * step * k as f64;
+            if !(0.0..=1.0).contains(&t) {
+                break;
+            }
+            match at(t) {
+                Some(sample) => out.push(sample),
+                None => break,
+            }
+        }
+    }
+    out
+}
+
+/// The picture a position is looked up in.
+struct Sight<'a> {
+    scene: &'a Scene,
+    view: &'a Viewpoint,
+    /// The triangles near the position.
+    near: &'a Neighbourhood,
+    size: [f64; 2],
+}
+
+impl Sight<'_> {
+    /// True when `point` is in the picture and no face is in front of it:
+    /// the surface the picture shows at the place where the point lands is
+    /// not nearer than the point is.
+    fn sees(&self, point: Vec3) -> bool {
+        let Some([x, y, depth]) = self.view.project(point) else {
+            return false;
+        };
+        let [width, height] = self.size;
+        if !(x >= 0.0 && y >= 0.0 && x < width && y < height) {
+            return false;
+        }
+        let Some(hit) = self.near.pick(x, y) else {
+            return true;
+        };
+        let slack = SIGHT_SLACK * (depth.abs() + self.scene.bbox.diagonal());
+        let slack = if slack.is_finite() { slack } else { 0.0 };
+        self.view.distance(hit.point) + slack >= depth
     }
 }
 
@@ -330,6 +854,7 @@ fn view_pick(session: &mut Session, params: &Value) -> Run {
             "y",
             "width",
             "height",
+            "radius",
             "view",
             "projection",
             "zoom",
@@ -342,6 +867,15 @@ fn view_pick(session: &mut Session, params: &Value) -> Run {
     let y = p.number("y")?.ok_or_else(|| p.missing("y"))?;
     let width = p.integer("width", 16, 4096)?.unwrap_or(800);
     let height = p.integer("height", 16, 4096)?.unwrap_or(600);
+    let radius = match p.number("radius")? {
+        None => DEFAULT_PICK_RADIUS,
+        Some(radius) if (0.0..=MAX_PICK_RADIUS).contains(&radius) => radius,
+        Some(_) => {
+            return fail(format!(
+                "{ID}: `radius` must be a number of pixels from 0 to {MAX_PICK_RADIUS}"
+            ));
+        }
+    };
     let given = p.get("camera").map(camera_param).transpose()?;
     if given.is_some()
         && let Some(key) = Framing::KEYS.iter().find(|key| p.get(key).is_some())
@@ -369,35 +903,23 @@ fn view_pick(session: &mut Session, params: &Value) -> Run {
         None => framing.camera(&scene.mesh.bbox(), width as f64 / height as f64)?,
     };
     let outside = !(x >= 0.0 && y >= 0.0 && x < width as f64 && y < height as f64);
-    let picked = scene
-        .pick(&camera, w, h, x, y)
+    let pointed = scene
+        .point_at(&camera, w, h, x, y, radius)
         .map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
     let mut result = json!({
-        "hit": picked.is_some(),
         "x": x,
         "y": y,
         "width": width,
         "height": height,
+        "radius": radius,
         "camera": camera_json(&camera),
     });
     let Some(map) = result.as_object_mut() else {
         return Ok(result);
     };
-    match picked {
-        None => {
-            map.insert("outside".into(), outside.into());
-        }
-        Some(pick) => {
-            map.insert("feature".into(), pick.feature.into());
-            map.insert("name".into(), pick.body.into());
-            map.insert("face".into(), pick.face.map_or(Value::Null, Value::from));
-            map.insert("faceIndex".into(), pick.face_index.into());
-            if !pick.aliases.is_empty() {
-                map.insert("aliases".into(), json!(pick.aliases));
-            }
-            map.insert("point".into(), vec3(pick.point));
-            map.insert("depth".into(), pick.depth.into());
-        }
+    pointed.describe(map);
+    if pointed.kind().is_none() {
+        map.insert("outside".into(), outside.into());
     }
     Ok(result)
 }

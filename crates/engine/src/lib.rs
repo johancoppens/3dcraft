@@ -34,7 +34,10 @@ mod step_cmds;
 mod sweep_cmds;
 mod workspace;
 
-pub use pick_cmds::{SceneFaces, ScenePick};
+pub use pick_cmds::{
+    DEFAULT_PICK_RADIUS, MAX_PICK_RADIUS, PickKind, SceneEdges, SceneFaces, SceneNear, ScenePick,
+    ScenePointed,
+};
 #[cfg(not(target_arch = "wasm32"))]
 pub use recovery::SystemClock;
 pub use recovery::{

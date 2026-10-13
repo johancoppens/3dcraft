@@ -849,6 +849,46 @@ pub fn render(mesh: &Mesh, camera: &Camera, params: &RenderParams) -> Result<Fra
     Ok(frame)
 }
 
+/// Where model points land in a picture of `width` × `height` pixels seen
+/// from a camera: the renderer's own arithmetic for a vertex, for whoever
+/// draws or looks for something over the picture (an edge near a
+/// position, [`pick`]'s way round).
+pub struct Viewpoint {
+    view: View,
+}
+
+impl Viewpoint {
+    /// An error for a picture [`render`] would refuse: its size, a camera
+    /// that looks nowhere.
+    pub fn new(camera: &Camera, width: u32, height: u32) -> Result<Self, RenderError> {
+        if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
+            return Err(RenderError::InvalidSize { width, height });
+        }
+        Ok(Self {
+            view: View::new(camera, width as usize, height as usize)?,
+        })
+    }
+
+    /// The position of `p` in the picture, in pixels (x right, y down from
+    /// the top-left corner), and its distance along the view direction.
+    /// `None` for a point at or behind the eye plane of a perspective
+    /// camera and for one that is not finite.
+    pub fn project(&self, p: Vec3) -> Option<[f64; 3]> {
+        self.view.project(p).map(|at| [at.sx, at.sy, at.dist])
+    }
+
+    /// True for a perspective camera: along a straight line in the picture
+    /// it is then the reciprocal of the distance that changes evenly.
+    pub fn is_perspective(&self) -> bool {
+        matches!(self.view.projection, Projection::Perspective { .. })
+    }
+
+    /// Distance of `p` in front of the eye, along the view direction.
+    pub fn distance(&self, p: Vec3) -> f64 {
+        (p - self.view.eye).dot(self.view.forward)
+    }
+}
+
 /// What [`pick`] found under a position of the picture.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Hit {
@@ -897,7 +937,6 @@ pub fn pick(
     if !(x >= 0.0 && y >= 0.0 && x < view.w && y < view.h) {
         return Ok(None);
     }
-    let (px, py) = (x, y);
     let mut best: Option<(f64, Hit)> = None;
     for (t, (tri, &face)) in mesh.triangles.iter().zip(&mesh.face_ids).enumerate() {
         let vertex = |k: u32| {
@@ -907,55 +946,180 @@ pub fn pick(
                 .ok_or(RenderError::InvalidMesh { triangle: t })
         };
         let [ia, ib, ic] = *tri;
-        let (pa, pb, pc) = (vertex(ia)?, vertex(ib)?, vertex(ic)?);
-        let (Some(a), Some(b), Some(c)) = (view.project(pa), view.project(pb), view.project(pc))
-        else {
+        let corners = [vertex(ia)?, vertex(ib)?, vertex(ic)?];
+        let Some(seen) = Seen::new(&view, t, face, corners) else {
             continue;
         };
+        seen.hit(x, y, &mut best);
+    }
+    Ok(best.map(|(_, hit)| hit))
+}
+
+/// A triangle of a mesh as a picture has it: its corners in space and
+/// where they land.
+#[derive(Clone, Copy)]
+struct Seen {
+    triangle: usize,
+    face: u32,
+    corners: [Vec3; 3],
+    projected: [Projected; 3],
+    /// Twice its signed area in the picture.
+    area: f64,
+}
+
+impl Seen {
+    /// `None` for a triangle the renderer does not draw: a corner at or
+    /// behind the eye plane, no area in the picture.
+    fn new(view: &View, triangle: usize, face: u32, corners: [Vec3; 3]) -> Option<Self> {
+        let [pa, pb, pc] = corners;
+        let (a, b, c) = (view.project(pa)?, view.project(pb)?, view.project(pc)?);
         let area = edge(a.sx, a.sy, b.sx, b.sy, c.sx, c.sy);
-        if !area.is_finite() || area == 0.0 {
-            continue;
-        }
+        (area.is_finite() && area != 0.0).then_some(Self {
+            triangle,
+            face,
+            corners,
+            projected: [a, b, c],
+            area,
+        })
+    }
+
+    /// The box around it in the picture: least x, least y, greatest x,
+    /// greatest y.
+    fn bounds(&self) -> [f64; 4] {
+        let [a, b, c] = &self.projected;
+        [
+            a.sx.min(b.sx).min(c.sx),
+            a.sy.min(b.sy).min(c.sy),
+            a.sx.max(b.sx).max(c.sx),
+            a.sy.max(b.sy).max(c.sy),
+        ]
+    }
+
+    /// Replaces `best` when this triangle is under (`px`, `py`) and nearer
+    /// than what `best` holds: the renderer's test of one sample.
+    fn hit(&self, px: f64, py: f64, best: &mut Option<(f64, Hit)>) {
+        let [pa, pb, pc] = self.corners;
+        let [a, b, c] = &self.projected;
         // The renderer visits the samples within the triangle's box only.
         let inside =
             |lo: f64, hi: f64, at: f64| lo.is_finite() && hi.is_finite() && lo <= at && at <= hi;
-        if !inside(a.sx.min(b.sx).min(c.sx), a.sx.max(b.sx).max(c.sx), px)
-            || !inside(a.sy.min(b.sy).min(c.sy), a.sy.max(b.sy).max(c.sy), py)
-        {
-            continue;
+        let [x0, y0, x1, y1] = self.bounds();
+        if !inside(x0, x1, px) || !inside(y0, y1, py) {
+            return;
         }
-        let wa = shared_edge(&b, &c, px, py) / area;
-        let wb = shared_edge(&c, &a, px, py) / area;
-        let wc = shared_edge(&a, &b, px, py) / area;
+        let wa = shared_edge(b, c, px, py) / self.area;
+        let wb = shared_edge(c, a, px, py) / self.area;
+        let wc = shared_edge(a, b, px, py) / self.area;
         // Negated, so that a weight that is not a number is outside.
         if !(wa >= 0.0 && wb >= 0.0 && wc >= 0.0) {
-            continue;
+            return;
         }
         let sum = wa + wb + wc;
         let (wa, wb, wc) = (wa / sum, wb / sum, wc / sum);
         let key = wa * a.key + wb * b.key + wc * c.key;
         // Strict, as in the renderer: the first triangle wins a tie.
         if best.as_ref().is_some_and(|(nearest, _)| key >= *nearest) || key.is_nan() {
-            continue;
+            return;
         }
         let (qa, qb, qc) = (wa * a.inv_w, wb * b.inv_w, wc * c.inv_w);
         let q = qa + qb + qc;
         let (qa, qb, qc) = (qa / q, qb / q, qc / q);
         let point = pa * qa + pb * qb + pc * qc;
         if !point.is_finite() {
-            continue;
+            return;
         }
-        best = Some((
+        *best = Some((
             key,
             Hit {
-                face,
-                triangle: t,
+                face: self.face,
+                triangle: self.triangle,
                 depth: wa * a.dist + wb * b.dist + wc * c.dist,
                 point,
             },
         ));
     }
-    Ok(best.map(|(_, hit)| hit))
+}
+
+/// The part of a picture within some pixels of a position: the triangles
+/// that can be under a position there, so that many positions close
+/// together are looked up ([`Self::pick`]) without going through the
+/// whole mesh for each.
+pub struct Neighbourhood {
+    seen: Vec<Seen>,
+    /// The box the triangles were kept for: least x, least y, greatest x,
+    /// greatest y.
+    within: [f64; 4],
+    size: [f64; 2],
+}
+
+impl Neighbourhood {
+    /// The triangles of `mesh` that can be under a position within
+    /// `radius` pixels (along x and along y) of (`x`, `y`) in the picture
+    /// [`pick`] looks at. Errors as [`pick`]. A position or a radius that
+    /// is not a number keeps nothing.
+    pub fn new(
+        mesh: &Mesh,
+        camera: &Camera,
+        width: u32,
+        height: u32,
+        x: f64,
+        y: f64,
+        radius: f64,
+    ) -> Result<Self, RenderError> {
+        if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
+            return Err(RenderError::InvalidSize { width, height });
+        }
+        if mesh.normals.len() != mesh.positions.len() || mesh.face_ids.len() != mesh.triangles.len()
+        {
+            return Err(RenderError::InvalidMesh { triangle: 0 });
+        }
+        let view = View::new(camera, width as usize, height as usize)?;
+        let within = [x - radius, y - radius, x + radius, y + radius];
+        let mut seen = Vec::new();
+        let usable = within.iter().all(|c| c.is_finite());
+        for (t, (tri, &face)) in mesh.triangles.iter().zip(&mesh.face_ids).enumerate() {
+            let vertex = |k: u32| {
+                mesh.positions
+                    .get(k as usize)
+                    .copied()
+                    .ok_or(RenderError::InvalidMesh { triangle: t })
+            };
+            let [ia, ib, ic] = *tri;
+            let corners = [vertex(ia)?, vertex(ib)?, vertex(ic)?];
+            if !usable {
+                continue;
+            }
+            let Some(triangle) = Seen::new(&view, t, face, corners) else {
+                continue;
+            };
+            let [x0, y0, x1, y1] = triangle.bounds();
+            // Negated, so that a box that is not a number is kept out.
+            if x0 <= within[2] && x1 >= within[0] && y0 <= within[3] && y1 >= within[1] {
+                seen.push(triangle);
+            }
+        }
+        Ok(Self {
+            seen,
+            within,
+            size: [view.w, view.h],
+        })
+    }
+
+    /// What [`pick`] gives for the position (`x`, `y`): the same triangle,
+    /// by the same arithmetic. `None` also for a position outside the
+    /// part of the picture this was made for.
+    pub fn pick(&self, x: f64, y: f64) -> Option<Hit> {
+        let [x0, y0, x1, y1] = self.within;
+        let [w, h] = self.size;
+        if !(x >= 0.0 && y >= 0.0 && x < w && y < h && x >= x0 && x <= x1 && y >= y0 && y <= y1) {
+            return None;
+        }
+        let mut best: Option<(f64, Hit)> = None;
+        for triangle in &self.seen {
+            triangle.hit(x, y, &mut best);
+        }
+        best.map(|(_, hit)| hit)
+    }
 }
 
 #[cfg(test)]

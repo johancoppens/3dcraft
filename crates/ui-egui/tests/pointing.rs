@@ -213,6 +213,33 @@ fn interiors(frame: &Frame) -> BTreeMap<u32, Vec<(u32, u32)>> {
     out
 }
 
+/// The pixels of `pixels` (one face's, from [`interiors`]) with nothing
+/// but that face within 6 pixels: further from every edge than the pick
+/// radius of a click (4 pixels at one pixel per point), so that a click
+/// there is a click on the face. Added 2026-10-13 with edges under the
+/// pointer: a click within the radius of an edge in sight is a click on
+/// that edge, whatever face is under it.
+fn clear_of_edges(frame: &Frame, pixels: &[(u32, u32)]) -> Vec<(u32, u32)> {
+    let (w, h) = (i64::from(frame.width), i64::from(frame.height));
+    pixels
+        .iter()
+        .copied()
+        .filter(|&(x, y)| {
+            let id = frame.ids[(y * frame.width + x) as usize];
+            (-6..=6_i64).all(|dy| {
+                (-6..=6_i64).all(|dx| {
+                    let (nx, ny) = (i64::from(x) + dx, i64::from(y) + dy);
+                    nx >= 0
+                        && ny >= 0
+                        && nx < w
+                        && ny < h
+                        && frame.ids[(ny * w + nx) as usize] == id
+                })
+            })
+        })
+        .collect()
+}
+
 /// What `document.inspect` calls the face with id `id` of the scene.
 fn inspect_name(session: &mut Session, scene: &Scene, id: u32) -> (String, String, usize) {
     let (body, index) = scene.face_of(id).unwrap();
@@ -294,8 +321,20 @@ fn a_click_in_the_viewport_picks_the_face_under_it_and_shows_it_highlighted() {
 
     let mut serial = 0;
     let mut bodies = std::collections::BTreeSet::new();
+    let mut clicked_faces = 0;
     for (&id, pixels) in &faces {
-        let (x, y) = pixels[pixels.len() / 2];
+        // Changed 2026-10-13 (edges under the pointer): the click was on
+        // the middle pixel of the face's inside, which for a narrow face
+        // is within the pick radius of one of its edges, and a click
+        // there is now a click on that edge. It is on the middle one of
+        // the pixels further from every edge than the radius; a face too
+        // narrow to have one cannot be clicked without clicking an edge,
+        // and is left out (how many are left is counted below).
+        let clear = clear_of_edges(&frame, pixels);
+        let Some(&(x, y)) = clear.get(clear.len() / 2) else {
+            continue;
+        };
+        clicked_faces += 1;
         let (feature, name, index) = inspect_name(&mut session, &scene, id);
         // The middle of the pixel, in points (one pixel per point here).
         let at = pos2(rect.left() + x as f32 + 0.5, rect.top() + y as f32 + 0.5);
@@ -348,6 +387,7 @@ fn a_click_in_the_viewport_picks_the_face_under_it_and_shows_it_highlighted() {
         3,
         "the boolean, the post and the pattern: {bodies:?}"
     );
+    assert!(clicked_faces >= 8, "{clicked_faces} faces were clicked");
     let last = window.uploaded(width, height).unwrap().to_vec();
     evidence("pointing-click-cpu.png", width, height, &last);
 
@@ -532,8 +572,18 @@ fn ui_pick_says_what_the_viewport_shows_at_a_pixel() {
     // With select it is a click.
     let (scene, frame) = id_buffer(&mut shell, &mut session);
     let faces = interiors(&frame);
-    let (&id, pixels) = faces.iter().next().unwrap();
-    let (x, y) = pixels[pixels.len() / 2];
+    // Changed 2026-10-13 (edges under the pointer): it was the middle
+    // pixel of the first face's inside, which is within the pick radius of
+    // an edge of that face, and a click there is now a click on the edge.
+    // It is the first face that has pixels further from every edge than
+    // the radius, at the middle one of those.
+    let (id, (x, y)) = faces
+        .iter()
+        .find_map(|(&id, pixels)| {
+            let clear = clear_of_edges(&frame, pixels);
+            clear.get(clear.len() / 2).map(|&at| (id, at))
+        })
+        .unwrap();
     let (feature, name, _) = inspect_name(&mut session, &scene, id);
     let before = shell.state.picked.clone().unwrap().serial;
     let clicked = call(

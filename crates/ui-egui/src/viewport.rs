@@ -15,7 +15,7 @@
 
 use crate::backend::{Backend, BodyRenderer};
 use crate::camera::{Projected, Projector};
-use crate::state::CameraState;
+use crate::state::{CameraState, EdgeRef};
 use crate::theme::{Rgb, Tokens};
 use craft3d_engine::Scene;
 use craft3d_math::Vec3;
@@ -42,6 +42,8 @@ pub enum LineKind {
     Axis(usize),
     /// An edge of a body.
     Edge,
+    /// An edge that is pointed at ([`Marks`]).
+    Highlight,
 }
 
 /// A line in image pixels (x right, y down, from the top-left corner).
@@ -85,6 +87,7 @@ impl LineKind {
             LineKind::Selected => tokens.sketch_selected,
             LineKind::Axis(axis) => tokens.axes.get(axis).copied().unwrap_or(tokens.text_dim),
             LineKind::Edge => tokens.edge,
+            LineKind::Highlight => tokens.face_highlight,
         }
     }
 
@@ -95,8 +98,52 @@ impl LineKind {
             LineKind::Construction => tokens.construction_width,
             LineKind::Axis(_) => tokens.axis_width,
             LineKind::Edge => tokens.edge_width,
+            LineKind::Highlight => tokens.highlight_width,
         }
     }
+}
+
+/// What is drawn over the picture to point at something: the edges that
+/// are highlighted, as the pieces of line the scene draws them with. Both
+/// paths of the viewport draw them from here (the lines of [`Overlay`] and
+/// the segments of [`crate::direct::segments_marked`]), over everything
+/// else, in the theme's highlight colour; the part behind a body is drawn
+/// dimmed, like a sketch there, so that an edge an agent points at is
+/// found also from the wrong side.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Marks {
+    pub lines: Vec<[Vec3; 2]>,
+}
+
+impl Marks {
+    pub fn is_empty(&self) -> bool {
+        self.lines.is_empty()
+    }
+}
+
+/// The edges of `scene` that `edge` refers to, as marks. None when the
+/// scene has no such edge: a highlight is view state and may outlive what
+/// it names.
+pub fn edge_marks(scene: Option<&Scene>, edge: &EdgeRef) -> Marks {
+    let mut marks = Marks::default();
+    let Some(scene) = scene else {
+        return marks;
+    };
+    let Ok(found) = scene.edges_named(edge.feature.as_deref(), edge.edge.as_deref(), &edge.between)
+    else {
+        return marks;
+    };
+    let Some(body) = scene.bodies.get(found.body_index) else {
+        return marks;
+    };
+    for polyline in found.edges.iter().filter_map(|&k| body.edges.get(k)) {
+        for pair in polyline.windows(2) {
+            if let [a, b] = *pair {
+                marks.lines.push([a, b]);
+            }
+        }
+    }
+    marks
 }
 
 /// The longest line is cut into at most this many pieces for the depth
@@ -267,7 +314,7 @@ pub fn overlay(
     height: u32,
     selected: Option<&str>,
 ) -> Overlay {
-    build_overlay(scene, camera, width, height, selected, None)
+    build_overlay(scene, camera, width, height, selected, None, None)
 }
 
 /// The lines over `frame`, the image of the scene's bodies seen with
@@ -298,6 +345,18 @@ pub fn overlay_on_with(
     selected: Option<&str>,
     slack: f64,
 ) -> Overlay {
+    overlay_marked(scene, camera, frame, selected, slack, &Marks::default())
+}
+
+/// [`overlay_on_with`] with `marks` drawn over everything else.
+pub fn overlay_marked(
+    scene: Option<&Scene>,
+    camera: &CameraState,
+    frame: &Frame,
+    selected: Option<&str>,
+    slack: f64,
+    marks: &Marks,
+) -> Overlay {
     let map = DepthMap::new(frame, slack);
     build_overlay(
         scene,
@@ -306,6 +365,7 @@ pub fn overlay_on_with(
         frame.height,
         selected,
         map.as_ref(),
+        Some(marks),
     )
 }
 
@@ -316,6 +376,7 @@ fn build_overlay(
     height: u32,
     selected: Option<&str>,
     map: Option<&DepthMap<'_>>,
+    marks: Option<&Marks>,
 ) -> Overlay {
     let mut out = Overlay::default();
     let Some(projector) = Projector::new(&camera.to_render(), f64::from(width), f64::from(height))
@@ -367,10 +428,7 @@ fn build_overlay(
             false,
         );
     }
-    let Some(scene) = scene else {
-        return out;
-    };
-    for sketch in &scene.sketches {
+    for sketch in scene.into_iter().flat_map(|scene| &scene.sketches) {
         let chosen = selected == Some(sketch.feature.as_str());
         for polyline in &sketch.polylines {
             let kind = match (polyline.construction, chosen) {
@@ -385,7 +443,11 @@ fn build_overlay(
             }
         }
     }
-    for sketch in &scene.sketches {
+    // What is pointed at, over everything else.
+    for &[a, b] in marks.into_iter().flat_map(|marks| &marks.lines) {
+        line(a, b, LineKind::Highlight, true, true);
+    }
+    for sketch in scene.into_iter().flat_map(|scene| &scene.sketches) {
         let kind = if selected == Some(sketch.feature.as_str()) {
             LineKind::Selected
         } else {
@@ -507,12 +569,13 @@ pub fn compose_with(
 ) -> Result<Composed, String> {
     let (frame, backend) = renderer.render(scene, camera, quality, tokens)?;
     let coverage = frame.coverage();
-    let overlay = overlay_on_with(
+    let overlay = overlay_marked(
         scene,
         camera,
         &frame,
         selected,
         depth_slack(backend, scene, camera),
+        renderer.marks(),
     );
     Ok(Composed {
         width: frame.width,
@@ -567,8 +630,34 @@ pub fn picture_with(
     highlight: Highlight,
     scale: f64,
 ) -> Result<Picture, String> {
+    picture_marked(
+        scene,
+        camera,
+        quality,
+        tokens,
+        selected,
+        highlight,
+        &Marks::default(),
+        scale,
+    )
+}
+
+/// [`picture_with`] with `marks` drawn over the picture: what the window
+/// shows when an edge was clicked or pointed at.
+#[allow(clippy::too_many_arguments)]
+pub fn picture_marked(
+    scene: Option<&Scene>,
+    camera: &CameraState,
+    quality: Quality,
+    tokens: &Tokens,
+    selected: Option<&str>,
+    highlight: Highlight,
+    marks: &Marks,
+    scale: f64,
+) -> Result<Picture, String> {
     let mut renderer = BodyRenderer::cpu();
     renderer.set_highlight(highlight);
+    renderer.set_marks(marks.clone());
     let composed = compose_with(&mut renderer, scene, camera, quality, tokens, selected)?;
     Ok(rasterise(composed, tokens, scale))
 }

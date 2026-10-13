@@ -27,18 +27,18 @@ pub const UI_METHODS: &[UiMethod] = &[
     },
     UiMethod {
         name: "ui.set",
-        params: r#"{"view": "iso|front|back|right|left|top|bottom", "camera": {"target": [x, y, z], "distance": number, "yaw": degrees, "pitch": degrees, "projection": "perspective|orthographic", "fovY": degrees, "autoFit": boolean}, "panels": {"tree": boolean, "status": boolean, "recovery": boolean}, "selectedFeature": id or null, "notice": string, "quality": {"chordal": fraction of the model's size = 3e-5, "maxTriangles": integer = 1000000}, "highlight": {"feature": id or name, "face": face name} or null}"#,
-        summary: "Changes the fields given and leaves the rest. An unknown field or a wrong type is an error, and then nothing has changed. Numbers out of range are clamped. quality is how finely the viewport's mesh follows the model: a chordal tolerance of chordal times the model's size, coarsened until the scene has at most maxTriangles triangles but never beyond the automatic tolerance view.render uses. highlight is the face shown highlighted (ui.highlight sets it too, and says whether the face exists); picked, the last click, cannot be set.",
+        params: r#"{"view": "iso|front|back|right|left|top|bottom", "camera": {"target": [x, y, z], "distance": number, "yaw": degrees, "pitch": degrees, "projection": "perspective|orthographic", "fovY": degrees, "autoFit": boolean}, "panels": {"tree": boolean, "status": boolean, "recovery": boolean}, "selectedFeature": id or null, "notice": string, "quality": {"chordal": fraction of the model's size = 3e-5, "maxTriangles": integer = 1000000}, "highlight": {"feature": id or name, "face": face name} or null, "highlightEdge": {"feature": id or name, "edge": edge name, "between": [face name, face name]} or null}"#,
+        summary: "Changes the fields given and leaves the rest. An unknown field or a wrong type is an error, and then nothing has changed. Numbers out of range are clamped. quality is how finely the viewport's mesh follows the model: a chordal tolerance of chordal times the model's size, coarsened until the scene has at most maxTriangles triangles but never beyond the automatic tolerance view.render uses. highlight is the face shown highlighted and highlightEdge the edge (ui.highlight sets them too, and says whether they exist); picked, the last click, cannot be set.",
     },
     UiMethod {
         name: "ui.pick",
-        params: r#"{"x": number, "y": number, "width": integer = the viewport's, "height": integer = the viewport's, "select": boolean = false}"#,
-        summary: "Says what the viewport shows at a position: the body (feature, name), the face's persistent name as document.inspect lists it under faceNames (with faceIndex and aliases) and the point in space, as the command view.pick does, for the viewport's mesh and camera. x and y are in pixels from the top-left corner of the viewport (the picture ui.screenshot makes; width and height when that picture was made at another size), the centre of pixel (i, j) at (i + 0.5, j + 0.5). hit is false when nothing is there, with outside true when the position is not in the viewport. With select it counts as a click of the mouse: state.picked becomes this pick and the face is highlighted (a pick on nothing clears the highlight). A click in the viewport does the same, so state.picked of ui.get is what the developer pointed at last.",
+        params: r#"{"x": number, "y": number, "width": integer = the viewport's, "height": integer = the viewport's, "radius": number = the click's (4 points), "select": boolean = false}"#,
+        summary: "Says what the viewport shows at a position, as the command view.pick does, for the viewport's mesh and camera: kind (edge when an edge is near, otherwise face), the face under the position (the body as feature and name, the face's persistent name as document.inspect lists it under faceNames, with faceIndex and aliases, and the point in space) and, when its nearest point in sight is within radius pixels, edge: {feature, body, name, index, faces, point, depth, distance}, the edge as document.edges lists it (name is its own persistent name or null, faces the names of the faces it lies between). x and y are in pixels from the top-left corner of the viewport (the picture ui.screenshot makes; width and height when that picture was made at another size), the centre of pixel (i, j) at (i + 0.5, j + 0.5). radius is in pixels of that picture, 0 to 64, 0 for faces only; without it, it is what a click uses. hit is false when nothing is there, with outside true when the position is not in the viewport. With select it counts as a click of the mouse: state.picked becomes this pick and what it points at is highlighted, the edge (state.highlightEdge) or else the face (state.highlight); a pick on nothing clears both. A click in the viewport does the same, so state.picked of ui.get is what the developer pointed at last.",
     },
     UiMethod {
         name: "ui.highlight",
-        params: r#"{"face": face name or null, "feature": id or name = the body that has the face}"#,
-        summary: "Shows a face highlighted in the viewport: face is its persistent name from document.inspect (faceNames, or an alias), feature says which body when several have a face of that name. null removes the highlight. Returns the highlight as it was set (the feature by id), the name of the body and how many faces carry the name (faces; a boolean can cut a face into pieces that keep its name). A name no body has is an error and changes nothing.",
+        params: r#"{"face": face name or null, "edge": edge name, "between": [face name, face name], "feature": id or name = the body that has it}"#,
+        summary: "Shows a face or an edge highlighted in the viewport; one of face, edge and between. face is a face's persistent name from document.inspect (faceNames, or an alias). edge is an edge's own persistent name (name in document.edges); between names an edge by the two faces it lies between, as document.edges takes it (the same name twice for a seam), and means every edge between them. feature says which body when several have one of that name. face: null removes every highlight. Returns the highlight as it was set (highlight: {feature, face} for a face, highlightEdge: {feature, edge, between} for an edge; the feature by id), the name of the body and how many faces carry the name (faces; a boolean can cut a face into pieces that keep its name) or how many edges are meant (edges). A name no body has is an error and changes nothing.",
     },
     UiMethod {
         name: "ui.fit",
@@ -276,7 +276,11 @@ impl Shell {
 
     fn ui_pick(&mut self, session: &mut Session, params: Option<&Value>) -> Result<Value, String> {
         let method = "ui.pick";
-        let map = fields(method, params, &["x", "y", "width", "height", "select"])?;
+        let map = fields(
+            method,
+            params,
+            &["x", "y", "width", "height", "radius", "select"],
+        )?;
         let number = |key: &str| match map.get(key) {
             None | Some(Value::Null) => Err(format!("{method}: missing parameter `{key}`")),
             Some(value) => value
@@ -288,6 +292,20 @@ impl Shell {
         let [viewport_width, viewport_height] = self.viewport_size();
         let width = side(method, map, "width")?.unwrap_or(viewport_width);
         let height = side(method, map, "height")?.unwrap_or(viewport_height);
+        let radius = match map.get("radius") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(
+                value
+                    .as_f64()
+                    .filter(|r| (0.0..=craft3d_engine::MAX_PICK_RADIUS).contains(r))
+                    .ok_or_else(|| {
+                        format!(
+                            "{method}: `radius` must be a number of pixels from 0 to {}",
+                            craft3d_engine::MAX_PICK_RADIUS
+                        )
+                    })?,
+            ),
+        };
         let select = match map.get("select") {
             None | Some(Value::Null) => false,
             Some(Value::Bool(select)) => *select,
@@ -301,9 +319,10 @@ impl Shell {
             });
         };
         // A click is in the viewport's own pixels.
+        let stretch = f64::from(viewport_width) / f64::from(width);
         let (px, py) = if select {
             (
-                x * f64::from(viewport_width) / f64::from(width),
+                x * stretch,
                 y * f64::from(viewport_height) / f64::from(height),
             )
         } else {
@@ -314,47 +333,31 @@ impl Shell {
         } else {
             [width, height]
         };
-        let picked = self
-            .pick(Some(&scene), px, py, Some(size), select)
+        let pick_radius = if select {
+            radius.map(|radius| radius * stretch)
+        } else {
+            radius
+        };
+        let pointed = self
+            .pick(Some(&scene), px, py, Some(size), pick_radius, select)
             .map_err(|e| format!("{method}: {e}"))?;
         let outside = !(x >= 0.0 && y >= 0.0 && x < f64::from(width) && y < f64::from(height));
         let mut result = json!({
-            "hit": picked.is_some(),
             "x": x,
             "y": y,
             "width": width,
             "height": height,
         });
         if let Some(map) = result.as_object_mut() {
-            match picked {
-                None => {
-                    map.insert("outside".into(), outside.into());
-                }
-                Some(pick) => {
-                    map.insert("feature".into(), pick.feature.into());
-                    map.insert("name".into(), pick.body.into());
-                    map.insert("face".into(), pick.face.map_or(Value::Null, Value::from));
-                    map.insert("faceIndex".into(), pick.face_index.into());
-                    if !pick.aliases.is_empty() {
-                        map.insert("aliases".into(), json!(pick.aliases));
-                    }
-                    map.insert(
-                        "point".into(),
-                        json!([pick.point.x, pick.point.y, pick.point.z]),
-                    );
-                    map.insert("depth".into(), pick.depth.into());
-                }
+            pointed.describe(map);
+            if pointed.kind().is_none() {
+                map.insert("outside".into(), outside.into());
             }
             if select {
                 let state = self.state_json()?;
-                map.insert(
-                    "picked".into(),
-                    state.get("picked").cloned().unwrap_or(Value::Null),
-                );
-                map.insert(
-                    "highlight".into(),
-                    state.get("highlight").cloned().unwrap_or(Value::Null),
-                );
+                for key in ["picked", "highlight", "highlightEdge"] {
+                    map.insert(key.into(), state.get(key).cloned().unwrap_or(Value::Null));
+                }
             }
         }
         Ok(result)
@@ -366,7 +369,7 @@ impl Shell {
         params: Option<&Value>,
     ) -> Result<Value, String> {
         let method = "ui.highlight";
-        let map = fields(method, params, &["face", "feature"])?;
+        let map = fields(method, params, &["face", "edge", "between", "feature"])?;
         let feature = match map.get("feature") {
             None | Some(Value::Null) => None,
             Some(Value::String(feature)) => Some(feature.clone()),
@@ -378,10 +381,18 @@ impl Shell {
                 ));
             }
         };
+        if map.get("edge").is_some() || map.get("between").is_some() {
+            if map.get("face").is_some() {
+                return Err(format!(
+                    "{method}: give one of `face`, `edge` and `between`"
+                ));
+            }
+            return self.highlight_edge(session, &map, feature);
+        }
         let face = match map.get("face") {
             None => {
                 return Err(format!(
-                    "{method}: missing parameter `face`: a face name from document.inspect, or null to remove the highlight"
+                    "{method}: missing parameter `face`: a face name from document.inspect, or null to remove the highlight (or `edge` or `between` for an edge)"
                 ));
             }
             Some(Value::Null) => {
@@ -391,6 +402,7 @@ impl Shell {
                     ));
                 }
                 self.state.highlight = None;
+                self.state.highlight_edge = None;
                 return Ok(json!({ "highlight": null, "faces": 0 }));
             }
             Some(Value::String(face)) => face,
@@ -411,6 +423,8 @@ impl Shell {
             feature: Some(found.feature.clone()),
             face: found.face.clone(),
         });
+        // One thing is pointed at.
+        self.state.highlight_edge = None;
         let mut result = json!({
             "highlight": { "feature": found.feature, "face": found.face },
             "name": found.body,
@@ -420,6 +434,56 @@ impl Shell {
         if let (Some(map), (_, left_out @ 1..)) = (result.as_object_mut(), shown) {
             map.insert("facesNotShown".into(), left_out.into());
         }
+        Ok(result)
+    }
+
+    /// `ui.highlight` for an edge: `edge` or `between`.
+    fn highlight_edge(
+        &mut self,
+        session: &mut Session,
+        map: &Fields<'_>,
+        feature: Option<String>,
+    ) -> Result<Value, String> {
+        let method = "ui.highlight";
+        let edge = match map.get("edge") {
+            None => None,
+            Some(Value::String(edge)) => Some(edge.as_str()),
+            Some(_) => {
+                return Err(format!(
+                    "{method}: `edge` must be an edge name from document.edges (`face`: null removes the highlight)"
+                ));
+            }
+        };
+        let between: Vec<String> = match map.get("between") {
+            None => Vec::new(),
+            Some(Value::Array(names)) => match names.as_slice() {
+                [Value::String(a), Value::String(b)] => vec![a.clone(), b.clone()],
+                _ => return Err(format!("{method}: `between` takes two face names")),
+            },
+            Some(_) => return Err(format!("{method}: `between` takes two face names")),
+        };
+        let Some(scene) = self.sync(session) else {
+            return Err(match self.problem() {
+                Some(problem) => format!("{method}: {problem}"),
+                None => format!("{method}: no document is open; run file.new or file.open first"),
+            });
+        };
+        let found = scene
+            .edges_named(feature.as_deref(), edge, &between)
+            .map_err(|e| format!("{method}: {e}"))?;
+        let shown = crate::state::EdgeRef {
+            feature: Some(found.feature.clone()),
+            edge: found.edge.clone(),
+            between: found.between.clone(),
+        };
+        let result = json!({
+            "highlightEdge": shown,
+            "name": found.body,
+            "edges": found.edges.len(),
+        });
+        self.state.highlight_edge = Some(shown);
+        // One thing is pointed at.
+        self.state.highlight = None;
         Ok(result)
     }
 
@@ -453,7 +517,7 @@ impl Shell {
                 .map_err(|e| format!("{method}: {e}"))?;
         }
         let scene = self.sync(session);
-        let picture = viewport::picture_with(
+        let picture = viewport::picture_marked(
             scene.as_deref(),
             &self.state.camera,
             Quality {
@@ -464,6 +528,7 @@ impl Shell {
             &self.tokens,
             self.state.selected_feature.as_deref(),
             self.face_highlight(scene.as_deref()),
+            &self.marks(scene.as_deref()),
             scale,
         )
         .map_err(|e| format!("{method}: {e}"))?;

@@ -148,6 +148,15 @@ pub struct SceneBody {
     /// Per face, the other names it answers to (`faceAliases` of
     /// `document.inspect`). Empty when no face of the body has any.
     pub face_aliases: Vec<Vec<String>>,
+    /// The persistent name of every edge, in the order of [`Self::edges`],
+    /// as `document.edges` gives it under `name`. Empty when the body's
+    /// edges have no names of their own (after a boolean): an edge is then
+    /// referred to by the faces it lies between.
+    pub edge_names: Vec<String>,
+    /// Per edge, the faces it lies between, as their places among the
+    /// faces of the body, ascending: two for an edge of a solid, one for a
+    /// seam. What `document.edges` lists under `faces`.
+    pub edge_faces: Vec<Vec<usize>>,
 }
 
 /// What a polyline of a sketch stands for.
@@ -701,6 +710,13 @@ fn build(
                     .collect()
             })
             .unwrap_or_default();
+        let edge_names: Vec<String> = names
+            .map(|names| names.edges.iter().map(ToString::to_string).collect())
+            .unwrap_or_default();
+        let edge_faces: Vec<Vec<usize>> = craft3d_regen::faces_of_edges(body)
+            .into_iter()
+            .map(|faces| faces.into_iter().map(|face| face.0 as usize).collect())
+            .collect();
         scene.bodies.push(SceneBody {
             feature: feature.id.to_string(),
             name: feature.name.clone(),
@@ -709,6 +725,8 @@ fn build(
             edges,
             face_names,
             face_aliases,
+            edge_names,
+            edge_faces,
         });
         faces_done = faces_done.saturating_add(body.faces.len());
         let triangles = scene.mesh.triangles.len();

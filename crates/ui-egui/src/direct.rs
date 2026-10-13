@@ -14,7 +14,7 @@
 use crate::backend::{Backend, RendererReport};
 use crate::state::CameraState;
 use crate::theme::Tokens;
-use crate::viewport::{AXIS_LENGTH, LineKind, MAX_SIDE, MIN_SIDE, depth_slack};
+use crate::viewport::{AXIS_LENGTH, LineKind, MAX_SIDE, MIN_SIDE, Marks, depth_slack};
 use craft3d_engine::Scene;
 use craft3d_gpu::{DrawOptions, GpuError, GpuLines, GpuMesh, Onscreen, OverlayParams, Segment};
 use craft3d_math::Vec3;
@@ -57,6 +57,7 @@ struct Uploaded {
     selected: Option<String>,
     tokens: Tokens,
     scale: f32,
+    marks: Marks,
     mesh: GpuMesh,
     lines: GpuLines,
     triangles: usize,
@@ -73,6 +74,7 @@ struct Shown {
     tokens: Tokens,
     scale: f32,
     highlight: Highlight,
+    marks: Marks,
 }
 
 pub struct Direct {
@@ -88,6 +90,8 @@ pub struct Direct {
     largest: u32,
     /// The faces the frames show highlighted.
     highlight: Highlight,
+    /// The edges the frames point at.
+    marks: Marks,
 }
 
 fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
@@ -120,6 +124,19 @@ pub fn segments(
     selected: Option<&str>,
     tokens: &Tokens,
     scale: f32,
+) -> Vec<Segment> {
+    segments_marked(scene, selected, tokens, scale, &Marks::default())
+}
+
+/// [`segments`] with `marks` drawn over the lines, as
+/// `viewport::overlay_marked` lists them: after the sketches' lines,
+/// before their points.
+pub fn segments_marked(
+    scene: Option<&Scene>,
+    selected: Option<&str>,
+    tokens: &Tokens,
+    scale: f32,
+    marks: &Marks,
 ) -> Vec<Segment> {
     let scale = if scale.is_finite() && scale > 0.0 {
         scale.min(16.0)
@@ -157,10 +174,7 @@ pub fn segments(
             true,
         );
     }
-    let Some(scene) = scene else {
-        return out;
-    };
-    for sketch in &scene.sketches {
+    for sketch in scene.into_iter().flat_map(|scene| &scene.sketches) {
         let chosen = selected == Some(sketch.feature.as_str());
         for polyline in &sketch.polylines {
             let kind = match (polyline.construction, chosen) {
@@ -175,7 +189,10 @@ pub fn segments(
             }
         }
     }
-    for sketch in &scene.sketches {
+    for &[a, b] in &marks.lines {
+        line(a, b, LineKind::Highlight, true, true, false);
+    }
+    for sketch in scene.into_iter().flat_map(|scene| &scene.sketches) {
         let kind = if selected == Some(sketch.feature.as_str()) {
             LineKind::Selected
         } else {
@@ -283,6 +300,7 @@ impl Direct {
             shown: None,
             largest,
             highlight: Highlight::NONE,
+            marks: Marks::default(),
         })
     }
 
@@ -304,6 +322,12 @@ impl Direct {
     /// [`crate::backend::BodyRenderer::set_highlight`].
     pub fn set_highlight(&mut self, highlight: Highlight) {
         self.highlight = highlight;
+    }
+
+    /// The edges the frames drawn from now on point at, as
+    /// [`crate::backend::BodyRenderer::set_marks`].
+    pub fn set_marks(&mut self, marks: Marks) {
+        self.marks = marks;
     }
 
     /// The egui texture that shows the picture, once one was drawn.
@@ -332,6 +356,7 @@ impl Direct {
             tokens: *tokens,
             scale,
             highlight: self.highlight,
+            marks: self.marks.clone(),
         };
         if self.shown.as_ref() == Some(&wanted) && self.texture.is_some() {
             return Ok(None);
@@ -378,15 +403,17 @@ impl Direct {
                 && u.selected == wanted.selected
                 && u.tokens == wanted.tokens
                 && u.scale == wanted.scale
+                && u.marks == wanted.marks
         });
         if !same_lines {
             let lines = self
                 .onscreen
-                .upload_lines(&segments(
+                .upload_lines(&segments_marked(
                     scene,
                     wanted.selected.as_deref(),
                     &wanted.tokens,
                     wanted.scale,
+                    &wanted.marks,
                 ))
                 .map_err(classify)?;
             if same_mesh && let Some(uploaded) = &mut self.uploaded {
@@ -394,6 +421,7 @@ impl Direct {
                 uploaded.selected.clone_from(&wanted.selected);
                 uploaded.tokens = wanted.tokens;
                 uploaded.scale = wanted.scale;
+                uploaded.marks.clone_from(&wanted.marks);
             } else {
                 // The old copy goes first: twice the model would not fit
                 // a small device.
@@ -407,6 +435,7 @@ impl Direct {
                     selected: wanted.selected.clone(),
                     tokens: wanted.tokens,
                     scale: wanted.scale,
+                    marks: wanted.marks.clone(),
                     mesh: uploaded,
                     lines,
                     triangles: mesh.triangles.len(),

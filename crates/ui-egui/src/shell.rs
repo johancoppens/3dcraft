@@ -7,12 +7,14 @@ use crate::backend::{Backend, BodyRenderer, RendererChoice, RendererReport};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::direct::{Direct, DirectFailure};
 use crate::frames::{Mode, Scheduler, Ticket};
-use crate::state::{CameraState, FaceRef, Picked, ProjectionKind, UiState, VIEWS};
+use crate::state::{
+    CameraState, EdgeRef, FaceRef, Picked, PickedEntity, PickedKind, ProjectionKind, UiState, VIEWS,
+};
 use crate::theme::{Tokens, color, color_alpha};
 use crate::viewport::{self, Composed, MAX_SIDE, MIN_SIDE, Overlay, Quality};
 use craft3d_engine::{
-    DocumentStatus, FeatureState, Recoverable, RecoveryOverview, Scene, ScenePick, SceneQuality,
-    Session,
+    DocumentStatus, FeatureState, PickKind, Recoverable, RecoveryOverview, Scene, SceneNear,
+    ScenePointed, SceneQuality, Session,
 };
 use craft3d_math::Bbox3;
 use craft3d_render::Highlight;
@@ -186,6 +188,8 @@ struct FrameKey {
     selected: Option<String>,
     /// The faces shown highlighted.
     highlight: Highlight,
+    /// The edge shown highlighted.
+    highlight_edge: Option<EdgeRef>,
     tokens: Tokens,
 }
 
@@ -197,6 +201,7 @@ struct RenderJob {
     tokens: Tokens,
     selected: Option<String>,
     highlight: Highlight,
+    marks: viewport::Marks,
     /// Asked to repaint when the image is ready.
     #[cfg(not(target_arch = "wasm32"))]
     wake: Option<egui::Context>,
@@ -215,6 +220,7 @@ impl RenderJob {
     fn render(&self, renderer: &mut BodyRenderer) -> Result<Rendered, String> {
         let elapsed = stopwatch();
         renderer.set_highlight(self.highlight);
+        renderer.set_marks(self.marks.clone());
         let composed = viewport::compose_with(
             renderer,
             self.scene.as_deref(),
@@ -712,31 +718,72 @@ impl Shell {
             })
     }
 
+    /// What the viewport draws over the picture to point at something:
+    /// the highlighted edge.
+    pub fn marks(&self, scene: Option<&Scene>) -> viewport::Marks {
+        self.state
+            .highlight_edge
+            .as_ref()
+            .map_or_else(viewport::Marks::default, |edge| {
+                viewport::edge_marks(scene, edge)
+            })
+    }
+
+    /// How near to an edge a click counts as a click on it, in pixels of
+    /// the viewport: the theme's `pick_radius` points.
+    pub fn pick_radius(&self) -> f64 {
+        let radius = f64::from(self.tokens.pick_radius) * f64::from(self.pixels_per_point);
+        if radius.is_finite() {
+            radius.clamp(0.0, craft3d_engine::MAX_PICK_RADIUS)
+        } else {
+            craft3d_engine::DEFAULT_PICK_RADIUS
+        }
+    }
+
     /// What the viewport shows at (`x`, `y`): pixels from the top-left
     /// corner of a picture of `size` (the viewport's own when `None`), as
     /// framed by the camera now. The answer is the engine's
-    /// (`Scene::pick`) on the mesh the viewport draws, so it is the face
-    /// the picture has there, whichever renderer made the picture.
+    /// (`Scene::point_at`) on the mesh the viewport draws, so it is the
+    /// face the picture has there, whichever renderer made the picture,
+    /// and the edge within `radius` pixels of that picture, by the
+    /// engine's rule (`None`: [`Self::pick_radius`], as many pixels of
+    /// that picture as it is of the viewport).
     ///
     /// With `select` this is a click: the answer becomes
-    /// [`UiState::picked`], the face under it the highlight, and a pick on
-    /// nothing clears the highlight.
+    /// [`UiState::picked`], what it points at the highlight (the edge, or
+    /// else the face), and a pick on nothing clears the highlights.
     pub fn pick(
         &mut self,
         scene: Option<&Scene>,
         x: f64,
         y: f64,
         size: Option<[u32; 2]>,
+        radius: Option<f64>,
         select: bool,
-    ) -> Result<Option<ScenePick>, String> {
+    ) -> Result<ScenePointed, String> {
         let [width, height] = size.unwrap_or(self.size);
+        let radius = radius.unwrap_or_else(|| {
+            // The same place on the model in a picture of another size.
+            let stretch = f64::from(width) / f64::from(self.size[0].max(1));
+            self.pick_radius() * stretch
+        });
         let found = match scene {
-            Some(scene) => scene.pick(&self.state.camera.to_render(), width, height, x, y)?,
-            None => None,
+            Some(scene) => {
+                scene.point_at(&self.state.camera.to_render(), width, height, x, y, radius)?
+            }
+            None => ScenePointed::default(),
         };
         if select && x.is_finite() && y.is_finite() {
             self.picks = self.picks.saturating_add(1);
-            let hit = found.as_ref();
+            let hit = found.face.as_ref();
+            let entity = |near: &SceneNear| PickedEntity {
+                feature: near.feature.clone(),
+                body: near.body.clone(),
+                name: near.name.clone(),
+                index: u64::try_from(near.index).unwrap_or(u64::MAX),
+                faces: near.faces.clone(),
+                point: [near.point.x, near.point.y, near.point.z],
+            };
             self.state.picked = Some(Picked {
                 serial: self.picks,
                 x,
@@ -746,13 +793,23 @@ impl Shell {
                 face: hit.and_then(|hit| hit.face.clone()),
                 face_index: hit.and_then(|hit| u64::try_from(hit.face_index).ok()),
                 point: hit.map(|hit| [hit.point.x, hit.point.y, hit.point.z]),
+                kind: found.kind().map(|kind| match kind {
+                    PickKind::Face => PickedKind::Face,
+                    PickKind::Edge => PickedKind::Edge,
+                }),
+                edge: found.edge.as_ref().map(entity),
             });
-            self.state.highlight = hit.and_then(|hit| {
-                Some(FaceRef {
-                    feature: Some(hit.feature.clone()),
-                    face: hit.face.clone()?,
-                })
-            });
+            // One thing is pointed at: the edge, or else the face.
+            self.state.highlight_edge = found.edge.as_ref().and_then(edge_ref);
+            self.state.highlight = match found.kind() {
+                Some(PickKind::Face) => hit.and_then(|hit| {
+                    Some(FaceRef {
+                        feature: Some(hit.feature.clone()),
+                        face: hit.face.clone()?,
+                    })
+                }),
+                _ => None,
+            };
         }
         Ok(found)
     }
@@ -781,6 +838,7 @@ impl Shell {
             self.rows.clear();
             self.state.selected_feature = None;
             self.state.highlight = None;
+            self.state.highlight_edge = None;
             self.state.picked = None;
             self.framed = Bbox3::EMPTY;
             return None;
@@ -806,11 +864,25 @@ impl Shell {
         }) {
             self.state.highlight = None;
         }
+        // An edge likewise: by its own name, or by the faces it lies
+        // between.
+        let edge_gone = |edge: &EdgeRef| {
+            scene
+                .edges_named(edge.feature.as_deref(), edge.edge.as_deref(), &edge.between)
+                .is_err()
+        };
+        if self.state.highlight_edge.as_ref().is_some_and(edge_gone) {
+            self.state.highlight_edge = None;
+        }
         if self.state.picked.as_ref().is_some_and(|picked| {
             picked
                 .face
                 .as_ref()
                 .is_some_and(|face| scene.faces_named(picked.feature.as_deref(), face).is_err())
+                || picked
+                    .edge
+                    .as_ref()
+                    .is_some_and(|edge| picked_edge_ref(edge).is_none_or(|edge| edge_gone(&edge)))
         }) {
             self.state.picked = None;
         }
@@ -1220,7 +1292,7 @@ impl Shell {
             let y = across(rect.top(), rect.bottom(), at.y, height);
             // A picture that cannot be made has nothing to point at; the
             // viewport says why already.
-            let _ = self.pick(scene, x, y, None, true);
+            let _ = self.pick(scene, x, y, None, None, true);
             ui.ctx().request_repaint();
         }
 
@@ -1235,6 +1307,7 @@ impl Shell {
             largest,
             selected: self.state.selected_feature.clone(),
             highlight: self.face_highlight(scene),
+            highlight_edge: self.state.highlight_edge.clone(),
             tokens,
         };
         // The direct path draws the whole picture, lines included, on the
@@ -1440,6 +1513,13 @@ impl Shell {
             return false;
         };
         direct.set_highlight(key.highlight);
+        direct.set_marks(
+            key.highlight_edge
+                .as_ref()
+                .map_or_else(viewport::Marks::default, |edge| {
+                    viewport::edge_marks(scene, edge)
+                }),
+        );
         let outcome = direct.frame(
             scene,
             &key.camera,
@@ -1516,6 +1596,12 @@ impl Shell {
             tokens: key.tokens,
             selected: key.selected.clone(),
             highlight: key.highlight,
+            marks: key
+                .highlight_edge
+                .as_ref()
+                .map_or_else(viewport::Marks::default, |edge| {
+                    viewport::edge_marks(scene.map(Arc::as_ref), edge)
+                }),
             #[cfg(not(target_arch = "wasm32"))]
             wake: Some(ctx.clone()),
         };
@@ -1687,6 +1773,32 @@ const GPU_TARGET_SIDE: u64 = 8192;
 
 /// Paints the overlay, which is in image pixels, into `rect`, which is the
 /// same image in points.
+/// The edge a pick found, as a highlight refers to it: by its own name
+/// when it has one, otherwise by the faces it lies between (a seam: its
+/// one face twice). `None` for an edge with neither.
+fn edge_ref(near: &SceneNear) -> Option<EdgeRef> {
+    named_edge(&near.feature, near.name.as_deref(), &near.faces)
+}
+
+/// [`edge_ref`] for the edge of a remembered click.
+fn picked_edge_ref(edge: &PickedEntity) -> Option<EdgeRef> {
+    named_edge(&edge.feature, edge.name.as_deref(), &edge.faces)
+}
+
+fn named_edge(feature: &str, name: Option<&str>, faces: &[String]) -> Option<EdgeRef> {
+    let between = match (name, faces) {
+        (Some(_), _) => Vec::new(),
+        (None, [a, b]) => vec![a.clone(), b.clone()],
+        (None, [a]) => vec![a.clone(), a.clone()],
+        (None, _) => return None,
+    };
+    Some(EdgeRef {
+        feature: Some(feature.to_string()),
+        edge: name.map(str::to_string),
+        between,
+    })
+}
+
 fn paint_overlay(
     painter: &egui::Painter,
     rect: egui::Rect,

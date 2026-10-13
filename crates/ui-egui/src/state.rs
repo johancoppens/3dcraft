@@ -171,6 +171,47 @@ pub struct FaceRef {
     pub face: String,
 }
 
+/// An edge of a body, the way `document.edges` says it: by its own
+/// persistent name where it has one, or by the two faces it lies between.
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct EdgeRef {
+    /// The feature of the body, by id (`F3`) or by name. `None` looks in
+    /// every body, which works while only one has such an edge.
+    pub feature: Option<String>,
+    /// The edge's own persistent name (`name` of `document.edges`).
+    pub edge: Option<String>,
+    /// Without a name of its own: the names of the two faces it lies
+    /// between, as `document.edges` takes them under `between` (the same
+    /// name twice for a seam). Every edge between them is meant.
+    pub between: Vec<String>,
+}
+
+/// What a click was on: a face, or an edge near the position.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PickedKind {
+    Face,
+    Edge,
+}
+
+/// The edge a click was on.
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct PickedEntity {
+    /// The feature of its body (`F3`) and that feature's name.
+    pub feature: String,
+    pub body: String,
+    /// Its own persistent name, when it has one.
+    pub name: Option<String>,
+    /// Its place in `document.edges`.
+    pub index: u64,
+    /// The names of the faces it lies between.
+    pub faces: Vec<String>,
+    /// The point of it nearest to the click, in model coordinates.
+    pub point: [f64; 3],
+}
+
 /// The last click in the viewport, or the last `ui.pick` that asked to be
 /// taken as one: where it was and what was under it. An agent reads here
 /// what the developer pointed at.
@@ -194,6 +235,12 @@ pub struct Picked {
     pub face_index: Option<u64>,
     /// The point under it, in model coordinates.
     pub point: Option<[f64; 3]>,
+    /// What the click was on: an edge when one was near, otherwise the
+    /// face under it; `None` for a click on nothing. The fields above are
+    /// the face under the click either way.
+    pub kind: Option<PickedKind>,
+    /// The edge, when the click was on one.
+    pub edge: Option<PickedEntity>,
 }
 
 /// Everything the shell remembers that is not in a document.
@@ -213,6 +260,10 @@ pub struct UiState {
     /// `ui.set`). It is dropped when no body has a face of that name any
     /// more.
     pub highlight: Option<FaceRef>,
+    /// The edge shown highlighted in the viewport: the one that was
+    /// clicked last, or the one an agent pointed at (`ui.highlight`, or
+    /// `ui.set`). Dropped when no body has such an edge any more.
+    pub highlight_edge: Option<EdgeRef>,
     /// The last click in the viewport. Read-only over the control channel:
     /// `ui.pick` with `select` makes one.
     pub picked: Option<Picked>,
@@ -301,6 +352,25 @@ impl UiState {
                 face: cut(&face.face, MAX_FACE_NAME_CHARS),
             })
             .filter(|face| !face.face.is_empty());
+        self.highlight_edge = self
+            .highlight_edge
+            .map(|edge| EdgeRef {
+                feature: edge
+                    .feature
+                    .map(|id| cut(&id, MAX_SELECTION_CHARS))
+                    .filter(|id| !id.is_empty()),
+                edge: edge
+                    .edge
+                    .map(|name| cut(&name, MAX_FACE_NAME_CHARS))
+                    .filter(|name| !name.is_empty()),
+                between: edge
+                    .between
+                    .iter()
+                    .take(2)
+                    .map(|name| cut(name, MAX_FACE_NAME_CHARS))
+                    .collect(),
+            })
+            .filter(|edge| edge.edge.is_some() || !edge.between.is_empty());
         Ok(self)
     }
 
@@ -336,7 +406,7 @@ impl UiState {
                 moved_by_hand = (camera.contains_key("target") || camera.contains_key("distance"))
                     && !camera.contains_key("autoFit");
             }
-            if key == "highlight" {
+            if key == "highlight" || key == "highlightEdge" {
                 // Another face, not the same one with a field changed: a
                 // highlight without `feature` looks in every body.
                 if let Value::Object(map) = &mut merged {
@@ -407,6 +477,12 @@ mod tests {
                 feature: Some("F3".to_string()),
                 face: "F3:face(2)".to_string(),
             }),
+            // The fields for edges were added with them (2026-10-13).
+            highlight_edge: Some(EdgeRef {
+                feature: Some("F3".to_string()),
+                edge: None,
+                between: vec!["F3:face(0)".to_string(), "F3:face(2)".to_string()],
+            }),
             picked: Some(Picked {
                 serial: 4,
                 x: 120.5,
@@ -416,6 +492,15 @@ mod tests {
                 face: Some("F3:face(2)".to_string()),
                 face_index: Some(2),
                 point: Some([1.0, 2.0, 3.5]),
+                kind: Some(PickedKind::Edge),
+                edge: Some(PickedEntity {
+                    feature: "F3".to_string(),
+                    body: "Post".to_string(),
+                    name: Some("F3:edge(1)".to_string()),
+                    index: 1,
+                    faces: vec!["F3:face(0)".to_string(), "F3:face(2)".to_string()],
+                    point: [1.0, 2.0, 3.0],
+                }),
             }),
         };
         let json = serde_json::to_value(&state).unwrap();

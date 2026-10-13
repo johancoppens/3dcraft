@@ -122,9 +122,21 @@ pub struct BodyRenderer {
     report: RendererReport,
     /// The faces the next frames show highlighted.
     highlight: Highlight,
+    /// The edges the overlay of the next frames points at.
+    marks: crate::viewport::Marks,
 }
 
 impl BodyRenderer {
+    /// What `viewport::compose_with` draws over the frames made from now
+    /// on to point at something: the highlighted edges.
+    pub fn set_marks(&mut self, marks: crate::viewport::Marks) {
+        self.marks = marks;
+    }
+
+    pub fn marks(&self) -> &crate::viewport::Marks {
+        &self.marks
+    }
+
     /// Which faces the frames made from now on show highlighted, and in
     /// which colour: the same faces whichever renderer makes the frame.
     pub fn set_highlight(&mut self, highlight: Highlight) {
@@ -148,6 +160,7 @@ impl BodyRenderer {
                 msaa: 1,
             },
             highlight: Highlight::NONE,
+            marks: crate::viewport::Marks::default(),
         }
     }
 
@@ -183,6 +196,7 @@ impl BodyRenderer {
                 },
                 gpu: Some(gpu),
                 highlight: Highlight::NONE,
+                marks: crate::viewport::Marks::default(),
             },
             Err(why) => {
                 let mut renderer = Self::cpu();
