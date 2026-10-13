@@ -7,6 +7,7 @@
 //! made it). A reference that points at nothing fails the datum with the
 //! reason and the reference it lost; it never resolves to something else.
 
+use crate::cause::FIX_IT_FIRST;
 use crate::query::{edges_between, faces_named};
 use crate::{FeatureResult, Status, angle, length};
 use craft3d_doc::{
@@ -83,14 +84,15 @@ pub(crate) fn datum_of(
     }
     let Some(outcome) = earlier.iter().find(|r| r.id == id) else {
         return Err(format!(
-            "{role}: `{name}` comes after this feature in the history; move it before (feature.move)"
+            "{role}: `{name}` {}",
+            crate::comes_after(doc, earlier, id)
         ));
     };
     match &outcome.status {
         Status::Ok => {}
         Status::Suppressed => return Err(format!("{role}: `{name}` is suppressed")),
         Status::RolledBack => return Err(format!("{role}: `{name}` is rolled back")),
-        Status::Failed(_) => return Err(format!("{role}: `{name}` failed; fix it first")),
+        Status::Failed(_) => return Err(format!("{role}: `{name}` {FIX_IT_FIRST}")),
     }
     outcome
         .datum
@@ -157,16 +159,34 @@ fn named_body<'a>(
     name: &PersistentName,
     role: &str,
 ) -> Result<(&'a Body, &'a crate::Names, String), String> {
-    let Some(source) = doc.feature(name.feature) else {
+    named_body_of(doc, earlier, name, None, role)
+}
+
+/// As [`named_body`], for a reference made of two names of one feature
+/// (the two faces an edge lies between): a reason names both, since both
+/// are lost with the feature.
+fn named_body_of<'a>(
+    doc: &Document,
+    earlier: &'a [FeatureResult],
+    first: &PersistentName,
+    second: Option<&PersistentName>,
+    role: &str,
+) -> Result<(&'a Body, &'a crate::Names, String), String> {
+    let name = &match second {
+        Some(second) if second != first => format!("{first} and {second}"),
+        _ => first.to_string(),
+    };
+    let Some(source) = doc.feature(first.feature) else {
         return Err(format!(
             "{role}: there is no feature {} for {name} (was it deleted?)",
-            name.feature
+            first.feature
         ));
     };
     let made_by = &source.name;
-    let Some(outcome) = earlier.iter().find(|r| r.id == name.feature) else {
+    let Some(outcome) = earlier.iter().find(|r| r.id == first.feature) else {
         return Err(format!(
-            "{role}: `{made_by}`, which makes {name}, comes after this feature in the history; move it before (feature.move)"
+            "{role}: `{made_by}`, which makes {name}, {}",
+            crate::comes_after(doc, earlier, first.feature)
         ));
     };
     let (Some(body), Some(names)) = (&outcome.body, &outcome.names) else {
@@ -182,7 +202,7 @@ fn named_body<'a>(
                 format!("{role}: `{made_by}`, which makes {name}, is rolled back")
             }
             Status::Failed(_) => {
-                format!("{role}: `{made_by}`, which makes {name}, failed; fix it first")
+                format!("{role}: `{made_by}`, which makes {name}, {FIX_IT_FIRST}")
             }
         });
     };
@@ -238,7 +258,7 @@ fn edge_line(
             a.feature, b.feature
         ));
     }
-    let (body, names, made_by) = named_body(doc, earlier, a, role)?;
+    let (body, names, made_by) = named_body_of(doc, earlier, a, Some(b), role)?;
     let (first, second) = (faces_named(names, a), faces_named(names, b));
     for (face, found) in [(a, &first), (b, &second)] {
         if found.is_empty() {
@@ -435,22 +455,15 @@ fn vertex(
     name: &PersistentName,
     role: &str,
 ) -> Result<Vec3, String> {
-    use craft3d_doc::NameRole::{EndVertex, StartVertex, Vertex};
-    if !matches!(name.root().role, StartVertex | EndVertex | Vertex) {
+    if !name.is_vertex() {
         return Err(format!(
-            "{role}: {name} is not a vertex; a vertex is a startVertex, an endVertex or a vertex"
+            "{role}: {name} is not a vertex; a vertex is a startVertex, an endVertex, a vertex or a corner"
         ));
     }
     let (body, names, made_by) = named_body(doc, earlier, name, role)?;
-    if names.vertices.is_empty() && !body.vertices.is_empty() {
-        return Err(format!(
-            "{role}: the vertices of `{made_by}` have no names: a boolean and a pattern whose instances are joined name only their faces"
-        ));
-    }
+    // By its own name, or by the name it kept from the body it came from.
     let found = names
-        .vertices
-        .iter()
-        .position(|own| own == name)
+        .vertex_named(name)
         .and_then(|index| body.vertices.get(index));
     match found {
         Some(vertex) => Ok(vertex.point),
@@ -522,7 +535,7 @@ fn center(
             a.feature, b.feature
         ));
     }
-    let (body, names, made_by) = named_body(doc, earlier, a, role)?;
+    let (body, names, made_by) = named_body_of(doc, earlier, a, Some(b), role)?;
     for face in between {
         if faces_named(names, face).is_empty() {
             return Err(format!(
@@ -669,6 +682,11 @@ pub(crate) fn plane(
 /// An edge as a datum refers to it: by the two faces it lies between.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EdgeReference {
+    /// The edge's own name, which no other edge of the body has.
+    pub name: Option<PersistentName>,
+    /// The other names it answers to: those it had in the bodies it came
+    /// from.
+    pub aliases: Vec<PersistentName>,
     /// The names of the two faces; twice the same for a seam.
     pub between: [PersistentName; 2],
     /// What the edge's curve is: `line`, `circle`, ...
@@ -683,9 +701,11 @@ pub struct EdgeReference {
 /// referred to by.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct References {
-    /// The named vertices and where they are. Empty for a body whose
-    /// vertices have no names (after a boolean).
+    /// The vertices, each by its own name, and where they are.
     pub vertices: Vec<(PersistentName, Vec3)>,
+    /// Per vertex of `vertices`, the other names it answers to: those it
+    /// had in the bodies it came from (after a boolean).
+    pub vertex_aliases: Vec<Vec<PersistentName>>,
     pub edges: Vec<EdgeReference>,
     /// The faces that have an axis (cylinder, cone, torus): the face, a
     /// point on the axis and its direction.
@@ -703,9 +723,16 @@ pub fn references(body: &Body, names: &crate::Names, limit: usize) -> References
             out.truncated = true;
             break;
         }
+        out.vertex_aliases
+            .push(names.vertex_aliases_of(out.vertices.len()).to_vec());
         out.vertices.push((name.clone(), vertex.point));
     }
-    for (edge, faces) in body.edges.iter().zip(crate::query::faces_of_edges(body)) {
+    for (index, (edge, faces)) in body
+        .edges
+        .iter()
+        .zip(crate::query::faces_of_edges(body))
+        .enumerate()
+    {
         let named = |index: usize| {
             faces
                 .get(index)
@@ -729,6 +756,8 @@ pub fn references(body: &Body, names: &crate::Names, limit: usize) -> References
             _ => (None, None),
         };
         out.edges.push(EdgeReference {
+            name: names.edges.get(index).cloned(),
+            aliases: names.edge_aliases_of(index).to_vec(),
             between: [a, b],
             kind: edge.curve.kind(),
             line,

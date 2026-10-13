@@ -1,6 +1,7 @@
 //! Extrusions in regeneration: the solved sketch becomes plain curves, the
 //! kernel finds the closed profiles and sweeps them.
 
+use crate::cause::FIX_IT_FIRST;
 use crate::query::faces_named;
 use crate::sketch::same_plane;
 use crate::{FeatureResult, Status, length};
@@ -105,7 +106,8 @@ pub(crate) fn swept<'a>(
     };
     let Some(outcome) = earlier.iter().find(|r| r.id == id) else {
         return Err(format!(
-            "sketch: `{name}` comes after this feature in the history; move it before (feature.move)"
+            "sketch: `{name}` {}",
+            crate::comes_after(doc, earlier, id)
         ));
     };
     match &outcome.status {
@@ -113,9 +115,7 @@ pub(crate) fn swept<'a>(
         Status::Suppressed => return Err(format!("sketch: `{name}` is suppressed")),
         Status::RolledBack => return Err(format!("sketch: `{name}` is rolled back")),
         Status::Failed(_) => {
-            return Err(format!(
-                "sketch: `{name}` failed; fix it first (sketch.inspect)"
-            ));
+            return Err(format!("sketch: `{name}` {FIX_IT_FIRST} (sketch.inspect)"));
         }
     }
     let Some(solved) = &outcome.sketch else {
@@ -237,7 +237,8 @@ fn target<'a>(
     let made_by = &source.name;
     let Some(outcome) = earlier.iter().find(|r| r.id == name.feature) else {
         return Err(format!(
-            "upTo: `{made_by}`, which makes the face {name}, comes after this feature in the history; move it before (feature.move)"
+            "upTo: `{made_by}`, which makes the face {name}, {}",
+            crate::comes_after(doc, earlier, name.feature)
         ));
     };
     let (Some(body), Some(names)) = (&outcome.body, &outcome.names) else {
@@ -253,7 +254,7 @@ fn target<'a>(
                 format!("upTo: `{made_by}`, which makes the face {name}, is rolled back")
             }
             Status::Failed(_) => {
-                format!("upTo: `{made_by}`, which makes the face {name}, failed; fix it first")
+                format!("upTo: `{made_by}`, which makes the face {name}, {FIX_IT_FIRST}")
             }
         });
     };

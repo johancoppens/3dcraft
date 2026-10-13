@@ -1262,9 +1262,13 @@ fn what_gives_no_plane_fails_with_the_reason() {
         "datum.plane",
         json!({"replace": "First", "from": "First", "distance": 1}),
     );
+    // A feature does not come after itself, and moving it mends nothing:
+    // the reason says what the reference is (until 2026-10-14: "comes
+    // after this feature ...; move it before"). The wording has no oracle
+    // but this test.
     assert_eq!(
         reason,
-        "from: `First` comes after this feature in the history; move it before (feature.move)"
+        "from: `First` is this feature itself; point the reference at something else"
     );
     let reason = failed(
         &mut s,
@@ -1272,7 +1276,8 @@ fn what_gives_no_plane_fails_with_the_reason() {
         json!({"replace": "First", "from": "Second", "distance": 1}),
     );
     assert!(
-        reason.contains("`Second` comes after this feature"),
+        reason.contains("`Second` comes after this feature")
+            && reason.contains("is itself made from this feature"),
         "{reason}"
     );
     assert_eq!(
@@ -2165,7 +2170,11 @@ fn what_gives_no_axis_fails_with_the_reason() {
         "do not meet in an edge",
     );
     // An axis placed by planes that are placed by it cannot be: the
-    // later one is not there yet.
+    // later one is not there yet. Until 2026-10-14 the reason sent the
+    // user to feature.move; in a circle no order builds both (with the
+    // rail moved before the shelf it is the rail that needs a later
+    // feature), so the reason says that instead. The wording has no
+    // oracle but this test.
     built(
         &mut s,
         "datum.axis",
@@ -2178,7 +2187,7 @@ fn what_gives_no_axis_fails_with_the_reason() {
     );
     assert_eq!(
         reason,
-        "about: `Rail` comes after this feature in the history; move it before (feature.move)"
+        "about: `Rail` comes after this feature in the history and is itself made from this feature, directly or through others: the two cannot both be built; point one of them at something else"
     );
     assert_eq!(
         feature(&mut s, "Rail")["error"],
@@ -2614,9 +2623,9 @@ fn the_references_of_a_body_are_listed_with_their_names() {
         let at = point(&mut s, json!({"vertex": name}));
         assert_near(at, vector(&vertex["at"]), 0.0, name);
     }
-    // After a boolean only faces have names: no vertices are listed, a
-    // vertex of an operand is refused with the reason, and what is
-    // referred to by faces is still found.
+    // After a boolean the vertices are named by the faces that meet in
+    // them, and one an operand had answers to the name it had there too:
+    // a datum finds it by either.
     built(
         &mut s,
         "feature.block",
@@ -2630,15 +2639,40 @@ fn the_references_of_a_body_are_listed_with_their_names() {
     );
     let stand = joined["id"].as_str().unwrap().to_string();
     let listed = run(&mut s, "datum.references", json!({"feature": "Stand"}));
-    assert_eq!(listed["vertices"], json!([]));
+    let corners = listed["vertices"].as_array().unwrap();
+    // The eight corners of the plate, the rod's top rim, and where the
+    // rod comes out of the plate.
+    assert_eq!(corners.len(), 10, "{listed}");
+    let kept = format!("{stand}:copy(0)/{plate}:vertex(7)");
+    let own = format!(
+        "{stand}:corner[{stand}:copy(0)/{plate}:face(1),{stand}:copy(0)/{plate}:face(3),{stand}:copy(0)/{plate}:face(5)]"
+    );
+    let corner = corners
+        .iter()
+        .find(|v| v["name"] == own.as_str())
+        .unwrap_or_else(|| panic!("{own} in {listed}"));
+    assert_eq!(corner["aliases"], json!([kept]));
+    assert_eq!(corner["at"], json!([60.0, 30.0, 2.0]));
+    for name in [&kept, &own] {
+        let at = point(&mut s, json!({"vertex": name}));
+        assert_near(at, [60.0, 30.0, 2.0], 0.0, name);
+    }
+    for vertex in corners {
+        let at = point(&mut s, json!({"vertex": vertex["name"]}));
+        assert_near(at, vector(&vertex["at"]), 0.0, "a vertex of the union");
+    }
+    // A vertex the union does not have is refused with the name.
+    let gone = format!("{stand}:copy(0)/{plate}:vertex(8)");
     let reason = failed(
         &mut s,
         "datum.point",
-        json!({"vertex": format!("{stand}:copy(0)/{plate}:vertex(7)"), "name": "Lost corner"}),
+        json!({"vertex": gone, "name": "Lost corner"}),
     );
-    assert_eq!(
-        reason,
-        "at: the vertices of `Stand` have no names: a boolean and a pattern whose instances are joined name only their faces"
+    assert!(
+        reason.starts_with(&format!(
+            "at: `Stand` no longer has a vertex {gone}; its vertices are: {stand}:corner["
+        )),
+        "{reason}"
     );
     let wall = format!("{stand}:copy(1)/F2:face(0)");
     let top = format!("{stand}:copy(1)/F2:face(2)");
@@ -2718,9 +2752,13 @@ fn a_lost_point_fails_what_goes_through_it_and_nothing_else() {
         assert_eq!(found["status"], "failed", "{found}");
         found["error"].as_str().unwrap().to_string()
     };
+    // The centre of an edge is referred to by two names, and both are
+    // lost with the feature: the reason names both (until 2026-10-14 only
+    // the first; M8.5 asks for the names that were lost). The wording has
+    // no oracle but this test.
     assert_eq!(
         error(&mut s, "Rim"),
-        "at: there is no feature F1 for F1:face(0) (was it deleted?)"
+        "at: there is no feature F1 for F1:face(0) and F1:face(2) (was it deleted?)"
     );
     assert_eq!(
         error(&mut s, "Slant"),
@@ -3009,4 +3047,80 @@ fn datum_points_are_saved_and_reopened_as_the_same_bodies() {
         assert!(text.contains(expected), "{expected} is not in the file");
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A half with a smooth spline outline, mirrored in a datum plane and
+/// joined with its mirror image: the outline leaves the mirror plane at
+/// right angles, so the spline wall and its image continue each other
+/// across the plane, tangent all along the line they share, each ending
+/// where the other begins. Until 2026-10-14 that was refused as "surfaces
+/// that touch along a curve, or with more than second-order contact",
+/// while the same half with a kink at the plane worked. The whole is the
+/// two halves less the two faces in the mirror plane, a rectangle of the
+/// chord of the outline by the thickness each.
+#[test]
+fn a_half_with_a_smooth_outline_mirrored_and_joined_is_one_body() {
+    for k in [1e-2, 1.0, 1e2] {
+        let mut s = session();
+        new_document(&mut s, k);
+        let p = |x: f64, y: f64| json!([x * k, y * k]);
+        built(
+            &mut s,
+            "datum.plane",
+            json!({"from": "yz", "distance": 0, "name": "Mid"}),
+        );
+        built(
+            &mut s,
+            "sketch.create",
+            json!({"plane": "xy", "name": "Half"}),
+        );
+        built(
+            &mut s,
+            "sketch.spline",
+            json!({"sketch": "Half",
+                   "control": [p(0.0, 35.0), p(25.0, 35.0), p(55.0, 0.0), p(25.0, -35.0), p(0.0, -35.0)]}),
+        );
+        built(
+            &mut s,
+            "sketch.polyline",
+            json!({"sketch": "Half", "points": ["e5", "e1"]}),
+        );
+        built(
+            &mut s,
+            "feature.extrude",
+            json!({"sketch": "Half", "distance": 8.0 * k, "name": "HalfBase"}),
+        );
+        let half = body(&mut s, "HalfBase");
+        let (volume, area) = (
+            half["volume"].as_f64().unwrap(),
+            half["area"].as_f64().unwrap(),
+        );
+        built(
+            &mut s,
+            "feature.mirror",
+            json!({"source": "HalfBase", "plane": "Mid", "keep": true, "name": "OtherHalf"}),
+        );
+        built(
+            &mut s,
+            "feature.boolean",
+            json!({"op": "union", "target": "HalfBase", "tool": "OtherHalf", "name": "Base"}),
+        );
+        let what = format!("scale {k}");
+        assert_sound(&mut s, &what);
+        let whole = body(&mut s, "Base");
+        let in_the_plane = 70.0 * k * 8.0 * k;
+        assert_measures(
+            &whole,
+            2.0 * volume,
+            2.0 * (area - in_the_plane),
+            1e-9,
+            &what,
+        );
+        assert_near(
+            vector(&whole["centroid"]),
+            [0.0, 0.0, 4.0 * k],
+            1e-9 * 100.0 * k,
+            &what,
+        );
+    }
 }

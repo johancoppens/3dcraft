@@ -25,9 +25,9 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("datum.axis", "Datum Axis", r#"{"through": [point, point], "edge": [face name, face name], "face": face name, "planes": [plane, plane], "replace": id or name, "name": string = automatic}"#,
         "Adds a datum axis: a straight line with a direction, to revolve about (feature.revolve, axis), to pattern about (feature.pattern, axis) and to turn a datum plane about (datum.plane, about). It makes no body. Give one of four. through: two points, each [x, y, z] (expressions), a vertex name, {\"center\": [face name, face name]} or a datum point (id or name); it points from the first to the second. edge: the straight edge between two faces of one body, by the names of the two faces from document.inspect (between two flat faces it points along the cross product of their outward normals in that order). face: the axis of a cylinder, cone or torus face, by its name; it points the way the surface's own axis does. planes: the line two planes meet in, each a base plane (xy, yz, zx), a flat face by its name or a datum plane; it points along the cross product of their normals in that order, and the planes must not be parallel. A reference that is lost after an upstream edit fails the datum with the reason and the name it lost. replace gives an existing datum axis this definition instead of adding one. The result has the line under datum: origin, direction.", doc: true, datum_axis),
     spec!("datum.point", "Datum Point", r#"{"at": [expr, expr, expr], "vertex": vertex name, "center": [face name, face name], "replace": id or name, "name": string = automatic}"#,
-        "Adds a datum point: a point a datum plane or a datum axis goes through (through, by its id or name). It makes no body. Give one of three. at: coordinates, three lengths that follow variables. vertex: a vertex of a body by its name (datum.references lists them; after a boolean, and in a pattern whose instances are joined, vertices have no names). center: the centre of the circular edge between two faces of one body, by the names of the two faces (the rim of a cylinder: its wall and its top). A reference that is lost after an upstream edit fails the datum with the reason and the name it lost. replace gives an existing datum point this definition instead of adding one. The result has the point under datum: at.", doc: true, datum_point),
+        "Adds a datum point: a point a datum plane or a datum axis goes through (through, by its id or name). It makes no body. Give one of three. at: coordinates, three lengths that follow variables. vertex: a vertex of a body by its name (datum.references lists them: \"F1:vertex(6)\" on a primitive, \"F2:endVertex(e5,e6)\" on a sweep; after a boolean, and in a pattern whose instances are joined, a vertex is named by the faces that meet in it, \"F7:corner[face name,face name,face name]\", and one that an operand already had also answers to the name it had there, \"F7:copy(0)/F1:vertex(6)\"). center: the centre of the circular edge between two faces of one body, by the names of the two faces (the rim of a cylinder: its wall and its top). A reference that is lost after an upstream edit fails the datum with the reason and the name it lost. replace gives an existing datum point this definition instead of adding one. The result has the point under datum: at.", doc: true, datum_point),
     spec!("datum.references", "List References", r#"{"feature": id or name}"#,
-        "Lists what a datum can be placed by on the body a feature made, with the name each is referred to by: vertices (name, at), edges (between: the names of the two faces the edge lies between, kind, and for a line from and to, for a circle center and radius; several edges can lie between the same two faces) and axes (face: the name of a cylinder, cone or torus face, origin, direction). Changes nothing. At most 2000 of each are listed; truncated says when there were more.", doc: true, datum_references),
+        "Lists what a datum can be placed by on the body a feature made, with the name each is referred to by: vertices (name, at, and aliases when the vertex answers to other names too: the name an operand of a boolean gave it), edges (name: the edge's own name, which no other edge of the body has; aliases; between: the names of the two faces the edge lies between; kind; and for a line from and to, for a circle center and radius; several edges can lie between the same two faces) and axes (face: the name of a cylinder, cone or torus face, origin, direction). Changes nothing. At most 2000 of each are listed; truncated says when there were more.", doc: true, datum_references),
 ];
 
 /// A feature that has to be reference geometry of one kind (`wanted` is
@@ -491,10 +491,24 @@ fn datum_references(session: &mut Session, params: &Value) -> Run {
         ));
     };
     let found = craft3d_regen::references(body, names, MAX_REFERENCES);
+    let texts = |names: &[craft3d_doc::PersistentName]| -> Value {
+        names
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .into()
+    };
     let vertices: Vec<Value> = found
         .vertices
         .iter()
-        .map(|(own, at)| json!({ "name": own.to_string(), "at": vec3(*at) }))
+        .zip(&found.vertex_aliases)
+        .map(|((own, at), aliases)| {
+            let mut entry = json!({ "name": own.to_string(), "at": vec3(*at) });
+            if let (Some(map), false) = (entry.as_object_mut(), aliases.is_empty()) {
+                map.insert("aliases".into(), texts(aliases));
+            }
+            entry
+        })
         .collect();
     let edges: Vec<Value> = found
         .edges
@@ -503,6 +517,12 @@ fn datum_references(session: &mut Session, params: &Value) -> Run {
             let [a, b] = &edge.between;
             let mut entry = json!({ "between": [a.to_string(), b.to_string()], "kind": edge.kind });
             if let Some(map) = entry.as_object_mut() {
+                if let Some(own) = &edge.name {
+                    map.insert("name".into(), own.to_string().into());
+                }
+                if !edge.aliases.is_empty() {
+                    map.insert("aliases".into(), texts(&edge.aliases));
+                }
                 if let Some((from, to)) = edge.line {
                     map.insert("from".into(), vec3(from));
                     map.insert("to".into(), vec3(to));

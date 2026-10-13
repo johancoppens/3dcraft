@@ -76,8 +76,8 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Adds a ring torus about axis, centred at position: major is the radius of the ring, minor of the tube.", doc: true, feature_torus),
     spec!("feature.extrude", "Extrude", r#"{"sketch": id or name, "distance": expr, "throughAll": boolean = false, "upTo": face name, "symmetric": boolean = false, "reversed": boolean = false, "cut": id or name, "join": id or name, "intersect": id or name, "name": string = automatic}"#,
         "Adds a solid by sweeping the closed profiles of a sketch along its normal: loops of lines and arcs, and circles; a loop inside another is a hole. Give one end: distance (a negative one goes the other way; symmetric puts half on each side of the sketch plane), throughAll (past every body the features before this one have built that lies in the way; symmetric goes through on both sides) or upTo (a face name from document.inspect: the solid ends on that face's surface, flat or curved, and follows it when the face moves). reversed goes against the sketch's normal. With cut, join or intersect (a feature with a body) the solid is combined with that body at once: two features are added in one undo step, the extrusion and a boolean, and the result is the boolean's (the one to build on; name applies to it) with the extrusion under sweep. A hole through a plate: sketch a circle on its top, extrude with throughAll, reversed and cut.", doc: true, feature_extrude),
-    spec!("feature.edit", "Edit Feature", r#"{"feature": id or name, "size": [expr; 3], "position": [expr; 3], "axis": [number; 3], "angle": expr, "radius": expr, "height": expr, "major": expr, "minor": expr, "distance": expr, "throughAll": boolean, "upTo": face name, "symmetric": boolean, "reversed": boolean, "translate": [expr; 3], "pivot": [expr; 3], "point": [expr; 3], "normal": [number; 3], "plane": datum plane id or name, "step": [expr; 3], "count": expr, "keep": boolean, "keepTool": boolean}"#,
-        "Changes parameters of a feature; give only the ones to change. Which ones a feature has depends on its kind (document.inspect shows them under params). The end of an extrusion is changed by giving the new one: distance, throughAll or upTo. A mirror is pointed at a datum plane with plane, and back at a plane of its own with normal or point; a circular pattern at a datum axis with axis (its name or id), and back at a line of its own with axis as a direction or point. A datum plane's distance or angle and the position of a datum point at coordinates are changed here; what a datum is placed by, with datum.plane, datum.axis or datum.point and replace.", doc: true, feature_edit),
+    spec!("feature.edit", "Edit Feature", r#"{"feature": id or name, "sketch": id or name, "source": id or name, "target": id or name, "tool": id or name, "op": "union|subtract|intersect", "size": [expr; 3], "position": [expr; 3], "axis": [number; 3] or datum axis or "x|y" or line id, "angle": expr, "radius": expr, "height": expr, "major": expr, "minor": expr, "distance": expr, "throughAll": boolean, "upTo": face name, "symmetric": boolean, "reversed": boolean, "translate": [expr; 3], "pivot": [expr; 3], "point": [expr; 3], "normal": [number; 3], "plane": datum plane id or name, "step": [expr; 3], "count": expr, "keep": boolean, "keepTool": boolean}"#,
+        "Changes parameters of a feature; give only the ones to change. Which ones a feature has depends on its kind (document.inspect shows them under params). The end of an extrusion is changed by giving the new one: distance, throughAll or upTo. A mirror is pointed at a datum plane with plane, and back at a plane of its own with normal or point; a circular pattern at a datum axis with axis (its name or id), and back at a line of its own with axis as a direction or point. What a feature is made from is changed the same way, which is how a feature that lost it is repaired: sketch for an extrusion or a revolution, axis for a revolution (x, y, a line of the sketch or a datum axis), source for a moved, mirrored or patterned body, target, tool and op for a boolean; the feature keeps its id and its place in the history, and the names of its faces are those of a feature built that way from the start. A datum plane's distance or angle and the position of a datum point at coordinates are changed here; what a datum is placed by, with datum.plane, datum.axis or datum.point and replace.", doc: true, feature_edit),
     spec!("feature.rename", "Rename Feature", r#"{"feature": id or name, "name": string}"#,
         "Renames a feature.", doc: true, feature_rename),
     spec!("feature.suppress", "Suppress Feature", r#"{"feature": id or name, "suppressed": boolean = true}"#,
@@ -89,9 +89,9 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("history.rollback", "Roll Back", r#"{"feature": id or name or null}"#,
         "Regenerates only up to and including this feature; null removes the marker.", doc: true, history_rollback),
     spec!("document.inspect", "Inspect", "{}",
-        "Returns the whole document state: units, variables with values, features with status (a datum with where it lies, under datum), bodies with counts, mass properties and faceNames (and, per face, faceAliases: the other names a face answers to when a boolean or a pattern merged faces of several operands into it), undo history.", doc: true, document_inspect),
+        "Returns the whole document state: units, variables with values, features with status (a failed one with the reason under error, which starts with the parameter and names the feature and the name it lost, and, when the reason is that something it is made from failed, under causedBy the feature at the start of that chain: the one to fix; a datum with where it lies, under datum), bodies with counts, mass properties and faceNames (and, per face, faceAliases: the other names a face answers to when a boolean or a pattern merged faces of several operands into it), undo history.", doc: true, document_inspect),
     spec!("document.check", "Check", r#"{"deep": boolean = false}"#,
-        "Checks every body for validity and lists every problem: failed variables, failed features, defects of bodies. ok is true when there is none. deep also looks for bodies that pass through themselves (faces crossing, shells overlapping or nested the wrong way), on a fine mesh: slower, and what it reports is certain (deeper than the mesh could be off); doubts are counted under marginal.", doc: true, document_check),
+        "Checks every body for validity and lists every problem: failed variables, failed features (with causedBy as in document.inspect), defects of bodies. ok is true when there is none. deep also looks for bodies that pass through themselves (faces crossing, shells overlapping or nested the wrong way), on a fine mesh: slower, and what it reports is certain (deeper than the mesh could be off); doubts are counted under marginal.", doc: true, document_check),
     spec!("document.measure", "Measure", r#"{"feature": id or name = all bodies}"#,
         "Returns volume, area and centroid, per body and in total, in document units.", doc: true, document_measure),
     spec!("view.render", "Render", r#"{"path": string, "width": integer = 800, "height": integer = 600, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the whole model, "mode": "shaded|ids" = "shaded", "tolerance": number = automatic}"#,
@@ -302,6 +302,9 @@ pub(crate) fn feature_result(session: &mut Session, id: FeatureId) -> Run {
         map.insert("status".into(), status.into());
         if let Some(error) = error {
             map.insert("error".into(), error.into());
+        }
+        if let Some(root) = craft3d_regen::root_cause(doc, &regen.features, id) {
+            map.insert("causedBy".into(), root.to_string().into());
         }
     }
     Ok(result)
@@ -829,7 +832,12 @@ fn symmetric_fits(end: &ExtrudeEnd, symmetric: bool, command: &str) -> Result<()
 }
 
 /// The parameters `feature.edit` can change, by name.
-const EDITABLE: [&str; 22] = [
+const EDITABLE: [&str; 27] = [
+    "sketch",
+    "source",
+    "target",
+    "tool",
+    "op",
     "size",
     "position",
     "axis",
@@ -890,6 +898,64 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
         )?),
         _ => None,
     };
+    // The axis of a revolution is one of the sketch's own, a line of the
+    // sketch or a datum axis, as feature.revolve takes it.
+    let revolution = matches!(
+        session
+            .document()?
+            .history
+            .current()
+            .feature(id)
+            .map(|f| &f.kind),
+        Some(FeatureKind::Revolve(_))
+    );
+    let new_revolve_axis = match p.get("axis") {
+        Some(value) if revolution => Some(crate::sweep_cmds::revolve_axis(
+            session.document()?.history.current(),
+            "feature.edit",
+            value,
+        )?),
+        _ => None,
+    };
+    // What the feature is made from: another sketch, another body. Each
+    // has to be there now; whether it can be used (it comes earlier, it
+    // has a body nothing else took) is for regeneration to say, as when
+    // the feature was added.
+    let mut made_from: [(&str, Option<FeatureId>); 4] = [
+        ("sketch", None),
+        ("source", None),
+        ("target", None),
+        ("tool", None),
+    ];
+    for (key, found) in &mut made_from {
+        if p.get(key).is_some() {
+            let doc = session.document()?.history.current();
+            let other = feature_ref(doc, &p, "feature.edit", key)?;
+            if other == id {
+                return fail(format!(
+                    "feature.edit: `{key}` is the feature itself; a feature cannot be made from itself"
+                ));
+            }
+            if *key == "sketch" {
+                doc.sketch(other).map_err(doc_error("feature.edit"))?;
+            }
+            *found = Some(other);
+        }
+    }
+    let [
+        (_, new_sketch),
+        (_, new_source),
+        (_, new_target),
+        (_, new_tool),
+    ] = made_from;
+    let new_op = match p.str("op")? {
+        None => None,
+        Some(op) => Some(BooleanOp::from_name(op).ok_or_else(|| {
+            CommandError::new(format!(
+                "feature.edit: unknown op `{op}`; use union, subtract or intersect"
+            ))
+        })?),
+    };
     for key in [
         "size",
         "position",
@@ -900,7 +966,7 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
         "normal",
         "step",
     ] {
-        if key == "axis" && new_axis.is_some() {
+        if key == "axis" && (new_axis.is_some() || new_revolve_axis.is_some()) {
             continue;
         }
         p.expr3(key)?;
@@ -998,6 +1064,7 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
         FeatureKind::Extrude(e) => (
             "extrude",
             vec![
+                ("sketch", Slot::Elsewhere),
                 ("distance", Slot::One(&mut e.distance)),
                 ("symmetric", Slot::Flag(&mut e.symmetric)),
                 ("reversed", Slot::Flag(&mut e.reversed)),
@@ -1009,6 +1076,8 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
         FeatureKind::Revolve(r) => (
             "revolve",
             vec![
+                ("sketch", Slot::Elsewhere),
+                ("axis", Slot::Elsewhere),
                 ("angle", Slot::One(&mut r.angle)),
                 ("symmetric", Slot::Flag(&mut r.symmetric)),
             ],
@@ -1016,6 +1085,7 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
         FeatureKind::Transform(t) => (
             "transform",
             vec![
+                ("source", Slot::Elsewhere),
                 ("translate", Slot::Triple(&mut t.translate)),
                 ("pivot", Slot::Triple(&mut t.pivot)),
                 ("axis", Slot::Triple(&mut t.axis)),
@@ -1023,10 +1093,19 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
                 ("keep", Slot::Flag(&mut t.keep)),
             ],
         ),
-        FeatureKind::Boolean(b) => ("boolean", vec![("keepTool", Slot::Flag(&mut b.keep_tool))]),
+        FeatureKind::Boolean(b) => (
+            "boolean",
+            vec![
+                ("op", Slot::Elsewhere),
+                ("target", Slot::Elsewhere),
+                ("tool", Slot::Elsewhere),
+                ("keepTool", Slot::Flag(&mut b.keep_tool)),
+            ],
+        ),
         FeatureKind::Mirror(m) => (
             "mirror",
             vec![
+                ("source", Slot::Elsewhere),
                 ("point", Slot::Triple(&mut m.point)),
                 ("normal", Slot::Triple(&mut m.normal)),
                 // Applied below: a datum plane instead of point and normal.
@@ -1065,7 +1144,10 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
             },
         ),
         FeatureKind::Pattern(pattern) => {
-            let mut slots = vec![("count", Slot::One(&mut pattern.count))];
+            let mut slots = vec![
+                ("source", Slot::Elsewhere),
+                ("count", Slot::One(&mut pattern.count)),
+            ];
             match &mut pattern.layout {
                 PatternLayout::Linear { step } => {
                     slots.push(("step", Slot::Triple(step)));
@@ -1148,6 +1230,33 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
             None if p.get("normal").is_some() || p.get("point").is_some() => mirror.plane = None,
             None => {}
         }
+    }
+    // What the feature is made from. (A parameter the kind does not have
+    // was refused above.)
+    match &mut kind {
+        FeatureKind::Extrude(extrusion) => {
+            extrusion.sketch = new_sketch.unwrap_or(extrusion.sketch);
+        }
+        FeatureKind::Revolve(revolution) => {
+            revolution.sketch = new_sketch.unwrap_or(revolution.sketch);
+            revolution.axis = new_revolve_axis.unwrap_or(revolution.axis);
+        }
+        FeatureKind::Transform(transform) => {
+            transform.source = new_source.unwrap_or(transform.source);
+        }
+        FeatureKind::Mirror(mirror) => mirror.source = new_source.unwrap_or(mirror.source),
+        FeatureKind::Pattern(pattern) => pattern.source = new_source.unwrap_or(pattern.source),
+        FeatureKind::Boolean(boolean) => {
+            boolean.op = new_op.unwrap_or(boolean.op);
+            boolean.target = new_target.unwrap_or(boolean.target);
+            boolean.tool = new_tool.unwrap_or(boolean.tool);
+            if boolean.target == boolean.tool {
+                return fail(
+                    "feature.edit: `target` and `tool` are the same feature; a body cannot be combined with itself",
+                );
+            }
+        }
+        _ => {}
     }
     if let (FeatureKind::Extrude(extrusion), Some(end)) = (&mut kind, new_end) {
         extrusion.end = end;
@@ -1292,6 +1401,14 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
         });
         if let (Some(map), Some(error)) = (entry.as_object_mut(), error) {
             map.insert("error".into(), error.into());
+        }
+        // Failed because something it is made from failed: the feature at
+        // the start of that chain, the one to fix.
+        if let (Some(map), Some(root)) = (
+            entry.as_object_mut(),
+            craft3d_regen::root_cause(doc, &regen.features, feature.id),
+        ) {
+            map.insert("causedBy".into(), root.to_string().into());
         }
         // A sketch: how far it is constrained. sketch.inspect has the rest.
         if let (Some(map), Some(solved)) = (
@@ -1466,9 +1583,15 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
             .feature(outcome.id)
             .map_or_else(|| outcome.id.to_string(), |f| f.name.clone());
         if let Status::Failed(reason) = &outcome.status {
-            problems.push(
-                json!({ "feature": outcome.id.to_string(), "name": name, "problem": reason }),
-            );
+            let mut problem =
+                json!({ "feature": outcome.id.to_string(), "name": name, "problem": reason });
+            if let (Some(map), Some(root)) = (
+                problem.as_object_mut(),
+                craft3d_regen::root_cause(doc, &regen.features, outcome.id),
+            ) {
+                map.insert("causedBy".into(), root.to_string().into());
+            }
+            problems.push(problem);
         }
         if let Some(body) = outcome.own_body() {
             checked += 1;

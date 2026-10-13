@@ -5,38 +5,49 @@
 //! into pieces gives several faces with one name; they lie on one surface.
 //! A face the kernel merged from faces of both operands (the flush tops of
 //! two united blocks) is named after the first contributor and carries the
-//! others' names as aliases. Edges and vertices of a boolean have no names
-//! yet.
+//! others' names as aliases. Its edges and vertices are named by the faces
+//! they lie on (`F7:between[a,b]`, `F7:corner[a,b,c]`: [`crate::entity`]),
+//! and one the target or the tool already had answers to a copy of the
+//! name it had there too (`F7:copy(0)/F1:vertex(3)`).
 
 use crate::derive::source_body;
-use crate::{Contributors, FeatureResult, Names};
+use crate::{Contributors, FeatureResult, Kept, Names};
 use craft3d_doc::{Boolean, BooleanOp, Document, FeatureId};
 use craft3d_math::Tolerance;
 use craft3d_topo::Body;
 
-/// The kernel's boolean: the body, and for every face of it the operands
-/// (0 the target, 1 the tool) and the faces of them it has a piece of, the
-/// one it is named after first.
+/// What the kernel's boolean made.
+struct Combined {
+    body: Body,
+    /// For every face the operands (0 the target, 1 the tool) and the
+    /// faces of them it has a piece of, the one it is named after first.
+    contributors: Contributors,
+    /// For every edge and vertex the operand and the entity of it that
+    /// it is, when it is one.
+    edges: Kept,
+    vertices: Kept,
+}
+
 fn combine(
     target: &Body,
     tool: &Body,
     op: BooleanOp,
     tolerance: &Tolerance,
-) -> Result<(Body, Contributors), String> {
-    use craft3d_kernel::boolean::{BooleanOp as Op, FaceSource, Operand, boolean};
+) -> Result<Combined, String> {
+    use craft3d_kernel::boolean::{
+        BooleanOp as Op, EdgeSource, FaceSource, Operand, VertexSource, boolean,
+    };
     let op = match op {
         BooleanOp::Union => Op::Union,
         BooleanOp::Subtract => Op::Subtract,
         BooleanOp::Intersect => Op::Intersect,
     };
     let result = boolean(target, tool, op, tolerance).map_err(|e| e.to_string())?;
-    let pair = |source: &FaceSource| {
-        let operand = match source.operand {
-            Operand::A => 0,
-            Operand::B => 1,
-        };
-        (operand, source.face.0 as usize)
+    let number = |operand: Operand| match operand {
+        Operand::A => 0,
+        Operand::B => 1,
     };
+    let pair = |source: &FaceSource| (number(source.operand), source.face.0 as usize);
     let mut contributors = Contributors::with_capacity(result.faces.len());
     for (index, source) in result.faces.iter().enumerate() {
         // The kernel reports the first contributor as the source and lists
@@ -52,7 +63,28 @@ fn combine(
         }
         contributors.push(sources);
     }
-    Ok((result.body, contributors))
+    let edges = result
+        .edges
+        .iter()
+        .map(|source| match source {
+            EdgeSource::Kept { operand, edge } => Some((number(*operand), edge.0 as usize)),
+            EdgeSource::Intersection { .. } => None,
+        })
+        .collect();
+    let vertices = result
+        .vertices
+        .iter()
+        .map(|source| match source {
+            VertexSource::Kept { operand, vertex } => Some((number(*operand), vertex.0 as usize)),
+            VertexSource::New { .. } => None,
+        })
+        .collect();
+    Ok(Combined {
+        body: result.body,
+        contributors,
+        edges,
+        vertices,
+    })
 }
 
 pub(crate) fn build(
@@ -71,14 +103,25 @@ pub(crate) fn build(
     };
     let tolerance = Tolerance::new(doc.tolerance.linear, doc.tolerance.angular)
         .ok_or("the document's tolerance is not positive and finite".to_string())?;
-    let (body, contributors) = combine(a, b, boolean.op, &tolerance)?;
-    let names = Names::copied_faces(feature, &contributors, |operand, face| {
+    let made = combine(a, b, boolean.op, &tolerance)?;
+    let operand = |operand: u64| {
         let names = if operand == 0 {
             &target.names
         } else {
             &tool.names
         };
-        names.as_ref().and_then(|n| n.faces.get(face))
-    })?;
-    Ok((body, names))
+        names.as_deref()
+    };
+    let mut names = Names::copied_faces(feature, &made.contributors, operand)?;
+    if let Some(names) = &mut names {
+        names.name_entities(
+            feature,
+            &made.body,
+            tolerance.linear,
+            &made.edges,
+            &made.vertices,
+            operand,
+        );
+    }
+    Ok((made.body, names))
 }
