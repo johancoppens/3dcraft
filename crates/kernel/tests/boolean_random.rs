@@ -314,11 +314,20 @@ fn sampled_overlap(a: &Shape, b: &Shape, rng: &mut Rng) -> (f64, f64) {
         }
     }
     let fraction = inside as f64 / SAMPLES as f64;
-    let deviation = (fraction * (1.0 - fraction) / SAMPLES as f64).sqrt();
-    // With no sample inside the overlap may still be a sliver.
+    // Five standard deviations, by the interval of Agresti and Coull: the
+    // deviation is taken at the fraction with z²/2 hits and z² samples
+    // added (z = 5), not at the fraction counted. Counted, it is zero
+    // when no sample hits, and an overlap that 6 of 3000 samples should
+    // have hit goes unhit once in four hundred pairs: seed 2000331 of the
+    // long run with every shape (two rings sharing 0.325 of a cell of
+    // 164; a hundred times the samples give 0.314 ± 0.013).
+    const Z: f64 = 5.0;
+    let samples = SAMPLES as f64 + Z * Z;
+    let middle = (inside as f64 + 0.5 * Z * Z) / samples;
+    let deviation = (middle * (1.0 - middle) / samples).sqrt();
     (
         cell * fraction,
-        cell * (5.0 * deviation + 5.0 / SAMPLES as f64),
+        cell * (Z * deviation + (middle - fraction).abs()),
     )
 }
 
@@ -348,6 +357,17 @@ fn spline_slack(body: &Body, k: f64) -> (f64, f64) {
     (4.0 * tol * area, 4.0 * tol * length)
 }
 
+/// The sum of a hash of every result so far: see the corpus test. (Run
+/// one test at a time to compare two builds by it.)
+static DIGEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn digest(result: &craft3d_kernel::boolean::BooleanResult) {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    format!("{result:?}").hash(&mut hasher);
+    DIGEST.fetch_add(hasher.finish(), std::sync::atomic::Ordering::Relaxed);
+}
+
 /// The volume of a boolean; 0 when it is empty; `Err` with the reason when
 /// it is not supported. Anything else fails the test.
 fn volume_of(
@@ -360,6 +380,7 @@ fn volume_of(
     let tol = tolerance(k);
     match boolean(a, b, op, &tol) {
         Ok(result) => {
+            digest(&result);
             assert_eq!(check(&result.body, &tol), [], "{what}: {op:?}");
             assert_eq!(result.faces.len(), result.body.faces.len(), "{what}");
             assert_eq!(result.edges.len(), result.body.edges.len(), "{what}");
@@ -598,6 +619,10 @@ fn hunt(pairs_per_cell: u64, first_seed: u64, shapes: Shapes) {
             );
         }
     }
+    println!(
+        "digest of all results: {:016x}",
+        DIGEST.load(std::sync::atomic::Ordering::Relaxed)
+    );
 }
 
 #[test]

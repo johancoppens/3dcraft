@@ -537,6 +537,19 @@ fn second_opinion(
     })
 }
 
+/// The sum of a hash of every result of the run: the body with all its
+/// numbers and where everything came from. Two builds of the kernel that
+/// print the same sum gave the same results, bit for bit (it is how a
+/// change that should only make the kernel faster is checked).
+static DIGEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn digest(result: &craft3d_kernel::boolean::BooleanResult) {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    format!("{result:?}").hash(&mut hasher);
+    DIGEST.fetch_add(hasher.finish(), std::sync::atomic::Ordering::Relaxed);
+}
+
 /// The three outcomes of a case, in the order of [`OPS`].
 fn run_case(case: &Value, snap: Option<&Value>, verbose: bool) -> Vec<Outcome> {
     let k = number(case, &["scale"]).unwrap_or(1.0);
@@ -607,6 +620,7 @@ fn run_case(case: &Value, snap: Option<&Value>, verbose: bool) -> Vec<Outcome> {
             Ok(Err(KernelError::EmptyResult { .. })) => score(case, snap, field, None, size),
             Ok(Err(other)) => Outcome::Invalid(format!("error: {other}")),
             Ok(Ok(result)) => {
+                digest(&result);
                 let defects = check(&result.body, &tolerance);
                 match measure(&result.body, k) {
                     _ if !defects.is_empty() => {
@@ -890,6 +904,10 @@ fn the_kernel_agrees_with_the_reference_kernel() {
     let _ = writeln!(
         report,
         "\nagreeing (match + match~ + empty): {agreeing}; floor {AGREEING_FLOOR}"
+    );
+    println!(
+        "digest of all results: {:016x}",
+        DIGEST.load(std::sync::atomic::Ordering::Relaxed)
     );
     if !known.is_empty() {
         let _ = writeln!(report, "\nKnown mismatches (allow-listed):");
