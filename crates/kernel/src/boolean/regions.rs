@@ -47,6 +47,11 @@ const ANGLE_GUARD: f64 = 1e-6;
 /// a little further along, where the tolerance no longer decides.
 const TIE: f64 = 1e-3;
 
+/// How many tolerances apart two arcs must be, at the distance from a
+/// vertex where their order is read, for the order to be theirs and not
+/// that of the curves' approximation.
+const APART: f64 = 4.0;
+
 const TANGENT: Reason = "two curves leave a point in the same direction and stay together (tangent contact of higher order)";
 const LOST: Reason = "an imprinted face could not be divided into regions; this is a bug";
 const UNBOUNDED: Reason = "a piece of a face is not closed off by its boundary";
@@ -102,6 +107,15 @@ fn from_end(arc: &Arc, at_end: bool, along: f64) -> Vec3 {
 /// direction to the point where each is at one small distance from the
 /// vertex, which is the order in which they leave it as long as they do
 /// not cross on the way (and arcs do not cross between vertices).
+///
+/// An arc is only within the tolerance of the curve it stands for, so
+/// the order means something only where the arcs are further apart than
+/// that: at a distance where two of them are still within a few
+/// tolerances of each other the next distance is tried, twice as far, up
+/// to a quarter of the shortest arc. (The curve of a hole that touches a
+/// rim where the rim meets a tangent wall leaves the rim with contact of
+/// the fourth order: a sixtieth of the way along they are a hundredth of
+/// a tolerance apart, a quarter of the way forty tolerances.)
 fn untie(
     run: &mut [usize],
     rays: &[Ray],
@@ -110,53 +124,57 @@ fn untie(
     frame: &Frame,
     tol: f64,
 ) -> Result<(), Reason> {
-    let mut distance = f64::INFINITY;
+    let mut nearest = f64::INFINITY;
     for &ray in run.iter() {
         let ray = rays.get(ray).ok_or(LOST)?;
         let arc = arcs.get(ray.arc).ok_or(LOST)?;
-        distance = distance.min(0.125 * from_end(arc, ray.at_end, 0.25).distance(origin));
-    }
-    if !(distance.is_finite() && distance > 16.0 * tol) {
-        return Err(TANGENT);
+        nearest = nearest.min(from_end(arc, ray.at_end, 0.25).distance(origin));
     }
     let base = rays
         .get(*run.first().ok_or(LOST)?)
         .map(|ray| (ray.direction.dot(frame.x()), ray.direction.dot(frame.y())))
         .ok_or(LOST)?;
-    let mut keyed = Vec::with_capacity(run.len());
-    for &index in run.iter() {
-        let ray = rays.get(index).ok_or(LOST)?;
-        let arc = arcs.get(ray.arc).ok_or(LOST)?;
-        // Where along the first quarter the arc is that far away.
-        let (mut near, mut far) = (0.0, 0.25);
-        for _ in 0..60 {
-            let mid = 0.5 * (near + far);
-            if from_end(arc, ray.at_end, mid).distance(origin) < distance {
-                near = mid;
-            } else {
-                far = mid;
+    for part in [0.125, 0.25, 0.5, 1.0] {
+        let distance = part * nearest;
+        if !(distance.is_finite() && distance > 16.0 * tol) {
+            return Err(TANGENT);
+        }
+        let mut keyed = Vec::with_capacity(run.len());
+        for &index in run.iter() {
+            let ray = rays.get(index).ok_or(LOST)?;
+            let arc = arcs.get(ray.arc).ok_or(LOST)?;
+            // Where along the first quarter the arc is that far away.
+            let (mut near, mut far) = (0.0, 0.25);
+            for _ in 0..60 {
+                let mid = 0.5 * (near + far);
+                if from_end(arc, ray.at_end, mid).distance(origin) < distance {
+                    near = mid;
+                } else {
+                    far = mid;
+                }
             }
+            let chord = from_end(arc, ray.at_end, 0.5 * (near + far)) - origin;
+            let (x, y) = (chord.dot(frame.x()), chord.dot(frame.y()));
+            let offset = (base.0 * y - base.1 * x).atan2(base.0 * x + base.1 * y);
+            if !offset.is_finite() {
+                return Err(TANGENT);
+            }
+            keyed.push((offset, index));
         }
-        let chord = from_end(arc, ray.at_end, 0.5 * (near + far)) - origin;
-        let (x, y) = (chord.dot(frame.x()), chord.dot(frame.y()));
-        let offset = (base.0 * y - base.1 * x).atan2(base.0 * x + base.1 * y);
-        if !offset.is_finite() {
-            return Err(TANGENT);
-        }
-        keyed.push((offset, index));
-    }
-    keyed.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
-    for pair in keyed.windows(2) {
-        if let [a, b] = pair
-            && b.0 - a.0 < ANGLE_GUARD
-        {
-            return Err(TANGENT);
+        keyed.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        // Apart by more than the tolerance can account for, there.
+        let guard = ANGLE_GUARD.max(APART * tol / distance);
+        let clear = keyed
+            .windows(2)
+            .all(|pair| matches!(pair, [a, b] if b.0 - a.0 >= guard));
+        if clear {
+            for (slot, (_, index)) in run.iter_mut().zip(keyed) {
+                *slot = index;
+            }
+            return Ok(());
         }
     }
-    for (slot, (_, index)) in run.iter_mut().zip(keyed) {
-        *slot = index;
-    }
-    Ok(())
+    Err(TANGENT)
 }
 
 /// The loops of the map: every use of an arc in exactly one.

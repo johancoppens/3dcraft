@@ -863,6 +863,16 @@ fn random_pairs_with_every_shape_long_run() {
 ///   its two ends were taken for one cut, no stretch was left, and the
 ///   bodies were said to have nothing in common (the sampled overlap
 ///   caught it).
+/// - Seed 2000613 on the grid with every shape: a hole along the tangent
+///   wall of a slot, lying on the slot's floor. Its curve on the slot's
+///   round end touches the floor's rim where the rim meets that wall,
+///   with contact of the fourth order: the place found for it on the rim
+///   is 1.4e-4 from the true one, and for a twentieth of the rim the
+///   curve and the rim are within the tolerance of each other. Their
+///   order about that point was read where they are a hundredth of a
+///   tolerance apart, came out by the curve's approximation, and the
+///   face "could not be divided into regions; this is a bug". It is read
+///   now where the two are more than four tolerances apart.
 #[test]
 fn pairs_that_once_went_wrong() {
     for k in SCALES {
@@ -875,6 +885,7 @@ fn pairs_that_once_went_wrong() {
             (1_001_488, Shapes::Flat),
             (87, Shapes::All),
             (2_000_516, Shapes::All),
+            (2_000_613, Shapes::All),
         ] {
             let mut tally = Tally::default();
             run_pair(seed, Placement::Grid, k, shapes, &mut tally);
