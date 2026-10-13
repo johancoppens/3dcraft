@@ -7,6 +7,7 @@ use crate::backend::{Backend, BodyRenderer, RendererChoice, RendererReport};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::direct::{Direct, DirectFailure};
 use crate::frames::{Mode, Scheduler, Ticket};
+use crate::state::VertexRef;
 use crate::state::{
     CameraState, EdgeRef, FaceRef, Picked, PickedEntity, PickedKind, ProjectionKind, UiState, VIEWS,
 };
@@ -190,6 +191,8 @@ struct FrameKey {
     highlight: Highlight,
     /// The edge shown highlighted.
     highlight_edge: Option<EdgeRef>,
+    /// The vertex shown highlighted.
+    highlight_vertex: Option<VertexRef>,
     tokens: Tokens,
 }
 
@@ -719,14 +722,13 @@ impl Shell {
     }
 
     /// What the viewport draws over the picture to point at something:
-    /// the highlighted edge.
+    /// the highlighted edge and the highlighted vertex.
     pub fn marks(&self, scene: Option<&Scene>) -> viewport::Marks {
-        self.state
-            .highlight_edge
-            .as_ref()
-            .map_or_else(viewport::Marks::default, |edge| {
-                viewport::edge_marks(scene, edge)
-            })
+        marks_of(
+            scene,
+            self.state.highlight_edge.as_ref(),
+            self.state.highlight_vertex.as_ref(),
+        )
     }
 
     /// How near to an edge a click counts as a click on it, in pixels of
@@ -796,11 +798,25 @@ impl Shell {
                 kind: found.kind().map(|kind| match kind {
                     PickKind::Face => PickedKind::Face,
                     PickKind::Edge => PickedKind::Edge,
+                    PickKind::Vertex => PickedKind::Vertex,
                 }),
-                edge: found.edge.as_ref().map(entity),
+                edge: found
+                    .edge
+                    .as_ref()
+                    .filter(|_| found.vertex.is_none())
+                    .map(entity),
+                vertex: found.vertex.as_ref().map(entity),
             });
-            // One thing is pointed at: the edge, or else the face.
-            self.state.highlight_edge = found.edge.as_ref().and_then(edge_ref);
+            // One thing is pointed at: the vertex, or else the edge, or
+            // else the face.
+            self.state.highlight_vertex = found
+                .vertex
+                .as_ref()
+                .and_then(|near| named_vertex(&near.feature, near.name.as_deref(), &near.faces));
+            self.state.highlight_edge = match found.kind() {
+                Some(PickKind::Edge) => found.edge.as_ref().and_then(edge_ref),
+                _ => None,
+            };
             self.state.highlight = match found.kind() {
                 Some(PickKind::Face) => hit.and_then(|hit| {
                     Some(FaceRef {
@@ -839,6 +855,7 @@ impl Shell {
             self.state.selected_feature = None;
             self.state.highlight = None;
             self.state.highlight_edge = None;
+            self.state.highlight_vertex = None;
             self.state.picked = None;
             self.framed = Bbox3::EMPTY;
             return None;
@@ -873,6 +890,23 @@ impl Shell {
         };
         if self.state.highlight_edge.as_ref().is_some_and(edge_gone) {
             self.state.highlight_edge = None;
+        }
+        let vertex_gone = |vertex: &VertexRef| {
+            scene
+                .vertices_named(
+                    vertex.feature.as_deref(),
+                    vertex.vertex.as_deref(),
+                    &vertex.corner,
+                )
+                .is_err()
+        };
+        if self
+            .state
+            .highlight_vertex
+            .as_ref()
+            .is_some_and(vertex_gone)
+        {
+            self.state.highlight_vertex = None;
         }
         if self.state.picked.as_ref().is_some_and(|picked| {
             picked
@@ -1308,6 +1342,7 @@ impl Shell {
             selected: self.state.selected_feature.clone(),
             highlight: self.face_highlight(scene),
             highlight_edge: self.state.highlight_edge.clone(),
+            highlight_vertex: self.state.highlight_vertex.clone(),
             tokens,
         };
         // The direct path draws the whole picture, lines included, on the
@@ -1513,13 +1548,11 @@ impl Shell {
             return false;
         };
         direct.set_highlight(key.highlight);
-        direct.set_marks(
-            key.highlight_edge
-                .as_ref()
-                .map_or_else(viewport::Marks::default, |edge| {
-                    viewport::edge_marks(scene, edge)
-                }),
-        );
+        direct.set_marks(marks_of(
+            scene,
+            key.highlight_edge.as_ref(),
+            key.highlight_vertex.as_ref(),
+        ));
         let outcome = direct.frame(
             scene,
             &key.camera,
@@ -1596,12 +1629,11 @@ impl Shell {
             tokens: key.tokens,
             selected: key.selected.clone(),
             highlight: key.highlight,
-            marks: key
-                .highlight_edge
-                .as_ref()
-                .map_or_else(viewport::Marks::default, |edge| {
-                    viewport::edge_marks(scene.map(Arc::as_ref), edge)
-                }),
+            marks: marks_of(
+                scene.map(Arc::as_ref),
+                key.highlight_edge.as_ref(),
+                key.highlight_vertex.as_ref(),
+            ),
             #[cfg(not(target_arch = "wasm32"))]
             wake: Some(ctx.clone()),
         };
@@ -1773,6 +1805,43 @@ const GPU_TARGET_SIDE: u64 = 8192;
 
 /// Paints the overlay, which is in image pixels, into `rect`, which is the
 /// same image in points.
+/// The marks of a highlighted edge and a highlighted vertex.
+fn marks_of(
+    scene: Option<&Scene>,
+    edge: Option<&EdgeRef>,
+    vertex: Option<&VertexRef>,
+) -> viewport::Marks {
+    let edges = edge.map_or_else(viewport::Marks::default, |edge| {
+        viewport::edge_marks(scene, edge)
+    });
+    let vertices = vertex.map_or_else(viewport::Marks::default, |vertex| {
+        viewport::vertex_marks(scene, vertex)
+    });
+    edges.with(vertices)
+}
+
+/// A vertex as a highlight refers to it: by its own name when it has one,
+/// otherwise by the faces that meet in it. `None` for a vertex with
+/// neither.
+fn named_vertex(feature: &str, name: Option<&str>, faces: &[String]) -> Option<VertexRef> {
+    if name.is_none() && faces.is_empty() {
+        return None;
+    }
+    Some(VertexRef {
+        feature: Some(feature.to_string()),
+        vertex: name.map(str::to_string),
+        corner: if name.is_some() {
+            Vec::new()
+        } else {
+            faces
+                .iter()
+                .take(crate::state::MAX_CORNER_FACES)
+                .cloned()
+                .collect()
+        },
+    })
+}
+
 /// The edge a pick found, as a highlight refers to it: by its own name
 /// when it has one, otherwise by the faces it lies between (a seam: its
 /// one face twice). `None` for an edge with neither.
@@ -1832,6 +1901,6 @@ fn paint_overlay(
             point.kind.color(tokens),
             viewport::opacity(point.hidden, tokens),
         );
-        painter.circle_filled(place(point.at), tokens.point_radius, tint);
+        painter.circle_filled(place(point.at), point.kind.dot_radius(tokens), tint);
     }
 }

@@ -27,18 +27,18 @@ pub const UI_METHODS: &[UiMethod] = &[
     },
     UiMethod {
         name: "ui.set",
-        params: r#"{"view": "iso|front|back|right|left|top|bottom", "camera": {"target": [x, y, z], "distance": number, "yaw": degrees, "pitch": degrees, "projection": "perspective|orthographic", "fovY": degrees, "autoFit": boolean}, "panels": {"tree": boolean, "status": boolean, "recovery": boolean}, "selectedFeature": id or null, "notice": string, "quality": {"chordal": fraction of the model's size = 3e-5, "maxTriangles": integer = 1000000}, "highlight": {"feature": id or name, "face": face name} or null, "highlightEdge": {"feature": id or name, "edge": edge name, "between": [face name, face name]} or null}"#,
-        summary: "Changes the fields given and leaves the rest. An unknown field or a wrong type is an error, and then nothing has changed. Numbers out of range are clamped. quality is how finely the viewport's mesh follows the model: a chordal tolerance of chordal times the model's size, coarsened until the scene has at most maxTriangles triangles but never beyond the automatic tolerance view.render uses. highlight is the face shown highlighted and highlightEdge the edge (ui.highlight sets them too, and says whether they exist); picked, the last click, cannot be set.",
+        params: r#"{"view": "iso|front|back|right|left|top|bottom", "camera": {"target": [x, y, z], "distance": number, "yaw": degrees, "pitch": degrees, "projection": "perspective|orthographic", "fovY": degrees, "autoFit": boolean}, "panels": {"tree": boolean, "status": boolean, "recovery": boolean}, "selectedFeature": id or null, "notice": string, "quality": {"chordal": fraction of the model's size = 3e-5, "maxTriangles": integer = 1000000}, "highlight": {"feature": id or name, "face": face name} or null, "highlightEdge": {"feature": id or name, "edge": edge name, "between": [face name, face name]} or null, "highlightVertex": {"feature": id or name, "vertex": vertex name, "corner": [face name, ...]} or null}"#,
+        summary: "Changes the fields given and leaves the rest. An unknown field or a wrong type is an error, and then nothing has changed. Numbers out of range are clamped. quality is how finely the viewport's mesh follows the model: a chordal tolerance of chordal times the model's size, coarsened until the scene has at most maxTriangles triangles but never beyond the automatic tolerance view.render uses. highlight is the face shown highlighted, highlightEdge the edge and highlightVertex the vertex (ui.highlight sets them too, and says whether they exist); picked, the last click, cannot be set.",
     },
     UiMethod {
         name: "ui.pick",
         params: r#"{"x": number, "y": number, "width": integer = the viewport's, "height": integer = the viewport's, "radius": number = the click's (4 points), "select": boolean = false}"#,
-        summary: "Says what the viewport shows at a position, as the command view.pick does, for the viewport's mesh and camera: kind (edge when an edge is near, otherwise face), the face under the position (the body as feature and name, the face's persistent name as document.inspect lists it under faceNames, with faceIndex and aliases, and the point in space) and, when its nearest point in sight is within radius pixels, edge: {feature, body, name, index, faces, point, depth, distance}, the edge as document.edges lists it (name is its own persistent name or null, faces the names of the faces it lies between). x and y are in pixels from the top-left corner of the viewport (the picture ui.screenshot makes; width and height when that picture was made at another size), the centre of pixel (i, j) at (i + 0.5, j + 0.5). radius is in pixels of that picture, 0 to 64, 0 for faces only; without it, it is what a click uses. hit is false when nothing is there, with outside true when the position is not in the viewport. With select it counts as a click of the mouse: state.picked becomes this pick and what it points at is highlighted, the edge (state.highlightEdge) or else the face (state.highlight); a pick on nothing clears both. A click in the viewport does the same, so state.picked of ui.get is what the developer pointed at last.",
+        summary: "Says what the viewport shows at a position, as the command view.pick does, for the viewport's mesh and camera: kind (vertex when a vertex is near, otherwise edge when an edge is near, otherwise face), the face under the position (the body as feature and name, the face's persistent name as document.inspect lists it under faceNames, with faceIndex and aliases, and the point in space) and, when its nearest point in sight is within radius pixels, edge: {feature, body, name, index, faces, point, depth, distance}, the edge as document.edges lists it (name is its own persistent name or null, faces the names of the faces it lies between), or vertex, with the same fields, when a vertex in sight is within radius pixels (faces: the faces that meet in it; index: its index under vertices of document.edges). x and y are in pixels from the top-left corner of the viewport (the picture ui.screenshot makes; width and height when that picture was made at another size), the centre of pixel (i, j) at (i + 0.5, j + 0.5). radius is in pixels of that picture, 0 to 64, 0 for faces only; without it, it is what a click uses. hit is false when nothing is there, with outside true when the position is not in the viewport. With select it counts as a click of the mouse: state.picked becomes this pick and what it points at is highlighted, the vertex (state.highlightVertex), or else the edge (state.highlightEdge), or else the face (state.highlight); a pick on nothing clears them. A click in the viewport does the same, so state.picked of ui.get is what the developer pointed at last.",
     },
     UiMethod {
         name: "ui.highlight",
-        params: r#"{"face": face name or null, "edge": edge name, "between": [face name, face name], "feature": id or name = the body that has it}"#,
-        summary: "Shows a face or an edge highlighted in the viewport; one of face, edge and between. face is a face's persistent name from document.inspect (faceNames, or an alias). edge is an edge's own persistent name (name in document.edges); between names an edge by the two faces it lies between, as document.edges takes it (the same name twice for a seam), and means every edge between them. feature says which body when several have one of that name. face: null removes every highlight. Returns the highlight as it was set (highlight: {feature, face} for a face, highlightEdge: {feature, edge, between} for an edge; the feature by id), the name of the body and how many faces carry the name (faces; a boolean can cut a face into pieces that keep its name) or how many edges are meant (edges). A name no body has is an error and changes nothing.",
+        params: r#"{"face": face name or null, "edge": edge name, "between": [face name, face name], "vertex": vertex name, "corner": [face name, ...], "feature": id or name = the body that has it}"#,
+        summary: "Shows a face, an edge or a vertex highlighted in the viewport; one of face, edge, between, vertex and corner. face is a face's persistent name from document.inspect (faceNames, or an alias). edge is an edge's own persistent name (name in document.edges); between names an edge by the two faces it lies between, as document.edges takes it (the same name twice for a seam), and means every edge between them. vertex is a vertex's own persistent name (name under vertices in document.edges); corner names a vertex by faces that meet in it (one to 16 names) and means every vertex in which all of them meet. feature says which body when several have one of that name. face: null removes every highlight. Returns the highlight as it was set (highlight: {feature, face} for a face, highlightEdge: {feature, edge, between} for an edge, highlightVertex: {feature, vertex, corner} for a vertex; the feature by id), the name of the body and how many faces carry the name (faces; a boolean can cut a face into pieces that keep its name) or how many edges or vertices are meant (edges, vertices). A name no body has is an error and changes nothing.",
     },
     UiMethod {
         name: "ui.fit",
@@ -355,7 +355,7 @@ impl Shell {
             }
             if select {
                 let state = self.state_json()?;
-                for key in ["picked", "highlight", "highlightEdge"] {
+                for key in ["picked", "highlight", "highlightEdge", "highlightVertex"] {
                     map.insert(key.into(), state.get(key).cloned().unwrap_or(Value::Null));
                 }
             }
@@ -369,7 +369,11 @@ impl Shell {
         params: Option<&Value>,
     ) -> Result<Value, String> {
         let method = "ui.highlight";
-        let map = fields(method, params, &["face", "edge", "between", "feature"])?;
+        let map = fields(
+            method,
+            params,
+            &["face", "edge", "between", "vertex", "corner", "feature"],
+        )?;
         let feature = match map.get("feature") {
             None | Some(Value::Null) => None,
             Some(Value::String(feature)) => Some(feature.clone()),
@@ -381,18 +385,24 @@ impl Shell {
                 ));
             }
         };
-        if map.get("edge").is_some() || map.get("between").is_some() {
-            if map.get("face").is_some() {
+        let of_edge = map.get("edge").is_some() || map.get("between").is_some();
+        let of_vertex = map.get("vertex").is_some() || map.get("corner").is_some();
+        if of_edge || of_vertex {
+            if map.get("face").is_some() || (of_edge && of_vertex) {
                 return Err(format!(
-                    "{method}: give one of `face`, `edge` and `between`"
+                    "{method}: give one of `face`, `edge`, `between`, `vertex` and `corner`"
                 ));
             }
-            return self.highlight_edge(session, &map, feature);
+            return if of_edge {
+                self.highlight_edge(session, &map, feature)
+            } else {
+                self.highlight_vertex(session, &map, feature)
+            };
         }
         let face = match map.get("face") {
             None => {
                 return Err(format!(
-                    "{method}: missing parameter `face`: a face name from document.inspect, or null to remove the highlight (or `edge` or `between` for an edge)"
+                    "{method}: missing parameter `face`: a face name from document.inspect, or null to remove the highlight (or `edge` or `between` for an edge, `vertex` or `corner` for a vertex)"
                 ));
             }
             Some(Value::Null) => {
@@ -403,6 +413,7 @@ impl Shell {
                 }
                 self.state.highlight = None;
                 self.state.highlight_edge = None;
+                self.state.highlight_vertex = None;
                 return Ok(json!({ "highlight": null, "faces": 0 }));
             }
             Some(Value::String(face)) => face,
@@ -425,6 +436,7 @@ impl Shell {
         });
         // One thing is pointed at.
         self.state.highlight_edge = None;
+        self.state.highlight_vertex = None;
         let mut result = json!({
             "highlight": { "feature": found.feature, "face": found.face },
             "name": found.body,
@@ -484,6 +496,69 @@ impl Shell {
         self.state.highlight_edge = Some(shown);
         // One thing is pointed at.
         self.state.highlight = None;
+        self.state.highlight_vertex = None;
+        Ok(result)
+    }
+
+    /// `ui.highlight` for a vertex: `vertex` or `corner`.
+    fn highlight_vertex(
+        &mut self,
+        session: &mut Session,
+        map: &Fields<'_>,
+        feature: Option<String>,
+    ) -> Result<Value, String> {
+        let method = "ui.highlight";
+        let vertex = match map.get("vertex") {
+            None => None,
+            Some(Value::String(vertex)) => Some(vertex.as_str()),
+            Some(_) => {
+                return Err(format!(
+                    "{method}: `vertex` must be a vertex name from document.edges (`face`: null removes the highlight)"
+                ));
+            }
+        };
+        let wrong = || {
+            format!(
+                "{method}: `corner` takes one to {} face names",
+                craft3d_engine::MAX_CORNER_FACES
+            )
+        };
+        let corner: Vec<String> = match map.get("corner") {
+            None => Vec::new(),
+            Some(Value::Array(names))
+                if !names.is_empty() && names.len() <= craft3d_engine::MAX_CORNER_FACES =>
+            {
+                names
+                    .iter()
+                    .map(|name| name.as_str().map(str::to_string))
+                    .collect::<Option<_>>()
+                    .ok_or_else(wrong)?
+            }
+            Some(_) => return Err(wrong()),
+        };
+        let Some(scene) = self.sync(session) else {
+            return Err(match self.problem() {
+                Some(problem) => format!("{method}: {problem}"),
+                None => format!("{method}: no document is open; run file.new or file.open first"),
+            });
+        };
+        let found = scene
+            .vertices_named(feature.as_deref(), vertex, &corner)
+            .map_err(|e| format!("{method}: {e}"))?;
+        let shown = crate::state::VertexRef {
+            feature: Some(found.feature.clone()),
+            vertex: found.vertex.clone(),
+            corner: found.corner.clone(),
+        };
+        let result = json!({
+            "highlightVertex": shown,
+            "name": found.body,
+            "vertices": found.vertices.len(),
+        });
+        self.state.highlight_vertex = Some(shown);
+        // One thing is pointed at.
+        self.state.highlight = None;
+        self.state.highlight_edge = None;
         Ok(result)
     }
 

@@ -1,6 +1,8 @@
-//! Pointing at edges (roadmap M8.5): a position in a picture near an edge
-//! in sight gives that edge, the way `document.edges` reports it: its own
-//! name where it has one, the faces it lies between, its place in the list.
+//! Pointing at edges and vertices (roadmap M8.5): a position in a picture
+//! near an edge in sight gives that edge, the way `document.edges` reports
+//! it: its own name where it has one, the faces it lies between, its place
+//! in the list. Near a vertex in sight it gives the vertex, as
+//! `document.edges` lists it under `vertices`.
 //!
 //! Neither side of the comparison is the code under test. The edges, their
 //! names and their geometry come from `document.edges` (a line from its
@@ -249,6 +251,126 @@ fn listed_edges(s: &mut Session) -> Vec<Listed> {
         }
     }
     out
+}
+
+/// One vertex as `document.edges` lists it under `vertices`.
+#[derive(Clone, Debug)]
+struct Corner {
+    feature: String,
+    body: String,
+    index: usize,
+    name: Option<String>,
+    faces: BTreeSet<String>,
+    point: Vec3,
+}
+
+/// Every vertex of every body, from `document.inspect` and
+/// `document.edges`.
+fn listed_vertices(s: &mut Session) -> Vec<Corner> {
+    let inspect = run(s, "document.inspect", json!({}));
+    let mut out = Vec::new();
+    for body in inspect["bodies"].as_array().unwrap() {
+        let name = body["name"].as_str().unwrap();
+        let listed = run(s, "document.edges", json!({"feature": name}));
+        let vertices = listed["vertices"].as_array().unwrap();
+        // Every vertex of a solid is the end of an edge.
+        assert_eq!(vertices.len() as u64, body["vertices"].as_u64().unwrap());
+        for (k, vertex) in vertices.iter().enumerate() {
+            assert_eq!(vertex["index"], k, "{name}");
+            let point = vec3(&vertex["point"]);
+            // It is where the edges that end there end.
+            let ends = listed["edges"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|e| [vec3(&e["start"]), vec3(&e["end"])])
+                .filter(|end| (*end - point).length() < 1e-12)
+                .count();
+            assert!(ends >= 2, "{name} vertex {k}: {ends} ends of edges");
+            out.push(Corner {
+                feature: body["feature"].as_str().unwrap().to_string(),
+                body: name.to_string(),
+                index: k,
+                name: vertex.get("name").map(|n| n.as_str().unwrap().to_string()),
+                faces: vertex["faces"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|f| f.as_str().unwrap().to_string())
+                    .collect(),
+                point,
+            });
+        }
+    }
+    out
+}
+
+/// How far (`x`, `y`) is from the nearest vertex in sight in the picture,
+/// in pixels: within the pick radius of one, a position points at the
+/// vertex and not at an edge.
+fn nearest_vertex(picture: &Picture, corners: &[Corner], x: f64, y: f64) -> f64 {
+    corners
+        .iter()
+        .filter_map(|c| {
+            let (cx, cy, _) = picture.project(c.point);
+            let d = (cx - x).hypot(cy - y);
+            // The ray is cast only for the ones that matter.
+            (d <= 70.0 && picture.in_sight(c.point)).then_some(d)
+        })
+        .fold(f64::INFINITY, f64::min)
+}
+
+/// What a pick says about its vertex, checked against `document.edges`:
+/// the entry at `index` of the body's vertices has that name, those faces
+/// and that point; it lands `distance` pixels from the position, within
+/// the radius, and is in sight. Returns the entry.
+fn check_vertex<'a>(
+    picture: &Picture,
+    corners: &'a [Corner],
+    picked: &Value,
+    context: &str,
+) -> &'a Corner {
+    let vertex = &picked["vertex"];
+    assert_eq!(picked["kind"], "vertex", "{context}");
+    assert_eq!(picked["hit"], true, "{context}");
+    assert!(picked.get("edge").is_none(), "{context}");
+    let index = vertex["index"].as_u64().unwrap() as usize;
+    let listed = corners
+        .iter()
+        .find(|c| c.feature == vertex["feature"].as_str().unwrap() && c.index == index)
+        .unwrap_or_else(|| panic!("{context}: document.edges has no such vertex"));
+    assert_eq!(vertex["body"], listed.body.as_str(), "{context}");
+    assert_eq!(
+        vertex["name"].as_str().map(str::to_string),
+        listed.name,
+        "{context}"
+    );
+    let faces: BTreeSet<String> = vertex["faces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(faces, listed.faces, "{context}");
+    let point = vec3(&vertex["point"]);
+    assert_eq!(point, listed.point, "{context}");
+    let (x, y, depth) = picture.project(point);
+    let distance = vertex["distance"].as_f64().unwrap();
+    let (px, py) = (picked["x"].as_f64().unwrap(), picked["y"].as_f64().unwrap());
+    assert!(
+        ((x - px).hypot(y - py) - distance).abs() < 1e-6,
+        "{context}: lands at ({x}, {y})"
+    );
+    assert!(
+        distance <= picked["radius"].as_f64().unwrap(),
+        "{context}: outside the radius"
+    );
+    assert!(
+        (vertex["depth"].as_f64().unwrap() - depth).abs() <= 1e-9 * depth.abs().max(1.0),
+        "{context}"
+    );
+    assert!(picture.in_sight(point), "{context}: picked through a face");
+    listed
 }
 
 /// The chords the scene draws an edge with.
@@ -540,10 +662,19 @@ fn a_pick_on_an_edge_in_sight_is_the_edge_document_edges_lists() {
     let mut s = workshop();
     let edges = listed_edges(&mut s);
     assert_eq!(edges.len(), 12 + 2 + 14 + 48 + 48);
+    let corners = listed_vertices(&mut s);
+    let mut by_a_vertex = 0;
     let (mut checked, mut hidden, mut unclear, mut crossings) = (0, 0, 0, 0);
     let mut seen: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
     let mut faces_behind = 0;
     for (label, view) in &views() {
+        // Pictures twice as large as the other tests', so that most of an
+        // edge is further from its ends than the pick radius.
+        let mut view = view.clone();
+        for side in ["width", "height"] {
+            view[side] = (view[side].as_u64().unwrap() * 2).into();
+        }
+        let view = &view;
         let picture = picture_of(&mut s, view);
         let tolerance = picture.scene.tolerance;
         let chords = chords_of(&picture.scene, &edges);
@@ -557,6 +688,13 @@ fn a_pick_on_an_edge_in_sight_is_the_edge_document_edges_lists() {
                 let p = chords.at(u);
                 let (x, y, _) = picture.project(p);
                 if !picture.inside(x, y, 1.0) {
+                    continue;
+                }
+                // Within the radius of a vertex the vertex is what is
+                // pointed at (the tests of the vertices): this test is
+                // about the stretches of the edges between them.
+                if nearest_vertex(&picture, &corners, x, y) <= DEFAULT_PICK_RADIUS + 0.01 {
+                    by_a_vertex += 1;
                     continue;
                 }
                 // Two pixels along the edge either way: a point is taken
@@ -622,9 +760,9 @@ fn a_pick_on_an_edge_in_sight_is_the_edge_document_edges_lists() {
         }
     }
     println!(
-        "{checked} picks on edges in sight, {hidden} on hidden ones ({faces_behind} gave the face in front), {unclear} at a border, {crossings} crossings"
+        "{checked} picks on edges in sight, {hidden} on hidden ones ({faces_behind} gave the face in front), {unclear} at a border, {crossings} crossings, {by_a_vertex} left out by a vertex"
     );
-    assert!(checked > 1200, "{checked}");
+    assert!(checked > 900, "{checked}");
     assert!(
         hidden > 600 && faces_behind > 150,
         "{hidden}, {faces_behind}"
@@ -646,8 +784,10 @@ fn a_pick_on_an_edge_in_sight_is_the_edge_document_edges_lists() {
 fn the_nearest_edge_in_sight_within_the_radius_wins() {
     let mut s = workshop();
     let edges = listed_edges(&mut s);
+    let corners = listed_vertices(&mut s);
     let radius = DEFAULT_PICK_RADIUS;
     let (mut with_edge, mut without, mut positions) = (0, 0, 0);
+    let mut with_vertex = 0;
     for (label, view) in views().iter().filter(|(label, _)| {
         ["iso", "tiles-zoom", "below-behind", "post-from-below"].contains(label)
     }) {
@@ -721,7 +861,15 @@ fn the_nearest_edge_in_sight_within_the_radius_wins() {
                         clearly = Some((d, i));
                     }
                 }
-                if picked["kind"] == "edge" {
+                if picked["kind"] == "vertex" {
+                    // A vertex in sight within the radius: it wins over
+                    // any edge. That it is the nearest one is the test of
+                    // the vertices.
+                    check_vertex(&picture, &corners, &picked, &context);
+                    with_vertex += 1;
+                } else if nearest_vertex(&picture, &corners, x, y) <= radius - 0.01 {
+                    panic!("{context}: a vertex in sight is within the radius");
+                } else if picked["kind"] == "edge" {
                     with_edge += 1;
                     check_edge(&picture, &edges, &picked, tolerance, &context);
                     let distance = picked["edge"]["distance"].as_f64().unwrap();
@@ -757,6 +905,7 @@ fn the_nearest_edge_in_sight_within_the_radius_wins() {
                     params
                 });
                 assert!(faces_only.get("edge").is_none(), "{context}");
+                assert!(faces_only.get("vertex").is_none(), "{context}");
                 assert_eq!(faces_only.get("face"), picked.get("face"), "{context}");
                 assert_eq!(faces_only.get("point"), picked.get("point"), "{context}");
                 assert_eq!(
@@ -767,8 +916,11 @@ fn the_nearest_edge_in_sight_within_the_radius_wins() {
             }
         }
     }
-    println!("{positions} positions: {with_edge} point at an edge, {without} do not");
-    assert!(with_edge > 200 && without > 800, "{with_edge}, {without}");
+    println!(
+        "{positions} positions: {with_edge} point at an edge, {with_vertex} at a vertex, {without} at neither"
+    );
+    assert!(with_edge > 150 && without > 800, "{with_edge}, {without}");
+    assert!(with_vertex > 10, "{with_vertex}");
 }
 
 /// A box alone, where what is in sight is known in closed form: a box is
@@ -785,6 +937,9 @@ fn the_edges_at_the_back_of_a_box_are_not_picked_through_it() {
     );
     let edges = listed_edges(&mut s);
     assert_eq!(edges.len(), 12);
+    let corners = listed_vertices(&mut s);
+    assert_eq!(corners.len(), 8);
+    let (mut by_a_corner, mut corners_seen) = (0, 0);
     // The faces of a block by number (`NameRole::Face`): bottom, top,
     // front (-y), back (+y), left (-x), right (+x), with a point of each.
     let outward = |face: &str| -> (Vec3, Vec3) {
@@ -831,12 +986,41 @@ fn the_edges_at_the_back_of_a_box_are_not_picked_through_it() {
             .collect();
         // Three faces of a box are seen from a corner: nine of its edges.
         assert_eq!(seen.iter().filter(|&&v| v).count(), 9, "{eye:?}");
+        // And seven of its corners: all but the one where the three faces
+        // at the back meet. A pick on a corner in sight is that corner; a
+        // pick where the hidden one lands is not.
+        for corner in &corners {
+            let visible = corner.faces.iter().any(|f| looks_at_eye(f));
+            let (x, y, _) = picture.project(corner.point);
+            let picked = run(&mut s, "view.pick", pick_params(&view, x, y));
+            let context = format!("{eye:?}: vertex {}: {picked}", corner.index);
+            if visible {
+                let found = check_vertex(&picture, &corners, &picked, &context);
+                assert_eq!(found.index, corner.index, "{context}");
+                assert_eq!(
+                    picked["vertex"]["name"],
+                    corner.name.clone().unwrap().as_str()
+                );
+                assert!(picked["vertex"]["distance"].as_f64().unwrap() < 1e-9);
+                assert_eq!(corner.faces.len(), 3);
+                corners_seen += 1;
+            } else {
+                assert_ne!(picked["vertex"]["index"], corner.index, "{context}");
+                assert_eq!(picked["hit"], true, "{context}");
+            }
+        }
         for (listed, &visible) in edges.iter().zip(&seen) {
             for u in [0.15, 0.35, 0.5, 0.65, 0.85] {
                 let (x, y, _) = picture.project(listed.curve.at(u));
                 let picked = run(&mut s, "view.pick", pick_params(&view, x, y));
                 let context = format!("{eye:?}: edge {} at {u}: {picked}", listed.index);
-                if visible {
+                if picked["kind"] == "vertex" {
+                    // Near the end of an edge its corner is what is
+                    // pointed at: one of the seven in sight.
+                    let found = check_vertex(&picture, &corners, &picked, &context);
+                    assert!(found.faces.iter().any(|f| looks_at_eye(f)), "{context}");
+                    by_a_corner += 1;
+                } else if visible {
                     let found = check_edge(&picture, &edges, &picked, 0.0, &context);
                     assert_eq!(found.index, listed.index, "{context}");
                     assert_eq!(
@@ -862,11 +1046,13 @@ fn the_edges_at_the_back_of_a_box_are_not_picked_through_it() {
             }
         }
     }
-    assert_eq!((front, back), (5 * 9 * 5, 5 * 3 * 5));
+    assert_eq!(front + back + by_a_corner, 5 * 12 * 5);
+    assert!(front >= 150 && back >= 40, "{front}, {back}, {by_a_corner}");
     assert!(
-        faces >= 30,
+        faces >= 20,
         "{faces} of {back} picks at the back gave a face"
     );
+    assert_eq!(corners_seen, 5 * 7, "seven corners of a box are in sight");
 }
 
 /// The radius, measured: positions at a known number of pixels from a
@@ -904,7 +1090,8 @@ fn an_edge_is_picked_from_as_far_as_the_radius_and_no_further() {
         (1.5, Some(1.0), false),
         (0.2, Some(0.0), false),
         (63.0, Some(64.0), false), // off the picture's side: x = -43
-        (19.0, Some(64.0), true),
+        // (Within 64 pixels there is a corner, and a vertex wins: below.)
+        (19.0, Some(30.0), true),
     ] {
         let x = 20.0 - off;
         let out = pick(&mut s, x, 100.0, radius);
@@ -958,9 +1145,10 @@ fn an_edge_is_picked_from_as_far_as_the_radius_and_no_further() {
         (&json!("face"), &json!("F1:face(1)"))
     );
     assert!(far.get("edge").is_none());
-    // Near a corner the nearer of the two edges wins: 3 pixels from the
-    // left side and 2 from the bottom one (y = 140 in the picture).
-    let corner = pick(&mut s, 23.0, 138.0, None);
+    // Near a corner, but further from it than the radius (4.6 pixels),
+    // the nearer of the two edges wins: 3.5 pixels from the left side and
+    // 3 from the bottom one (y = 140 in the picture).
+    let corner = pick(&mut s, 23.5, 137.0, None);
     let faces: BTreeSet<&str> = corner["edge"]["faces"]
         .as_array()
         .unwrap()
@@ -972,7 +1160,7 @@ fn an_edge_is_picked_from_as_far_as_the_radius_and_no_further() {
         BTreeSet::from(["F1:face(1)", "F1:face(2)"]),
         "{corner}"
     );
-    assert!((corner["edge"]["distance"].as_f64().unwrap() - 2.0).abs() < 1e-9);
+    assert!((corner["edge"]["distance"].as_f64().unwrap() - 3.0).abs() < 1e-9);
 
     // A radius that is not one is refused, and says what it takes.
     for bad in [json!(-1), json!(64.5), json!(1e300), json!("4"), json!([4])] {
@@ -1112,5 +1300,249 @@ fn edges_are_looked_up_in_the_scene_by_name_or_by_their_faces() {
         let between: Vec<String> = between.into_iter().map(str::to_string).collect();
         let error = scene.edges_named(feature, edge, &between).unwrap_err();
         assert!(error.contains(part), "{edge:?} {between:?}: {error}");
+    }
+}
+
+/// The acceptance test for vertices: every vertex of every body, in every
+/// view; where it is in sight, a pick where it lands is that vertex, with
+/// the name, the faces and the point `document.edges` lists.
+#[test]
+fn a_pick_on_a_vertex_in_sight_is_the_vertex_document_edges_lists() {
+    let mut s = workshop();
+    let corners = listed_vertices(&mut s);
+    assert_eq!(corners.len(), 8 + 2 + 10 + 32 + 32);
+    let (mut checked, mut hidden, mut crossings) = (0, 0, 0);
+    let mut seen: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
+    for (label, view) in &views() {
+        let picture = picture_of(&mut s, view);
+        for corner in &corners {
+            let (x, y, _) = picture.project(corner.point);
+            if !picture.inside(x, y, 1.0) {
+                continue;
+            }
+            let picked = run(&mut s, "view.pick", pick_params(view, x, y));
+            let context = format!(
+                "{label}: {} vertex {} ({x}, {y}): {picked}",
+                corner.body, corner.index
+            );
+            let found = (picked["kind"] == "vertex")
+                .then(|| check_vertex(&picture, &corners, &picked, &context));
+            if picture.in_sight(corner.point) {
+                let found = found.unwrap_or_else(|| panic!("{context}: no vertex"));
+                let distance = picked["vertex"]["distance"].as_f64().unwrap();
+                assert!(distance < 1e-6, "{context}");
+                if found.feature == corner.feature && found.index == corner.index {
+                    checked += 1;
+                    seen.entry(corner.body.clone())
+                        .or_default()
+                        .insert(corner.index);
+                } else {
+                    // Another vertex lands on the same spot, nearer to
+                    // the eye and in sight (check_vertex). Counted.
+                    assert!(
+                        picked["vertex"]["depth"].as_f64().unwrap()
+                            <= picture.project(corner.point).2,
+                        "{context}"
+                    );
+                    crossings += 1;
+                }
+            } else {
+                // Behind a face: not this vertex.
+                if let Some(found) = found {
+                    assert!(
+                        (found.feature.as_str(), found.index)
+                            != (corner.feature.as_str(), corner.index),
+                        "{context}: picked through a face"
+                    );
+                }
+                hidden += 1;
+            }
+        }
+    }
+    println!(
+        "{checked} picks on vertices in sight, {hidden} on hidden ones, {crossings} crossings"
+    );
+    assert!(checked > 450 && hidden > 150, "{checked}, {hidden}");
+    assert!(crossings * 50 < checked, "{crossings}");
+    for (body, count) in [("Box", 8), ("Post", 2), ("Drilled", 10), ("Studs", 32)] {
+        assert_eq!(seen[body].len(), count, "{body}: {:?}", seen[body]);
+    }
+    assert!(seen["Tiles"].len() >= 26, "{:?}", seen["Tiles"]);
+}
+
+/// The nearest vertex in sight within the radius wins, over any edge:
+/// measured on a box seen straight down, 4 pixels per unit, its top on
+/// x = 20 to 180 and y = 60 to 140 of the picture.
+#[test]
+fn a_vertex_wins_over_an_edge_within_the_radius_and_the_nearest_vertex_wins() {
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [40, 20, 10], "name": "Box"}),
+    );
+    let view = json!({"camera": {"eye": [20, 10, 100], "target": [20, 10, 0], "up": [0, 1, 0],
+                                  "projection": "orthographic", "height": 50},
+                      "width": 200, "height": 200});
+    let pick = |s: &mut Session, x: f64, y: f64, radius: Option<f64>| {
+        let mut params = pick_params(&view, x, y);
+        if let Some(radius) = radius {
+            params["radius"] = radius.into();
+        }
+        run(s, "view.pick", params)
+    };
+    // The top-left corner of the top in the picture is (20, 60): the
+    // model's (0, 20, 10), where the top, the back and the left meet.
+    let corner_faces = BTreeSet::from(["F1:face(1)", "F1:face(3)", "F1:face(4)"]);
+    for (dx, dy, radius, expected) in [
+        (0.0, 0.0, None, "vertex"),
+        // Along the top's left side, which is 0 pixels away all the time.
+        (0.0, 3.5, None, "vertex"),
+        (0.0, 4.5, None, "edge"),
+        // Off the body, diagonally: 2.83 and 4.24 pixels from the corner.
+        (-2.0, -2.0, None, "vertex"),
+        (-3.0, -3.0, None, "none"),
+        (-3.0, -3.0, Some(4.5), "vertex"),
+        // Inside the top face.
+        (2.0, 3.0, None, "vertex"),
+        (3.0, 3.0, None, "edge"),
+        (9.0, 9.0, None, "face"),
+        (9.0, 9.0, Some(13.0), "vertex"),
+        (2.0, 3.0, Some(0.0), "face"),
+    ] {
+        let out = pick(&mut s, 20.0 + dx, 60.0 + dy, radius);
+        let context = format!("({dx}, {dy}), radius {radius:?}: {out}");
+        if expected == "none" {
+            assert_eq!(out["hit"], false, "{context}");
+            continue;
+        }
+        assert_eq!(out["kind"], expected, "{context}");
+        assert_eq!(
+            out.get("vertex").is_some(),
+            expected == "vertex",
+            "{context}"
+        );
+        assert_eq!(out.get("edge").is_some(), expected == "edge", "{context}");
+        if expected == "vertex" {
+            let vertex = &out["vertex"];
+            let d = f64::hypot(dx, dy);
+            assert!(
+                (vertex["distance"].as_f64().unwrap() - d).abs() < 1e-9,
+                "{context}"
+            );
+            assert!(
+                (vec3(&vertex["point"]) - Vec3::new(0.0, 20.0, 10.0)).length() < 1e-12,
+                "{context}"
+            );
+            let faces: BTreeSet<&str> = vertex["faces"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|f| f.as_str().unwrap())
+                .collect();
+            assert_eq!(faces, corner_faces, "{context}");
+            assert_eq!(vertex["feature"], "F1");
+            assert_eq!(vertex["body"], "Box");
+            assert!(vertex["name"].as_str().unwrap().starts_with("F1:vertex("));
+        }
+        // The face under the position is said either way.
+        assert_eq!(
+            out.get("face").is_some(),
+            dx >= 0.0 && dy >= 0.0,
+            "{context}"
+        );
+    }
+    // Between two corners 80 pixels apart, with a radius that reaches
+    // both: the nearer one. The left side runs from (20, 60) to (20, 140).
+    let upper = pick(&mut s, 20.0, 95.0, Some(50.0));
+    let lower = pick(&mut s, 20.0, 105.0, Some(50.0));
+    assert!((vec3(&upper["vertex"]["point"]) - Vec3::new(0.0, 20.0, 10.0)).length() < 1e-12);
+    assert!((vec3(&lower["vertex"]["point"]) - Vec3::new(0.0, 0.0, 10.0)).length() < 1e-12);
+    // The corners at the bottom of the box land on the same spots and are
+    // behind the top: at a spot, the one in sight.
+    assert!((upper["vertex"]["depth"].as_f64().unwrap() - 90.0).abs() < 1e-9);
+}
+
+#[test]
+fn vertices_are_looked_up_in_the_scene_by_name_or_by_their_faces() {
+    let mut s = workshop();
+    let corners = listed_vertices(&mut s);
+    let scene = s.scene(None).unwrap().unwrap();
+    let mut named = 0;
+    for corner in &corners {
+        // The scene has the vertex where document.edges has it.
+        let body = scene
+            .bodies
+            .iter()
+            .find(|b| b.feature == corner.feature)
+            .unwrap();
+        assert_eq!(body.vertices[corner.index], corner.point);
+        if let Some(name) = &corner.name {
+            let found = scene.vertices_named(None, Some(name), &[]).unwrap();
+            assert_eq!(
+                (found.feature.as_str(), found.vertices.as_slice()),
+                (corner.feature.as_str(), [corner.index].as_slice())
+            );
+            named += 1;
+        }
+        // By all the faces that meet in it: itself, and whatever other
+        // vertex the same faces meet in (the two ends of an edge between
+        // two pieces of one face, after a boolean).
+        let faces: Vec<String> = corner.faces.iter().cloned().collect();
+        let found = scene
+            .vertices_named(Some(&corner.feature), None, &faces)
+            .unwrap();
+        assert!(found.vertices.contains(&corner.index), "{faces:?}");
+        for &other in &found.vertices {
+            let other = corners
+                .iter()
+                .find(|c| c.feature == corner.feature && c.index == other)
+                .unwrap();
+            assert!(corner.faces.is_subset(&other.faces));
+        }
+        assert_eq!(found.body, corner.body);
+    }
+    assert_eq!(named, 8 + 2 + 32);
+    // One face of the box: its four corners.
+    let four = scene
+        .vertices_named(None, None, &["F1:face(1)".to_string()])
+        .unwrap();
+    assert_eq!(four.vertices.len(), 4);
+    for (feature, vertex, corner, part) in [
+        (None, None, vec![], "`vertex` (its own name) or by `corner`"),
+        (None, Some("F1:vertex(0)"), vec!["F1:face(0)"], "not both"),
+        (None, Some("F1:face(0)"), vec![], "is a face"),
+        (None, Some("nonsense"), vec![], ""),
+        (
+            None,
+            Some("F1:vertex(99)"),
+            vec![],
+            "no body has a vertex F1:vertex(99)",
+        ),
+        (
+            Some("Post"),
+            Some("F1:vertex(0)"),
+            vec![],
+            "`Post` has no vertex",
+        ),
+        (
+            Some("Nobody"),
+            Some("F1:vertex(0)"),
+            vec![],
+            "no body of a feature `Nobody`",
+        ),
+        (None, None, vec!["F1:vertex(1)"], "is not a face"),
+        (
+            None,
+            None,
+            vec!["F1:face(0)", "F1:face(1)"],
+            "no body has a vertex where",
+        ),
+        (None, None, vec!["F1:face(0)"; 17], "at most 16"),
+    ] {
+        let corner: Vec<String> = corner.into_iter().map(str::to_string).collect();
+        let error = scene.vertices_named(feature, vertex, &corner).unwrap_err();
+        assert!(error.contains(part), "{vertex:?} {corner:?}: {error}");
     }
 }

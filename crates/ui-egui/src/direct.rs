@@ -129,8 +129,8 @@ pub fn segments(
 }
 
 /// [`segments`] with `marks` drawn over the lines, as
-/// `viewport::overlay_marked` lists them: after the sketches' lines,
-/// before their points.
+/// `viewport::overlay_marked` lists them: the lines after the sketches'
+/// lines, the dots after their points.
 pub fn segments_marked(
     scene: Option<&Scene>,
     selected: Option<&str>,
@@ -209,6 +209,17 @@ pub fn segments_marked(
                 axis: false,
             });
         }
+    }
+    for point in &marks.points {
+        out.push(Segment {
+            from: *point,
+            to: *point,
+            color: LineKind::Highlight.color(tokens),
+            width: LineKind::Highlight.dot_radius(tokens) * 2.0 * scale,
+            tested: true,
+            dimmed: true,
+            axis: false,
+        });
     }
     out
 }

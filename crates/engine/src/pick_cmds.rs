@@ -1,5 +1,6 @@
-//! Pointing: which face is under a position of a picture and which edge is
-//! near it, and which faces and edges of the scene a name means.
+//! Pointing: which face is under a position of a picture and which edge or
+//! vertex is near it, and which faces, edges and vertices of the scene a
+//! name means.
 //!
 //! The rule for what a position points at ([`Scene::point_at`]), the same
 //! for `view.pick`, `ui.pick` and a click in the viewport:
@@ -13,8 +14,13 @@
 //!    nearest point. The nearest point in sight of all edges wins; at the
 //!    same distance the one nearer to the eye, then the earlier body, then
 //!    the earlier edge.
-//! 3. An edge that is near is what the position points at; otherwise the
-//!    face under it; otherwise nothing.
+//! 3. A vertex is near when it is within the pick radius of the position
+//!    in the picture and in sight; the nearest wins, with the same
+//!    tie-breaks.
+//! 4. A vertex that is near is what the position points at, however near
+//!    an edge is (an edge ends in its vertices, so near a vertex an edge
+//!    is always nearer or as near); otherwise an edge that is near;
+//!    otherwise the face under it; otherwise nothing.
 //!
 //! Both are questions about a [`Scene`], so that a viewer asks them of the
 //! very mesh it draws: the window of the scene in its viewport, with the
@@ -34,9 +40,11 @@ use serde_json::{Value, json};
 
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("view.pick", "Pick", r#"{"x": number, "y": number, "width": integer = 800, "height": integer = 600, "radius": number = 4, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the whole model, "camera": {eye, target, up, projection, fovY, height}, "tolerance": number = automatic}"#,
-        "Says what is at a position of a picture. kind says what the position points at: an edge when one is near, otherwise the face under it. The face under the position, when there is one: the body (feature, name), the face's persistent name as document.inspect lists it under faceNames (with faceIndex, its place in that list, and aliases), and the point in space (point, depth). An edge is near when its point nearest to the position in the picture is within radius pixels (0 to 64; 0 looks at faces only) and not behind a face; the nearest one wins. It is given as edge: its body (feature, body), name (the edge's own persistent name as document.edges gives it, null when it has none, as after a boolean), faces (the names of the faces it lies between, which is how document.edges refers to an edge), index (its place in document.edges), point (the point of the edge nearest to the position), depth and distance (pixels from the position). x and y are in pixels from the top-left corner of a picture of width by height, x to the right and y down; the centre of pixel (i, j) is (i + 0.5, j + 0.5). The picture is the one view.render makes with the same view, projection, zoom, box and tolerance, or the one seen by camera when that is given: an object with eye and target ([x, y, z]), up ([x, y, z], default [0, 0, 1]), projection (perspective, the default, or orthographic) and, for a perspective camera, fovY (the vertical field of view in degrees, default 30) or, for an orthographic one, height (the model units from the top of the picture to its bottom). hit is false when nothing is there, with outside true when the position is not in the picture: an answer, not an error. The result repeats the camera, so a second pick can pass it back.", doc: true, view_pick),
+        "Says what is at a position of a picture. kind says what the position points at: a vertex when one is near, otherwise an edge when one is near, otherwise the face under it. The face under the position, when there is one: the body (feature, name), the face's persistent name as document.inspect lists it under faceNames (with faceIndex, its place in that list, and aliases), and the point in space (point, depth). An edge is near when its point nearest to the position in the picture is within radius pixels (0 to 64; 0 looks at faces only) and not behind a face; the nearest one wins. It is given as edge: its body (feature, body), name (the edge's own persistent name as document.edges gives it, null when it has none, as after a boolean), faces (the names of the faces it lies between, which is how document.edges refers to an edge), index (its place in document.edges), point (the point of the edge nearest to the position), depth and distance (pixels from the position). A vertex is near when it is within radius pixels and not behind a face; it wins over an edge and is given as vertex, with the same fields: name is its own persistent name or null, faces the names of the faces that meet in it, index its index under vertices of document.edges. x and y are in pixels from the top-left corner of a picture of width by height, x to the right and y down; the centre of pixel (i, j) is (i + 0.5, j + 0.5). The picture is the one view.render makes with the same view, projection, zoom, box and tolerance, or the one seen by camera when that is given: an object with eye and target ([x, y, z]), up ([x, y, z], default [0, 0, 1]), projection (perspective, the default, or orthographic) and, for a perspective camera, fovY (the vertical field of view in degrees, default 30) or, for an orthographic one, height (the model units from the top of the picture to its bottom). hit is false when nothing is there, with outside true when the position is not in the picture: an answer, not an error. The result repeats the camera, so a second pick can pass it back.", doc: true, view_pick),
 ];
 
+/// Most face names a vertex is referred to by.
+pub const MAX_CORNER_FACES: usize = 16;
 /// The pick radius when none is given, in pixels: an edge this near to a
 /// position is what the position points at.
 pub const DEFAULT_PICK_RADIUS: f64 = 4.0;
@@ -82,6 +90,7 @@ pub struct ScenePick {
 pub enum PickKind {
     Face,
     Edge,
+    Vertex,
 }
 
 impl PickKind {
@@ -90,24 +99,26 @@ impl PickKind {
         match self {
             PickKind::Face => "face",
             PickKind::Edge => "edge",
+            PickKind::Vertex => "vertex",
         }
     }
 }
 
-/// An edge near a position of a picture of a scene.
+/// An edge or a vertex near a position of a picture of a scene.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SceneNear {
     /// The feature that made the body (`F3`) and its name.
     pub feature: String,
     pub body: String,
     /// The entity's own persistent name, as `document.edges` gives it;
-    /// `None` when the body's edges have none (after a boolean).
+    /// `None` when the body's edges and vertices have none (after a
+    /// boolean).
     pub name: Option<String>,
-    /// Its place among the edges of its body, the order of
-    /// `document.edges`.
+    /// Its place among the edges, or the vertices, of its body: the order
+    /// of `document.edges`, and `index` of its `vertices`.
     pub index: usize,
-    /// The names of the faces it lies between: how an edge is referred to
-    /// when it has no name of its own.
+    /// The names of the faces an edge lies between, or that meet in a
+    /// vertex: how it is referred to when it has no name of its own.
     pub faces: Vec<String>,
     /// The point of the entity nearest to the position, in model
     /// coordinates.
@@ -140,14 +151,19 @@ impl SceneNear {
 pub struct ScenePointed {
     /// The face under the position.
     pub face: Option<ScenePick>,
-    /// The edge near it, which is then what the position points at.
+    /// The edge near it, which is then what the position points at,
+    /// unless a vertex is near too.
     pub edge: Option<SceneNear>,
+    /// The vertex near it, which is then what the position points at.
+    pub vertex: Option<SceneNear>,
 }
 
 impl ScenePointed {
     /// What the position points at: `None` for nothing.
     pub fn kind(&self) -> Option<PickKind> {
-        if self.edge.is_some() {
+        if self.vertex.is_some() {
+            Some(PickKind::Vertex)
+        } else if self.edge.is_some() {
             Some(PickKind::Edge)
         } else if self.face.is_some() {
             Some(PickKind::Face)
@@ -158,7 +174,7 @@ impl ScenePointed {
 
     /// The fields `view.pick` and `ui.pick` have in common, put into
     /// `map`: `hit`, and for a hit `kind`, the face under the position
-    /// and the edge near it.
+    /// and the vertex or, without one, the edge near it.
     pub fn describe(&self, map: &mut serde_json::Map<String, Value>) {
         let kind = self.kind();
         map.insert("hit".into(), kind.is_some().into());
@@ -179,8 +195,14 @@ impl ScenePointed {
             map.insert("point".into(), vec3(pick.point));
             map.insert("depth".into(), pick.depth.into());
         }
-        if let Some(edge) = &self.edge {
-            map.insert("edge".into(), edge.json());
+        match (&self.vertex, &self.edge) {
+            (Some(vertex), _) => {
+                map.insert("vertex".into(), vertex.json());
+            }
+            (None, Some(edge)) => {
+                map.insert("edge".into(), edge.json());
+            }
+            (None, None) => {}
         }
     }
 }
@@ -200,6 +222,23 @@ pub struct SceneEdges {
     pub between: Vec<String>,
     /// The places of the edges among the edges of the body, ascending.
     pub edges: Vec<usize>,
+}
+
+/// The vertices of a scene a name, or the faces that meet in them, mean.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SceneVertices {
+    /// The feature that made the body (`F3`) and its name.
+    pub feature: String,
+    pub body: String,
+    /// The body's place in [`Scene::bodies`].
+    pub body_index: usize,
+    /// The vertex's own name, when that is what was asked for.
+    pub vertex: Option<String>,
+    /// The face names, when those were asked for.
+    pub corner: Vec<String>,
+    /// The places of the vertices among the vertices of the body,
+    /// ascending.
+    pub vertices: Vec<usize>,
 }
 
 /// The faces of a scene a persistent name means.
@@ -374,7 +413,10 @@ impl Scene {
             0.0
         };
         if !inside || radius <= 0.0 {
-            return Ok(ScenePointed { face, edge: None });
+            return Ok(ScenePointed {
+                face,
+                ..ScenePointed::default()
+            });
         }
         let view = Viewpoint::new(camera, width, height).map_err(|e| e.to_string())?;
         // A point within the radius lands within the radius, give or take
@@ -387,8 +429,52 @@ impl Scene {
             near: &near,
             size: [f64::from(width), f64::from(height)],
         };
+        let vertex = self.vertex_near(&sight, x, y, radius);
         let edge = self.edge_near(&sight, x, y, radius);
-        Ok(ScenePointed { face, edge })
+        Ok(ScenePointed { face, edge, vertex })
+    }
+
+    /// The vertex in sight within `radius` pixels of (`x`, `y`): the
+    /// nearest.
+    fn vertex_near(&self, sight: &Sight<'_>, x: f64, y: f64, radius: f64) -> Option<SceneNear> {
+        let mut candidates: Vec<Candidate> = Vec::new();
+        for (body_index, body) in self.bodies.iter().enumerate() {
+            for (index, &point) in body.vertices.iter().enumerate() {
+                let Some([sx, sy, depth]) = sight.view.project(point) else {
+                    continue;
+                };
+                let distance = (sx - x).hypot(sy - y);
+                if distance <= radius {
+                    candidates.push(Candidate {
+                        distance,
+                        depth,
+                        body: body_index,
+                        index,
+                        point,
+                    });
+                }
+            }
+        }
+        candidates.sort_by(Candidate::order);
+        let nearest = candidates.iter().find(|c| sight.sees(c.point))?;
+        let body = self.bodies.get(nearest.body)?;
+        let faces = body
+            .vertex_faces
+            .get(nearest.index)
+            .into_iter()
+            .flatten()
+            .filter_map(|&face| body.face_names.get(face).cloned())
+            .collect();
+        Some(SceneNear {
+            feature: body.feature.clone(),
+            body: body.name.clone(),
+            name: body.vertex_names.get(nearest.index).cloned(),
+            index: nearest.index,
+            faces,
+            point: nearest.point,
+            depth: nearest.depth,
+            distance: nearest.distance,
+        })
     }
 
     /// The edge with a point in sight within `radius` pixels of (`x`,
@@ -510,12 +596,14 @@ impl Scene {
             .map(|(index, body)| (index, body, find(body)))
             .filter(|(_, _, found)| !found.is_empty());
         let Some((index, body, found)) = having.next() else {
-            return Err(format!("no body has an {what} ({hint})"));
+            return Err(format!("no body has {} {what} ({hint})", article(what)));
         };
         if let Some((_, other, _)) = having.next() {
             return Err(format!(
-                "several bodies have an {what} (`{}` and `{}` among them); say which with `feature`",
-                body.name, other.name
+                "several bodies have {} {what} (`{}` and `{}` among them); say which with `feature`",
+                article(what),
+                body.name,
+                other.name
             ));
         }
         Ok((index, found))
@@ -607,6 +695,94 @@ impl Scene {
         }
     }
 
+    /// The vertices that `vertex` names (a vertex's own persistent name,
+    /// `name` under `vertices` of `document.edges`) or in which the faces
+    /// of `corner` all meet (one to [`MAX_CORNER_FACES`] face names): one
+    /// or the other. `feature` says which body, as for
+    /// [`Self::faces_named`]. The error is a sentence for whoever asked.
+    pub fn vertices_named(
+        &self,
+        feature: Option<&str>,
+        vertex: Option<&str>,
+        corner: &[String],
+    ) -> Result<SceneVertices, String> {
+        const HINT: &str = "document.edges lists the vertices of a body";
+        let found = |(body_index, vertices): (usize, Vec<usize>),
+                     vertex: Option<String>,
+                     corner: Vec<String>| {
+            let body = self.bodies.get(body_index);
+            SceneVertices {
+                feature: body.map(|b| b.feature.clone()).unwrap_or_default(),
+                body: body.map(|b| b.name.clone()).unwrap_or_default(),
+                body_index,
+                vertex,
+                corner,
+                vertices,
+            }
+        };
+        match (vertex, corner) {
+            (Some(_), [_, ..]) => {
+                Err("give the vertex's own name or the faces that meet in it, not both"
+                    .to_string())
+            }
+            (Some(vertex), []) => {
+                let name: PersistentName = vertex.parse()?;
+                if name.is_face() {
+                    return Err(format!(
+                        "{name} is a face; a vertex is named by `vertex` (its own name) or by `corner` (the faces that meet in it)"
+                    ));
+                }
+                let wanted = name.to_string();
+                let at = self
+                    .body_having(feature, &format!("vertex {wanted}"), HINT, |body| {
+                        (0..body.vertex_names.len())
+                            .filter(|&k| body.vertex_names.get(k) == Some(&wanted))
+                            .collect()
+                    })?;
+                Ok(found(at, Some(wanted), Vec::new()))
+            }
+            (None, []) => Err(
+                "a vertex is named by `vertex` (its own name) or by `corner` (the faces that meet in it)"
+                    .to_string(),
+            ),
+            (None, faces) => {
+                if faces.len() > MAX_CORNER_FACES {
+                    return Err(format!(
+                        "`corner` takes at most {MAX_CORNER_FACES} face names"
+                    ));
+                }
+                let mut wanted = Vec::with_capacity(faces.len());
+                for face in faces {
+                    let name: PersistentName = face.parse()?;
+                    if !name.is_face() {
+                        return Err(format!("{name} is not a face"));
+                    }
+                    wanted.push(name.to_string());
+                }
+                let shown: Vec<&str> = wanted.iter().take(3).map(String::as_str).collect();
+                let more = if wanted.len() > 3 { " and more" } else { "" };
+                let what = format!("vertex where {}{more} meet", shown.join(", "));
+                let at = self
+                    .body_having(feature, &what, HINT, |body| {
+                        let sets: Vec<Vec<usize>> = wanted
+                            .iter()
+                            .map(|name| Self::faces_answering(body, name))
+                            .collect();
+                        body.vertex_faces
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, meeting)| {
+                                sets.iter()
+                                    .all(|set| meeting.iter().any(|face| set.contains(face)))
+                            })
+                            .map(|(index, _)| index)
+                            .collect()
+                    })?;
+                Ok(found(at, None, wanted))
+            }
+        }
+    }
+
     /// The bodies as an error message lists them.
     fn body_list(&self) -> String {
         if self.bodies.is_empty() {
@@ -619,6 +795,15 @@ impl Scene {
             .map(|body| format!("{} ({})", body.name, body.feature))
             .collect();
         listed.join(", ")
+    }
+}
+
+/// "a" or "an" before `what`.
+fn article(what: &str) -> &'static str {
+    if what.starts_with(['a', 'e', 'i', 'o', 'u']) {
+        "an"
+    } else {
+        "a"
     }
 }
 

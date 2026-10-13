@@ -62,7 +62,9 @@ pub struct Tokens {
     /// Width of a highlighted edge, in points; its colour is
     /// `face_highlight`.
     pub highlight_width: f32,
-    /// How near to an edge a click counts as a click on it, in points
+    /// Radius of a highlighted vertex's dot, in points.
+    pub highlight_radius: f32,
+    /// How near to an edge or a vertex a click counts as a click on it, in points
     /// (the pick radius of `view.pick`, which is in pixels).
     pub pick_radius: f32,
     /// Space between the viewport's edge and what floats over it.
@@ -107,6 +109,7 @@ impl Tokens {
             edge_width: 1.0,
             point_radius: 2.25,
             highlight_width: 3.0,
+            highlight_radius: 4.0,
             pick_radius: 4.0,
             inset: 10.0,
         }

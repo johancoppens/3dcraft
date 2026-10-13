@@ -1,5 +1,5 @@
-//! Pointing at edges in the viewport (roadmap M8.5): a click near an edge
-//! in sight gives that edge as UI state an agent reads, an agent asks what
+//! Pointing at edges and vertices in the viewport (roadmap M8.5): a click
+//! near an edge or a vertex in sight gives it as UI state an agent reads, an agent asks what
 //! is at a pixel (`ui.pick`) and has an edge highlighted (`ui.highlight`),
 //! and the picture shows the highlight, the same on the GPU's direct path
 //! as in the CPU oracle.
@@ -25,8 +25,8 @@ use craft3d_render::Projection;
 use craft3d_ui_egui::backend::Backend;
 use craft3d_ui_egui::camera::Projector;
 use craft3d_ui_egui::direct::headless_render_state;
-use craft3d_ui_egui::state::{CameraState, EdgeRef, PickedKind};
-use craft3d_ui_egui::viewport::{self, Composed, LineKind, OverlayLine, Quality};
+use craft3d_ui_egui::state::{CameraState, EdgeRef, PickedKind, VertexRef};
+use craft3d_ui_egui::viewport::{self, Composed, LineKind, Marks, OverlayLine, Quality};
 use craft3d_ui_egui::{RendererChoice, Shell, Tokens};
 use egui::{Event, PointerButton, Pos2, pos2, vec2};
 use serde_json::{Value, json};
@@ -290,7 +290,14 @@ fn edges_in_sight(
             let clear = [u - 0.04, u, u + 0.04]
                 .into_iter()
                 .all(|v| in_sight(scene, camera, listed.at(v)));
-            (inside && clear).then(|| (listed.clone(), p, [at.x, at.y]))
+            // Further from every vertex than a click reaches: nearer, the
+            // vertex is what is pointed at.
+            let by_a_vertex = scene.bodies.iter().flat_map(|b| &b.vertices).any(|v| {
+                projector
+                    .project(*v)
+                    .is_some_and(|c| (c.x - at.x).hypot(c.y - at.y) < 6.0)
+            });
+            (inside && clear && !by_a_vertex).then(|| (listed.clone(), p, [at.x, at.y]))
         })
         .collect()
 }
@@ -836,7 +843,7 @@ fn ui_pick_and_ui_highlight_speak_of_edges() {
         ),
         (
             json!({"edge": name, "face": face}),
-            "one of `face`, `edge` and `between`",
+            "one of `face`, `edge`, `between`",
         ),
         (json!({"edge": name, "between": [a, b]}), "not both"),
         (json!({"between": [a]}), "takes two face names"),
@@ -1106,4 +1113,457 @@ fn a_highlighted_edge_is_the_same_on_the_gpus_direct_path_as_in_the_oracle() {
     window.frame(&mut shell, &mut session, Vec::new());
     let (_, _, cleared) = shell.direct_picture().unwrap().unwrap();
     assert_eq!(cleared, direct_plain);
+}
+
+/// One vertex as `document.edges` lists it under `vertices`.
+#[derive(Clone, Debug)]
+struct Corner {
+    feature: String,
+    body: String,
+    index: usize,
+    name: Option<String>,
+    faces: Vec<String>,
+    point: Vec3,
+}
+
+impl Corner {
+    /// How a highlight refers to it: by its own name, or by its faces.
+    fn reference(&self) -> VertexRef {
+        VertexRef {
+            feature: Some(self.feature.clone()),
+            vertex: self.name.clone(),
+            corner: if self.name.is_some() {
+                Vec::new()
+            } else {
+                self.faces.clone()
+            },
+        }
+    }
+}
+
+fn listed_vertices(session: &mut Session) -> Vec<Corner> {
+    let inspect = run(session, "document.inspect", json!({}));
+    let mut out = Vec::new();
+    for body in inspect["bodies"].as_array().unwrap() {
+        let name = body["name"].as_str().unwrap();
+        let listed = run(session, "document.edges", json!({"feature": name}));
+        for vertex in listed["vertices"].as_array().unwrap() {
+            let c: Vec<f64> = vertex["point"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_f64().unwrap())
+                .collect();
+            out.push(Corner {
+                feature: body["feature"].as_str().unwrap().to_string(),
+                body: name.to_string(),
+                index: vertex["index"].as_u64().unwrap() as usize,
+                name: vertex.get("name").map(|n| n.as_str().unwrap().to_string()),
+                faces: vertex["faces"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|f| f.as_str().unwrap().to_string())
+                    .collect(),
+                point: Vec3::new(c[0], c[1], c[2]),
+            });
+        }
+    }
+    out
+}
+
+/// The vertices in sight, with where they land, that have no other vertex
+/// within 10 pixels in the picture (so a click on one is a click on it).
+fn vertices_in_sight(
+    scene: &Scene,
+    camera: &CameraState,
+    corners: &[Corner],
+    [width, height]: [u32; 2],
+) -> Vec<(Corner, [f64; 2])> {
+    let projector =
+        Projector::new(&camera.to_render(), f64::from(width), f64::from(height)).unwrap();
+    let landed: Vec<[f64; 2]> = corners
+        .iter()
+        .map(|c| projector.project(c.point).map_or([-1e9; 2], |p| [p.x, p.y]))
+        .collect();
+    corners
+        .iter()
+        .zip(&landed)
+        .enumerate()
+        .filter(|(k, (corner, at))| {
+            at[0] >= 8.0
+                && at[1] >= 8.0
+                && at[0] < f64::from(width) - 8.0
+                && at[1] < f64::from(height) - 8.0
+                && in_sight(scene, camera, corner.point)
+                && landed
+                    .iter()
+                    .enumerate()
+                    .all(|(j, other)| j == *k || (other[0] - at[0]).hypot(other[1] - at[1]) > 10.0)
+        })
+        .map(|(_, (corner, at))| (corner.clone(), *at))
+        .collect()
+}
+
+#[test]
+fn a_click_on_a_vertex_picks_it_and_ui_highlight_shows_one() {
+    let mut session = part();
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let tokens = shell.tokens;
+    let mut window = Window::new(1000.0, 700.0);
+    for _ in 0..4 {
+        window.frame(&mut shell, &mut session, Vec::new());
+    }
+    let rect = shell.viewport_rect().unwrap();
+    let size = shell.viewport_size();
+    let [width, height] = size;
+    let scene: Arc<Scene> = session.scene_with(shell.scene_quality()).unwrap().unwrap();
+    let camera = shell.state.camera;
+    let corners = listed_vertices(&mut session);
+    assert_eq!(corners.len(), 10 + 2 + 24);
+    let (_, _, plain) = shot(&mut shell, &mut session);
+    let seen = vertices_in_sight(&scene, &camera, &corners, size);
+    assert!(seen.len() >= 15, "{} vertices are in sight", seen.len());
+    let mut bodies = BTreeSet::new();
+    for (round, (corner, [x, y])) in seen.iter().enumerate() {
+        // A click a pixel and a half off the vertex is still on it.
+        let at = pos2(rect.left() + *x as f32 + 1.0, rect.top() + *y as f32 - 1.0);
+        window.click(&mut shell, &mut session, at);
+        let picked = shell.state.picked.clone().unwrap();
+        let context = format!("{} vertex {}: {picked:?}", corner.body, corner.index);
+        assert_eq!(picked.serial, round as u64 + 1, "{context}");
+        assert_eq!(picked.kind, Some(PickedKind::Vertex), "{context}");
+        assert_eq!(picked.edge, None, "{context}");
+        let vertex = picked.vertex.clone().unwrap();
+        assert_eq!(
+            (vertex.feature.as_str(), vertex.index as usize),
+            (corner.feature.as_str(), corner.index),
+            "{context}"
+        );
+        assert_eq!(vertex.body, corner.body, "{context}");
+        assert_eq!(vertex.name, corner.name, "{context}");
+        assert_eq!(vertex.faces, corner.faces, "{context}");
+        assert_eq!(
+            vertex.point,
+            [corner.point.x, corner.point.y, corner.point.z],
+            "{context}"
+        );
+        bodies.insert(corner.feature.clone());
+        // The vertex is what is highlighted, alone.
+        assert_eq!(
+            shell.state.highlight_vertex,
+            Some(corner.reference()),
+            "{context}"
+        );
+        assert_eq!(shell.state.highlight_edge, None, "{context}");
+        assert_eq!(shell.state.highlight, None, "{context}");
+        // The window draws a dot of the highlight kind on it.
+        let overlay = shell.overlay().0.clone();
+        let dots: Vec<_> = overlay
+            .points
+            .iter()
+            .filter(|p| p.kind == LineKind::Highlight)
+            .collect();
+        assert!(!dots.is_empty(), "{context}");
+        assert!(
+            dots.iter()
+                .any(|d| !d.hidden && (d.at[0] - x).hypot(d.at[1] - y) < 1e-6),
+            "{context}: no dot on the vertex"
+        );
+        assert!(overlay.lines.iter().all(|l| l.kind != LineKind::Highlight));
+        let got = call(&mut shell, &mut session, "ui.get", json!({}));
+        assert_eq!(got["state"]["picked"]["kind"], "vertex", "{context}");
+        assert_eq!(got["state"]["picked"]["vertex"]["index"], corner.index);
+        assert_eq!(
+            got["state"]["highlightVertex"],
+            serde_json::to_value(corner.reference()).unwrap()
+        );
+        // The screenshot has the dot, in the highlight's colour, and is
+        // the plain picture away from it.
+        if round % 3 == 0 {
+            let (_, _, marked) = shot(&mut shell, &mut session);
+            assert!(
+                levels(pixel(&marked, width, [*x, *y]), tokens.face_highlight) <= 8,
+                "{context}: {:?} at the vertex",
+                pixel(&marked, width, [*x, *y])
+            );
+            let mut changed = 0;
+            for py in 0..height {
+                for px in 0..width {
+                    let p = [f64::from(px) + 0.5, f64::from(py) + 0.5];
+                    let differs = pixel(&marked, width, p) != pixel(&plain, width, p);
+                    let near = dots
+                        .iter()
+                        .any(|d| (d.at[0] - p[0]).hypot(d.at[1] - p[1]) <= 5.5);
+                    assert!(!differs || near, "{context}: the picture changed at {p:?}");
+                    changed += usize::from(differs);
+                }
+            }
+            // A dot of radius 4: about 50 pixels of it.
+            assert!((30..=95).contains(&changed), "{context}: {changed} pixels");
+            if round == 3 {
+                let path = evidence("pointing-vertex-click-cpu.png");
+                write_png(&path, width, height, &marked);
+                println!("evidence: {}", path.display());
+            }
+        }
+    }
+    assert_eq!(bodies.len(), 3, "the boolean, the post and the pattern");
+
+    // ui.pick says the same, and with no radius the face.
+    let (corner, [x, y]) = &seen[0];
+    let picked = call(&mut shell, &mut session, "ui.pick", json!({"x": x, "y": y}));
+    assert_eq!(picked["kind"], "vertex", "{picked}");
+    assert_eq!(picked["vertex"]["index"], corner.index);
+    assert_eq!(picked["vertex"]["faces"], json!(corner.faces));
+    assert!(picked.get("edge").is_none());
+    let faces_only = call(
+        &mut shell,
+        &mut session,
+        "ui.pick",
+        json!({"x": x, "y": y, "radius": 0}),
+    );
+    assert!(faces_only.get("vertex").is_none());
+
+    // ui.highlight by name and by the faces that meet in a vertex.
+    for corner in &corners {
+        let reference = corner.reference();
+        let mut params = json!({"feature": corner.feature});
+        match &reference.vertex {
+            Some(name) => params["vertex"] = json!(name),
+            None => params["corner"] = json!(reference.corner),
+        }
+        let result = call(&mut shell, &mut session, "ui.highlight", params.clone());
+        assert_eq!(
+            result["highlightVertex"],
+            serde_json::to_value(&reference).unwrap(),
+            "{params}"
+        );
+        assert_eq!(result["name"], corner.body.as_str());
+        assert!(result["vertices"].as_u64().unwrap() >= 1);
+        assert_eq!(shell.state.highlight_vertex, Some(reference));
+        assert_eq!(shell.state.highlight_edge, None);
+        assert_eq!(shell.state.highlight, None);
+    }
+    // A vertex behind the model is drawn too, dimmed.
+    let hidden = corners
+        .iter()
+        .find(|c| {
+            !in_sight(&scene, &camera, c.point)
+                && seen.iter().all(|(_, at)| {
+                    let p =
+                        Projector::new(&camera.to_render(), f64::from(width), f64::from(height))
+                            .unwrap()
+                            .project(c.point)
+                            .unwrap();
+                    (p.x - at[0]).hypot(p.y - at[1]) > 12.0
+                })
+        })
+        .expect("a vertex at the back");
+    let mut params = json!({"feature": hidden.feature});
+    match &hidden.name {
+        Some(name) => params["vertex"] = json!(name),
+        None => params["corner"] = json!(hidden.faces),
+    }
+    call(&mut shell, &mut session, "ui.highlight", params);
+    let (_, _, marked) = shot(&mut shell, &mut session);
+    let at = Projector::new(&camera.to_render(), f64::from(width), f64::from(height))
+        .unwrap()
+        .project(hidden.point)
+        .unwrap();
+    let (now, before) = (
+        pixel(&marked, width, [at.x, at.y]),
+        pixel(&plain, width, [at.x, at.y]),
+    );
+    assert_ne!(now, before, "a hidden vertex is drawn");
+    assert!(
+        levels(now, tokens.face_highlight) > 30,
+        "and dimmed: {now:?}"
+    );
+
+    // ui.set, and what is wrong.
+    let named = corners.iter().find(|c| c.name.is_some()).unwrap();
+    let name = named.name.clone().unwrap();
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"highlightVertex": {"vertex": name}}),
+    );
+    assert_eq!(
+        shell.state.highlight_vertex,
+        Some(VertexRef {
+            feature: None,
+            vertex: Some(name.clone()),
+            corner: Vec::new()
+        })
+    );
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"highlightVertex": {"vertex": "F99:vertex(0)"}}),
+    );
+    assert_eq!(shell.state.highlight_vertex, None);
+    call(
+        &mut shell,
+        &mut session,
+        "ui.highlight",
+        json!({"vertex": name}),
+    );
+    let state = shell.state.clone();
+    let face = named.faces[0].clone();
+    for (params, part) in [
+        (json!({"vertex": 3}), "`vertex` must be a vertex name"),
+        (json!({"vertex": "corner"}), "is not a name"),
+        (json!({"vertex": face}), "is a face"),
+        (
+            json!({"vertex": "F99:vertex(0)"}),
+            "no body has a vertex F99:vertex(0)",
+        ),
+        (
+            json!({"vertex": name, "feature": "Drilled"}),
+            "`Drilled` has no vertex",
+        ),
+        (json!({"vertex": name, "face": face}), "one of `face`"),
+        (
+            json!({"vertex": name, "edge": "F1:edge(0)"}),
+            "one of `face`",
+        ),
+        (json!({"vertex": name, "corner": [face]}), "not both"),
+        (json!({"corner": []}), "one to 16 face names"),
+        (json!({"corner": face}), "one to 16 face names"),
+        (json!({"corner": [face, 7]}), "one to 16 face names"),
+        (json!({"corner": [name]}), "is not a face"),
+        (
+            json!({"corner": vec![face.clone(); 17]}),
+            "one to 16 face names",
+        ),
+        (
+            json!({"corner": ["F99:face(0)"]}),
+            "no body has a vertex where",
+        ),
+    ] {
+        let error = refused(&mut shell, &mut session, "ui.highlight", params.clone());
+        assert!(error.contains(part), "{:.80}: {error}", params.to_string());
+        assert_eq!(shell.state, state);
+    }
+    // It goes with its body, and face: null clears it.
+    let of_post = corners.iter().find(|c| c.body == "Post").unwrap();
+    call(
+        &mut shell,
+        &mut session,
+        "ui.highlight",
+        json!({"vertex": of_post.name}),
+    );
+    run(&mut session, "feature.delete", json!({"feature": "Post"}));
+    shell.sync(&mut session);
+    assert_eq!(shell.state.highlight_vertex, None);
+    run(&mut session, "edit.undo", json!({}));
+    call(
+        &mut shell,
+        &mut session,
+        "ui.highlight",
+        json!({"vertex": of_post.name}),
+    );
+    let cleared = call(
+        &mut shell,
+        &mut session,
+        "ui.highlight",
+        json!({"face": null}),
+    );
+    assert_eq!(cleared, json!({"highlight": null, "faces": 0}));
+    assert_eq!(shell.state.highlight_vertex, None);
+}
+
+/// A highlighted vertex on the GPU's direct path: the dot the oracle
+/// draws, in the same place and colour, and nothing else changed.
+#[test]
+fn a_highlighted_vertex_is_the_same_on_the_gpus_direct_path_as_in_the_oracle() {
+    let state = headless_render_state()
+        .unwrap_or_else(|e| panic!("the direct path cannot be tested: {e}; {ADAPTER_HINT}"));
+    let mut session = part();
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    let tokens = shell.tokens;
+    shell.attach_gpu(&state).unwrap();
+    let mut window = Window::new(1000.0, 700.0);
+    window.frame(&mut shell, &mut session, Vec::new());
+    window.frame(&mut shell, &mut session, Vec::new());
+    let size = shell.viewport_size();
+    let [w, h] = size;
+    let rect = shell.viewport_rect().unwrap();
+    let scene: Arc<Scene> = session.scene_with(shell.scene_quality()).unwrap().unwrap();
+    let camera = shell.state.camera;
+    let corners = listed_vertices(&mut session);
+    let (_, _, direct_plain) = shell.direct_picture().unwrap().unwrap();
+    let cpu_frame = viewport::render_bodies(
+        Some(&scene),
+        &camera,
+        Quality {
+            width: w,
+            height: h,
+            ssaa: 1,
+        },
+        &tokens,
+    )
+    .unwrap();
+    let slack = viewport::depth_slack(Backend::Gpu, Some(&scene), &camera);
+    let seen = vertices_in_sight(&scene, &camera, &corners, size);
+    assert!(seen.len() >= 15, "{}", seen.len());
+    let (mut samples, mut agree) = (0, 0);
+    for (round, (corner, [x, y])) in seen.iter().enumerate() {
+        let at = pos2(rect.left() + *x as f32, rect.top() + *y as f32);
+        window.click(&mut shell, &mut session, at);
+        assert_eq!(shell.state.highlight_vertex, Some(corner.reference()));
+        let (_, _, direct) = shell.direct_picture().unwrap().unwrap();
+        let marks: Marks = shell.marks(Some(&scene));
+        assert_eq!(marks.points, vec![corner.point]);
+        let overlay =
+            viewport::overlay_marked(Some(&scene), &camera, &cpu_frame, None, slack, &marks);
+        let oracle = viewport::rasterise(
+            Composed {
+                width: w,
+                height: h,
+                rgb: cpu_frame.rgb.clone(),
+                overlay,
+                coverage: cpu_frame.coverage(),
+                triangles: scene.triangles(),
+                backend: Backend::Cpu,
+            },
+            &tokens,
+            1.0,
+        )
+        .rgb;
+        // Within two pixels of the centre of a dot of radius 4 every
+        // pixel is all ink in both pictures: 8 levels, as for the lines.
+        for (dx, dy) in [(0.0, 0.0), (2.0, 0.0), (-2.0, 0.0), (0.0, 2.0), (0.0, -2.0)] {
+            let p = [x + dx, y + dy];
+            let (c, g) = (pixel(&oracle, w, p), pixel(&direct, w, p));
+            assert!(levels(c, tokens.face_highlight) <= 1, "the oracle: {c:?}");
+            samples += 1;
+            agree += usize::from(levels(c, g) <= 8);
+        }
+        // Further than the dot reaches, the device shows what it showed.
+        let (wu, hu) = (w as usize, h as usize);
+        for i in (0..wu * hu).step_by(5) {
+            let p = [(i % wu) as f64 + 0.5, (i / wu) as f64 + 0.5];
+            if (p[0] - x).hypot(p[1] - y) > 6.5 {
+                assert!(
+                    levels(pixel(&direct, w, p), pixel(&direct_plain, w, p)) <= 1,
+                    "{} vertex {}: the picture changed at {p:?}",
+                    corner.body,
+                    corner.index
+                );
+            }
+        }
+        if round == 2 {
+            for (suffix, rgb) in [("direct", &direct), ("oracle", &oracle)] {
+                let path = evidence(&format!("pointing-vertex-{suffix}.png"));
+                write_png(&path, w, h, rgb);
+                println!("evidence: {}", path.display());
+            }
+        }
+    }
+    println!("{samples} samples on highlighted vertices, {agree} agree");
+    assert!(agree * 100 >= samples * 99, "{agree} of {samples}");
 }

@@ -15,7 +15,7 @@
 
 use crate::backend::{Backend, BodyRenderer};
 use crate::camera::{Projected, Projector};
-use crate::state::{CameraState, EdgeRef};
+use crate::state::{CameraState, EdgeRef, VertexRef};
 use crate::theme::{Rgb, Tokens};
 use craft3d_engine::Scene;
 use craft3d_math::Vec3;
@@ -42,7 +42,7 @@ pub enum LineKind {
     Axis(usize),
     /// An edge of a body.
     Edge,
-    /// An edge that is pointed at ([`Marks`]).
+    /// An edge or a vertex that is pointed at ([`Marks`]).
     Highlight,
 }
 
@@ -101,6 +101,14 @@ impl LineKind {
             LineKind::Highlight => tokens.highlight_width,
         }
     }
+
+    /// The radius of a dot of this kind, in points.
+    pub fn dot_radius(self, tokens: &Tokens) -> f32 {
+        match self {
+            LineKind::Highlight => tokens.highlight_radius,
+            _ => tokens.point_radius,
+        }
+    }
 }
 
 /// What is drawn over the picture to point at something: the edges that
@@ -113,12 +121,47 @@ impl LineKind {
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Marks {
     pub lines: Vec<[Vec3; 2]>,
+    /// The highlighted vertices, drawn as dots.
+    pub points: Vec<Vec3>,
 }
 
 impl Marks {
     pub fn is_empty(&self) -> bool {
-        self.lines.is_empty()
+        self.lines.is_empty() && self.points.is_empty()
     }
+
+    /// Both together.
+    pub fn with(mut self, other: Marks) -> Marks {
+        self.lines.extend(other.lines);
+        self.points.extend(other.points);
+        self
+    }
+}
+
+/// The vertices of `scene` that `vertex` refers to, as marks. None when
+/// the scene has no such vertex.
+pub fn vertex_marks(scene: Option<&Scene>, vertex: &VertexRef) -> Marks {
+    let mut marks = Marks::default();
+    let Some(scene) = scene else {
+        return marks;
+    };
+    let Ok(found) = scene.vertices_named(
+        vertex.feature.as_deref(),
+        vertex.vertex.as_deref(),
+        &vertex.corner,
+    ) else {
+        return marks;
+    };
+    let Some(body) = scene.bodies.get(found.body_index) else {
+        return marks;
+    };
+    marks.points.extend(
+        found
+            .vertices
+            .iter()
+            .filter_map(|&k| body.vertices.get(k).copied()),
+    );
+    marks
 }
 
 /// The edges of `scene` that `edge` refers to, as marks. None when the
@@ -463,6 +506,15 @@ fn build_overlay(
             }
         }
     }
+    for point in marks.into_iter().flat_map(|marks| &marks.points) {
+        if let Some(p) = projector.project(*point) {
+            out.points.push(OverlayPoint {
+                at: [p.x, p.y],
+                kind: LineKind::Highlight,
+                hidden: map.is_some_and(|map| map.covers(p.x, p.y, p.depth)),
+            });
+        }
+    }
     out
 }
 
@@ -700,7 +752,7 @@ pub fn rasterise(composed: Composed, tokens: &Tokens, scale: f64) -> Picture {
             height,
             point.at,
             point.at,
-            f64::from(tokens.point_radius) * 2.0 * scale,
+            f64::from(point.kind.dot_radius(tokens)) * 2.0 * scale,
             point.kind.color(tokens),
             opacity(point.hidden, tokens),
         );

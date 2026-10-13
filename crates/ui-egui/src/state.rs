@@ -187,15 +187,35 @@ pub struct EdgeRef {
     pub between: Vec<String>,
 }
 
-/// What a click was on: a face, or an edge near the position.
+/// A vertex of a body: by its own persistent name where it has one, or by
+/// the faces that meet in it.
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct VertexRef {
+    /// The feature of the body, by id (`F3`) or by name. `None` looks in
+    /// every body, which works while only one has such a vertex.
+    pub feature: Option<String>,
+    /// The vertex's own persistent name (`name` under `vertices` of
+    /// `document.edges`).
+    pub vertex: Option<String>,
+    /// Without a name of its own: names of faces that meet in it. Every
+    /// vertex in which all of them meet is meant.
+    pub corner: Vec<String>,
+}
+
+/// Most face names a [`VertexRef`] keeps.
+pub const MAX_CORNER_FACES: usize = craft3d_engine::MAX_CORNER_FACES;
+
+/// What a click was on: a face, or an edge or a vertex near the position.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PickedKind {
     Face,
     Edge,
+    Vertex,
 }
 
-/// The edge a click was on.
+/// The edge or the vertex a click was on.
 #[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields, default)]
 pub struct PickedEntity {
@@ -204,11 +224,14 @@ pub struct PickedEntity {
     pub body: String,
     /// Its own persistent name, when it has one.
     pub name: Option<String>,
-    /// Its place in `document.edges`.
+    /// Its place in `document.edges`: among the edges, or `index` of a
+    /// vertex.
     pub index: u64,
-    /// The names of the faces it lies between.
+    /// The names of the faces an edge lies between, or that meet in a
+    /// vertex.
     pub faces: Vec<String>,
-    /// The point of it nearest to the click, in model coordinates.
+    /// The point of an edge nearest to the click, or the vertex, in model
+    /// coordinates.
     pub point: [f64; 3],
 }
 
@@ -235,12 +258,15 @@ pub struct Picked {
     pub face_index: Option<u64>,
     /// The point under it, in model coordinates.
     pub point: Option<[f64; 3]>,
-    /// What the click was on: an edge when one was near, otherwise the
-    /// face under it; `None` for a click on nothing. The fields above are
-    /// the face under the click either way.
+    /// What the click was on: a vertex when one was near, otherwise an
+    /// edge when one was near, otherwise the face under it; `None` for a
+    /// click on nothing. The fields above are the face under the click
+    /// either way.
     pub kind: Option<PickedKind>,
     /// The edge, when the click was on one.
     pub edge: Option<PickedEntity>,
+    /// The vertex, when the click was on one.
+    pub vertex: Option<PickedEntity>,
 }
 
 /// Everything the shell remembers that is not in a document.
@@ -264,6 +290,8 @@ pub struct UiState {
     /// clicked last, or the one an agent pointed at (`ui.highlight`, or
     /// `ui.set`). Dropped when no body has such an edge any more.
     pub highlight_edge: Option<EdgeRef>,
+    /// The vertex shown highlighted, likewise.
+    pub highlight_vertex: Option<VertexRef>,
     /// The last click in the viewport. Read-only over the control channel:
     /// `ui.pick` with `select` makes one.
     pub picked: Option<Picked>,
@@ -371,6 +399,25 @@ impl UiState {
                     .collect(),
             })
             .filter(|edge| edge.edge.is_some() || !edge.between.is_empty());
+        self.highlight_vertex = self
+            .highlight_vertex
+            .map(|vertex| VertexRef {
+                feature: vertex
+                    .feature
+                    .map(|id| cut(&id, MAX_SELECTION_CHARS))
+                    .filter(|id| !id.is_empty()),
+                vertex: vertex
+                    .vertex
+                    .map(|name| cut(&name, MAX_FACE_NAME_CHARS))
+                    .filter(|name| !name.is_empty()),
+                corner: vertex
+                    .corner
+                    .iter()
+                    .take(MAX_CORNER_FACES)
+                    .map(|name| cut(name, MAX_FACE_NAME_CHARS))
+                    .collect(),
+            })
+            .filter(|vertex| vertex.vertex.is_some() || !vertex.corner.is_empty());
         Ok(self)
     }
 
@@ -406,7 +453,7 @@ impl UiState {
                 moved_by_hand = (camera.contains_key("target") || camera.contains_key("distance"))
                     && !camera.contains_key("autoFit");
             }
-            if key == "highlight" || key == "highlightEdge" {
+            if key == "highlight" || key == "highlightEdge" || key == "highlightVertex" {
                 // Another face, not the same one with a field changed: a
                 // highlight without `feature` looks in every body.
                 if let Value::Object(map) = &mut merged {
@@ -477,11 +524,17 @@ mod tests {
                 feature: Some("F3".to_string()),
                 face: "F3:face(2)".to_string(),
             }),
-            // The fields for edges were added with them (2026-10-13).
+            // The fields for edges and vertices were added with them
+            // (2026-10-13).
             highlight_edge: Some(EdgeRef {
                 feature: Some("F3".to_string()),
                 edge: None,
                 between: vec!["F3:face(0)".to_string(), "F3:face(2)".to_string()],
+            }),
+            highlight_vertex: Some(VertexRef {
+                feature: None,
+                vertex: Some("F3:vertex(1)".to_string()),
+                corner: Vec::new(),
             }),
             picked: Some(Picked {
                 serial: 4,
@@ -501,6 +554,7 @@ mod tests {
                     faces: vec!["F3:face(0)".to_string(), "F3:face(2)".to_string()],
                     point: [1.0, 2.0, 3.0],
                 }),
+                vertex: None,
             }),
         };
         let json = serde_json::to_value(&state).unwrap();
@@ -517,12 +571,14 @@ mod tests {
                 "highlight": {"feature": "F3", "face": "F3:face(2)"},
                 "highlightEdge": {"feature": "F3", "edge": null,
                                   "between": ["F3:face(0)", "F3:face(2)"]},
+                "highlightVertex": {"feature": null, "vertex": "F3:vertex(1)", "corner": []},
                 "picked": {"serial": 4, "x": 120.5, "y": 80.25, "feature": "F3",
                            "name": "Post", "face": "F3:face(2)", "faceIndex": 2,
                            "point": [1.0, 2.0, 3.5], "kind": "edge",
                            "edge": {"feature": "F3", "body": "Post", "name": "F3:edge(1)",
                                     "index": 1, "faces": ["F3:face(0)", "F3:face(2)"],
-                                    "point": [1.0, 2.0, 3.0]}},
+                                    "point": [1.0, 2.0, 3.0]},
+                           "vertex": null},
             })
         );
         let back: UiState = serde_json::from_value(json).unwrap();
