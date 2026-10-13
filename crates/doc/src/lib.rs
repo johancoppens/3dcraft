@@ -228,9 +228,45 @@ pub struct Extrude {
     /// How far, along the sketch's normal; a negative length goes the
     /// other way.
     pub distance: Expr,
-    /// Half of `distance` to each side of the sketch plane.
+    /// Half of `distance` to each side of the sketch plane. With
+    /// [`ExtrudeEnd::ThroughAll`]: through everything on both sides.
     #[serde(default)]
     pub symmetric: bool,
+    /// Where the extrusion ends. `distance` is only used by
+    /// [`ExtrudeEnd::Distance`]; the other ends keep it, unused, so that
+    /// going back to a distance brings the old one back.
+    #[serde(default)]
+    pub end: ExtrudeEnd,
+    /// Against the sketch's normal instead of along it. (For a distance
+    /// this is the same as negating it.)
+    #[serde(default)]
+    pub reversed: bool,
+}
+
+/// Where an extrusion ends.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum ExtrudeEnd {
+    /// `distance` from the sketch plane.
+    #[default]
+    Distance,
+    /// Past everything the features before this one have built in the
+    /// direction of the extrusion.
+    ThroughAll,
+    /// On the surface of a face of an earlier feature, by its persistent
+    /// name: the end follows the face, flat or not.
+    UpToFace { face: PersistentName },
+}
+
+impl ExtrudeEnd {
+    /// The end's name, as in command parameters and results.
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            ExtrudeEnd::Distance => "distance",
+            ExtrudeEnd::ThroughAll => "throughAll",
+            ExtrudeEnd::UpToFace { .. } => "upToFace",
+        }
+    }
 }
 
 /// What a revolution turns about: a line in the plane of its sketch.
@@ -456,7 +492,10 @@ impl FeatureKind {
     /// moves, the sketch it sweeps, the feature whose face it lies on.
     pub fn inputs(&self) -> Vec<FeatureId> {
         match self {
-            FeatureKind::Extrude(e) => vec![e.sketch],
+            FeatureKind::Extrude(e) => match &e.end {
+                ExtrudeEnd::UpToFace { face } => vec![e.sketch, face.feature],
+                ExtrudeEnd::Distance | ExtrudeEnd::ThroughAll => vec![e.sketch],
+            },
             FeatureKind::Revolve(r) => vec![r.sketch],
             FeatureKind::Sketch(sketch) => match &sketch.plane {
                 SketchPlane::Face { face, .. } => vec![face.feature],
@@ -464,6 +503,18 @@ impl FeatureKind {
             },
             other => other.sources().into_iter().map(|(id, _)| id).collect(),
         }
+    }
+
+    /// True for a feature whose result depends on every body the features
+    /// before it have made, whichever they are: an extrusion through all.
+    pub fn uses_all_earlier(&self) -> bool {
+        matches!(
+            self,
+            FeatureKind::Extrude(Extrude {
+                end: ExtrudeEnd::ThroughAll,
+                ..
+            })
+        )
     }
 
     /// Every expression of the feature with the name of its parameter, in a
@@ -745,6 +796,18 @@ impl Document {
                     "feature id {} is not below the next free id {}",
                     feature.id.0, self.next_feature_id
                 )));
+            }
+            if let FeatureKind::Extrude(Extrude {
+                end: ExtrudeEnd::UpToFace { face },
+                ..
+            }) = &feature.kind
+            {
+                face.check().map_err(|reason| {
+                    DocError::Invalid(format!(
+                        "the face `{}` ends on is not a name: {reason}",
+                        feature.name
+                    ))
+                })?;
             }
             if let FeatureKind::Sketch(sketch) = &feature.kind {
                 sketch
@@ -1145,6 +1208,8 @@ mod tests {
                     sketch,
                     distance: Expr::new("2 * half"),
                     symmetric: false,
+                    end: Default::default(),
+                    reversed: false,
                 }),
             )
             .unwrap();
@@ -1160,8 +1225,11 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_value(kind).unwrap(),
-            serde_json::json!({"type": "extrude", "sketch": 3, "distance": "2 * h", "symmetric": false})
+            serde_json::json!({"type": "extrude", "sketch": 3, "distance": "2 * h", "symmetric": false,
+                "end": {"type": "distance"}, "reversed": false})
         );
+        assert_eq!(kind.inputs(), [sketch]);
+        assert!(!kind.uses_all_earlier());
         // `symmetric` may be absent. A sketch that is gone is not an
         // invalid document: regeneration reports it.
         let read: FeatureKind = serde_json::from_value(
@@ -1177,6 +1245,43 @@ mod tests {
         ));
         doc.remove_feature(sketch).unwrap();
         assert_eq!(doc.validate(), Ok(()));
+    }
+
+    #[test]
+    fn the_end_of_an_extrusion_says_what_it_depends_on() {
+        let (mut doc, sketch) = sketched();
+        let face = PersistentName::new(FeatureId(7), NameRole::Face, vec![1]);
+        let extrusion = |end| {
+            FeatureKind::Extrude(Extrude {
+                sketch,
+                distance: Expr::new("0"),
+                symmetric: false,
+                end,
+                reversed: true,
+            })
+        };
+        let up_to = extrusion(ExtrudeEnd::UpToFace { face: face.clone() });
+        assert_eq!(up_to.inputs(), [sketch, FeatureId(7)]);
+        assert!(!up_to.uses_all_earlier());
+        assert_eq!(
+            serde_json::to_value(&up_to).unwrap()["end"],
+            serde_json::json!({"type": "upToFace",
+                "face": serde_json::to_value(&face).unwrap()})
+        );
+        let through = extrusion(ExtrudeEnd::ThroughAll);
+        assert_eq!(through.inputs(), [sketch]);
+        assert!(through.uses_all_earlier());
+        assert_eq!(ExtrudeEnd::default().type_name(), "distance");
+        // A name that could not be written back is an invalid document.
+        let id = doc.add_feature(None, up_to).unwrap();
+        assert_eq!(doc.validate(), Ok(()));
+        let broken = PersistentName {
+            of: None,
+            ..PersistentName::copy(FeatureId(7), 0, face)
+        };
+        doc.feature_mut(id).unwrap().kind = extrusion(ExtrudeEnd::UpToFace { face: broken });
+        let error = doc.validate().unwrap_err().to_string();
+        assert!(error.contains("ends on is not a name"), "{error}");
     }
 
     #[test]

@@ -148,14 +148,29 @@ impl RegenCache {
 /// ascending order of id. Bounded by the number of features, so a cycle in
 /// a damaged document ends.
 fn dependencies(doc: &Document, feature: &Feature) -> Vec<FeatureId> {
+    // What a feature is made from: what it names, and for a feature that
+    // looks at every body built so far (an extrusion through all), every
+    // feature before it in the history.
+    let inputs = |feature: &Feature| {
+        let mut inputs = feature.kind.inputs();
+        if feature.kind.uses_all_earlier() {
+            inputs.extend(
+                doc.features
+                    .iter()
+                    .take_while(|f| f.id != feature.id)
+                    .map(|f| f.id),
+            );
+        }
+        inputs
+    };
     let mut seen = BTreeSet::new();
-    let mut open = feature.kind.inputs();
+    let mut open = inputs(feature);
     while let Some(id) = open.pop() {
         if id == feature.id || !seen.insert(id) {
             continue;
         }
         if let Some(input) = doc.feature(id) {
-            open.extend(input.kind.inputs());
+            open.extend(inputs(input));
         }
     }
     seen.into_iter().collect()

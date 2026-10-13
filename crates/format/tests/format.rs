@@ -90,6 +90,8 @@ fn full(units: Units) -> Document {
             sketch: profile,
             distance: Expr::new("-half"),
             symmetric: true,
+            end: Default::default(),
+            reversed: false,
         }),
     )
     .unwrap();
@@ -1138,6 +1140,68 @@ fn an_extrusion_is_written_like_this_and_round_trips() {
     assert!(kind(r#"{"type": "extrude", "sketch": "Profile", "distance": "1"}"#).is_err());
     assert!(
         kind(r#"{"type": "extrude", "sketch": 5, "distance": "1", "taper": "2 deg"}"#).is_err()
+    );
+}
+
+/// The ends of an extrusion (2026-10-13): an extrusion that ends at its
+/// distance is written as it always was (the test above pins the bytes),
+/// so the fields are new optional ones and the version stays; the other
+/// ends are written like this.
+#[test]
+fn the_ends_of_an_extrusion_are_written_like_this_and_round_trip() {
+    use craft3d_doc::{ExtrudeEnd, NameRole, PersistentName};
+    let mut doc = full(Units::default());
+    let face = PersistentName::copy(
+        FeatureId(4),
+        1,
+        PersistentName::new(FeatureId(2), NameRole::Face, vec![1]),
+    );
+    let ends = [
+        (
+            ExtrudeEnd::ThroughAll,
+            false,
+            serde_json::json!({"type": "extrude", "sketch": 5, "distance": "-half",
+                "symmetric": true, "end": {"type": "throughAll"}}),
+        ),
+        (
+            ExtrudeEnd::UpToFace { face },
+            true,
+            serde_json::json!({"type": "extrude", "sketch": 5, "distance": "-half",
+                "symmetric": true,
+                "end": {"type": "upToFace", "face": {"feature": 4, "role": "copy", "sources": [1],
+                    "of": {"feature": 2, "role": "face", "sources": [1]}}},
+                "reversed": true}),
+        ),
+    ];
+    for (end, reversed, written) in ends {
+        let FeatureKind::Extrude(extrusion) = &mut doc.features[4].kind else {
+            panic!("the body is an extrusion")
+        };
+        (extrusion.end, extrusion.reversed) = (end, reversed);
+        let json = to_manifest_json(&doc).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["format_version"], FORMAT_VERSION);
+        assert_eq!(value["document"]["features"][4]["kind"], written);
+        assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+    }
+    // What is not an end, or not a name, is refused.
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let kind = |end: &str| {
+        let mut value = value.clone();
+        value["document"]["features"][4]["kind"]["end"] = serde_json::from_str(end).unwrap();
+        from_manifest_json(serde_json::to_string(&value).unwrap().as_bytes())
+    };
+    assert!(kind(r#"{"type": "distance"}"#).is_ok());
+    assert!(kind(r#"{"type": "upToNext"}"#).is_err());
+    assert!(kind(r#"{"type": "upToFace"}"#).is_err());
+    assert!(kind(r#"{"type": "throughAll", "margin": 1}"#).is_err());
+    assert!(kind(r#""throughAll""#).is_err());
+    // A well-formed name that is not a face is a file that loads; the
+    // feature fails at regeneration, with the reason.
+    assert!(
+        kind(r#"{"type": "upToFace", "face": {"feature": 2, "role": "edge", "sources": [1]}}"#)
+            .is_ok_and(|doc| doc.validate().is_ok())
     );
 }
 
