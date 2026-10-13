@@ -27,6 +27,72 @@ def unit(v):
     return [v[0] / n, v[1] / n, v[2] / n]
 
 
+def domed_block(dx, dy, height, spline):
+    """A block dx x dy on the xy plane under a roof that is a bicubic
+    Bezier patch (or, with `spline`, the same patch as a B-spline surface)
+    over the regular 4 x 4 net with the control point (i, j) at
+    (dx i / 3, dy j / 3, height (1 + 0.15 (((7 i + 3 j) mod 5) - 2))): the
+    domed block of 3DCraft's test kit. Four planar walls under the roof's
+    own edges, a floor, one shell, six faces."""
+    poles = [
+        [
+            FreeCAD.Vector(
+                dx * i / 3.0,
+                dy * j / 3.0,
+                height * (1.0 + 0.15 * (((i * 7 + j * 3) % 5) - 2)),
+            )
+            for j in range(4)
+        ]
+        for i in range(4)
+    ]
+    if spline:
+        surface = Part.BSplineSurface()
+        surface.buildFromPolesMultsKnots(
+            poles, [4, 4], [4, 4], [0.0, 1.0], [0.0, 1.0], False, False, 3, 3
+        )
+    else:
+        surface = Part.BezierSurface()
+        surface.increase(3, 3)
+        for i in range(4):
+            for j in range(4):
+                surface.setPole(i + 1, j + 1, poles[i][j])
+    roof = Part.Face(surface)
+    ground = [
+        FreeCAD.Vector(0.0, 0.0, 0.0),
+        FreeCAD.Vector(dx, 0.0, 0.0),
+        FreeCAD.Vector(dx, dy, 0.0),
+        FreeCAD.Vector(0.0, dy, 0.0),
+    ]
+    top = [poles[0][0], poles[3][0], poles[3][3], poles[0][3]]
+
+    def roof_edge(p, q):
+        # The roof's own edge between two of its corners, so that the
+        # wall below shares it.
+        for edge in roof.Edges:
+            a, b = edge.Vertexes[0].Point, edge.Vertexes[-1].Point
+            if ((a - p).Length < 1e-9 and (b - q).Length < 1e-9) or (
+                (a - q).Length < 1e-9 and (b - p).Length < 1e-9
+            ):
+                return edge
+        raise ValueError("the roof has no edge between %s and %s" % (p, q))
+
+    floor_edges = [Part.makeLine(ground[k], ground[(k + 1) % 4]) for k in range(4)]
+    uprights = [Part.makeLine(ground[k], top[k]) for k in range(4)]
+    faces = []
+    for k in range(4):
+        n = (k + 1) % 4
+        wire = Part.Wire(
+            [floor_edges[k], uprights[n], roof_edge(top[k], top[n]), uprights[k]]
+        )
+        faces.append(Part.Face(wire))
+    faces.append(Part.Face(Part.Wire(floor_edges)))
+    faces.append(roof)
+    solid = Part.Solid(Part.Shell(faces))
+    if len(solid.Shells) != 1 or len(solid.Faces) != 6 or not solid.isValid():
+        raise ValueError("the domed block did not close")
+    return solid
+
+
 def build(solid):
     kind = solid["kind"]
     if kind == "block":
@@ -39,6 +105,8 @@ def build(solid):
         shape = Part.makeSphere(solid["radius"])
     elif kind == "torus":
         shape = Part.makeTorus(solid["major"], solid["minor"])
+    elif kind in ("dome", "spline"):
+        shape = domed_block(*solid["size"], spline=(kind == "spline"))
     else:
         raise ValueError("unknown kind " + kind)
     # The frame as 3DCraft makes it: z normalised, x made perpendicular to
