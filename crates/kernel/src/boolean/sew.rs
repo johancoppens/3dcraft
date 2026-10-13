@@ -17,7 +17,7 @@
 //! The copies are in the same place and share nothing.
 
 use super::classify::Kept;
-use super::outline::{onto, outward_normal};
+use super::outline::{Seg, clearance, onto, outward_normal};
 use super::{
     Arcs, BooleanResult, EdgeSource, Entity, FaceSource, LOST, NON_MANIFOLD, Operand, Stop,
     TANGENT_EDGE, VertexSource, Vertices, face_id,
@@ -356,9 +356,94 @@ pub(super) fn sew(kept: Vec<Kept>, arcs: &Arcs, vertices: &Vertices) -> Result<W
     })
 }
 
+/// Gives every bounded face on a sphere a frame that suits it.
+///
+/// Needed by one oracle: FreeCAD reading the STEP export of a result
+/// (`crates/engine/tests/step_freecad.rs`). Without it a ball joined to
+/// the corner of a box, and two balls askew, come back from FreeCAD with
+/// another area and volume: a spherical face whose boundary passes by a
+/// pole of its own frame is not read as the face we mean. The corpus,
+/// the mass properties and the tessellator are the same with and without.
+///
+/// A sphere is the same surface whichever way its poles point, but what
+/// reads a face through the surface's parameters (mass properties, the
+/// tessellator) is at its best when the poles are well away from the
+/// face's boundary. A face bounded by one whole circle gets the circle's
+/// axis as its sphere's axis, so that the boundary is a circle of
+/// latitude; any other face the axis, among its old frame's axes and
+/// their diagonals, whose two poles are furthest from its boundary.
+fn reframe_spheres(work: &mut Work) {
+    for face in work.faces.iter_mut().flatten() {
+        let Surface::Sphere(sphere) = &face.surface else {
+            continue;
+        };
+        let (old, radius) = (*sphere.frame(), sphere.radius());
+        let center = old.origin();
+        let edge = |index: usize| work.edges.get(index).and_then(Option::as_ref);
+        let around_circle = match face.loops.as_slice() {
+            [single] => match single.as_slice() {
+                [(index, _)] => match edge(*index).map(|e| (&e.curve, e.start == e.end)) {
+                    Some((Curve3::Circle(circle), true)) => circle.frame().at(center),
+                    _ => None,
+                },
+                _ => None,
+            },
+            _ => None,
+        };
+        let frame = around_circle.or_else(|| {
+            let mut loops = Vec::with_capacity(face.loops.len());
+            for loop_ in &face.loops {
+                let mut segs = Vec::with_capacity(loop_.len());
+                for &(index, reversed) in loop_ {
+                    let made = edge(index)?;
+                    segs.push(Seg {
+                        curve: made.curve.clone(),
+                        range: made.range,
+                        a: work.vertices.get(made.start)?.point,
+                        b: work.vertices.get(made.end)?.point,
+                        reversed,
+                    });
+                }
+                loops.push(segs);
+            }
+            if loops.is_empty() {
+                return None;
+            }
+            let diagonal = 1.0 / 3.0_f64.sqrt();
+            let mut best: Option<(f64, Vec3)> = None;
+            for axis in [
+                old.z(),
+                old.x(),
+                old.y(),
+                old.vector(1.0, 1.0, 1.0) * diagonal,
+                old.vector(-1.0, 1.0, 1.0) * diagonal,
+                old.vector(1.0, -1.0, 1.0) * diagonal,
+                old.vector(1.0, 1.0, -1.0) * diagonal,
+            ] {
+                let clear = clearance(&loops, center + axis * radius)
+                    .min(clearance(&loops, center - axis * radius));
+                if best.is_none_or(|(most, _)| clear > most) {
+                    best = Some((clear, axis));
+                }
+            }
+            let (_, axis) = best?;
+            if axis == old.z() {
+                return None;
+            }
+            Frame::from_z(center, axis)
+        });
+        if let Some(frame) = frame
+            && let Ok(sphere) = craft3d_geom::Sphere::new(frame, radius)
+        {
+            face.surface = Surface::Sphere(sphere);
+        }
+    }
+}
+
 /// The body, with faces in their order and edges and vertices numbered in
 /// the order the faces use them, and where everything came from.
-pub(super) fn finish(work: Work) -> Result<BooleanResult, Stop> {
+pub(super) fn finish(mut work: Work) -> Result<BooleanResult, Stop> {
+    reframe_spheres(&mut work);
     let mut body = Body::new(BodyKind::Solid);
     let mut vertex_ids: BTreeMap<usize, VertexId> = BTreeMap::new();
     let mut edge_ids: BTreeMap<usize, EdgeId> = BTreeMap::new();
