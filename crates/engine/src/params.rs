@@ -129,6 +129,17 @@ impl<'a> Params<'a> {
         }
     }
 
+    /// The command these are the parameters of.
+    pub fn command(&self) -> &'static str {
+        self.command
+    }
+
+    /// An expression inside the value of parameter `key` (an item of an
+    /// array): a string or a finite number.
+    pub fn expr_of(&self, key: &str, value: &Value) -> Result<String, CommandError> {
+        self.expr_value(key, value)
+    }
+
     fn expr_value(&self, key: &str, value: &Value) -> Result<String, CommandError> {
         match value {
             Value::String(s) => Ok(s.clone()),

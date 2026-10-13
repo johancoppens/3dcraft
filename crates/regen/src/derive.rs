@@ -131,6 +131,7 @@ fn instances(
     doc: &Document,
     variables: &Evaluation,
     kind: &FeatureKind,
+    earlier: &[FeatureResult],
 ) -> Result<Vec<Transform>, String> {
     let degenerate = |what: &str| format!("{what} does not give a finite motion");
     match kind {
@@ -151,8 +152,18 @@ fn instances(
             Ok(vec![map.then(&Transform::translation(shift))])
         }
         FeatureKind::Mirror(m) => {
-            let point = lengths(doc, variables, "point", &m.point)?;
-            let normal = direction(variables, "normal", &m.normal)?;
+            // In a datum plane, or in the plane through a point with a
+            // normal.
+            let (point, normal) = match m.plane {
+                Some(plane) => {
+                    let frame = crate::datum::datum_plane(doc, earlier, plane, "plane")?;
+                    (frame.origin(), frame.z())
+                }
+                None => (
+                    lengths(doc, variables, "point", &m.point)?,
+                    direction(variables, "normal", &m.normal)?,
+                ),
+            };
             Ok(vec![
                 Transform::mirror(point, normal).ok_or_else(|| degenerate("the mirror plane"))?,
             ])
@@ -346,7 +357,7 @@ pub(crate) fn build(
     let Some(body) = &source.body else {
         return Err("source: it has no body".to_string());
     };
-    let maps = instances(doc, variables, &feature.kind)?;
+    let maps = instances(doc, variables, &feature.kind, earlier)?;
     if body.faces.len().saturating_mul(maps.len()) > MAX_PATTERN_FACES {
         return Err(format!(
             "{} instances of a body with {} faces are more than the {MAX_PATTERN_FACES} faces one body may have",

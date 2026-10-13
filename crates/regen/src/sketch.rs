@@ -518,7 +518,7 @@ pub(crate) fn same_plane(a: &PersistentName, b: &PersistentName) -> bool {
 /// The frame of the face a name points at, among the features regenerated
 /// so far. A name that points at nothing is an error that says what is
 /// there instead; it never resolves to another face.
-fn resolve_face(
+pub(crate) fn resolve_face(
     doc: &Document,
     earlier: &[FeatureResult],
     name: &PersistentName,
@@ -679,6 +679,15 @@ pub(crate) fn place(
         }
         SketchPlane::Face { face, .. } => {
             let frame = resolve_face(doc, earlier, face)?;
+            Ok(Placement {
+                origin: frame.origin() + frame.z() * offset,
+                x_axis: frame.x(),
+                y_axis: frame.y(),
+                normal: frame.z(),
+            })
+        }
+        SketchPlane::Datum { plane, .. } => {
+            let frame = crate::datum::datum_plane(doc, earlier, *plane, "plane")?;
             Ok(Placement {
                 origin: frame.origin() + frame.z() * offset,
                 x_axis: frame.x(),

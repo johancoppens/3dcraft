@@ -222,6 +222,11 @@ pub enum FeatureKind {
         source: u64,
         point: [String; 3],
         normal: [String; 3],
+        /// The id of a datum plane to mirror in instead; `point` and
+        /// `normal` are then kept, unused. Written only when set, so a
+        /// file without datums is the file an earlier build wrote.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        plane: Option<u64>,
         #[serde(default)]
         keep: bool,
     },
@@ -240,6 +245,65 @@ pub enum FeatureKind {
         count: String,
         layout: PatternLayout,
     },
+    /// A plane to place other features by; it makes no body. `by` says
+    /// how it is placed.
+    DatumPlane { by: PlaneBy },
+}
+
+/// How a datum plane is placed: `from` moved by `distance` along its
+/// normal; `from` turned by `angle` about `about`, through that axis; or
+/// through three points.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum PlaneBy {
+    Offset {
+        from: PlaneRef,
+        distance: String,
+    },
+    Angle {
+        from: PlaneRef,
+        about: AxisRef,
+        angle: String,
+    },
+    ThreePoints {
+        points: [PointRef; 3],
+    },
+}
+
+/// A plane a datum is placed relative to: a base plane, a flat face by
+/// its persistent name, or a datum plane by the id of its feature.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum PlaneRef {
+    World { plane: WorldPlane },
+    Face { face: Name },
+    Datum { feature: u64 },
+}
+
+/// A straight line a datum is placed relative to: an axis of the world,
+/// or the straight edge between two faces of one body.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum AxisRef {
+    World { axis: WorldAxis },
+    Edge { between: [Name; 2] },
+}
+
+/// A point a datum is placed relative to: coordinates (three
+/// expressions), or a vertex by its persistent name.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum PointRef {
+    At { position: [String; 3] },
+    Vertex { vertex: Name },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WorldAxis {
+    X,
+    Y,
+    Z,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -285,6 +349,9 @@ pub enum SketchPlane {
     /// A flat face of a body made earlier in the history, moved by
     /// `offset` along the face's outward normal.
     Face { face: Name, offset: String },
+    /// A datum plane, by the id of its feature, moved by `offset` along
+    /// its normal.
+    Datum { plane: u64, offset: String },
 }
 
 /// Where an extrusion ends: at its `distance`, past everything built

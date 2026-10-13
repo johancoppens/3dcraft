@@ -18,8 +18,8 @@ use serde_json::Value;
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("feature.transform", "Move Body", r#"{"source": id or name, "translate": [expr, expr, expr] = [0, 0, 0], "angle": expr = "0 deg", "axis": [number, number, number] = [0, 0, 1], "pivot": [expr, expr, expr] = [0, 0, 0], "keep": boolean = false, "name": string = automatic}"#,
         "Adds a feature whose body is the body of source, turned by angle about the line through pivot along axis (counter-clockwise seen from the tip of axis) and then shifted by translate. The source's body goes into it; with keep the source keeps its body and this is a moved copy. Faces keep their names with a prefix: \"F5:copy(0)/F2:side(e7)\".", doc: true, feature_transform),
-    spec!("feature.mirror", "Mirror Body", r#"{"source": id or name, "normal": [number, number, number], "point": [expr, expr, expr] = [0, 0, 0], "keep": boolean = false, "name": string = automatic}"#,
-        "Adds a feature whose body is the body of source mirrored in the plane through point with the given normal. With keep the source keeps its body and this is a mirrored copy.", doc: true, feature_mirror),
+    spec!("feature.mirror", "Mirror Body", r#"{"source": id or name, "normal": [number, number, number], "point": [expr, expr, expr] = [0, 0, 0], "plane": datum plane id or name, "keep": boolean = false, "name": string = automatic}"#,
+        "Adds a feature whose body is the body of source mirrored in a plane: the plane through point with the given normal, or a datum plane (plane, instead of normal and point; the mirror follows the datum). With keep the source keeps its body and this is a mirrored copy.", doc: true, feature_mirror),
     spec!("feature.pattern", "Pattern", r#"{"source": id or name, "count": expr, "step": [expr, expr, expr], "angle": expr, "axis": [number, number, number] = [0, 0, 1], "point": [expr, expr, expr] = [0, 0, 0], "name": string = automatic}"#,
         "Adds a feature whose body is count instances of the body of source, the source included. Linear: give step, the shift from one instance to the next. Circular: give angle, the turn from one instance to the next about the line through point along axis (\"360 deg / n\" with count n goes evenly round). count is a whole number and may be a formula of variables. Instances that touch or overlap are joined into one piece. The faces of instance i are named \"F5:copy(i)/...\".", doc: true, feature_pattern),
     spec!("feature.boolean", "Boolean", r#"{"op": "union|subtract|intersect", "target": id or name, "tool": id or name, "keepTool": boolean = false, "name": string = automatic}"#,
@@ -67,13 +67,48 @@ fn feature_transform(session: &mut Session, params: &Value) -> Run {
 
 fn feature_mirror(session: &mut Session, params: &Value) -> Run {
     const ID: &str = "feature.mirror";
-    let p = Params::new(ID, params, &["source", "normal", "point", "keep", "name"])?;
-    let source = feature_ref(session.document()?.history.current(), &p, ID, "source")?;
-    let normal = p.expr3("normal")?.ok_or_else(|| p.missing("normal"))?;
+    let p = Params::new(
+        ID,
+        params,
+        &["source", "normal", "point", "plane", "keep", "name"],
+    )?;
+    let doc = session.document()?.history.current();
+    let source = feature_ref(doc, &p, ID, "source")?;
+    let plane = match p.get("plane") {
+        None => None,
+        Some(_) => Some(crate::datum_cmds::datum_ref(
+            doc,
+            &p,
+            ID,
+            "plane",
+            "datumPlane",
+        )?),
+    };
+    let normal = match (p.expr3("normal")?, plane) {
+        (Some(_), Some(_)) => {
+            return fail(format!(
+                "{ID}: give either `plane` (a datum plane) or `normal` (with `point`), not both"
+            ));
+        }
+        (Some(normal), None) => normal,
+        // Kept, unused: the plane a mirror without a datum goes back to.
+        (None, Some(_)) => z_axis(),
+        (None, None) => {
+            return fail(format!(
+                "{ID}: missing parameter `normal` (or `plane`: a datum plane to mirror in)"
+            ));
+        }
+    };
+    if plane.is_some() && p.has("point") {
+        return fail(format!(
+            "{ID}: `point` goes with `normal`, not with `plane`: a datum plane says where it lies"
+        ));
+    }
     let kind = FeatureKind::Mirror(Mirror {
         source,
         point: triple(&p, "point", origin)?,
         normal: exprs(normal),
+        plane,
         keep: p.bool("keep")?.unwrap_or(false),
     });
     add_feature(session, ID, p.str("name")?, kind)

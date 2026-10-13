@@ -11,9 +11,11 @@
 //! docs/architecture.md §4 arrive with their milestones; `craft3d-format` fails to compile when a field is added
 //! here without being saved (AGENTS.md §8).
 
+pub mod datum;
 pub mod name;
 pub mod sketch;
 
+pub use datum::{AxisRef, DatumPlane, PlaneBy, PlaneRef, PointRef, WorldAxis};
 pub use name::{MAX_NAME_DEPTH, MAX_NAME_SOURCES, NameRole, PersistentName};
 
 pub use sketch::{
@@ -339,7 +341,7 @@ pub struct Transform {
 }
 
 /// The body of an earlier feature, mirrored in the plane through `point`
-/// with normal `normal`.
+/// with normal `normal`, or in a datum plane.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Mirror {
     pub source: FeatureId,
@@ -347,6 +349,11 @@ pub struct Mirror {
     pub point: [Expr; 3],
     /// Three plain numbers, any length.
     pub normal: [Expr; 3],
+    /// A datum plane made earlier in the history to mirror in, instead of
+    /// the plane through `point` with `normal`. Those two are kept,
+    /// unused, so that going back to them brings the old plane back.
+    #[serde(default)]
+    pub plane: Option<FeatureId>,
     /// The source keeps its body: this feature makes a mirrored copy.
     #[serde(default)]
     pub keep: bool,
@@ -436,6 +443,7 @@ pub enum FeatureKind {
     Mirror(Mirror),
     Pattern(Pattern),
     Boolean(Boolean),
+    DatumPlane(DatumPlane),
 }
 
 impl FeatureKind {
@@ -454,7 +462,29 @@ impl FeatureKind {
             FeatureKind::Mirror(_) => "mirror",
             FeatureKind::Pattern(_) => "pattern",
             FeatureKind::Boolean(_) => "boolean",
+            FeatureKind::DatumPlane(_) => "datumPlane",
         }
+    }
+
+    /// What a feature of this kind is called when it is given no name,
+    /// before its number: `Block`, `Plane`.
+    pub fn default_name(&self) -> String {
+        match self {
+            FeatureKind::DatumPlane(_) => "Plane".to_string(),
+            other => {
+                let mut base = other.type_name().to_string();
+                if let Some(first) = base.get_mut(0..1) {
+                    first.make_ascii_uppercase();
+                }
+                base
+            }
+        }
+    }
+
+    /// True for reference geometry: a feature that makes no body and no
+    /// sketch, only something to place other features by.
+    pub fn is_datum(&self) -> bool {
+        matches!(self, FeatureKind::DatumPlane(_))
     }
 
     /// The features whose bodies this feature is made from, each with
@@ -484,12 +514,14 @@ impl FeatureKind {
             | FeatureKind::Sketch(_)
             | FeatureKind::Extrude(_)
             | FeatureKind::Revolve(_)
-            | FeatureKind::Boolean(_) => None,
+            | FeatureKind::Boolean(_)
+            | FeatureKind::DatumPlane(_) => None,
         }
     }
 
     /// Every feature this one is made from, in a fixed order: the body it
-    /// moves, the sketch it sweeps, the feature whose face it lies on.
+    /// moves, the sketch it sweeps, the feature whose face it lies on, the
+    /// datum it is placed by.
     pub fn inputs(&self) -> Vec<FeatureId> {
         match self {
             FeatureKind::Extrude(e) => match &e.end {
@@ -499,8 +531,11 @@ impl FeatureKind {
             FeatureKind::Revolve(r) => vec![r.sketch],
             FeatureKind::Sketch(sketch) => match &sketch.plane {
                 SketchPlane::Face { face, .. } => vec![face.feature],
+                SketchPlane::Datum { plane, .. } => vec![*plane],
                 SketchPlane::World { .. } => Vec::new(),
             },
+            FeatureKind::DatumPlane(datum) => datum.inputs(),
+            FeatureKind::Mirror(m) => std::iter::once(m.source).chain(m.plane).collect(),
             other => other.sources().into_iter().map(|(id, _)| id).collect(),
         }
     }
@@ -573,6 +608,7 @@ impl FeatureKind {
                 out.extend(triple("normal", &m.normal));
             }
             FeatureKind::Boolean(_) => out = Vec::new(),
+            FeatureKind::DatumPlane(d) => out = d.exprs(),
             FeatureKind::Pattern(p) => {
                 out = vec![named("count", &p.count)];
                 match &p.layout {
@@ -630,6 +666,7 @@ impl FeatureKind {
                 .collect(),
             FeatureKind::Mirror(m) => m.point.iter_mut().chain(m.normal.iter_mut()).collect(),
             FeatureKind::Boolean(_) => Vec::new(),
+            FeatureKind::DatumPlane(d) => d.exprs_mut(),
             FeatureKind::Pattern(p) => {
                 let mut out = vec![&mut p.count];
                 match &mut p.layout {
@@ -809,6 +846,16 @@ impl Document {
                     ))
                 })?;
             }
+            if let FeatureKind::DatumPlane(datum) = &feature.kind {
+                for name in datum.names() {
+                    name.check().map_err(|reason| {
+                        DocError::Invalid(format!(
+                            "a reference of `{}` is not a name: {reason}",
+                            feature.name
+                        ))
+                    })?;
+                }
+            }
             if let FeatureKind::Sketch(sketch) = &feature.kind {
                 sketch
                     .validate()
@@ -956,10 +1003,7 @@ impl Document {
                 name.to_string()
             }
             None => {
-                let mut base = kind.type_name().to_string();
-                if let Some(first) = base.get_mut(0..1) {
-                    first.make_ascii_uppercase();
-                }
+                let base = kind.default_name();
                 // At most len + 1 candidates can be taken.
                 (1..=self.features.len() + 1)
                     .map(|n| format!("{base}{n}"))
@@ -1282,6 +1326,129 @@ mod tests {
         doc.feature_mut(id).unwrap().kind = extrusion(ExtrudeEnd::UpToFace { face: broken });
         let error = doc.validate().unwrap_err().to_string();
         assert!(error.contains("ends on is not a name"), "{error}");
+    }
+
+    #[test]
+    fn a_datum_plane_says_what_it_is_placed_by_and_follows_variables() {
+        let mut doc = sample();
+        let face = |n| PersistentName::new(FeatureId(1), NameRole::Face, vec![n]);
+        let offset = FeatureKind::DatumPlane(DatumPlane {
+            by: PlaneBy::Offset {
+                from: PlaneRef::Face { face: face(1) },
+                distance: Expr::new("half + 1 mm"),
+            },
+        });
+        assert_eq!(offset.inputs(), [FeatureId(1)]);
+        assert!(offset.is_datum() && offset.source().is_none());
+        assert_eq!(
+            serde_json::to_value(&offset).unwrap(),
+            serde_json::json!({"type": "datumPlane", "by": {"type": "offset",
+                "from": {"type": "face", "face": "F1:face(1)"}, "distance": "half + 1 mm"}})
+        );
+        let shelf = doc.add_feature(None, offset).unwrap();
+        assert_eq!(doc.feature(shelf).unwrap().name, "Plane1");
+        let angled = FeatureKind::DatumPlane(DatumPlane {
+            by: PlaneBy::Angle {
+                from: PlaneRef::Datum { feature: shelf },
+                about: AxisRef::Edge {
+                    between: [
+                        face(1),
+                        PersistentName::new(FeatureId(2), NameRole::Face, vec![0]),
+                    ],
+                },
+                angle: Expr::new("half * 1 deg"),
+            },
+        });
+        assert_eq!(angled.inputs(), [shelf, FeatureId(1), FeatureId(2)]);
+        let through = FeatureKind::DatumPlane(DatumPlane {
+            by: PlaneBy::ThreePoints {
+                points: [
+                    PointRef::At {
+                        position: exprs(["half", "0", "0"]),
+                    },
+                    PointRef::Vertex {
+                        vertex: PersistentName::new(FeatureId(2), NameRole::Vertex, vec![3]),
+                    },
+                    PointRef::At {
+                        position: exprs(["0", "width", "0"]),
+                    },
+                ],
+            },
+        });
+        assert_eq!(through.inputs(), [FeatureId(2)]);
+        assert_eq!(
+            through
+                .exprs()
+                .iter()
+                .map(|(n, e)| (n.as_str(), e.source()))
+                .collect::<Vec<_>>(),
+            [
+                ("through.0.x", "half"),
+                ("through.0.y", "0"),
+                ("through.0.z", "0"),
+                ("through.2.x", "0"),
+                ("through.2.y", "width"),
+                ("through.2.z", "0")
+            ]
+        );
+        let angled = doc.add_feature(None, angled).unwrap();
+        let through = doc.add_feature(None, through).unwrap();
+        // What lies on a datum, or is mirrored in one, depends on it.
+        let sketch = FeatureKind::Sketch(Sketch::new(SketchPlane::Datum {
+            plane: shelf,
+            offset: Expr::new("half"),
+        }));
+        assert_eq!(sketch.inputs(), [shelf]);
+        let mirror = FeatureKind::Mirror(Mirror {
+            source: FeatureId(1),
+            point: exprs(["0", "0", "0"]),
+            normal: exprs(["0", "0", "1"]),
+            plane: Some(angled),
+            keep: false,
+        });
+        assert_eq!(mirror.inputs(), [FeatureId(1), angled]);
+        assert_eq!(mirror.sources(), [(FeatureId(1), false)]);
+        // A mirror written before datums existed has none.
+        let read: FeatureKind = serde_json::from_value(serde_json::json!(
+            {"type": "mirror", "source": 1, "normal": ["0", "0", "1"]}
+        ))
+        .unwrap();
+        assert!(matches!(
+            read,
+            FeatureKind::Mirror(Mirror { plane: None, .. })
+        ));
+        doc.add_feature(None, sketch).unwrap();
+        assert_eq!(doc.validate(), Ok(()));
+        // Variables are renamed in every expression of a datum.
+        doc.rename_variable("half", "h").unwrap();
+        let sources = |id| -> Vec<String> {
+            doc.feature(id)
+                .unwrap()
+                .kind
+                .exprs()
+                .iter()
+                .map(|(_, e)| e.source().to_string())
+                .collect()
+        };
+        assert_eq!(sources(shelf), ["h + 1 mm"]);
+        assert_eq!(sources(angled), ["h * 1 deg"]);
+        assert_eq!(sources(through)[0], "h");
+        // A name that could not be written back is an invalid document.
+        let broken = PersistentName {
+            of: None,
+            ..PersistentName::copy(FeatureId(7), 0, face(1))
+        };
+        doc.feature_mut(shelf).unwrap().kind = FeatureKind::DatumPlane(DatumPlane {
+            by: PlaneBy::Offset {
+                from: PlaneRef::Face { face: broken },
+                distance: Expr::new("1"),
+            },
+        });
+        let error = doc.validate().unwrap_err().to_string();
+        assert!(
+            error.contains("a reference of `Plane1` is not a name"),
+            "{error}"
+        );
     }
 
     #[test]

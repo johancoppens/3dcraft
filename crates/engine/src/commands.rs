@@ -10,7 +10,7 @@ use crate::{CommandError, CommandSpec, OpenDocument, Session, base64};
 use craft3d_doc::{
     Block, Boolean, BooleanOp, Cone, Cylinder, DocError, Document, Expr, Extrude, ExtrudeEnd,
     Feature, FeatureId, FeatureKind, LengthUnit, Orientation, PatternLayout, PersistentName,
-    Sphere, Tolerance, Torus, Units,
+    PlaneBy, Sphere, Tolerance, Torus, Units,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use craft3d_io::MeshFormat;
@@ -76,8 +76,8 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Adds a ring torus about axis, centred at position: major is the radius of the ring, minor of the tube.", doc: true, feature_torus),
     spec!("feature.extrude", "Extrude", r#"{"sketch": id or name, "distance": expr, "throughAll": boolean = false, "upTo": face name, "symmetric": boolean = false, "reversed": boolean = false, "cut": id or name, "join": id or name, "intersect": id or name, "name": string = automatic}"#,
         "Adds a solid by sweeping the closed profiles of a sketch along its normal: loops of lines and arcs, and circles; a loop inside another is a hole. Give one end: distance (a negative one goes the other way; symmetric puts half on each side of the sketch plane), throughAll (past every body the features before this one have built that lies in the way; symmetric goes through on both sides) or upTo (a face name from document.inspect: the solid ends on that face's surface, flat or curved, and follows it when the face moves). reversed goes against the sketch's normal. With cut, join or intersect (a feature with a body) the solid is combined with that body at once: two features are added in one undo step, the extrusion and a boolean, and the result is the boolean's (the one to build on; name applies to it) with the extrusion under sweep. A hole through a plate: sketch a circle on its top, extrude with throughAll, reversed and cut.", doc: true, feature_extrude),
-    spec!("feature.edit", "Edit Feature", r#"{"feature": id or name, "size": [expr; 3], "position": [expr; 3], "axis": [number; 3], "angle": expr, "radius": expr, "height": expr, "major": expr, "minor": expr, "distance": expr, "throughAll": boolean, "upTo": face name, "symmetric": boolean, "reversed": boolean, "translate": [expr; 3], "pivot": [expr; 3], "point": [expr; 3], "normal": [number; 3], "step": [expr; 3], "count": expr, "keep": boolean, "keepTool": boolean}"#,
-        "Changes parameters of a feature; give only the ones to change. Which ones a feature has depends on its kind (document.inspect shows them under params). The end of an extrusion is changed by giving the new one: distance, throughAll or upTo.", doc: true, feature_edit),
+    spec!("feature.edit", "Edit Feature", r#"{"feature": id or name, "size": [expr; 3], "position": [expr; 3], "axis": [number; 3], "angle": expr, "radius": expr, "height": expr, "major": expr, "minor": expr, "distance": expr, "throughAll": boolean, "upTo": face name, "symmetric": boolean, "reversed": boolean, "translate": [expr; 3], "pivot": [expr; 3], "point": [expr; 3], "normal": [number; 3], "plane": datum plane id or name, "step": [expr; 3], "count": expr, "keep": boolean, "keepTool": boolean}"#,
+        "Changes parameters of a feature; give only the ones to change. Which ones a feature has depends on its kind (document.inspect shows them under params). The end of an extrusion is changed by giving the new one: distance, throughAll or upTo. A mirror is pointed at a datum plane with plane, and back at a plane of its own with normal or point. A datum plane's distance or angle is changed here; what it is placed by, with datum.plane and replace.", doc: true, feature_edit),
     spec!("feature.rename", "Rename Feature", r#"{"feature": id or name, "name": string}"#,
         "Renames a feature.", doc: true, feature_rename),
     spec!("feature.suppress", "Suppress Feature", r#"{"feature": id or name, "suppressed": boolean = true}"#,
@@ -89,7 +89,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("history.rollback", "Roll Back", r#"{"feature": id or name or null}"#,
         "Regenerates only up to and including this feature; null removes the marker.", doc: true, history_rollback),
     spec!("document.inspect", "Inspect", "{}",
-        "Returns the whole document state: units, variables with values, features with status, bodies with counts, mass properties and faceNames (and, per face, faceAliases: the other names a face answers to when a boolean or a pattern merged faces of several operands into it), undo history.", doc: true, document_inspect),
+        "Returns the whole document state: units, variables with values, features with status (a datum with where it lies, under datum), bodies with counts, mass properties and faceNames (and, per face, faceAliases: the other names a face answers to when a boolean or a pattern merged faces of several operands into it), undo history.", doc: true, document_inspect),
     spec!("document.check", "Check", r#"{"deep": boolean = false}"#,
         "Checks every body for validity and lists every problem: failed variables, failed features, defects of bodies. ok is true when there is none. deep also looks for bodies that pass through themselves (faces crossing, shells overlapping or nested the wrong way), on a fine mesh: slower, and what it reports is certain (deeper than the mesh could be off); doubts are counted under marginal.", doc: true, document_check),
     spec!("document.measure", "Measure", r#"{"feature": id or name = all bodies}"#,
@@ -829,7 +829,7 @@ fn symmetric_fits(end: &ExtrudeEnd, symmetric: bool, command: &str) -> Result<()
 }
 
 /// The parameters `feature.edit` can change, by name.
-const EDITABLE: [&str; 21] = [
+const EDITABLE: [&str; 22] = [
     "size",
     "position",
     "axis",
@@ -847,6 +847,7 @@ const EDITABLE: [&str; 21] = [
     "pivot",
     "point",
     "normal",
+    "plane",
     "step",
     "count",
     "keep",
@@ -885,6 +886,16 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
         p.bool(key)?;
     }
     let new_end = extrude_end(&p, "feature.edit")?;
+    let new_plane = match p.get("plane") {
+        None => None,
+        Some(_) => Some(crate::datum_cmds::datum_ref(
+            session.document()?.history.current(),
+            &p,
+            "feature.edit",
+            "plane",
+            "datumPlane",
+        )?),
+    };
     let given: Vec<&str> = EDITABLE
         .into_iter()
         .filter(|key| p.get(key).is_some())
@@ -990,8 +1001,22 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
             vec![
                 ("point", Slot::Triple(&mut m.point)),
                 ("normal", Slot::Triple(&mut m.normal)),
+                // Applied below: a datum plane instead of point and normal.
+                ("plane", Slot::Elsewhere),
                 ("keep", Slot::Flag(&mut m.keep)),
             ],
+        ),
+        FeatureKind::DatumPlane(datum) => (
+            "datum plane",
+            match &mut datum.by {
+                PlaneBy::Offset { distance, .. } => vec![("distance", Slot::One(distance))],
+                PlaneBy::Angle { angle, .. } => vec![("angle", Slot::One(angle))],
+                PlaneBy::ThreePoints { .. } => {
+                    return fail(
+                        "feature.edit: a datum plane through three points has no parameter to change here; give it other points with datum.plane and replace",
+                    );
+                }
+            },
         ),
         FeatureKind::Pattern(pattern) => {
             let mut slots = vec![("count", Slot::One(&mut pattern.count))];
@@ -1034,6 +1059,19 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
                 }
             }
             Slot::Elsewhere => {}
+        }
+    }
+    if let FeatureKind::Mirror(mirror) = &mut kind {
+        // A plane of its own again when point or normal is given.
+        match new_plane {
+            Some(_) if p.get("normal").is_some() || p.get("point").is_some() => {
+                return fail(
+                    "feature.edit: give either `plane` (a datum plane) or `normal` and `point`, not both",
+                );
+            }
+            Some(plane) => mirror.plane = Some(plane),
+            None if p.get("normal").is_some() || p.get("point").is_some() => mirror.plane = None,
+            None => {}
         }
     }
     if let (FeatureKind::Extrude(extrusion), Some(end)) = (&mut kind, new_end) {
@@ -1186,6 +1224,13 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
             outcome.and_then(|o| o.sketch.as_ref()),
         ) {
             map.insert("dof".into(), solved.dof.map_or(Value::Null, Value::from));
+        }
+        // Reference geometry: where it lies.
+        if let (Some(map), Some(datum)) = (
+            entry.as_object_mut(),
+            outcome.and_then(|o| o.datum.as_ref()),
+        ) {
+            map.insert("datum".into(), crate::datum_cmds::datum_json(datum));
         }
         // A body that went into a later feature is no longer listed under
         // bodies; this says where it went.
