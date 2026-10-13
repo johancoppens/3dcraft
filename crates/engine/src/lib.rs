@@ -18,6 +18,7 @@ mod params;
 mod query_cmds;
 mod scene;
 mod sketch_cmds;
+mod sketch_spline_cmds;
 #[cfg(not(target_arch = "wasm32"))]
 mod step_cmds;
 mod sweep_cmds;
@@ -167,6 +168,7 @@ impl Session {
                 commands::SPECS,
                 file_cmds::SPECS,
                 sketch_cmds::SPECS,
+                sketch_spline_cmds::SPECS,
                 sweep_cmds::SPECS,
                 body_cmds::SPECS,
                 query_cmds::SPECS,

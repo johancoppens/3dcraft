@@ -166,7 +166,7 @@ fn saving_twice_gives_the_same_bytes() {
 fn the_manifest_of_a_small_document_is_exactly_this() {
     let expected = r#"{
   "format": "3dcraft",
-  "format_version": 5,
+  "format_version": 6,
   "document": {
     "units": {
       "length": "mm",
@@ -1110,7 +1110,7 @@ fn an_extrusion_is_written_like_this_and_round_trips() {
     let doc = full(Units::default());
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 5);
+    assert_eq!(value["format_version"], FORMAT_VERSION);
     assert_eq!(
         value["document"]["features"][4],
         serde_json::json!({
@@ -1315,7 +1315,7 @@ fn moved_mirrored_and_repeated_bodies_are_written_like_this_and_round_trip() {
     doc.validate().unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 5);
+    assert_eq!(value["format_version"], FORMAT_VERSION);
     let kinds: Vec<&serde_json::Value> = (5..10)
         .map(|i| &value["document"]["features"][i]["kind"])
         .collect();
@@ -1429,5 +1429,116 @@ fn a_version_4_file_opens_unchanged_and_is_saved_as_the_current_version() {
     assert!(saved.contains(&version_field()), "{saved}");
     // A name that is not a copy is written as it was: no `of`.
     assert!(!saved.contains("\"of\""), "{saved}");
+    assert_eq!(from_manifest_json(saved.as_bytes()).unwrap(), doc);
+}
+
+/// Version 6: a spline in a sketch, as it is written.
+#[test]
+fn a_spline_is_written_like_this_and_round_trips() {
+    let mut doc = small();
+    let mut sketch = Sketch::new(SketchPlane::default());
+    let p: Vec<EntityId> = [(0.0, 0.0), (1.0, 2.5), (3.0, -1e-7), (4e6, 0.0)]
+        .into_iter()
+        .map(|(x, y)| sketch.add_point(x, y).unwrap())
+        .collect();
+    let open = sketch.add_spline(3, p.clone(), false).unwrap();
+    let closed = sketch
+        .add_spline(2, vec![p[0], p[2], p[1], p[0]], true)
+        .unwrap();
+    sketch.add_line(p[3], p[0], false).unwrap();
+    sketch
+        .add_constraint(ConstraintKind::Tangent { a: open, b: closed })
+        .unwrap();
+    doc.add_feature(Some("Hull"), FeatureKind::Sketch(sketch))
+        .unwrap();
+    doc.validate().unwrap();
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["format_version"], 6);
+    let entities = &value["document"]["features"][1]["kind"]["entities"];
+    assert_eq!(
+        entities[4],
+        serde_json::json!({"id": 5, "construction": false,
+            "geometry": {"type": "spline", "degree": 3, "control": [1, 2, 3, 4]}})
+    );
+    assert_eq!(
+        entities[5],
+        serde_json::json!({"id": 6, "construction": true,
+            "geometry": {"type": "spline", "degree": 2, "control": [1, 3, 2, 1]}})
+    );
+    assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+    assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
+
+    // A spline a file may not hold: each is an error, not a panic and not
+    // a document.
+    let with = |from: &str, to: &str| {
+        assert!(json.contains(from), "`{from}` is not in the manifest");
+        from_manifest_json(json.replacen(from, to, 1).as_bytes())
+    };
+    let degree = "\"degree\": 3";
+    for bad in ["0", "8", "-1", "4294967296", "2.5", "\"3\"", "null"] {
+        assert!(
+            with(degree, &format!("\"degree\": {bad}")).is_err(),
+            "degree {bad}"
+        );
+    }
+    let control = "\"control\": [\n                  1,\n                  2,\n                  3,\n                  4\n                ]";
+    for bad in [
+        "[1, 2, 3]",
+        "[]",
+        "[1, 2, 2, 4]",
+        "[1, 2, 3, 99]",
+        "[1, 2, 3, 5]",
+        "7",
+    ] {
+        assert!(
+            with(control, &format!("\"control\": {bad}")).is_err(),
+            "control {bad}"
+        );
+    }
+    assert!(with(degree, "\"degree\": 3, \"weights\": [1, 1, 1, 1]").is_err());
+}
+
+/// A version-5 file, as written before sketches had splines. Never edit
+/// this.
+#[test]
+fn a_version_5_file_opens_unchanged_and_is_saved_as_the_current_version() {
+    let v5 = r#"{"format": "3dcraft", "format_version": 5, "document": {
+        "units": {"length": "mm", "angle": "deg"},
+        "tolerance": {"linear": 1e-6, "angular": 1e-9},
+        "variables": [{"name": "d", "expr": "8 mm"}],
+        "features": [
+          {"id": 1, "name": "Profile", "suppressed": false, "kind": {"type": "sketch",
+            "plane": {"type": "world", "plane": "xy", "offset": "0"},
+            "entities": [
+              {"id": 1, "construction": false, "geometry": {"type": "point", "x": 0.0, "y": 0.0}},
+              {"id": 2, "construction": false, "geometry": {"type": "point", "x": 4.0, "y": 0.0}},
+              {"id": 3, "construction": false, "geometry": {"type": "point", "x": 4.0, "y": 3.0}},
+              {"id": 4, "construction": false, "geometry": {"type": "line", "start": 1, "end": 2}},
+              {"id": 5, "construction": false, "geometry": {"type": "line", "start": 2, "end": 3}},
+              {"id": 6, "construction": false, "geometry": {"type": "arc", "center": 2, "start": 3, "end": 1}},
+              {"id": 7, "construction": true, "geometry": {"type": "circle", "center": 1, "radius": 1.5}}],
+            "constraints": [{"id": 1, "kind": {"type": "tangent", "a": 4, "b": 7}}],
+            "next_entity_id": 8, "next_constraint_id": 2}},
+          {"id": 2, "name": "Body", "suppressed": false,
+            "kind": {"type": "revolve", "sketch": 1, "axis": {"type": "x"}, "angle": "90 deg", "symmetric": false}},
+          {"id": 3, "name": "Moved", "suppressed": false,
+            "kind": {"type": "transform", "source": 2, "translate": ["d", "0", "0"],
+                     "pivot": ["0", "0", "0"], "axis": ["0", "0", "1"], "angle": "0 deg",
+                     "keep": false}}],
+        "rollback": null, "next_feature_id": 4}}"#;
+    let doc = match from_manifest_json(v5.as_bytes()) {
+        Ok(doc) => doc,
+        Err(error) => panic!("{error}"),
+    };
+    let FeatureKind::Sketch(profile) = &doc.features[0].kind else {
+        panic!()
+    };
+    assert_eq!(profile.entities.len(), 7);
+    assert_eq!(profile.entities[5].geometry.type_name(), "arc");
+    assert_eq!(doc.features[1].kind.type_name(), "revolve");
+    let saved = to_manifest_json(&doc).unwrap();
+    assert!(saved.contains(&version_field()), "{saved}");
+    assert!(!saved.contains("spline"), "{saved}");
     assert_eq!(from_manifest_json(saved.as_bytes()).unwrap(), doc);
 }

@@ -319,7 +319,7 @@ pub enum WorldPlane {
     Zx,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SketchEntity {
     /// Unique within the sketch, never reused.
@@ -330,8 +330,8 @@ pub struct SketchEntity {
     pub geometry: SketchGeometry,
 }
 
-/// Lines, circles and arcs refer to point entities by id.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+/// Lines, circles, arcs and splines refer to point entities by id.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
 pub enum SketchGeometry {
     Point {
@@ -351,6 +351,12 @@ pub enum SketchGeometry {
         center: u64,
         start: u64,
         end: u64,
+    },
+    /// A polynomial B-spline on clamped uniform knots: its control points
+    /// in order (format version 6).
+    Spline {
+        degree: u32,
+        control: Vec<u64>,
     },
 }
 

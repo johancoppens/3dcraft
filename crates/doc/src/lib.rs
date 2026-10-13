@@ -18,7 +18,8 @@ pub use name::{MAX_NAME_DEPTH, MAX_NAME_SOURCES, NameRole, PersistentName};
 
 pub use sketch::{
     Constraint, ConstraintId, ConstraintKind, DistanceDirection, Entity, EntityId, Geometry,
-    Sketch, SketchError, SketchPlane, WorldPlane,
+    MAX_SPLINE_DEGREE, MAX_SPLINE_POINTS, Sketch, SketchError, SketchPlane, WorldPlane,
+    clamped_uniform_knots,
 };
 
 use craft3d_expr::{VariableError, VariableTable};

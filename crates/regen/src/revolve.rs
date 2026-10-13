@@ -33,7 +33,7 @@ pub(crate) fn build(
         RevolveAxis::Y => ([0.0, 0.0], [0.0, 1.0]),
         RevolveAxis::Line { entity } => {
             let line = sketch.entities.iter().find(|e| e.id == entity);
-            let Some(Geometry::Line { start, end }) = line.map(|e| e.geometry) else {
+            let Some(&Geometry::Line { start, end }) = line.map(|e| &e.geometry) else {
                 return Err(match line {
                     None => format!("axis: sketch `{name}` has no entity {entity}"),
                     Some(_) => format!(

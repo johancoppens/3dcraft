@@ -33,11 +33,11 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("sketch.arc", "Sketch Arc", r#"{"sketch": id or name, "center": point id or [x, y], "start": point id or [x, y], "end": point id or [x, y], "construction": boolean = false}"#,
         "Adds an arc about center, counter-clockwise from start to end. Solving keeps both ends at the same distance from the center.", doc: true, sketch_arc),
     spec!("sketch.constrain", "Constrain", r#"{"sketch": id or name, "type": "coincident|pointOn|horizontal|vertical|parallel|perpendicular|tangent|equal|concentric|symmetric|midpoint|fixed|distance|angle|radius|diameter", "entities": [entity id, ...], "value": expr, "direction": "direct|horizontal|vertical" = "direct"}"#,
-        "Adds a constraint between entities. distance, angle, radius and diameter take a value; a distance takes one line (its length), two points, or a point and a line. symmetric takes two points and the mirror line. An angle is measured counter-clockwise from the first line to the second, each taken from its start to its end. Returns the constraint id and how the sketch solved.", doc: true, sketch_constrain),
+        "Adds a constraint between entities. distance, angle, radius and diameter take a value; a distance takes one line (its length), two points, or a point and a line. symmetric takes two points and the mirror line. A spline is shaped by constraints on its control points; itself it takes only tangent, to a line, an arc or another spline that it shares an end point with (the same point, or two made coincident): the spline then leaves that point along the other curve. An angle is measured counter-clockwise from the first line to the second, each taken from its start to its end. Returns the constraint id and how the sketch solved.", doc: true, sketch_constrain),
     spec!("sketch.edit", "Edit Sketch", r#"{"sketch": id or name, "constraint": constraint id, "value": expr, "entity": entity id, "construction": boolean, "at": [number, number], "plane": "xy|yz|zx", "face": face name, "offset": expr}"#,
         "Changes a sketch: the value of a dimension (constraint and value), an entity's construction flag or a point's position before solving (entity with construction or at), or what it lies on (plane or face) and the offset.", doc: true, sketch_edit),
     spec!("sketch.delete", "Delete From Sketch", r#"{"sketch": id or name, "entity": entity id, "constraint": constraint id}"#,
-        "Deletes a constraint, or an entity with the constraints on it. A point that lines, circles or arcs are built on cannot be deleted before them.", doc: true, sketch_delete),
+        "Deletes a constraint, or an entity with the constraints on it. A point that lines, circles, arcs or splines are built on cannot be deleted before them.", doc: true, sketch_delete),
     spec!("sketch.inspect", "Inspect Sketch", r#"{"sketch": id or name}"#,
         "Returns a sketch in full: plane, entities with solved coordinates, constraints with their state, and the degrees of freedom left.", doc: true, sketch_inspect),
 ];
@@ -45,7 +45,11 @@ pub(crate) static SPECS: &[CommandSpec] = &[
 // ---------------------------------------------------------------- helpers
 
 /// The sketch a command works on.
-fn sketch_ref(session: &Session, p: &Params, command: &str) -> Result<FeatureId, CommandError> {
+pub(crate) fn sketch_ref(
+    session: &Session,
+    p: &Params,
+    command: &str,
+) -> Result<FeatureId, CommandError> {
     let doc = session.document()?.history.current();
     let id = feature_ref(doc, p, command, "sketch")?;
     doc.sketch(id).map_err(doc_error(command))?;
@@ -91,13 +95,13 @@ fn coordinates(value: &Value) -> Option<(f64, f64)> {
 /// Where a line, circle or arc is attached: a point that exists, or the
 /// place for a new one.
 #[derive(Clone, Copy)]
-enum PointArg {
+pub(crate) enum PointArg {
     Existing(EntityId),
     New(f64, f64),
 }
 
 impl PointArg {
-    fn parse(command: &str, key: &str, value: &Value) -> Result<Self, CommandError> {
+    pub(crate) fn parse(command: &str, key: &str, value: &Value) -> Result<Self, CommandError> {
         match value {
             Value::Array(_) => match coordinates(value) {
                 Some((x, y)) => Ok(PointArg::New(x, y)),
@@ -119,7 +123,7 @@ impl PointArg {
     }
 
     /// The point's id, adding it to the sketch when it is new.
-    fn place(self, sketch: &mut Sketch) -> Result<EntityId, SketchError> {
+    pub(crate) fn place(self, sketch: &mut Sketch) -> Result<EntityId, SketchError> {
         match self {
             PointArg::Existing(id) => sketch.point(id).map(|_| id),
             PointArg::New(x, y) => sketch.add_point(x, y),
@@ -150,7 +154,7 @@ fn face_param(p: &Params, command: &str) -> Result<Option<PersistentName>, Comma
     }
 }
 
-fn ids(list: &[EntityId]) -> Vec<String> {
+pub(crate) fn ids(list: &[EntityId]) -> Vec<String> {
     list.iter().map(|id| id.to_string()).collect()
 }
 
@@ -188,7 +192,7 @@ fn solve_summary(map: &mut Map<String, Value>, result: &SketchResult) {
 
 /// What a sketch command returns: the sketch feature, how it regenerated
 /// and solved, and the command's own fields.
-fn sketch_result(session: &mut Session, id: FeatureId, own: Value) -> Run {
+pub(crate) fn sketch_result(session: &mut Session, id: FeatureId, own: Value) -> Run {
     let mut result = feature_result(session, id)?;
     let regen = session.document_mut()?.regen();
     if let Some(map) = result.as_object_mut() {
@@ -202,7 +206,7 @@ fn sketch_result(session: &mut Session, id: FeatureId, own: Value) -> Run {
     Ok(result)
 }
 
-fn change<T>(
+pub(crate) fn change<T>(
     session: &mut Session,
     command: &'static str,
     label: &str,
@@ -602,6 +606,17 @@ fn sketch_inspect(session: &mut Session, params: &Value) -> Run {
             });
             if let Some(map) = entry.as_object_mut() {
                 match entity.geometry {
+                    Geometry::Spline {
+                        degree,
+                        ref control,
+                    } => {
+                        map.insert("degree".into(), degree.into());
+                        map.insert("control".into(), ids(control).into());
+                        map.insert(
+                            "closed".into(),
+                            (control.len() > 1 && control.first() == control.last()).into(),
+                        );
+                    }
                     Geometry::Point { x, y } => {
                         // The solution of this regeneration when there is
                         // one; what is stored otherwise.
