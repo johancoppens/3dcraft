@@ -105,6 +105,14 @@ fn the_multisampled_picture_matches_the_cpu_renderer_away_from_the_edges() {
         let adapter_name = name_of(&adapter);
         let mut onscreen = Onscreen::new(&device, &queue, &adapter).unwrap();
         println!("{adapter_name}: {} samples", onscreen.samples());
+        // One on OpenGL (see `Onscreen::new` and `gl_multisample.rs`),
+        // four wherever else this test has run.
+        let expected = if adapter.get_info().backend == wgpu::Backend::Gl {
+            1
+        } else {
+            craft3d_gpu::WANTED_SAMPLES
+        };
+        assert_eq!(onscreen.samples(), expected, "{adapter_name}");
         let lines = onscreen.upload_lines(&[]).unwrap();
         for (name, mesh, params, camera) in &scenes {
             let cpu = craft3d_render::render(mesh, camera, params).unwrap();

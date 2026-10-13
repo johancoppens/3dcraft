@@ -231,11 +231,23 @@ impl Onscreen {
     /// A renderer with [`WANTED_SAMPLES`] samples per pixel when `adapter`
     /// has them for the colour and depth formats, else with one.
     ///
-    /// On wgpu's OpenGL backend it is always one: on the development
-    /// machine (Mesa 25.3, Intel) that backend resolved nothing out of the
-    /// multisampled colour attachment and read nothing from the
-    /// multisampled depth texture, while both work on Vulkan and on
-    /// lavapipe. OpenGL is the last resort of the window anyway.
+    /// On wgpu's OpenGL backend it is always one, because that backend
+    /// (wgpu-hal 30.0.1, `src/gles`) cannot make a multisampled texture
+    /// that is also read by a shader, which the lines' depth test needs of
+    /// the depth buffer. Only a multisampled texture that is nothing but a
+    /// render target becomes a multisampled renderbuffer (`device.rs`,
+    /// `create_texture`); any other gets the target `GL_TEXTURE_2D`
+    /// (`mod.rs`, `Texture::get_info_from_desc`: `GL_TEXTURE_2D_MULTISAMPLE`
+    /// occurs nowhere in the backend) and is given its storage with
+    /// `glTexStorage2DMultisample(GL_TEXTURE_2D, ..)`, which OpenGL refuses
+    /// (`GL_INVALID_ENUM`). The texture has no storage, the framebuffer it
+    /// is attached to is incomplete, and every clear, draw and resolve
+    /// into it fails without wgpu saying so: the picture stays empty.
+    /// `tests/gl_multisample.rs` shows it, and that four samples resolve
+    /// on OpenGL when the depth buffer is only an attachment; what Mesa
+    /// reports is printed with `MESA_DEBUG=1`. Multisampling on OpenGL
+    /// would take a depth buffer the lines can read made in a pass of its
+    /// own, at one sample. OpenGL is the last resort of the window anyway.
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
