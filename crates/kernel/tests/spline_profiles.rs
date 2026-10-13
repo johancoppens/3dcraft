@@ -648,7 +648,7 @@ fn a_spline_profile_is_the_same_every_time() {
 fn random_spline_loops_give_valid_solids_or_errors() {
     use common::Rng;
     let tol = Tolerance::default();
-    let mut rng = Rng(0x5911_7E5);
+    let mut rng = Rng(0x0591_17E5);
     let hostile = [f64::NAN, f64::INFINITY, -1e300, 1e-320, 0.0, -0.0];
     let (mut accepted, mut meshed, mut refused, mut declined, mut too_fine) = (0, 0, 0, 0, 0);
     let mut spent = [std::time::Duration::ZERO; 3];
