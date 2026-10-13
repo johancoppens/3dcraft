@@ -18,6 +18,8 @@ mod params;
 mod query_cmds;
 mod scene;
 mod sketch_cmds;
+#[cfg(not(target_arch = "wasm32"))]
+mod step_cmds;
 mod sweep_cmds;
 mod workspace;
 

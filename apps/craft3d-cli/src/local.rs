@@ -434,9 +434,14 @@ pub(crate) fn convert(args: Args) -> Result<Parsed<()>, CliError> {
         .extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| e.eq_ignore_ascii_case("3dcraft"));
-    if native && tolerance.is_some() {
+    let exact = Path::new(output)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("step") || e.eq_ignore_ascii_case("stp"));
+    if (native || exact) && tolerance.is_some() {
         return Err(CliError::Usage(
-            "`--tolerance` applies to mesh output (.stl, .3mf, .obj), not to .3dcraft".to_string(),
+            "`--tolerance` applies to mesh output (.stl, .3mf, .obj), not to .3dcraft or STEP"
+                .to_string(),
         ));
     }
     let mut session = Session::new(Workspace::unrestricted());
@@ -444,7 +449,7 @@ pub(crate) fn convert(args: Args) -> Result<Parsed<()>, CliError> {
     let result = if native {
         execute(&mut session, "file.save", &json!({ "path": output }))?
     } else {
-        // The engine picks the mesh format from the extension, and says
+        // The engine picks the format from the extension, and says
         // which extensions it knows when this one is not among them.
         let mut params = Map::new();
         params.insert("path".into(), output.as_str().into());

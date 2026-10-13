@@ -58,7 +58,7 @@ Subcommands:
   run        Open or create a document, run commands, optionally save it
   info       Print a document's state as JSON
   render     Render a document to a PNG with the CPU renderer
-  convert    Convert a .3dcraft file to STL, 3MF, OBJ or .3dcraft
+  convert    Convert a .3dcraft file to STEP, STL, 3MF, OBJ or .3dcraft
   serve      JSON-lines server on stdin/stdout, for scripts
   mcp        Model Context Protocol server on stdin/stdout, for agents
 
@@ -118,8 +118,9 @@ const HELP_CONVERT: &str = "\
 Usage: craft3d-cli convert IN OUT [--tolerance T]
 
 Converts the .3dcraft file IN. The extension of OUT picks the format:
-.stl, .3mf or .obj tessellate the bodies and write a mesh; .3dcraft writes
-the document again in the current format version.
+.step or .stp write the bodies' exact geometry, with the document's units,
+tolerance and names; .stl, .3mf or .obj tessellate the bodies and write a
+mesh; .3dcraft writes the document again in the current format version.
 
 Options:
   --tolerance T   Chordal tolerance of the mesh, in document units.
