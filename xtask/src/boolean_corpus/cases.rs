@@ -157,6 +157,14 @@ impl Rng {
                     minor: self.length(0.25, 0.45 * major, round),
                 }
             }
+            Kind::Dome | Kind::Spline => Solid::Dome {
+                size: V(
+                    self.length(1.0, 3.0, round),
+                    self.length(1.0, 3.0, round),
+                    self.length(1.0, 3.0, round),
+                ),
+                spline: kind == Kind::Spline,
+            },
         }
     }
 
@@ -372,6 +380,12 @@ fn is_sharp(a: Class, b: Class) -> bool {
     a.sharp() || b.sharp()
 }
 
+/// Whether solids put against each other at places of these classes
+/// touch there and nowhere else: both places have a supporting plane.
+fn supported((ka, kb): Kinds, (ca, cb): Classes) -> bool {
+    Solid::supported(ka, ca) && Solid::supported(kb, cb)
+}
+
 /// Two solids against each other at a place of each.
 struct Contact {
     a: Placed,
@@ -381,6 +395,10 @@ struct Contact {
     same_side: bool,
     spin: Spin,
     variant: String,
+    /// Whether the contact is all they share (see [`supported`]); a
+    /// contact on the roof of a dome is tangent there and may overlap
+    /// elsewhere, so nothing is expected of it.
+    supported: bool,
 }
 
 impl Contact {
@@ -394,6 +412,19 @@ impl Contact {
             self.spin,
             gap,
         )
+    }
+
+    /// What the construction says when the solids are on opposite sides
+    /// of the contact plane, `gap` apart: nothing where the contact is
+    /// not supported.
+    fn expect(&self, gap: f64) -> Option<Expect> {
+        if self.same_side || !self.supported {
+            None
+        } else if gap > 0.0 {
+            Some(Expect::Apart)
+        } else {
+            Some(Expect::Disjoint)
+        }
     }
 }
 
@@ -429,6 +460,7 @@ fn contact(
         same_side,
         spin,
         variant: format!("{}-{}-{side}-{spin_name}", ca.name(), cb.name()),
+        supported: supported((ka, kb), (ca, cb)),
     })
 }
 
@@ -473,8 +505,7 @@ fn contacts(
         ) else {
             continue;
         };
-        let expect = (!same_side).then_some(Expect::Disjoint);
-        g.push(c.variant.clone(), expect, c.a, c.b(0.0));
+        g.push(c.variant.clone(), c.expect(0.0), c.a, c.b(0.0));
     }
 }
 
@@ -521,6 +552,14 @@ fn sphere(radius: f64) -> Solid {
 
 fn torus(major: f64, minor: f64) -> Solid {
     Solid::Torus { major, minor }
+}
+
+/// The domed block of the kind (`Dome` or `Spline`).
+fn domed(kind: Kind, x: f64, y: f64, height: f64) -> Solid {
+    Solid::Dome {
+        size: V(x, y, height),
+        spline: kind == Kind::Spline,
+    }
 }
 
 /// The hand-made configurations of a category for a kind pair (`k1` not
@@ -1146,6 +1185,92 @@ fn special_case(
                 Some(Apart),
             )
         }
+
+        // ---- the domed block, in either representation ----
+        // Its roof is at least 0.7 of its height up everywhere.
+        ("flush", Block, k, 0) if k.domed() => {
+            let (x, y, z) = (len(1.0, 3.0), len(1.0, 3.0), len(0.5, 2.0));
+            special(
+                "dome-on-a-block-same-footprint",
+                block(x, y, z),
+                domed(k, x, y, len(1.0, 3.0)),
+                V(0.0, 0.0, z),
+                id,
+                Some(Disjoint),
+            )
+        }
+        ("flush", Block, k, 1) if k.domed() => {
+            let (x, y, h) = (len(1.0, 3.0), len(1.0, 3.0), len(1.0, 3.0));
+            special(
+                "block-under-the-roof-flush-with-the-walls",
+                domed(k, x, y, h),
+                block(x, y, 0.35 * h),
+                V::ZERO,
+                id,
+                Some(BInA),
+            )
+        }
+        ("flush", Block, k, 2) if k.domed() => {
+            let (x, y, h) = (len(1.0, 3.0), len(1.0, 3.0), len(1.0, 3.0));
+            special(
+                "block-in-a-corner-under-the-roof",
+                domed(k, x, y, h),
+                block(0.5 * x, 0.5 * y, 0.35 * h),
+                V::ZERO,
+                id,
+                Some(BInA),
+            )
+        }
+        ("flush", Cylinder, k, 0) if k.domed() => {
+            let (x, y, h) = (len(2.0, 3.0), len(2.0, 3.0), len(1.0, 3.0));
+            special(
+                "post-under-the-roof",
+                domed(k, x, y, h),
+                cylinder(len(0.25, 0.75), 0.35 * h),
+                V(0.5 * x, 0.5 * y, 0.0),
+                id,
+                Some(BInA),
+            )
+        }
+        ("flush", Cone, k, 0) if k.domed() => {
+            let (x, y, h) = (len(2.0, 3.0), len(2.0, 3.0), len(1.0, 3.0));
+            special(
+                "cone-under-the-roof",
+                domed(k, x, y, h),
+                cone(len(0.25, 0.75), 0.5 * h),
+                V(0.5 * x, 0.5 * y, 0.0),
+                id,
+                Some(BInA),
+            )
+        }
+        ("flush", k1, k2, 0) if k1.domed() && k2.domed() => {
+            let (x, y, h) = (len(1.0, 3.0), len(1.0, 3.0), len(1.0, 3.0));
+            // The Bézier roof and the B-spline roof are the same surface.
+            let variant = if k1 == k2 {
+                "identical"
+            } else {
+                "identical-roof-as-bezier-and-as-b-spline"
+            };
+            special(
+                variant,
+                domed(k1, x, y, h),
+                domed(k2, x, y, h),
+                V::ZERO,
+                id,
+                Some(Same),
+            )
+        }
+        ("inside", Block, k, 0) if k.domed() => {
+            let (x, y, h) = (len(1.0, 3.0), len(1.0, 3.0), len(1.0, 3.0));
+            special(
+                "block-under-the-roof",
+                domed(k, x, y, h),
+                block(0.8 * x, 0.8 * y, 0.5 * h),
+                V(0.1 * x, 0.1 * y, 0.1 * h),
+                id,
+                Some(BInA),
+            )
+        }
         _ => None,
     }
 }
@@ -1237,7 +1362,10 @@ fn apart(g: &mut Group, k1: Kind, k2: Kind, n: usize) {
             g.push("far".to_string(), Some(Expect::Apart), a, b);
         } else {
             // Close: a contact pulled apart, so the boxes mostly overlap.
-            let all = class_pairs(ka, kb, |_, _| true);
+            // Only contacts that are all the solids share: pulled off
+            // the roof of a dome, a solid may still cut its bumps.
+            let mut all = class_pairs(ka, kb, |_, _| true);
+            all.retain(|&classes| supported((ka, kb), classes));
             let Some(&classes) = all.get((i / 2) % all.len().max(1)) else {
                 continue;
             };
@@ -1284,10 +1412,9 @@ fn near(g: &mut Group, k1: Kind, k2: Kind, bases: usize) {
         let Some(c) = contact(&mut rng, order, classes, same_side, round, base as u64) else {
             continue;
         };
-        let touching = (!same_side).then_some(Expect::Disjoint);
         let exact = g.push_near(
             format!("exact-{}", c.variant),
-            touching,
+            c.expect(0.0),
             c.a,
             c.b(0.0),
             Some(0.0),
@@ -1296,9 +1423,9 @@ fn near(g: &mut Group, k1: Kind, k2: Kind, bases: usize) {
         for tolerances in [10.0_f64, -10.0, 1.0, -1.0, 0.1, -0.1] {
             // Beyond the tolerance the answer is that of the gap; within
             // it, that of the exact contact is as good.
-            let expect = match (same_side, tolerances) {
-                (false, t) if t > 1.0 => Some(Expect::Apart),
-                (false, t) if t > 0.0 => Some(Expect::Disjoint),
+            let expect = match tolerances {
+                t if t > 1.0 => c.expect(t),
+                t if t > 0.0 => c.expect(0.0),
                 _ => None,
             };
             let snap = (tolerances.abs() <= 1.0).then(|| exact.clone());

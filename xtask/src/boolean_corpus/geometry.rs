@@ -1,12 +1,14 @@
 //! The little geometry the case generator needs: vectors, rotations, the
-//! five primitive solids and what can be said about each without a kernel
-//! (where its faces, edges and corners are, a ball inside it, a ball around
-//! it, whether a point is inside).
+//! five primitive solids and the domed block, and what can be said about
+//! each without a kernel (where its faces, edges and corners are, a ball
+//! inside it, a ball around it, whether a point is inside).
 //!
 //! `xtask` depends on no 3DCraft crate, on purpose: the corpus must not be
-//! built with the code it is going to judge.
+//! built with the code it is going to judge. The domed block's roof, a
+//! bicubic Bézier patch, is evaluated here with the Bernstein polynomials
+//! written out.
 
-use std::f64::consts::{FRAC_1_SQRT_2, TAU};
+use std::f64::consts::{FRAC_1_SQRT_2, PI, TAU};
 use std::ops::{Add, Mul, Neg, Sub};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -177,14 +179,20 @@ pub enum Kind {
     Cone,
     Sphere,
     Torus,
+    /// A block under a roof that is a bicubic Bézier patch.
+    Dome,
+    /// The same block, its roof the same patch as a B-spline surface.
+    Spline,
 }
 
-pub const KINDS: [Kind; 5] = [
+pub const KINDS: [Kind; 7] = [
     Kind::Block,
     Kind::Cylinder,
     Kind::Cone,
     Kind::Sphere,
     Kind::Torus,
+    Kind::Dome,
+    Kind::Spline,
 ];
 
 impl Kind {
@@ -195,7 +203,14 @@ impl Kind {
             Kind::Cone => "cone",
             Kind::Sphere => "sphere",
             Kind::Torus => "torus",
+            Kind::Dome => "dome",
+            Kind::Spline => "spline",
         }
+    }
+
+    /// Whether the kind is the domed block, in either representation.
+    pub fn domed(self) -> bool {
+        matches!(self, Kind::Dome | Kind::Spline)
     }
 }
 
@@ -203,6 +218,16 @@ impl Kind {
 /// block with a corner at the origin and edges along the axes; a cylinder
 /// and a cone standing on the xy plane about z, the cone with its apex at
 /// the height; a sphere about the origin; a torus about z.
+///
+/// The domed block is the one solid with a freeform face: a floor
+/// `size.0 × size.1` at z = 0, four planar walls, and a roof that is a
+/// bicubic Bézier patch over the regular 4 × 4 net of [`dome_net`], so
+/// that the roof is the height field `z = h(x / dx, y / dy)` with `h` of
+/// [`dome_height`] and its boundary curves are cubic splines in the
+/// walls' planes. It is `craft3d_testkit::trimmed::domed_block`, built
+/// again here from its definition. With `spline` the roof is the same
+/// patch as a B-spline surface: the same points, another representation,
+/// another code path in a kernel.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Solid {
     Block { size: V },
@@ -210,6 +235,184 @@ pub enum Solid {
     Cone { radius: f64, height: f64 },
     Sphere { radius: f64 },
     Torus { major: f64, minor: f64 },
+    Dome { size: V, spline: bool },
+}
+
+/// The cubic Bernstein polynomials at `t`.
+fn bernstein(t: f64) -> [f64; 4] {
+    let s = 1.0 - t;
+    [s * s * s, 3.0 * s * s * t, 3.0 * s * t * t, t * t * t]
+}
+
+/// Their derivatives at `t`.
+fn bernstein_slope(t: f64) -> [f64; 4] {
+    let s = 1.0 - t;
+    [
+        -3.0 * s * s,
+        3.0 * s * s - 6.0 * s * t,
+        6.0 * s * t - 3.0 * t * t,
+        3.0 * t * t,
+    ]
+}
+
+/// The heights of the roof's control net, `[i][j]` for the control point
+/// at `(dx i / 3, dy j / 3)`: `height × (1 + 0.15 × (((7 i + 3 j) mod 5)
+/// − 2))`, between 0.7 and 1.3 times `height`, without symmetry.
+pub fn dome_net(height: f64) -> [[f64; 4]; 4] {
+    let mut net = [[0.0; 4]; 4];
+    for (i, row) in net.iter_mut().enumerate() {
+        for (j, z) in row.iter_mut().enumerate() {
+            *z = height * (1.0 + 0.15 * (((i * 7 + j * 3) % 5) as f64 - 2.0));
+        }
+    }
+    net
+}
+
+/// `Σ a_i b_j net[i][j]`.
+fn tensor(a: &[f64; 4], b: &[f64; 4], net: &[[f64; 4]; 4]) -> f64 {
+    a.iter()
+        .zip(net)
+        .map(|(a, row)| a * b.iter().zip(row).map(|(b, z)| b * z).sum::<f64>())
+        .sum()
+}
+
+/// The roof's height above the floor at `(u, v)` in the unit square, for
+/// the net of `height`: `h(u, v) = Σ B_i(u) B_j(v) z_ij`.
+pub fn dome_height(height: f64, u: f64, v: f64) -> f64 {
+    tensor(&bernstein(u), &bernstein(v), &dome_net(height))
+}
+
+/// Its partial derivatives with respect to `u` and `v`.
+fn dome_slope(height: f64, u: f64, v: f64) -> (f64, f64) {
+    let net = dome_net(height);
+    (
+        tensor(&bernstein_slope(u), &bernstein(v), &net),
+        tensor(&bernstein(u), &bernstein_slope(v), &net),
+    )
+}
+
+/// The mean of the net's heights: the roof's mean height, since every
+/// Bernstein polynomial has the same integral over the unit interval.
+fn dome_mean(height: f64) -> f64 {
+    dome_net(height).iter().flatten().sum::<f64>() / 16.0
+}
+
+/// The steepest the roof gets along either parameter: `3 ×` the largest
+/// difference between neighbouring control heights bounds `|∂h/∂u|` and
+/// `|∂h/∂v|` (the derivative of a cubic Bézier curve is a quadratic one
+/// over those differences, and a Bézier curve stays within the hull of
+/// its control points).
+fn dome_steepest(height: f64) -> f64 {
+    let net = dome_net(height);
+    let mut steepest: f64 = 0.0;
+    for i in 0..4 {
+        for j in 0..3 {
+            let (Some(a), Some(b), Some(c), Some(d)) = (
+                net.get(i).and_then(|r| r.get(j)),
+                net.get(i).and_then(|r| r.get(j + 1)),
+                net.get(j).and_then(|r| r.get(i)),
+                net.get(j + 1).and_then(|r| r.get(i)),
+            ) else {
+                continue;
+            };
+            steepest = steepest.max((a - b).abs()).max((c - d).abs());
+        }
+    }
+    3.0 * steepest
+}
+
+/// Gauss–Legendre nodes and weights on `[0, 1]`, `n` of them, by Newton's
+/// method on the Legendre polynomial (each root bracketed by its usual
+/// first guess; the iteration is capped, so a root that does not settle
+/// is still returned, slightly off).
+fn gauss_legendre(n: usize) -> Vec<(f64, f64)> {
+    let mut rule = Vec::with_capacity(n);
+    for k in 1..=n {
+        let mut x = (PI * (k as f64 - 0.25) / (n as f64 + 0.5)).cos();
+        let mut slope = 1.0;
+        for _ in 0..100 {
+            let (mut p0, mut p1) = (1.0, x);
+            for m in 2..=n {
+                let m = m as f64;
+                (p0, p1) = (p1, ((2.0 * m - 1.0) * x * p1 - (m - 1.0) * p0) / m);
+            }
+            slope = n as f64 * (x * p1 - p0) / (x * x - 1.0);
+            if slope == 0.0 || !slope.is_finite() {
+                break;
+            }
+            let step = p1 / slope;
+            x -= step;
+            if step.abs() < 1e-16 {
+                break;
+            }
+        }
+        let weight = 1.0 / ((1.0 - x * x) * slope * slope);
+        rule.push((0.5 * (1.0 - x), weight));
+    }
+    rule
+}
+
+/// The rule used for the roof's area: `ROOF_POINTS` Gauss–Legendre
+/// points on each of `ROOF_PANELS` equal panels each way. The integrand
+/// is analytic, but its nearest complex singularity comes close to the
+/// real square where the roof is steep (height 3 over a side of 1): one
+/// 32-point rule is then still 3e-11 off, while this composite rule, one
+/// with 16 panels of 8 points and a plain 128-point rule agree to 1e-14.
+const ROOF_PANELS: usize = 8;
+const ROOF_POINTS: usize = 16;
+
+/// The area of the roof: `∫∫ √(1 + z_x² + z_y²) dx dy` over the floor, by
+/// composite Gauss–Legendre quadrature. There is no closed form.
+fn dome_roof_area(size: V, panels: usize, points: usize) -> f64 {
+    let V(dx, dy, height) = size;
+    let net = dome_net(height);
+    let rule = gauss_legendre(points);
+    let width = 1.0 / panels.max(1) as f64;
+    let mut total = 0.0;
+    for pu in 0..panels {
+        for pv in 0..panels {
+            for &(u, wu) in &rule {
+                let u = (pu as f64 + u) * width;
+                let (bu, su) = (bernstein(u), bernstein_slope(u));
+                for &(v, wv) in &rule {
+                    let v = (pv as f64 + v) * width;
+                    let (bv, sv) = (bernstein(v), bernstein_slope(v));
+                    let zx = tensor(&su, &bv, &net) / dx;
+                    let zy = tensor(&bu, &sv, &net) / dy;
+                    total += wu * wv * (1.0 + zx * zx + zy * zy).sqrt();
+                }
+            }
+        }
+    }
+    total * dx * dy * width * width
+}
+
+/// The four walls of a domed block, `k` in `0..4`, each running from one
+/// corner of the floor to the next: where it starts, the unit direction
+/// it runs in, its length and its outward normal.
+fn dome_wall(size: V, k: usize) -> (V, V, f64, V) {
+    let V(dx, dy, _) = size;
+    match k % 4 {
+        0 => (V::ZERO, V::X, dx, -V::Y),
+        1 => (V(dx, 0.0, 0.0), V::Y, dy, V::X),
+        2 => (V(dx, dy, 0.0), -V::X, dx, V::Y),
+        _ => (V(0.0, dy, 0.0), -V::Y, dy, -V::X),
+    }
+}
+
+/// The roof's corner above floor corner `k` (where wall `k` starts).
+fn dome_corner_height(height: f64, k: usize) -> f64 {
+    let (i, j) = match k % 4 {
+        0 => (0, 0),
+        1 => (3, 0),
+        2 => (3, 3),
+        _ => (0, 3),
+    };
+    dome_net(height)
+        .get(i)
+        .and_then(|row| row.get(j))
+        .copied()
+        .unwrap_or(height)
 }
 
 /// What kind of place on a solid another solid can be put against.
@@ -274,12 +477,18 @@ impl Solid {
             Solid::Cone { .. } => Kind::Cone,
             Solid::Sphere { .. } => Kind::Sphere,
             Solid::Torus { .. } => Kind::Torus,
+            Solid::Dome { spline: false, .. } => Kind::Dome,
+            Solid::Dome { spline: true, .. } => Kind::Spline,
         }
     }
 
     pub fn scaled(&self, k: f64) -> Solid {
         match *self {
             Solid::Block { size } => Solid::Block { size: size * k },
+            Solid::Dome { size, spline } => Solid::Dome {
+                size: size * k,
+                spline,
+            },
             Solid::Cylinder { radius, height } => Solid::Cylinder {
                 radius: radius * k,
                 height: height * k,
@@ -304,9 +513,13 @@ impl Solid {
             Solid::Cone { radius, height } => pi * radius * radius * height / 3.0,
             Solid::Sphere { radius } => 4.0 / 3.0 * pi * radius * radius * radius,
             Solid::Torus { major, minor } => 2.0 * pi * pi * major * minor * minor,
+            // The floor times the roof's mean height.
+            Solid::Dome { size, .. } => size.0 * size.1 * dome_mean(size.2),
         }
     }
 
+    /// The area: a closed form, except for the roof of a domed block,
+    /// which is a quadrature that three rules agree on to 1e-14.
     pub fn area(&self) -> f64 {
         let pi = TAU / 2.0;
         match *self {
@@ -315,6 +528,25 @@ impl Solid {
             Solid::Cone { radius, height } => pi * radius * (radius + radius.hypot(height)),
             Solid::Sphere { radius } => 4.0 * pi * radius * radius,
             Solid::Torus { major, minor } => 4.0 * pi * pi * major * minor,
+            Solid::Dome { size, .. } => {
+                let V(dx, dy, height) = size;
+                // Each wall is the region under a cubic Bézier curve, the
+                // border of the net in its plane: its length times the
+                // mean of that border's heights.
+                let net = dome_net(height);
+                let border = |heights: [f64; 4]| heights.iter().sum::<f64>() / 4.0;
+                let row = |j: usize| {
+                    let mut h = [0.0; 4];
+                    for (i, z) in h.iter_mut().enumerate() {
+                        *z = net.get(i).and_then(|r| r.get(j)).copied().unwrap_or(0.0);
+                    }
+                    h
+                };
+                let column = |i: usize| net.get(i).copied().unwrap_or([0.0; 4]);
+                let walls = dx * (border(row(0)) + border(row(3)))
+                    + dy * (border(column(0)) + border(column(3)));
+                dx * dy + walls + dome_roof_area(size, ROOF_PANELS, ROOF_POINTS)
+            }
         }
     }
 
@@ -323,9 +555,22 @@ impl Solid {
         match kind {
             Kind::Block => &[Class::Face, Class::Edge, Class::Vertex],
             Kind::Cylinder => &[Class::Face, Class::Smooth, Class::Edge],
-            Kind::Cone => &[Class::Face, Class::Smooth, Class::Edge, Class::Vertex],
+            Kind::Cone | Kind::Dome | Kind::Spline => {
+                &[Class::Face, Class::Smooth, Class::Edge, Class::Vertex]
+            }
             Kind::Sphere | Kind::Torus => &[Class::Smooth],
         }
+    }
+
+    /// Whether a place of this class on this kind has a supporting plane
+    /// (the whole solid on its inner side), so that another solid put
+    /// against it touches it there and nowhere else. True everywhere but
+    /// on the roof of a domed block: the roof has no point whose tangent
+    /// plane clears the rest of it (checked on a grid: its bumps rise
+    /// above every tangent plane), so a contact there is tangent at the
+    /// point and says nothing about the rest.
+    pub fn supported(kind: Kind, class: Class) -> bool {
+        !(kind.domed() && class == Class::Smooth)
     }
 
     /// A place of the class, or `None` when the solid has none.
@@ -481,6 +726,110 @@ impl Solid {
                     t: around,
                 },
             }),
+            // The domed block: its floor and walls are planes, its floor
+            // edges and uprights straight and sharp, its eight corners
+            // sharp; the roof is curved. The roof's own edges, splines,
+            // are no place: a sphere or a torus has none like them.
+            (Solid::Dome { size, .. }, Class::Face) => {
+                let V(dx, dy, height) = size;
+                // A wall reaches at least 0.7 height everywhere: a point
+                // about 0.35 height up is well inside it.
+                let up = 0.35 * height;
+                Some(match (pick.which % 5) as usize {
+                    0 => Place {
+                        p: V(
+                            0.5 * dx + off(pick.u, 0.5 * dx),
+                            0.5 * dy + off(pick.v, 0.5 * dy),
+                            0.0,
+                        ),
+                        n: -V::Z,
+                        t: V::X,
+                    },
+                    k => {
+                        let (start, along, length, n) = dome_wall(size, k - 1);
+                        Place {
+                            p: start
+                                + along * (0.5 * length + off(pick.u, 0.5 * length))
+                                + V::Z * (up + off(pick.v, up)),
+                            n,
+                            t: along,
+                        }
+                    }
+                })
+            }
+            (Solid::Dome { size, .. }, Class::Edge) => {
+                let up = 0.35 * size.2;
+                let k = (pick.which % 8) as usize;
+                let (start, along, length, n) = dome_wall(size, k);
+                Some(if k < 4 {
+                    // A floor edge.
+                    Place {
+                        p: start + along * (0.5 * length + off(pick.u, 0.5 * length)),
+                        n: (n - V::Z) * FRAC_1_SQRT_2,
+                        t: along,
+                    }
+                } else {
+                    // The upright where wall `k - 1` meets wall `k`.
+                    let (_, _, _, before) = dome_wall(size, k + 3);
+                    Place {
+                        p: start + V::Z * (up + off(pick.u, up)),
+                        n: (before + n) * FRAC_1_SQRT_2,
+                        t: V::Z,
+                    }
+                })
+            }
+            (Solid::Dome { size, .. }, Class::Vertex) => {
+                let V(dx, dy, height) = size;
+                let k = (pick.which % 8) as usize;
+                let (corner, _, _, n) = dome_wall(size, k);
+                let (_, _, _, before) = dome_wall(size, k + 3);
+                let sideways = before + n;
+                let n = if k < 4 {
+                    // A floor corner: the plane x + y + z = 0 there, with
+                    // the signs of the corner, has the solid on one side.
+                    (sideways - V::Z).unit()
+                } else {
+                    // A roof corner. The plane with normal (±1, ±1, b)
+                    // through it has the solid below it when the roof
+                    // climbs away from the corner more slowly than the
+                    // plane: b |∂z/∂x| ≤ 1 and b |∂z/∂y| ≤ 1 everywhere,
+                    // which `dome_steepest` bounds. Half that b, so that
+                    // the plane touches the solid at the corner (and
+                    // along the upright below it, where it only has the
+                    // solid's points strictly below the corner) alone.
+                    let b = 0.5 * dx.min(dy) / dome_steepest(height);
+                    (sideways + V::Z * b).unit()
+                };
+                let p = if k < 4 {
+                    corner
+                } else {
+                    corner + V::Z * dome_corner_height(height, k)
+                };
+                Some(Place {
+                    p,
+                    n,
+                    t: n.perpendicular(),
+                })
+            }
+            (Solid::Dome { size, .. }, Class::Smooth) => {
+                // A point of the roof away from its edges, with the
+                // roof's tangent plane: not a supporting plane, see
+                // `supported`.
+                let V(dx, dy, height) = size;
+                let (u, v) = if pick.round {
+                    (0.5, 0.5)
+                } else {
+                    (0.25 + 0.5 * pick.u, 0.25 + 0.5 * pick.v)
+                };
+                let (hu, hv) = dome_slope(height, u, v);
+                Some(Place {
+                    p: V(u * dx, v * dy, dome_height(height, u, v)),
+                    // ∂u × ∂v for ∂u = (dx, 0, h_u) and ∂v = (0, dy, h_v):
+                    // upward.
+                    n: V(-hu * dy, -dx * hv, dx * dy).unit(),
+                    t: V(dx, 0.0, hu).unit(),
+                })
+            }
             _ => None,
         }
     }
@@ -500,6 +849,14 @@ impl Solid {
                 let (s, c) = (TAU * turn).sin_cos();
                 (V(major * c, major * s, 0.0), minor)
             }
+            // Under the lowest the roof gets (0.7 height).
+            Solid::Dome { size, .. } => {
+                let up = 0.35 * size.2;
+                (
+                    V(0.5 * size.0, 0.5 * size.1, up),
+                    (0.5 * size.0).min(0.5 * size.1).min(up),
+                )
+            }
         }
     }
 
@@ -512,6 +869,10 @@ impl Solid {
             }
             Solid::Sphere { radius } => (V::ZERO, radius),
             Solid::Torus { major, minor } => (V::ZERO, major + minor),
+            Solid::Dome { .. } => {
+                let (lo, hi) = self.local_box();
+                ((lo + hi) * 0.5, 0.5 * (hi - lo).length())
+            }
         }
     }
 
@@ -519,7 +880,7 @@ impl Solid {
     /// the middle of a block.
     pub fn axis_point(&self) -> V {
         match *self {
-            Solid::Block { size } => V(0.5 * size.0, 0.5 * size.1, 0.0),
+            Solid::Block { size } | Solid::Dome { size, .. } => V(0.5 * size.0, 0.5 * size.1, 0.0),
             _ => V::ZERO,
         }
     }
@@ -527,7 +888,8 @@ impl Solid {
     /// From where to where the solid reaches along its own z.
     pub fn axial_extent(&self) -> (f64, f64) {
         match *self {
-            Solid::Block { size } => (0.0, size.2),
+            // The roof of a dome is about `height` up.
+            Solid::Block { size } | Solid::Dome { size, .. } => (0.0, size.2),
             Solid::Cylinder { height, .. } | Solid::Cone { height, .. } => (0.0, height),
             Solid::Sphere { radius } => (-radius, radius),
             Solid::Torus { minor, .. } => (-minor, minor),
@@ -546,6 +908,8 @@ impl Solid {
                 let r = major + minor;
                 (V(-r, -r, -minor), V(r, r, minor))
             }
+            // The roof stays within the hull of its net: below 1.3 height.
+            Solid::Dome { size, .. } => (V::ZERO, V(size.0, size.1, 1.3 * size.2)),
         }
     }
 
@@ -564,6 +928,197 @@ impl Solid {
             }
             Solid::Sphere { radius } => p.length() <= radius,
             Solid::Torus { major, minor } => (rho - major).hypot(p.2) <= minor,
+            Solid::Dome { size, .. } => {
+                (0.0..=size.0).contains(&p.0)
+                    && (0.0..=size.1).contains(&p.1)
+                    && p.2 >= 0.0
+                    && p.2 <= dome_height(size.2, p.0 / size.0, p.1 / size.1)
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dome(dx: f64, dy: f64, height: f64) -> Solid {
+        Solid::Dome {
+            size: V(dx, dy, height),
+            spline: false,
+        }
+    }
+
+    /// Points of the solid: a grid over the floor, up to the roof.
+    fn dome_points(size: V) -> Vec<V> {
+        let mut points = Vec::new();
+        let n = 60;
+        for a in 0..=n {
+            for b in 0..=n {
+                let (u, v) = (a as f64 / n as f64, b as f64 / n as f64);
+                let top = dome_height(size.2, u, v);
+                // Up to just under the roof: `contains` evaluates the
+                // roof again at `x / dx`, which rounds.
+                for c in 0..=6 {
+                    let f = if c == 6 { 1.0 - 1e-12 } else { c as f64 / 6.0 };
+                    points.push(V(u * size.0, v * size.1, top * f));
+                }
+            }
+        }
+        points
+    }
+
+    #[test]
+    fn the_net_is_the_test_kits() {
+        let net = dome_net(2.0);
+        assert_eq!(net[0], [1.4, 2.3, 1.7, 2.6]);
+        assert_eq!(net[3], [1.7, 2.6, 2.0, 1.4]);
+        assert!((dome_mean(1.0) - 0.98125).abs() < 1e-15);
+        assert!((dome_steepest(1.0) - 1.35).abs() < 1e-15);
+        // The corners of the patch are the corners of the net.
+        assert!((dome_height(1.0, 0.0, 0.0) - 0.7).abs() < 1e-15);
+        assert!((dome_height(1.0, 1.0, 1.0) - 0.7).abs() < 1e-15);
+        assert!((dome_height(1.0, 0.0, 1.0) - 1.3).abs() < 1e-15);
+        assert!((dome_height(1.0, 1.0, 0.0) - 0.85).abs() < 1e-15);
+        for k in 0..4 {
+            let (corner, ..) = dome_wall(V(2.0, 3.0, 1.0), k);
+            assert!(
+                (dome_corner_height(1.0, k) - dome_height(1.0, corner.0 / 2.0, corner.1 / 3.0))
+                    .abs()
+                    < 1e-15
+            );
+        }
+    }
+
+    #[test]
+    fn the_roof_area_is_settled() {
+        // A gentle roof, and the steepest ones the corpus makes.
+        for size in [
+            V(2.0, 1.5, 2.5),
+            V(1.0, 3.0, 0.8),
+            V(3.0, 1.0, 3.0),
+            V(1.0, 1.0, 3.0),
+        ] {
+            let settled = dome_roof_area(size, ROOF_PANELS, ROOF_POINTS);
+            for (panels, points) in [(4, 16), (16, 8), (1, 128)] {
+                let other = dome_roof_area(size, panels, points);
+                assert!(
+                    (other - settled).abs() < 1e-13 * settled,
+                    "{size:?} {panels}x{points}: {other} vs {settled}"
+                );
+            }
+        }
+        // Against the figure of the scratch check with FreeCAD's dome of
+        // these sizes (whose own roof area was 9.5e-7 off this).
+        assert!((dome(2.0, 1.5, 2.5).area() - 23.67869696607736).abs() < 1e-12);
+        let rule = gauss_legendre(ROOF_POINTS);
+        let weights: f64 = rule.iter().map(|(_, w)| w).sum();
+        assert!((weights - 1.0).abs() < 1e-15);
+        let mean: f64 = rule.iter().map(|(x, w)| x * w).sum();
+        assert!((mean - 0.5).abs() < 1e-15);
+    }
+
+    #[test]
+    fn the_roof_is_the_height_field() {
+        let solid = dome(2.0, 1.5, 2.5);
+        let V(dx, dy, height) = V(2.0, 1.5, 2.5);
+        for &(u, v) in &[(0.3, 0.7), (0.5, 0.5), (0.05, 0.95), (0.8, 0.2)] {
+            let top = dome_height(height, u, v);
+            assert!(solid.contains(V(u * dx, v * dy, top - 1e-9)));
+            assert!(!solid.contains(V(u * dx, v * dy, top + 1e-9)));
+            // The slope by finite differences.
+            let (hu, hv) = dome_slope(height, u, v);
+            let e = 1e-6;
+            let du = (dome_height(height, u + e, v) - dome_height(height, u - e, v)) / (2.0 * e);
+            let dv = (dome_height(height, u, v + e) - dome_height(height, u, v - e)) / (2.0 * e);
+            assert!((hu - du).abs() < 1e-7 && (hv - dv).abs() < 1e-7);
+        }
+        let (lo, hi) = solid.local_box();
+        for p in dome_points(V(dx, dy, height)) {
+            assert!(solid.contains(p));
+            assert!(p.0 >= lo.0 && p.1 >= lo.1 && p.2 >= lo.2);
+            assert!(p.0 <= hi.0 && p.1 <= hi.1 && p.2 <= hi.2);
+        }
+        let (centre, radius) = solid.inner_ball(0.0);
+        for d in [V::X, -V::X, V::Y, -V::Y, V::Z, -V::Z] {
+            assert!(solid.contains(centre + d * (radius * 0.999)));
+        }
+    }
+
+    /// Every place of a domed block lies on it and has the solid on the
+    /// inner side of its plane, except the roof's, which is tangent and
+    /// says so.
+    #[test]
+    fn places_of_a_dome_support_it() {
+        for size in [V(2.0, 1.5, 2.5), V(1.0, 3.0, 0.8), V(3.0, 1.0, 3.0)] {
+            let solid = Solid::Dome {
+                size,
+                spline: false,
+            };
+            let points = dome_points(size);
+            for class in Solid::classes(Kind::Dome) {
+                for which in 0..8 {
+                    for (u, v, round) in [(0.3, 0.8, false), (0.9, 0.1, false), (0.5, 0.5, true)] {
+                        let pick = Pick { which, u, v, round };
+                        let place = solid.place(*class, pick).unwrap();
+                        assert!((place.n.length() - 1.0).abs() < 1e-12);
+                        assert!((place.t.length() - 1.0).abs() < 1e-12);
+                        assert!(place.n.dot(place.t).abs() < 1e-12, "{class:?} {which}");
+                        // On the boundary: outside just above the normal
+                        // and inside just below it, except at a corner,
+                        // where the plane need not point into the solid
+                        // (a roof corner's does not: the roof may fall
+                        // away from it faster than the plane).
+                        assert!(
+                            !solid.contains(place.p + place.n * 1e-7),
+                            "{class:?} {which}"
+                        );
+                        if *class == Class::Vertex {
+                            assert!(solid.contains(place.p), "{class:?} {which}");
+                        } else {
+                            assert!(
+                                solid.contains(place.p - place.n * 1e-7),
+                                "{class:?} {which}"
+                            );
+                        }
+                        if !Solid::supported(Kind::Dome, *class) {
+                            continue;
+                        }
+                        let worst = points
+                            .iter()
+                            .map(|&q| place.n.dot(q - place.p))
+                            .fold(f64::MIN, f64::max);
+                        assert!(worst <= 1e-12, "{class:?} {which} {size:?}: {worst}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_roof_has_no_supporting_tangent_plane() {
+        let size = V(2.0, 1.5, 2.5);
+        let solid = Solid::Dome {
+            size,
+            spline: false,
+        };
+        let points = dome_points(size);
+        let n = 20;
+        for a in 1..n {
+            for b in 1..n {
+                let pick = Pick {
+                    which: 0,
+                    u: a as f64 / n as f64,
+                    v: b as f64 / n as f64,
+                    round: false,
+                };
+                let place = solid.place(Class::Smooth, pick).unwrap();
+                let above = points
+                    .iter()
+                    .map(|&q| place.n.dot(q - place.p))
+                    .fold(f64::MIN, f64::max);
+                assert!(above > 1e-6, "a supporting tangent plane at {pick:?}");
+            }
         }
     }
 }

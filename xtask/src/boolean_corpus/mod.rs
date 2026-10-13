@@ -48,6 +48,15 @@ const APPROXIMATE: f64 = 1e-4;
 /// Points sampled per pair for the independent estimate of the common
 /// volume.
 const SAMPLES: u32 = 20_000;
+/// How far FreeCAD's area of a domed block may be from ours (the volume
+/// and the centroid are held to 1e-9 like every operand's). FreeCAD
+/// integrates the area of a spline face numerically and does not take it
+/// to convergence: for the dome 2 × 1.5 × 2.5 it reports 23.678674443567235
+/// where 24-, 32- and 64-point Gauss–Legendre rules all give
+/// 23.67869696607736, 9.5e-7 off; its volume and centroid of the same
+/// solid are exact (polynomial integrands, which its rule integrates
+/// exactly). The run prints the largest deviation it saw.
+const FREEFORM_AREA: f64 = 1e-5;
 
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
@@ -64,7 +73,7 @@ fn vector(v: V) -> String {
 
 fn solid_json(p: &Placed) -> String {
     let shape = match p.solid {
-        Solid::Block { size } => format!("\"size\":{}", vector(size)),
+        Solid::Block { size } | Solid::Dome { size, .. } => format!("\"size\":{}", vector(size)),
         Solid::Cylinder { radius, height } | Solid::Cone { radius, height } => {
             format!(
                 "\"radius\":{},\"height\":{}",
@@ -252,7 +261,7 @@ fn grade(case: &Case, reference: &Value) -> Result<Grade, String> {
     if let Some(error) = reference.get("err").and_then(Value::as_str) {
         return unreliable(format!("FreeCAD could not build the operands: {error}"));
     }
-    // The operands are primitives: their volume and area are known.
+    // The operands are known solids: their volume and area are known.
     for (name, placed) in [("a", &case.a), ("b", &case.b)] {
         let (Some(v), Some(a)) = (
             field(reference, &[name, "v"]),
@@ -261,10 +270,15 @@ fn grade(case: &Case, reference: &Value) -> Result<Grade, String> {
             return Err(format!("{}: FreeCAD measured no operand {name}", case.id));
         };
         let (volume, area) = (placed.solid.volume(), placed.solid.area());
-        if (v - volume).abs() > 1e-9 * volume || (a - area).abs() > 1e-9 * area {
+        let area_bound = if placed.solid.kind().domed() {
+            FREEFORM_AREA
+        } else {
+            1e-9
+        };
+        if (v - volume).abs() > 1e-9 * volume || (a - area).abs() > area_bound * area {
             return Err(format!(
                 "{}: FreeCAD's operand {name} has volume {v} and area {a}, \
-                 the primitive has {volume} and {area}",
+                 the solid has {volume} and {area}",
                 case.id
             ));
         }
@@ -355,6 +369,37 @@ fn grade(case: &Case, reference: &Value) -> Result<Grade, String> {
         volume_residual: Some(residual / sum),
         area_residual,
     })
+}
+
+/// The largest relative difference between FreeCAD's area of a domed
+/// operand and ours, and the case it was seen on.
+fn freeform_area_deviation(
+    cases: &[Case],
+    answers: &BTreeMap<String, Result<String, String>>,
+) -> Option<(f64, String)> {
+    let mut worst: Option<(f64, String)> = None;
+    for case in cases {
+        let Some(Ok(raw)) = answers.get(&case.id) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(raw) else {
+            continue;
+        };
+        for (name, placed) in [("a", &case.a), ("b", &case.b)] {
+            if !placed.solid.kind().domed() {
+                continue;
+            }
+            let Some(a) = field(&value, &[name, "a"]) else {
+                continue;
+            };
+            let area = placed.solid.area();
+            let off = ((a - area) / area).abs();
+            if worst.as_ref().is_none_or(|(w, _)| off > *w) {
+                worst = Some((off, case.id.clone()));
+            }
+        }
+    }
+    worst
 }
 
 fn escape(text: &str) -> String {
@@ -607,6 +652,12 @@ pub fn run(args: &[String]) -> Result<(), String> {
         lines.push(line);
     }
     eprintln!("boolean corpus: references {counts:?}");
+    if let Some((off, id)) = freeform_area_deviation(&cases, &answers) {
+        eprintln!(
+            "boolean corpus: FreeCAD's area of a domed block is at most {off:.1e} off ours \
+             (on {id}; allowed {FREEFORM_AREA:e})"
+        );
+    }
     if options.only.is_some() {
         for line in &lines {
             println!("{line}");
