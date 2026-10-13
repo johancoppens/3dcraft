@@ -103,7 +103,12 @@ cargo xtask freecad         # if you touched tess, meshio, step, io or file.expo
 cargo test -p craft3d-engine --test panic_hunt                # if you added/changed commands (about 2.5 min; also part of the full test run)
 ```
 
-`cargo xtask ci` runs fmt, clippy, tests, layers and wasm in one go. It is the gate: CI on GitHub (which adds macOS and Windows) runs only weekly and on demand (`gh workflow run CI`), so a commit is never checked there automatically. If `cargo` is not on `PATH` in your shell, it is in `~/.cargo/bin`.
+`cargo xtask ci` runs fmt, clippy, tests, layers and wasm in one go. It is the gate: CI on GitHub (which adds macOS and Windows) runs only weekly and on demand (`gh workflow run CI`), so a commit is never checked there automatically.
+
+**Two steps, so the gate is not paid for every commit** (the developer, 2026-10-13):
+
+- **Per commit, the quick check:** `cargo fmt --all --check`, `cargo clippy -p <crates you touched> --all-targets -- -D warnings`, `cargo test -p <crates you touched>`, and the tests of the crates that depend on them when you changed behaviour or a public API. A commit that changes only docs, comments or the data of one test needs just the tests it can affect. Such commits go on a work branch, not on `main`.
+- **Before `main` moves, the full gate:** `cargo xtask ci` on the exact commit, once per finished piece of work (a merged branch, a finished round), not once per commit. `main` only fast-forwards to a commit the full gate passed. Run it on a separate checkout so work can go on meanwhile, and read its exit status, not its last lines. If `cargo` is not on `PATH` in your shell, it is in `~/.cargo/bin`.
 
 While iterating, run less and keep the full commands above as the final gate: `cargo test -p <crate> --lib --tests` skips examples and doctests, and `cargo test -p <crate> --test <file>` runs one integration-test file.
 

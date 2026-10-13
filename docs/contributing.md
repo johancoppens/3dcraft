@@ -28,7 +28,7 @@
    - `run`, which validates params, records exactly **one** history step and returns a JSON result an agent can verify (ids and names of what was created, feature status).
 4. **Lengths and angles are expressions.** A numeric parameter that belongs to the design accepts an expression string (`"width / 2"`, `"25 mm"`); the command stores the source text.
 5. **Tests** in the module: behaviour (checked through `document.inspect` / mass properties, not internals), undo/redo, disabled states, bad params (empty, out of range, wrong type → `Err`), a save → load → regenerate round trip.
-6. Run the gate in [`AGENTS.md`](../AGENTS.md) §5, including `panic_hunt`.
+6. Run the quick check per commit and the full gate before `main` moves ([`AGENTS.md`](../AGENTS.md) §5), including `panic_hunt` when commands changed.
 
 ## Adding a feature type
 
