@@ -203,6 +203,93 @@ fn the_reference_solids_match_the_cpu_renderer() {
     assert_eq!(check(&scenes), scenes.len() * offscreens().len());
 }
 
+/// The first round of the reference solids with faces highlighted: every
+/// other face, and in the next scene one run of three, so that the runs of
+/// the uniform block are all used and are used in pairs.
+fn highlighted_scenes() -> Vec<Scene> {
+    solid_scenes()
+        .into_iter()
+        .take(16)
+        .enumerate()
+        .map(|(index, mut scene)| {
+            let faces = scene
+                .mesh
+                .face_ids
+                .iter()
+                .copied()
+                .max()
+                .map_or(0, |m| m + 1);
+            let chosen: Vec<u32> = if index % 2 == 0 {
+                (0..faces).step_by(2).collect()
+            } else {
+                (faces / 2..faces).take(3).collect()
+            };
+            let (highlight, _) = craft3d_gpu::Highlight::new([255, 150, 40], chosen);
+            assert!(!highlight.is_empty(), "{}", scene.name);
+            scene.params.highlight = highlight;
+            scene.name = scene.name.replacen("solids-", "highlight-", 1);
+            scene.evidence = [0, 5, 6, 12].contains(&index);
+            scene
+        })
+        .collect()
+}
+
+#[test]
+fn highlighted_faces_match_the_cpu_renderer() {
+    let scenes = highlighted_scenes();
+    assert_eq!(scenes.len(), 16);
+    // The highlight is in the picture at all: the CPU frame has pixels of
+    // the highlight's hue (red well above blue) that the plain one lacks.
+    // (Three faces in a row may all be on the far side; every other face
+    // never is.)
+    let mut shown = 0;
+    for (index, scene) in scenes.iter().enumerate() {
+        let orange = |params: &RenderParams| {
+            craft3d_render::render(&scene.mesh, &scene.camera, params)
+                .unwrap()
+                .rgb
+                .chunks(3)
+                .filter(|p| i32::from(p[0]) - i32::from(p[2]) > 60)
+                .count()
+        };
+        let plain = RenderParams {
+            highlight: craft3d_gpu::Highlight::NONE,
+            ..scene.params
+        };
+        assert_eq!(orange(&plain), 0, "{}", scene.name);
+        let marked = orange(&scene.params);
+        assert!(marked > 20 || index % 2 == 1, "{}", scene.name);
+        shown += usize::from(marked > 20);
+    }
+    assert!(shown >= 12, "{shown} of 16 scenes show their highlight");
+    assert_eq!(check(&scenes), scenes.len() * offscreens().len());
+}
+
+/// A face id the shader cannot compare exactly is refused, not drawn wrong.
+#[test]
+fn a_highlight_above_the_ids_a_float_holds_is_refused() {
+    let mesh = teapot_mesh();
+    let params = params(64, 48, 1);
+    let camera = perspective(&mesh, Vec3::new(1.0, -1.0, 0.8), 30.0, &params);
+    for mut offscreen in offscreens() {
+        let (highlight, _) = craft3d_gpu::Highlight::new([255, 0, 0], [(1 << 24) - 1]);
+        let fine = RenderParams {
+            highlight,
+            ..params
+        };
+        offscreen.render(&mesh, &camera, &fine).unwrap();
+        let (highlight, _) = craft3d_gpu::Highlight::new([255, 0, 0], [3, 1 << 24]);
+        let refused = RenderParams {
+            highlight,
+            ..params
+        };
+        let error = offscreen.render(&mesh, &camera, &refused).unwrap_err();
+        assert!(error.to_string().contains("highlighted faces"), "{error}");
+        // And the renderer goes on.
+        offscreen.render(&mesh, &camera, &params).unwrap();
+    }
+}
+
 fn quad(mesh: &mut Mesh, corners: [Vec3; 4], normal: Vec3, face: u32) {
     let base = mesh.positions.len() as u32;
     mesh.positions.extend(corners);

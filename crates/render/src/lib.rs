@@ -296,6 +296,17 @@ pub const SHADE_DIFFUSE: f64 = 0.8;
 pub const SHADE_SPECULAR: f64 = 0.35;
 /// Exponent of the specular highlight.
 pub const SHADE_SHININESS: i32 = 48;
+/// Ambient term and diffuse weight of a highlighted face ([`Highlight`]):
+/// more ambient light than a plain face gets, so that a highlighted face
+/// in the shade still shows its colour.
+///
+/// Three fifths, like the plain face's one fifth, on purpose: everything
+/// turned away from the light is shaded with the ambient term alone, and a
+/// colour byte times a fifth is never half-way between two levels. With
+/// 0.55 a byte of 150 is 82.5 there, which the two renderers round
+/// differently (the GPU to even), a level apart over the whole shaded side.
+pub const SHADE_HIGHLIGHT_AMBIENT: f64 = 0.6;
+pub const SHADE_HIGHLIGHT_DIFFUSE: f64 = 0.4;
 
 /// A camera resolved to an orthonormal basis and a projection scale. Both
 /// renderers take their projection from here, so there is one definition of
@@ -358,6 +369,92 @@ impl Camera {
     }
 }
 
+/// Most runs of consecutive face ids a [`Highlight`] holds: what fits the
+/// GPU renderer's uniform block.
+pub const MAX_HIGHLIGHT_RANGES: usize = 8;
+
+/// The faces drawn in another base colour, so that one face stands out:
+/// they are shaded like the others, from `color` instead of
+/// [`RenderParams::color`] and with more ambient light
+/// ([`SHADE_HIGHLIGHT_AMBIENT`], [`SHADE_HIGHLIGHT_DIFFUSE`]). Both renderers take it from here, so a
+/// highlighted face is the same face in both.
+///
+/// The faces are held as at most [`MAX_HIGHLIGHT_RANGES`] runs of
+/// consecutive ids, in ascending order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Highlight {
+    pub color: [u8; 3],
+    /// First and last id of each run; a run whose first id is above its
+    /// last is empty.
+    ranges: [[u32; 2]; MAX_HIGHLIGHT_RANGES],
+}
+
+impl Default for Highlight {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
+impl Highlight {
+    /// No face.
+    pub const NONE: Highlight = Highlight {
+        color: [0; 3],
+        ranges: [[1, 0]; MAX_HIGHLIGHT_RANGES],
+    };
+
+    /// The faces `faces` in `color`, and how many of them were left out
+    /// because they make more than [`MAX_HIGHLIGHT_RANGES`] runs: the ones
+    /// with the highest ids. [`NO_FACE`] is never a face.
+    pub fn new(color: [u8; 3], faces: impl IntoIterator<Item = u32>) -> (Self, usize) {
+        let faces: BTreeSet<u32> = faces.into_iter().filter(|&f| f != NO_FACE).collect();
+        let mut out = Self {
+            color,
+            ..Self::NONE
+        };
+        let mut used = 0_usize;
+        let mut left_out = 0_usize;
+        for face in faces {
+            let last = used.checked_sub(1).and_then(|k| out.ranges.get_mut(k));
+            match last {
+                Some(run) if run[1].checked_add(1) == Some(face) => run[1] = face,
+                _ => match out.ranges.get_mut(used) {
+                    Some(run) => {
+                        *run = [face, face];
+                        used += 1;
+                    }
+                    None => left_out += 1,
+                },
+            }
+        }
+        (out, left_out)
+    }
+
+    pub fn contains(&self, face: u32) -> bool {
+        self.ranges
+            .iter()
+            .any(|&[first, last]| first <= face && face <= last)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.ranges().next().is_none()
+    }
+
+    /// The runs that hold a face, as `[first, last]`, in ascending order.
+    pub fn ranges(&self) -> impl Iterator<Item = [u32; 2]> + '_ {
+        self.ranges
+            .iter()
+            .copied()
+            .filter(|&[first, last]| first <= last)
+    }
+
+    /// How many faces it holds.
+    pub fn len(&self) -> u64 {
+        self.ranges()
+            .map(|[first, last]| u64::from(last - first) + 1)
+            .sum()
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RenderParams {
     pub width: u32,
@@ -366,6 +463,8 @@ pub struct RenderParams {
     pub ssaa: u32,
     pub background: [u8; 3],
     pub color: [u8; 3],
+    /// The faces shaded from another base colour.
+    pub highlight: Highlight,
 }
 
 impl Default for RenderParams {
@@ -376,6 +475,7 @@ impl Default for RenderParams {
             ssaa: 2,
             background: [30, 33, 40],
             color: [198, 204, 214],
+            highlight: Highlight::NONE,
         }
     }
 }
@@ -575,7 +675,14 @@ fn sample_range(lo: f64, hi: f64, len: usize) -> Option<(usize, usize)> {
     (first <= end).then_some((first, end))
 }
 
-fn shade(base: [u8; 3], normal: Vec3, to_viewer: Vec3, view: &View) -> [u8; 3] {
+/// `weights` is the ambient term and the diffuse weight.
+fn shade(
+    base: [u8; 3],
+    weights: (f64, f64),
+    normal: Vec3,
+    to_viewer: Vec3,
+    view: &View,
+) -> [u8; 3] {
     // Two-sided: sheets are seen from both sides (the inside of the spout).
     let n = if normal.dot(to_viewer) < 0.0 {
         -normal
@@ -588,7 +695,7 @@ fn shade(base: [u8; 3], normal: Vec3, to_viewer: Vec3, view: &View) -> [u8; 3] {
     let specular = (light + to_viewer)
         .normalized()
         .map_or(0.0, |half| n.dot(half).max(0.0).powi(SHADE_SHININESS));
-    let intensity = SHADE_AMBIENT + SHADE_DIFFUSE * diffuse;
+    let intensity = weights.0 + weights.1 * diffuse;
     // Clamped to 0..=255 before the cast.
     base.map(|c| {
         (f64::from(c) * intensity + 255.0 * SHADE_SPECULAR * specular)
@@ -686,7 +793,15 @@ pub fn render(mesh: &Mesh, camera: &Camera, params: &RenderParams) -> Result<Fra
                 let position = pa * qa + pb * qb + pc * qc;
                 let normal = (na * qa + nb * qb + nc * qc).normalized().or(flat_normal);
                 let to_viewer = view.toward_viewer(position);
-                let rgb = normal.map_or(params.color, |n| shade(params.color, n, to_viewer, &view));
+                let (base, light) = if params.highlight.contains(face) {
+                    (
+                        params.highlight.color,
+                        (SHADE_HIGHLIGHT_AMBIENT, SHADE_HIGHLIGHT_DIFFUSE),
+                    )
+                } else {
+                    (params.color, (SHADE_AMBIENT, SHADE_DIFFUSE))
+                };
+                let rgb = normal.map_or(base, |n| shade(base, light, n, to_viewer, &view));
                 if let (Some(c_slot), Some(id_slot), Some(d_slot)) =
                     (color.get_mut(i), ids.get_mut(i), depth.get_mut(i))
                 {
@@ -732,6 +847,115 @@ pub fn render(mesh: &Mesh, camera: &Camera, params: &RenderParams) -> Result<Fra
         }
     }
     Ok(frame)
+}
+
+/// What [`pick`] found under a position of the picture.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Hit {
+    /// The face id of the triangle, as in [`Frame::ids`].
+    pub face: u32,
+    /// The index of the triangle in the mesh.
+    pub triangle: usize,
+    /// The value [`Frame::depth`] holds there: the distance along the view
+    /// direction interpolated across the triangle on screen, which in
+    /// perspective is close to, not exactly, the distance of `point`.
+    pub depth: f64,
+    /// The point of the triangle under the position, in model coordinates:
+    /// the one that projects onto the position.
+    pub point: Vec3,
+}
+
+/// What [`render`] draws at one sample: the triangle nearest to the viewer
+/// under the position (`x`, `y`) of a picture of `width` × `height` pixels
+/// seen from `camera`, with x to the right and y down from the top-left
+/// corner, so that the centre of pixel (i, j) is (i + 0.5, j + 0.5).
+///
+/// It is the renderer's own arithmetic for one sample: at a pixel centre
+/// the face is the one [`Frame::ids`] holds for that pixel in a picture of
+/// the same size with one sample per pixel, triangles skipped by the
+/// renderer (a vertex at or behind the eye plane) are skipped here, and a
+/// tie goes to the triangle that comes first in the mesh.
+///
+/// `Ok(None)` when nothing is under the position, when it is outside the
+/// picture, and when it is not a number.
+pub fn pick(
+    mesh: &Mesh,
+    camera: &Camera,
+    width: u32,
+    height: u32,
+    x: f64,
+    y: f64,
+) -> Result<Option<Hit>, RenderError> {
+    if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
+        return Err(RenderError::InvalidSize { width, height });
+    }
+    if mesh.normals.len() != mesh.positions.len() || mesh.face_ids.len() != mesh.triangles.len() {
+        return Err(RenderError::InvalidMesh { triangle: 0 });
+    }
+    let view = View::new(camera, width as usize, height as usize)?;
+    // Negated, so that a position that is not a number is outside too.
+    if !(x >= 0.0 && y >= 0.0 && x < view.w && y < view.h) {
+        return Ok(None);
+    }
+    let (px, py) = (x, y);
+    let mut best: Option<(f64, Hit)> = None;
+    for (t, (tri, &face)) in mesh.triangles.iter().zip(&mesh.face_ids).enumerate() {
+        let vertex = |k: u32| {
+            mesh.positions
+                .get(k as usize)
+                .copied()
+                .ok_or(RenderError::InvalidMesh { triangle: t })
+        };
+        let [ia, ib, ic] = *tri;
+        let (pa, pb, pc) = (vertex(ia)?, vertex(ib)?, vertex(ic)?);
+        let (Some(a), Some(b), Some(c)) = (view.project(pa), view.project(pb), view.project(pc))
+        else {
+            continue;
+        };
+        let area = edge(a.sx, a.sy, b.sx, b.sy, c.sx, c.sy);
+        if !area.is_finite() || area == 0.0 {
+            continue;
+        }
+        // The renderer visits the samples within the triangle's box only.
+        let inside =
+            |lo: f64, hi: f64, at: f64| lo.is_finite() && hi.is_finite() && lo <= at && at <= hi;
+        if !inside(a.sx.min(b.sx).min(c.sx), a.sx.max(b.sx).max(c.sx), px)
+            || !inside(a.sy.min(b.sy).min(c.sy), a.sy.max(b.sy).max(c.sy), py)
+        {
+            continue;
+        }
+        let wa = shared_edge(&b, &c, px, py) / area;
+        let wb = shared_edge(&c, &a, px, py) / area;
+        let wc = shared_edge(&a, &b, px, py) / area;
+        // Negated, so that a weight that is not a number is outside.
+        if !(wa >= 0.0 && wb >= 0.0 && wc >= 0.0) {
+            continue;
+        }
+        let sum = wa + wb + wc;
+        let (wa, wb, wc) = (wa / sum, wb / sum, wc / sum);
+        let key = wa * a.key + wb * b.key + wc * c.key;
+        // Strict, as in the renderer: the first triangle wins a tie.
+        if best.as_ref().is_some_and(|(nearest, _)| key >= *nearest) || key.is_nan() {
+            continue;
+        }
+        let (qa, qb, qc) = (wa * a.inv_w, wb * b.inv_w, wc * c.inv_w);
+        let q = qa + qb + qc;
+        let (qa, qb, qc) = (qa / q, qb / q, qc / q);
+        let point = pa * qa + pb * qb + pc * qc;
+        if !point.is_finite() {
+            continue;
+        }
+        best = Some((
+            key,
+            Hit {
+                face,
+                triangle: t,
+                depth: wa * a.dist + wb * b.dist + wc * c.dist,
+                point,
+            },
+        ));
+    }
+    Ok(best.map(|(_, hit)| hit))
 }
 
 #[cfg(test)]
@@ -1349,5 +1573,233 @@ mod tests {
             ..cameras[0]
         };
         assert!(broken.zoomed(2.0).is_none());
+    }
+
+    fn teapot_mesh_and_camera(width: u32, height: u32, perspective: bool) -> (Mesh, Camera) {
+        let mesh = tessellate_patches(&teapot().unwrap(), &TessParams::default()).unwrap();
+        let aspect = f64::from(width) / f64::from(height);
+        let toward = Vec3::new(0.35, -1.0, 0.45);
+        let camera = if perspective {
+            Camera::framing(&mesh.bbox(), toward, Vec3::Z, 30.0, aspect)
+        } else {
+            Camera::framing_orthographic(&mesh.bbox(), toward, Vec3::Z, aspect)
+        }
+        .unwrap();
+        (mesh, camera)
+    }
+
+    #[test]
+    fn a_pick_at_a_pixel_centre_is_the_id_buffer_of_that_pixel() {
+        for perspective in [true, false] {
+            let (width, height) = (96, 72);
+            let (mesh, camera) = teapot_mesh_and_camera(width, height, perspective);
+            let frame = render(&mesh, &camera, &params(width, height, 1)).unwrap();
+            let (mut hits, mut misses) = (0, 0);
+            for y in 0..height {
+                // Every fifth pixel, shifted from row to row: each pick
+                // looks at every triangle.
+                for x in (y % 5..width).step_by(5) {
+                    let i = (y * width + x) as usize;
+                    let hit = pick(
+                        &mesh,
+                        &camera,
+                        width,
+                        height,
+                        f64::from(x) + 0.5,
+                        f64::from(y) + 0.5,
+                    )
+                    .unwrap();
+                    match hit {
+                        None => {
+                            misses += 1;
+                            assert_eq!(frame.ids[i], NO_FACE, "({x}, {y})");
+                        }
+                        Some(hit) => {
+                            hits += 1;
+                            // The very same numbers, not close ones.
+                            assert_eq!(hit.face, frame.ids[i], "({x}, {y})");
+                            assert_eq!(hit.depth, frame.depth[i], "({x}, {y})");
+                            assert_eq!(mesh.face_ids[hit.triangle], hit.face);
+                            // The point is the one seen at that pixel: it
+                            // projects back to the pixel's centre.
+                            let view = View::new(&camera, width as usize, height as usize).unwrap();
+                            let back = view.project(hit.point).unwrap();
+                            assert!(
+                                (back.sx - (f64::from(x) + 0.5)).abs() < 1e-6
+                                    && (back.sy - (f64::from(y) + 0.5)).abs() < 1e-6,
+                                "({x}, {y}): ({}, {})",
+                                back.sx,
+                                back.sy
+                            );
+                        }
+                    }
+                }
+            }
+            assert!(hits > 150 && misses > 150, "{hits} hits, {misses} misses");
+        }
+    }
+
+    #[test]
+    fn a_pick_gives_the_point_under_the_position() {
+        // A unit square at z = 0 seen from above, 100 pixels across the 2
+        // units from -0.5 to 1.5: 50 pixels per unit, and y runs the other
+        // way.
+        let mut mesh = Mesh::default();
+        unit_square(0.0, 7, &mut mesh);
+        for projection in [
+            Projection::Orthographic { half_height: 1.0 },
+            Projection::Perspective {
+                fov_y_deg: 2.0 * (1.0_f64 / 5.0).atan().to_degrees(),
+            },
+        ] {
+            let camera = Camera {
+                projection,
+                ..top_down(1.0)
+            };
+            let hit = pick(&mesh, &camera, 100, 100, 60.0, 40.0).unwrap().unwrap();
+            assert_eq!(hit.face, 7);
+            assert!(
+                (hit.point - Vec3::new(0.7, 0.7, 0.0)).length() < 1e-12,
+                "{:?}",
+                hit.point
+            );
+            assert!((hit.depth - 5.0).abs() < 1e-12);
+            // Beside the square: nothing.
+            assert_eq!(pick(&mesh, &camera, 100, 100, 10.0, 40.0).unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn a_pick_outside_the_picture_or_nowhere_is_nothing_and_never_a_panic() {
+        let mut mesh = Mesh::default();
+        unit_square(0.0, 0, &mut mesh);
+        let camera = top_down(1.0);
+        let hostile = [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            -1.0,
+            -1e-9,
+            100.0,
+            1e300,
+            -1e300,
+        ];
+        for &x in &hostile {
+            for &y in hostile.iter().chain(&[50.0]) {
+                assert_eq!(pick(&mesh, &camera, 100, 100, x, y).unwrap(), None);
+                assert_eq!(pick(&mesh, &camera, 100, 100, y, x).unwrap(), None);
+            }
+        }
+        // The last position inside is still inside: seen this close the
+        // square fills the picture.
+        let filled = top_down(0.5);
+        for (x, y) in [(99.999, 99.999), (0.0, 0.0), (99.999, 0.001)] {
+            assert!(pick(&mesh, &filled, 100, 100, x, y).unwrap().is_some());
+        }
+        assert_eq!(pick(&mesh, &filled, 100, 100, 100.0, 50.0).unwrap(), None);
+        assert!(matches!(
+            pick(&mesh, &camera, 0, 100, 1.0, 1.0),
+            Err(RenderError::InvalidSize { .. })
+        ));
+        assert!(matches!(
+            pick(&mesh, &camera, MAX_SIDE + 1, 100, 1.0, 1.0),
+            Err(RenderError::InvalidSize { .. })
+        ));
+        let nowhere = Camera {
+            target: camera.eye,
+            ..camera
+        };
+        assert!(pick(&mesh, &nowhere, 100, 100, 50.0, 50.0).is_err());
+        // A mesh that names a vertex it does not have, or holds numbers
+        // that are not numbers.
+        let mut broken = mesh.clone();
+        broken.triangles.push([0, 1, 99]);
+        broken.face_ids.push(1);
+        assert!(matches!(
+            pick(&broken, &camera, 100, 100, 50.0, 50.0),
+            Err(RenderError::InvalidMesh { triangle: 2 })
+        ));
+        let mut unlabelled = mesh.clone();
+        unlabelled.face_ids.pop();
+        assert!(pick(&unlabelled, &camera, 100, 100, 50.0, 50.0).is_err());
+        let mut wild = mesh.clone();
+        wild.positions[0] = Vec3::new(f64::NAN, 0.0, 0.0);
+        wild.positions[2] = Vec3::new(1e308, -1e308, f64::INFINITY);
+        let _ = pick(&wild, &camera, 100, 100, 50.0, 50.0).unwrap();
+        assert_eq!(
+            pick(&Mesh::default(), &camera, 100, 100, 50.0, 50.0).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn a_highlight_holds_runs_of_faces_and_says_what_it_left_out() {
+        assert!(Highlight::NONE.is_empty());
+        assert_eq!(Highlight::default(), Highlight::NONE);
+        assert!(!Highlight::NONE.contains(0) && !Highlight::NONE.contains(1));
+        let (some, left_out) = Highlight::new([1, 2, 3], [5, 3, 4, 9, NO_FACE, 5]);
+        assert_eq!(left_out, 0);
+        assert_eq!(some.ranges().collect::<Vec<_>>(), vec![[3, 5], [9, 9]]);
+        assert_eq!(some.len(), 4);
+        for face in 0..12 {
+            assert_eq!(some.contains(face), matches!(face, 3..=5 | 9), "{face}");
+        }
+        assert!(!some.contains(NO_FACE));
+        // Ten separate faces: the first eight are kept.
+        let (many, left_out) = Highlight::new([0; 3], (0..10).map(|k| k * 2));
+        assert_eq!(left_out, 2);
+        assert_eq!(many.len(), MAX_HIGHLIGHT_RANGES as u64);
+        assert!(many.contains(14) && !many.contains(16));
+        // The largest id that is a face, next to the one that is none.
+        let (top, _) = Highlight::new([0; 3], [u32::MAX - 1, u32::MAX]);
+        assert!(top.contains(u32::MAX - 1) && !top.contains(u32::MAX));
+    }
+
+    #[test]
+    fn a_highlighted_face_is_shaded_from_its_own_colour_and_nothing_else_changes() {
+        let (width, height) = (160, 120);
+        let (mesh, camera) = teapot_mesh_and_camera(width, height, true);
+        let plain = render(&mesh, &camera, &params(width, height, 1)).unwrap();
+        let face = plain.ids[(60 * width + 80) as usize];
+        assert_ne!(face, NO_FACE);
+        let (highlight, _) = Highlight::new([255, 140, 0], [face]);
+        let marked = render(
+            &mesh,
+            &camera,
+            &RenderParams {
+                highlight,
+                ..params(width, height, 1)
+            },
+        )
+        .unwrap();
+        assert_eq!(marked.ids, plain.ids);
+        assert_eq!(marked.depth, plain.depth);
+        let (mut changed, mut bluer) = (0, 0);
+        for (i, (a, b)) in plain.rgb.chunks(3).zip(marked.rgb.chunks(3)).enumerate() {
+            if plain.ids[i] == face {
+                // Orange where the body is grey: less blue than red.
+                changed += usize::from(a != b);
+                bluer += usize::from(b[2] >= b[0]);
+            } else {
+                assert_eq!(a, b, "pixel {i} is not of the face");
+            }
+        }
+        let pixels = plain.ids.iter().filter(|&&id| id == face).count();
+        assert!(pixels > 50, "{pixels}");
+        assert_eq!(changed, pixels);
+        // Only where the specular highlight saturates is it not orange.
+        assert!(bluer * 20 <= pixels, "{bluer} of {pixels}");
+        // A highlight of a face the mesh does not have changes nothing.
+        let (absent, _) = Highlight::new([255, 0, 0], [1_000_000]);
+        let same = render(
+            &mesh,
+            &camera,
+            &RenderParams {
+                highlight: absent,
+                ..params(width, height, 1)
+            },
+        )
+        .unwrap();
+        assert_eq!(same, plain);
     }
 }

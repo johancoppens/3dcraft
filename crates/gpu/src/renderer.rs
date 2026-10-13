@@ -7,7 +7,8 @@ use crate::readback;
 use craft3d_math::Bbox3;
 use craft3d_render::{
     Camera, Frame, MAX_SAMPLES, MAX_SIDE, MAX_SSAA, NO_FACE, Projection, RenderError, RenderParams,
-    SHADE_AMBIENT, SHADE_DIFFUSE, SHADE_SHININESS, SHADE_SPECULAR, ViewAxes,
+    SHADE_AMBIENT, SHADE_DIFFUSE, SHADE_HIGHLIGHT_AMBIENT, SHADE_HIGHLIGHT_DIFFUSE,
+    SHADE_SHININESS, SHADE_SPECULAR, ViewAxes,
 };
 use craft3d_tess::Mesh;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -21,8 +22,13 @@ pub(crate) const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8U
 pub(crate) const DATA_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg32Uint;
 pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-/// Number of `f32` in the scene uniform block (eight `vec4`).
-pub(crate) const SCENE_FLOATS: usize = 32;
+/// Number of `f32` in the scene uniform block: eight `vec4` for the view
+/// and the shading, one for the highlight's colour, one for its light and
+/// four for its runs of faces.
+pub(crate) const SCENE_FLOATS: usize = 56;
+
+/// Face ids are compared as `f32` in the shader: exact below this.
+const MAX_HIGHLIGHT_FACE: u32 = 1 << 24;
 
 /// The vertex layout of [`GpuMesh`]: position, normal, the triangle's own
 /// normal, the face id.
@@ -160,6 +166,20 @@ pub(crate) fn scene_uniforms(
     let light = axes.light();
     let l = light.unwrap_or(craft3d_math::Vec3::ZERO);
     let [r, g, b] = params.color.map(f64::from);
+    let [hr, hg, hb] = params.highlight.color.map(f64::from);
+    // Two runs per vector; a run that is not there is first 1, last 0.
+    let mut runs = [[1.0, 0.0, 1.0, 0.0]; 4];
+    for (k, [first, last]) in params.highlight.ranges().enumerate() {
+        if last >= MAX_HIGHLIGHT_FACE {
+            return Err(GpuError::OutOfRange("the highlighted faces"));
+        }
+        if let Some(run) = runs.get_mut(k / 2).and_then(|v| v.get_mut(k % 2 * 2..)) {
+            for (slot, id) in run.iter_mut().zip([first, last]) {
+                *slot = f64::from(id);
+            }
+        }
+    }
+    let [run0, run1, run2, run3] = runs;
     let wide = [
         [
             axes.right.x,
@@ -184,6 +204,12 @@ pub(crate) fn scene_uniforms(
             255.0 * SHADE_SPECULAR,
             f64::from(SHADE_SHININESS.max(0)),
         ],
+        [hr, hg, hb, 0.0],
+        [SHADE_HIGHLIGHT_AMBIENT, SHADE_HIGHLIGHT_DIFFUSE, 0.0, 0.0],
+        run0,
+        run1,
+        run2,
+        run3,
     ];
     let mut out = [0.0_f32; SCENE_FLOATS];
     for (slot, value) in out.iter_mut().zip(wide.iter().flatten()) {
