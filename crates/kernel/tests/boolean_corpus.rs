@@ -65,7 +65,7 @@ use std::path::PathBuf;
 /// the kernel learns something, the test prints the new count: put it
 /// here, in the same commit. Never lower it to get green: a lower count
 /// means booleans that used to be right are now refused or wrong.
-const AGREEING_FLOOR: usize = 5985;
+const AGREEING_FLOOR: usize = 6082;
 
 /// Mismatches the kernel is known to have: `(case id, operation, why)`.
 /// They are bugs, listed so that the test is green while they are open and
@@ -486,32 +486,6 @@ fn second_opinion(
     })
 }
 
-fn spline_edges(body: &Body) -> bool {
-    body.edges
-        .iter()
-        .any(|e| matches!(e.curve, craft3d_geom::Curve3::Nurbs(_)))
-}
-
-/// True when volume and area are within `relative` of the reference's.
-fn within(case: &Value, field: &str, ours: &Measured, relative: f64) -> bool {
-    // Relative to the operands: the result may be a sliver of them.
-    let both = |key: &str| {
-        Some(number(case, &["freecad", "a", key])? + number(case, &["freecad", "b", key])?)
-    };
-    match (
-        number(case, &["freecad", field, "v"]),
-        number(case, &["freecad", field, "a"]),
-        both("v"),
-        both("a"),
-    ) {
-        (Some(v), Some(a), Some(volumes), Some(areas)) => {
-            (ours.volume - v).abs() <= relative * volumes
-                && (ours.area - a).abs() <= relative * areas
-        }
-        _ => false,
-    }
-}
-
 /// The three outcomes of a case, in the order of [`OPS`].
 fn run_case(case: &Value, snap: Option<&Value>, verbose: bool) -> Vec<Outcome> {
     let k = number(case, &["scale"]).unwrap_or(1.0);
@@ -592,25 +566,6 @@ fn run_case(case: &Value, snap: Option<&Value>, verbose: bool) -> Vec<Outcome> {
                     Ok(measured) => {
                         ours = Some(measured);
                         match score(case, snap, field, Some(&measured), size) {
-                            // `mass_properties` integrates along an edge
-                            // in panels that do not end at a spline's
-                            // knots, which costs it up to 1e-5 of the
-                            // result on a rational conic (a cone cut
-                            // along its axis: the hyperbola is exact to
-                            // 1e-15, the volume is off by 5e-6; with the
-                            // panels at the knots it is right to 1e-9).
-                            // That file is another agent's. Until it is
-                            // fixed such a difference is a defect of the
-                            // measurement.
-                            Outcome::Mismatch(difference)
-                                if spline_edges(&result.body)
-                                    && within(case, field, &measured, 1e-5) =>
-                            {
-                                Outcome::Measure(format!(
-                                    "a result with spline edges, within 1e-5 of the reference: \
-                                     {difference}"
-                                ))
-                            }
                             Outcome::Mismatch(difference) => second_opinion(
                                 case,
                                 field,
