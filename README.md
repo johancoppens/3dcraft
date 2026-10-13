@@ -7,7 +7,7 @@ channel or an MCP server.
 ![A part modelled with six commands: a plate, a post with a knob, and a peg](docs/img/part.png)
 
 **Status: the kernel is being made professional.** A part is modelled from primitive solids (block, cylinder,
-sphere, cone, torus) and from sketches: lines, polylines, circles and arcs under sixteen kinds of
+sphere, cone, torus) and from sketches: lines, polylines, circles, arcs and paths of lines and arcs under sixteen kinds of
 constraint, solved by 3DCraft's own solver, extruded or revolved into solids, which are moved, mirrored,
 patterned and combined by booleans (union, subtract, intersect), with variables and formulas throughout.
 Documents are saved as `.3dcraft`, reopened and changed (only what an edit touches is regenerated), rendered
