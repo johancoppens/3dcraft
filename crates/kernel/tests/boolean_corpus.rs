@@ -552,10 +552,9 @@ fn score(
     Outcome::Mismatch(first_difference.unwrap_or_default())
 }
 
-/// The volume of `body` at scale 1 by counting sampled points that the
-/// kernel's own point classification puts inside it, and five standard
-/// deviations of that count. Seeded: the same points every run.
-fn sampled_volume(body: &Body, k: f64, tolerance: &Tolerance) -> Option<(f64, f64)> {
+/// How [`sampled_volume`] samples `body`: the number of points, and the
+/// volume of the box they are drawn from at scale 1.
+fn sampling(body: &Body, k: f64) -> Option<(usize, f64)> {
     // A point through a freeform face costs the kernel about forty
     // milliseconds (a root isolation on the patch per ray): a body with
     // one gets a fifth of the points, and a bound 2.2 times as wide.
@@ -566,6 +565,22 @@ fn sampled_volume(body: &Body, k: f64, tolerance: &Tolerance) -> Option<(f64, f6
         )
     });
     let samples: usize = if freeform_face { 4_000 } else { 20_000 };
+    let (lo, hi) = body.bbox().ok()?.corners()?;
+    let cell = (hi.x - lo.x) * (hi.y - lo.y) * (hi.z - lo.z) / (k * k * k);
+    Some((samples, cell))
+}
+
+/// The slack [`sampled_volume`] reports is never below this: every point
+/// decided and all of them on one side.
+fn least_sampling_slack(samples: usize, cell: f64) -> f64 {
+    cell * (5.0 / samples as f64)
+}
+
+/// The volume of `body` at scale 1 by counting sampled points that the
+/// kernel's own point classification puts inside it, and five standard
+/// deviations of that count. Seeded: the same points every run.
+fn sampled_volume(body: &Body, k: f64, tolerance: &Tolerance) -> Option<(f64, f64)> {
+    let (samples, cell) = sampling(body, k)?;
     let (lo, hi) = body.bbox().ok()?.corners()?;
     let mut state = 0x9E37_79B9_7F4A_7C15_u64;
     let mut unit = || {
@@ -589,7 +604,6 @@ fn sampled_volume(body: &Body, k: f64, tolerance: &Tolerance) -> Option<(f64, f6
     if decided * 10 < samples * 9 {
         return None;
     }
-    let cell = (hi.x - lo.x) * (hi.y - lo.y) * (hi.z - lo.z) / (k * k * k);
     let fraction = inside as f64 / decided as f64;
     let deviation = (fraction * (1.0 - fraction) / decided as f64).sqrt();
     Some((
@@ -611,6 +625,16 @@ fn second_opinion(
     difference: &str,
 ) -> Option<Outcome> {
     let reference = number(case, &["freecad", field, "v"])?;
+    // Sampling can only overrule `mass_properties` where the two volumes
+    // differ by more than twice its slack (`resolved` below). Where they
+    // are nearer than twice the least slack any count can give, the answer
+    // is known before a point is classified: an area-only disagreement on
+    // a freeform body cost 12 to 24 s of sampling for nothing.
+    if let (Some(m), Some((samples, cell))) = (measured, sampling(body, k))
+        && (m.volume - reference).abs() <= 2.0 * least_sampling_slack(samples, cell)
+    {
+        return None;
+    }
     let (sampled, slack) = sampled_volume(body, k, tolerance)?;
     let agrees = (sampled - reference).abs() <= slack;
     // Where the two differ by less than sampling resolves, sampling
@@ -721,6 +745,8 @@ fn run_case(case: &Value, snap: Option<&Value>, verbose: bool) -> Vec<Outcome> {
     let tolerance = Tolerance::new(TOLERANCE * k, 1e-9).unwrap();
     let mut outcomes = Vec::new();
     let mut measured: Vec<Option<Measured>> = Vec::new();
+    let id = case.get("id").and_then(Value::as_str).unwrap_or("?");
+    let set_aside = REFERENCE_OFF.iter().any(|(case, _)| *case == id) || UNDECIDED.contains(&id);
     for (op, name, field) in OPS {
         let started = std::time::Instant::now();
         let mut booleans_ms = 0.0;
@@ -746,6 +772,10 @@ fn run_case(case: &Value, snap: Option<&Value>, verbose: bool) -> Vec<Outcome> {
                     Ok(measured) => {
                         ours = Some(measured);
                         match score(case, snap, field, Some(&measured), size) {
+                            // A disagreement with a reference that is set
+                            // aside is not scored whatever a second
+                            // opinion would say (20,000 points, 2 s).
+                            Outcome::Mismatch(_) if set_aside => Outcome::Unscored,
                             Outcome::Mismatch(difference) => second_opinion(
                                 case,
                                 field,
@@ -762,13 +792,8 @@ fn run_case(case: &Value, snap: Option<&Value>, verbose: bool) -> Vec<Outcome> {
                 }
             }
         };
-        let id = case.get("id").and_then(Value::as_str).unwrap_or("?");
         let outcome = match outcome {
-            Outcome::Mismatch(_)
-                if REFERENCE_OFF.iter().any(|(case, _)| *case == id) || UNDECIDED.contains(&id) =>
-            {
-                Outcome::Unscored
-            }
+            Outcome::Mismatch(_) if set_aside => Outcome::Unscored,
             other => other,
         };
         if verbose {
