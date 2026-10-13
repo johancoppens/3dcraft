@@ -6,15 +6,16 @@ channel or an MCP server.
 
 ![A part modelled with six commands: a plate, a post with a knob, and a peg](docs/img/part.png)
 
-**Status: early.** A part can be modelled from primitive solids (block, cylinder, sphere, cone, torus), placed and turned freely, with
-variables and formulas, saved as `.3dcraft`, reopened, changed, rendered on the CPU and exported as
-STL, 3MF or OBJ, all through commands: from the command line, a JSON-lines server or an MCP server.
-Sketches can be drawn and constrained (lines, circles and arcs; sixteen kinds of constraint, with
-dimensions that follow variables) and are solved by 3DCraft's own solver, which reports the degrees of
-freedom left and which constraints are redundant or in conflict. A sketch's closed profiles, holes
-included, can be extruded into a solid, and a sketch can lie on a face of it. A native window shows
-the model while an agent builds it, also over MCP. There are no booleans, no revolve and no STEP yet;
-[`docs/roadmap.md`](docs/roadmap.md) says what comes next.
+**Status: the kernel is being made professional.** A part is modelled from primitive solids (block, cylinder,
+sphere, cone, torus) and from sketches: lines, polylines, circles and arcs under sixteen kinds of
+constraint, solved by 3DCraft's own solver, extruded or revolved into solids, which are moved, mirrored,
+patterned and combined by booleans (union, subtract, intersect), with variables and formulas throughout.
+Documents are saved as `.3dcraft`, reopened and changed (only what an edit touches is regenerated), rendered
+on the CPU or the GPU, and exported as STEP, STL, 3MF or OBJ, all through commands: from the command line,
+a JSON-lines server or an MCP server. A native window shows the model while an agent builds it, also over
+MCP. Freeform (Bézier and B-spline) faces take part in booleans and are measured against FreeCAD on a corpus
+of 3996 cases. There are no fillets, no lofts and no splines in sketches yet; [`docs/roadmap.md`](docs/roadmap.md)
+says what comes next.
 
 ```sh
 cargo build --release -p craft3d-cli
@@ -37,6 +38,22 @@ target/release/craft3d --control 7878 --control-token-file .private/control.toke
 claude mcp add craft3d -- "$PWD/target/release/craft3d-cli" mcp \
     --bridge 7878 --control-token-file "$PWD/.private/control.token"
 ```
+
+## Showcase
+
+Six models built with the commands that exist today, each driven step by step into the window while the
+developer watched; the pictures are the CPU renderer's. The `.3dcraft` files and the step scripts are in
+[`docs/showcase/`](docs/showcase/); any of them is rebuilt headless with
+
+```sh
+target/release/craft3d-cli run --new '{"units":"mm"}' --script docs/showcase/gear.steps.json --out gear.3dcraft
+```
+
+| | |
+|---|---|
+| ![Spur gear](docs/showcase/gear.png) **Spur gear**, module 2, 24 teeth: the involute flanks as one closed polyline of 336 points, extruded; hub, bore and keyway by booleans. | ![Gear pair](docs/showcase/gearpair.png) **Gear pair** 24:12 in mesh: the pinion turned by half a tooth, its shaft joined; `document.check` with `deep` finds no interference. |
+| ![Timing belt drive](docs/showcase/belt.png) **Timing-belt drive** 20:40: toothed pulleys with flanges and bores; the belt is one sketch with an outer and an inner loop (arcs around the pulleys, tangent runs between them), extruded. | ![Turbine rotor](docs/showcase/turbine.png) **Turbine rotor**: hub by revolve, a cambered blade section extruded radially, its tip cut round by an intersect, seven of them by a circular pattern, joined to the hub; a shroud ring. |
+| ![Wind turbine](docs/showcase/windmill.png) **Wind turbine**: tubular tower by revolve, foundation, nacelle, spinner cone, three blades pitched by `feature.transform` and patterned about the rotor axis, everything one body. | ![Boat hull](docs/showcase/hull.png) **Boat hull** from three profiles (side, plan, section) extruded and intersected, hollowed by the same three a wall thinner, thwarts across. Faceted, since sketches have no splines yet; a loft would make it fair. |
 
 ## First field test: an agent that only knew the command list
 
