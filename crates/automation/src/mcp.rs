@@ -445,7 +445,7 @@ fn tools() -> Value {
 /// The definition of `control_call` for a host with these methods.
 fn control_call_tool(extension: &Extension<'_>) -> Value {
     let mut description = String::from(
-        "Runs one method of the 3DCraft window this server belongs to: what the developer sees, not the document. Use it to read the view (ui.get: the camera, state.picked, the face the developer clicked last, and state.highlight), to ask what the viewport shows at a pixel (ui.pick), to point at a face for the developer (ui.highlight) and to take a picture of the viewport (ui.screenshot). The methods:",
+        "Runs one method of the 3DCraft window this server belongs to: what the developer sees, not the document. Use it to read the view (ui.get: the camera, state.picked, the face or the edge the developer clicked last, and state.highlight and state.highlightEdge), to ask what the viewport shows at a pixel (ui.pick), to point at a face or an edge for the developer (ui.highlight) and to take a picture of the viewport (ui.screenshot). The methods:",
     );
     for method in extension.methods {
         description.push_str(&format!(

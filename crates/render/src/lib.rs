@@ -1897,6 +1897,65 @@ mod tests {
     }
 
     #[test]
+    fn a_neighbourhood_answers_as_pick_does_within_its_radius_and_nothing_outside() {
+        for perspective in [true, false] {
+            let (width, height) = (96, 72);
+            let (mesh, camera) = teapot_mesh_and_camera(width, height, perspective);
+            let view = Viewpoint::new(&camera, width, height).unwrap();
+            assert_eq!(view.is_perspective(), perspective);
+            let (mut hits, mut kept, mut all) = (0, 0, 0);
+            for (cx, cy, radius) in [(48.3, 36.9, 6.0), (20.0, 30.5, 3.5), (2.0, 70.0, 9.0)] {
+                let near =
+                    Neighbourhood::new(&mesh, &camera, width, height, cx, cy, radius).unwrap();
+                kept += near.seen.len();
+                all += mesh.triangles.len();
+                for dy in -12..=12 {
+                    for dx in -12..=12 {
+                        let (x, y) = (cx + f64::from(dx) * 0.77, cy + f64::from(dy) * 0.77);
+                        let within = (x - cx).abs() <= radius && (y - cy).abs() <= radius;
+                        let whole = pick(&mesh, &camera, width, height, x, y).unwrap();
+                        if within {
+                            // The very same hit, not a close one.
+                            assert_eq!(near.pick(x, y), whole, "({x}, {y})");
+                            hits += usize::from(whole.is_some());
+                        } else {
+                            assert_eq!(near.pick(x, y), None, "({x}, {y})");
+                        }
+                        // A point that was hit lands where it was hit, at
+                        // its own distance.
+                        if let Some(hit) = whole {
+                            let [sx, sy, dist] = view.project(hit.point).unwrap();
+                            assert!((sx - x).abs() < 1e-6 && (sy - y).abs() < 1e-6);
+                            assert!((dist - view.distance(hit.point)).abs() < 1e-12);
+                        }
+                    }
+                }
+            }
+            assert!(hits > 100, "{hits}");
+            assert!(kept * 4 < all, "{kept} of {all} triangles were kept");
+        }
+        // Hostile numbers: nothing kept, nothing found, no panic.
+        let mut mesh = Mesh::default();
+        unit_square(0.0, 0, &mut mesh);
+        let camera = top_down(1.0);
+        for bad in [f64::NAN, f64::INFINITY, -1e300] {
+            for (x, y, r) in [(bad, 50.0, 4.0), (50.0, bad, 4.0), (50.0, 50.0, bad)] {
+                let near = Neighbourhood::new(&mesh, &camera, 100, 100, x, y, r).unwrap();
+                assert_eq!(near.pick(50.0, 50.0), None);
+                assert_eq!(near.pick(bad, bad), None);
+            }
+        }
+        assert!(Neighbourhood::new(&mesh, &camera, 0, 100, 1.0, 1.0, 1.0).is_err());
+        assert!(Viewpoint::new(&camera, 100, MAX_SIDE + 1).is_err());
+        let view = Viewpoint::new(&camera, 100, 100).unwrap();
+        assert_eq!(view.project(Vec3::new(f64::NAN, 0.0, 0.0)), None);
+        let mut broken = mesh.clone();
+        broken.triangles.push([0, 1, 99]);
+        broken.face_ids.push(1);
+        assert!(Neighbourhood::new(&broken, &camera, 100, 100, 50.0, 50.0, 4.0).is_err());
+    }
+
+    #[test]
     fn a_highlight_holds_runs_of_faces_and_says_what_it_left_out() {
         assert!(Highlight::NONE.is_empty());
         assert_eq!(Highlight::default(), Highlight::NONE);

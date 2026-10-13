@@ -515,9 +515,14 @@ mod tests {
                 "notice": "Step 2: the post",
                 "quality": {"chordal": 1e-4, "maxTriangles": 500_000},
                 "highlight": {"feature": "F3", "face": "F3:face(2)"},
+                "highlightEdge": {"feature": "F3", "edge": null,
+                                  "between": ["F3:face(0)", "F3:face(2)"]},
                 "picked": {"serial": 4, "x": 120.5, "y": 80.25, "feature": "F3",
                            "name": "Post", "face": "F3:face(2)", "faceIndex": 2,
-                           "point": [1.0, 2.0, 3.5]},
+                           "point": [1.0, 2.0, 3.5], "kind": "edge",
+                           "edge": {"feature": "F3", "body": "Post", "name": "F3:edge(1)",
+                                    "index": 1, "faces": ["F3:face(0)", "F3:face(2)"],
+                                    "point": [1.0, 2.0, 3.0]}},
             })
         );
         let back: UiState = serde_json::from_value(json).unwrap();

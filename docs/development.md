@@ -129,6 +129,8 @@ printf '%s\n' "{\"id\":\"auth\",\"method\":\"auth\",\"params\":{\"token\":\"$TOK
               '{"id":3,"method":"ui.get"}' | nc 127.0.0.1 7878
 ```
 
+**Pointing at an edge.** Click within 4 points of an edge that is in sight: the edge is highlighted instead of the face, and `state.picked` has `kind: "edge"` and `edge` (its body, its own name where it has one, the faces it lies between, its place in `document.edges`, the point). An agent points at an edge with `ui.highlight {"edge": "F1:edge(7)"}` or, for an edge without a name of its own (after a boolean), `ui.highlight {"between": ["F3:copy(0)/F1:face(1)", "F3:copy(1)/F2:face(0)"]}`; `ui.pick` takes `radius` (pixels; 0 for faces only).
+
 Without a window the command `view.pick` answers the same question about the picture `view.render` makes ([`control-protocol.md`](control-protocol.md), *Pointing*).
 
 ## The viewer today
