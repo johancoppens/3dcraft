@@ -12,7 +12,7 @@ const MAX_EDGES: usize = 2_000;
 
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("document.edges", "Edges", r#"{"feature": id or name, "between": [face name, face name]}"#,
-        "Lists the edges of a feature's body, each with the names of the faces it lies between, its curve kind and its end points. With between: only the edges between those two faces (names from document.inspect, faceNames; an alias from faceAliases names the same face). That is how an edge is referred to: by the faces it separates, which keeps meaning the same edge when the model changes upstream, also through booleans. There can be several, or none. The same name twice gives the seams of that face and the cuts between its pieces.", doc: true, document_edges),
+        "Lists the edges of a feature's body, each with the names of the faces it lies between, its curve kind and its end points, and under vertices the vertices those edges end in: index (its place among the vertices of the body), name (its own persistent name, when it has one), point and faces (the names of the faces that meet in it). With between: only the edges between those two faces (names from document.inspect, faceNames; an alias from faceAliases names the same face). That is how an edge is referred to: by the faces it separates, which keeps meaning the same edge when the model changes upstream, also through booleans. There can be several, or none. The same name twice gives the seams of that face and the cuts between its pieces.", doc: true, document_edges),
 ];
 
 fn vec3(v: Vec3) -> Value {
@@ -88,6 +88,21 @@ fn document_edges(session: &mut Session, params: &Value) -> Run {
     };
     let mut edges = Vec::new();
     let mut total = 0_usize;
+    // Per vertex, whether a listed edge ends in it and the faces that meet
+    // in it (those of every edge that ends there, listed or not).
+    let mut ends = vec![false; body.vertices.len()];
+    let mut meeting: Vec<Vec<u32>> = vec![Vec::new(); body.vertices.len()];
+    for (index, edge) in body.edges.iter().enumerate() {
+        for end in [edge.start, edge.end] {
+            if let Some(list) = meeting.get_mut(end.0 as usize) {
+                for face in users.get(index).into_iter().flatten() {
+                    if !list.contains(&face.0) {
+                        list.push(face.0);
+                    }
+                }
+            }
+        }
+    }
     for (index, edge) in body.edges.iter().enumerate() {
         let id = u32::try_from(index).unwrap_or(u32::MAX);
         if wanted.as_ref().is_some_and(|list| !list.contains(&id)) {
@@ -96,6 +111,11 @@ fn document_edges(session: &mut Session, params: &Value) -> Run {
         total = total.saturating_add(1);
         if edges.len() >= MAX_EDGES {
             continue;
+        }
+        for end in [edge.start, edge.end] {
+            if let Some(listed) = ends.get_mut(end.0 as usize) {
+                *listed = true;
+            }
         }
         let faces: Vec<String> = users
             .get(index)
@@ -117,10 +137,33 @@ fn document_edges(session: &mut Session, params: &Value) -> Run {
         }
         edges.push(entry);
     }
+    let mut vertices = Vec::new();
+    for (index, vertex) in body.vertices.iter().enumerate() {
+        if ends.get(index) != Some(&true) {
+            continue;
+        }
+        let mut faces: Vec<u32> = meeting.get(index).cloned().unwrap_or_default();
+        faces.sort_unstable();
+        let faces: Vec<String> = faces
+            .iter()
+            .filter_map(|&face| names.faces.get(face as usize))
+            .map(ToString::to_string)
+            .collect();
+        let mut entry = json!({
+            "index": index,
+            "point": vec3(vertex.point),
+            "faces": faces,
+        });
+        if let (Some(map), Some(name)) = (entry.as_object_mut(), names.vertices.get(index)) {
+            map.insert("name".into(), name.to_string().into());
+        }
+        vertices.push(entry);
+    }
     Ok(json!({
         "feature": feature.to_string(),
         "name": made_by,
         "count": total,
         "edges": edges,
+        "vertices": vertices,
     }))
 }

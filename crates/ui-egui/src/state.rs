@@ -31,6 +31,9 @@ pub const MAX_FACE_NAME_CHARS: usize = 4096;
 /// is a mesh that is not the model.
 pub const MIN_CHORDAL: f64 = 1e-7;
 pub const MAX_CHORDAL: f64 = 1e-1;
+/// The most see-through the bodies get: nearly clear, with a tenth of the
+/// front surface left so that it is still there.
+pub const MAX_TRANSPARENCY: f64 = 0.9;
 /// The display quality's triangle budget is clamped to this range.
 pub const MIN_TRIANGLES: u64 = 1_000;
 pub const MAX_TRIANGLES: u64 = 1 << 26;
@@ -171,6 +174,70 @@ pub struct FaceRef {
     pub face: String,
 }
 
+/// An edge of a body, the way `document.edges` says it: by its own
+/// persistent name where it has one, or by the two faces it lies between.
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct EdgeRef {
+    /// The feature of the body, by id (`F3`) or by name. `None` looks in
+    /// every body, which works while only one has such an edge.
+    pub feature: Option<String>,
+    /// The edge's own persistent name (`name` of `document.edges`).
+    pub edge: Option<String>,
+    /// Without a name of its own: the names of the two faces it lies
+    /// between, as `document.edges` takes them under `between` (the same
+    /// name twice for a seam). Every edge between them is meant.
+    pub between: Vec<String>,
+}
+
+/// A vertex of a body: by its own persistent name where it has one, or by
+/// the faces that meet in it.
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct VertexRef {
+    /// The feature of the body, by id (`F3`) or by name. `None` looks in
+    /// every body, which works while only one has such a vertex.
+    pub feature: Option<String>,
+    /// The vertex's own persistent name (`name` under `vertices` of
+    /// `document.edges`).
+    pub vertex: Option<String>,
+    /// Without a name of its own: names of faces that meet in it. Every
+    /// vertex in which all of them meet is meant.
+    pub corner: Vec<String>,
+}
+
+/// Most face names a [`VertexRef`] keeps.
+pub const MAX_CORNER_FACES: usize = craft3d_engine::MAX_CORNER_FACES;
+
+/// What a click was on: a face, or an edge or a vertex near the position.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PickedKind {
+    Face,
+    Edge,
+    Vertex,
+}
+
+/// The edge or the vertex a click was on.
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct PickedEntity {
+    /// The feature of its body (`F3`) and that feature's name.
+    pub feature: String,
+    pub body: String,
+    /// Its own persistent name, when it has one.
+    pub name: Option<String>,
+    /// Its place in `document.edges`: among the edges, or `index` of a
+    /// vertex.
+    pub index: u64,
+    /// The names of the faces an edge lies between, or that meet in a
+    /// vertex.
+    pub faces: Vec<String>,
+    /// The point of an edge nearest to the click, or the vertex, in model
+    /// coordinates.
+    pub point: [f64; 3],
+}
+
 /// The last click in the viewport, or the last `ui.pick` that asked to be
 /// taken as one: where it was and what was under it. An agent reads here
 /// what the developer pointed at.
@@ -194,6 +261,15 @@ pub struct Picked {
     pub face_index: Option<u64>,
     /// The point under it, in model coordinates.
     pub point: Option<[f64; 3]>,
+    /// What the click was on: a vertex when one was near, otherwise an
+    /// edge when one was near, otherwise the face under it; `None` for a
+    /// click on nothing. The fields above are the face under the click
+    /// either way.
+    pub kind: Option<PickedKind>,
+    /// The edge, when the click was on one.
+    pub edge: Option<PickedEntity>,
+    /// The vertex, when the click was on one.
+    pub vertex: Option<PickedEntity>,
 }
 
 /// Everything the shell remembers that is not in a document.
@@ -213,6 +289,18 @@ pub struct UiState {
     /// `ui.set`). It is dropped when no body has a face of that name any
     /// more.
     pub highlight: Option<FaceRef>,
+    /// The edge shown highlighted in the viewport: the one that was
+    /// clicked last, or the one an agent pointed at (`ui.highlight`, or
+    /// `ui.set`). Dropped when no body has such an edge any more.
+    pub highlight_edge: Option<EdgeRef>,
+    /// The vertex shown highlighted, likewise.
+    pub highlight_vertex: Option<VertexRef>,
+    /// How see-through the bodies are drawn, 0 (opaque, the default) to
+    /// [`MAX_TRANSPARENCY`]: the front surface is blended over the one
+    /// behind it, so that inner faces, holes and cavities show
+    /// (`craft3d_render::render`, *See-through*). The slider in the
+    /// viewport sets it; `ui.set` too.
+    pub transparency: f64,
     /// The last click in the viewport. Read-only over the control channel:
     /// `ui.pick` with `select` makes one.
     pub picked: Option<Picked>,
@@ -286,6 +374,7 @@ impl UiState {
     pub fn validated(mut self) -> Result<Self, String> {
         self.camera = self.camera.validated()?;
         self.quality = self.quality.validated()?;
+        self.transparency = finite("transparency", self.transparency)?.clamp(0.0, MAX_TRANSPARENCY);
         self.notice = one_line(&self.notice, MAX_NOTICE_CHARS);
         self.selected_feature = self
             .selected_feature
@@ -301,6 +390,44 @@ impl UiState {
                 face: cut(&face.face, MAX_FACE_NAME_CHARS),
             })
             .filter(|face| !face.face.is_empty());
+        self.highlight_edge = self
+            .highlight_edge
+            .map(|edge| EdgeRef {
+                feature: edge
+                    .feature
+                    .map(|id| cut(&id, MAX_SELECTION_CHARS))
+                    .filter(|id| !id.is_empty()),
+                edge: edge
+                    .edge
+                    .map(|name| cut(&name, MAX_FACE_NAME_CHARS))
+                    .filter(|name| !name.is_empty()),
+                between: edge
+                    .between
+                    .iter()
+                    .take(2)
+                    .map(|name| cut(name, MAX_FACE_NAME_CHARS))
+                    .collect(),
+            })
+            .filter(|edge| edge.edge.is_some() || !edge.between.is_empty());
+        self.highlight_vertex = self
+            .highlight_vertex
+            .map(|vertex| VertexRef {
+                feature: vertex
+                    .feature
+                    .map(|id| cut(&id, MAX_SELECTION_CHARS))
+                    .filter(|id| !id.is_empty()),
+                vertex: vertex
+                    .vertex
+                    .map(|name| cut(&name, MAX_FACE_NAME_CHARS))
+                    .filter(|name| !name.is_empty()),
+                corner: vertex
+                    .corner
+                    .iter()
+                    .take(MAX_CORNER_FACES)
+                    .map(|name| cut(name, MAX_FACE_NAME_CHARS))
+                    .collect(),
+            })
+            .filter(|vertex| vertex.vertex.is_some() || !vertex.corner.is_empty());
         Ok(self)
     }
 
@@ -336,7 +463,7 @@ impl UiState {
                 moved_by_hand = (camera.contains_key("target") || camera.contains_key("distance"))
                     && !camera.contains_key("autoFit");
             }
-            if key == "highlight" {
+            if key == "highlight" || key == "highlightEdge" || key == "highlightVertex" {
                 // Another face, not the same one with a field changed: a
                 // highlight without `feature` looks in every body.
                 if let Value::Object(map) = &mut merged {
@@ -407,6 +534,19 @@ mod tests {
                 feature: Some("F3".to_string()),
                 face: "F3:face(2)".to_string(),
             }),
+            // The fields for edges and vertices were added with them
+            // (2026-10-13).
+            highlight_edge: Some(EdgeRef {
+                feature: Some("F3".to_string()),
+                edge: None,
+                between: vec!["F3:face(0)".to_string(), "F3:face(2)".to_string()],
+            }),
+            highlight_vertex: Some(VertexRef {
+                feature: None,
+                vertex: Some("F3:vertex(1)".to_string()),
+                corner: Vec::new(),
+            }),
+            transparency: 0.5,
             picked: Some(Picked {
                 serial: 4,
                 x: 120.5,
@@ -416,6 +556,16 @@ mod tests {
                 face: Some("F3:face(2)".to_string()),
                 face_index: Some(2),
                 point: Some([1.0, 2.0, 3.5]),
+                kind: Some(PickedKind::Edge),
+                edge: Some(PickedEntity {
+                    feature: "F3".to_string(),
+                    body: "Post".to_string(),
+                    name: Some("F3:edge(1)".to_string()),
+                    index: 1,
+                    faces: vec!["F3:face(0)".to_string(), "F3:face(2)".to_string()],
+                    point: [1.0, 2.0, 3.0],
+                }),
+                vertex: None,
             }),
         };
         let json = serde_json::to_value(&state).unwrap();
@@ -430,9 +580,17 @@ mod tests {
                 "notice": "Step 2: the post",
                 "quality": {"chordal": 1e-4, "maxTriangles": 500_000},
                 "highlight": {"feature": "F3", "face": "F3:face(2)"},
+                "highlightEdge": {"feature": "F3", "edge": null,
+                                  "between": ["F3:face(0)", "F3:face(2)"]},
+                "highlightVertex": {"feature": null, "vertex": "F3:vertex(1)", "corner": []},
+                "transparency": 0.5,
                 "picked": {"serial": 4, "x": 120.5, "y": 80.25, "feature": "F3",
                            "name": "Post", "face": "F3:face(2)", "faceIndex": 2,
-                           "point": [1.0, 2.0, 3.5]},
+                           "point": [1.0, 2.0, 3.5], "kind": "edge",
+                           "edge": {"feature": "F3", "body": "Post", "name": "F3:edge(1)",
+                                    "index": 1, "faces": ["F3:face(0)", "F3:face(2)"],
+                                    "point": [1.0, 2.0, 3.0]},
+                           "vertex": null},
             })
         );
         let back: UiState = serde_json::from_value(json).unwrap();

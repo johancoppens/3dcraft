@@ -281,8 +281,28 @@ fn check_view(s: &mut Session, label: &str, view: &Value) -> (usize, usize) {
             picks += 1;
         }
     }
-    // A pixel of the background, when the view has one.
-    if let Some(i) = frame.ids.iter().position(|&id| id == NO_FACE) {
+    // A pixel of the background, when the view has one. Changed
+    // 2026-10-13 (edges under the pointer): it was the first pixel without
+    // a face; since a position within the pick radius of an edge in sight
+    // points at that edge, also from just outside the silhouette, the
+    // pixel is now one with no body within the radius (a square of 6
+    // pixels about it is all background: the id buffer says so, not the
+    // code under test), and such a pixel still has to answer `hit: false`.
+    let (w, h) = (width as i64, height as i64);
+    let clear = |i: usize| {
+        let (x, y) = (i as i64 % w, i as i64 / w);
+        (-6..=6_i64).all(|dy| {
+            (-6..=6_i64).all(|dx| {
+                let (nx, ny) = (x + dx, y + dy);
+                nx < 0
+                    || ny < 0
+                    || nx >= w
+                    || ny >= h
+                    || frame.ids[(ny * w + nx) as usize] == NO_FACE
+            })
+        })
+    };
+    if let Some(i) = (0..frame.ids.len()).find(|&i| clear(i)) {
         let (x, y) = (i as u32 % width, i as u32 / width);
         let picked = run(
             s,
@@ -415,7 +435,12 @@ fn every_face_of_every_body_is_picked_from_some_side() {
                     "view.pick",
                     pick_params(&view, f64::from(x) + 0.5, f64::from(y) + 0.5),
                 );
-                if picked["hit"] == true {
+                // Changed 2026-10-13 (edges under the pointer): a hit used
+                // to be a face; a position just outside the silhouette is
+                // now a hit too, on the edge near it, with no face under
+                // it. The faces are collected as before, wherever one is
+                // under the position.
+                if picked["hit"] == true && picked.get("face").is_some() {
                     found.insert((
                         picked["feature"].as_str().unwrap().to_string(),
                         picked["face"].as_str().unwrap().to_string(),

@@ -143,6 +143,7 @@ fn time_direct(
         background: tokens.viewport_background,
         color: tokens.body,
         highlight: craft3d_render::Highlight::NONE,
+        opacity: 1.0,
     };
     let overlay = OverlayParams {
         slack: depth_slack(Backend::Gpu, Some(scene), camera),

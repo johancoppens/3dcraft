@@ -7,12 +7,16 @@ use crate::backend::{Backend, BodyRenderer, RendererChoice, RendererReport};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::direct::{Direct, DirectFailure};
 use crate::frames::{Mode, Scheduler, Ticket};
-use crate::state::{CameraState, FaceRef, Picked, ProjectionKind, UiState, VIEWS};
+use crate::gizmo;
+use crate::state::VertexRef;
+use crate::state::{
+    CameraState, EdgeRef, FaceRef, Picked, PickedEntity, PickedKind, ProjectionKind, UiState,
+};
 use crate::theme::{Tokens, color, color_alpha};
 use crate::viewport::{self, Composed, MAX_SIDE, MIN_SIDE, Overlay, Quality};
 use craft3d_engine::{
-    DocumentStatus, FeatureState, Recoverable, RecoveryOverview, Scene, ScenePick, SceneQuality,
-    Session,
+    DocumentStatus, FeatureState, PickKind, Recoverable, RecoveryOverview, Scene, SceneNear,
+    ScenePointed, SceneQuality, Session,
 };
 use craft3d_math::Bbox3;
 use craft3d_render::Highlight;
@@ -186,6 +190,12 @@ struct FrameKey {
     selected: Option<String>,
     /// The faces shown highlighted.
     highlight: Highlight,
+    /// The edge shown highlighted.
+    highlight_edge: Option<EdgeRef>,
+    /// The vertex shown highlighted.
+    highlight_vertex: Option<VertexRef>,
+    /// How opaque the bodies are.
+    opacity: f64,
     tokens: Tokens,
 }
 
@@ -197,6 +207,8 @@ struct RenderJob {
     tokens: Tokens,
     selected: Option<String>,
     highlight: Highlight,
+    marks: viewport::Marks,
+    opacity: f64,
     /// Asked to repaint when the image is ready.
     #[cfg(not(target_arch = "wasm32"))]
     wake: Option<egui::Context>,
@@ -215,6 +227,8 @@ impl RenderJob {
     fn render(&self, renderer: &mut BodyRenderer) -> Result<Rendered, String> {
         let elapsed = stopwatch();
         renderer.set_highlight(self.highlight);
+        renderer.set_marks(self.marks.clone());
+        renderer.set_opacity(self.opacity);
         let composed = viewport::compose_with(
             renderer,
             self.scene.as_deref(),
@@ -357,6 +371,12 @@ pub struct Shell {
     renders: u64,
     /// The camera when the drag in progress began.
     drag_from: Option<CameraState>,
+    /// The camera when a drag on the orbit gizmo began.
+    gizmo_drag_from: Option<CameraState>,
+    /// Where the orbit gizmo was drawn.
+    gizmo_rect: Option<egui::Rect>,
+    /// Where the see-through slider was drawn.
+    transparency_rect: Option<egui::Rect>,
     /// The box the camera was last fitted to automatically.
     framed: Bbox3,
     themed: bool,
@@ -436,6 +456,9 @@ impl Shell {
             stats: None,
             renders: 0,
             drag_from: None,
+            gizmo_drag_from: None,
+            gizmo_rect: None,
+            transparency_rect: None,
             framed: Bbox3::EMPTY,
             themed: false,
             quit: false,
@@ -712,31 +735,88 @@ impl Shell {
             })
     }
 
+    /// What the viewport draws over the picture to point at something:
+    /// the highlighted edge and the highlighted vertex.
+    pub fn marks(&self, scene: Option<&Scene>) -> viewport::Marks {
+        marks_of(
+            scene,
+            self.state.highlight_edge.as_ref(),
+            self.state.highlight_vertex.as_ref(),
+        )
+    }
+
+    /// How opaque the viewport draws the bodies, 0.1 to 1: one minus
+    /// [`UiState::transparency`].
+    pub fn opacity(&self) -> f64 {
+        let transparency = self.state.transparency;
+        if transparency.is_finite() {
+            1.0 - transparency.clamp(0.0, crate::state::MAX_TRANSPARENCY)
+        } else {
+            1.0
+        }
+    }
+
+    /// Where the see-through slider is in the window, in points, once the
+    /// viewport was drawn.
+    pub fn transparency_rect(&self) -> Option<egui::Rect> {
+        self.transparency_rect
+    }
+
+    /// How near to an edge a click counts as a click on it, in pixels of
+    /// the viewport: the theme's `pick_radius` points.
+    pub fn pick_radius(&self) -> f64 {
+        let radius = f64::from(self.tokens.pick_radius) * f64::from(self.pixels_per_point);
+        if radius.is_finite() {
+            radius.clamp(0.0, craft3d_engine::MAX_PICK_RADIUS)
+        } else {
+            craft3d_engine::DEFAULT_PICK_RADIUS
+        }
+    }
+
     /// What the viewport shows at (`x`, `y`): pixels from the top-left
     /// corner of a picture of `size` (the viewport's own when `None`), as
     /// framed by the camera now. The answer is the engine's
-    /// (`Scene::pick`) on the mesh the viewport draws, so it is the face
-    /// the picture has there, whichever renderer made the picture.
+    /// (`Scene::point_at`) on the mesh the viewport draws, so it is the
+    /// face the picture has there, whichever renderer made the picture,
+    /// and the edge within `radius` pixels of that picture, by the
+    /// engine's rule (`None`: [`Self::pick_radius`], as many pixels of
+    /// that picture as it is of the viewport).
     ///
     /// With `select` this is a click: the answer becomes
-    /// [`UiState::picked`], the face under it the highlight, and a pick on
-    /// nothing clears the highlight.
+    /// [`UiState::picked`], what it points at the highlight (the edge, or
+    /// else the face), and a pick on nothing clears the highlights.
     pub fn pick(
         &mut self,
         scene: Option<&Scene>,
         x: f64,
         y: f64,
         size: Option<[u32; 2]>,
+        radius: Option<f64>,
         select: bool,
-    ) -> Result<Option<ScenePick>, String> {
+    ) -> Result<ScenePointed, String> {
         let [width, height] = size.unwrap_or(self.size);
+        let radius = radius.unwrap_or_else(|| {
+            // The same place on the model in a picture of another size.
+            let stretch = f64::from(width) / f64::from(self.size[0].max(1));
+            self.pick_radius() * stretch
+        });
         let found = match scene {
-            Some(scene) => scene.pick(&self.state.camera.to_render(), width, height, x, y)?,
-            None => None,
+            Some(scene) => {
+                scene.point_at(&self.state.camera.to_render(), width, height, x, y, radius)?
+            }
+            None => ScenePointed::default(),
         };
         if select && x.is_finite() && y.is_finite() {
             self.picks = self.picks.saturating_add(1);
-            let hit = found.as_ref();
+            let hit = found.face.as_ref();
+            let entity = |near: &SceneNear| PickedEntity {
+                feature: near.feature.clone(),
+                body: near.body.clone(),
+                name: near.name.clone(),
+                index: u64::try_from(near.index).unwrap_or(u64::MAX),
+                faces: near.faces.clone(),
+                point: [near.point.x, near.point.y, near.point.z],
+            };
             self.state.picked = Some(Picked {
                 serial: self.picks,
                 x,
@@ -746,13 +826,37 @@ impl Shell {
                 face: hit.and_then(|hit| hit.face.clone()),
                 face_index: hit.and_then(|hit| u64::try_from(hit.face_index).ok()),
                 point: hit.map(|hit| [hit.point.x, hit.point.y, hit.point.z]),
+                kind: found.kind().map(|kind| match kind {
+                    PickKind::Face => PickedKind::Face,
+                    PickKind::Edge => PickedKind::Edge,
+                    PickKind::Vertex => PickedKind::Vertex,
+                }),
+                edge: found
+                    .edge
+                    .as_ref()
+                    .filter(|_| found.vertex.is_none())
+                    .map(entity),
+                vertex: found.vertex.as_ref().map(entity),
             });
-            self.state.highlight = hit.and_then(|hit| {
-                Some(FaceRef {
-                    feature: Some(hit.feature.clone()),
-                    face: hit.face.clone()?,
-                })
-            });
+            // One thing is pointed at: the vertex, or else the edge, or
+            // else the face.
+            self.state.highlight_vertex = found
+                .vertex
+                .as_ref()
+                .and_then(|near| named_vertex(&near.feature, near.name.as_deref(), &near.faces));
+            self.state.highlight_edge = match found.kind() {
+                Some(PickKind::Edge) => found.edge.as_ref().and_then(edge_ref),
+                _ => None,
+            };
+            self.state.highlight = match found.kind() {
+                Some(PickKind::Face) => hit.and_then(|hit| {
+                    Some(FaceRef {
+                        feature: Some(hit.feature.clone()),
+                        face: hit.face.clone()?,
+                    })
+                }),
+                _ => None,
+            };
         }
         Ok(found)
     }
@@ -781,6 +885,8 @@ impl Shell {
             self.rows.clear();
             self.state.selected_feature = None;
             self.state.highlight = None;
+            self.state.highlight_edge = None;
+            self.state.highlight_vertex = None;
             self.state.picked = None;
             self.framed = Bbox3::EMPTY;
             return None;
@@ -806,11 +912,42 @@ impl Shell {
         }) {
             self.state.highlight = None;
         }
+        // An edge likewise: by its own name, or by the faces it lies
+        // between.
+        let edge_gone = |edge: &EdgeRef| {
+            scene
+                .edges_named(edge.feature.as_deref(), edge.edge.as_deref(), &edge.between)
+                .is_err()
+        };
+        if self.state.highlight_edge.as_ref().is_some_and(edge_gone) {
+            self.state.highlight_edge = None;
+        }
+        let vertex_gone = |vertex: &VertexRef| {
+            scene
+                .vertices_named(
+                    vertex.feature.as_deref(),
+                    vertex.vertex.as_deref(),
+                    &vertex.corner,
+                )
+                .is_err()
+        };
+        if self
+            .state
+            .highlight_vertex
+            .as_ref()
+            .is_some_and(vertex_gone)
+        {
+            self.state.highlight_vertex = None;
+        }
         if self.state.picked.as_ref().is_some_and(|picked| {
             picked
                 .face
                 .as_ref()
                 .is_some_and(|face| scene.faces_named(picked.feature.as_deref(), face).is_err())
+                || picked
+                    .edge
+                    .as_ref()
+                    .is_some_and(|edge| picked_edge_ref(edge).is_none_or(|edge| edge_gone(&edge)))
         }) {
             self.state.picked = None;
         }
@@ -1220,7 +1357,7 @@ impl Shell {
             let y = across(rect.top(), rect.bottom(), at.y, height);
             // A picture that cannot be made has nothing to point at; the
             // viewport says why already.
-            let _ = self.pick(scene, x, y, None, true);
+            let _ = self.pick(scene, x, y, None, None, true);
             ui.ctx().request_repaint();
         }
 
@@ -1235,6 +1372,9 @@ impl Shell {
             largest,
             selected: self.state.selected_feature.clone(),
             highlight: self.face_highlight(scene),
+            highlight_edge: self.state.highlight_edge.clone(),
+            highlight_vertex: self.state.highlight_vertex.clone(),
+            opacity: self.opacity(),
             tokens,
         };
         // The direct path draws the whole picture, lines included, on the
@@ -1307,7 +1447,11 @@ impl Shell {
             );
         }
 
-        // View buttons, bottom-right: camera only, so not commands.
+        // The orbit gizmo and, under it, the controls the view buttons
+        // had that it does not replace: fit, the corner view, the
+        // projection. Bottom-right, camera only, so not commands. They are
+        // widgets of their own over the viewport: a click on them is not
+        // a click in the viewport, and picks nothing.
         let mut view = None;
         let mut fit = false;
         let mut toggle = false;
@@ -1322,16 +1466,55 @@ impl Shell {
                     ProjectionKind::Orthographic => "Orthographic",
                 };
                 toggle = ui.small_button(projection).clicked();
-                for (name, ..) in VIEWS.iter().rev() {
-                    if ui.small_button(*name).clicked() {
-                        view = Some(*name);
-                    }
+                if ui.small_button("iso").clicked() {
+                    view = Some("iso");
                 }
                 fit = ui.small_button("Fit").clicked();
+                // How see-through the bodies are: view state, like the
+                // camera. Its own widget, so a drag on it is not a drag
+                // in the viewport.
+                ui.add_space(8.0);
+                let mut transparency = self.state.transparency;
+                ui.spacing_mut().slider_width = tokens.slider_width;
+                let slider = ui
+                    .add(
+                        egui::Slider::new(&mut transparency, 0.0..=crate::state::MAX_TRANSPARENCY)
+                            .show_value(false),
+                    )
+                    .on_hover_text("See-through: how much of what is behind a surface shows");
+                self.transparency_rect = Some(slider.rect);
+                if slider.changed() && transparency.is_finite() {
+                    self.state.transparency =
+                        transparency.clamp(0.0, crate::state::MAX_TRANSPARENCY);
+                    ui.ctx().request_repaint();
+                }
+                ui.label(
+                    egui::RichText::new("See-through")
+                        .color(color(tokens.text_dim))
+                        .small(),
+                );
             });
         });
+        let side = tokens
+            .gizmo_size
+            .min(inner.width())
+            .min(inner.height() - 28.0);
+        if side >= 4.0 * tokens.gizmo_end_radius {
+            let place = egui::Rect::from_min_size(
+                egui::pos2(inner.right() - side, bar.top() - 6.0 - side),
+                egui::vec2(side, side),
+            );
+            self.gizmo_rect = Some(place);
+            if let Some(turned) = self.gizmo(ui, place) {
+                view = turned;
+            }
+        } else {
+            self.gizmo_rect = None;
+            self.gizmo_drag_from = None;
+        }
         if let Some(name) = view {
-            // The names come from the table, so this cannot fail.
+            // The names come from the table, so this cannot fail. (The
+            // gizmo has turned the camera itself.)
             let _ = self.state.camera.set_view(name);
             ui.ctx().request_repaint();
         }
@@ -1346,6 +1529,111 @@ impl Shell {
             self.fit_to(scene);
             ui.ctx().request_repaint();
         }
+    }
+
+    /// The orbit gizmo in `place`: paints it and handles its mouse.
+    /// Returns the view a click on one of its ends asked for (the camera
+    /// is then to be framed again, as after a view button); a drag orbits
+    /// the camera here and returns nothing.
+    fn gizmo(&mut self, ui: &mut egui::Ui, place: egui::Rect) -> Option<Option<&'static str>> {
+        let tokens = self.tokens;
+        let response = ui.interact(
+            place,
+            ui.id().with("orbit-gizmo"),
+            egui::Sense::click_and_drag(),
+        );
+        // The arm leaves room for the disc at its end.
+        let arm = (place.width() * 0.5 - tokens.gizmo_end_radius - 1.0).max(1.0);
+        let center = place.center();
+        let mut turned = None;
+        if response.drag_started() {
+            self.gizmo_drag_from = Some(self.state.camera);
+        }
+        if response.dragged() {
+            // As a drag in the viewport: from where it began, by how far
+            // the pointer is from there now.
+            if let (Some(from), Some(total)) = (self.gizmo_drag_from, response.total_drag_delta()) {
+                let mut camera = from;
+                camera.orbit(f64::from(total.x), f64::from(total.y));
+                self.state.camera = camera;
+            }
+            ui.ctx().request_repaint();
+        } else {
+            self.gizmo_drag_from = None;
+        }
+        if response.clicked()
+            && let Some(at) = response.interact_pointer_pos()
+        {
+            let at = [
+                f64::from(at.x - center.x) / f64::from(arm),
+                f64::from(at.y - center.y) / f64::from(arm),
+            ];
+            let reach = f64::from(tokens.gizmo_end_radius + 2.0) / f64::from(arm);
+            if let Some(end) = gizmo::end_at(&self.state.camera, at, reach) {
+                turned = Some(Some(gizmo::click(&mut self.state.camera, &end)));
+            }
+        }
+        let painter = ui.painter_at(place.expand(1.0));
+        painter.circle_filled(
+            center,
+            place.width() * 0.5,
+            color_alpha(tokens.panel_fill, tokens.gizmo_opacity),
+        );
+        let hovered = response
+            .hover_pos()
+            .map(|at| {
+                [
+                    f64::from(at.x - center.x) / f64::from(arm),
+                    f64::from(at.y - center.y) / f64::from(arm),
+                ]
+            })
+            .and_then(|at| {
+                let reach = f64::from(tokens.gizmo_end_radius + 2.0) / f64::from(arm);
+                gizmo::end_at(&self.state.camera, at, reach)
+            });
+        for end in gizmo::ends(&self.state.camera) {
+            let at = center + egui::vec2(end.offset[0] as f32, end.offset[1] as f32) * arm;
+            let ink = tokens
+                .axes
+                .get(end.axis)
+                .copied()
+                .unwrap_or(tokens.text_dim);
+            let over = hovered.is_some_and(|h| (h.axis, h.positive) == (end.axis, end.positive));
+            if end.positive {
+                painter.line_segment(
+                    [center, at],
+                    egui::Stroke::new(tokens.axis_width * 1.6, color(ink)),
+                );
+                painter.circle_filled(at, tokens.gizmo_end_radius, color(ink));
+                painter.text(
+                    at,
+                    egui::Align2::CENTER_CENTER,
+                    end.label(),
+                    egui::FontId::proportional(tokens.gizmo_end_radius * 1.25),
+                    color(tokens.notice_fill),
+                );
+            } else {
+                painter.circle_filled(
+                    at,
+                    tokens.gizmo_end_radius * 0.72,
+                    color_alpha(ink, if over { 255 } else { 120 }),
+                );
+            }
+            if over {
+                painter.circle_stroke(
+                    at,
+                    tokens.gizmo_end_radius + 1.0,
+                    egui::Stroke::new(1.5, color(tokens.text)),
+                );
+            }
+        }
+        turned
+    }
+
+    /// Where the orbit gizmo is in the window, in points, once the
+    /// viewport was drawn with room for it.
+    pub fn gizmo_rect(&self) -> Option<egui::Rect> {
+        self.gizmo_rect
     }
 
     fn fit_to(&mut self, scene: Option<&Scene>) {
@@ -1440,6 +1728,12 @@ impl Shell {
             return false;
         };
         direct.set_highlight(key.highlight);
+        direct.set_opacity(key.opacity);
+        direct.set_marks(marks_of(
+            scene,
+            key.highlight_edge.as_ref(),
+            key.highlight_vertex.as_ref(),
+        ));
         let outcome = direct.frame(
             scene,
             &key.camera,
@@ -1516,6 +1810,12 @@ impl Shell {
             tokens: key.tokens,
             selected: key.selected.clone(),
             highlight: key.highlight,
+            marks: marks_of(
+                scene.map(Arc::as_ref),
+                key.highlight_edge.as_ref(),
+                key.highlight_vertex.as_ref(),
+            ),
+            opacity: key.opacity,
             #[cfg(not(target_arch = "wasm32"))]
             wake: Some(ctx.clone()),
         };
@@ -1687,6 +1987,69 @@ const GPU_TARGET_SIDE: u64 = 8192;
 
 /// Paints the overlay, which is in image pixels, into `rect`, which is the
 /// same image in points.
+/// The marks of a highlighted edge and a highlighted vertex.
+fn marks_of(
+    scene: Option<&Scene>,
+    edge: Option<&EdgeRef>,
+    vertex: Option<&VertexRef>,
+) -> viewport::Marks {
+    let edges = edge.map_or_else(viewport::Marks::default, |edge| {
+        viewport::edge_marks(scene, edge)
+    });
+    let vertices = vertex.map_or_else(viewport::Marks::default, |vertex| {
+        viewport::vertex_marks(scene, vertex)
+    });
+    edges.with(vertices)
+}
+
+/// A vertex as a highlight refers to it: by its own name when it has one,
+/// otherwise by the faces that meet in it. `None` for a vertex with
+/// neither.
+fn named_vertex(feature: &str, name: Option<&str>, faces: &[String]) -> Option<VertexRef> {
+    if name.is_none() && faces.is_empty() {
+        return None;
+    }
+    Some(VertexRef {
+        feature: Some(feature.to_string()),
+        vertex: name.map(str::to_string),
+        corner: if name.is_some() {
+            Vec::new()
+        } else {
+            faces
+                .iter()
+                .take(crate::state::MAX_CORNER_FACES)
+                .cloned()
+                .collect()
+        },
+    })
+}
+
+/// The edge a pick found, as a highlight refers to it: by its own name
+/// when it has one, otherwise by the faces it lies between (a seam: its
+/// one face twice). `None` for an edge with neither.
+fn edge_ref(near: &SceneNear) -> Option<EdgeRef> {
+    named_edge(&near.feature, near.name.as_deref(), &near.faces)
+}
+
+/// [`edge_ref`] for the edge of a remembered click.
+fn picked_edge_ref(edge: &PickedEntity) -> Option<EdgeRef> {
+    named_edge(&edge.feature, edge.name.as_deref(), &edge.faces)
+}
+
+fn named_edge(feature: &str, name: Option<&str>, faces: &[String]) -> Option<EdgeRef> {
+    let between = match (name, faces) {
+        (Some(_), _) => Vec::new(),
+        (None, [a, b]) => vec![a.clone(), b.clone()],
+        (None, [a]) => vec![a.clone(), a.clone()],
+        (None, _) => return None,
+    };
+    Some(EdgeRef {
+        feature: Some(feature.to_string()),
+        edge: name.map(str::to_string),
+        between,
+    })
+}
+
 fn paint_overlay(
     painter: &egui::Painter,
     rect: egui::Rect,
@@ -1720,6 +2083,6 @@ fn paint_overlay(
             point.kind.color(tokens),
             viewport::opacity(point.hidden, tokens),
         );
-        painter.circle_filled(place(point.at), tokens.point_radius, tint);
+        painter.circle_filled(place(point.at), point.kind.dot_radius(tokens), tint);
     }
 }

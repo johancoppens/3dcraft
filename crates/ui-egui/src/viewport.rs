@@ -15,7 +15,7 @@
 
 use crate::backend::{Backend, BodyRenderer};
 use crate::camera::{Projected, Projector};
-use crate::state::CameraState;
+use crate::state::{CameraState, EdgeRef, VertexRef};
 use crate::theme::{Rgb, Tokens};
 use craft3d_engine::Scene;
 use craft3d_math::Vec3;
@@ -42,6 +42,8 @@ pub enum LineKind {
     Axis(usize),
     /// An edge of a body.
     Edge,
+    /// An edge or a vertex that is pointed at ([`Marks`]).
+    Highlight,
 }
 
 /// A line in image pixels (x right, y down, from the top-left corner).
@@ -85,6 +87,7 @@ impl LineKind {
             LineKind::Selected => tokens.sketch_selected,
             LineKind::Axis(axis) => tokens.axes.get(axis).copied().unwrap_or(tokens.text_dim),
             LineKind::Edge => tokens.edge,
+            LineKind::Highlight => tokens.face_highlight,
         }
     }
 
@@ -95,8 +98,95 @@ impl LineKind {
             LineKind::Construction => tokens.construction_width,
             LineKind::Axis(_) => tokens.axis_width,
             LineKind::Edge => tokens.edge_width,
+            LineKind::Highlight => tokens.highlight_width,
         }
     }
+
+    /// The radius of a dot of this kind, in points.
+    pub fn dot_radius(self, tokens: &Tokens) -> f32 {
+        match self {
+            LineKind::Highlight => tokens.highlight_radius,
+            _ => tokens.point_radius,
+        }
+    }
+}
+
+/// What is drawn over the picture to point at something: the edges that
+/// are highlighted, as the pieces of line the scene draws them with. Both
+/// paths of the viewport draw them from here (the lines of [`Overlay`] and
+/// the segments of [`crate::direct::segments_marked`]), over everything
+/// else, in the theme's highlight colour; the part behind a body is drawn
+/// dimmed, like a sketch there, so that an edge an agent points at is
+/// found also from the wrong side.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct Marks {
+    pub lines: Vec<[Vec3; 2]>,
+    /// The highlighted vertices, drawn as dots.
+    pub points: Vec<Vec3>,
+}
+
+impl Marks {
+    pub fn is_empty(&self) -> bool {
+        self.lines.is_empty() && self.points.is_empty()
+    }
+
+    /// Both together.
+    pub fn with(mut self, other: Marks) -> Marks {
+        self.lines.extend(other.lines);
+        self.points.extend(other.points);
+        self
+    }
+}
+
+/// The vertices of `scene` that `vertex` refers to, as marks. None when
+/// the scene has no such vertex.
+pub fn vertex_marks(scene: Option<&Scene>, vertex: &VertexRef) -> Marks {
+    let mut marks = Marks::default();
+    let Some(scene) = scene else {
+        return marks;
+    };
+    let Ok(found) = scene.vertices_named(
+        vertex.feature.as_deref(),
+        vertex.vertex.as_deref(),
+        &vertex.corner,
+    ) else {
+        return marks;
+    };
+    let Some(body) = scene.bodies.get(found.body_index) else {
+        return marks;
+    };
+    marks.points.extend(
+        found
+            .vertices
+            .iter()
+            .filter_map(|&k| body.vertices.get(k).copied()),
+    );
+    marks
+}
+
+/// The edges of `scene` that `edge` refers to, as marks. None when the
+/// scene has no such edge: a highlight is view state and may outlive what
+/// it names.
+pub fn edge_marks(scene: Option<&Scene>, edge: &EdgeRef) -> Marks {
+    let mut marks = Marks::default();
+    let Some(scene) = scene else {
+        return marks;
+    };
+    let Ok(found) = scene.edges_named(edge.feature.as_deref(), edge.edge.as_deref(), &edge.between)
+    else {
+        return marks;
+    };
+    let Some(body) = scene.bodies.get(found.body_index) else {
+        return marks;
+    };
+    for polyline in found.edges.iter().filter_map(|&k| body.edges.get(k)) {
+        for pair in polyline.windows(2) {
+            if let [a, b] = *pair {
+                marks.lines.push([a, b]);
+            }
+        }
+    }
+    marks
 }
 
 /// The longest line is cut into at most this many pieces for the depth
@@ -267,7 +357,7 @@ pub fn overlay(
     height: u32,
     selected: Option<&str>,
 ) -> Overlay {
-    build_overlay(scene, camera, width, height, selected, None)
+    build_overlay(scene, camera, width, height, selected, None, None)
 }
 
 /// The lines over `frame`, the image of the scene's bodies seen with
@@ -298,6 +388,34 @@ pub fn overlay_on_with(
     selected: Option<&str>,
     slack: f64,
 ) -> Overlay {
+    overlay_marked(scene, camera, frame, selected, slack, &Marks::default())
+}
+
+/// [`overlay_on_with`] with `marks` drawn over everything else.
+pub fn overlay_marked(
+    scene: Option<&Scene>,
+    camera: &CameraState,
+    frame: &Frame,
+    selected: Option<&str>,
+    slack: f64,
+    marks: &Marks,
+) -> Overlay {
+    overlay_see_through(scene, camera, frame, selected, slack, marks, false)
+}
+
+/// [`overlay_marked`] for a picture whose bodies are see-through or not:
+/// through see-through bodies the hidden part of a body's edge is drawn
+/// too, dimmed as a hidden sketch is, so that the edges of a hole or a
+/// cavity inside show and the shape stays readable.
+pub fn overlay_see_through(
+    scene: Option<&Scene>,
+    camera: &CameraState,
+    frame: &Frame,
+    selected: Option<&str>,
+    slack: f64,
+    marks: &Marks,
+    see_through: bool,
+) -> Overlay {
     let map = DepthMap::new(frame, slack);
     build_overlay(
         scene,
@@ -306,6 +424,7 @@ pub fn overlay_on_with(
         frame.height,
         selected,
         map.as_ref(),
+        Some((marks, see_through)),
     )
 }
 
@@ -316,7 +435,10 @@ fn build_overlay(
     height: u32,
     selected: Option<&str>,
     map: Option<&DepthMap<'_>>,
+    marked: Option<(&Marks, bool)>,
 ) -> Overlay {
+    let marks = marked.map(|(marks, _)| marks);
+    let see_through = marked.is_some_and(|(_, see_through)| see_through);
     let mut out = Overlay::default();
     let Some(projector) = Projector::new(&camera.to_render(), f64::from(width), f64::from(height))
     else {
@@ -352,7 +474,7 @@ fn build_overlay(
         for edge in &body.edges {
             for pair in edge.windows(2) {
                 if let [a, b] = *pair {
-                    line(a, b, LineKind::Edge, true, false);
+                    line(a, b, LineKind::Edge, true, see_through);
                 }
             }
         }
@@ -367,10 +489,7 @@ fn build_overlay(
             false,
         );
     }
-    let Some(scene) = scene else {
-        return out;
-    };
-    for sketch in &scene.sketches {
+    for sketch in scene.into_iter().flat_map(|scene| &scene.sketches) {
         let chosen = selected == Some(sketch.feature.as_str());
         for polyline in &sketch.polylines {
             let kind = match (polyline.construction, chosen) {
@@ -385,7 +504,11 @@ fn build_overlay(
             }
         }
     }
-    for sketch in &scene.sketches {
+    // What is pointed at, over everything else.
+    for &[a, b] in marks.into_iter().flat_map(|marks| &marks.lines) {
+        line(a, b, LineKind::Highlight, true, true);
+    }
+    for sketch in scene.into_iter().flat_map(|scene| &scene.sketches) {
         let kind = if selected == Some(sketch.feature.as_str()) {
             LineKind::Selected
         } else {
@@ -399,6 +522,15 @@ fn build_overlay(
                     hidden: map.is_some_and(|map| map.covers(p.x, p.y, p.depth)),
                 });
             }
+        }
+    }
+    for point in marks.into_iter().flat_map(|marks| &marks.points) {
+        if let Some(p) = projector.project(*point) {
+            out.points.push(OverlayPoint {
+                at: [p.x, p.y],
+                kind: LineKind::Highlight,
+                hidden: map.is_some_and(|map| map.covers(p.x, p.y, p.depth)),
+            });
         }
     }
     out
@@ -423,6 +555,7 @@ pub fn render_params(quality: Quality, tokens: &Tokens) -> RenderParams {
         background: tokens.viewport_background,
         color: tokens.body,
         highlight: Highlight::NONE,
+        opacity: 1.0,
     }
 }
 
@@ -507,12 +640,14 @@ pub fn compose_with(
 ) -> Result<Composed, String> {
     let (frame, backend) = renderer.render(scene, camera, quality, tokens)?;
     let coverage = frame.coverage();
-    let overlay = overlay_on_with(
+    let overlay = overlay_see_through(
         scene,
         camera,
         &frame,
         selected,
         depth_slack(backend, scene, camera),
+        renderer.marks(),
+        renderer.opacity() < 1.0,
     );
     Ok(Composed {
         width: frame.width,
@@ -567,8 +702,38 @@ pub fn picture_with(
     highlight: Highlight,
     scale: f64,
 ) -> Result<Picture, String> {
+    picture_marked(
+        scene,
+        camera,
+        quality,
+        tokens,
+        selected,
+        highlight,
+        &Marks::default(),
+        1.0,
+        scale,
+    )
+}
+
+/// [`picture_with`] with `marks` drawn over the picture, and the bodies
+/// `opacity` opaque (1: as ever): what the window shows when an edge was
+/// clicked or pointed at, or the bodies were made see-through.
+#[allow(clippy::too_many_arguments)]
+pub fn picture_marked(
+    scene: Option<&Scene>,
+    camera: &CameraState,
+    quality: Quality,
+    tokens: &Tokens,
+    selected: Option<&str>,
+    highlight: Highlight,
+    marks: &Marks,
+    opacity: f64,
+    scale: f64,
+) -> Result<Picture, String> {
     let mut renderer = BodyRenderer::cpu();
     renderer.set_highlight(highlight);
+    renderer.set_marks(marks.clone());
+    renderer.set_opacity(opacity);
     let composed = compose_with(&mut renderer, scene, camera, quality, tokens, selected)?;
     Ok(rasterise(composed, tokens, scale))
 }
@@ -611,7 +776,7 @@ pub fn rasterise(composed: Composed, tokens: &Tokens, scale: f64) -> Picture {
             height,
             point.at,
             point.at,
-            f64::from(tokens.point_radius) * 2.0 * scale,
+            f64::from(point.kind.dot_radius(tokens)) * 2.0 * scale,
             point.kind.color(tokens),
             opacity(point.hidden, tokens),
         );

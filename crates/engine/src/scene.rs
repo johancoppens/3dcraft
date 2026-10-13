@@ -148,6 +148,25 @@ pub struct SceneBody {
     /// Per face, the other names it answers to (`faceAliases` of
     /// `document.inspect`). Empty when no face of the body has any.
     pub face_aliases: Vec<Vec<String>>,
+    /// The persistent name of every edge, in the order of [`Self::edges`],
+    /// as `document.edges` gives it under `name`. Empty when the body's
+    /// edges have no names of their own (after a boolean): an edge is then
+    /// referred to by the faces it lies between.
+    pub edge_names: Vec<String>,
+    /// Per edge, the faces it lies between, as their places among the
+    /// faces of the body, ascending: two for an edge of a solid, one for a
+    /// seam. What `document.edges` lists under `faces`.
+    pub edge_faces: Vec<Vec<usize>>,
+    /// The body's vertices, in the order of the B-rep.
+    pub vertices: Vec<Vec3>,
+    /// The persistent name of every vertex, in the order of
+    /// [`Self::vertices`], as `document.edges` gives it under `vertices`.
+    /// Empty when the body's vertices have no names of their own (after a
+    /// boolean): a vertex is then referred to by the faces that meet in it.
+    pub vertex_names: Vec<String>,
+    /// Per vertex, the faces that meet in it (the faces of the edges that
+    /// end there), as their places among the faces of the body, ascending.
+    pub vertex_faces: Vec<Vec<usize>>,
 }
 
 /// What a polyline of a sketch stands for.
@@ -701,6 +720,34 @@ fn build(
                     .collect()
             })
             .unwrap_or_default();
+        let edge_names: Vec<String> = names
+            .map(|names| names.edges.iter().map(ToString::to_string).collect())
+            .unwrap_or_default();
+        let edge_faces: Vec<Vec<usize>> = craft3d_regen::faces_of_edges(body)
+            .into_iter()
+            .map(|faces| faces.into_iter().map(|face| face.0 as usize).collect())
+            .collect();
+        let vertices: Vec<Vec3> = body.vertices.iter().map(|v| v.point).collect();
+        let vertex_names: Vec<String> = names
+            .map(|names| names.vertices.iter().map(ToString::to_string).collect())
+            .unwrap_or_default();
+        let mut vertex_faces: Vec<Vec<usize>> = vec![Vec::new(); vertices.len()];
+        for (edge, faces) in body.edges.iter().zip(&edge_faces) {
+            for end in [edge.start, edge.end] {
+                if let Some(list) = vertex_faces.get_mut(end.0 as usize) {
+                    list.extend(
+                        faces
+                            .iter()
+                            .filter(|face| !list.contains(face))
+                            .copied()
+                            .collect::<Vec<_>>(),
+                    );
+                }
+            }
+        }
+        for list in &mut vertex_faces {
+            list.sort_unstable();
+        }
         scene.bodies.push(SceneBody {
             feature: feature.id.to_string(),
             name: feature.name.clone(),
@@ -709,6 +756,11 @@ fn build(
             edges,
             face_names,
             face_aliases,
+            edge_names,
+            edge_faces,
+            vertices,
+            vertex_names,
+            vertex_faces,
         });
         faces_done = faces_done.saturating_add(body.faces.len());
         let triangles = scene.mesh.triangles.len();
