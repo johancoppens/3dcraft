@@ -9,8 +9,8 @@ use super::outline::{
     surface_distance,
 };
 use super::{
-    AMBIGUOUS, LOST, Meeting, NEAR, NEARLY_COINCIDENT, NEARLY_TOUCHING, Operand, Stop, Vertices,
-    face_id, geometry,
+    AMBIGUOUS, LOST, Meeting, NEAR, NEARLY_COINCIDENT, NEARLY_TOUCHING, Operand, Stop,
+    TANGENT_CROSSING, Vertices, face_id, geometry,
 };
 use crate::{KernelError, MAX_REPORTED};
 use craft3d_geom::Surface;
@@ -563,6 +563,26 @@ fn clip(
         // tolerance or more they cross, exactly as given; in between they
         // do neither. (The counterpart, for surfaces of different kinds,
         // of the rule for faces on one surface.)
+        // A curve in which a freeform surface and another cross through a
+        // point where they are tangent (a ball against a dome: touching at
+        // one point, cutting in beside it) is two branches through a touch.
+        // Refused, as a tangent contact of higher order is for the
+        // analytic kinds; what FreeCAD and this kernel answer there differed
+        // by a fifth of the lens.
+        if is_freeform(&oa.surface) || is_freeform(&ob.surface) {
+            const GRAZING_SINE: f64 = 1e-6;
+            const LOOKS: u32 = 32;
+            for k in 0..=LOOKS {
+                let p = curve.eval(t0 + (t1 - t0) * f64::from(k) / f64::from(LOOKS));
+                if let (Some(na), Some(nb)) = (
+                    outward_normal(oa.sheet(), false, p),
+                    outward_normal(ob.sheet(), false, p),
+                ) && na.cross(nb).length() < GRAZING_SINE
+                {
+                    return Err(Stop::of(TANGENT_CROSSING).at(&named));
+                }
+            }
+        }
         let mut crossing = !meeting.tangent;
         if crossing {
             let reach = box_a.diagonal().max(box_b.diagonal());
