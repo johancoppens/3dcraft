@@ -8,6 +8,13 @@ use crate::{BezierPatch, GeomError, NurbsSurface};
 use craft3d_math::{Frame, Vec3};
 use std::f64::consts::{FRAC_PI_2, TAU};
 
+/// Steps each way of the grid a numeric projection starts from.
+const PROJECT_GRID: usize = 16;
+/// Samples a numeric projection starts from, at most.
+const PROJECT_STARTS: usize = 6;
+/// Steps of one descent of a numeric projection, at most.
+const PROJECT_STEPS: usize = 80;
+
 fn positive(value: f64, message: &'static str) -> Result<f64, GeomError> {
     if value.is_finite() && value > 0.0 {
         Ok(value)
@@ -324,9 +331,14 @@ impl Surface {
     ///
     /// Closed form for the analytic kinds; where the closest point is not
     /// unique (on a cylinder's axis, at a sphere's centre) the free
-    /// parameter is 0. Gauss–Newton from the best of a grid of samples for
-    /// Bézier and NURBS surfaces, which finds the closest point unless the
-    /// surface is more wiggly than the grid resolves.
+    /// parameter is 0. For Bézier and NURBS surfaces a search from the
+    /// samples of a grid that are nearer than their neighbours, which
+    /// finds a nearest point and, unless the surface folds more finely
+    /// than the grid resolves or `p` is far from it, the nearest: see
+    /// `project_numeric` for what is promised. On a surface that closes
+    /// on itself a point at the seam may come back at either end of the
+    /// parameter range; a point at a pole with any value of the parameter
+    /// that runs around it.
     pub fn project(&self, p: Vec3) -> Result<(f64, f64), GeomError> {
         if !p.is_finite() {
             return Err(GeomError::InvalidParameter(
@@ -386,6 +398,44 @@ impl Surface {
         })
     }
 
+    /// The nearest point of a Bézier or NURBS surface, numerically.
+    ///
+    /// The surface is sampled on a grid of [`PROJECT_GRID`] steps each
+    /// way. Every sample that is nearer to `p` than its neighbours is a
+    /// place to start from, and around the nearest of them the surface is
+    /// sampled four times as closely for more ([`PROJECT_STARTS`] in all
+    /// at most, the nearest first). From each a damped Gauss–Newton
+    /// iteration (Levenberg–Marquardt) walks downhill within the domain.
+    /// The nearest of what they find is the answer, and it is never
+    /// further from `p` than the nearest sample. When the walk from the
+    /// nearest sample ends on `p` itself, that is the answer and nothing
+    /// else is tried.
+    ///
+    /// What the grid finds out about the surface first:
+    ///
+    /// - **Closed.** Where the first and the last row of samples are the
+    ///   same points, the surface closes on itself in that direction (a
+    ///   can, a torus). The iteration then runs across the seam, and a
+    ///   point just short of the seam comes back on its own side.
+    /// - **Collapsed.** Where a whole border row is one point (a pole, the
+    ///   middle of the teapot's lid) no sample of it says which way to go,
+    ///   so the row is not started from; its neighbours are. The damping
+    ///   keeps the step defined there, where the tangent plane is not.
+    /// - **Borders.** At a border of an open surface the iteration drops
+    ///   the direction that points out of the domain and goes on along
+    ///   the border.
+    ///
+    /// **What is promised.** The result is a local nearest point (the
+    /// distance does not decrease in any direction within the domain), to
+    /// rounding when `p` is on the surface and to about 1e-12 of the
+    /// domain otherwise. It is *the* nearest point when the nearest
+    /// point's surroundings, out to where the distance to `p` stops
+    /// growing, are wider than a cell of the grid (a quarter of a cell
+    /// next to the nearest sample): always for a point closer to the
+    /// surface than the smallest radius the surface curves with, on a
+    /// surface whose features are larger than a sixteenth of its domain.
+    /// Further off, or on a surface that folds more finely, another local
+    /// nearest point may be returned.
     fn project_numeric(&self, p: Vec3) -> Result<(f64, f64), GeomError> {
         let ((u0, u1), (v0, v1)) = self.domain();
         if ![u0, u1, v0, v1].iter().all(|x| x.is_finite()) {
@@ -393,44 +443,459 @@ impl Surface {
                 "numeric projection onto an unbounded surface",
             ));
         }
-        const GRID: u32 = 16;
-        let mut best = (f64::INFINITY, u0, v0);
-        for i in 0..=GRID {
-            for j in 0..=GRID {
-                let u = u0 + (u1 - u0) * f64::from(i) / f64::from(GRID);
-                let v = v0 + (v1 - v0) * f64::from(j) / f64::from(GRID);
-                let d = self.eval(u, v).distance(p);
-                if d < best.0 {
-                    best = (d, u, v);
+        const N: usize = PROJECT_GRID;
+        let at = |i: usize, j: usize| {
+            (
+                u0 + (u1 - u0) * i as f64 / N as f64,
+                v0 + (v1 - v0) * j as f64 / N as f64,
+            )
+        };
+        let mut points = [[Vec3::ZERO; N + 1]; N + 1];
+        let mut extent = 0.0_f64;
+        for (i, row) in points.iter_mut().enumerate() {
+            for (j, point) in row.iter_mut().enumerate() {
+                let (u, v) = at(i, j);
+                *point = self.eval(u, v);
+            }
+        }
+        let first = points.first().and_then(|row| row.first()).copied();
+        let Some(first) = first else {
+            return Ok((u0, v0));
+        };
+        for row in &points {
+            for point in row {
+                let reach = point.distance(first);
+                if reach.is_finite() {
+                    extent = extent.max(reach);
                 }
             }
         }
-        // Gauss–Newton on the residual S(u, v) - p: solve the 2 × 2 normal
-        // equations of [Su Sv] δ = p - S.
-        let (mut u, mut v) = (best.1, best.2);
-        for _ in 0..50 {
+        // The same point, as far as a sample can tell.
+        let same = |a: Vec3, b: Vec3| a.distance(b) <= 1e-9 * extent;
+        let row = |i: usize| points.get(i).map_or(&[][..], |row| row.as_slice());
+        let column = |j: usize| points.iter().filter_map(move |row| row.get(j).copied());
+        let closed_u = row(0).iter().zip(row(N)).all(|(&a, &b)| same(a, b));
+        let closed_v = column(0).zip(column(N)).all(|(a, b)| same(a, b));
+        let one_point = |points: &mut dyn Iterator<Item = Vec3>| {
+            let Some(first) = points.next() else {
+                return false;
+            };
+            for point in points {
+                if !same(point, first) {
+                    return false;
+                }
+            }
+            true
+        };
+        // Border rows that are a single point: [u start, u end, v start, v end].
+        let collapsed = [
+            one_point(&mut row(0).iter().copied()),
+            one_point(&mut row(N).iter().copied()),
+            one_point(&mut column(0)),
+            one_point(&mut column(N)),
+        ];
+        let skipped = |i: usize, j: usize| {
+            (i == 0 && collapsed[0])
+                || (i == N && (collapsed[1] || closed_u))
+                || (j == 0 && collapsed[2])
+                || (j == N && (collapsed[3] || closed_v))
+        };
+        let distance = |i: usize, j: usize| {
+            points
+                .get(i)
+                .and_then(|row| row.get(j))
+                .map_or(f64::INFINITY, |point| point.distance(p))
+        };
+        // The neighbour of a sample one step along, across the seam of a
+        // closed direction; `None` beyond the border of an open one.
+        let step = |index: usize, by: isize, closed: bool| -> Option<usize> {
+            let moved = index as isize + by;
+            if closed {
+                Some(moved.rem_euclid(N as isize) as usize)
+            } else {
+                usize::try_from(moved).ok().filter(|&moved| moved <= N)
+            }
+        };
+
+        // The samples nearer than their neighbours, the nearest first.
+        let mut nearest_sample = (f64::INFINITY, 0, 0);
+        let mut starts: Vec<(f64, f64, usize, usize)> = Vec::new();
+        for i in 0..=N {
+            for j in 0..=N {
+                let d = distance(i, j);
+                if d < nearest_sample.0 {
+                    nearest_sample = (d, i, j);
+                }
+                if skipped(i, j) || !d.is_finite() {
+                    continue;
+                }
+                let mut lowest = true;
+                let mut reach = 0.0_f64;
+                for (di, dj) in [
+                    (-1, -1),
+                    (-1, 0),
+                    (-1, 1),
+                    (0, -1),
+                    (0, 1),
+                    (1, -1),
+                    (1, 0),
+                    (1, 1),
+                ] {
+                    let (Some(ni), Some(nj)) = (step(i, di, closed_u), step(j, dj, closed_v))
+                    else {
+                        continue;
+                    };
+                    if let (Some(&here), Some(&there)) = (
+                        points.get(i).and_then(|row| row.get(j)),
+                        points.get(ni).and_then(|row| row.get(nj)),
+                    ) {
+                        reach = reach.max(here.distance(there));
+                    }
+                    if skipped(ni, nj) {
+                        continue;
+                    }
+                    // Of two equally near neighbours the first counts.
+                    let other = distance(ni, nj);
+                    if other < d || (other == d && (ni, nj) < (i, j)) {
+                        lowest = false;
+                    }
+                }
+                if lowest {
+                    starts.push((d, reach, i, j));
+                }
+            }
+        }
+        starts.sort_by(|a, b| a.0.total_cmp(&b.0).then((a.2, a.3).cmp(&(b.2, b.3))));
+
+        // From the nearest of them first. A point of the surface is found
+        // at once, and then there is nothing nearer to look for: the
+        // common case, of points that are on the surface to begin with.
+        let mut best: Option<(f64, f64, f64)> = None;
+        if let Some(&(_, _, i, j)) = starts.first() {
+            let found = self.descend(p, at(i, j), (closed_u, closed_v), collapsed);
+            if found.0 <= 16.0 * f64::EPSILON * (p.length() + extent) {
+                return Ok((found.1, found.2));
+            }
+            best = Some(found);
+        }
+        // Around it the surface is then looked at four times as closely:
+        // two nearest points a cell apart (the end of a tube and its side
+        // just before the end) are one start to the grid.
+        const FINE: usize = 4;
+        let mut places: Vec<(f64, f64, f64, f64)> = Vec::new();
+        if let Some(&(_, reach, i, j)) = starts.first() {
+            let (cu, cv) = at(i, j);
+            let (hu, hv) = ((u1 - u0) / (N * FINE) as f64, (v1 - v0) / (N * FINE) as f64);
+            let mut fine = [[f64::INFINITY; 2 * FINE + 1]; 2 * FINE + 1];
+            let spot = |a: usize, b: usize| {
+                let u = cu + hu * (a as f64 - FINE as f64);
+                let v = cv + hv * (b as f64 - FINE as f64);
+                let inside =
+                    (closed_u || (u0..=u1).contains(&u)) && (closed_v || (v0..=v1).contains(&v));
+                // Not on a border that is one point: see above.
+                let half = 0.5 * hu.min(hv);
+                let on_a_pole = (collapsed[0] && u - u0 < half)
+                    || (collapsed[1] && u1 - u < half)
+                    || (collapsed[2] && v - v0 < half)
+                    || (collapsed[3] && v1 - v < half);
+                (inside && !on_a_pole).then_some((u, v))
+            };
+            for (a, row) in fine.iter_mut().enumerate() {
+                for (b, d) in row.iter_mut().enumerate() {
+                    if let Some((u, v)) = spot(a, b) {
+                        *d = self.eval(u, v).distance(p);
+                    }
+                }
+            }
+            let at_fine = |a: usize, b: usize| {
+                fine.get(a)
+                    .and_then(|row| row.get(b))
+                    .copied()
+                    .unwrap_or(f64::INFINITY)
+            };
+            for a in 0..=2 * FINE {
+                for b in 0..=2 * FINE {
+                    let d = at_fine(a, b);
+                    let Some((u, v)) = spot(a, b).filter(|_| d.is_finite()) else {
+                        continue;
+                    };
+                    let lowest = (0..3).all(|da| {
+                        (0..3).all(|db| {
+                            let (Some(na), Some(nb)) =
+                                ((a + da).checked_sub(1), (b + db).checked_sub(1))
+                            else {
+                                return true;
+                            };
+                            let other = at_fine(na, nb);
+                            !(other < d || (other == d && (na, nb) < (a, b)))
+                        })
+                    });
+                    if lowest {
+                        places.push((d, reach / FINE as f64, u, v));
+                    }
+                }
+            }
+            places.sort_by(|x, y| {
+                x.0.total_cmp(&y.0)
+                    .then(x.2.total_cmp(&y.2))
+                    .then(x.3.total_cmp(&y.3))
+            });
+        }
+        // Then the other samples that are nearer than their neighbours.
+        places.extend(starts.iter().skip(1).map(|&(d, reach, i, j)| {
+            let (u, v) = at(i, j);
+            (d, reach, u, v)
+        }));
+
+        for &(d, reach, u, v) in places.iter().take(PROJECT_STARTS) {
+            // What is found from a sample is within its cells: it cannot
+            // be nearer than the sample by more than they reach.
+            if best.is_some_and(|(found, _, _)| d - reach > found) {
+                continue;
+            }
+            let (found, u, v) = self.descend(
+                p,
+                (
+                    if closed_u {
+                        u0 + (u - u0).rem_euclid(u1 - u0)
+                    } else {
+                        u
+                    },
+                    if closed_v {
+                        v0 + (v - v0).rem_euclid(v1 - v0)
+                    } else {
+                        v
+                    },
+                ),
+                (closed_u, closed_v),
+                collapsed,
+            );
+            if best.is_none_or(|(least, _, _)| found < least) {
+                best = Some((found, u, v));
+            }
+        }
+        // Never further than the nearest sample (a pole, when nothing
+        // was started from; a start that could not improve).
+        let (d, i, j) = nearest_sample;
+        Ok(match best {
+            Some((found, u, v)) if found <= d => (u, v),
+            _ => at(i, j),
+        })
+    }
+
+    /// Walks downhill from `start` to a nearest point of `p` within the
+    /// domain of a freeform surface: `(distance, u, v)`.
+    ///
+    /// Levenberg–Marquardt (K. Levenberg 1944, D. Marquardt 1963) on the
+    /// residual `S(u, v) − p`: each step solves
+    /// `(JᵀJ + λ diag JᵀJ) δ = Jᵀ r`, and `λ` follows whether the step
+    /// helped. With `λ` small this is Gauss–Newton, which lands on a
+    /// point of the surface in a few steps; with `λ` large it is a short
+    /// step down the gradient, defined also where the tangent plane is
+    /// not.
+    ///
+    /// Gauss–Newton takes the surface for its tangent plane. For a point
+    /// off the surface each step then falls short by the share the
+    /// point's distance is of the radius the surface curves with, and
+    /// near a tight curve it crawls. When steps are seen to fall short
+    /// the curving of the surface is added to the equations (Newton's
+    /// method), from differences of the tangents, wherever that leaves
+    /// the distance a bowl.
+    ///
+    /// A step helps when it brings the surface point nearer by more than
+    /// rounding. Next to the nearest point the distance is flat (it
+    /// changes with the square of the step) and stops telling steps apart
+    /// at the square root of the rounding; there a step helps when the
+    /// distance stays what it is to rounding and the slope `Jᵀ r` gets
+    /// smaller, which is what pins the parameters down to the rounding
+    /// itself.
+    fn descend(
+        &self,
+        p: Vec3,
+        start: (f64, f64),
+        closed: (bool, bool),
+        collapsed: [bool; 4],
+    ) -> (f64, f64, f64) {
+        let ((u0, u1), (v0, v1)) = self.domain();
+        // A parameter after a step: around a closed direction, or stopped
+        // at the border of an open one.
+        let place = |x: f64, (low, high): (f64, f64), closed: bool| {
+            if closed {
+                let wrapped = low + (x - low).rem_euclid(high - low);
+                if wrapped.is_finite() { wrapped } else { low }
+            } else {
+                x.clamp(low, high)
+            }
+        };
+        // At a border, a direction that leads out of the domain is held
+        // and the other one followed alone.
+        let held = |x: f64, (low, high): (f64, f64), pull: f64, closed: bool| {
+            !closed && ((x <= low && pull < 0.0) || (x >= high && pull > 0.0))
+        };
+        // Everything about a place: the distance, the normal equations,
+        // which directions are held, and the slope along the free ones as
+        // a length.
+        let look = |u: f64, v: f64| {
             let (s, su, sv) = self.derivatives(u, v);
             let r = p - s;
             let (a, b, c) = (su.dot(su), su.dot(sv), sv.dot(sv));
-            let det = a * c - b * b;
-            if !(det.is_finite() && det > 1e-14 * a * c) {
-                break; // Degenerate tangent plane; keep what we have.
-            }
             let (ru, rv) = (r.dot(su), r.dot(sv));
-            let next_u = (u + (c * ru - b * rv) / det).clamp(u0, u1);
-            let next_v = (v + (a * rv - b * ru) / det).clamp(v0, v1);
-            let moved = (next_u - u).abs() / (u1 - u0) + (next_v - v).abs() / (v1 - v0);
-            (u, v) = (next_u, next_v);
-            if moved <= 1e-15 {
+            let hold = (
+                held(u, (u0, u1), ru, closed.0),
+                held(v, (v0, v1), rv, closed.1),
+            );
+            let along = |pull: f64, square: f64, hold: bool| {
+                if hold || square <= 0.0 {
+                    0.0
+                } else {
+                    pull.abs() / square.sqrt()
+                }
+            };
+            let slope = along(ru, a, hold.0).max(along(rv, c, hold.1));
+            (r, (a, b, c), (ru, rv), hold, slope)
+        };
+        // How the tangents change from `(u, v)`, by differences of them a
+        // little way off each way (or one way, at a border): what the
+        // curving of the surface adds to the normal equations, `r · S''`.
+        let bend = |u: f64, v: f64, r: Vec3| {
+            let span = |x: f64, (low, high): (f64, f64), closed: bool| {
+                let h = 1e-5 * (high - low);
+                if closed {
+                    (x - h, x + h)
+                } else {
+                    ((x - h).max(low), (x + h).min(high))
+                }
+            };
+            let (ua, ub) = span(u, (u0, u1), closed.0);
+            let (va, vb) = span(v, (v0, v1), closed.1);
+            let (_, su_a, sv_a) = self.derivatives(ua, v);
+            let (_, su_b, sv_b) = self.derivatives(ub, v);
+            let (_, _, sv_c) = self.derivatives(u, va);
+            let (_, _, sv_d) = self.derivatives(u, vb);
+            (
+                r.dot(su_b - su_a) / (ub - ua),
+                r.dot(sv_b - sv_a) / (ub - ua),
+                r.dot(sv_d - sv_c) / (vb - va),
+            )
+        };
+        let (mut u, mut v) = start;
+        let mut here = look(u, v);
+        let mut lambda = 1e-3;
+        // Gauss–Newton leaves the curving of the surface out. That costs
+        // nothing for a point on the surface, and for a point off it
+        // makes every step fall short by the share its distance is of the
+        // radius the surface curves with. Once steps are seen to fall
+        // short, the curving is put in (Newton's method).
+        let mut curved = false;
+        for _ in 0..PROJECT_STEPS {
+            let (r, (a, b, c), (ru, rv), (hold_u, hold_v), slope) = here;
+            let distance = r.length();
+            // On the surface, nowhere to go, or not a number.
+            if distance <= 0.0 || distance.is_nan() || lambda > 1e12 || (hold_u && hold_v) {
+                break;
+            }
+            let (mut a, mut b, mut c) = (a, b, c);
+            if curved {
+                let (ruu, ruv, rvv) = bend(u, v, r);
+                let (na, nb, nc) = (a - ruu, b - ruv, c - rvv);
+                // Only where the distance is a bowl, along what is free to
+                // move: elsewhere Newton's step leads uphill. (Along a
+                // border the distance still falls towards the outside,
+                // and is a bowl only along the border.)
+                let bowl = match (hold_u, hold_v) {
+                    (true, _) => nc > 0.0,
+                    (_, true) => na > 0.0,
+                    _ => na > 0.0 && nc > 0.0 && na * nc - nb * nb > 0.0,
+                };
+                if bowl {
+                    (a, b, c) = (na, nb, nc);
+                }
+            }
+            // Each parameter is damped in its own measure (Marquardt's
+            // scaling): one the surface barely moves with, around a pole,
+            // is then as free as the other. One it does not move with at
+            // all has nothing to say.
+            let (hold_u, hold_v) = (hold_u || a <= 0.0, hold_v || c <= 0.0);
+            if hold_u && hold_v {
+                break;
+            }
+            let (a, c) = (a * (1.0 + lambda), c * (1.0 + lambda));
+            let (mut du, mut dv) = if hold_u {
+                (0.0, rv / c)
+            } else if hold_v {
+                (ru / a, 0.0)
+            } else {
+                let det = a * c - b * b;
+                ((c * ru - b * rv) / det, (a * rv - b * ru) / det)
+            };
+            // A step that would leave the domain stops at the border, and
+            // the other parameter makes the best of that. At a border
+            // that is one point it stops half way: on a pole there may be
+            // no tangent left to go on by, and a point next to a pole is
+            // reached from next to it.
+            let stop = |x: f64, step: f64, (low, high): (f64, f64), poles: (bool, bool)| {
+                let (border, pole) = if step < 0.0 {
+                    (low, poles.0)
+                } else {
+                    (high, poles.1)
+                };
+                if pole { 0.5 * (border - x) } else { border - x }
+            };
+            let [pole_u0, pole_u1, pole_v0, pole_v1] = collapsed;
+            let leaves_u = !closed.0
+                && !hold_u
+                && (!(u0..=u1).contains(&(u + du))
+                    || (pole_u0 && u + du <= u0)
+                    || (pole_u1 && u + du >= u1));
+            if leaves_u {
+                du = stop(u, du, (u0, u1), (pole_u0, pole_u1));
+                if !hold_v {
+                    dv = (rv - b * du) / c;
+                }
+            }
+            let leaves_v = !closed.1
+                && !hold_v
+                && (!(v0..=v1).contains(&(v + dv))
+                    || (pole_v0 && v + dv <= v0)
+                    || (pole_v1 && v + dv >= v1));
+            if leaves_v {
+                dv = stop(v, dv, (v0, v1), (pole_v0, pole_v1));
+                if !hold_u && !leaves_u && (u0..=u1).contains(&(u + (ru - b * dv) / a)) {
+                    du = (ru - b * dv) / a;
+                }
+            }
+            if !(du.is_finite() && dv.is_finite()) {
+                // No tangent at all here, or a number that is not one:
+                // nothing to follow.
+                break;
+            }
+            let next = (
+                place(u + du, (u0, u1), closed.0),
+                place(v + dv, (v0, v1), closed.1),
+            );
+            let moved = du.abs() / (u1 - u0) + dv.abs() / (v1 - v0);
+            let there = look(next.0, next.1);
+            let reached = there.0.length();
+            // What rounding makes of a distance: the difference of two
+            // positions, each good to its own last place.
+            let rounding = 16.0 * f64::EPSILON * (p.length() + distance);
+            let level = reached <= distance + rounding;
+            if reached < distance - rounding || (level && there.4 < slope) {
+                // A step of Gauss–Newton on a point of the surface takes
+                // the slope down to its square; one that leaves a quarter
+                // of it is falling short.
+                curved |= there.4 > 0.25 * slope;
+                (u, v, here) = (next.0, next.1, there);
+                lambda = (lambda / 8.0).max(1e-14);
+            } else {
+                lambda *= 8.0;
+            }
+            // A step this small is the rounding of the parameters.
+            if moved <= 4.0 * f64::EPSILON {
                 break;
             }
         }
-        // Never return something worse than the best sample.
-        Ok(if self.eval(u, v).distance(p) <= best.0 {
-            (u, v)
-        } else {
-            (best.1, best.2)
-        })
+        (here.0.length(), u, v)
     }
 }
 
