@@ -54,6 +54,31 @@ pub(crate) fn build(
             }
             ([a.0, a.1], direction)
         }
+        RevolveAxis::Datum { axis } => {
+            let line = crate::datum::datum_axis(doc, earlier, axis, "axis")?;
+            let made_by = doc.feature(axis).map_or("", |f| f.name.as_str());
+            // A revolution turns about a line in the plane of its sketch.
+            let (x, y, off) = plane.local(line.origin);
+            let (dx, dy, lean) = (
+                line.direction.dot(plane.x()),
+                line.direction.dot(plane.y()),
+                line.direction.dot(plane.z()),
+            );
+            let lean = lean.clamp(-1.0, 1.0).asin();
+            if lean.is_nan() || lean.abs() > tolerance.angular {
+                return Err(format!(
+                    "axis: `{made_by}` does not lie in the plane of sketch `{name}` (it makes {} deg with it); a revolution turns about a line in the sketch's plane",
+                    lean.to_degrees()
+                ));
+            }
+            if off.is_nan() || off.abs() > tolerance.linear {
+                return Err(format!(
+                    "axis: `{made_by}` does not lie in the plane of sketch `{name}` (it is {} beside it); a revolution turns about a line in the sketch's plane",
+                    off.abs()
+                ));
+            }
+            ([x, y], [dx, dy])
+        }
     };
 
     let turn = angle(doc, variables, "angle", &feature.angle)?;

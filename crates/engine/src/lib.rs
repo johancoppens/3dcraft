@@ -15,6 +15,7 @@
 mod base64;
 mod body_cmds;
 mod commands;
+mod datum_cmds;
 #[cfg(not(target_arch = "wasm32"))]
 mod drawing_cmds;
 mod file_cmds;
@@ -214,6 +215,7 @@ impl Session {
                 sketch_spline_cmds::SPECS,
                 sweep_cmds::SPECS,
                 body_cmds::SPECS,
+                datum_cmds::SPECS,
                 query_cmds::SPECS,
                 pick_cmds::SPECS,
                 recovery_cmds::SPECS,

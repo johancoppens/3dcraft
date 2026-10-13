@@ -7,7 +7,8 @@
 //! depend on it is still built.
 //!
 //! Sketches are solved here too ([`sketch`]): a sketch feature has no body,
-//! its result is the solved sketch placed in space.
+//! its result is the solved sketch placed in space. Reference geometry
+//! ([`datum`]) has no body either: its result is where the datum lies.
 //!
 //! A feature can make its body out of the body of an earlier one
 //! ([`derive`]: transform, mirror, pattern). The earlier feature's result
@@ -18,6 +19,7 @@
 
 mod boolean;
 mod cache;
+mod datum;
 mod derive;
 mod extrude;
 mod query;
@@ -26,6 +28,7 @@ mod sketch;
 
 pub use cache::RegenCache;
 pub use craft3d_kernel::extrude::{Origin, Origins, Role};
+pub use datum::{Datum, EdgeReference, References, references};
 pub use derive::{MAX_PATTERN_FACES, MAX_PATTERN_INSTANCES};
 pub use extrude::name_of;
 pub use query::{edges_between, faces_named, faces_of_edges};
@@ -207,6 +210,8 @@ pub struct FeatureResult {
     /// For a sketch: how it solved. Present for a failed sketch too, unless
     /// its plane could not be evaluated.
     pub sketch: Option<Arc<SketchResult>>,
+    /// For reference geometry that was placed: where it lies.
+    pub datum: Option<Datum>,
     /// What each face, edge and vertex of `body` is called by the features
     /// that come after, for features that name what they make (not the
     /// primitives yet).
@@ -412,6 +417,10 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
         // Built in `features`, which knows the sketch's result.
         FeatureKind::Extrude(_) => return Err("an extrusion needs its sketch".to_string()),
         FeatureKind::Revolve(_) => return Err("a revolution needs its sketch".to_string()),
+        // Placed in `features`; reference geometry is not a body.
+        FeatureKind::DatumPlane(_) | FeatureKind::DatumAxis(_) | FeatureKind::DatumPoint(_) => {
+            return Err("a datum has no body".to_string());
+        }
         // Built in `features`, which knows the earlier bodies.
         FeatureKind::Transform(_)
         | FeatureKind::Mirror(_)
@@ -514,6 +523,7 @@ fn build_feature(
     let mut names = None;
     let mut instances = None;
     let mut taken = None;
+    let mut placed = None;
     let (status, body) = if rolled_back {
         (Status::RolledBack, None)
     } else if feature.suppressed {
@@ -536,6 +546,33 @@ fn build_feature(
                 });
                 (status, None)
             }
+        }
+    } else if let FeatureKind::DatumPlane(plane) = &feature.kind {
+        match datum::plane(doc, variables, plane, earlier) {
+            Ok(frame) => {
+                placed = Some(Datum::Plane(frame));
+                (Status::Ok, None)
+            }
+            Err(reason) => (Status::Failed(reason), None),
+        }
+    } else if let FeatureKind::DatumPoint(point) = &feature.kind {
+        match datum::point(doc, variables, point, earlier) {
+            Ok(at) => {
+                placed = Some(Datum::Point(at));
+                (Status::Ok, None)
+            }
+            Err(reason) => (Status::Failed(reason), None),
+        }
+    } else if let FeatureKind::DatumAxis(axis) = &feature.kind {
+        match datum::axis(doc, variables, axis, earlier) {
+            Ok(line) => {
+                placed = Some(Datum::Axis {
+                    origin: line.origin,
+                    direction: line.direction,
+                });
+                (Status::Ok, None)
+            }
+            Err(reason) => (Status::Failed(reason), None),
         }
     } else if let FeatureKind::Extrude(_) | FeatureKind::Revolve(_) = &feature.kind {
         let swept = match &feature.kind {
@@ -593,6 +630,7 @@ fn build_feature(
             status,
             body,
             sketch: solved,
+            datum: placed,
             names,
             instances,
             consumed_by: None,

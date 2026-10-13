@@ -1334,6 +1334,7 @@ fn moved_mirrored_and_repeated_bodies_are_written_like_this_and_round_trip() {
                 source: moved,
                 point: exprs(["half", "0", "0"]),
                 normal: exprs(["1", "0", "0"]),
+                plane: None,
                 keep: false,
             }),
         )
@@ -1356,6 +1357,7 @@ fn moved_mirrored_and_repeated_bodies_are_written_like_this_and_round_trip() {
                 source: body,
                 count: Expr::new("teeth"),
                 layout: PatternLayout::Circular {
+                    about: None,
                     point: exprs(["0", "0", "0"]),
                     axis: exprs(["0", "0", "1"]),
                     angle: Expr::new("360 deg / teeth"),
@@ -1605,4 +1607,409 @@ fn a_version_5_file_opens_unchanged_and_is_saved_as_the_current_version() {
     assert!(saved.contains(&version_field()), "{saved}");
     assert!(!saved.contains("spline"), "{saved}");
     assert_eq!(from_manifest_json(saved.as_bytes()).unwrap(), doc);
+}
+
+#[test]
+fn datum_planes_are_written_like_this_and_round_trip() {
+    use craft3d_doc::{
+        AxisRef, DatumPlane, Mirror, NameRole, PersistentName, PlaneBy, PlaneRef, PointRef,
+        WorldAxis,
+    };
+    let mut doc = small();
+    let face = |n: u64| PersistentName::new(FeatureId(1), NameRole::Face, vec![n]);
+    let plane = |doc: &mut Document, by: PlaneBy| {
+        doc.add_feature(None, FeatureKind::DatumPlane(DatumPlane { by }))
+            .unwrap()
+    };
+    let shelf = plane(
+        &mut doc,
+        PlaneBy::Offset {
+            from: PlaneRef::Face { face: face(1) },
+            distance: Expr::new("width / 4"),
+        },
+    );
+    plane(
+        &mut doc,
+        PlaneBy::Offset {
+            from: PlaneRef::World {
+                plane: WorldPlane::Yz,
+            },
+            distance: Expr::new("-3 mm"),
+        },
+    );
+    plane(
+        &mut doc,
+        PlaneBy::Angle {
+            from: PlaneRef::Datum { feature: shelf },
+            about: AxisRef::Edge {
+                between: [face(1), face(5)],
+            },
+            angle: Expr::new("30 deg"),
+        },
+    );
+    plane(
+        &mut doc,
+        PlaneBy::Angle {
+            from: PlaneRef::World {
+                plane: WorldPlane::Xy,
+            },
+            about: AxisRef::World { axis: WorldAxis::X },
+            angle: Expr::new("width * 1 deg / 1 mm"),
+        },
+    );
+    plane(
+        &mut doc,
+        PlaneBy::ThreePoints {
+            points: [
+                PointRef::At {
+                    position: exprs(["width", "0", "0"]),
+                },
+                PointRef::Vertex {
+                    vertex: PersistentName::new(FeatureId(1), NameRole::Vertex, vec![6]),
+                },
+                PointRef::At {
+                    position: exprs(["0", "0", "1 in"]),
+                },
+            ],
+        },
+    );
+    doc.add_feature(
+        Some("On the shelf"),
+        FeatureKind::Sketch(Sketch::new(SketchPlane::Datum {
+            plane: shelf,
+            offset: Expr::new("1 mm"),
+        })),
+    )
+    .unwrap();
+    doc.add_feature(
+        None,
+        FeatureKind::Mirror(Mirror {
+            source: FeatureId(1),
+            point: exprs(["0", "0", "0"]),
+            normal: exprs(["0", "0", "1"]),
+            plane: Some(shelf),
+            keep: true,
+        }),
+    )
+    .unwrap();
+    assert_eq!(doc.validate(), Ok(()));
+    assert_eq!(doc.features[1].name, "Plane1");
+
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    // No new version: nothing an earlier file holds changed meaning.
+    assert_eq!(value["format_version"], 6);
+    let face_json = |n: u64| serde_json::json!({"feature": 1, "role": "face", "sources": [n]});
+    let kinds: Vec<&serde_json::Value> = value["document"]["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .skip(1)
+        .map(|f| &f["kind"])
+        .collect();
+    let written = [
+        serde_json::json!({"type": "datumPlane", "by": {"type": "offset",
+            "from": {"type": "face", "face": face_json(1)}, "distance": "width / 4"}}),
+        serde_json::json!({"type": "datumPlane", "by": {"type": "offset",
+            "from": {"type": "world", "plane": "yz"}, "distance": "-3 mm"}}),
+        serde_json::json!({"type": "datumPlane", "by": {"type": "angle",
+            "from": {"type": "datum", "feature": 2},
+            "about": {"type": "edge", "between": [face_json(1), face_json(5)]},
+            "angle": "30 deg"}}),
+        serde_json::json!({"type": "datumPlane", "by": {"type": "angle",
+            "from": {"type": "world", "plane": "xy"},
+            "about": {"type": "world", "axis": "x"},
+            "angle": "width * 1 deg / 1 mm"}}),
+        serde_json::json!({"type": "datumPlane", "by": {"type": "threePoints", "points": [
+            {"type": "at", "position": ["width", "0", "0"]},
+            {"type": "vertex", "vertex": {"feature": 1, "role": "vertex", "sources": [6]}},
+            {"type": "at", "position": ["0", "0", "1 in"]}]}}),
+        serde_json::json!({"type": "sketch",
+            "plane": {"type": "datum", "plane": 2, "offset": "1 mm"},
+            "entities": [], "constraints": [], "next_entity_id": 1, "next_constraint_id": 1}),
+        serde_json::json!({"type": "mirror", "source": 1, "point": ["0", "0", "0"],
+            "normal": ["0", "0", "1"], "plane": 2, "keep": true}),
+    ];
+    assert_eq!(kinds.len(), written.len());
+    for (kind, expected) in kinds.iter().zip(&written) {
+        assert_eq!(*kind, expected);
+    }
+    assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+    assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
+
+    // A mirror without a datum plane is written without the field: a file
+    // that uses no datum is the file an earlier build wrote.
+    let FeatureKind::Mirror(mirror) = &mut doc.features[7].kind else {
+        panic!("the last feature is the mirror")
+    };
+    mirror.plane = None;
+    let plain: serde_json::Value = serde_json::from_str(&to_manifest_json(&doc).unwrap()).unwrap();
+    assert!(
+        plain["document"]["features"][7]["kind"]
+            .get("plane")
+            .is_none()
+    );
+
+    // What is not a way to place a plane is refused; a name that is not
+    // one makes the document invalid.
+    let with = |by: &str| {
+        let mut value = value.clone();
+        value["document"]["features"][1]["kind"]["by"] = serde_json::from_str(by).unwrap();
+        from_manifest_json(serde_json::to_string(&value).unwrap().as_bytes())
+    };
+    assert!(
+        with(r#"{"type": "offset", "from": {"type": "world", "plane": "xy"}, "distance": "1"}"#)
+            .is_ok()
+    );
+    assert!(with(r#"{"type": "offset", "from": {"type": "world", "plane": "xy"}}"#).is_err());
+    assert!(
+        with(r#"{"type": "offset", "from": {"type": "world", "plane": "xz"}, "distance": "1"}"#)
+            .is_err()
+    );
+    assert!(with(r#"{"type": "offset", "from": {"type": "datum", "feature": 2}, "distance": "1", "angle": "1"}"#).is_err());
+    assert!(with(r#"{"type": "tangent", "from": {"type": "world", "plane": "xy"}}"#).is_err());
+    assert!(
+        with(r#"{"type": "threePoints", "points": [{"type": "at", "position": ["0", "0", "0"]}]}"#)
+            .is_err()
+    );
+    assert!(
+        with(r#"{"type": "offset", "from": {"type": "face", "face": {"feature": 1, "role": "copy", "sources": [0]}}, "distance": "1"}"#)
+            .is_err(),
+        "a copy of nothing is not a name"
+    );
+    // A reference to a feature that is not there, or to itself, is a file
+    // that loads; the datum fails at regeneration, with the reason.
+    for feature in [2, 99] {
+        let by = format!(
+            r#"{{"type": "offset", "from": {{"type": "datum", "feature": {feature}}}, "distance": "1"}}"#
+        );
+        assert!(with(&by).is_ok_and(|doc| doc.validate().is_ok()));
+    }
+}
+
+#[test]
+fn datum_axes_are_written_like_this_and_round_trip() {
+    use craft3d_doc::{
+        AxisBy, AxisRef, DatumAxis, DatumPlane, NameRole, Pattern, PatternLayout, PersistentName,
+        PlaneBy, PlaneRef, PointRef, Revolve, RevolveAxis,
+    };
+    let mut doc = small();
+    let face = |n: u64| PersistentName::new(FeatureId(1), NameRole::Face, vec![n]);
+    let axis = |doc: &mut Document, by: AxisBy| {
+        doc.add_feature(None, FeatureKind::DatumAxis(DatumAxis { by }))
+            .unwrap()
+    };
+    let through = axis(
+        &mut doc,
+        AxisBy::TwoPoints {
+            points: [
+                PointRef::At {
+                    position: exprs(["width", "0", "0"]),
+                },
+                PointRef::Vertex {
+                    vertex: PersistentName::new(FeatureId(1), NameRole::Vertex, vec![6]),
+                },
+            ],
+        },
+    );
+    axis(
+        &mut doc,
+        AxisBy::Edge {
+            between: [face(1), face(5)],
+        },
+    );
+    axis(&mut doc, AxisBy::Face { face: face(0) });
+    axis(
+        &mut doc,
+        AxisBy::TwoPlanes {
+            planes: [
+                PlaneRef::World {
+                    plane: WorldPlane::Zx,
+                },
+                PlaneRef::Face { face: face(1) },
+            ],
+        },
+    );
+    doc.add_feature(
+        None,
+        FeatureKind::DatumPlane(DatumPlane {
+            by: PlaneBy::Angle {
+                from: PlaneRef::World {
+                    plane: WorldPlane::Xy,
+                },
+                about: AxisRef::Datum { feature: through },
+                angle: Expr::new("12 deg"),
+            },
+        }),
+    )
+    .unwrap();
+    let sketch = doc
+        .add_feature(None, FeatureKind::Sketch(Sketch::default()))
+        .unwrap();
+    doc.add_feature(
+        None,
+        FeatureKind::Revolve(Revolve {
+            sketch,
+            axis: RevolveAxis::Datum { axis: through },
+            angle: Expr::new("90 deg"),
+            symmetric: false,
+        }),
+    )
+    .unwrap();
+    let circular = |about| {
+        FeatureKind::Pattern(Pattern {
+            source: FeatureId(1),
+            count: Expr::new("3"),
+            layout: PatternLayout::Circular {
+                point: exprs(["0", "0", "0"]),
+                axis: exprs(["0", "0", "1"]),
+                angle: Expr::new("120 deg"),
+                about,
+            },
+        })
+    };
+    doc.add_feature(None, circular(Some(through))).unwrap();
+    doc.add_feature(None, circular(None)).unwrap();
+    assert_eq!(doc.validate(), Ok(()));
+    assert_eq!(doc.features[1].name, "Axis1");
+
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["format_version"], 6);
+    let face_json = |n: u64| serde_json::json!({"feature": 1, "role": "face", "sources": [n]});
+    let kind = |index: usize| &value["document"]["features"][index]["kind"];
+    let written = [
+        serde_json::json!({"type": "datumAxis", "by": {"type": "twoPoints", "points": [
+            {"type": "at", "position": ["width", "0", "0"]},
+            {"type": "vertex", "vertex": {"feature": 1, "role": "vertex", "sources": [6]}}]}}),
+        serde_json::json!({"type": "datumAxis", "by": {"type": "edge",
+            "between": [face_json(1), face_json(5)]}}),
+        serde_json::json!({"type": "datumAxis", "by": {"type": "face", "face": face_json(0)}}),
+        serde_json::json!({"type": "datumAxis", "by": {"type": "twoPlanes", "planes": [
+            {"type": "world", "plane": "zx"}, {"type": "face", "face": face_json(1)}]}}),
+        serde_json::json!({"type": "datumPlane", "by": {"type": "angle",
+            "from": {"type": "world", "plane": "xy"},
+            "about": {"type": "datum", "feature": 2}, "angle": "12 deg"}}),
+    ];
+    for (index, expected) in written.iter().enumerate() {
+        assert_eq!(kind(index + 1), expected);
+    }
+    assert_eq!(
+        *kind(7),
+        serde_json::json!({"type": "revolve", "sketch": 7,
+            "axis": {"type": "datum", "axis": 2}, "angle": "90 deg", "symmetric": false})
+    );
+    assert_eq!(
+        kind(8)["layout"],
+        serde_json::json!({"type": "circular", "point": ["0", "0", "0"],
+            "axis": ["0", "0", "1"], "angle": "120 deg", "about": 2})
+    );
+    // A pattern about a line of its own is written as before datums.
+    assert_eq!(
+        kind(9)["layout"],
+        serde_json::json!({"type": "circular", "point": ["0", "0", "0"],
+            "axis": ["0", "0", "1"], "angle": "120 deg"})
+    );
+    assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+    assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
+
+    let with = |by: &str| {
+        let mut value = value.clone();
+        value["document"]["features"][1]["kind"]["by"] = serde_json::from_str(by).unwrap();
+        from_manifest_json(serde_json::to_string(&value).unwrap().as_bytes())
+    };
+    assert!(
+        with(r#"{"type": "face", "face": {"feature": 1, "role": "face", "sources": [0]}}"#).is_ok()
+    );
+    assert!(with(r#"{"type": "face"}"#).is_err());
+    assert!(
+        with(r#"{"type": "twoPlanes", "planes": [{"type": "world", "plane": "xy"}]}"#).is_err()
+    );
+    assert!(with(r#"{"type": "edge", "between": []}"#).is_err());
+    assert!(
+        with(r#"{"type": "normal", "face": {"feature": 1, "role": "face", "sources": [0]}}"#)
+            .is_err()
+    );
+    assert!(
+        with(r#"{"type": "face", "face": {"feature": 1, "role": "face", "sources": [0, 1]}}"#)
+            .is_err(),
+        "a face of a primitive has one number"
+    );
+}
+
+#[test]
+fn datum_points_are_written_like_this_and_round_trip() {
+    use craft3d_doc::{AxisBy, DatumAxis, DatumPoint, NameRole, PersistentName, PointRef};
+    let mut doc = small();
+    let face = |n: u64| PersistentName::new(FeatureId(1), NameRole::Face, vec![n]);
+    let point = |doc: &mut Document, at: PointRef| {
+        doc.add_feature(None, FeatureKind::DatumPoint(DatumPoint { at }))
+            .unwrap()
+    };
+    let free = point(
+        &mut doc,
+        PointRef::At {
+            position: exprs(["width", "0", "1 in"]),
+        },
+    );
+    point(
+        &mut doc,
+        PointRef::Vertex {
+            vertex: PersistentName::new(FeatureId(1), NameRole::Vertex, vec![6]),
+        },
+    );
+    point(
+        &mut doc,
+        PointRef::Center {
+            between: [face(0), face(2)],
+        },
+    );
+    doc.add_feature(
+        None,
+        FeatureKind::DatumAxis(DatumAxis {
+            by: AxisBy::TwoPoints {
+                points: [
+                    PointRef::Datum { feature: free },
+                    PointRef::Center {
+                        between: [face(0), face(1)],
+                    },
+                ],
+            },
+        }),
+    )
+    .unwrap();
+    assert_eq!(doc.validate(), Ok(()));
+    assert_eq!(doc.features[1].name, "Point1");
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["format_version"], 6);
+    let face_json = |n: u64| serde_json::json!({"feature": 1, "role": "face", "sources": [n]});
+    let written = [
+        serde_json::json!({"type": "datumPoint",
+            "at": {"type": "at", "position": ["width", "0", "1 in"]}}),
+        serde_json::json!({"type": "datumPoint", "at": {"type": "vertex",
+            "vertex": {"feature": 1, "role": "vertex", "sources": [6]}}}),
+        serde_json::json!({"type": "datumPoint", "at": {"type": "center",
+            "between": [face_json(0), face_json(2)]}}),
+        serde_json::json!({"type": "datumAxis", "by": {"type": "twoPoints", "points": [
+            {"type": "datum", "feature": 2},
+            {"type": "center", "between": [face_json(0), face_json(1)]}]}}),
+    ];
+    for (index, expected) in written.iter().enumerate() {
+        assert_eq!(&value["document"]["features"][index + 1]["kind"], expected);
+    }
+    assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+    assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
+
+    let with = |at: &str| {
+        let mut value = value.clone();
+        value["document"]["features"][1]["kind"]["at"] = serde_json::from_str(at).unwrap();
+        from_manifest_json(serde_json::to_string(&value).unwrap().as_bytes())
+    };
+    assert!(with(r#"{"type": "at", "position": ["0", "0", "0"]}"#).is_ok());
+    assert!(with(r#"{"type": "at", "position": ["0", "0"]}"#).is_err());
+    assert!(with(r#"{"type": "at", "position": [0, 0, 0]}"#).is_err());
+    assert!(with(r#"{"type": "midpoint", "between": []}"#).is_err());
+    assert!(with(r#"{"type": "datum", "feature": 2, "offset": "1"}"#).is_err());
+    assert!(with(r#"["0", "0", "0"]"#).is_err());
 }

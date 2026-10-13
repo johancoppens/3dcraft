@@ -157,6 +157,13 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                         face: name_to_manifest(face),
                         offset: expr_to_manifest(offset),
                     },
+                    doc::SketchPlane::Datum {
+                        plane: doc::FeatureId(plane),
+                        offset,
+                    } => manifest::SketchPlane::Datum {
+                        plane: *plane,
+                        offset: expr_to_manifest(offset),
+                    },
                 },
                 entities: entities.iter().map(entity_to_manifest).collect(),
                 constraints: constraints.iter().map(constraint_to_manifest).collect(),
@@ -195,6 +202,9 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                     doc::RevolveAxis::Line {
                         entity: doc::EntityId(entity),
                     } => manifest::RevolveAxis::Line { entity: *entity },
+                    doc::RevolveAxis::Datum {
+                        axis: doc::FeatureId(axis),
+                    } => manifest::RevolveAxis::Datum { axis: *axis },
                 },
                 angle: expr_to_manifest(angle),
                 symmetric: *symmetric,
@@ -218,13 +228,72 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 source: doc::FeatureId(source),
                 point,
                 normal,
+                plane,
                 keep,
             }) => manifest::FeatureKind::Mirror {
                 source: *source,
                 point: exprs_to_manifest(point),
                 normal: exprs_to_manifest(normal),
+                plane: plane.map(|doc::FeatureId(id)| id),
                 keep: *keep,
             },
+            doc::FeatureKind::DatumPoint(doc::DatumPoint { at }) => {
+                manifest::FeatureKind::DatumPoint {
+                    at: point_ref_to_manifest(at),
+                }
+            }
+            doc::FeatureKind::DatumAxis(doc::DatumAxis { by }) => {
+                manifest::FeatureKind::DatumAxis {
+                    by: match by {
+                        doc::AxisBy::TwoPoints { points } => {
+                            let [a, b] = points;
+                            manifest::AxisBy::TwoPoints {
+                                points: [point_ref_to_manifest(a), point_ref_to_manifest(b)],
+                            }
+                        }
+                        doc::AxisBy::Edge { between } => {
+                            let [a, b] = between;
+                            manifest::AxisBy::Edge {
+                                between: [name_to_manifest(a), name_to_manifest(b)],
+                            }
+                        }
+                        doc::AxisBy::Face { face } => manifest::AxisBy::Face {
+                            face: name_to_manifest(face),
+                        },
+                        doc::AxisBy::TwoPlanes { planes } => {
+                            let [a, b] = planes;
+                            manifest::AxisBy::TwoPlanes {
+                                planes: [plane_ref_to_manifest(a), plane_ref_to_manifest(b)],
+                            }
+                        }
+                    },
+                }
+            }
+            doc::FeatureKind::DatumPlane(doc::DatumPlane { by }) => {
+                manifest::FeatureKind::DatumPlane {
+                    by: match by {
+                        doc::PlaneBy::Offset { from, distance } => manifest::PlaneBy::Offset {
+                            from: plane_ref_to_manifest(from),
+                            distance: expr_to_manifest(distance),
+                        },
+                        doc::PlaneBy::Angle { from, about, angle } => manifest::PlaneBy::Angle {
+                            from: plane_ref_to_manifest(from),
+                            about: axis_ref_to_manifest(about),
+                            angle: expr_to_manifest(angle),
+                        },
+                        doc::PlaneBy::ThreePoints { points } => {
+                            let [a, b, c] = points;
+                            manifest::PlaneBy::ThreePoints {
+                                points: [
+                                    point_ref_to_manifest(a),
+                                    point_ref_to_manifest(b),
+                                    point_ref_to_manifest(c),
+                                ],
+                            }
+                        }
+                    },
+                }
+            }
             doc::FeatureKind::Boolean(doc::Boolean {
                 op,
                 target: doc::FeatureId(target),
@@ -251,15 +320,139 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                     doc::PatternLayout::Linear { step } => manifest::PatternLayout::Linear {
                         step: exprs_to_manifest(step),
                     },
-                    doc::PatternLayout::Circular { point, axis, angle } => {
-                        manifest::PatternLayout::Circular {
-                            point: exprs_to_manifest(point),
-                            axis: exprs_to_manifest(axis),
-                            angle: expr_to_manifest(angle),
-                        }
-                    }
+                    doc::PatternLayout::Circular {
+                        point,
+                        axis,
+                        angle,
+                        about,
+                    } => manifest::PatternLayout::Circular {
+                        point: exprs_to_manifest(point),
+                        axis: exprs_to_manifest(axis),
+                        angle: expr_to_manifest(angle),
+                        about: about.map(|doc::FeatureId(id)| id),
+                    },
                 },
             },
+        },
+    }
+}
+
+fn world_plane_to_manifest(plane: doc::WorldPlane) -> manifest::WorldPlane {
+    match plane {
+        doc::WorldPlane::Xy => manifest::WorldPlane::Xy,
+        doc::WorldPlane::Yz => manifest::WorldPlane::Yz,
+        doc::WorldPlane::Zx => manifest::WorldPlane::Zx,
+    }
+}
+
+fn world_plane_to_doc(plane: manifest::WorldPlane) -> doc::WorldPlane {
+    match plane {
+        manifest::WorldPlane::Xy => doc::WorldPlane::Xy,
+        manifest::WorldPlane::Yz => doc::WorldPlane::Yz,
+        manifest::WorldPlane::Zx => doc::WorldPlane::Zx,
+    }
+}
+
+fn plane_ref_to_manifest(plane: &doc::PlaneRef) -> manifest::PlaneRef {
+    match plane {
+        doc::PlaneRef::World { plane } => manifest::PlaneRef::World {
+            plane: world_plane_to_manifest(*plane),
+        },
+        doc::PlaneRef::Face { face } => manifest::PlaneRef::Face {
+            face: name_to_manifest(face),
+        },
+        doc::PlaneRef::Datum {
+            feature: doc::FeatureId(feature),
+        } => manifest::PlaneRef::Datum { feature: *feature },
+    }
+}
+
+fn plane_ref_to_doc(plane: manifest::PlaneRef) -> doc::PlaneRef {
+    match plane {
+        manifest::PlaneRef::World { plane } => doc::PlaneRef::World {
+            plane: world_plane_to_doc(plane),
+        },
+        manifest::PlaneRef::Face { face } => doc::PlaneRef::Face {
+            face: name_to_doc(face),
+        },
+        manifest::PlaneRef::Datum { feature } => doc::PlaneRef::Datum {
+            feature: doc::FeatureId(feature),
+        },
+    }
+}
+
+fn axis_ref_to_manifest(axis: &doc::AxisRef) -> manifest::AxisRef {
+    match axis {
+        doc::AxisRef::World { axis } => manifest::AxisRef::World {
+            axis: match axis {
+                doc::WorldAxis::X => manifest::WorldAxis::X,
+                doc::WorldAxis::Y => manifest::WorldAxis::Y,
+                doc::WorldAxis::Z => manifest::WorldAxis::Z,
+            },
+        },
+        doc::AxisRef::Edge { between } => {
+            let [a, b] = between;
+            manifest::AxisRef::Edge {
+                between: [name_to_manifest(a), name_to_manifest(b)],
+            }
+        }
+        doc::AxisRef::Datum {
+            feature: doc::FeatureId(feature),
+        } => manifest::AxisRef::Datum { feature: *feature },
+    }
+}
+
+fn axis_ref_to_doc(axis: manifest::AxisRef) -> doc::AxisRef {
+    match axis {
+        manifest::AxisRef::World { axis } => doc::AxisRef::World {
+            axis: match axis {
+                manifest::WorldAxis::X => doc::WorldAxis::X,
+                manifest::WorldAxis::Y => doc::WorldAxis::Y,
+                manifest::WorldAxis::Z => doc::WorldAxis::Z,
+            },
+        },
+        manifest::AxisRef::Edge { between } => doc::AxisRef::Edge {
+            between: between.map(name_to_doc),
+        },
+        manifest::AxisRef::Datum { feature } => doc::AxisRef::Datum {
+            feature: doc::FeatureId(feature),
+        },
+    }
+}
+
+fn point_ref_to_manifest(point: &doc::PointRef) -> manifest::PointRef {
+    match point {
+        doc::PointRef::At { position } => manifest::PointRef::At {
+            position: exprs_to_manifest(position),
+        },
+        doc::PointRef::Vertex { vertex } => manifest::PointRef::Vertex {
+            vertex: name_to_manifest(vertex),
+        },
+        doc::PointRef::Center { between } => {
+            let [a, b] = between;
+            manifest::PointRef::Center {
+                between: [name_to_manifest(a), name_to_manifest(b)],
+            }
+        }
+        doc::PointRef::Datum {
+            feature: doc::FeatureId(feature),
+        } => manifest::PointRef::Datum { feature: *feature },
+    }
+}
+
+fn point_ref_to_doc(point: manifest::PointRef) -> doc::PointRef {
+    match point {
+        manifest::PointRef::At { position } => doc::PointRef::At {
+            position: exprs_to_doc(position),
+        },
+        manifest::PointRef::Vertex { vertex } => doc::PointRef::Vertex {
+            vertex: name_to_doc(vertex),
+        },
+        manifest::PointRef::Center { between } => doc::PointRef::Center {
+            between: between.map(name_to_doc),
+        },
+        manifest::PointRef::Datum { feature } => doc::PointRef::Datum {
+            feature: doc::FeatureId(feature),
         },
     }
 }
@@ -702,6 +895,10 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
                         face: name_to_doc(face),
                         offset: doc::Expr(offset),
                     },
+                    manifest::SketchPlane::Datum { plane, offset } => doc::SketchPlane::Datum {
+                        plane: doc::FeatureId(plane),
+                        offset: doc::Expr(offset),
+                    },
                 },
                 entities: entities.into_iter().map(entity_to_doc).collect(),
                 constraints: constraints.into_iter().map(constraint_to_doc).collect(),
@@ -740,6 +937,9 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
                     manifest::RevolveAxis::Line { entity } => doc::RevolveAxis::Line {
                         entity: doc::EntityId(entity),
                     },
+                    manifest::RevolveAxis::Datum { axis } => doc::RevolveAxis::Datum {
+                        axis: doc::FeatureId(axis),
+                    },
                 },
                 angle: doc::Expr(angle),
                 symmetric,
@@ -763,13 +963,56 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
                 source,
                 point,
                 normal,
+                plane,
                 keep,
             } => doc::FeatureKind::Mirror(doc::Mirror {
                 source: doc::FeatureId(source),
                 point: exprs_to_doc(point),
                 normal: exprs_to_doc(normal),
+                plane: plane.map(doc::FeatureId),
                 keep,
             }),
+            manifest::FeatureKind::DatumPoint { at } => {
+                doc::FeatureKind::DatumPoint(doc::DatumPoint {
+                    at: point_ref_to_doc(at),
+                })
+            }
+            manifest::FeatureKind::DatumAxis { by } => {
+                doc::FeatureKind::DatumAxis(doc::DatumAxis {
+                    by: match by {
+                        manifest::AxisBy::TwoPoints { points } => doc::AxisBy::TwoPoints {
+                            points: points.map(point_ref_to_doc),
+                        },
+                        manifest::AxisBy::Edge { between } => doc::AxisBy::Edge {
+                            between: between.map(name_to_doc),
+                        },
+                        manifest::AxisBy::Face { face } => doc::AxisBy::Face {
+                            face: name_to_doc(face),
+                        },
+                        manifest::AxisBy::TwoPlanes { planes } => doc::AxisBy::TwoPlanes {
+                            planes: planes.map(plane_ref_to_doc),
+                        },
+                    },
+                })
+            }
+            manifest::FeatureKind::DatumPlane { by } => {
+                doc::FeatureKind::DatumPlane(doc::DatumPlane {
+                    by: match by {
+                        manifest::PlaneBy::Offset { from, distance } => doc::PlaneBy::Offset {
+                            from: plane_ref_to_doc(from),
+                            distance: doc::Expr(distance),
+                        },
+                        manifest::PlaneBy::Angle { from, about, angle } => doc::PlaneBy::Angle {
+                            from: plane_ref_to_doc(from),
+                            about: axis_ref_to_doc(about),
+                            angle: doc::Expr(angle),
+                        },
+                        manifest::PlaneBy::ThreePoints { points } => doc::PlaneBy::ThreePoints {
+                            points: points.map(point_ref_to_doc),
+                        },
+                    },
+                })
+            }
             manifest::FeatureKind::Boolean {
                 op,
                 target,
@@ -796,13 +1039,17 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
                     manifest::PatternLayout::Linear { step } => doc::PatternLayout::Linear {
                         step: exprs_to_doc(step),
                     },
-                    manifest::PatternLayout::Circular { point, axis, angle } => {
-                        doc::PatternLayout::Circular {
-                            point: exprs_to_doc(point),
-                            axis: exprs_to_doc(axis),
-                            angle: doc::Expr(angle),
-                        }
-                    }
+                    manifest::PatternLayout::Circular {
+                        point,
+                        axis,
+                        angle,
+                        about,
+                    } => doc::PatternLayout::Circular {
+                        point: exprs_to_doc(point),
+                        axis: exprs_to_doc(axis),
+                        angle: doc::Expr(angle),
+                        about: about.map(doc::FeatureId),
+                    },
                 },
             }),
         },

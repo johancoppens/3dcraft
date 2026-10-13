@@ -78,8 +78,7 @@ impl WorldPlane {
     }
 }
 
-/// What a sketch lies on. Datum planes join this enum with the feature
-/// that makes them.
+/// What a sketch lies on.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum SketchPlane {
@@ -94,19 +93,29 @@ pub enum SketchPlane {
         face: crate::PersistentName,
         offset: Expr,
     },
+    /// A datum plane made earlier in the history, moved by `offset` along
+    /// its normal. The sketch's origin and axes are the datum's.
+    Datum {
+        plane: crate::FeatureId,
+        offset: Expr,
+    },
 }
 
 impl SketchPlane {
     /// The offset along the normal.
     pub fn offset(&self) -> &Expr {
         match self {
-            SketchPlane::World { offset, .. } | SketchPlane::Face { offset, .. } => offset,
+            SketchPlane::World { offset, .. }
+            | SketchPlane::Face { offset, .. }
+            | SketchPlane::Datum { offset, .. } => offset,
         }
     }
 
     pub fn offset_mut(&mut self) -> &mut Expr {
         match self {
-            SketchPlane::World { offset, .. } | SketchPlane::Face { offset, .. } => offset,
+            SketchPlane::World { offset, .. }
+            | SketchPlane::Face { offset, .. }
+            | SketchPlane::Datum { offset, .. } => offset,
         }
     }
 }
