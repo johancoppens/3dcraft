@@ -56,7 +56,13 @@ pub(super) fn inside(solid: &Solid, p: Vec3, tolerance: &Tolerance) -> Result<bo
         if !box_.contains(p, 2.0 * tol) {
             continue;
         }
-        let near = signed_distance(outline.sheet(), p).is_some_and(|d| d.abs() < 2.0 * tol);
+        // A bound below the distance to a freeform face (a few boxes)
+        // settles most points before a nearest-point search.
+        let sheet = outline.sheet();
+        let far = sheet
+            .tree
+            .is_some_and(|tree| tree.lower_bound(p, tol, 2.001 * tol) >= 2.0 * tol);
+        let near = !far && signed_distance(sheet, p).is_some_and(|d| d.abs() < 2.0 * tol);
         if near && let Ok((u, v)) = outline.surface.project(p) {
             let named = [solid.name(face)];
             let foot = outline.surface.eval(u, v);
