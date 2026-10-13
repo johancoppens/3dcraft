@@ -473,10 +473,15 @@ dependencies = [
 name = "craft3d-io"
 version = "0.0.1"
 dependencies = [
+ "craft3d-geom",
+ "craft3d-kernel",
  "craft3d-math",
  "craft3d-meshio",
+ "craft3d-step",
  "craft3d-tess",
  "craft3d-testkit",
+ "craft3d-topo",
+ "serde_json",
 ]
 
 [[package]]
