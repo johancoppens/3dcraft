@@ -582,6 +582,73 @@ fn an_edge_is_referred_to_by_the_faces_it_lies_between() {
 }
 
 #[test]
+fn curved_boolean_results_are_meshed_at_every_scale() {
+    // Two results the tessellator once refused although they are valid:
+    // a ball with a hole through it (a sphere face between two circles),
+    // and a ball on the corner of a block in a small document.
+    for k in [1e-3_f64, 1.0, 1e3] {
+        let mut s = Session::new(Workspace::none());
+        run(&mut s, "file.new", json!({"tolerance": 1e-6 * k}));
+        run(
+            &mut s,
+            "feature.sphere",
+            json!({"name": "Ball", "radius": 10.0 * k}),
+        );
+        run(
+            &mut s,
+            "feature.cylinder",
+            json!({"name": "Rod", "radius": 6.0 * k, "height": 30.0 * k,
+                   "position": [0, 0, -15.0 * k]}),
+        );
+        for op in ["union", "subtract"] {
+            let made = boolean(&mut s, op, "Ball", "Rod", "Part");
+            assert_eq!(made["status"], "ok", "{op} at {k}: {made}");
+            let check = run(&mut s, "document.check", json!({"deep": true}));
+            assert_eq!(check["ok"], true, "{op} at {k}: {check}");
+            let picture = run(&mut s, "view.render", json!({"width": 64, "height": 48}));
+            assert!(picture["coverage"].as_f64().unwrap() > 0.0, "{op} at {k}");
+            run(&mut s, "edit.undo", json!({}));
+        }
+        // The ball less the rod through it: a napkin ring, whose volume
+        // depends on its height alone: pi h^3 / 6 with h = 2 sqrt(100 - 36).
+        boolean(&mut s, "subtract", "Ball", "Rod", "Ring");
+        let ring = volume(&mut s, "Ring");
+        let expected = PI * (16.0 * k).powi(3) / 6.0;
+        assert!(
+            (ring - expected).abs() <= 1e-9 * expected,
+            "{ring} vs {expected}"
+        );
+
+        let mut s = Session::new(Workspace::none());
+        run(&mut s, "file.new", json!({"tolerance": 1e-6 * k}));
+        run(
+            &mut s,
+            "feature.block",
+            json!({"name": "Block", "size": [40.0 * k, 30.0 * k, 20.0 * k]}),
+        );
+        run(
+            &mut s,
+            "feature.sphere",
+            json!({"name": "Ball", "radius": 9.0 * k,
+                   "position": [40.0 * k, 30.0 * k, 20.0 * k]}),
+        );
+        let made = boolean(&mut s, "union", "Block", "Ball", "Part");
+        assert_eq!(made["status"], "ok", "at {k}: {made}");
+        // Seven eighths of the ball stick out of the corner.
+        let expected = 24000.0 * k.powi(3) + 7.0 / 8.0 * 4.0 / 3.0 * PI * (9.0 * k).powi(3);
+        let part = volume(&mut s, "Part");
+        assert!(
+            (part - expected).abs() <= 1e-9 * expected,
+            "{part} vs {expected}"
+        );
+        let check = run(&mut s, "document.check", json!({"deep": true}));
+        assert_eq!(check["ok"], true, "at {k}: {check}");
+        let picture = run(&mut s, "view.render", json!({"width": 64, "height": 48}));
+        assert!(picture["coverage"].as_f64().unwrap() > 0.0, "at {k}");
+    }
+}
+
+#[test]
 fn the_three_operations_obey_the_volume_identities() {
     // Two blocks that overlap in a 10 x 10 x 10 corner.
     let build = |op: &str| {
