@@ -516,3 +516,57 @@ fn freeform_patches_that_nearly_touch_do_not_meet() {
         }
     }
 }
+
+/// The same crossing through a touch with the surfaces a tenth of a
+/// tolerance apart at the point: within half the tolerance, so it is read
+/// as the crossing, and the four arms still end at the point, each
+/// leaving it along its own direction of the crossing. (`f = 0` itself is
+/// two branches there that turn away half a thousandth before the point.
+/// Until 2026-10-13 the arms were fitted to them on the way in, so two
+/// arms reached the point from the same side, and a boolean sorted the
+/// four pieces around the vertex wrongly: two lumps that touch came out
+/// as one shell, near/dome-dome/012 of the boolean corpus.)
+#[test]
+fn a_crossing_a_tenth_of_a_tolerance_apart_is_drawn_to_the_point() {
+    for k in SCALES {
+        for nurbs in [false, true] {
+            let frame = tilted(k);
+            let at = (0.45, 0.5);
+            let upper = quadric_patch(&frame, k, at, (0.8, -0.12, 0.0), 1e-7, nurbs);
+            let lower = quadric_patch(&frame, k, at, (0.3, 0.2, 0.0), 0.0, nurbs);
+            let t = tol(k);
+            let touch = frame.point(k * at.0, k * at.1, 0.0);
+            let within = cube(touch, 2.0 * k);
+            let m = meeting(meet_surfaces(&upper, &lower, &within, &t).unwrap());
+            check_meeting(&m, &upper, &lower, &within, &t);
+            assert_eq!(m.curves.len(), 4, "scale {k} nurbs {nurbs}");
+            let mut quadrants = [false; 4];
+            for curve in &m.curves {
+                let (first, last) = curve.range;
+                let (node, inwards) = if start(curve).distance(touch) <= t.linear {
+                    (first, 1.0)
+                } else {
+                    assert!(
+                        end(curve).distance(touch) <= t.linear,
+                        "scale {k} nurbs {nurbs}: an arm that does not end at the point"
+                    );
+                    (last, -1.0)
+                };
+                // Two ten-thousandths out (the branches of `f = 0` turn
+                // away at 5.6 of them, on the y axis, 39° from here): along
+                // y = ± 1.25 x within 15° (the arm starts on a branch four
+                // times as far out, a few degrees off the direction).
+                let p = curve.curve.eval(node + inwards * 2e-4 * k);
+                let (x, y, _) = frame.local(p);
+                let (x, y) = (x / k - at.0, y / k - at.1);
+                let off = (y.abs().atan2(x.abs()) - 1.25_f64.atan()).abs();
+                assert!(
+                    off < 15.0_f64.to_radians(),
+                    "scale {k} nurbs {nurbs}: an arm leaves towards ({x}, {y})"
+                );
+                quadrants[usize::from(x > 0.0) + 2 * usize::from(y > 0.0)] = true;
+            }
+            assert_eq!(quadrants, [true; 4], "scale {k} nurbs {nurbs}");
+        }
+    }
+}

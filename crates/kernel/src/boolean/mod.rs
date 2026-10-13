@@ -181,7 +181,6 @@ const AMBIGUOUS: Reason =
     "a curve that is partly on and partly off a face boundary (at the edge of tolerance)";
 const INCONSISTENT: Reason = "an imprinted curve that does not fit the edges it should coincide with (at the edge of tolerance)";
 const NON_MANIFOLD: Reason = "the result would have an edge shared by faces that do not pair up around it (at the edge of tolerance)";
-const TANGENT_CROSSING: Reason = "an intersection curve through a point where the surfaces are tangent (a crossing through a touch; tangent contact with a freeform face)";
 const TANGENT_EDGE: Reason = "more than two faces meet along an edge and two of them are tangent there (tangent contact along an edge)";
 const ON_A_FACE: Reason = "a piece of a face lies within tolerance of a face it is not coincident with (at the edge of tolerance)";
 const NO_RAY: Reason = "could not tell inside from outside: every ray tried grazes the other body";

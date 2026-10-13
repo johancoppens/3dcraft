@@ -171,6 +171,11 @@ struct Singular {
     v: f64,
     p: Vec3,
     kind: SingularKind,
+    /// How far from a crossing point its arms are seeded.
+    arm: f64,
+    /// How far from a crossing point the branches of `f = 0` turn away
+    /// from it, where the surfaces are a little apart there.
+    turn: f64,
 }
 
 /// Where Newton on the gradient of `f` came to rest.
@@ -259,6 +264,11 @@ pub(super) struct Marcher {
     /// Borders of the chart's rectangle (u start, u end, v start, v end)
     /// that lie on the field's surface: reported as curves, not marched.
     lying: [bool; 4],
+    /// Crossing points read as such although the surfaces are a little
+    /// apart there, each with the radius within which a branch is drawn
+    /// straight to the point instead of along `f = 0`, which turns away
+    /// before it gets there.
+    zones: Vec<(Vec3, f64)>,
 }
 
 impl Marcher {
@@ -291,6 +301,7 @@ impl Marcher {
             hmin: 4.0 * on,
             evals: 0,
             lying: [false; 4],
+            zones: Vec::new(),
         })
     }
 
@@ -942,6 +953,19 @@ impl Marcher {
                 "surfaces that touch along a curve, or with more than second-order contact, without a closed form",
             ));
         }
+        // Where the surfaces are a little apart at a crossing (within the
+        // tolerance, so it is read as one), `f = 0` is two branches that
+        // turn away at `sqrt(2 |f| / λ)` from the point, `λ` the weaker
+        // eigenvalue of the Hessian: the arms start four times as far out,
+        // where the branches run along the directions of the crossing
+        // within a thirtieth and a march towards the point ends on it.
+        let mean = 0.5 * (ha + hc);
+        let weaker = (mean.abs() - (0.25 * (ha - hc) * (ha - hc) + hb * hb).sqrt()).abs();
+        let turn = if weaker > 0.0 {
+            (2.0 * s.e.f.abs() / weaker).sqrt()
+        } else {
+            0.0
+        };
         Ok(Some(Singular {
             u: s.u,
             v: s.v,
@@ -951,6 +975,8 @@ impl Marcher {
             } else {
                 SingularKind::Cross
             },
+            arm: self.arm_radius().max(4.0 * turn),
+            turn,
         }))
     }
 
@@ -1018,7 +1044,7 @@ impl Marcher {
         None
     }
 
-    /// How far from a crossing point its arms are seeded.
+    /// How far from a crossing point its arms are seeded, at the least.
     fn arm_radius(&self) -> f64 {
         (64.0 * self.tol.linear).max(1e-2 * self.hmax)
     }
@@ -1037,7 +1063,7 @@ impl Marcher {
         } else {
             [(1.0, 0.0), (0.0, 1.0)]
         };
-        let radius = self.arm_radius();
+        let radius = s.arm;
         for (du, dv) in directions {
             let len = (e.su * du + e.sv * dv).length();
             if !(len > 0.0) {
@@ -1392,12 +1418,49 @@ impl Marcher {
         }
         // Where the surfaces are nearly tangent a curve can be close to
         // both and still far from where they meet: hold the middle of the
-        // span against a point of the intersection itself.
-        if let Some(m) = self.between(a, b) {
+        // span against a point of the intersection itself. (Not on the
+        // way into a crossing point the surfaces are a little apart at:
+        // there the curve is drawn to the point, and `f = 0` is not.)
+        if !self.modelled(a, b)
+            && let Some(m) = self.between(a, b)
+        {
             let off = Self::bezier(&c, 0.5) - m.p;
             worst = worst.max((off - m.t * off.dot(m.t)).length());
         }
         worst
+    }
+
+    /// True when the span from `a` to `b` lies in the zone of a crossing
+    /// point the surfaces are a little apart at.
+    fn modelled(&self, a: &Pt, b: &Pt) -> bool {
+        self.zones
+            .iter()
+            .any(|&(p, radius)| a.p.distance(p) <= radius && b.p.distance(p) <= radius)
+    }
+
+    /// The point of the chart halfway between `a` and `b` in its
+    /// parameters, travelling from `a` to `b`: on the way into a crossing
+    /// point along the direction in which the Hessian vanishes, `f` stays
+    /// what it is at the point to third order.
+    fn straight(&mut self, a: &Pt, b: &Pt) -> Option<Pt> {
+        let (u, v) = (0.5 * (a.u + b.u), 0.5 * (a.v + b.v));
+        let e = self.eval(u, v)?;
+        let t = (b.p - a.p).normalized()?;
+        let (g11, g12, g22) = (e.su.dot(e.su), e.su.dot(e.sv), e.sv.dot(e.sv));
+        let det = g11 * g22 - g12 * g12;
+        if !(det > 0.0) {
+            return None;
+        }
+        let (tu, tv) = (t.dot(e.su), t.dot(e.sv));
+        let (du, dv) = ((g22 * tu - g12 * tv) / det, (g11 * tv - g12 * tu) / det);
+        (du != 0.0 || dv != 0.0).then_some(Pt {
+            u,
+            v,
+            p: e.p,
+            t,
+            du,
+            dv,
+        })
     }
 
     /// A point of the branch between `a` and `b`.
@@ -1452,8 +1515,12 @@ impl Marcher {
             if pts.len() >= 2 * MAX_POINTS || a.p.distance(b.p) <= 8.0 * self.on {
                 return Err(give_up);
             }
-            let middle = self.between(&a, &b).ok_or(give_up)?;
-            pts.insert(i + 1, middle);
+            let middle = if self.modelled(&a, &b) {
+                self.straight(&a, &b)
+            } else {
+                self.between(&a, &b)
+            };
+            pts.insert(i + 1, middle.ok_or(give_up)?);
         }
         Ok(())
     }
@@ -1633,6 +1700,8 @@ impl Marcher {
                 v,
                 p: apex,
                 kind: SingularKind::Apex,
+                arm: 0.0,
+                turn: 0.0,
             });
         }
         let merge = 8.0 * self.tol.linear;
@@ -1641,6 +1710,11 @@ impl Marcher {
         for s in singular.clone() {
             if s.kind == SingularKind::Cross {
                 self.arms(&s, &mut seeds);
+                // (A quarter over: an arm's seed is brought onto `f = 0`
+                // from its place on the circle.)
+                if s.turn > 0.5 * self.tol.linear {
+                    self.zones.push((s.p, 1.25 * s.arm));
+                }
             }
         }
         let mut branches: Vec<Branch> = Vec::new();
@@ -1660,7 +1734,7 @@ impl Marcher {
             // Close to a crossing point every arm has its own seed.
             let covered = |s: &Singular| {
                 let radius = match s.kind {
-                    SingularKind::Cross => 0.5 * self.arm_radius(),
+                    SingularKind::Cross => 0.5 * s.arm,
                     _ => 2.0 * merge,
                 };
                 e.p.distance(s.p) <= radius.max(2.0 * merge)

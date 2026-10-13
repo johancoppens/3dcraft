@@ -248,3 +248,116 @@ fn a_ball_sunk_into_the_roof() {
         "dome and ball",
     );
 }
+
+/// A block set with its underside in the tangent plane of the roof at a
+/// point where the roof is a saddle: the plane touches the roof there and
+/// cuts into it on two opposite sides, so the curve in which they meet is
+/// two branches that cross at the touch. Until 2026-10-13 a meeting curve
+/// through a point where the surfaces are tangent was refused wherever a
+/// freeform face was involved, because this kernel and the reference
+/// disagreed on such cases; a direct integration of the common volume
+/// (below, and in the corpus test) showed the reference to be the one
+/// that was off.
+///
+/// What the block and the dome share, integrated without either: along
+/// every vertical line the dome is the stretch from the floor to the
+/// roof, the block the stretch between its six planes.
+#[test]
+fn a_block_on_the_tangent_plane_of_a_saddle_of_the_roof() {
+    // The most saddle-like place of the roof's middle, by differences.
+    let step = 1e-4;
+    let second = |x: f64, y: f64| {
+        let h = roof_height;
+        (
+            (h(x + step, y) - 2.0 * h(x, y) + h(x - step, y)) / (step * step),
+            (h(x + step, y + step) - h(x + step, y - step) - h(x - step, y + step)
+                + h(x - step, y - step))
+                / (4.0 * step * step),
+            (h(x, y + step) - 2.0 * h(x, y) + h(x, y - step)) / (step * step),
+        )
+    };
+    let mut at = (0.0, 0.0, 0.0);
+    for i in 3..=9 {
+        for j in 3..=9 {
+            let (x, y) = (DX * f64::from(i) / 12.0, DY * f64::from(j) / 12.0);
+            let (xx, xy, yy) = second(x, y);
+            let gauss = xx * yy - xy * xy;
+            if gauss < at.2 {
+                at = (x, y, gauss);
+            }
+        }
+    }
+    let (x0, y0, gauss) = at;
+    assert!(gauss < -0.01, "the roof has no saddle there: {gauss}");
+    let z0 = roof_height(x0, y0);
+    let slope = (
+        (roof_height(x0 + step, y0) - roof_height(x0 - step, y0)) / (2.0 * step),
+        (roof_height(x0, y0 + step) - roof_height(x0, y0 - step)) / (2.0 * step),
+    );
+    let normal = Vec3::new(-slope.0, -slope.1, 1.0).normalized().unwrap();
+    let along = Vec3::new(1.0, 0.0, slope.0).normalized().unwrap();
+    // The touch in the middle of the block's underside.
+    let (side, tall) = (1.3, 0.8);
+    let frame_at = |k: f64| {
+        let unit = Frame::new(Vec3::new(x0, y0, z0), normal, along).unwrap();
+        let corner = unit.point(-0.5 * side, -0.5 * side, 0.0);
+        Frame::new(corner * k, normal, along).unwrap()
+    };
+    let frame = frame_at(1.0);
+    let axes = (frame.x(), frame.y(), frame.z());
+    const N: usize = 1600;
+    let shared = |n: usize| {
+        let mut sum = 0.0;
+        for i in 0..n {
+            for j in 0..n {
+                let (x, y) = (
+                    DX * (i as f64 + 0.5) / n as f64,
+                    DY * (j as f64 + 0.5) / n as f64,
+                );
+                let p = frame.local(Vec3::new(x, y, 0.0));
+                let (mut low, mut high) = (0.0_f64, roof_height(x, y));
+                for (at, along, most) in [
+                    (p.0, axes.0.z, side),
+                    (p.1, axes.1.z, side),
+                    (p.2, axes.2.z, tall),
+                ] {
+                    // 0 ≤ at + t along ≤ most.
+                    let (a, b) = ((0.0 - at) / along, (most - at) / along);
+                    low = low.max(a.min(b));
+                    high = high.min(a.max(b));
+                }
+                sum += (high - low).max(0.0);
+            }
+        }
+        sum * DX * DY / (n * n) as f64
+    };
+    let (coarse, expected) = (shared(N / 2), shared(N));
+    assert!(expected > 1e-3, "nothing is shared: {expected}");
+    assert!(
+        (expected - coarse).abs() < 2e-4 * expected,
+        "the integral has not settled: {coarse} then {expected}"
+    );
+    for k in SCALES {
+        for nurbs in [false, true] {
+            let (dome, volume) = dome(k, nurbs);
+            let block = primitives::block(&frame_at(k), side * k, side * k, tall * k).unwrap();
+            let k3 = k * k * k;
+            let common = solve(&dome, &block, Intersect, k);
+            let common = mass(&common.body).volume / k3;
+            near(common, expected, 1e-3, "block and dome");
+            let rest = solve(&dome, &block, Subtract, k);
+            assert_close(
+                mass(&rest.body).volume / k3,
+                volume - common,
+                "dome less block",
+            );
+            let united = solve(&dome, &block, Union, k);
+            assert_close(
+                mass(&united.body).volume / k3,
+                volume + side * side * tall - common,
+                "dome and block",
+            );
+            assert!(has_patch(&united.body) && has_patch(&rest.body));
+        }
+    }
+}

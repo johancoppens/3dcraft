@@ -83,7 +83,7 @@ use std::path::PathBuf;
 /// Raised to 11062 on 2026-10-13 when freeform faces came in: 4998 of the
 /// 5613 outcomes with a domed block agree (the rest are refused, none
 /// wrong), and the 6064 of the primitives are unchanged.
-const AGREEING_FLOOR: usize = 11062;
+const AGREEING_FLOOR: usize = 11351;
 
 /// Mismatches the kernel is known to have: `(case id, operation, why)`.
 /// They are bugs, listed so that the test is green while they are open and
@@ -223,6 +223,10 @@ enum Outcome {
     /// reference's area is off (FreeCAD integrates the area of a spline
     /// face numerically). Counted as unscored.
     ReferenceArea(String),
+    /// The volumes disagree, ours are those of the common volume
+    /// integrated directly ([`integrated_common`]) and the reference's are
+    /// not: the reference is off. Counted as unscored.
+    ReferenceVolume(String),
     Mismatch(String),
     Invalid(String),
 }
@@ -243,7 +247,7 @@ impl Outcome {
             Outcome::Unsupported(_) => "unsupported",
             Outcome::Unscored => "unscored",
             Outcome::Measure(_) => "measure",
-            Outcome::ReferenceArea(_) => "unscored",
+            Outcome::ReferenceArea(_) | Outcome::ReferenceVolume(_) => "unscored",
             Outcome::Mismatch(_) => "MISMATCH",
             Outcome::Invalid(_) => "INVALID",
         }
@@ -576,6 +580,261 @@ fn least_sampling_slack(samples: usize, cell: f64) -> f64 {
     cell * (5.0 / samples as f64)
 }
 
+/// A primitive of the corpus in its own frame: whether a point is in it,
+/// and where a line can enter or leave it.
+struct Convex {
+    frame: Frame,
+    kind: ConvexKind,
+}
+
+enum ConvexKind {
+    Block(Vec3),
+    Cylinder {
+        radius: f64,
+        height: f64,
+    },
+    Cone {
+        radius: f64,
+        height: f64,
+    },
+    Sphere {
+        radius: f64,
+    },
+    /// Not convex: a line can cross it four times.
+    Torus {
+        major: f64,
+        minor: f64,
+    },
+}
+
+impl Convex {
+    fn of(solid: &Value) -> Option<Convex> {
+        let frame = Frame::new(
+            vector(solid, "origin")?,
+            vector(solid, "z")?,
+            vector(solid, "x")?,
+        )?;
+        let get = |key: &str| number(solid, &[key]);
+        let kind = match solid.get("kind")?.as_str()? {
+            "block" => ConvexKind::Block(vector(solid, "size")?),
+            "cylinder" => ConvexKind::Cylinder {
+                radius: get("radius")?,
+                height: get("height")?,
+            },
+            "cone" => ConvexKind::Cone {
+                radius: get("radius")?,
+                height: get("height")?,
+            },
+            "sphere" => ConvexKind::Sphere {
+                radius: get("radius")?,
+            },
+            "torus" => ConvexKind::Torus {
+                major: get("major")?,
+                minor: get("minor")?,
+            },
+            _ => return None,
+        };
+        Some(Convex { frame, kind })
+    }
+
+    /// Whether the point with these coordinates in the solid's frame is in it.
+    fn holds(&self, (x, y, z): (f64, f64, f64)) -> bool {
+        match self.kind {
+            ConvexKind::Block(size) => {
+                (0.0..=size.x).contains(&x)
+                    && (0.0..=size.y).contains(&y)
+                    && (0.0..=size.z).contains(&z)
+            }
+            ConvexKind::Cylinder { radius, height } => {
+                (0.0..=height).contains(&z) && x * x + y * y <= radius * radius
+            }
+            ConvexKind::Cone { radius, height } => {
+                let reach = radius * (1.0 - z / height);
+                (0.0..=height).contains(&z) && x * x + y * y <= reach * reach
+            }
+            ConvexKind::Sphere { radius } => x * x + y * y + z * z <= radius * radius,
+            ConvexKind::Torus { major, minor } => Self::tube(major, minor, (x, y, z)) <= 0.0,
+        }
+    }
+
+    /// Negative inside the tube of a torus about the z axis.
+    fn tube(major: f64, minor: f64, (x, y, z): (f64, f64, f64)) -> f64 {
+        let off = x.hypot(y) - major;
+        off * off + z * z - minor * minor
+    }
+
+    /// The parameters at which the line `p + t d` (in the solid's frame)
+    /// can cross the solid's boundary: every root of every face's equation
+    /// (for a torus, whose equation is a quartic: the changes of sign
+    /// between 256 places on the stretch `from..to`, each by bisection; the
+    /// tube is far wider than a step).
+    fn crossings(
+        &self,
+        p: (f64, f64, f64),
+        d: (f64, f64, f64),
+        (from, to): (f64, f64),
+        out: &mut Vec<f64>,
+    ) {
+        let mut plane = |at: f64, along: f64, level: f64| {
+            if along != 0.0 {
+                out.push((level - at) / along);
+            }
+        };
+        // a t² + 2 b t + c = 0.
+        let quadratic = |a: f64, b: f64, c: f64, out: &mut Vec<f64>| {
+            let disc = b * b - a * c;
+            if a != 0.0 && disc >= 0.0 {
+                let root = disc.sqrt();
+                out.extend([(-b - root) / a, (-b + root) / a]);
+            } else if a == 0.0 && b != 0.0 {
+                out.push(-c / (2.0 * b));
+            }
+        };
+        match self.kind {
+            ConvexKind::Block(size) => {
+                for (at, along, most) in
+                    [(p.0, d.0, size.x), (p.1, d.1, size.y), (p.2, d.2, size.z)]
+                {
+                    plane(at, along, 0.0);
+                    plane(at, along, most);
+                }
+            }
+            ConvexKind::Cylinder { radius, height } => {
+                plane(p.2, d.2, 0.0);
+                plane(p.2, d.2, height);
+                quadratic(
+                    d.0 * d.0 + d.1 * d.1,
+                    p.0 * d.0 + p.1 * d.1,
+                    p.0 * p.0 + p.1 * p.1 - radius * radius,
+                    out,
+                );
+            }
+            ConvexKind::Cone { radius, height } => {
+                plane(p.2, d.2, 0.0);
+                plane(p.2, d.2, height);
+                // x² + y² = (s0 + s1 t)², the radius at the height of the point.
+                let (s0, s1) = (radius * (1.0 - p.2 / height), -radius * d.2 / height);
+                quadratic(
+                    d.0 * d.0 + d.1 * d.1 - s1 * s1,
+                    p.0 * d.0 + p.1 * d.1 - s0 * s1,
+                    p.0 * p.0 + p.1 * p.1 - s0 * s0,
+                    out,
+                );
+            }
+            ConvexKind::Sphere { radius } => quadratic(
+                d.0 * d.0 + d.1 * d.1 + d.2 * d.2,
+                p.0 * d.0 + p.1 * d.1 + p.2 * d.2,
+                p.0 * p.0 + p.1 * p.1 + p.2 * p.2 - radius * radius,
+                out,
+            ),
+            ConvexKind::Torus { major, minor } => {
+                let at = |t: f64| {
+                    Self::tube(major, minor, (p.0 + t * d.0, p.1 + t * d.1, p.2 + t * d.2))
+                };
+                // Nowhere near the torus: no crossing.
+                let reach = major + minor;
+                let (middle, half) = (0.5 * (from + to), 0.5 * (to - from));
+                let centre = (p.0 + middle * d.0, p.1 + middle * d.1, p.2 + middle * d.2);
+                let length = (d.0 * d.0 + d.1 * d.1 + d.2 * d.2).sqrt();
+                if (centre.0 * centre.0 + centre.1 * centre.1 + centre.2 * centre.2).sqrt()
+                    > reach + half * length
+                {
+                    return;
+                }
+                const STEPS: usize = 256;
+                let mut before = (from, at(from));
+                for k in 1..=STEPS {
+                    let t = from + (to - from) * k as f64 / STEPS as f64;
+                    let here = (t, at(t));
+                    if (before.1 <= 0.0) != (here.1 <= 0.0) {
+                        let (mut lo, mut hi) = (before, here);
+                        for _ in 0..60 {
+                            let t = 0.5 * (lo.0 + hi.0);
+                            let mid = (t, at(t));
+                            if (mid.1 <= 0.0) == (lo.1 <= 0.0) {
+                                lo = mid;
+                            } else {
+                                hi = mid;
+                            }
+                        }
+                        out.push(0.5 * (lo.0 + hi.0));
+                    }
+                    before = here;
+                }
+            }
+        }
+    }
+}
+
+/// The volume a domed block and a primitive of the corpus have in
+/// common, at scale 1, integrated directly: independent of this kernel and
+/// of the reference kernel. Along a line parallel to the dome's axis the
+/// dome is the interval from its floor to its roof, whose height is the
+/// bicubic Bernstein polynomial of the test kit's control heights; the
+/// primitive is what lies between the roots of its faces' equations on
+/// that line, where the middle of a piece is in it. The length both share
+/// is summed over `n × n` lines through the middles of a grid on the
+/// dome's floor (the midpoint rule). `None` for any other pair.
+fn integrated_common(case: &Value, n: usize) -> Option<f64> {
+    let (a, b) = (case.get("a")?, case.get("b")?);
+    let (dome, other) = match (freeform(a), freeform(b)) {
+        (true, false) => (a, b),
+        (false, true) => (b, a),
+        _ => return None,
+    };
+    let other = Convex::of(other)?;
+    let frame = Frame::new(
+        vector(dome, "origin")?,
+        vector(dome, "z")?,
+        vector(dome, "x")?,
+    )?;
+    let size = vector(dome, "size")?;
+    // The control heights of `craft3d_testkit::trimmed::domed_block`.
+    let height = |i: usize, j: usize| size.z * (1.0 + 0.15 * (((i * 7 + j * 3) % 5) as f64 - 2.0));
+    let bernstein = |t: f64| {
+        let r = 1.0 - t;
+        [r * r * r, 3.0 * r * r * t, 3.0 * r * t * t, t * t * t]
+    };
+    let axis = frame.z();
+    let d = (
+        axis.dot(other.frame.x()),
+        axis.dot(other.frame.y()),
+        axis.dot(other.frame.z()),
+    );
+    let mut total = 0.0;
+    let mut cuts: Vec<f64> = Vec::new();
+    for i in 0..n {
+        let u = (i as f64 + 0.5) / n as f64;
+        let bu = bernstein(u);
+        for j in 0..n {
+            let v = (j as f64 + 0.5) / n as f64;
+            let bv = bernstein(v);
+            let mut roof = 0.0;
+            for (p, wu) in bu.iter().enumerate() {
+                for (q, wv) in bv.iter().enumerate() {
+                    roof += wu * wv * height(p, q);
+                }
+            }
+            let p = other.frame.local(frame.point(u * size.x, v * size.y, 0.0));
+            cuts.clear();
+            cuts.extend([0.0, roof]);
+            other.crossings(p, d, (0.0, roof), &mut cuts);
+            cuts.retain(|t| (0.0..=roof).contains(t));
+            cuts.sort_by(f64::total_cmp);
+            for pair in cuts.windows(2) {
+                let (Some(&from), Some(&to)) = (pair.first(), pair.get(1)) else {
+                    continue;
+                };
+                let t = 0.5 * (from + to);
+                if other.holds((p.0 + t * d.0, p.1 + t * d.1, p.2 + t * d.2)) {
+                    total += to - from;
+                }
+            }
+        }
+    }
+    Some(total * size.x * size.y / (n * n) as f64)
+}
+
 /// The volume of `body` at scale 1 by counting sampled points that the
 /// kernel's own point classification puts inside it, and five standard
 /// deviations of that count. Seeded: the same points every run.
@@ -659,6 +918,14 @@ fn digest(result: &craft3d_kernel::boolean::BooleanResult) {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     format!("{result:?}").hash(&mut hasher);
     DIGEST.fetch_add(hasher.finish(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A disagreement in the area and nothing else.
+fn only_area(outcome: &Outcome) -> bool {
+    matches!(outcome, Outcome::Mismatch(what) if what.starts_with("area ")
+        && !what.contains("volume")
+        && !what.contains("centroid")
+        && !what.contains("shells"))
 }
 
 /// The three outcomes of a case, in the order of [`OPS`].
@@ -767,6 +1034,9 @@ fn run_case(case: &Value, snap: Option<&Value>, verbose: bool) -> Vec<Outcome> {
                     _ if !defects.is_empty() => {
                         Outcome::Invalid(format!("fails the checker: {:?}", defects.first()))
                     }
+                    // (Nor is a body of such a case that `mass_properties`
+                    // cannot measure held against its reference.)
+                    Err(_) if set_aside => Outcome::Unscored,
                     Err(e) => second_opinion(case, field, &result.body, None, k, &tolerance, &e)
                         .unwrap_or(Outcome::Invalid(e)),
                     Ok(measured) => {
@@ -812,21 +1082,94 @@ fn run_case(case: &Value, snap: Option<&Value>, verbose: bool) -> Vec<Outcome> {
         outcomes.push(outcome);
         measured.push(ours);
     }
+    // Where an outcome disagrees with the reference and the pair is a
+    // domed block and a convex primitive, the common volume integrated
+    // directly says who is right: the three results follow from it and
+    // from the operands' volumes, which both kernels have to rounding.
+    // Ours must be those volumes within the corpus's own bound; the
+    // reference's must be off by more than that bound. (FreeCAD loses one of the two
+    // lumps a ball and a dome share where they also touch:
+    // tangent/sphere-dome/007, common 0.0064231930 integrated, ours
+    // 0.0064231919, FreeCAD's 0.0053844056.)
+    if outcomes.iter().any(|o| matches!(o, Outcome::Mismatch(_)))
+        && !outcomes
+            .iter()
+            .any(|o| matches!(o, Outcome::Invalid(_) | Outcome::Unsupported(_)))
+        && let (Some(coarse), Some(fine)) =
+            (integrated_common(case, 1024), integrated_common(case, 2048))
+        && let (Some(va), Some(vb)) = (
+            number(case, &["freecad", "a", "v"]),
+            number(case, &["freecad", "b", "v"]),
+        )
+    {
+        // The midpoint rule gains a factor of about three per doubling on
+        // these integrands (kinks along curves): twice the last change
+        // bounds what is left. A result may be as far from the truth as
+        // the corpus lets it be from the reference.
+        let expected = [va + vb - fine, va - fine, fine];
+        let left = 2.0 * (fine - coarse).abs();
+        let allowed = |field: &str| {
+            case.get("freecad")
+                .and_then(|f| f.get(field))
+                .and_then(|result| bounds(case, result, size, 0.0))
+                .map_or(0.0, |b| b.volume)
+        };
+        let slack = |field: &str| allowed(field) + left;
+        let ours_hold =
+            OPS.iter()
+                .zip(&measured)
+                .zip(expected)
+                .all(|(((_, _, field), ours), expected)| {
+                    (ours.map_or(0.0, |m| m.volume) - expected).abs() <= slack(field)
+                });
+        if verbose {
+            println!(
+                "{id}: common volume integrated: {coarse:.10} (1024²), {fine:.10} (2048²); ours follow it: {ours_hold}"
+            );
+        }
+        let worst = measured
+            .iter()
+            .zip(expected)
+            .map(|(ours, expected)| (ours.map_or(0.0, |m| m.volume) - expected).abs())
+            .fold(0.0, f64::max);
+        if ours_hold {
+            for (((_, _, field), outcome), expected) in
+                OPS.iter().zip(outcomes.iter_mut()).zip(expected)
+            {
+                // (An area alone is the area identity's to judge, below.)
+                if only_area(outcome) {
+                    continue;
+                }
+                let Outcome::Mismatch(what) = outcome else {
+                    continue;
+                };
+                let Some(theirs) = number(case, &["freecad", field, "v"]) else {
+                    continue;
+                };
+                // Off by more than the corpus allows, or (where the corpus
+                // allows much because the reference's three results
+                // disagree among themselves) ten times further from the
+                // integral than any of ours is.
+                let off = (theirs - expected).abs();
+                if off > allowed(field) + 10.0 * left || off > 10.0 * worst.max(left) {
+                    *outcome = Outcome::ReferenceVolume(format!(
+                        "{what}: the common volume integrated directly is {fine:.10}, which makes this result {expected:.10}; the reference has {theirs:.10}"
+                    ));
+                }
+            }
+        }
+    }
     // Where every volume and centroid agrees and only an area does not,
     // the identity area(A ∪ B) + area(A ∩ B) = area A + area B (nothing
     // coincides where the two kernels agree on the volumes of a `near` or
     // `tangent` case) says whose area is off: ours is held to 1e-9 of the
     // operands' areas, and FreeCAD's area of a spline face is a numerical
     // integral it does not take to convergence (see `FREEFORM_AREA`).
-    let only_area = |o: &Outcome| {
-        matches!(o, Outcome::Mismatch(what) if what.starts_with("area ")
-            && !what.contains("volume")
-            && !what.contains("centroid")
-            && !what.contains("shells"))
-    };
     let category = case["category"].as_str().unwrap_or("");
     if outcomes.iter().any(only_area)
-        && outcomes.iter().all(|o| o.agrees() || only_area(o))
+        && outcomes
+            .iter()
+            .all(|o| o.agrees() || only_area(o) || matches!(o, Outcome::ReferenceVolume(_)))
         && (freeform(&case["a"]) || freeform(&case["b"]))
         && matches!(
             category,
@@ -1050,6 +1393,7 @@ fn the_kernel_agrees_with_the_reference_kernel() {
     let mut categories: Vec<String> = Vec::new();
     let mut failures = Vec::new();
     let mut measures = Vec::new();
+    let mut judged = Vec::new();
     let mut known = Vec::new();
     let mut healed = Vec::new();
     let mut unreliable = 0;
@@ -1075,6 +1419,7 @@ fn the_kernel_agrees_with_the_reference_kernel() {
                     failures.push(format!("{} {id} {name}: {what}", outcome.name()));
                 }
                 (Outcome::Measure(what), _) => measures.push(format!("{id} {name}: {what}")),
+                (Outcome::ReferenceVolume(what), _) => judged.push(format!("{id} {name}: {what}")),
                 (outcome, Some(_)) if outcome.agrees() => healed.push(format!("{id} {name}")),
                 _ => {}
             }
@@ -1117,6 +1462,16 @@ fn the_kernel_agrees_with_the_reference_kernel() {
              of them does not (a defect of the measurement, not of the boolean):"
         );
         for line in &measures {
+            let _ = writeln!(report, "  {line}");
+        }
+    }
+    if !judged.is_empty() {
+        let _ = writeln!(
+            report,
+            "\nReferences that are off by the common volume integrated directly (unscored; ours \
+             follow the integral):"
+        );
+        for line in &judged {
             let _ = writeln!(report, "  {line}");
         }
     }
