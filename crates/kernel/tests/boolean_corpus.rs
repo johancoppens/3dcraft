@@ -35,6 +35,7 @@
 //! BOOLEAN_CORPUS_CASE=flush/block-cylinder/003 \
 //!     cargo test -p craft3d-kernel --test boolean_corpus -- --nocapture
 //! BOOLEAN_CORPUS_CATEGORY=tangent cargo test -p craft3d-kernel --test boolean_corpus
+//! BOOLEAN_CORPUS_VERBOSE=1 BOOLEAN_CORPUS_CATEGORY=near cargo test ... # every case printed
 //! ```
 //!
 //! The score table goes to `target/evidence/booleans/corpus-score.txt`.
@@ -64,7 +65,7 @@ use std::path::PathBuf;
 /// the kernel learns something, the test prints the new count: put it
 /// here, in the same commit. Never lower it to get green: a lower count
 /// means booleans that used to be right are now refused or wrong.
-const AGREEING_FLOOR: usize = 5976;
+const AGREEING_FLOOR: usize = 5985;
 
 /// Mismatches the kernel is known to have: `(case id, operation, why)`.
 /// They are bugs, listed so that the test is green while they are open and
@@ -801,7 +802,7 @@ fn the_kernel_agrees_with_the_reference_kernel() {
         })
         .collect();
     assert!(!selected.is_empty(), "the filter selects no case");
-    let verbose = only_case.is_some();
+    let verbose = only_case.is_some() || std::env::var_os("BOOLEAN_CORPUS_VERBOSE").is_some();
 
     // In parallel, merged in the order of the file.
     let workers = std::thread::available_parallelism().map_or(4, usize::from);

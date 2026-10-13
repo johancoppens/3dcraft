@@ -5,7 +5,9 @@ use super::hits::{curve_hits, signed_distance};
 use super::outline::{Outline, Side, line_in_box};
 use super::regions::{self, Half};
 use super::section::Solid;
-use super::{Arcs, BooleanOp, FaceSource, LOST, NO_RAY, ON_A_FACE, Operand, Stop, Vertices};
+use super::{
+    Arcs, BooleanOp, FaceSource, IMPRINT_LOST, LOST, NO_RAY, ON_A_FACE, Operand, Stop, Vertices,
+};
 use super::{face_id, geometry};
 use craft3d_geom::intersect::CurveIntersection;
 use craft3d_geom::{Curve3, Line, Surface};
@@ -205,6 +207,7 @@ pub(super) fn select(
     other: &Solid,
     pieces: &[Vec<Half>],
     interior: &BTreeMap<usize, BTreeSet<usize>>,
+    crossing: &BTreeMap<usize, BTreeSet<usize>>,
     coincident: &BTreeMap<usize, Vec<(usize, bool)>>,
     arcs: &Arcs,
     vertices: &Vertices,
@@ -227,7 +230,7 @@ pub(super) fn select(
         let regions = if whole {
             vec![loops]
         } else {
-            regions::build(
+            let (regions, dropped) = regions::build(
                 &outline.surface,
                 outline.reversed,
                 &loops,
@@ -236,7 +239,18 @@ pub(super) fn select(
                 &vertices.points,
                 tol,
             )
-            .map_err(|r| Stop::of(r).at(&named))?
+            .map_err(|r| Stop::of(r).at(&named))?;
+            // Where the other body's face passes through this one, what
+            // is on one side of the curve is inside that body and what is
+            // on the other side is not: such a curve divides the face, or
+            // a piece of the imprint is missing.
+            if crossing
+                .get(&face)
+                .is_some_and(|must| !must.is_disjoint(&dropped))
+            {
+                return Err(Stop::of(IMPRINT_LOST).at(&named));
+            }
+            regions
         };
         for loops in regions {
             // A face that nothing divides is its own outline.

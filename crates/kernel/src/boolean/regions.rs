@@ -319,7 +319,9 @@ fn trace(
 }
 
 /// The regions of a face: each a list of loops, the outer boundary first
-/// (when the region has one), then the holes.
+/// (when the region has one), then the holes. And the imprinted arcs that
+/// were dropped because they divide nothing.
+#[allow(clippy::type_complexity)]
 pub(super) fn build(
     surface: &Surface,
     reversed: bool,
@@ -328,8 +330,9 @@ pub(super) fn build(
     arcs: &[Arc],
     points: &[Vec3],
     tol: f64,
-) -> Result<Vec<Vec<Vec<Half>>>, Reason> {
+) -> Result<(Vec<Vec<Vec<Half>>>, BTreeSet<usize>), Reason> {
     let mut interior = interior.clone();
+    let mut dropped = BTreeSet::new();
     for _ in 0..=interior.len() {
         let loops = trace(surface, reversed, boundary, &interior, arcs, points, tol)?;
         // An imprinted arc that a loop runs along both ways has the same
@@ -357,11 +360,12 @@ pub(super) fn build(
                 slits.append(&mut twice(region));
             }
             if slits.is_empty() {
-                return Ok(regions);
+                return Ok((regions, dropped));
             }
         }
         for slit in slits {
             interior.remove(&slit);
+            dropped.insert(slit);
         }
     }
     Err(LOST)
@@ -503,4 +507,68 @@ fn group(
         out.push(loops);
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::boolean::{EdgeSource, Operand};
+    use craft3d_geom::{Curve3, Line, Plane};
+    use craft3d_topo::EdgeId;
+
+    fn arc(points: &[Vec3], start: usize, end: usize) -> Arc {
+        let (a, b) = (points[start], points[end]);
+        Arc {
+            curve: Curve3::Line(Line::through(a, b).unwrap()),
+            range: (0.0, a.distance(b)),
+            start,
+            end,
+            source: EdgeSource::Kept {
+                operand: Operand::A,
+                edge: EdgeId(0),
+            },
+        }
+    }
+
+    /// A square with one more arc from a corner: to the opposite corner it
+    /// divides the square in two; to the middle it divides nothing, is
+    /// dropped, and is reported as dropped (which is how a curve along
+    /// which two faces cross, and of which a piece is missing, is caught).
+    #[test]
+    fn an_arc_that_divides_nothing_is_dropped_and_reported() {
+        let points = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(2.0, 2.0, 0.0),
+            Vec3::new(0.0, 2.0, 0.0),
+            Vec3::new(1.5, 0.5, 0.0),
+        ];
+        let surface = Surface::Plane(Plane::new(Frame::WORLD));
+        let rim: Vec<Half> = (0..4).map(|i| (i, false)).collect();
+        let mut arcs: Vec<Arc> = (0..4).map(|i| arc(&points, i, (i + 1) % 4)).collect();
+        arcs.push(arc(&points, 0, 2));
+        arcs.push(arc(&points, 1, 4));
+        let build = |interior: &[usize]| {
+            build(
+                &surface,
+                false,
+                std::slice::from_ref(&rim),
+                &interior.iter().copied().collect(),
+                &arcs,
+                &points,
+                1e-6,
+            )
+            .unwrap()
+        };
+        let (regions, dropped) = build(&[4]);
+        assert_eq!(regions.len(), 2);
+        assert!(dropped.is_empty());
+        let (regions, dropped) = build(&[5]);
+        assert_eq!(regions, vec![vec![rim.clone()]]);
+        assert_eq!(dropped, BTreeSet::from([5]));
+        // Both: the diagonal divides, the spur into one half does not.
+        let (regions, dropped) = build(&[4, 5]);
+        assert_eq!(regions.len(), 2);
+        assert_eq!(dropped, BTreeSet::from([5]));
+    }
 }

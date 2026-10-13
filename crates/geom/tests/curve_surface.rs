@@ -752,3 +752,54 @@ fn hostile_input_is_an_error_or_a_plain_answer() {
         Ok(CurveIntersection::OnSurface)
     ));
 }
+
+/// A crossing exactly at a closed curve's seam (its parameter 0, which is
+/// also its parameter 2π) is a hit like any other. The two evaluations of
+/// that one point differ in the last bit, and with them the sign of the
+/// distance: read on its own each side of the seam then saw no change of
+/// sign, and the hit was lost (found as an invalid boolean of two slots
+/// whose round ends cross at right angles).
+#[test]
+fn a_crossing_at_the_seam_of_a_circle_is_found() {
+    for s in [1e-3, 1.0, 1e6] {
+        let t = Tolerance::new(1e-6 * s, 1e-9).unwrap();
+        // The cylinder about z through (0.5, 0.5), radius 0.5; a circle of
+        // radius 0.75 in the plane y = 0.5 about (1, 0.5, 1), whose
+        // parameter 0 is at the top, (1, 0.5, 1.75): there and at the
+        // bottom it passes through the cylinder's ruling x = 1.
+        let cylinder = Surface::Cylinder(
+            craft3d_geom::Cylinder::new(
+                Frame::WORLD.at(Vec3::new(0.5, 0.5, -0.5) * s).unwrap(),
+                0.5 * s,
+            )
+            .unwrap(),
+        );
+        let frame = Frame::new(Vec3::new(1.0, 0.5, 1.0) * s, Vec3::Y, Vec3::Z).unwrap();
+        assert_eq!(frame.x(), Vec3::Z);
+        let circle = Curve3::Circle(Circle::new(frame, 0.75 * s).unwrap());
+        let hits = hits_of(&circle, &cylinder, &t);
+        let near = |p: Vec3| {
+            hits.iter()
+                .filter(|h| h.point.distance(p) < 1e-9 * s)
+                .count()
+        };
+        assert_eq!(hits.len(), 2, "at scale {s}: {hits:?}");
+        assert_eq!(near(Vec3::new(1.0, 0.5, 1.75) * s), 1, "{hits:?}");
+        assert_eq!(near(Vec3::new(1.0, 0.5, 0.25) * s), 1, "{hits:?}");
+        assert!(hits.iter().all(|h| !h.tangent));
+        // The same with the seam turned to every multiple of a sixteenth
+        // of a turn, where the first intervals of the search meet.
+        for k in 0..16 {
+            let angle = std::f64::consts::TAU * f64::from(k) / 16.0;
+            let x = Vec3::Z * angle.cos() + Vec3::X * angle.sin();
+            let frame = Frame::new(Vec3::new(1.0, 0.5, 1.0) * s, Vec3::Y, x).unwrap();
+            let circle = Curve3::Circle(Circle::new(frame, 0.75 * s).unwrap());
+            let hits = hits_of(&circle, &cylinder, &t);
+            assert_eq!(
+                hits.len(),
+                2,
+                "seam turned by {k}/16 at scale {s}: {hits:?}"
+            );
+        }
+    }
+}

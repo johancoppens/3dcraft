@@ -348,6 +348,64 @@ fn spline_slack(body: &Body, k: f64) -> (f64, f64) {
     (4.0 * tol * area, 4.0 * tol * length)
 }
 
+/// The genus of a solid from its counts, as `craft3d_topo::genus` gives
+/// it, with one thing put right: a face on a torus carries the torus's
+/// handle not only when it has no loops, but whenever it is the torus with
+/// discs cut out of it. That is: none of its loops goes around the torus
+/// either way, and each of them has the face outside it (seen from
+/// outside the solid, a face is to the left of its boundary: such a loop
+/// runs clockwise around the disc it cuts out).
+///
+/// `V − E + Σ (2 − 2 h − loops) = 2 (S − G)`, the sum over the faces with
+/// `h` the handles a face carries.
+fn counted_genus(body: &Body) -> Option<i64> {
+    use std::f64::consts::{PI, TAU};
+    let mut chi = body.vertices.len() as i64 - body.edges.len() as i64;
+    for face in &body.faces {
+        let mut handle = matches!(face.surface, craft3d_geom::Surface::Torus(_));
+        for &id in &face.loops {
+            if !handle {
+                break;
+            }
+            let loop_ = body.loop_(id)?;
+            // The loop in the torus's parameters, unwrapped.
+            let (mut u, mut v, mut area) = (0.0, 0.0, 0.0);
+            let mut previous: Option<(f64, f64)> = None;
+            for coedge in &loop_.coedges {
+                let edge = body.edge(coedge.edge)?;
+                for i in 0..=48 {
+                    let k = f64::from(i) / 48.0;
+                    let k = if coedge.reversed { 1.0 - k } else { k };
+                    let p = edge
+                        .curve
+                        .eval(edge.range.0 + (edge.range.1 - edge.range.0) * k);
+                    let (pu, pv) = face.surface.project(p).ok()?;
+                    if let Some((qu, qv)) = previous {
+                        let wrap = |d: f64| (d + PI).rem_euclid(TAU) - PI;
+                        let (du, dv) = (wrap(pu - qu), wrap(pv - qv));
+                        area += 0.5 * (u * (v + dv) - (u + du) * v);
+                        u += du;
+                        v += dv;
+                    }
+                    previous = Some((pu, pv));
+                }
+            }
+            // The outward normal of the solid against that of increasing
+            // u then v at a place on the loop.
+            let (pu, pv) = previous?;
+            let at = |du: f64, dv: f64| face.surface.eval(pu + du, pv + dv);
+            let turn = (at(1e-4, 0.0) - at(0.0, 0.0)).cross(at(0.0, 1e-4) - at(0.0, 0.0));
+            let outward = turn.dot(face.surface.normal(pu, pv)?) > 0.0;
+            let around = u.abs() > PI || v.abs() > PI;
+            let clockwise = (area < 0.0) == (outward != face.reversed);
+            handle = !around && clockwise;
+        }
+        chi += 2 - 2 * i64::from(handle) - face.loops.len() as i64;
+    }
+    let twice = 2 * body.shells.len() as i64 - chi;
+    (twice >= 0 && twice % 2 == 0).then_some(twice / 2)
+}
+
 /// The volume of a boolean; 0 when it is empty; `Err` with the reason when
 /// it is not supported. Anything else fails the test.
 fn volume_of(
@@ -387,19 +445,57 @@ fn volume_of(
                         Ok(u) => u,
                         Err(e) => panic!("{what}: {op:?}, not merged: mass properties: {e}"),
                     };
+                    // `mass_properties` integrates a piece of a cone or a
+                    // sphere numerically, to about 1e-9 of the body: a
+                    // cone of radius 1 and height 2 (seed 33 on the grid,
+                    // every shape, scale 0.001, which a ring touches
+                    // along a circle) has π r² h / 3 to 5e-16 as one
+                    // face and to 1.003e-9 as the two faces that circle
+                    // divides it into before merging. So 1e-8 where the
+                    // unmerged body has such a face, until that
+                    // integration is exact; 1e-9 everywhere else.
+                    let integrated = unmerged.body.faces.iter().any(|f| {
+                        matches!(
+                            f.surface,
+                            craft3d_geom::Surface::Sphere(_) | craft3d_geom::Surface::Cone(_)
+                        )
+                    });
+                    let exact = if integrated { 1e-8 } else { 1e-9 };
                     assert!(
                         // (The splines may be among what merging removes.)
                         (u.volume - m.volume).abs()
-                            <= 1e-9 * m.volume + spline_slack(&unmerged.body, k).0
+                            <= exact * m.volume + spline_slack(&unmerged.body, k).0
                             && (u.area - m.area).abs()
-                                <= 1e-9 * m.area + spline_slack(&unmerged.body, k).1,
+                                <= exact * m.area + spline_slack(&unmerged.body, k).1,
                         "{what}: {op:?}: merging changed volume {} to {} or area {} to {}",
                         u.volume,
                         m.volume,
                         u.area,
                         m.area
                     );
-                    assert_eq!(genus(&unmerged.body), genus(&result.body), "{what}: {op:?}");
+                    // `topo::genus` counts a torus's handle only where
+                    // its face has no loop: a torus with a disc cut out
+                    // of it (the ring of a union before the cut is merged
+                    // away) carries its handle unseen. `counted_genus`
+                    // sees it, and is the same count everywhere else.
+                    assert_eq!(
+                        counted_genus(&unmerged.body),
+                        counted_genus(&result.body),
+                        "{what}: {op:?}"
+                    );
+                    for body in [&unmerged.body, &result.body] {
+                        let ring_with_loops = body.faces.iter().any(|f| {
+                            matches!(f.surface, craft3d_geom::Surface::Torus(_))
+                                && !f.loops.is_empty()
+                        });
+                        if !ring_with_loops {
+                            assert_eq!(
+                                counted_genus(body),
+                                genus(body).map(i64::from),
+                                "{what}: {op:?}"
+                            );
+                        }
+                    }
                     assert_eq!(unmerged.body.shells.len(), result.body.shells.len());
                     assert!(unmerged.body.faces.len() >= result.body.faces.len());
                     assert!(unmerged.body.edges.len() >= result.body.edges.len());
@@ -621,10 +717,14 @@ fn one_pair() {
     let describe =
         |name: &str, r: &Result<craft3d_kernel::boolean::BooleanResult, KernelError>| match r {
             Ok(r) => println!(
-                "{name}: {:?}, {} faces, {} shells",
+                "{name}: {:?}, {} faces, {} shells, {} edges, {} vertices, {} loops, genus {:?}",
                 mass_properties(&r.body),
                 r.body.faces.len(),
-                r.body.shells.len()
+                r.body.shells.len(),
+                r.body.edges.len(),
+                r.body.vertices.len(),
+                r.body.faces.iter().map(|f| f.loops.len()).sum::<usize>(),
+                genus(&r.body)
             ),
             Err(e) => println!("{name}: {e}"),
         };
@@ -669,6 +769,11 @@ fn one_pair() {
         "A ∩ B, not merged",
         &craft3d_kernel::boolean::boolean_with(&a.body, &b.body, Intersect, &tol, &plain),
     );
+    describe(
+        "B ∪ A, not merged",
+        &craft3d_kernel::boolean::boolean_with(&b.body, &a.body, Union, &tol, &plain),
+    );
+    describe("B ∪ A", &boolean(&b.body, &a.body, Union, &tol));
     describe("A ∪ B", &boolean(&a.body, &b.body, Union, &tol));
     describe("A − B", &less);
     describe("A ∩ B", &common);

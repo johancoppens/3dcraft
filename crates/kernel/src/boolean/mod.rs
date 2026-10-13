@@ -175,6 +175,7 @@ const OPERATION: &str = "boolean";
 pub(crate) const NEAR: Reason =
     "two points closer together than the tolerance can tell apart (at the edge of tolerance)";
 const NEARLY_COINCIDENT: Reason = "two faces between half and twice the tolerance apart: neither the same surface nor safely two (at the edge of tolerance)";
+const NEARLY_TOUCHING: Reason = "two faces that go through each other by between half and twice the tolerance: neither touching nor safely crossing (at the edge of tolerance)";
 const AMBIGUOUS: Reason =
     "a curve that is partly on and partly off a face boundary (at the edge of tolerance)";
 const INCONSISTENT: Reason = "an imprinted curve that does not fit the edges it should coincide with (at the edge of tolerance)";
@@ -183,6 +184,11 @@ const TANGENT_EDGE: Reason = "more than two faces meet along an edge and two of 
 const ON_A_FACE: Reason = "a piece of a face lies within tolerance of a face it is not coincident with (at the edge of tolerance)";
 const NO_RAY: Reason = "could not tell inside from outside: every ray tried grazes the other body";
 const LOST: Reason = "the boolean lost track of an entity; this is a bug";
+/// Two faces pass through each other along a curve, and the curve does not
+/// divide one of them: a piece of it is missing (a place where an edge
+/// meets a surface was not found, or a curve was cut short).
+const IMPRINT_LOST: Reason =
+    "imprint lost: a curve in which two faces cross does not divide them; a piece of it is missing";
 
 #[derive(Debug)]
 enum Stop {
@@ -485,6 +491,10 @@ fn run(
     let (rims_a, rims_b) = (rims(&a, &pieces_a), rims(&b, &pieces_b));
     let mut interior_a: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
     let mut interior_b: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+    // Per face the arcs along which the other body's face passes through
+    // it, strictly inside both: each of them must divide the face.
+    let mut crossing_a: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+    let mut crossing_b: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
     for stretch in &sections.stretches {
         let named = [a.name(stretch.fa), b.name(stretch.fb)];
         let (arc, _) = arcs.find_or_add(
@@ -512,6 +522,10 @@ fn run(
                 interior.entry(face).or_default().insert(arc);
             }
         }
+        if stretch.crossing && stretch.inside_a && stretch.inside_b {
+            crossing_a.entry(stretch.fa).or_default().insert(arc);
+            crossing_b.entry(stretch.fb).or_default().insert(arc);
+        }
     }
 
     let mut kept = Vec::new();
@@ -520,6 +534,7 @@ fn run(
         &b,
         &pieces_a,
         &interior_a,
+        &crossing_a,
         &sections.coincident_a,
         &arcs,
         &vertices,
@@ -532,6 +547,7 @@ fn run(
         &a,
         &pieces_b,
         &interior_b,
+        &crossing_b,
         &sections.coincident_b,
         &arcs,
         &vertices,

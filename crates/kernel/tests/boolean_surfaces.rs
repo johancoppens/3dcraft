@@ -685,3 +685,66 @@ fn curves_that_are_only_approximations() {
         );
     }
 }
+
+/// Two cylinders at right angles, placed so that the rim of the lying one
+/// passes through the wall of the upright one exactly where that rim's
+/// circle has its parameter 0 (which is also its parameter 2π).
+///
+/// That crossing was once lost (the sign of the distance was read from two
+/// evaluations of the one point, which differ in the last bit), so the
+/// curve in which the walls meet ran on past the lying cylinder's end
+/// face, hung loose in both walls and was dropped: an invalid body. Found
+/// by the random run as seed 32 on the grid (two slots with holes).
+///
+/// The volume in common is an integral in one variable, done here: over
+/// x, the chord of the lying cylinder's circle in z times the half chord
+/// of the upright one's in y.
+#[test]
+fn a_rim_through_a_wall_at_the_seam_of_its_circle() {
+    // Upright: about z through (0.5, 0.5), radius 0.5. Lying: about the
+    // line x = 1, z = 1 from y = 0.5 to 1.5, radius 0.75.
+    let exact = {
+        let (n, mut sum) = (2_000_000, 0.0);
+        // Midpoints in an angle, which takes the square-root ends smoothly:
+        // x = 0.625 - 0.375 cos s runs from 0.25 to 1.
+        for i in 0..n {
+            let s = PI * (f64::from(i) + 0.5) / f64::from(n);
+            let x = 0.625 - 0.375 * s.cos();
+            let chord = 2.0 * (0.5625 - (x - 1.0) * (x - 1.0)).max(0.0).sqrt();
+            let half = (0.25 - (x - 0.5) * (x - 0.5)).max(0.0).sqrt();
+            sum += chord * half * 0.375 * s.sin();
+        }
+        sum * PI / f64::from(n)
+    };
+    for k in SCALES {
+        let upright = rod(k, [0.5, 0.5, -0.5], 0.5, 2.5);
+        let frame = Frame::new(Vec3::new(1.0, 0.5, 1.0) * k, Vec3::Y, Vec3::Z).unwrap();
+        let lying = primitives::cylinder(&frame, 0.75 * k, k).unwrap();
+        // The seam of the lying cylinder's base circle is on the wall of
+        // the upright one.
+        let seam = frame.point(0.75 * k, 0.0, 0.0);
+        assert!(((seam.x - 0.5 * k).hypot(seam.y - 0.5 * k) - 0.5 * k).abs() < 1e-12 * k);
+        let (va, vb) = (PI * 0.25 * 2.5, PI * 0.5625);
+        let volume = |op, a: &craft3d_topo::Body, b: &craft3d_topo::Body| {
+            mass(&solve(a, b, op, k).body).volume / (k * k * k)
+        };
+        // Spline edges are within the tolerance of the true curves: the
+        // volume is right to the tolerance times the area they bound, and
+        // (until mass properties integrate spline edges exactly) to the
+        // 1e-5 of `curves_that_are_only_approximations`.
+        let near = |actual: f64, expected: f64, what: &str| {
+            assert!(
+                (actual - expected).abs() <= 1e-5 * expected.abs(),
+                "{what} at scale {k}: {actual} is not {expected}"
+            );
+        };
+        near(volume(Intersect, &upright, &lying), exact, "A ∩ B");
+        near(volume(Intersect, &lying, &upright), exact, "B ∩ A");
+        near(volume(Union, &upright, &lying), va + vb - exact, "A ∪ B");
+        near(volume(Subtract, &upright, &lying), va - exact, "A − B");
+        near(volume(Subtract, &lying, &upright), vb - exact, "B − A");
+        let common = solve(&upright, &lying, Intersect, k);
+        assert_eq!(common.body.shells.len(), 1);
+        assert_eq!(genus(&common.body), Some(0));
+    }
+}

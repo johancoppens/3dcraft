@@ -375,7 +375,18 @@ pub(super) fn numeric(
             None => false,
         };
         if monotonic {
-            let (Some((_, a, _)), Some((_, b, _))) = (sample(lo), sample(hi)) else {
+            // The end of a closed curve is its start: one point, whose
+            // two evaluations differ in the last bit. Its sign is read
+            // once, or a crossing exactly there would show on neither
+            // side of the seam.
+            let at_end = |t: f64| {
+                if periodic && t >= t1 {
+                    sample(t0)
+                } else {
+                    sample(t)
+                }
+            };
+            let (Some((_, a, _)), Some((_, b, _))) = (at_end(lo), at_end(hi)) else {
                 continue;
             };
             if (a.signed >= 0.0) == (b.signed >= 0.0) {

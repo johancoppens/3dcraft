@@ -3,9 +3,12 @@
 //! both faces.
 
 use super::hits::{curve_hits, signed_distance};
-use super::outline::{Hull, Outline, Seg, Side, boxes_meet, locate, nearest, surface_distance};
+use super::outline::{
+    Hull, Outline, Seg, Side, boxes_meet, locate, nearest, onto, outward_normal, surface_distance,
+};
 use super::{
-    AMBIGUOUS, LOST, Meeting, NEAR, NEARLY_COINCIDENT, Operand, Stop, Vertices, face_id, geometry,
+    AMBIGUOUS, LOST, Meeting, NEAR, NEARLY_COINCIDENT, NEARLY_TOUCHING, Operand, Stop, Vertices,
+    face_id, geometry,
 };
 use crate::{KernelError, MAX_REPORTED};
 use craft3d_geom::Surface;
@@ -76,6 +79,8 @@ pub(super) struct Stretch {
     /// Strictly inside the face, rather than along its boundary.
     pub inside_a: bool,
     pub inside_b: bool,
+    /// The surfaces cross along it, rather than touch without crossing.
+    pub crossing: bool,
 }
 
 #[derive(Default)]
@@ -163,6 +168,109 @@ pub(super) fn prepare<'a>(
         hulls,
         vertices: merged,
     })
+}
+
+/// What two surfaces do along a curve in which they meet.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Passage {
+    /// They pass through each other: on either side of the curve one is
+    /// twice the tolerance or more beyond the other, on opposite sides.
+    Crossing,
+    /// One dips through the other and comes back: next to the curve lies
+    /// a lens between the two surfaces that is nowhere as thick as twice
+    /// the tolerance. The number is its greatest thickness found.
+    Lens(f64),
+    /// They stay on one side of each other: a touch along the curve.
+    Touch,
+}
+
+/// How far `surface` goes through `other` beside the point `p` of a curve
+/// in which they meet, whose direction there is `tangent`.
+///
+/// The surface is walked away from the curve at right angles to it, both
+/// ways, until it is twice the tolerance from the other surface. Where the
+/// two cross plainly that happens on opposite sides of the other surface.
+/// Where it happens on the same side both ways, the surface has gone
+/// through the other and come back on the way: what lies between is a
+/// lens thinner than twice the tolerance, and its thickness is measured.
+///
+/// The steps grow with the distance walked (a quarter of it, two
+/// tolerances at least), so a lens is seen as long as it is not narrower
+/// than a few tolerances; a walk that does not get twice the tolerance
+/// away within its limits proves nothing, and the curve counts as a
+/// crossing, as does everything with a freeform surface.
+pub(super) fn passage(
+    surface: &Surface,
+    other: &Surface,
+    p: Vec3,
+    tangent: Vec3,
+    reach: f64,
+    tol: f64,
+) -> Passage {
+    const STEPS: usize = 160;
+    let Some(across) =
+        outward_normal(surface, false, p).and_then(|normal| normal.cross(tangent).normalized())
+    else {
+        return Passage::Crossing;
+    };
+    let distance = |s: f64| {
+        onto(surface, p + across * s)
+            .and_then(|q| signed_distance(other, q))
+            .filter(|d| d.is_finite())
+    };
+    // Per direction: where the walk got away (how far and on which side),
+    // and the samples on the way.
+    let mut exits = [None, None];
+    let mut walks: [Vec<(f64, f64)>; 2] = [Vec::new(), Vec::new()];
+    for ((exit, walk), sign) in exits.iter_mut().zip(walks.iter_mut()).zip([1.0, -1.0]) {
+        let mut s = 0.0;
+        for _ in 0..STEPS {
+            s += (2.0 * tol).max(0.25 * s);
+            if s > reach {
+                break;
+            }
+            let Some(d) = distance(sign * s) else {
+                break;
+            };
+            if d.abs() >= 2.0 * tol {
+                *exit = Some((s, d > 0.0));
+                break;
+            }
+            walk.push((s, d));
+        }
+    }
+    let [Some((s0, side0)), Some((s1, side1))] = exits else {
+        return Passage::Crossing;
+    };
+    if side0 != side1 {
+        return Passage::Crossing;
+    }
+    // The lens is on the side where the surface was on the other side of
+    // `other` first: from the curve to where it comes back.
+    let mut thickest = 0.0_f64;
+    let mut found = false;
+    for ((walk, end), sign) in walks.iter().zip([s0, s1]).zip([1.0, -1.0]) {
+        let beyond = |d: f64| d != 0.0 && (d > 0.0) != side0;
+        let Some(last) = walk.iter().rev().find(|(_, d)| beyond(*d)).map(|w| w.0) else {
+            continue;
+        };
+        found = true;
+        // Up to the next sample, which is on the way out.
+        let back = walk.iter().map(|w| w.0).find(|&s| s > last).unwrap_or(end);
+        for k in 1..64 {
+            let s = back * f64::from(k) / 64.0;
+            if let Some(d) = distance(sign * s)
+                && beyond(d)
+            {
+                thickest = thickest.max(d.abs());
+            }
+        }
+    }
+    if found {
+        Passage::Lens(thickest)
+    } else {
+        Passage::Touch
+    }
 }
 
 /// A place where an intersection curve may enter or leave a face.
@@ -434,6 +542,36 @@ fn clip(
         if !keep {
             continue;
         }
+        // Faces that go through each other by less than half the
+        // tolerance touch, and nothing is imprinted; by twice the
+        // tolerance or more they cross, exactly as given; in between they
+        // do neither. (The counterpart, for surfaces of different kinds,
+        // of the rule for faces on one surface.)
+        let mut crossing = !meeting.tangent;
+        if crossing {
+            let reach = box_a.diagonal().max(box_b.diagonal());
+            let mut seen = [Passage::Touch; 3];
+            for (k, seen) in [0.25, 0.5, 0.75].into_iter().zip(seen.iter_mut()) {
+                let (p, tangent) = curve.derivatives(t0 + (t1 - t0) * k);
+                *seen = passage(&oa.surface, &ob.surface, p, tangent, reach, tol);
+            }
+            if seen.contains(&Passage::Crossing) {
+                // As given.
+            } else if seen.iter().all(|&p| p == Passage::Touch) {
+                // A touch along the curve that geometry did not call one:
+                // imprinted like any other touch.
+                crossing = false;
+            } else {
+                let thickest = seen.iter().fold(0.0_f64, |most, p| match p {
+                    Passage::Lens(depth) => most.max(*depth),
+                    _ => most,
+                });
+                if thickest <= 0.5 * tol {
+                    continue;
+                }
+                return Err(Stop::of(NEARLY_TOUCHING).at(&named));
+            }
+        }
         let start = vertices.find_or_add(from.point).map_err(|s| s.at(&named))?;
         let end = vertices.find_or_add(to.point).map_err(|s| s.at(&named))?;
         let whole = closed && cuts.len() <= 1;
@@ -477,6 +615,7 @@ fn clip(
             fb,
             inside_a: inside.first().copied().unwrap_or(false),
             inside_b: inside.get(1).copied().unwrap_or(false),
+            crossing,
         });
     }
     Ok(())
@@ -639,4 +778,103 @@ pub(super) fn section(
         }
     }
     Ok(sections)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use craft3d_geom::{Cylinder, Plane, Sphere, Torus};
+    use craft3d_math::Frame;
+
+    /// A ball of radius 2 that dips `depth` through the plane z = 0: they
+    /// meet in a circle of radius √(depth (4 − depth)), and the cap below
+    /// the plane is `depth` thick.
+    fn dip(k: f64, depth: f64, swap: bool) -> Passage {
+        let tol = 1e-6 * k;
+        let plane = Surface::Plane(Plane::new(Frame::WORLD));
+        let r = 2.0 * k;
+        let centre = Vec3::new(0.3 * k, -0.2 * k, r - depth);
+        let ball = Surface::Sphere(Sphere::new(Frame::WORLD.at(centre).unwrap(), r).unwrap());
+        let rim = (depth * (2.0 * r - depth)).sqrt();
+        let p = Vec3::new(centre.x + rim * 0.6, centre.y + rim * 0.8, 0.0);
+        let tangent = Vec3::new(-0.8, 0.6, 0.0);
+        if swap {
+            passage(&ball, &plane, p, tangent, 10.0 * k, tol)
+        } else {
+            passage(&plane, &ball, p, tangent, 10.0 * k, tol)
+        }
+    }
+
+    #[test]
+    fn a_dip_thinner_than_twice_the_tolerance_is_a_lens_of_that_thickness() {
+        for k in [1e-3, 1.0, 1e6] {
+            let tol = 1e-6 * k;
+            for swap in [false, true] {
+                // Well through: a crossing, whichever surface is walked.
+                for depth in [2.5 * tol, 10.0 * tol, 1e-3 * k, 0.5 * k, 2.0 * k] {
+                    assert_eq!(dip(k, depth, swap), Passage::Crossing, "{depth} at {k}");
+                }
+                // Barely through: a lens, measured to a few percent (the
+                // cap is as thick as the dip is deep).
+                for parts in [0.05, 0.1, 0.4, 0.6, 1.0, 1.7] {
+                    let depth = parts * tol;
+                    match dip(k, depth, swap) {
+                        Passage::Lens(found) => assert!(
+                            (found - depth).abs() <= 0.03 * depth,
+                            "{found} for a dip of {depth} at scale {k}"
+                        ),
+                        other => panic!("{other:?} for a dip of {parts} tolerances at {k}"),
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_touch_is_a_touch_and_a_crossing_at_any_angle_a_crossing() {
+        for k in [1e-3, 1.0, 1e6] {
+            let tol = 1e-6 * k;
+            // A cylinder lying on a plane touches it along a line.
+            let plane = Surface::Plane(Plane::new(Frame::WORLD));
+            let lying = Frame::new(Vec3::new(0.0, 0.0, k), Vec3::X, Vec3::Y).unwrap();
+            let cylinder = Surface::Cylinder(Cylinder::new(lying, k).unwrap());
+            let on = Vec3::new(0.4 * k, 0.0, 0.0);
+            for (a, b) in [(&plane, &cylinder), (&cylinder, &plane)] {
+                assert_eq!(passage(a, b, on, Vec3::X, 10.0 * k, tol), Passage::Touch);
+            }
+            // A plane through the top of a torus at a slant: the tube
+            // bends away from its tangent plane as x^2 / 2k, so the two
+            // enclose a lens slant^2 k / 2 thick. At a slant of 0.1 that
+            // is five thousand tolerances, a crossing.
+            let torus = Surface::Torus(Torus::new(Frame::WORLD, 4.0 * k, k).unwrap());
+            let top = Vec3::new(4.0 * k, 0.0, k);
+            for slant in [0.1, 1.0_f64] {
+                let normal = Vec3::new(slant.sin(), 0.0, slant.cos());
+                let slanted = Surface::Plane(Plane::new(Frame::from_z(top, normal).unwrap()));
+                // The curve leaves `top` along y, by symmetry.
+                assert_eq!(
+                    passage(&torus, &slanted, top, Vec3::Y, 10.0 * k, tol),
+                    Passage::Crossing,
+                    "slant {slant} at {k}"
+                );
+                assert_eq!(
+                    passage(&slanted, &torus, top, Vec3::Y, 10.0 * k, tol),
+                    Passage::Crossing
+                );
+            }
+            // At a slant of 0.0006 the lens is 0.18 of a tolerance thick.
+            let slant = 6e-4_f64;
+            let normal = Vec3::new(slant.sin(), 0.0, slant.cos());
+            let slanted = Surface::Plane(Plane::new(Frame::from_z(top, normal).unwrap()));
+            for (a, b) in [(&torus, &slanted), (&slanted, &torus)] {
+                match passage(a, b, top, Vec3::Y, 10.0 * k, tol) {
+                    Passage::Lens(found) => assert!(
+                        (found - 0.18 * tol).abs() <= 0.01 * tol,
+                        "{found} at scale {k}"
+                    ),
+                    other => panic!("{other:?} at scale {k}"),
+                }
+            }
+        }
+    }
 }
