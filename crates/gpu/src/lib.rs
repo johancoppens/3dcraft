@@ -34,6 +34,12 @@
 //!   to the mesh per frame, so the buffer's precision is spent on the model.
 //! - **Shading** is per sample in the fragment shader, two-sided, from the
 //!   interpolated normal or the triangle's own where a vertex has none.
+//! - **See-through bodies** ([`RenderParams::opacity`] below 1) are the CPU
+//!   renderer's two layers per sample, the front surface blended over the
+//!   nearest one strictly behind it: the scene is drawn twice (the second
+//!   time without the front) and a last pass blends the layers with a
+//!   table of the CPU renderer's own blend (`peel.rs`). At opacity 1 none
+//!   of it runs and the frame is the opaque one, bit for bit.
 //!
 //! `f32` exists only here, at the GPU boundary: positions are stored relative
 //! to the centre of the mesh, and everything about the camera is computed in
@@ -52,7 +58,8 @@
 //! # Errors, never panics
 //!
 //! No adapter, a refused or lost device, a zero-sized or oversized target, an
-//! inconsistent mesh and a degenerate camera are all [`GpuError`] values.
+//! inconsistent mesh, a degenerate camera and a see-through picture on a
+//! device that cannot draw one are all [`GpuError`] values.
 //! wgpu reports validation and out-of-memory errors through error scopes,
 //! which every entry point here opens on native targets; in the browser
 //! WebGPU reports them to the console without unwinding.
@@ -60,6 +67,7 @@
 mod mesh;
 mod offscreen;
 mod onscreen;
+mod peel;
 mod readback;
 mod renderer;
 
@@ -108,6 +116,9 @@ pub enum GpuError {
     Unsupported(&'static str),
     /// A camera or mesh number does not fit in `f32` at the GPU boundary.
     OutOfRange(&'static str),
+    /// A see-through picture (`RenderParams::opacity` below 1) on a device
+    /// that cannot draw one; the text says why. Opaque pictures are fine.
+    SeeThrough(String),
     /// The mesh was uploaded by another renderer.
     ForeignMesh,
     /// A frame was asked for before anything was drawn, or after a draw
@@ -140,6 +151,10 @@ impl fmt::Display for GpuError {
             GpuError::OutOfRange(what) => {
                 write!(f, "{what} does not fit in single precision for the GPU")
             }
+            GpuError::SeeThrough(why) => write!(
+                f,
+                "see-through bodies cannot be drawn on this device ({why}); opaque ones can"
+            ),
             GpuError::ForeignMesh => write!(
                 f,
                 "the mesh was uploaded by another renderer; upload it with this one"

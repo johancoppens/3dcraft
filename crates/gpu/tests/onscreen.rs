@@ -13,46 +13,19 @@
 )]
 
 mod common;
+mod devices;
 
-use common::{compare_msaa, evidence, orthographic, params, perspective, write_evidence};
+use common::{
+    compare_msaa, compare_msaa_see_through, evidence, orthographic, params, perspective,
+    write_evidence,
+};
 use craft3d_gpu::{
-    ADAPTER_HINT, Camera, DrawOptions, GpuError, Mesh, Onscreen, OverlayParams, Projection,
-    RenderParams, Segment,
+    Camera, DrawOptions, GpuError, Mesh, Onscreen, OverlayParams, Projection, RenderParams, Segment,
 };
 use craft3d_math::{Frame, Vec3};
 use craft3d_tess::{TessParams, tessellate_body, tessellate_patches};
 use craft3d_testkit::{solids, teapot::teapot};
-
-/// A device on every adapter of the machine, with the adapter.
-fn devices() -> Vec<(wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
-    let adapters = craft3d_gpu::adapters();
-    assert!(
-        !adapters.is_empty(),
-        "no GPU adapter found, so the viewport renderer cannot be tested: {ADAPTER_HINT}"
-    );
-    adapters
-        .into_iter()
-        .map(|adapter| {
-            let (device, queue) =
-                pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-                    label: Some("craft3d onscreen test"),
-                    required_features: wgpu::Features::empty(),
-                    required_limits:
-                        wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
-                    experimental_features: wgpu::ExperimentalFeatures::default(),
-                    memory_hints: wgpu::MemoryHints::default(),
-                    trace: wgpu::Trace::default(),
-                }))
-                .unwrap_or_else(|e| {
-                    panic!("cannot use adapter {:?}: {e}", adapter.get_info().name)
-                });
-            device.on_uncaptured_error(std::sync::Arc::new(|error: wgpu::Error| {
-                panic!("wgpu reported an error outside a scope: {error}");
-            }));
-            (adapter, device, queue)
-        })
-        .collect()
-}
+use devices::devices;
 
 fn name_of(adapter: &wgpu::Adapter) -> String {
     let info = adapter.get_info();
@@ -162,6 +135,138 @@ fn the_multisampled_picture_matches_the_cpu_renderer_away_from_the_edges() {
         }
     }
     std::fs::write(evidence("onscreen.txt"), log).unwrap();
+    assert!(compared >= scenes.len());
+}
+
+/// A block with a cavity and a sphere in the cavity.
+fn nested_mesh() -> Mesh {
+    let frame = |x, y, z| Frame::new(Vec3::new(x, y, z), Vec3::Z, Vec3::X).unwrap();
+    let tess = TessParams {
+        chordal_tolerance: 0.01,
+        ..TessParams::default()
+    };
+    let parts = [
+        solids::block(&frame(-4.0, -3.0, -2.5), 8.0, 6.0, 5.0).unwrap(),
+        solids::block(&frame(-3.5, -2.5, -2.0), 7.0, 5.0, 4.0).unwrap(),
+        solids::sphere(&frame(-1.2, 0.3, 0.0), 1.4).unwrap(),
+    ];
+    let mut out = Mesh::default();
+    let mut first_face = 0;
+    for part in &parts {
+        let part = tessellate_body(&part.body, &tess).unwrap();
+        let base = out.positions.len() as u32;
+        out.positions.extend(&part.positions);
+        out.normals.extend(&part.normals);
+        out.triangles
+            .extend(part.triangles.iter().map(|t| t.map(|k| k + base)));
+        out.face_ids
+            .extend(part.face_ids.iter().map(|f| f + first_face));
+        first_face += part.face_ids.iter().copied().max().map_or(0, |m| m + 1);
+    }
+    out
+}
+
+/// See-through bodies in the viewport's picture, against the CPU renderer:
+/// the teapot, a block and a body inside a hollow body at three opacities,
+/// plain and with faces highlighted.
+#[test]
+fn the_see_through_picture_matches_the_cpu_renderer_away_from_the_edges() {
+    let teapot = teapot_mesh();
+    let block = block_mesh();
+    let nested = nested_mesh();
+    let mut scenes: Vec<(String, &Mesh, RenderParams, Camera)> = Vec::new();
+    for (k, opacity) in [0.1, 0.5, 0.9].into_iter().enumerate() {
+        for (name, mesh, size, toward_eye) in [
+            ("teapot", &teapot, (640, 400), Vec3::new(0.35, -1.0, 0.45)),
+            ("block", &block, (480, 320), Vec3::new(1.0, -0.8, 0.6)),
+            ("nested", &nested, (400, 300), Vec3::new(1.0, -1.6, 0.8)),
+        ] {
+            let mut p = RenderParams {
+                opacity,
+                ..params(size.0, size.1, 1)
+            };
+            let highlighted = (k + name.len()) % 2 == 0;
+            if highlighted {
+                let faces = mesh.face_ids.iter().copied().max().unwrap() + 1;
+                p.highlight = craft3d_gpu::Highlight::new([255, 150, 40], (0..faces).step_by(2)).0;
+            }
+            let c = if k == 1 {
+                orthographic(mesh, toward_eye, &p)
+            } else {
+                perspective(mesh, toward_eye, 30.0, &p)
+            };
+            let name = format!(
+                "{name}-{opacity}{}",
+                if highlighted { "-highlight" } else { "" }
+            );
+            scenes.push((name, mesh, p, c));
+        }
+    }
+    let mut log = String::new();
+    let mut compared = 0;
+    // Checked after every scene was drawn, so that a failure leaves the
+    // numbers and the pictures of all of them.
+    let mut measured = Vec::new();
+    for (adapter, device, queue) in devices() {
+        let adapter_name = name_of(&adapter);
+        let mut onscreen = Onscreen::new(&device, &queue, &adapter).unwrap();
+        assert_eq!(onscreen.see_through(), Ok(()), "{adapter_name}");
+        let lines = onscreen.upload_lines(&[]).unwrap();
+        for (name, mesh, params, camera) in &scenes {
+            let cpu = craft3d_render::render(mesh, camera, params).unwrap();
+            let uploaded = onscreen.upload(mesh).unwrap();
+            let options = DrawOptions {
+                bodies: true,
+                capture: true,
+            };
+            onscreen
+                .draw(&uploaded, &lines, camera, params, &no_overlay(), options)
+                .unwrap();
+            let gpu = onscreen.read_frame().unwrap();
+            let (parity, band) = compare_msaa_see_through(mesh, camera, params, &cpu, &gpu);
+            let label = format!("onscreen see-through {name} on {adapter_name}");
+            println!("{label}: {parity:?}");
+            log.push_str(&format!("{label}: {parity:?}\n"));
+            let backend = format!("{:?}", adapter.get_info().backend).to_lowercase();
+            let kind = format!("{:?}", adapter.get_info().device_type).to_lowercase();
+            let file = format!("onscreen-seethrough-{name}-{backend}-{kind}.png");
+            let path = write_evidence(&file, &cpu, &gpu, &band);
+            println!("evidence: {}", path.display());
+            measured.push((label.clone(), parity));
+            // The opaque picture afterwards is what it was before any
+            // see-through one: the layers leave nothing behind.
+            let opaque = RenderParams {
+                opacity: 1.0,
+                ..*params
+            };
+            let mut fresh = Onscreen::new(&device, &queue, &adapter).unwrap();
+            let fresh_mesh = fresh.upload(mesh).unwrap();
+            let fresh_lines = fresh.upload_lines(&[]).unwrap();
+            fresh
+                .draw(
+                    &fresh_mesh,
+                    &fresh_lines,
+                    camera,
+                    &opaque,
+                    &no_overlay(),
+                    options,
+                )
+                .unwrap();
+            onscreen
+                .draw(&uploaded, &lines, camera, &opaque, &no_overlay(), options)
+                .unwrap();
+            assert_eq!(
+                onscreen.read_frame().unwrap(),
+                fresh.read_frame().unwrap(),
+                "{label}"
+            );
+            compared += 1;
+        }
+    }
+    std::fs::write(evidence("onscreen-seethrough.txt"), log).unwrap();
+    for (label, parity) in &measured {
+        parity.check(label);
+    }
     assert!(compared >= scenes.len());
 }
 

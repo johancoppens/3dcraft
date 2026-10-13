@@ -58,6 +58,8 @@ struct Uploaded {
     tokens: Tokens,
     scale: f32,
     marks: Marks,
+    /// Whether the lines are the ones over see-through bodies.
+    see_through: bool,
     mesh: GpuMesh,
     lines: GpuLines,
     triangles: usize,
@@ -93,8 +95,9 @@ pub struct Direct {
     highlight: Highlight,
     /// The edges the frames point at.
     marks: Marks,
-    /// How opaque the bodies are. Below 1 the device refuses the frame
-    /// (`GpuError::OutOfRange`), which is drawn another way.
+    /// How opaque the bodies are (`RenderParams::opacity`). A device that
+    /// cannot draw see-through bodies refuses a frame below 1
+    /// (`GpuError::SeeThrough`), which is then drawn another way.
     opacity: f64,
 }
 
@@ -129,18 +132,21 @@ pub fn segments(
     tokens: &Tokens,
     scale: f32,
 ) -> Vec<Segment> {
-    segments_marked(scene, selected, tokens, scale, &Marks::default())
+    segments_marked(scene, selected, tokens, scale, &Marks::default(), false)
 }
 
 /// [`segments`] with `marks` drawn over the lines, as
-/// `viewport::overlay_marked` lists them: the lines after the sketches'
-/// lines, the dots after their points.
+/// `viewport::overlay_see_through` lists them: the lines after the
+/// sketches' lines, the dots after their points. With `see_through` (the
+/// bodies are see-through) the hidden part of a body's edge is drawn
+/// dimmed, like a hidden sketch, where otherwise it is left out.
 pub fn segments_marked(
     scene: Option<&Scene>,
     selected: Option<&str>,
     tokens: &Tokens,
     scale: f32,
     marks: &Marks,
+    see_through: bool,
 ) -> Vec<Segment> {
     let scale = if scale.is_finite() && scale > 0.0 {
         scale.min(16.0)
@@ -163,7 +169,7 @@ pub fn segments_marked(
         for edge in &body.edges {
             for pair in edge.windows(2) {
                 if let [a, b] = *pair {
-                    line(a, b, LineKind::Edge, true, false, false);
+                    line(a, b, LineKind::Edge, true, see_through, false);
                 }
             }
         }
@@ -272,7 +278,8 @@ fn classify(error: GpuError) -> DirectFailure {
         GpuError::TargetTooLarge { .. }
         | GpuError::MeshTooLarge { .. }
         | GpuError::TooManyLines { .. }
-        | GpuError::OutOfRange(_) => DirectFailure::ThisFrame(text),
+        | GpuError::OutOfRange(_)
+        | GpuError::SeeThrough(_) => DirectFailure::ThisFrame(text),
         GpuError::NoAdapter(_)
         | GpuError::Device(_)
         | GpuError::ForeignMesh
@@ -352,6 +359,13 @@ impl Direct {
         self.opacity = opacity;
     }
 
+    /// As on a device that cannot draw see-through bodies: from now on a
+    /// see-through frame is refused here and drawn another way. For tests
+    /// of that fallback.
+    pub fn without_see_through(&mut self) {
+        self.onscreen.without_see_through();
+    }
+
     /// The egui texture that shows the picture, once one was drawn.
     pub fn texture_id(&self) -> Option<egui::TextureId> {
         self.texture.map(|(id, _)| id)
@@ -420,6 +434,15 @@ impl Direct {
             .uploaded
             .as_ref()
             .is_some_and(|u| u.revision == wanted.revision && u.tolerance == wanted.tolerance);
+        // Through see-through bodies the hidden parts of their edges are
+        // drawn: other lines, uploaded when the bodies become see-through
+        // or opaque again (not while the slider moves in between).
+        let see_through = RenderParams {
+            opacity: wanted.opacity,
+            ..RenderParams::default()
+        }
+        .opacity()
+            < 1.0;
         let same_lines = self.uploaded.as_ref().is_some_and(|u| {
             u.revision == wanted.revision
                 && u.tolerance == wanted.tolerance
@@ -427,6 +450,7 @@ impl Direct {
                 && u.tokens == wanted.tokens
                 && u.scale == wanted.scale
                 && u.marks == wanted.marks
+                && u.see_through == see_through
         });
         if !same_lines {
             let lines = self
@@ -437,10 +461,12 @@ impl Direct {
                     &wanted.tokens,
                     wanted.scale,
                     &wanted.marks,
+                    see_through,
                 ))
                 .map_err(classify)?;
             if same_mesh && let Some(uploaded) = &mut self.uploaded {
                 uploaded.lines = lines;
+                uploaded.see_through = see_through;
                 uploaded.selected.clone_from(&wanted.selected);
                 uploaded.tokens = wanted.tokens;
                 uploaded.scale = wanted.scale;
@@ -459,6 +485,7 @@ impl Direct {
                     tokens: wanted.tokens,
                     scale: wanted.scale,
                     marks: wanted.marks.clone(),
+                    see_through,
                     mesh: uploaded,
                     lines,
                     triangles: mesh.triangles.len(),
@@ -572,6 +599,7 @@ mod tests {
             GpuError::MeshTooLarge { triangles: 1 << 30 },
             GpuError::TooManyLines { segments: 1 << 30 },
             GpuError::OutOfRange("the camera"),
+            GpuError::SeeThrough("no such pipeline".into()),
         ] {
             assert!(matches!(classify(this_frame), DirectFailure::ThisFrame(_)));
         }
@@ -595,6 +623,13 @@ mod tests {
             assert_eq!(line.color, tokens.axes[axis]);
             assert_eq!(line.width, tokens.axis_width * 2.0);
         }
+        // Through see-through bodies a body's edges are dimmed where
+        // hidden; the other lines are as ever.
+        assert!(
+            segments_marked(None, None, &tokens, 2.0, &Marks::default(), true)
+                .iter()
+                .all(|line| line.axis && !line.dimmed)
+        );
         // A hostile scale is one pixel per point.
         assert_eq!(
             segments(None, None, &tokens, f32::NAN)[0].width,

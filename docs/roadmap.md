@@ -59,8 +59,9 @@ Phase 1 is M0–M8. Its acceptance scenario, run entirely by an agent over MCP w
 |---|---|---|
 | 2026-10-14 | minor | M8.5: failed features done (uniform reasons, `causedBy`, repair by `feature.edit` for sketch, source, target, tool and revolve axis, reorder and roll back held to a full regeneration in every position, a random walk of breaking and repairing) |
 | 2026-10-13 | minor | Splines in sketches, the first step of M9's sweeps: drawn, constrained by their points, extruded; loft and sweep are not started |
-| 2026-10-13 | minor | The viewport has a see-through slider (the developer's request): done in the CPU renderer and the shell; open: the wgpu renderer's second depth layer, until then a see-through frame is drawn on the CPU |
+| 2026-10-13 | minor | The viewport has a see-through slider (the developer's request): done in the CPU renderer and the shell |
 | 2026-10-14 | minor | The viewport has a view cube in place of the orbit gizmo (the developer's request): faces, edge and corner facets as views, the projection on its ring |
+| 2026-10-14 | minor | See-through bodies are drawn by the wgpu renderer (two depth layers and a blend, both the readback renderer and the viewport's, within the tolerances of architecture §7.2): the window no longer hands those frames to the CPU |
 | 2026-10-13 | minor | The viewport has an orbit gizmo instead of the view buttons (the developer's request) |
 | 2026-10-13 | minor | M8.5: pointing at vertices done; the section plane open |
 | 2026-10-13 | minor | M8.5: pointing at edges done; vertices and the section plane open |

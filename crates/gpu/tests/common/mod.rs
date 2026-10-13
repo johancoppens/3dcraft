@@ -65,6 +65,34 @@
 //! over the pixels outside the band is the largest expected number of
 //! differing pixels; more than that is a systematic error (a mean that is
 //! truncated instead of rounded differs in half of the shaded pixels).
+//!
+//! # See-through pictures
+//!
+//! With `RenderParams::opacity` below 1 a sample's colour is a function of
+//! two shaded surfaces: the front one and the nearest one strictly behind
+//! it. The GPU blends the two with a table of the CPU renderer's own blend
+//! (`blend.wgsl`), so the blend adds no error of its own: a sample whose
+//! two layers equal the CPU's has the CPU's colour. What changes is that
+//! two layers can be wrong instead of one, and both are known from the CPU
+//! renderer alone: the *front picture* is the CPU frame at opacity 1, the
+//! *picture behind* the CPU frame at opacity 0 (which is the layer behind
+//! wherever the front is seen through). The tolerances above then read:
+//!
+//! - **The band** also holds every pixel within one pixel of a change of
+//!   the face *behind* ([`behind_ids`]): where two surfaces behind the
+//!   front pass through each other no mesh edge and no id of the front
+//!   says so. Hidden feature edges were in the band already (it is made
+//!   from all edges of the mesh, seen or not).
+//! - **Colour** outside the band: each layer is within its own tolerance
+//!   `1 + floor(2^-7 · G)`, with `G` its picture's gradient, so the exact
+//!   blends differ by at most `o · e_front + (1 - o) · e_behind <=
+//!   max(e_front, e_behind)`, an integer, and rounding is monotone and
+//!   commutes with adding an integer: the blended levels differ by at most
+//!   `1 + floor(2^-7 · max(G_front, G_behind))`.
+//! - **How many** differ at all: a blended sample can differ only when one
+//!   of its layers does, so the probabilities of the two layers add.
+//!
+//! Face ids and distances are the front's and keep their tolerances.
 
 #![allow(
     dead_code,
@@ -315,14 +343,152 @@ fn neighbours(x: usize, y: usize, w: usize, h: usize) -> impl Iterator<Item = us
         })
 }
 
+/// The face behind the front one at every pixel's first sample (the
+/// sample the frame's ids come from), or [`NO_FACE`]: the second of the
+/// two surfaces a see-through picture is made of. It is found here from
+/// the definition, with a rasteriser of its own, because the CPU frame
+/// holds the front's ids only; it is used for the band and nothing else,
+/// so surfaces closer together than a billionth of the scene's depth
+/// count as one.
+pub fn behind_ids(mesh: &Mesh, camera: &Camera, width: u32, height: u32, ssaa: u32) -> Vec<u32> {
+    let (w, h) = (width as usize, height as usize);
+    let perspective = matches!(camera.projection, Projection::Perspective { .. });
+    let offset = 0.5 / f64::from(ssaa.max(1));
+    let projected: Vec<Option<(f64, f64, f64)>> = mesh
+        .positions
+        .iter()
+        .map(|&p| {
+            project(camera, p, w as f64, h as f64).map(|(x, y, dist)| {
+                // The CPU renderer's depth key: affine in screen space.
+                (x, y, if perspective { -1.0 / dist } else { dist })
+            })
+        })
+        .collect();
+    let keys = || projected.iter().flatten().map(|p| p.2);
+    let span = keys().fold(f64::NEG_INFINITY, f64::max) - keys().fold(f64::INFINITY, f64::min);
+    let eps = if span.is_finite() { span * 1e-9 } else { 0.0 };
+    // Per pixel: the key and the face of the front and of the one behind.
+    let nothing = (f64::INFINITY, NO_FACE);
+    let mut layers = vec![(nothing, nothing); w * h];
+    for (tri, &face) in mesh.triangles.iter().zip(&mesh.face_ids) {
+        let [Some(a), Some(b), Some(c)] = tri.map(|k| projected[k as usize]) else {
+            continue;
+        };
+        let area = (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0);
+        if area == 0.0 || !area.is_finite() {
+            continue;
+        }
+        let range = |lo: f64, hi: f64, len: usize| {
+            let first = (lo - offset).ceil().max(0.0) as i64;
+            let last = ((hi - offset).floor().max(-1.0) as i64).min(len as i64 - 1);
+            first..=last
+        };
+        for y in range(a.1.min(b.1).min(c.1), a.1.max(b.1).max(c.1), h) {
+            for x in range(a.0.min(b.0).min(c.0), a.0.max(b.0).max(c.0), w) {
+                let (px, py) = (x as f64 + offset, y as f64 + offset);
+                let edge = |p: (f64, f64, f64), q: (f64, f64, f64)| {
+                    ((q.0 - p.0) * (py - p.1) - (q.1 - p.1) * (px - p.0)) / area
+                };
+                let (wa, wb, wc) = (edge(b, c), edge(c, a), edge(a, b));
+                if wa < 0.0 || wb < 0.0 || wc < 0.0 {
+                    continue;
+                }
+                let key = (wa * a.2 + wb * b.2 + wc * c.2) / (wa + wb + wc);
+                let (front, behind) = &mut layers[y as usize * w + x as usize];
+                if key < front.0 - eps {
+                    // A new front: the old one is behind it now.
+                    if front.0.is_finite() {
+                        *behind = *front;
+                    }
+                    *front = (key, face);
+                } else if key > front.0 + eps && key < behind.0 {
+                    *behind = (key, face);
+                }
+            }
+        }
+    }
+    layers.into_iter().map(|(_, behind)| behind.1).collect()
+}
+
+/// The band of a see-through picture: [`band`], and every pixel within one
+/// pixel of a change of the face behind the front one ([`behind_ids`]).
+pub fn band_see_through(mesh: &Mesh, camera: &Camera, cpu: &Frame, ssaa: u32) -> Vec<bool> {
+    let mut band = band(mesh, camera, cpu);
+    let behind = behind_ids(mesh, camera, cpu.width, cpu.height, ssaa);
+    mark_changes(&behind, cpu.width as usize, cpu.height as usize, &mut band);
+    band
+}
+
+/// Marks every pixel within one pixel of a change of `ids` in `band`.
+fn mark_changes(ids: &[u32], w: usize, h: usize, band: &mut [bool]) {
+    let mut mark = |x: usize, y: usize| {
+        for ny in y.saturating_sub(1)..=(y + 1).min(h - 1) {
+            for nx in x.saturating_sub(1)..=(x + 1).min(w - 1) {
+                band[ny * w + nx] = true;
+            }
+        }
+    };
+    for y in 0..h {
+        for x in 0..w {
+            let id = ids[y * w + x];
+            if x + 1 < w && ids[y * w + x + 1] != id {
+                mark(x, y);
+                mark(x + 1, y);
+            }
+            if y + 1 < h && ids[(y + 1) * w + x] != id {
+                mark(x, y);
+                mark(x, y + 1);
+            }
+        }
+    }
+}
+
+/// The CPU renderer's two layers of a see-through picture, as pictures:
+/// the frame at opacity 1 (the front) and at opacity 0 (the one behind,
+/// wherever the front is seen through).
+pub fn layers(mesh: &Mesh, camera: &Camera, params: &RenderParams) -> [Frame; 2] {
+    [1.0, 0.0].map(|opacity| {
+        let layer = RenderParams { opacity, ..*params };
+        craft3d_render::render(mesh, camera, &layer).unwrap()
+    })
+}
+
 /// Compares a GPU frame with the CPU frame of the same scene.
 pub fn compare(mesh: &Mesh, camera: &Camera, cpu: &Frame, gpu: &Frame) -> (Parity, Vec<bool>) {
+    let band = band(mesh, camera, cpu);
+    compare_layered(mesh, camera, cpu, gpu, band, &[cpu])
+}
+
+/// Compares a see-through GPU frame with the CPU frame of the same scene
+/// (see the module docs, *See-through pictures*).
+pub fn compare_see_through(
+    mesh: &Mesh,
+    camera: &Camera,
+    params: &RenderParams,
+    cpu: &Frame,
+    gpu: &Frame,
+) -> (Parity, Vec<bool>) {
+    let band = band_see_through(mesh, camera, cpu, params.ssaa);
+    let [front, back] = layers(mesh, camera, params);
+    compare_layered(mesh, camera, cpu, gpu, band, &[&front, &back])
+}
+
+/// The comparison, given the band and the pictures whose gradients bound
+/// the colour: the CPU frame itself for an opaque picture, its two layers
+/// for a see-through one.
+fn compare_layered(
+    mesh: &Mesh,
+    camera: &Camera,
+    cpu: &Frame,
+    gpu: &Frame,
+    band: Vec<bool>,
+    layers: &[&Frame],
+) -> (Parity, Vec<bool>) {
     assert_eq!((cpu.width, cpu.height), (gpu.width, gpu.height));
     assert_eq!(cpu.rgb.len(), gpu.rgb.len());
     assert_eq!(cpu.ids.len(), gpu.ids.len());
     assert_eq!(cpu.depth.len(), gpu.depth.len());
     let (w, h) = (cpu.width as usize, cpu.height as usize);
-    let band = band(mesh, camera, cpu);
     let bbox = mesh.bbox();
     let reach = bbox
         .center()
@@ -347,13 +513,17 @@ pub fn compare(mesh: &Mesh, camera: &Camera, cpu: &Frame, gpu: &Frame) -> (Parit
                 continue;
             }
             parity.id_outside += usize::from(id_c != id_g);
-            let color_gradient = neighbours(x, y, w, h)
-                .flat_map(|n| (0..3).map(move |c| (n, c)))
-                .map(|(n, c)| (channel(cpu, i, c) - channel(cpu, n, c)).abs())
-                .fold(0.0, f64::max);
+            // Per layer, the largest difference to the eight neighbours.
+            let gradients = layers.iter().map(|layer| {
+                neighbours(x, y, w, h)
+                    .flat_map(|n| (0..3).map(move |c| (n, c)))
+                    .map(|(n, c)| (channel(layer, i, c) - channel(layer, n, c)).abs())
+                    .fold(0.0, f64::max)
+            });
+            let color_gradient = gradients.clone().fold(0.0, f64::max);
             let color_tolerance = COLOR_TOLERANCE + (2.0 * SNAP * color_gradient).floor();
             parity.color_histogram[(color_diff as usize).min(3)] += 1;
-            parity.color_differ_allowed += differ_probability(color_gradient);
+            parity.color_differ_allowed += gradients.map(differ_probability).sum::<f64>().min(1.0);
             parity.color_outside += usize::from(color_diff > color_tolerance);
 
             let (d_c, d_g) = (cpu.depth[i], gpu.depth[i]);
@@ -542,12 +712,39 @@ pub fn compare_msaa(
     cpu: &Frame,
     gpu: &Frame,
 ) -> (MsaaParity, Vec<bool>) {
+    let band = band(mesh, camera, cpu);
+    compare_msaa_layered(mesh, camera, cpu, gpu, band, &[cpu])
+}
+
+/// [`compare_msaa`] for a see-through picture: the band and the gradients
+/// of *See-through pictures* in the module docs. A seam is a pixel near a
+/// triangle edge of either layer (the seams are made from every triangle
+/// of the mesh, seen or not).
+pub fn compare_msaa_see_through(
+    mesh: &Mesh,
+    camera: &Camera,
+    params: &RenderParams,
+    cpu: &Frame,
+    gpu: &Frame,
+) -> (MsaaParity, Vec<bool>) {
+    let band = band_see_through(mesh, camera, cpu, params.ssaa);
+    let [front, back] = layers(mesh, camera, params);
+    compare_msaa_layered(mesh, camera, cpu, gpu, band, &[&front, &back])
+}
+
+fn compare_msaa_layered(
+    mesh: &Mesh,
+    camera: &Camera,
+    cpu: &Frame,
+    gpu: &Frame,
+    band: Vec<bool>,
+    layers: &[&Frame],
+) -> (MsaaParity, Vec<bool>) {
     assert_eq!((cpu.width, cpu.height), (gpu.width, gpu.height));
     assert_eq!(cpu.rgb.len(), gpu.rgb.len());
     assert_eq!(cpu.ids.len(), gpu.ids.len());
     assert_eq!(cpu.depth.len(), gpu.depth.len());
     let (w, h) = (cpu.width as usize, cpu.height as usize);
-    let band = band(mesh, camera, cpu);
     let seams = seams(mesh, camera, cpu.width, cpu.height);
     let bbox = mesh.bbox();
     let reach = bbox
@@ -573,10 +770,13 @@ pub fn compare_msaa(
                 continue;
             }
             out.id_outside += usize::from(id_c != id_g);
-            let color_gradient = neighbours(x, y, w, h)
-                .flat_map(|n| (0..3).map(move |c| (n, c)))
-                .map(|(n, c)| (channel(cpu, i, c) - channel(cpu, n, c)).abs())
-                .fold(0.0, f64::max);
+            let gradients = layers.iter().map(|layer| {
+                neighbours(x, y, w, h)
+                    .flat_map(|n| (0..3).map(move |c| (n, c)))
+                    .map(|(n, c)| (channel(layer, i, c) - channel(layer, n, c)).abs())
+                    .fold(0.0, f64::max)
+            });
+            let color_gradient = gradients.clone().fold(0.0, f64::max);
             if seams[i] {
                 out.seam += 1;
                 out.color_seam_over += usize::from(color_diff > COLOR_TOLERANCE + color_gradient);
@@ -585,7 +785,7 @@ pub fn compare_msaa(
                 out.plain += 1;
                 let tolerance = COLOR_TOLERANCE + (2.0 * SNAP * color_gradient).floor();
                 out.color_plain_histogram[(color_diff as usize).min(3)] += 1;
-                out.color_plain_allowed += differ_probability(color_gradient);
+                out.color_plain_allowed += gradients.map(differ_probability).sum::<f64>().min(1.0);
                 out.color_plain_over += usize::from(color_diff > tolerance);
             }
             let (d_c, d_g) = (cpu.depth[i], gpu.depth[i]);
