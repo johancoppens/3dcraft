@@ -187,13 +187,27 @@ impl Host {
         // The protocol guards its dispatch already; this guard covers
         // everything around it: the status bar's report and bringing the
         // view up to date (AGENTS.md, last-resort guard).
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.answer_line(line)))
-            .unwrap_or_else(|_| {
-                Some(rpc::error_reply(
-                    &Value::Null,
-                    "internal error (a bug in 3DCraft, please report it); the document was kept",
-                ))
-            })
+        let answered =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.answer_line(line)));
+        answered.unwrap_or_else(|_| {
+            self.autosave_after_a_panic();
+            Some(rpc::error_reply(
+                &Value::Null,
+                "internal error (a bug in 3DCraft, please report it); the document was kept",
+            ))
+        })
+    }
+
+    /// After a caught panic nobody knows what else is wrong: the last
+    /// good state of every document with unsaved changes is autosaved at
+    /// once, not when its interval has passed. (A panic inside a command
+    /// is caught by the engine, which does the same.)
+    pub(crate) fn autosave_after_a_panic(&mut self) {
+        let session = &mut self.session;
+        // Not worth a second panic.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            session.autosave_now();
+        }));
     }
 
     fn answer_line(&mut self, line: &str) -> Option<String> {

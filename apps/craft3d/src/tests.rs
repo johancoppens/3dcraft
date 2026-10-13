@@ -786,6 +786,118 @@ fn the_listener_binds_loopback_only_and_refuses_a_taken_port_or_no_token() {
     assert!(no_token.contains("token"), "{no_token}");
 }
 
+/// A panic the engine's own guard does not see (here: while the status
+/// bar's report is written, after the command ran) is caught by the
+/// host's, and then the last good state is autosaved at once: whatever
+/// else is wrong, the work so far is on disk.
+#[test]
+fn after_a_caught_panic_the_document_is_autosaved_at_once_and_can_be_recovered() {
+    let dir = workdir("panic-autosave");
+    let recovery = dir.join("recovery");
+    let host_on = |recovery: &std::path::Path| {
+        let mut session = Session::new(Workspace::none());
+        // A clock that stands still: nothing is ever due by itself.
+        session.enable_recovery(craft3d_engine::RecoveryOptions::manual(
+            recovery,
+            Arc::new(craft3d_engine::ManualClock::new(1_800_000_000)),
+        ));
+        Host::new(session)
+    };
+    let ask = |host: &mut Host, command: &str, params: Value| -> Value {
+        let line = json!({"id": 1, "method": "engine.execute",
+                          "params": {"command": command, "params": params}})
+        .to_string();
+        serde_json::from_str(&host.handle_line(&line).unwrap()).unwrap()
+    };
+    let mut host = host_on(&recovery);
+    for (command, params) in [
+        ("file.new", json!({})),
+        ("feature.block", json!({"size": [10, 20, 30]})),
+        ("feature.sphere", json!({"radius": 4})),
+    ] {
+        assert_eq!(ask(&mut host, command, params)["ok"], true);
+    }
+    let before = ask(&mut host, "document.measure", json!({}));
+    assert!(!recovery.exists(), "nothing was due");
+
+    let reply = ask(&mut host, "debug.panic-in-report", json!({}));
+    assert_eq!(reply["ok"], false, "{reply}");
+    assert!(
+        reply["error"]
+            .as_str()
+            .unwrap()
+            .contains("document was kept"),
+        "{reply}"
+    );
+    let overview = host.session.recovery_overview();
+    assert_eq!((overview.writes, overview.pending), (1, 0), "{overview:?}");
+    assert_eq!(overview.problem, None);
+    // The session goes on.
+    assert_eq!(ask(&mut host, "document.measure", json!({})), before);
+    // And if it had not: what the next start finds is that document.
+    drop(host);
+    let mut next = host_on(&recovery);
+    let listed = ask(&mut next, "recovery.list", json!({}));
+    let id = listed["result"]["documents"][0]["id"].clone();
+    assert_eq!(listed["result"]["documents"][0]["features"], 2, "{listed}");
+    assert_eq!(
+        ask(&mut next, "recovery.open", json!({"id": id}))["ok"],
+        true
+    );
+    assert_eq!(ask(&mut next, "document.measure", json!({})), before);
+    // The window shows it as an unsaved, recovered document.
+    let got = ask(&mut next, "file.list", json!({}));
+    assert_eq!(got["result"]["documents"][0]["recovered"], true);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// What `app::run` does with the options: the session autosaves into the
+/// directory they name, on the engine's thread, and the window is woken
+/// when something was written; a clean end leaves nothing behind.
+#[test]
+fn the_recovery_options_start_autosave_that_wakes_the_window() {
+    let dir = workdir("recovery-options");
+    let woken = Arc::new(AtomicUsize::new(0));
+    let for_wake = Arc::clone(&woken);
+    let wake: Wake = Arc::new(move || {
+        for_wake.fetch_add(1, Ordering::SeqCst);
+    });
+    // No directory: no autosave. That is what `Options::default()` is,
+    // so no test of the app writes where the person's documents go.
+    assert!(
+        app::recovery(&Options::default(), Arc::clone(&wake))
+            .unwrap()
+            .is_none()
+    );
+    let options = Options {
+        recovery_dir: Some(dir.join("recovery")),
+        autosave_interval: Some(std::time::Duration::from_millis(20)),
+        ..Options::default()
+    };
+    let mut session = app::session(&options).unwrap();
+    assert!(!session.recovery_overview().enabled);
+    session.enable_recovery(app::recovery(&options, Arc::clone(&wake)).unwrap().unwrap());
+    let overview = session.recovery_overview();
+    assert!(overview.enabled);
+    assert_eq!(overview.interval_seconds, 0.02);
+    assert_eq!(overview.directory.as_deref(), dir.join("recovery").to_str());
+    session.execute("file.new", &json!({})).unwrap();
+    session
+        .execute("feature.block", &json!({"size": [1, 2, 3]}))
+        .unwrap();
+    let waited = std::time::Instant::now();
+    while session.recovery_overview().writes == 0 {
+        assert!(waited.elapsed() < std::time::Duration::from_secs(20));
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(woken.load(Ordering::SeqCst) >= 1, "the status bar is told");
+    assert_eq!(std::fs::read_dir(dir.join("recovery")).unwrap().count(), 3);
+    // The window closes: nothing is left to recover.
+    session.end_recovery();
+    assert_eq!(std::fs::read_dir(dir.join("recovery")).unwrap().count(), 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn the_window_pumps_the_same_channel_between_frames() {
     // What `Viewer::logic` does, without the window.

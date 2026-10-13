@@ -7,7 +7,7 @@ use crate::control::{ControlConfig, ControlServer, Wake};
 use crate::files::{Picker, SystemDialogs};
 use crate::host::{Host, Request};
 use crate::token;
-use craft3d_engine::{Access, Session, Workspace};
+use craft3d_engine::{Access, RecoveryOptions, Session, Workspace};
 use craft3d_ui_egui::{Shell, window_title};
 use eframe::UserEvent;
 use eframe::egui;
@@ -60,6 +60,28 @@ pub fn session(options: &Options) -> Result<Session, String> {
     }
     session.set_workspace(workspace);
     Ok(session)
+}
+
+/// How the window's session autosaves, when the options name a recovery
+/// directory: there, at the interval asked for, on the engine's own
+/// thread, waking the window when something was written or went wrong so
+/// the status bar shows it. The directory is made absolute, so it does
+/// not move with the working directory; it need not exist yet.
+pub fn recovery(options: &Options, wake: Wake) -> Result<Option<RecoveryOptions>, String> {
+    let Some(dir) = &options.recovery_dir else {
+        return Ok(None);
+    };
+    let dir = std::path::absolute(dir).map_err(|e| {
+        format!(
+            "`--recovery-dir {}`: cannot use this directory: {e}",
+            dir.display()
+        )
+    })?;
+    let mut recovery = RecoveryOptions::new(dir).with_notify(wake);
+    if let Some(interval) = options.autosave_interval {
+        recovery = recovery.with_interval(interval);
+    }
+    Ok(Some(recovery))
 }
 
 /// The control listener the options ask for, if any, with the channel its
@@ -262,7 +284,7 @@ pub fn waker(
 /// Opens the window and runs until it is closed. `announce` is told where
 /// the control channel listens, once it does.
 pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
-    let session = session(options)?;
+    let mut session = session(options)?;
     let event_loop = EventLoop::<UserEvent>::with_user_event()
         .build()
         .map_err(|e| window_error(&eframe::Error::WinitEventLoop(e)))?;
@@ -294,6 +316,21 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
             server.address(),
             token_file.display()
         ));
+    }
+    // Autosave starts with the window, and looks for what an earlier
+    // launch that crashed left behind. Nothing is recovered by itself:
+    // the window shows what was found, and the person or an agent decides
+    // (`recovery.list`, `recovery.open`, `recovery.discard`).
+    if let Some(recovery) = recovery(options, Arc::clone(&wake))? {
+        session.enable_recovery(recovery);
+        let overview = session.recovery_overview();
+        if !overview.found.is_empty() {
+            announce(&format!(
+                "{} unsaved document(s) of an earlier session can be recovered (in {})",
+                overview.found.len(),
+                overview.directory.as_deref().unwrap_or_default()
+            ));
+        }
     }
     let host = Host::new(session);
     let title = window_title(host.session.document_status().as_ref());
@@ -346,9 +383,14 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
         desk,
         context: Arc::clone(&context),
     };
-    event_loop
-        .run_app(&mut driver)
-        .map_err(|e| window_error(&eframe::Error::WinitEventLoop(e)))?;
+    let ran = event_loop.run_app(&mut driver);
+    // The window was closed, or could not be made: either way the
+    // application ends on purpose, and leaves no recovery files. (A crash
+    // or a kill never gets here, and leaves them.)
+    if let Ok(mut desk) = driver.desk.try_borrow_mut() {
+        desk.host.session.end_recovery();
+    }
+    ran.map_err(|e| window_error(&eframe::Error::WinitEventLoop(e)))?;
     // eframe ends the loop when the window cannot be made, and keeps the
     // reason to itself: it is only logged.
     if context.get().is_some() {
