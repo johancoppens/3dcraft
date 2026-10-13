@@ -1193,11 +1193,13 @@ fn edges_are_looked_up_in_the_scene_by_name_or_by_their_faces() {
         assert_eq!(found.edge.as_deref(), Some(name));
         named += 1;
     }
-    assert_eq!(
-        named,
-        12 + 2 + 48,
-        "the box, the post and the separate studs"
+    // Every edge has a name of its own (since 2026-10-14 also those of a
+    // body a boolean made, by the faces they lie between).
+    assert!(
+        named > 12 + 2 + 48,
+        "more than the box, the post and the studs"
     );
+    assert_eq!(named, edges.len());
     // By the faces it lies between: what document.edges answers for the
     // same two names.
     let mut between = 0;
@@ -1503,7 +1505,10 @@ fn vertices_are_looked_up_in_the_scene_by_name_or_by_their_faces() {
         }
         assert_eq!(found.body, corner.body);
     }
-    assert_eq!(named, 8 + 2 + 32);
+    // Every vertex has a name of its own (since 2026-10-14 also those of
+    // a body a boolean made, by the faces that meet in it).
+    assert!(named > 8 + 2 + 32);
+    assert_eq!(named, corners.len());
     // One face of the box: its four corners.
     let four = scene
         .vertices_named(None, None, &["F1:face(1)".to_string()])

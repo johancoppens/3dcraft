@@ -18,7 +18,9 @@ pub mod sketch;
 pub use datum::{
     AxisBy, AxisRef, DatumAxis, DatumPlane, DatumPoint, PlaneBy, PlaneRef, PointRef, WorldAxis,
 };
-pub use name::{MAX_NAME_DEPTH, MAX_NAME_SOURCES, NameRole, PersistentName};
+pub use name::{
+    FaceLists, MAX_NAME_DEPTH, MAX_NAME_FACES, MAX_NAME_SOURCES, NameRole, PersistentName,
+};
 
 pub use sketch::{
     Constraint, ConstraintId, ConstraintKind, DistanceDirection, Entity, EntityId, Geometry,

@@ -2623,9 +2623,9 @@ fn the_references_of_a_body_are_listed_with_their_names() {
         let at = point(&mut s, json!({"vertex": name}));
         assert_near(at, vector(&vertex["at"]), 0.0, name);
     }
-    // After a boolean only faces have names: no vertices are listed, a
-    // vertex of an operand is refused with the reason, and what is
-    // referred to by faces is still found.
+    // After a boolean the vertices are named by the faces that meet in
+    // them, and one an operand had answers to the name it had there too:
+    // a datum finds it by either.
     built(
         &mut s,
         "feature.block",
@@ -2639,15 +2639,40 @@ fn the_references_of_a_body_are_listed_with_their_names() {
     );
     let stand = joined["id"].as_str().unwrap().to_string();
     let listed = run(&mut s, "datum.references", json!({"feature": "Stand"}));
-    assert_eq!(listed["vertices"], json!([]));
+    let corners = listed["vertices"].as_array().unwrap();
+    // The eight corners of the plate, the rod's top rim, and where the
+    // rod comes out of the plate.
+    assert_eq!(corners.len(), 10, "{listed}");
+    let kept = format!("{stand}:copy(0)/{plate}:vertex(7)");
+    let own = format!(
+        "{stand}:corner[{stand}:copy(0)/{plate}:face(1),{stand}:copy(0)/{plate}:face(3),{stand}:copy(0)/{plate}:face(5)]"
+    );
+    let corner = corners
+        .iter()
+        .find(|v| v["name"] == own.as_str())
+        .unwrap_or_else(|| panic!("{own} in {listed}"));
+    assert_eq!(corner["aliases"], json!([kept]));
+    assert_eq!(corner["at"], json!([60.0, 30.0, 2.0]));
+    for name in [&kept, &own] {
+        let at = point(&mut s, json!({"vertex": name}));
+        assert_near(at, [60.0, 30.0, 2.0], 0.0, name);
+    }
+    for vertex in corners {
+        let at = point(&mut s, json!({"vertex": vertex["name"]}));
+        assert_near(at, vector(&vertex["at"]), 0.0, "a vertex of the union");
+    }
+    // A vertex the union does not have is refused with the name.
+    let gone = format!("{stand}:copy(0)/{plate}:vertex(8)");
     let reason = failed(
         &mut s,
         "datum.point",
-        json!({"vertex": format!("{stand}:copy(0)/{plate}:vertex(7)"), "name": "Lost corner"}),
+        json!({"vertex": gone, "name": "Lost corner"}),
     );
-    assert_eq!(
-        reason,
-        "at: the vertices of `Stand` have no names: a boolean and a pattern whose instances are joined name only their faces"
+    assert!(
+        reason.starts_with(&format!(
+            "at: `Stand` no longer has a vertex {gone}; its vertices are: {stand}:corner["
+        )),
+        "{reason}"
     );
     let wall = format!("{stand}:copy(1)/F2:face(0)");
     let top = format!("{stand}:copy(1)/F2:face(2)");

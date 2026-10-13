@@ -12,7 +12,7 @@
 
 use craft3d_doc::{
     Block, Boolean, BooleanOp, Document, Expr, FeatureId, FeatureKind, Orientation, Pattern,
-    PatternLayout, PersistentName, Units,
+    PatternLayout, PersistentName, Transform, Units,
 };
 use craft3d_regen::{Names, Regen, Status, faces_named, regenerate};
 use craft3d_topo::FaceId;
@@ -193,4 +193,113 @@ fn a_joined_pattern_names_a_merged_cap_after_every_instance() {
     assert_eq!(names.faces.len(), 18);
     assert!(names.aliases.is_empty());
     assert_eq!(names.edges.len(), 36);
+}
+
+/// What a face, an edge or a vertex answers to besides its own name, it
+/// still answers to in a body made from that body: as a copy.
+#[test]
+fn aliases_follow_the_body_through_a_copy_and_through_another_boolean() {
+    // Moved: the merged top of the joint answers to the wing's name for
+    // it, as the copy of that name.
+    let (mut doc, joint) = united("40");
+    let moved = doc
+        .add_feature(
+            Some("Moved"),
+            FeatureKind::Transform(Transform {
+                source: joint,
+                translate: exprs(["0", "0", "50"]),
+                pivot: exprs(["0", "0", "0"]),
+                axis: exprs(["0", "0", "1"]),
+                angle: Expr::new("0"),
+                keep: false,
+            }),
+        )
+        .unwrap();
+    let regen = regenerate(&doc);
+    assert!(regen.is_ok(), "{regen:?}");
+    let names = names_of(&regen, moved);
+    let own = name("F4:copy(0)/F3:copy(0)/F1:face(1)");
+    let alias = name("F4:copy(0)/F3:copy(1)/F2:face(1)");
+    let top = faces_named(&names, &alias);
+    assert_eq!(top.len(), 1, "{:?}", names.aliases);
+    assert_eq!(top, faces_named(&names, &own));
+    assert_eq!(names.aliases_of(top[0].0 as usize), &[alias][..]);
+    assert_eq!(names.aliases.len(), 4);
+    // The corners and edges of the joint keep, moved, the names the
+    // plate and the wing gave them.
+    assert_eq!(
+        (names.vertices.len(), names.vertex_aliases.len()),
+        (8, 8),
+        "{:?}",
+        names.vertex_aliases
+    );
+    for (text, at) in [
+        ("F4:copy(0)/F3:copy(0)/F1:vertex(0)", [0.0, 0.0, 50.0]),
+        ("F4:copy(0)/F3:copy(1)/F2:vertex(7)", [70.0, 20.0, 55.0]),
+    ] {
+        let index = names.vertex_named(&name(text)).expect(text);
+        let body = regen.feature(moved).unwrap().body.as_ref().unwrap();
+        let p = body.vertices[index].point;
+        assert_eq!([p.x, p.y, p.z], at, "{text}");
+        assert!(
+            names.vertices[index]
+                .to_string()
+                .starts_with("F4:copy(0)/F3:corner[")
+        );
+    }
+    assert_eq!(names.edges.len(), 12);
+    let edge = names
+        .edge_named(&name("F4:copy(0)/F3:copy(1)/F2:edge(5)"))
+        .expect("the wing's top right edge");
+    assert!(
+        names.edges[edge]
+            .to_string()
+            .starts_with("F4:copy(0)/F3:between[")
+    );
+
+    // United with a third block that stands on it: the top is cut round
+    // the block's foot and still answers to both names.
+    let (mut doc, joint) = united("40");
+    let post = block(&mut doc, "Post", ["30", "5", "5"], ["20", "10", "8"]);
+    let stand = doc
+        .add_feature(
+            Some("Stand"),
+            FeatureKind::Boolean(Boolean {
+                op: BooleanOp::Union,
+                target: joint,
+                tool: post,
+                keep_tool: false,
+            }),
+        )
+        .unwrap();
+    let regen = regenerate(&doc);
+    assert!(regen.is_ok(), "{regen:?}");
+    let names = names_of(&regen, stand);
+    let own = name("F5:copy(0)/F3:copy(0)/F1:face(1)");
+    let alias = name("F5:copy(0)/F3:copy(1)/F2:face(1)");
+    let top = faces_named(&names, &alias);
+    assert_eq!(top.len(), 1, "{:?}", names.aliases);
+    assert_eq!(top, faces_named(&names, &own));
+    assert_eq!(names.faces[top[0].0 as usize], own);
+    // A corner of the wing, two booleans on, by the name the wing gave.
+    let index = names
+        .vertex_named(&name("F5:copy(0)/F3:copy(1)/F2:vertex(7)"))
+        .expect("the wing's far corner");
+    let body = regen.feature(stand).unwrap().body.as_ref().unwrap();
+    let p = body.vertices[index].point;
+    assert_eq!([p.x, p.y, p.z], [70.0, 20.0, 5.0]);
+    // Its own name is by the faces of this body, and it carries no name
+    // by the faces of the body in between.
+    assert!(names.vertices[index].to_string().starts_with("F5:corner["));
+    assert_eq!(
+        texts(names.vertex_aliases_of(index)),
+        ["F5:copy(0)/F3:copy(1)/F2:vertex(7)"]
+    );
+    // Every edge and vertex has a name, and no two share one.
+    for list in [&names.edges, &names.vertices] {
+        let mut seen = std::collections::BTreeSet::new();
+        assert!(list.iter().all(|n| seen.insert(n)), "{:?}", texts(list));
+    }
+    assert_eq!(names.edges.len(), body.edges.len());
+    assert_eq!(names.vertices.len(), body.vertices.len());
 }

@@ -652,10 +652,18 @@ fn ui_pick_and_ui_highlight_speak_of_edges() {
     assert_eq!(shell.state.highlight_edge, None);
 
     // With select it is a click on the edge.
+    // (An edge of the body a boolean made: named by the faces it lies
+    // between, since 2026-10-14.)
     let (listed, _, [x, y]) = seen
         .iter()
-        .find(|(l, ..)| l.name.is_none())
+        .find(|(l, ..)| l.body == "Drilled")
         .expect("an edge of the drilled plate is in sight");
+    assert!(
+        listed
+            .name
+            .as_deref()
+            .is_some_and(|n| n.contains("between["))
+    );
     let clicked = call(
         &mut shell,
         &mut session,
@@ -667,7 +675,7 @@ fn ui_pick_and_ui_highlight_speak_of_edges() {
     assert_eq!(clicked["picked"]["edge"]["index"], listed.index);
     assert_eq!(
         clicked["highlightEdge"],
-        json!({"feature": listed.feature, "edge": null, "between": listed.faces})
+        serde_json::to_value(listed.reference()).unwrap()
     );
     assert_eq!(clicked["highlight"], json!(null));
     assert_eq!(shell.state.highlight_edge, Some(listed.reference()));
@@ -772,7 +780,12 @@ fn ui_pick_and_ui_highlight_speak_of_edges() {
 
     // ui.set sets it too, without the checks; a name nobody has is
     // dropped.
-    let named = edges.iter().find(|l| l.name.is_some()).unwrap();
+    // An edge of another body than the drilled plate (a refusal below
+    // asks that plate for it).
+    let named = edges
+        .iter()
+        .find(|l| l.name.is_some() && l.body != "Drilled")
+        .unwrap();
     call(
         &mut shell,
         &mut session,
@@ -1382,7 +1395,12 @@ fn a_click_on_a_vertex_picks_it_and_ui_highlight_shows_one() {
     );
 
     // ui.set, and what is wrong.
-    let named = corners.iter().find(|c| c.name.is_some()).unwrap();
+    // A vertex of another body than the drilled plate (the refusals below
+    // ask that plate for it).
+    let named = corners
+        .iter()
+        .find(|c| c.name.is_some() && c.body != "Drilled")
+        .unwrap();
     let name = named.name.clone().unwrap();
     call(
         &mut shell,

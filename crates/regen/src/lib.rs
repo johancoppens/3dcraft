@@ -22,6 +22,7 @@ mod cache;
 mod cause;
 mod datum;
 mod derive;
+mod entity;
 mod extrude;
 mod query;
 mod revolve;
@@ -79,7 +80,15 @@ pub enum Status {
 
 /// What every entity of a body is called: `faces[i]` is the name of face
 /// `FaceId(i)`, and so on. A name belongs to one entity, except that the
-/// pieces a boolean cut a face into share the face's name.
+/// pieces a boolean cut a face into share the face's name: every edge has
+/// a name no other edge of the body has, and every vertex one no other
+/// vertex has.
+///
+/// The edges and vertices of a body a boolean made, or a pattern that
+/// joined its instances, are named by the faces they lie on
+/// (`F7:between[a,b]`, `F7:corner[a,b,c]`); one that an operand already
+/// had also answers to the name it had there, as an *alias*
+/// (docs/architecture.md §4.1).
 ///
 /// A face that a boolean merged from faces of both operands (two flush
 /// blocks united: their tops become one face) is named after the first
@@ -95,7 +104,18 @@ pub struct Names {
     pub aliases: BTreeMap<usize, Vec<PersistentName>>,
     pub edges: Vec<PersistentName>,
     pub vertices: Vec<PersistentName>,
+    /// Per edge that has them (by its index in `edges`), the other names
+    /// it answers to: the names it had in the bodies it came from. No two
+    /// edges answer to one name.
+    pub edge_aliases: BTreeMap<usize, Vec<PersistentName>>,
+    /// The same per vertex, by its index in `vertices`.
+    pub vertex_aliases: BTreeMap<usize, Vec<PersistentName>>,
 }
+
+/// For every edge or vertex of a body the kernel put together: the
+/// instance and the entity of that instance's source it is, when the
+/// kernel says it is one.
+pub(crate) type Kept = Vec<Option<(u64, usize)>>;
 
 /// Per face of a body made from the bodies of other features, the
 /// (instance, face of the source) pairs it has a piece of: one for a face
@@ -127,16 +147,94 @@ impl Names {
         self.names_of(face).any(|n| n == name)
     }
 
+    /// The other names edge `edge` answers to besides `edges[edge]`.
+    pub fn edge_aliases_of(&self, edge: usize) -> &[PersistentName] {
+        self.edge_aliases.get(&edge).map_or(&[], Vec::as_slice)
+    }
+
+    /// The other names vertex `vertex` answers to besides
+    /// `vertices[vertex]`.
+    pub fn vertex_aliases_of(&self, vertex: usize) -> &[PersistentName] {
+        self.vertex_aliases.get(&vertex).map_or(&[], Vec::as_slice)
+    }
+
+    /// Every name edge `edge` answers to: its own first.
+    pub fn edge_names_of(&self, edge: usize) -> impl Iterator<Item = &PersistentName> {
+        self.edges
+            .get(edge)
+            .into_iter()
+            .chain(self.edge_aliases_of(edge))
+    }
+
+    /// Every name vertex `vertex` answers to: its own first.
+    pub fn vertex_names_of(&self, vertex: usize) -> impl Iterator<Item = &PersistentName> {
+        self.vertices
+            .get(vertex)
+            .into_iter()
+            .chain(self.vertex_aliases_of(vertex))
+    }
+
+    /// The edge called `name`, by its own name or an alias: its index.
+    pub fn edge_named(&self, name: &PersistentName) -> Option<usize> {
+        self.edges.iter().position(|own| own == name).or_else(|| {
+            self.edge_aliases
+                .iter()
+                .find(|(_, aliases)| aliases.contains(name))
+                .map(|(index, _)| *index)
+        })
+    }
+
+    /// The vertex called `name`, by its own name or an alias: its index.
+    pub fn vertex_named(&self, name: &PersistentName) -> Option<usize> {
+        self.vertices
+            .iter()
+            .position(|own| own == name)
+            .or_else(|| {
+                self.vertex_aliases
+                    .iter()
+                    .find(|(_, aliases)| aliases.contains(name))
+                    .map(|(index, _)| *index)
+            })
+    }
+
+    /// Names the edges and vertices of `body`, whose faces these names
+    /// are of, by the faces they lie on, and gives each the names it kept
+    /// from the body it came from: `source(instance)` is what the
+    /// entities of that instance's source are called.
+    pub(crate) fn name_entities<'a>(
+        &mut self,
+        feature: FeatureId,
+        body: &Body,
+        tolerance: f64,
+        kept_edges: &Kept,
+        kept_vertices: &Kept,
+        source: impl Fn(u64) -> Option<&'a Names>,
+    ) {
+        let made = entity::by_faces(feature, body, &self.faces, tolerance);
+        self.edges = made.edges;
+        self.vertices = made.vertices;
+        self.edge_aliases = entity::kept_names(feature, kept_edges, |instance, edge| {
+            source(instance)
+                .into_iter()
+                .flat_map(move |names| names.edge_names_of(edge))
+        });
+        self.vertex_aliases = entity::kept_names(feature, kept_vertices, |instance, vertex| {
+            source(instance)
+                .into_iter()
+                .flat_map(move |names| names.vertex_names_of(vertex))
+        });
+    }
+
     /// The names of faces that are copies of the faces of an earlier body:
     /// `contributors[i]` lists, for face `i`, the (instance, face of the
     /// source) pairs it has a piece of, the one it is named after first.
-    /// `source_name(instance, face)` gives the name of that face in the
-    /// body of that instance's source. Edges and vertices get no names:
-    /// after a boolean they are referred to by the faces they lie between.
+    /// `source(instance)` gives what the entities of that instance's
+    /// source are called. Edges and vertices are named after
+    /// the faces, by [`Names::name_entities`].
     pub(crate) fn copied_faces<'a>(
         feature: FeatureId,
         contributors: &Contributors,
-        source_name: impl Fn(u64, usize) -> Option<&'a PersistentName>,
+        source: impl Fn(u64) -> Option<&'a Names>,
     ) -> Result<Option<Self>, String> {
         let mut names = Names {
             faces: Vec::with_capacity(contributors.len()),
@@ -144,10 +242,17 @@ impl Names {
         };
         for (index, sources) in contributors.iter().enumerate() {
             let mut all = Vec::with_capacity(sources.len());
+            // What the contributors answered to besides their own names
+            // (a face an earlier boolean merged): the face answers to
+            // those too, after the names of the contributors themselves.
+            let mut inherited = Vec::new();
             for &(instance, face) in sources {
                 // A face is named only when the body it came from names
                 // its faces.
-                let Some(name) = source_name(instance, face) else {
+                let Some(there) = source(instance) else {
+                    return Ok(None);
+                };
+                let Some(name) = there.faces.get(face) else {
                     return Ok(None);
                 };
                 if name.depth() >= MAX_NAME_DEPTH {
@@ -158,6 +263,16 @@ impl Names {
                 let copy = PersistentName::copy(feature, instance, name.clone());
                 if !all.contains(&copy) {
                     all.push(copy);
+                }
+                for alias in there.aliases_of(face) {
+                    if alias.depth() < MAX_NAME_DEPTH {
+                        inherited.push(PersistentName::copy(feature, instance, alias.clone()));
+                    }
+                }
+            }
+            for alias in inherited {
+                if !all.contains(&alias) {
+                    all.push(alias);
                 }
             }
             let mut rest = all.into_iter();
@@ -187,6 +302,7 @@ impl Names {
             aliases: BTreeMap::new(),
             edges: named(NameRole::Edge, body.edges.len()),
             vertices: named(NameRole::Vertex, body.vertices.len()),
+            ..Self::default()
         }
     }
 
@@ -199,6 +315,7 @@ impl Names {
             aliases: BTreeMap::new(),
             edges: named(&origins.edges),
             vertices: named(&origins.vertices),
+            ..Self::default()
         }
     }
 }

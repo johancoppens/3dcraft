@@ -12,7 +12,7 @@ const MAX_EDGES: usize = 2_000;
 
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("document.edges", "Edges", r#"{"feature": id or name, "between": [face name, face name]}"#,
-        "Lists the edges of a feature's body, each with the names of the faces it lies between, its curve kind and its end points, and under vertices the vertices those edges end in: index (its place among the vertices of the body), name (its own persistent name, when it has one), point and faces (the names of the faces that meet in it). With between: only the edges between those two faces (names from document.inspect, faceNames; an alias from faceAliases names the same face). That is how an edge is referred to: by the faces it separates, which keeps meaning the same edge when the model changes upstream, also through booleans. There can be several, or none. The same name twice gives the seams of that face and the cuts between its pieces.", doc: true, document_edges),
+        "Lists the edges of a feature's body, each with its own name (name, which no other edge of the body has; after a boolean it is made of the faces the edge lies between, \"F7:between[face name,face name]\", with the faces near it after | and a number when several edges lie between the same two; aliases: the name an operand of a boolean gave the edge, when it is still one edge), the names of the faces it lies between, its curve kind and its end points, and under vertices the vertices those edges end in: index (its place among the vertices of the body), name (its own persistent name), point and faces (the names of the faces that meet in it). With between: only the edges between those two faces (names from document.inspect, faceNames; an alias from faceAliases names the same face). That is how an edge is referred to: by the faces it separates, which keeps meaning the same edge when the model changes upstream, also through booleans. There can be several, or none. The same name twice gives the seams of that face and the cuts between its pieces.", doc: true, document_edges),
 ];
 
 fn vec3(v: Vec3) -> Value {
@@ -134,6 +134,14 @@ fn document_edges(session: &mut Session, params: &Value) -> Run {
         });
         if let (Some(map), Some(name)) = (entry.as_object_mut(), names.edges.get(index)) {
             map.insert("name".into(), name.to_string().into());
+            let aliases: Vec<String> = names
+                .edge_aliases_of(index)
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+            if !aliases.is_empty() {
+                map.insert("aliases".into(), aliases.into());
+            }
         }
         edges.push(entry);
     }

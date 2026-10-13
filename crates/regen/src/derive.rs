@@ -6,7 +6,7 @@
 //! document's bodies, unless the feature keeps it.
 
 use crate::cause::FIX_IT_FIRST;
-use crate::{Contributors, FeatureResult, Names, Status, angle, length, number};
+use crate::{Contributors, FeatureResult, Kept, Names, Status, angle, length, number};
 use craft3d_doc::{
     Document, Expr, Feature, FeatureId, FeatureKind, MAX_NAME_DEPTH, PatternLayout, PersistentName,
 };
@@ -265,6 +265,28 @@ fn copied(
     Ok(())
 }
 
+/// The aliases of instance `instance`, whose entities start at `first`
+/// in the body: the copies of the aliases of the entities they are the
+/// images of.
+fn copied_aliases(
+    feature: FeatureId,
+    instance: u64,
+    aliases: &std::collections::BTreeMap<usize, Vec<PersistentName>>,
+    first: usize,
+    out: &mut std::collections::BTreeMap<usize, Vec<PersistentName>>,
+) {
+    for (index, list) in aliases {
+        let copies: Vec<PersistentName> = list
+            .iter()
+            .filter(|name| name.depth() < MAX_NAME_DEPTH)
+            .map(|name| PersistentName::copy(feature, instance, name.clone()))
+            .collect();
+        if !copies.is_empty() {
+            out.insert(first.saturating_add(*index), copies);
+        }
+    }
+}
+
 /// Whether any two instances of a pattern come near each other: touch or
 /// share volume, as far as their boxes can tell.
 ///
@@ -306,9 +328,13 @@ fn instances_meet(doc: &Document, placed: &[Body]) -> Result<bool, String> {
 /// its faces, the instances and the faces of the source it has a piece
 /// of: one pair for a face that is a piece of one instance's face, more
 /// for a face the union merged from the faces of several (three bars end
-/// to end: one top), the one it is named after first.
-fn joined(doc: &Document, placed: &[Body]) -> Result<(Body, Contributors), String> {
-    use craft3d_kernel::boolean::{BooleanOp, FaceSource, Operand, boolean};
+/// to end: one top), the one it is named after first; and for each of its
+/// edges and vertices the instance and the entity of the source it is,
+/// when it is one through every union.
+fn joined(doc: &Document, placed: &[Body]) -> Result<(Body, Contributors, Kept, Kept), String> {
+    use craft3d_kernel::boolean::{
+        BooleanOp, EdgeSource, FaceSource, Operand, VertexSource, boolean,
+    };
     let tolerance = craft3d_math::Tolerance::new(doc.tolerance.linear, doc.tolerance.angular)
         .ok_or("the document's tolerance is not positive and finite".to_string())?;
     let Some((first, others)) = placed.split_first() else {
@@ -316,6 +342,14 @@ fn joined(doc: &Document, placed: &[Body]) -> Result<(Body, Contributors), Strin
     };
     let mut body = first.clone();
     let mut sources: Contributors = (0..body.faces.len()).map(|face| vec![(0, face)]).collect();
+    let mut edges: Kept = (0..body.edges.len()).map(|edge| Some((0, edge))).collect();
+    let mut vertices: Kept = (0..body.vertices.len()).map(|v| Some((0, v))).collect();
+    // An entity of the body so far is what it already was; one of the new
+    // instance is its own; one the union made is nobody's.
+    let through = |so_far: &Kept, operand: Operand, index: u32, instance: u64| match operand {
+        Operand::A => so_far.get(index as usize).copied().flatten(),
+        Operand::B => Some((instance, index as usize)),
+    };
     for (index, other) in others.iter().enumerate() {
         let instance = index.saturating_add(1) as u64;
         let result = boolean(&body, other, BooleanOp::Union, &tolerance).map_err(|e| {
@@ -348,10 +382,28 @@ fn joined(doc: &Document, placed: &[Body]) -> Result<(Body, Contributors), Strin
             }
             next.push(pairs);
         }
+        edges = result
+            .edges
+            .iter()
+            .map(|source| match source {
+                EdgeSource::Kept { operand, edge } => through(&edges, *operand, edge.0, instance),
+                EdgeSource::Intersection { .. } => None,
+            })
+            .collect();
+        vertices = result
+            .vertices
+            .iter()
+            .map(|source| match source {
+                VertexSource::Kept { operand, vertex } => {
+                    through(&vertices, *operand, vertex.0, instance)
+                }
+                VertexSource::New { .. } => None,
+            })
+            .collect();
         body = result.body;
         sources = next;
     }
-    Ok((body, sources))
+    Ok((body, sources, edges, vertices))
 }
 
 pub(crate) fn build(
@@ -386,17 +438,24 @@ pub(crate) fn build(
     // put side by side in one body they would leave faces inside the
     // material, a solid that passes through itself.
     if matches!(feature.kind, FeatureKind::Pattern(_)) && instances_meet(doc, &placed)? {
-        let (result, contributors) = joined(doc, &placed)?;
+        let (result, contributors, edges, vertices) = joined(doc, &placed)?;
         // Every instance is a copy of the one source. As after a boolean,
-        // edges are referred to by the faces they lie between, and a face
-        // merged from the faces of several instances answers to each
-        // instance's name for it.
-        let names = match &source.names {
-            None => None,
-            Some(names) => {
-                Names::copied_faces(feature.id, &contributors, |_, face| names.faces.get(face))?
-            }
-        };
+        // edges and vertices are named by the faces they lie on (and keep
+        // the name they have as a copy when the union left them whole),
+        // and a face merged from the faces of several instances answers
+        // to each instance's name for it.
+        let mut names =
+            Names::copied_faces(feature.id, &contributors, |_| source.names.as_deref())?;
+        if let Some(names) = &mut names {
+            names.name_entities(
+                feature.id,
+                &result,
+                doc.tolerance.linear,
+                &edges,
+                &vertices,
+                |_| source.names.as_deref(),
+            );
+        }
         return Ok(Derived {
             body: result,
             names,
@@ -421,6 +480,29 @@ pub(crate) fn build(
         Some(names) => {
             let mut out = Names::default();
             for instance in 0..maps.len() as u64 {
+                // What an entity answers to besides its own name, its
+                // copy answers to as a copy.
+                copied_aliases(
+                    feature.id,
+                    instance,
+                    &names.aliases,
+                    out.faces.len(),
+                    &mut out.aliases,
+                );
+                copied_aliases(
+                    feature.id,
+                    instance,
+                    &names.edge_aliases,
+                    out.edges.len(),
+                    &mut out.edge_aliases,
+                );
+                copied_aliases(
+                    feature.id,
+                    instance,
+                    &names.vertex_aliases,
+                    out.vertices.len(),
+                    &mut out.vertex_aliases,
+                );
                 copied(feature.id, instance, &names.faces, &mut out.faces)?;
                 copied(feature.id, instance, &names.edges, &mut out.edges)?;
                 copied(feature.id, instance, &names.vertices, &mut out.vertices)?;

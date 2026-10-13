@@ -3,9 +3,11 @@
 //! An edge of a solid is where two faces meet (or one face meets itself,
 //! along a seam). Faces have persistent names through every feature kind,
 //! booleans included, so "the edges between face A and face B" refers to
-//! edges in a way that survives upstream edits without the edges having
-//! names of their own. Several edges can lie between two faces, and after
-//! a boolean several faces can share one name: the answer is a list.
+//! edges in a way that survives upstream edits. Several edges can lie
+//! between two faces, and after a boolean several faces can share one
+//! name: the answer is a list. (One edge of that list is told from the
+//! others by its own name, [`crate::Names::edges`], which after a boolean
+//! is made of the same two faces: `crate::entity`.)
 
 use crate::Names;
 use craft3d_doc::PersistentName;
