@@ -1285,6 +1285,110 @@ fn pairs_that_once_fooled_the_detector() {
     assert_eq!(found.passes, 1, "{found}");
 }
 
+/// A boolean has no size of its own, and neither has the mesh of what it
+/// returns: pairs at sizes from 1e-6 to 1e6 (the tolerance with them)
+/// give bodies with as many faces, edges and vertices, whose edges become
+/// as many points and whose meshes are the same surface, in area and in
+/// volume, within the chord they were made at. At a size that is a power
+/// of two, where scaling does not round, the mesh is the scaled mesh bit
+/// for bit.
+///
+/// Seed 20 on the grid is the pair that showed the need, at 1e-3 only: a
+/// spline edge whose range began a rounding error before a knot of its
+/// curve had two points 5e-19 apart, and its faces could not be meshed
+/// (`crates/tess/tests/scale.rs` has that edge by itself).
+#[test]
+fn booleans_and_their_meshes_have_no_size_of_their_own() {
+    use craft3d_tess::{TessParams, tessellate_body, tessellate_edges};
+    let chord = 1e-3;
+    let volume = |mesh: &craft3d_tess::Mesh| -> f64 {
+        (0..mesh.triangles.len())
+            .filter_map(|t| mesh.corners(t))
+            .map(|[a, b, c]| a.dot(b.cross(c)) / 6.0)
+            .sum()
+    };
+    let mut pairs = vec![(20, Placement::Grid)];
+    for seed in 1..=8 {
+        for placement in [Placement::General, Placement::Parallel, Placement::Grid] {
+            pairs.push((seed, placement));
+        }
+    }
+    let (mut compared, mut exact, mut refused_somewhere) = (0, 0, 0);
+    for (seed, placement) in pairs {
+        for op in [Union, Intersect, Subtract] {
+            let result = |k: f64| {
+                let (a, b) = random_pair(seed, placement, k);
+                boolean(&a, &b, op, &tolerance(k)).map(|r| r.body)
+            };
+            let params = |k: f64| TessParams {
+                chordal_tolerance: chord * k,
+                ..TessParams::default()
+            };
+            let Ok(unit) = result(1.0) else {
+                // Refused or empty at size 1: then at every size.
+                for k in [1e-6, 1e-3, 1e3, 1e6] {
+                    assert!(
+                        result(k).is_err(),
+                        "seed {seed} {placement:?} {op:?}: a body at {k}, none at 1"
+                    );
+                }
+                refused_somewhere += 1;
+                continue;
+            };
+            let unit_mesh = tessellate_body(&unit, &params(1.0)).unwrap();
+            let unit_edges = tessellate_edges(&unit, &params(1.0)).unwrap();
+            let (unit_area, unit_volume) = (unit_mesh.area(), volume(&unit_mesh));
+            for exponent in [-20, 20] {
+                let k = 2.0_f64.powi(exponent);
+                let what = format!("seed {seed} {placement:?} {op:?} at 2^{exponent}");
+                let body = result(k).unwrap_or_else(|e| panic!("{what}: {e}"));
+                let mesh =
+                    tessellate_body(&body, &params(k)).unwrap_or_else(|e| panic!("{what}: {e}"));
+                assert_eq!(mesh.triangles, unit_mesh.triangles, "{what}");
+                let scaled: Vec<Vec3> = unit_mesh.positions.iter().map(|p| *p * k).collect();
+                assert!(mesh.positions == scaled, "{what}: positions");
+                exact += 1;
+            }
+            for k in [1e-6, 1e-3, 1e3, 1e6] {
+                let what = format!("seed {seed} {placement:?} {op:?} at {k}");
+                let body = result(k).unwrap_or_else(|e| panic!("{what}: {e}"));
+                assert_eq!(
+                    (body.faces.len(), body.edges.len(), body.vertices.len()),
+                    (unit.faces.len(), unit.edges.len(), unit.vertices.len()),
+                    "{what}: faces, edges, vertices"
+                );
+                let edges =
+                    tessellate_edges(&body, &params(k)).unwrap_or_else(|e| panic!("{what}: {e}"));
+                let counts = |edges: &[Vec<Vec3>]| edges.iter().map(Vec::len).collect::<Vec<_>>();
+                assert_eq!(
+                    counts(&edges),
+                    counts(&unit_edges),
+                    "{what}: points per edge"
+                );
+                let mesh =
+                    tessellate_body(&body, &params(k)).unwrap_or_else(|e| panic!("{what}: {e}"));
+                let (area, inside) = (mesh.area() / (k * k), volume(&mesh) / (k * k * k));
+                // Sizes of a few units and a chord of 1e-3: that much of
+                // the area, and of the area as a volume.
+                assert!(
+                    (area - unit_area).abs() <= chord * unit_area,
+                    "{what}: area {area} against {unit_area}"
+                );
+                assert!(
+                    (inside - unit_volume).abs() <= chord * unit_area,
+                    "{what}: volume {inside} against {unit_volume}"
+                );
+                compared += 1;
+            }
+        }
+    }
+    println!(
+        "{compared} results compared with their size 1, {exact} bit for bit, \
+         {refused_somewhere} operations without a body"
+    );
+    assert!(compared >= 100, "{compared}");
+}
+
 /// The long run: `cargo test --release -p craft3d-testkit --test
 /// self_intersection -- --ignored --nocapture random_booleans_long_run`.
 #[test]
