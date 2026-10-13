@@ -64,6 +64,23 @@
 //! area of the torus, and the same whole number applies to all five
 //! integrals.
 //!
+//! **Spline surfaces.** A spline surface is smooth only between its knot
+//! lines, and so are `f` and `G`. The inner integral is summed stretch by
+//! stretch between the surface's knots in its direction, and the boundary
+//! panels end where an edge crosses a knot line (found by a change of side
+//! along the edge and bisection) as well as at the edge's own knots. `f`
+//! is a square root of a polynomial or rational function there, for which
+//! no panel count is known to do: the inner panels are doubled along with
+//! the boundary's, so the sums below only agree once both have settled. A
+//! spline surface may also close on itself around u without saying so (a
+//! sphere or a can swept from a rational circle). A boundary that then
+//! goes around once in total is the rim of a face that reaches to an end
+//! of v: a face only if the surface is a single point there, where `G`
+//! then runs from, as from an apex. And a point just short of such a
+//! surface's seam is looked up from both sides of it. A face without
+//! loops is the whole surface, summed between its knot lines both ways
+//! until two sums agree.
+//!
 //! **Nothing is taken on trust.** The boundary integral of a face is
 //! computed twice, first with half the panels its edges need and then with
 //! all of them, and again with twice as many until two in a row agree to
@@ -152,19 +169,6 @@ impl Sums {
         self.moment += o.moment * s;
     }
 
-    /// Each of the five made positive.
-    fn abs(self) -> Sums {
-        Sums {
-            area: self.area.abs(),
-            volume: self.volume.abs(),
-            moment: Vec3::new(
-                self.moment.x.abs(),
-                self.moment.y.abs(),
-                self.moment.z.abs(),
-            ),
-        }
-    }
-
     fn parts(self) -> [f64; 5] {
         [
             self.area,
@@ -177,8 +181,10 @@ impl Sums {
 }
 
 /// `f(u, v)` for the five integrals, and how large each is before
-/// anything cancels: the position times the normal where `f` is their dot
-/// product, which is zero all over a cone with its apex at the origin.
+/// anything cancels: the position times the length of the normal where
+/// `f` has their dot product, which is zero all over a cone with its apex
+/// at the origin, and the whole normal where it has one component, which
+/// is rounding all over a face that a coordinate axis lies in.
 fn integrand(surface: &Surface, u: f64, v: f64) -> Total {
     let (s, su, sv) = surface.derivatives(u, v);
     let n = su.cross(sv);
@@ -190,8 +196,9 @@ fn integrand(surface: &Surface, u: f64, v: f64) -> Total {
     Total {
         sum,
         size: Sums {
+            area: n.length(),
             volume: s.length() * n.length() / 3.0,
-            ..sum.abs()
+            moment: Vec3::new(s.x * s.x, s.y * s.y, s.z * s.z) * (0.5 * n.length()),
         },
     }
 }
@@ -262,7 +269,61 @@ impl Total {
 }
 
 /// `∫ f dt` from `from` to `to` along one parameter, the other one fixed.
-fn inner(surface: &Surface, rule: &Rule, along: Along, fixed: f64, from: f64, to: f64) -> Total {
+///
+/// On an analytic surface the integrand is a polynomial or trigonometric
+/// and the panels are what makes the rule exact to rounding. On a spline
+/// surface it is smooth only between the surface's knots in the direction
+/// of `t`, so the panels end at the knots in between, and nothing says how
+/// many a stretch needs: half of [`INNER_PANELS`] doubled `doublings`
+/// times, along with the panels of the boundary, so that the sums of the
+/// boundary only agree once these have settled too.
+fn inner(
+    surface: &Surface,
+    rule: &Rule,
+    along: Along,
+    fixed: f64,
+    (from, to): (f64, f64),
+    doublings: u32,
+) -> Total {
+    let mut sum = Total::default();
+    let mut panel = |start: f64, end: f64, sign: f64| {
+        for (t, w) in rule.points(start, end) {
+            let (u, v) = match along {
+                Along::U => (t, fixed),
+                Along::V => (fixed, t),
+            };
+            sum.add(integrand(surface, u, v), w * sign);
+        }
+    };
+    let knots: &[f64] = match (surface, along) {
+        (Surface::Nurbs(s), Along::U) => s.knots_u(),
+        (Surface::Nurbs(s), Along::V) => s.knots_v(),
+        _ => &[],
+    };
+    if matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_)) {
+        let (low, high, sign) = if from <= to {
+            (from, to, 1.0)
+        } else {
+            (to, from, -1.0)
+        };
+        let count = ((INNER_PANELS << doublings.min(8)) / 2).clamp(1, MAX_INNER_PANELS);
+        let mut stretch = |start: f64, end: f64| {
+            let width = (end - start) / count as f64;
+            for k in 0..count {
+                let at = start + width * k as f64;
+                panel(at, at + width, sign);
+            }
+        };
+        let mut start = low;
+        for &knot in knots {
+            if knot > start && knot < high {
+                stretch(start, knot);
+                start = knot;
+            }
+        }
+        stretch(start, high);
+        return sum;
+    }
     let periodic = match along {
         Along::U => surface.period_u().is_some(),
         Along::V => surface.period_v().is_some(),
@@ -274,17 +335,10 @@ fn inner(surface: &Surface, rule: &Rule, along: Along, fixed: f64, from: f64, to
     } else {
         INNER_PANELS
     };
-    let mut sum = Total::default();
     let width = (to - from) / count as f64;
     for k in 0..count {
         let start = from + width * k as f64;
-        for (t, w) in rule.points(start, start + width) {
-            let (u, v) = match along {
-                Along::U => (t, fixed),
-                Along::V => (fixed, t),
-            };
-            sum.add(integrand(surface, u, v), w);
-        }
+        panel(start, start + width, 1.0);
     }
     sum
 }
@@ -294,40 +348,217 @@ fn inner(surface: &Surface, rule: &Rule, along: Along, fixed: f64, from: f64, to
 /// times.
 ///
 /// What an edge needs: panels of an eighth of a turn at most along a
-/// circle or an ellipse, two along a line, and two to every stretch
-/// between the knots of a spline. A spline is smooth only between its
-/// knots, and a sum over panels that straddle them converges too slowly
-/// to ever settle.
-fn panels(curve: &Curve3, (low, high): (f64, f64), doublings: u32) -> Vec<(f64, f64)> {
+/// circle or an ellipse, two along a line, and two to every stretch of a
+/// spline. A panel ends wherever the integrand has a kink: at the knots
+/// of a spline edge, which is smooth only between them, and at `crossings`,
+/// where the edge crosses a knot line of a spline surface. A sum over
+/// panels that straddle a kink converges too slowly to ever settle.
+fn panels(
+    curve: &Curve3,
+    (low, high): (f64, f64),
+    crossings: &[f64],
+    doublings: u32,
+) -> Vec<(f64, f64)> {
     let double = 1_usize << doublings.min(16);
     let mut stops = vec![low];
-    let per_stretch = match curve {
-        Curve3::Line(_) => double,
-        Curve3::Circle(_) | Curve3::Ellipse(_) => (((high - low) / FRAC_PI_2).ceil() as usize)
-            .clamp(1, 32)
-            .saturating_mul(double),
-        Curve3::Nurbs(c) => {
-            for &knot in c.knots() {
-                if knot > low && knot < high && stops.last().is_some_and(|&last| knot > last) {
-                    stops.push(knot);
-                }
-            }
-            double
-        }
-    };
+    if let Curve3::Nurbs(c) = curve {
+        stops.extend(c.knots().iter().filter(|&&k| k > low && k < high));
+    }
+    stops.extend(crossings.iter().filter(|&&t| t > low && t < high));
     stops.push(high);
+    stops.sort_by(f64::total_cmp);
+    stops.dedup();
     let stretches = stops.len().saturating_sub(1).max(1);
-    let per_stretch = per_stretch.min(MAX_PANELS / stretches).max(1);
-    let mut panels = Vec::with_capacity(stretches.saturating_mul(per_stretch).min(MAX_PANELS));
+    let mut panels = Vec::new();
     for pair in stops.windows(2) {
         let &[from, to] = pair else { continue };
-        let width = (to - from) / per_stretch as f64;
-        for k in 0..per_stretch {
+        let needed = match curve {
+            Curve3::Line(_) | Curve3::Nurbs(_) => 1,
+            Curve3::Circle(_) | Curve3::Ellipse(_) => {
+                (((to - from) / FRAC_PI_2).ceil() as usize).clamp(1, 32)
+            }
+        };
+        let count = needed
+            .saturating_mul(double)
+            .min(MAX_PANELS / stretches)
+            .max(1);
+        let width = (to - from) / count as f64;
+        for k in 0..count {
             let start = from + width * k as f64;
             panels.push((start, start + width));
         }
     }
     panels
+}
+
+/// The parameters of `point`, which lies on `surface`.
+///
+/// `Surface::project`, except on a spline surface that closes on itself.
+/// There a point just short of the seam is as close to the first row of
+/// the search's samples as to the last, the search starts from the first,
+/// and its steps stop at the edge of the domain: the answer is the seam
+/// itself, on the wrong side and off by the distance to it. So an answer
+/// at an edge of the domain is tried again from the opposite edge, and
+/// whichever lands closer to the point is taken.
+fn locate(surface: &Surface, point: Vec3) -> Result<(f64, f64), GeomError> {
+    let found = surface.project(point)?;
+    if !matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_)) {
+        return Ok(found);
+    }
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    let opposite = |x: f64, (start, end): (f64, f64)| {
+        if x == start {
+            Some(end)
+        } else if x == end {
+            Some(start)
+        } else {
+            None
+        }
+    };
+    let (other_u, other_v) = (opposite(found.0, (u0, u1)), opposite(found.1, (v0, v1)));
+    let mut best = (surface.eval(found.0, found.1).distance(point), found);
+    if best.0 == 0.0 {
+        return Ok(found);
+    }
+    for start in [
+        other_u.map(|u| (u, found.1)),
+        other_v.map(|v| (found.0, v)),
+        other_u.zip(other_v),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        // Gauss–Newton on S(u, v) − point, kept within the domain.
+        let (mut u, mut v) = start;
+        for _ in 0..40 {
+            let (at, su, sv) = surface.derivatives(u, v);
+            let r = point - at;
+            let (a, b, c) = (su.dot(su), su.dot(sv), sv.dot(sv));
+            let det = a * c - b * b;
+            if !(det.is_finite() && det > 1e-14 * a * c) {
+                break;
+            }
+            let (ru, rv) = (r.dot(su), r.dot(sv));
+            let next = (
+                (u + (c * ru - b * rv) / det).clamp(u0, u1),
+                (v + (a * rv - b * ru) / det).clamp(v0, v1),
+            );
+            let moved = (next.0 - u).abs() / (u1 - u0) + (next.1 - v).abs() / (v1 - v0);
+            (u, v) = next;
+            // Not `>`: a NaN has not converged, but must not loop.
+            if moved <= 1e-15 || moved.is_nan() {
+                break;
+            }
+        }
+        let distance = surface.eval(u, v).distance(point);
+        if distance < best.0 {
+            best = (distance, (u, v));
+        }
+    }
+    Ok(best.1)
+}
+
+/// The distinct knots of a spline surface strictly inside its domain, in
+/// u and in v: its knot lines, across which it is not smooth.
+fn knot_lines(surface: &Surface) -> (Vec<f64>, Vec<f64>) {
+    let Surface::Nurbs(s) = surface else {
+        return (Vec::new(), Vec::new());
+    };
+    let ((u0, u1), (v0, v1)) = s.domain();
+    let inside = |knots: &[f64], (start, end): (f64, f64)| {
+        let mut lines: Vec<f64> = knots
+            .iter()
+            .copied()
+            .filter(|&k| k > start && k < end)
+            .collect();
+        lines.dedup();
+        lines
+    };
+    (inside(s.knots_u(), (u0, u1)), inside(s.knots_v(), (v0, v1)))
+}
+
+/// Looks along an edge at this many places per stretch between its knots
+/// for crossings of the surface's knot lines.
+const CROSSING_STEPS: u32 = 8;
+
+/// Where the stretch `low` to `high` of an edge crosses a knot line of
+/// the spline surface it lies on (or the seam of one that closes on
+/// itself): parameters of the edge, in no particular order.
+///
+/// Found by a change of side between neighbouring places along the edge
+/// and narrowed by bisection. An edge that runs along a knot line does
+/// not cross it; one that touches a line and turns back between two of
+/// the places looked at is missed, and its sums then do not settle.
+fn knot_crossings(
+    curve: &Curve3,
+    surface: &Surface,
+    (low, high): (f64, f64),
+) -> Result<Vec<f64>, GeomError> {
+    let (lines_u, lines_v) = knot_lines(surface);
+    let mut crossings = Vec::new();
+    if (lines_u.is_empty() && lines_v.is_empty()) || high <= low || (high - low).is_nan() {
+        return Ok(crossings);
+    }
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    let at = |t: f64| locate(surface, curve.eval(t));
+    // The places to look at: evenly between the edge's own knots.
+    let mut places = vec![low];
+    let mut ends = vec![low];
+    if let Curve3::Nurbs(c) = curve {
+        ends.extend(c.knots().iter().filter(|&&k| k > low && k < high));
+    }
+    ends.push(high);
+    ends.dedup();
+    for pair in ends.windows(2) {
+        let &[from, to] = pair else { continue };
+        for k in 1..=CROSSING_STEPS {
+            places.push(from + (to - from) * f64::from(k) / f64::from(CROSSING_STEPS));
+        }
+    }
+    let mut before: Option<(f64, (f64, f64))> = None;
+    for t in places {
+        let here = at(t)?;
+        if let Some((s, there)) = before {
+            for (lines, from, to, width, pick_u) in [
+                (&lines_u, there.0, here.0, u1 - u0, true),
+                (&lines_v, there.1, here.1, v1 - v0, false),
+            ] {
+                let pick = |uv: (f64, f64)| if pick_u { uv.0 } else { uv.1 };
+                // The side of `x` the stretch started on, for bisection.
+                let mut narrow = |starts: &dyn Fn(f64) -> bool| -> Result<(), GeomError> {
+                    let (mut a, mut b) = (s, t);
+                    for _ in 0..48 {
+                        let middle = 0.5 * (a + b);
+                        if !(middle > a && middle < b) {
+                            break;
+                        }
+                        if starts(pick(at(middle)?)) {
+                            a = middle;
+                        } else {
+                            b = middle;
+                        }
+                    }
+                    crossings.push(0.5 * (a + b));
+                    Ok(())
+                };
+                if (to - from).abs() > 0.5 * width {
+                    // From one side of a seam to the other.
+                    narrow(&|x| (x - from).abs() < (x - to).abs())?;
+                    continue;
+                }
+                // On a line (within rounding) is on neither side of it.
+                let clear = 1e-9 * width;
+                for &line in lines.iter() {
+                    let (d0, d1) = (from - line, to - line);
+                    if (d0 > clear && d1 < -clear) || (d0 < -clear && d1 > clear) {
+                        narrow(&|x| (x - line > 0.0) == (d0 > 0.0))?;
+                    }
+                }
+            }
+        }
+        before = Some((t, here));
+    }
+    Ok(crossings)
 }
 
 /// The frame a sphere face is measured in (see the module documentation):
@@ -396,6 +627,8 @@ struct Piece<'a> {
     curve: &'a Curve3,
     start: f64,
     end: f64,
+    /// Where it crosses a knot line of its spline surface.
+    crossings: Vec<f64>,
 }
 
 /// The boundary of a face: per loop its pieces in the order the loop runs.
@@ -499,15 +732,23 @@ fn outline<'a>(
                 }
             }
             let curve = &edge.curve;
+            let crossings = knot_crossings(curve, surface, (t0, t1)).map_err(geometry)?;
             let mut stretch = |start: f64, end: f64| {
+                let crossings = crossings.clone();
                 run.push(if reversed {
                     Piece {
                         curve,
                         start: end,
                         end: start,
+                        crossings,
                     }
                 } else {
-                    Piece { curve, start, end }
+                    Piece {
+                        curve,
+                        start,
+                        end,
+                        crossings,
+                    }
                 });
             };
             match (cut, reversed) {
@@ -565,11 +806,10 @@ fn samples(
             let (low, high) = (piece.start.min(piece.end), piece.start.max(piece.end));
             let direction = if piece.end < piece.start { -1.0 } else { 1.0 };
             let first = samples.len();
-            for (start, end) in panels(piece.curve, (low, high), doublings) {
+            for (start, end) in panels(piece.curve, (low, high), &piece.crossings, doublings) {
                 for (t, w) in rule.points(start, end) {
                     let (point, tangent) = piece.curve.derivatives(t);
-                    let (u, v) = surface
-                        .project(point)
+                    let (u, v) = locate(surface, point)
                         .map_err(|error| MassError::Geometry { face: index, error })?;
                     // Solve [Sᵤ Sᵥ] (du, dv) = tangent in the least-squares
                     // sense: the edge lies on the surface, so this is exact
@@ -608,21 +848,48 @@ fn samples(
 }
 
 /// `∬ f du dv` over a whole closed surface.
+///
+/// On a spline surface the panels in u end at its knots, like those in v
+/// ([`inner`]), and are doubled until two sums agree.
 fn whole_surface(surface: &Surface, index: usize, rule: &Rule) -> Result<Sums, MassError> {
     let ((u0, u1), (v0, v1)) = surface.domain();
     if ![u0, u1, v0, v1].iter().all(|x| x.is_finite()) {
         return Err(MassError::UnboundedFace { face: index });
     }
-    const U_PANELS: usize = 8;
-    let mut sum = Sums::default();
-    let width = (u1 - u0) / U_PANELS as f64;
-    for k in 0..U_PANELS {
-        let start = u0 + width * k as f64;
-        for (u, w) in rule.points(start, start + width) {
-            sum.add_scaled(inner(surface, rule, Along::V, u, v0, v1).sum, w);
+    let across = |from: f64, to: f64, count: usize, doublings: u32, sum: &mut Total| {
+        let width = (to - from) / count as f64;
+        for k in 0..count {
+            let start = from + width * k as f64;
+            for (u, w) in rule.points(start, start + width) {
+                sum.add(inner(surface, rule, Along::V, u, (v0, v1), doublings), w);
+            }
         }
+    };
+    if !matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_)) {
+        const U_PANELS: usize = 8;
+        let mut sum = Total::default();
+        across(u0, u1, U_PANELS, 0, &mut sum);
+        return Ok(sum.sum);
     }
-    Ok(sum)
+    let (mut lines, _) = knot_lines(surface);
+    lines.push(u1);
+    let mut coarser: Option<Total> = None;
+    for doublings in 0..=MAX_DOUBLINGS {
+        let mut sum = Total::default();
+        let mut start = u0;
+        for &line in &lines {
+            across(start, line, 1 << doublings, doublings, &mut sum);
+            start = line;
+        }
+        if coarser.is_some_and(|coarser| coarser.agrees_with(&sum, 0.0)) {
+            return Ok(sum.sum);
+        }
+        coarser = Some(sum);
+    }
+    Err(MassError::Unsupported {
+        face: index,
+        what: "an integral over a whole spline surface that does not settle",
+    })
 }
 
 /// `value` moved by whole periods to be as near to `target` as it gets.
@@ -731,12 +998,49 @@ fn plan(
             what: "a surface closed in v only",
         });
     }
-    let ((_, _), (v_min, v_max)) = surface.domain();
+    let ((u_min, u_max), (v_min, v_max)) = surface.domain();
     let first_v = samples.first().map_or(0.0, |s| s.v);
     let v_ref = match (surface, surface.period_u()) {
         // The north pole of the frame chosen for the face.
         (Surface::Sphere(_), _) => v_max,
-        (_, None) => first_v,
+        (Surface::Plane(_), _) => first_v,
+        (_, None) => {
+            // A spline surface may close on itself around u without
+            // saying so, and a boundary that goes around it once in total
+            // (the rim of a cap on a sphere of revolution) is not closed
+            // in its parameters: the face reaches to the end of v on one
+            // side. That is a face only if the surface is a single point
+            // there, a pole, which is then where `G` runs from, as from
+            // an apex.
+            let swept = samples.iter().map(|s| s.du).sum::<f64>();
+            let turns = (sense * swept / (u_max - u_min)).round();
+            let risen = samples.iter().map(|s| s.dv).sum::<f64>();
+            if (risen / (v_max - v_min)).round() != 0.0 {
+                return Err(MassError::Unsupported {
+                    face: index,
+                    what: "a boundary that goes around a spline surface in v",
+                });
+            }
+            if turns == 0.0 {
+                first_v
+            } else if turns.abs() == 1.0 {
+                let end = if turns > 0.0 { v_max } else { v_min };
+                let pole = (0..=8).all(|k| {
+                    let u = u_min + (u_max - u_min) * f64::from(k) / 8.0;
+                    let (_, su, sv) = surface.derivatives(u, end);
+                    su.length() <= 1e-9 * (su.length() + sv.length())
+                });
+                if !pole {
+                    return Err(MassError::UnboundedFace { face: index });
+                }
+                end
+            } else {
+                return Err(MassError::Unsupported {
+                    face: index,
+                    what: "a boundary that winds around the axis more than once",
+                });
+            }
+        }
         (_, Some(period)) => {
             let apex = match surface {
                 Surface::Cone(c) => Some(c.apex_v()).filter(|v| v.is_finite()),
@@ -788,7 +1092,7 @@ fn boundary_integral(
     samples: &mut [Sample],
     sense: f64,
     plan: &Plan,
-    unrolled: bool,
+    (unrolled, doublings): (bool, u32),
 ) -> Total {
     let mut total = Total::default();
     match plan {
@@ -796,7 +1100,7 @@ fn boundary_integral(
             for s in samples.iter() {
                 if s.du != 0.0 {
                     total.add(
-                        inner(surface, rule, Along::V, s.u, *v_ref, s.v),
+                        inner(surface, rule, Along::V, s.u, (*v_ref, s.v), doublings),
                         -sense * s.du,
                     );
                 }
@@ -817,11 +1121,11 @@ fn boundary_integral(
             for s in samples.iter() {
                 match along {
                     Along::V if s.du != 0.0 => total.add(
-                        inner(surface, rule, Along::V, s.u, v_ref, s.v),
+                        inner(surface, rule, Along::V, s.u, (v_ref, s.v), doublings),
                         -sense * s.du,
                     ),
                     Along::U if s.dv != 0.0 => total.add(
-                        inner(surface, rule, Along::U, s.v, u_ref, s.u),
+                        inner(surface, rule, Along::U, s.v, (u_ref, s.u), doublings),
                         sense * s.dv,
                     ),
                     _ => {}
@@ -923,7 +1227,15 @@ fn integrals_in(
                 (plan, true)
             }
         };
-        let total = boundary_integral(face, surface, rule, &mut samples, sense, &plan, unrolled);
+        let total = boundary_integral(
+            face,
+            surface,
+            rule,
+            &mut samples,
+            sense,
+            &plan,
+            (unrolled, doublings),
+        );
         if exact || coarser.is_some_and(|coarser| coarser.agrees_with(&total, outline.noise)) {
             return settle(surface, index, rule, total);
         }
