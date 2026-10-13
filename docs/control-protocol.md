@@ -46,7 +46,7 @@ Each segment runs from the end of the one before it to its own end: a point id, 
 
 **Limits enforced:** 1 MiB per request line, 8 MiB per reply, 256 steps per batch, previews at most 2048 px on the long side, renders 16 to 4096 px per side. Not enforced yet: the triangle budget for tessellation.
 
-**`document.inspect`** returns the shape shown further down with these differences: feature parameters are under `"params"` with a `"type"` field; a failed feature carries `"error"`; bodies are listed per feature with `"feature"` and `"name"`, and carry a `"bbox"` taken from a tessellation (exact for flat-faced bodies, inside the true box by at most `"bboxTolerance"` for curved ones); `"history"` holds the undo and redo labels as arrays; `"path"`, `"dirty"`, `"ok"` and `"document"` (its index) are added.
+**`document.inspect`** returns the shape shown further down with these differences: feature parameters are under `"params"` with a `"type"` field; a failed feature carries `"error"` (the reason: it starts with the parameter and names the feature and the name it lost) and, when the reason is that something it is made from failed, `"causedBy"` (the id of the feature at the start of that chain, the one to fix; `document.check` and the result of a feature command carry it too); bodies are listed per feature with `"feature"` and `"name"`, and carry a `"bbox"` taken from a tessellation (exact for flat-faced bodies, inside the true box by at most `"bboxTolerance"` for curved ones); `"history"` holds the undo and redo labels as arrays; `"path"`, `"dirty"`, `"ok"` and `"document"` (its index) are added.
 
 Three transports, one command registry:
 

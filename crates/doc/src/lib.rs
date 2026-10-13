@@ -1081,6 +1081,11 @@ impl Document {
     }
 
     /// Removes a feature. Its id is not reused.
+    ///
+    /// When the rollback marker is on it, the marker moves to the feature
+    /// before it, so that what was rolled back stays rolled back. Deleting
+    /// the first feature with the marker on it clears the marker: there is
+    /// no feature left to put it on.
     pub fn remove_feature(&mut self, id: FeatureId) -> Result<Feature, DocError> {
         let index = self
             .features
@@ -1088,7 +1093,10 @@ impl Document {
             .position(|f| f.id == id)
             .ok_or(DocError::UnknownFeature(id))?;
         if self.rollback == Some(id) {
-            self.rollback = None;
+            self.rollback = index
+                .checked_sub(1)
+                .and_then(|before| self.features.get(before))
+                .map(|f| f.id);
         }
         Ok(self.features.remove(index))
     }
@@ -1558,9 +1566,27 @@ mod tests {
         doc.set_rollback(Some(FeatureId(2))).unwrap();
         assert!(doc.set_rollback(Some(FeatureId(9))).is_err());
         assert_eq!(doc.rollback, Some(FeatureId(2)));
-        // Deleting the marked feature clears the marker.
+        // Deleting the marked feature when it is the first clears the
+        // marker.
         doc.remove_feature(FeatureId(2)).unwrap();
         assert_eq!(doc.rollback, None);
+    }
+
+    #[test]
+    fn deleting_the_marked_feature_leaves_the_marker_on_the_one_before() {
+        let mut doc = sample();
+        let ids: Vec<FeatureId> = doc.features.iter().map(|f| f.id).collect();
+        assert!(ids.len() >= 2, "the sample has several features");
+        let (before, marked) = (ids[ids.len() - 2], ids[ids.len() - 1]);
+        doc.set_rollback(Some(marked)).unwrap();
+        doc.remove_feature(marked).unwrap();
+        assert_eq!(doc.rollback, Some(before));
+        assert!(doc.validate().is_ok());
+        // Deleting another feature leaves the marker where it is.
+        let mut doc = sample();
+        doc.set_rollback(Some(marked)).unwrap();
+        doc.remove_feature(before).unwrap();
+        assert_eq!(doc.rollback, Some(marked));
     }
 
     #[test]

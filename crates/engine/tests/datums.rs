@@ -1262,9 +1262,13 @@ fn what_gives_no_plane_fails_with_the_reason() {
         "datum.plane",
         json!({"replace": "First", "from": "First", "distance": 1}),
     );
+    // A feature does not come after itself, and moving it mends nothing:
+    // the reason says what the reference is (until 2026-10-14: "comes
+    // after this feature ...; move it before"). The wording has no oracle
+    // but this test.
     assert_eq!(
         reason,
-        "from: `First` comes after this feature in the history; move it before (feature.move)"
+        "from: `First` is this feature itself; point the reference at something else"
     );
     let reason = failed(
         &mut s,
@@ -1272,7 +1276,8 @@ fn what_gives_no_plane_fails_with_the_reason() {
         json!({"replace": "First", "from": "Second", "distance": 1}),
     );
     assert!(
-        reason.contains("`Second` comes after this feature"),
+        reason.contains("`Second` comes after this feature")
+            && reason.contains("is itself made from this feature"),
         "{reason}"
     );
     assert_eq!(
@@ -2165,7 +2170,11 @@ fn what_gives_no_axis_fails_with_the_reason() {
         "do not meet in an edge",
     );
     // An axis placed by planes that are placed by it cannot be: the
-    // later one is not there yet.
+    // later one is not there yet. Until 2026-10-14 the reason sent the
+    // user to feature.move; in a circle no order builds both (with the
+    // rail moved before the shelf it is the rail that needs a later
+    // feature), so the reason says that instead. The wording has no
+    // oracle but this test.
     built(
         &mut s,
         "datum.axis",
@@ -2178,7 +2187,7 @@ fn what_gives_no_axis_fails_with_the_reason() {
     );
     assert_eq!(
         reason,
-        "about: `Rail` comes after this feature in the history; move it before (feature.move)"
+        "about: `Rail` comes after this feature in the history and is itself made from this feature, directly or through others: the two cannot both be built; point one of them at something else"
     );
     assert_eq!(
         feature(&mut s, "Rail")["error"],
@@ -2718,9 +2727,13 @@ fn a_lost_point_fails_what_goes_through_it_and_nothing_else() {
         assert_eq!(found["status"], "failed", "{found}");
         found["error"].as_str().unwrap().to_string()
     };
+    // The centre of an edge is referred to by two names, and both are
+    // lost with the feature: the reason names both (until 2026-10-14 only
+    // the first; M8.5 asks for the names that were lost). The wording has
+    // no oracle but this test.
     assert_eq!(
         error(&mut s, "Rim"),
-        "at: there is no feature F1 for F1:face(0) (was it deleted?)"
+        "at: there is no feature F1 for F1:face(0) and F1:face(2) (was it deleted?)"
     );
     assert_eq!(
         error(&mut s, "Slant"),

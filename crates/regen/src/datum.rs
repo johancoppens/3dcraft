@@ -7,6 +7,7 @@
 //! made it). A reference that points at nothing fails the datum with the
 //! reason and the reference it lost; it never resolves to something else.
 
+use crate::cause::FIX_IT_FIRST;
 use crate::query::{edges_between, faces_named};
 use crate::{FeatureResult, Status, angle, length};
 use craft3d_doc::{
@@ -83,14 +84,15 @@ pub(crate) fn datum_of(
     }
     let Some(outcome) = earlier.iter().find(|r| r.id == id) else {
         return Err(format!(
-            "{role}: `{name}` comes after this feature in the history; move it before (feature.move)"
+            "{role}: `{name}` {}",
+            crate::comes_after(doc, earlier, id)
         ));
     };
     match &outcome.status {
         Status::Ok => {}
         Status::Suppressed => return Err(format!("{role}: `{name}` is suppressed")),
         Status::RolledBack => return Err(format!("{role}: `{name}` is rolled back")),
-        Status::Failed(_) => return Err(format!("{role}: `{name}` failed; fix it first")),
+        Status::Failed(_) => return Err(format!("{role}: `{name}` {FIX_IT_FIRST}")),
     }
     outcome
         .datum
@@ -157,16 +159,34 @@ fn named_body<'a>(
     name: &PersistentName,
     role: &str,
 ) -> Result<(&'a Body, &'a crate::Names, String), String> {
-    let Some(source) = doc.feature(name.feature) else {
+    named_body_of(doc, earlier, name, None, role)
+}
+
+/// As [`named_body`], for a reference made of two names of one feature
+/// (the two faces an edge lies between): a reason names both, since both
+/// are lost with the feature.
+fn named_body_of<'a>(
+    doc: &Document,
+    earlier: &'a [FeatureResult],
+    first: &PersistentName,
+    second: Option<&PersistentName>,
+    role: &str,
+) -> Result<(&'a Body, &'a crate::Names, String), String> {
+    let name = &match second {
+        Some(second) if second != first => format!("{first} and {second}"),
+        _ => first.to_string(),
+    };
+    let Some(source) = doc.feature(first.feature) else {
         return Err(format!(
             "{role}: there is no feature {} for {name} (was it deleted?)",
-            name.feature
+            first.feature
         ));
     };
     let made_by = &source.name;
-    let Some(outcome) = earlier.iter().find(|r| r.id == name.feature) else {
+    let Some(outcome) = earlier.iter().find(|r| r.id == first.feature) else {
         return Err(format!(
-            "{role}: `{made_by}`, which makes {name}, comes after this feature in the history; move it before (feature.move)"
+            "{role}: `{made_by}`, which makes {name}, {}",
+            crate::comes_after(doc, earlier, first.feature)
         ));
     };
     let (Some(body), Some(names)) = (&outcome.body, &outcome.names) else {
@@ -182,7 +202,7 @@ fn named_body<'a>(
                 format!("{role}: `{made_by}`, which makes {name}, is rolled back")
             }
             Status::Failed(_) => {
-                format!("{role}: `{made_by}`, which makes {name}, failed; fix it first")
+                format!("{role}: `{made_by}`, which makes {name}, {FIX_IT_FIRST}")
             }
         });
     };
@@ -238,7 +258,7 @@ fn edge_line(
             a.feature, b.feature
         ));
     }
-    let (body, names, made_by) = named_body(doc, earlier, a, role)?;
+    let (body, names, made_by) = named_body_of(doc, earlier, a, Some(b), role)?;
     let (first, second) = (faces_named(names, a), faces_named(names, b));
     for (face, found) in [(a, &first), (b, &second)] {
         if found.is_empty() {
@@ -522,7 +542,7 @@ fn center(
             a.feature, b.feature
         ));
     }
-    let (body, names, made_by) = named_body(doc, earlier, a, role)?;
+    let (body, names, made_by) = named_body_of(doc, earlier, a, Some(b), role)?;
     for face in between {
         if faces_named(names, face).is_empty() {
             return Err(format!(

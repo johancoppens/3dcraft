@@ -51,6 +51,10 @@ struct Input {
     stamp: Option<u64>,
     /// The later feature its body had gone into by then.
     taken_by: Option<(FeatureId, String)>,
+    /// For one that does not come earlier: whether it is itself made from
+    /// this feature, which the reason of the failure says
+    /// ([`crate::comes_after`]).
+    circle: bool,
 }
 
 /// Everything but the feature's own definition that its result depends on.
@@ -147,7 +151,7 @@ impl RegenCache {
 /// Every feature `feature` is made from, directly or through others, in
 /// ascending order of id. Bounded by the number of features, so a cycle in
 /// a damaged document ends.
-fn dependencies(doc: &Document, feature: &Feature) -> Vec<FeatureId> {
+pub(crate) fn dependencies(doc: &Document, feature: &Feature) -> Vec<FeatureId> {
     // What a feature is made from: what it names, and for a feature that
     // looks at every body built so far (an extrusion through all), every
     // feature before it in the history.
@@ -214,6 +218,10 @@ pub(crate) fn features(
                         let name = doc.feature(taker).map(|f| f.name.clone());
                         (taker, name.unwrap_or_default())
                     }),
+                circle: !stamps.contains_key(&id)
+                    && doc
+                        .feature(id)
+                        .is_some_and(|later| dependencies(doc, later).contains(&feature.id)),
             })
             .collect();
         let context = Context {
