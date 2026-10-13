@@ -18,7 +18,7 @@ use crate::viewport::{AXIS_LENGTH, LineKind, MAX_SIDE, MIN_SIDE, depth_slack};
 use craft3d_engine::Scene;
 use craft3d_gpu::{DrawOptions, GpuError, GpuLines, GpuMesh, Onscreen, OverlayParams, Segment};
 use craft3d_math::Vec3;
-use craft3d_render::RenderParams;
+use craft3d_render::{Highlight, RenderParams};
 use egui_wgpu::wgpu;
 use std::sync::Arc;
 
@@ -72,6 +72,7 @@ struct Shown {
     selected: Option<String>,
     tokens: Tokens,
     scale: f32,
+    highlight: Highlight,
 }
 
 pub struct Direct {
@@ -85,6 +86,8 @@ pub struct Direct {
     shown: Option<Shown>,
     /// The largest side the device draws.
     largest: u32,
+    /// The faces the frames show highlighted.
+    highlight: Highlight,
 }
 
 fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
@@ -279,6 +282,7 @@ impl Direct {
             texture: None,
             shown: None,
             largest,
+            highlight: Highlight::NONE,
         })
     }
 
@@ -294,6 +298,12 @@ impl Direct {
             direct: true,
             msaa: self.onscreen.samples(),
         }
+    }
+
+    /// Which faces the frames drawn from now on show highlighted, as
+    /// [`crate::backend::BodyRenderer::set_highlight`].
+    pub fn set_highlight(&mut self, highlight: Highlight) {
+        self.highlight = highlight;
     }
 
     /// The egui texture that shows the picture, once one was drawn.
@@ -321,6 +331,7 @@ impl Direct {
             selected: selected.map(str::to_string),
             tokens: *tokens,
             scale,
+            highlight: self.highlight,
         };
         if self.shown.as_ref() == Some(&wanted) && self.texture.is_some() {
             return Ok(None);
@@ -413,6 +424,7 @@ impl Direct {
             ssaa: 1,
             background: wanted.tokens.viewport_background,
             color: wanted.tokens.body,
+            highlight: wanted.highlight,
         };
         let overlay = OverlayParams {
             slack: depth_slack(Backend::Gpu, scene, &wanted.camera),

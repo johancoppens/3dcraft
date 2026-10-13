@@ -24,11 +24,9 @@
 
 use crate::state::CameraState;
 use crate::theme::Tokens;
-use crate::viewport::Quality;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::viewport::render_params;
+use crate::viewport::{Quality, render_params};
 use craft3d_engine::Scene;
-use craft3d_render::Frame;
+use craft3d_render::{Frame, Highlight, RenderParams};
 
 /// A renderer of the viewport.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -122,9 +120,21 @@ pub struct BodyRenderer {
     #[cfg(not(target_arch = "wasm32"))]
     gpu: Option<gpu::Gpu>,
     report: RendererReport,
+    /// The faces the next frames show highlighted.
+    highlight: Highlight,
 }
 
 impl BodyRenderer {
+    /// Which faces the frames made from now on show highlighted, and in
+    /// which colour: the same faces whichever renderer makes the frame.
+    pub fn set_highlight(&mut self, highlight: Highlight) {
+        self.highlight = highlight;
+    }
+
+    pub fn highlight(&self) -> Highlight {
+        self.highlight
+    }
+
     /// The CPU reference renderer.
     pub fn cpu() -> Self {
         Self {
@@ -137,6 +147,7 @@ impl BodyRenderer {
                 direct: false,
                 msaa: 1,
             },
+            highlight: Highlight::NONE,
         }
     }
 
@@ -171,6 +182,7 @@ impl BodyRenderer {
                     msaa: 1,
                 },
                 gpu: Some(gpu),
+                highlight: Highlight::NONE,
             },
             Err(why) => {
                 let mut renderer = Self::cpu();
@@ -199,9 +211,13 @@ impl BodyRenderer {
         quality: Quality,
         tokens: &Tokens,
     ) -> Result<(Frame, Backend), String> {
+        let params = RenderParams {
+            highlight: self.highlight,
+            ..render_params(quality, tokens)
+        };
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(gpu) = &mut self.gpu {
-            match gpu.render(scene, camera, quality, tokens) {
+            match gpu.render(scene, camera, &params) {
                 Ok(frame) => return Ok((frame, Backend::Gpu)),
                 Err(gpu::Failure::Frame(why)) => return Err(why),
                 // This frame on the CPU; the next one on the GPU again.
@@ -218,7 +234,10 @@ impl BodyRenderer {
                 }
             }
         }
-        let frame = crate::viewport::render_bodies(scene, camera, quality, tokens)?;
+        let empty = craft3d_tess::Mesh::default();
+        let mesh = scene.map_or(&empty, |scene| &scene.mesh);
+        let frame = craft3d_render::render(mesh, &camera.to_render(), &params)
+            .map_err(|e| e.to_string())?;
         Ok((frame, Backend::Cpu))
     }
 }
@@ -280,10 +299,8 @@ mod gpu {
             &mut self,
             scene: Option<&Scene>,
             camera: &CameraState,
-            quality: Quality,
-            tokens: &Tokens,
+            params: &RenderParams,
         ) -> Result<Frame, Failure> {
-            let params = render_params(quality, tokens);
             let camera = camera.to_render();
             let empty = craft3d_tess::Mesh::default();
             let (revision, mesh) = scene.map_or((u64::MAX, &empty), |s| (s.revision, &s.mesh));
@@ -298,7 +315,7 @@ mod gpu {
                     self.uploaded = Some((revision, mesh));
                 }
                 let (_, uploaded) = self.uploaded.as_ref().ok_or(GpuError::NothingDrawn)?;
-                self.offscreen.render_uploaded(uploaded, &camera, &params)
+                self.offscreen.render_uploaded(uploaded, &camera, params)
             }));
             match outcome {
                 Ok(Ok(frame)) => Ok(frame),

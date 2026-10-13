@@ -7,13 +7,15 @@ use crate::backend::{Backend, BodyRenderer, RendererChoice, RendererReport};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::direct::{Direct, DirectFailure};
 use crate::frames::{Mode, Scheduler, Ticket};
-use crate::state::{CameraState, ProjectionKind, UiState, VIEWS};
+use crate::state::{CameraState, FaceRef, Picked, ProjectionKind, UiState, VIEWS};
 use crate::theme::{Tokens, color, color_alpha};
 use crate::viewport::{self, Composed, MAX_SIDE, MIN_SIDE, Overlay, Quality};
 use craft3d_engine::{
-    DocumentStatus, FeatureState, Recoverable, RecoveryOverview, Scene, SceneQuality, Session,
+    DocumentStatus, FeatureState, Recoverable, RecoveryOverview, Scene, ScenePick, SceneQuality,
+    Session,
 };
 use craft3d_math::Bbox3;
+use craft3d_render::Highlight;
 use std::sync::Arc;
 
 /// The viewport's size before the window has laid it out, in pixels: what
@@ -182,6 +184,8 @@ struct FrameKey {
     /// The backend's largest texture side.
     largest: usize,
     selected: Option<String>,
+    /// The faces shown highlighted.
+    highlight: Highlight,
     tokens: Tokens,
 }
 
@@ -192,6 +196,7 @@ struct RenderJob {
     quality: Quality,
     tokens: Tokens,
     selected: Option<String>,
+    highlight: Highlight,
     /// Asked to repaint when the image is ready.
     #[cfg(not(target_arch = "wasm32"))]
     wake: Option<egui::Context>,
@@ -209,6 +214,7 @@ struct Rendered {
 impl RenderJob {
     fn render(&self, renderer: &mut BodyRenderer) -> Result<Rendered, String> {
         let elapsed = stopwatch();
+        renderer.set_highlight(self.highlight);
         let composed = viewport::compose_with(
             renderer,
             self.scene.as_deref(),
@@ -314,6 +320,8 @@ pub struct Shell {
     recovery_hits: Vec<(RecoveryAction, egui::Rect)>,
     /// The discard that was clicked once and waits for its second click.
     discard_armed: Option<RecoveryAction>,
+    /// How many picks were made in the viewport ([`Picked::serial`]).
+    picks: u64,
     /// Viewport size in pixels, and pixels per point.
     size: [u32; 2],
     pixels_per_point: f32,
@@ -408,6 +416,7 @@ impl Shell {
             recovery: RecoveryOverview::default(),
             recovery_hits: Vec::new(),
             discard_armed: None,
+            picks: 0,
             size: DEFAULT_VIEWPORT,
             pixels_per_point: 1.0,
             rect: None,
@@ -692,6 +701,62 @@ impl Shell {
         self.file_action = Some(action);
     }
 
+    /// The faces the viewport shows highlighted, as the renderers take
+    /// them.
+    pub fn face_highlight(&self, scene: Option<&Scene>) -> Highlight {
+        self.state
+            .highlight
+            .as_ref()
+            .map_or(Highlight::NONE, |face| {
+                viewport::face_highlight(scene, face.feature.as_deref(), &face.face, &self.tokens)
+            })
+    }
+
+    /// What the viewport shows at (`x`, `y`): pixels from the top-left
+    /// corner of a picture of `size` (the viewport's own when `None`), as
+    /// framed by the camera now. The answer is the engine's
+    /// (`Scene::pick`) on the mesh the viewport draws, so it is the face
+    /// the picture has there, whichever renderer made the picture.
+    ///
+    /// With `select` this is a click: the answer becomes
+    /// [`UiState::picked`], the face under it the highlight, and a pick on
+    /// nothing clears the highlight.
+    pub fn pick(
+        &mut self,
+        scene: Option<&Scene>,
+        x: f64,
+        y: f64,
+        size: Option<[u32; 2]>,
+        select: bool,
+    ) -> Result<Option<ScenePick>, String> {
+        let [width, height] = size.unwrap_or(self.size);
+        let found = match scene {
+            Some(scene) => scene.pick(&self.state.camera.to_render(), width, height, x, y)?,
+            None => None,
+        };
+        if select && x.is_finite() && y.is_finite() {
+            self.picks = self.picks.saturating_add(1);
+            let hit = found.as_ref();
+            self.state.picked = Some(Picked {
+                serial: self.picks,
+                x,
+                y,
+                feature: hit.map(|hit| hit.feature.clone()),
+                name: hit.map(|hit| hit.body.clone()),
+                face: hit.and_then(|hit| hit.face.clone()),
+                face_index: hit.and_then(|hit| u64::try_from(hit.face_index).ok()),
+                point: hit.map(|hit| [hit.point.x, hit.point.y, hit.point.z]),
+            });
+            self.state.highlight = hit.and_then(|hit| {
+                Some(FaceRef {
+                    feature: Some(hit.feature.clone()),
+                    face: hit.face.clone()?,
+                })
+            });
+        }
+        Ok(found)
+    }
+
     fn aspect(&self) -> f64 {
         let [w, h] = self.size;
         f64::from(w.max(1)) / f64::from(h.max(1))
@@ -715,6 +780,8 @@ impl Shell {
         let Some(scene) = scene else {
             self.rows.clear();
             self.state.selected_feature = None;
+            self.state.highlight = None;
+            self.state.picked = None;
             self.framed = Bbox3::EMPTY;
             return None;
         };
@@ -728,6 +795,24 @@ impl Shell {
             .is_some_and(|id| !scene.features.iter().any(|f| f.id == *id))
         {
             self.state.selected_feature = None;
+        }
+        // A face that is gone is not pointed at any more. A name is made
+        // of where the face came from, so it survives the edits that keep
+        // the face.
+        if self.state.highlight.as_ref().is_some_and(|face| {
+            scene
+                .faces_named(face.feature.as_deref(), &face.face)
+                .is_err()
+        }) {
+            self.state.highlight = None;
+        }
+        if self.state.picked.as_ref().is_some_and(|picked| {
+            picked
+                .face
+                .as_ref()
+                .is_some_and(|face| scene.faces_named(picked.feature.as_deref(), face).is_err())
+        }) {
+            self.state.picked = None;
         }
         let selected = self.state.selected_feature.as_deref();
         self.rows = scene
@@ -1090,7 +1175,8 @@ impl Shell {
     fn viewport(&mut self, ui: &mut egui::Ui, shared: Option<&Arc<Scene>>) {
         let scene = shared.map(Arc::as_ref);
         let tokens = self.tokens;
-        let (rect, response) = ui.allocate_exact_size(ui.available_size(), egui::Sense::drag());
+        let (rect, response) =
+            ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
         let scale = ui.pixels_per_point();
         self.rect = Some(rect);
         self.pixels_per_point = scale;
@@ -1121,6 +1207,22 @@ impl Shell {
         }
 
         let moving = self.pointer(ui, &response, rect, scene) || resized;
+        // A click that was not a drag points at what is under it.
+        if response.clicked()
+            && let Some(at) = response.interact_pointer_pos()
+        {
+            let [width, height] = self.size;
+            let across = |from: f32, to: f32, at: f32, pixels: u32| {
+                f64::from(at - from) / f64::from((to - from).max(f32::MIN_POSITIVE))
+                    * f64::from(pixels)
+            };
+            let x = across(rect.left(), rect.right(), at.x, width);
+            let y = across(rect.top(), rect.bottom(), at.y, height);
+            // A picture that cannot be made has nothing to point at; the
+            // viewport says why already.
+            let _ = self.pick(scene, x, y, None, true);
+            ui.ctx().request_repaint();
+        }
 
         // A quick preview whenever what is shown changes, and the sharp
         // image once the camera rests (see `frames`).
@@ -1132,6 +1234,7 @@ impl Shell {
             size,
             largest,
             selected: self.state.selected_feature.clone(),
+            highlight: self.face_highlight(scene),
             tokens,
         };
         // The direct path draws the whole picture, lines included, on the
@@ -1336,6 +1439,7 @@ impl Shell {
         let Some(direct) = &mut self.direct else {
             return false;
         };
+        direct.set_highlight(key.highlight);
         let outcome = direct.frame(
             scene,
             &key.camera,
@@ -1411,6 +1515,7 @@ impl Shell {
             quality,
             tokens: key.tokens,
             selected: key.selected.clone(),
+            highlight: key.highlight,
             #[cfg(not(target_arch = "wasm32"))]
             wake: Some(ctx.clone()),
         };

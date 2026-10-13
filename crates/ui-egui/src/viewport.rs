@@ -19,7 +19,7 @@ use crate::state::CameraState;
 use crate::theme::{Rgb, Tokens};
 use craft3d_engine::Scene;
 use craft3d_math::Vec3;
-use craft3d_render::{Frame, RenderParams};
+use craft3d_render::{Frame, Highlight, RenderParams};
 
 /// Smallest and largest side of a viewport image, in pixels.
 pub const MIN_SIDE: u32 = 16;
@@ -414,7 +414,7 @@ pub struct Quality {
 }
 
 /// What either renderer is given for an image of `quality` in the theme's
-/// colours.
+/// colours, with no face highlighted.
 pub fn render_params(quality: Quality, tokens: &Tokens) -> RenderParams {
     RenderParams {
         width: quality.width,
@@ -422,7 +422,25 @@ pub fn render_params(quality: Quality, tokens: &Tokens) -> RenderParams {
         ssaa: quality.ssaa,
         background: tokens.viewport_background,
         color: tokens.body,
+        highlight: Highlight::NONE,
     }
+}
+
+/// The faces of `scene` that `face` names (a persistent name, with the
+/// feature of its body when given), as the renderers highlight them in the
+/// theme's colour. No face when the scene has none of that name: a
+/// highlight is view state and may outlive the face it names.
+pub fn face_highlight(
+    scene: Option<&Scene>,
+    feature: Option<&str>,
+    face: &str,
+    tokens: &Tokens,
+) -> Highlight {
+    scene
+        .and_then(|scene| scene.faces_named(feature, face).ok())
+        .map_or(Highlight::NONE, |faces| {
+            Highlight::new(tokens.face_highlight, faces.ids).0
+        })
 }
 
 /// The bodies of `scene` as the CPU reference renderer shades them, in the
@@ -534,6 +552,24 @@ pub fn picture(
     scale: f64,
 ) -> Result<Picture, String> {
     let composed = compose(scene, camera, quality, tokens, selected)?;
+    Ok(rasterise(composed, tokens, scale))
+}
+
+/// [`picture`] with faces highlighted: what the window shows when a face
+/// was clicked or pointed at.
+#[allow(clippy::too_many_arguments)]
+pub fn picture_with(
+    scene: Option<&Scene>,
+    camera: &CameraState,
+    quality: Quality,
+    tokens: &Tokens,
+    selected: Option<&str>,
+    highlight: Highlight,
+    scale: f64,
+) -> Result<Picture, String> {
+    let mut renderer = BodyRenderer::cpu();
+    renderer.set_highlight(highlight);
+    let composed = compose_with(&mut renderer, scene, camera, quality, tokens, selected)?;
     Ok(rasterise(composed, tokens, scale))
 }
 
