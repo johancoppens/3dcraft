@@ -75,6 +75,34 @@ const APPROX: Expect = Expect {
     relative: APPROXIMATED,
     extent: Extent::Tight,
 };
+/// A plane face bounded by a spline: a cap of an extruded spline profile.
+/// FreeCAD imports it as a valid solid with our counts, but its own
+/// integration of such a face is approximate, and not by the tolerance or
+/// the size: the D with a cubic bulge comes back with its area 2.2e-7 off
+/// ours and its volume 9.7e-5 off, at the scales 1e-3, 1 and 1e6 alike,
+/// which no prism can have (its volume is the area of a cap times its
+/// height); the leaf with a quartic side is 3.8e-4 off in area and 3.2e-4
+/// in volume. So what is asked of those two numbers is only that they are
+/// near, and the shape itself is checked by a measure that does not go
+/// through that integration: the volume by Gauss-Legendre over the curves
+/// and surfaces FreeCAD imported (`quadrature_volume` in
+/// `step_report.py`), which must agree with ours to [`SPLINE_QUADRATURE`].
+/// (Ours is pinned to 1e-9 against Green's theorem by de Boor and Simpson
+/// in `tests/sketch_spline.rs`.)
+///
+/// Not FreeCAD's mesh of the solid, which was tried first: its volume
+/// nears ours only as the deflection goes down (3e-6 off at 1e-4 of the
+/// size), not alike at every scale (4e-3 off at 1e6), and the mesher's
+/// memory explodes long before it is exact (1.6 GB at 1e-5 of the size,
+/// past 3 GB at 1e-6, for some 6000 triangles).
+const SPLINE: Expect = Expect {
+    relative: 1e-3,
+    extent: Extent::Tight,
+};
+/// Measured: 3.3e-14 at most, over both solids at the three scales (the D
+/// is 139.2 mm³ and comes back as 139.20000000000002).
+const SPLINE_QUADRATURE: f64 = 1e-9;
+
 /// A zone of a sphere: a face between two circles about the sphere's
 /// axis, which we write, as it is, with two bounds and no seam. FreeCAD
 /// gives such a face a third wire on import (a whole meridian from pole to
@@ -543,7 +571,7 @@ fn freecad_reads_what_the_commands_build() {
 
         // Extrusions of splines: the wall is a B-spline surface between
         // B-spline edges, the caps are planes bounded by them.
-        set.add(&format!("{tag}-spline-d"), "mm", k, EXACT, |s, k| {
+        set.add(&format!("{tag}-spline-d"), "mm", k, SPLINE, |s, k| {
             run(s, "sketch.create", json!({"name": "Profile", "plane": "zx"}));
             let p = |x: f64, y: f64| json!([x * k, y * k]);
             run(
@@ -564,7 +592,7 @@ fn freecad_reads_what_the_commands_build() {
             );
             Ok(())
         });
-        set.add(&format!("{tag}-spline-leaf"), "mm", k, EXACT, |s, k| {
+        set.add(&format!("{tag}-spline-leaf"), "mm", k, SPLINE, |s, k| {
             run(s, "sketch.create", json!({"name": "Profile"}));
             let p = |x: f64, y: f64| json!([x * k, y * k]);
             run(
@@ -959,6 +987,25 @@ fn freecad_reads_what_the_commands_build() {
         "STEP: documents built by commands, read by FreeCAD",
         &set.cases,
     );
+    // The spline solids, by a quadrature over what FreeCAD imported (see
+    // `SPLINE`).
+    let splines: Vec<&harness::Row> = rows.iter().filter(|r| r.file.contains("spline")).collect();
+    assert_eq!(splines.len(), 6, "two spline solids at three scales");
+    for row in splines {
+        let ratio = row
+            .quadrature_volume_ratio
+            .unwrap_or_else(|| panic!("{}: no volume by quadrature", row.file));
+        println!(
+            "{}: the volume of FreeCAD's geometry over ours - 1 = {:+.2e}",
+            row.file,
+            ratio - 1.0
+        );
+        assert!(
+            (ratio - 1.0).abs() <= SPLINE_QUADRATURE,
+            "{}: FreeCAD's geometry has {ratio} times our volume",
+            row.file
+        );
+    }
     let mut report = String::new();
     if !set.refused.is_empty() {
         report.push_str(&format!(

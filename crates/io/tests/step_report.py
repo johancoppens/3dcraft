@@ -63,12 +63,97 @@ def measure(shape):
     return record
 
 
+# Five-point Gauss-Legendre on [-1, 1]: exact to degree 9.
+GAUSS = (
+    (-0.9061798459386640, 0.2369268850561891),
+    (-0.5384693101056831, 0.4786286704993665),
+    (0.0, 0.5688888888888889),
+    (0.5384693101056831, 0.4786286704993665),
+    (0.9061798459386640, 0.2369268850561891),
+)
+def breaks(geometry, method, a, b):
+    """Where to cut [a, b] for the quadrature: at the knots of a spline
+    (it is a polynomial between them), each span in four."""
+    inner = []
+    if hasattr(geometry, method):
+        inner = [k for k in getattr(geometry, method)() if a < k < b]
+    cuts = [a] + sorted(set(inner)) + [b]
+    pieces = 4 if inner or hasattr(geometry, method) else 16
+    out = []
+    for lo, hi in zip(cuts, cuts[1:]):
+        out.extend(lo + (hi - lo) * i / pieces for i in range(pieces))
+    return out + [b]
+
+
+def nodes(geometry, method, a, b):
+    cuts = breaks(geometry, method, a, b)
+    for lo, hi in zip(cuts, cuts[1:]):
+        mid, half = (lo + hi) / 2.0, (hi - lo) / 2.0
+        for x, w in GAUSS:
+            yield mid + half * x, half * w
+
+
+def wire_area(wire):
+    """The area a closed plane wire encloses: half the length of the
+    integral of r x dr along it."""
+    total = FreeCAD.Vector()
+    for edge in wire.OrderedEdges:
+        a, b = edge.ParameterRange
+        sign = -1.0 if edge.Orientation == "Reversed" else 1.0
+        for t, w in nodes(edge.Curve, "getKnots", a, b):
+            total += edge.valueAt(t).cross(edge.derivative1At(t)) * (w * sign)
+    return total.Length / 2.0
+
+
+def quadrature_volume(solid):
+    """The volume of a solid by the divergence theorem, a third of the flux
+    of r through its faces, by Gauss-Legendre on the curves and surfaces
+    FreeCAD imported: a measure that does not go through FreeCAD's own
+    integration of faces, which is approximate for a plane face bounded by
+    a spline. It takes milliseconds and no memory to speak of, and gives
+    FreeCAD's own volume to 1e-13 where that one is exact (a block, a
+    cylinder, a slot). A plane face may have any wires; a curved face must
+    be a whole patch of its surface, or this raises."""
+    total = 0.0
+    for face in solid.Faces:
+        (u0, u1, v0, v1) = face.ParameterRange
+        surface = face.Surface
+        if surface.TypeId == "Part::GeomPlane":
+            area = wire_area(face.OuterWire)
+            for wire in face.Wires:
+                if not wire.isSame(face.OuterWire):
+                    area -= wire_area(wire)
+            u, v = (u0 + u1) / 2.0, (v0 + v1) / 2.0
+            total += face.valueAt(u, v).dot(face.normalAt(u, v)) * area
+            continue
+        if len(face.Wires) != 1 or len(face.Edges) not in (3, 4):
+            raise ValueError("a curved face that is not a whole patch")
+        vs = list(nodes(surface, "getVKnots", v0, v1))
+        for u, wu in nodes(surface, "getUKnots", u0, u1):
+            for v, wv in vs:
+                du, dv = face.derivative1At(u, v)
+                point = face.valueAt(u, v)
+                flux = abs(point.dot(du.cross(dv)))
+                side = point.dot(face.normalAt(u, v))
+                total += (flux if side > 0 else -flux) * wu * wv
+    return total / 3.0
+
+
 def read(path):
     record = {"file": os.path.basename(path)}
     shape = Part.Shape()
     shape.read(path)
     record["shape"] = measure(shape)
     record["solids"] = [measure(s) for s in shape.Solids]
+    # Only where asked for by the file's name: most bodies have curved
+    # faces that are trimmed.
+    if "spline" in record["file"]:
+        try:
+            record["quadrature_volume"] = sum(
+                quadrature_volume(s) for s in shape.Solids
+            )
+        except Exception as error:
+            record["quadrature_error"] = str(error)
     record["names"] = None
     if Import is not None:
         document = FreeCAD.newDocument("StepCheck")

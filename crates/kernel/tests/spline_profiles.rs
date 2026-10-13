@@ -800,3 +800,67 @@ fn random_spline_loops_give_valid_solids_or_errors() {
         "{too_fine} too fine, {meshed} meshed"
     );
 }
+
+/// A loop of splines inside a polygon is a hole in it: its walls face the
+/// other way, and an island inside the hole is a profile of its own.
+#[test]
+fn a_loop_of_splines_is_a_hole_in_the_profile_around_it() {
+    for k in [1e-3, 1.0, 1e3] {
+        let tol = Tolerance::new(1e-6 * k, 1e-9).unwrap();
+        let (upper, lower) = (scaled(&UPPER, k), scaled(&LOWER, k));
+        let leaf = along_spline(2, &lower)[0] - along_spline(3, &upper)[0];
+        let corners = scaled(&[[-2.0, -4.0], [12.0, -4.0], [12.0, 6.0], [-2.0, 6.0]], k);
+        let mut curves = vec![spline(3, 3, &upper), spline(4, 2, &lower)];
+        for i in 0..4 {
+            curves.push(line(20 + i as u64, corners[i], corners[(i + 1) % 4]));
+        }
+        // An island in the hole: a small circle inside the leaf.
+        let radius = 0.8 * k;
+        curves.push(circle(30, [5.0 * k, 1.0 * k], radius));
+        let profiles = detect_profiles(&curves, &tol).unwrap();
+        assert_eq!(profiles.len(), 2, "x{k}");
+        let plate = profiles
+            .iter()
+            .find(|p| p.outer.segments.len() == 4)
+            .unwrap();
+        assert_eq!(plate.holes.len(), 1, "x{k}");
+        let plate_area = 14.0 * 10.0 * k * k - leaf;
+        close(plate.area(), plate_area, 1e-11, &format!("x{k} plate"));
+        let island = PI * radius * radius;
+        let result = extrude(&profiles, &frames(k)[1], 0.0, 2.0 * k, &tol).unwrap();
+        assert_eq!(check(&result.body, &tol), [], "x{k}");
+        assert_eq!(result.body.shells.len(), 2, "x{k}");
+        let mass = mass_properties(&result.body).unwrap();
+        close(
+            mass.volume,
+            (plate_area + island) * 2.0 * k,
+            1e-9,
+            &format!("x{k} volume"),
+        );
+        // The walls of the hole face into it: towards the middle of the
+        // leaf, where the island stands.
+        let inside = frames(k)[1].point(5.0 * k, 2.5 * k, k);
+        for (face, origin) in result.body.faces.iter().zip(&result.origins.faces) {
+            if origin.role != Role::Side || !matches!(face.surface, Surface::Nurbs(_)) {
+                continue;
+            }
+            let ((u0, u1), (v0, v1)) = face.surface.domain();
+            let (u, v) = ((u0 + u1) / 2.0, (v0 + v1) / 2.0);
+            let mut normal = face.surface.normal(u, v).unwrap();
+            if face.reversed {
+                normal = -normal;
+            }
+            let towards = inside - face.surface.eval(u, v);
+            assert!(normal.dot(towards) > 0.0, "x{k}: {origin:?}");
+        }
+        let params = TessParams {
+            chordal_tolerance: 2e-3 * k,
+            ..TessParams::default()
+        };
+        let welded = tessellate_body(&result.body, &params)
+            .unwrap()
+            .weld()
+            .unwrap();
+        assert!(welded.is_closed(), "x{k}");
+    }
+}
