@@ -379,6 +379,10 @@ fn entity_to_manifest(entity: &doc::Entity) -> manifest::SketchEntity {
                 start: raw(start),
                 end: raw(end),
             },
+            doc::Geometry::Spline { degree, control } => manifest::SketchGeometry::Spline {
+                degree: *degree,
+                control: control.iter().map(raw).collect(),
+            },
         },
     }
 }
@@ -474,6 +478,10 @@ fn entity_to_doc(entity: manifest::SketchEntity) -> doc::Entity {
                 center: Id(center),
                 start: Id(start),
                 end: Id(end),
+            },
+            manifest::SketchGeometry::Spline { degree, control } => doc::Geometry::Spline {
+                degree,
+                control: control.into_iter().map(Id).collect(),
             },
         },
     }

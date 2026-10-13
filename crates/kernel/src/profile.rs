@@ -1,22 +1,28 @@
 //! Closed profiles from the curves of a sketch: which curves join into
 //! loops, which loop is the outside of a region and which are its holes.
 //!
-//! Version 1 accepts simple closed loops of lines and arcs joined end to
-//! end, and circles, where no two loops touch or cross. Everything else is
-//! an error that names the curves involved; a region is never guessed.
+//! Version 1 accepts simple closed loops of lines, arcs and splines joined
+//! end to end, and circles, where no two loops touch or cross. Everything
+//! else is an error that names the curves involved; a region is never
+//! guessed. (A spline that closes on itself is not a loop yet: its wall
+//! would be a surface that closes on itself, which the tessellator does
+//! not follow. Two splines that share both ends are.)
 //!
 //! How it works:
 //! 1. Curve ends closer than the linear tolerance are one junction. Exactly
 //!    two ends meet at a junction; one alone is an open chain, three or more
 //!    a branch.
 //! 2. Both curves at a junction get the same end point, the
-//!    *representative*: the end of the arc when an arc meets a line (a line
-//!    through two given points is exact, an arc about a given centre is
+//!    *representative*: the end of the arc when an arc meets a line or a
+//!    spline (a line through two given points is exact, and so is a spline
+//!    whose end control point is moved; an arc about a given centre is
 //!    not), otherwise the end of the curve with the smaller id.
 //! 3. Following junctions from the smallest unused curve id gives the loops.
 //! 4. Every pair of curves is tested for touching: the parts of one curve
 //!    within tolerance of the other may only be a stretch at an end the two
-//!    share, never the whole curve.
+//!    share, never the whole curve. Lines, arcs and circles are compared
+//!    exactly; a pair with a spline in it, and a spline with itself, by
+//!    subdivision, as sharp as [`crate::spline2`] says.
 //! 5. Loops then cannot cross, so one point of a loop tells whether it is
 //!    inside another (winding number). Nesting is even-odd: depth 0, 2, …
 //!    are outer boundaries, depth 1, 3, … holes of the loop around them.
@@ -25,6 +31,8 @@
 //! lines were drawn in: curves are processed by ascending id, loops start at
 //! their smallest id, outer loops run counter-clockwise and holes clockwise.
 
+use crate::spline2::{self, Part};
+pub use crate::spline2::{MAX_SPLINE_DEGREE, MAX_SPLINE_POINTS, Spline2};
 use crate::{KernelError, MAX_REPORTED};
 use craft3d_geom::GeomError;
 use craft3d_math::Tolerance;
@@ -90,7 +98,7 @@ fn internal() -> KernelError {
 }
 
 /// A curve of a sketch in the sketch's own 2D axes.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Curve2 {
     Line {
         start: [f64; 2],
@@ -106,17 +114,19 @@ pub enum Curve2 {
         center: [f64; 2],
         radius: f64,
     },
+    /// A polynomial B-spline from its first control point to its last.
+    Spline(Spline2),
 }
 
 /// A curve with the caller's stable id for it (the sketch entity id).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SketchCurve {
     pub id: u64,
     pub curve: Curve2,
 }
 
 /// What a [`Segment`] runs along.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Shape {
     /// Straight from `start` to `end`.
     Line,
@@ -126,10 +136,14 @@ pub enum Shape {
     /// A whole circle, from its point at angle 0 (`center + (radius, 0)`)
     /// back to it: counter-clockwise, or clockwise when `reversed`.
     Circle { center: [f64; 2], radius: f64 },
+    /// Along the spline, in the spline's own direction: from its first
+    /// control point to its last, or back when the segment is `reversed`.
+    /// The end control points are the ends of the segment exactly.
+    Spline(Spline2),
 }
 
 /// The use of a curve by a loop: in its own direction, or against it.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Segment {
     /// The id of the sketch curve.
     pub source: u64,
@@ -157,10 +171,10 @@ impl Segment {
     }
 
     /// For an arc or circle: the angle its counter-clockwise run starts at
-    /// and the angle it sweeps, in `[0, 2π]`. `None` for a line.
+    /// and the angle it sweeps, in `[0, 2π]`. `None` for a line or a spline.
     pub fn angles(&self) -> Option<(f64, f64)> {
         match self.shape {
-            Shape::Line => None,
+            Shape::Line | Shape::Spline(_) => None,
             Shape::Circle { .. } => Some((0.0, TAU)),
             Shape::Arc { center, .. } => {
                 let (from, to) = self.own_ends();
@@ -174,16 +188,32 @@ impl Segment {
     /// The same segment run the other way.
     fn opposite(&self) -> Segment {
         Segment {
+            source: self.source,
             reversed: !self.reversed,
             start: self.end,
             end: self.start,
-            ..*self
+            shape: self.shape.clone(),
+        }
+    }
+
+    /// The segment in its own direction as pieces that can be boxed and
+    /// cut in two, for comparing it with a spline.
+    fn parts(&self) -> Vec<Part> {
+        let (from, to) = self.own_ends();
+        match &self.shape {
+            Shape::Line => vec![Part::line(from, to)],
+            Shape::Arc { center, radius } | Shape::Circle { center, radius } => {
+                let (begin, sweep) = self.angles().unwrap_or((0.0, TAU));
+                vec![Part::arc(*center, *radius, begin, sweep)]
+            }
+            Shape::Spline(spline) => spline.pieces(),
         }
     }
 
     /// The point at `t` in `[0, 1]` along the curve's own direction.
     fn point_at(&self, t: f64) -> P2 {
         match self.shape {
+            Shape::Spline(_) => spline2::point_on(&self.parts(), t).unwrap_or([f64::NAN, f64::NAN]),
             Shape::Line => {
                 let (a, b) = self.own_ends();
                 add(a, scaled(sub(b, a), t))
@@ -196,9 +226,11 @@ impl Segment {
         }
     }
 
-    /// The distance from `p` to the nearest point of the segment.
-    fn distance_to(&self, p: P2) -> f64 {
+    /// The distance from `p` to the nearest point of the segment; to a
+    /// spline within an eighth of `tol`.
+    fn distance_to(&self, p: P2, tol: f64) -> f64 {
         match self.shape {
+            Shape::Spline(_) => spline2::distance_to(&self.parts(), p, tol),
             Shape::Line => {
                 let (a, b) = (self.start, self.end);
                 let d = sub(b, a);
@@ -231,6 +263,16 @@ impl Segment {
             self.start[0].max(self.end[0]),
             self.start[1].max(self.end[1]),
         ];
+        if let Shape::Spline(spline) = &self.shape {
+            // The control points contain the curve.
+            let o = spline.bbox();
+            b = [
+                b[0].min(o[0]),
+                b[1].min(o[1]),
+                b[2].max(o[2]),
+                b[3].max(o[3]),
+            ];
+        }
         if let Shape::Arc { center, radius } | Shape::Circle { center, radius } = self.shape {
             let (begin, sweep) = self.angles().unwrap_or((0.0, TAU));
             for quarter in 0..4_u8 {
@@ -260,8 +302,16 @@ impl Segment {
     /// `4 r sin³(Δ/2) / (3 (Δ − sin Δ))` from the centre along the bisector,
     /// so its moment about the centre is `(2/3) r³ sin³(Δ/2)`. The circular
     /// segment counts positive counter-clockwise, negative clockwise.
+    ///
+    /// A spline contributes the region swept by the line from the origin
+    /// to a point running along it, integrated exactly (Gauss–Legendre on
+    /// each of its polynomial pieces).
     fn moments(&self, origin: P2) -> (f64, f64, f64) {
         let sign = if self.reversed { -1.0 } else { 1.0 };
+        if let Shape::Spline(spline) = &self.shape {
+            let (area, mx, my) = spline2::moments(spline, origin);
+            return (sign * area, sign * mx, sign * my);
+        }
         if let Shape::Circle { center, radius } = self.shape {
             let area = sign * PI * radius * radius;
             let c = sub(center, origin);
@@ -270,7 +320,8 @@ impl Segment {
         let (a, b) = (sub(self.start, origin), sub(self.end, origin));
         let w = cross(a, b);
         let mut sum = (w / 2.0, (a[0] + b[0]) * w / 6.0, (a[1] + b[1]) * w / 6.0);
-        if let (Shape::Arc { center, radius }, Some((begin, sweep))) = (self.shape, self.angles()) {
+        if let (&Shape::Arc { center, radius }, Some((begin, sweep))) = (&self.shape, self.angles())
+        {
             let area = sign * radius * radius * (sweep - sweep.sin()) / 2.0;
             let c = sub(center, origin);
             let half = (sweep / 2.0).sin();
@@ -291,6 +342,7 @@ impl Segment {
         let (a, b) = (sub(from, p), sub(to, p));
         match self.shape {
             Shape::Line => cross(a, b).atan2(dot(a, b)) * sign,
+            Shape::Spline(_) => spline2::turn_about(&self.parts(), p) * sign,
             Shape::Circle { center, radius } => {
                 if distance(p, center) < radius {
                     sign * TAU
@@ -336,7 +388,8 @@ impl Loop2 {
     }
 
     /// The enclosed area: positive counter-clockwise, negative clockwise.
-    /// Exact for lines and arcs (Green's theorem in closed form).
+    /// Exact for lines and arcs (Green's theorem in closed form) and for
+    /// splines (the same integral by a quadrature that is exact for them).
     pub fn signed_area(&self) -> f64 {
         self.moments(self.origin()).0
     }
@@ -426,8 +479,28 @@ fn degenerate(id: u64, reason: &'static str) -> KernelError {
 fn validate(curve: &SketchCurve, tol: f64) -> Result<(), KernelError> {
     let id = curve.id;
     let not_finite = "a coordinate is not finite or is out of range";
-    match curve.curve {
-        Curve2::Line { start, end } => {
+    match &curve.curve {
+        Curve2::Spline(spline) => {
+            if !spline.control.iter().all(|p| in_range(*p)) {
+                return Err(degenerate(id, not_finite));
+            }
+            if let Some(fault) = spline.fault() {
+                return Err(degenerate(id, fault));
+            }
+            let b = spline.bbox();
+            if (b[2] - b[0]).hypot(b[3] - b[1]) <= tol {
+                return Err(degenerate(id, "the spline has no length"));
+            }
+            if let (Some(first), Some(last)) = (spline.control.first(), spline.control.last())
+                && distance(*first, *last) <= tol
+            {
+                return Err(degenerate(
+                    id,
+                    "the spline closes on itself, and a loop of one spline is not supported yet: draw the loop as two splines that share their end points",
+                ));
+            }
+        }
+        &Curve2::Line { start, end } => {
             if !(in_range(start) && in_range(end)) {
                 return Err(degenerate(id, not_finite));
             }
@@ -435,7 +508,7 @@ fn validate(curve: &SketchCurve, tol: f64) -> Result<(), KernelError> {
                 return Err(degenerate(id, "the line has no length"));
             }
         }
-        Curve2::Arc { center, start, end } => {
+        &Curve2::Arc { center, start, end } => {
             if !(in_range(center) && in_range(start) && in_range(end)) {
                 return Err(degenerate(id, not_finite));
             }
@@ -456,7 +529,7 @@ fn validate(curve: &SketchCurve, tol: f64) -> Result<(), KernelError> {
                 ));
             }
         }
-        Curve2::Circle { center, radius } => {
+        &Curve2::Circle { center, radius } => {
             if !(in_range(center) && in_range([radius, 0.0])) {
                 return Err(degenerate(id, not_finite));
             }
@@ -468,13 +541,15 @@ fn validate(curve: &SketchCurve, tol: f64) -> Result<(), KernelError> {
     Ok(())
 }
 
-/// One end of a line or an arc.
+/// One end of a line, an arc or a spline.
 struct End {
     /// Index of the curve in id order.
     curve: usize,
     /// 0 for the start, 1 for the end.
     which: usize,
     point: P2,
+    /// True for a curve that goes exactly through any end point it is
+    /// given: a line or a spline, not an arc.
     line: bool,
 }
 
@@ -570,6 +645,8 @@ fn offset_bounds(b: &Segment, tol: f64) -> Vec<Bound> {
                 });
             }
         }
+        // Splines are not compared through offset curves (`keeps_clear`).
+        Shape::Spline(_) => {}
         Shape::Arc { center, radius } | Shape::Circle { center, radius } => {
             bounds.push(Bound::Circle {
                 c: center,
@@ -634,6 +711,7 @@ fn crossings(a: &Segment, bound: &Bound, out: &mut Vec<f64>) {
         }
     };
     match a.shape {
+        Shape::Spline(_) => {}
         Shape::Line => {
             let (p, d) = (a.start, sub(a.end, a.start));
             match *bound {
@@ -677,11 +755,14 @@ fn crossings(a: &Segment, bound: &Bound, out: &mut Vec<f64>) {
 /// curve that is close all along lies on the other, and one that is close
 /// anywhere else touches or crosses it.
 fn keeps_clear(a: &Segment, b: &Segment, shared: [bool; 2], tol: f64) -> bool {
+    if matches!(a.shape, Shape::Spline(_)) || matches!(b.shape, Shape::Spline(_)) {
+        return spline2::keeps_clear(&a.parts(), &b.parts(), shared, tol);
+    }
     let mut breaks = Vec::with_capacity(10);
     for bound in offset_bounds(b, tol) {
         crossings(a, &bound, &mut breaks);
     }
-    let close = |t: f64| b.distance_to(a.point_at(t)) <= tol;
+    let close = |t: f64| b.distance_to(a.point_at(t), tol) <= tol;
     if matches!(a.shape, Shape::Circle { .. }) {
         // No ends: nothing of a circle may be close. It is sampled at the
         // breaks and halfway between them, around the turn.
@@ -742,6 +823,15 @@ fn check_clear(
             [b[0] - tol, b[1] - tol, b[2] + tol, b[3] + tol]
         })
         .collect();
+    // A spline can cross itself.
+    for segment in own {
+        if matches!(segment.shape, Shape::Spline(_)) && !spline2::self_clear(&segment.parts(), tol)
+        {
+            return Err(KernelError::CrossingCurves {
+                curves: [segment.source, segment.source],
+            });
+        }
+    }
     let mut order: Vec<usize> = (0..own.len()).collect();
     let min_x = |i: usize| boxes.get(i).map_or(f64::NAN, |b| b[0]);
     order.sort_by(|&i, &j| min_x(i).total_cmp(&min_x(j)).then(i.cmp(&j)));
@@ -826,9 +916,16 @@ pub fn detect_profiles(
     let mut ends = Vec::new();
     let mut first_end: Vec<Option<usize>> = Vec::with_capacity(sorted.len());
     for (index, curve) in sorted.iter().enumerate() {
-        let (start, end, line) = match curve.curve {
-            Curve2::Line { start, end } => (start, end, true),
-            Curve2::Arc { start, end, .. } => (start, end, false),
+        let (start, end, line) = match &curve.curve {
+            Curve2::Line { start, end } => (*start, *end, true),
+            Curve2::Arc { start, end, .. } => (*start, *end, false),
+            Curve2::Spline(spline) => {
+                let (Some(start), Some(end)) = (spline.control.first(), spline.control.last())
+                else {
+                    return Err(internal());
+                };
+                (*start, *end, true)
+            }
             Curve2::Circle { .. } => {
                 first_end.push(None);
                 continue;
@@ -866,14 +963,14 @@ pub fn detect_profiles(
     let mut own = Vec::with_capacity(sorted.len());
     for (curve, first) in sorted.iter().zip(&first_end) {
         let ends_of = first.and_then(|f| Some((*snapped.get(f)?, *snapped.get(f + 1)?)));
-        let (start, end, shape) = match (curve.curve, ends_of) {
-            (Curve2::Circle { center, radius }, _) => {
+        let (start, end, shape) = match (&curve.curve, ends_of) {
+            (&Curve2::Circle { center, radius }, _) => {
                 let start = [center[0] + radius, center[1]];
                 (start, start, Shape::Circle { center, radius })
             }
             (Curve2::Line { .. }, Some((start, end))) => (start, end, Shape::Line),
             (
-                Curve2::Arc {
+                &Curve2::Arc {
                     center,
                     start: s,
                     end: e,
@@ -882,6 +979,18 @@ pub fn detect_profiles(
             ) => {
                 let radius = (distance(center, s) + distance(center, e)) / 2.0;
                 (start, end, Shape::Arc { center, radius })
+            }
+            (Curve2::Spline(spline), Some((start, end))) => {
+                // The spline goes through the representatives: its end
+                // control points are moved onto them.
+                let mut spline = spline.clone();
+                if let Some(first) = spline.control.first_mut() {
+                    *first = start;
+                }
+                if let Some(last) = spline.control.last_mut() {
+                    *last = end;
+                }
+                (start, end, Shape::Spline(spline))
             }
             _ => return Err(internal()),
         };
@@ -918,7 +1027,7 @@ pub fn detect_profiles(
             segments.push(if reversed {
                 segment.opposite()
             } else {
-                *segment
+                segment.clone()
             });
             let Some(first) = first_end.get(current).copied().flatten() else {
                 break; // A circle is a loop on its own.

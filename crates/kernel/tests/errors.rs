@@ -41,7 +41,7 @@ fn crossing(curves: &[SketchCurve], a: u64, b: u64) {
 fn degenerate(curve: SketchCurve) {
     let id = curve.id;
     // Alone, and as part of an otherwise good sketch.
-    for curves in [vec![curve], {
+    for curves in [vec![curve.clone()], {
         let mut v = rectangle(100, 1, (50.0, 60.0), (50.0, 60.0));
         v.push(curve);
         v
@@ -709,7 +709,7 @@ fn extrusion_refuses_profiles_that_are_not_closed_boundaries() {
     ] {
         let profile = Profile {
             outer: Loop2 {
-                segments: vec![bad, segment(Shape::Line, bad.end, bad.start)],
+                segments: vec![bad.clone(), segment(Shape::Line, bad.end, bad.start)],
             },
             holes: vec![],
         };

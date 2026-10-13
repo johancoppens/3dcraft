@@ -149,10 +149,11 @@ pub enum SketchCurve {
     Line,
     Circle,
     Arc,
+    Spline,
 }
 
-/// One line, circle or arc of a sketch, as points in space. A circle is
-/// closed: its last point repeats the first.
+/// One line, circle, arc or spline of a sketch, as points in space. A
+/// circle is closed: its last point repeats the first.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ScenePolyline {
     /// The entity, as `sketch.inspect` writes it (`e7`).
@@ -329,7 +330,9 @@ fn model_size(regen: &Regen, doc: &Document) -> f64 {
                         extent.add(solved.to_world(x + r, y + r));
                     }
                 }
-                Geometry::Line { .. } | Geometry::Arc { .. } => {}
+                // The control points of a spline are points of the sketch,
+                // counted above, and hold the curve between them.
+                Geometry::Line { .. } | Geometry::Arc { .. } | Geometry::Spline { .. } => {}
             }
         }
     }
@@ -404,6 +407,22 @@ fn sample_arc(
 fn polyline(solved: &SketchResult, entity: &Entity, tolerance: f64) -> Option<ScenePolyline> {
     let (curve, points) = match entity.geometry {
         Geometry::Point { .. } => return None,
+        Geometry::Spline {
+            degree,
+            ref control,
+        } => {
+            let control: Vec<(f64, f64)> = control
+                .iter()
+                .map(|id| solved.point(*id))
+                .collect::<Option<_>>()?;
+            let curve = crate::sketch_spline_cmds::SplineCurve::new(degree, &control)?;
+            let points = curve
+                .polyline(tolerance)
+                .into_iter()
+                .map(|(x, y)| solved.to_world(x, y))
+                .collect();
+            (SketchCurve::Spline, points)
+        }
         Geometry::Line { start, end } => {
             let (a, b) = (solved.point(start)?, solved.point(end)?);
             (

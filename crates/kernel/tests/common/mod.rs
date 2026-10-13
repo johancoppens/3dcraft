@@ -4,7 +4,7 @@
 // The catalogue is a list of commented cases, pushed one by one.
 #![allow(dead_code, clippy::vec_init_then_push)]
 
-use craft3d_kernel::profile::{Curve2, SketchCurve};
+use craft3d_kernel::profile::{Curve2, SketchCurve, Spline2};
 use craft3d_math::{Frame, Vec3};
 use std::f64::consts::PI;
 
@@ -64,20 +64,25 @@ pub fn scale_curves(curves: &[SketchCurve], k: f64) -> Vec<SketchCurve> {
         .iter()
         .map(|c| SketchCurve {
             id: c.id,
-            curve: match c.curve {
-                Curve2::Line { start, end } => Curve2::Line {
+            curve: match &c.curve {
+                &Curve2::Line { start, end } => Curve2::Line {
                     start: scale_point(start, k),
                     end: scale_point(end, k),
                 },
-                Curve2::Arc { center, start, end } => Curve2::Arc {
+                &Curve2::Arc { center, start, end } => Curve2::Arc {
                     center: scale_point(center, k),
                     start: scale_point(start, k),
                     end: scale_point(end, k),
                 },
-                Curve2::Circle { center, radius } => Curve2::Circle {
+                &Curve2::Circle { center, radius } => Curve2::Circle {
                     center: scale_point(center, k),
                     radius: radius * k,
                 },
+                Curve2::Spline(spline) => Curve2::Spline(Spline2 {
+                    degree: spline.degree,
+                    knots: spline.knots.clone(),
+                    control: spline.control.iter().map(|p| scale_point(*p, k)).collect(),
+                }),
             },
         })
         .collect()
@@ -91,12 +96,12 @@ pub fn lines_reversed(curves: &[SketchCurve]) -> Vec<SketchCurve> {
         .iter()
         .map(|c| SketchCurve {
             id: c.id,
-            curve: match c.curve {
-                Curve2::Line { start, end } => Curve2::Line {
+            curve: match &c.curve {
+                &Curve2::Line { start, end } => Curve2::Line {
                     start: end,
                     end: start,
                 },
-                other => other,
+                other => other.clone(),
             },
         })
         .collect()

@@ -52,6 +52,7 @@ impl Axis {
 /// bisector, `r sin(a/2) / (a/2)` from the centre.
 pub fn measure(curve: &Curve2) -> (f64, P) {
     match *curve {
+        Curve2::Spline(_) => panic!("the revolve tests draw no splines: they are not revolved"),
         Curve2::Line { start, end } => (
             (end[0] - start[0]).hypot(end[1] - start[1]),
             [(start[0] + end[0]) / 2.0, (start[1] + end[1]) / 2.0],
@@ -91,6 +92,7 @@ pub fn corners(curves: &[SketchCurve]) -> [P; 4] {
                 add(start, 0.0);
                 add(end, 0.0);
             }
+            Curve2::Spline(ref spline) => spline.control.iter().for_each(|p| add(*p, 0.0)),
             Curve2::Circle { center, radius } => add(center, radius),
             Curve2::Arc { center, start, .. } => {
                 add(center, (start[0] - center[0]).hypot(start[1] - center[1]))

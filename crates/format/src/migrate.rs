@@ -26,7 +26,7 @@ use serde_json::Value;
 type Step = fn(Value) -> Result<Value, String>;
 
 /// `STEPS[n]` brings a manifest from version `n + 1` to version `n + 2`.
-const STEPS: &[Step] = &[v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5];
+const STEPS: &[Step] = &[v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6];
 
 /// Version 2 adds the `cone` and `torus` feature kinds and an optional
 /// `orientation` on block, cylinder, cone and torus. Nothing a version-1
@@ -57,6 +57,13 @@ fn v3_to_v4(manifest: Value) -> Result<Value, String> {
 /// role `copy` with its `of`, and the roles `face`, `edge` and `vertex` for
 /// the entities of primitives. Nothing a version-4 file contains changes meaning.
 fn v4_to_v5(manifest: Value) -> Result<Value, String> {
+    Ok(manifest)
+}
+
+/// Version 6 adds the `spline` kind of sketch entity. Nothing a version-5
+/// file contains changes meaning; the version was raised so that an older
+/// build reports the version and not an unknown kind.
+fn v5_to_v6(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
 }
 

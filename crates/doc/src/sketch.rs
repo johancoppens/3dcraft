@@ -20,6 +20,12 @@ use std::fmt;
 pub const MAX_SKETCH_ENTITIES: usize = 10_000;
 /// Largest number of constraints in one sketch.
 pub const MAX_SKETCH_CONSTRAINTS: usize = 20_000;
+/// Highest degree of a spline. A sketch curve gains nothing from more, and
+/// everything downstream (areas, intersections, the surfaces swept from
+/// it) costs with the degree.
+pub const MAX_SPLINE_DEGREE: u32 = 7;
+/// Largest number of control points of one spline.
+pub const MAX_SPLINE_POINTS: usize = 1_000;
 
 /// Identifies an entity within its sketch. Written `e3`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -114,9 +120,9 @@ impl Default for SketchPlane {
     }
 }
 
-/// The shape of an entity. Lines, circles and arcs are built on point
-/// entities, so two lines that share a corner share one point.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+/// The shape of an entity. Lines, circles, arcs and splines are built on
+/// point entities, so two curves that share a corner share one point.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum Geometry {
     Point {
@@ -138,6 +144,41 @@ pub enum Geometry {
         start: EntityId,
         end: EntityId,
     },
+    /// A polynomial B-spline of `degree` whose control points are the
+    /// points `control`, in order, on the clamped uniform knots of
+    /// [`clamped_uniform_knots`]: it starts at the first control point,
+    /// ends at the last, and leaves each along the leg to the next. Its
+    /// shape is that of its points, so constraints on them (coincident,
+    /// fixed, distance, ...) shape it. With the first point also as the
+    /// last it closes on itself.
+    ///
+    /// Knots and weights are not stored: a later rational or non-uniform
+    /// spline adds them as fields that default to what this one means.
+    Spline {
+        degree: u32,
+        control: Vec<EntityId>,
+    },
+}
+
+/// The knots of a sketch spline: `degree + 1` zeros, the inner knots evenly
+/// spaced, `degree + 1` ones (`count + degree + 1` in all). Empty when
+/// there are fewer than `degree + 1` control points, when the degree is 0
+/// or when either is beyond [`MAX_SPLINE_DEGREE`] or [`MAX_SPLINE_POINTS`].
+pub fn clamped_uniform_knots(degree: u32, count: usize) -> Vec<f64> {
+    let Ok(p) = usize::try_from(degree) else {
+        return Vec::new();
+    };
+    if degree == 0 || degree > MAX_SPLINE_DEGREE || count > MAX_SPLINE_POINTS || count <= p {
+        return Vec::new();
+    }
+    let spans = count - p;
+    let mut knots = Vec::with_capacity(count + p + 1);
+    knots.extend(std::iter::repeat_n(0.0, p + 1));
+    // Counts are at most MAX_SPLINE_POINTS, exact as f64.
+    #[allow(clippy::cast_precision_loss)]
+    knots.extend((1..spans).map(|i| i as f64 / spans as f64));
+    knots.extend(std::iter::repeat_n(1.0, p + 1));
+    knots
 }
 
 impl Geometry {
@@ -147,21 +188,70 @@ impl Geometry {
             Geometry::Line { .. } => "line",
             Geometry::Circle { .. } => "circle",
             Geometry::Arc { .. } => "arc",
+            Geometry::Spline { .. } => "spline",
         }
     }
 
     /// The point entities this one is built on.
     pub fn points(&self) -> Vec<EntityId> {
-        match *self {
+        match self {
             Geometry::Point { .. } => Vec::new(),
-            Geometry::Line { start, end } => vec![start, end],
-            Geometry::Circle { center, .. } => vec![center],
-            Geometry::Arc { center, start, end } => vec![center, start, end],
+            Geometry::Line { start, end } => vec![*start, *end],
+            Geometry::Circle { center, .. } => vec![*center],
+            Geometry::Arc { center, start, end } => vec![*center, *start, *end],
+            Geometry::Spline { control, .. } => control.clone(),
         }
+    }
+
+    /// For a curve with two ends, the points it starts and ends at.
+    pub fn ends(&self) -> Option<(EntityId, EntityId)> {
+        match self {
+            Geometry::Point { .. } | Geometry::Circle { .. } => None,
+            Geometry::Line { start, end } | Geometry::Arc { start, end, .. } => {
+                Some((*start, *end))
+            }
+            Geometry::Spline { control, .. } => Some((*control.first()?, *control.last()?)),
+        }
+    }
+
+    /// Why a spline of this degree on these points cannot be, if it cannot:
+    /// the rules [`Sketch::add_spline`] and [`Sketch::validate`] share.
+    fn spline_fault(degree: u32, control: &[EntityId]) -> Option<String> {
+        if degree == 0 || degree > MAX_SPLINE_DEGREE {
+            return Some(format!(
+                "the degree of a spline is from 1 to {MAX_SPLINE_DEGREE}, got {degree}"
+            ));
+        }
+        if control.len() > MAX_SPLINE_POINTS {
+            return Some(format!(
+                "a spline has at most {MAX_SPLINE_POINTS} control points, got {}",
+                control.len()
+            ));
+        }
+        let needed = usize::try_from(degree).map_or(usize::MAX, |p| p.saturating_add(1));
+        if control.len() < needed {
+            return Some(format!(
+                "a spline of degree {degree} needs at least {needed} control points, got {}",
+                control.len()
+            ));
+        }
+        // The same point twice, but for the first as the last: a doubled
+        // control point is a kink, which two splines say better.
+        let mut seen = BTreeSet::new();
+        let last = control.len().saturating_sub(1);
+        for (i, id) in control.iter().enumerate() {
+            let closes = i == last && control.first() == Some(id) && control.len() > 2;
+            if !closes && !seen.insert(*id) {
+                return Some(format!(
+                    "a spline uses each point once (only its first point may come back as its last), but {id} is there twice"
+                ));
+            }
+        }
+        None
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Entity {
     pub id: EntityId,
     /// Construction geometry guides constraints but is not part of a
@@ -218,7 +308,9 @@ pub enum ConstraintKind {
         a: EntityId,
         b: EntityId,
     },
-    /// A line and a circle or arc, or two circles or arcs.
+    /// A line and a circle or arc, or two circles or arcs. With a spline:
+    /// the spline leaves the end point it shares with the other curve (a
+    /// line, an arc or another spline) in that curve's direction there.
     Tangent {
         a: EntityId,
         b: EntityId,
@@ -281,6 +373,7 @@ pub enum Role {
     Line,
     /// A circle or an arc.
     Round,
+    Spline,
 }
 
 impl Role {
@@ -289,6 +382,7 @@ impl Role {
             Geometry::Point { .. } => Role::Point,
             Geometry::Line { .. } => Role::Line,
             Geometry::Circle { .. } | Geometry::Arc { .. } => Role::Round,
+            Geometry::Spline { .. } => Role::Spline,
         }
     }
 
@@ -297,11 +391,12 @@ impl Role {
             Role::Point => "a point",
             Role::Line => "a line",
             Role::Round => "a circle or arc",
+            Role::Spline => "a spline",
         }
     }
 }
 
-use Role::{Line, Point, Round};
+use Role::{Line, Point, Round, Spline};
 
 impl ConstraintKind {
     /// Every constraint type, by the name used in files and commands.
@@ -353,7 +448,16 @@ impl ConstraintKind {
             "pointOn" => &[&[Point, Line], &[Point, Round]],
             "horizontal" | "vertical" => &[&[Line], &[Point, Point]],
             "parallel" | "perpendicular" | "angle" => &[&[Line, Line]],
-            "tangent" => &[&[Line, Round], &[Round, Line], &[Round, Round]],
+            "tangent" => &[
+                &[Line, Round],
+                &[Round, Line],
+                &[Round, Round],
+                &[Line, Spline],
+                &[Spline, Line],
+                &[Round, Spline],
+                &[Spline, Round],
+                &[Spline, Spline],
+            ],
             "equal" => &[&[Line, Line], &[Round, Round]],
             "concentric" => &[&[Round, Round]],
             "symmetric" => &[&[Point, Point, Line]],
@@ -618,8 +722,8 @@ impl Sketch {
 
     /// The coordinates of a point entity.
     pub fn point(&self, id: EntityId) -> Result<(f64, f64), SketchError> {
-        match self.entity(id)?.geometry {
-            Geometry::Point { x, y } => Ok((x, y)),
+        match &self.entity(id)?.geometry {
+            Geometry::Point { x, y } => Ok((*x, *y)),
             other => invalid(format!("{id} is a {}, not a point", other.type_name())),
         }
     }
@@ -696,6 +800,21 @@ impl Sketch {
         self.push(Geometry::Arc { center, start, end }, construction)
     }
 
+    /// A spline of `degree` with the existing points `control` as its
+    /// control points, on clamped uniform knots. Closed when the first
+    /// point is also the last.
+    pub fn add_spline(
+        &mut self,
+        degree: u32,
+        control: Vec<EntityId>,
+        construction: bool,
+    ) -> Result<EntityId, SketchError> {
+        if let Some(fault) = Geometry::spline_fault(degree, &control) {
+            return invalid(fault);
+        }
+        self.push(Geometry::Spline { degree, control }, construction)
+    }
+
     /// Checks that the constraint's entities exist, are different from each
     /// other and are of a kind the constraint accepts.
     pub fn check_constraint(&self, kind: &ConstraintKind) -> Result<(), SketchError> {
@@ -718,12 +837,18 @@ impl Sketch {
                 .zip(&given)
                 .map(|(id, role)| format!("{id} ({})", role.noun()))
                 .collect();
+            let unsupported = if given.contains(&Role::Spline) {
+                " (not supported for splines yet)"
+            } else {
+                ""
+            };
             return invalid(format!(
-                "a {type_name} constraint takes {}, got {}",
+                "a {type_name} constraint takes {}, got {}{unsupported}",
                 describe_roles(roles),
                 got.join(" and ")
             ));
         }
+
         if let ConstraintKind::Distance {
             b: Some(b),
             direction,
@@ -739,6 +864,30 @@ impl Sketch {
         Ok(())
     }
 
+    /// For a tangency that involves a spline: the end points at which the
+    /// two curves meet, `(end of a, end of b)`. Ends meet when they are one
+    /// point entity or are tied by a coincident constraint. `None` when
+    /// the curves share no end (or one of them has no ends).
+    pub fn tangent_at(&self, a: EntityId, b: EntityId) -> Option<(EntityId, EntityId)> {
+        let ends = |id: EntityId| {
+            let geometry = &self.entity(id).ok()?.geometry;
+            let (start, end) = geometry.ends()?;
+            Some([start, end])
+        };
+        let (ends_a, ends_b) = (ends(a)?, ends(b)?);
+        let tied = |p: EntityId, q: EntityId| {
+            p == q
+                || self.constraints.iter().any(|c| {
+                    matches!(c.kind, ConstraintKind::Coincident { a, b }
+                        if (a, b) == (p, q) || (a, b) == (q, p))
+                })
+        };
+        ends_a
+            .into_iter()
+            .flat_map(|p| ends_b.into_iter().map(move |q| (p, q)))
+            .find(|&(p, q)| tied(p, q))
+    }
+
     pub fn add_constraint(&mut self, kind: ConstraintKind) -> Result<ConstraintId, SketchError> {
         if self.constraints.len() >= MAX_SKETCH_CONSTRAINTS {
             return invalid(format!(
@@ -746,6 +895,23 @@ impl Sketch {
             ));
         }
         self.check_constraint(&kind)?;
+        // Checked when the constraint is made, not as a rule of the sketch:
+        // the coincident constraint that ties the ends may be deleted
+        // later, and the sketch then fails to solve with this reason
+        // instead of the file failing to load.
+        if let ConstraintKind::Tangent { a, b } = &kind
+            && [*a, *b].iter().any(|id| {
+                matches!(
+                    self.entity(*id).map(|e| &e.geometry),
+                    Ok(Geometry::Spline { .. })
+                )
+            })
+            && self.tangent_at(*a, *b).is_none()
+        {
+            return invalid(format!(
+                "a spline is tangent to another curve at an end point the two share, but {a} and {b} share none: build both on one point, or make their ends coincident first"
+            ));
+        }
         let id = ConstraintId(self.next_constraint_id);
         self.next_constraint_id = self.next_constraint_id.checked_add(1).ok_or_else(|| {
             SketchError::Invalid("the sketch has run out of constraint ids".into())
@@ -764,8 +930,8 @@ impl Sketch {
     }
 
     /// Removes an entity and the constraints on it, and returns the ids of
-    /// those constraints. Refused while a line, circle or arc is built on
-    /// it.
+    /// those constraints. Refused while a line, circle, arc or spline is
+    /// built on it.
     pub fn remove_entity(&mut self, id: EntityId) -> Result<Vec<ConstraintId>, SketchError> {
         let index = self
             .entities
@@ -838,25 +1004,32 @@ impl Sketch {
         }
         for entity in &self.entities {
             let id = entity.id;
-            match entity.geometry {
+            let mut spline = false;
+            match &entity.geometry {
                 Geometry::Point { x, y } => {
                     if !(x.is_finite() && y.is_finite()) {
                         return invalid(format!("the coordinates of {id} are not finite"));
                     }
                 }
                 Geometry::Circle { radius, .. } => {
-                    if !(radius.is_finite() && radius > 0.0) {
+                    if !(radius.is_finite() && *radius > 0.0) {
                         return invalid(format!("the radius of {id} is not a positive number"));
                     }
                 }
                 Geometry::Line { .. } | Geometry::Arc { .. } => {}
+                Geometry::Spline { degree, control } => {
+                    spline = true;
+                    if let Some(fault) = Geometry::spline_fault(*degree, control) {
+                        return invalid(format!("{id}: {fault}"));
+                    }
+                }
             }
             let points = entity.geometry.points();
             for point in &points {
                 self.point(*point)?;
             }
             let distinct: BTreeSet<_> = points.iter().collect();
-            if distinct.len() != points.len() {
+            if !spline && distinct.len() != points.len() {
                 return invalid(format!("{id} uses the same point twice"));
             }
         }
@@ -1022,6 +1195,173 @@ mod tests {
             value: Expr::new("1"),
         };
         assert!(s.check_constraint(&sideways).is_err());
+    }
+
+    #[test]
+    fn a_spline_is_built_on_points_and_refused_with_a_reason() {
+        let mut s = square();
+        let before = s.clone();
+        // (degree, control points, what the refusal says)
+        let bad: [(u32, &[u64], &str); 9] = [
+            (0, &[1, 2, 3], "degree"),
+            (MAX_SPLINE_DEGREE + 1, &[1, 2, 3, 4, 9], "degree"),
+            (u32::MAX, &[1, 2, 3], "degree"),
+            (3, &[1, 2, 3], "at least 4"),
+            (2, &[], "at least 3"),
+            (2, &[1, 2, 2, 3], "twice"),
+            (2, &[1, 2, 3, 2], "twice"),
+            (1, &[1, 1], "twice"),
+            (2, &[1, 2, 5], "not a point"),
+        ];
+        for (degree, control, what) in bad {
+            let ids: Vec<EntityId> = control.iter().map(|n| e(*n)).collect();
+            let error = s.add_spline(degree, ids, false).unwrap_err().to_string();
+            assert!(error.contains(what), "{degree} {control:?}: {error}");
+        }
+        assert!(matches!(
+            s.add_spline(2, vec![e(1), e(2), e(77)], false),
+            Err(SketchError::UnknownEntity(EntityId(77)))
+        ));
+        let many: Vec<EntityId> = (0..=MAX_SPLINE_POINTS as u64).map(EntityId).collect();
+        assert!(s.add_spline(3, many, false).is_err());
+        assert_eq!(s, before, "failed adds add nothing and use up no ids");
+
+        let open = s
+            .add_spline(3, vec![e(1), e(2), e(3), e(4)], false)
+            .unwrap();
+        let closed = s.add_spline(2, vec![e(1), e(9), e(3), e(1)], true).unwrap();
+        assert_eq!((open, closed), (e(11), e(12)));
+        let geometry = &s.entity(open).unwrap().geometry;
+        assert_eq!(geometry.type_name(), "spline");
+        assert_eq!(geometry.points(), [e(1), e(2), e(3), e(4)]);
+        assert_eq!(geometry.ends(), Some((e(1), e(4))));
+        assert_eq!(
+            s.entity(closed).unwrap().geometry.ends(),
+            Some((e(1), e(1)))
+        );
+        assert_eq!(s.validate(), Ok(()));
+        // Its points cannot go before it does.
+        assert_eq!(
+            s.remove_entity(e(9)),
+            Err(SketchError::InUse {
+                entity: e(9),
+                by: vec![e(10), closed]
+            })
+        );
+        assert_eq!(s.remove_entity(closed), Ok(vec![]));
+
+        // The JSON form.
+        let json = serde_json::to_value(&s.entity(open).unwrap().geometry).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"type": "spline", "degree": 3, "control": [1, 2, 3, 4]})
+        );
+        assert_eq!(
+            &serde_json::from_value::<Geometry>(json).unwrap(),
+            &s.entity(open).unwrap().geometry
+        );
+
+        // A file may say anything.
+        type Damage = fn(&mut Geometry);
+        let broken: [Damage; 4] = [
+            |g| {
+                *g = Geometry::Spline {
+                    degree: 0,
+                    control: vec![EntityId(1), EntityId(2)],
+                }
+            },
+            |g| {
+                *g = Geometry::Spline {
+                    degree: 3,
+                    control: vec![EntityId(1), EntityId(2)],
+                }
+            },
+            |g| {
+                *g = Geometry::Spline {
+                    degree: 1,
+                    control: vec![EntityId(1), EntityId(40)],
+                }
+            },
+            |g| {
+                *g = Geometry::Spline {
+                    degree: 1,
+                    control: vec![EntityId(1), EntityId(2), EntityId(2)],
+                }
+            },
+        ];
+        for (i, damage) in broken.into_iter().enumerate() {
+            let mut damaged = s.clone();
+            damage(&mut damaged.entity_mut(open).unwrap().geometry);
+            assert!(damaged.validate().is_err(), "damage {i}");
+        }
+    }
+
+    #[test]
+    fn the_knots_of_a_spline_are_clamped_and_uniform() {
+        assert_eq!(
+            clamped_uniform_knots(3, 4),
+            [0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]
+        );
+        assert_eq!(
+            clamped_uniform_knots(2, 5),
+            [0.0, 0.0, 0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0, 1.0, 1.0]
+        );
+        assert_eq!(clamped_uniform_knots(1, 3), [0.0, 0.0, 0.5, 1.0, 1.0]);
+        for (degree, count) in [(0, 5), (3, 3), (MAX_SPLINE_DEGREE + 1, 20), (u32::MAX, 9)] {
+            assert!(clamped_uniform_knots(degree, count).is_empty());
+        }
+        assert!(clamped_uniform_knots(3, MAX_SPLINE_POINTS + 1).is_empty());
+        for degree in 1..=MAX_SPLINE_DEGREE {
+            for count in (degree as usize + 1)..40 {
+                let knots = clamped_uniform_knots(degree, count);
+                assert_eq!(knots.len(), count + degree as usize + 1);
+                assert!(knots.windows(2).all(|w| w[0] <= w[1]));
+            }
+        }
+    }
+
+    #[test]
+    fn a_spline_is_tangent_to_a_curve_it_shares_an_end_with() {
+        let mut s = square();
+        // From corner e2 over two new points to corner e3: it shares e2
+        // with the sides e5 and e6.
+        let a = s.add_point(2.0, 0.2).unwrap();
+        let b = s.add_point(2.0, 0.8).unwrap();
+        let spline = s.add_spline(3, vec![e(2), a, b, e(3)], false).unwrap();
+        assert_eq!(s.tangent_at(spline, e(5)), Some((e(2), e(2))));
+        assert_eq!(s.tangent_at(e(7), spline), Some((e(3), e(3))));
+        assert_eq!(s.tangent_at(spline, e(8)), None);
+        assert_eq!(s.tangent_at(spline, e(10)), None, "a circle has no ends");
+        let tangent = |x: EntityId, y: EntityId| ConstraintKind::Tangent { a: x, b: y };
+        assert!(s.add_constraint(tangent(spline, e(5))).is_ok());
+        assert!(s.add_constraint(tangent(e(7), spline)).is_ok());
+        let error = s.add_constraint(tangent(spline, e(8))).unwrap_err();
+        assert!(error.to_string().contains("share none"), "{error}");
+        // Ends tied by a coincident constraint are shared too.
+        let far = s.add_point(0.0, 1.0).unwrap();
+        let other = s.add_spline(1, vec![far, a], true).unwrap();
+        assert_eq!(s.tangent_at(other, e(8)), None);
+        s.add_constraint(ConstraintKind::Coincident { a: far, b: e(4) })
+            .unwrap();
+        assert_eq!(s.tangent_at(other, e(8)), Some((far, e(4))));
+        assert!(s.add_constraint(tangent(other, e(8))).is_ok());
+        // What a spline cannot be given to says so.
+        for (type_name, entities) in [
+            ("pointOn", vec![e(1), spline]),
+            ("equal", vec![spline, other]),
+            ("parallel", vec![spline, e(5)]),
+            ("fixed", vec![spline]),
+        ] {
+            let kind =
+                ConstraintKind::from_parts(type_name, &entities, None, DistanceDirection::Direct)
+                    .unwrap();
+            let error = s.check_constraint(&kind).unwrap_err().to_string();
+            assert!(
+                error.contains("not supported for splines yet"),
+                "{type_name}: {error}"
+            );
+        }
+        assert_eq!(s.validate(), Ok(()));
     }
 
     #[test]

@@ -85,6 +85,13 @@ pub struct Case {
     pub relative: f64,
 }
 
+/// The address space FreeCAD gets, in kB (4 GiB). Reading and measuring
+/// the files of these checks takes a few hundred MB. What it guards
+/// against: on 2026-10-13 a version of the report script asked FreeCAD for
+/// a mesh of one extruded spline at 1e-7 of its size, the mesher of
+/// OpenCASCADE took 7.5 GB for it, and the machine went down.
+const ADDRESS_SPACE_KB: u64 = 4 * 1024 * 1024;
+
 #[derive(Clone, Debug)]
 pub struct Row {
     pub file: String,
@@ -93,6 +100,11 @@ pub struct Row {
     pub area_ratio: f64,
     pub centre_off: f64,
     pub bbox_off: f64,
+    /// The volume by the report script's own quadrature over the geometry
+    /// FreeCAD imported (`quadrature_volume` in `step_report.py`) over
+    /// our volume, for the files it is taken of: those with `spline` in
+    /// their name.
+    pub quadrature_volume_ratio: Option<f64>,
     /// Ours, then FreeCAD's: faces/edges/vertices/shells.
     pub counts: String,
     pub added: String,
@@ -127,7 +139,21 @@ pub fn run_freecad(dir: &Path, cases: &[Case]) -> (String, BTreeMap<String, Valu
         }
         std::fs::write(&listing, list).unwrap();
         let _ = std::fs::remove_file(&output);
-        let mut command = Command::new(&freecad);
+        // Under a limit on its address space where the shell has one, so
+        // that a FreeCAD that runs away with memory dies alone (it ends
+        // as a crash on the file it was reading, reported as such below)
+        // and not with the machine.
+        let mut command = if cfg!(target_os = "linux") {
+            let mut shell = Command::new("sh");
+            shell
+                .arg("-c")
+                .arg(format!("ulimit -v {ADDRESS_SPACE_KB} && exec \"$@\""))
+                .arg("sh")
+                .arg(&freecad);
+            shell
+        } else {
+            Command::new(&freecad)
+        };
         if freecad.ends_with(".AppImage") {
             command.arg("freecadcmd");
         }
@@ -197,6 +223,7 @@ pub fn compare(case: &Case, record: &Value) -> Row {
         area_ratio: f64::NAN,
         centre_off: f64::NAN,
         bbox_off: f64::NAN,
+        quadrature_volume_ratio: None,
         counts: String::new(),
         added: String::new(),
         problems: Vec::new(),
@@ -222,6 +249,9 @@ pub fn compare(case: &Case, record: &Value) -> Row {
         ));
     }
     let (k, k2, k3) = (case.to_mm, case.to_mm.powi(2), case.to_mm.powi(3));
+    row.quadrature_volume_ratio = record["quadrature_volume"]
+        .as_f64()
+        .map(|volume| volume / (case.volume * k3));
     let area = shape["area"].as_f64().unwrap_or(f64::NAN);
     row.area_ratio = area / (case.area * k2);
     if !((row.area_ratio - 1.0).abs() <= case.relative) {

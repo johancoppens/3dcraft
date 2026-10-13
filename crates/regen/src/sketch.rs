@@ -100,17 +100,32 @@ fn list(ids: &[ConstraintId]) -> String {
 /// The sketch as the solver takes it, with the way back to document ids.
 struct Problem {
     input: solve::Sketch,
-    /// Document id of each solver entity, by solver index.
+    /// Document id of each solver entity, by solver index: every entity
+    /// but the splines, in the sketch's order, and then for each helper
+    /// line that stands for the end of a spline in a tangency the id of
+    /// that spline.
     entities: Vec<EntityId>,
     /// Document id of each solver constraint, by solver index.
     constraints: Vec<ConstraintId>,
 }
 
 fn problem(doc: &Document, variables: &Evaluation, sketch: &Sketch) -> Result<Problem, String> {
+    // A spline is not an entity of the solver's: its shape is that of its
+    // control points, which are. So it adds no unknowns and no equations,
+    // and the degrees of freedom are those of the points.
     let mut index = BTreeMap::new();
-    for (i, entity) in sketch.entities.iter().enumerate() {
-        let i = u32::try_from(i).map_err(|_| "the sketch has too many entities".to_string())?;
-        index.insert(entity.id, solve::EntityId(i));
+    let mut entities = Vec::new();
+    let position = |count: usize| {
+        u32::try_from(count)
+            .map(solve::EntityId)
+            .map_err(|_| "the sketch has too many entities".to_string())
+    };
+    for entity in &sketch.entities {
+        if matches!(entity.geometry, Geometry::Spline { .. }) {
+            continue;
+        }
+        index.insert(entity.id, position(entities.len())?);
+        entities.push(entity.id);
     }
     let find = |id: EntityId| -> Result<solve::EntityId, String> {
         index
@@ -121,6 +136,7 @@ fn problem(doc: &Document, variables: &Evaluation, sketch: &Sketch) -> Result<Pr
     let mut input = solve::Sketch::new();
     for entity in &sketch.entities {
         input.entities.push(match entity.geometry {
+            Geometry::Spline { .. } => continue,
             Geometry::Point { x, y } => solve::Entity::Point { x, y },
             Geometry::Line { start, end } => solve::Entity::Line {
                 start: find(start)?,
@@ -137,14 +153,57 @@ fn problem(doc: &Document, variables: &Evaluation, sketch: &Sketch) -> Result<Pr
             },
         });
     }
+    // What a curve gives a tangency that involves a spline: a line to be
+    // parallel to, or a circle or arc to touch.
+    enum Along {
+        Line(solve::EntityId),
+        Round(solve::EntityId),
+    }
+    // A clamped spline leaves its end point along the leg to the next
+    // control point. For the solver that leg is a line between two of its
+    // points, added here: it has no unknowns of its own, and stands for
+    // the spline in messages.
+    let along = |input: &mut solve::Sketch,
+                 entities: &mut Vec<EntityId>,
+                 curve: EntityId,
+                 at: EntityId|
+     -> Result<Along, String> {
+        match &sketch.entity(curve).map_err(|e| e.to_string())?.geometry {
+            Geometry::Line { .. } => Ok(Along::Line(find(curve)?)),
+            Geometry::Circle { .. } | Geometry::Arc { .. } => Ok(Along::Round(find(curve)?)),
+            Geometry::Point { .. } => Err(format!("{curve} is a point, which has no direction")),
+            Geometry::Spline { control, .. } => {
+                let leg = if control.first() == Some(&at) {
+                    control.get(1)
+                } else {
+                    control.len().checked_sub(2).and_then(|i| control.get(i))
+                };
+                let Some(next) = leg else {
+                    return Err(format!("{curve} has too few control points"));
+                };
+                let id = position(input.entities.len())?;
+                input.entities.push(solve::Entity::Line {
+                    start: find(at)?,
+                    end: find(*next)?,
+                });
+                entities.push(curve);
+                Ok(Along::Line(id))
+            }
+        }
+    };
+    let is_spline = |id: EntityId| {
+        sketch
+            .entity(id)
+            .is_ok_and(|e| matches!(e.geometry, Geometry::Spline { .. }))
+    };
     let is_line = |id: EntityId| {
         sketch
             .entity(id)
             .is_ok_and(|e| matches!(e.geometry, Geometry::Line { .. }))
     };
     let ends = |id: EntityId| -> Result<(solve::EntityId, solve::EntityId), String> {
-        match sketch.entity(id).map(|e| e.geometry) {
-            Ok(Geometry::Line { start, end }) => Ok((find(start)?, find(end)?)),
+        match sketch.entity(id).map(|e| &e.geometry) {
+            Ok(&Geometry::Line { start, end }) => Ok((find(start)?, find(end)?)),
             _ => Err(format!("{id} is not a line")),
         }
     };
@@ -188,6 +247,25 @@ fn problem(doc: &Document, variables: &Evaluation, sketch: &Sketch) -> Result<Pr
                 a: find(*a)?,
                 b: find(*b)?,
             },
+            ConstraintKind::Tangent { a, b } if is_spline(*a) || is_spline(*b) => {
+                let Some((at_a, at_b)) = sketch.tangent_at(*a, *b) else {
+                    return Err(format!(
+                        "{id}: a spline is tangent to another curve at an end point the two share, and {a} and {b} share none (any more); make their ends coincident, or delete the constraint"
+                    ));
+                };
+                let first = along(&mut input, &mut entities, *a, at_a)?;
+                let second = along(&mut input, &mut entities, *b, at_b)?;
+                match (first, second) {
+                    (Along::Line(a), Along::Line(b)) => S::Parallel { a, b },
+                    // The solver takes the tangency at the point both are
+                    // kept on, which is the shared end.
+                    (Along::Line(line), Along::Round(round))
+                    | (Along::Round(round), Along::Line(line)) => S::Tangent { a: line, b: round },
+                    (Along::Round(_), Along::Round(_)) => {
+                        return Err(format!("{id}: neither {a} nor {b} is a spline"));
+                    }
+                }
+            }
             ConstraintKind::Tangent { a, b } => S::Tangent {
                 a: find(*a)?,
                 b: find(*b)?,
@@ -249,7 +327,7 @@ fn problem(doc: &Document, variables: &Evaluation, sketch: &Sketch) -> Result<Pr
     }
     Ok(Problem {
         input,
-        entities: sketch.entities.iter().map(|e| e.id).collect(),
+        entities,
         constraints: sketch.constraints.iter().map(|c| c.id).collect(),
     })
 }
@@ -327,7 +405,7 @@ fn stored(sketch: &Sketch) -> (Points, Radii) {
         match entity.geometry {
             Geometry::Point { x, y } => points.push((entity.id, x, y)),
             Geometry::Circle { radius, .. } => radii.push((entity.id, radius)),
-            Geometry::Line { .. } | Geometry::Arc { .. } => {}
+            Geometry::Line { .. } | Geometry::Arc { .. } | Geometry::Spline { .. } => {}
         }
     }
     (points, radii)
@@ -791,7 +869,7 @@ pub fn settle_sketches_cached(doc: &mut Document, cache: &mut crate::RegenCache)
                         moved = true;
                     }
                 }
-                Geometry::Line { .. } | Geometry::Arc { .. } => {}
+                Geometry::Line { .. } | Geometry::Arc { .. } | Geometry::Spline { .. } => {}
             }
         }
     }

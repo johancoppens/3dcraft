@@ -6,7 +6,7 @@ use craft3d_doc::{Document, Extrude, FeatureId, FeatureKind, Geometry, NameRole,
 use craft3d_expr::Evaluation;
 use craft3d_kernel::KernelError;
 use craft3d_kernel::extrude::{Origin, Origins, Role, extrude};
-use craft3d_kernel::profile::{Curve2, SketchCurve, detect_profiles};
+use craft3d_kernel::profile::{Curve2, SketchCurve, Spline2, detect_profiles};
 use craft3d_math::{Frame, Tolerance};
 use craft3d_topo::Body;
 
@@ -50,6 +50,9 @@ fn profile_error(error: &KernelError) -> String {
         KernelError::BranchingProfile { curves } => format!(
             "more than two curves meet in one point ({}); a profile is a simple loop",
             list(curves)
+        ),
+        KernelError::CrossingCurves { curves: [a, b] } if a == b => format!(
+            "e{a} crosses or touches itself, or has a cusp; the boundary of a profile is a simple curve"
         ),
         KernelError::CrossingCurves { curves } => format!(
             "{} cross or touch each other; the loops of a profile must stay apart",
@@ -122,18 +125,33 @@ pub(crate) fn swept<'a>(
     };
     let mut curves = Vec::new();
     for entity in sketch.entities.iter().filter(|e| !e.construction) {
-        let curve = match entity.geometry {
+        let curve = match &entity.geometry {
             Geometry::Point { .. } => continue,
-            Geometry::Line { start, end } => Curve2::Line {
+            &Geometry::Line { start, end } => Curve2::Line {
                 start: point(start)?,
                 end: point(end)?,
             },
-            Geometry::Arc { center, start, end } => Curve2::Arc {
+            &Geometry::Arc { center, start, end } => Curve2::Arc {
                 center: point(center)?,
                 start: point(start)?,
                 end: point(end)?,
             },
-            Geometry::Circle { center, .. } => Curve2::Circle {
+            Geometry::Spline { degree, control } => {
+                let knots = craft3d_doc::clamped_uniform_knots(*degree, control.len());
+                let degree = usize::try_from(*degree).unwrap_or(usize::MAX);
+                let control = control
+                    .iter()
+                    .map(|id| point(*id))
+                    .collect::<Result<Vec<_>, _>>()?;
+                // Knots that could not be made (a degree or a count the
+                // document does not allow) are refused by the kernel.
+                Curve2::Spline(Spline2 {
+                    degree,
+                    knots,
+                    control,
+                })
+            }
+            &Geometry::Circle { center, .. } => Curve2::Circle {
                 center: point(center)?,
                 radius: solved.radius(entity.id).ok_or_else(|| {
                     format!("sketch `{name}`: {} has no solved radius", entity.id)
@@ -147,7 +165,7 @@ pub(crate) fn swept<'a>(
     }
     if curves.is_empty() {
         return Err(format!(
-            "sketch `{name}` has nothing to {verb}: draw a closed profile of lines, arcs or circles"
+            "sketch `{name}` has nothing to {verb}: draw a closed profile of lines, arcs, splines or circles"
         ));
     }
     let tolerance = Tolerance::new(doc.tolerance.linear, doc.tolerance.angular)

@@ -11,6 +11,7 @@ pub mod extrude;
 pub mod primitives;
 pub mod profile;
 pub mod revolve;
+mod spline2;
 
 use craft3d_geom::GeomError;
 use craft3d_topo::Defect;
@@ -53,7 +54,8 @@ pub enum KernelError {
     BranchingProfile {
         curves: Vec<u64>,
     },
-    /// Two curves cross, touch or overlap away from an end they share.
+    /// Two curves cross, touch or overlap away from an end they share; the
+    /// same curve twice for a spline that crosses or touches itself.
     CrossingCurves {
         curves: [u64; 2],
     },
@@ -153,6 +155,11 @@ impl fmt::Display for KernelError {
                 "more than two curve ends meet at one place (curves {}); \
                  a profile boundary cannot branch",
                 id_list(curves)
+            ),
+            KernelError::CrossingCurves { curves: [a, b] } if a == b => write!(
+                f,
+                "curve {a} crosses or touches itself, or has a cusp; a profile boundary \
+                 is a simple curve"
             ),
             KernelError::CrossingCurves { curves } => write!(
                 f,

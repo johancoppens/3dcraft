@@ -1,7 +1,8 @@
 //! Extrusion: the solid swept by profiles along the normal of their plane.
 //!
 //! Per profile one shell: a planar cap at each end, a planar side face per
-//! line and a cylindrical one per arc or circle. Per loop of a profile, at
+//! line, a cylindrical one per arc or circle and a B-spline one (the
+//! spline's degree by 1, polynomial) per spline. Per loop of a profile, at
 //! each end, one vertex where two segments meet and one edge per segment;
 //! between the ends one straight lateral edge per vertex. A full circle has
 //! one vertex at each end (at its angle 0) and no lateral edge: its wall is
@@ -9,7 +10,9 @@
 //!
 //! A line's edges run the way the loop does. The edge of an arc or circle
 //! always runs counter-clockwise about the plane normal, as its curve does,
-//! and a loop that goes clockwise uses it reversed. So the body depends on
+//! and a loop that goes clockwise uses it reversed. The edge of a spline
+//! always runs from the spline's first control point to its last, and a
+//! loop that goes the other way uses it reversed. So the body depends on
 //! the profile only, not on the direction its lines were drawn in.
 //!
 //! Every entity is reported with its origin (see [`Origin`]), from which
@@ -17,7 +20,9 @@
 
 use crate::profile::{Loop2, Profile, Segment, Shape};
 use crate::{KernelError, MAX_REPORTED};
-use craft3d_geom::{Circle, Curve3, Cylinder, GeomError, Line, Plane, Surface};
+use craft3d_geom::{
+    Circle, Curve3, Cylinder, GeomError, Line, NurbsCurve, NurbsSurface, Plane, Surface,
+};
 use craft3d_math::{Frame, Tolerance};
 use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, FaceId, LoopId, VertexId, check};
 use std::f64::consts::TAU;
@@ -140,7 +145,27 @@ impl Builder<'_> {
         role: Role,
     ) -> Result<(EdgeId, bool), KernelError> {
         let sources = [segment.source];
-        match segment.shape {
+        match &segment.shape {
+            Shape::Spline(spline) => {
+                let control = spline
+                    .control
+                    .iter()
+                    .map(|p| self.plane.point(p[0], p[1], z))
+                    .collect();
+                let curve = NurbsCurve::polynomial(spline.degree, spline.knots.clone(), control)?;
+                let range = curve.domain();
+                // The curve runs the spline's own way: from the loop's end
+                // vertex to its start vertex when the loop goes against it.
+                let own = if segment.reversed {
+                    (ends.1, ends.0)
+                } else {
+                    ends
+                };
+                Ok((
+                    self.edge(Curve3::Nurbs(curve), range, own, role, &sources),
+                    segment.reversed,
+                ))
+            }
             Shape::Line => {
                 let start = self.plane.point(segment.start[0], segment.start[1], z);
                 let end = self.plane.point(segment.end[0], segment.end[1], z);
@@ -148,7 +173,7 @@ impl Builder<'_> {
                 let range = (0.0, start.distance(end));
                 Ok((self.edge(line, range, ends, role, &sources), false))
             }
-            Shape::Arc { center, radius } => {
+            &Shape::Arc { center, radius } => {
                 let (begin, sweep) = segment.angles().ok_or(invalid("an arc without angles"))?;
                 if !(sweep > 0.0 && sweep < TAU) {
                     return Err(invalid(
@@ -169,7 +194,7 @@ impl Builder<'_> {
                     segment.reversed,
                 ))
             }
-            Shape::Circle { center, radius } => {
+            &Shape::Circle { center, radius } => {
                 let circle = Curve3::Circle(Circle::new(self.frame_at(center, z)?, radius)?);
                 Ok((
                     self.edge(circle, (0.0, TAU), ends, role, &sources),
@@ -269,7 +294,33 @@ impl Builder<'_> {
                     self.body.add_loop(vec![coedge(high, !high_against)]),
                 ],
             };
-            let (surface, reversed) = match segment.shape {
+            let (surface, reversed) = match &segment.shape {
+                Shape::Spline(spline) => {
+                    // The spline at the start offset and at the end offset,
+                    // joined by straight lines: u along the spline, v from
+                    // 0 at the start to 1 at the end. The normal is the
+                    // spline's direction crossed with the plane's z, which
+                    // is to the right of the spline: outside when the loop
+                    // runs the spline's way, as an outer loop
+                    // (counter-clockwise) has the outside on its right.
+                    let mut control = Vec::with_capacity(spline.control.len() * 2);
+                    for p in &spline.control {
+                        control.push(self.plane.point(p[0], p[1], from));
+                        control.push(self.plane.point(p[0], p[1], to));
+                    }
+                    let weights = vec![1.0; control.len()];
+                    let wall = NurbsSurface::new(
+                        spline.degree,
+                        1,
+                        spline.knots.clone(),
+                        vec![0.0, 0.0, 1.0, 1.0],
+                        spline.control.len(),
+                        2,
+                        control,
+                        weights,
+                    )?;
+                    (Surface::Nurbs(wall), segment.reversed)
+                }
                 Shape::Line => {
                     let start = self.plane.point(segment.start[0], segment.start[1], from);
                     let along = self.plane.point(segment.end[0], segment.end[1], from) - start;
@@ -277,7 +328,7 @@ impl Builder<'_> {
                         .ok_or(invalid("a line without length"))?;
                     (Surface::Plane(Plane::new(wall)), false)
                 }
-                Shape::Arc { center, radius } | Shape::Circle { center, radius } => {
+                &Shape::Arc { center, radius } | &Shape::Circle { center, radius } => {
                     let axis = self.frame_at(center, from)?;
                     // A cylinder's normal points away from its axis; going
                     // clockwise the outside is towards the axis.

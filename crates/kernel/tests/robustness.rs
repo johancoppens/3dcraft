@@ -338,7 +338,7 @@ fn spoiled_profiles_never_panic() {
                 curves.remove(pick);
             }
             1 => {
-                let mut copy = curves[pick];
+                let mut copy = curves[pick].clone();
                 copy.id = 1000;
                 curves.push(copy);
             }
@@ -362,6 +362,10 @@ fn spoiled_profiles_never_panic() {
                         },
                         &mut rng,
                     ),
+                    Curve2::Spline(spline) => {
+                        let count = spline.control.len();
+                        edit(&mut spline.control[which % count], &mut rng)
+                    }
                     Curve2::Circle { center, radius } => {
                         if which < 4 {
                             edit(center, &mut rng)

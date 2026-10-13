@@ -173,7 +173,7 @@ fn drawing_direction_and_input_order_do_not_matter() {
                         for (sa, sb) in la.segments.iter().zip(&lb.segments) {
                             let flips = drawn_backwards && sa.shape == Shape::Line;
                             assert_eq!(sa.reversed != flips, sb.reversed, "{name}");
-                            let mut same = *sb;
+                            let mut same = sb.clone();
                             same.reversed = sa.reversed;
                             // Debug prints every bit of an f64, and tells
                             // 0.0 from −0.0.
@@ -205,6 +205,16 @@ fn the_reversed_flag_tells_how_each_curve_is_traversed() {
                         let drawn = curves.iter().find(|c| c.id == s.source).unwrap();
                         match drawn.curve {
                             Curve2::Line { start, end } => {
+                                let (from, to) = if s.reversed {
+                                    (end, start)
+                                } else {
+                                    (start, end)
+                                };
+                                assert_eq!((s.start, s.end), (from, to), "{}", case.name);
+                            }
+                            Curve2::Spline(ref spline) => {
+                                let (start, end) =
+                                    (spline.control[0], spline.control[spline.control.len() - 1]);
                                 let (from, to) = if s.reversed {
                                     (end, start)
                                 } else {
