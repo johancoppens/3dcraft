@@ -5,6 +5,7 @@
 //! against it); it is marked as taken, so its body is no longer one of the
 //! document's bodies, unless the feature keeps it.
 
+use crate::cause::FIX_IT_FIRST;
 use crate::{Contributors, FeatureResult, Names, Status, angle, length, number};
 use craft3d_doc::{
     Document, Expr, Feature, FeatureId, FeatureKind, MAX_NAME_DEPTH, PatternLayout, PersistentName,
@@ -45,14 +46,15 @@ pub(crate) fn source_body<'a>(
     let name = &source.name;
     let Some(outcome) = earlier.iter().find(|r| r.id == id) else {
         return Err(format!(
-            "{role}: `{name}` comes after this feature in the history; move it before (feature.move)"
+            "{role}: `{name}` {}",
+            crate::comes_after(doc, earlier, id)
         ));
     };
     match &outcome.status {
         Status::Ok => {}
         Status::Suppressed => return Err(format!("{role}: `{name}` is suppressed")),
         Status::RolledBack => return Err(format!("{role}: `{name}` is rolled back")),
-        Status::Failed(_) => return Err(format!("{role}: `{name}` failed; fix it first")),
+        Status::Failed(_) => return Err(format!("{role}: `{name}` {FIX_IT_FIRST}")),
     }
     if outcome.body.is_none() {
         return Err(format!(

@@ -51,15 +51,40 @@ fn datums_that_refer_in_circles_fail_and_end() {
     let mut doc = Document::new(Units::default());
     doc.add_feature(None, offset(datum(2))).unwrap();
     doc.add_feature(None, offset(datum(1))).unwrap();
+    // Until 2026-10-14 the reason sent the user to feature.move here.
+    // In a circle that advice cannot work, whatever the code prints:
+    // with F2 moved before F1 it is F2 that needs a later feature. So the
+    // reason says that the two are made from each other. (The wording has
+    // no oracle but this test: a regression test, not a proof.)
     assert_eq!(
         reason(&doc, 1),
-        "from: `Plane2` comes after this feature in the history; move it before (feature.move)"
+        "from: `Plane2` comes after this feature in the history and is itself made from this feature, directly or through others: the two cannot both be built; point one of them at something else"
     );
     assert_eq!(reason(&doc, 2), "from: `Plane1` failed; fix it first");
-    // By itself, and by what is not there.
+    // By itself (no feature comes after itself: the reason says what it
+    // is), and by what is not there.
     doc.add_feature(None, offset(datum(3))).unwrap();
     doc.add_feature(None, offset(datum(77))).unwrap();
-    assert!(reason(&doc, 3).contains("`Plane3` comes after this feature"));
+    assert_eq!(
+        reason(&doc, 3),
+        "from: `Plane3` is this feature itself; point the reference at something else"
+    );
+    // Not in a circle, moving it before is the remedy and the reason
+    // says so.
+    let mut apart = Document::new(Units::default());
+    apart.add_feature(None, offset(datum(2))).unwrap();
+    apart
+        .add_feature(
+            None,
+            offset(PlaneRef::World {
+                plane: WorldPlane::Xy,
+            }),
+        )
+        .unwrap();
+    assert_eq!(
+        reason(&apart, 1),
+        "from: `Plane2` comes after this feature in the history; move it before (feature.move)"
+    );
     assert_eq!(
         reason(&doc, 4),
         "from: there is no feature F77 (was the datum plane deleted?)"
@@ -292,4 +317,45 @@ fn placing_datums_is_deterministic_and_cached() {
     doc.set_variable("unused", "1").unwrap();
     regenerate_cached(&doc, &mut cache);
     assert_eq!(cache.last_run(), (0, 4));
+}
+
+#[test]
+fn the_root_of_a_chain_of_failures_is_the_feature_that_failed_on_its_own() {
+    // F1 by a plane that is not there; F2 by F1; F3 by F2; F4 on its own.
+    let mut doc = Document::new(Units::default());
+    doc.add_feature(None, offset(datum(77))).unwrap();
+    doc.add_feature(None, offset(datum(1))).unwrap();
+    doc.add_feature(None, offset(datum(2))).unwrap();
+    doc.add_feature(
+        None,
+        offset(PlaneRef::World {
+            plane: WorldPlane::Xy,
+        }),
+    )
+    .unwrap();
+    let regen = regenerate(&doc);
+    let root = |id: u64| craft3d_regen::root_cause(&doc, &regen.features, FeatureId(id));
+    assert_eq!(reason(&doc, 3), "from: `Plane2` failed; fix it first");
+    assert_eq!(root(1), None, "it failed for a reason of its own");
+    assert_eq!(root(2), Some(FeatureId(1)));
+    assert_eq!(root(3), Some(FeatureId(1)));
+    assert_eq!(root(4), None, "it did not fail");
+    assert_eq!(root(99), None, "there is no such feature");
+    // Results that are not this document's: no answer, and it ends.
+    assert_eq!(
+        craft3d_regen::root_cause(
+            &Document::new(Units::default()),
+            &regen.features,
+            FeatureId(3)
+        ),
+        None
+    );
+    // In a circle no feature waits for a failed one before it: each link
+    // either needs a later feature or the one that does.
+    let mut circle = Document::new(Units::default());
+    circle.add_feature(None, offset(datum(2))).unwrap();
+    circle.add_feature(None, offset(datum(1))).unwrap();
+    let regen = regenerate(&circle);
+    let root = |id: u64| craft3d_regen::root_cause(&circle, &regen.features, FeatureId(id));
+    assert_eq!((root(1), root(2)), (None, Some(FeatureId(1))));
 }

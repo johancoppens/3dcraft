@@ -19,6 +19,7 @@
 
 mod boolean;
 mod cache;
+mod cause;
 mod datum;
 mod derive;
 mod extrude;
@@ -27,6 +28,7 @@ mod revolve;
 mod sketch;
 
 pub use cache::RegenCache;
+pub use cause::root_cause;
 pub use craft3d_kernel::extrude::{Origin, Origins, Role};
 pub use datum::{Datum, EdgeReference, References, references};
 pub use derive::{MAX_PATTERN_FACES, MAX_PATTERN_INSTANCES};
@@ -444,6 +446,31 @@ fn checked(doc: &Document, body: Body) -> Result<Body, String> {
     match craft3d_topo::check(&body, &tolerance).first() {
         None => Ok(body),
         Some(defect) => Err(format!("the result is not a valid body: {defect}")),
+    }
+}
+
+/// What to say of a feature that a reference needs and that comes later
+/// in the history than the feature being built (the one after `earlier`).
+/// Moving it before is the remedy, unless it is itself made from the
+/// feature being built: then no order builds both, and the reason says
+/// so instead of sending the user round in a circle.
+pub(crate) fn comes_after(
+    doc: &Document,
+    earlier: &[FeatureResult],
+    later: FeatureId,
+) -> &'static str {
+    let this = doc.features.get(earlier.len()).map(|f| f.id);
+    if this == Some(later) {
+        return "is this feature itself; point the reference at something else";
+    }
+    let circle = match (this, doc.feature(later)) {
+        (Some(this), Some(later)) => cache::dependencies(doc, later).contains(&this),
+        _ => false,
+    };
+    if circle {
+        "comes after this feature in the history and is itself made from this feature, directly or through others: the two cannot both be built; point one of them at something else"
+    } else {
+        "comes after this feature in the history; move it before (feature.move)"
     }
 }
 

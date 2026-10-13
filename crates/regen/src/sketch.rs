@@ -7,6 +7,7 @@
 //! than from scratch. [`settle_sketches`] writes a new solution back into
 //! the document; the engine does that as part of every edit.
 
+use crate::cause::FIX_IT_FIRST;
 use crate::{FeatureResult, Status, angle, length};
 use craft3d_doc::{
     ConstraintId, ConstraintKind, DistanceDirection, Document, EntityId, FeatureKind, Geometry,
@@ -453,7 +454,8 @@ fn maker<'a>(
     let made_by = &source.name;
     let Some(outcome) = earlier.iter().find(|r| r.id == feature) else {
         return Err(format!(
-            "plane: `{made_by}`, which makes the face {name}, comes after this sketch in the history; move it before (feature.move)"
+            "plane: `{made_by}`, which makes the face {name}, {}",
+            crate::comes_after(doc, earlier, feature)
         ));
     };
     let Some(body) = &outcome.body else {
@@ -469,7 +471,7 @@ fn maker<'a>(
                 format!("plane: `{made_by}`, which makes the face {name}, is rolled back")
             }
             Status::Failed(_) => {
-                format!("plane: `{made_by}`, which makes the face {name}, failed; fix it first")
+                format!("plane: `{made_by}`, which makes the face {name}, {FIX_IT_FIRST}")
             }
         });
     };
