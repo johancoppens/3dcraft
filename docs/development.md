@@ -6,7 +6,7 @@
 
 ```sh
 cargo test --workspace                          # about 1100 tests, one binary after the other: about 8 minutes
-cargo xtask ci                                  # fmt --check + clippy -D warnings + tests (binaries side by side) + doctests + layers + wasm: about 6 minutes
+cargo xtask ci                                  # fmt --check + clippy -D warnings + tests (binaries side by side) + doctests + layers + wasm: under 4 minutes on 12 cores
 cargo xtask layers                              # dependency layering, and that every crate opts in to the never-crash lints
 cargo xtask stats                               # lines and tests per crate
 CRAFT3D_FREECAD=/path/to/FreeCAD.AppImage cargo xtask freecad   # FreeCAD reads our exports back
