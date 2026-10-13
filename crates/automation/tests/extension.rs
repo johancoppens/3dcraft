@@ -233,3 +233,144 @@ fn the_reply_builders_and_the_line_reader_are_the_protocols_own() {
     );
     assert_eq!(read_line(&mut input, 8).unwrap(), Line::End);
 }
+
+/// Sends an MCP message to a server that has the host's methods.
+fn send_mcp(session: &mut Session, calls: &mut Vec<String>, message: Value) -> Value {
+    let mut handle = |session: &mut Session, method: &str, params: Option<&Value>| {
+        calls.push(method.to_string());
+        match method {
+            "host.echo" => Some(Ok(json!({
+                "params": params,
+                "document": session.has_document(),
+            }))),
+            "host.fail" => Some(Err("host.fail: no".to_string())),
+            "host.panic" => panic!("the host fell over"),
+            // A method the host answers without having listed it.
+            "host.secret" => Some(Ok(json!("secret"))),
+            _ => None,
+        }
+    };
+    let mut extension = Extension {
+        methods: EXTRA,
+        handle: &mut handle,
+    };
+    let reply =
+        craft3d_automation::mcp::handle_line_with(session, &message.to_string(), &mut extension)
+            .expect("a reply");
+    serde_json::from_str(&reply).expect("the reply is JSON")
+}
+
+fn control_call(id: u64, arguments: Value) -> Value {
+    json!({"jsonrpc": "2.0", "id": id, "method": "tools/call",
+           "params": {"name": "control_call", "arguments": arguments}})
+}
+
+#[test]
+fn an_mcp_server_with_a_host_has_the_tool_control_call() {
+    let mut session = Session::new(Workspace::none());
+    let mut calls = Vec::new();
+    let list = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
+    let reply = send_mcp(&mut session, &mut calls, list.clone());
+    let tools = reply["result"]["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 6);
+    let tool = tools.iter().find(|t| t["name"] == "control_call").unwrap();
+    let description = tool["description"].as_str().unwrap();
+    assert!(description.contains("host.echo {\"text\": string}: Returns its params"));
+    assert_eq!(tool["inputSchema"]["required"], json!(["method"]));
+    assert_eq!(tool["inputSchema"]["additionalProperties"], false);
+    // A server without a host does not list it and says why it cannot be
+    // called.
+    let plain: Value = serde_json::from_str(
+        &craft3d_automation::mcp::handle_line(&mut session, &list.to_string()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(plain["result"]["tools"].as_array().unwrap().len(), 5);
+    let refused: Value = serde_json::from_str(
+        &craft3d_automation::mcp::handle_line(
+            &mut session,
+            &control_call(2, json!({"method": "host.echo"})).to_string(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(refused["error"]["code"], -32602);
+    assert!(
+        refused["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("--bridge"),
+        "{refused}"
+    );
+    assert!(calls.is_empty());
+
+    // A call reaches the host with its params, on the same session.
+    let reply = send_mcp(
+        &mut session,
+        &mut calls,
+        control_call(3, json!({"method": "host.echo", "params": {"text": "hi"}})),
+    );
+    assert_eq!(reply["result"]["isError"], false, "{reply}");
+    let text: Value =
+        serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(text, json!({"params": {"text": "hi"}, "document": false}));
+    // Without params the host gets none.
+    let reply = send_mcp(
+        &mut session,
+        &mut calls,
+        control_call(4, json!({"method": "host.echo"})),
+    );
+    let text: Value =
+        serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(text["params"], Value::Null);
+    // A method that fails is a tool result marked as an error.
+    let reply = send_mcp(
+        &mut session,
+        &mut calls,
+        control_call(5, json!({"method": "host.fail"})),
+    );
+    assert_eq!(reply["result"]["isError"], true);
+    assert_eq!(reply["result"]["content"][0]["text"], "host.fail: no");
+    assert_eq!(calls, ["host.echo", "host.echo", "host.fail"]);
+
+    // Only what the host listed is reachable; wrong arguments are refused
+    // before the host is asked.
+    calls.clear();
+    for (arguments, part) in [
+        (
+            json!({"method": "host.secret"}),
+            "unknown method `host.secret`",
+        ),
+        (
+            json!({"method": "engine.execute"}),
+            "unknown method `engine.execute`",
+        ),
+        (json!({"method": "x".repeat(5000)}), "unknown method"),
+        (json!({}), "method"),
+        (json!({"method": 7}), "method"),
+        (json!({"method": "host.echo", "params": "text"}), "params"),
+        (json!({"method": "host.echo", "extra": 1}), "extra"),
+    ] {
+        let reply = send_mcp(&mut session, &mut calls, control_call(6, arguments.clone()));
+        assert_eq!(reply["error"]["code"], -32602, "{arguments}: {reply}");
+        let message = reply["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains(part) && message.len() < 400,
+            "{arguments}: {message}"
+        );
+    }
+    assert!(calls.is_empty(), "{calls:?}");
+
+    // A host that panics is an error reply, and the server goes on.
+    let reply = send_mcp(
+        &mut session,
+        &mut calls,
+        control_call(7, json!({"method": "host.panic"})),
+    );
+    assert_eq!(reply["error"]["code"], -32603, "{reply}");
+    let reply = send_mcp(
+        &mut session,
+        &mut calls,
+        json!({"jsonrpc": "2.0", "id": 8, "method": "ping"}),
+    );
+    assert_eq!(reply["result"], json!({}));
+}

@@ -401,6 +401,8 @@ fn a_script_builds_a_part_and_measures_the_closed_form_volume() {
             "mcp.message",
             "ui.get",
             "ui.set",
+            "ui.pick",
+            "ui.highlight",
             "ui.fit",
             "ui.screenshot",
             "ui.notice",
@@ -1191,6 +1193,175 @@ fn an_mcp_client_models_in_the_windows_own_document_through_the_bridge() {
         .execute("document.inspect", &Value::Null)
         .unwrap();
     assert_eq!(inspected["features"][0]["name"], "Plate");
+}
+
+/// Pointing over both channels (roadmap M8.5): what is at a pixel of the
+/// viewport, what was clicked, a face to highlight, for a client of the
+/// control channel and for an MCP client through the bridge.
+#[test]
+fn an_agent_points_at_a_face_over_the_control_channel_and_over_mcp() {
+    let rig = Rig::start(Workspace::none());
+    let mut client = rig.client();
+    build_plate_and_post(&mut client);
+    client.ok("ui.fit", json!({"view": "top"}));
+    client.ok("ui.set", json!({"camera": {"projection": "orthographic"}}));
+    let got = client.ok("ui.get", json!({}));
+    let (width, height) = (
+        got["viewport"]["width"].as_f64().unwrap(),
+        got["viewport"]["height"].as_f64().unwrap(),
+    );
+    assert_eq!(got["state"]["picked"], Value::Null);
+    assert_eq!(got["state"]["highlight"], Value::Null);
+    // Seen from the top, framed about the model's centre: the middle of
+    // the viewport is the top of the plate, at z = 8.
+    let middle = json!({"x": width / 2.0, "y": height / 2.0});
+    let picked = client.ok("ui.pick", middle.clone());
+    assert_eq!(picked["hit"], true, "{picked}");
+    assert_eq!(picked["name"], "Plate");
+    assert!(
+        (picked["point"][2].as_f64().unwrap() - 8.0).abs() < 1e-9,
+        "{picked}"
+    );
+    let inspect = client.execute("document.inspect", json!({}));
+    let names = inspect["bodies"][0]["faceNames"].as_array().unwrap();
+    let face = picked["face"].clone();
+    assert_eq!(names[picked["faceIndex"].as_u64().unwrap() as usize], face);
+    // The command gives the same answer for a camera of its own.
+    let own = client.execute(
+        "view.pick",
+        json!({"x": 100, "y": 100, "width": 200, "height": 200,
+               "camera": {"eye": [30, 20, 500], "target": [30, 20, 0], "up": [0, 1, 0],
+                          "projection": "orthographic", "height": 100}}),
+    );
+    assert_eq!(own["face"], face);
+
+    // The same question through the MCP bridge, then a click and a
+    // highlight from there.
+    let replies = bridged(
+        rig.address,
+        TOKEN,
+        &[
+            json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}),
+            tool_call(
+                2,
+                "control_call",
+                json!({"method": "ui.pick", "params": middle}),
+            ),
+            tool_call(
+                3,
+                "control_call",
+                json!({"method": "ui.pick",
+                       "params": {"x": width / 2.0, "y": height / 2.0, "select": true}}),
+            ),
+            tool_call(4, "control_call", json!({"method": "ui.get"})),
+            tool_call(
+                5,
+                "control_call",
+                json!({"method": "ui.highlight", "params": {"face": null}}),
+            ),
+            tool_call(
+                6,
+                "control_call",
+                json!({"method": "ui.highlight", "params": {"face": face, "feature": "Plate"}}),
+            ),
+            tool_call(
+                7,
+                "control_call",
+                json!({"method": "ui.screenshot", "params": {"width": 160, "height": 120}}),
+            ),
+            tool_call(
+                8,
+                "control_call",
+                json!({"method": "ui.highlight", "params": {"face": "F9:face(0)"}}),
+            ),
+            tool_call(9, "control_call", json!({"method": "ui.quit"})),
+            tool_call(
+                10,
+                "control_call",
+                json!({"method": "mcp.message", "params": {}}),
+            ),
+            tool_call(11, "control_call", json!({"params": {}})),
+            tool_call(
+                12,
+                "control_call",
+                json!({"method": "ui.get", "params": [1]}),
+            ),
+            tool_call(
+                13,
+                "command_run",
+                json!({"id": "view.pick", "params": {"x": 5, "y": 5, "width": 64, "height": 64}}),
+            ),
+        ],
+    );
+    assert_eq!(replies.len(), 13);
+    let tools = replies[0]["result"]["tools"].as_array().unwrap();
+    let control = tools.iter().find(|t| t["name"] == "control_call").unwrap();
+    let description = control["description"].as_str().unwrap();
+    for method in ["ui.get", "ui.pick", "ui.highlight", "ui.screenshot"] {
+        assert!(description.contains(method), "{method} is not described");
+    }
+    assert!(!description.contains("ui.quit"));
+    assert_eq!(tool_json(&replies[1]), picked);
+    let clicked = tool_json(&replies[2]);
+    assert_eq!(clicked["picked"]["face"], face);
+    assert_eq!(clicked["picked"]["serial"], 1);
+    let state = tool_json(&replies[3]);
+    assert_eq!(state["state"]["picked"]["face"], face);
+    assert_eq!(state["state"]["highlight"]["face"], face);
+    assert_eq!(tool_json(&replies[4])["highlight"], Value::Null);
+    let shown = tool_json(&replies[5]);
+    assert_eq!(shown["highlight"], json!({"feature": "F1", "face": face}));
+    assert_eq!(shown["faces"], 1);
+    // The picture is a picture, and the plate's top in it is highlighted:
+    // the middle pixel has the hue of the token, not the body's grey.
+    let blocks = replies[6]["result"]["content"].as_array().unwrap();
+    assert_eq!(blocks[0]["type"], "image");
+    let (w, h, rgb) = decode(&unbase64(blocks[0]["data"].as_str().unwrap()));
+    assert_eq!((w, h), (160, 120));
+    let at = ((60 * 160 + 80) * 3) as usize;
+    let (r, g, b) = (
+        i32::from(rgb[at]),
+        i32::from(rgb[at + 1]),
+        i32::from(rgb[at + 2]),
+    );
+    assert!(
+        g > 2 * r && b > 2 * r,
+        "({r}, {g}, {b}) is not the highlight"
+    );
+    assert!(tool_json(&replies[6]).get("base64").is_none());
+    // A face nobody has: the tool's result says so, as an error.
+    assert_eq!(replies[7]["result"]["isError"], true, "{}", replies[7]);
+    assert!(
+        replies[7]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("no body has a face"),
+        "{}",
+        replies[7]
+    );
+    // What is not offered is not reachable, and wrong arguments are
+    // refused before anything runs.
+    for (reply, part) in [
+        (&replies[8], "unknown method `ui.quit`"),
+        (&replies[9], "unknown method `mcp.message`"),
+        (&replies[10], "method"),
+        (&replies[11], "params"),
+    ] {
+        assert_eq!(reply["error"]["code"], -32602, "{reply}");
+        assert!(
+            reply["error"]["message"].as_str().unwrap().contains(part),
+            "{reply}"
+        );
+    }
+    // The command is there over MCP too, for a client without a window.
+    assert_eq!(tool_json(&replies[12])["hit"], false);
+
+    // The control channel sees what MCP did, and the window is still open.
+    let got = client.ok("ui.get", json!({}));
+    assert_eq!(got["state"]["highlight"]["face"], face);
+    let host = rig.finish();
+    assert!(!host.shell.quit_requested());
+    assert_eq!(host.shell.state.picked.as_ref().unwrap().serial, 1);
 }
 
 #[test]

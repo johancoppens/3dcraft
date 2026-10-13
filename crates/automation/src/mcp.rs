@@ -22,6 +22,7 @@
 use crate::fields::{Fields, describe, shorten};
 use crate::lines::{self, Protocol, Rejected};
 use crate::registry::{self, panic_detail};
+use crate::rpc::Extension;
 use crate::{MAX_BATCH_STEPS, MAX_REPLY_BYTES, MAX_REQUEST_BYTES};
 use craft3d_engine::Session;
 use serde_json::{Map, Value, json};
@@ -75,7 +76,21 @@ impl RpcError {
 /// `None` when the message needs no reply: a notification, a response, or a
 /// blank line. Never panics, whatever the line holds.
 pub fn handle_line(session: &mut Session, line: &str) -> Option<String> {
-    handle_line_capped(session, line, MAX_REPLY_BYTES)
+    handle_line_capped(session, line, MAX_REPLY_BYTES, None)
+}
+
+/// [`handle_line`] for a host with a window: the same protocol and tools,
+/// plus the tool `control_call`, which runs one of the host's own methods
+/// (the desktop app's `ui.*`: what the viewport shows, what was clicked in
+/// it, a face to highlight). `extension` is what the host gives the JSON
+/// protocol (`rpc::handle_line_with`): its methods are listed in the
+/// tool's description and its handler answers them.
+pub fn handle_line_with(
+    session: &mut Session,
+    line: &str,
+    extension: &mut Extension<'_>,
+) -> Option<String> {
+    handle_line_capped(session, line, MAX_REPLY_BYTES, Some(extension))
 }
 
 /// Serves messages from `input` until it ends, writing each reply to
@@ -102,7 +117,12 @@ pub fn serve(session: &mut Session, input: impl BufRead, output: impl Write) -> 
 
 /// [`handle_line`] with the reply cap as a parameter, so tests can reach it
 /// with a small one.
-fn handle_line_capped(session: &mut Session, line: &str, max_reply: usize) -> Option<String> {
+fn handle_line_capped(
+    session: &mut Session,
+    line: &str,
+    max_reply: usize,
+    mut extension: Option<&mut Extension<'_>>,
+) -> Option<String> {
     if line.trim().is_empty() {
         return None;
     }
@@ -190,7 +210,12 @@ fn handle_line_capped(session: &mut Session, line: &str, max_reply: usize) -> Op
     // Last-resort guard (AGENTS.md, never crash). `Session::execute` already
     // catches a panic inside a command; this one covers this module.
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        dispatch(session, method, message.get("params"))
+        dispatch(
+            session,
+            method,
+            message.get("params"),
+            extension.as_deref_mut(),
+        )
     }))
     .unwrap_or_else(|payload| {
         Err(RpcError {
@@ -225,6 +250,7 @@ fn dispatch(
     session: &mut Session,
     method: &str,
     params: Option<&Value>,
+    extension: Option<&mut Extension<'_>>,
 ) -> Result<Value, RpcError> {
     // JSON-RPC also allows positional params (an array); MCP never uses them.
     let params = match params {
@@ -242,8 +268,14 @@ fn dispatch(
         "initialize" => initialize(params),
         "ping" => Ok(json!({})),
         // The list is one page: a `cursor` has nothing to continue.
-        "tools/list" => Ok(json!({ "tools": tools() })),
-        "tools/call" => call_tool(session, params),
+        "tools/list" => {
+            let mut tools = tools();
+            if let (Some(extension), Value::Array(list)) = (&extension, &mut tools) {
+                list.push(control_call_tool(extension));
+            }
+            Ok(json!({ "tools": tools }))
+        }
+        "tools/call" => call_tool(session, params, extension),
         other => Err(RpcError {
             code: METHOD_NOT_FOUND,
             message: format!(
@@ -410,6 +442,38 @@ fn tools() -> Value {
     ])
 }
 
+/// The definition of `control_call` for a host with these methods.
+fn control_call_tool(extension: &Extension<'_>) -> Value {
+    let mut description = String::from(
+        "Runs one method of the 3DCraft window this server belongs to: what the developer sees, not the document. Use it to read the view (ui.get: the camera, state.picked, the face the developer clicked last, and state.highlight), to ask what the viewport shows at a pixel (ui.pick), to point at a face for the developer (ui.highlight) and to take a picture of the viewport (ui.screenshot). The methods:",
+    );
+    for method in extension.methods {
+        description.push_str(&format!(
+            "\n{} {}: {}",
+            method.name, method.params, method.summary
+        ));
+    }
+    json!({
+        "name": "control_call",
+        "description": description,
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "method": {
+                    "type": "string",
+                    "description": "The method, e.g. \"ui.pick\"."
+                },
+                "params": {
+                    "type": "object",
+                    "description": "The method's parameters."
+                }
+            },
+            "required": ["method"],
+            "additionalProperties": false
+        }
+    })
+}
+
 /// How a tool call ended when it did not succeed.
 enum ToolFailure {
     /// The arguments were wrong; nothing ran. A JSON-RPC error.
@@ -448,6 +512,7 @@ fn text_block(text: String) -> Value {
 fn call_tool(
     session: &mut Session,
     params: Option<&Map<String, Value>>,
+    extension: Option<&mut Extension<'_>>,
 ) -> Result<Value, RpcError> {
     let missing_name = || RpcError::invalid_params("tools/call: missing `name`");
     let name = match params.ok_or_else(missing_name)?.get("name") {
@@ -469,10 +534,23 @@ fn call_tool(
         "command_batch" => tool_command_batch(session, arguments),
         "doc_inspect" => tool_doc_inspect(session, arguments),
         "doc_render_preview" => tool_doc_render_preview(session, arguments),
+        "control_call" => match extension {
+            Some(extension) => tool_control_call(session, arguments, extension),
+            None => {
+                return Err(RpcError::invalid_params(
+                    "the tool `control_call` reaches a 3DCraft window, and this server has none: start the window with `craft3d --control PORT --control-token-file FILE` and this server with `craft3d-cli mcp --bridge PORT --control-token-file FILE`",
+                ));
+            }
+        },
         other => {
             return Err(RpcError::invalid_params(format!(
-                "unknown tool `{}`; the tools are: command_list, command_run, command_batch, doc_inspect, doc_render_preview",
-                shorten(other)
+                "unknown tool `{}`; the tools are: command_list, command_run, command_batch, doc_inspect, doc_render_preview{}",
+                shorten(other),
+                if extension.is_some() {
+                    ", control_call"
+                } else {
+                    ""
+                }
             )));
         }
     };
@@ -537,6 +615,69 @@ fn tool_command_batch(
     Ok(ToolOutput {
         is_error: outcome.failed > 0,
         ..ToolOutput::json(&outcome.report)
+    })
+}
+
+fn tool_control_call(
+    session: &mut Session,
+    arguments: Option<&Value>,
+    extension: &mut Extension<'_>,
+) -> Result<ToolOutput, ToolFailure> {
+    let a = Fields::new("control_call", "argument", arguments, &["method", "params"])?;
+    let method = a.required_str("method")?;
+    // Only what the host listed: nothing else of the host is reachable
+    // from here, whatever its handler would answer.
+    if !extension.methods.iter().any(|m| m.name == method) {
+        let names: Vec<&str> = extension.methods.iter().map(|m| m.name).collect();
+        return Err(ToolFailure::Invalid(format!(
+            "control_call: unknown method `{}`; the methods are: {}",
+            shorten(method),
+            names.join(", ")
+        )));
+    }
+    let params = a.object("params")?;
+    let params = (!params.is_null()).then_some(params);
+    let mut result = match (extension.handle)(session, method, params) {
+        Some(Ok(result)) => result,
+        Some(Err(error)) => return Err(ToolFailure::Failed(error)),
+        None => {
+            return Err(ToolFailure::Failed(format!(
+                "control_call: the window does not answer `{}`",
+                shorten(method)
+            )));
+        }
+    };
+    // A picture comes back as a picture (ui.screenshot without a path).
+    let image = match result.as_object_mut() {
+        Some(map) if map.get("mime").and_then(Value::as_str) == Some("image/png") => {
+            match map.remove("base64") {
+                Some(Value::String(data)) => {
+                    map.remove("mime");
+                    Some(data)
+                }
+                Some(other) => {
+                    map.insert("base64".into(), other);
+                    None
+                }
+                None => None,
+            }
+        }
+        _ => None,
+    };
+    let mut content = Vec::new();
+    if let Some(image) = image {
+        let png_bytes = image.len() / 4 * 3;
+        if png_bytes > PREVIEW_MAX_PNG_BYTES {
+            return Err(ToolFailure::Failed(format!(
+                "control_call: the PNG is about {png_bytes} bytes, over the limit of {PREVIEW_MAX_PNG_BYTES}; ask for a smaller width and height, or give a path"
+            )));
+        }
+        content.push(json!({ "type": "image", "data": image, "mimeType": "image/png" }));
+    }
+    content.push(text_block(serialize(&result)));
+    Ok(ToolOutput {
+        content,
+        is_error: false,
     })
 }
 
@@ -663,7 +804,7 @@ mod tests {
         let mut session = Session::new(Workspace::none());
         let list = r#"{"jsonrpc": "2.0", "id": "big", "method": "tools/list"}"#;
 
-        let reply = parse(handle_line_capped(&mut session, list, 300));
+        let reply = parse(handle_line_capped(&mut session, list, 300, None));
         assert_eq!(reply["id"], "big");
         assert_eq!(reply["error"]["code"], INTERNAL_ERROR);
         let message = reply["error"]["message"].as_str().unwrap();
@@ -675,7 +816,7 @@ mod tests {
 
         // A reply that fits the same cap is delivered.
         let ping = r#"{"jsonrpc": "2.0", "id": 2, "method": "ping"}"#;
-        let reply = parse(handle_line_capped(&mut session, ping, 300));
+        let reply = parse(handle_line_capped(&mut session, ping, 300, None));
         assert_eq!(reply, json!({"jsonrpc": "2.0", "id": 2, "result": {}}));
 
         // And the uncapped handler returns the tools.
