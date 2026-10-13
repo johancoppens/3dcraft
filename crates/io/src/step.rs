@@ -72,6 +72,20 @@
 //!   longer semi-axis along y is written on a placement turned a quarter
 //!   about z: the same curve in the same direction. *Sure* of the
 //!   standard; the turn is a courtesy.
+//! - **B-spline curve knots** (`b_spline_curve_with_knots`): written on
+//!   the interval from 0 to 1, whatever the curve's own knots are (the
+//!   kernel's intersection curves have knots that are lengths, so they
+//!   grow with the model). A B-spline is the same point set after an
+//!   affine change of its knots, and no parameter value of a curve is
+//!   written anywhere else in the file, so nothing else changes. *Sure*
+//!   of the standard. The reason is a reader: FreeCAD (OpenCascade) calls
+//!   a wire "self-intersecting" on a cylinder when a closed spline edge
+//!   has knots beyond some 1e4 and the model is 1e3 or larger, and valid
+//!   with the same control points on knots from 0 to 1 (measured
+//!   2026-10-14: 58 of 312 sleeves with an oil hole invalid before, none
+//!   after; supplying parameter-space curves changes nothing, the reader
+//!   makes its own). The knots of a B-spline *surface* are written as
+//!   they are: scaling them changed no verdict.
 //! - **Edge** (topology schema, `edge_curve`): `same_sense` says whether the edge
 //!   runs from its start to its end vertex in the direction of increasing
 //!   curve parameter. Edges here always do: `.T.`. The edge is the part
@@ -258,6 +272,27 @@ fn knot_multiplicities(knots: &[f64]) -> (Vec<i64>, Vec<f64>) {
         }
     }
     (multiplicities, distinct)
+}
+
+/// The knots of a curve on the interval from 0 to 1: the same curve, with
+/// its parameter running over a range that does not depend on the size of
+/// the model. Knots that cannot be mapped (no span, not finite, or two
+/// distinct knots that would fall together) are returned as they are.
+fn unit_interval(knots: Vec<f64>) -> Vec<f64> {
+    let (Some(&first), Some(&last)) = (knots.first(), knots.last()) else {
+        return knots;
+    };
+    let span = last - first;
+    if !(span.is_finite() && span > 0.0) {
+        return knots;
+    }
+    let mapped: Vec<f64> = knots.iter().map(|&knot| (knot - first) / span).collect();
+    let increasing = mapped.iter().zip(mapped.iter().skip(1)).all(|(a, b)| a < b);
+    if increasing && mapped.iter().all(|knot| knot.is_finite()) {
+        mapped
+    } else {
+        knots
+    }
 }
 
 fn integers(values: &[i64]) -> Param {
@@ -707,6 +742,10 @@ impl Writer<'_> {
             .map(|&p| self.point(p))
             .collect();
         let (multiplicities, knots) = knot_multiplicities(curve.knots());
+        // No parameter of a curve is written anywhere else (an edge is the
+        // part of its curve between its vertices), so the curve's own
+        // range is free to choose: see "B-spline curve knots" above.
+        let knots = unit_interval(knots);
         let degree = Param::Integer(i64::try_from(curve.degree()).unwrap_or(i64::MAX));
         let unknown = || Param::enumeration("U");
         let unspecified = || Param::enumeration("UNSPECIFIED");
@@ -1438,4 +1477,34 @@ pub fn export_step(
 /// Whether a file extension (without the dot, any case) means STEP.
 pub fn is_step_extension(extension: &str) -> bool {
     matches!(extension.to_ascii_lowercase().as_str(), "step" | "stp")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unit_interval;
+
+    #[test]
+    fn knots_go_to_the_unit_interval_or_stay_as_they_are() {
+        assert_eq!(unit_interval(vec![2.0, 5.0, 12.0]), [0.0, 0.3, 1.0]);
+        assert_eq!(unit_interval(vec![-4.0e7, 0.0, 4.0e7]), [0.0, 0.5, 1.0]);
+        // On the interval already: bit for bit.
+        let thirds = vec![0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0];
+        assert_eq!(unit_interval(thirds.clone()), thirds);
+        // Nothing to map onto, or nothing finite: as they are.
+        assert_eq!(unit_interval(vec![]), Vec::<f64>::new());
+        assert_eq!(unit_interval(vec![3.0]), [3.0]);
+        assert_eq!(unit_interval(vec![3.0, 3.0]), [3.0, 3.0]);
+        assert_eq!(unit_interval(vec![5.0, 3.0]), [5.0, 3.0]);
+        let endless = unit_interval(vec![0.0, 1.0, f64::INFINITY]);
+        assert_eq!(endless.get(1), Some(&1.0));
+        assert_eq!(
+            unit_interval(vec![-f64::MAX, 0.0, f64::MAX]).first(),
+            Some(&-f64::MAX)
+        );
+        let not_a_number = unit_interval(vec![0.0, f64::NAN, 1.0]);
+        assert!(not_a_number.get(1).is_some_and(|k| k.is_nan()));
+        // Two knots that would fall together stay apart.
+        let close = vec![0.0, 5e-324, 1e300];
+        assert_eq!(unit_interval(close.clone()), close);
+    }
 }

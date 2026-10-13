@@ -14,7 +14,7 @@
 #[path = "common/bodies.rs"]
 mod bodies;
 
-use craft3d_geom::{Cone, Curve3, Surface};
+use craft3d_geom::{Cone, Curve3, NurbsCurve, Surface};
 use craft3d_io::{AngleUnit, IoError, StepBody, StepOptions, StepSummary, export_step, step_model};
 use craft3d_kernel::primitives;
 use craft3d_math::{Frame, Tolerance, Vec3};
@@ -1050,6 +1050,116 @@ fn splines_keep_their_knots_points_and_weights() {
         assert_eq!(edge.params[1], Param::Integer(3));
         assert_eq!(Graph::references(&edge.params[2]).len(), 4);
     }
+}
+
+/// A block of 10 × 2 × 1 (times `scale`) whose first straight edge is a
+/// cubic spline on the same line, with knots that are lengths from
+/// `2 scale` to `12 scale`: what the kernel's intersection curves look
+/// like. Returns the body and the edge's control points.
+fn block_with_a_spline_edge(scale: f64) -> (Body, Vec<Vec3>) {
+    let mut body = primitives::block(&Frame::WORLD, 10.0 * scale, 2.0 * scale, scale).unwrap();
+    let index = body
+        .edges
+        .iter()
+        .position(|e| {
+            let (a, b) = (e.curve.eval(e.range.0), e.curve.eval(e.range.1));
+            (a.distance(b) - 10.0 * scale).abs() < 1e-9 * scale
+        })
+        .unwrap();
+    let edge = &mut body.edges[index];
+    let (a, b) = (edge.curve.eval(edge.range.0), edge.curve.eval(edge.range.1));
+    // Cubic, one double knot inside: C1 there, and a straight line when
+    // the control points are where the Greville abscissae put them.
+    let knots = [2.0, 2.0, 2.0, 2.0, 5.0, 5.0, 12.0, 12.0, 12.0, 12.0].map(|k| k * scale);
+    let ctrl: Vec<Vec3> = (0..6)
+        .map(|i| {
+            let greville = (knots[i + 1] + knots[i + 2] + knots[i + 3]) / 3.0;
+            a + (b - a) * ((greville - knots[0]) / (knots[9] - knots[0]))
+        })
+        .collect();
+    edge.curve = Curve3::Nurbs(NurbsCurve::polynomial(3, knots.to_vec(), ctrl.clone()).unwrap());
+    edge.range = (knots[0], knots[9]);
+    (body, ctrl)
+}
+
+/// The knots of a spline curve are written from 0 to 1 whatever they are
+/// in the body (FreeCAD calls a wire self-intersecting when a closed
+/// spline's knots are lengths and the model is large; `step_freecad`'s
+/// oil holes are the outside proof). The curve is the same point set, so
+/// the control points go over unchanged, and so do the multiplicities.
+#[test]
+fn spline_curve_knots_are_written_from_zero_to_one() {
+    for scale in [1e-3, 1.0, 1e6] {
+        let (body, ctrl) = block_with_a_spline_edge(scale);
+        let options = options(scale);
+        let (file, _) = model("spline edge", &body, &options);
+        let graph = Graph::new(&file);
+        let curves: Vec<&Record> = graph
+            .all("B_SPLINE_CURVE_WITH_KNOTS")
+            .map(|(_, r)| r)
+            .collect();
+        assert_eq!(curves.len(), 1, "scale {scale}");
+        let curve = curves[0];
+        assert_eq!(curve.params[1], Param::Integer(3));
+        let points = Graph::references(&curve.params[2]);
+        assert_eq!(points.len(), 6);
+        for (id, p) in points.iter().zip(&ctrl) {
+            assert_eq!(
+                graph.triple(*id, "CARTESIAN_POINT"),
+                [p.x + 0.0, p.y + 0.0, p.z + 0.0],
+                "scale {scale}: control points are not touched"
+            );
+        }
+        assert_eq!(
+            curve.params[6],
+            Param::List([4, 2, 4].map(Param::Integer).to_vec())
+        );
+        // (5 - 2) / (12 - 2), at every scale: the same text.
+        let Param::List(knots) = &curve.params[7] else {
+            panic!("knots are a list")
+        };
+        let knots: Vec<f64> = knots
+            .iter()
+            .map(|k| match k {
+                Param::Real(x) => *x,
+                other => panic!("a knot is a real, not {other:?}"),
+            })
+            .collect();
+        assert_eq!((knots[0], knots[2]), (0.0, 1.0), "scale {scale}");
+        assert!(
+            (knots[1] - 0.3).abs() < 1e-15,
+            "scale {scale}: {}",
+            knots[1]
+        );
+        // The body is still a consistent B-rep to the interpreter, and
+        // the same body gives the same bytes.
+        graph.check_shells(options.tolerance.linear);
+        let text = craft3d_step::write(&file).unwrap();
+        let (again, _) = model("spline edge", &body, &options);
+        assert_eq!(craft3d_step::write(&again).unwrap(), text);
+    }
+    // Knots that are on [0, 1] already are written bit for bit: an edge of
+    // the domed block (thirds are not exact in binary).
+    let knots = vec![0.0, 0.0, 0.0, 0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0, 1.0, 1.0, 1.0];
+    let (mut body, _) = block_with_a_spline_edge(1.0);
+    let edge = body
+        .edges
+        .iter_mut()
+        .find(|e| matches!(e.curve, Curve3::Nurbs(_)))
+        .unwrap();
+    let (a, b) = (edge.curve.eval(edge.range.0), edge.curve.eval(edge.range.1));
+    let ctrl: Vec<Vec3> = (0..6)
+        .map(|i| a + (b - a) * ((knots[i + 1] + knots[i + 2] + knots[i + 3]) / 3.0))
+        .collect();
+    edge.curve = Curve3::Nurbs(NurbsCurve::polynomial(3, knots, ctrl).unwrap());
+    edge.range = (0.0, 1.0);
+    let (file, _) = model("thirds", &body, &StepOptions::default());
+    let graph = Graph::new(&file);
+    let (_, curve) = graph.all("B_SPLINE_CURVE_WITH_KNOTS").next().unwrap();
+    assert_eq!(
+        curve.params[7],
+        Param::reals([0.0, 1.0 / 3.0, 2.0 / 3.0, 1.0])
+    );
 }
 
 #[test]
