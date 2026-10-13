@@ -641,7 +641,7 @@ fn made_face(
     // straight onto the face: a point that only moves when the face itself
     // moves along its normal.
     let mut origin = frame.origin();
-    if link.role == NameRole::Side
+    if link.root().role == NameRole::Side
         && let FeatureKind::Extrude(extrusion) = &source.kind
         && let Some(base) = earlier
             .iter()

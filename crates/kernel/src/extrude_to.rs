@@ -901,11 +901,11 @@ fn assemble(
         let origin = match part_of(*face).ok_or_else(lost)? {
             Part::Near => Origin {
                 role: Role::StartCap,
-                sources: prism_face(*face).ok_or_else(lost)?.sources.clone(),
+                ..prism_face(*face).ok_or_else(lost)?.clone()
             },
             Part::Side => Origin {
                 role: Role::Side,
-                sources: prism_face(*face).ok_or_else(lost)?.sources.clone(),
+                ..prism_face(*face).ok_or_else(lost)?.clone()
             },
             // The end of the profile whose start cap is in the same shell.
             Part::End | Part::Far | Part::Stray => {
@@ -917,7 +917,7 @@ fn assemble(
                     .ok_or_else(lost)?;
                 Origin {
                     role: Role::EndCap,
-                    sources: start.sources.clone(),
+                    ..start.clone()
                 }
             }
         };
@@ -947,14 +947,14 @@ fn assemble(
                 };
                 Some(Origin {
                     role,
-                    sources: origin.sources.clone(),
+                    ..origin.clone()
                 })
             }
             EdgeSource::Intersection { a, .. } => {
                 let origin = prism.faces.get(a.0 as usize)?;
                 (origin.role == Role::Side).then(|| Origin {
                     role: Role::EndEdge,
-                    sources: origin.sources.clone(),
+                    ..origin.clone()
                 })
             }
             EdgeSource::Kept {
@@ -972,7 +972,7 @@ fn assemble(
                 let origin = prism.vertices.get(vertex.0 as usize)?;
                 (origin.role == near_vertex).then(|| Origin {
                     role: Role::StartVertex,
-                    sources: origin.sources.clone(),
+                    ..origin.clone()
                 })
             }
             VertexSource::New {
@@ -982,7 +982,7 @@ fn assemble(
                 let origin = prism.edges.get(edge.0 as usize)?;
                 (origin.role == Role::LateralEdge).then(|| Origin {
                     role: Role::EndVertex,
-                    sources: origin.sources.clone(),
+                    ..origin.clone()
                 })
             }
             // On the end edge of a wall, away from its corners: the one
@@ -998,6 +998,7 @@ fn assemble(
                 (origin.role == Role::Side).then(|| Origin {
                     role: Role::EndVertex,
                     sources: vec![curve, curve],
+                    piece: origin.piece,
                 })
             }
             VertexSource::Kept {

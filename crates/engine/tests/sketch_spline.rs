@@ -927,72 +927,9 @@ fn what_a_spline_cannot_do_yet_is_refused_with_the_reason() {
     run(&mut s, "edit.undo", json!({}));
     assert_eq!(status(&mut s, "Profile").0, "ok");
 
-    // A revolution of a spline is a rational surface: not yet.
-    let made = run(
-        &mut s,
-        "feature.revolve",
-        json!({"sketch": "Profile", "axis": "y", "name": "Turned"}),
-    );
-    assert_eq!(made["status"], "failed", "{made}");
-    let reason = made["error"].as_str().unwrap();
-    assert!(
-        reason.contains("e6") && reason.contains("rational"),
-        "{reason}"
-    );
-    assert!(
-        run(&mut s, "document.inspect", json!({}))["bodies"]
-            .as_array()
-            .unwrap()
-            .is_empty()
-    );
-    run(&mut s, "edit.undo", json!({}));
-
-    // A loop of one closed spline is not a profile yet.
-    let mut s = session();
-    new_document(&mut s, 1.0);
-    let ring = run(
-        &mut s,
-        "sketch.spline",
-        json!({"sketch": "Profile", "closed": true,
-               "control": [[0, 0], [6, -2], [8, 4], [3, 8], [-3, 4]]}),
-    );
-    assert_eq!(ring["control"], json!(["e1", "e2", "e3", "e4", "e5", "e1"]));
-    assert_eq!((&ring["start"], &ring["end"]), (&json!("e1"), &json!("e1")));
-    let inspected = run(&mut s, "sketch.inspect", json!({"sketch": "Profile"}));
-    assert_eq!(inspected["entities"][5]["closed"], true);
-    let made = run(
-        &mut s,
-        "feature.extrude",
-        json!({"sketch": "Profile", "distance": 2, "name": "Ring"}),
-    );
-    assert_eq!(made["status"], "failed", "{made}");
-    let reason = made["error"].as_str().unwrap();
-    assert!(
-        reason.contains("e6")
-            && reason.contains("closes on itself")
-            && reason.contains("two splines"),
-        "{reason}"
-    );
-    // A spline of degree 1 with a corner is a polyline: lines, please.
-    let mut s = session();
-    new_document(&mut s, 1.0);
-    run(
-        &mut s,
-        "sketch.spline",
-        json!({"sketch": "Profile", "degree": 1, "control": [[0, 0], [4, 0], [4, 3]]}),
-    );
-    run(
-        &mut s,
-        "sketch.line",
-        json!({"sketch": "Profile", "from": "e3", "to": "e1"}),
-    );
-    let made = run(
-        &mut s,
-        "feature.extrude",
-        json!({"sketch": "Profile", "distance": 2}),
-    );
-    let reason = made["error"].as_str().unwrap_or("");
-    assert!(reason.contains("e4") && reason.contains("corner"), "{made}");
+    // (A revolution of a spline, a loop of one closed spline and a
+    // polyline are built since 2026-10-14: `spline_sweeps.rs`. Until then
+    // this test pinned their refusals.)
 }
 
 #[test]

@@ -6,6 +6,16 @@ Decisions that shape the project, newest first, each with its reason. An agent t
 
 ## Taken
 
+### 2026-10-14: Decided by an agent overnight, for the developer to overturn
+
+Taken while building revolved and closed splines (`architecture.md` §4.1 › *Revolved splines, closed splines and corners*); nobody was awake to ask.
+
+- **No face on a spline surface that closes on itself.** A full turn of a spline is two faces of half a turn, a closed spline is two pieces. The alternatives were one face with a seam edge walked there and back, or a period for spline surfaces in `geom`: either needs the tessellator, the exact measure and the booleans to follow a seam they cannot see today, and the first try (a seam edge) gave a mesh that was silently not watertight. With ordinary patches all three worked unchanged, booleans included. The price is two faces where a cylinder has one, and an edge between them that is smooth.
+- **The second and later entities a curve sweeps are numbered pieces:** `F2:piece(1)/F2:side(e7)`, a new role written like a copy, the first keeping the plain name. The alternative was to let both halves answer to `F2:side(e7)` (a name already may resolve to several faces after a boolean), which reads better and would let "the wall" mean both halves, but leaves a vertex or an edge of a sweep without a name of its own. To overturn: drop `piece` in `regen::extrude::name_of`.
+- **Analytic faces next to a revolved spline stay whole** (their loop is two arcs); only the spline's faces are in halves.
+- **A spline that ends on the axis is built,** although the exact measure and booleans decline its face (a collapsed border): the body is valid, meshes, renders and exports, and refusing it would make a dome impossible. `document.inspect` shows such a body without a volume until the measure takes it.
+- **A polyline's legs become lines** (planes, cylinders and cones when swept), not degree-1 spline faces.
+
 ### 2026-10-13: Decided by the developer
 
 - **The boolean kernel is the first priority:** it is what makes 3DCraft a professional tool. A case the kernel refuses is work owed, not an end state; the checklist is in [`roadmap.md`](roadmap.md).

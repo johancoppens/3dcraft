@@ -12,6 +12,16 @@
 //! | any other line | cone, through its apex when the line ends on the axis |
 //! | arc centred on the axis | sphere, through a pole when the arc ends on the axis |
 //! | arc or circle whose whole circle stays clear of the axis | torus |
+//! | spline that stays clear of the axis but for its ends | rational B-spline surface |
+//!
+//! A spline sweeps a surface of revolution that is a NURBS surface exactly:
+//! around the axis (u) the standard rational quadratic arcs of at most a
+//! quarter turn each, along the spline (v) the spline's own degree, knots
+//! and control points, each control point turned into the control polygon
+//! of its circle. Its parameter u runs over `[0, 1]` for the angle turned
+//! through and is not the angle. A spline that ends on the axis sweeps a
+//! surface whose border there is one point (as a cone has its apex); one
+//! that reaches the axis anywhere else is an error that names it.
 //!
 //! An arc or circle whose own circle reaches the axis without being
 //! centred on it would sweep a spindle torus, which `craft3d-geom` does not
@@ -35,6 +45,22 @@
 //! circle sweeps a torus without edges, a half circle on the axis a sphere
 //! without edges, as the primitives are.
 //!
+//! A spline is the exception: `craft3d-geom` knows no period for a spline
+//! surface, so a face that goes all the way around on one could not be
+//! followed across its seam by anything downstream. A full revolution of
+//! a loop with a spline in it is therefore made in two halves. Each
+//! spline sweeps two faces, from the sketch plane half a turn on and from
+//! there back, each on a surface of its own that ends where the face
+//! does; they meet in the spline's edge in the sketch plane (its start
+//! edge) and in its edge half a turn on (its end edge). At both ends of a
+//! spline the circle about the axis is two arcs between a start vertex
+//! and an end vertex, and a line or an arc next to a spline has a face
+//! whose loop there is those two arcs. Of two entities with the same
+//! role and sources the one of the second half is piece 1
+//! ([`crate::extrude::Origin::piece`]; for a spline that was itself cut
+//! into pieces, piece `2 k` and `2 k + 1` for its piece `k`). A vertex
+//! where a spline ends on the axis is one vertex for both halves.
+//!
 //! All surfaces share one frame about the axis whose angle 0 is where the
 //! revolution starts, so no face crosses the seam of its surface around
 //! the axis. Edges run as in `extrude`: a line's the way the loop does, an
@@ -45,20 +71,22 @@
 //! [`crate::extrude::Role`] (see [`revolve`] for the two cases an
 //! extrusion does not have).
 
-use crate::extrude::{OpResult, Origin, Origins, Role};
+use crate::extrude::{OpResult, Origin, Origins, Role, cap_sources, each_curve_once};
 use crate::profile::{Loop2, Profile, Segment, Shape};
+use crate::spline2::{self, Part as CurvePart};
 use crate::{KernelError, MAX_REPORTED};
 use craft3d_geom::{
-    Circle, Cone, Curve3, Cylinder, GeomError, Line, Plane, Sphere, Surface, Torus,
+    Circle, Cone, Curve3, Cylinder, GeomError, Line, NurbsCurve, NurbsSurface, Plane, Sphere,
+    Surface, Torus,
 };
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, FaceId, LoopId, VertexId, check};
-use std::f64::consts::TAU;
+use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 type P2 = [f64; 2];
 
-/// Why a spline is not revolved.
-const SPLINE: &str = "a spline turns into a rational surface of revolution, which is not made yet; extrude it, or use lines and arcs";
+/// Why a spline that reaches the axis between its ends is not revolved.
+const PINCHED: &str = "the spline reaches the axis between its ends, where the surface it sweeps would pinch into a point; keep it clear of the axis, or end it there";
 
 fn invalid(reason: &'static str) -> KernelError {
     KernelError::InvalidProfile { reason }
@@ -105,6 +133,12 @@ impl Axis {
         let (a, _) = self.coordinates(segment.start);
         let (b, _) = self.coordinates(segment.end);
         let (mut low, mut high) = (a.min(b), a.max(b));
+        if let Shape::Spline(spline) = &segment.shape {
+            // The ends are the segment's own (they may have been moved
+            // onto a neighbour); in between, the spline's extremes.
+            let (least, most) = spline.extent(self.point, self.left);
+            (low, high) = (low.min(least), high.max(most));
+        }
         if let Shape::Arc { center, radius } | Shape::Circle { center, radius } = segment.shape {
             let (c, _) = self.coordinates(center);
             let (begin, sweep) = segment.angles().unwrap_or((0.0, TAU));
@@ -136,6 +170,10 @@ struct Part<'a> {
     end: Rz,
     /// The centre of an arc or circle.
     centre: Rz,
+    /// For a spline: its control points in the half-plane, in the spline's
+    /// own order, as (distance from the axis, height along it). The end
+    /// ones are the corners exactly. Empty for the other shapes.
+    net: Vec<(f64, f64)>,
     /// The surface and whether the outside is against its normal; `None`
     /// for a line on the axis.
     face: Option<(Surface, bool)>,
@@ -182,11 +220,8 @@ impl Builder {
             .ok_or_else(degenerate_frame)
     }
 
-    fn vertex(&mut self, point: Vec3, role: Role, sources: [u64; 2]) -> VertexId {
-        self.origins.vertices.push(Origin {
-            role,
-            sources: sources.to_vec(),
-        });
+    fn vertex(&mut self, point: Vec3, origin: Origin) -> VertexId {
+        self.origins.vertices.push(origin);
         self.body.add_vertex(point)
     }
 
@@ -195,13 +230,9 @@ impl Builder {
         curve: Curve3,
         range: (f64, f64),
         ends: (VertexId, VertexId),
-        role: Role,
-        sources: &[u64],
+        origin: Origin,
     ) -> EdgeId {
-        self.origins.edges.push(Origin {
-            role,
-            sources: sources.to_vec(),
-        });
+        self.origins.edges.push(origin);
         self.body.add_edge(curve, range, ends.0, ends.1)
     }
 
@@ -210,10 +241,9 @@ impl Builder {
         surface: Surface,
         reversed: bool,
         loops: Vec<LoopId>,
-        role: Role,
-        sources: Vec<u64>,
+        origin: Origin,
     ) -> FaceId {
-        self.origins.faces.push(Origin { role, sources });
+        self.origins.faces.push(origin);
         self.body.add_face(surface, reversed, loops)
     }
 
@@ -258,8 +288,22 @@ impl Builder {
             reason,
         };
         let mut centre = start;
-        let face = match segment.shape {
-            Shape::Spline(_) => return Err(unsupported(SPLINE)),
+        let mut net = Vec::new();
+        let face = match &segment.shape {
+            Shape::Spline(spline) => {
+                net = self.spline_net(axis, segment, spline, start, end)?;
+                let turn = if self.full { PI } else { self.sweep };
+                let surface = self.spline_surface(spline, &net, 0.0, turn)?;
+                // The normal (around the axis crossed with along the
+                // spline) is to the right of the spline in the half-plane,
+                // which mirrors the sketch when the profile is to the left
+                // of the axis: the inside, for a loop that runs the
+                // spline's way.
+                Some((
+                    Surface::Nurbs(surface),
+                    (self.side > 0.0) != segment.reversed,
+                ))
+            }
             Shape::Line => {
                 let (across, along) = (end.rho - start.rho, end.z - start.z);
                 let length = across.hypot(along);
@@ -298,7 +342,7 @@ impl Builder {
                     }
                 }
             }
-            Shape::Arc { center, radius } | Shape::Circle { center, radius } => {
+            &Shape::Arc { center, radius } | &Shape::Circle { center, radius } => {
                 let (left, along) = axis.coordinates(center);
                 let rho = self.side * left;
                 if rho.abs() <= self.linear {
@@ -323,8 +367,102 @@ impl Builder {
             start,
             end,
             centre,
+            net,
             face,
         })
+    }
+
+    /// The control points of `spline` in the half-plane, in its own order,
+    /// with its ends at the corners `start` and `end` of the loop. Errors
+    /// when the spline reaches the axis anywhere but at an end.
+    fn spline_net(
+        &self,
+        axis: &Axis,
+        segment: &Segment,
+        spline: &spline2::Spline2,
+        start: Rz,
+        end: Rz,
+    ) -> Result<Vec<(f64, f64)>, KernelError> {
+        let pinched = || KernelError::UnsupportedCurve {
+            id: segment.source,
+            reason: PINCHED,
+        };
+        let mut net: Vec<(f64, f64)> = spline
+            .control
+            .iter()
+            .map(|&p| {
+                let (left, along) = axis.coordinates(p);
+                (self.side * left, along)
+            })
+            .collect();
+        let (first, last) = if segment.reversed {
+            (end, start)
+        } else {
+            (start, end)
+        };
+        if let Some(slot) = net.first_mut() {
+            *slot = (first.rho, first.z);
+        }
+        if let Some(slot) = net.last_mut() {
+            *slot = (last.rho, last.z);
+        }
+        if !net.iter().all(|p| p.0.is_finite() && p.1.is_finite()) {
+            return Err(degenerate_frame());
+        }
+        // Where the spline is within tolerance of the axis: only a stretch
+        // that reaches an end which is on the axis, and not all of it.
+        let (mut low, mut high) = (f64::INFINITY, f64::NEG_INFINITY);
+        for &(_, z) in &net {
+            (low, high) = (low.min(z), high.max(z));
+        }
+        let reach = (high - low).abs() + self.linear;
+        let on_axis = |z: f64| {
+            [
+                axis.point[0] + axis.direction[0] * z,
+                axis.point[1] + axis.direction[1] * z,
+            ]
+        };
+        let line = [CurvePart::line(on_axis(low - reach), on_axis(high + reach))];
+        let runs = spline2::close_runs(&spline.pieces(), &line, self.linear).ok_or_else(pinched)?;
+        for (from, to) in runs {
+            let at_start = from <= spline2::RUN_GAP && first.rho == 0.0;
+            let at_end = to >= 1.0 - spline2::RUN_GAP && last.rho == 0.0;
+            if at_start == at_end {
+                return Err(pinched());
+            }
+        }
+        Ok(net)
+    }
+
+    /// The surface a spline sweeps from the angle `from` through `turn`:
+    /// u around the axis, in rational quadratic arcs of at most a quarter
+    /// turn, v along the spline.
+    fn spline_surface(
+        &self,
+        spline: &spline2::Spline2,
+        net: &[(f64, f64)],
+        from: f64,
+        turn: f64,
+    ) -> Result<NurbsSurface, KernelError> {
+        let ring = arcs_about(from, turn);
+        let mut control = Vec::with_capacity(ring.points.len() * net.len());
+        let mut weights = Vec::with_capacity(ring.points.len() * net.len());
+        for &(x, y, weight) in &ring.points {
+            for &(rho, z) in net {
+                control.push(self.frame.point(rho * x, rho * y, z));
+                weights.push(weight);
+            }
+        }
+        Ok(NurbsSurface::new(
+            2,
+            spline.degree,
+            ring.knots,
+            spline.knots.clone(),
+            ring.points.len(),
+            net.len(),
+            control,
+            weights,
+        )?)
     }
 
     /// The edge of `part` in the half-plane at `angle`, between the
@@ -335,10 +473,9 @@ impl Builder {
         part: &Part,
         angle: f64,
         ends: (VertexId, VertexId),
-        role: Role,
+        origin: Origin,
     ) -> Result<(EdgeId, bool), KernelError> {
         let segment = part.segment;
-        let sources = [segment.source];
         // The sketch plane turned to `angle`: its normal and its x axis.
         let turned = |b: &Builder, radius: f64, centre: Rz| -> Result<Curve3, KernelError> {
             let normal = b.onward(angle) * b.side;
@@ -347,18 +484,34 @@ impl Builder {
                 Frame::new(b.point(centre, angle), normal, x).ok_or_else(degenerate_frame)?;
             Ok(Curve3::Circle(Circle::new(frame, radius)?))
         };
-        match segment.shape {
-            Shape::Spline(_) => Err(KernelError::UnsupportedCurve {
-                id: segment.source,
-                reason: SPLINE,
-            }),
+        match &segment.shape {
+            Shape::Spline(spline) => {
+                let control = part
+                    .net
+                    .iter()
+                    .map(|&(rho, z)| self.point(Rz { rho, z }, angle))
+                    .collect();
+                let curve = NurbsCurve::polynomial(spline.degree, spline.knots.clone(), control)?;
+                let range = curve.domain();
+                // The curve runs the spline's own way: from the loop's end
+                // vertex to its start vertex when the loop goes against it.
+                let own = if segment.reversed {
+                    (ends.1, ends.0)
+                } else {
+                    ends
+                };
+                Ok((
+                    self.edge(Curve3::Nurbs(curve), range, own, origin),
+                    segment.reversed,
+                ))
+            }
             Shape::Line => {
                 let (start, end) = (self.point(part.start, angle), self.point(part.end, angle));
                 let line = Curve3::Line(Line::through(start, end)?);
                 let range = (0.0, start.distance(end));
-                Ok((self.edge(line, range, ends, role, &sources), false))
+                Ok((self.edge(line, range, ends, origin), false))
             }
-            Shape::Arc { radius, .. } => {
+            &Shape::Arc { radius, .. } => {
                 // The angles in the sketch that its ends are at, from where
                 // the vertices are: that is where the sketch has them,
                 // except that what is within tolerance of the axis is on
@@ -390,15 +543,12 @@ impl Builder {
                     ends
                 };
                 let range = (begin, begin + sweep);
-                Ok((
-                    self.edge(circle, range, own, role, &sources),
-                    segment.reversed,
-                ))
+                Ok((self.edge(circle, range, own, origin), segment.reversed))
             }
-            Shape::Circle { radius, .. } => {
+            &Shape::Circle { radius, .. } => {
                 let circle = turned(self, radius, part.centre)?;
                 Ok((
-                    self.edge(circle, (0.0, TAU), ends, role, &sources),
+                    self.edge(circle, (0.0, TAU), ends, origin),
                     segment.reversed,
                 ))
             }
@@ -460,83 +610,127 @@ impl Builder {
         // Vertex i is where segment i starts: the loop arrives by the
         // segment before it and leaves by segment i.
         let before = segments.iter().cycle().skip(n - 1);
-        let names: Vec<[u64; 2]> = before
+        let names: Vec<([u64; 2], u32)> = before
             .zip(segments)
-            .map(|(arriving, leaving)| [arriving.source, leaving.source])
+            .map(|(arriving, leaving)| ([arriving.source, leaving.source], leaving.piece))
             .collect();
         let (full, sweep) = (self.full, self.sweep);
+        // A full revolution of a loop with a spline in it is made in two
+        // halves (see the module documentation): the entities of the
+        // second half are the second their sources give.
+        let halved = full && parts.iter().any(|p| !p.net.is_empty());
+        let numbered = |piece: u32, half: u32| {
+            if halved {
+                piece.saturating_mul(2).saturating_add(half)
+            } else {
+                piece
+            }
+        };
+        // The corners at an end of a spline: there the halves meet in a
+        // vertex, and the circle about the axis is two arcs.
+        let is_spline: Vec<bool> = parts.iter().map(|p| !p.net.is_empty()).collect();
+        let spline_before = is_spline.iter().cycle().skip(n - 1);
+        let cut: Vec<bool> = is_spline
+            .iter()
+            .zip(spline_before)
+            .map(|(&leaving, &arriving)| full && (leaving || arriving))
+            .collect();
 
         // Vertices: at the start, then at the end. One on the axis is the
         // same at both; a full revolution has only those at the start, and
         // none where no edge would use them: on the axis, and on a whole
-        // circle.
+        // circle. Where a full revolution is in two halves, the end is
+        // half a turn on.
+        let turn_end = if full { PI } else { sweep };
         let mut low: Vec<Option<VertexId>> = Vec::with_capacity(n);
-        for (part, name) in parts.iter().zip(&names) {
+        for ((part, (name, piece)), &cut_here) in parts.iter().zip(&names).zip(&cut) {
             let wanted = if full {
-                part.start.rho > 0.0 && !whole_circle
+                (part.start.rho > 0.0 && !whole_circle) || cut_here
             } else {
                 true
             };
             low.push(wanted.then(|| {
                 let point = self.point(part.start, 0.0);
-                self.vertex(point, Role::StartVertex, *name)
+                let origin = Origin::of_piece(Role::StartVertex, name, numbered(*piece, 0));
+                self.vertex(point, origin)
             }));
         }
         let mut high: Vec<Option<VertexId>> = Vec::with_capacity(n);
-        for ((part, name), &same) in parts.iter().zip(&names).zip(&low) {
-            high.push(if full || part.start.rho == 0.0 {
+        for (((part, (name, piece)), &same), &cut_here) in
+            parts.iter().zip(&names).zip(&low).zip(&cut)
+        {
+            high.push(if part.start.rho == 0.0 || (full && !cut_here) {
                 same
             } else {
-                let point = self.point(part.start, sweep);
-                Some(self.vertex(point, Role::EndVertex, *name))
+                let point = self.point(part.start, turn_end);
+                let origin = Origin::of_piece(Role::EndVertex, name, numbered(*piece, 0));
+                Some(self.vertex(point, origin))
             });
         }
 
-        // The profile's edges at the start and at the end. A line on the
-        // axis is one edge for both.
+        // The profile's edges at the start and at the end (in a full
+        // revolution: of the splines only, at the start and half a turn
+        // on). A line on the axis is one edge for both.
         let mut bottom: Vec<Option<(EdgeId, bool)>> = vec![None; n];
         let mut top: Vec<Option<(EdgeId, bool)>> = vec![None; n];
-        if !full {
-            for (layer, angle, role) in [(0, 0.0, Role::StartEdge), (1, sweep, Role::EndEdge)] {
-                let vertices = if layer == 0 { &low } else { &high };
-                let after = vertices.iter().cycle().skip(1);
-                let mut made = Vec::with_capacity(n);
-                for (i, (part, (&here, &there))) in
-                    parts.iter().zip(vertices.iter().zip(after)).enumerate()
-                {
-                    let shared = bottom.get(i).copied().flatten();
-                    made.push(match (part.face.is_none(), shared, layer) {
-                        (true, Some(edge), 1) => Some(edge),
-                        _ => {
-                            let (Some(here), Some(there)) = (here, there) else {
-                                return Err(invalid("a loop lost a vertex"));
-                            };
-                            Some(self.profile_edge(part, angle, (here, there), role)?)
-                        }
-                    });
+        for (layer, angle, role) in [(0, 0.0, Role::StartEdge), (1, turn_end, Role::EndEdge)] {
+            let vertices = if layer == 0 { &low } else { &high };
+            let after = vertices.iter().cycle().skip(1);
+            let mut made = Vec::with_capacity(n);
+            for (i, (part, (&here, &there))) in
+                parts.iter().zip(vertices.iter().zip(after)).enumerate()
+            {
+                if full && part.net.is_empty() {
+                    made.push(None);
+                    continue;
                 }
-                if layer == 0 {
-                    bottom = made;
-                } else {
-                    top = made;
-                }
+                let shared = bottom.get(i).copied().flatten();
+                made.push(match (part.face.is_none(), shared, layer) {
+                    (true, Some(edge), 1) => Some(edge),
+                    _ => {
+                        let (Some(here), Some(there)) = (here, there) else {
+                            return Err(invalid("a loop lost a vertex"));
+                        };
+                        let origin = Origin::of_piece(
+                            role,
+                            &[part.segment.source],
+                            numbered(part.segment.piece, 0),
+                        );
+                        Some(self.profile_edge(part, angle, (here, there), origin)?)
+                    }
+                });
+            }
+            if layer == 0 {
+                bottom = made;
+            } else {
+                top = made;
             }
         }
 
-        // The circle or arc about the axis that each vertex off it sweeps.
-        let mut arcs: Vec<Option<EdgeId>> = Vec::with_capacity(n);
-        for (((part, name), &from), &to) in parts.iter().zip(&names).zip(&low).zip(&high) {
-            arcs.push(if part.start.rho > 0.0 && !whole_circle {
+        // The circle or arc about the axis that each vertex off it sweeps;
+        // two arcs where a full revolution is in two halves.
+        let mut arcs: Vec<Vec<EdgeId>> = Vec::with_capacity(n);
+        for ((((part, (name, piece)), &from), &to), &cut_here) in
+            parts.iter().zip(&names).zip(&low).zip(&high).zip(&cut)
+        {
+            let mut made = Vec::new();
+            if part.start.rho > 0.0 && !whole_circle {
                 let (Some(from), Some(to)) = (from, to) else {
                     return Err(invalid("a loop lost a vertex"));
                 };
                 let circle =
                     Curve3::Circle(Circle::new(self.level(part.start.z)?, part.start.rho)?);
-                let range = (0.0, if full { TAU } else { sweep });
-                Some(self.edge(circle, range, (from, to), Role::LateralEdge, name))
-            } else {
-                None
-            });
+                let stretches: &[Stretch] = if cut_here {
+                    &[((0.0, PI), (from, to), 0), ((PI, TAU), (to, from), 1)]
+                } else {
+                    &[((0.0, if full { TAU } else { sweep }), (from, to), 0)]
+                };
+                for &(range, ends, half) in stretches {
+                    let origin = Origin::of_piece(Role::LateralEdge, name, numbered(*piece, half));
+                    made.push(self.edge(circle.clone(), range, ends, origin));
+                }
+            }
+            arcs.push(made);
         }
 
         // Seen from outside, which is to the right of the loop, a profile
@@ -545,63 +739,98 @@ impl Builder {
         // its end edge and down the arc of its start vertex. To the right
         // of the axis it is the mirror image.
         let along = self.side > 0.0;
+        let none: Vec<EdgeId> = Vec::new();
         let mut groups: Vec<Vec<FaceId>> = Vec::new();
-        let after = arcs.iter().cycle().skip(1);
-        for (i, (part, (&here, &there))) in parts.iter().zip(arcs.iter().zip(after)).enumerate() {
+        for (i, part) in parts.iter().enumerate() {
             let Some((surface, reversed)) = part.face.clone() else {
                 continue;
             };
-            let mut loops = Vec::new();
-            if full {
-                // Left of the circle at its start when the profile is to
-                // the right of the axis, and the other way round.
-                for (arc, against) in [(here, along), (there, !along)] {
-                    if let Some(arc) = arc {
-                        loops.push(self.body.add_loop(vec![coedge(arc, against)]));
-                    }
+            let here = arcs.get(i).unwrap_or(&none);
+            let there = arcs.get((i + 1) % n).unwrap_or(&none);
+            let (source, piece) = (part.segment.source, part.segment.piece);
+            // The ring of a face between the profile's edge `first` where
+            // its turn starts and `last` where it ends, in half `half`.
+            let ring = |b: &mut Builder,
+                        (first, first_against): (EdgeId, bool),
+                        (last, last_against): (EdgeId, bool),
+                        half: usize| {
+                let (here, there) = (here.get(half).copied(), there.get(half).copied());
+                let mut ring = Vec::with_capacity(4);
+                if along {
+                    ring.push(coedge(first, first_against));
+                    ring.extend(there.map(|arc| coedge(arc, false)));
+                    ring.push(coedge(last, !last_against));
+                    ring.extend(here.map(|arc| coedge(arc, true)));
+                } else {
+                    ring.push(coedge(first, !first_against));
+                    ring.extend(here.map(|arc| coedge(arc, false)));
+                    ring.push(coedge(last, last_against));
+                    ring.extend(there.map(|arc| coedge(arc, true)));
                 }
-            } else {
-                let (Some(&Some((first, first_against))), Some(&Some((last, last_against)))) =
-                    (bottom.get(i), top.get(i))
-                else {
+                b.body.add_loop(ring)
+            };
+            let edges = (
+                bottom.get(i).copied().flatten(),
+                top.get(i).copied().flatten(),
+            );
+            let mut made = Vec::with_capacity(2);
+            if let (true, Shape::Spline(spline)) = (full, &part.segment.shape) {
+                // Two halves: from the start edge to the one half a turn
+                // on, and from that one back to the start edge.
+                let (Some(first), Some(last)) = edges else {
                     return Err(invalid("a loop lost an edge"));
                 };
-                if whole_circle {
-                    loops.push(
-                        self.body
-                            .add_loop(vec![coedge(first, first_against != !along)]),
-                    );
-                    loops.push(
-                        self.body
-                            .add_loop(vec![coedge(last, last_against != along)]),
-                    );
-                } else {
-                    let mut ring = Vec::with_capacity(4);
-                    if along {
-                        ring.push(coedge(first, first_against));
-                        ring.extend(there.map(|arc| coedge(arc, false)));
-                        ring.push(coedge(last, !last_against));
-                        ring.extend(here.map(|arc| coedge(arc, true)));
-                    } else {
-                        ring.push(coedge(first, !first_against));
-                        ring.extend(here.map(|arc| coedge(arc, false)));
-                        ring.push(coedge(last, last_against));
-                        ring.extend(there.map(|arc| coedge(arc, true)));
-                    }
-                    loops.push(self.body.add_loop(ring));
+                let second = self.spline_surface(spline, &part.net, PI, PI)?;
+                let first_loop = ring(self, first, last, 0);
+                let second_loop = ring(self, last, first, 1);
+                for (surface, ring, half) in [
+                    (surface, first_loop, 0),
+                    (Surface::Nurbs(second), second_loop, 1),
+                ] {
+                    let origin = Origin::of_piece(Role::Side, &[source], numbered(piece, half));
+                    made.push(self.face(surface, reversed, vec![ring], origin));
                 }
+            } else {
+                let mut loops = Vec::new();
+                if full {
+                    // Left of the circle at its start when the profile is
+                    // to the right of the axis, and the other way round. A
+                    // circle in two arcs is gone round in their order, or
+                    // against both from the second.
+                    for (arcs, against) in [(here, along), (there, !along)] {
+                        let mut round: Vec<Coedge> =
+                            arcs.iter().map(|&arc| coedge(arc, against)).collect();
+                        if against {
+                            round.reverse();
+                        }
+                        if !round.is_empty() {
+                            loops.push(self.body.add_loop(round));
+                        }
+                    }
+                } else {
+                    let (Some((first, first_against)), Some((last, last_against))) = edges else {
+                        return Err(invalid("a loop lost an edge"));
+                    };
+                    if whole_circle {
+                        loops.push(
+                            self.body
+                                .add_loop(vec![coedge(first, first_against != !along)]),
+                        );
+                        loops.push(
+                            self.body
+                                .add_loop(vec![coedge(last, last_against != along)]),
+                        );
+                    } else {
+                        loops.push(ring(self, (first, first_against), (last, last_against), 0));
+                    }
+                }
+                let origin = Origin::of_piece(Role::Side, &[source], numbered(piece, 0));
+                made.push(self.face(surface, reversed, loops, origin));
             }
-            let face = self.face(
-                surface,
-                reversed,
-                loops,
-                Role::Side,
-                vec![part.segment.source],
-            );
             // Faces either side of a vertex on the axis share no edge.
             match groups.last_mut() {
-                Some(group) if part.start.rho > 0.0 => group.push(face),
-                _ => groups.push(vec![face]),
+                Some(group) if part.start.rho > 0.0 => group.extend(made),
+                _ => groups.push(made),
             }
         }
         // The loop is closed: its last faces join its first across vertex 0.
@@ -626,6 +855,52 @@ impl Builder {
         })
     }
 }
+
+/// The control polygon of an arc about the origin, as rational quadratic
+/// pieces: per control point its x, y and weight, with the knots.
+struct Ring {
+    points: Vec<(f64, f64, f64)>,
+    knots: Vec<f64>,
+}
+
+/// The unit arc from the angle `from` through `sweep` (at most a full
+/// turn) in equal pieces of at most a quarter turn: each a rational
+/// quadratic Bézier arc whose middle control point is where the tangents
+/// at its ends meet, with the cosine of half its angle as weight (*The
+/// NURBS Book* §7.3). The parameter runs over `[0, 1]`.
+fn arcs_about(from: f64, sweep: f64) -> Ring {
+    let pieces = if sweep > 1.5 * PI + 1e-9 {
+        4_u8
+    } else if sweep > PI + 1e-9 {
+        3
+    } else if sweep > FRAC_PI_2 + 1e-9 {
+        2
+    } else {
+        1
+    };
+    let half = sweep / (2.0 * f64::from(pieces));
+    let weight = half.cos();
+    let mut points = Vec::with_capacity(2 * usize::from(pieces) + 1);
+    for k in 0..=2 * pieces {
+        let (sin, cos) = (from + half * f64::from(k)).sin_cos();
+        points.push(if k % 2 == 0 {
+            (cos, sin, 1.0)
+        } else {
+            (cos / weight, sin / weight, weight)
+        });
+    }
+    let mut knots = vec![0.0; 3];
+    for k in 1..pieces {
+        let knot = f64::from(k) / f64::from(pieces);
+        knots.extend([knot, knot]);
+    }
+    knots.extend([1.0; 3]);
+    Ring { points, knots }
+}
+
+/// A stretch of the circle a vertex sweeps: its range of angles, the
+/// vertices at its ends and which half of a full revolution it is in.
+type Stretch = ((f64, f64), (VertexId, VertexId), u32);
 
 struct Swept {
     /// The side faces, grouped by what is connected through shared edges.
@@ -716,19 +991,7 @@ pub fn revolve(
             .flat_map(|p| std::iter::once(&p.outer).chain(&p.holes))
             .flat_map(|l| l.segments.iter())
     };
-    let mut ids: Vec<u64> = all_segments().map(|s| s.source).collect();
-    ids.sort_unstable();
-    if ids.iter().zip(ids.iter().skip(1)).any(|(a, b)| a == b) {
-        return Err(invalid("a curve id is used by more than one segment"));
-    }
-    // Before anything is measured against the axis: a spline is not a
-    // line or an arc there either.
-    if let Some(spline) = all_segments().find(|s| matches!(s.shape, Shape::Spline(_))) {
-        return Err(KernelError::UnsupportedCurve {
-            id: spline.source,
-            reason: SPLINE,
-        });
-    }
+    each_curve_once(profiles)?;
 
     let axis = Axis {
         point: axis_point,
@@ -765,6 +1028,7 @@ pub fn revolve(
             .map(|s| s.source)
             .collect();
         curves.sort_unstable();
+        curves.dedup();
         curves.truncate(MAX_REPORTED);
         return Err(KernelError::CrossesAxis { curves });
     }
@@ -838,21 +1102,18 @@ pub fn revolve(
         let Some((start_cap, end_cap)) = caps else {
             continue;
         };
-        let mut sources: Vec<u64> = profile.outer.segments.iter().map(|s| s.source).collect();
-        sources.sort_unstable();
+        let sources = cap_sources(&profile.outer);
         faces.push(b.face(
             Surface::Plane(Plane::new(start_cap)),
             false,
             start_loops,
-            Role::StartCap,
-            sources.clone(),
+            Origin::new(Role::StartCap, &sources),
         ));
         faces.push(b.face(
             Surface::Plane(Plane::new(end_cap)),
             false,
             end_loops,
-            Role::EndCap,
-            sources,
+            Origin::new(Role::EndCap, &sources),
         ));
         b.body.add_shell(faces);
     }

@@ -449,6 +449,10 @@ pub enum NameRole {
     EndVertex,
     /// The image of an entity of another body; `sources` is the instance.
     Copy,
+    /// One of several entities the name in `of` would name at once (the
+    /// faces a spline sweeps when it is cut into pieces or turned a full
+    /// turn); `sources` is its number, from 1.
+    Piece,
     /// An entity of a primitive; `sources` is its number.
     Face,
     Edge,
