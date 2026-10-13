@@ -1276,13 +1276,13 @@ fn pairs_that_once_fooled_the_detector() {
     }
     // A block and a slot with a hole, united: a flat face with a neck
     // narrower than the first mesh is fine. The polygon of the hole's rim
-    // crossed the face's border and the tessellator refused the face; a
-    // finer mesh is tried now.
+    // crossed the face's border and the tessellator refused the face. It
+    // samples such an edge finer now, so the first mesh is enough.
     let (a, b) = random_pair(1_000_370, Placement::General, 1e-3);
     let union = boolean(&a, &b, Union, &tolerance(1e-3)).unwrap().body;
     let found = inspect(&union, 1e-3);
     assert!(found.is_spotless(), "{found}");
-    assert_eq!(found.passes, 2, "{found}");
+    assert_eq!(found.passes, 1, "{found}");
 }
 
 /// The long run: `cargo test --release -p craft3d-testkit --test

@@ -49,13 +49,13 @@ PhotoCraft's main oracle is free: every PSD contains Photoshop's own rendering. 
 | Box with a through hole | V = abc − πr²h |
 | Filleted box edge | V = abc − (1 − π/4) r² × edge length |
 
-In place for revolution (`crates/kernel/tests/revolve*.rs`): the profile catalogue about axes clear of it and profiles drawn against the axis, full and partial turns, either side of the axis, at three scales on tilted planes, volume and area to 1e-10; full turns against the primitives; a seeded random run. The faces a revolution makes are checked on their own in `crates/topo/tests/mass_revolved.rs` (torus segments, sphere segments and wedges, cone wedges).
+In place for revolution (`crates/kernel/tests/revolve*.rs`): the profile catalogue about axes clear of it and profiles drawn against the axis, full and partial turns, either side of the axis, at three scales on tilted planes, volume and area to 1e-10; full turns against the primitives; a seeded random run. The faces a revolution makes are checked on their own in `crates/topo/tests/mass_revolved.rs` (torus segments, sphere segments and wedges, cone wedges). That the numbers do not depend on how a surface is parametrised is checked in `crates/topo/tests/mass_frames.rs`: caps, zones, wedges and lenses of balls, each with its sphere's frame turned so that a pole lies well inside the face, well outside it, on its boundary and within 1e-12 to 0.2 of it on either side, and cone faces around, through and near the apex with the cone's frame moved along the axis and flipped; as built and inside out, at three scales, 34 000 bodies to 1e-11.
 
 `testkit` *(planned)* provides these as reference solids with their expected values, at several scales and after arbitrary rigid transforms (mass properties must be invariant or transform predictably).
 
 ### Oracle 2: topological invariants
 
-Every body an operation returns must pass `topo::check`: Euler–Poincaré (V − E + F − (L − F) = 2(S − G)), each edge of a solid used exactly twice in opposite directions, closed loops, curves on their surfaces and vertices on their curves within tolerance, consistent orientation. Expected entity counts are asserted where known (a box has 6 faces, 12 edges, 8 vertices; a box minus a through cylinder has 7 faces).
+Every body an operation returns must pass `topo::check`: Euler–Poincaré (V − E + F − (L − F) − 2H = 2(S − G), with H the faces that are a torus or a torus with holes in it; `crates/topo/tests/genus.rs` holds `topo::genus` to what hand-built bodies are, and `crates/kernel/tests/genus.rs` to what the booleans make of a torus), each edge of a solid used exactly twice in opposite directions, closed loops, curves on their surfaces and vertices on their curves within tolerance, consistent orientation. Expected entity counts are asserted where known (a box has 6 faces, 12 edges, 8 vertices; a box minus a through cylinder has 7 faces).
 
 ### Oracle 3: algebraic identities
 
@@ -127,8 +127,8 @@ What it cannot see, so that a clean result is not read as more than it is:
 - **Shallow overlaps of curved faces.** After the refinements the chordal tolerance is 1/16000 of the body's diagonal; an overlap of curved faces shallower than about six times that (four in most places) stays marginal.
 - **Curved faces lying on each other.** A pin in a hole of its own size that is not united with it is caught when both happen to be meshed alike (their triangles are then in one plane exactly, which no approximation brings about) and is only marginal when the pin is turned about its axis.
 - **Flat faces closer than twice the modelling tolerance** count as lying on each other: a wall thinner than that is reported as an overlap. The kernel refuses to make one.
-- **Contact without overlap** (shells touching along an edge or in a point, a vertex on a face) is a marginal finding at most; `topo::check` and the boolean's own refusals cover results that are not manifolds.
-- **Anything the tessellator cannot mesh** is an error, not a verdict. A face narrower than the first mesh's chordal tolerance can be refused (the polygon of a curved edge crosses its neighbour); the check then tries finer meshes before giving up.
+- **Contact without overlap** (shells touching along an edge or in a point, a vertex on a face) is a marginal finding at most; `topo::check` and the boolean's own refusals cover results that are not manifolds, with one stated allowance: a solid whose skin is pinched in a single point (a profile standing on the axis of a full revolution with one corner) passes `topo::check`, because nothing in how the body hangs together shows it (`crates/topo/tests/genus.rs`).
+- **Anything the tessellator cannot mesh** is an error, not a verdict; the check tries finer meshes before giving up. (Until 2026-10-13 a face narrower than the chordal tolerance was such a case: the polygon of a curved edge crossed its neighbour. The tessellator now samples the edge finer there, [`architecture.md`](architecture.md) §6, held to oracle 4 at forty tolerances in `crates/tess/tests/near_edges.rs`.)
 
 ## Test kinds per crate
 

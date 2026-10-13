@@ -11,7 +11,7 @@ use crate::{CommandError, Session, Workspace};
 use craft3d_doc::{AngleUnit, Document, Entity, FeatureKind, Geometry, Sketch};
 use craft3d_math::{Bbox3, Vec3};
 use craft3d_regen::{Regen, SketchResult, Status};
-use craft3d_tess::{Mesh, TessParams, tessellate_body, tessellate_edges};
+use craft3d_tess::{Mesh, TessParams, tessellate_body_and_edges};
 use craft3d_topo::mass_properties;
 use std::sync::Arc;
 
@@ -436,22 +436,19 @@ fn build(doc: &Document, regen: &Regen, revision: u64, tolerance: f64) -> Scene 
         let Some(body) = outcome.and_then(|o| o.own_body()) else {
             continue;
         };
-        let mesh = match tessellate_body(body, &tess) {
-            Ok(mesh) => mesh,
+        // The mesh and the edges in one go: the boundaries of the faces
+        // are worked out once.
+        let (mesh, edges) = match tessellate_body_and_edges(body, &tess) {
+            Ok(both) => match both.mesh {
+                Ok(mesh) => (mesh, both.edges),
+                Err(e) => {
+                    scene.problems.push(format!("{}: {e}", feature.name));
+                    continue;
+                }
+            },
             Err(e) => {
                 scene.problems.push(format!("{}: {e}", feature.name));
                 continue;
-            }
-        };
-        // The mesh was made from these same points, so this cannot fail
-        // where that did not; if it does, the body is shown without edges.
-        let edges = match tessellate_edges(body, &tess) {
-            Ok(edges) => edges,
-            Err(e) => {
-                scene
-                    .problems
-                    .push(format!("{}: its edges cannot be drawn: {e}", feature.name));
-                Vec::new()
             }
         };
         let Ok(vertex_base) = u32::try_from(scene.mesh.positions.len()) else {

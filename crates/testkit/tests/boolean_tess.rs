@@ -363,11 +363,11 @@ fn meshes_of_curved_boolean_results_are_closed_and_converge() {
     assert_eq!(names, EXPECTED_REFUSALS, "{refused:#?}");
 }
 
-/// Boolean results the tessellator does not mesh yet: the zone of a sphere
-/// between two circles about its axis (it says the loops do not bound a
-/// region). The body is right: it passes the checker and its volume and
-/// area are the closed form's, in crates/kernel/tests/boolean_surfaces.rs.
-const EXPECTED_REFUSALS: [&str; 1] = ["a ball with a hole through it"];
+/// Boolean results the tessellator does not mesh: none. (The zone of a
+/// sphere between two circles, a ball with a hole through it, was one
+/// until the tessellator learnt a sphere face that is everything outside
+/// its loops.)
+const EXPECTED_REFUSALS: [&str; 0] = [];
 
 #[test]
 fn meshes_of_boolean_results_are_closed_and_converge() {

@@ -4,9 +4,19 @@
 //! derivatives come from the hodograph (the derivative of a B-spline is a
 //! B-spline of one degree less) and the quotient rule. Reference: Piegl &
 //! Tiller, *The NURBS Book*, 2nd ed., ch. 2–4 and §7.5 (circles).
+//!
+//! Evaluation is local and does not allocate: the homogeneous net is made
+//! once when the spline is made, and a call touches only the `degree + 1`
+//! control points (per direction) of the knot span it lands in, on the
+//! stack. The blend factors depend on the knots and the parameter alone, so
+//! a surface works them out once per direction and not once per row. The
+//! arithmetic on the control points is the same, in the same order, as
+//! reducing every row in full, so the results are the same bit for bit
+//! (`tests/spline_eval.rs` keeps that older algorithm to compare with).
 
 use crate::{BezierPatch, GeomError, MAX_DEGREE};
 use craft3d_math::{Frame, Vec3};
+use std::fmt;
 
 /// Largest accepted number of control points per direction.
 pub const MAX_CONTROL_POINTS: usize = 1 << 16;
@@ -86,89 +96,156 @@ fn domain_of(knots: &[f64], degree: usize) -> (f64, f64) {
     }
 }
 
-/// De Boor's algorithm: the point at `t` of the B-spline with the given
-/// knots, degree and homogeneous control points. `t` is clamped to the
-/// domain. The inputs satisfy `check_knots`.
-fn de_boor(knots: &[f64], degree: usize, ctrl: &[H], t: f64) -> H {
-    let zero = H {
-        p: Vec3::ZERO,
-        w: 0.0,
-    };
-    let knot = |i: usize| knots.get(i).copied().unwrap_or(0.0);
-    let (start, end) = domain_of(knots, degree);
-    // NaN compares false both ways and falls through to `start`.
-    let t = if t > start { t.min(end) } else { start };
-    // The knot span [span, span + 1) holding t; the last one is closed.
-    let span = knots
-        .partition_point(|&k| k <= t)
-        .saturating_sub(1)
-        .clamp(degree, ctrl.len().saturating_sub(1));
-    let first = span - degree;
-    let mut d: Vec<H> = ctrl.iter().skip(first).take(degree + 1).copied().collect();
-    for r in 1..=degree {
-        d = d
-            .iter()
-            .zip(d.iter().skip(1))
-            .enumerate()
-            .map(|(j, (&a, &b))| {
-                let (lo, hi) = (knot(first + r + j), knot(span + 1 + j));
-                // lo < hi inside a non-empty span; guard the division anyway.
-                let alpha = if hi > lo { (t - lo) / (hi - lo) } else { 0.0 };
-                a.lerp(b, alpha)
-            })
-            .collect();
-    }
-    d.first().copied().unwrap_or(zero)
+const ZERO: H = H {
+    p: Vec3::ZERO,
+    w: 0.0,
+};
+
+/// What evaluating a spline at one parameter needs from its knot vector, and
+/// nothing from its control points: the knot span and the blend factors of
+/// de Boor's algorithm, for the spline and for its hodograph (the derivative
+/// spline, one degree lower, on the same knots without the first and last).
+/// A surface works these out once per direction and uses them for every row.
+///
+/// `N` is the room per level and must be above the degree; a shorter array
+/// only drops terms, it cannot panic.
+struct Along<const N: usize> {
+    degree: usize,
+    /// Index of the first of the `degree + 1` control points with influence.
+    first: usize,
+    /// `alpha[r][j]`: the factor of level `r` (from 1) between the points
+    /// `j` and `j + 1` of the level before.
+    alpha: [[f64; N]; N],
+    /// The same for the hodograph, of degree `degree − 1`.
+    hodograph_alpha: [[f64; N]; N],
+    /// `degree / (knot difference)` per pair of neighbouring control points.
+    hodograph_scale: [f64; N],
 }
 
-/// Knots and control points of the derivative spline (degree − 1).
-fn hodograph(knots: &[f64], degree: usize, ctrl: &[H]) -> (Vec<f64>, Vec<H>) {
-    let knot = |i: usize| knots.get(i).copied().unwrap_or(0.0);
-    let points = ctrl
-        .iter()
-        .zip(ctrl.iter().skip(1))
-        .enumerate()
-        .map(|(i, (a, b))| {
-            let span = knot(i + degree + 1) - knot(i + 1);
-            // A zero span means the two points have no influence here.
-            let scale = if span > 0.0 {
-                degree as f64 / span
-            } else {
-                0.0
-            };
-            H {
-                p: (b.p - a.p) * scale,
-                w: (b.w - a.w) * scale,
-            }
-        })
-        .collect();
-    let inner = knots
-        .iter()
-        .skip(1)
-        .take(knots.len().saturating_sub(2))
-        .copied()
-        .collect();
-    (inner, points)
-}
-
-/// The homogeneous derivative at `t`; zero for degree 1 splines' missing
-/// lower degree is handled by the caller never passing degree 0.
-fn de_boor_derivative(knots: &[f64], degree: usize, ctrl: &[H], t: f64) -> H {
-    let (inner, points) = hodograph(knots, degree, ctrl);
-    if degree == 1 {
-        // Degree 0: piecewise constant; pick the span's single value.
+impl<const N: usize> Along<N> {
+    /// For the spline with the given (checked) knots, degree and number of
+    /// control points at `t`, clamped to the domain. Without `derivative`
+    /// the hodograph's numbers are left at zero.
+    fn new(knots: &[f64], degree: usize, count: usize, t: f64, derivative: bool) -> Self {
         let (start, end) = domain_of(knots, degree);
+        // NaN compares false both ways and falls through to `start`.
         let t = if t > start { t.min(end) } else { start };
+        // The knot span [span, span + 1) holding t; the last one is closed.
         let span = knots
             .partition_point(|&k| k <= t)
             .saturating_sub(1)
-            .clamp(1, ctrl.len().saturating_sub(1));
-        return points.get(span - 1).copied().unwrap_or(H {
-            p: Vec3::ZERO,
-            w: 0.0,
-        });
+            .min(count.saturating_sub(1))
+            .max(degree);
+        let first = span - degree;
+        let mut along = Self {
+            degree,
+            first,
+            alpha: [[0.0; N]; N],
+            hodograph_alpha: [[0.0; N]; N],
+            hodograph_scale: [0.0; N],
+        };
+        // The only knots that matter here: `first + 1 ..= span + degree`,
+        // `degree` of them up to the span and `degree` after it.
+        let (below, above) = knots
+            .get(first + 1..)
+            .and_then(|k| k.split_at_checked(degree))
+            .unwrap_or_default();
+        // lo < hi inside a non-empty span; the division is guarded anyway.
+        let factor = |lo: f64, hi: f64| if hi > lo { (t - lo) / (hi - lo) } else { 0.0 };
+        // Level r blends with the knots `first + r + j` and `span + 1 + j`.
+        for (r, level) in along.alpha.iter_mut().enumerate().skip(1) {
+            let Some(lo) = below.get(r - 1..) else { break };
+            for ((alpha, &lo), &hi) in level.iter_mut().zip(lo).zip(above) {
+                *alpha = factor(lo, hi);
+            }
+        }
+        if derivative {
+            for ((scale, &lo), &hi) in along.hodograph_scale.iter_mut().zip(below).zip(above) {
+                let width = hi - lo;
+                // A zero width means the two points have no influence here.
+                *scale = if width > 0.0 {
+                    degree as f64 / width
+                } else {
+                    0.0
+                };
+            }
+            // The hodograph's knots are these knots without the first and
+            // the last, its span is `span − 1` and its first point is
+            // `first`: both domains are [knot(degree), knot(count)], and
+            // dropping the first knot moves every index down by one.
+            // (Dropping the last knot matters only at the end of a clamped
+            // domain, where the span is the last one either way.) So its
+            // level r blends with the knots `first + r + j + 1` and
+            // `span + 1 + j` of this spline.
+            for (r, level) in along.hodograph_alpha.iter_mut().enumerate().skip(1) {
+                let Some(lo) = below.get(r..) else { break };
+                for ((alpha, &lo), &hi) in level.iter_mut().zip(lo).zip(above) {
+                    *alpha = factor(lo, hi);
+                }
+            }
+        }
+        along
     }
-    de_boor(&inner, degree - 1, &points, t)
+
+    /// The `degree + 1` control points with influence, out of one row.
+    #[inline]
+    fn local(&self, row: &[H]) -> [H; N] {
+        let mut d = [ZERO; N];
+        let local = row.get(self.first..).unwrap_or_default();
+        for (slot, &h) in d.iter_mut().zip(local).take(self.degree + 1) {
+            *slot = h;
+        }
+        d
+    }
+
+    /// The hodograph's control points of the local points `d`: `degree` of
+    /// them (the derivative of a B-spline is a B-spline of one degree less).
+    #[inline]
+    fn hodograph(&self, d: &[H; N]) -> [H; N] {
+        let mut e = [ZERO; N];
+        let pairs = d.iter().zip(d.iter().skip(1)).take(self.degree);
+        for ((slot, (a, b)), &scale) in e.iter_mut().zip(pairs).zip(&self.hodograph_scale) {
+            *slot = H {
+                p: (b.p - a.p) * scale,
+                w: (b.w - a.w) * scale,
+            };
+        }
+        e
+    }
+
+    /// De Boor's algorithm on the local points: the homogeneous point.
+    #[inline]
+    fn point(&self, d: [H; N]) -> H {
+        reduce(d, &self.alpha, self.degree)
+    }
+
+    /// The homogeneous derivative, from the local points' hodograph. For a
+    /// degree 1 spline that is the span's single value.
+    #[inline]
+    fn derivative(&self, e: [H; N]) -> H {
+        reduce(e, &self.hodograph_alpha, self.degree.saturating_sub(1))
+    }
+}
+
+/// De Boor's triangle in place: level `r` replaces the points `r..=degree`
+/// by blends of neighbours of the level before; the point is the last one.
+#[inline]
+fn reduce<const N: usize>(mut d: [H; N], alpha: &[[f64; N]; N], degree: usize) -> H {
+    let Some(points) = d.get_mut(..=degree) else {
+        return ZERO;
+    };
+    for (r, level) in alpha.iter().enumerate().skip(1) {
+        let Some((before, rest)) = points.get_mut(r - 1..).and_then(<[H]>::split_first_mut) else {
+            break;
+        };
+        let mut before = *before;
+        for (slot, &alpha) in rest.iter_mut().zip(level) {
+            let here = *slot;
+            *slot = before.lerp(here, alpha);
+            before = here;
+        }
+    }
+    points.last().copied().unwrap_or(ZERO)
 }
 
 fn homogeneous(ctrl: &[Vec3], weights: &[f64]) -> Vec<H> {
@@ -178,13 +255,104 @@ fn homogeneous(ctrl: &[Vec3], weights: &[f64]) -> Vec<H> {
         .collect()
 }
 
+fn curve_at<const N: usize>(c: &NurbsCurve, t: f64, derivative: bool) -> (Vec3, Vec3) {
+    let along = Along::<N>::new(&c.knots, c.degree, c.homogeneous.len(), t, derivative);
+    let d = along.local(&c.homogeneous);
+    let da = if derivative {
+        along.derivative(along.hodograph(&d))
+    } else {
+        ZERO
+    };
+    let a = along.point(d);
+    // Weights are positive, so a.w > 0 (convex combination).
+    let point = a.p * (1.0 / a.w);
+    if !derivative {
+        return (point, Vec3::ZERO);
+    }
+    (point, (da.p - point * da.w) * (1.0 / a.w))
+}
+
+fn surface_at<const N: usize>(
+    s: &NurbsSurface,
+    u: f64,
+    v: f64,
+    derivative: bool,
+) -> (Vec3, Vec3, Vec3) {
+    let count_v = s.count_v.max(1);
+    let count_u = s.homogeneous.len() / count_v;
+    let along_u = Along::<N>::new(&s.knots_u, s.degree_u, count_u, u, derivative);
+    let along_v = Along::<N>::new(&s.knots_v, s.degree_v, count_v, v, derivative);
+    // Collapse the rows with influence along v, then work along u.
+    let mut row_points = [ZERO; N];
+    let mut row_derivs = [ZERO; N];
+    for ((point, deriv), row) in row_points
+        .iter_mut()
+        .zip(row_derivs.iter_mut())
+        .zip(s.homogeneous.chunks(count_v).skip(along_u.first))
+        .take(s.degree_u + 1)
+    {
+        let d = along_v.local(row);
+        if derivative {
+            *deriv = along_v.derivative(along_v.hodograph(&d));
+        }
+        *point = along_v.point(d);
+    }
+    // The rows are already the local ones: no offset along u any more.
+    let a = along_u.point(row_points);
+    let point = a.p * (1.0 / a.w);
+    if !derivative {
+        return (point, Vec3::ZERO, Vec3::ZERO);
+    }
+    let a_u = along_u.derivative(along_u.hodograph(&row_points));
+    let a_v = along_u.point(row_derivs);
+    let partial = |d: H| (d.p - point * d.w) * (1.0 / a.w);
+    (point, partial(a_u), partial(a_v))
+}
+
+/// Picks the working room for a degree: small arrays for the usual low
+/// degrees, so clearing them costs next to nothing.
+macro_rules! sized_for {
+    ($degree:expr, $call:ident($($arg:expr),*)) => {
+        match $degree {
+            0..=3 => $call::<4>($($arg),*),
+            4..=7 => $call::<8>($($arg),*),
+            8..=15 => $call::<16>($($arg),*),
+            _ => $call::<{ MAX_DEGREE + 1 }>($($arg),*),
+        }
+    };
+}
+
 /// A non-uniform rational B-spline curve.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone)]
 pub struct NurbsCurve {
     degree: usize,
     knots: Vec<f64>,
     ctrl: Vec<Vec3>,
     weights: Vec<f64>,
+    /// `ctrl` times `weights`, made once in [`NurbsCurve::new`] (the only
+    /// place a curve is made) so evaluation does not rebuild it. Not part of
+    /// the curve's value: left out of `==` and of the debug text.
+    homogeneous: Vec<H>,
+}
+
+impl PartialEq for NurbsCurve {
+    fn eq(&self, o: &Self) -> bool {
+        self.degree == o.degree
+            && self.knots == o.knots
+            && self.ctrl == o.ctrl
+            && self.weights == o.weights
+    }
+}
+
+impl fmt::Debug for NurbsCurve {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NurbsCurve")
+            .field("degree", &self.degree)
+            .field("knots", &self.knots)
+            .field("ctrl", &self.ctrl)
+            .field("weights", &self.weights)
+            .finish()
+    }
 }
 
 impl NurbsCurve {
@@ -196,11 +364,13 @@ impl NurbsCurve {
     ) -> Result<Self, GeomError> {
         check_knots(&knots, degree, ctrl.len())?;
         check_points(&ctrl, &weights)?;
+        let homogeneous = homogeneous(&ctrl, &weights);
         Ok(Self {
             degree,
             knots,
             ctrl,
             weights,
+            homogeneous,
         })
     }
 
@@ -266,23 +436,18 @@ impl NurbsCurve {
 
     /// Point at `t`, clamped to the domain.
     pub fn eval(&self, t: f64) -> Vec3 {
-        self.derivatives(t).0
+        sized_for!(self.degree, curve_at(self, t, false)).0
     }
 
     /// `(point, first derivative)` at `t`, clamped to the domain.
     pub fn derivatives(&self, t: f64) -> (Vec3, Vec3) {
-        let h = homogeneous(&self.ctrl, &self.weights);
-        let a = de_boor(&self.knots, self.degree, &h, t);
-        let da = de_boor_derivative(&self.knots, self.degree, &h, t);
-        // Weights are positive, so a.w > 0 (convex combination).
-        let point = a.p * (1.0 / a.w);
-        (point, (da.p - point * da.w) * (1.0 / a.w))
+        sized_for!(self.degree, curve_at(self, t, true))
     }
 }
 
 /// A non-uniform rational B-spline surface. Control points are row-major:
 /// point `(i, j)` (`i` along u) is at index `i * count_v + j`.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone)]
 pub struct NurbsSurface {
     degree_u: usize,
     degree_v: usize,
@@ -291,6 +456,36 @@ pub struct NurbsSurface {
     count_v: usize,
     ctrl: Vec<Vec3>,
     weights: Vec<f64>,
+    /// `ctrl` times `weights`, made once in [`NurbsSurface::new`] (the only
+    /// place a surface is made) so evaluation does not rebuild it. Not part
+    /// of the surface's value: left out of `==` and of the debug text.
+    homogeneous: Vec<H>,
+}
+
+impl PartialEq for NurbsSurface {
+    fn eq(&self, o: &Self) -> bool {
+        self.degree_u == o.degree_u
+            && self.degree_v == o.degree_v
+            && self.knots_u == o.knots_u
+            && self.knots_v == o.knots_v
+            && self.count_v == o.count_v
+            && self.ctrl == o.ctrl
+            && self.weights == o.weights
+    }
+}
+
+impl fmt::Debug for NurbsSurface {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NurbsSurface")
+            .field("degree_u", &self.degree_u)
+            .field("degree_v", &self.degree_v)
+            .field("knots_u", &self.knots_u)
+            .field("knots_v", &self.knots_v)
+            .field("count_v", &self.count_v)
+            .field("ctrl", &self.ctrl)
+            .field("weights", &self.weights)
+            .finish()
+    }
 }
 
 impl NurbsSurface {
@@ -316,6 +511,7 @@ impl NurbsSurface {
             });
         }
         check_points(&ctrl, &weights)?;
+        let homogeneous = homogeneous(&ctrl, &weights);
         Ok(Self {
             degree_u,
             degree_v,
@@ -324,6 +520,7 @@ impl NurbsSurface {
             count_v,
             ctrl,
             weights,
+            homogeneous,
         })
     }
 
@@ -383,25 +580,14 @@ impl NurbsSurface {
     }
 
     pub fn eval(&self, u: f64, v: f64) -> Vec3 {
-        self.derivatives(u, v).0
+        let degree = self.degree_u.max(self.degree_v);
+        sized_for!(degree, surface_at(self, u, v, false)).0
     }
 
     /// `(point, ∂/∂u, ∂/∂v)` at `(u, v)`, clamped to the domain.
     pub fn derivatives(&self, u: f64, v: f64) -> (Vec3, Vec3, Vec3) {
-        let h = homogeneous(&self.ctrl, &self.weights);
-        // Collapse every row along v, then work along u.
-        let mut row_points = Vec::new();
-        let mut row_derivs = Vec::new();
-        for row in h.chunks(self.count_v.max(1)) {
-            row_points.push(de_boor(&self.knots_v, self.degree_v, row, v));
-            row_derivs.push(de_boor_derivative(&self.knots_v, self.degree_v, row, v));
-        }
-        let a = de_boor(&self.knots_u, self.degree_u, &row_points, u);
-        let a_u = de_boor_derivative(&self.knots_u, self.degree_u, &row_points, u);
-        let a_v = de_boor(&self.knots_u, self.degree_u, &row_derivs, u);
-        let point = a.p * (1.0 / a.w);
-        let partial = |d: H| (d.p - point * d.w) * (1.0 / a.w);
-        (point, partial(a_u), partial(a_v))
+        let degree = self.degree_u.max(self.degree_v);
+        sized_for!(degree, surface_at(self, u, v, true))
     }
 }
 
