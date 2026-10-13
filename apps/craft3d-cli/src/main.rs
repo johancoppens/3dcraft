@@ -138,6 +138,7 @@ Options:
 const HELP_SERVE: &str = "\
 Usage: craft3d-cli serve [--automation-read-root DIR]
                          [--automation-write-root DIR]
+                         [--recovery-dir DIR|none] [--autosave-interval SECONDS]
 
 Serves the JSON-lines protocol on stdin and stdout until stdin closes: one
 request per line, {\"id\": ..., \"method\": ..., \"params\": {...}}, and one
@@ -149,11 +150,18 @@ direction is denied.
 
 Options:
   --automation-read-root DIR    An existing directory commands may read from
-  --automation-write-root DIR   An existing directory commands may write to";
+  --automation-write-root DIR   An existing directory commands may write to
+  --recovery-dir DIR|none       Autosave documents with unsaved changes into
+                                DIR, and offer what a killed server left
+                                there (recovery.list, recovery.open,
+                                recovery.discard). Default: none
+  --autosave-interval SECONDS   How long after a change a document is
+                                autosaved. Default: 30";
 
 const HELP_MCP: &str = "\
 Usage: craft3d-cli mcp [--automation-read-root DIR]
                        [--automation-write-root DIR]
+                       [--recovery-dir DIR|none] [--autosave-interval SECONDS]
        craft3d-cli mcp --bridge PORT --control-token-file FILE
 
 Serves the Model Context Protocol on stdin and stdout (JSON-RPC 2.0, one
@@ -173,6 +181,12 @@ then the ones that window was given.
 Options:
   --automation-read-root DIR    An existing directory commands may read from
   --automation-write-root DIR   An existing directory commands may write to
+  --recovery-dir DIR|none       Autosave documents with unsaved changes into
+                                DIR, and offer what a killed server left
+                                there (recovery.list, recovery.open,
+                                recovery.discard). Default: none
+  --autosave-interval SECONDS   How long after a change a document is
+                                autosaved. Default: 30
   --bridge PORT                 Port (or 127.0.0.1:PORT) of a running window
   --control-token-file FILE     The token file that window was started with";
 

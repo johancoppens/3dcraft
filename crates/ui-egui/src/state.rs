@@ -139,6 +139,9 @@ pub struct Panels {
     pub tree: bool,
     /// The status bar, at the bottom.
     pub status: bool,
+    /// The bar that offers the documents a crashed 3DCraft left behind.
+    /// Shown only while there are any; its Later button turns this off.
+    pub recovery: bool,
 }
 
 impl Default for Panels {
@@ -146,6 +149,7 @@ impl Default for Panels {
         Self {
             tree: true,
             status: true,
+            recovery: true,
         }
     }
 }
@@ -317,6 +321,7 @@ mod tests {
             panels: Panels {
                 tree: false,
                 status: true,
+                recovery: false,
             },
             selected_feature: Some("F3".to_string()),
             notice: "Step 2: the post".to_string(),
@@ -332,7 +337,7 @@ mod tests {
                 "camera": {"target": [1.5, -2.0, 3.25], "distance": 42.0, "yaw": 135.0,
                            "pitch": -20.0, "projection": "orthographic", "fovY": 45.0,
                            "autoFit": false},
-                "panels": {"tree": false, "status": true},
+                "panels": {"tree": false, "status": true, "recovery": false},
                 "selectedFeature": "F3",
                 "notice": "Step 2: the post",
                 "quality": {"chordal": 1e-4, "maxTriangles": 500_000},

@@ -247,10 +247,11 @@ impl Host {
     /// guarded like a request is.
     fn run(&mut self, command: &str, params: &Value) -> Result<Value, String> {
         let session = &mut self.session;
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             session.execute(command, params)
-        }))
-        .unwrap_or_else(|_| {
+        }));
+        ran.unwrap_or_else(|_| {
+            self.autosave_after_a_panic();
             Err(CommandError::new(
                 "internal error (a bug in 3DCraft, please report it); the document was kept",
             ))
@@ -261,18 +262,28 @@ impl Host {
     /// Runs `command` on the file at `path` with the person's own access
     /// to it (see the module's documentation). The automation workspace is
     /// back in place when this returns, whatever happened.
-    fn run_as_user(&mut self, command: &str, path: &Path, write: bool) -> Result<Value, String> {
+    fn run_as_user(
+        &mut self,
+        command: &str,
+        path: &Path,
+        write: bool,
+        extra: Option<(&str, Value)>,
+    ) -> Result<Value, String> {
         let (grant, text) = grant(path, write).map_err(|e| format!("{command}: {e}"))?;
         let automation = self.session.workspace().clone();
         self.session.set_workspace(grant);
-        let outcome = self.run(command, &json!({ "path": text }));
+        let mut params = json!({ "path": text });
+        if let (Some((key, value)), Some(map)) = (extra, params.as_object_mut()) {
+            map.insert(key.to_string(), value);
+        }
+        let outcome = self.run(command, &params);
         self.session.set_workspace(automation);
         outcome
     }
 
     /// Opens the file the person chose and makes it the active document.
     pub fn open_as_user(&mut self, path: &Path) -> Result<Value, String> {
-        let outcome = self.run_as_user("file.open", path, false);
+        let outcome = self.run_as_user("file.open", path, false, None);
         self.report("file.open", &outcome);
         self.shell.sync(&mut self.session);
         outcome
@@ -280,8 +291,24 @@ impl Host {
 
     /// Saves the active document to the file the person chose, which
     /// becomes its own file.
+    ///
+    /// A recovered document is not saved over an original that changed
+    /// since it was autosaved (`file.save`'s `overwrite`): a plain Save
+    /// reports that, and Save As, where the person names the file in the
+    /// dialog and the dialog asks before replacing one, goes through
+    /// ([`Self::save_chosen_as_user`]).
     pub fn save_as_user(&mut self, path: &Path) -> Result<Value, String> {
-        let outcome = self.run_as_user("file.save", path, true);
+        let outcome = self.run_as_user("file.save", path, true, None);
+        self.report("file.save", &outcome);
+        self.shell.sync(&mut self.session);
+        outcome
+    }
+
+    /// Saves the active document to the file the person just named in the
+    /// save dialog, replacing what is there: the dialog asked.
+    pub fn save_chosen_as_user(&mut self, path: &Path) -> Result<Value, String> {
+        let confirmed = Some(("overwrite", Value::Bool(true)));
+        let outcome = self.run_as_user("file.save", path, true, confirmed);
         self.report("file.save", &outcome);
         self.shell.sync(&mut self.session);
         outcome
@@ -348,7 +375,7 @@ impl Host {
                 let _ = self.open_as_user(&path);
             }
             Ok(Choice::Save(path)) => {
-                let _ = self.save_as_user(&path);
+                let _ = self.save_chosen_as_user(&path);
             }
             Ok(Choice::Cancelled(label)) => self.report(label, &Err("cancelled".to_string())),
             Err(error) => self.report("file", &Err(error)),
@@ -754,6 +781,76 @@ mod tests {
 
     fn text_of(path: &Path) -> &str {
         text(path)
+    }
+
+    /// A host whose session autosaves into `dir` when asked to, by a
+    /// clock that stands still.
+    fn recovering(dir: &Path) -> Host {
+        let mut session = Session::new(Workspace::none());
+        session.enable_recovery(craft3d_engine::RecoveryOptions::manual(
+            dir,
+            Arc::new(craft3d_engine::ManualClock::new(1_800_000_000)),
+        ));
+        Host::new(session)
+    }
+
+    #[test]
+    fn a_recovered_document_replaces_a_changed_original_only_through_save_as() {
+        let dir = workdir("recovered");
+        let (mine, recovery) = (subdir(&dir, "mine"), subdir(&dir, "recovery"));
+        let part = mine.join("part.3dcraft");
+        write_part(&part, 5.0);
+
+        // The person opens their file, an edit is autosaved, the app dies.
+        let mut crashed = recovering(&recovery);
+        crashed.open_as_user(&part).unwrap();
+        crashed
+            .session
+            .execute(
+                "feature.edit",
+                &json!({"feature": "F1", "size": [10, 10, 7]}),
+            )
+            .unwrap();
+        crashed.session.autosave_now();
+        drop(crashed);
+        // Meanwhile the file on disk became another version.
+        write_part(&part, 9.0);
+
+        let mut host = recovering(&recovery);
+        let found = host.session.recovery_overview().found;
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].path.as_deref(), Some(text(&part)));
+        host.session
+            .execute("recovery.open", &json!({"id": found[0].id}))
+            .unwrap();
+        assert_eq!(volume(&mut host), 700.0);
+        assert!(host.session.document_status().unwrap().dirty);
+
+        // Save: its own file, without a dialog, as always; refused,
+        // because that file is no longer the one the recovery was of.
+        let person = Person::who_answers(&[Some(&part)]);
+        let mut dialogs = picker(&person);
+        act(&mut host, &mut dialogs, FileAction::Save);
+        assert_eq!(person.asked(), Vec::<String>::new());
+        let (label, ok, said) = last(&host);
+        assert_eq!((label.as_str(), ok), ("file.save", false));
+        assert!(said.contains("changed on disk"), "{said}");
+        assert_eq!(volume_on_disk(&part), 900.0);
+        assert!(host.session.document_status().unwrap().dirty);
+        assert_eq!(listing(&recovery).len(), 3, "the recovery file is kept");
+
+        // Save As: the person names the file in the dialog, which asks
+        // before replacing one. That is the confirmation.
+        act(&mut host, &mut dialogs, FileAction::SaveAs);
+        assert_eq!(person.asked(), ["save part.3dcraft"]);
+        let (label, ok, said) = last(&host);
+        assert_eq!((label.as_str(), ok), ("file.save", true), "{said}");
+        assert_eq!(volume_on_disk(&part), 700.0);
+        assert!(!host.session.document_status().unwrap().dirty);
+        assert_eq!(listing(&recovery).len(), 1, "only the lock is left");
+        // The workspace is the automation's again.
+        assert_eq!(*host.session.workspace(), Workspace::none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

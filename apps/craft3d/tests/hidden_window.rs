@@ -98,6 +98,9 @@ fn quits_unseen(renderer: &str, display: &str, dir: &Path) {
         .args(["--renderer", renderer, "--control", "0"])
         .arg("--control-token-file")
         .arg(&token_file)
+        // Not the developer's own recovery directory.
+        .arg("--recovery-dir")
+        .arg(dir.join(format!("recovery-{renderer}")))
         .env("WAYLAND_DISPLAY", display)
         .env_remove("DISPLAY")
         .stdin(Stdio::null())

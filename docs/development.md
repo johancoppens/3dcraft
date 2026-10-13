@@ -71,6 +71,8 @@ cargo run --release -p craft3d -- --control 7878 --control-token-file .private/c
 
 Geometry code is slow at `opt-level 0`, so the workspace profile builds dependencies at `opt-level 2`. Use `--release` for anything interactive or timed.
 
+**Autosave and crash recovery.** The app autosaves documents with unsaved changes into `3dcraft/recovery` in the per-user state directory (`~/.local/state` on Linux), 30 s after a change, and a start after a crash or a kill shows a bar with what was left there: Recover, Discard (asks twice), Later. The status bar says `autosaved 2 min ago`, or why autosave failed. `--recovery-dir DIR|none` and `--autosave-interval SECONDS` (or `CRAFT3D_RECOVERY_DIR`, `CRAFT3D_AUTOSAVE_INTERVAL`) change that; closing the window, or `ui.quit`, is a clean end and leaves nothing. **A window started for a test or by an agent, and ended by killing it, would leave its documents in the developer's own recovery directory: start it with `--recovery-dir none` or a directory of the test's own** (`apps/craft3d/tests/hidden_window.rs` and `killed_window.rs` do). The recovery directory is described in [`file-formats.md`](file-formats.md), the three `recovery.*` commands in [`control-protocol.md`](control-protocol.md).
+
 The dev profile builds with `debug = "line-tables-only"`: backtraces keep file and line, and test binaries link faster. To inspect local variables in a debugger, build with `CARGO_PROFILE_DEV_DEBUG=true`.
 
 ### Faster test loops
@@ -203,6 +205,8 @@ The desktop app writes `log` records to standard error and to `logs/craft3d.log`
 | `CRAFT3D_CONTROL_PORT` | Same as `--control <port>` |
 | `CRAFT3D_CONTROL_TOKEN_FILE` | Read, or create for a server, the control bearer-token file |
 | `CRAFT3D_AUTOMATION_READ_ROOT` / `CRAFT3D_AUTOMATION_WRITE_ROOT` | Desktop app only: automation file roots. Headless CLI modes require the flags |
+| `CRAFT3D_RECOVERY_DIR` | Desktop app only: where documents with unsaved changes are autosaved and where a start looks for what a crash left behind; `none` turns autosave off. Same as `--recovery-dir`. Default: `3dcraft/recovery` in the per-user state directory (`$XDG_STATE_HOME` or `~/.local/state`; `~/Library/Application Support`; `%LOCALAPPDATA%`). `craft3d-cli serve` and `mcp` take the flag only, and do not autosave without it. Tests and scripts that start the app pass a directory of their own |
+| `CRAFT3D_AUTOSAVE_INTERVAL` | Desktop app only: seconds after a change until a document is autosaved (0.01 to 86400, default 30). Same as `--autosave-interval` |
 | `CRAFT3D_RENDERER` | `auto` (the GPU when there is an adapter, else the CPU; the default) or `cpu`: what shades the viewport. Same as `--renderer` |
 | `CRAFT3D_CONFIG_DIR` | Settings and log directory override (tests, portable use) |
 | `CRAFT3D_THREADS` | Worker thread count (determinism tests run with 1, 2 and N) |

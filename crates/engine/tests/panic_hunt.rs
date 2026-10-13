@@ -11,7 +11,7 @@
     clippy::indexing_slicing
 )]
 
-use craft3d_engine::{Access, Session, Workspace};
+use craft3d_engine::{Access, ManualClock, RecoveryOptions, Session, Workspace};
 use craft3d_testkit::parallel::map_parallel;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
@@ -138,6 +138,54 @@ fn workspace(dir: &std::path::Path) -> Workspace {
         read: Access::Root(dir.to_path_buf()),
         write: Access::Root(dir.to_path_buf()),
     }
+}
+
+/// The id of the document in [`seed_recovery`]'s directory.
+const SEED_ID: &str = "0123456789abcdef-1";
+
+/// A recovery directory as a launch that died left it: one document with
+/// its record, and no lock held. Built once; [`with_recovery`] copies it.
+fn seed_recovery(dir: &std::path::Path) -> PathBuf {
+    let seed = dir.join("recovery-seed");
+    std::fs::create_dir_all(&seed).unwrap();
+    let mut s = Session::new(Workspace::none());
+    s.execute("file.new", &json!({})).unwrap();
+    s.execute("feature.block", &json!({"size": [1, 2, 3]}))
+        .unwrap();
+    s.set_workspace(workspace(&seed));
+    s.execute("file.save", &json!({"path": format!("{SEED_ID}.3dcraft")}))
+        .unwrap();
+    std::fs::write(
+        seed.join(format!("{SEED_ID}.json")),
+        br#"{"recovery_version": 1, "name": "seed.3dcraft", "path": "seed.3dcraft", "revision": 1, "time": 1800000000, "pid": 1}"#,
+    )
+    .unwrap();
+    seed
+}
+
+/// Gives the session a recovery directory of its own beneath `dir`,
+/// holding what `seed` holds when the command is one that looks there.
+/// The clock stands still and there is no thread: nothing is autosaved
+/// but what a command asks for.
+fn with_recovery(
+    mut s: Session,
+    dir: &std::path::Path,
+    seed: &std::path::Path,
+    id: &str,
+) -> Session {
+    let recovery = dir.join("recovery");
+    if id.starts_with("recovery.") {
+        std::fs::create_dir_all(&recovery).unwrap();
+        for entry in std::fs::read_dir(seed).unwrap() {
+            let entry = entry.unwrap();
+            std::fs::copy(entry.path(), recovery.join(entry.file_name())).unwrap();
+        }
+    }
+    s.enable_recovery(RecoveryOptions::manual(
+        recovery,
+        std::sync::Arc::new(ManualClock::new(1_800_000_000)),
+    ));
+    s
 }
 
 fn session(dir: &std::path::Path, state: usize) -> Session {
@@ -271,6 +319,7 @@ fn no_command_panics_on_adversarial_parameters() {
     let values = adversarial();
     let commands = Session::commands();
     let templates: Vec<Session> = (0..4).map(|state| session(&dir, state)).collect();
+    let seed = seed_recovery(&dir);
     // One case per command, state and adversarial value: the value as the
     // params itself, under each parameter, under all of them at once, and
     // with one parameter left valid in turn. The cases are independent of
@@ -297,14 +346,16 @@ fn no_command_panics_on_adversarial_parameters() {
         // as in a session that has been working for a while. Both must
         // hold, and the clone saves rebuilding the document a hundred
         // thousand times.
+        // Every session autosaves into a recovery directory of its own.
         let fresh = |dir: &std::path::Path| -> Session {
-            if v == 0 {
+            let s = if v == 0 {
                 session(dir, state)
             } else {
                 let mut s = templates[state].clone();
                 s.set_workspace(workspace(dir));
                 s
-            }
+            };
+            with_recovery(s, dir, &seed, spec.id)
         };
         let mut runs = 0_usize;
         let mut check = |params: &Value| {
@@ -337,6 +388,8 @@ fn no_command_panics_on_adversarial_parameters() {
             ("radius", json!(1)),
             ("major", json!(5)),
             ("axis", json!([0, 0, 1])),
+            ("id", json!(SEED_ID)),
+            ("all", json!(true)),
         ] {
             if all.contains_key(key) {
                 let mut mixed = all.clone();

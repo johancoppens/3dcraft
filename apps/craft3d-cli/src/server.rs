@@ -6,7 +6,7 @@
 
 use crate::args::{self, Arg, Args};
 use crate::{CliError, Parsed};
-use craft3d_engine::{Access, Session, Workspace};
+use craft3d_engine::{Access, RecoveryOptions, Session, Workspace};
 use std::io::ErrorKind;
 
 pub(crate) enum Protocol {
@@ -70,11 +70,54 @@ fn bridge_token(path: &str) -> Result<String, CliError> {
     }
 }
 
+/// How the session autosaves: not at all unless `--recovery-dir` names a
+/// directory (`none` says so explicitly). The directory is made absolute,
+/// so it does not move with the working directory; it need not exist yet.
+fn recovery(
+    dir: Option<&str>,
+    interval: Option<&str>,
+) -> Result<Option<RecoveryOptions>, CliError> {
+    let interval = interval
+        .map(|text| {
+            craft3d_engine::parse_autosave_interval(text)
+                .map_err(|e| CliError::Usage(format!("`--autosave-interval`: {e}")))
+        })
+        .transpose()?;
+    let dir = match dir {
+        None | Some("none") => {
+            if interval.is_some() {
+                return Err(CliError::Usage(
+                    "`--autosave-interval` needs `--recovery-dir DIR`: without a recovery directory nothing is autosaved".to_string(),
+                ));
+            }
+            return Ok(None);
+        }
+        Some("") => {
+            return Err(CliError::Usage(
+                "`--recovery-dir` needs a directory, or `none`".to_string(),
+            ));
+        }
+        Some(dir) => dir,
+    };
+    let path = std::path::absolute(dir).map_err(|e| {
+        CliError::Failed(format!(
+            "`--recovery-dir {dir}`: cannot use this directory: {e}"
+        ))
+    })?;
+    let mut options = RecoveryOptions::new(path);
+    if let Some(interval) = interval {
+        options = options.with_interval(interval);
+    }
+    Ok(Some(options))
+}
+
 pub(crate) fn serve(mut args: Args, protocol: Protocol) -> Result<Parsed<()>, CliError> {
     let mut workspace = Workspace::none();
     let mut seen = (false, false);
     let mut bridge = None;
     let mut token_file = None;
+    let mut recovery_dir = None;
+    let mut interval = None;
     while let Some(arg) = args.next() {
         match arg {
             Arg::Flag { name, inline } => match name.as_str() {
@@ -96,6 +139,17 @@ pub(crate) fn serve(mut args: Args, protocol: Protocol) -> Result<Parsed<()>, Cl
                         workspace.write = access;
                     }
                 }
+                "--recovery-dir" | "--autosave-interval" => {
+                    let slot = if name == "--recovery-dir" {
+                        &mut recovery_dir
+                    } else {
+                        &mut interval
+                    };
+                    if slot.is_some() {
+                        return Err(CliError::Usage(format!("`{name}` was given twice")));
+                    }
+                    *slot = Some(args.value(&name, inline)?);
+                }
                 "--bridge" | "--control-token-file" if matches!(protocol, Protocol::Mcp) => {
                     let slot = if name == "--bridge" {
                         &mut bridge
@@ -115,6 +169,7 @@ pub(crate) fn serve(mut args: Args, protocol: Protocol) -> Result<Parsed<()>, Cl
         }
     }
 
+    let recovery = recovery(recovery_dir.as_deref(), interval.as_deref())?;
     let input = std::io::stdin().lock();
     let output = std::io::stdout().lock();
     if bridge.is_some() || token_file.is_some() {
@@ -128,6 +183,11 @@ pub(crate) fn serve(mut args: Args, protocol: Protocol) -> Result<Parsed<()>, Cl
                 "with `--bridge` the files a command may touch are the window's: give the root flags to `craft3d`, not here".to_string(),
             ));
         }
+        if recovery.is_some() {
+            return Err(CliError::Usage(
+                "with `--bridge` the documents are the window's, and so is their autosave: give `--recovery-dir` to `craft3d`, not here".to_string(),
+            ));
+        }
         let config = craft3d_automation::bridge::BridgeConfig::new(
             bridge_address(&address)?,
             bridge_token(&token_file)?,
@@ -135,10 +195,16 @@ pub(crate) fn serve(mut args: Args, protocol: Protocol) -> Result<Parsed<()>, Cl
         return finish(craft3d_automation::bridge::serve(&config, input, output));
     }
     let mut session = Session::new(workspace);
+    if let Some(options) = recovery {
+        session.enable_recovery(options);
+    }
     let served = match protocol {
         Protocol::JsonLines => craft3d_automation::rpc::serve(&mut session, input, output),
         Protocol::Mcp => craft3d_automation::mcp::serve(&mut session, input, output),
     };
+    // The client closed its end: a clean end, which leaves no recovery
+    // files. A server that is killed never gets here and leaves them.
+    session.end_recovery();
     finish(served)
 }
 

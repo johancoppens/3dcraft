@@ -6,6 +6,7 @@
 
 use craft3d_ui_egui::RendererChoice;
 use std::path::PathBuf;
+use std::time::Duration;
 
 pub const HELP: &str = "\
 craft3d: the 3DCraft desktop viewer
@@ -13,6 +14,7 @@ craft3d: the 3DCraft desktop viewer
 Usage: craft3d [FILE] [--control PORT --control-token-file FILE]
                [--automation-read-root DIR] [--automation-write-root DIR]
                [--renderer auto|cpu]
+               [--recovery-dir DIR|none] [--autosave-interval SECONDS]
        craft3d --version | --help
 
 Opens FILE (a .3dcraft file) when one is given, and shows the active
@@ -35,10 +37,20 @@ Options:
                               (the GPU when there is one, else the CPU; the
                               default) or cpu (the reference renderer, to
                               compare). The screenshot is always the CPU's.
+  --recovery-dir DIR|none     Where documents with unsaved changes are
+                              autosaved, and where the next start looks for
+                              what a crash left behind. Default: 3dcraft/
+                              recovery in your state directory (Linux:
+                              $XDG_STATE_HOME or ~/.local/state; macOS:
+                              ~/Library/Application Support; Windows:
+                              %LOCALAPPDATA%). none turns autosave off.
+  --autosave-interval SECONDS How long after a change a document is
+                              autosaved. Default: 30
 
 Environment: CRAFT3D_CONTROL_PORT, CRAFT3D_CONTROL_TOKEN_FILE,
-CRAFT3D_AUTOMATION_READ_ROOT, CRAFT3D_AUTOMATION_WRITE_ROOT and
-CRAFT3D_RENDERER stand in for the flags of the same name.
+CRAFT3D_AUTOMATION_READ_ROOT, CRAFT3D_AUTOMATION_WRITE_ROOT,
+CRAFT3D_RENDERER, CRAFT3D_RECOVERY_DIR and CRAFT3D_AUTOSAVE_INTERVAL stand
+in for the flags of the same name.
 
 Mouse: drag to orbit, right-drag or shift-drag to pan, wheel to zoom, F to
 frame everything.
@@ -56,6 +68,13 @@ pub struct Options {
     pub write_root: Option<String>,
     /// What renders the viewport.
     pub renderer: RendererChoice,
+    /// Where documents are autosaved; `None` for no autosave. Parsing
+    /// fills in the platform's default; `Options::default()` has none, so
+    /// nothing that builds its options by hand writes there.
+    pub recovery_dir: Option<PathBuf>,
+    /// How long after a change a document is autosaved; `None` for the
+    /// engine's default.
+    pub autosave_interval: Option<Duration>,
 }
 
 /// What the command line asked for.
@@ -83,6 +102,7 @@ pub fn parse(
     let mut args = args.into_iter();
     let mut flags_ended = false;
     let mut seen: Vec<String> = Vec::new();
+    let mut recovery_dir: Option<String> = None;
     while let Some(arg) = args.next() {
         if flags_ended || !arg.starts_with('-') || arg == "-" {
             if options.file.is_some() {
@@ -116,7 +136,9 @@ pub fn parse(
             | "--control-token-file"
             | "--automation-read-root"
             | "--automation-write-root"
-            | "--renderer" => {
+            | "--renderer"
+            | "--recovery-dir"
+            | "--autosave-interval" => {
                 if seen.contains(&name) {
                     return Err(format!("`{name}` was given twice"));
                 }
@@ -127,6 +149,13 @@ pub fn parse(
                     "--control" => options.control = Some(port(&value, "--control")?),
                     "--control-token-file" => options.token_file = Some(PathBuf::from(value)),
                     "--automation-read-root" => options.read_root = Some(value),
+                    "--recovery-dir" => recovery_dir = Some(value),
+                    "--autosave-interval" => {
+                        options.autosave_interval = Some(
+                            craft3d_engine::parse_autosave_interval(&value)
+                                .map_err(|e| format!("--autosave-interval: {e}"))?,
+                        );
+                    }
                     "--renderer" => {
                         options.renderer = RendererChoice::parse(&value)
                             .map_err(|e| format!("--renderer: {e}"))?;
@@ -159,6 +188,21 @@ pub fn parse(
         options.renderer =
             RendererChoice::parse(&value).map_err(|e| format!("CRAFT3D_RENDERER: {e}"))?;
     }
+    if options.autosave_interval.is_none()
+        && let Some(value) = from_env("CRAFT3D_AUTOSAVE_INTERVAL")
+    {
+        options.autosave_interval = Some(
+            craft3d_engine::parse_autosave_interval(&value)
+                .map_err(|e| format!("CRAFT3D_AUTOSAVE_INTERVAL: {e}"))?,
+        );
+    }
+    // The flag, else the variable, else the platform's place; `none`
+    // turns autosave off, and so does a platform that names no place.
+    options.recovery_dir = match recovery_dir.or_else(|| from_env("CRAFT3D_RECOVERY_DIR")) {
+        Some(none) if none == "none" => None,
+        Some(dir) => Some(PathBuf::from(dir)),
+        None => craft3d_engine::default_recovery_directory(env),
+    };
     if options.control.is_some() && options.token_file.is_none() {
         return Err(
             "`--control` needs `--control-token-file FILE`: the token is never given on the command line"
@@ -212,6 +256,8 @@ mod tests {
                 read_root: Some("work".to_string()),
                 write_root: Some("out dir".to_string()),
                 renderer: RendererChoice::Auto,
+                recovery_dir: None,
+                autosave_interval: None,
             }
         );
         // Port 0 asks for a free one.
@@ -259,6 +305,78 @@ mod tests {
         let error = super::parse(Vec::new(), &bad).unwrap_err();
         assert!(error.starts_with("CRAFT3D_RENDERER:"), "{error}");
         assert!(HELP.contains("--renderer") && HELP.contains("CRAFT3D_RENDERER"));
+    }
+
+    #[test]
+    fn the_recovery_directory_is_a_flag_a_variable_or_the_platforms_place() {
+        // Nothing in the environment names a place: no autosave.
+        assert_eq!(options(&[]).recovery_dir, None);
+        assert_eq!(
+            options(&["--recovery-dir", "rec"]).recovery_dir,
+            Some(PathBuf::from("rec"))
+        );
+        assert_eq!(options(&["--recovery-dir=none"]).recovery_dir, None);
+        assert_eq!(
+            options(&["--autosave-interval", "2.5"]).autosave_interval,
+            Some(Duration::from_millis(2500))
+        );
+        for (args, words) in [
+            (&["--recovery-dir"][..], "needs a value"),
+            (&["--recovery-dir=a", "--recovery-dir=b"], "given twice"),
+            (
+                &["--autosave-interval", "soon"],
+                "--autosave-interval: `soon`",
+            ),
+            (&["--autosave-interval", "0"], "above 0"),
+        ] {
+            let error = run(args).unwrap_err();
+            assert!(error.contains(words), "{args:?}: {error}");
+        }
+        let home = |name: &str| match name {
+            "HOME" => Some("/home/ann".to_string()),
+            "LOCALAPPDATA" => Some("C:\\Users\\ann\\AppData\\Local".to_string()),
+            _ => None,
+        };
+        let with = |env: &dyn Fn(&str) -> Option<String>, list: &[&str]| match parse(
+            list.iter().map(|s| (*s).to_string()),
+            env,
+        ) {
+            Ok(Parsed::Run(options)) => options,
+            other => panic!("{other:?}"),
+        };
+        // The platform's place, when the environment names one.
+        let default = with(&home, &[]).recovery_dir.unwrap();
+        assert!(default.ends_with("3dcraft/recovery"), "{default:?}");
+        assert_eq!(
+            Some(default),
+            craft3d_engine::default_recovery_directory(&home)
+        );
+        assert_eq!(with(&home, &["--recovery-dir", "none"]).recovery_dir, None);
+        let env = |name: &str| match name {
+            "HOME" => Some("/home/ann".to_string()),
+            "CRAFT3D_RECOVERY_DIR" => Some("/var/rec".to_string()),
+            "CRAFT3D_AUTOSAVE_INTERVAL" => Some("5".to_string()),
+            _ => None,
+        };
+        let from_env = with(&env, &[]);
+        assert_eq!(from_env.recovery_dir, Some(PathBuf::from("/var/rec")));
+        assert_eq!(from_env.autosave_interval, Some(Duration::from_secs(5)));
+        // A flag wins over its variable.
+        let flags = with(&env, &["--recovery-dir=mine", "--autosave-interval=9"]);
+        assert_eq!(flags.recovery_dir, Some(PathBuf::from("mine")));
+        assert_eq!(flags.autosave_interval, Some(Duration::from_secs(9)));
+        let off = |name: &str| (name == "CRAFT3D_RECOVERY_DIR").then(|| "none".to_string());
+        assert_eq!(with(&off, &[]).recovery_dir, None);
+        let bad = |name: &str| (name == "CRAFT3D_AUTOSAVE_INTERVAL").then(|| "-1".to_string());
+        let error = super::parse(Vec::new(), &bad).unwrap_err();
+        assert!(error.starts_with("CRAFT3D_AUTOSAVE_INTERVAL:"), "{error}");
+        for word in [
+            "--recovery-dir",
+            "--autosave-interval",
+            "CRAFT3D_RECOVERY_DIR",
+        ] {
+            assert!(HELP.contains(word), "{word}");
+        }
     }
 
     #[test]
