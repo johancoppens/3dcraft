@@ -68,38 +68,71 @@ impl fmt::Display for GeomError {
 
 impl std::error::Error for GeomError {}
 
-/// Bernstein basis of degree `n` at `t`: `n + 1` values that sum to 1.
-fn bernstein(n: usize, t: f64) -> Vec<f64> {
-    let mut b = Vec::with_capacity(n + 1);
-    b.push(1.0);
-    for _ in 0..n {
-        let mut next = Vec::with_capacity(n + 1);
-        let mut prev = 0.0;
-        for &c in &b {
-            next.push(t * prev + (1.0 - t) * c);
-            prev = c;
-        }
-        next.push(t * prev);
-        b = next;
-    }
-    b
+/// The values of a basis of degree at most [`MAX_DEGREE`], on the stack:
+/// a slice of `degree + 1` numbers.
+struct Basis {
+    values: [f64; MAX_DEGREE + 1],
+    len: usize,
 }
 
-/// First derivative of the Bernstein basis of degree `n` at `t`.
-fn bernstein_derivative(n: usize, t: f64) -> Vec<f64> {
-    let Some(lower_degree) = n.checked_sub(1) else {
-        return vec![0.0];
-    };
-    let lower = bernstein(lower_degree, t);
-    let scale = n as f64;
-    let mut d = Vec::with_capacity(n + 1);
-    let mut prev = 0.0;
-    for &c in &lower {
-        d.push(scale * (prev - c));
-        prev = c;
+impl std::ops::Deref for Basis {
+    type Target = [f64];
+
+    fn deref(&self) -> &[f64] {
+        self.values.get(..self.len).unwrap_or(&self.values)
     }
-    d.push(scale * prev);
-    d
+}
+
+/// Bernstein basis of degree `n` (at most [`MAX_DEGREE`]) at `t`: `n + 1`
+/// values that sum to 1.
+fn bernstein(n: usize, t: f64) -> Basis {
+    let n = n.min(MAX_DEGREE);
+    let mut b = [0.0; MAX_DEGREE + 1];
+    if let Some(first) = b.first_mut() {
+        *first = 1.0;
+    }
+    // Raise the degree in place: value k of degree m + 1 blends the values
+    // k − 1 and k of degree m, and the new last one has only a left parent.
+    for m in 0..n {
+        let mut prev = 0.0;
+        let mut values = b.iter_mut();
+        for slot in values.by_ref().take(m + 1) {
+            let c = *slot;
+            *slot = t * prev + (1.0 - t) * c;
+            prev = c;
+        }
+        if let Some(last) = values.next() {
+            *last = t * prev;
+        }
+    }
+    Basis {
+        values: b,
+        len: n + 1,
+    }
+}
+
+/// First derivative of the Bernstein basis of degree `n` at `t`: `n + 1`
+/// values.
+fn bernstein_derivative(n: usize, t: f64) -> Basis {
+    let n = n.min(MAX_DEGREE);
+    let mut d = [0.0; MAX_DEGREE + 1];
+    if let Some(lower_degree) = n.checked_sub(1) {
+        let lower = bernstein(lower_degree, t);
+        let scale = n as f64;
+        let mut prev = 0.0;
+        let mut values = d.iter_mut();
+        for (&c, slot) in lower.iter().zip(values.by_ref()) {
+            *slot = scale * (prev - c);
+            prev = c;
+        }
+        if let Some(last) = values.next() {
+            *last = scale * prev;
+        }
+    }
+    Basis {
+        values: d,
+        len: n + 1,
+    }
 }
 
 /// A polynomial tensor-product Bézier patch over `[0, 1] × [0, 1]`.
@@ -170,21 +203,19 @@ impl BezierPatch {
         Bbox3::from_points(self.ctrl.iter().copied())
     }
 
-    /// Sum of `wu[i] * wv[j] * P(i, j)`.
-    fn blend(&self, wu: &[f64], wv: &[f64]) -> Vec3 {
+    /// Point at `(u, v)`. Parameters outside `[0, 1]` extrapolate the
+    /// polynomial; non-finite parameters give a non-finite point.
+    pub fn eval(&self, u: f64, v: f64) -> Vec3 {
+        let bu = bernstein(self.degree_u, u);
+        let bv = bernstein(self.degree_v, v);
+        // Sum of `bu[i] * bv[j] * P(i, j)`, row by row.
         let mut sum = Vec3::ZERO;
-        for (row, &a) in self.ctrl.chunks(self.degree_v + 1).zip(wu) {
-            for (&p, &b) in row.iter().zip(wv) {
+        for (row, &a) in self.ctrl.chunks(self.degree_v + 1).zip(bu.iter()) {
+            for (&p, &b) in row.iter().zip(bv.iter()) {
                 sum += p * (a * b);
             }
         }
         sum
-    }
-
-    /// Point at `(u, v)`. Parameters outside `[0, 1]` extrapolate the
-    /// polynomial; non-finite parameters give a non-finite point.
-    pub fn eval(&self, u: f64, v: f64) -> Vec3 {
-        self.blend(&bernstein(self.degree_u, u), &bernstein(self.degree_v, v))
     }
 
     /// `(point, ∂/∂u, ∂/∂v)` at `(u, v)`.
@@ -193,11 +224,21 @@ impl BezierPatch {
         let bv = bernstein(self.degree_v, v);
         let du = bernstein_derivative(self.degree_u, u);
         let dv = bernstein_derivative(self.degree_v, v);
-        (
-            self.blend(&bu, &bv),
-            self.blend(&du, &bv),
-            self.blend(&bu, &dv),
-        )
+        // Three sums over the net in one pass; each adds its terms in the
+        // order it would have on its own.
+        let (mut point, mut along_u, mut along_v) = (Vec3::ZERO, Vec3::ZERO, Vec3::ZERO);
+        for (row, (&a, &da)) in self
+            .ctrl
+            .chunks(self.degree_v + 1)
+            .zip(bu.iter().zip(du.iter()))
+        {
+            for (&p, (&b, &db)) in row.iter().zip(bv.iter().zip(dv.iter())) {
+                point += p * (a * b);
+                along_u += p * (da * b);
+                along_v += p * (a * db);
+            }
+        }
+        (point, along_u, along_v)
     }
 
     /// Unit normal `∂u × ∂v` at `(u, v)`.
