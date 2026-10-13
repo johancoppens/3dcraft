@@ -2,6 +2,10 @@
 //! includes this file by path): run FreeCAD over a set of STEP files and
 //! compare what it measures with what we know of each body.
 
+// `!(x <= bound)` on purpose: a NaN from FreeCAD is a problem too.
+// Two tests share this file and each uses a part of it.
+#![allow(clippy::neg_cmp_op_on_partial_ord, dead_code)]
+
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -323,13 +327,11 @@ pub fn compare(case: &Case, record: &Value) -> Row {
             .push(format!("{} faces in FreeCAD, {faces} ours", count("faces")));
     }
     // FreeCAD adds seams and poles to faces we write without, and splits
-    // an edge that crosses a seam: never fewer edges or vertices.
-    if count("edges") < edges + seams + degenerated {
-        row.problems.push(format!(
-            "{} edges in FreeCAD of which {} seams and poles, {edges} ours",
-            count("edges"),
-            seams + degenerated
-        ));
+    // an edge that crosses a seam: never fewer edges or vertices. (A seam
+    // it reports may be one of ours: a spline wall has its own.)
+    if count("edges") < edges {
+        row.problems
+            .push(format!("{} edges in FreeCAD, {edges} ours", count("edges")));
     }
     if count("vertices") < vertices {
         row.problems.push(format!(

@@ -206,7 +206,8 @@ impl<'a> Graph<'a> {
         let (keyword, radii) = if let Some(circle) = entity.record("CIRCLE") {
             let r = circle.params[2].as_real().unwrap();
             (circle, (r, r))
-        } else if let Some(ellipse) = entity.record("ELLIPSE") {
+        } else {
+            let ellipse = entity.record("ELLIPSE")?;
             (
                 ellipse,
                 (
@@ -214,8 +215,6 @@ impl<'a> Graph<'a> {
                     ellipse.params[3].as_real().unwrap(),
                 ),
             )
-        } else {
-            return None;
         };
         let (origin, z, x) = self.placement(Self::reference(&keyword.params[1]));
         assert!(dot(z, x).abs() < 1e-12, "placement axes are perpendicular");
@@ -1342,18 +1341,15 @@ fn what_cannot_be_exported_is_an_error_that_says_why() {
         Surface::Plane(craft3d_geom::Plane::new(Frame::WORLD)),
         Surface::Cylinder(craft3d_geom::Cylinder::new(Frame::WORLD, 1.0).unwrap()),
         Surface::Cone(Cone::new(Frame::WORLD, 1.0, 0.3).unwrap()),
-        match &trimmed::domed_block(&Frame::WORLD, 3.0, 2.0, 1.5, true)
+        trimmed::domed_block(&Frame::WORLD, 3.0, 2.0, 1.5, true)
             .unwrap()
             .body
             .faces
-        {
-            faces => faces
-                .iter()
-                .find(|f| matches!(f.surface, Surface::Nurbs(_)))
-                .unwrap()
-                .surface
-                .clone(),
-        },
+            .iter()
+            .find(|f| matches!(f.surface, Surface::Nurbs(_)))
+            .unwrap()
+            .surface
+            .clone(),
     ] {
         let mut body = Body::new(BodyKind::Sheet);
         let kind = surface.kind();

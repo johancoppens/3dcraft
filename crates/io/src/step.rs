@@ -4,12 +4,17 @@
 //!
 //! The exchange structure (Part 21) is `craft3d-step`'s; this module knows
 //! which entities to write and what their attributes mean. The entity
-//! definitions are those of ISO 10303-42 (geometry and topology), -41 and
-//! -43 (products, representations, contexts, units). The clause numbers
-//! below are from memory of Part 42 (the standard's text is not at hand
-//! here) and may be off; every convention was also checked against what
-//! FreeCAD (an independent kernel) makes of the files: see
-//! `cargo xtask freecad` and docs/testing.md, oracle 8.
+//! definitions are those of ISO 10303-42 (clause 4, the geometry schema;
+//! clause 5, the topology schema; clause 6, the geometric model schema),
+//! and of -41 and -43 (products, representations, contexts, units). The
+//! standard's text was not at hand when this was written: each convention
+//! below names the schema and the entity whose definition it comes from
+//! (the entity definitions are subclauses 4.4, 5.4 and 6.4; their numbers
+//! within are not given, rather than given wrong), says how sure the
+//! reading is, and was checked against what FreeCAD (an independent
+//! kernel) makes of the files: see `cargo xtask freecad` and
+//! docs/testing.md, oracle 8, which also says which conventions FreeCAD
+//! can tell apart and which it repairs silently.
 //!
 //! # Mapping
 //!
@@ -32,10 +37,12 @@
 //!
 //! Each is what Part 42 says as far as remembered, with how sure that is.
 //!
-//! - **Placement** (`axis2_placement_3d`, 4.4.x): `axis` is the local z,
+//! - **Placement** (geometry schema, `axis2_placement_3d`): `axis` is the local z,
 //!   `ref_direction` the local x, y completes a right-handed frame. Both
 //!   are always written. *Sure.*
-//! - **Surface parametrisation and normal.** Part 42 gives each elementary
+//! - **Surface parametrisation and normal** (geometry schema, `plane`,
+//!   `cylindrical_surface`, `conical_surface`, `spherical_surface`,
+//!   `toroidal_surface`). Part 42 gives each elementary
 //!   surface a parametrisation in its placement (`cylindrical_surface`:
 //!   `C + R(cos u x + sin u y) + v z`; `conical_surface`:
 //!   `C + (R + v tan α)(cos u x + sin u y) + v z`; `spherical_surface`:
@@ -57,7 +64,7 @@
 //! - **Torus**: `major_radius` then `minor_radius`. *Sure.*
 //! - **Angles** (the cone's semi-angle) are in the plane angle unit of the
 //!   context: radians or degrees, as the options say.
-//! - **Curves.** `line`: `pnt + t · dir` with a `VECTOR` of magnitude 1,
+//! - **Curves** (geometry schema, `line`, `circle`, `ellipse`). `line`: `pnt + t · dir` with a `VECTOR` of magnitude 1,
 //!   so the parameter is the distance as it is here. `circle` and
 //!   `ellipse`: the angle from the placement's x, counter-clockwise about
 //!   its z; `semi_axis_1` is along x. Readers built on a kernel whose
@@ -65,23 +72,24 @@
 //!   longer semi-axis along y is written on a placement turned a quarter
 //!   about z: the same curve in the same direction. *Sure* of the
 //!   standard; the turn is a courtesy.
-//! - **Edge** (`edge_curve`, 5.4.x): `same_sense` says whether the edge
+//! - **Edge** (topology schema, `edge_curve`): `same_sense` says whether the edge
 //!   runs from its start to its end vertex in the direction of increasing
 //!   curve parameter. Edges here always do: `.T.`. The edge is the part
 //!   of the curve between the vertices; no parameter values are written,
 //!   so a closed curve used by an edge with one vertex is the whole curve.
 //!   *Sure.*
-//! - **Oriented edge** (`oriented_edge`): `orientation` `.T.` when the
+//! - **Oriented edge** (topology schema, `oriented_edge`): `orientation` `.T.` when the
 //!   loop uses the edge from start to end: the opposite of
 //!   `Coedge::reversed`. *Sure.*
-//! - **Face** (`face_surface` / `advanced_face`): `same_sense` `.T.` when
+//! - **Face** (topology schema, `face_surface` and its subtype
+//!   `advanced_face`): `same_sense` `.T.` when
 //!   the face's normal is the surface's: the opposite of
 //!   `Face::reversed`. *Sure.*
-//! - **Bounds** (`face_bound`): seen from the side the face normal points
+//! - **Bounds** (topology schema, `face_bound` and `face`): seen from the side the face normal points
 //!   to, a loop runs with the face on its left: outer boundaries
 //!   counter-clockwise, holes clockwise. That is the convention of
 //!   `craft3d-topo`, so `orientation` is `.T.`. *Sure.*
-//! - **Outer bound** (`face_outer_bound`): at most one bound of a face may
+//! - **Outer bound** (topology schema, `face_outer_bound`): at most one bound of a face may
 //!   be of this type, and none need be. It is written for a face with one
 //!   loop; for a planar face with several, for the loop that runs
 //!   counter-clockwise (exactly one must); on other surfaces for the one
@@ -91,8 +99,8 @@
 //!   *Fairly sure* that readers accept a face without one; FreeCAD does.
 //! - **Faces without loops** (a whole sphere, a whole torus): a face needs
 //!   at least one bound, and the standard gives `vertex_loop` for this
-//!   (5.4.x: a loop of a single vertex, "for example the apex of a cone or
-//!   a whole sphere"). The vertex is a point of the surface that the body
+//!   (topology schema: a loop of a single vertex, with the apex of a cone
+//!   and a whole sphere as what it is for, as remembered). The vertex is a point of the surface that the body
 //!   does not have: on a sphere its north pole (`v = π/2`), on a torus the
 //!   point `(u, v) = (0, 0)`. *Fairly sure* for the sphere; for the torus
 //!   the standard is silent as far as remembered and this is by analogy.
@@ -105,8 +113,9 @@
 //! - **Seams.** Faces on closed surfaces are written as they are here:
 //!   without a seam edge. Part 42 does not ask for one. *Sure* of the
 //!   standard; that readers cope is what the external check is for.
-//! - **Shells and solids** (`closed_shell`, `manifold_solid_brep`,
-//!   `brep_with_voids`): a closed shell's normal points away from the
+//! - **Shells and solids** (topology schema, `closed_shell` and
+//!   `oriented_closed_shell`; geometric model schema,
+//!   `manifold_solid_brep` and `brep_with_voids`): a closed shell's normal points away from the
 //!   finite region it encloses. The faces of a cavity here point away
 //!   from the material, into the cavity; so a cavity's `CLOSED_SHELL` is
 //!   written with every face turned over (`same_sense` and the bounds'
@@ -131,8 +140,8 @@
 //! `craft3d_topo::check`; a face without loops on a surface that is not a
 //! whole sphere or torus; a planar face without exactly one
 //! counter-clockwise loop; a solid whose shells cannot be told apart
-//! (cavity or lump); geometry that is not finite; a sheet body with a
-//! face that would need a vertex loop.
+//! (cavity or lump) or with a cavity outside every lump; geometry that is
+//! not finite.
 
 use crate::IoError;
 use craft3d_geom::{Curve3, NurbsCurve, NurbsSurface, Surface};
@@ -526,30 +535,16 @@ fn shell_body(body: &Body, shell: usize) -> Option<Body> {
     Some(out)
 }
 
-/// A point on a shell: a vertex of it, or a point of a face without loops.
-fn shell_points(body: &Body, shell: &Body) -> Vec<Vec3> {
+/// Points on a shell (given as a body of its own): vertices of it, and a
+/// point of each face without loops.
+fn shell_points(shell: &Body) -> Vec<Vec3> {
     let mut points = Vec::new();
     for face in &shell.faces {
         if face.loops.is_empty() {
             points.push(face.surface.eval(0.0, 0.0));
         }
-        for &loop_ in &face.loops {
-            let Some(loop_) = shell.loop_(loop_) else {
-                continue;
-            };
-            for coedge in loop_.coedges.iter().take(2) {
-                if let Some(vertex) = body
-                    .coedge_ends(*coedge)
-                    .and_then(|(start, _)| body.vertex(start))
-                {
-                    points.push(vertex.point);
-                }
-            }
-        }
-        if points.len() >= 8 {
-            break;
-        }
     }
+    points.extend(shell.vertices.iter().take(8).map(|v| v.point));
     points
 }
 
@@ -605,7 +600,7 @@ fn lumps(
             many => {
                 // The innermost lump whose outer shell has a point of the
                 // cavity inside it.
-                let points = shell_points(body, part);
+                let points = shell_points(part);
                 let mut best: Option<(f64, usize)> = None;
                 for &outer in many {
                     let Some((lump, volume)) = parts.get(outer) else {
@@ -1442,8 +1437,5 @@ pub fn export_step(
 
 /// Whether a file extension (without the dot, any case) means STEP.
 pub fn is_step_extension(extension: &str) -> bool {
-    matches!(
-        extension.to_ascii_lowercase().as_str(),
-        "step" | "stp" | "p21"
-    )
+    matches!(extension.to_ascii_lowercase().as_str(), "step" | "stp")
 }
