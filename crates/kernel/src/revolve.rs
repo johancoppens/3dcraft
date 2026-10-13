@@ -57,6 +57,9 @@ use std::f64::consts::TAU;
 
 type P2 = [f64; 2];
 
+/// Why a spline is not revolved.
+const SPLINE: &str = "a spline turns into a rational surface of revolution, which is not made yet; extrude it, or use lines and arcs";
+
 fn invalid(reason: &'static str) -> KernelError {
     KernelError::InvalidProfile { reason }
 }
@@ -256,6 +259,7 @@ impl Builder {
         };
         let mut centre = start;
         let face = match segment.shape {
+            Shape::Spline(_) => return Err(unsupported(SPLINE)),
             Shape::Line => {
                 let (across, along) = (end.rho - start.rho, end.z - start.z);
                 let length = across.hypot(along);
@@ -344,6 +348,10 @@ impl Builder {
             Ok(Curve3::Circle(Circle::new(frame, radius)?))
         };
         match segment.shape {
+            Shape::Spline(_) => Err(KernelError::UnsupportedCurve {
+                id: segment.source,
+                reason: SPLINE,
+            }),
             Shape::Line => {
                 let (start, end) = (self.point(part.start, angle), self.point(part.end, angle));
                 let line = Curve3::Line(Line::through(start, end)?);
@@ -712,6 +720,14 @@ pub fn revolve(
     ids.sort_unstable();
     if ids.iter().zip(ids.iter().skip(1)).any(|(a, b)| a == b) {
         return Err(invalid("a curve id is used by more than one segment"));
+    }
+    // Before anything is measured against the axis: a spline is not a
+    // line or an arc there either.
+    if let Some(spline) = all_segments().find(|s| matches!(s.shape, Shape::Spline(_))) {
+        return Err(KernelError::UnsupportedCurve {
+            id: spline.source,
+            reason: SPLINE,
+        });
     }
 
     let axis = Axis {
