@@ -316,7 +316,7 @@ fn status_json(status: &Status) -> (&'static str, Option<&str>) {
     }
 }
 
-fn vec3(v: Vec3) -> Value {
+pub(crate) fn vec3(v: Vec3) -> Value {
     json!([v.x, v.y, v.z])
 }
 
@@ -1324,8 +1324,8 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
 // ------------------------------------------------------------------- view
 
 /// The `box` of `view.render`: two opposite corners, in any order.
-fn view_box(value: &Value) -> Result<craft3d_math::Bbox3, CommandError> {
-    const SHAPE: &str = "view.render: `box` must be two opposite corners, [[x, y, z], [x, y, z]], \
+fn view_box(value: &Value, command: &str) -> Result<craft3d_math::Bbox3, CommandError> {
+    const SHAPE: &str = "`box` must be two opposite corners, [[x, y, z], [x, y, z]], \
                          of numbers within ±1e12 that are not the same point";
     let corner = |value: &Value| -> Option<Vec3> {
         let [x, y, z] = value.as_array()?.as_slice() else {
@@ -1342,7 +1342,97 @@ fn view_box(value: &Value) -> Result<craft3d_math::Bbox3, CommandError> {
         });
     match corners {
         Some((a, b)) if a != b => Ok(craft3d_math::Bbox3::from_points([a, b])),
-        _ => fail(SHAPE),
+        _ => fail(format!("{command}: {SHAPE}")),
+    }
+}
+
+/// How `view.render` looks at the model: the parameters `view`,
+/// `projection`, `zoom` and `box`, shared with `view.pick`, which answers
+/// what is at a position of the picture these parameters give.
+pub(crate) struct Framing {
+    command: &'static str,
+    pub view: &'static str,
+    toward_eye: Vec3,
+    up: Vec3,
+    pub orthographic: bool,
+    pub zoom: f64,
+    pub look_at: Option<craft3d_math::Bbox3>,
+}
+
+impl Framing {
+    /// The keys of the parameters it reads.
+    pub const KEYS: [&'static str; 4] = ["view", "projection", "zoom", "box"];
+
+    pub fn from_params(p: &Params, command: &'static str) -> Result<Self, CommandError> {
+        const VIEWS: [(&str, Vec3, Vec3); 7] = [
+            ("iso", Vec3::new(1.0, -1.0, 0.8), Vec3::Z),
+            ("front", Vec3::new(0.0, -1.0, 0.0), Vec3::Z),
+            ("back", Vec3::new(0.0, 1.0, 0.0), Vec3::Z),
+            ("right", Vec3::new(1.0, 0.0, 0.0), Vec3::Z),
+            ("left", Vec3::new(-1.0, 0.0, 0.0), Vec3::Z),
+            ("top", Vec3::new(0.0, 0.0, 1.0), Vec3::Y),
+            ("bottom", Vec3::new(0.0, 0.0, -1.0), Vec3::Y),
+        ];
+        let name = p.str("view")?.unwrap_or("iso");
+        let Some(&(view, toward_eye, up)) = VIEWS.iter().find(|(view, ..)| *view == name) else {
+            return fail(format!(
+                "{command}: unknown view `{name}`; use iso, front, back, left, right, top or bottom"
+            ));
+        };
+        let orthographic = match p.str("projection")?.unwrap_or("perspective") {
+            "perspective" => false,
+            "orthographic" => true,
+            other => {
+                return fail(format!(
+                    "{command}: unknown projection `{other}`; use perspective or orthographic"
+                ));
+            }
+        };
+        let zoom = match p.number("zoom")? {
+            None => 1.0,
+            Some(zoom) if (0.01..=1000.0).contains(&zoom) => zoom,
+            Some(_) => {
+                return fail(format!(
+                    "{command}: `zoom` must be a number from 0.01 to 1000"
+                ));
+            }
+        };
+        let look_at = p
+            .get("box")
+            .map(|value| view_box(value, command))
+            .transpose()?;
+        Ok(Self {
+            command,
+            view,
+            toward_eye,
+            up,
+            orthographic,
+            zoom,
+            look_at,
+        })
+    }
+
+    /// The camera for a picture of `aspect` (width over height) of a model
+    /// that fills `model`.
+    pub fn camera(&self, model: &craft3d_math::Bbox3, aspect: f64) -> Result<Camera, CommandError> {
+        let framed = self.look_at.unwrap_or(*model);
+        if self.orthographic {
+            Camera::framing_orthographic(&framed, self.toward_eye, self.up, aspect)
+        } else {
+            // A close-up is taken from outside the whole model.
+            Camera::framing_clear_of(&framed, model, self.toward_eye, self.up, 30.0, aspect)
+        }
+        .and_then(|camera| camera.zoomed(self.zoom))
+        .ok_or_else(|| {
+            CommandError::new(if self.look_at.is_some() {
+                format!(
+                    "{}: cannot frame this `box` from this view: seen from there it has no size",
+                    self.command
+                )
+            } else {
+                format!("{}: cannot frame the model", self.command)
+            })
+        })
     }
 }
 
@@ -1364,21 +1454,13 @@ fn view_render(session: &mut Session, params: &Value) -> Run {
     )?;
     let width = p.integer("width", 16, 4096)?.unwrap_or(800);
     let height = p.integer("height", 16, 4096)?.unwrap_or(600);
-    let view = p.str("view")?.unwrap_or("iso");
-    let (toward_eye, up) = match view {
-        "iso" => (Vec3::new(1.0, -1.0, 0.8), Vec3::Z),
-        "front" => (Vec3::new(0.0, -1.0, 0.0), Vec3::Z),
-        "back" => (Vec3::new(0.0, 1.0, 0.0), Vec3::Z),
-        "right" => (Vec3::new(1.0, 0.0, 0.0), Vec3::Z),
-        "left" => (Vec3::new(-1.0, 0.0, 0.0), Vec3::Z),
-        "top" => (Vec3::new(0.0, 0.0, 1.0), Vec3::Y),
-        "bottom" => (Vec3::new(0.0, 0.0, -1.0), Vec3::Y),
-        other => {
-            return fail(format!(
-                "view.render: unknown view `{other}`; use iso, front, back, left, right, top or bottom"
-            ));
-        }
-    };
+    let framing = Framing::from_params(&p, "view.render")?;
+    let (view, orthographic, zoom, look_at) = (
+        framing.view,
+        framing.orthographic,
+        framing.zoom,
+        framing.look_at,
+    );
     let ids = match p.str("mode")?.unwrap_or("shaded") {
         "shaded" => false,
         "ids" => true,
@@ -1388,21 +1470,6 @@ fn view_render(session: &mut Session, params: &Value) -> Run {
             ));
         }
     };
-    let orthographic = match p.str("projection")?.unwrap_or("perspective") {
-        "perspective" => false,
-        "orthographic" => true,
-        other => {
-            return fail(format!(
-                "view.render: unknown projection `{other}`; use perspective or orthographic"
-            ));
-        }
-    };
-    let zoom = match p.number("zoom")? {
-        None => 1.0,
-        Some(zoom) if (0.01..=1000.0).contains(&zoom) => zoom,
-        Some(_) => return fail("view.render: `zoom` must be a number from 0.01 to 1000"),
-    };
-    let look_at = p.get("box").map(view_box).transpose()?;
     let path = p.str("path")?;
     let resolved = path
         .map(|path| session.workspace.resolve_write(path))
@@ -1435,20 +1502,7 @@ fn view_render(session: &mut Session, params: &Value) -> Run {
     let aspect = width as f64 / height as f64;
     let model = all.bbox();
     let framed = look_at.unwrap_or(model);
-    let camera = if orthographic {
-        Camera::framing_orthographic(&framed, toward_eye, up, aspect)
-    } else {
-        // A close-up is taken from outside the whole model.
-        Camera::framing_clear_of(&framed, &model, toward_eye, up, 30.0, aspect)
-    }
-    .and_then(|camera| camera.zoomed(zoom))
-    .ok_or_else(|| {
-        CommandError::new(if look_at.is_some() {
-            "view.render: cannot frame this `box` from this view: seen from there it has no size"
-        } else {
-            "view.render: cannot frame the model"
-        })
-    })?;
+    let camera = framing.camera(&model, aspect)?;
     let frame = craft3d_render::render(&all, &camera, &render_params)
         .map_err(|e| CommandError::new(format!("view.render: {e}")))?;
     let png = if ids {

@@ -141,6 +141,13 @@ pub struct SceneBody {
     /// points the mesh has along each edge, so a line drawn through them
     /// lies on the border between the faces it separates.
     pub edges: Vec<Vec<Vec3>>,
+    /// The persistent name of every face, as `document.inspect` lists them
+    /// under `faceNames`: face `k` of the body has id `first_face_id + k`
+    /// in [`Scene::mesh`]. Empty when the body's faces have no names.
+    pub face_names: Vec<String>,
+    /// Per face, the other names it answers to (`faceAliases` of
+    /// `document.inspect`). Empty when no face of the body has any.
+    pub face_aliases: Vec<Vec<String>>,
 }
 
 /// What a polyline of a sketch stands for.
@@ -676,12 +683,32 @@ fn build(
                 .iter()
                 .map(|f| f.saturating_add(first_face_id)),
         );
+        let names = outcome.and_then(|o| o.names.as_ref());
+        let face_names: Vec<String> = names
+            .map(|names| names.faces.iter().map(ToString::to_string).collect())
+            .unwrap_or_default();
+        let face_aliases: Vec<Vec<String>> = names
+            .filter(|names| !names.aliases.is_empty())
+            .map(|names| {
+                (0..names.faces.len())
+                    .map(|face| {
+                        names
+                            .aliases_of(face)
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         scene.bodies.push(SceneBody {
             feature: feature.id.to_string(),
             name: feature.name.clone(),
             mesh,
             first_face_id,
             edges,
+            face_names,
+            face_aliases,
         });
         faces_done = faces_done.saturating_add(body.faces.len());
         let triangles = scene.mesh.triangles.len();
