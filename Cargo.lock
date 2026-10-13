@@ -429,6 +429,7 @@ dependencies = [
  "craft3d-ops",
  "craft3d-regen",
  "craft3d-render",
+ "craft3d-step",
  "craft3d-tess",
  "craft3d-topo",
  "png 0.17.16",

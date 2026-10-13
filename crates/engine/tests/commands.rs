@@ -195,6 +195,7 @@ fn a_part_is_built_saved_reopened_changed_exported_and_rendered() {
         ("b.stl", &b"3DCraft binary STL"[..]),
         ("b.3mf", b"PK"),
         ("b.obj", b"# 3DCraft"),
+        ("b.step", b"ISO-10303-21;"),
     ] {
         let result = run(&mut session, "file.export", json!({"path": file}));
         assert_eq!(result["bodies"], 2);
@@ -422,8 +423,8 @@ fn commands_that_fail_change_nothing_and_say_why() {
         ),
         (
             "file.export",
-            json!({"path": "part.step"}),
-            "cannot tell the format from `part.step`",
+            json!({"path": "part.dxf"}),
+            "cannot tell the format from `part.dxf`",
         ),
         (
             "file.export",

@@ -54,8 +54,8 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Saves the active document as a .3dcraft file (atomically) under the write root.", doc: true, file_save),
     spec!("file.close", "Close", r#"{"discard": boolean = false}"#,
         "Closes the active document. Refuses unsaved changes unless discard is true.", doc: true, file_close),
-    spec!("file.export", "Export Mesh", r#"{"path": string, "format": "stl|stl-ascii|3mf|obj" = from the extension, "tolerance": number = automatic}"#,
-        "Tessellates every body and writes a mesh file under the write root. tolerance is the chordal tolerance in document units. closed counts the meshes that are watertight.", doc: true, file_export),
+    spec!("file.export", "Export", r#"{"path": string, "format": "step|stl|stl-ascii|3mf|obj" = from the extension, "tolerance": number = automatic}"#,
+        "Writes every body to a file under the write root. step (.step, .stp) is the exact geometry, with the document's units, its tolerance as the file's uncertainty and the bodies' names. The others are meshes: the bodies are tessellated, tolerance is the chordal tolerance in document units, and closed counts the meshes that are watertight.", doc: true, file_export),
     spec!("edit.undo", "Undo", "{}", "Undoes the last change to the document.", doc: true, edit_undo),
     spec!("edit.redo", "Redo", "{}", "Redoes the change last undone.", doc: true, edit_redo),
     spec!("variable.set", "Set Variable", r#"{"name": string, "expr": expression}"#,
@@ -465,19 +465,28 @@ fn meshes(
 fn file_export(session: &mut Session, params: &Value) -> Run {
     let p = Params::new("file.export", params, &["path", "format", "tolerance"])?;
     let path = p.required_str("path")?;
+    if crate::step_cmds::wanted(p.str("format")?, path) {
+        if p.number("tolerance")?.is_some() {
+            return fail(
+                "file.export: `tolerance` is for mesh formats; STEP is exact and carries the document's tolerance",
+            );
+        }
+        let resolved = session.workspace.resolve_write(path)?;
+        return crate::step_cmds::export(session, path, &resolved);
+    }
     let format = match p.str("format")? {
         Some("stl") => MeshFormat::StlBinary,
         Some("stl-ascii") => MeshFormat::StlAscii,
         Some("3mf") => MeshFormat::ThreeMf,
         Some("obj") => MeshFormat::Obj,
-        Some(other) => return fail(format!("file.export: unknown format `{other}`; use stl, stl-ascii, 3mf or obj")),
+        Some(other) => return fail(format!("file.export: unknown format `{other}`; use step, stl, stl-ascii, 3mf or obj")),
         None => std::path::Path::new(path)
             .extension()
             .and_then(|e| e.to_str())
             .and_then(MeshFormat::from_extension)
             .ok_or_else(|| {
                 CommandError::new(format!(
-                    "file.export: cannot tell the format from `{path}`; use a .stl, .3mf or .obj name, or pass `format`"
+                    "file.export: cannot tell the format from `{path}`; use a .step, .stp, .stl, .3mf or .obj name, or pass `format`"
                 ))
             })?,
     };

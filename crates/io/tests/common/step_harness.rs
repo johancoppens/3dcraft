@@ -69,6 +69,9 @@ pub struct Case {
     pub centroid: Option<[f64; 3]>,
     /// `[x0, y0, z0, x1, y1, z1]`, when known.
     pub bbox: Option<[f64; 6]>,
+    /// How far inside the body our box may be, in the file's unit (a box
+    /// taken from a mesh); 0 for an exact one.
+    pub bbox_slack: f64,
     pub extent: Extent,
     /// `(faces, edges, vertices, shells)` of our body.
     pub counts: (usize, usize, usize, usize),
@@ -286,10 +289,11 @@ pub fn compare(case: &Case, record: &Value) -> Row {
                     / size
             };
             let (theirs_out, ours_out) = (excess(1.0), excess(-1.0));
+            let slack = 1e-6 + case.bbox_slack * k / size;
             let ok = match case.extent {
-                Extent::Exact => row.bbox_off <= 1e-6,
-                Extent::Tight => ours_out <= 1e-6,
-                Extent::Loose => ours_out <= 1e-6 || theirs_out <= 1e-6,
+                Extent::Exact => row.bbox_off <= slack,
+                Extent::Tight => ours_out <= slack,
+                Extent::Loose => ours_out <= slack || theirs_out <= slack,
                 Extent::Unchecked => true,
             };
             if !ok {
@@ -317,6 +321,21 @@ pub fn compare(case: &Case, record: &Value) -> Row {
     if count("faces") != faces {
         row.problems
             .push(format!("{} faces in FreeCAD, {faces} ours", count("faces")));
+    }
+    // FreeCAD adds seams and poles to faces we write without, and splits
+    // an edge that crosses a seam: never fewer edges or vertices.
+    if count("edges") < edges + seams + degenerated {
+        row.problems.push(format!(
+            "{} edges in FreeCAD of which {} seams and poles, {edges} ours",
+            count("edges"),
+            seams + degenerated
+        ));
+    }
+    if count("vertices") < vertices {
+        row.problems.push(format!(
+            "{} vertices in FreeCAD, {vertices} ours",
+            count("vertices")
+        ));
     }
     if count("shells") != shells {
         row.problems.push(format!(

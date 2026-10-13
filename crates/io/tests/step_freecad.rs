@@ -69,6 +69,7 @@ fn case(file: &str, body: &Body, lumps: usize, options: &StepOptions, to_mm: f64
             body.vertices.len(),
             body.shells.len(),
         ),
+        bbox_slack: 0.0,
         extent: extent(body),
         names: vec![file.to_string()],
         relative: RELATIVE,
