@@ -1283,6 +1283,36 @@ fn pairs_that_once_fooled_the_detector() {
     let found = inspect(&union, 1e-3);
     assert!(found.is_spotless(), "{found}");
     assert_eq!(found.passes, 1, "{found}");
+    // A slot on an L: over part of the L they lie face on face and are
+    // one body, and further on the slot runs beside a leg of the L, edge
+    // along edge. There four faces meet, two and two in one plane, each
+    // in the wall of the column over the next; the detector followed the
+    // surface around the end of that edge and called it a crossing, 0.5
+    // deep (the height of the slot). The body is right: it passes the
+    // checker and its volume is that of the two. What is left is the
+    // contact, seen as contact (`crates/tess/tests/self_intersections.rs`
+    // has the configuration built by hand).
+    for k in SCALES {
+        let (a, b) = random_pair(1_000_453, Placement::Grid, k);
+        let tol = tolerance(k);
+        let volume = |body: &Body| craft3d_topo::mass_properties(body).unwrap().volume;
+        for (x, y) in [(&a, &b), (&b, &a)] {
+            let union = boolean(x, y, Union, &tol).unwrap().body;
+            assert_eq!(check(&union, &tol), []);
+            assert_eq!(union.shells.len(), 1);
+            let (is, should) = (volume(&union), volume(&a) + volume(&b));
+            assert!(
+                (is - should).abs() < 1e-12 * should,
+                "{is} against {should}"
+            );
+            let found = inspect(&union, k);
+            assert!(found.is_clean(), "scale {k}: {found}");
+            assert!(
+                found.crossings.iter().all(|c| c.depth <= 1e-9 * k),
+                "scale {k}: {found}"
+            );
+        }
+    }
 }
 
 /// A boolean has no size of its own, and neither has the mesh of what it
