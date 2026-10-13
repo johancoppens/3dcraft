@@ -843,6 +843,49 @@ fn a_thousand_faces() {
     );
 }
 
+/// Timing with two bodies of more than a thousand faces each: two plates
+/// with 32 by 32 holes, the second half a plate's thickness higher and
+/// shifted by a third of the distance between holes, so that every hole
+/// of one crosses the walls of holes of the other.
+#[test]
+#[ignore = "a benchmark; run in release"]
+fn two_bodies_of_a_thousand_faces() {
+    let n = 32;
+    let lower = drilled(n, 1.0, false);
+    let side = 2.0 * n as f64;
+    let mut upper = boxed(1.0, [0.7, 0.7, 0.5], [side + 0.7, side + 0.7, 1.5]);
+    for i in 0..n {
+        for j in 0..n {
+            let cutter = rod(
+                1.0,
+                [2.0 * i as f64 + 1.7, 2.0 * j as f64 + 1.7, 0.0],
+                0.5,
+                2.0,
+            );
+            upper = solve(&upper, &cutter, Subtract, 1.0).body;
+        }
+    }
+    let volume = side * side - (n * n) as f64 * PI * 0.25;
+    for op in [Union, Intersect, Subtract] {
+        let start = std::time::Instant::now();
+        let result = boolean(&lower, &upper, op, &tolerance(1.0));
+        let took = start.elapsed();
+        match result {
+            Ok(result) => {
+                println!(
+                    "{op:?} of two plates of {} and {} faces: {took:?} ({} faces, volume {})",
+                    lower.faces.len(),
+                    upper.faces.len(),
+                    result.body.faces.len(),
+                    mass(&result.body).volume
+                );
+                assert!(mass(&result.body).volume < 2.0 * volume);
+            }
+            Err(e) => println!("{op:?} of two plates: {took:?}, {e}"),
+        }
+    }
+}
+
 #[test]
 fn a_post_over_a_hole() {
     for k in SCALES {
