@@ -10,7 +10,7 @@
 //! ```
 //!
 //! The documents: every primitive, the bracket of `tests/acceptance.rs`,
-//! extrusions with arcs and holes, revolved bodies (whole and part turns,
+//! extrusions with arcs and holes and of splines, revolved bodies (whole and part turns,
 //! through apexes and poles), moved, mirrored and patterned bodies, and
 //! the three booleans of pairs like those of the kernel's tests
 //! (`crates/kernel/tests/boolean*.rs`), cavities included; all at the
@@ -537,6 +537,58 @@ fn freecad_reads_what_the_commands_build() {
                 s,
                 "feature.extrude",
                 json!({"sketch": "Profile", "distance": -9.0 * k, "symmetric": true, "name": "Slot"}),
+            );
+            Ok(())
+        });
+
+        // Extrusions of splines: the wall is a B-spline surface between
+        // B-spline edges, the caps are planes bounded by them.
+        set.add(&format!("{tag}-spline-d"), "mm", k, EXACT, |s, k| {
+            run(s, "sketch.create", json!({"name": "Profile", "plane": "zx"}));
+            let p = |x: f64, y: f64| json!([x * k, y * k]);
+            run(
+                s,
+                "sketch.spline",
+                json!({"sketch": "Profile",
+                       "control": [p(0.0, 0.0), p(5.0, -1.0), p(7.0, 3.0), p(5.0, 7.0), p(0.0, 6.0)]}),
+            );
+            run(
+                s,
+                "sketch.line",
+                json!({"sketch": "Profile", "from": "e5", "to": "e1"}),
+            );
+            run(
+                s,
+                "feature.extrude",
+                json!({"sketch": "Profile", "distance": 4.0 * k, "name": "Hull"}),
+            );
+            Ok(())
+        });
+        set.add(&format!("{tag}-spline-leaf"), "mm", k, EXACT, |s, k| {
+            run(s, "sketch.create", json!({"name": "Profile"}));
+            let p = |x: f64, y: f64| json!([x * k, y * k]);
+            run(
+                s,
+                "sketch.spline",
+                json!({"sketch": "Profile", "through": [p(0.0, 0.0), p(2.0, 2.6), p(5.0, 3.4),
+                       p(8.0, 2.2), p(10.0, 0.0)], "degree": 4}),
+            );
+            run(
+                s,
+                "sketch.spline",
+                json!({"sketch": "Profile", "degree": 2,
+                       "control": ["e1", p(3.0, -2.0), p(8.0, -1.5), "e5"]}),
+            );
+            run(
+                s,
+                "sketch.circle",
+                json!({"sketch": "Profile", "center": p(5.0, 0.8), "radius": 1.2 * k}),
+            );
+            run(
+                s,
+                "feature.extrude",
+                json!({"sketch": "Profile", "distance": -3.0 * k, "symmetric": true,
+                       "name": "Leaf"}),
             );
             Ok(())
         });
