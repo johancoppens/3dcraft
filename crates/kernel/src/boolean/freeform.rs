@@ -614,6 +614,8 @@ impl PatchTree {
         let mut distance = point.distance(p);
         let mut damping = 1e-6;
         let (hu, hv) = (1e-6 * (u1 - u0), 1e-6 * (v1 - v0));
+        // Whether the curvature terms are taken from the start of a step.
+        let mut curved = false;
         for _ in 0..NEWTON_STEPS {
             let (s, su, sv) = self.surface.derivatives(u, v);
             let r = s - p;
@@ -621,26 +623,36 @@ impl PatchTree {
             if !(g1.hypot(g2) > 0.0) {
                 break;
             }
-            // The Hessian of half the squared distance: first-order terms
-            // plus the curvature terms, which matter when `r` is long.
-            let (_, su_up, sv_up) = self.surface.derivatives((u + hu).min(u1), v);
-            let (_, su_down, sv_down) = self.surface.derivatives((u - hu).max(u0), v);
-            let (_, _, sv_vup) = self.surface.derivatives(u, (v + hv).min(v1));
-            let (_, _, sv_vdown) = self.surface.derivatives(u, (v - hv).max(v0));
-            let suu = (su_up - su_down) * (0.5 / hu);
-            let suv = (sv_up - sv_down) * (0.5 / hu);
-            let svv = (sv_vup - sv_vdown) * (0.5 / hv);
-            let (a, b, c) = (
-                su.dot(su) + suu.dot(r),
-                su.dot(sv) + suv.dot(r),
-                sv.dot(sv) + svv.dot(r),
-            );
             // Descent is held to the sides of the domain it stands on.
             let held_u = (u <= u0 && g1 > 0.0) || (u >= u1 && g1 < 0.0);
             let held_v = (v <= v0 && g2 > 0.0) || (v >= v1 && g2 < 0.0);
             if held_u && held_v {
                 break;
             }
+            // The Hessian of half the squared distance: first-order terms
+            // (Gauss–Newton, enough near the surface, where the residual
+            // and with it the curvature terms vanish) plus, when a step
+            // from those alone is refused or gains little, the curvature
+            // terms from differences of the first derivatives, which
+            // matter when `r` is long.
+            let gauss = (su.dot(su), su.dot(sv), sv.dot(sv));
+            let curvature = |full: &mut bool| {
+                *full = true;
+                let (_, su_up, sv_up) = self.surface.derivatives((u + hu).min(u1), v);
+                let (_, su_down, sv_down) = self.surface.derivatives((u - hu).max(u0), v);
+                let (_, _, sv_vup) = self.surface.derivatives(u, (v + hv).min(v1));
+                let (_, _, sv_vdown) = self.surface.derivatives(u, (v - hv).max(v0));
+                let suu = (su_up - su_down) * (0.5 / hu);
+                let suv = (sv_up - sv_down) * (0.5 / hu);
+                let svv = (sv_vup - sv_vdown) * (0.5 / hv);
+                (
+                    gauss.0 + suu.dot(r),
+                    gauss.1 + suv.dot(r),
+                    gauss.2 + svv.dot(r),
+                )
+            };
+            let mut full = curved;
+            let (mut a, mut b, mut c) = if full { curvature(&mut full) } else { gauss };
             let scale = su.dot(su).max(sv.dot(sv)).max(f64::MIN_POSITIVE);
             let mut moved = false;
             for _ in 0..16 {
@@ -655,7 +667,11 @@ impl PatchTree {
                 } else {
                     let det = aa * cc - b * b;
                     if !(det > 0.0 && aa > 0.0) {
-                        damping = (damping * 10.0).max(1e-9);
+                        if !full {
+                            (a, b, c) = curvature(&mut full);
+                        } else {
+                            damping = (damping * 10.0).max(1e-9);
+                        }
                         continue;
                     }
                     (-(cc * g1 - b * g2) / det, -(aa * g2 - b * g1) / det)
@@ -665,6 +681,10 @@ impl PatchTree {
                 let d = candidate.distance(p);
                 if d < distance || (d == distance && (nu != u || nv != v) && damping < 1e-3) {
                     let step = (nu - u).hypot(nv - v);
+                    // A step from the first-order terms that gains little
+                    // is a far point converging slowly: the curvature
+                    // terms from the next step on.
+                    curved = full || d > 0.25 * distance;
                     u = nu;
                     v = nv;
                     point = candidate;
@@ -673,7 +693,11 @@ impl PatchTree {
                     moved = step > 0.0;
                     break;
                 }
-                damping *= 10.0;
+                if !full {
+                    (a, b, c) = curvature(&mut full);
+                } else {
+                    damping *= 10.0;
+                }
             }
             if !moved {
                 break;
