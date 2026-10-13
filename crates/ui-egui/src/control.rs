@@ -23,12 +23,12 @@ pub const UI_METHODS: &[UiMethod] = &[
     UiMethod {
         name: "ui.get",
         params: "{}",
-        summary: "Returns the UI state (camera, panels, selectedFeature, notice), the viewport size, what the scene holds, the feature tree rows, which renderer the viewport uses (gpu or cpu, the adapter, whether the GPU draws directly on the window's device and with how many samples, why it fell back) and how the viewport was last rendered.",
+        summary: "Returns the UI state (camera, panels, selectedFeature, notice, quality), the viewport size, what the scene holds (bodies, sketches, triangles, the chordal tolerance it was meshed with and whether the display quality was coarsened to fit its triangle budget), the feature tree rows, which renderer the viewport uses (gpu or cpu, the adapter, whether the GPU draws directly on the window's device and with how many samples, why it fell back) and how the viewport was last rendered.",
     },
     UiMethod {
         name: "ui.set",
-        params: r#"{"view": "iso|front|back|right|left|top|bottom", "camera": {"target": [x, y, z], "distance": number, "yaw": degrees, "pitch": degrees, "projection": "perspective|orthographic", "fovY": degrees, "autoFit": boolean}, "panels": {"tree": boolean, "status": boolean}, "selectedFeature": id or null, "notice": string}"#,
-        summary: "Changes the fields given and leaves the rest. An unknown field or a wrong type is an error, and then nothing has changed. Numbers out of range are clamped.",
+        params: r#"{"view": "iso|front|back|right|left|top|bottom", "camera": {"target": [x, y, z], "distance": number, "yaw": degrees, "pitch": degrees, "projection": "perspective|orthographic", "fovY": degrees, "autoFit": boolean}, "panels": {"tree": boolean, "status": boolean}, "selectedFeature": id or null, "notice": string, "quality": {"chordal": fraction of the model's size = 3e-5, "maxTriangles": integer = 1000000}}"#,
+        summary: "Changes the fields given and leaves the rest. An unknown field or a wrong type is an error, and then nothing has changed. Numbers out of range are clamped. quality is how finely the viewport's mesh follows the model: a chordal tolerance of chordal times the model's size, coarsened until the scene has at most maxTriangles triangles but never beyond the automatic tolerance view.render uses.",
     },
     UiMethod {
         name: "ui.fit",
@@ -38,7 +38,7 @@ pub const UI_METHODS: &[UiMethod] = &[
     UiMethod {
         name: "ui.screenshot",
         params: r#"{"path": string, "width": integer = the viewport's, "height": integer = the viewport's, "scale": number = the window's pixels per point}"#,
-        summary: "A PNG of the viewport as it is framed now: bodies by the CPU reference renderer (the oracle, whichever renderer the window uses), sketches and axes over them. Written under the write root when path is given, otherwise returned as base64.",
+        summary: "A PNG of the viewport as it is framed now: bodies by the CPU reference renderer (the oracle, whichever renderer the window uses), meshed at the display quality the viewport shows, sketches and axes over them. Written under the write root when path is given, otherwise returned as base64.",
     },
     UiMethod {
         name: "ui.notice",
@@ -146,6 +146,7 @@ impl Shell {
                 "sketches": scene.sketches.len(),
                 "triangles": scene.triangles(),
                 "tolerance": scene.tolerance,
+                "coarsened": scene.coarsened,
                 "bbox": scene.bbox.corners().map(|(lo, hi)| json!([vec3(lo), vec3(hi)])),
                 "problems": scene.problems,
             })

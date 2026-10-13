@@ -9,7 +9,8 @@
 )]
 
 use craft3d_engine::{
-    Access, FeatureState, Scene, ScenePolyline, SceneSketch, Session, SketchCurve, Workspace,
+    AUTOMATIC_RELATIVE_TOLERANCE, Access, DISPLAY_RELATIVE_TOLERANCE, FeatureState, Scene,
+    ScenePolyline, SceneQuality, SceneSketch, Session, SketchCurve, Workspace,
 };
 use craft3d_math::Vec3;
 use serde_json::{Value, json};
@@ -694,4 +695,187 @@ fn bodies_carry_their_edges_as_polylines_on_the_mesh() {
     assert!(fine.bodies[1].edges[0].len() > post.edges[0].len());
     assert_eq!(fine.bodies[0].edges, plate.edges);
     assert_eq!(scene(&mut s, Some(0.0005)).bodies, fine.bodies);
+}
+
+fn display(session: &mut Session, relative: f64, max_triangles: usize) -> Arc<Scene> {
+    session
+        .scene_with(SceneQuality::Display {
+            relative,
+            max_triangles,
+        })
+        .unwrap()
+        .expect("a document")
+}
+
+/// The display rule: a fraction of the model's size, the same size the
+/// automatic tolerance is a fraction of.
+#[test]
+fn the_display_quality_is_a_finer_fraction_of_the_same_size() {
+    let mut s = session();
+    part(&mut s);
+    let automatic = scene(&mut s, None);
+    let size = automatic.tolerance / AUTOMATIC_RELATIVE_TOLERANCE;
+    assert!(!automatic.coarsened);
+    assert!(!scene(&mut s, Some(0.05)).coarsened);
+    let shown = s.scene_with(SceneQuality::display()).unwrap().unwrap();
+    assert!(
+        (shown.tolerance - size * DISPLAY_RELATIVE_TOLERANCE).abs() <= 1e-12 * size,
+        "{} for a size of {size}",
+        shown.tolerance
+    );
+    assert!(!shown.coarsened);
+    assert!(shown.problems.is_empty(), "{:?}", shown.problems);
+    assert!(shown.triangles() > automatic.triangles());
+    // The post's circles are rounder: more points, each on the circle,
+    // and the polygon within the finer tolerance of the circle's length.
+    let circle = |scene: &Scene| scene.bodies[1].edges[0].clone();
+    let (coarse, fine) = (circle(&automatic), circle(&shown));
+    assert!(
+        fine.len() > 2 * coarse.len(),
+        "{} vs {}",
+        fine.len(),
+        coarse.len()
+    );
+    let around: f64 = fine.windows(2).map(|w| w[0].distance(w[1])).sum();
+    assert!(around < TAU * 6.0 && around > TAU * 6.0 * (1.0 - 2.0 * shown.tolerance / 6.0));
+    for point in &fine {
+        assert!(((point.x - 15.0).hypot(point.y - 20.0) - 6.0).abs() < 1e-9);
+    }
+    // The sketch circles follow the same tolerance.
+    let samples = |scene: &Scene| {
+        curve(sketch(scene, "OnXy"), SketchCurve::Circle, false)
+            .points
+            .len()
+    };
+    assert!(samples(&shown) > samples(&automatic));
+
+    // Cached per quality, and dropped by an edit like the others.
+    assert!(Arc::ptr_eq(
+        &shown,
+        &s.scene_with(SceneQuality::display()).unwrap().unwrap()
+    ));
+    assert!(Arc::ptr_eq(&automatic, &scene(&mut s, None)));
+    let other = display(&mut s, 2.0 * DISPLAY_RELATIVE_TOLERANCE, usize::MAX);
+    assert!(!Arc::ptr_eq(&other, &shown));
+    assert!(other.tolerance > shown.tolerance);
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Post", "height": "31 mm"}),
+    );
+    let after = s.scene_with(SceneQuality::display()).unwrap().unwrap();
+    assert!(!Arc::ptr_eq(&after, &shown));
+    assert_eq!(after.revision, shown.revision + 1);
+
+    // A request coarser than the automatic tolerance is what it asks for:
+    // no budget applies there, and nothing was coarsened.
+    let coarse = display(&mut s, 5.0 * AUTOMATIC_RELATIVE_TOLERANCE, 10);
+    let automatic = scene(&mut s, None);
+    let size = automatic.tolerance / AUTOMATIC_RELATIVE_TOLERANCE;
+    assert!((coarse.tolerance - 5.0 * AUTOMATIC_RELATIVE_TOLERANCE * size).abs() <= 1e-12 * size);
+    assert!(!coarse.coarsened);
+    assert!(coarse.triangles() > 10);
+    assert!(coarse.triangles() < automatic.triangles());
+}
+
+/// The triangle budget coarsens the display tolerance until the scene
+/// fits, and the automatic tolerance is the floor.
+#[test]
+fn the_triangle_budget_coarsens_the_display_down_to_the_automatic_tolerance() {
+    let mut s = session();
+    part(&mut s);
+    let automatic = scene(&mut s, None);
+    let fine = display(&mut s, DISPLAY_RELATIVE_TOLERANCE, usize::MAX);
+    assert!(!fine.coarsened);
+    assert!(fine.triangles() > automatic.triangles() + 100);
+
+    // A budget between the two: a scene that fits it, coarser than asked,
+    // finer than automatic, and complete.
+    let budget = (automatic.triangles() + fine.triangles()) / 2;
+    let fitted = display(&mut s, DISPLAY_RELATIVE_TOLERANCE, budget);
+    assert!(fitted.coarsened);
+    assert!(
+        fitted.triangles() <= budget,
+        "{} > {budget}",
+        fitted.triangles()
+    );
+    assert!(fitted.tolerance > fine.tolerance && fitted.tolerance <= automatic.tolerance);
+    assert_eq!(fitted.bodies.len(), 2);
+    assert_eq!(fitted.sketches.len(), 3);
+    assert!(fitted.problems.is_empty(), "{:?}", fitted.problems);
+    // The budget is the exact count: one more triangle and the fit is
+    // the same scene; the fitted count itself is not refused.
+    let again = display(&mut s, DISPLAY_RELATIVE_TOLERANCE, fitted.triangles());
+    assert!(again.triangles() <= fitted.triangles());
+
+    // A budget no scene can meet: the automatic scene, bit for bit, over
+    // budget and said to be coarsened.
+    let floor = display(&mut s, DISPLAY_RELATIVE_TOLERANCE, 1);
+    assert!(floor.coarsened);
+    assert_eq!(floor.tolerance, automatic.tolerance);
+    assert_eq!(floor.mesh, automatic.mesh);
+    assert_eq!(floor.bodies, automatic.bodies);
+    assert!(floor.triangles() > 1);
+    assert!(floor.problems.is_empty());
+}
+
+/// A tolerance the tessellator cannot meet on a body (more segments on a
+/// patch than it allows) is coarsened until it can, where asking for that
+/// tolerance outright leaves the body out.
+#[test]
+fn a_display_tolerance_the_tessellator_cannot_meet_is_coarsened_until_it_can() {
+    let mut s = session();
+    part(&mut s);
+    let automatic = scene(&mut s, None);
+    let size = automatic.tolerance / AUTOMATIC_RELATIVE_TOLERANCE;
+    // The post's circles of radius 6 would need some twenty thousand
+    // segments, more than the tessellator allows on an edge.
+    let relative = 1e-9;
+    let asked = scene(&mut s, Some(size * relative));
+    assert!(
+        asked.problems.iter().any(|p| p.contains("Post")),
+        "{:?}",
+        asked.problems
+    );
+    assert_eq!(asked.bodies.len(), 1);
+    let shown = display(&mut s, relative, usize::MAX);
+    assert!(shown.problems.is_empty(), "{:?}", shown.problems);
+    assert!(shown.coarsened);
+    assert_eq!(shown.bodies.len(), 2);
+    assert!(shown.tolerance > size * relative && shown.tolerance <= automatic.tolerance);
+    // Still much finer than automatic: the coarsening stops where the
+    // tessellator can go on, not at the floor.
+    assert!(
+        shown.tolerance < automatic.tolerance / 4.0,
+        "{}",
+        shown.tolerance
+    );
+}
+
+#[test]
+fn a_display_quality_that_is_not_a_request_is_refused() {
+    let mut s = session();
+    part(&mut s);
+    for relative in [0.0, -1e-5, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let error = s
+            .scene_with(SceneQuality::Display {
+                relative,
+                max_triangles: 1000,
+            })
+            .unwrap_err();
+        assert!(error.message().contains("chordal"), "{relative}: {error}");
+    }
+    let error = s
+        .scene_with(SceneQuality::Display {
+            relative: 1e-4,
+            max_triangles: 0,
+        })
+        .unwrap_err();
+    assert!(error.message().contains("budget"), "{error}");
+    // Refusals are not cached as scenes: the good request still answers.
+    assert!(s.scene_with(SceneQuality::display()).unwrap().is_some());
+    // Without a document there is no scene, whatever the quality.
+    let mut empty = session();
+    assert!(empty.scene_with(SceneQuality::display()).unwrap().is_none());
+    assert!(empty.scene_with(SceneQuality::Automatic).unwrap().is_none());
 }

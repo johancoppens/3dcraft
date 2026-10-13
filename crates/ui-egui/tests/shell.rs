@@ -8,7 +8,10 @@
     clippy::indexing_slicing
 )]
 
-use craft3d_engine::{FeatureState, Session, Workspace};
+use craft3d_engine::{
+    AUTOMATIC_RELATIVE_TOLERANCE, DISPLAY_MAX_TRIANGLES, DISPLAY_RELATIVE_TOLERANCE, FeatureState,
+    SceneQuality, Session, Workspace,
+};
 use craft3d_ui_egui::camera::{ORBIT_DEGREES_PER_POINT, Projector};
 use craft3d_ui_egui::shell::image_quality;
 use craft3d_ui_egui::state::{CameraState, ProjectionKind};
@@ -242,7 +245,7 @@ fn a_few_frames_show_the_tree_and_render_the_viewport_once() {
 
     // The camera framed the model by itself: every corner of the scene's
     // box is inside the viewport.
-    let scene = session.scene(None).unwrap().unwrap();
+    let scene = session.scene_with(shell.scene_quality()).unwrap().unwrap();
     let (lo, hi) = scene.bbox.corners().unwrap();
     let projector =
         Projector::new(&shell.state.camera.to_render(), f64::from(w), f64::from(h)).unwrap();
@@ -421,7 +424,7 @@ fn dragging_with_the_right_button_pans_and_the_wheel_zooms() {
     window.idle(&mut shell, &mut session, 2);
     let fitted = shell.state.camera;
     assert!(fitted.auto_fit);
-    let scene = session.scene(None).unwrap().unwrap();
+    let scene = session.scene_with(shell.scene_quality()).unwrap().unwrap();
     let mut by_hand = CameraState {
         yaw: before.yaw,
         pitch: before.pitch,
@@ -494,7 +497,7 @@ fn clicking_a_row_selects_the_feature_and_its_sketch_is_highlighted() {
     let selected: Vec<bool> = shell.tree_rows().iter().map(|r| r.selected).collect();
     assert_eq!(selected, [false, false, true, false]);
     let [w, h] = shell.viewport_size();
-    let scene = session.scene(None).unwrap().unwrap();
+    let scene = session.scene_with(shell.scene_quality()).unwrap().unwrap();
     let kinds = |selected: Option<&str>| -> Vec<LineKind> {
         viewport::overlay(Some(&scene), &shell.state.camera, w, h, selected)
             .lines
@@ -572,7 +575,7 @@ fn resizing_the_window_draws_coarse_frames_and_then_a_sharp_one() {
     // tall and narrow now, so the width decides and the camera is further.
     assert!(shell.state.camera.distance > framed.distance * 1.2);
     let mut by_hand = framed;
-    let scene = session.scene(None).unwrap().unwrap();
+    let scene = session.scene_with(shell.scene_quality()).unwrap().unwrap();
     by_hand.fit(&scene.bbox, f64::from(w2) / f64::from(h2));
     assert_eq!(shell.state.camera, by_hand);
 }
@@ -854,7 +857,7 @@ fn direct(
     camera: &CameraState,
     moving: bool,
 ) -> viewport::Composed {
-    let scene = session.scene(None).unwrap();
+    let scene = session.scene_with(shell.scene_quality()).unwrap();
     viewport::compose(
         scene.as_deref(),
         camera,
@@ -1162,4 +1165,118 @@ fn the_title_names_the_file_and_marks_unsaved_changes() {
     );
     run(&mut session, "file.close", json!({"discard": true}));
     assert_eq!(window_title(session.document_status().as_ref()), "3DCraft");
+}
+
+/// The viewport shows the scene at the display quality (finer than the
+/// automatic tolerance `view.render` uses); `ui.set` changes the quality
+/// and the picture follows; a quality that is not one is refused and
+/// changes nothing; `ui.screenshot` renders the scene the viewport shows.
+#[test]
+fn the_viewport_asks_for_the_display_quality_and_ui_set_changes_it() {
+    let mut session = part();
+    // A ball, so that the finest mesh is well over the smallest budget.
+    run(
+        &mut session,
+        "feature.sphere",
+        json!({"name": "Ball", "radius": 20, "position": [100, 0, 0]}),
+    );
+    let mut shell = Shell::new();
+    let mut window = Window::new(1000.0, 700.0);
+    window.idle(&mut shell, &mut session, 2);
+    let automatic = session.scene(None).unwrap().unwrap();
+    let shown = shell.sync(&mut session).unwrap();
+    assert_eq!(shell.scene_quality(), SceneQuality::display());
+    let size = automatic.tolerance / AUTOMATIC_RELATIVE_TOLERANCE;
+    assert!((shown.tolerance - size * DISPLAY_RELATIVE_TOLERANCE).abs() <= 1e-12 * size);
+    assert!(!shown.coarsened);
+    assert!(shown.triangles() > automatic.triangles());
+    assert!(shown.triangles() > 1000);
+    assert_eq!(shell.render_stats().unwrap().triangles, shown.triangles());
+    let call = |shell: &mut Shell, session: &mut Session, method: &str, params: Value| {
+        shell
+            .handle_method(session, method, Some(&params))
+            .unwrap_or_else(|| panic!("{method} is not a ui method"))
+    };
+    let got = call(&mut shell, &mut session, "ui.get", json!({})).unwrap();
+    assert_eq!(
+        got["state"]["quality"],
+        json!({"chordal": DISPLAY_RELATIVE_TOLERANCE, "maxTriangles": DISPLAY_MAX_TRIANGLES})
+    );
+    assert_eq!(got["scene"]["tolerance"], shown.tolerance);
+    assert_eq!(got["scene"]["coarsened"], false);
+    assert_eq!(got["scene"]["triangles"], shown.triangles());
+
+    // The automatic tolerance as the display quality: the automatic
+    // scene, bit for bit, and a new picture of it.
+    let rendered = shell.render_count();
+    let set = call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"quality": {"chordal": AUTOMATIC_RELATIVE_TOLERANCE}}),
+    )
+    .unwrap();
+    assert_eq!(
+        set["state"]["quality"],
+        json!({"chordal": AUTOMATIC_RELATIVE_TOLERANCE, "maxTriangles": DISPLAY_MAX_TRIANGLES})
+    );
+    window.idle(&mut shell, &mut session, 2);
+    let coarse = shell.sync(&mut session).unwrap();
+    assert_eq!(coarse.tolerance, automatic.tolerance);
+    assert_eq!(coarse.mesh, automatic.mesh);
+    assert!(
+        shell.render_count() > rendered,
+        "the picture follows the quality"
+    );
+    assert_eq!(
+        shell.render_stats().unwrap().triangles,
+        automatic.triangles()
+    );
+
+    // The smallest budget: coarsened towards the automatic tolerance,
+    // and `ui.get` says so.
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"quality": {"chordal": DISPLAY_RELATIVE_TOLERANCE, "maxTriangles": 1000}}),
+    )
+    .unwrap();
+    window.idle(&mut shell, &mut session, 2);
+    let fitted = shell.sync(&mut session).unwrap();
+    assert!(fitted.coarsened);
+    assert!(fitted.tolerance > shown.tolerance && fitted.tolerance <= automatic.tolerance);
+    let got = call(&mut shell, &mut session, "ui.get", json!({})).unwrap();
+    assert_eq!(got["scene"]["coarsened"], true);
+    assert_eq!(got["state"]["quality"]["maxTriangles"], 1000);
+
+    // Garbage is refused and changes nothing.
+    let before = shell.state.clone();
+    for bad in [
+        json!({"quality": 3}),
+        json!({"quality": "fine"}),
+        json!({"quality": {"chordal": "fine"}}),
+        json!({"quality": {"maxTriangles": -5}}),
+        json!({"quality": {"maxTriangles": 2.5}}),
+        json!({"quality": {"level": 2}}),
+        json!({"quality": {"chordal": 1e-4}, "bogus": true}),
+    ] {
+        let error = call(&mut shell, &mut session, "ui.set", bad.clone()).unwrap_err();
+        assert!(error.starts_with("ui.set: "), "{bad}: {error}");
+        assert_eq!(shell.state, before, "{bad} changed the state");
+    }
+    assert!(std::ptr::eq(
+        shell.sync(&mut session).unwrap().as_ref(),
+        fitted.as_ref()
+    ));
+
+    // The screenshot is of the scene the viewport shows.
+    let shot = call(
+        &mut shell,
+        &mut session,
+        "ui.screenshot",
+        json!({"width": 64, "height": 48}),
+    )
+    .unwrap();
+    assert_eq!(shot["triangles"], fitted.triangles());
 }

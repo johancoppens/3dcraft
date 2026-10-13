@@ -21,10 +21,11 @@
 mod common;
 
 use common::{color_tolerance, compare, differ_probability};
-use craft3d_engine::{Scene, Session, Workspace};
+use craft3d_engine::{DISPLAY_RELATIVE_TOLERANCE, Scene, SceneQuality, Session, Workspace};
 use craft3d_gpu::{ADAPTER_HINT, Frame, NO_FACE};
 use craft3d_ui_egui::backend::{Backend, BodyRenderer, RendererChoice};
-use craft3d_ui_egui::direct::headless_render_state;
+use craft3d_ui_egui::camera::Projector;
+use craft3d_ui_egui::direct::{ReadBack, headless_render_state};
 use craft3d_ui_egui::shell::image_quality_for;
 use craft3d_ui_egui::state::{CameraState, ProjectionKind};
 use craft3d_ui_egui::viewport::{self, Composed, Overlay, OverlayLine, Quality};
@@ -85,8 +86,8 @@ fn part() -> Session {
     s
 }
 
-fn scene(session: &mut Session) -> Arc<Scene> {
-    session.scene(None).unwrap().unwrap()
+fn scene(session: &mut Session, quality: SceneQuality) -> Arc<Scene> {
+    session.scene_with(quality).unwrap().unwrap()
 }
 
 /// The GPU renderer, or the failure every test here shares.
@@ -170,7 +171,7 @@ fn difference(cpu: &[u8], gpu: &[u8], ids: (&Frame, &Frame), band: &[bool]) -> V
 #[test]
 fn the_gpu_viewport_matches_the_cpu_viewport_within_the_documented_tolerance() {
     let mut session = part();
-    let scene = scene(&mut session);
+    let scene = scene(&mut session, SceneQuality::Automatic);
     let tokens = Tokens::default();
     // The sharp image of a 960 × 640 viewport, as the window asks for it.
     let quality = image_quality_for(Backend::Gpu, [960, 640], false, 8192);
@@ -383,7 +384,7 @@ fn the_shell_puts_the_gpu_picture_on_screen_and_says_so() {
     let uploaded = window.uploaded(w, h).unwrap();
     let expected = viewport::compose_with(
         &mut gpu(),
-        Some(&scene(&mut session)),
+        Some(&scene(&mut session, shell.scene_quality())),
         &shell.state.camera,
         Quality {
             width: w,
@@ -592,7 +593,7 @@ fn the_direct_path_draws_the_viewport_on_the_windows_device_and_matches_the_orac
     // pixel (shaded at the pixel centres, where the GPU shades), the lines
     // inked by the CPU with the depth decisions taken with the slack the
     // GPU frame gets.
-    let scene = scene(&mut session);
+    let scene = scene(&mut session, shell.scene_quality());
     let camera = shell.state.camera;
     let quality = Quality {
         width: w,
@@ -887,6 +888,250 @@ fn the_direct_path_draws_the_viewport_on_the_windows_device_and_matches_the_orac
         (covered_gpu + uncovered_lines).abs_diff(covered_cpu) * 100 < covered_cpu * 3,
         "coverage {covered_gpu} + {uncovered_lines} against {covered_cpu}"
     );
+}
+
+/// A change of the display quality is another mesh of the same document
+/// revision: the direct path uploads it and draws it, once.
+#[test]
+fn a_change_of_display_quality_reaches_the_direct_path() {
+    let state = headless_render_state()
+        .unwrap_or_else(|e| panic!("the direct path cannot be tested: {e}; {ADAPTER_HINT}"));
+    let mut session = part();
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    shell.attach_gpu(&state).unwrap();
+    let mut window = Window::new(1000.0, 700.0);
+    window.frame(&mut shell, &mut session, Vec::new());
+    window.frame(&mut shell, &mut session, Vec::new());
+    let shown = scene(&mut session, shell.scene_quality());
+    let automatic = scene(&mut session, SceneQuality::Automatic);
+    assert!(shown.triangles() > automatic.triangles());
+    let stats = shell.render_stats().unwrap();
+    assert_eq!(
+        (stats.renderer, stats.triangles),
+        (Backend::Gpu, shown.triangles())
+    );
+    let (_, _, fine) = shell.direct_picture().unwrap().unwrap();
+
+    let renders = shell.render_count();
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"quality": {"chordal": 1e-3}}),
+    );
+    window.frame(&mut shell, &mut session, Vec::new());
+    assert_eq!(shell.render_count(), renders + 1);
+    let stats = shell.render_stats().unwrap();
+    assert_eq!(
+        (stats.renderer, stats.triangles),
+        (Backend::Gpu, automatic.triangles())
+    );
+    let (_, _, coarse) = shell.direct_picture().unwrap().unwrap();
+    assert!(fine != coarse, "the coarser mesh is another picture");
+    // Nothing more is drawn while nothing changes.
+    window.frame(&mut shell, &mut session, Vec::new());
+    window.frame(&mut shell, &mut session, Vec::new());
+    assert_eq!(shell.render_count(), renders + 1);
+}
+
+/// The flange of the demo: a disc of radius 40 with a hub, six bolt
+/// holes of radius 4 about the axis at radius 30, a keyway and two lugs
+/// with holes (the commands of the developer's `flange.sh`).
+fn flange() -> Session {
+    let mut s = Session::new(Workspace::none());
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"plane": "zx", "name": "Section"}),
+    );
+    run(
+        &mut s,
+        "sketch.polyline",
+        json!({"sketch": "Section", "closed": true,
+               "points": [[0, 12], [0, 40], [10, 40], [10, 20], [30, 20], [34, 16], [34, 12]]}),
+    );
+    run(
+        &mut s,
+        "feature.revolve",
+        json!({"sketch": "Section", "axis": "x", "name": "Flange"}),
+    );
+    run(
+        &mut s,
+        "feature.cylinder",
+        json!({"radius": 4, "height": 20, "position": [30, 0, -5], "name": "Bolt"}),
+    );
+    run(
+        &mut s,
+        "feature.pattern",
+        json!({"source": "Bolt", "count": 6, "angle": "60 deg", "axis": [0, 0, 1],
+               "point": [0, 0, 0], "name": "Bolts"}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Flange", "tool": "Bolts", "name": "Drilled"}),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [4, 6, 40], "position": [10, -3, -3], "name": "Keyway"}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Drilled", "tool": "Keyway", "name": "Keyed"}),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [14, 12, 10], "position": [38, -6, 0], "name": "Lug"}),
+    );
+    run(
+        &mut s,
+        "feature.mirror",
+        json!({"source": "Lug", "normal": [1, 0, 0], "point": [0, 0, 0], "keep": true, "name": "Lug2"}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "union", "target": "Keyed", "tool": "Lug", "name": "OneLug"}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "union", "target": "OneLug", "tool": "Lug2", "name": "TwoLugs"}),
+    );
+    run(
+        &mut s,
+        "feature.cylinder",
+        json!({"radius": 3, "height": 20, "position": [46, 0, -5], "name": "LugHole"}),
+    );
+    run(
+        &mut s,
+        "feature.mirror",
+        json!({"source": "LugHole", "normal": [1, 0, 0], "point": [0, 0, 0], "keep": true, "name": "LugHole2"}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "TwoLugs", "tool": "LugHole", "name": "Holed"}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Holed", "tool": "LugHole2", "name": "Flange part"}),
+    );
+    s
+}
+
+/// A square of `half` pixels about (`cx`, `cy`) of the picture, every
+/// pixel `zoom` times as large, so a chord can be seen.
+fn crop(rgb: &[u8], width: u32, height: u32, cx: f64, cy: f64, half: u32, zoom: u32) -> ReadBack {
+    let (w, h) = (width as i64, height as i64);
+    let (x0, y0) = (
+        cx.round() as i64 - i64::from(half),
+        cy.round() as i64 - i64::from(half),
+    );
+    let side = 2 * half;
+    let mut out = Vec::with_capacity((side * zoom * side * zoom * 3) as usize);
+    for y in 0..side {
+        for _ in 0..zoom {
+            for x in 0..side {
+                let (px, py) = (x0 + i64::from(x), y0 + i64::from(y));
+                let pixel = if (0..w).contains(&px) && (0..h).contains(&py) {
+                    let i = ((py * w + px) * 3) as usize;
+                    [rgb[i], rgb[i + 1], rgb[i + 2]]
+                } else {
+                    [0, 0, 0]
+                };
+                for _ in 0..zoom {
+                    out.extend_from_slice(&pixel);
+                }
+            }
+        }
+    }
+    (side * zoom, side * zoom, out)
+}
+
+/// The flange through the direct path, at the automatic tolerance the
+/// viewport showed before 2026-10-13 and at the display quality, at the
+/// two window sizes of the development machine. Pictures and a crop of
+/// one bolt hole go to `target/evidence/ui/`. The check is the rule
+/// itself: at the display quality the chord error of the mesh is below a
+/// third of a pixel at the framed zoom, and at four times that zoom still
+/// below a pixel, where the automatic tolerance's is over a third of a
+/// pixel at the framed zoom on both sizes.
+#[test]
+fn the_flange_holes_are_round_at_the_display_quality() {
+    let state = headless_render_state()
+        .unwrap_or_else(|e| panic!("the direct path cannot be tested: {e}; {ADAPTER_HINT}"));
+    let mut session = flange();
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    shell.attach_gpu(&state).unwrap();
+    let mut log = String::new();
+    for size in [[1020.0_f32, 754.0_f32], [2560.0, 1400.0]] {
+        let mut window = Window::new(size[0], size[1]);
+        for (label, chordal) in [("automatic", 1e-3), ("display", DISPLAY_RELATIVE_TOLERANCE)] {
+            call(
+                &mut shell,
+                &mut session,
+                "ui.set",
+                json!({"quality": {"chordal": chordal}}),
+            );
+            window.frame(&mut shell, &mut session, Vec::new());
+            window.frame(&mut shell, &mut session, Vec::new());
+            call(&mut shell, &mut session, "ui.fit", json!({"view": "iso"}));
+            let drawn = std::time::Instant::now();
+            window.frame(&mut shell, &mut session, Vec::new());
+            let _ = state
+                .device
+                .poll(egui_wgpu::wgpu::PollType::wait_indefinitely());
+            let gpu_done_ms = drawn.elapsed().as_secs_f64() * 1000.0;
+            let scene = scene(&mut session, shell.scene_quality());
+            let stats = shell.render_stats().unwrap();
+            assert_eq!(stats.renderer, Backend::Gpu);
+            assert_eq!(stats.triangles, scene.triangles());
+            let (w, h, rgb) = shell.direct_picture().unwrap().unwrap();
+            let name = format!("viewport-flange-{w}x{h}-{label}");
+            write_png(&evidence(&format!("{name}.png")), w, h, &rgb);
+
+            // The bolt hole at (30, 0) on the top of the disc (z = 10):
+            // its centre and a point of its rim, in pixels.
+            let projector =
+                Projector::new(&shell.state.camera.to_render(), f64::from(w), f64::from(h))
+                    .unwrap();
+            let centre = projector
+                .project(craft3d_math::Vec3::new(30.0, 0.0, 10.0))
+                .unwrap();
+            let rim = projector
+                .project(craft3d_math::Vec3::new(34.0, 0.0, 10.0))
+                .unwrap();
+            let radius_px = (rim.x - centre.x).hypot(rim.y - centre.y);
+            let px_per_mm = radius_px / 4.0;
+            let chord_px = scene.tolerance * px_per_mm;
+            let half = (radius_px * 1.6).ceil() as u32;
+            let (cw, ch, crop_rgb) = crop(&rgb, w, h, centre.x, centre.y, half, 4);
+            write_png(&evidence(&format!("{name}-hole.png")), cw, ch, &crop_rgb);
+            let line = format!(
+                "{label} at {w}x{h}: {} triangles, chordal tolerance {:.5} mm, hole radius {radius_px:.1} px, chord error {chord_px:.3} px; drawn in {:.1} ms on the thread, {gpu_done_ms:.1} ms until the GPU is done\n",
+                scene.triangles(),
+                scene.tolerance,
+                stats.milliseconds.unwrap_or(f64::NAN)
+            );
+            print!("{line}");
+            log.push_str(&line);
+            if label == "display" {
+                assert!(!scene.coarsened);
+                assert!(chord_px < 1.0 / 3.0, "{chord_px} px");
+                assert!(chord_px * 4.0 < 1.0, "{chord_px} px at four times the zoom");
+            } else {
+                assert!(chord_px > 1.0 / 3.0, "{chord_px} px");
+            }
+        }
+    }
+    std::fs::write(evidence("viewport-flange.txt"), log).unwrap();
+    println!("evidence: {}", evidence("viewport-flange.txt").display());
 }
 
 #[test]

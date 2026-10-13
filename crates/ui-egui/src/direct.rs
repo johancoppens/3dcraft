@@ -50,9 +50,10 @@ pub enum DirectFailure {
     ForGood(String),
 }
 
-/// What is on the GPU for one scene revision.
+/// What is on the GPU for one scene revision at one tolerance.
 struct Uploaded {
     revision: Option<u64>,
+    tolerance: Option<f64>,
     selected: Option<String>,
     tokens: Tokens,
     scale: f32,
@@ -65,6 +66,7 @@ struct Uploaded {
 #[derive(Clone, PartialEq)]
 struct Shown {
     revision: Option<u64>,
+    tolerance: Option<f64>,
     camera: CameraState,
     size: [u32; 2],
     selected: Option<String>,
@@ -313,6 +315,7 @@ impl Direct {
     ) -> Result<Option<DirectFrame>, DirectFailure> {
         let wanted = Shown {
             revision: scene.map(|s| s.revision),
+            tolerance: scene.map(|s| s.tolerance),
             camera: *camera,
             size,
             selected: selected.map(str::to_string),
@@ -357,9 +360,10 @@ impl Direct {
         let same_mesh = self
             .uploaded
             .as_ref()
-            .is_some_and(|u| u.revision == wanted.revision);
+            .is_some_and(|u| u.revision == wanted.revision && u.tolerance == wanted.tolerance);
         let same_lines = self.uploaded.as_ref().is_some_and(|u| {
             u.revision == wanted.revision
+                && u.tolerance == wanted.tolerance
                 && u.selected == wanted.selected
                 && u.tokens == wanted.tokens
                 && u.scale == wanted.scale
@@ -388,6 +392,7 @@ impl Direct {
                 let uploaded = self.onscreen.upload(mesh).map_err(classify)?;
                 self.uploaded = Some(Uploaded {
                     revision: wanted.revision,
+                    tolerance: wanted.tolerance,
                     selected: wanted.selected.clone(),
                     tokens: wanted.tokens,
                     scale: wanted.scale,

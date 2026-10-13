@@ -11,7 +11,7 @@ use crate::{CommandError, Session, Workspace};
 use craft3d_doc::{AngleUnit, Document, Entity, FeatureKind, Geometry, Sketch};
 use craft3d_math::{Bbox3, Vec3};
 use craft3d_regen::{Regen, SketchResult, Status};
-use craft3d_tess::{Mesh, TessParams, tessellate_body_and_edges};
+use craft3d_tess::{Mesh, TessError, TessParams, tessellate_body_and_edges};
 use craft3d_topo::mass_properties;
 use std::sync::Arc;
 
@@ -23,8 +23,108 @@ pub const MIN_CIRCLE_SEGMENTS: usize = 24;
 /// need more (a chord error below about 3e-7 of the radius) is not met.
 pub const MAX_ARC_SEGMENTS: usize = 4096;
 
-/// Scenes kept for one document: one per tolerance asked for.
+/// Scenes kept for one document: one per quality asked for.
 const MAX_CACHED: usize = 4;
+
+/// The automatic chordal tolerance, as `view.render`, `file.export` and
+/// previews choose it: this fraction of the model's size (the side of a
+/// square with the bodies' total area; see [`SceneQuality::Automatic`]).
+pub const AUTOMATIC_RELATIVE_TOLERANCE: f64 = 1e-3;
+
+/// The display rule's default chordal tolerance, as a fraction of the
+/// model's size: 3e-5, a chord error of a thirtieth of a pixel on a model
+/// that fills a 1020-pixel viewport, so a circle stays round when the
+/// developer zooms in on a detail (docs/architecture.md §6, *What a viewer
+/// draws*).
+pub const DISPLAY_RELATIVE_TOLERANCE: f64 = 3e-5;
+
+/// The display rule's default triangle budget: the mesh is coarsened
+/// until the scene has at most this many triangles, but never beyond the
+/// automatic tolerance. A million: the tessellator adds about 1.5 µs per
+/// triangle beyond its cost per face (measured 2026-10-13, release, a
+/// plate with 1024 holes), so the finer mesh costs at most about 1.5 s
+/// per edit, and the GPU viewport draws a million triangles in about
+/// 25 ms per frame.
+pub const DISPLAY_MAX_TRIANGLES: usize = 1_000_000;
+
+/// Most tessellations the display rule tries before it settles for the
+/// automatic tolerance. Every step coarsens the tolerance at least twice,
+/// so six steps cover a factor of 64 and the default of 33.
+const MAX_DISPLAY_ATTEMPTS: usize = 6;
+
+/// How finely the bodies and the sketch curves of a scene are sampled.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SceneQuality {
+    /// The chordal tolerance `view.render`, `file.export` and previews use
+    /// when none is given: [`AUTOMATIC_RELATIVE_TOLERANCE`] of the model's
+    /// size. Without bodies, the same fraction of the size of the sketches.
+    Automatic,
+    /// A chordal tolerance in document units.
+    Tolerance(f64),
+    /// What a viewport shows: a chordal tolerance of `relative` times the
+    /// model's size, coarsened until the scene has at most `max_triangles`
+    /// triangles and every body is within what the tessellator can do, but
+    /// never beyond the automatic tolerance (the display is never coarser
+    /// than `view.render`). The scene says whether it was coarsened
+    /// ([`Scene::coarsened`]).
+    Display { relative: f64, max_triangles: usize },
+}
+
+impl SceneQuality {
+    /// The display rule with its defaults.
+    pub fn display() -> Self {
+        SceneQuality::Display {
+            relative: DISPLAY_RELATIVE_TOLERANCE,
+            max_triangles: DISPLAY_MAX_TRIANGLES,
+        }
+    }
+
+    /// Refuses a quality that is not a request at all: a tolerance or a
+    /// fraction that is not a positive number, a budget of nothing.
+    fn validate(self) -> Result<(), CommandError> {
+        match self {
+            SceneQuality::Automatic => Ok(()),
+            SceneQuality::Tolerance(t) if t.is_finite() && t > 0.0 => Ok(()),
+            SceneQuality::Tolerance(_) => Err(CommandError::new(
+                "the scene's tolerance must be a positive number",
+            )),
+            SceneQuality::Display { relative, .. } if !(relative.is_finite() && relative > 0.0) => {
+                Err(CommandError::new(
+                    "the display quality's chordal tolerance must be a positive fraction of the model's size",
+                ))
+            }
+            SceneQuality::Display {
+                max_triangles: 0, ..
+            } => Err(CommandError::new(
+                "the display quality's triangle budget must be at least 1",
+            )),
+            SceneQuality::Display { .. } => Ok(()),
+        }
+    }
+
+    /// What the cache is keyed by.
+    fn key(self) -> SceneKey {
+        match self {
+            SceneQuality::Automatic => SceneKey::Automatic,
+            SceneQuality::Tolerance(t) => SceneKey::Tolerance(t.to_bits()),
+            SceneQuality::Display {
+                relative,
+                max_triangles,
+            } => SceneKey::Display {
+                relative: relative.to_bits(),
+                max_triangles,
+            },
+        }
+    }
+}
+
+/// A [`SceneQuality`] with its numbers as bits, so it can be compared.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SceneKey {
+    Automatic,
+    Tolerance(u64),
+    Display { relative: u64, max_triangles: usize },
+}
 
 /// One body of the scene.
 #[derive(Clone, Debug, PartialEq)]
@@ -125,6 +225,10 @@ pub struct Scene {
     /// The chordal tolerance the bodies and the sketch curves were sampled
     /// with, in document units.
     pub tolerance: f64,
+    /// True when the display rule ([`SceneQuality::Display`]) had to
+    /// coarsen its tolerance to stay within its triangle budget or within
+    /// what the tessellator can do. False for the other qualities.
+    pub coarsened: bool,
     /// In history order.
     pub bodies: Vec<SceneBody>,
     /// All bodies as one mesh for a renderer; face ids keep counting across
@@ -169,10 +273,10 @@ pub(crate) struct SceneCache {
     /// `Arc` keeps its address from being reused by another document.
     seen: Option<Arc<Document>>,
     revision: u64,
-    /// Keyed by the tolerance that was asked for (`None`: automatic). A
-    /// scene that could not be built is remembered as its error, so a
-    /// viewer asking every frame does not build it every frame.
-    scenes: Vec<(Option<u64>, Built)>,
+    /// Keyed by the quality that was asked for. A scene that could not be
+    /// built is remembered as its error, so a viewer asking every frame
+    /// does not build it every frame.
+    scenes: Vec<(SceneKey, Built)>,
 }
 
 impl SceneCache {
@@ -192,17 +296,18 @@ impl SceneCache {
     }
 }
 
-/// The default chordal tolerance, as `view.render` and `file.export` choose
-/// it: a thousandth of the side of a square with the bodies' total area.
-/// Without bodies: a thousandth of the size of the sketches.
-fn automatic_tolerance(regen: &Regen, doc: &Document) -> f64 {
+/// The size of the model that the relative tolerances are fractions of:
+/// the side of a square with the bodies' total area. Without bodies, the
+/// diagonal of the box around the sketches' points and circles; without
+/// those, one unit.
+fn model_size(regen: &Regen, doc: &Document) -> f64 {
     let area: f64 = regen
         .bodies()
         .filter_map(|(_, body)| mass_properties(body).ok())
         .map(|m| m.area)
         .sum();
     if area.is_finite() && area > 0.0 {
-        return area.sqrt() * 1e-3;
+        return area.sqrt();
     }
     let mut extent = Bbox3::EMPTY;
     for (feature, solved) in sketches(regen, doc) {
@@ -230,9 +335,9 @@ fn automatic_tolerance(regen: &Regen, doc: &Document) -> f64 {
     }
     let size = extent.diagonal();
     if size.is_finite() && size > 0.0 {
-        size * 1e-3
+        size
     } else {
-        1e-3
+        1.0
     }
 }
 
@@ -385,7 +490,32 @@ fn scene_sketch(
     }
 }
 
-fn build(doc: &Document, regen: &Regen, revision: u64, tolerance: f64) -> Scene {
+/// Why a build with a triangle budget stopped before its last body.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Stop {
+    /// The triangles so far are over the budget, with `faces_done` of the
+    /// model's `faces_total` faces meshed.
+    OverBudget {
+        triangles: usize,
+        faces_done: usize,
+        faces_total: usize,
+    },
+    /// A body needs more segments on a patch than the tessellator allows
+    /// at this tolerance.
+    TooFine { needed: f64, max: u32 },
+}
+
+/// Builds the scene at `tolerance`. With a `budget`, the build stops at the
+/// first body after which the scene has more triangles than that, or that
+/// is too fine for the tessellator, and says so; without one it never
+/// stops, and a body the tessellator refuses is a problem of the scene.
+fn build(
+    doc: &Document,
+    regen: &Regen,
+    revision: u64,
+    tolerance: f64,
+    budget: Option<usize>,
+) -> (Scene, Option<Stop>) {
     #[cfg(test)]
     tests::building();
     let tess = TessParams {
@@ -395,6 +525,7 @@ fn build(doc: &Document, regen: &Regen, revision: u64, tolerance: f64) -> Scene 
     let mut scene = Scene {
         revision,
         tolerance,
+        coarsened: false,
         bodies: Vec::new(),
         mesh: Mesh::default(),
         sketches: Vec::new(),
@@ -402,6 +533,18 @@ fn build(doc: &Document, regen: &Regen, revision: u64, tolerance: f64) -> Scene 
         problems: Vec::new(),
         bbox: Bbox3::EMPTY,
     };
+    // How much of the model is done, for the estimate when the budget is
+    // exceeded: by faces, which every body has and which cost nothing to
+    // count.
+    let faces_total: usize = if budget.is_some() {
+        doc.features
+            .iter()
+            .filter_map(|f| regen.feature(f.id).and_then(|o| o.own_body()))
+            .fold(0, |n, body| n.saturating_add(body.faces.len()))
+    } else {
+        0
+    };
+    let mut faces_done: usize = 0;
     for feature in &doc.features {
         let outcome = regen.feature(feature.id);
         let (state, error) = match outcome.map(|o| &o.status) {
@@ -438,14 +581,24 @@ fn build(doc: &Document, regen: &Regen, revision: u64, tolerance: f64) -> Scene 
         };
         // The mesh and the edges in one go: the boundaries of the faces
         // are worked out once.
-        let (mesh, edges) = match tessellate_body_and_edges(body, &tess) {
-            Ok(both) => match both.mesh {
-                Ok(mesh) => (mesh, both.edges),
-                Err(e) => {
-                    scene.problems.push(format!("{}: {e}", feature.name));
-                    continue;
-                }
-            },
+        let meshed = tessellate_body_and_edges(body, &tess)
+            .and_then(|both| both.mesh.map(|mesh| (mesh, both.edges)));
+        let (mesh, edges) = match meshed {
+            Ok(both) => both,
+            Err(TessError::TooFine {
+                needed_segments,
+                max_segments,
+                ..
+            }) if budget.is_some() => {
+                // A coarser tolerance will do: the caller's business.
+                return (
+                    scene,
+                    Some(Stop::TooFine {
+                        needed: needed_segments,
+                        max: max_segments,
+                    }),
+                );
+            }
             Err(e) => {
                 scene.problems.push(format!("{}: {e}", feature.name));
                 continue;
@@ -483,6 +636,20 @@ fn build(doc: &Document, regen: &Regen, revision: u64, tolerance: f64) -> Scene 
             first_face_id,
             edges,
         });
+        faces_done = faces_done.saturating_add(body.faces.len());
+        let triangles = scene.mesh.triangles.len();
+        if let Some(max) = budget
+            && triangles > max
+        {
+            return (
+                scene,
+                Some(Stop::OverBudget {
+                    triangles,
+                    faces_done,
+                    faces_total,
+                }),
+            );
+        }
     }
     let mut bbox = scene.mesh.bbox();
     for sketch in &scene.sketches {
@@ -496,7 +663,73 @@ fn build(doc: &Document, regen: &Regen, revision: u64, tolerance: f64) -> Scene 
         }
     }
     scene.bbox = bbox;
-    scene
+    (scene, None)
+}
+
+/// The display rule: the scene at `fine`, or at the coarsest tolerance
+/// between `fine` and `automatic` that keeps the scene within
+/// `max_triangles` triangles and within the tessellator's reach. Each
+/// attempt that stops early says how far over it was, and the next
+/// tolerance is coarser by that ratio (triangles grow as the inverse of
+/// the tolerance at worst, so the estimate errs towards another attempt,
+/// never towards a coarser mesh than needed), at least twice as coarse
+/// and at most 64 times. At or beyond `automatic` no budget applies: the
+/// display is never coarser than `view.render`.
+fn build_for_display(
+    doc: &Document,
+    regen: &Regen,
+    revision: u64,
+    fine: f64,
+    automatic: f64,
+    max_triangles: usize,
+) -> Scene {
+    let mut tolerance = fine;
+    let mut attempts = 0;
+    while tolerance < automatic && attempts < MAX_DISPLAY_ATTEMPTS {
+        attempts += 1;
+        let (scene, stop) = build(doc, regen, revision, tolerance, Some(max_triangles));
+        let Some(stop) = stop else {
+            return Scene {
+                coarsened: tolerance > fine,
+                ..scene
+            };
+        };
+        let factor = match stop {
+            Stop::OverBudget {
+                triangles,
+                faces_done,
+                faces_total,
+            } => {
+                let share = if faces_total > 0 {
+                    (faces_done as f64 / faces_total as f64).clamp(1e-3, 1.0)
+                } else {
+                    1.0
+                };
+                (triangles as f64 / share) / (max_triangles as f64)
+            }
+            // Segments on a patch grow as the inverse square root of the
+            // tolerance; a tenth more for the rounding of the count.
+            Stop::TooFine { needed, max } => (needed / f64::from(max.max(1)) * 1.1).powi(2),
+        };
+        let factor = if factor.is_finite() {
+            factor.clamp(2.0, 64.0)
+        } else {
+            4.0
+        };
+        tolerance = (tolerance * factor).min(automatic);
+    }
+    // At the automatic tolerance, out of attempts below it, or asked for
+    // something coarser from the start: no budget.
+    let tolerance = if tolerance.is_finite() && tolerance >= automatic {
+        tolerance
+    } else {
+        automatic
+    };
+    let (scene, _) = build(doc, regen, revision, tolerance, None);
+    Scene {
+        coarsened: tolerance > fine,
+        ..scene
+    }
 }
 
 impl Session {
@@ -517,21 +750,26 @@ impl Session {
 
     /// The scene of the active document, or `None` when no document is
     /// open. `tolerance` is the chordal tolerance in document units; `None`
-    /// picks the one `view.render` uses. A tolerance that is not a positive
-    /// number is an error.
+    /// picks the one `view.render` uses ([`SceneQuality::Automatic`]). A
+    /// tolerance that is not a positive number is an error.
     ///
     /// Cached: asking again for the same tolerance while the document has
     /// not changed returns the same `Arc`.
     pub fn scene(&mut self, tolerance: Option<f64>) -> Result<Option<Arc<Scene>>, CommandError> {
-        if let Some(t) = tolerance
-            && !(t.is_finite() && t > 0.0)
-        {
-            return Err(CommandError::new(
-                "the scene's tolerance must be a positive number",
-            ));
-        }
+        self.scene_with(tolerance.map_or(SceneQuality::Automatic, SceneQuality::Tolerance))
+    }
+
+    /// [`Self::scene`] for any [`SceneQuality`]: what a viewport asks for
+    /// with [`SceneQuality::Display`]. Cached per quality: asking again for
+    /// the same quality while the document has not changed returns the
+    /// same `Arc`.
+    pub fn scene_with(
+        &mut self,
+        quality: SceneQuality,
+    ) -> Result<Option<Arc<Scene>>, CommandError> {
+        quality.validate()?;
         let revision = self.scene_revision();
-        let key = tolerance.map(f64::to_bits);
+        let key = quality.key();
         if let Some((_, scene)) = self.scene.scenes.iter().find(|(k, _)| *k == key) {
             return scene.clone().map(Some);
         }
@@ -544,8 +782,23 @@ impl Session {
         let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let regen = open.regen();
             let doc = open.history.current();
-            let tolerance = tolerance.unwrap_or_else(|| automatic_tolerance(&regen, doc));
-            build(doc, &regen, revision, tolerance)
+            let size = model_size(&regen, doc);
+            let automatic = size * AUTOMATIC_RELATIVE_TOLERANCE;
+            match quality {
+                SceneQuality::Automatic => build(doc, &regen, revision, automatic, None).0,
+                SceneQuality::Tolerance(t) => build(doc, &regen, revision, t, None).0,
+                SceneQuality::Display {
+                    relative,
+                    max_triangles,
+                } => build_for_display(
+                    doc,
+                    &regen,
+                    revision,
+                    size * relative,
+                    automatic,
+                    max_triangles,
+                ),
+            }
         }));
         let scene = built.map(Arc::new).map_err(|payload| {
             let detail = payload

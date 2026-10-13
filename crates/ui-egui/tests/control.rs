@@ -447,7 +447,11 @@ fn ui_screenshot_returns_a_png_of_the_requested_size_that_shows_the_model() {
     );
     assert_eq!(
         shot["triangles"],
-        session.scene(None).unwrap().unwrap().triangles()
+        session
+            .scene_with(shell.scene_quality())
+            .unwrap()
+            .unwrap()
+            .triangles()
     );
 
     // Without a size it is the viewport's.

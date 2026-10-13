@@ -24,8 +24,10 @@ mod sweep_cmds;
 mod workspace;
 
 pub use scene::{
+    AUTOMATIC_RELATIVE_TOLERANCE, DISPLAY_MAX_TRIANGLES, DISPLAY_RELATIVE_TOLERANCE,
     DocumentStatus, FeatureState, MAX_ARC_SEGMENTS, MIN_CIRCLE_SEGMENTS, Scene, SceneBody,
-    SceneFeature, ScenePolyline, SceneSketch, SketchCurve, arc_segments, base64 as encode_base64,
+    SceneFeature, ScenePolyline, SceneQuality, SceneSketch, SketchCurve, arc_segments,
+    base64 as encode_base64,
 };
 pub use workspace::{Access, Workspace};
 

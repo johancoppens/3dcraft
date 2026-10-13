@@ -3,6 +3,7 @@
 //! it (`ui.get`) and drives it (`ui.set`) exactly as the mouse does
 //! (AGENTS.md rule 9). Nothing here belongs to a document.
 
+use craft3d_engine::{DISPLAY_MAX_TRIANGLES, DISPLAY_RELATIVE_TOLERANCE, SceneQuality};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -19,6 +20,61 @@ pub const MAX_FOV: f64 = 120.0;
 pub const MAX_NOTICE_CHARS: usize = 200;
 /// Longest feature reference kept as the selection.
 pub const MAX_SELECTION_CHARS: usize = 128;
+/// The display quality's chordal tolerance, as a fraction of the model's
+/// size, is clamped to this range: at 1e-7 of the size a circle the size
+/// of the model needs more segments than the tessellator allows on an
+/// edge (it would be coarsened straight back), and coarser than a tenth
+/// is a mesh that is not the model.
+pub const MIN_CHORDAL: f64 = 1e-7;
+pub const MAX_CHORDAL: f64 = 1e-1;
+/// The display quality's triangle budget is clamped to this range.
+pub const MIN_TRIANGLES: u64 = 1_000;
+pub const MAX_TRIANGLES: u64 = 1 << 26;
+
+/// How finely the viewport's mesh follows the model: the display rule of
+/// `craft3d_engine::SceneQuality::Display`, as the shell asks for it. The
+/// other pictures (`ui.screenshot` follows this; `view.render`, previews
+/// and `file.export` keep their own tolerance) are not affected.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct DisplayQuality {
+    /// The chordal tolerance as a fraction of the model's size (the side
+    /// of a square with the bodies' total area): the default,
+    /// `DISPLAY_RELATIVE_TOLERANCE`, keeps a circle round at any zoom the
+    /// developer is likely to use.
+    pub chordal: f64,
+    /// The most triangles the viewport's scene may have: the mesh is
+    /// coarsened until it fits, but never beyond the automatic tolerance
+    /// `view.render` uses.
+    pub max_triangles: u64,
+}
+
+impl Default for DisplayQuality {
+    fn default() -> Self {
+        Self {
+            chordal: DISPLAY_RELATIVE_TOLERANCE,
+            max_triangles: u64::try_from(DISPLAY_MAX_TRIANGLES).unwrap_or(u64::MAX),
+        }
+    }
+}
+
+impl DisplayQuality {
+    /// The same quality with every number in range; a number that is not
+    /// finite is an error.
+    pub fn validated(mut self) -> Result<Self, String> {
+        self.chordal = finite("quality.chordal", self.chordal)?.clamp(MIN_CHORDAL, MAX_CHORDAL);
+        self.max_triangles = self.max_triangles.clamp(MIN_TRIANGLES, MAX_TRIANGLES);
+        Ok(self)
+    }
+
+    /// What the shell asks the engine for.
+    pub fn scene_quality(self) -> SceneQuality {
+        SceneQuality::Display {
+            relative: self.chordal,
+            max_triangles: usize::try_from(self.max_triangles).unwrap_or(usize::MAX),
+        }
+    }
+}
 
 /// The named views, with the yaw and pitch each one is.
 pub const VIEWS: [(&str, f64, f64); 7] = [
@@ -104,6 +160,8 @@ pub struct UiState {
     pub selected_feature: Option<String>,
     /// A one-line caption shown over the viewport, for narrated demos.
     pub notice: String,
+    /// How finely the viewport's mesh follows the model.
+    pub quality: DisplayQuality,
 }
 
 fn finite(name: &str, value: f64) -> Result<f64, String> {
@@ -173,6 +231,7 @@ impl UiState {
     /// [`CameraState::validated`]); texts are cut to their limits.
     pub fn validated(mut self) -> Result<Self, String> {
         self.camera = self.camera.validated()?;
+        self.quality = self.quality.validated()?;
         self.notice = one_line(&self.notice, MAX_NOTICE_CHARS);
         self.selected_feature = self
             .selected_feature
@@ -261,6 +320,10 @@ mod tests {
             },
             selected_feature: Some("F3".to_string()),
             notice: "Step 2: the post".to_string(),
+            quality: DisplayQuality {
+                chordal: 1e-4,
+                max_triangles: 500_000,
+            },
         };
         let json = serde_json::to_value(&state).unwrap();
         assert_eq!(
@@ -272,6 +335,7 @@ mod tests {
                 "panels": {"tree": false, "status": true},
                 "selectedFeature": "F3",
                 "notice": "Step 2: the post",
+                "quality": {"chordal": 1e-4, "maxTriangles": 500_000},
             })
         );
         let back: UiState = serde_json::from_value(json).unwrap();
@@ -396,6 +460,16 @@ mod tests {
             json!({"notice": ["a"]}),
             json!({"selectedFeature": 3}),
             json!({"selectedFeature": {"id": "F1"}}),
+            json!({"quality": 1e-4}),
+            json!({"quality": "fine"}),
+            json!({"quality": {"chordal": "fine"}}),
+            json!({"quality": {"chordal": null}}),
+            json!({"quality": {"chordal": [1e-4]}}),
+            json!({"quality": {"maxTriangles": -1}}),
+            json!({"quality": {"maxTriangles": 1.5}}),
+            json!({"quality": {"maxTriangles": "many"}}),
+            json!({"quality": {"level": "high"}}),
+            json!({"quality": {"chordal": 1e-4, "tolerance": 0.01}}),
             json!({"view": 3}),
             json!({"view": "upside-down"}),
             json!({"view": null}),
@@ -462,6 +536,73 @@ mod tests {
             .unwrap();
         assert_eq!(state.notice, "two lines and a tab");
         assert_eq!(state.selected_feature, None);
+    }
+
+    /// The display quality is state like the camera: patched field by
+    /// field, clamped, and the engine's defaults when nothing is set.
+    #[test]
+    fn the_display_quality_is_patched_and_clamped() {
+        let mut state = UiState::default();
+        assert_eq!(
+            state.quality,
+            DisplayQuality {
+                chordal: DISPLAY_RELATIVE_TOLERANCE,
+                max_triangles: DISPLAY_MAX_TRIANGLES as u64,
+            }
+        );
+        assert_eq!(
+            state.quality.scene_quality(),
+            SceneQuality::Display {
+                relative: DISPLAY_RELATIVE_TOLERANCE,
+                max_triangles: DISPLAY_MAX_TRIANGLES,
+            }
+        );
+        state
+            .apply_patch(&json!({"quality": {"chordal": 1e-4}}))
+            .unwrap();
+        assert_eq!(state.quality.chordal, 1e-4);
+        assert_eq!(state.quality.max_triangles, DISPLAY_MAX_TRIANGLES as u64);
+        state
+            .apply_patch(&json!({"quality": {"maxTriangles": 250_000}}))
+            .unwrap();
+        assert_eq!(state.quality.chordal, 1e-4);
+        assert_eq!(state.quality.max_triangles, 250_000);
+        assert_eq!(
+            state.quality.scene_quality(),
+            SceneQuality::Display {
+                relative: 1e-4,
+                max_triangles: 250_000,
+            }
+        );
+        // Out of range is clamped, not refused.
+        state
+            .apply_patch(&json!({"quality": {"chordal": 1e-30, "maxTriangles": 1}}))
+            .unwrap();
+        assert_eq!(
+            (state.quality.chordal, state.quality.max_triangles),
+            (MIN_CHORDAL, MIN_TRIANGLES)
+        );
+        state
+            .apply_patch(&json!({"quality": {"chordal": 5.0, "maxTriangles": u64::MAX}}))
+            .unwrap();
+        assert_eq!(
+            (state.quality.chordal, state.quality.max_triangles),
+            (MAX_CHORDAL, MAX_TRIANGLES)
+        );
+        // A quality nobody can mean is an error.
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let quality = DisplayQuality {
+                chordal: bad,
+                ..DisplayQuality::default()
+            };
+            let error = quality.validated().unwrap_err();
+            assert!(error.contains("quality.chordal"), "{error}");
+            let state = UiState {
+                quality,
+                ..UiState::default()
+            };
+            assert!(state.validated().is_err());
+        }
     }
 
     /// JSON cannot carry NaN, but Rust code can hand one over.

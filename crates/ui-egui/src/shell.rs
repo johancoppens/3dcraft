@@ -10,7 +10,7 @@ use crate::frames::{Mode, Scheduler, Ticket};
 use crate::state::{CameraState, ProjectionKind, UiState, VIEWS};
 use crate::theme::{Tokens, color, color_alpha};
 use crate::viewport::{self, Composed, MAX_SIDE, MIN_SIDE, Overlay, Quality};
-use craft3d_engine::{DocumentStatus, FeatureState, Scene, Session};
+use craft3d_engine::{DocumentStatus, FeatureState, Scene, SceneQuality, Session};
 use craft3d_math::Bbox3;
 use std::sync::Arc;
 
@@ -171,6 +171,9 @@ pub struct RenderStats {
 #[derive(Clone, Debug, PartialEq)]
 struct FrameKey {
     revision: Option<u64>,
+    /// The tolerance the scene was sampled with: another display quality
+    /// is another mesh of the same revision.
+    tolerance: Option<f64>,
     camera: CameraState,
     /// The viewport, in pixels.
     size: [u32; 2],
@@ -487,6 +490,14 @@ impl Shell {
         }
     }
 
+    /// The quality the viewport asks the engine for: the display rule
+    /// with the state's `quality` ([`crate::state::DisplayQuality`]). The
+    /// scene the shell shows, and `ui.screenshot` renders, is
+    /// `session.scene_with(shell.scene_quality())`.
+    pub fn scene_quality(&self) -> SceneQuality {
+        self.state.quality.scene_quality()
+    }
+
     /// True when sharp images are made on a thread of their own.
     pub fn renders_in_background(&self) -> bool {
         self.scheduler.mode() == Mode::Background
@@ -607,7 +618,7 @@ impl Shell {
     /// active document, the tree rows, the selection, and the camera when
     /// it follows the model. Called every frame and after every request.
     pub fn sync(&mut self, session: &mut Session) -> Option<Arc<Scene>> {
-        let scene = match session.scene(None) {
+        let scene = match session.scene_with(self.scene_quality()) {
             Ok(scene) => {
                 self.problem = None;
                 scene
@@ -875,6 +886,7 @@ impl Shell {
         let largest = ui.input(|i| i.max_texture_side);
         let key = FrameKey {
             revision: scene.map(|s| s.revision),
+            tolerance: scene.map(|s| s.tolerance),
             camera: self.state.camera,
             size,
             largest,

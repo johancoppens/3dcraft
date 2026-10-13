@@ -20,7 +20,10 @@
 //! existed; `--cpu` with the CPU reference renderer. `--inline` renders
 //! the sharp image of those two paths on the drawing thread, as a host
 //! without threads does; without it on the worker thread, as in the
-//! window.
+//! window. `--chordal FRACTION` sets the display quality's chordal
+//! tolerance as a fraction of the model's size (the shell's default
+//! without it; `1e-3` is the automatic tolerance the viewport showed
+//! before 2026-10-13), so the cost of the finer mesh can be compared.
 
 use craft3d_engine::{Session, Workspace};
 use craft3d_ui_egui::direct::headless_render_state;
@@ -125,25 +128,15 @@ enum Path {
     Cpu,
 }
 
-fn measure(large: bool, size: [f32; 2], inline: bool, path: Path) -> Result<(), String> {
+fn measure(
+    large: bool,
+    size: [f32; 2],
+    inline: bool,
+    path: Path,
+    chordal: Option<f64>,
+) -> Result<(), String> {
     let mut session = Session::new(Workspace::none());
     build(&mut session, large)?;
-    let scene = session
-        .scene(None)
-        .map_err(|e| e.message().to_string())?
-        .ok_or("no document")?;
-    println!(
-        "{} bodies, {} triangles, window {} x {}, sharp image {}",
-        scene.bodies.len(),
-        scene.triangles(),
-        size[0],
-        size[1],
-        if inline {
-            "on the drawing thread"
-        } else {
-            "on the worker thread"
-        }
-    );
     let choice = match path {
         Path::Direct | Path::Readback => RendererChoice::Auto,
         Path::Cpu => RendererChoice::Cpu,
@@ -153,6 +146,32 @@ fn measure(large: bool, size: [f32; 2], inline: bool, path: Path) -> Result<(), 
     } else {
         Shell::threaded_with(choice)
     };
+    if let Some(chordal) = chordal {
+        shell.state.quality.chordal = chordal;
+        shell.state = shell.state.clone().validated()?;
+    }
+    let scene = session
+        .scene_with(shell.scene_quality())
+        .map_err(|e| e.message().to_string())?
+        .ok_or("no document")?;
+    println!(
+        "{} bodies, {} triangles (chordal tolerance {:.5}, {}), window {} x {}, sharp image {}",
+        scene.bodies.len(),
+        scene.triangles(),
+        scene.tolerance,
+        if scene.coarsened {
+            "coarsened to the budget"
+        } else {
+            "as asked"
+        },
+        size[0],
+        size[1],
+        if inline {
+            "on the drawing thread"
+        } else {
+            "on the worker thread"
+        }
+    );
     let mut device = None;
     if path == Path::Direct {
         let state = headless_render_state()?;
@@ -262,9 +281,23 @@ fn main() -> ExitCode {
     } else {
         Path::Direct
     };
-    let outcome = measure(false, [1280.0, 800.0], inline, path)
-        .and_then(|()| measure(true, [1280.0, 800.0], inline, path))
-        .and_then(|()| measure(true, [2560.0, 1400.0], inline, path));
+    // `--chordal FRACTION`: the display quality's chordal tolerance as a
+    // fraction of the model's size (`1e-3` is the automatic tolerance the
+    // viewport showed before 2026-10-13); the default is the shell's.
+    let mut args = std::env::args().skip(1);
+    let mut chordal = None;
+    while let Some(arg) = args.next() {
+        if arg == "--chordal" {
+            let Some(value) = args.next().and_then(|v| v.parse::<f64>().ok()) else {
+                eprintln!("frame_time: --chordal takes a number");
+                return ExitCode::FAILURE;
+            };
+            chordal = Some(value);
+        }
+    }
+    let outcome = measure(false, [1280.0, 800.0], inline, path, chordal)
+        .and_then(|()| measure(true, [1280.0, 800.0], inline, path, chordal))
+        .and_then(|()| measure(true, [2560.0, 1400.0], inline, path, chordal));
     match outcome {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
