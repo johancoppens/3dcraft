@@ -641,7 +641,12 @@ fn random_pairs_with_cones_balls_and_rings_satisfy_the_identities() {
 #[test]
 #[ignore = "a tool for reproducing one pair of a run"]
 fn one_pair() {
-    let spec = std::env::var("BOOLEAN_PAIR").unwrap_or_default();
+    // Not asked for (the long runs are started with `--ignored`, which
+    // starts this too): nothing to look at, and nothing wrong.
+    let Ok(spec) = std::env::var("BOOLEAN_PAIR") else {
+        println!("one_pair: BOOLEAN_PAIR is not set, nothing to do");
+        return;
+    };
     let fields: Vec<f64> = spec
         .split_whitespace()
         .filter_map(|f| f.parse().ok())

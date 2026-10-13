@@ -1434,7 +1434,12 @@ fn random_booleans_long_run() {
 #[test]
 #[ignore = "a tool for reproducing one pair of a run"]
 fn one_pair() {
-    let spec = std::env::var("SELF_PAIR").unwrap_or_default();
+    // Not asked for (the long run is started with `--ignored`, which
+    // starts this too): nothing to look at, and nothing wrong.
+    let Ok(spec) = std::env::var("SELF_PAIR") else {
+        println!("one_pair: SELF_PAIR is not set, nothing to do");
+        return;
+    };
     let fields: Vec<f64> = spec
         .split_whitespace()
         .filter_map(|f| f.parse().ok())

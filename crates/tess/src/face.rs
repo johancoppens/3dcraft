@@ -648,12 +648,14 @@ fn patch_region(
     rings: &[Ring],
     sense: f64,
     face: usize,
+    starved: &mut bool,
 ) -> Result<Region, TessError> {
     let periods = param.periods();
     let mut region = Region::default();
     let areas: Vec<f64> = rings.iter().map(|r| r.twice_area(periods)).collect();
     let total: f64 = areas.iter().sum();
     if !positive(total * sense) {
+        *starved = true;
         return fail(
             face,
             "its loops do not bound a region: they enclose no area, or run the wrong way \
@@ -1720,13 +1722,49 @@ impl Boundary<'_> {
     }
 }
 
+/// Every chord of the edges of `face` that cutting in two can change: all
+/// of them but those of straight edges on a surface whose straight lines
+/// are straight in its parameters. What a face asks for whose loops, as
+/// polygons, enclose nothing (see [`face_boundary`]).
+pub(crate) fn curved_chords(body: &Body, edges: &[Vec<Vec3>], face: &Face) -> Vec<Chord> {
+    let freeform = matches!(face.surface, Surface::Bezier(_) | Surface::Nurbs(_));
+    let mut chords = Vec::new();
+    let coedges = face
+        .loops
+        .iter()
+        .filter_map(|id| body.loop_(*id))
+        .flat_map(|loop_| &loop_.coedges);
+    for coedge in coedges {
+        let id = coedge.edge.0;
+        let (Some(edge), Some(points)) = (body.edge(coedge.edge), edges.get(id as usize)) else {
+            continue;
+        };
+        if !freeform && matches!(edge.curve, Curve3::Line(_)) {
+            continue;
+        }
+        let count = u32::try_from(points.len().saturating_sub(1)).unwrap_or(u32::MAX);
+        chords.extend((0..count).map(|chord| (id, chord)));
+    }
+    chords
+}
+
 /// The boundary of face `index` of `body`, whose edges are already points.
+///
+/// `starved` is set when the face is refused because its loops, as the
+/// polygons the edge points make of them, enclose no area: a face
+/// narrower than the chordal tolerance between a curved edge and its
+/// chord (a sliver between a line and a flat arc from the same vertex to
+/// the same vertex is, at one chord for the arc, a line there and back).
+/// That says nothing about the face, only about the points: with the
+/// chords of its curved edges cut in two ([`curved_chords`]) it may well
+/// enclose some.
 pub(crate) fn face_boundary<'a>(
     body: &Body,
     edges: &[Vec<Vec3>],
     face: &'a Face,
     index: usize,
     params: &TessParams,
+    starved: &mut bool,
 ) -> Result<Boundary<'a>, TessError> {
     let loops = loop_points(body, edges, face, index)?;
     let tolerance = params.chordal_tolerance;
@@ -1791,7 +1829,7 @@ pub(crate) fn face_boundary<'a>(
         }
         band_region(&param, &rings, sense, index)?
     } else {
-        patch_region(&param, &rings, sense, index)?
+        patch_region(&param, &rings, sense, index, starved)?
     };
 
     // The box the region lies in, and the grid over it.
@@ -1810,6 +1848,7 @@ pub(crate) fn face_boundary<'a>(
     }
     let span = [get2(high, 0) - get2(low, 0), get2(high, 1) - get2(low, 1)];
     if !span.iter().all(|s| s.is_finite() && *s > 0.0) {
+        *starved = true;
         return fail(
             index,
             "its loops do not bound a region: they enclose no area on the surface",
