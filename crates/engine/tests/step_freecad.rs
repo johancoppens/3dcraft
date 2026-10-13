@@ -16,7 +16,12 @@
 //! (`crates/kernel/tests/boolean*.rs`), cavities included; all at the
 //! scales 1e-3, 1 and 1e6. A boolean the kernel refuses is listed, not
 //! failed: that is the kernel's work, not the export's. The tables are
-//! printed and left in `target/tmp/step-engine/report.md`.
+//! printed and left in `target/tmp/step-engine-files/report.md`.
+//!
+//! A second test, in `step_freecad/features.rs`, has the documents of
+//! extrusion ends, datums, spline profiles and slivers, compared body by
+//! body, with closed forms and with the mesh exports
+//! (`target/tmp/step-features-files/report.md`).
 
 #![allow(
     clippy::unwrap_used,
@@ -25,6 +30,8 @@
     clippy::indexing_slicing
 )]
 
+#[path = "step_freecad/features.rs"]
+mod features;
 #[path = "../../io/tests/common/step_harness.rs"]
 mod harness;
 
@@ -47,6 +54,12 @@ struct Set {
     /// Bodies our own measurements fail on: reported, since FreeCAD
     /// cannot be compared with nothing.
     unmeasured: Vec<String>,
+    /// Hold FreeCAD's solids to our bodies one by one, not only in total
+    /// (`harness::Part`).
+    per_body: bool,
+    /// When there: every document is also exported as STL and 3MF, for
+    /// FreeCAD's mesh module to read (`features::check_meshes`).
+    meshes: Option<Vec<features::MeshCase>>,
 }
 
 /// What a case expects of FreeCAD beyond the numbers.
@@ -181,6 +194,7 @@ impl Set {
         ]);
         let mut slack: f64 = 0.0;
         let mut names = Vec::new();
+        let mut parts = Vec::new();
         for body in bodies {
             assert_eq!(body["kind"], "solid", "{name}: {body}");
             let Some(v) = body["volume"].as_f64() else {
@@ -215,6 +229,31 @@ impl Set {
                 }
             }
             names.push(body["name"].as_str().unwrap().to_string());
+            if self.per_body {
+                parts.push(harness::Part {
+                    name: body["name"].as_str().unwrap().to_string(),
+                    volume: v,
+                    area: body["area"].as_f64().unwrap(),
+                    centroid: [0, 1, 2].map(|axis| body["centroid"][axis].as_f64().unwrap()),
+                });
+            }
+        }
+        if let Some(meshes) = self.meshes.as_mut() {
+            for extension in ["stl", "3mf"] {
+                let file = format!("{name}.{extension}");
+                let exported = run(&mut s, "file.export", json!({"path": file}));
+                meshes.push(features::MeshCase {
+                    bytes: std::fs::read(self.dir.join(&file)).unwrap(),
+                    file,
+                    bodies: bodies.len(),
+                    closed: exported["closed"].as_u64().unwrap() as usize,
+                    triangles: exported["triangles"].as_u64().unwrap() as usize,
+                    tolerance: exported["tolerance"].as_f64().unwrap(),
+                    volume,
+                    area,
+                    bbox,
+                });
+            }
         }
         self.cases.push(Case {
             file,
@@ -238,6 +277,7 @@ impl Set {
             ),
             names,
             relative: expect.relative,
+            parts,
         });
     }
 }
@@ -515,6 +555,8 @@ fn freecad_reads_what_the_commands_build() {
         cases: Vec::new(),
         refused: Vec::new(),
         unmeasured: Vec::new(),
+        per_body: false,
+        meshes: None,
     };
 
     for (k, tag) in [(1e-3, "milli"), (1.0, "one"), (1e6, "mega")] {

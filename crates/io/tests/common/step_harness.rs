@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 const SCRIPT: &str = include_str!("../step_report.py");
+const MESH_SCRIPT: &str = include_str!("../mesh_report.py");
 
 /// Relative agreement asked of volume and area where FreeCAD has nothing
 /// to approximate: every edge is a line in the parameter plane of both its
@@ -83,6 +84,32 @@ pub struct Case {
     pub names: Vec<String>,
     /// Relative tolerance on volume and area for this case.
     pub relative: f64,
+    /// Our bodies one by one, in the order they were written, to be held
+    /// to FreeCAD's solids one by one (empty: only the totals are
+    /// compared). A small body next to a large one is otherwise measured
+    /// against the large one's size. Compared only when FreeCAD finds as
+    /// many solids as there are parts (a body of several lumps is several
+    /// solids in FreeCAD).
+    pub parts: Vec<Part>,
+}
+
+/// One body of a [`Case`], in the file's unit.
+#[derive(Clone, Debug)]
+pub struct Part {
+    pub name: String,
+    pub volume: f64,
+    pub area: f64,
+    pub centroid: [f64; 3],
+}
+
+/// FreeCAD's solid `name` over ours: what [`compare`] found per part.
+#[derive(Clone, Debug)]
+pub struct PartRow {
+    pub name: String,
+    pub volume_ratio: f64,
+    pub area_ratio: f64,
+    /// Distance between the centres of mass over the part's size.
+    pub centre_off: f64,
 }
 
 /// The address space FreeCAD gets, in kB (4 GiB). Reading and measuring
@@ -108,6 +135,8 @@ pub struct Row {
     /// Ours, then FreeCAD's: faces/edges/vertices/shells.
     pub counts: String,
     pub added: String,
+    /// Per part of the case, where they were compared.
+    pub parts: Vec<PartRow>,
     pub problems: Vec<String>,
 }
 
@@ -226,6 +255,7 @@ pub fn compare(case: &Case, record: &Value) -> Row {
         quadrature_volume_ratio: None,
         counts: String::new(),
         added: String::new(),
+        parts: Vec::new(),
         problems: Vec::new(),
     };
     if let Some(error) = record.get("error").and_then(Value::as_str) {
@@ -303,6 +333,51 @@ pub fn compare(case: &Case, record: &Value) -> Row {
                 "centre of mass off by {:e} of the size",
                 row.centre_off
             ));
+        }
+    }
+    // Body by body, where FreeCAD's solids are our bodies.
+    if case.solid && !case.parts.is_empty() && case.parts.len() == solids.len() {
+        for (part, solid) in case.parts.iter().zip(&solids) {
+            let volume = solid["volume"].as_f64().unwrap_or(f64::NAN);
+            let area = solid["area"].as_f64().unwrap_or(f64::NAN);
+            let centre = numbers(&solid["centre"]);
+            let part_size = part.area.sqrt() * k;
+            let centre_off = if centre.len() == 3 {
+                (0..3)
+                    .map(|axis| (centre[axis] - part.centroid[axis] * k).powi(2))
+                    .sum::<f64>()
+                    .sqrt()
+                    / part_size
+            } else {
+                f64::NAN
+            };
+            let found = PartRow {
+                name: part.name.clone(),
+                volume_ratio: volume / (part.volume * k3),
+                area_ratio: area / (part.area * k2),
+                centre_off,
+            };
+            if !((found.volume_ratio - 1.0).abs() <= case.relative) {
+                row.problems.push(format!(
+                    "{}: volume {volume:e} mm³, ours {:e}",
+                    part.name,
+                    part.volume * k3
+                ));
+            }
+            if !((found.area_ratio - 1.0).abs() <= case.relative) {
+                row.problems.push(format!(
+                    "{}: area {area:e} mm², ours {:e}",
+                    part.name,
+                    part.area * k2
+                ));
+            }
+            if !(found.centre_off <= 10.0 * case.relative) {
+                row.problems.push(format!(
+                    "{}: centre of mass off by {centre_off:e} of its size",
+                    part.name
+                ));
+            }
+            row.parts.push(found);
         }
     }
     if let Some(ours) = case.bbox {
@@ -395,6 +470,88 @@ pub fn compare(case: &Case, record: &Value) -> Row {
             .push("FreeCAD's Import module is missing: names not checked".to_string());
     }
     row
+}
+
+/// One exported mesh file and what the exporter said of it.
+#[derive(Clone, Debug)]
+pub struct MeshFile {
+    /// File name, without directory (`.stl`, `.3mf`).
+    pub file: String,
+    pub bytes: Vec<u8>,
+}
+
+/// Writes the mesh files into `dir` and returns what FreeCAD's mesh
+/// module makes of each, by file name: `facets`, `points`, `area`,
+/// `volume`, `solid` and `bbox` (in the file's own numbers: FreeCAD
+/// stores a mesh in 32-bit floats and without a unit), or `error`. One
+/// FreeCAD for all of them; a file it stops on ends the run and the
+/// files after it are run again, as for STEP.
+pub fn run_freecad_meshes(dir: &Path, files: &[MeshFile]) -> BTreeMap<String, Value> {
+    let freecad = freecad();
+    std::fs::create_dir_all(dir).unwrap();
+    let script = dir.join("mesh_report.py");
+    std::fs::write(&script, MESH_SCRIPT).unwrap();
+    let mut records = BTreeMap::new();
+    let mut rest: Vec<&MeshFile> = files.iter().collect();
+    while !rest.is_empty() {
+        let listing = dir.join("meshes.txt");
+        let output = dir.join("meshes.jsonl");
+        let mut list = String::new();
+        for file in &rest {
+            let path = dir.join(&file.file);
+            std::fs::write(&path, &file.bytes).unwrap();
+            writeln!(list, "{}", path.display()).unwrap();
+        }
+        std::fs::write(&listing, list).unwrap();
+        let _ = std::fs::remove_file(&output);
+        let mut command = if cfg!(target_os = "linux") {
+            let mut shell = Command::new("sh");
+            shell
+                .arg("-c")
+                .arg(format!("ulimit -v {ADDRESS_SPACE_KB} && exec \"$@\""))
+                .arg("sh")
+                .arg(&freecad);
+            shell
+        } else {
+            Command::new(&freecad)
+        };
+        if freecad.ends_with(".AppImage") {
+            command.arg("freecadcmd");
+        }
+        let run = command
+            .arg(&script)
+            .env("CRAFT3D_FC_LIST", &listing)
+            .env("CRAFT3D_FC_OUT", &output)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap_or_else(|e| panic!("cannot run {freecad}: {e}"));
+        let text = std::fs::read_to_string(&output).unwrap_or_else(|_| {
+            panic!(
+                "FreeCAD wrote no mesh report ({}):\n{}\n{}",
+                run.status,
+                String::from_utf8_lossy(&run.stdout),
+                String::from_utf8_lossy(&run.stderr)
+            )
+        });
+        let mut done = 0;
+        for line in text.lines() {
+            let value: Value = serde_json::from_str(line).unwrap();
+            let file = value["file"].as_str().unwrap().to_string();
+            records.insert(file, value);
+            done += 1;
+        }
+        if done < rest.len() {
+            let culprit = rest[done];
+            records.insert(
+                culprit.file.clone(),
+                serde_json::json!({"file": culprit.file, "error": format!(
+                    "FreeCAD stopped on this file ({})", run.status)}),
+            );
+            done += 1;
+        }
+        rest.drain(..done);
+    }
+    records
 }
 
 /// The rows as a Markdown table, and the problems under it.
