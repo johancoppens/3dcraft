@@ -11,7 +11,7 @@
 // for NaN.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
-use crate::{BezierPatch, GeomError, NurbsSurface, Sphere, Surface};
+use crate::{BezierPatch, BezierSpan, DerivativeBounds, GeomError, NurbsSurface, Sphere, Surface};
 use craft3d_math::{Bbox3, Frame, Tolerance, Vec3};
 use std::f64::consts::{FRAC_PI_2, TAU};
 
@@ -673,8 +673,9 @@ impl Chart {
     }
 }
 
-/// Derivative bounds of a rational surface, estimated from samples (four per
-/// control point and direction) with a margin. Not a proof.
+/// Derivative bounds of a surface, estimated from samples (four per control
+/// point and direction) with a margin. Not a proof: the last resort of
+/// `nurbs_bounds`.
 fn sampled_bounds(
     surface: &Surface,
     u: (f64, f64),
@@ -722,10 +723,63 @@ fn sampled_bounds(
     }
 }
 
-/// Derivative bounds of a NURBS surface: proofs for a polynomial one (every
-/// weight 1), from the Bézier nets of its spans, each span's net bounding
+/// How often each Bézier span of a rational surface is quartered for its
+/// derivative bounds: the bounds of a rational piece tighten as it shrinks
+/// (its weights even out).
+const RATIONAL_QUARTERINGS: usize = 2;
+
+/// Derivative bounds of a rational surface, proven: the largest of the
+/// bounds of the pieces of its spans
+/// ([`RationalBezierPatch::derivative_bounds`]), each scaled by the part
+/// of the surface's domain the piece covers. `None` when a piece has none
+/// (a weight that is not positive).
+fn rational_bounds(spans: &[BezierSpan]) -> Option<Bounds> {
+    let mut all: Option<DerivativeBounds> = None;
+    for span in spans {
+        let mut pieces = vec![span.patch.clone()];
+        for _ in 0..RATIONAL_QUARTERINGS {
+            pieces = pieces
+                .iter()
+                .flat_map(|piece| {
+                    let (left, right) = piece.split_u(0.5);
+                    let ((a, b), (c, d)) = (left.split_v(0.5), right.split_v(0.5));
+                    [a, b, c, d]
+                })
+                .collect();
+        }
+        let across = (1_usize << RATIONAL_QUARTERINGS) as f64;
+        let (du, dv) = (
+            (span.u.1 - span.u.0) / across,
+            (span.v.1 - span.v.0) / across,
+        );
+        if !(du > 0.0 && dv > 0.0) {
+            return None;
+        }
+        for piece in &pieces {
+            let bound = piece.derivative_bounds()?.over(du, dv);
+            all = Some(all.map_or(bound, |so_far| so_far.max(&bound)));
+        }
+    }
+    let b = all?;
+    let bounds = Bounds {
+        lu: b.first_u,
+        lv: b.first_v,
+        muu: b.second_uu,
+        muv: b.second_uv,
+        mvv: b.second_vv,
+    };
+    [bounds.lu, bounds.lv, bounds.muu, bounds.muv, bounds.mvv]
+        .iter()
+        .all(|x| x.is_finite())
+        .then_some(bounds)
+}
+
+/// Derivative bounds of a NURBS surface: proofs, from the Bézier nets of
+/// its spans. For a polynomial one (every weight 1) each span's net bounds
 /// its derivatives as a Bézier patch's does, scaled by the span's width in
-/// the surface's own parameters; estimates from samples otherwise. (With
+/// the surface's own parameters; for a rational one see
+/// `rational_bounds`. Estimates from samples only where the surface cannot
+/// be split into spans or a bound is not finite. (With
 /// the estimates, which carry a margin, the marcher could rarely call a
 /// cell simple on a B-spline and split down to the floor along the whole
 /// curve: a B-spline roof took seconds where the same roof as a Bézier
@@ -743,7 +797,7 @@ fn nurbs_bounds(
         return estimate();
     };
     if !spans.iter().all(|span| span.patch.is_polynomial()) {
-        return estimate();
+        return rational_bounds(&spans).unwrap_or_else(estimate);
     }
     let mut b = Bounds {
         lu: 0.0,
