@@ -96,9 +96,10 @@ fn a_round_profile_up_to_an_inclined_plane_has_the_mean_height() {
             );
             let target = primitives::cylinder(&floor, 20.0 * k, 3.0 * k).unwrap();
             // The floor is the plane face through the frame's origin.
-            let faces = face_on(&target, |s| {
-                matches!(s, Surface::Plane(p) if p.frame().origin().distance(floor.origin()) < 1e-9 * k)
-            });
+            let faces = face_on(
+                &target,
+                |s| matches!(s, Surface::Plane(p) if p.frame().origin().distance(floor.origin()) < 1e-9 * k),
+            );
             let round = profiles(&[circle(5, [0.0, 0.0], a)], k);
             let made = extrude_up_to(
                 &round,
@@ -156,16 +157,22 @@ fn reversed_goes_against_the_normal() {
     let k = 1.0;
     let base = Frame::WORLD;
     let block = primitives::block(
-        &within(&base, [-10.0, -10.0, -9.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]),
+        &within(
+            &base,
+            [-10.0, -10.0, -9.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.0],
+        ),
         20.0,
         20.0,
         4.0,
     )
     .unwrap();
     // The top of the block, at z = -5.
-    let top = face_on(&block, |s| {
-        matches!(s, Surface::Plane(p) if (p.frame().origin().z + 5.0).abs() < 1e-9)
-    });
+    let top = face_on(
+        &block,
+        |s| matches!(s, Surface::Plane(p) if (p.frame().origin().z + 5.0).abs() < 1e-9),
+    );
     let target = Target {
         body: &block,
         faces: &top,
@@ -190,7 +197,10 @@ fn reversed_goes_against_the_normal() {
     assert!(plane.frame().origin().z.abs() < 1e-9);
     // Along the normal the block is behind the sketch plane.
     let error = extrude_up_to(&square, &base, false, &target, &tolerance(k)).unwrap_err();
-    assert!(error.to_string().contains("behind the sketch plane"), "{error}");
+    assert!(
+        error.to_string().contains("behind the sketch plane"),
+        "{error}"
+    );
 }
 
 /// A rectangle `2a` wide across a lying cylinder of radius `r` whose axis
@@ -256,7 +266,10 @@ fn a_rectangle_up_to_a_cylinder_ends_on_its_arch() {
                     .filter(|o| o.role == role)
                     .count()
             };
-            assert_eq!((corners(Role::StartVertex), corners(Role::EndVertex)), (4, 4));
+            assert_eq!(
+                (corners(Role::StartVertex), corners(Role::EndVertex)),
+                (4, 4)
+            );
         }
     }
 }
@@ -450,7 +463,8 @@ fn a_rectangle_up_to_a_parabolic_wall_has_the_area_under_the_parabola() {
             let (volume, area) = measured(&made, k);
             let t = |x: f64| (x + 6.0) / 12.0;
             let y = |x: f64| 4.0 + 8.0 * t(x) * (1.0 - t(x));
-            let primitive = |x: f64| 12.0 * (4.0 * t(x) + 4.0 * t(x).powi(2) - 8.0 / 3.0 * t(x).powi(3));
+            let primitive =
+                |x: f64| 12.0 * (4.0 * t(x) + 4.0 * t(x).powi(2) - 8.0 / 3.0 * t(x).powi(3));
             let under = primitive(x1) - primitive(x0);
             // The slope is s = (2 - 4t) / 3, and dx = -9 ds.
             let slope = |x: f64| (2.0 - 4.0 * t(x)) / 3.0;
@@ -534,9 +548,10 @@ fn every_profile_gets_its_own_end() {
         2.0,
     )
     .unwrap();
-    let under = face_on(&roof, |s| {
-        matches!(s, Surface::Plane(p) if p.frame().z().z < -0.9)
-    });
+    let under = face_on(
+        &roof,
+        |s| matches!(s, Surface::Plane(p) if p.frame().z().z < -0.9),
+    );
     let mut curves = rectangle(1, 1, (0.0, 4.0), (0.0, 4.0));
     curves.push(circle(5, [2.0, 2.0], 1.0));
     curves.push(circle(6, [8.0, 2.0], 1.0));
@@ -591,22 +606,29 @@ fn what_cannot_end_is_refused_with_its_reason() {
         2.0,
     )
     .unwrap();
-    let refused = |profiles: &[Profile], body: &Body, faces: &[FaceId], reversed: bool| {
-        match extrude_up_to(profiles, &base, reversed, &Target { body, faces }, &tol) {
+    let refused =
+        |profiles: &[Profile], body: &Body, faces: &[FaceId], reversed: bool| match extrude_up_to(
+            profiles,
+            &base,
+            reversed,
+            &Target { body, faces },
+            &tol,
+        ) {
             Err(error) => error.to_string(),
             Ok(_) => panic!("should be refused"),
-        }
-    };
+        };
     // A side of the block: parallel to the direction.
-    let side = face_on(&block, |s| {
-        matches!(s, Surface::Plane(p) if p.frame().z().x > 0.9)
-    });
+    let side = face_on(
+        &block,
+        |s| matches!(s, Surface::Plane(p) if p.frame().z().x > 0.9),
+    );
     let reason = refused(&square, &block, &side, false);
     assert!(reason.contains("parallel to the direction"), "{reason}");
     // The underside, but going down.
-    let under = face_on(&block, |s| {
-        matches!(s, Surface::Plane(p) if p.frame().z().z < -0.9)
-    });
+    let under = face_on(
+        &block,
+        |s| matches!(s, Surface::Plane(p) if p.frame().z().z < -0.9),
+    );
     let reason = refused(&square, &block, &under, true);
     assert!(reason.contains("behind the sketch plane"), "{reason}");
     // A profile far beside the block: the plane goes on, the face does not.
@@ -727,4 +749,169 @@ fn what_cannot_end_is_refused_with_its_reason() {
         )
         .is_err()
     );
+}
+
+/// `∫ f` over the disc of radius `a` about `(cx, 0)` in x, for an `f` of x
+/// alone: with x = cx + a sin φ the chord's square root goes.
+fn over_disc(a: f64, cx: f64, f: impl Fn(f64) -> f64) -> f64 {
+    let steps = 20_000;
+    let g = |i: usize| {
+        let phi = -PI / 2.0 + PI * i as f64 / steps as f64;
+        f(cx + a * phi.sin()) * 2.0 * a * a * phi.cos().powi(2)
+    };
+    let mut sum = g(0) + g(steps);
+    for i in 1..steps {
+        sum += g(i) * if i % 2 == 1 { 4.0 } else { 2.0 };
+    }
+    sum * (PI / steps as f64) / 3.0
+}
+
+/// A round profile against a lying cylinder: the two cylinders meet in a
+/// curve without a closed form (a spline within the tolerance). From
+/// outside the profile stops under the arch, from a sketch plane through
+/// the cylinder's axis it fills the bore up to the wall: the height over
+/// the disc is `h ∓ √(r² − x²)`, integrated by Simpson's rule.
+#[test]
+fn a_round_profile_up_to_a_cylinder_from_outside_and_from_inside() {
+    for k in SCALES {
+        let base = Frame::WORLD;
+        let (a, r) = (1.5 * k, 2.5 * k);
+        for (h, cx, inside) in [(6.0 * k, 0.4 * k, false), (0.0, 0.4 * k, true)] {
+            let lying = within(&base, [0.0, -8.0 * k, h], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]);
+            let target = primitives::cylinder(&lying, r, 16.0 * k).unwrap();
+            let wall = face_on(&target, |s| matches!(s, Surface::Cylinder(_)));
+            let round = profiles(&[circle(4, [cx, 0.0], a)], k);
+            let made = extrude_up_to(
+                &round,
+                &base,
+                false,
+                &Target {
+                    body: &target,
+                    faces: &wall,
+                },
+                &tolerance(k),
+            )
+            .unwrap();
+            let (volume, _) = measured(&made, k);
+            let arch = over_disc(a, cx, |x| (r * r - x * x).sqrt());
+            let expected = if inside { arch } else { PI * a * a * h - arch };
+            assert_close(volume, expected, 1e-6, "volume");
+        }
+    }
+}
+
+/// A profile with arcs, a spline and a hole up to an inclined plane: the
+/// volume is the profile's area times the plane's height over its
+/// centroid, whatever the outline.
+#[test]
+fn any_outline_up_to_an_inclined_plane_has_its_area_times_the_height_at_its_centroid() {
+    for k in SCALES {
+        let base = frames(k).remove(1);
+        let roof = primitives::block(
+            &within(
+                &base,
+                [-30.0 * k, -30.0 * k, 9.0 * k],
+                [0.2, -0.1, 1.0],
+                [1.0, 0.0, 0.0],
+            ),
+            80.0 * k,
+            80.0 * k,
+            2.0 * k,
+        )
+        .unwrap();
+        // The underside passes through the block's corner; its normal
+        // looks back at the sketch plane.
+        let under = face_on(
+            &roof,
+            |s| matches!(s, Surface::Plane(p) if p.frame().z().dot(base.z()) < -0.9),
+        );
+        let p = |x: f64, y: f64| [x * k, y * k];
+        let curves = vec![
+            line(1, p(0.0, 0.0), p(6.0, 0.0)),
+            common::arc(2, p(6.0, 2.0), p(6.0, 0.0), p(6.0, 4.0)),
+            SketchCurve {
+                id: 3,
+                curve: Curve2::Spline(Spline2 {
+                    degree: 3,
+                    knots: knots(3, 5),
+                    control: vec![
+                        p(6.0, 4.0),
+                        p(4.5, 5.5),
+                        p(3.0, 3.0),
+                        p(1.5, 5.5),
+                        p(0.0, 4.0),
+                    ],
+                }),
+            },
+            line(4, p(0.0, 4.0), p(0.0, 0.0)),
+            circle(5, p(2.0, 1.5), 0.8 * k),
+        ];
+        let outline = profiles(&curves, k);
+        let (area, centroid) = (outline[0].area(), outline[0].centroid().unwrap());
+        let made = extrude_up_to(
+            &outline,
+            &base,
+            false,
+            &Target {
+                body: &roof,
+                faces: &under,
+            },
+            &tolerance(k),
+        )
+        .unwrap();
+        let (volume, _) = measured(&made, k);
+        // z over (x, y): the plane through the corner with normal n.
+        let n = [0.2, -0.1, 1.0];
+        let height =
+            9.0 * k - (n[0] * (centroid[0] + 30.0 * k) + n[1] * (centroid[1] + 30.0 * k)) / n[2];
+        assert_close(volume, area * height, 1e-9, "volume");
+        assert_eq!(made.origins.faces.len(), 7);
+    }
+}
+
+/// Where a wall of the profile is tangent to the surface (a profile as
+/// wide as the cylinder it runs into) the boolean decides: an error, or a
+/// body, and then the right one. The closed forms: the rectangle of
+/// `a_rectangle_up_to_a_cylinder_ends_on_its_arch` with `a = r`; two
+/// equal cylinders at right angles, of whose common part (16 r³ / 3) the
+/// half below the axis is missing, `π r² h − 8 r³ / 3`; and a rectangle
+/// from `x = -1` to the tangent wall at `x = r = 2`.
+#[test]
+fn walls_tangent_to_the_surface_give_the_right_body_or_an_error() {
+    let k = 1.0;
+    let base = Frame::WORLD;
+    let (r, h) = (2.0_f64, 6.0);
+    let lying = within(&base, [0.0, -8.0, h], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]);
+    let target = primitives::cylinder(&lying, r, 16.0).unwrap();
+    let wall = face_on(&target, |s| matches!(s, Surface::Cylinder(_)));
+    let under = |x: f64| x / 2.0 * (r * r - x * x).sqrt() + r * r / 2.0 * (x / r).asin();
+    for (curves, expected) in [
+        (
+            rectangle(1, 1, (-r, r), (0.0, 3.0)),
+            3.0 * (2.0 * r * h - PI * r * r / 2.0),
+        ),
+        (
+            vec![circle(1, [0.0, 0.0], r)],
+            PI * r * r * h - 8.0 * r.powi(3) / 3.0,
+        ),
+        (
+            rectangle(1, 1, (-1.0, r), (0.0, 3.0)),
+            3.0 * (3.0 * h - (under(r) - under(-1.0))),
+        ),
+    ] {
+        let outline = profiles(&curves, k);
+        match extrude_up_to(
+            &outline,
+            &base,
+            false,
+            &Target {
+                body: &target,
+                faces: &wall,
+            },
+            &tolerance(k),
+        ) {
+            Ok(made) => assert_close(measured(&made, k).0, expected, 1e-6, "tangent walls"),
+            Err(error) => println!("tangent walls: {error}"),
+        }
+    }
 }

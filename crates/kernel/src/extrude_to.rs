@@ -91,12 +91,12 @@ fn unsupported(reason: &'static str) -> KernelError {
 }
 
 const PARALLEL_FACE: &str = "the face is parallel to the direction of the extrusion";
-const BEHIND: &str =
-    "the face lies behind the sketch plane; the extrusion goes away from it (`reversed` turns it round)";
-const THROUGH_START: &str =
-    "the face's surface passes through the sketch plane inside the profile, or the profile starts behind it";
-const NEVER_ENDS: &str = "part of the profile passes beside the face's surface, or reaches beyond it, and never ends";
-const MISSES: &str = "the profile misses the face: it would end on the face's surface beside the face itself";
+const BEHIND: &str = "the face lies behind the sketch plane; the extrusion goes away from it (`reversed` turns it round)";
+const THROUGH_START: &str = "the face's surface passes through the sketch plane inside the profile, or the profile starts behind it";
+const NEVER_ENDS: &str =
+    "part of the profile passes beside the face's surface, or reaches beyond it, and never ends";
+const MISSES: &str =
+    "the profile misses the face: it would end on the face's surface beside the face itself";
 
 /// The box of the profiles in sketch coordinates: `(lowest corner, highest
 /// corner)`. Conservative for arcs (the whole circle) and splines (the
@@ -153,6 +153,7 @@ struct Sweep<'a> {
     /// Room left around everything, so that nothing ends flush.
     margin: f64,
     tol: f64,
+    tolerance: Tolerance,
 }
 
 impl Sweep<'_> {
@@ -454,11 +455,8 @@ fn freeform_tool(sweep: &Sweep, surface: &Surface) -> Result<Tool, KernelError> 
         // Each curve runs its own way: from the round's exit to its entry
         // when the round goes against it.
         let own = |from: VertexId, to: VertexId| if *against { (to, from) } else { (from, to) };
-        let top = NurbsCurve::polynomial(
-            border.degree,
-            border.knots.clone(),
-            border.control.clone(),
-        )?;
+        let top =
+            NurbsCurve::polynomial(border.degree, border.knots.clone(), border.control.clone())?;
         let range = top.domain();
         let (s, e) = own(a, b);
         top_edges.push(body.add_edge(Curve3::Nurbs(top), range, s, e));
@@ -540,12 +538,7 @@ fn freeform_tool(sweep: &Sweep, surface: &Surface) -> Result<Tool, KernelError> 
     ));
     body.add_shell(faces);
 
-    if !check(&body, &Tolerance {
-        linear: sweep.tol,
-        angular: 1e-9,
-    })
-    .is_empty()
-    {
+    if !check(&body, &sweep.tolerance).is_empty() {
         return Err(unsupported(
             "a freeform face whose surface, with a wall under each border, does not close into a solid",
         ));
@@ -645,7 +638,9 @@ fn reaches(
     }
     let sides = contains_points(target.body, &probes, tolerance)?;
     Ok(sides
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .any(|pair| matches!(pair, [Some(a), Some(b)] if a != b)))
 }
 
@@ -700,6 +695,7 @@ pub fn extrude_up_to(
         starts,
         margin: (0.25 * size).max(1000.0 * tol),
         tol,
+        tolerance: *tolerance,
     };
     if !(sweep.margin.is_finite() && sweep.corners.iter().all(|c| c.is_finite())) {
         return Err(no_end("the profile or the sketch plane is not finite"));
@@ -1011,8 +1007,7 @@ fn assemble(
         }
     };
     let named_edges: Option<Vec<Origin>> = edges.iter().map(|e| edge_origin(*e)).collect();
-    let named_vertices: Option<Vec<Origin>> =
-        vertices.iter().map(|v| vertex_origin(*v)).collect();
+    let named_vertices: Option<Vec<Origin>> = vertices.iter().map(|v| vertex_origin(*v)).collect();
     if let (Some(e), Some(v)) = (named_edges, named_vertices) {
         origins.edges = e;
         origins.vertices = v;

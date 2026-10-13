@@ -8,9 +8,9 @@
 use crate::params::Params;
 use crate::{CommandError, CommandSpec, OpenDocument, Session, base64};
 use craft3d_doc::{
-    Block, Boolean, BooleanOp, Cone, Cylinder, DocError, Document, Expr, Extrude, Feature,
-    FeatureId, FeatureKind, LengthUnit, Orientation, PatternLayout, Sphere, Tolerance, Torus,
-    Units,
+    Block, Boolean, BooleanOp, Cone, Cylinder, DocError, Document, Expr, Extrude, ExtrudeEnd,
+    Feature, FeatureId, FeatureKind, LengthUnit, Orientation, PatternLayout, PersistentName,
+    Sphere, Tolerance, Torus, Units,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use craft3d_io::MeshFormat;
@@ -74,10 +74,10 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Adds a cone along axis: its base circle is centred at position, its apex is height further along the axis.", doc: true, feature_cone),
     spec!("feature.torus", "Torus", r#"{"major": expr, "minor": expr, "position": [expr, expr, expr] = [0, 0, 0], "axis": [number, number, number] = [0, 0, 1], "angle": expr = "0 deg", "name": string = automatic}"#,
         "Adds a ring torus about axis, centred at position: major is the radius of the ring, minor of the tube.", doc: true, feature_torus),
-    spec!("feature.extrude", "Extrude", r#"{"sketch": id or name, "distance": expr, "symmetric": boolean = false, "cut": id or name, "join": id or name, "intersect": id or name, "name": string = automatic}"#,
-        "Adds a solid by sweeping the closed profiles of a sketch along its normal: loops of lines and arcs, and circles; a loop inside another is a hole. A negative distance goes the other way; symmetric puts half on each side of the sketch plane. With cut, join or intersect (a feature with a body) the solid is combined with that body at once: two features are added in one undo step, the extrusion and a boolean, and the result is the boolean's (the one to build on; name applies to it) with the extrusion under sweep. A hole in a plate: sketch a circle on its top, extrude by a negative distance with cut.", doc: true, feature_extrude),
-    spec!("feature.edit", "Edit Feature", r#"{"feature": id or name, "size": [expr; 3], "position": [expr; 3], "axis": [number; 3], "angle": expr, "radius": expr, "height": expr, "major": expr, "minor": expr, "distance": expr, "symmetric": boolean, "translate": [expr; 3], "pivot": [expr; 3], "point": [expr; 3], "normal": [number; 3], "step": [expr; 3], "count": expr, "keep": boolean, "keepTool": boolean}"#,
-        "Changes parameters of a feature; give only the ones to change. Which ones a feature has depends on its kind (document.inspect shows them under params).", doc: true, feature_edit),
+    spec!("feature.extrude", "Extrude", r#"{"sketch": id or name, "distance": expr, "throughAll": boolean = false, "upTo": face name, "symmetric": boolean = false, "reversed": boolean = false, "cut": id or name, "join": id or name, "intersect": id or name, "name": string = automatic}"#,
+        "Adds a solid by sweeping the closed profiles of a sketch along its normal: loops of lines and arcs, and circles; a loop inside another is a hole. Give one end: distance (a negative one goes the other way; symmetric puts half on each side of the sketch plane), throughAll (past every body the features before this one have built that lies in the way; symmetric goes through on both sides) or upTo (a face name from document.inspect: the solid ends on that face's surface, flat or curved, and follows it when the face moves). reversed goes against the sketch's normal. With cut, join or intersect (a feature with a body) the solid is combined with that body at once: two features are added in one undo step, the extrusion and a boolean, and the result is the boolean's (the one to build on; name applies to it) with the extrusion under sweep. A hole through a plate: sketch a circle on its top, extrude with throughAll, reversed and cut.", doc: true, feature_extrude),
+    spec!("feature.edit", "Edit Feature", r#"{"feature": id or name, "size": [expr; 3], "position": [expr; 3], "axis": [number; 3], "angle": expr, "radius": expr, "height": expr, "major": expr, "minor": expr, "distance": expr, "throughAll": boolean, "upTo": face name, "symmetric": boolean, "reversed": boolean, "translate": [expr; 3], "pivot": [expr; 3], "point": [expr; 3], "normal": [number; 3], "step": [expr; 3], "count": expr, "keep": boolean, "keepTool": boolean}"#,
+        "Changes parameters of a feature; give only the ones to change. Which ones a feature has depends on its kind (document.inspect shows them under params). The end of an extrusion is changed by giving the new one: distance, throughAll or upTo.", doc: true, feature_edit),
     spec!("feature.rename", "Rename Feature", r#"{"feature": id or name, "name": string}"#,
         "Renames a feature.", doc: true, feature_rename),
     spec!("feature.suppress", "Suppress Feature", r#"{"feature": id or name, "suppressed": boolean = true}"#,
@@ -753,7 +753,10 @@ fn feature_extrude(session: &mut Session, params: &Value) -> Run {
         &[
             "sketch",
             "distance",
+            "throughAll",
+            "upTo",
             "symmetric",
+            "reversed",
             "cut",
             "join",
             "intersect",
@@ -764,16 +767,69 @@ fn feature_extrude(session: &mut Session, params: &Value) -> Run {
     let sketch = feature_ref(doc, &p, "feature.extrude", "sketch")?;
     doc.sketch(sketch).map_err(doc_error("feature.extrude"))?;
     let combine = combine_param(doc, &p, "feature.extrude")?;
+    let Some(end) = extrude_end(&p, "feature.extrude")? else {
+        return fail(
+            "feature.extrude: missing parameter `distance` (or `throughAll` or `upTo`: where the extrusion ends)",
+        );
+    };
+    let symmetric = p.bool("symmetric")?.unwrap_or(false);
+    symmetric_fits(&end, symmetric, "feature.extrude")?;
     let kind = FeatureKind::Extrude(Extrude {
         sketch,
-        distance: required(&p, "distance")?,
-        symmetric: p.bool("symmetric")?.unwrap_or(false),
+        // An end that is not a distance keeps one, unused.
+        distance: Expr::new(p.expr("distance")?.unwrap_or_else(|| "0".to_string())),
+        symmetric,
+        end,
+        reversed: p.bool("reversed")?.unwrap_or(false),
     });
     add_sweep(session, "feature.extrude", p.str("name")?, kind, combine)
 }
 
+/// The end of an extrusion as the parameters give it: one of `distance`,
+/// `throughAll` (true) and `upTo`. `None` when none of them is given.
+fn extrude_end(p: &Params, command: &str) -> Result<Option<ExtrudeEnd>, CommandError> {
+    let distance = p.expr("distance")?.is_some();
+    let through = p.bool("throughAll")?;
+    let up_to = match p.str("upTo")? {
+        None => None,
+        Some(text) => Some(
+            text.parse::<PersistentName>()
+                .map_err(|reason| CommandError::new(format!("{command}: `upTo`: {reason}")))?,
+        ),
+    };
+    if up_to.as_ref().is_some_and(|name| !name.is_face()) {
+        return fail(format!(
+            "{command}: `upTo` must name a face (see faceNames in document.inspect)"
+        ));
+    }
+    let given =
+        usize::from(distance) + usize::from(through == Some(true)) + usize::from(up_to.is_some());
+    if given > 1 {
+        return fail(format!(
+            "{command}: give one of `distance`, `throughAll` and `upTo`, not several"
+        ));
+    }
+    Ok(match (up_to, through) {
+        (Some(face), _) => Some(ExtrudeEnd::UpToFace { face }),
+        (None, Some(true)) => Some(ExtrudeEnd::ThroughAll),
+        // `throughAll: false` on its own asks for a distance again.
+        (None, Some(false)) => Some(ExtrudeEnd::Distance),
+        (None, None) => distance.then_some(ExtrudeEnd::Distance),
+    })
+}
+
+/// An extrusion up to a face has one end: it cannot be symmetric.
+fn symmetric_fits(end: &ExtrudeEnd, symmetric: bool, command: &str) -> Result<(), CommandError> {
+    if symmetric && matches!(end, ExtrudeEnd::UpToFace { .. }) {
+        return fail(format!(
+            "{command}: `symmetric` does not go with `upTo`: an extrusion up to a face goes one way"
+        ));
+    }
+    Ok(())
+}
+
 /// The parameters `feature.edit` can change, by name.
-const EDITABLE: [&str; 18] = [
+const EDITABLE: [&str; 21] = [
     "size",
     "position",
     "axis",
@@ -783,7 +839,10 @@ const EDITABLE: [&str; 18] = [
     "minor",
     "angle",
     "distance",
+    "throughAll",
+    "upTo",
     "symmetric",
+    "reversed",
     "translate",
     "pivot",
     "point",
@@ -822,9 +881,10 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
     ] {
         p.expr(key)?;
     }
-    for key in ["symmetric", "keep", "keepTool"] {
+    for key in ["symmetric", "reversed", "keep", "keepTool"] {
         p.bool(key)?;
     }
+    let new_end = extrude_end(&p, "feature.edit")?;
     let given: Vec<&str> = EDITABLE
         .into_iter()
         .filter(|key| p.get(key).is_some())
@@ -901,6 +961,10 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
             vec![
                 ("distance", Slot::One(&mut e.distance)),
                 ("symmetric", Slot::Flag(&mut e.symmetric)),
+                ("reversed", Slot::Flag(&mut e.reversed)),
+                // Applied below: the three name one thing, the end.
+                ("throughAll", Slot::Elsewhere),
+                ("upTo", Slot::Elsewhere),
             ],
         ),
         FeatureKind::Revolve(r) => (
@@ -969,7 +1033,14 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
                     *target = value;
                 }
             }
+            Slot::Elsewhere => {}
         }
+    }
+    if let (FeatureKind::Extrude(extrusion), Some(end)) = (&mut kind, new_end) {
+        extrusion.end = end;
+    }
+    if let FeatureKind::Extrude(extrusion) = &kind {
+        symmetric_fits(&extrusion.end, extrusion.symmetric, "feature.edit")?;
     }
     edit(session, "feature.edit", "Edit feature", |doc| {
         doc.feature_mut(id)?.kind = kind;
@@ -983,6 +1054,8 @@ enum Slot<'a> {
     One(&'a mut Expr),
     Triple(&'a mut [Expr; 3]),
     Flag(&'a mut bool),
+    /// A parameter that is not one field: handled where the kind is known.
+    Elsewhere,
 }
 
 fn feature_rename(session: &mut Session, params: &Value) -> Run {

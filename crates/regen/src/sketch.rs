@@ -493,7 +493,7 @@ fn no_such_face(made_by: &str, name: &PersistentName, names: &[PersistentName]) 
 /// True when two face names are the same, or differ only in the outline
 /// their cap was named after: all caps of one role of one feature lie in
 /// one plane (see [`made_face`]).
-fn same_plane(a: &PersistentName, b: &PersistentName) -> bool {
+pub(crate) fn same_plane(a: &PersistentName, b: &PersistentName) -> bool {
     let (mut a, mut b) = (a, b);
     for _ in 0..craft3d_doc::MAX_NAME_DEPTH {
         match (&a.of, &b.of) {

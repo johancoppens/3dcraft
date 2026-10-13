@@ -183,6 +183,16 @@ pub enum FeatureKind {
         /// Always written; absent means one-sided.
         #[serde(default)]
         symmetric: bool,
+        /// Where the extrusion ends. Absent means at `distance`, and an
+        /// extrusion that ends at its distance is written without it, so
+        /// that a file that uses no other end is the file an earlier
+        /// build wrote and reads.
+        #[serde(default, skip_serializing_if = "ExtrudeEnd::is_distance")]
+        end: ExtrudeEnd,
+        /// Against the sketch's normal. Absent means along it; written
+        /// only when set, for the same reason.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        reversed: bool,
     },
     /// A solid swept by turning the closed profiles of sketch `sketch` by
     /// `angle` about `axis`, a line in the sketch's plane.
@@ -275,6 +285,29 @@ pub enum SketchPlane {
     /// A flat face of a body made earlier in the history, moved by
     /// `offset` along the face's outward normal.
     Face { face: Name, offset: String },
+}
+
+/// Where an extrusion ends: at its `distance`, past everything built
+/// before it, or on the surface of a face.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum ExtrudeEnd {
+    // With braces: serde lets a variant without them take any field.
+    Distance {},
+    ThroughAll {},
+    UpToFace { face: Name },
+}
+
+impl Default for ExtrudeEnd {
+    fn default() -> Self {
+        ExtrudeEnd::Distance {}
+    }
+}
+
+impl ExtrudeEnd {
+    fn is_distance(&self) -> bool {
+        matches!(self, ExtrudeEnd::Distance {})
+    }
 }
 
 /// The persistent name of a face, edge or vertex: the feature that made

@@ -167,10 +167,20 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 sketch: doc::FeatureId(sketch),
                 distance,
                 symmetric,
+                end,
+                reversed,
             }) => manifest::FeatureKind::Extrude {
                 sketch: *sketch,
                 distance: expr_to_manifest(distance),
                 symmetric: *symmetric,
+                end: match end {
+                    doc::ExtrudeEnd::Distance => manifest::ExtrudeEnd::Distance {},
+                    doc::ExtrudeEnd::ThroughAll => manifest::ExtrudeEnd::ThroughAll {},
+                    doc::ExtrudeEnd::UpToFace { face } => manifest::ExtrudeEnd::UpToFace {
+                        face: name_to_manifest(face),
+                    },
+                },
+                reversed: *reversed,
             },
             doc::FeatureKind::Revolve(doc::Revolve {
                 sketch: doc::FeatureId(sketch),
@@ -702,10 +712,20 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
                 sketch,
                 distance,
                 symmetric,
+                end,
+                reversed,
             } => doc::FeatureKind::Extrude(doc::Extrude {
                 sketch: doc::FeatureId(sketch),
                 distance: doc::Expr(distance),
                 symmetric,
+                end: match end {
+                    manifest::ExtrudeEnd::Distance {} => doc::ExtrudeEnd::Distance,
+                    manifest::ExtrudeEnd::ThroughAll {} => doc::ExtrudeEnd::ThroughAll,
+                    manifest::ExtrudeEnd::UpToFace { face } => doc::ExtrudeEnd::UpToFace {
+                        face: name_to_doc(face),
+                    },
+                },
+                reversed,
             }),
             manifest::FeatureKind::Revolve {
                 sketch,
