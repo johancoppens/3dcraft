@@ -1,7 +1,11 @@
 //! Import and export orchestration.
 //!
-//! So far: 3DCraft meshes to STL, 3MF and OBJ through `craft3d-meshio`.
-//! STEP and bodies arrive with the kernel (docs/file-formats.md).
+//! 3DCraft meshes to STL, 3MF and OBJ through `craft3d-meshio`, and bodies
+//! (the exact B-rep) to STEP through `craft3d-step`: see [`step`].
+
+pub mod step;
+
+pub use step::{AngleUnit, StepBody, StepOptions, StepSummary, export_step, step_model};
 
 use craft3d_meshio::{self as meshio, MeshError, Model, Object, ObjectKind, Unit};
 use craft3d_tess::Mesh;
@@ -35,6 +39,21 @@ pub enum IoError {
         triangle: usize,
     },
     Format(MeshError),
+    /// There is nothing to export.
+    NoBodies,
+    /// A body fails the validity check: the first few defects, and how
+    /// many there are.
+    InvalidBody {
+        body: String,
+        defects: Vec<String>,
+        total: usize,
+    },
+    /// Something the export does not handle; `body` is empty when it is
+    /// not about one body.
+    Unsupported {
+        body: String,
+        what: String,
+    },
 }
 
 impl fmt::Display for IoError {
@@ -47,6 +66,18 @@ impl fmt::Display for IoError {
                 )
             }
             IoError::Format(e) => write!(f, "{e}"),
+            IoError::NoBodies => write!(f, "there are no bodies to export"),
+            IoError::InvalidBody {
+                body,
+                defects,
+                total,
+            } => write!(
+                f,
+                "body `{body}` is not valid ({total} defects): {}",
+                defects.join("; ")
+            ),
+            IoError::Unsupported { body, what } if body.is_empty() => write!(f, "{what}"),
+            IoError::Unsupported { body, what } => write!(f, "body `{body}`: {what}"),
         }
     }
 }

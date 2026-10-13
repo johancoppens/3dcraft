@@ -50,23 +50,35 @@ fn ci() -> Result<(), String> {
 }
 
 /// Runs the opt-in tests that let FreeCAD read our exports (docs/testing.md,
-/// oracle 8). Needs `CRAFT3D_FREECAD`.
+/// oracle 8): the meshes, then the STEP files of bodies built on the
+/// kernel, then those of documents built by commands. Needs
+/// `CRAFT3D_FREECAD`. The STEP checks leave their tables in
+/// `target/tmp/step-io/report.md` and
+/// `target/tmp/step-engine-files/report.md`.
 fn freecad() -> Result<(), String> {
     if std::env::var_os("CRAFT3D_FREECAD").is_none() {
         return Err(
             "set CRAFT3D_FREECAD to a FreeCAD AppImage or FreeCADCmd executable".to_string(),
         );
     }
-    cargo(&[
-        "test",
-        "--release",
-        "-p",
-        "craft3d-io",
-        "--test",
-        "freecad",
-        "--",
-        "--ignored",
-    ])
+    for (package, test) in [
+        ("craft3d-io", "freecad"),
+        ("craft3d-io", "step_freecad"),
+        ("craft3d-engine", "step_freecad"),
+    ] {
+        cargo(&[
+            "test",
+            "--release",
+            "-p",
+            package,
+            "--test",
+            test,
+            "--",
+            "--ignored",
+            "--nocapture",
+        ])?;
+    }
+    Ok(())
 }
 
 fn main() -> ExitCode {

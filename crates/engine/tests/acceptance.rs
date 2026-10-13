@@ -1,11 +1,11 @@
-//! The acceptance scenario of phase 1 (docs/roadmap.md), as far as it can
-//! be run today: everything but STEP export and the independent program
-//! that reads it back.
+//! The acceptance scenario of phase 1 (docs/roadmap.md). The independent
+//! program that opens the STEP file is in `tests/step_freecad.rs`, which
+//! needs FreeCAD and runs on request (`cargo xtask freecad`).
 //!
 //! > Create a document. Define variables `width`, `height`, `thickness`,
 //! > `hole_d`. Sketch an L-shaped profile constrained by those variables,
 //! > extrude it, cut two holes, save as `.3dcraft`. Reopen it, change
-//! > `width`, regenerate: the holes follow. Export [...] 3MF.
+//! > `width`, regenerate: the holes follow. Export STEP and 3MF.
 //! > `document.inspect` reports the volume predicted by hand calculation.
 
 #![allow(
@@ -58,7 +58,7 @@ fn part_volume(s: &mut Session) -> f64 {
 }
 
 #[test]
-fn the_phase_1_scenario_without_step() {
+fn the_phase_1_scenario() {
     let dir = std::env::temp_dir().join(format!("craft3d-acceptance-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let mut s = Session::new(Workspace {
@@ -236,5 +236,60 @@ fn the_phase_1_scenario_without_step() {
     let exported = run(&mut s, "file.export", json!({"path": "bracket.3mf"}));
     assert_eq!(exported["closed"], exported["bodies"], "{exported}");
     assert!(dir.join("bracket.3mf").metadata().unwrap().len() > 1000);
+
+    // Export: the exact B-rep as STEP. The file is written, parses back,
+    // and holds the part as it is: an L of eight flat faces with two
+    // round holes through it.
+    let exported = run(&mut s, "file.export", json!({"path": "bracket.step"}));
+    assert_eq!(exported["format"], "step", "{exported}");
+    assert_eq!(exported["bodies"], 1, "{exported}");
+    assert_eq!(exported["solids"], 1, "{exported}");
+    assert_eq!(exported["unit"], "mm", "{exported}");
+    let bytes = std::fs::read(dir.join("bracket.step")).unwrap();
+    assert_eq!(exported["bytes"].as_u64().unwrap() as usize, bytes.len());
+    let step = craft3d_step::read(&bytes).unwrap();
+    assert_eq!(step.reference_cycle(), None);
+    assert_eq!(craft3d_step::write(&step).unwrap().into_bytes(), bytes);
+    for (keyword, count) in [
+        ("PRODUCT", 1),
+        ("MANIFOLD_SOLID_BREP", 1),
+        ("BREP_WITH_VOIDS", 0),
+        ("CLOSED_SHELL", 1),
+        // Six sides, two caps, two holes.
+        ("ADVANCED_FACE", 10),
+        ("PLANE", 8),
+        ("CYLINDRICAL_SURFACE", 2),
+        // The L: six edges on each cap and six between them; a circle at
+        // each end of each hole.
+        ("EDGE_CURVE", 22),
+        ("LINE", 18),
+        ("CIRCLE", 4),
+        ("VERTEX_POINT", 16),
+        // Each edge is used by two faces.
+        ("ORIENTED_EDGE", 44),
+        // Every flat face has one outer boundary; the two caps have the
+        // holes as well, and a hole's wall lies between its two circles,
+        // neither of which is an outer boundary.
+        ("FACE_OUTER_BOUND", 8),
+        ("FACE_BOUND", 4 + 4),
+        ("EDGE_LOOP", 16),
+        ("VERTEX_LOOP", 0),
+    ] {
+        assert_eq!(step.count(keyword), count, "{keyword}");
+    }
+    let product = step
+        .data
+        .iter()
+        .find_map(|i| i.entity.record("PRODUCT"))
+        .unwrap();
+    assert_eq!(product.params[1].as_str(), Some("Part"));
+    // The holes are the ones the variables ask for: diameter 4.
+    for hole in step
+        .data
+        .iter()
+        .filter_map(|i| i.entity.record("CYLINDRICAL_SURFACE"))
+    {
+        assert_eq!(hole.params[2].as_real(), Some(2.0));
+    }
     std::fs::remove_dir_all(&dir).unwrap();
 }

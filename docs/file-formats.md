@@ -1,6 +1,6 @@
 # File formats
 
-> **Last updated:** 2026-10-12 · **Status:** `.3dcraft` (version 5) and mesh export (STL, 3MF, OBJ) work and are tested; STEP is the plan.
+> **Last updated:** 2026-10-13 · **Status:** `.3dcraft` (version 5), mesh export (STL, 3MF, OBJ) and STEP export work and are tested; STEP import is the plan.
 
 | Format | Read | Write | Carries | Crates | Milestone |
 |---|---|---|---|---|---|
@@ -8,7 +8,7 @@
 | STL (binary, ASCII) | later | **yes (2026-10-12)** | Triangles only; no units, no colour | `meshio`, `io` | M3 |
 | 3MF | later | **yes (2026-10-12)** | Indexed mesh per body, units, names, colours | `meshio`, `io` | M3 |
 | OBJ | later | **yes (2026-10-12)** | Indexed mesh, normals, groups per body/face | `meshio`, `io` | M3 |
-| STEP (`.step`, `.stp`) | M10 | yes | Exact B-rep geometry and topology, units, names; **no history** | `step`, `io` | M8 |
+| STEP (`.step`, `.stp`) | M10 | **yes (2026-10-13)** | Exact B-rep geometry and topology, units, uncertainty, names; **no history** | `step`, `io` | M8 |
 
 Formats live in standalone crates with their own format-level model and no workspace dependencies; the mapping to bodies and documents lives in `io` ([`architecture.md`](architecture.md) §3).
 
@@ -44,15 +44,42 @@ The body blob encoding (how a B-rep is serialised) is defined in M2 alongside `t
 
 ## STEP
 
-**Scope.** Export solids and sheets as exact B-rep (`MANIFOLD_SOLID_BREP`, `ADVANCED_FACE`, `EDGE_CURVE`, analytic surfaces and `B_SPLINE_SURFACE_WITH_KNOTS`, …) with units and product names, in the AP214/AP242 "automotive design" family that every mainstream CAD system reads. Assemblies, colours and PMI come later. Import (M10) maps the same entity set back to `topo` bodies as `Import` features.
+**As built (2026-10-13): export.** `file.export` with a `.step` or `.stp` name (or `"format": "step"`) writes every body of the document as an exact B-rep, with the document's length unit, its angle unit, its linear tolerance as the file's uncertainty, and each body under its feature's name. `craft3d-cli convert part.3dcraft part.step` does the same. Import is M10.
 
-**Structure.** `craft3d-step` has two levels: a Part 21 layer (tokenizer, parser and writer for the exchange structure: header, entity instances, references, typed parameters) that knows nothing about CAD, and a typed layer for the entities we use. Unknown entities survive a parse → write round trip verbatim.
+**Structure.** `craft3d-step` is the Part 21 layer and nothing else: a file is a header (records) and one data section (entity instances, simple or complex), and a record is a keyword with parameters (integer, real, string, enumeration, binary, reference, list, typed parameter, omitted `$`, derived `*`). It reads and writes that model and knows no entity. Reals are written as the shortest text that reads back as the same `f64` (`1.`, `0.25`, `1.E-7`); strings as printable ASCII with `''`, `\\` and the `\X2\`, `\X4\` directives for everything else (read: also `\X\`, `\S\`, `\P`, raw UTF-8 and raw ISO 8859-1). Unknown entities survive a read → write round trip as the instances they are; comments and white space do not. A reader gets every reference resolved (an unresolved one is an error) and can ask for a reference cycle before it follows references. Not read: a second data section, the `ANCHOR`/`REFERENCE`/`SIGNATURE` sections of edition 3, `&SCOPE` of edition 1; each is an error that says so. Hostile input is an error with byte offset, line and column; nesting (64), instances, parameters and string length are capped (`ReadLimits`). Which entities to write, and what their attributes mean, is `craft3d_io::step`: there is no typed entity layer in `craft3d-step`, the mapping builds records directly.
 
-**Specs.** The exchange structure is ISO 10303-21; the entity definitions are in ISO 10303-42 (geometry and topology) and the application protocols (ISO 10303-214, -242). ISO documents are paid publications: work from copies the project legitimately has, from the freely published EXPRESS schemas and recommended practices of the CAx Implementor Forum, and from the files other systems write. Never paste text from a standard into the repository; cite the clause.
+**Entities written.** The schema declared is `AUTOMOTIVE_DESIGN { 1 0 10303 214 1 1 1 1 }` (AP214; [`decisions.md`](decisions.md) D-open-8).
 
-**Tests.** Writer output parses back to the same model; exported analytic solids have the expected entity counts; malformed-input sweep and fuzzing on the reader; and the external check ([`testing.md`](testing.md) oracle 8): an independent program opens the file and reports the same volume and bounding box. That last test is the one that matters: a STEP file is only correct if other CAD systems accept it.
+| 3DCraft | STEP |
+|---|---|
+| body | `PRODUCT` → `PRODUCT_DEFINITION_FORMATION` → `PRODUCT_DEFINITION` → `PRODUCT_DEFINITION_SHAPE` → `SHAPE_DEFINITION_REPRESENTATION`, and `PRODUCT_RELATED_PRODUCT_CATEGORY('part')`; one `APPLICATION_CONTEXT`, `APPLICATION_PROTOCOL_DEFINITION`, `PRODUCT_CONTEXT`, `PRODUCT_DEFINITION_CONTEXT` per file |
+| solid body | `ADVANCED_BREP_SHAPE_REPRESENTATION` with one item per lump |
+| lump | `MANIFOLD_SOLID_BREP` of a `CLOSED_SHELL`; with cavities `BREP_WITH_VOIDS`, each cavity an `ORIENTED_CLOSED_SHELL` (`.F.`) of a `CLOSED_SHELL` |
+| sheet body | `MANIFOLD_SURFACE_SHAPE_REPRESENTATION` of a `SHELL_BASED_SURFACE_MODEL` of `OPEN_SHELL`s |
+| face, loop, coedge, edge, vertex | `ADVANCED_FACE` with `FACE_OUTER_BOUND` / `FACE_BOUND`; `EDGE_LOOP`; `ORIENTED_EDGE`; `EDGE_CURVE`; `VERTEX_POINT` on a `CARTESIAN_POINT` |
+| a whole sphere or torus; a cone's apex inside a face | a `FACE_BOUND` of a `VERTEX_LOOP` |
+| plane, cylinder, cone, sphere, torus | `PLANE`, `CYLINDRICAL_SURFACE`, `CONICAL_SURFACE`, `SPHERICAL_SURFACE`, `TOROIDAL_SURFACE` on an `AXIS2_PLACEMENT_3D` |
+| Bézier patch, NURBS surface | `B_SPLINE_SURFACE_WITH_KNOTS`; rational: the complex instance with `RATIONAL_B_SPLINE_SURFACE` |
+| line, circle, ellipse, NURBS curve | `LINE` (with a `VECTOR` of magnitude 1), `CIRCLE`, `ELLIPSE`, `B_SPLINE_CURVE_WITH_KNOTS` (rational: the complex instance with `RATIONAL_B_SPLINE_CURVE`) |
+| units, tolerance | one context: `GEOMETRIC_REPRESENTATION_CONTEXT(3)`, `GLOBAL_UNIT_ASSIGNED_CONTEXT` (length: `SI_UNIT` with a prefix, or `CONVERSION_BASED_UNIT` `'INCH'` 25.4 mm / `'FOOT'` 304.8 mm; plane angle: radian or `'DEGREE'`; steradian), `GLOBAL_UNCERTAINTY_ASSIGNED_CONTEXT` with one `UNCERTAINTY_MEASURE_WITH_UNIT` |
 
-**Tolerance on export.** The document's modelling tolerance is written as the file's uncertainty measure, and entity tolerances larger than it are tightened or reported, because receivers reject geometry whose gaps exceed the declared uncertainty.
+Instances are numbered from 1 in the order they are made and refer only to earlier ones; the same document gives the same bytes (`FILE_NAME.time_stamp` is empty for that reason). Geometry is not shared between entities: every placement has its own point and directions.
+
+**Conventions.** The module documentation of `crates/io/src/step.rs` has each one with how sure it is; in short:
+
+- Surfaces and curves are parametrised by ISO 10303-42 exactly as `craft3d-geom` does (normal `∂u × ∂v`: away from the axis or centre), so frames and radii go over unchanged. A cone gets a positive semi-angle: one that narrows along its frame's z is written on the frame seen from the other side. An ellipse gets its longer semi-axis first, on a placement turned a quarter if need be. Angles are in the document's angle unit.
+- An edge runs from its start to its end vertex with the curve's parameter (`same_sense` `.T.`, always) and is the part of its curve between its vertices; an `ORIENTED_EDGE` is `.T.` unless the coedge is reversed; `ADVANCED_FACE.same_sense` is `.T.` unless the face is reversed; bounds are `.T.` (our loops already run with the face on their left seen from outside).
+- `FACE_OUTER_BOUND` is written first, and only where a loop is the outer one: the one loop of a face; on a plane the loop that runs counter-clockwise; elsewhere the one loop that does not go around the surface, when none does. A cylinder wall between two circles has two plain `FACE_BOUND`s.
+- Faces on closed surfaces are written without seam edges, as they are in the kernel. Part 42 does not ask for seams; readers add their own.
+- A cavity's `CLOSED_SHELL` has its faces turned over (so its normals point away from the volume it encloses, as a closed shell's must), and `ORIENTED_CLOSED_SHELL` `.F.` turns them back. A shell is a cavity when it encloses a negative volume, and belongs to the innermost lump that contains a point of it.
+
+**Refused**, with an error that names the body: a body that fails `topo::check` at the document's tolerance; a face without loops on anything but a sphere or a torus; a planar face without exactly one counter-clockwise loop; a solid of several shells where one cannot be measured, encloses nothing, or is a cavity outside every lump; geometry that is not finite. Not written at all: assemblies (every body is a part of its own in the world frame), colours, PMI, face and edge names, parameter-space curves.
+
+**Specs.** The exchange structure is ISO 10303-21; the entity definitions are in ISO 10303-42 (geometry and topology) and the application protocols (ISO 10303-214, -242). ISO documents are paid publications: work from copies the project legitimately has, from the freely published EXPRESS schemas and recommended practices of the CAx Implementor Forum, and from the files other systems write. Never paste text from a standard into the repository; cite the clause. The mapping as built was written from memory of the standard and checked against what FreeCAD makes of the files; the clause numbers in the code are marked as approximate.
+
+**Tests.** In `craft3d-step`: every real reads back bit for bit (20 000 random bit patterns); a file with one of everything reads back as the same model and its text is pinned; every string directive; hostile input (some 40 malformed files, each with the expected error and line), truncation at every offset, 20 000 random damages, limits, cycles. In `craft3d-io` (`tests/step.rs`): 26 bodies at three scales read back as the same instance graph and pass a small independent interpreter (closed loops, each edge of a closed shell used once each way, every vertex on its edge's curve and on its face's surface); each convention above; golden text for a block and a cylinder (`tests/golden/`, `CRAFT3D_UPDATE_GOLDEN=1` rewrites them); what is refused. In `craft3d-engine`: `tests/step.rs` and the acceptance scenario. And the external check ([`testing.md`](testing.md) oracle 8): FreeCAD imports the files and reports the same solids. That last test is the one that matters: a STEP file is only correct if other CAD systems accept it.
+
+**Tolerance on export.** The document's modelling tolerance is written as the file's uncertainty measure; the body is checked with that tolerance before it is written, so no vertex is further from its edge, and no edge from its face, than the file declares. (There are no per-entity tolerances in `topo` yet to tighten or report.)
 
 ## Meshes: STL, 3MF, OBJ
 
