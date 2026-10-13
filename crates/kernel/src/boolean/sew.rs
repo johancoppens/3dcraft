@@ -62,6 +62,9 @@ pub(super) struct WorkFace {
     /// Uses of edges: the edge and whether it is run backwards.
     pub loops: Vec<Vec<(usize, bool)>>,
     pub source: FaceSource,
+    /// Every face of the operands that this face has a piece of, the
+    /// source among them, in order.
+    pub contributors: Vec<FaceSource>,
 }
 
 /// A body in the making. Removed edges and faces leave a gap, so that
@@ -296,6 +299,7 @@ pub(super) fn sew(kept: Vec<Kept>, arcs: &Arcs, vertices: &Vertices) -> Result<W
             reversed: region.reversed,
             loops,
             source: region.source,
+            contributors: vec![region.source],
         }));
     }
 
@@ -353,6 +357,13 @@ pub(super) fn sew(kept: Vec<Kept>, arcs: &Arcs, vertices: &Vertices) -> Result<W
 }
 
 /// Gives every bounded face on a sphere a frame that suits it.
+///
+/// Needed by one oracle: FreeCAD reading the STEP export of a result
+/// (`crates/engine/tests/step_freecad.rs`). Without it a ball joined to
+/// the corner of a box, and two balls askew, come back from FreeCAD with
+/// another area and volume: a spherical face whose boundary passes by a
+/// pole of its own frame is not read as the face we mean. The corpus,
+/// the mass properties and the tessellator are the same with and without.
 ///
 /// A sphere is the same surface whichever way its poles point, but what
 /// reads a face through the surface's parameters (mass properties, the
@@ -437,6 +448,7 @@ pub(super) fn finish(mut work: Work) -> Result<BooleanResult, Stop> {
     let mut vertex_ids: BTreeMap<usize, VertexId> = BTreeMap::new();
     let mut edge_ids: BTreeMap<usize, EdgeId> = BTreeMap::new();
     let mut faces = Vec::new();
+    let mut merged = Vec::new();
     let mut edges = Vec::new();
     let mut vertices = Vec::new();
     let mut counts: BTreeMap<(Entity, Entity), u32> = BTreeMap::new();
@@ -494,6 +506,7 @@ pub(super) fn finish(mut work: Work) -> Result<BooleanResult, Stop> {
         }
         body.add_face(face.surface, face.reversed, loops);
         faces.push(face.source);
+        merged.push(face.contributors);
     }
 
     // Shells: faces connected through edges, in the order of their first
@@ -509,6 +522,7 @@ pub(super) fn finish(mut work: Work) -> Result<BooleanResult, Stop> {
     Ok(BooleanResult {
         body,
         faces,
+        merged,
         edges,
         vertices,
     })

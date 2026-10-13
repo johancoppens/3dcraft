@@ -2,10 +2,12 @@
 //! solid, and which of them the operation keeps.
 
 use super::hits::{curve_hits, signed_distance};
-use super::outline::{Outline, Side, line_in_box};
+use super::outline::{Outline, Side, boxes_meet, line_in_box};
 use super::regions::{self, Half};
 use super::section::Solid;
-use super::{Arcs, BooleanOp, FaceSource, LOST, NO_RAY, ON_A_FACE, Operand, Stop, Vertices};
+use super::{
+    Arcs, BooleanOp, FaceSource, IMPRINT_LOST, LOST, NO_RAY, ON_A_FACE, Operand, Stop, Vertices,
+};
 use super::{face_id, geometry};
 use craft3d_geom::intersect::CurveIntersection;
 use craft3d_geom::{Curve3, Line, Surface};
@@ -129,41 +131,52 @@ fn classify(
     tolerance: &Tolerance,
 ) -> Result<Class, Stop> {
     let tol = tolerance.linear;
-    let candidates = region
-        .interior_points(tol, 4.0 * tol, TRIES)
-        .map_err(Stop::of)?;
     let mut failure = None;
-    'points: for p in candidates {
-        for &(face, same_normal) in coincident {
-            let outline = other.outlines.get(face).ok_or(Stop::of(LOST))?;
-            match outline
-                .side(p, tol)
-                .map_err(|r| Stop::of(r).at(&[other.name(face)]))?
-            {
-                Side::Out => {}
-                // A boundary of the other body that was not imprinted
-                // here: no other point of the region would mean more.
-                Side::On => return Err(Stop::of(ON_A_FACE).at(&[other.name(face)])),
-                Side::In => {
-                    let same = same_normal == (region.reversed == outline.reversed);
-                    return Ok(if same {
-                        Class::OnSame
-                    } else {
-                        Class::OnOpposite
-                    });
+    // One point decides, nearly always: the others are looked for only
+    // when it does not. (The points for a greater number begin with those
+    // for a smaller one.)
+    let mut tried = 0;
+    'points: for want in [1, TRIES] {
+        let candidates = region
+            .interior_points(tol, 4.0 * tol, want)
+            .map_err(Stop::of)?;
+        let fresh: Vec<Vec3> = candidates.into_iter().skip(tried).collect();
+        tried += fresh.len();
+        for p in fresh {
+            for &(face, same_normal) in coincident {
+                let outline = other.outlines.get(face).ok_or(Stop::of(LOST))?;
+                match outline
+                    .side(p, tol)
+                    .map_err(|r| Stop::of(r).at(&[other.name(face)]))?
+                {
+                    Side::Out => {}
+                    // A boundary of the other body that was not imprinted
+                    // here: no other point of the region would mean more.
+                    Side::On => return Err(Stop::of(ON_A_FACE).at(&[other.name(face)])),
+                    Side::In => {
+                        let same = same_normal == (region.reversed == outline.reversed);
+                        return Ok(if same {
+                            Class::OnSame
+                        } else {
+                            Class::OnOpposite
+                        });
+                    }
                 }
             }
-        }
-        // A point may by chance be where the bodies touch without
-        // crossing, or have no usable ray: the next one decides as well.
-        match inside(other, p, tolerance) {
-            Ok(true) => return Ok(Class::In),
-            Ok(false) => return Ok(Class::Out),
-            Err(stop @ Stop::Unsupported { .. }) => {
-                failure = failure.or(Some(stop));
-                continue 'points;
+            // A point may by chance be where the bodies touch without
+            // crossing, or have no usable ray: the next one decides as
+            // well.
+            match inside(other, p, tolerance) {
+                Ok(true) => return Ok(Class::In),
+                Ok(false) => return Ok(Class::Out),
+                Err(stop @ Stop::Unsupported { .. }) => {
+                    failure = failure.or(Some(stop));
+                }
+                Err(stop) => return Err(stop),
             }
-            Err(stop) => return Err(stop),
+        }
+        if want == 1 && TRIES == 1 {
+            break 'points;
         }
     }
     Err(failure.unwrap_or(Stop::of(NO_RAY)))
@@ -205,6 +218,7 @@ pub(super) fn select(
     other: &Solid,
     pieces: &[Vec<Half>],
     interior: &BTreeMap<usize, BTreeSet<usize>>,
+    crossing: &BTreeMap<usize, BTreeSet<usize>>,
     coincident: &BTreeMap<usize, Vec<(usize, bool)>>,
     arcs: &Arcs,
     vertices: &Vertices,
@@ -214,6 +228,7 @@ pub(super) fn select(
 ) -> Result<(), Stop> {
     let tol = tolerance.linear;
     let none = BTreeSet::new();
+    let other_box = other.bbox();
     for (face, outline) in own.outlines.iter().enumerate() {
         let named = [own.name(face)];
         let loops = boundary(own, face, pieces)?;
@@ -227,7 +242,7 @@ pub(super) fn select(
         let regions = if whole {
             vec![loops]
         } else {
-            regions::build(
+            let (regions, dropped) = regions::build(
                 &outline.surface,
                 outline.reversed,
                 &loops,
@@ -236,7 +251,18 @@ pub(super) fn select(
                 &vertices.points,
                 tol,
             )
-            .map_err(|r| Stop::of(r).at(&named))?
+            .map_err(|r| Stop::of(r).at(&named))?;
+            // Where the other body's face passes through this one, what
+            // is on one side of the curve is inside that body and what is
+            // on the other side is not: such a curve divides the face, or
+            // a piece of the imprint is missing.
+            if crossing
+                .get(&face)
+                .is_some_and(|must| !must.is_disjoint(&dropped))
+            {
+                return Err(Stop::of(IMPRINT_LOST).at(&named));
+            }
+            regions
         };
         for loops in regions {
             // A face that nothing divides is its own outline.
@@ -256,7 +282,19 @@ pub(super) fn select(
                 &made
             };
             let coincident = coincident.get(&face).map_or(&[][..], Vec::as_slice);
-            let class = classify(region, other, coincident, tolerance).map_err(|s| s.at(&named))?;
+            // A whole face that is nowhere near the other solid's box is
+            // outside that solid, without looking for a point of it.
+            let apart = whole
+                && coincident.is_empty()
+                && own
+                    .boxes
+                    .get(face)
+                    .is_some_and(|own_box| !boxes_meet(own_box, &other_box, 4.0 * tol));
+            let class = if apart {
+                Class::Out
+            } else {
+                classify(region, other, coincident, tolerance).map_err(|s| s.at(&named))?
+            };
             // Of two coincident regions with the same normal A's is the
             // one kept; with opposite normals the solids lie on either
             // side and only A minus B has a face there, A's.
@@ -304,13 +342,8 @@ mod tests {
 
     fn prepared(body: &Body) -> Solid<'_> {
         let tolerance = Tolerance::default();
-        let mut vertices = Vertices {
-            points: Vec::new(),
-            meetings: Vec::new(),
-            merge: 0.5 * tolerance.linear,
-            guard: 2.0 * tolerance.linear,
-        };
-        match prepare(body, Operand::A, &mut vertices, &tolerance) {
+        let mut vertices = Vertices::new(0.5 * tolerance.linear, 2.0 * tolerance.linear);
+        match prepare(body, Operand::A, &mut vertices, &tolerance, false) {
             Ok(solid) => solid,
             Err(_) => panic!("a primitive is a valid operand"),
         }

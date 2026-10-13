@@ -145,13 +145,19 @@ fn cases(k: f64) -> Vec<Case> {
             1,
             1,
         ),
-        // And the trench it leaves is open along its whole length.
+        // And what it leaves is a tunnel: the half of the upright ring
+        // below the top is a U-shaped tube that meets the top in two
+        // discs only (where the tube passes through the plane), going in
+        // at one and out at the other. One handle, as for the handle
+        // above the block. (This said 0, "a trench open along its whole
+        // length", while the boolean was still refused; a trench is what
+        // a ring lying flat leaves.)
         case(
             "a block with half a ring cut out of its top",
             below,
             upright_torus(k),
             Subtract,
-            0,
+            1,
             1,
         ),
         case("a ball with a hole through it", ball, pin, Subtract, 1, 1),

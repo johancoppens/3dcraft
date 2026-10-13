@@ -734,3 +734,92 @@ fn curved_edges_that_really_cross_are_still_refused() {
         );
     }
 }
+
+/// The face between an arc and its chord: a sliver 2 long and 0.05 high
+/// (a circle of radius 10), or with a line on both sides, which is no
+/// face at all.
+fn sliver(scale: f64, arc: bool) -> Body {
+    let (a, b) = (Vec3::ZERO, Vec3::new(2.0 * scale, 0.0, 0.0));
+    let mut body = Body::new(BodyKind::Sheet);
+    let (from, to) = (body.add_vertex(a), body.add_vertex(b));
+    let there = if arc {
+        // From a to b counter-clockwise about a centre on the left of the
+        // chord: the arc bulges to the right, and the face is between it
+        // and the chord.
+        let radius = 10.0 * scale;
+        let centre = Vec3::new(scale, (radius * radius - scale * scale).sqrt(), 0.0);
+        let circle = Circle::new(Frame::new(centre, Vec3::Z, a - centre).unwrap(), radius).unwrap();
+        let sweep = 2.0 * (scale / radius).asin();
+        body.add_edge(Curve3::Circle(circle), (0.0, sweep), from, to)
+    } else {
+        line(&mut body, from, to)
+    };
+    let back = line(&mut body, to, from);
+    let loop_ = body.add_loop(vec![forward(there), forward(back)]);
+    let face = body.add_face(Surface::Plane(Plane::new(Frame::WORLD)), false, vec![loop_]);
+    body.add_shell(vec![face]);
+    body
+}
+
+/// Found by the long random run of the booleans (`SELF_PAIR="1000006 0
+/// 1"`, the difference: a flat face between a line and an arc of an
+/// ellipse from the same vertex to the same vertex, refused at every
+/// chord but the finest). At a chordal tolerance above the height of the
+/// sliver the arc is one chord, the loop a line there and back, and the
+/// face was refused for enclosing no area before it could ask for the arc
+/// to be cut. It asks now.
+#[test]
+fn a_face_narrower_than_the_tolerance_between_an_arc_and_its_chord() {
+    for scale in [1e-3, 1.0, 1e6] {
+        let body = sliver(scale, true);
+        let half_angle = (0.1_f64).asin();
+        let exact = 100.0 * scale * scale * (half_angle - half_angle.sin() * half_angle.cos());
+        let mut last = 0.0;
+        for relative in [10.0, 1.0, 0.06, 0.04, 1e-2, 1e-3, 1e-5] {
+            let tolerance = relative * scale;
+            let what = format!("scale {scale}, tolerance {relative}");
+            let mesh = tessellate_body(&body, &params(tolerance))
+                .unwrap_or_else(|e| panic!("{what}: {e}"));
+            let area = mesh.area();
+            // Inside the face, and short of it by no more than the
+            // tolerance along the chord.
+            assert!(
+                area > 0.0 && area <= exact * (1.0 + 1e-12),
+                "{what}: {area}"
+            );
+            assert!(
+                exact - area <= 2.0 * scale * tolerance,
+                "{what}: {area} of {exact}"
+            );
+            // No worse for a finer tolerance.
+            assert!(area >= last * (1.0 - 1e-12), "{what}: {area} after {last}");
+            last = area;
+            // The same on any number of threads, and the edges alone are
+            // the edges of the mesh.
+            assert_eq!(
+                bits(&mesh),
+                bits(&tessellate_body_with_threads(&body, &params(tolerance), 4).unwrap()),
+                "{what}"
+            );
+            let both = tessellate_body_and_edges(&body, &params(tolerance)).unwrap();
+            assert_eq!(
+                both.edges,
+                tessellate_edges(&body, &params(tolerance)).unwrap()
+            );
+            // The arc is cut no further than the face needs: once, where
+            // one chord would have done for the arc alone.
+            if relative >= 0.06 {
+                assert_eq!(both.edges[0].len(), 3, "{what}");
+                assert_eq!(mesh.triangles.len(), 1, "{what}");
+            }
+        }
+        // A line there and back encloses nothing however it is cut.
+        for relative in [1.0, 1e-3] {
+            let error = tessellate_body(&sliver(scale, false), &params(relative * scale));
+            assert!(
+                matches!(&error, Err(TessError::Face { face: 0, reason }) if reason.contains("enclose no area")),
+                "{error:?}"
+            );
+        }
+    }
+}

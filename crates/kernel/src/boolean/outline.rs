@@ -285,6 +285,167 @@ pub(super) fn clearance(loops: &[Vec<Seg>], p: Vec3) -> f64 {
     least
 }
 
+/// A box around every piece of some loops, arranged so that the pieces
+/// near a point are found without looking at all of them: what keeps a
+/// face with a thousand holes from costing a million measurements.
+///
+/// The boxes are sorted by where they begin along x. The few that are much
+/// longer along x than the rest (the sides of a plate, against its holes)
+/// are kept apart and always looked at, so that the others are found in a
+/// stretch of the sorted row no longer than the search is wide.
+#[derive(Clone, Debug, Default)]
+pub(super) struct Boxes {
+    /// Where the box begins along x, the box, and the piece: its loop and
+    /// its place in the loop.
+    row: Vec<(f64, Bbox3, usize, usize)>,
+    /// The greatest length along x of a box in the row.
+    width: f64,
+    long: Vec<(Bbox3, usize, usize)>,
+    /// Per loop, a box around all of it.
+    around: Vec<Bbox3>,
+}
+
+pub(super) fn boxes(loops: &[Vec<Seg>]) -> Boxes {
+    let mut all = Vec::new();
+    let mut around = vec![Bbox3::EMPTY; loops.len()];
+    for (l, loop_) in loops.iter().enumerate() {
+        for (k, seg) in loop_.iter().enumerate() {
+            let mut b = Bbox3::from_points([seg.a, seg.b]);
+            // A piece of a circle or an ellipse counts as the whole of it.
+            let conic = match &seg.curve {
+                Curve3::Line(_) => None,
+                Curve3::Circle(c) => {
+                    let f = c.frame();
+                    Some((f.origin(), f.x() * c.radius(), f.y() * c.radius()))
+                }
+                Curve3::Ellipse(e) => {
+                    let (f, (major, minor)) = (e.frame(), e.semi_axes());
+                    Some((f.origin(), f.x() * major, f.y() * minor))
+                }
+                Curve3::Nurbs(c) => {
+                    for &p in c.control_points() {
+                        b.add(p);
+                    }
+                    None
+                }
+            };
+            if let Some((center, x, y)) = conic {
+                let reach = Vec3::new(x.x.hypot(y.x), x.y.hypot(y.y), x.z.hypot(y.z));
+                b.add(center - reach);
+                b.add(center + reach);
+            }
+            if let Some((lo, hi)) = b.corners() {
+                if let Some(whole) = around.get_mut(l) {
+                    whole.add(lo);
+                    whole.add(hi);
+                }
+                all.push((lo.x, hi.x - lo.x, b, l, k));
+            }
+        }
+    }
+    // Long: more than four times the middle length.
+    let mut lengths: Vec<f64> = all.iter().map(|entry| entry.1).collect();
+    lengths.sort_by(f64::total_cmp);
+    let limit = 4.0 * lengths.get(lengths.len() / 2).copied().unwrap_or(0.0);
+    let mut found = Boxes {
+        around,
+        ..Boxes::default()
+    };
+    for (begin, length, b, l, k) in all {
+        if length > limit || !begin.is_finite() || !length.is_finite() {
+            found.long.push((b, l, k));
+        } else {
+            found.width = found.width.max(length);
+            found.row.push((begin, b, l, k));
+        }
+    }
+    found
+        .row
+        .sort_by(|p, q| p.0.total_cmp(&q.0).then(p.2.cmp(&q.2)).then(p.3.cmp(&q.3)));
+    found
+}
+
+impl Boxes {
+    /// True when `p` is within `margin` of the box around loop `l`, or
+    /// that box is not known: outside it, a loop in a plane does not go
+    /// around the point.
+    pub fn around(&self, l: usize, p: Vec3, margin: f64) -> bool {
+        self.around.get(l).is_none_or(|b| b.contains(p, margin))
+    }
+
+    /// The pieces whose box is within `r` of `p`, each as its loop and
+    /// its place in the loop: every piece that is itself within `r` of
+    /// `p` is among them.
+    pub fn near(&self, p: Vec3, r: f64) -> Vec<(usize, usize)> {
+        let room = r * (1.0 + 1e-9) + 1e-300;
+        let (from, to) = if p.is_finite() && room.is_finite() {
+            (
+                self.row
+                    .partition_point(|entry| entry.0 < p.x - room - self.width),
+                self.row.partition_point(|entry| entry.0 <= p.x + room),
+            )
+        } else {
+            (0, self.row.len())
+        };
+        let row = self
+            .row
+            .get(from..to)
+            .into_iter()
+            .flatten()
+            .map(|(_, b, l, k)| (b, *l, *k));
+        row.chain(self.long.iter().map(|(b, l, k)| (b, *l, *k)))
+            .filter(|(b, ..)| {
+                b.corners().is_some_and(|(lo, hi)| {
+                    // (Not finite: not ruled out.)
+                    {
+                        let away = (lo - p).max(p - hi).max(Vec3::ZERO).length();
+                        away <= room || away.is_nan()
+                    }
+                })
+            })
+            .map(|(_, l, k)| (l, k))
+            .collect()
+    }
+
+    /// True when a piece of the loops is nearer to `p` than `r` (or as
+    /// near, when `or_as_near`): what `clearance(loops, p) < r` says,
+    /// measuring only the pieces whose box is that near.
+    pub fn nearer(&self, loops: &[Vec<Seg>], p: Vec3, r: f64, or_as_near: bool) -> bool {
+        if !(p.is_finite() && r.is_finite()) {
+            let least = clearance(loops, p);
+            return least < r || (or_as_near && least == r);
+        }
+        // With room for the rounding of a box's own distance.
+        let room = r * (1.0 + 1e-9) + 1e-300;
+        let from = self
+            .row
+            .partition_point(|entry| entry.0 < p.x - room - self.width);
+        let to = self.row.partition_point(|entry| entry.0 <= p.x + room);
+        let near = self
+            .row
+            .get(from..to)
+            .into_iter()
+            .flatten()
+            .map(|(_, b, l, k)| (b, l, k));
+        for (b, &l, &k) in near.chain(self.long.iter().map(|(b, l, k)| (b, l, k))) {
+            let Some((lo, hi)) = b.corners() else {
+                continue;
+            };
+            if (lo - p).max(p - hi).max(Vec3::ZERO).length() > room {
+                continue;
+            }
+            let Some(seg) = loops.get(l).and_then(|loop_| loop_.get(k)) else {
+                continue;
+            };
+            let d = nearest(&seg.curve, seg.range, p).map_or(0.0, |(_, d)| d);
+            if d < r || (or_as_near && d == r) {
+                return true;
+            }
+        }
+        false
+    }
+}
+
 /// A point of the surface just to the left of one of the pieces `of`, seen
 /// from outside: on the side of it that the face it bounds is on, and with
 /// nothing of `all` between it and that piece. At least `margin` away from
@@ -293,6 +454,7 @@ pub(super) fn left_of(
     surface: &Surface,
     reversed: bool,
     all: &[Vec<Seg>],
+    all_boxes: &Boxes,
     of: &[Seg],
     margin: f64,
 ) -> Result<Vec3, Reason> {
@@ -323,7 +485,7 @@ pub(super) fn left_of(
             };
             let edge = 1e-6 * (seg.range.1 - seg.range.0);
             if !(reach > margin && t > seg.range.0 + edge && t < seg.range.1 - edge)
-                || clearance(all, candidate) < reach * (1.0 - 1e-9)
+                || all_boxes.nearer(all, candidate, reach * (1.0 - 1e-9), false)
             {
                 continue;
             }
@@ -344,6 +506,8 @@ pub(super) struct Outline {
     /// The outward normal is opposite to the surface's.
     pub reversed: bool,
     pub loops: Vec<Vec<Seg>>,
+    /// The [`boxes`] of the loops.
+    boxes: Boxes,
     chart: Chart,
     /// The face contains the place its chart leaves out (the centre of
     /// projection of a sphere, the cut of a torus). Its loops then wind
@@ -365,12 +529,13 @@ impl Outline {
         if loops.is_empty() && !chart.is_closed() {
             return Err(UNBOUNDED);
         }
+        let boxes = boxes(&loops);
         let infinite = if chart.is_closed() && !loops.is_empty() {
             // The loops go around a point just inside the face once, or
             // not at all when the face is the outside of them.
             let mut found = None;
             for loop_ in &loops {
-                if let Ok(witness) = left_of(&surface, reversed, &loops, loop_, margin) {
+                if let Ok(witness) = left_of(&surface, reversed, &loops, &boxes, loop_, margin) {
                     found = Some(witness);
                     break;
                 }
@@ -388,22 +553,38 @@ impl Outline {
             surface,
             reversed,
             loops,
+            boxes,
             chart,
             infinite,
         })
     }
 
+    /// The pieces of the boundary that may be within `r` of `p`: see
+    /// [`Boxes::near`].
+    pub fn pieces_near(&self, p: Vec3, r: f64) -> Vec<(usize, usize)> {
+        self.boxes.near(p, r)
+    }
+
     /// Where a point of the surface is with respect to the loops.
     pub fn side(&self, p: Vec3, tol: f64) -> Result<Side, Reason> {
-        if clearance(&self.loops, p) <= tol {
+        if self.boxes.nearer(&self.loops, p, tol, true) {
             return Ok(Side::On);
         }
         if self.loops.is_empty() {
             return Ok(Side::In);
         }
-        let winding = self
-            .chart
-            .winding(self.loops.iter().map(Vec::as_slice), About::Point(p))?;
+        // In a plane a loop does not go around a point outside the box
+        // around it: on a plate with a thousand holes that leaves the
+        // outside and at most a hole or two to follow.
+        let flat = matches!(self.surface, Surface::Plane(_));
+        let winding = self.chart.winding(
+            self.loops
+                .iter()
+                .enumerate()
+                .filter(|(l, _)| !flat || self.boxes.around(*l, p, tol))
+                .map(|(_, loop_)| loop_.as_slice()),
+            About::Point(p),
+        )?;
         Ok(if (winding == 0) == self.infinite {
             Side::In
         } else {
@@ -453,7 +634,7 @@ impl Outline {
                 let Some(candidate) = onto(&self.surface, point + inward * step) else {
                     continue;
                 };
-                if clearance(&self.loops, candidate) < margin {
+                if self.boxes.nearer(&self.loops, candidate, margin, false) {
                     continue;
                 }
                 match self.side(candidate, tol) {
@@ -738,7 +919,15 @@ mod tests {
                 assert!(clearance(&face.loops, p) >= 4e-6);
             }
             // Just left of the hole's rim is in the plate, not in the hole.
-            let beside = left_of(&face.surface, false, &face.loops, &face.loops[1], 4e-6).unwrap();
+            let beside = left_of(
+                &face.surface,
+                false,
+                &face.loops,
+                &boxes(&face.loops),
+                &face.loops[1],
+                4e-6,
+            )
+            .unwrap();
             assert_eq!(face.side(beside, 1e-6), Ok(Side::In));
             let (x, y, _) = frame.local(beside);
             assert!((x - 1.0).hypot(y - 1.0) > 0.5);

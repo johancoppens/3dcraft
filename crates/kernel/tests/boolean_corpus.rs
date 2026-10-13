@@ -35,6 +35,7 @@
 //! BOOLEAN_CORPUS_CASE=flush/block-cylinder/003 \
 //!     cargo test -p craft3d-kernel --test boolean_corpus -- --nocapture
 //! BOOLEAN_CORPUS_CATEGORY=tangent cargo test -p craft3d-kernel --test boolean_corpus
+//! BOOLEAN_CORPUS_VERBOSE=1 BOOLEAN_CORPUS_CATEGORY=near cargo test ... # every case printed
 //! ```
 //!
 //! The score table goes to `target/evidence/booleans/corpus-score.txt`.
@@ -64,7 +65,18 @@ use std::path::PathBuf;
 /// the kernel learns something, the test prints the new count: put it
 /// here, in the same commit. Never lower it to get green: a lower count
 /// means booleans that used to be right are now refused or wrong.
-const AGREEING_FLOOR: usize = 3511;
+///
+/// Lowered once, from 6082 to 6064, on purpose (2026-10-13): six `near`
+/// cases with a gap of -1 (a ball or a torus one tolerance deep in a
+/// block, a cylinder, a ball or a torus) were answered as touching,
+/// because geometry reports a touch point for surfaces within the
+/// tolerance of each other, and agreed through the slack that such a
+/// case has. The tolerance rule for faces of different kinds (through
+/// each other by between half and twice the tolerance: refused) now
+/// applies to those touch points as it does to the 48 outcomes of the
+/// same category where the surfaces meet in a curve. The developer may
+/// overturn the rule; then this goes back up.
+const AGREEING_FLOOR: usize = 6064;
 
 /// Mismatches the kernel is known to have: `(case id, operation, why)`.
 /// They are bugs, listed so that the test is green while they are open and
@@ -101,7 +113,82 @@ const REFERENCE_OFF: &[(&str, &str)] = &[
         "parallel/block-sphere/015",
         "the same integration: 1.7087781 and 1.7087772; FreeCAD 1.7090096530; ours 1.7087774037",
     ),
+    (
+        "general/cylinder-sphere/007",
+        "the common volume integrated as chord lengths over the ball's shadow (Gauss-Legendre, \
+         400 and 800 panels): 5.578889 and 5.578874; FreeCAD 5.579373; ours 5.578885",
+    ),
+    // The next three were undecided until the common volume was integrated
+    // directly: lines along one solid's axis meet a cone, a cylinder, a
+    // sphere and a torus with a parallel axis in one interval each, in
+    // closed form, and the common volume is the integral over the plane
+    // across that axis of the length the intervals share (midpoint rule,
+    // 4000, 8000 and 16000 points each way; the same program gives the
+    // lens of general/sphere-sphere/010 as 1.711673888 against the closed
+    // form 1.711673910). The other two results follow from the operands'
+    // volumes, which both kernels have to rounding.
+    (
+        "general/cylinder-cone/010",
+        "integrated: common 1.345190631, 1.345190630, 1.345190631; so cut 6.376722079 and fuse \
+         9.756786976. FreeCAD 1.345179734, 6.376743670, 9.756812633; ours 1.345190471, \
+         6.376722276, 9.756786898",
+    ),
+    (
+        "general/cone-sphere/005",
+        "integrated: common 0.848178405, 0.848178491, 0.848178504; so cut 0.133410383 and fuse \
+         5.843793962. FreeCAD 0.848197575, 0.133387799, 5.843775224; ours 0.848178408, \
+         0.133410478, 5.843794057",
+    ),
+    (
+        "parallel/torus-torus/003",
+        "integrated: common 1.006761531, 1.006761745, 1.006761611; so cut 4.734977264 and fuse \
+         11.347961215. FreeCAD 1.007568665, 4.734154604, 11.347233441; ours 1.006761617, \
+         4.734977259, 11.347961209",
+    ),
+    // The next four are of the `near` category with a gap of -10: by
+    // their construction the solids overlap ten tolerances deep, which by
+    // the kernel's rule (twice the tolerance or more: as given) is an
+    // overlap. FreeCAD reads three of them as apart or touching, and its
+    // three results contradict each other or the construction.
+    (
+        "near/torus-torus/002",
+        "two equal tori of area 22.206609902451056 and volume 4.163739356709573 each. Ours: \
+         area(fuse) + area(common) = 44.41218706809724 + 0.00103273680 = 44.4132198049, twice \
+         the torus to 1e-13, and vol(cut) + vol(common) = 4.163739356709574. FreeCAD: \
+         44.41790708938 + 0.00103312256 = 44.418940, off by 5.7e-3, and 4.163785252825 + \
+         2.955e-9, off by 4.6e-5; its common agrees with ours",
+    ),
+    (
+        "near/torus-torus/009",
+        "the tori overlap in two places (ours: two shells, 2.9348e-10 together); FreeCAD has \
+         one of them, 1.4672e-10, exactly half. Ours: vol(fuse) + vol(common) = \
+         12.172541122786, the sum of the tori 12.17254112278654; FreeCAD: 12.172543076755, \
+         off by 2e-6",
+    ),
+    (
+        "near/sphere-torus/016",
+        "a ball of radius 1 whose centre is 1.24999 from the centre circle of a tube of radius \
+         0.25: they overlap 1e-5 deep, in a lens between a sphere and the top of a torus \
+         (curvatures 1 + 4 and 1 + 0), whose two faces have area 2 * 2 pi 1e-5 / sqrt(5) = \
+         5.61985e-5 together. Ours 5.62000e-5, one shell in the fuse; FreeCAD: no common \
+         volume and a fuse of two shells",
+    ),
+    (
+        "near/cylinder-torus/009",
+        "the rim of a cylinder ten tolerances inside a torus, by construction (gap -10): the \
+         fuse is one shell and the common a sliver. FreeCAD: two shells and nothing in \
+         common. (The sliver's volume is below what mass_properties resolves at this scale: \
+         it reports -2.4e-10 of a body of 23; its area is 2.98e-7)",
+    ),
 ];
+
+/// Cases where our result and the reference differ by more than the
+/// reference's bound and nothing independent has decided between them
+/// yet: none. (There were seven; all were settled for our result, by a
+/// direct integration or by the reference contradicting itself, and are
+/// in [`REFERENCE_OFF`] with the evidence.) A new entry is an OPEN
+/// question: not scored, listed in every report, to be settled.
+const UNDECIDED: &[&str] = &[];
 
 /// The linear tolerance at scale 1, as in the corpus header.
 const TOLERANCE: f64 = 1e-6;
@@ -461,6 +548,19 @@ fn second_opinion(
     })
 }
 
+/// The sum of a hash of every result of the run: the body with all its
+/// numbers and where everything came from. Two builds of the kernel that
+/// print the same sum gave the same results, bit for bit (it is how a
+/// change that should only make the kernel faster is checked).
+static DIGEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn digest(result: &craft3d_kernel::boolean::BooleanResult) {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    format!("{result:?}").hash(&mut hasher);
+    DIGEST.fetch_add(hasher.finish(), std::sync::atomic::Ordering::Relaxed);
+}
+
 /// The three outcomes of a case, in the order of [`OPS`].
 fn run_case(case: &Value, snap: Option<&Value>, verbose: bool) -> Vec<Outcome> {
     let k = number(case, &["scale"]).unwrap_or(1.0);
@@ -531,6 +631,7 @@ fn run_case(case: &Value, snap: Option<&Value>, verbose: bool) -> Vec<Outcome> {
             Ok(Err(KernelError::EmptyResult { .. })) => score(case, snap, field, None, size),
             Ok(Err(other)) => Outcome::Invalid(format!("error: {other}")),
             Ok(Ok(result)) => {
+                digest(&result);
                 let defects = check(&result.body, &tolerance);
                 match measure(&result.body, k) {
                     _ if !defects.is_empty() => {
@@ -559,7 +660,9 @@ fn run_case(case: &Value, snap: Option<&Value>, verbose: bool) -> Vec<Outcome> {
         };
         let id = case.get("id").and_then(Value::as_str).unwrap_or("?");
         let outcome = match outcome {
-            Outcome::Mismatch(_) if REFERENCE_OFF.iter().any(|(case, _)| *case == id) => {
+            Outcome::Mismatch(_)
+                if REFERENCE_OFF.iter().any(|(case, _)| *case == id) || UNDECIDED.contains(&id) =>
+            {
                 Outcome::Unscored
             }
             other => other,
@@ -730,7 +833,7 @@ fn the_kernel_agrees_with_the_reference_kernel() {
         })
         .collect();
     assert!(!selected.is_empty(), "the filter selects no case");
-    let verbose = only_case.is_some();
+    let verbose = only_case.is_some() || std::env::var_os("BOOLEAN_CORPUS_VERBOSE").is_some();
 
     // In parallel, merged in the order of the file.
     let workers = std::thread::available_parallelism().map_or(4, usize::from);
@@ -812,6 +915,10 @@ fn the_kernel_agrees_with_the_reference_kernel() {
     let _ = writeln!(
         report,
         "\nagreeing (match + match~ + empty): {agreeing}; floor {AGREEING_FLOOR}"
+    );
+    println!(
+        "digest of all results: {:016x}",
+        DIGEST.load(std::sync::atomic::Ordering::Relaxed)
     );
     if !known.is_empty() {
         let _ = writeln!(report, "\nKnown mismatches (allow-listed):");

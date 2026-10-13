@@ -246,6 +246,244 @@ fn touching_is_not_crossing() {
     }
 }
 
+/// One body whose two parts meet face on face in one place and along an
+/// edge in another: an L lying flat, and a bar on top of it that covers
+/// the short leg and runs beside the long one. Along `y = 1, z = 1` from
+/// `x = 1` to `x = 3` four faces meet, two and two in one plane, with
+/// material in two opposite quarters: the top of the long leg and the
+/// underside of the bar, the side of the leg and the side of the bar.
+/// Nothing passes through anything there.
+///
+/// Each of the four lies exactly in the wall of the column over the
+/// next, and the surface runs from one to the one opposite around the
+/// end of the edge at `(1, 1, 1)`, where the leg's side turns the corner
+/// under the bar. With the column a hair wider than its triangle all
+/// round, that was "through": depth 1, the height of the leg, between
+/// faces that touch. (Found by the long random run of the booleans: seed
+/// 1000453 on the grid, a slot on an L.) The bar is longer than the leg,
+/// so that the edge has other ends in the two parts, as it had there.
+fn bar_on_an_l() -> Soup {
+    let mut soup = Soup::default();
+    let mut face = |points: &[[f64; 3]], outward: [f64; 3], id: u32| {
+        let p: Vec<Vec3> = points.iter().map(|&[x, y, z]| v(x, y, z)).collect();
+        let outward = v(outward[0], outward[1], outward[2]);
+        for k in 1..p.len() - 1 {
+            let (a, mut b, mut c) = (p[0], p[k], p[k + 1]);
+            let turn = (b - a).cross(c - a).dot(outward);
+            assert!(turn != 0.0, "a triangle without area in face {id}");
+            if turn < 0.0 {
+                (b, c) = (c, b);
+            }
+            soup.triangle(a, b, c, id);
+        }
+    };
+    let (down, up) = ([0.0, 0.0, -1.0], [0.0, 0.0, 1.0]);
+    let (left, right) = ([-1.0, 0.0, 0.0], [1.0, 0.0, 0.0]);
+    let (front, back) = ([0.0, -1.0, 0.0], [0.0, 1.0, 0.0]);
+    let q = |a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]| [a, b, c, d];
+    // The L: [0, 3] x [0, 1] and [0, 1] x [1, 2], from z = 0 to 1.
+    face(
+        &q(
+            [0.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [3.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ),
+        down,
+        0,
+    );
+    face(
+        &q(
+            [0.0, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [1.0, 2.0, 0.0],
+            [0.0, 2.0, 0.0],
+        ),
+        down,
+        0,
+    );
+    // Its top, where the bar is not.
+    let top = [
+        [0.0, 0.0, 1.0],
+        [3.0, 0.0, 1.0],
+        [3.0, 1.0, 1.0],
+        [1.0, 1.0, 1.0],
+        [0.0, 1.0, 1.0],
+    ];
+    face(&top, up, 1);
+    face(
+        &q(
+            [0.0, 0.0, 0.0],
+            [3.0, 0.0, 0.0],
+            [3.0, 0.0, 1.0],
+            [0.0, 0.0, 1.0],
+        ),
+        front,
+        2,
+    );
+    face(
+        &q(
+            [3.0, 0.0, 0.0],
+            [3.0, 1.0, 0.0],
+            [3.0, 1.0, 1.0],
+            [3.0, 0.0, 1.0],
+        ),
+        right,
+        3,
+    );
+    // The side of the long leg, and the inner corner under the bar.
+    face(
+        &q(
+            [3.0, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [1.0, 1.0, 1.0],
+            [3.0, 1.0, 1.0],
+        ),
+        back,
+        4,
+    );
+    face(
+        &q(
+            [1.0, 1.0, 0.0],
+            [1.0, 2.0, 0.0],
+            [1.0, 2.0, 1.0],
+            [1.0, 1.0, 1.0],
+        ),
+        right,
+        5,
+    );
+    face(
+        &q(
+            [1.0, 2.0, 0.0],
+            [0.0, 2.0, 0.0],
+            [0.0, 2.0, 1.0],
+            [1.0, 2.0, 1.0],
+        ),
+        back,
+        6,
+    );
+    face(
+        &q(
+            [0.0, 0.0, 0.0],
+            [0.0, 2.0, 0.0],
+            [0.0, 2.0, 1.0],
+            [0.0, 0.0, 1.0],
+        ),
+        left,
+        7,
+    );
+    // The bar: [0, 3.5] x [1, 2], from z = 1 to 2.
+    let far = [
+        [0.0, 2.0, 2.0],
+        [3.5, 2.0, 2.0],
+        [3.5, 2.0, 1.0],
+        [1.0, 2.0, 1.0],
+        [0.0, 2.0, 1.0],
+    ];
+    face(&far, back, 6);
+    face(
+        &q(
+            [0.0, 1.0, 1.0],
+            [0.0, 2.0, 1.0],
+            [0.0, 2.0, 2.0],
+            [0.0, 1.0, 2.0],
+        ),
+        left,
+        7,
+    );
+    face(
+        &q(
+            [0.0, 1.0, 2.0],
+            [3.5, 1.0, 2.0],
+            [3.5, 2.0, 2.0],
+            [0.0, 2.0, 2.0],
+        ),
+        up,
+        8,
+    );
+    // Its underside beside the L, and its side over the long leg.
+    face(
+        &q(
+            [1.0, 1.0, 1.0],
+            [1.0, 2.0, 1.0],
+            [3.5, 2.0, 1.0],
+            [3.5, 1.0, 1.0],
+        ),
+        down,
+        9,
+    );
+    let near = [
+        [0.0, 1.0, 2.0],
+        [0.0, 1.0, 1.0],
+        [1.0, 1.0, 1.0],
+        [3.5, 1.0, 1.0],
+        [3.5, 1.0, 2.0],
+    ];
+    face(&near, front, 10);
+    face(
+        &q(
+            [3.5, 1.0, 1.0],
+            [3.5, 2.0, 1.0],
+            [3.5, 2.0, 2.0],
+            [3.5, 1.0, 2.0],
+        ),
+        right,
+        11,
+    );
+    soup
+}
+
+#[test]
+fn parts_of_one_body_that_meet_along_an_edge_touch() {
+    let soup = bar_on_an_l();
+    // The mesh is what it is meant to be: it encloses the L and the bar.
+    let volume: f64 = (0..soup.mesh.triangles.len())
+        .map(|t| {
+            let [a, b, c] = soup.mesh.corners(t).unwrap();
+            a.dot(b.cross(c)) / 6.0
+        })
+        .sum();
+    assert!((volume - (4.0 + 3.5)).abs() < 1e-12, "{volume}");
+    for scale in SCALES {
+        assert_eq!(all_crossings(&soup.scaled(scale)), [], "scale {scale}");
+        for turn in [0.83, 1.7, 2.9, 4.1] {
+            let by = Transform::rotation(v(0.3, -0.7, 0.4), turn)
+                .unwrap()
+                .then(&Transform::translation(v(0.123, -4.56, 7.89)));
+            let mut mesh = soup.moved(&by);
+            for q in &mut mesh.positions {
+                *q = *q * scale;
+            }
+            // Turned, the four faces are a rounding error out of their
+            // planes: what is found is as deep as that, not as the leg.
+            let deepest = all_crossings(&mesh)
+                .iter()
+                .map(|c| c.depth)
+                .fold(0.0, f64::max);
+            assert!(
+                deepest < 1e-9 * scale,
+                "scale {scale}, turned {turn}: {deepest}"
+            );
+        }
+    }
+    // The same bar pushed a tenth into the leg is a crossing, about a
+    // tenth deep.
+    let mut pushed = bar_on_an_l();
+    let ids = pushed.mesh.face_ids.clone();
+    for (corners, id) in pushed.mesh.positions.chunks_mut(3).zip(ids) {
+        if id >= 8 {
+            for p in corners {
+                *p += v(0.0, -0.1, -0.1);
+            }
+        }
+    }
+    let deepest = all_crossings(&pushed.mesh)
+        .iter()
+        .map(|c| c.depth)
+        .fold(0.0, f64::max);
+    assert!(deepest >= 0.099, "{deepest}");
+}
+
 // ------------------------------------------------------- seeded defects
 
 /// A spike of three faces with its tip at `tip`, pointing down.

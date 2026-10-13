@@ -309,15 +309,17 @@ pub(super) fn curve_hits(
     surface: &Surface,
     tolerance: &Tolerance,
 ) -> Result<CurveIntersection, GeomError> {
-    // TEMPORARY (until the booleans are moved onto geom's intersections
-    // for every kind, in progress): geom is asked only for the pairs it
-    // answered when this module was written, lines, circles and ellipses
-    // against planes and cylinders. For the others its answers are for the
-    // whole curve and differ at the ends of a piece (a hit at an end is a
-    // crossing there, a touch here) and where a curve grazes a surface.
-    let as_before = matches!(surface, Surface::Plane(_) | Surface::Cylinder(_))
+    // Geometry's closed forms are exact, and are asked for where they
+    // exist: lines, circles and ellipses against planes and cylinders.
+    // For every other pair with an analytic surface the roots are isolated
+    // here rather than by geometry's general routine, because what the
+    // booleans need differs from it in two places that decide inside from
+    // outside: the piece is taken as given (a hit at an end of it is a
+    // touch, since the piece does not show a crossing there), and a
+    // stretch near the surface is bounded, never sampled.
+    let exact = matches!(surface, Surface::Plane(_) | Surface::Cylinder(_))
         && !matches!(curve, Curve3::Nurbs(_));
-    if as_before {
+    if exact {
         match intersect_curve_surface(curve, surface, tolerance) {
             Err(GeomError::Unsupported(_) | GeomError::NoConvergence(_)) => {}
             other => return other,

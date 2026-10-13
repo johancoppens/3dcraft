@@ -48,8 +48,13 @@
 //!   triangles together: it is the surface that is followed, not the
 //!   triangle.
 //!
-//! The column is taken a hair wider than `Y` (1e-9 of its size), so that
-//! a surface standing exactly on an edge of `Y` is in it.
+//! The column is taken a hair wider than `Y` (1e-9 of its size) across
+//! every edge of `Y` beyond which the surface around `Y` goes on, so that
+//! a surface standing exactly on such an edge is in it: it passes through
+//! the surface around `Y` between `Y` and its neighbour. Across an edge
+//! where the surface around `Y` turns away square or folds back, and
+//! across a border, the column ends at the edge: what stands there
+//! touches (`Depths::column`).
 //!
 //! For an overlap the depth is how wide the common area of the two
 //! triangles is: twice its area over its perimeter.
@@ -1012,13 +1017,47 @@ struct Depths<'a, 'm> {
 }
 
 impl Depths<'_, '_> {
-    /// The column over triangle `t`, a hair wider than the triangle: what
-    /// stands exactly on one of its edges is inside.
+    /// The column over triangle `t`, a hair wider than the triangle where
+    /// the surface goes on beyond it: what stands exactly on an edge of
+    /// `t` is inside when, seen along the normal of `t`, a neighbour
+    /// continues on the other side of that edge. Then it passes through
+    /// the surface around `t` there, between the two.
+    ///
+    /// Not across an edge where the surface turns away square or folds
+    /// back (seen along the normal, the neighbour does not reach beyond
+    /// the edge), nor across a border: there the column ends a hair
+    /// inside the edge. What stands on such an edge has the surface
+    /// around `t` on one side only: it touches. A body whose
+    /// parts meet along an edge has four faces there, two and two in one
+    /// plane; each lies in the wall of the column over the next, and with
+    /// a hair to spare all round every one of them would pass "through"
+    /// its neighbour by going around its end.
     fn column(&self, t: u32) -> Option<Column> {
-        let [a, b, c] = self.mesh.points(t)?;
+        let corners = self.mesh.points(t)?;
+        let [a, b, c] = corners;
         let size = a.distance(b).max(b.distance(c)).max(c.distance(a));
         let hair = 1e-9 * size + 16.0 * f64::EPSILON * self.mesh.largest;
-        Column::new(&[a, b, c], [-hair; 3])
+        let tight = Column::new(&corners, [0.0; 3])?;
+        let names = self.mesh.names(t);
+        let mut offsets = [0.0; 3];
+        for ((slot, (i, j)), &(on, inward, _)) in offsets.iter_mut().zip(EDGES).zip(&tight.walls) {
+            let (from, to) = (pick(&names, i), pick(&names, j));
+            let goes_on = self.edges.on(from, to).any(|next| {
+                next != t
+                    && self
+                        .mesh
+                        .names(next)
+                        .iter()
+                        .zip(self.mesh.points(next).iter().flatten())
+                        .any(|(&name, &corner)| {
+                            name != from && name != to && (corner - on).dot(inward) < -hair
+                        })
+            });
+            // Out by a hair, or in by one: what lies in the plane of the
+            // wall, to rounding, is then on one side of it for certain.
+            *slot = if goes_on { -hair } else { hair };
+        }
+        Column::new(&corners, offsets)
     }
 
     /// How far the surface around triangle `x` passes through triangle

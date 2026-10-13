@@ -10,7 +10,7 @@ mod boolean_common;
 
 use boolean_common::*;
 use craft3d_geom::Curve3;
-use craft3d_kernel::boolean::{BooleanOp, FaceSource, Operand, approximate_circles, boolean};
+use craft3d_kernel::boolean::{BooleanOp, FaceSource, Operand, boolean};
 use craft3d_kernel::primitives;
 use craft3d_math::{Frame, Vec3};
 use craft3d_topo::{FaceId, genus};
@@ -592,91 +592,159 @@ fn bodies_in_any_position() {
 
 #[test]
 fn curves_that_are_only_approximations() {
-    // The circles in which the surfaces meet, handed over as splines that
-    // stray from them by a good part of the tolerance: the edges made from
-    // them are tolerant edges, and the results are the same bodies within
-    // what the approximation allows.
+    // Pairs of surfaces that meet in curves with no closed form: the edges
+    // made from them are splines within the tolerance of both surfaces.
     for k in SCALES {
-        let (r, h) = (2.0, 0.75);
-        let ball_ = ball(k, [1.0, -0.5, 3.0], r);
-        let above = boxed(k, [-4.0, -4.0, 3.0 + h], [6.0, 5.0, 9.0]);
-        let plate = boxed(k, [0.0, 0.0, 0.0], [4.0, 3.0, 1.0]);
-        let hole = rod(k, [1.5, 1.25, -1.0], 0.75, 3.0);
-        let corner = boxed(k, [1.0, -0.5, 3.0], [5.0, 4.0, 8.0]);
-        // 16 pieces to a circle: within 7e-8 of its radius.
-        approximate_circles(16);
-        let top = boolean(&ball_, &above, Intersect, &tolerance(k));
-        let rest = boolean(&ball_, &above, Subtract, &tolerance(k));
-        let holed = boolean(&plate, &hole, Subtract, &tolerance(k));
-        let eighth = boolean(&ball_, &corner, Intersect, &tolerance(k));
-        let again = boolean(
-            &rest.clone().unwrap().body,
-            &corner,
-            Subtract,
-            &tolerance(k),
-        );
-        approximate_circles(0);
-        let (top, rest, holed, eighth, again) = (
-            top.unwrap(),
-            rest.unwrap(),
-            holed.unwrap(),
-            eighth.unwrap(),
-            again.unwrap(),
-        );
-        let (cap_volume, cap_area) = cap(r, r - h);
-        let disc = PI * (r * r - h * h);
+        let tol = tolerance(k);
         let near = |actual: f64, expected: f64, what: &str| {
-            // The edges are off by 1e-7 of their size, and so are the
-            // integrals over the faces they bound.
+            // An edge off by the tolerance over a size of a few units.
             assert!(
-                (actual - expected).abs() <= 1e-6 * expected.abs(),
-                "{what}: {actual} is not {expected}"
+                (actual - expected).abs() <= 1e-5 * expected.abs(),
+                "{what} at scale {k}: {actual} is not {expected}"
             );
         };
-        for (result, volume, area, expected) in [
-            (&top, cap_volume, cap_area + disc, (1, 1, 2, 1)),
-            (
-                &rest,
-                sphere(r).0 - cap_volume,
-                sphere(r).1 - cap_area + disc,
-                (1, 1, 2, 1),
-            ),
-            (
-                &holed,
-                12.0 - PI * 0.5625,
-                38.0 - 2.0 * PI * 0.5625 + 2.0 * PI * 0.75,
-                (10, 14, 7, 1),
-            ),
-        ] {
-            assert_eq!(craft3d_topo::check(&result.body, &tolerance(k)), []);
-            assert_eq!(counts(result), expected);
-            let m = mass(&result.body);
-            near(m.volume, volume * k * k * k, "volume");
-            near(m.area, area * k * k, "area");
-            assert!(
-                result
-                    .body
-                    .edges
-                    .iter()
-                    .any(|e| matches!(e.curve, Curve3::Nurbs(_)))
-            );
-        }
-        // Cut by three planes through the centre: the splines are cut
-        // where the edges of the block's faces meet the sphere, and the
-        // pieces of three different splines meet in the same vertices.
-        assert_eq!(counts(&eighth), (4, 6, 4, 1));
-        near(
-            mass(&eighth.body).volume,
-            sphere(r).0 / 8.0 * k * k * k,
-            "eighth",
+        let has_spline = |body: &craft3d_topo::Body| {
+            body.edges
+                .iter()
+                .any(|e| matches!(e.curve, Curve3::Nurbs(_)))
+        };
+        // Two cylinders at right angles, the thinner through the thicker:
+        // what they share and what is left add up, and the hole goes
+        // through.
+        let upright = rod(k, [0.0, 0.0, -2.0], 1.0, 4.0);
+        let lying = log(k, [-3.0, 0.0, 0.0], 0.5, 6.0);
+        let common = solve(&upright, &lying, Intersect, k);
+        let less = solve(&upright, &lying, Subtract, k);
+        let both = solve(&upright, &lying, Union, k);
+        assert!(has_spline(&common.body));
+        let (va, vb) = (PI * 4.0, PI * 0.25 * 6.0);
+        let (vc, vl, vu) = (
+            mass(&common.body).volume / (k * k * k),
+            mass(&less.body).volume / (k * k * k),
+            mass(&both.body).volume / (k * k * k),
         );
-        // A body with a spline edge is an operand like any other.
-        assert_eq!(craft3d_topo::check(&again.body, &tolerance(k)), []);
-        let expected = sphere(r).0 - cap_volume - {
-            // The eighth, less the part of the cap that is in it: a
-            // quarter of the cap.
-            sphere(r).0 / 8.0 - cap_volume / 4.0
+        near(vc + vl, va, "common + difference");
+        near(vu + vc, va + vb, "union + common");
+        assert_eq!(genus(&less.body), Some(1));
+        assert_eq!(common.body.shells.len(), 1);
+        // Equal cylinders at right angles: the solid they share has the
+        // volume 16 r³ / 3 and the area 16 r² (Archimedes).
+        let other = log(k, [-3.0, 0.0, 0.0], 1.0, 6.0);
+        let steinmetz = solve(&upright, &other, Intersect, k);
+        let m = mass(&steinmetz.body);
+        near(
+            m.volume,
+            16.0 / 3.0 * k * k * k,
+            "the volume two equal cylinders share",
+        );
+        near(m.area, 16.0 * k * k, "its area");
+        // A plane at a slant through the centre of a ring halves it.
+        let ring_ = ring(k, [0.0, 0.0, 0.0], 3.0, 1.0);
+        let slanted = Frame::new(Vec3::ZERO, Vec3::new(0.1, 0.05, 1.0), Vec3::X).unwrap();
+        let above = primitives::block(
+            &slanted.at(slanted.point(-8.0 * k, -8.0 * k, 0.0)).unwrap(),
+            16.0 * k,
+            16.0 * k,
+            8.0 * k,
+        )
+        .unwrap();
+        // (Refused today: the two curves of the cut go around the ring in
+        // a way its chart cannot be cut open along. Valid or refused,
+        // never wrong.)
+        match boolean(&ring_, &above, Intersect, &tol) {
+            Ok(upper) => {
+                assert_eq!(craft3d_topo::check(&upper.body, &tol), []);
+                near(
+                    mass(&upper.body).volume,
+                    PI * PI * 3.0 * k * k * k,
+                    "half a ring",
+                );
+            }
+            Err(craft3d_kernel::KernelError::Unsupported { .. }) => {}
+            Err(other) => panic!("{other}"),
+        }
+        // A ball through the side of a cylinder, off its axis.
+        let ball_ = ball(k, [0.8, 0.0, 0.0], 0.75);
+        let bite = solve(&upright, &ball_, Subtract, k);
+        let lump = solve(&upright, &ball_, Intersect, k);
+        assert!(has_spline(&bite.body));
+        near(
+            mass(&bite.body).volume + mass(&lump.body).volume,
+            va * k * k * k,
+            "a cylinder in two parts",
+        );
+        // The bitten cylinder is an operand like any other.
+        let slab = boxed(k, [-3.0, -3.0, -0.25], [3.0, 3.0, 0.25]);
+        let slice = solve(&bite.body, &slab, Intersect, k);
+        let whole = solve(&upright, &slab, Intersect, k);
+        let lump_slice = solve(&lump.body, &slab, Intersect, k);
+        near(
+            mass(&slice.body).volume + mass(&lump_slice.body).volume,
+            mass(&whole.body).volume,
+            "a slice of both parts",
+        );
+    }
+}
+
+/// Two cylinders at right angles, placed so that the rim of the lying one
+/// passes through the wall of the upright one exactly where that rim's
+/// circle has its parameter 0 (which is also its parameter 2π).
+///
+/// That crossing was once lost (the sign of the distance was read from two
+/// evaluations of the one point, which differ in the last bit), so the
+/// curve in which the walls meet ran on past the lying cylinder's end
+/// face, hung loose in both walls and was dropped: an invalid body. Found
+/// by the random run as seed 32 on the grid (two slots with holes).
+///
+/// The volume in common is an integral in one variable, done here: over
+/// x, the chord of the lying cylinder's circle in z times the half chord
+/// of the upright one's in y.
+#[test]
+fn a_rim_through_a_wall_at_the_seam_of_its_circle() {
+    // Upright: about z through (0.5, 0.5), radius 0.5. Lying: about the
+    // line x = 1, z = 1 from y = 0.5 to 1.5, radius 0.75.
+    let exact = {
+        let (n, mut sum) = (2_000_000, 0.0);
+        // Midpoints in an angle, which takes the square-root ends smoothly:
+        // x = 0.625 - 0.375 cos s runs from 0.25 to 1.
+        for i in 0..n {
+            let s = PI * (f64::from(i) + 0.5) / f64::from(n);
+            let x = 0.625 - 0.375 * s.cos();
+            let chord = 2.0 * (0.5625 - (x - 1.0) * (x - 1.0)).max(0.0).sqrt();
+            let half = (0.25 - (x - 0.5) * (x - 0.5)).max(0.0).sqrt();
+            sum += chord * half * 0.375 * s.sin();
+        }
+        sum * PI / f64::from(n)
+    };
+    for k in SCALES {
+        let upright = rod(k, [0.5, 0.5, -0.5], 0.5, 2.5);
+        let frame = Frame::new(Vec3::new(1.0, 0.5, 1.0) * k, Vec3::Y, Vec3::Z).unwrap();
+        let lying = primitives::cylinder(&frame, 0.75 * k, k).unwrap();
+        // The seam of the lying cylinder's base circle is on the wall of
+        // the upright one.
+        let seam = frame.point(0.75 * k, 0.0, 0.0);
+        assert!(((seam.x - 0.5 * k).hypot(seam.y - 0.5 * k) - 0.5 * k).abs() < 1e-12 * k);
+        let (va, vb) = (PI * 0.25 * 2.5, PI * 0.5625);
+        let volume = |op, a: &craft3d_topo::Body, b: &craft3d_topo::Body| {
+            mass(&solve(a, b, op, k).body).volume / (k * k * k)
         };
-        near(mass(&again.body).volume, expected * k * k * k, "cut twice");
+        // Spline edges are within the tolerance of the true curves: the
+        // volume is right to the tolerance times the area they bound, and
+        // (until mass properties integrate spline edges exactly) to the
+        // 1e-5 of `curves_that_are_only_approximations`.
+        let near = |actual: f64, expected: f64, what: &str| {
+            assert!(
+                (actual - expected).abs() <= 1e-5 * expected.abs(),
+                "{what} at scale {k}: {actual} is not {expected}"
+            );
+        };
+        near(volume(Intersect, &upright, &lying), exact, "A ∩ B");
+        near(volume(Intersect, &lying, &upright), exact, "B ∩ A");
+        near(volume(Union, &upright, &lying), va + vb - exact, "A ∪ B");
+        near(volume(Subtract, &upright, &lying), va - exact, "A − B");
+        near(volume(Subtract, &lying, &upright), vb - exact, "B − A");
+        let common = solve(&upright, &lying, Intersect, k);
+        assert_eq!(common.body.shells.len(), 1);
+        assert_eq!(genus(&common.body), Some(0));
     }
 }

@@ -40,6 +40,11 @@ pub(crate) fn arc_segments(radius: f64, sweep: f64, params: &TessParams) -> Resu
 /// How deep a piece of a curve is halved before giving up.
 const MAX_DEPTH: u32 = 40;
 
+/// The shortest piece of a spline edge between two knots that is a piece
+/// of its own, as a fraction of the edge's parameter range. A fraction and
+/// not a length: the same edge at another size has the same pieces.
+const SHORTEST_PIECE: f64 = 1e-9;
+
 /// Points along `curve` from `t0` to `t1`, between the given end points,
 /// by halving pieces until each chord is within the tolerance.
 ///
@@ -281,9 +286,18 @@ pub(crate) fn edge_points(body: &Body, params: &TessParams) -> Result<EdgeSample
             }
             Curve3::Nurbs(c) => {
                 let mut breaks = vec![t0];
+                // A knot is a break when it is inside the range by more
+                // than rounding. One that is not (an edge cut from a spline
+                // at a knot, whose range starts a few units in the last
+                // place before it) would make a piece too short to have a
+                // length: two points of the edge that no face can tell
+                // apart. Left out, it lies within `SHORTEST_PIECE` of an
+                // end of a piece, where it cannot bend the piece away from
+                // what is measured at its quarters.
+                let shortest = SHORTEST_PIECE * (t1 - t0);
                 for &knot in c.knots() {
-                    let after_last = breaks.last().is_some_and(|last| knot > *last);
-                    if after_last && knot < t1 {
+                    let after_last = breaks.last().is_some_and(|last| knot - *last > shortest);
+                    if after_last && t1 - knot > shortest {
                         breaks.push(knot);
                     }
                 }

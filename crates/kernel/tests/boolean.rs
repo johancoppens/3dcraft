@@ -560,34 +560,9 @@ fn what_is_not_supported_says_so() {
     assert!(why.contains("freeform"), "{why}");
     assert_eq!(faces, [(Operand::A, FaceId(1))]);
     assert!(reason(&ball, &patched, Subtract).0.contains("freeform"));
-    // Crossing cylinders: until the general surface intersection is in.
-    let upright = rod(k, [0.0, 0.0, -2.0], 1.0, 4.0);
-    let lying = primitives::cylinder(
-        &Frame::new(Vec3::new(-2.0, 0.0, 0.0), Vec3::X, Vec3::Y).unwrap(),
-        0.5,
-        4.0,
-    )
-    .unwrap();
-    let (why, faces) = reason(&upright, &lying, Union);
-    assert!(why.contains("not parallel"), "{why}");
-    assert_eq!(faces, [(Operand::A, FaceId(0)), (Operand::B, FaceId(0))]);
-    // Likewise a cone cut by a plane along its axis but not through it
-    // (a hyperbola), and a ball through the side of a cylinder.
-    let cone = primitives::cone(
-        &Frame::WORLD.at(Vec3::new(0.5, 1.5, 0.0)).unwrap(),
-        1.0,
-        2.0,
-    )
-    .unwrap();
-    let (why, _) = reason(&plate, &cone, Union);
-    assert!(why.contains("not a line or a circle"), "{why}");
-    let side =
-        primitives::sphere(&Frame::WORLD.at(Vec3::new(1.0, 0.0, 0.0)).unwrap(), 0.75).unwrap();
-    assert!(
-        reason(&upright, &side, Subtract)
-            .0
-            .contains("not a line or a circle")
-    );
+    // (Until the general surface intersection came in, crossing cylinders,
+    // a cone cut along its axis and a ball through the side of a cylinder
+    // were refused here. See boolean_surfaces.rs.)
     // Features below the tolerance.
     let nearly = boxed(k, [4.0 - 1.2e-6, 0.0, 0.0], [6.0, 3.0, 2.0]);
     assert!(
@@ -676,13 +651,13 @@ fn what_is_not_supported_says_so() {
         }
     }
     // The message names the faces.
-    let message = boolean(&upright, &lying, Union, &tol)
+    let message = boolean(&patched, &ball, Union, &tol)
         .unwrap_err()
         .to_string();
-    assert_eq!(
-        message,
-        "boolean does not support this: cylinders whose axes are not parallel (the intersection \
-         is a quartic curve) (face 0 of the first body, face 0 of the second body)"
+    assert!(
+        message.starts_with("boolean does not support this: a freeform")
+            && message.ends_with("(face 1 of the first body)"),
+        "{message}"
     );
     let diagonal = boxed(k, [4.0, 3.0, 0.0], [5.0, 4.0, 2.0]);
     assert_eq!(
@@ -866,6 +841,49 @@ fn a_thousand_faces() {
         side * side - (n * n) as f64 * PI * 0.25 + 5.0 * side,
         "volume",
     );
+}
+
+/// Timing with two bodies of more than a thousand faces each: two plates
+/// with 32 by 32 holes, the second half a plate's thickness higher and
+/// shifted by a third of the distance between holes, so that every hole
+/// of one crosses the walls of holes of the other.
+#[test]
+#[ignore = "a benchmark; run in release"]
+fn two_bodies_of_a_thousand_faces() {
+    let n = 32;
+    let lower = drilled(n, 1.0, false);
+    let side = 2.0 * n as f64;
+    let mut upper = boxed(1.0, [0.7, 0.7, 0.5], [side + 0.7, side + 0.7, 1.5]);
+    for i in 0..n {
+        for j in 0..n {
+            let cutter = rod(
+                1.0,
+                [2.0 * i as f64 + 1.7, 2.0 * j as f64 + 1.7, 0.0],
+                0.5,
+                2.0,
+            );
+            upper = solve(&upper, &cutter, Subtract, 1.0).body;
+        }
+    }
+    let volume = side * side - (n * n) as f64 * PI * 0.25;
+    for op in [Union, Intersect, Subtract] {
+        let start = std::time::Instant::now();
+        let result = boolean(&lower, &upper, op, &tolerance(1.0));
+        let took = start.elapsed();
+        match result {
+            Ok(result) => {
+                println!(
+                    "{op:?} of two plates of {} and {} faces: {took:?} ({} faces, volume {})",
+                    lower.faces.len(),
+                    upper.faces.len(),
+                    result.body.faces.len(),
+                    mass(&result.body).volume
+                );
+                assert!(mass(&result.body).volume < 2.0 * volume);
+            }
+            Err(e) => println!("{op:?} of two plates: {took:?}, {e}"),
+        }
+    }
 }
 
 #[test]

@@ -24,7 +24,7 @@
 //! out.
 
 use super::chart::{About, Chart, TOO_CLOSE};
-use super::outline::{Seg, left_of, outward_normal};
+use super::outline::{Seg, boxes, left_of, outward_normal};
 use super::{Arc, Reason};
 use craft3d_geom::Surface;
 use craft3d_math::{Frame, Vec3};
@@ -37,6 +37,15 @@ pub(super) type Half = (usize, bool);
 /// Directions closer together than this (radians) at a vertex cannot be
 /// put in order reliably.
 const ANGLE_GUARD: f64 = 1e-6;
+
+/// Directions closer together than this (radians) at a vertex are not
+/// trusted to be in the right order as they stand: an intersection curve
+/// is only within the tolerance of the curve it stands for, and where it
+/// arrives along another curve (the curve of two cylinders that touches a
+/// rim at its highest point) its direction at its very end may be off to
+/// the wrong side by more than `ANGLE_GUARD`. Such curves are put in order
+/// a little further along, where the tolerance no longer decides.
+const TIE: f64 = 1e-3;
 
 const TANGENT: Reason = "two curves leave a point in the same direction and stay together (tangent contact of higher order)";
 const LOST: Reason = "an imprinted face could not be divided into regions; this is a bug";
@@ -230,7 +239,7 @@ fn trace(
                     let here = fan.get(i).map_or(0.0, |&r| angle(r));
                     let next = fan.get((i + 1) % count).map_or(0.0, |&r| angle(r));
                     let gap = wrap(next - here);
-                    gap < ANGLE_GUARD || gap > TAU - ANGLE_GUARD
+                    gap < TIE || gap > TAU - TIE
                 })
                 .collect();
             if tied.iter().any(|&t| t) {
@@ -319,7 +328,9 @@ fn trace(
 }
 
 /// The regions of a face: each a list of loops, the outer boundary first
-/// (when the region has one), then the holes.
+/// (when the region has one), then the holes. And the imprinted arcs that
+/// were dropped because they divide nothing.
+#[allow(clippy::type_complexity)]
 pub(super) fn build(
     surface: &Surface,
     reversed: bool,
@@ -328,8 +339,9 @@ pub(super) fn build(
     arcs: &[Arc],
     points: &[Vec3],
     tol: f64,
-) -> Result<Vec<Vec<Vec<Half>>>, Reason> {
+) -> Result<(Vec<Vec<Vec<Half>>>, BTreeSet<usize>), Reason> {
     let mut interior = interior.clone();
+    let mut dropped = BTreeSet::new();
     for _ in 0..=interior.len() {
         let loops = trace(surface, reversed, boundary, &interior, arcs, points, tol)?;
         // An imprinted arc that a loop runs along both ways has the same
@@ -357,11 +369,12 @@ pub(super) fn build(
                 slits.append(&mut twice(region));
             }
             if slits.is_empty() {
-                return Ok(regions);
+                return Ok((regions, dropped));
             }
         }
         for slit in slits {
             interior.remove(&slit);
+            dropped.insert(slit);
         }
     }
     Err(LOST)
@@ -396,7 +409,16 @@ fn group(
             Err(UNBOUNDED)
         };
     }
+    let all_boxes = boxes(&all);
+    let flat = matches!(surface, Surface::Plane(_));
     let around = |loop_: usize, about: About| -> Result<bool, Reason> {
+        // In a plane a loop does not go around a point outside its box.
+        if let About::Point(p) = about
+            && flat
+            && !all_boxes.around(loop_, p, tol)
+        {
+            return Ok(false);
+        }
         let segs = all.get(loop_).ok_or(LOST)?;
         match chart.winding([segs.as_slice()], about)? {
             0 => Ok(false),
@@ -407,7 +429,7 @@ fn group(
     let mut measured = Vec::with_capacity(loops.len());
     for (index, halves) in loops.into_iter().enumerate() {
         let own = all.get(index).ok_or(LOST)?;
-        let witness = left_of(surface, reversed, &all, own, 4.0 * tol)?;
+        let witness = left_of(surface, reversed, &all, &all_boxes, own, 4.0 * tol)?;
         measured.push(Measured {
             halves,
             witness,
@@ -503,4 +525,68 @@ fn group(
         out.push(loops);
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::boolean::{EdgeSource, Operand};
+    use craft3d_geom::{Curve3, Line, Plane};
+    use craft3d_topo::EdgeId;
+
+    fn arc(points: &[Vec3], start: usize, end: usize) -> Arc {
+        let (a, b) = (points[start], points[end]);
+        Arc {
+            curve: Curve3::Line(Line::through(a, b).unwrap()),
+            range: (0.0, a.distance(b)),
+            start,
+            end,
+            source: EdgeSource::Kept {
+                operand: Operand::A,
+                edge: EdgeId(0),
+            },
+        }
+    }
+
+    /// A square with one more arc from a corner: to the opposite corner it
+    /// divides the square in two; to the middle it divides nothing, is
+    /// dropped, and is reported as dropped (which is how a curve along
+    /// which two faces cross, and of which a piece is missing, is caught).
+    #[test]
+    fn an_arc_that_divides_nothing_is_dropped_and_reported() {
+        let points = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(2.0, 0.0, 0.0),
+            Vec3::new(2.0, 2.0, 0.0),
+            Vec3::new(0.0, 2.0, 0.0),
+            Vec3::new(1.5, 0.5, 0.0),
+        ];
+        let surface = Surface::Plane(Plane::new(Frame::WORLD));
+        let rim: Vec<Half> = (0..4).map(|i| (i, false)).collect();
+        let mut arcs: Vec<Arc> = (0..4).map(|i| arc(&points, i, (i + 1) % 4)).collect();
+        arcs.push(arc(&points, 0, 2));
+        arcs.push(arc(&points, 1, 4));
+        let build = |interior: &[usize]| {
+            build(
+                &surface,
+                false,
+                std::slice::from_ref(&rim),
+                &interior.iter().copied().collect(),
+                &arcs,
+                &points,
+                1e-6,
+            )
+            .unwrap()
+        };
+        let (regions, dropped) = build(&[4]);
+        assert_eq!(regions.len(), 2);
+        assert!(dropped.is_empty());
+        let (regions, dropped) = build(&[5]);
+        assert_eq!(regions, vec![vec![rim.clone()]]);
+        assert_eq!(dropped, BTreeSet::from([5]));
+        // Both: the diagonal divides, the spur into one half does not.
+        let (regions, dropped) = build(&[4, 5]);
+        assert_eq!(regions.len(), 2);
+        assert_eq!(dropped, BTreeSet::from([5]));
+    }
 }

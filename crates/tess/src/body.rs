@@ -47,14 +47,16 @@
 //! The points of an edge are chosen for its curve alone, but a face may
 //! need more of them: where another edge of the face comes nearer than
 //! the chordal tolerance (the chords would cross it), and where the
-//! surface's parameters distort the chord (near a pole). Faces say so
+//! surface's parameters distort the chord (near a pole), and where the
+//! face is so narrow that its loops, as polygons, enclose nothing (a
+//! sliver between a line and an arc flatter than the tolerance). Faces say so
 //! before they are triangulated, the chords they name are cut in two for
 //! every face that uses the edge, and the faces concerned are done again:
 //! a bounded number of rounds, each the same for any number of threads
 //! (see `tessellate` below).
 
 use crate::edge::{EdgeSamples, edge_points};
-use crate::face::{Chord, FaceMesh, face_boundary, mesh_face};
+use crate::face::{Chord, FaceMesh, curved_chords, face_boundary, mesh_face};
 use crate::{Mesh, TessError, TessParams};
 use craft3d_geom::{Curve3, Surface};
 use craft3d_math::Vec3;
@@ -218,9 +220,22 @@ fn tessellate(
             let Some(face) = body.faces.get(index) else {
                 return (Vec::new(), None);
             };
-            let boundary = match face_boundary(body, points, face, index, params) {
+            let mut starved = false;
+            let boundary = match face_boundary(body, points, face, index, params, &mut starved) {
                 Ok(boundary) => boundary,
-                Err(error) => return (Vec::new(), Some(Err(error))),
+                Err(error) => {
+                    // Loops that enclose nothing as polygons: finer chords
+                    // may give them something to enclose. All the face's
+                    // curved chords are asked for; the error stands when
+                    // there are none, and in the last round.
+                    let wanted = if starved && !last {
+                        curved_chords(body, points, face)
+                    } else {
+                        Vec::new()
+                    };
+                    let result = wanted.is_empty().then_some(Err(error));
+                    return (wanted, result);
+                }
             };
             let wanted = boundary.chords_to_refine(body, tolerance);
             let result = (mesh && (last || wanted.is_empty()))

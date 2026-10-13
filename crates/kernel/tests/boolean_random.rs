@@ -314,12 +314,58 @@ fn sampled_overlap(a: &Shape, b: &Shape, rng: &mut Rng) -> (f64, f64) {
         }
     }
     let fraction = inside as f64 / SAMPLES as f64;
-    let deviation = (fraction * (1.0 - fraction) / SAMPLES as f64).sqrt();
-    // With no sample inside the overlap may still be a sliver.
+    // Five standard deviations, by the interval of Agresti and Coull: the
+    // deviation is taken at the fraction with z²/2 hits and z² samples
+    // added (z = 5), not at the fraction counted. Counted, it is zero
+    // when no sample hits, and an overlap that 6 of 3000 samples should
+    // have hit goes unhit once in four hundred pairs: seed 2000331 of the
+    // long run with every shape (two rings sharing 0.325 of a cell of
+    // 164; a hundred times the samples give 0.314 ± 0.013).
+    const Z: f64 = 5.0;
+    let samples = SAMPLES as f64 + Z * Z;
+    let middle = (inside as f64 + 0.5 * Z * Z) / samples;
+    let deviation = (middle * (1.0 - middle) / samples).sqrt();
     (
         cell * fraction,
-        cell * (5.0 * deviation + 5.0 / SAMPLES as f64),
+        cell * (Z * deviation + (middle - fraction).abs()),
     )
+}
+
+/// How far the volume and the area of a body may be off because its
+/// spline edges are only within the tolerance of the curves they stand
+/// for: the tolerance times the area of the faces they bound (here: of the
+/// whole body) for the volume, and times the length of those edges for
+/// the area. Nothing for a body without spline edges.
+fn spline_slack(body: &Body, k: f64) -> (f64, f64) {
+    let tol = 1e-6 * k;
+    let mut length = 0.0;
+    for edge in &body.edges {
+        if matches!(edge.curve, craft3d_geom::Curve3::Nurbs(_)) {
+            let (t0, t1) = edge.range;
+            let mut previous = edge.curve.eval(t0);
+            for i in 1..=64 {
+                let p = edge.curve.eval(t0 + (t1 - t0) * f64::from(i) / 64.0);
+                length += p.distance(previous);
+                previous = p;
+            }
+        }
+    }
+    if length == 0.0 {
+        return (0.0, 0.0);
+    }
+    let area = mass_properties(body).map_or(0.0, |m| m.area);
+    (4.0 * tol * area, 4.0 * tol * length)
+}
+
+/// The sum of a hash of every result so far: see the corpus test. (Run
+/// one test at a time to compare two builds by it.)
+static DIGEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn digest(result: &craft3d_kernel::boolean::BooleanResult) {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    format!("{result:?}").hash(&mut hasher);
+    DIGEST.fetch_add(hasher.finish(), std::sync::atomic::Ordering::Relaxed);
 }
 
 /// The volume of a boolean; 0 when it is empty; `Err` with the reason when
@@ -334,6 +380,7 @@ fn volume_of(
     let tol = tolerance(k);
     match boolean(a, b, op, &tol) {
         Ok(result) => {
+            digest(&result);
             assert_eq!(check(&result.body, &tol), [], "{what}: {op:?}");
             assert_eq!(result.faces.len(), result.body.faces.len(), "{what}");
             assert_eq!(result.edges.len(), result.body.edges.len(), "{what}");
@@ -346,7 +393,10 @@ fn volume_of(
             // Merging changes how the solid is divided into faces, not
             // the solid: without it the same volume, area and genus, and
             // never fewer faces, edges or vertices.
-            let plain = BooleanOptions { merge: false };
+            let plain = BooleanOptions {
+                merge: false,
+                ..BooleanOptions::default()
+            };
             match boolean_with(a, b, op, &tol, &plain) {
                 Ok(unmerged) => {
                     assert_eq!(
@@ -358,9 +408,29 @@ fn volume_of(
                         Ok(u) => u,
                         Err(e) => panic!("{what}: {op:?}, not merged: mass properties: {e}"),
                     };
+                    // `mass_properties` integrates a piece of a cone or a
+                    // sphere numerically, to about 1e-9 of the body: a
+                    // cone of radius 1 and height 2 (seed 33 on the grid,
+                    // every shape, scale 0.001, which a ring touches
+                    // along a circle) has π r² h / 3 to 5e-16 as one
+                    // face and to 1.003e-9 as the two faces that circle
+                    // divides it into before merging, although the
+                    // circle lies on the cone to rounding. So 1e-8 where
+                    // the unmerged body has such a face; 1e-9 everywhere
+                    // else.
+                    let integrated = unmerged.body.faces.iter().any(|f| {
+                        matches!(
+                            f.surface,
+                            craft3d_geom::Surface::Sphere(_) | craft3d_geom::Surface::Cone(_)
+                        )
+                    });
+                    let exact = if integrated { 1e-8 } else { 1e-9 };
                     assert!(
-                        (u.volume - m.volume).abs() <= 1e-9 * m.volume
-                            && (u.area - m.area).abs() <= 1e-9 * m.area,
+                        // (The splines may be among what merging removes.)
+                        (u.volume - m.volume).abs()
+                            <= exact * m.volume + spline_slack(&unmerged.body, k).0
+                            && (u.area - m.area).abs()
+                                <= exact * m.area + spline_slack(&unmerged.body, k).1,
                         "{what}: {op:?}: merging changed volume {} to {} or area {} to {}",
                         u.volume,
                         m.volume,
@@ -436,9 +506,17 @@ fn run_pair(seed: u64, placement: Placement, k: f64, shapes: Shapes, tally: &mut
         panic!("{what}: six results");
     };
     let unit = va.max(vb);
+    // Where an edge is a spline (the surfaces meet in a curve without a
+    // closed form), it is within the tolerance of the true curve, and the
+    // identities hold to that: see `spline_slack`.
+    let slack = results
+        .iter()
+        .filter_map(|r| r.2.as_ref())
+        .map(|body| spline_slack(body, k))
+        .fold((0.0_f64, 0.0_f64), |a, b| (a.0.max(b.0), a.1.max(b.1)));
     let close = |x: f64, y: f64, name: &str| {
         assert!(
-            (x - y).abs() <= 1e-9 * unit,
+            (x - y).abs() <= 1e-9 * unit + slack.0,
             "{what}: {name}: {x} is not {y}"
         );
     };
@@ -458,7 +536,7 @@ fn run_pair(seed: u64, placement: Placement, k: f64, shapes: Shapes, tally: &mut
         let unit = aa.max(ab);
         let close = |x: f64, y: f64, name: &str| {
             assert!(
-                (x - y).abs() <= 1e-9 * unit,
+                (x - y).abs() <= 1e-9 * unit + slack.1,
                 "{what}: {name}: {x} is not {y}"
             );
         };
@@ -541,6 +619,10 @@ fn hunt(pairs_per_cell: u64, first_seed: u64, shapes: Shapes) {
             );
         }
     }
+    println!(
+        "digest of all results: {:016x}",
+        DIGEST.load(std::sync::atomic::Ordering::Relaxed)
+    );
 }
 
 #[test]
@@ -559,7 +641,12 @@ fn random_pairs_with_cones_balls_and_rings_satisfy_the_identities() {
 #[test]
 #[ignore = "a tool for reproducing one pair of a run"]
 fn one_pair() {
-    let spec = std::env::var("BOOLEAN_PAIR").unwrap_or_default();
+    // Not asked for (the long runs are started with `--ignored`, which
+    // starts this too): nothing to look at, and nothing wrong.
+    let Ok(spec) = std::env::var("BOOLEAN_PAIR") else {
+        println!("one_pair: BOOLEAN_PAIR is not set, nothing to do");
+        return;
+    };
     let fields: Vec<f64> = spec
         .split_whitespace()
         .filter_map(|f| f.parse().ok())
@@ -581,10 +668,14 @@ fn one_pair() {
     let describe =
         |name: &str, r: &Result<craft3d_kernel::boolean::BooleanResult, KernelError>| match r {
             Ok(r) => println!(
-                "{name}: {:?}, {} faces, {} shells",
+                "{name}: {:?}, {} faces, {} shells, {} edges, {} vertices, {} loops, genus {:?}",
                 mass_properties(&r.body),
                 r.body.faces.len(),
-                r.body.shells.len()
+                r.body.shells.len(),
+                r.body.edges.len(),
+                r.body.vertices.len(),
+                r.body.faces.iter().map(|f| f.loops.len()).sum::<usize>(),
+                genus(&r.body)
             ),
             Err(e) => println!("{name}: {e}"),
         };
@@ -617,7 +708,10 @@ fn one_pair() {
     println!("A ∩ B by sampling: {}", total / 100.0);
     let less = boolean(&a.body, &b.body, Subtract, &tol);
     let common = boolean(&a.body, &b.body, Intersect, &tol);
-    let plain = craft3d_kernel::boolean::BooleanOptions { merge: false };
+    let plain = craft3d_kernel::boolean::BooleanOptions {
+        merge: false,
+        ..BooleanOptions::default()
+    };
     describe(
         "A ∪ B, not merged",
         &craft3d_kernel::boolean::boolean_with(&a.body, &b.body, Union, &tol, &plain),
@@ -626,7 +720,56 @@ fn one_pair() {
         "A ∩ B, not merged",
         &craft3d_kernel::boolean::boolean_with(&a.body, &b.body, Intersect, &tol, &plain),
     );
+    describe(
+        "B ∪ A, not merged",
+        &craft3d_kernel::boolean::boolean_with(&b.body, &a.body, Union, &tol, &plain),
+    );
+    describe("B ∪ A", &boolean(&b.body, &a.body, Union, &tol));
     describe("A ∪ B", &boolean(&a.body, &b.body, Union, &tol));
+    // `BOOLEAN_FACE=n`: the boundary of face n of the union, edge by edge.
+    if let (Some(face), Ok(union)) = (
+        std::env::var("BOOLEAN_FACE")
+            .ok()
+            .and_then(|f| f.parse::<usize>().ok()),
+        boolean(&a.body, &b.body, Union, &tol),
+    ) && let Some(f) = union.body.faces.get(face)
+    {
+        println!("face {face} of A ∪ B: {:?}", f.surface);
+        for &id in &f.loops {
+            println!("  loop");
+            for coedge in &union.body.loop_(id).unwrap().coedges {
+                let edge = union.body.edge(coedge.edge).unwrap();
+                let (from, to) = (
+                    union.body.vertex(edge.start).unwrap().point,
+                    union.body.vertex(edge.end).unwrap().point,
+                );
+                let off = |p: Vec3| {
+                    let (u, v) = f.surface.project(p).unwrap();
+                    f.surface.eval(u, v).distance(p)
+                };
+                println!(
+                    "    edge {} {} {} {:?} from {:?} ({:?}) to {:?} ({:?}), ends off the curve by {:e} and {:e}, off the surface by {:e} and {:e}; {:?}",
+                    coedge.edge.0,
+                    if coedge.reversed {
+                        "reversed"
+                    } else {
+                        "forward"
+                    },
+                    edge.curve.kind(),
+                    edge.range,
+                    edge.start,
+                    from,
+                    edge.end,
+                    to,
+                    edge.curve.eval(edge.range.0).distance(from),
+                    edge.curve.eval(edge.range.1).distance(to),
+                    off(from),
+                    off(to),
+                    union.edges[coedge.edge.0 as usize]
+                );
+            }
+        }
+    }
     describe("A − B", &less);
     describe("A ∩ B", &common);
     describe("B − A", &boolean(&b.body, &a.body, Subtract, &tol));
@@ -665,4 +808,47 @@ fn random_pairs_long_run() {
 #[ignore = "thousands of pairs; run in release"]
 fn random_pairs_with_every_shape_long_run() {
     hunt(1500, 2_000_000, Shapes::All);
+}
+
+/// Pairs of the runs that once went wrong, each with what it was.
+///
+/// - Seed 32 on the grid: two slots with holes whose round ends cross at
+///   right angles. A rim met a wall exactly at the seam of its circle and
+///   the crossing was lost: an invalid body.
+/// - Seeds 1000568, 1000735, 1000810, 1001320 and 1001488 on the grid,
+///   and 87 with every shape: a cylinder that lies against the plane of
+///   another cylinder's rim, so that the curve in which the two walls meet
+///   touches that rim at its highest point. The curve is a spline within
+///   the tolerance of the true one, and at its very end its direction was
+///   off to the wrong side of the rim by a few millionths of a radian:
+///   "an imprinted face could not be divided into regions".
+/// - Seed 2000516 with every shape: a cone whose apex lies on a ball. The
+///   curve in which they meet is a loop that begins and ends at the apex;
+///   its two ends were taken for one cut, no stretch was left, and the
+///   bodies were said to have nothing in common (the sampled overlap
+///   caught it).
+#[test]
+fn pairs_that_once_went_wrong() {
+    for k in SCALES {
+        for (seed, shapes) in [
+            (32, Shapes::Flat),
+            (1_000_568, Shapes::Flat),
+            (1_000_735, Shapes::Flat),
+            (1_000_810, Shapes::Flat),
+            (1_001_320, Shapes::Flat),
+            (1_001_488, Shapes::Flat),
+            (87, Shapes::All),
+            (2_000_516, Shapes::All),
+        ] {
+            let mut tally = Tally::default();
+            run_pair(seed, Placement::Grid, k, shapes, &mut tally);
+            assert_eq!(
+                (tally.solved, tally.unsupported.len()),
+                (1, 0),
+                "seed {seed} at scale {k}: {:?}",
+                tally.unsupported
+            );
+            assert_eq!(tally.overlapping, 1, "seed {seed} at scale {k}");
+        }
+    }
 }
