@@ -29,15 +29,16 @@
 //! `Outline::infinite`).
 
 use super::Reason;
+use super::freeform::{IRREGULAR, PatchTree, RATIONAL};
 use super::hits::speed_bound;
-use super::outline::Seg;
+use super::outline::{Seg, Sheet};
 use craft3d_geom::{Curve3, Surface};
 use craft3d_math::{Frame, Vec3};
 use std::f64::consts::{PI, TAU};
+use std::sync::Arc;
 
 pub(super) const TOO_CLOSE: Reason =
     "a point too close to a face boundary to tell inside from outside (at the edge of tolerance)";
-const FREEFORM: Reason = "a freeform (Bézier or NURBS) face; booleans handle planes, cylinders, cones, spheres and tori so far";
 const NO_POLE: Reason =
     "a face on a sphere whose boundary comes close to every point tried as a centre of projection";
 const NO_CUT: Reason = "a face on a torus whose boundary crosses every circle around its axis and every circle around its tube";
@@ -80,6 +81,13 @@ pub(super) enum Chart {
         major: f64,
         minor: f64,
         cut: f64,
+    },
+    /// A freeform surface: its own parameters are the chart, found by the
+    /// nearest point through its index. `speed` bounds how fast they
+    /// change per length travelled on the surface.
+    Patch {
+        tree: Arc<PatchTree>,
+        speed: f64,
     },
 }
 
@@ -150,7 +158,8 @@ fn widest_gap(mut covered: Vec<(f64, f64)>) -> Option<(f64, f64)> {
 
 impl Chart {
     /// A chart of `surface` for telling the inside of `loops`.
-    pub(super) fn new(surface: &Surface, loops: &[Vec<Seg>]) -> Result<Chart, Reason> {
+    pub(super) fn new(sheet: Sheet, loops: &[Vec<Seg>]) -> Result<Chart, Reason> {
+        let surface = sheet.surface;
         Ok(match surface {
             Surface::Plane(s) => Chart::Plane(*s.frame()),
             Surface::Cylinder(s) => Chart::Cylinder {
@@ -256,7 +265,17 @@ impl Chart {
                     _ => return Err(NO_CUT),
                 }
             }
-            Surface::Bezier(_) | Surface::Nurbs(_) => return Err(FREEFORM),
+            Surface::Bezier(_) | Surface::Nurbs(_) => {
+                let tree = sheet.tree.ok_or(IRREGULAR)?;
+                if !tree.is_polynomial() {
+                    return Err(RATIONAL);
+                }
+                let speed = tree.parameter_speed().ok_or(IRREGULAR)?;
+                Chart::Patch {
+                    tree: Arc::clone(tree),
+                    speed,
+                }
+            }
         })
     }
 
@@ -295,6 +314,9 @@ impl Chart {
                 let reach = 1.0 + wrap(v - cut) / TAU;
                 (reach * u.cos(), reach * u.sin())
             }
+            Chart::Patch { tree, .. } => {
+                tree.nearest(p).map_or((f64::NAN, f64::NAN), |n| (n.u, n.v))
+            }
             Chart::Cylinder { .. } | Chart::Sphere { .. } => (0.0, 0.0),
         }
     }
@@ -320,6 +342,11 @@ impl Chart {
                 at: self.coordinates(q),
                 q,
                 lipschitz: 1.0,
+            },
+            Chart::Patch { speed, .. } => Target {
+                at: self.coordinates(q),
+                q,
+                lipschitz: *speed,
             },
             Chart::Cylinder { frame, radius } => {
                 let (x, y, z) = frame.local(q);
@@ -365,7 +392,11 @@ impl Chart {
     /// to a positive factor; zero only when they are the same point.
     fn direction(&self, target: &Target, p: Vec3) -> (f64, f64) {
         match self {
-            Chart::Plane(_) | Chart::Cone(_) | Chart::Tube { .. } | Chart::Ring { .. } => {
+            Chart::Plane(_)
+            | Chart::Cone(_)
+            | Chart::Tube { .. }
+            | Chart::Ring { .. }
+            | Chart::Patch { .. } => {
                 let (x, y) = self.coordinates(p);
                 (x - target.at.0, y - target.at.1)
             }

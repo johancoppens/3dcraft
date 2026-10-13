@@ -48,6 +48,7 @@
 
 mod chart;
 mod classify;
+mod freeform;
 mod hits;
 mod merge;
 mod outline;

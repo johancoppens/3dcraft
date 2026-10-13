@@ -56,7 +56,7 @@ pub(super) fn inside(solid: &Solid, p: Vec3, tolerance: &Tolerance) -> Result<bo
         if !box_.contains(p, 2.0 * tol) {
             continue;
         }
-        let near = signed_distance(&outline.surface, p).is_some_and(|d| d.abs() < 2.0 * tol);
+        let near = signed_distance(outline.sheet(), p).is_some_and(|d| d.abs() < 2.0 * tol);
         if near && let Ok((u, v)) = outline.surface.project(p) {
             let named = [solid.name(face)];
             let foot = outline.surface.eval(u, v);
@@ -92,7 +92,7 @@ pub(super) fn inside(solid: &Solid, p: Vec3, tolerance: &Tolerance) -> Result<bo
             let leave = leave + 16.0 * tol + 0.01 * (leave - enter.max(from));
             let named = [solid.name(face)];
             let side = |q: Vec3| outline.side(q, tol).map_err(|r| Stop::of(r).at(&named));
-            let hits = match curve_hits(&ray, (from, leave), &outline.surface, tolerance)
+            let hits = match curve_hits(&ray, (from, leave), outline.sheet(), tolerance)
                 .map_err(|e| geometry(e, &named))?
             {
                 CurveIntersection::OnSurface => continue 'rays,
@@ -243,7 +243,7 @@ pub(super) fn select(
             vec![loops]
         } else {
             let (regions, dropped) = regions::build(
-                &outline.surface,
+                outline.sheet(),
                 outline.reversed,
                 &loops,
                 across,
@@ -277,7 +277,8 @@ pub(super) fn select(
                             .map_err(|r| Stop::of(r).at(&named))?,
                     );
                 }
-                made = Outline::new(outline.surface.clone(), outline.reversed, segs, 4.0 * tol)
+                made = outline
+                    .piece(segs, 4.0 * tol)
                     .map_err(|r| Stop::of(r).at(&named))?;
                 &made
             };

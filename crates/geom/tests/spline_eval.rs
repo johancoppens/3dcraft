@@ -60,9 +60,12 @@ mod old {
         };
         let knot = |i: usize| knots.get(i).copied().unwrap_or(0.0);
         let (start, end) = domain_of(knots, degree);
-        let t = if t > start { t.min(end) } else { start };
+        // The end span continues beyond the domain (as the crate does since
+        // 2026-10-13; before, the parameter was clamped).
+        let inside = if t > start { t.min(end) } else { start };
+        let t = if t.is_nan() { start } else { t };
         let span = knots
-            .partition_point(|&k| k <= t)
+            .partition_point(|&k| k <= inside)
             .saturating_sub(1)
             .clamp(degree, ctrl.len().saturating_sub(1));
         let first = span - degree;
@@ -114,9 +117,9 @@ mod old {
         let (inner, points) = hodograph(knots, degree, ctrl);
         if degree == 1 {
             let (start, end) = domain_of(knots, degree);
-            let t = if t > start { t.min(end) } else { start };
+            let inside = if t > start { t.min(end) } else { start };
             let span = knots
-                .partition_point(|&k| k <= t)
+                .partition_point(|&k| k <= inside)
                 .saturating_sub(1)
                 .clamp(1, ctrl.len().saturating_sub(1));
             return points.get(span - 1).copied().unwrap_or(H {

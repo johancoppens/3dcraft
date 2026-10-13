@@ -24,7 +24,7 @@
 //! out.
 
 use super::chart::{About, Chart, TOO_CLOSE};
-use super::outline::{Seg, boxes, left_of, outward_normal};
+use super::outline::{Seg, Sheet, boxes, left_of, outward_normal};
 use super::{Arc, Reason};
 use craft3d_geom::Surface;
 use craft3d_math::{Frame, Vec3};
@@ -161,7 +161,7 @@ fn untie(
 
 /// The loops of the map: every use of an arc in exactly one.
 fn trace(
-    surface: &Surface,
+    surface: Sheet,
     reversed: bool,
     boundary: &[Vec<Half>],
     interior: &BTreeSet<usize>,
@@ -332,7 +332,7 @@ fn trace(
 /// were dropped because they divide nothing.
 #[allow(clippy::type_complexity)]
 pub(super) fn build(
-    surface: &Surface,
+    surface: Sheet,
     reversed: bool,
     boundary: &[Vec<Half>],
     interior: &BTreeSet<usize>,
@@ -389,7 +389,7 @@ struct Measured {
 }
 
 fn group(
-    surface: &Surface,
+    surface: Sheet,
     reversed: bool,
     loops: Vec<Vec<Half>>,
     arcs: &[Arc],
@@ -410,7 +410,7 @@ fn group(
         };
     }
     let all_boxes = boxes(&all);
-    let flat = matches!(surface, Surface::Plane(_));
+    let flat = matches!(surface.surface, Surface::Plane(_));
     let around = |loop_: usize, about: About| -> Result<bool, Reason> {
         // In a plane a loop does not go around a point outside its box.
         if let About::Point(p) = about
@@ -568,7 +568,7 @@ mod tests {
         arcs.push(arc(&points, 1, 4));
         let build = |interior: &[usize]| {
             build(
-                &surface,
+                Sheet::bare(&surface),
                 false,
                 std::slice::from_ref(&rim),
                 &interior.iter().copied().collect(),

@@ -14,11 +14,13 @@
 //! When `intersect_curve_surface` covers every pair, the numeric path is
 //! simply never taken.
 
+use super::freeform::is_freeform;
+use super::outline::Sheet;
 use craft3d_geom::intersect::{CurveHit, CurveIntersection, intersect_curve_surface};
 use craft3d_geom::{Curve3, GeomError, Surface};
 use craft3d_math::{Bbox3, Tolerance, Vec3};
 
-const FREEFORM: &str = "a freeform (Bézier or NURBS) surface; booleans handle planes, cylinders, cones, spheres and tori";
+const FREEFORM: &str = "a freeform (Bézier or NURBS) surface that was not indexed for booleans (a bug in 3DCraft, please report it)";
 const ALONG: &str = "a curve that runs along a surface within the tolerance without lying on it (at the edge of tolerance)";
 
 /// The most evaluations one curve and surface may cost.
@@ -28,9 +30,10 @@ const MAX_EVALUATIONS: usize = 200_000;
 /// most the distance moved, and of one sign on each side. For a cone it is
 /// the distance to the cone continued past its apex as a line in the
 /// half-plane through the axis, which is positive there and so has no zero
-/// that the surface does not have. `None` for freeform surfaces.
-pub(super) fn signed_distance(surface: &Surface, p: Vec3) -> Option<f64> {
-    let d = match surface {
+/// that the surface does not have. For a freeform surface the distance to
+/// its nearest point through its index, and `None` without one.
+pub(super) fn signed_distance(sheet: Sheet, p: Vec3) -> Option<f64> {
+    let d = match sheet.surface {
         Surface::Plane(s) => s.frame().local(p).2,
         Surface::Cylinder(s) => {
             let (x, y, _) = s.frame().local(p);
@@ -47,7 +50,9 @@ pub(super) fn signed_distance(surface: &Surface, p: Vec3) -> Option<f64> {
             let (major, minor) = s.radii();
             (x.hypot(y) - major).hypot(z) - minor
         }
-        Surface::Bezier(_) | Surface::Nurbs(_) => return None,
+        Surface::Bezier(_) | Surface::Nurbs(_) => {
+            return sheet.tree.and_then(|tree| tree.signed_distance(p));
+        }
     };
     Some(d)
 }
@@ -178,10 +183,15 @@ fn closest(f: &dyn Fn(f64) -> f64, lo: f64, hi: f64) -> f64 {
 
 /// The hits of the piece of `curve` over `range` with the zero set of
 /// `distance`.
+/// `lower`, when given, is a bound below the distance that never
+/// overestimates it (an index of a freeform surface has one, and the
+/// distance it reports is only as near as its search got): a stretch is
+/// called clear of the surface by the bound, never by the distance alone.
 fn numeric(
     curve: &Curve3,
     range: (f64, f64),
     distance: &dyn Fn(Vec3) -> Option<f64>,
+    lower: Option<&dyn Fn(Vec3) -> f64>,
     bend: Option<(f64, f64)>,
     tol: f64,
 ) -> Result<CurveIntersection, GeomError> {
@@ -224,6 +234,10 @@ fn numeric(
         }
         let mid = 0.5 * (a + b);
         let value = f(mid);
+        let certain = match lower {
+            Some(bound) => bound(curve.eval(mid)).min(value.abs()),
+            None => value.abs(),
+        };
         // How far the distance can stray from its value in the middle:
         // by the length travelled, or, near the surface, by the slope
         // across the stretch and how much that slope can change.
@@ -236,7 +250,7 @@ fn numeric(
             let slope = (f(b) - f(a)).abs() / (b - a) + 2.0 * bend * half;
             stray = stray.min(slope * half);
         }
-        let kind = if value.abs() - stray > tol {
+        let kind = if certain - stray > tol {
             Kind::Clear {
                 positive: value > 0.0,
             }
@@ -306,9 +320,10 @@ fn numeric(
 pub(super) fn curve_hits(
     curve: &Curve3,
     range: (f64, f64),
-    surface: &Surface,
+    sheet: Sheet,
     tolerance: &Tolerance,
 ) -> Result<CurveIntersection, GeomError> {
+    let surface = sheet.surface;
     // Geometry's closed forms are exact, and are asked for where they
     // exist: lines, circles and ellipses against planes and cylinders.
     // For every other pair with an analytic surface the roots are isolated
@@ -325,13 +340,26 @@ pub(super) fn curve_hits(
             other => return other,
         }
     }
-    if signed_distance(surface, Vec3::ZERO).is_none() {
-        return Err(GeomError::Unsupported(FREEFORM));
+    if is_freeform(surface) {
+        // The index gives the distance to the nearest point, and a bound
+        // below it that a stretch is called clear by.
+        let Some(tree) = sheet.tree else {
+            return Err(GeomError::Unsupported(FREEFORM));
+        };
+        return numeric(
+            curve,
+            range,
+            &|p| tree.signed_distance(p),
+            Some(&|p| tree.lower_bound(p, 0.25 * tolerance.linear)),
+            None,
+            tolerance.linear,
+        );
     }
     numeric(
         curve,
         range,
-        &|p| signed_distance(surface, p),
+        &|p| signed_distance(sheet, p),
+        None,
         bend_bound(curve, surface),
         tolerance.linear,
     )
@@ -377,13 +405,13 @@ mod tests {
                         _ => (u, v),
                     };
                     let on = surface.eval(u, v);
-                    let d = signed_distance(&surface, on).unwrap();
+                    let d = signed_distance(Sheet::bare(&surface), on).unwrap();
                     assert!(d.abs() < 1e-12 * k, "{}: {d}", surface.kind());
                     // Moving off along the normal changes it by the step.
                     let n = surface.normal(u, v).unwrap();
                     let step = 0.05 * k;
-                    let up = signed_distance(&surface, on + n * step).unwrap();
-                    let down = signed_distance(&surface, on - n * step).unwrap();
+                    let up = signed_distance(Sheet::bare(&surface), on + n * step).unwrap();
+                    let down = signed_distance(Sheet::bare(&surface), on - n * step).unwrap();
                     assert!((up - step).abs() < 1e-9 * k, "{}: {up}", surface.kind());
                     assert!((down + step).abs() < 1e-9 * k, "{}", surface.kind());
                 }
@@ -399,8 +427,8 @@ mod tests {
                     let p = f.point(unit() * 12.0 * k, unit() * 12.0 * k, unit() * 12.0 * k);
                     let q = p + Vec3::new(unit(), unit(), unit()) * k;
                     let (dp, dq) = (
-                        signed_distance(&surface, p).unwrap(),
-                        signed_distance(&surface, q).unwrap(),
+                        signed_distance(Sheet::bare(&surface), p).unwrap(),
+                        signed_distance(Sheet::bare(&surface), q).unwrap(),
                     );
                     assert!((dp - dq).abs() <= p.distance(q) * (1.0 + 1e-12));
                 }
@@ -412,12 +440,14 @@ mod tests {
     /// among the hits.
     fn assert_hits(curve: &Curve3, range: (f64, f64), surface: &Surface, k: f64) -> usize {
         let tol = Tolerance::new(1e-6 * k, 1e-9).unwrap();
-        let CurveIntersection::Hits(hits) = curve_hits(curve, range, surface, &tol).unwrap() else {
+        let CurveIntersection::Hits(hits) =
+            curve_hits(curve, range, Sheet::bare(surface), &tol).unwrap()
+        else {
             panic!("{} on {}", curve.kind(), surface.kind());
         };
         for hit in &hits {
             assert!(hit.point.distance(curve.eval(hit.t)) < 1e-9 * k);
-            let d = signed_distance(surface, hit.point).unwrap();
+            let d = signed_distance(Sheet::bare(surface), hit.point).unwrap();
             assert!(d.abs() <= tol.linear, "{}: {d}", surface.kind());
         }
         let in_range: Vec<&CurveHit> = hits
@@ -430,8 +460,8 @@ mod tests {
         for i in 0..N {
             let (a, b) = (at(i), at(i + 1));
             let (fa, fb) = (
-                signed_distance(surface, curve.eval(a)).unwrap(),
-                signed_distance(surface, curve.eval(b)).unwrap(),
+                signed_distance(Sheet::bare(surface), curve.eval(a)).unwrap(),
+                signed_distance(Sheet::bare(surface), curve.eval(b)).unwrap(),
             );
             if (fa > 0.0) != (fb > 0.0) {
                 crossings += 1;
@@ -495,7 +525,8 @@ mod tests {
         // Along the top of the torus: touches the circle of radius 4 at
         // height 1 in one point.
         let graze = Curve3::Line(Line::new(Vec3::new(-9.0, 4.0, 1.0), Vec3::X).unwrap());
-        let CurveIntersection::Hits(hits) = curve_hits(&graze, (0.0, 18.0), &torus, &tol).unwrap()
+        let CurveIntersection::Hits(hits) =
+            curve_hits(&graze, (0.0, 18.0), Sheet::bare(&torus), &tol).unwrap()
         else {
             panic!("expected a touch");
         };
@@ -506,7 +537,7 @@ mod tests {
         // Its outer equator lies on it.
         let equator = Curve3::Circle(Circle::new(Frame::WORLD, 5.0).unwrap());
         assert_eq!(
-            curve_hits(&equator, (0.0, TAU), &torus, &tol).unwrap(),
+            curve_hits(&equator, (0.0, TAU), Sheet::bare(&torus), &tol).unwrap(),
             CurveIntersection::OnSurface
         );
         // A line that ends on a sphere: a hit at that end; whether it
@@ -521,7 +552,8 @@ mod tests {
             )
             .unwrap(),
         );
-        let CurveIntersection::Hits(hits) = curve_hits(&spoke, (0.0, 1.0), &ball, &tol).unwrap()
+        let CurveIntersection::Hits(hits) =
+            curve_hits(&spoke, (0.0, 1.0), Sheet::bare(&ball), &tol).unwrap()
         else {
             panic!("expected a hit");
         };
@@ -532,7 +564,8 @@ mod tests {
         let cone = Surface::Cone(Cone::new(Frame::WORLD, 1.0, -0.5).unwrap());
         let apex = Vec3::new(0.0, 0.0, 1.0 / 0.5_f64.tan());
         let past = Curve3::Line(Line::new(apex - Vec3::X * 3.0, Vec3::X).unwrap());
-        let CurveIntersection::Hits(hits) = curve_hits(&past, (0.0, 6.0), &cone, &tol).unwrap()
+        let CurveIntersection::Hits(hits) =
+            curve_hits(&past, (0.0, 6.0), Sheet::bare(&cone), &tol).unwrap()
         else {
             panic!("expected a touch");
         };
@@ -549,7 +582,7 @@ mod tests {
             .unwrap(),
         );
         assert!(matches!(
-            curve_hits(&graze, (0.0, 18.0), &patch, &tol),
+            curve_hits(&graze, (0.0, 18.0), Sheet::bare(&patch), &tol),
             Err(GeomError::Unsupported(_))
         ));
     }

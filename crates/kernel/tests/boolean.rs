@@ -538,7 +538,10 @@ fn what_is_not_supported_says_so() {
     // touch along a line, and boxes that share only an edge to be
     // unsupported. They are supported now: see boolean_surfaces.rs and
     // boolean_contact.rs.)
-    // A freeform face: the top of a block as a flat Bézier patch.
+    // A freeform face is no longer refused (2026-10-13): the top of a block
+    // as a flat Bézier patch unites with a ball at a corner of the block
+    // like a plane would. (The expectation changed from a refusal to the
+    // value, which a closed form pins: an eighth of the ball is inside.)
     let mut patched = plate.clone();
     let corner = |x: f64, y: f64| Vec3::new(x, y, 2.0);
     patched.faces[1].surface = Surface::Bezier(
@@ -556,10 +559,56 @@ fn what_is_not_supported_says_so() {
     );
     assert_eq!(craft3d_topo::check(&patched, &tol), []);
     let ball = primitives::sphere(&Frame::WORLD, 1.0).unwrap();
-    let (why, faces) = reason(&patched, &ball, Union);
-    assert!(why.contains("freeform"), "{why}");
+    let eighth = 4.0 * PI / 3.0 / 8.0;
+    // Seven eighths of the ball stand out of the block; three quarter
+    // discs of the block are gone.
+    let united = solve(&patched, &ball, Union, k);
+    assert_mass(
+        &united,
+        24.0 + 4.0 * PI / 3.0 - eighth,
+        52.0 - 3.0 * PI / 4.0 + 7.0 * PI / 2.0,
+        k,
+    );
+    assert!(
+        united
+            .body
+            .faces
+            .iter()
+            .any(|f| matches!(f.surface, Surface::Bezier(_))),
+        "the patch stays a patch"
+    );
+    let rest = solve(&ball, &patched, Subtract, k);
+    assert_mass(
+        &rest,
+        4.0 * PI / 3.0 - eighth,
+        7.0 * PI / 2.0 + 3.0 * PI / 4.0,
+        k,
+    );
+    // A rational patch (weights that are not all one) is still refused:
+    // its chart has no bound on how fast its parameters move.
+    let mut rational = plate.clone();
+    rational.faces[1].surface = Surface::Nurbs(
+        craft3d_geom::NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            2,
+            2,
+            vec![
+                corner(0.0, 0.0),
+                corner(0.0, 3.0),
+                corner(4.0, 0.0),
+                corner(4.0, 3.0),
+            ],
+            vec![1.0, 2.0, 2.0, 1.0],
+        )
+        .unwrap(),
+    );
+    assert_eq!(craft3d_topo::check(&rational, &tol), []);
+    let (why, faces) = reason(&rational, &ball, Union);
+    assert!(why.contains("rational"), "{why}");
     assert_eq!(faces, [(Operand::A, FaceId(1))]);
-    assert!(reason(&ball, &patched, Subtract).0.contains("freeform"));
     // (Until the general surface intersection came in, crossing cylinders,
     // a cone cut along its axis and a ball through the side of a cylinder
     // were refused here. See boolean_surfaces.rs.)
@@ -651,11 +700,11 @@ fn what_is_not_supported_says_so() {
         }
     }
     // The message names the faces.
-    let message = boolean(&patched, &ball, Union, &tol)
+    let message = boolean(&rational, &ball, Union, &tol)
         .unwrap_err()
         .to_string();
     assert!(
-        message.starts_with("boolean does not support this: a freeform")
+        message.starts_with("boolean does not support this: a rational freeform")
             && message.ends_with("(face 1 of the first body)"),
         "{message}"
     );

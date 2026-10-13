@@ -10,10 +10,12 @@
 
 use super::Reason;
 use super::chart::{About, Chart, TOO_CLOSE};
+use super::freeform::{PatchTree, is_freeform};
 use super::hits::speed_bound;
 use craft3d_geom::{Curve3, Ellipse, Surface};
 use craft3d_math::{Bbox3, Vec3};
 use std::f64::consts::FRAC_PI_2;
+use std::sync::Arc;
 
 /// A piece of a curve in a loop.
 #[derive(Clone, Debug)]
@@ -234,11 +236,41 @@ pub(super) fn locate(curve: &Curve3, range: (f64, f64), p: Vec3, tol: f64) -> Op
         .map(|(t, _)| t)
 }
 
+/// A surface with, when it is freeform, its index: what the helpers below
+/// and the hits take. An analytic surface needs none; a freeform surface
+/// without one is refused where the index is needed (the hits, the chart)
+/// and projected the slow way elsewhere.
+#[derive(Clone, Copy)]
+pub(super) struct Sheet<'a> {
+    pub surface: &'a Surface,
+    pub tree: Option<&'a Arc<PatchTree>>,
+}
+
+impl<'a> Sheet<'a> {
+    pub fn bare(surface: &'a Surface) -> Self {
+        Sheet {
+            surface,
+            tree: None,
+        }
+    }
+
+    /// The parameters of the point of the surface nearest to `p`.
+    fn project(self, p: Vec3) -> Option<(f64, f64)> {
+        match self.tree {
+            Some(tree) => tree.nearest(p).map(|n| (n.u, n.v)),
+            None => self.surface.project(p).ok(),
+        }
+    }
+}
+
 /// The distance from `p` to the surface; infinite when it has none.
-pub(super) fn surface_distance(surface: &Surface, p: Vec3) -> f64 {
-    match surface.project(p) {
+pub(super) fn surface_distance(sheet: Sheet, p: Vec3) -> f64 {
+    if let Some(tree) = sheet.tree {
+        return tree.nearest(p).map_or(f64::INFINITY, |n| n.distance);
+    }
+    match sheet.surface.project(p) {
         Ok((u, v)) => {
-            let d = surface.eval(u, v).distance(p);
+            let d = sheet.surface.eval(u, v).distance(p);
             if d.is_finite() { d } else { f64::INFINITY }
         }
         Err(_) => f64::INFINITY,
@@ -246,19 +278,20 @@ pub(super) fn surface_distance(surface: &Surface, p: Vec3) -> f64 {
 }
 
 /// The point of the surface nearest to `p`.
-pub(super) fn onto(surface: &Surface, p: Vec3) -> Option<Vec3> {
-    let (u, v) = surface.project(p).ok()?;
-    let q = surface.eval(u, v);
+pub(super) fn onto(sheet: Sheet, p: Vec3) -> Option<Vec3> {
+    let (u, v) = sheet.project(p)?;
+    let q = sheet.surface.eval(u, v);
     q.is_finite().then_some(q)
 }
 
-/// The outward normal of a face on `surface` at (the projection of) `p`.
+/// The outward normal of a face on the surface at (the projection of) `p`.
 ///
 /// At the apex of a cone, where the surface has no normal, the direction
 /// along the axis on the outward side: curves that leave the apex are told
 /// apart by their directions seen along the axis.
-pub(super) fn outward_normal(surface: &Surface, reversed: bool, p: Vec3) -> Option<Vec3> {
-    let (u, v) = surface.project(p).ok()?;
+pub(super) fn outward_normal(sheet: Sheet, reversed: bool, p: Vec3) -> Option<Vec3> {
+    let surface = sheet.surface;
+    let (u, v) = sheet.project(p)?;
     let normal = match (surface.normal(u, v), surface) {
         (Some(normal), _) => normal,
         (None, Surface::Cone(cone)) => {
@@ -451,7 +484,7 @@ impl Boxes {
 /// nothing of `all` between it and that piece. At least `margin` away from
 /// everything.
 pub(super) fn left_of(
-    surface: &Surface,
+    sheet: Sheet,
     reversed: bool,
     all: &[Vec<Seg>],
     all_boxes: &Boxes,
@@ -460,7 +493,7 @@ pub(super) fn left_of(
 ) -> Result<Vec3, Reason> {
     for seg in of {
         let (point, travel) = seg.travel();
-        let Some(outward) = outward_normal(surface, reversed, point) else {
+        let Some(outward) = outward_normal(sheet, reversed, point) else {
             continue;
         };
         // Seen from outside the face lies to the left of its boundary.
@@ -473,7 +506,7 @@ pub(super) fn left_of(
             if !(step.is_finite() && step > margin) {
                 break;
             }
-            let Some(candidate) = onto(surface, point + inward * step) else {
+            let Some(candidate) = onto(sheet, point + inward * step) else {
                 continue;
             };
             // The nearest thing to it must be this piece, away from its
@@ -491,7 +524,7 @@ pub(super) fn left_of(
             }
             let (foot, tangent) = seg.curve.derivatives(t);
             let travel = if seg.reversed { -tangent } else { tangent };
-            let left = outward_normal(surface, reversed, foot).map(|n| n.cross(travel));
+            let left = outward_normal(sheet, reversed, foot).map(|n| n.cross(travel));
             if left.is_some_and(|left| left.dot(candidate - foot) > 0.0) {
                 return Ok(candidate);
             }
@@ -513,6 +546,9 @@ pub(super) struct Outline {
     /// projection of a sphere, the cut of a torus). Its loops then wind
     /// about the points outside it, and not about those inside.
     infinite: bool,
+    /// For a freeform surface: its index, shared with the pieces of the
+    /// face.
+    tree: Option<Arc<PatchTree>>,
 }
 
 impl Outline {
@@ -525,7 +561,38 @@ impl Outline {
         loops: Vec<Vec<Seg>>,
         margin: f64,
     ) -> Result<Outline, Reason> {
-        let chart = Chart::new(&surface, &loops)?;
+        let tree = if is_freeform(&surface) {
+            Some(Arc::new(PatchTree::new(&surface)?))
+        } else {
+            None
+        };
+        Self::build(surface, tree, reversed, loops, margin)
+    }
+
+    /// A piece of this face: the same surface, with its index shared, and
+    /// other loops.
+    pub fn piece(&self, loops: Vec<Vec<Seg>>, margin: f64) -> Result<Outline, Reason> {
+        Self::build(
+            self.surface.clone(),
+            self.tree.clone(),
+            self.reversed,
+            loops,
+            margin,
+        )
+    }
+
+    fn build(
+        surface: Surface,
+        tree: Option<Arc<PatchTree>>,
+        reversed: bool,
+        loops: Vec<Vec<Seg>>,
+        margin: f64,
+    ) -> Result<Outline, Reason> {
+        let sheet = Sheet {
+            surface: &surface,
+            tree: tree.as_ref(),
+        };
+        let chart = Chart::new(sheet, &loops)?;
         if loops.is_empty() && !chart.is_closed() {
             return Err(UNBOUNDED);
         }
@@ -535,7 +602,7 @@ impl Outline {
             // not at all when the face is the outside of them.
             let mut found = None;
             for loop_ in &loops {
-                if let Ok(witness) = left_of(&surface, reversed, &loops, &boxes, loop_, margin) {
+                if let Ok(witness) = left_of(sheet, reversed, &loops, &boxes, loop_, margin) {
                     found = Some(witness);
                     break;
                 }
@@ -556,7 +623,16 @@ impl Outline {
             boxes,
             chart,
             infinite,
+            tree,
         })
+    }
+
+    /// The surface with its index.
+    pub fn sheet(&self) -> Sheet<'_> {
+        Sheet {
+            surface: &self.surface,
+            tree: self.tree.as_ref(),
+        }
     }
 
     /// The pieces of the boundary that may be within `r` of `p`: see
@@ -617,7 +693,7 @@ impl Outline {
                 break;
             }
             let (point, travel) = seg.travel();
-            let Some(outward) = outward_normal(&self.surface, self.reversed, point) else {
+            let Some(outward) = outward_normal(self.sheet(), self.reversed, point) else {
                 continue;
             };
             // Seen from outside the face lies to the left of its boundary.
@@ -631,7 +707,7 @@ impl Outline {
                 if !(step.is_finite() && step > margin) {
                     break;
                 }
-                let Some(candidate) = onto(&self.surface, point + inward * step) else {
+                let Some(candidate) = onto(self.sheet(), point + inward * step) else {
                     continue;
                 };
                 if self.boxes.nearer(&self.loops, candidate, margin, false) {
@@ -687,7 +763,16 @@ impl Outline {
             }
         }
         let (frame, radius, slope, apex) = match &self.surface {
-            Surface::Plane(_) | Surface::Bezier(_) | Surface::Nurbs(_) => return hull,
+            Surface::Plane(_) => return hull,
+            // A freeform surface lies in the hull of its control points.
+            Surface::Bezier(b) => {
+                hull.points.extend_from_slice(b.control_points());
+                return hull;
+            }
+            Surface::Nurbs(s) => {
+                hull.points.extend_from_slice(s.control_points());
+                return hull;
+            }
             Surface::Sphere(s) => {
                 hull.balls.push((s.frame().origin(), s.radius()));
                 return hull;
@@ -920,7 +1005,7 @@ mod tests {
             }
             // Just left of the hole's rim is in the plate, not in the hole.
             let beside = left_of(
-                &face.surface,
+                face.sheet(),
                 false,
                 &face.loops,
                 &boxes(&face.loops),

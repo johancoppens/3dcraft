@@ -4,7 +4,8 @@
 
 use super::hits::{curve_hits, signed_distance};
 use super::outline::{
-    Hull, Outline, Seg, Side, boxes_meet, locate, nearest, onto, outward_normal, surface_distance,
+    Hull, Outline, Seg, Sheet, Side, boxes_meet, locate, nearest, onto, outward_normal,
+    surface_distance,
 };
 use super::{
     AMBIGUOUS, LOST, Meeting, NEAR, NEARLY_COINCIDENT, NEARLY_TOUCHING, Operand, Stop, Vertices,
@@ -200,8 +201,8 @@ pub(super) enum Passage {
 /// away within its limits proves nothing, and the curve counts as a
 /// crossing, as does everything with a freeform surface.
 pub(super) fn passage(
-    surface: &Surface,
-    other: &Surface,
+    surface: Sheet,
+    other: Sheet,
     p: Vec3,
     tangent: Vec3,
     reach: f64,
@@ -289,7 +290,7 @@ struct Cut {
 fn edge_cuts(
     own: &Solid,
     face: usize,
-    surface: &Surface,
+    surface: Sheet,
     named: &[(Operand, FaceId)],
     tolerance: &Tolerance,
     cuts: &mut Vec<Cut>,
@@ -561,7 +562,7 @@ fn clip(
             let mut seen = [Passage::Touch; 3];
             for (k, seen) in [0.25, 0.5, 0.75].into_iter().zip(seen.iter_mut()) {
                 let (p, tangent) = curve.derivatives(t0 + (t1 - t0) * k);
-                *seen = passage(&oa.surface, &ob.surface, p, tangent, reach, tol);
+                *seen = passage(oa.sheet(), ob.sheet(), p, tangent, reach, tol);
             }
             if seen.contains(&Passage::Crossing) {
                 // As given.
@@ -663,15 +664,14 @@ fn gap(a: (&Outline, &Bbox3), b: (&Outline, &Bbox3), tol: f64) -> Result<Option<
             if !other_box.contains(p, 2.0 * tol) {
                 continue;
             }
-            let Some(distance) = signed_distance(&other.surface, p).map(f64::abs) else {
+            let Some(distance) = signed_distance(other.sheet(), p).map(f64::abs) else {
                 continue;
             };
             // Further than this they are plainly apart here.
             if distance >= 2.0 * tol {
                 continue;
             }
-            let (u, v) = other.surface.project(p).map_err(|e| geometry(e, &[]))?;
-            let foot = other.surface.eval(u, v);
+            let foot = onto(other.sheet(), p).ok_or(Stop::of(LOST))?;
             if other.side(foot, tol).map_err(Stop::of)? != Side::Out {
                 widest = Some(widest.map_or(distance, |w: f64| w.max(distance)));
             }
@@ -683,8 +683,8 @@ fn gap(a: (&Outline, &Bbox3), b: (&Outline, &Bbox3), tol: f64) -> Result<Option<
 /// True when everything in the hull is on one side of the surface, more
 /// than `margin` away from it: a face in the hull cannot meet a face on
 /// the surface.
-fn clear_of(surface: &Surface, hull: &Hull, margin: f64) -> bool {
-    if let Surface::Plane(plane) = surface {
+fn clear_of(sheet: Sheet, hull: &Hull, margin: f64) -> bool {
+    if let Surface::Plane(plane) = sheet.surface {
         // Flat: how far the hull reaches along the normal says it exactly.
         let normal = plane.frame().z();
         let (low, high) = hull.span(normal);
@@ -694,8 +694,14 @@ fn clear_of(surface: &Surface, hull: &Hull, margin: f64) -> bool {
     let Some((lo, hi)) = hull.bbox().corners() else {
         return true;
     };
-    // The distance changes by no more than the distance moved.
-    signed_distance(surface, lo.lerp(hi, 0.5))
+    // The distance changes by no more than the distance moved. (A freeform
+    // surface answers with the bound below its distance, which is what a
+    // proof of clearance needs.)
+    let middle = lo.lerp(hi, 0.5);
+    if let Some(tree) = sheet.tree {
+        return tree.lower_bound(middle, 0.5 * margin) > 0.5 * lo.distance(hi) + margin;
+    }
+    signed_distance(sheet, middle)
         .is_some_and(|middle| middle.abs() > 0.5 * lo.distance(hi) + margin)
 }
 
@@ -735,8 +741,7 @@ pub(super) fn section(
             let (Some(hull_a), Some(hull_b)) = (a.hulls.get(fa), b.hulls.get(fb)) else {
                 return Err(Stop::of(LOST));
             };
-            if clear_of(&oa.surface, hull_b, 2.0 * tol) || clear_of(&ob.surface, hull_a, 2.0 * tol)
-            {
+            if clear_of(oa.sheet(), hull_b, 2.0 * tol) || clear_of(ob.sheet(), hull_a, 2.0 * tol) {
                 continue;
             }
             let named = [a.name(fa), b.name(fb)];
@@ -784,11 +789,11 @@ pub(super) fn section(
                     // lies inside the other body), the faces neither
                     // touch nor safely cross.
                     for &p in &meeting.points {
-                        let (Some(qa), Some(qb)) = (onto(&oa.surface, p), onto(&ob.surface, p))
+                        let (Some(qa), Some(qb)) = (onto(oa.sheet(), p), onto(ob.sheet(), p))
                         else {
                             continue;
                         };
-                        let through = outward_normal(&oa.surface, oa.reversed, qa)
+                        let through = outward_normal(oa.sheet(), oa.reversed, qa)
                             .is_some_and(|outward| (qb - qa).dot(outward) < 0.0);
                         if qa.distance(qb) > 0.5 * tol
                             && through
@@ -802,8 +807,8 @@ pub(super) fn section(
                         continue;
                     }
                     let mut found = Vec::new();
-                    edge_cuts(a, fa, &ob.surface, &named, tolerance, &mut found)?;
-                    edge_cuts(b, fb, &oa.surface, &named, tolerance, &mut found)?;
+                    edge_cuts(a, fa, ob.sheet(), &named, tolerance, &mut found)?;
+                    edge_cuts(b, fb, oa.sheet(), &named, tolerance, &mut found)?;
                     for curve in &meeting.curves {
                         clip(
                             curve,
@@ -843,9 +848,23 @@ mod tests {
         let p = Vec3::new(centre.x + rim * 0.6, centre.y + rim * 0.8, 0.0);
         let tangent = Vec3::new(-0.8, 0.6, 0.0);
         if swap {
-            passage(&ball, &plane, p, tangent, 10.0 * k, tol)
+            passage(
+                Sheet::bare(&ball),
+                Sheet::bare(&plane),
+                p,
+                tangent,
+                10.0 * k,
+                tol,
+            )
         } else {
-            passage(&plane, &ball, p, tangent, 10.0 * k, tol)
+            passage(
+                Sheet::bare(&plane),
+                Sheet::bare(&ball),
+                p,
+                tangent,
+                10.0 * k,
+                tol,
+            )
         }
     }
 
@@ -884,7 +903,10 @@ mod tests {
             let cylinder = Surface::Cylinder(Cylinder::new(lying, k).unwrap());
             let on = Vec3::new(0.4 * k, 0.0, 0.0);
             for (a, b) in [(&plane, &cylinder), (&cylinder, &plane)] {
-                assert_eq!(passage(a, b, on, Vec3::X, 10.0 * k, tol), Passage::Touch);
+                assert_eq!(
+                    passage(Sheet::bare(a), Sheet::bare(b), on, Vec3::X, 10.0 * k, tol),
+                    Passage::Touch
+                );
             }
             // A plane through the top of a torus at a slant: the tube
             // bends away from its tangent plane as x^2 / 2k, so the two
@@ -897,12 +919,26 @@ mod tests {
                 let slanted = Surface::Plane(Plane::new(Frame::from_z(top, normal).unwrap()));
                 // The curve leaves `top` along y, by symmetry.
                 assert_eq!(
-                    passage(&torus, &slanted, top, Vec3::Y, 10.0 * k, tol),
+                    passage(
+                        Sheet::bare(&torus),
+                        Sheet::bare(&slanted),
+                        top,
+                        Vec3::Y,
+                        10.0 * k,
+                        tol
+                    ),
                     Passage::Crossing,
                     "slant {slant} at {k}"
                 );
                 assert_eq!(
-                    passage(&slanted, &torus, top, Vec3::Y, 10.0 * k, tol),
+                    passage(
+                        Sheet::bare(&slanted),
+                        Sheet::bare(&torus),
+                        top,
+                        Vec3::Y,
+                        10.0 * k,
+                        tol
+                    ),
                     Passage::Crossing
                 );
             }
@@ -911,7 +947,7 @@ mod tests {
             let normal = Vec3::new(slant.sin(), 0.0, slant.cos());
             let slanted = Surface::Plane(Plane::new(Frame::from_z(top, normal).unwrap()));
             for (a, b) in [(&torus, &slanted), (&slanted, &torus)] {
-                match passage(a, b, top, Vec3::Y, 10.0 * k, tol) {
+                match passage(Sheet::bare(a), Sheet::bare(b), top, Vec3::Y, 10.0 * k, tol) {
                     Passage::Lens(found) => assert!(
                         (found - 0.18 * tol).abs() <= 0.01 * tol,
                         "{found} at scale {k}"

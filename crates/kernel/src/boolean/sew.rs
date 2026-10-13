@@ -17,7 +17,7 @@
 //! The copies are in the same place and share nothing.
 
 use super::classify::Kept;
-use super::outline::{Seg, clearance, onto, outward_normal};
+use super::outline::{Seg, Sheet, clearance, onto, outward_normal};
 use super::{
     Arcs, BooleanResult, EdgeSource, Entity, FaceSource, LOST, NON_MANIFOLD, Operand, Stop,
     TANGENT_EDGE, VertexSource, Vertices, face_id,
@@ -132,7 +132,8 @@ fn pair_up(
     let mut around = Vec::with_capacity(uses.len());
     for (index, u) in uses.iter().enumerate() {
         let face = kept.get(u.face).ok_or(Stop::of(LOST))?;
-        let outward = outward_normal(&face.surface, face.reversed, point).ok_or(Stop::of(LOST))?;
+        let outward = outward_normal(Sheet::bare(&face.surface), face.reversed, point)
+            .ok_or(Stop::of(LOST))?;
         let travel = if u.reversed { -tangent } else { tangent };
         let into = outward.cross(travel);
         let angle = into.dot(frame.y()).atan2(into.dot(frame.x()));
@@ -181,12 +182,13 @@ fn pair_up(
                 for entry in run.iter_mut() {
                     let u = uses.get(entry.1).ok_or(Stop::of(LOST))?;
                     let face = kept.get(u.face).ok_or(Stop::of(LOST))?;
-                    let outward = outward_normal(&face.surface, face.reversed, point)
+                    let outward = outward_normal(Sheet::bare(&face.surface), face.reversed, point)
                         .ok_or(Stop::of(LOST))?;
                     let travel = if u.reversed { -tangent } else { tangent };
                     let into = outward.cross(travel);
-                    let off =
-                        onto(&face.surface, point + into * reach).ok_or(Stop::of(LOST))? - point;
+                    let off = onto(Sheet::bare(&face.surface), point + into * reach)
+                        .ok_or(Stop::of(LOST))?
+                        - point;
                     let angle = off.dot(frame.y()).atan2(off.dot(frame.x()));
                     // Close to where it was, on the same turn.
                     entry.0 = base + (angle - base + TAU / 2.0).rem_euclid(TAU) - TAU / 2.0;

@@ -15,7 +15,7 @@
 //! (`tests/spline_eval.rs` keeps that older algorithm to compare with).
 
 use crate::{BezierPatch, GeomError, MAX_DEGREE};
-use craft3d_math::{Frame, Vec3};
+use craft3d_math::{Bbox3, Frame, Vec3};
 use std::fmt;
 
 /// Largest accepted number of control points per direction.
@@ -124,15 +124,20 @@ struct Along<const N: usize> {
 
 impl<const N: usize> Along<N> {
     /// For the spline with the given (checked) knots, degree and number of
-    /// control points at `t`, clamped to the domain. Without `derivative`
+    /// control points at `t` (beyond the domain: the end span continued).
+    /// Without `derivative`
     /// the hodograph's numbers are left at zero.
     fn new(knots: &[f64], degree: usize, count: usize, t: f64, derivative: bool) -> Self {
         let (start, end) = domain_of(knots, degree);
         // NaN compares false both ways and falls through to `start`.
-        let t = if t > start { t.min(end) } else { start };
+        let inside = if t > start { t.min(end) } else { start };
+        // Beyond the domain the end span continues as the polynomial it
+        // is, as a Bézier patch continues: the span is the end one, the
+        // blend factors are taken at the parameter itself (NaN: the start).
+        let t = if t.is_nan() { start } else { t };
         // The knot span [span, span + 1) holding t; the last one is closed.
         let span = knots
-            .partition_point(|&k| k <= t)
+            .partition_point(|&k| k <= inside)
             .saturating_sub(1)
             .min(count.saturating_sub(1))
             .max(degree);
@@ -434,12 +439,16 @@ impl NurbsCurve {
         domain_of(&self.knots, self.degree)
     }
 
-    /// Point at `t`, clamped to the domain.
+    /// Point at `t`. Beyond the domain the end span continues as the
+    /// polynomial (or rational function) it is, as a Bézier curve does; far
+    /// out, a rational curve's weight can vanish and the point is then
+    /// not finite. A non-finite `t` gives the start.
     pub fn eval(&self, t: f64) -> Vec3 {
         sized_for!(self.degree, curve_at(self, t, false)).0
     }
 
-    /// `(point, first derivative)` at `t`, clamped to the domain.
+    /// `(point, first derivative)` at `t`, continued beyond the domain as
+    /// [`NurbsCurve::eval`] is.
     pub fn derivatives(&self, t: f64) -> (Vec3, Vec3) {
         sized_for!(self.degree, curve_at(self, t, true))
     }
@@ -584,10 +593,367 @@ impl NurbsSurface {
         sized_for!(degree, surface_at(self, u, v, false)).0
     }
 
-    /// `(point, ∂/∂u, ∂/∂v)` at `(u, v)`, clamped to the domain.
+    /// `(point, ∂/∂u, ∂/∂v)` at `(u, v)`; beyond the domain the end spans
+    /// continue as the polynomials they are, as a Bézier patch does.
     pub fn derivatives(&self, u: f64, v: f64) -> (Vec3, Vec3, Vec3) {
         let degree = self.degree_u.max(self.degree_v);
         sized_for!(degree, surface_at(self, u, v, true))
+    }
+}
+
+// ------------------------------------------------------- Bézier spans
+
+/// `n` over `k`, as a float (the degrees are small).
+fn binomial(n: usize, k: usize) -> f64 {
+    if k > n {
+        return 0.0;
+    }
+    let k = k.min(n - k);
+    let mut value = 1.0;
+    for i in 0..k {
+        value *= (n - i) as f64 / (i + 1) as f64;
+    }
+    value
+}
+
+/// De Casteljau's algorithm on one row of homogeneous Bézier points at
+/// `s`: the control points of the two halves, `[0, s]` and `[s, 1]`, each
+/// as long as the row.
+fn split_row(points: &[H], s: f64) -> (Vec<H>, Vec<H>) {
+    let mut work: Vec<H> = points.to_vec();
+    let mut left = Vec::with_capacity(points.len());
+    let mut right = Vec::with_capacity(points.len());
+    while let Some((&first, _)) = work.split_first() {
+        left.push(first);
+        right.push(work.last().copied().unwrap_or(first));
+        let next: Vec<H> = work
+            .iter()
+            .zip(work.iter().skip(1))
+            .map(|(a, b)| a.lerp(*b, s))
+            .collect();
+        work = next;
+    }
+    right.reverse();
+    (left, right)
+}
+
+/// Inserts the knot `u` once into `knots` and into every curve of `rows`
+/// (each a run of control points along that direction): Boehm's
+/// algorithm, *The NURBS Book* A5.1, on homogeneous points. `u` must lie
+/// inside the domain and have a multiplicity below the degree.
+fn insert_knot(knots: &mut Vec<f64>, degree: usize, rows: &mut [Vec<H>], u: f64) {
+    // The span [knot k, knot k + 1) that holds u.
+    let k = knots.partition_point(|&x| x <= u).saturating_sub(1);
+    let alpha = |i: usize| -> f64 {
+        if i + degree <= k {
+            1.0
+        } else if i > k {
+            0.0
+        } else {
+            let (Some(&lo), Some(&hi)) = (knots.get(i), knots.get(i + degree)) else {
+                return 0.0;
+            };
+            if hi > lo { (u - lo) / (hi - lo) } else { 0.0 }
+        }
+    };
+    for row in rows.iter_mut() {
+        let old = std::mem::take(row);
+        let count = old.len() + 1;
+        let mut new = Vec::with_capacity(count);
+        for i in 0..count {
+            let a = alpha(i);
+            let here = i.checked_sub(0).and_then(|i| old.get(i)).copied();
+            let before = i.checked_sub(1).and_then(|i| old.get(i)).copied();
+            new.push(match (here, before) {
+                (Some(h), Some(b)) => b.lerp(h, a),
+                (Some(h), None) => h,
+                (None, Some(b)) => b,
+                (None, None) => ZERO,
+            });
+        }
+        *row = new;
+    }
+    knots.insert((k + 1).min(knots.len()), u);
+}
+
+/// Inserts every knot of the domain's interior, and both ends of the
+/// domain, until each has the multiplicity `degree`: after that every
+/// span between two different knots is one Bézier piece.
+fn make_bezier(knots: &mut Vec<f64>, degree: usize, rows: &mut [Vec<H>]) {
+    let (start, end) = domain_of(knots, degree);
+    let mut distinct: Vec<f64> = knots
+        .iter()
+        .copied()
+        .filter(|&x| x >= start && x <= end)
+        .collect();
+    distinct.dedup();
+    for value in distinct {
+        loop {
+            let multiplicity = knots.iter().filter(|&&x| x == value).count();
+            if multiplicity >= degree {
+                break;
+            }
+            insert_knot(knots, degree, rows, value);
+        }
+    }
+}
+
+/// One span of a NURBS surface as a rational Bézier patch: the patch over
+/// `[0, 1]²` that is the surface over `u × v`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BezierSpan {
+    pub u: (f64, f64),
+    pub v: (f64, f64),
+    pub patch: RationalBezierPatch,
+}
+
+/// A rational tensor-product Bézier patch over `[0, 1] × [0, 1]`: control
+/// points with positive weights, row-major like [`NurbsSurface`] (point
+/// `(i, j)`, `i` along u, at `i * (degree_v + 1) + j`). The surface lies
+/// in the convex hull of its control points.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RationalBezierPatch {
+    degree_u: usize,
+    degree_v: usize,
+    homogeneous: Vec<H>,
+}
+
+impl RationalBezierPatch {
+    /// A polynomial patch, with every weight 1.
+    pub fn from_bezier(patch: &BezierPatch) -> Self {
+        Self {
+            degree_u: patch.degree_u(),
+            degree_v: patch.degree_v(),
+            homogeneous: patch
+                .control_points()
+                .iter()
+                .map(|&p| H { p, w: 1.0 })
+                .collect(),
+        }
+    }
+
+    pub fn degrees(&self) -> (usize, usize) {
+        (self.degree_u, self.degree_v)
+    }
+
+    /// The control points (positions, not weighted).
+    pub fn control_points(&self) -> Vec<Vec3> {
+        self.homogeneous.iter().map(|h| h.p * (1.0 / h.w)).collect()
+    }
+
+    pub fn weights(&self) -> Vec<f64> {
+        self.homogeneous.iter().map(|h| h.w).collect()
+    }
+
+    /// True when every weight is 1 (to rounding): the patch is polynomial
+    /// and its control points are the Bézier net.
+    pub fn is_polynomial(&self) -> bool {
+        self.homogeneous.iter().all(|h| (h.w - 1.0).abs() <= 1e-12)
+    }
+
+    /// A box around the control points, and so around the patch.
+    pub fn control_bbox(&self) -> Bbox3 {
+        Bbox3::from_points(self.control_points())
+    }
+
+    fn row(&self, i: usize) -> &[H] {
+        let width = self.degree_v + 1;
+        self.homogeneous
+            .get(i * width..(i + 1) * width)
+            .unwrap_or_default()
+    }
+
+    fn column(&self, j: usize) -> Vec<H> {
+        (0..=self.degree_u)
+            .filter_map(|i| self.row(i).get(j).copied())
+            .collect()
+    }
+
+    /// The point at `(s, t)` in `[0, 1]²`, by de Casteljau's algorithm.
+    pub fn eval(&self, s: f64, t: f64) -> Vec3 {
+        let mut along_u = Vec::with_capacity(self.degree_u + 1);
+        for i in 0..=self.degree_u {
+            let (left, _) = split_row(self.row(i), t);
+            along_u.push(left.last().copied().unwrap_or(ZERO));
+        }
+        let (left, _) = split_row(&along_u, s);
+        let h = left.last().copied().unwrap_or(ZERO);
+        if h.w > 0.0 {
+            h.p * (1.0 / h.w)
+        } else {
+            Vec3::new(f64::NAN, f64::NAN, f64::NAN)
+        }
+    }
+
+    /// The two patches over `[0, s]` and `[s, 1]` in u (each over
+    /// `[0, 1]²` of its own).
+    pub fn split_u(&self, s: f64) -> (Self, Self) {
+        let width = self.degree_v + 1;
+        let mut left = vec![ZERO; self.homogeneous.len()];
+        let mut right = vec![ZERO; self.homogeneous.len()];
+        for j in 0..width {
+            let (l, r) = split_row(&self.column(j), s);
+            for (i, (a, b)) in l.into_iter().zip(r).enumerate() {
+                if let Some(slot) = left.get_mut(i * width + j) {
+                    *slot = a;
+                }
+                if let Some(slot) = right.get_mut(i * width + j) {
+                    *slot = b;
+                }
+            }
+        }
+        let make = |homogeneous| Self {
+            degree_u: self.degree_u,
+            degree_v: self.degree_v,
+            homogeneous,
+        };
+        (make(left), make(right))
+    }
+
+    /// The two patches over `[0, t]` and `[t, 1]` in v.
+    pub fn split_v(&self, t: f64) -> (Self, Self) {
+        let mut left = Vec::with_capacity(self.homogeneous.len());
+        let mut right = Vec::with_capacity(self.homogeneous.len());
+        for i in 0..=self.degree_u {
+            let (l, r) = split_row(self.row(i), t);
+            left.extend(l);
+            right.extend(r);
+        }
+        let make = |homogeneous| Self {
+            degree_u: self.degree_u,
+            degree_v: self.degree_v,
+            homogeneous,
+        };
+        (make(left), make(right))
+    }
+
+    /// For a polynomial patch: the Bézier nets of `∂/∂u` (degrees
+    /// `(degree_u − 1, degree_v)`) and `∂/∂v` (degrees `(degree_u, degree_v
+    /// − 1)`), as scaled differences of the control points. The
+    /// derivatives lie in the convex hulls of these. `None` for a rational
+    /// patch, whose derivatives are no polynomials.
+    pub fn derivative_nets(&self) -> Option<(Vec<Vec3>, Vec<Vec3>)> {
+        if !self.is_polynomial() {
+            return None;
+        }
+        let points = self.control_points();
+        let (m, n) = (self.degree_u, self.degree_v);
+        let at = |i: usize, j: usize| points.get(i * (n + 1) + j).copied().unwrap_or(Vec3::ZERO);
+        let mut along_u = Vec::with_capacity(m * (n + 1));
+        for i in 0..m {
+            for j in 0..=n {
+                along_u.push((at(i + 1, j) - at(i, j)) * (m as f64));
+            }
+        }
+        let mut along_v = Vec::with_capacity((m + 1) * n);
+        for i in 0..=m {
+            for j in 0..n {
+                along_v.push((at(i, j + 1) - at(i, j)) * (n as f64));
+            }
+        }
+        Some((along_u, along_v))
+    }
+
+    /// For a polynomial patch: the Bézier net of the normal field `∂u ×
+    /// ∂v` (not unit), of degrees `(2 degree_u − 1, 2 degree_v − 1)`; the
+    /// product of two Bernstein forms is a Bernstein form whose
+    /// coefficients blend theirs with binomial weights. The normal lies in
+    /// the convex hull of the net: a net whose hull is clear of the origin
+    /// proves the patch is regular. `None` for a rational patch.
+    pub fn normal_net(&self) -> Option<Vec<Vec3>> {
+        let (fu, fv) = self.derivative_nets()?;
+        let (m, n) = (self.degree_u, self.degree_v);
+        // fu has degrees (a, b) = (m − 1, n), fv has (c, d) = (m, n − 1).
+        let (a, b, c, d) = (m.saturating_sub(1), n, m, n.saturating_sub(1));
+        let (ka, kb) = (a + c, b + d);
+        let mut net = vec![Vec3::ZERO; (ka + 1) * (kb + 1)];
+        for i in 0..=a {
+            for j in 0..=b {
+                let f = fu.get(i * (b + 1) + j).copied().unwrap_or(Vec3::ZERO);
+                for i2 in 0..=c {
+                    for j2 in 0..=d {
+                        let g = fv.get(i2 * (d + 1) + j2).copied().unwrap_or(Vec3::ZERO);
+                        let (k, l) = (i + i2, j + j2);
+                        let weight = binomial(a, i) * binomial(c, i2) / binomial(ka, k)
+                            * (binomial(b, j) * binomial(d, j2) / binomial(kb, l));
+                        if let Some(slot) = net.get_mut(k * (kb + 1) + l) {
+                            *slot += f.cross(g) * weight;
+                        }
+                    }
+                }
+            }
+        }
+        Some(net)
+    }
+}
+
+impl NurbsSurface {
+    /// The surface as rational Bézier patches, one per knot span in each
+    /// direction (*The NURBS Book* A5.7 by repeated knot insertion), each
+    /// with the part of the domain it covers.
+    pub fn bezier_spans(&self) -> Result<Vec<BezierSpan>, GeomError> {
+        let (count_u, count_v) = self.counts();
+        let (du, dv) = (self.degree_u, self.degree_v);
+        // Along u first: one curve per column j.
+        let mut knots_u = self.knots_u.clone();
+        let mut columns: Vec<Vec<H>> = (0..count_v)
+            .map(|j| {
+                (0..count_u)
+                    .filter_map(|i| self.homogeneous.get(i * count_v + j).copied())
+                    .collect()
+            })
+            .collect();
+        make_bezier(&mut knots_u, du, &mut columns);
+        let count_u = columns.first().map_or(0, Vec::len);
+        // Then along v: one curve per row i of the new net.
+        let mut knots_v = self.knots_v.clone();
+        let mut rows: Vec<Vec<H>> = (0..count_u)
+            .map(|i| columns.iter().filter_map(|c| c.get(i).copied()).collect())
+            .collect();
+        make_bezier(&mut knots_v, dv, &mut rows);
+        let count_v = rows.first().map_or(0, Vec::len);
+        let spans = |knots: &[f64], degree: usize, count: usize| -> Vec<(usize, (f64, f64))> {
+            let (start, end) = domain_of(knots, degree);
+            let mut found = Vec::new();
+            for k in degree..count {
+                let (Some(&lo), Some(&hi)) = (knots.get(k), knots.get(k + 1)) else {
+                    continue;
+                };
+                if hi > lo && lo >= start && hi <= end {
+                    found.push((k, (lo, hi)));
+                }
+            }
+            found
+        };
+        let mut out = Vec::new();
+        for (ku, range_u) in spans(&knots_u, du, count_u) {
+            for (kv, range_v) in spans(&knots_v, dv, count_v) {
+                let mut homogeneous = Vec::with_capacity((du + 1) * (dv + 1));
+                for i in ku - du..=ku {
+                    for j in kv - dv..=kv {
+                        let h = rows.get(i).and_then(|r| r.get(j)).copied().ok_or(
+                            GeomError::InvalidParameter("knot insertion lost a control point"),
+                        )?;
+                        homogeneous.push(h);
+                    }
+                }
+                out.push(BezierSpan {
+                    u: range_u,
+                    v: range_v,
+                    patch: RationalBezierPatch {
+                        degree_u: du,
+                        degree_v: dv,
+                        homogeneous,
+                    },
+                });
+            }
+        }
+        if out.is_empty() {
+            return Err(GeomError::InvalidParameter(
+                "a surface without a knot span cannot be split into Bézier patches",
+            ));
+        }
+        Ok(out)
     }
 }
 
@@ -691,7 +1057,7 @@ mod tests {
     }
 
     #[test]
-    fn evaluation_is_continuous_across_knots_and_clamped_outside() {
+    fn evaluation_is_continuous_across_knots_and_continued_outside() {
         let curve = wiggle();
         for knot in [0.3, 0.6] {
             assert!(close(
@@ -700,8 +1066,16 @@ mod tests {
                 1e-9
             ));
         }
-        assert_eq!(curve.eval(-5.0), curve.eval(0.0));
-        assert_eq!(curve.eval(7.0), curve.eval(1.0));
+        // Beyond the domain the end spans go on as the polynomials they
+        // are (2026-10-13; until then the parameter was clamped, which
+        // left the marcher of the surface intersections nothing to correct
+        // onto past a border): smoothly, with the end derivative.
+        for (t, h) in [(0.0, -1e-6), (1.0, 1e-6)] {
+            let (p, d) = curve.derivatives(t);
+            let beyond = curve.eval(t + h);
+            assert!(beyond != p);
+            assert!(close((beyond - p) * (1.0 / h), d, 1e-4 * d.length()), "{t}");
+        }
         assert_eq!(curve.eval(f64::NAN), curve.eval(0.0));
         assert_eq!(curve.eval(1.0), *curve.control_points().last().unwrap());
         assert_eq!(curve.domain(), (0.0, 1.0));
@@ -870,5 +1244,207 @@ mod tests {
                 actual: 3
             })
         ));
+    }
+
+    /// A rational surface of degrees (2, 3) with interior knots in both
+    /// directions (one of them double) and varied weights.
+    fn lumpy() -> NurbsSurface {
+        let (count_u, count_v) = (5, 7);
+        let mut ctrl = Vec::new();
+        let mut weights = Vec::new();
+        for i in 0..count_u {
+            for j in 0..count_v {
+                let (x, y) = (i as f64, j as f64 * 0.8);
+                let z = ((i * 7 + j * 5) % 4) as f64 * 0.4 - 0.3 * (i as f64 - 2.0).abs();
+                ctrl.push(Vec3::new(x + 0.1 * y, y - 0.05 * x, z));
+                weights.push(1.0 + 0.3 * ((i * 3 + j * 2) % 5) as f64);
+            }
+        }
+        let knots_u = vec![0.0, 0.0, 0.0, 0.4, 0.7, 1.0, 1.0, 1.0];
+        let knots_v = vec![0.0, 0.0, 0.0, 0.0, 0.3, 0.6, 0.6, 1.0, 1.0, 1.0, 1.0];
+        NurbsSurface::new(2, 3, knots_u, knots_v, count_u, count_v, ctrl, weights).unwrap()
+    }
+
+    /// Evaluates a Bernstein net of degrees `(m, n)` at `(s, t)`.
+    fn net_at(net: &[Vec3], m: usize, n: usize, s: f64, t: f64) -> Vec3 {
+        let b = |k: usize, i: usize, x: f64| {
+            binomial(k, i) * x.powi(i as i32) * (1.0 - x).powi((k - i) as i32)
+        };
+        let mut sum = Vec3::ZERO;
+        for i in 0..=m {
+            for j in 0..=n {
+                sum += net[i * (n + 1) + j] * (b(m, i, s) * b(n, j, t));
+            }
+        }
+        sum
+    }
+
+    #[test]
+    fn the_bezier_spans_of_a_surface_are_the_surface() {
+        let surface = lumpy();
+        let spans = surface.bezier_spans().unwrap();
+        // Three spans along u (0.4 and 0.7 inserted) times three along v.
+        assert_eq!(spans.len(), 9);
+        let covered: f64 = spans
+            .iter()
+            .map(|s| (s.u.1 - s.u.0) * (s.v.1 - s.v.0))
+            .sum();
+        assert!((covered - 1.0).abs() < 1e-12);
+        let mut rng = 0x1234_5678_u64;
+        let mut next = || {
+            rng = rng
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (rng >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for _ in 0..200 {
+            let (u, v) = (next(), next());
+            let span = spans
+                .iter()
+                .find(|s| u >= s.u.0 && u <= s.u.1 && v >= s.v.0 && v <= s.v.1)
+                .unwrap();
+            let s = (u - span.u.0) / (span.u.1 - span.u.0);
+            let t = (v - span.v.0) / (span.v.1 - span.v.0);
+            let want = surface.eval(u, v);
+            let got = span.patch.eval(s, t);
+            assert!(close(got, want, 1e-11), "({u}, {v}): {got:?} vs {want:?}");
+            assert!(span.patch.control_bbox().contains(got, 1e-9));
+        }
+        // The corners of a span are the surface at the corners of its range.
+        for span in &spans {
+            let points = span.patch.control_points();
+            assert!(close(points[0], surface.eval(span.u.0, span.v.0), 1e-11));
+            assert!(close(
+                *points.last().unwrap(),
+                surface.eval(span.u.1, span.v.1),
+                1e-11
+            ));
+        }
+    }
+
+    #[test]
+    fn a_single_span_surface_is_one_bezier_patch_with_its_own_points() {
+        let net = [
+            [
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.4),
+                Vec3::new(0.0, 2.0, 0.1),
+                Vec3::new(0.0, 3.0, 0.0),
+            ],
+            [
+                Vec3::new(1.0, 0.0, 0.3),
+                Vec3::new(1.0, 1.0, 1.0),
+                Vec3::new(1.0, 2.0, 0.7),
+                Vec3::new(1.0, 3.0, 0.2),
+            ],
+            [
+                Vec3::new(2.0, 0.0, 0.1),
+                Vec3::new(2.0, 1.0, 0.6),
+                Vec3::new(2.0, 2.0, 0.9),
+                Vec3::new(2.0, 3.0, 0.3),
+            ],
+            [
+                Vec3::new(3.0, 0.0, 0.0),
+                Vec3::new(3.0, 1.0, 0.2),
+                Vec3::new(3.0, 2.0, 0.3),
+                Vec3::new(3.0, 3.0, 0.0),
+            ],
+        ];
+        let patch = BezierPatch::bicubic(net).unwrap();
+        let spans = NurbsSurface::from_bezier(&patch)
+            .unwrap()
+            .bezier_spans()
+            .unwrap();
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].u, (0.0, 1.0));
+        assert_eq!(spans[0].patch.control_points(), patch.control_points());
+        assert!(spans[0].patch.is_polynomial());
+        assert_eq!(spans[0].patch, RationalBezierPatch::from_bezier(&patch));
+    }
+
+    #[test]
+    fn splitting_a_patch_keeps_its_points_and_shrinks_its_box() {
+        let surface = lumpy();
+        let span = &surface.bezier_spans().unwrap()[4];
+        let patch = &span.patch;
+        let (left, right) = patch.split_u(0.3);
+        let (low, high) = patch.split_v(0.65);
+        for (s, t) in [(0.0, 0.0), (0.2, 0.9), (0.5, 0.5), (0.95, 0.1), (1.0, 1.0)] {
+            let want = patch.eval(s, t);
+            assert!(close(left.eval(s / 0.3, t), want, 1e-11) || s > 0.3);
+            assert!(close(right.eval((s - 0.3) / 0.7, t), want, 1e-11) || s < 0.3);
+            assert!(close(low.eval(s, t / 0.65), want, 1e-11) || t > 0.65);
+            assert!(close(high.eval(s, (t - 0.65) / 0.35), want, 1e-11) || t < 0.65);
+        }
+        // Each half lies in the whole's box; the halves together are
+        // tighter than the whole.
+        let whole = patch.control_bbox();
+        for part in [&left, &right, &low, &high] {
+            let (lo, hi) = part.control_bbox().corners().unwrap();
+            assert!(whole.contains(lo, 1e-9) && whole.contains(hi, 1e-9));
+        }
+        assert!(left.control_bbox().diagonal() < whole.diagonal());
+        assert!(high.control_bbox().diagonal() < whole.diagonal());
+    }
+
+    #[test]
+    fn the_derivative_and_normal_nets_of_a_polynomial_patch_are_its_derivatives() {
+        let net = [
+            [
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.4),
+                Vec3::new(0.0, 2.0, 0.1),
+                Vec3::new(0.0, 3.0, 0.0),
+            ],
+            [
+                Vec3::new(1.0, 0.0, 0.3),
+                Vec3::new(1.2, 1.0, 1.0),
+                Vec3::new(0.9, 2.0, 0.7),
+                Vec3::new(1.0, 3.0, 0.2),
+            ],
+            [
+                Vec3::new(2.0, 0.0, 0.1),
+                Vec3::new(2.0, 1.1, 0.6),
+                Vec3::new(2.1, 2.0, 0.9),
+                Vec3::new(2.0, 3.0, 0.3),
+            ],
+            [
+                Vec3::new(3.0, 0.0, 0.0),
+                Vec3::new(3.0, 1.0, 0.2),
+                Vec3::new(3.0, 2.0, 0.3),
+                Vec3::new(3.0, 3.0, 0.0),
+            ],
+        ];
+        let bezier = BezierPatch::bicubic(net).unwrap();
+        let patch = RationalBezierPatch::from_bezier(&bezier);
+        let (fu, fv) = patch.derivative_nets().unwrap();
+        let normal = patch.normal_net().unwrap();
+        assert_eq!(fu.len(), 3 * 4);
+        assert_eq!(fv.len(), 4 * 3);
+        assert_eq!(normal.len(), 6 * 6);
+        for (s, t) in [(0.0, 0.0), (0.3, 0.8), (0.5, 0.5), (0.9, 0.2), (1.0, 1.0)] {
+            let (_, du, dv) = bezier.derivatives(s, t);
+            assert!(
+                close(net_at(&fu, 2, 3, s, t), du, 1e-11),
+                "du at ({s}, {t})"
+            );
+            assert!(
+                close(net_at(&fv, 3, 2, s, t), dv, 1e-11),
+                "dv at ({s}, {t})"
+            );
+            let n = net_at(&normal, 5, 5, s, t);
+            assert!(
+                close(n, du.cross(dv), 1e-10),
+                "normal at ({s}, {t}): {n:?} vs {:?}",
+                du.cross(dv)
+            );
+        }
+        // A rational patch has no such nets.
+        assert!(
+            lumpy().bezier_spans().unwrap()[0]
+                .patch
+                .derivative_nets()
+                .is_none()
+        );
     }
 }
