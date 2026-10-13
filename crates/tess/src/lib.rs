@@ -77,6 +77,13 @@ pub struct TessParams {
     /// Upper limit on grid segments per patch direction. A tolerance that
     /// needs more is an error, never a silent coarser mesh.
     pub max_segments: u32,
+    /// A triangle budget, or `None` for no limit (the default). A mesh
+    /// that would have more triangles is not made:
+    /// [`TessError::OverBudget`], as soon as the faces done so far show
+    /// it, without tessellating the rest. A mesh within the budget is the
+    /// very mesh made without one. For a viewer that tries a fine
+    /// tolerance first and a coarser one when that is too much.
+    pub max_triangles: Option<usize>,
 }
 
 impl Default for TessParams {
@@ -84,6 +91,7 @@ impl Default for TessParams {
         Self {
             chordal_tolerance: 0.01,
             max_segments: 1024,
+            max_triangles: None,
         }
     }
 }
@@ -100,6 +108,16 @@ pub enum TessError {
         max_segments: u32,
     },
     TooManyVertices,
+    /// The mesh would have more triangles than
+    /// [`TessParams::max_triangles`]: the first `faces` faces, in face
+    /// order, make `triangles` already, and the rest was not tessellated.
+    /// The numbers depend on the body and the parameters only, not on the
+    /// number of threads or on which of them was first.
+    OverBudget {
+        triangles: usize,
+        faces: usize,
+        max_triangles: usize,
+    },
     /// The body refers to something that does not exist; run the checker.
     InvalidBody(String),
     /// A face or edge this tessellator cannot handle yet.
@@ -136,6 +154,15 @@ impl fmt::Display for TessError {
                  tolerance, above the limit of {max_segments}; use a larger tolerance"
             ),
             TessError::TooManyVertices => write!(f, "mesh would exceed 2^32 vertices"),
+            TessError::OverBudget {
+                triangles,
+                faces,
+                max_triangles,
+            } => write!(
+                f,
+                "the mesh has {triangles} triangles after {faces} faces, over the budget of \
+                 {max_triangles}; use a coarser tolerance"
+            ),
             TessError::InvalidBody(what) => write!(f, "invalid body: {what}"),
             TessError::Unsupported { face, what } => {
                 write!(f, "face {face} cannot be tessellated yet: {what}")
@@ -312,6 +339,17 @@ pub fn tessellate_patches(patches: &[BezierPatch], params: &TessParams) -> Resul
                     }
                 }
             }
+        }
+        // Patches are made one after the other: the first that takes the
+        // mesh over the budget ends it.
+        if let Some(max_triangles) = params.max_triangles
+            && mesh.triangles.len() > max_triangles
+        {
+            return Err(TessError::OverBudget {
+                triangles: mesh.triangles.len(),
+                faces: index.saturating_add(1),
+                max_triangles,
+            });
         }
     }
     Ok(mesh)
@@ -532,6 +570,7 @@ mod tests {
         let too_fine = TessParams {
             chordal_tolerance: 1e-300,
             max_segments: 64,
+            ..TessParams::default()
         };
         let err = tessellate_patches(&[patch], &too_fine).unwrap_err();
         assert!(matches!(err, TessError::TooFine { patch: 0, .. }));

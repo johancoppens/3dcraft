@@ -1046,6 +1046,7 @@ fn a_million_triangles() {
     let params = TessParams {
         chordal_tolerance: 3.6e-5,
         max_segments: 8192,
+        ..TessParams::default()
     };
     let start = Instant::now();
     let mesh = tessellate_body_with_threads(&torus.body, &params, 0).unwrap();

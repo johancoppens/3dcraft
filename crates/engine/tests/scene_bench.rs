@@ -174,15 +174,33 @@ pub fn polygon(sides: usize) -> Session {
     s
 }
 
+/// The processor time this process has used, on all its threads, in
+/// milliseconds (Linux: `/proc/self/stat`, in ticks of 10 ms); 0 elsewhere.
+/// What a busy machine changes least.
+fn cpu_ms() -> f64 {
+    let stat = std::fs::read_to_string("/proc/self/stat").unwrap_or_default();
+    // After the command's name, which may hold spaces: fields 14 and 15
+    // of the line are the 12th and 13th after the closing bracket.
+    let after = stat.rsplit(')').next().unwrap_or_default();
+    let ticks: f64 = after
+        .split_whitespace()
+        .skip(11)
+        .take(2)
+        .filter_map(|n| n.parse::<f64>().ok())
+        .sum();
+    ticks * 10.0
+}
+
 fn time(label: &str, s: &mut Session, quality: SceneQuality) {
     // A fresh build: the cache is keyed by what is asked for, so ask for
     // something not asked before.
-    let start = Instant::now();
+    let (start, cpu) = (Instant::now(), cpu_ms());
     let scene = s.scene_with(quality).unwrap().unwrap();
     let ms = start.elapsed().as_secs_f64() * 1e3;
+    let cpu = cpu_ms() - cpu;
     let faces = scene.mesh.face_ids.iter().max().map_or(0, |m| m + 1);
     println!(
-        "  {label:<28} tolerance {:>10.5}  {:>9} triangles  {faces:>5} faces  {ms:>8.1} ms  ({:?})",
+        "  {label:<28} tolerance {:>10.5}  {:>9} triangles  {faces:>5} faces  {ms:>8.1} ms  cpu {cpu:>6.0} ms  ({:?})",
         scene.tolerance,
         scene.triangles(),
         scene.problems
@@ -239,5 +257,41 @@ fn time_of_the_scene_at_the_display_quality_and_the_automatic_tolerance() {
                 max_triangles: 200_000,
             },
         );
+    }
+}
+
+/// What the triangle budget costs when a scene is over it: the display
+/// ladder on models whose finest mesh is several times the budget. Since
+/// 2026-10-13 the body that goes over the budget stops inside the
+/// tessellator (`TessParams::max_triangles`); before, it was tessellated
+/// in full at every step of the ladder.
+#[test]
+#[ignore = "a timing, not a check"]
+fn time_of_the_display_ladder_under_a_triangle_budget() {
+    let mut models: Vec<(&str, Session)> = vec![
+        ("flange", flange()),
+        ("plate with 32 x 32 holes", drilled(32)),
+    ];
+    for (name, s) in &mut models {
+        println!("{name}:");
+        let relative = 1e-6;
+        time(
+            "display 1e-6, no budget",
+            s,
+            SceneQuality::Display {
+                relative,
+                max_triangles: usize::MAX,
+            },
+        );
+        for max_triangles in [400_000, 100_000, 30_000, 10_000] {
+            time(
+                &format!("display 1e-6, budget {max_triangles}"),
+                s,
+                SceneQuality::Display {
+                    relative,
+                    max_triangles,
+                },
+            );
+        }
     }
 }

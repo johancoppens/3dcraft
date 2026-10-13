@@ -224,6 +224,7 @@ fn what_cannot_be_tessellated_yet_is_an_error_that_says_so() {
     let too_fine = TessParams {
         chordal_tolerance: 1e-14,
         max_segments: 8,
+        ..TessParams::default()
     };
     assert!(matches!(
         tessellate_body(&cylinder, &too_fine),

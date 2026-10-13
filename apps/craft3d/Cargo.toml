@@ -14,8 +14,10 @@ craft3d-automation.workspace = true
 craft3d-ui-egui.workspace = true
 eframe.workspace = true
 getrandom.workspace = true
+log.workspace = true
 rfd.workspace = true
 serde_json.workspace = true
+winit.workspace = true
 
 [dev-dependencies]
 png.workspace = true

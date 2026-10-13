@@ -879,3 +879,49 @@ fn a_display_quality_that_is_not_a_request_is_refused() {
     assert!(empty.scene_with(SceneQuality::display()).unwrap().is_none());
     assert!(empty.scene_with(SceneQuality::Automatic).unwrap().is_none());
 }
+
+/// Whatever the budget, the scene shown is a scene the engine would build
+/// at that tolerance without a budget, whole and bit for bit: the budget
+/// (which stops a body inside the tessellator, `TessParams::max_triangles`)
+/// only decides which tolerance it is. It is within the budget unless it
+/// is the automatic scene, and a larger budget never gives a coarser one.
+#[test]
+fn a_scene_under_a_budget_is_the_scene_at_its_tolerance_without_one() {
+    let mut s = session();
+    part(&mut s);
+    let automatic = scene(&mut s, None);
+    let fine = display(&mut s, DISPLAY_RELATIVE_TOLERANCE, usize::MAX);
+    let (least, most) = (automatic.triangles(), fine.triangles());
+    let mut last = automatic.tolerance;
+    let mut within = 0;
+    for step in 0..=12 {
+        // From below the automatic scene's count to the fine scene's own.
+        let budget = least / 2 + (most - least / 2) * step / 12;
+        let shown = display(&mut s, DISPLAY_RELATIVE_TOLERANCE, budget);
+        println!(
+            "budget {budget:>6}: tolerance {:.6}, {} triangles",
+            shown.tolerance,
+            shown.triangles()
+        );
+        let plain = scene(&mut s, Some(shown.tolerance));
+        assert_eq!(shown.mesh, plain.mesh, "budget {budget}");
+        assert_eq!(shown.bodies, plain.bodies, "budget {budget}");
+        assert_eq!(shown.sketches, plain.sketches, "budget {budget}");
+        assert!(shown.problems.is_empty(), "{:?}", shown.problems);
+        assert_eq!(shown.coarsened, shown.tolerance > fine.tolerance);
+        if shown.tolerance < automatic.tolerance {
+            assert!(shown.triangles() <= budget, "budget {budget}");
+            within += 1;
+        } else {
+            assert_eq!(shown.tolerance, automatic.tolerance);
+        }
+        assert!(
+            shown.tolerance <= last,
+            "budget {budget}: coarser than a smaller budget"
+        );
+        last = shown.tolerance;
+    }
+    // The fine scene's own count is a budget it meets.
+    assert_eq!(last, fine.tolerance);
+    assert!(within >= 6, "{within}");
+}

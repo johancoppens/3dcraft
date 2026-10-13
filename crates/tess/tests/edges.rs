@@ -197,6 +197,7 @@ fn the_edges_are_reproducible_and_bad_input_is_an_error() {
     let too_fine = TessParams {
         chordal_tolerance: 1e-15,
         max_segments: 16,
+        ..TessParams::default()
     };
     assert!(matches!(
         tessellate_edges(&cylinder, &too_fine),

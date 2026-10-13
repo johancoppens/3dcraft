@@ -78,8 +78,13 @@ impl Drop for Slot<'_> {
 }
 
 fn send_line(stream: &mut TcpStream, reply: &str) -> std::io::Result<()> {
-    stream.write_all(reply.as_bytes())?;
-    stream.write_all(b"\n")?;
+    // One write for the line and its end: two would have the second wait
+    // for the peer's delayed acknowledgement of the first (about 40 ms per
+    // reply on Linux).
+    let mut line = Vec::with_capacity(reply.len().saturating_add(1));
+    line.extend_from_slice(reply.as_bytes());
+    line.push(b'\n');
+    stream.write_all(&line)?;
     stream.flush()
 }
 

@@ -360,6 +360,7 @@ mod tests {
         let too_fine = TessParams {
             chordal_tolerance: 1e-15,
             max_segments: 16,
+            ..TessParams::default()
         };
         assert!(matches!(
             arc_segments(1.0, TAU, &too_fine),
@@ -570,6 +571,7 @@ mod tests {
             let tight = TessParams {
                 chordal_tolerance: 1e-2,
                 max_segments: 2,
+                ..TessParams::default()
             };
             let mut samples = edge_points(&one_edge(curve.clone(), range), &p).unwrap();
             let all: Vec<Chord> = (0..n as u32).map(|k| (0, k)).collect();
@@ -585,6 +587,7 @@ mod tests {
         let too_fine = TessParams {
             chordal_tolerance: 1e-13,
             max_segments: 8,
+            ..TessParams::default()
         };
         for curve in [ellipse.clone(), wiggle(1.0)] {
             let range = if curve.period().is_some() {
