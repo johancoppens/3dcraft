@@ -17,7 +17,9 @@
 
 use craft3d_geom::{Circle, Curve3, Cylinder, Plane, Sphere, Surface};
 use craft3d_math::{Frame, Tolerance, Vec3};
-use craft3d_tess::{Mesh, TessParams, tessellate_body, tessellate_body_with_threads};
+use craft3d_tess::{
+    Mesh, TessParams, tessellate_body, tessellate_body_with_threads, tessellate_edges,
+};
 use craft3d_topo::{Body, BodyKind, Coedge, check, mass_properties};
 use std::f64::consts::{PI, TAU};
 
@@ -369,7 +371,6 @@ fn output_does_not_depend_on_the_number_of_threads() {
 /// middle of the flat, and so is the way its rim is sampled.
 #[test]
 fn a_rim_around_a_pole_is_sampled_finer_next_to_the_pole_on_both_sides() {
-    use craft3d_tess::tessellate_edges;
     let frame = Frame::WORLD;
     // The rim is the circle 68° from z; the pole is 60° from z towards
     // −x, opposite the rim's vertex, 8° inside the rim.
@@ -409,21 +410,24 @@ fn a_rim_around_a_pole_is_sampled_finer_next_to_the_pole_on_both_sides() {
     }
 }
 
-/// When the holes leave no meridian free for the seam, the face is
-/// refused as before, with an error that names it; it does not come out
-/// as a mesh of something else.
+/// When the holes leave no meridian free for the seam, the seam goes
+/// from pole to pole in pieces, through a hole (it was refused until
+/// 2026-10-13). What comes out is the face and not a mesh of something
+/// else: the area is the sphere's less the twenty caps, every triangle
+/// faces outward within the tolerance, and the only open edges of the
+/// mesh are the rims of the holes.
 #[test]
-fn a_sphere_with_holes_on_every_meridian_is_refused() {
-    use craft3d_tess::TessError;
+fn a_sphere_with_holes_on_every_meridian_is_cut_through_a_hole() {
     // Twenty holes around the equator, each wider than the gap between
-    // the sixteen places a seam is tried at. A sheet: only the sphere.
+    // the sixteen places a straight seam is tried at. A sheet: only the
+    // sphere.
     let r = 2.0;
     let mut body = Body::new(BodyKind::Sheet);
     let mut loops = Vec::new();
+    let rim = (r * (TAU / 40.0).sin()) * 0.95;
     for k in 0..20 {
         let angle = TAU * f64::from(k) / 20.0 + 0.05;
         let out = Vec3::new(angle.cos(), angle.sin(), 0.0);
-        let rim = (r * (TAU / 40.0).sin()) * 0.95;
         let centre = out * (r * r - rim * rim).sqrt();
         let circle =
             Curve3::Circle(Circle::new(Frame::new(centre, out, Vec3::Z).unwrap(), rim).unwrap());
@@ -437,12 +441,50 @@ fn a_sphere_with_holes_on_every_meridian_is_refused() {
     let sphere = Sphere::new(Frame::WORLD, r).unwrap();
     let face = body.add_face(Surface::Sphere(sphere), false, loops);
     body.add_shell(vec![face]);
-    let error = tessellate_body(&body, &params(1e-2)).unwrap_err();
-    assert!(
-        matches!(error, TessError::Unsupported { face: 0, .. }),
-        "{error}"
-    );
-    assert!(error.to_string().contains("seam"), "{error}");
+    let cap = TAU * r * (r - (r * r - rim * rim).sqrt());
+    let expected = 4.0 * PI * r * r - 20.0 * cap;
+    let mut previous = f64::INFINITY;
+    for tolerance in [1e-2, 1e-3] {
+        let mesh = tessellate_body(&body, &params(tolerance)).unwrap();
+        assert_eq!(
+            bits(&mesh),
+            bits(&tessellate_body_with_threads(&body, &params(tolerance), 1).unwrap())
+        );
+        for t in 0..mesh.triangles.len() {
+            let [a, b, c] = mesh.corners(t).unwrap();
+            let centroid = (a + b + c) * (1.0 / 3.0);
+            assert!((centroid.length() - r).abs() <= tolerance * (1.0 + 1e-9));
+            assert!((b - a).cross(c - a).dot(centroid) > 0.0, "triangle {t}");
+        }
+        // The open edges of the welded mesh are the chords of the rims.
+        let welded = mesh.weld().unwrap();
+        let mut uses = std::collections::BTreeSet::new();
+        for &[a, b, c] in &welded.triangles {
+            for e in [(a, b), (b, c), (c, a)] {
+                assert!(uses.insert(e), "an edge is used twice the same way");
+            }
+        }
+        let open = uses.iter().filter(|(a, b)| !uses.contains(&(*b, *a)));
+        let on_the_boundary: std::collections::BTreeSet<[u64; 3]> = open
+            .flat_map(|&(a, b)| [a, b])
+            .map(|k| welded.positions[k as usize].map(f64::to_bits))
+            .collect();
+        let rims: std::collections::BTreeSet<[u64; 3]> =
+            tessellate_edges(&body, &params(tolerance))
+                .unwrap()
+                .iter()
+                .flatten()
+                .map(|p| [p.x, p.y, p.z].map(f64::to_bits))
+                .collect();
+        assert_eq!(on_the_boundary, rims, "at {tolerance}");
+        let error = (mesh.area() - expected).abs() / expected;
+        println!(
+            "sphere with twenty holes at {tolerance:e}: {} triangles, area error {error:e}",
+            mesh.triangles.len()
+        );
+        assert!(error < 2.0 * tolerance / r && error < previous, "{error:e}");
+        previous = error;
+    }
 }
 
 /// A loop that runs counter-clockwise with a hole in it is still the

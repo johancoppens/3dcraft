@@ -24,9 +24,11 @@
 //! Not handled, each an `Unsupported` error that names the face:
 //! - a loop that winds around its surface more than once, or around both
 //!   the axis and the tube of a torus (a Villarceau circle);
-//! - a face around the axis of its surface that leaves no room for a
-//!   straight seam between its winding loops, or between the poles of a
-//!   sphere past its holes (16 places are tried).
+//! - a face around the axis of its surface for which no seam is found
+//!   between its winding loops (or the ends of the surface), neither a
+//!   straight one nor one in pieces through its other loops. A face
+//!   whose loops do not cross has one; this is what is left for loops
+//!   that do, after the chords were made finer.
 //!
 //! Refused as a `TessError::Face`, because the loops bound no region or
 //! do not say which one is meant:

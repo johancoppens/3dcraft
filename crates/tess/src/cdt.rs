@@ -154,6 +154,10 @@ enum Toward {
     Crossing(u32, usize),
 }
 
+/// How many triangles within the clearance of an interior point are
+/// searched for constraints ([`Cdt::insert_interior`]).
+const NEAR_TRIANGLES: usize = 64;
+
 /// The result of offering an interior point.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Interior {
@@ -491,8 +495,7 @@ impl Cdt {
     }
 
     /// Offers an interior point. It is added when it lies inside the
-    /// region, at least `clearance` away from the constraints of the
-    /// triangle it falls in.
+    /// region, at least `clearance` away from every constraint.
     pub(crate) fn insert_interior(&mut self, p: P2, clearance: f64) -> Result<Interior, CdtError> {
         if !(p.0.is_finite() && p.1.is_finite()) {
             return Err(CdtError::NonFinite);
@@ -507,12 +510,32 @@ impl Cdt {
         if !tri.inside {
             return Ok(Interior::Skipped);
         }
+        // Every edge nearer than the clearance is looked at, in this
+        // triangle and in the ones beyond such an edge: a constraint that
+        // starts at a corner of this triangle, or lies behind a thin
+        // neighbour, is as near as one of its own.
         let limit = clearance * clearance;
-        for i in 0..3 {
-            if pick(tri.c, i) > 0 {
+        let mut seen: Vec<u32> = vec![t];
+        let mut next = 0;
+        while let Some(&current) = seen.get(next) {
+            next += 1;
+            let tri = self.t(current)?;
+            for i in 0..3 {
                 let (a, b) = (self.p(pick(tri.v, i + 1))?, self.p(pick(tri.v, i + 2))?);
-                if edge == Some(i) || distance_squared_to_segment(p, a, b) < limit {
+                let on_it = current == t && edge == Some(i);
+                if !(on_it || distance_squared_to_segment(p, a, b) < limit) {
+                    continue;
+                }
+                if pick(tri.c, i) > 0 {
                     return Ok(Interior::Skipped);
+                }
+                let beyond = pick(tri.n, i);
+                if beyond != NONE && !seen.contains(&beyond) {
+                    if seen.len() >= NEAR_TRIANGLES {
+                        // Too crowded here to tell: no point is needed.
+                        return Ok(Interior::Skipped);
+                    }
+                    seen.push(beyond);
                 }
             }
         }
@@ -886,6 +909,49 @@ pub(crate) fn triangulate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An interior point keeps its clearance from every constraint, not
+    /// only from those of the triangle it falls in: next to a corner of
+    /// a hole it falls in a triangle of the fan around that corner, none
+    /// of whose own edges is a constraint. (Such a point just above a
+    /// chord of a hole made a triangle that stands inside out on a curved
+    /// face, which refinement then never got right.)
+    #[test]
+    fn interior_points_keep_their_clearance_from_every_constraint() {
+        let outer = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)];
+        let hole = [(4.0, 4.0), (4.0, 6.0), (6.0, 6.0), (6.0, 4.0)];
+        let (points, segments) = rings(&[&outer, &hole]);
+        let mut cdt = Cdt::new((0.0, 0.0), (10.0, 10.0), 100_000).unwrap();
+        let ids: Vec<u32> = points
+            .iter()
+            .map(|p| cdt.insert_boundary(*p).unwrap())
+            .collect();
+        for &(i, j) in &segments {
+            cdt.constrain(ids[i], ids[j]).unwrap();
+        }
+        assert!(cdt.classify().unwrap() > 0);
+        let clearance = 0.5;
+        let mut added = 0;
+        for i in 0..15 {
+            for j in 0..15 {
+                // Off the lines through the corners.
+                let p = (f64::from(i) * 0.7 + 0.013, f64::from(j) * 0.7 + 0.007);
+                let nearest = segments
+                    .iter()
+                    .map(|&(a, b)| distance_squared_to_segment(p, points[a], points[b]).sqrt())
+                    .fold(f64::INFINITY, f64::min);
+                let in_the_hole = p.0 > 4.0 && p.0 < 6.0 && p.1 > 4.0 && p.1 < 6.0;
+                let wanted = nearest >= clearance && !in_the_hole;
+                let got = matches!(
+                    cdt.insert_interior(p, clearance).unwrap(),
+                    Interior::Added(_)
+                );
+                assert_eq!(got, wanted, "{p:?}, {nearest} from a constraint");
+                added += usize::from(got);
+            }
+        }
+        assert!(added > 100, "{added}");
+    }
 
     /// Points and segments of closed polygons, one after the other.
     fn rings(polygons: &[&[P2]]) -> (Vec<P2>, Vec<(usize, usize)>) {

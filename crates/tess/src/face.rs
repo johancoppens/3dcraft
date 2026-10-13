@@ -10,7 +10,12 @@
 //!    parameter plane. A loop that winds once around the axis is cut open
 //!    along a *seam*, a line from it to the loop on the other side (or to
 //!    the end of the surface: a pole or an apex); both sides of the cut
-//!    get the same 3D points. Where the parametrisation is singular (a
+//!    get the same 3D points. Where the other loops leave no room for a
+//!    straight seam (holes on every longitude, in rows that overlap), the
+//!    seam is made of straight pieces from loop to loop: it enters a hole
+//!    at one vertex and goes on from another, and the hole's two
+//!    stretches between them become part of the two sides of the cut
+//!    ([`Routes`]). Where the parametrisation is singular (a
 //!    pole, an apex, a collapsed edge of a patch) a whole stretch of the
 //!    parameter boundary is one 3D point; its vertices all carry that
 //!    point, and triangles between two of them are dropped at the end.
@@ -460,7 +465,8 @@ impl Ring {
 
 /// A cut through a surface that closes on itself: the straight line in
 /// parameter space between two boundary vertices, and its twin one period
-/// further, which is the same curve in space.
+/// further, which is the same curve in space. A cut that cannot be
+/// straight is several of these, from loop to loop ([`Cut`]).
 #[derive(Clone, Copy)]
 struct Seam {
     from: usize,
@@ -468,6 +474,42 @@ struct Seam {
     twin_from: usize,
     twin_to: usize,
     shift: Uv,
+}
+
+/// A loop that does not wind, on the way of a seam (see
+/// [`Region::add_split`]): which of the face's loops, moved by how many
+/// periods, and the vertices at which the seam arrives and goes on.
+#[derive(Clone, Copy, Debug)]
+struct Via {
+    ring: usize,
+    turns: [i32; 2],
+    enter: usize,
+    leave: usize,
+}
+
+/// The vertices of a loop a seam passes through, on the side where the
+/// region starts and (`twin_*`) a period further.
+struct SplitEnds {
+    enter: usize,
+    leave: usize,
+    twin_enter: usize,
+    twin_leave: usize,
+}
+
+/// Where a face that goes around its surface is cut open: from the lower
+/// winding loop (or the lower end of the surface) to the upper one, in
+/// one straight piece or, when the other loops leave no room for that,
+/// in pieces from loop to loop.
+struct Cut {
+    /// Where the seam starts on the lower end of the surface, when no
+    /// loop winds there.
+    a: f64,
+    /// The same for the upper end.
+    upper_a: f64,
+    lower_start: Option<usize>,
+    upper_start: Option<(usize, i32)>,
+    /// The loops on the way, from the lower side to the upper.
+    via: Vec<Via>,
 }
 
 /// The boundary of a face in parameter space.
@@ -546,6 +588,91 @@ impl Region {
             (base, base + n)
         } else {
             (base + n, base)
+        }
+    }
+
+    /// A loop that does not wind and that a seam passes through: it comes
+    /// in at vertex `enter` and goes on from vertex `leave`. The loop is
+    /// then part of both sides of the cut. Of its two stretches between
+    /// those vertices one is added at `turns` and bounds the region where
+    /// it starts, the other a period of `a` further, where the region
+    /// ends; `forward_far` says that the far one is the stretch that runs
+    /// from `enter` to `leave` in loop order.
+    ///
+    /// Returns the vertices the seam's pieces end on.
+    fn add_split(
+        &mut self,
+        ring: &Ring,
+        via: &Via,
+        forward_far: bool,
+        periods: [Option<f64>; 2],
+    ) -> SplitEnds {
+        let n = ring.verts.len();
+        let [ta, tb] = via.turns;
+        let far = [ta.saturating_add(1), tb];
+        if via.enter == via.leave || n == 0 {
+            // The seam only touches the loop: all of it stays on the near
+            // side, and the far side gets the one point.
+            let base = self.verts.len();
+            self.add_ring(ring, via.turns, periods);
+            let near = base + via.enter.min(n.saturating_sub(1));
+            let twin = match ring.verts.get(via.enter) {
+                Some(v) => self.add(Bv {
+                    uv: shifted(v.uv, far, periods),
+                    chord: None,
+                    ..*v
+                }),
+                None => near,
+            };
+            return SplitEnds {
+                enter: near,
+                leave: near,
+                twin_enter: twin,
+                twin_leave: twin,
+            };
+        }
+        // The stretch from vertex `from` on to vertex `to`: its first and
+        // its last vertex.
+        let mut stretch = |from: usize, to: usize, turns: [i32; 2]| -> (usize, usize) {
+            let base = self.verts.len();
+            let steps = (to + n - from) % n;
+            let mut leaving: Option<Chord> = None;
+            for i in 0..=steps {
+                let Some(v) = ring.verts.get((from + i) % n) else {
+                    continue;
+                };
+                self.verts.push(Bv {
+                    uv: shifted(v.uv, turns, periods),
+                    ..*v
+                });
+                if i > 0 {
+                    self.link(base + i - 1, base + i, leaving);
+                }
+                leaving = v.chord;
+            }
+            (base, base + steps)
+        };
+        let (forward_turns, backward_turns) = if forward_far {
+            (far, via.turns)
+        } else {
+            (via.turns, far)
+        };
+        let (forward_enter, forward_leave) = stretch(via.enter, via.leave, forward_turns);
+        let (backward_leave, backward_enter) = stretch(via.leave, via.enter, backward_turns);
+        if forward_far {
+            SplitEnds {
+                enter: backward_enter,
+                leave: backward_leave,
+                twin_enter: forward_enter,
+                twin_leave: forward_leave,
+            }
+        } else {
+            SplitEnds {
+                enter: forward_enter,
+                leave: forward_leave,
+                twin_enter: backward_enter,
+                twin_leave: backward_leave,
+            }
         }
     }
 
@@ -757,6 +884,7 @@ fn band_region(
     rings: &[Ring],
     sense: f64,
     face: usize,
+    starved: &mut bool,
 ) -> Result<Region, TessError> {
     let periods = param.periods();
     let [Some(period), period_b] = periods else {
@@ -837,12 +965,6 @@ fn band_region(
     // The seam: from a vertex of one winding loop to the vertex of the
     // other that is nearest in `a`, or straight to the end of the surface.
     // It must not cross any loop; a few starting vertices are tried.
-    struct Cut {
-        a: f64,
-        lower_start: Option<usize>,
-        upper_start: Option<(usize, i32)>,
-        ends: [Uv; 2],
-    }
     let left_a = |ring: &Ring, s: usize| -> Option<f64> {
         let [a, _] = ring.verts.get(s)?.uv;
         let [wa, _] = ring.winding;
@@ -907,14 +1029,14 @@ fn band_region(
             let tries = if holes.is_empty() { 1 } else { SEAM_TRIES };
             for c in 0..tries {
                 let a = a_low + period * c as f64 / tries as f64;
-                let ends = [[a, b_low], [a, b_high]];
-                let [from, to] = ends;
+                let (from, to) = ([a, b_low], [a, b_high]);
                 if from.iter().chain(&to).all(|x| x.is_finite()) && !crosses_a_loop(from, to) {
                     cut = Some(Cut {
                         a,
+                        upper_a: a,
                         lower_start: None,
                         upper_start: None,
-                        ends,
+                        via: Vec::new(),
                     });
                     break;
                 }
@@ -940,29 +1062,41 @@ fn band_region(
                                 continue;
                             };
                             let [_, end_b] = shifted(end.uv, [0, upper_turns_b], periods);
+                            (
+                                Cut {
+                                    a,
+                                    upper_a: a,
+                                    lower_start: Some(s),
+                                    upper_start: Some((j, turns)),
+                                    via: Vec::new(),
+                                },
+                                [[a, b], [end_a + f64::from(turns) * period, end_b]],
+                            )
+                        }
+                        None => (
                             Cut {
                                 a,
+                                upper_a: a,
                                 lower_start: Some(s),
-                                upper_start: Some((j, turns)),
-                                ends: [[a, b], [end_a + f64::from(turns) * period, end_b]],
-                            }
-                        }
-                        None => Cut {
-                            a,
-                            lower_start: Some(s),
-                            upper_start: None,
-                            ends: [[a, b], [a, b_high]],
-                        },
+                                upper_start: None,
+                                via: Vec::new(),
+                            },
+                            [[a, b], [a, b_high]],
+                        ),
                     }
                 } else {
-                    Cut {
-                        a,
-                        lower_start: None,
-                        upper_start: Some((s, 0)),
-                        ends: [[a, b_low], [a, b]],
-                    }
+                    (
+                        Cut {
+                            a,
+                            upper_a: a,
+                            lower_start: None,
+                            upper_start: Some((s, 0)),
+                            via: Vec::new(),
+                        },
+                        [[a, b_low], [a, b]],
+                    )
                 };
-                let [from, to] = candidate.ends;
+                let (candidate, [from, to]) = candidate;
                 if from.iter().chain(&to).all(|x| x.is_finite()) && !crosses_a_loop(from, to) {
                     cut = Some(candidate);
                     break;
@@ -970,12 +1104,31 @@ fn band_region(
             }
         }
     }
-    let Some(cut) = cut else {
-        return unsupported(
-            face,
-            "a face around the axis of its surface with no place for a straight seam between \
-             its loops",
-        );
+    // No straight seam: one in pieces, from loop to loop.
+    let cut = match cut {
+        Some(cut) => cut,
+        None => {
+            let search = Routes {
+                param,
+                lower,
+                upper,
+                holes: &holes,
+                upper_turns_b,
+                crosses_a_loop: &crosses_a_loop,
+            };
+            let Some(cut) = search.cut() else {
+                // Chords too coarse may be what closes the way (two loops
+                // nearer to each other than the tolerance): the face asks
+                // for finer ones before this error stands.
+                *starved = true;
+                return unsupported(
+                    face,
+                    "a face around the axis of its surface with no way for a seam between its \
+                     loops",
+                );
+            };
+            cut
+        }
     };
 
     let mut region = Region::default();
@@ -997,9 +1150,9 @@ fn band_region(
             region.add_chain(ring, start, [turns, upper_turns_b], periods)
         }
         _ => {
-            let left = pole(param, cut.a, b_high, typical, face)?;
+            let left = pole(param, cut.upper_a, b_high, typical, face)?;
             let right = Bv {
-                uv: [cut.a + period, b_high],
+                uv: [cut.upper_a + period, b_high],
                 ..left
             };
             let ends = (region.add(left), region.add(right));
@@ -1007,13 +1160,33 @@ fn band_region(
             ends
         }
     };
+    // The seam's pieces, through the loops on its way. Going up, the face
+    // is on the right of the seam where the region starts and on the left
+    // where it ends, and the face is on the left of its loops, which is
+    // the right in `(a, b)` when they run clockwise there.
+    let (mut from, mut twin_from) = (lower_left, lower_right);
+    for via in &cut.via {
+        let Some(ring) = rings.get(via.ring) else {
+            continue;
+        };
+        let ends = region.add_split(ring, via, positive(sense), periods);
+        region.seams.push(Seam {
+            from,
+            to: ends.enter,
+            twin_from,
+            twin_to: ends.twin_enter,
+            shift: [period, 0.0],
+        });
+        (from, twin_from) = (ends.leave, ends.twin_leave);
+    }
     region.seams.push(Seam {
-        from: lower_left,
+        from,
         to: upper_left,
-        twin_from: lower_right,
+        twin_from,
         twin_to: upper_right,
         shift: [period, 0.0],
     });
+    holes.retain(|(i, _)| cut.via.iter().all(|via| via.ring != *i));
     let mut outline = Region::default();
     outline.verts.clone_from(&region.verts);
     outline.segs.clone_from(&region.segs);
@@ -1033,6 +1206,518 @@ fn band_region(
         region.add_ring(ring, turns, periods);
     }
     Ok(region)
+}
+
+/// How many copies of the loops, side by side around the axis, the search
+/// for a seam in pieces lays out on either side of the one in the middle.
+const ROUTE_TURNS: i32 = 1;
+
+/// How many pieces may be tried and found to cross a loop before the
+/// search for a seam in pieces gives up.
+const ROUTE_REJECTS: usize = 256;
+
+/// Whether `p` lies above (towards `+b` of) a loop that winds around `a`
+/// and is moved by `tb` periods of `b`.
+fn above(ring: &Ring, tb: i32, p: Uv, periods: [Option<f64>; 2]) -> bool {
+    let [Some(period), _] = periods else {
+        return false;
+    };
+    let [pa, pb] = p;
+    let mut odd = false;
+    for (i, v) in ring.verts.iter().enumerate() {
+        let Some(w) = ring.next(i, periods) else {
+            continue;
+        };
+        let around = ((pa - get2(v.uv, 0)) / period).round();
+        if exceeds(around.abs(), 1e6) {
+            return false;
+        }
+        // In range by the check above.
+        let around = around as i32;
+        for ta in around - 1..=around + 1 {
+            let [a0, b0] = shifted(v.uv, [ta, tb], periods);
+            let [a1, b1] = shifted(w.uv, [ta, tb], periods);
+            if (a0 > pa) != (a1 > pa) && b0 + (pa - a0) / (a1 - a0) * (b1 - b0) < pb {
+                odd = !odd;
+            }
+        }
+    }
+    odd
+}
+
+/// One loop a seam in pieces may start from, pass through or end on.
+struct Station<'a> {
+    ring: &'a Ring,
+    /// Its number among the face's loops, for one that does not wind.
+    hole: Option<usize>,
+    /// The periods of `b` it is moved by.
+    tb: i32,
+}
+
+/// A piece a seam may be made of: from vertex `leave` of station `from`
+/// to vertex `enter` of station `to`, which lies `dt` periods of `a`
+/// further than `from` does. A piece without one of the vertices starts
+/// or ends on the end of the surface, straight below or above its other
+/// end.
+#[derive(Clone, Copy)]
+struct Bridge {
+    from: usize,
+    to: usize,
+    leave: Option<usize>,
+    enter: Option<usize>,
+    dt: i32,
+    length: f64,
+}
+
+/// How a station was reached from the lower side.
+#[derive(Clone, Copy)]
+struct Reached {
+    /// The bridge it was reached by; none for the station the search
+    /// starts from.
+    by: Option<usize>,
+    /// The periods of `a` the station is moved by.
+    turns: i32,
+    piece: Option<[Uv; 2]>,
+}
+
+/// The search for a seam in pieces: from the lower winding loop (or the
+/// lower end of the surface) to the upper one, each piece a straight
+/// line between vertices of two loops that crosses nothing.
+///
+/// The loops are laid out a few times side by side and triangulated,
+/// their segments as constraints. No edge of that triangulation crosses
+/// a loop, so every edge between two different loops is a piece a seam
+/// can use, and because the region between the loops is connected the
+/// edges join the lower side to the upper. The shortest chain of them (in
+/// pieces, then in length) is the seam. Every piece is still tested
+/// against all loops and against the pieces before it, since the layout
+/// is finite and a chain is put together from edges found in different
+/// copies.
+struct Routes<'a> {
+    param: &'a Param<'a>,
+    lower: Option<&'a Ring>,
+    upper: Option<&'a Ring>,
+    holes: &'a [(usize, &'a Ring)],
+    upper_turns_b: i32,
+    crosses_a_loop: &'a dyn Fn(Uv, Uv) -> bool,
+}
+
+impl Routes<'_> {
+    /// The periods of `b` that bring a loop that does not wind between
+    /// the winding loops (only a torus has such a period).
+    fn hole_turns(&self, ring: &Ring, periods: [Option<f64>; 2]) -> Option<i32> {
+        if get2(periods, 1).is_none() {
+            return Some(0);
+        }
+        let vertex = ring.verts.iter().find(|v| v.free.is_none())?;
+        [0, -1, 1, -2, 2].into_iter().find(|&tb| {
+            let p = shifted(vertex.uv, [0, tb], periods);
+            self.lower.is_none_or(|ring| above(ring, 0, p, periods))
+                && self
+                    .upper
+                    .is_none_or(|ring| !above(ring, self.upper_turns_b, p, periods))
+        })
+    }
+
+    /// Every piece a seam may be made of, ordered by the station it
+    /// leaves and then by length.
+    fn bridges(
+        &self,
+        stations: &[Station],
+        low_end: usize,
+        high_end: usize,
+    ) -> Option<Vec<Bridge>> {
+        let periods = self.param.periods();
+        // Parameters scaled by how fast the surface moves with them, so
+        // that short edges are short in space.
+        let mut scale = [0.0_f64; 2];
+        for v in stations.iter().flat_map(|s| &s.ring.verts) {
+            let (_, [da, db]) = self.param.derivatives(v.uv);
+            let [sa, sb] = scale;
+            scale = [sa.max(da.length()), sb.max(db.length())];
+        }
+        let scale = scale.map(|s| if s.is_finite() && s > 0.0 { s } else { 1.0 });
+
+        struct Point {
+            plane: P2,
+            station: usize,
+            vertex: usize,
+            ta: i32,
+            usable: bool,
+        }
+        let origin = stations.first()?.ring.verts.first()?.uv;
+        let mut points: Vec<Point> = Vec::new();
+        let mut offsets: Vec<usize> = Vec::with_capacity(stations.len());
+        let (mut low, mut high) = (
+            (f64::INFINITY, f64::INFINITY),
+            (f64::NEG_INFINITY, f64::NEG_INFINITY),
+        );
+        for (station, s) in stations.iter().enumerate() {
+            offsets.push(points.len());
+            for ta in -ROUTE_TURNS..=ROUTE_TURNS {
+                for (vertex, v) in s.ring.verts.iter().enumerate() {
+                    let plane = to_plane(shifted(v.uv, [ta, s.tb], periods), origin, scale);
+                    if !(plane.0.is_finite() && plane.1.is_finite()) {
+                        return None;
+                    }
+                    low = (low.0.min(plane.0), low.1.min(plane.1));
+                    high = (high.0.max(plane.0), high.1.max(plane.1));
+                    points.push(Point {
+                        plane,
+                        station,
+                        vertex,
+                        ta,
+                        usable: v.free.is_none(),
+                    });
+                }
+            }
+        }
+        let count = points.len();
+        let mut cdt = Cdt::new(low, high, count.checked_add(8)?).ok()?;
+        // In an order that jumps around, as for the face itself.
+        let mut stride = ((count as f64) * 0.618) as usize;
+        let coprime = |mut a: usize, mut b: usize| {
+            while b != 0 {
+                (a, b) = (b, a % b);
+            }
+            a == 1
+        };
+        while stride > 1 && !coprime(stride, count) {
+            stride -= 1;
+        }
+        let stride = stride.max(1);
+        let mut id_of: Vec<Option<u32>> = vec![None; count];
+        // Per vertex of the triangulation, the first usable point there.
+        let mut point_of: Vec<Option<usize>> = Vec::new();
+        for n in 0..count {
+            let i = n.checked_mul(stride)? % count;
+            let Some(point) = points.get(i) else {
+                continue;
+            };
+            // A point too close to another to tell them apart is left out.
+            let Ok(id) = cdt.insert_boundary(point.plane) else {
+                continue;
+            };
+            if let Some(slot) = id_of.get_mut(i) {
+                *slot = Some(id);
+            }
+            let Some(k) = id.checked_sub(FIRST_VERTEX).map(|k| k as usize) else {
+                continue;
+            };
+            if point_of.len() <= k {
+                point_of.resize(k + 1, None);
+            }
+            if let Some(slot) = point_of.get_mut(k)
+                && slot.is_none()
+                && point.usable
+            {
+                *slot = Some(i);
+            }
+        }
+        // The loops' segments. One that cannot be made an edge (it
+        // crosses another: chords too coarse) is left out; the pieces are
+        // tested against the loops themselves anyway.
+        let copies = usize::try_from(2 * ROUTE_TURNS + 1).ok()?;
+        for (station, s) in stations.iter().enumerate() {
+            let n = s.ring.verts.len();
+            let [wa, _] = s.ring.winding;
+            let base = offsets.get(station).copied()?;
+            for copy in 0..copies {
+                for i in 0..n {
+                    let next = if i + 1 < n {
+                        Some(copy * n + i + 1)
+                    } else {
+                        // The loop closes in the copy it winds into.
+                        let closing = i64::try_from(copy).ok()? + i64::from(wa);
+                        usize::try_from(closing)
+                            .ok()
+                            .filter(|c| *c < copies)
+                            .map(|c| c * n)
+                    };
+                    let Some(next) = next else { continue };
+                    let ids = (
+                        id_of.get(base + copy * n + i).copied().flatten(),
+                        id_of.get(base + next).copied().flatten(),
+                    );
+                    if let (Some(p), Some(q)) = ids
+                        && p != q
+                    {
+                        let _ = cdt.constrain(p, q);
+                    }
+                }
+            }
+        }
+
+        let mut bridges: Vec<Bridge> = Vec::new();
+        let point_at = |v: u32| -> Option<&Point> {
+            let k = v.checked_sub(FIRST_VERTEX)? as usize;
+            points.get(point_of.get(k).copied().flatten()?)
+        };
+        for t in 0..cdt.triangle_count() {
+            let Some(view) = cdt.triangle(t) else {
+                continue;
+            };
+            let [x, y, z] = view.v;
+            for (v, w) in [(x, y), (y, z), (z, x)] {
+                let (Some(p), Some(q)) = (point_at(v), point_at(w)) else {
+                    continue;
+                };
+                if p.station == q.station {
+                    continue;
+                }
+                let length = (p.plane.0 - q.plane.0).hypot(p.plane.1 - q.plane.1);
+                for (p, q) in [(p, q), (q, p)] {
+                    bridges.push(Bridge {
+                        from: p.station,
+                        to: q.station,
+                        leave: Some(p.vertex),
+                        enter: Some(q.vertex),
+                        dt: q.ta.saturating_sub(p.ta),
+                        length,
+                    });
+                }
+            }
+        }
+        // Where no loop winds, the surface ends in a point that every
+        // loop sees from its lowest (or highest) vertex unless another
+        // loop is in the way.
+        let [_, (b_low, b_high)] = self.param.domain();
+        let [_, sb] = scale;
+        for (station, s) in stations.iter().enumerate() {
+            let proper = || {
+                s.ring
+                    .verts
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, v)| v.free.is_none())
+            };
+            let b_of = |v: &Bv| get2(v.uv, 1);
+            if self.lower.is_none()
+                && let Some((i, v)) =
+                    proper().min_by(|x, y| b_of(x.1).total_cmp(&b_of(y.1)).then(x.0.cmp(&y.0)))
+            {
+                bridges.push(Bridge {
+                    from: low_end,
+                    to: station,
+                    leave: None,
+                    enter: Some(i),
+                    dt: 0,
+                    length: ((b_of(v) - b_low) * sb).abs(),
+                });
+            }
+            if self.upper.is_none()
+                && let Some((i, v)) =
+                    proper().max_by(|x, y| b_of(x.1).total_cmp(&b_of(y.1)).then(y.0.cmp(&x.0)))
+            {
+                bridges.push(Bridge {
+                    from: station,
+                    to: high_end,
+                    leave: Some(i),
+                    enter: None,
+                    dt: 0,
+                    length: ((b_high - b_of(v)) * sb).abs(),
+                });
+            }
+        }
+        let key = |b: &Bridge| (b.from, b.to, b.leave, b.enter, b.dt);
+        bridges.sort_by(|x, y| {
+            x.from
+                .cmp(&y.from)
+                .then(x.length.total_cmp(&y.length))
+                .then(key(x).cmp(&key(y)))
+        });
+        bridges.dedup_by(|x, y| key(x) == key(y));
+        Some(bridges)
+    }
+
+    /// The seam in pieces, if there is a way for one.
+    fn cut(&self) -> Option<Cut> {
+        let periods = self.param.periods();
+        let [_, (b_low, b_high)] = self.param.domain();
+        let mut stations: Vec<Station> = Vec::new();
+        let (mut source, mut target) = (None, None);
+        if let Some(ring) = self.lower {
+            source = Some(stations.len());
+            stations.push(Station {
+                ring,
+                hole: None,
+                tb: 0,
+            });
+        }
+        if let Some(ring) = self.upper {
+            target = Some(stations.len());
+            stations.push(Station {
+                ring,
+                hole: None,
+                tb: self.upper_turns_b,
+            });
+        }
+        for &(index, ring) in self.holes {
+            if let Some(tb) = self.hole_turns(ring, periods) {
+                stations.push(Station {
+                    ring,
+                    hole: Some(index),
+                    tb,
+                });
+            }
+        }
+        // The two ends of the surface come after the loops.
+        let low_end = stations.len();
+        let high_end = low_end + 1;
+        let (source, target) = (source.unwrap_or(low_end), target.unwrap_or(high_end));
+        let bridges = self.bridges(&stations, low_end, high_end)?;
+
+        // A piece in parameters, when the station it leaves is moved by
+        // `turns` periods.
+        let piece = |bridge: &Bridge, turns: i32| -> Option<[Uv; 2]> {
+            let at = |station: usize, vertex: Option<usize>, turns: i32| -> Option<Uv> {
+                let s = stations.get(station)?;
+                Some(shifted(
+                    s.ring.verts.get(vertex?)?.uv,
+                    [turns, s.tb],
+                    periods,
+                ))
+            };
+            let leave = at(bridge.from, bridge.leave, turns);
+            let enter = at(bridge.to, bridge.enter, turns.checked_add(bridge.dt)?);
+            let ends = match (leave, enter) {
+                (Some(p), Some(q)) => [p, q],
+                (None, Some([a, b])) => [[a, b_low], [a, b]],
+                (Some([a, b]), None) => [[a, b], [a, b_high]],
+                (None, None) => return None,
+            };
+            ends.iter().flatten().all(|x| x.is_finite()).then_some(ends)
+        };
+
+        // Breadth first from the lower side: the fewest pieces, and among
+        // those the short ones first.
+        let mut reached: Vec<Option<Reached>> = vec![None; high_end + 1];
+        let lower_turns = match self.lower.map(|ring| ring.winding) {
+            Some([wa, _]) if wa < 0 => -1,
+            _ => 0,
+        };
+        if let Some(slot) = reached.get_mut(source) {
+            *slot = Some(Reached {
+                by: None,
+                turns: lower_turns,
+                piece: None,
+            });
+        }
+        let crosses_the_seam = |ends: [Uv; 2], from: usize, reached: &[Option<Reached>]| -> bool {
+            let [p, q] = ends;
+            let mut node = from;
+            for _ in 0..reached.len() {
+                let Some(Some(step)) = reached.get(node) else {
+                    return false;
+                };
+                let (Some([c, d]), Some(by)) = (step.piece, step.by) else {
+                    return false;
+                };
+                for k in -1..=1 {
+                    let (c, d) = (shifted(c, [k, 0], periods), shifted(d, [k, 0], periods));
+                    if seam_blocked(p, q, c, d) {
+                        return true;
+                    }
+                }
+                let Some(bridge) = bridges.get(by) else {
+                    return false;
+                };
+                node = bridge.from;
+            }
+            false
+        };
+        let mut queue = std::collections::VecDeque::from([source]);
+        let mut rejects = 0_usize;
+        while let Some(node) = queue.pop_front() {
+            if node == target {
+                break;
+            }
+            let Some(Some(here)) = reached.get(node).copied() else {
+                continue;
+            };
+            let first = bridges.partition_point(|b| b.from < node);
+            for (index, bridge) in bridges.iter().enumerate().skip(first) {
+                if bridge.from != node {
+                    break;
+                }
+                if !matches!(reached.get(bridge.to), Some(None)) {
+                    continue;
+                }
+                let Some(ends) = piece(bridge, here.turns) else {
+                    continue;
+                };
+                let [p, q] = ends;
+                if crosses_the_seam(ends, node, &reached) || (self.crosses_a_loop)(p, q) {
+                    rejects += 1;
+                    if rejects > ROUTE_REJECTS {
+                        return None;
+                    }
+                    continue;
+                }
+                if let Some(slot) = reached.get_mut(bridge.to) {
+                    *slot = Some(Reached {
+                        by: Some(index),
+                        turns: here.turns.checked_add(bridge.dt)?,
+                        piece: Some(ends),
+                    });
+                    queue.push_back(bridge.to);
+                }
+            }
+        }
+
+        // Back from the upper side along the bridges that reached it.
+        let mut chain: Vec<(Bridge, Reached)> = Vec::new();
+        let mut node = target;
+        for _ in 0..reached.len() {
+            let step = reached.get(node).copied().flatten()?;
+            let Some(by) = step.by else { break };
+            let bridge = bridges.get(by).copied()?;
+            chain.push((bridge, step));
+            node = bridge.from;
+        }
+        if node != source || chain.is_empty() {
+            return None;
+        }
+        chain.reverse();
+        let mut cut = Cut {
+            a: 0.0,
+            upper_a: 0.0,
+            lower_start: None,
+            upper_start: None,
+            via: Vec::new(),
+        };
+        let mut entered: Option<usize> = None;
+        for (bridge, step) in &chain {
+            let [[from_a, _], [to_a, _]] = step.piece?;
+            if bridge.from == source {
+                match bridge.leave {
+                    Some(start) => cut.lower_start = Some(start),
+                    None => cut.a = from_a,
+                }
+            } else {
+                let station = stations.get(bridge.from)?;
+                cut.via.push(Via {
+                    ring: station.hole?,
+                    turns: [step.turns.checked_sub(bridge.dt)?, station.tb],
+                    enter: entered?,
+                    leave: bridge.leave?,
+                });
+            }
+            if bridge.to == target {
+                match (bridge.enter, self.upper.map(|ring| ring.winding)) {
+                    (Some(start), Some([wa, _])) => {
+                        // `Region::add_chain` puts the left end of a loop
+                        // that runs backwards a period before its start.
+                        let turns = step.turns.checked_add(i32::from(wa < 0))?;
+                        cut.upper_start = Some((start, turns));
+                    }
+                    _ => cut.upper_a = to_a,
+                }
+            }
+            entered = bridge.enter;
+        }
+        Some(cut)
+    }
 }
 
 /// A whole torus: a rectangle of one period by one period, cut along both
@@ -1827,7 +2512,7 @@ pub(crate) fn face_boundary<'a>(
                 "its loops do not bound a region: more than two of them wind around the axis",
             );
         }
-        band_region(&param, &rings, sense, index)?
+        band_region(&param, &rings, sense, index, starved)?
     } else {
         patch_region(&param, &rings, sense, index, starved)?
     };
