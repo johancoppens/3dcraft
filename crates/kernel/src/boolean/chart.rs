@@ -29,7 +29,7 @@
 //! `Outline::infinite`).
 
 use super::Reason;
-use super::freeform::{IRREGULAR, PatchTree, RATIONAL};
+use super::freeform::{IRREGULAR, PatchTree};
 use super::hits::speed_bound;
 use super::outline::{Seg, Sheet};
 use craft3d_geom::{Curve3, Surface};
@@ -280,9 +280,6 @@ impl Chart {
             }
             Surface::Bezier(_) | Surface::Nurbs(_) => {
                 let tree = sheet.tree.ok_or(IRREGULAR)?;
-                if !tree.is_polynomial() {
-                    return Err(RATIONAL);
-                }
                 let speed = tree.parameter_speed().ok_or(IRREGULAR)?;
                 Chart::Patch {
                     tree: Arc::clone(tree),

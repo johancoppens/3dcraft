@@ -119,7 +119,7 @@ fn bend_bound(curve: &Curve3, surface: &Surface) -> Option<(f64, f64)> {
 }
 
 /// How much the curve bends, at most: its second derivative per unit of
-/// parameter squared. `None` for a rational spline.
+/// parameter squared. `None` where no finite bound comes out.
 fn turn_bound(curve: &Curve3) -> Option<f64> {
     match curve {
         Curve3::Line(_) => Some(0.0),
@@ -130,8 +130,11 @@ fn turn_bound(curve: &Curve3) -> Option<f64> {
             // over the second differences of its control points, each
             // scaled by the knot spans it straddles (*The NURBS Book*
             // 3.3), and lies in their hull.
+            // A rational spline's second derivative is no spline, but it
+            // is bounded through the nets of its Bézier pieces all the
+            // same (`NurbsCurve::derivative_bounds`).
             if c.weights().iter().any(|&w| (w - 1.0).abs() > 1e-12) {
-                return None;
+                return c.derivative_bounds().map(|(_, second)| second);
             }
             let (degree, knots, points) = (c.degree(), c.knots(), c.control_points());
             if degree < 2 {
@@ -894,7 +897,8 @@ mod tests {
             steepest > 0.2 * bound,
             "a bound {bound} far above {steepest}"
         );
-        // A rational spline has no such bound here.
+        // A rational spline has one too, from the nets of its Bézier
+        // pieces (it had none until rational faces came in).
         let rational = NurbsCurve::new(
             2,
             vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
@@ -906,6 +910,24 @@ mod tests {
             vec![1.0, 0.5, 1.0],
         )
         .unwrap();
-        assert!(turn_bound(&Curve3::Nurbs(rational)).is_none());
+        let bound = turn_bound(&Curve3::Nurbs(rational.clone())).unwrap();
+        let mut steepest = 0.0_f64;
+        for k in 1..1000 {
+            let t = f64::from(k) / 1000.0;
+            let second =
+                (rational.derivatives(t + h).1 - rational.derivatives(t - h).1) * (0.5 / h);
+            steepest = steepest.max(second.length());
+        }
+        assert!(steepest <= bound * (1.0 + 1e-6), "{steepest} > {bound}");
+        assert!(
+            steepest > 0.5 * bound,
+            "a bound {bound} far above {steepest}"
+        );
+        // And the speed bound of a rational spline holds as well.
+        let speed = speed_bound(&Curve3::Nurbs(rational.clone()));
+        for k in 0..=1000 {
+            let fast = rational.derivatives(f64::from(k) / 1000.0).1.length();
+            assert!(fast <= speed, "{fast} > {speed}");
+        }
     }
 }

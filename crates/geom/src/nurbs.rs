@@ -454,6 +454,135 @@ impl NurbsCurve {
     }
 }
 
+/// Upper bounds on the first and second derivatives of one rational Bézier
+/// curve over `[0, 1]`, in its own parameter; `None` when a weight is not
+/// positive and finite.
+///
+/// With `C = A / w` (`A` the weighted points, `w` the weight, both
+/// polynomials in Bernstein form of degree `p`):
+///
+/// - `C' = (A' − C w') / w`, and `A' − C w'` has the Bernstein
+///   coefficients `p (w₁ (P₁ − C) − w₀ (P₀ − C))` over neighbours, which is
+///   `p (w₁ (P₁ − P₀) + (w₁ − w₀) (P₀ − C))`. `C` lies in the hull of the
+///   control points, so `|P₀ − C|` is at most the reach of `P₀` across
+///   their box, and `w` is at least the lightest weight.
+/// - `C'' = (A'' − 2 w' C' − w'' C) / w`, and `A'' − C w''` has the
+///   coefficients `p (p − 1) (w₂ (P₂ − P₁) + w₀ (P₀ − P₁) + (w₂ − 2 w₁ +
+///   w₀) (P₁ − C))`; `|w'|` is at most `p` times the largest difference of
+///   neighbouring weights.
+///
+/// For weights that are all one these are the hull bounds of a polynomial
+/// Bézier curve.
+fn bezier_curve_bounds(points: &[H]) -> Option<(f64, f64)> {
+    let degree = points.len().checked_sub(1)? as f64;
+    let (lightest, _) = weight_range(points)?;
+    let bbox = Bbox3::from_points(points.iter().map(|h| h.p * (1.0 / h.w)));
+    let position = |h: &H| h.p * (1.0 / h.w);
+    let mut first = 0.0_f64;
+    let mut weight_step = 0.0_f64;
+    for (a, b) in points.iter().zip(points.iter().skip(1)) {
+        let (pa, pb) = (position(a), position(b));
+        let (step, dw) = (pb.distance(pa), (b.w - a.w).abs());
+        first =
+            first.max((b.w * step + dw * reach(&bbox, pa)).min(a.w * step + dw * reach(&bbox, pb)));
+        weight_step = weight_step.max(dw);
+    }
+    let first = degree * first / lightest;
+    let mut second = 0.0_f64;
+    for ((a, b), c) in points
+        .iter()
+        .zip(points.iter().skip(1))
+        .zip(points.iter().skip(2))
+    {
+        let (pa, pb, pc) = (position(a), position(b), position(c));
+        let bend = ((pc - pb) * c.w + (pa - pb) * a.w).length()
+            + (c.w - 2.0 * b.w + a.w).abs() * reach(&bbox, pb);
+        second = second.max(bend);
+    }
+    let second = (degree * (degree - 1.0) * second + 2.0 * degree * weight_step * first) / lightest;
+    (first.is_finite() && second.is_finite()).then_some((first, second))
+}
+
+/// The lightest and the heaviest weight; `None` unless all are positive
+/// and finite.
+fn weight_range(points: &[H]) -> Option<(f64, f64)> {
+    let (mut lightest, mut heaviest) = (f64::INFINITY, 0.0_f64);
+    for h in points {
+        if !(h.w.is_finite() && h.w > 0.0) {
+            return None;
+        }
+        lightest = lightest.min(h.w);
+        heaviest = heaviest.max(h.w);
+    }
+    (lightest.is_finite() && heaviest > 0.0).then_some((lightest, heaviest))
+}
+
+/// The distance from `p` to the farthest corner of the box: no point of
+/// the box is farther from `p`.
+fn reach(bbox: &Bbox3, p: Vec3) -> f64 {
+    let Some((lo, hi)) = bbox.corners() else {
+        return 0.0;
+    };
+    Vec3::new(
+        (p.x - lo.x).abs().max((hi.x - p.x).abs()),
+        (p.y - lo.y).abs().max((hi.y - p.y).abs()),
+        (p.z - lo.z).abs().max((hi.z - p.z).abs()),
+    )
+    .length()
+}
+
+/// How often a Bézier span of a curve is halved for
+/// [`NurbsCurve::derivative_bounds`]: the bounds of a rational piece
+/// tighten as it shortens (its weights even out).
+const CURVE_BOUND_HALVINGS: usize = 3;
+
+impl NurbsCurve {
+    /// Upper bounds on the lengths of the first and the second derivative
+    /// over the whole domain, in the curve's own parameter: proven from
+    /// the control points and weights of its Bézier pieces (see
+    /// `bezier_curve_bounds` in the source for the argument), also for a
+    /// rational curve. `None` when no finite bound comes out.
+    pub fn derivative_bounds(&self) -> Option<(f64, f64)> {
+        let mut knots = self.knots.clone();
+        let mut rows = vec![self.homogeneous.clone()];
+        make_bezier(&mut knots, self.degree, &mut rows);
+        let row = rows.first()?;
+        let (start, end) = domain_of(&knots, self.degree);
+        let (mut first, mut second) = (0.0_f64, 0.0_f64);
+        let mut found = false;
+        for k in self.degree..row.len() {
+            let (Some(&lo), Some(&hi)) = (knots.get(k), knots.get(k + 1)) else {
+                continue;
+            };
+            if !(hi > lo && lo >= start && hi <= end) {
+                continue;
+            }
+            let span = row.get(k - self.degree..=k)?;
+            let mut pieces = vec![span.to_vec()];
+            for _ in 0..CURVE_BOUND_HALVINGS {
+                pieces = pieces
+                    .iter()
+                    .flat_map(|piece| {
+                        let (left, right) = split_row(piece, 0.5);
+                        [left, right]
+                    })
+                    .collect();
+            }
+            let width = (hi - lo) / pieces.len() as f64;
+            if width.is_nan() || width <= 0.0 {
+                return None;
+            }
+            for piece in &pieces {
+                let (l, m) = bezier_curve_bounds(piece)?;
+                first = first.max(l / width);
+                second = second.max(m / (width * width));
+            }
+            found = true;
+        }
+        (found && first.is_finite() && second.is_finite()).then_some((first, second))
+    }
+}
+
 /// A non-uniform rational B-spline surface. Control points are row-major:
 /// point `(i, j)` (`i` along u) is at index `i * count_v + j`.
 #[derive(Clone)]
@@ -885,6 +1014,274 @@ impl RationalBezierPatch {
         }
         Some(net)
     }
+
+    /// The lightest and the heaviest weight; `None` unless every weight is
+    /// positive and finite.
+    pub fn weight_range(&self) -> Option<(f64, f64)> {
+        weight_range(&self.homogeneous)
+    }
+
+    /// Upper bounds on the lengths of the first and second partial
+    /// derivatives over the whole patch, in its own parameters: proven
+    /// from the control points and the weights, also for a rational patch.
+    /// `None` when a weight is not positive and finite, or no finite bound
+    /// comes out.
+    ///
+    /// The argument is the one for a curve (`bezier_curve_bounds` in the
+    /// source), per direction: with `S = A / w`, `S_u = (A_u − S w_u) / w`
+    /// and `S_uu = (A_uu − 2 w_u S_u − w_uu S) / w`, where `A_u − S w_u`
+    /// and `A_uu − S w_uu` are Bernstein forms whose coefficients are
+    /// differences of `w (P − S)` over neighbours, each bounded through
+    /// the reach of a control point across the box of the net (`S` lies in
+    /// the hull). The mixed one is `S_uv = (A_uv − w_u S_v − w_v S_u −
+    /// w_uv S) / w`. For weights that are all one these are the hull
+    /// bounds of a polynomial patch
+    /// ([`BezierPatch::second_derivative_bounds`]).
+    pub fn derivative_bounds(&self) -> Option<DerivativeBounds> {
+        let (m, n) = (self.degree_u, self.degree_v);
+        let (lightest, _) = self.weight_range()?;
+        let width = n + 1;
+        let points: Vec<(Vec3, f64)> = self
+            .homogeneous
+            .iter()
+            .map(|h| (h.p * (1.0 / h.w), h.w))
+            .collect();
+        let bbox = Bbox3::from_points(points.iter().map(|p| p.0));
+        let at = |i: usize, j: usize| points.get(i * width + j).copied();
+        let reach = |p: Vec3| reach(&bbox, p);
+        let (mut first_u, mut first_v) = (0.0_f64, 0.0_f64);
+        let (mut step_u, mut step_v) = (0.0_f64, 0.0_f64);
+        let (mut uu, mut uv, mut vv) = (0.0_f64, 0.0_f64, 0.0_f64);
+        // The largest coefficient of `A' − S w'` between two neighbours.
+        let first = |(pa, wa): (Vec3, f64), (pb, wb): (Vec3, f64)| {
+            let (step, dw) = (pb.distance(pa), (wb - wa).abs());
+            (
+                (wb * step + dw * reach(pa)).min(wa * step + dw * reach(pb)),
+                dw,
+            )
+        };
+        // The largest coefficient of `A'' − S w''` over three in a row.
+        let second = |(pa, wa): (Vec3, f64), (pb, wb): (Vec3, f64), (pc, wc): (Vec3, f64)| {
+            ((pc - pb) * wc + (pa - pb) * wa).length() + (wc - 2.0 * wb + wa).abs() * reach(pb)
+        };
+        for i in 0..=m {
+            for j in 0..=n {
+                let here = at(i, j)?;
+                if i < m {
+                    let (bound, dw) = first(here, at(i + 1, j)?);
+                    first_u = first_u.max(bound);
+                    step_u = step_u.max(dw);
+                }
+                if j < n {
+                    let (bound, dw) = first(here, at(i, j + 1)?);
+                    first_v = first_v.max(bound);
+                    step_v = step_v.max(dw);
+                }
+                if i + 2 <= m {
+                    uu = uu.max(second(here, at(i + 1, j)?, at(i + 2, j)?));
+                }
+                if j + 2 <= n {
+                    vv = vv.max(second(here, at(i, j + 1)?, at(i, j + 2)?));
+                }
+                if i < m && j < n {
+                    let ((p00, w00), (p10, w10)) = (here, at(i + 1, j)?);
+                    let ((p01, w01), (p11, w11)) = (at(i, j + 1)?, at(i + 1, j + 1)?);
+                    let twist = ((p11 - p00) * w11 - (p10 - p00) * w10 - (p01 - p00) * w01)
+                        .length()
+                        + (w11 - w10 - w01 + w00).abs() * reach(p00);
+                    uv = uv.max(twist);
+                }
+            }
+        }
+        let (m, n) = (m as f64, n as f64);
+        let first_u = m * first_u / lightest;
+        let first_v = n * first_v / lightest;
+        let bounds = DerivativeBounds {
+            first_u,
+            first_v,
+            second_uu: (m * (m - 1.0) * uu + 2.0 * m * step_u * first_u) / lightest,
+            second_uv: (m * n * uv + m * step_u * first_v + n * step_v * first_u) / lightest,
+            second_vv: (n * (n - 1.0) * vv + 2.0 * n * step_v * first_v) / lightest,
+        };
+        bounds.is_finite().then_some(bounds)
+    }
+
+    /// The Bézier net, of degrees `(3 degree_u − 1, 3 degree_v − 1)`, of
+    /// the field `D = w³ (∂u × ∂v)`: the normal of the patch (not unit)
+    /// times the cube of its weight, which is a polynomial where the
+    /// normal itself is not. With `S = A / w`,
+    ///
+    /// `w³ (S_u × S_v) = w (A_u × A_v) + w_v (A × A_u) + w_u (A_v × A)`
+    ///
+    /// (from `S_u = (A_u − S w_u) / w`; the products of Bernstein forms
+    /// are Bernstein forms whose coefficients blend theirs with binomial
+    /// weights). `D` lies in the convex hull of the net, so the normal is
+    /// at least as long as the distance from the origin to that hull over
+    /// the cube of the heaviest weight: a net whose hull is clear of the
+    /// origin proves the patch regular. The control points are taken from
+    /// the first of them, which changes nothing in `D` and keeps the
+    /// products small far from the origin. `None` when a weight is not
+    /// positive and finite.
+    pub fn weighted_normal_net(&self) -> Option<Vec<Vec3>> {
+        let (m, n) = (self.degree_u, self.degree_v);
+        self.weight_range()?;
+        let first = self.homogeneous.first()?;
+        let origin = first.p * (1.0 / first.w);
+        let local: Vec<H> = self
+            .homogeneous
+            .iter()
+            .map(|h| H {
+                p: h.p - origin * h.w,
+                w: h.w,
+            })
+            .collect();
+        let at = |i: usize, j: usize| local.get(i * (n + 1) + j).copied().unwrap_or(ZERO);
+        let mut along_u = Vec::with_capacity(m * (n + 1));
+        for i in 0..m {
+            for j in 0..=n {
+                let (a, b) = (at(i, j), at(i + 1, j));
+                along_u.push(H {
+                    p: (b.p - a.p) * (m as f64),
+                    w: (b.w - a.w) * (m as f64),
+                });
+            }
+        }
+        let mut along_v = Vec::with_capacity((m + 1) * n);
+        for i in 0..=m {
+            for j in 0..n {
+                let (a, b) = (at(i, j), at(i, j + 1));
+                along_v.push(H {
+                    p: (b.p - a.p) * (n as f64),
+                    w: (b.w - a.w) * (n as f64),
+                });
+            }
+        }
+        let whole = Grid { m, n, c: local };
+        let du = Grid {
+            m: m.saturating_sub(1),
+            n,
+            c: along_u,
+        };
+        let dv = Grid {
+            m,
+            n: n.saturating_sub(1),
+            c: along_v,
+        };
+        let cross = |a: H, b: H| a.p.cross(b.p);
+        let scaled = |weight: &Grid<H>, field: &Grid<Vec3>| {
+            bernstein_product(weight, field, |h: H, v: Vec3| v * h.w)
+        };
+        let terms = [
+            scaled(&whole, &bernstein_product(&du, &dv, cross)),
+            scaled(&dv, &bernstein_product(&whole, &du, cross)),
+            scaled(&du, &bernstein_product(&dv, &whole, cross)),
+        ];
+        let [a, b, c] = terms;
+        Some(
+            a.c.iter()
+                .zip(&b.c)
+                .zip(&c.c)
+                .map(|((&a, &b), &c)| a + b + c)
+                .collect(),
+        )
+    }
+}
+
+/// Upper bounds on the lengths of the first and second partial derivatives
+/// of a patch over all of it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DerivativeBounds {
+    pub first_u: f64,
+    pub first_v: f64,
+    pub second_uu: f64,
+    pub second_uv: f64,
+    pub second_vv: f64,
+}
+
+impl DerivativeBounds {
+    fn is_finite(&self) -> bool {
+        [
+            self.first_u,
+            self.first_v,
+            self.second_uu,
+            self.second_uv,
+            self.second_vv,
+        ]
+        .iter()
+        .all(|x| x.is_finite())
+    }
+
+    /// The bounds of the same patch over a domain `width_u` by `width_v`
+    /// in place of `[0, 1]²`.
+    pub fn over(&self, width_u: f64, width_v: f64) -> DerivativeBounds {
+        DerivativeBounds {
+            first_u: self.first_u / width_u,
+            first_v: self.first_v / width_v,
+            second_uu: self.second_uu / (width_u * width_u),
+            second_uv: self.second_uv / (width_u * width_v),
+            second_vv: self.second_vv / (width_v * width_v),
+        }
+    }
+
+    /// The larger of each bound.
+    pub fn max(&self, o: &DerivativeBounds) -> DerivativeBounds {
+        DerivativeBounds {
+            first_u: self.first_u.max(o.first_u),
+            first_v: self.first_v.max(o.first_v),
+            second_uu: self.second_uu.max(o.second_uu),
+            second_uv: self.second_uv.max(o.second_uv),
+            second_vv: self.second_vv.max(o.second_vv),
+        }
+    }
+}
+
+/// A tensor-product Bernstein form of degrees `(m, n)`: coefficient
+/// `(i, j)` at `i * (n + 1) + j`.
+struct Grid<T> {
+    m: usize,
+    n: usize,
+    c: Vec<T>,
+}
+
+/// `C(a, i) C(c, k) / C(a + c, i + k)` at `i * (c + 1) + k`: how the
+/// coefficients of two Bernstein forms of degrees `a` and `c` blend into
+/// those of their product.
+fn blend_table(a: usize, c: usize) -> Vec<f64> {
+    let mut table = Vec::with_capacity((a + 1) * (c + 1));
+    for i in 0..=a {
+        for k in 0..=c {
+            table.push(binomial(a, i) * binomial(c, k) / binomial(a + c, i + k));
+        }
+    }
+    table
+}
+
+/// The product of two Bernstein forms, with `mul` as the product of two
+/// coefficients.
+fn bernstein_product<A: Copy, B: Copy>(
+    f: &Grid<A>,
+    g: &Grid<B>,
+    mul: impl Fn(A, B) -> Vec3,
+) -> Grid<Vec3> {
+    let (m, n) = (f.m + g.m, f.n + g.n);
+    let (blend_u, blend_v) = (blend_table(f.m, g.m), blend_table(f.n, g.n));
+    let mut c = vec![Vec3::ZERO; (m + 1) * (n + 1)];
+    for (index, &a) in f.c.iter().enumerate() {
+        let (i, j) = (index / (f.n + 1), index % (f.n + 1));
+        for (other, &b) in g.c.iter().enumerate() {
+            let (i2, j2) = (other / (g.n + 1), other % (g.n + 1));
+            let (Some(&bu), Some(&bv)) = (
+                blend_u.get(i * (g.m + 1) + i2),
+                blend_v.get(j * (g.n + 1) + j2),
+            ) else {
+                continue;
+            };
+            if let Some(slot) = c.get_mut((i + i2) * (n + 1) + j + j2) {
+                *slot += mul(a, b) * (bu * bv);
+            }
+        }
+    }
+    Grid { m, n, c }
 }
 
 impl NurbsSurface {
@@ -1277,6 +1674,253 @@ mod tests {
             }
         }
         sum
+    }
+
+    /// The homogeneous point of a patch at `(s, t)`.
+    fn homogeneous_at(patch: &RationalBezierPatch, s: f64, t: f64) -> H {
+        let mut along_u = Vec::new();
+        for i in 0..=patch.degree_u {
+            along_u.push(*split_row(patch.row(i), t).0.last().unwrap());
+        }
+        *split_row(&along_u, s).0.last().unwrap()
+    }
+
+    /// The largest first and second derivatives of a span seen on a
+    /// lattice, in the span's own `[0, 1]²` (second ones by differences
+    /// of the first).
+    fn seen(surface: &NurbsSurface, span: &BezierSpan) -> DerivativeBounds {
+        let (wu, wv) = (span.u.1 - span.u.0, span.v.1 - span.v.0);
+        let mut b = DerivativeBounds {
+            first_u: 0.0,
+            first_v: 0.0,
+            second_uu: 0.0,
+            second_uv: 0.0,
+            second_vv: 0.0,
+        };
+        const N: usize = 24;
+        let h = 1e-5;
+        for i in 0..=N {
+            for j in 0..=N {
+                // Kept inside the span, so the differences stay in it.
+                let s = h + (1.0 - 2.0 * h) * i as f64 / N as f64;
+                let t = h + (1.0 - 2.0 * h) * j as f64 / N as f64;
+                let at = |s: f64, t: f64| {
+                    let (_, du, dv) = surface.derivatives(span.u.0 + s * wu, span.v.0 + t * wv);
+                    (du * wu, dv * wv)
+                };
+                let (du, dv) = at(s, t);
+                let ((du_a, dv_a), (du_b, dv_b)) = (at(s - h, t), at(s + h, t));
+                let ((_, dv_c), (_, dv_d)) = (at(s, t - h), at(s, t + h));
+                b = b.max(&DerivativeBounds {
+                    first_u: du.length(),
+                    first_v: dv.length(),
+                    second_uu: (du_b - du_a).length() / (2.0 * h),
+                    second_uv: (dv_b - dv_a).length() / (2.0 * h),
+                    second_vv: (dv_d - dv_c).length() / (2.0 * h),
+                });
+            }
+        }
+        b
+    }
+
+    fn assert_bounds(bound: &DerivativeBounds, seen: &DerivativeBounds, slack: f64, what: &str) {
+        for (name, b, s) in [
+            ("first u", bound.first_u, seen.first_u),
+            ("first v", bound.first_v, seen.first_v),
+            ("second uu", bound.second_uu, seen.second_uu),
+            ("second uv", bound.second_uv, seen.second_uv),
+            ("second vv", bound.second_vv, seen.second_vv),
+        ] {
+            assert!(
+                b >= s * (1.0 - 1e-6),
+                "{what}: the bound on {name} is {b}, below {s} as seen"
+            );
+            assert!(
+                b <= slack * s + 1e-9,
+                "{what}: the bound on {name} is {b}, more than {slack} times {s} as seen"
+            );
+        }
+    }
+
+    /// A quarter of a cylinder of radius 2 and height 3 as one rational
+    /// patch of degrees (2, 1), placed by `frame`.
+    fn quarter_cylinder(frame: &Frame, k: f64) -> NurbsSurface {
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let mut ctrl = Vec::new();
+        let mut weights = Vec::new();
+        for (x, y, w) in [(2.0, 0.0, 1.0), (2.0, 2.0, s), (0.0, 2.0, 1.0)] {
+            for z in [0.0, 3.0] {
+                ctrl.push(frame.point(x * k, y * k, z * k));
+                weights.push(w);
+            }
+        }
+        NurbsSurface::new(
+            2,
+            1,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            3,
+            2,
+            ctrl,
+            weights,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn the_derivative_bounds_of_a_rational_patch_hold_and_tighten() {
+        let surface = lumpy();
+        for span in surface.bezier_spans().unwrap() {
+            assert!(!span.patch.is_polynomial());
+            let bound = span.patch.derivative_bounds().unwrap();
+            let actual = seen(&surface, &span);
+            // Whole spans: weights from 1 to 2.2, so the bounds are loose,
+            // but bounds.
+            assert_bounds(&bound, &actual, 40.0, "a span");
+            // A sixteenth of the span each way: the weights even out and
+            // the bounds close in on the derivatives. (Seen on the whole
+            // span, so only the direction that matters is checked: no
+            // piece's bound may exceed the span's by much.)
+            let mut pieces = vec![span.patch.clone()];
+            for _ in 0..4 {
+                pieces = pieces
+                    .iter()
+                    .flat_map(|p| {
+                        let (a, b) = p.split_u(0.5);
+                        let ((a0, a1), (b0, b1)) = (a.split_v(0.5), b.split_v(0.5));
+                        [a0, a1, b0, b1]
+                    })
+                    .collect();
+            }
+            let mut finest = DerivativeBounds {
+                first_u: 0.0,
+                first_v: 0.0,
+                second_uu: 0.0,
+                second_uv: 0.0,
+                second_vv: 0.0,
+            };
+            for piece in &pieces {
+                finest = finest.max(
+                    &piece
+                        .derivative_bounds()
+                        .unwrap()
+                        .over(1.0 / 16.0, 1.0 / 16.0),
+                );
+            }
+            assert_bounds(&finest, &actual, 2.5, "the pieces of a span");
+        }
+    }
+
+    #[test]
+    fn the_derivative_bounds_of_a_polynomial_patch_are_its_hull_bounds() {
+        let net = std::array::from_fn(|i| {
+            std::array::from_fn(|j| {
+                Vec3::new(
+                    i as f64 + 0.1 * j as f64,
+                    j as f64,
+                    ((i * 5 + j * 3) % 4) as f64 * 0.3,
+                )
+            })
+        });
+        let bezier = BezierPatch::bicubic(net).unwrap();
+        let bound = RationalBezierPatch::from_bezier(&bezier)
+            .derivative_bounds()
+            .unwrap();
+        let (uu, uv, vv) = bezier.second_derivative_bounds();
+        assert!((bound.second_uu - uu).abs() <= 1e-12);
+        assert!((bound.second_uv - uv).abs() <= 1e-12);
+        assert!((bound.second_vv - vv).abs() <= 1e-12);
+    }
+
+    #[test]
+    fn the_weighted_normal_net_is_the_normal_times_the_weight_cubed() {
+        // Placed as far out as the model is large, as the other tests do
+        // (farther out, the control points themselves are rounded by
+        // more than the comparison allows).
+        let tilted = |k: f64| {
+            Frame::new(
+                Vec3::new(30.0, -20.0, 50.0) * k,
+                Vec3::new(0.3, -0.4, 1.0),
+                Vec3::new(1.0, 0.2, 0.0),
+            )
+            .unwrap()
+        };
+        let surfaces = [
+            (lumpy(), 1.0),
+            (quarter_cylinder(&Frame::WORLD, 1.0), 1.0),
+            (quarter_cylinder(&tilted(1e-3), 1e-3), 1e-3),
+            (quarter_cylinder(&tilted(1e6), 1e6), 1e6),
+        ];
+        for (surface, k) in surfaces {
+            for span in surface.bezier_spans().unwrap() {
+                let (m, n) = span.patch.degrees();
+                let net = span.patch.weighted_normal_net().unwrap();
+                assert_eq!(net.len(), (3 * m) * (3 * n));
+                let (wu, wv) = (span.u.1 - span.u.0, span.v.1 - span.v.0);
+                for (s, t) in [(0.0, 0.0), (0.3, 0.8), (0.5, 0.5), (0.9, 0.2), (1.0, 1.0)] {
+                    let (_, du, dv) = surface.derivatives(span.u.0 + s * wu, span.v.0 + t * wv);
+                    let w = homogeneous_at(&span.patch, s, t).w;
+                    let want = (du * wu).cross(dv * wv) * (w * w * w);
+                    let got = net_at(&net, 3 * m - 1, 3 * n - 1, s, t);
+                    assert!(
+                        close(got, want, 1e-9 * k * k),
+                        "at ({s}, {t}), scale {k}: {got:?} vs {want:?}"
+                    );
+                }
+            }
+        }
+        // The quarter cylinder is regular: the net of each half is clear
+        // of the origin, by about the area of the patch's parallelogram.
+        let (left, right) = quarter_cylinder(&Frame::WORLD, 1.0).bezier_spans().unwrap()[0]
+            .patch
+            .split_u(0.5);
+        for half in [left, right] {
+            let net = half.weighted_normal_net().unwrap();
+            let clear = Bbox3::from_points(net.iter().copied());
+            let (lo, hi) = clear.corners().unwrap();
+            assert!(
+                lo.x > 0.0 || hi.x < 0.0 || lo.y > 0.0 || hi.y < 0.0,
+                "{lo:?} {hi:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_derivative_bounds_of_a_curve_hold_at_samples() {
+        let circle = NurbsCurve::circle(&Frame::WORLD, 2.0).unwrap();
+        for (curve, slack) in [(wiggle(), 6.0), (circle, 1.3)] {
+            let (first, second) = curve.derivative_bounds().unwrap();
+            let (start, end) = curve.domain();
+            let (mut speed, mut turn) = (0.0_f64, 0.0_f64);
+            const N: usize = 4000;
+            let h = (end - start) / N as f64;
+            for i in 0..N {
+                let t = start + h * i as f64;
+                let (_, d) = curve.derivatives(t + 0.25 * h);
+                let (_, e) = curve.derivatives(t + 0.75 * h);
+                speed = speed.max(d.length());
+                // Within one stretch between two knots (the knots of both
+                // curves fall on the lattice).
+                turn = turn.max(e.distance(d) / (0.5 * h));
+            }
+            assert!(
+                first >= speed && second >= turn * (1.0 - 1e-3),
+                "{first} {speed} {second} {turn}"
+            );
+            assert!(
+                first <= slack * speed && second <= slack * slack * turn,
+                "loose: {first} against {speed}, {second} against {turn}"
+            );
+        }
+        // A polynomial curve: the hull bounds.
+        let line = NurbsCurve::polynomial(
+            1,
+            vec![0.0, 0.0, 2.0, 2.0],
+            vec![Vec3::ZERO, Vec3::new(4.0, 0.0, 0.0)],
+        )
+        .unwrap();
+        let (first, second) = line.derivative_bounds().unwrap();
+        assert!((first - 2.0).abs() < 1e-12 && second == 0.0);
     }
 
     #[test]

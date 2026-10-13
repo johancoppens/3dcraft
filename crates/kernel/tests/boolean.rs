@@ -752,30 +752,55 @@ fn what_is_not_supported_says_so() {
         7.0 * PI / 2.0 + 3.0 * PI / 4.0,
         k,
     );
-    // A rational patch (weights that are not all one) is still refused:
-    // its chart has no bound on how fast its parameters move.
-    let mut rational = plate.clone();
-    rational.faces[1].surface = Surface::Nurbs(
-        craft3d_geom::NurbsSurface::new(
-            1,
-            1,
-            vec![0.0, 0.0, 1.0, 1.0],
-            vec![0.0, 0.0, 1.0, 1.0],
-            2,
-            2,
-            vec![
-                corner(0.0, 0.0),
-                corner(0.0, 3.0),
-                corner(4.0, 0.0),
-                corner(4.0, 3.0),
-            ],
-            vec![1.0, 2.0, 2.0, 1.0],
-        )
-        .unwrap(),
+    // A rational patch (weights that are not all one) is no longer
+    // refused either (2026-10-13, the same evening): the same top as a
+    // bilinear patch with the weights 1, 2, 2, 1 is the same piece of the
+    // plane with other parameters, and the results are the same solids.
+    // (The expectation changed from a refusal to the closed forms above.
+    // See boolean_rational.rs for rational faces that bend.)
+    let weighted = |heavy: f64| {
+        let mut body = plate.clone();
+        body.faces[1].surface = Surface::Nurbs(
+            craft3d_geom::NurbsSurface::new(
+                1,
+                1,
+                vec![0.0, 0.0, 1.0, 1.0],
+                vec![0.0, 0.0, 1.0, 1.0],
+                2,
+                2,
+                vec![
+                    corner(0.0, 0.0),
+                    corner(0.0, 3.0),
+                    corner(4.0, 0.0),
+                    corner(4.0, 3.0),
+                ],
+                vec![1.0, heavy, heavy, 1.0],
+            )
+            .unwrap(),
+        );
+        assert_eq!(craft3d_topo::check(&body, &tol), []);
+        body
+    };
+    let united = solve(&weighted(2.0), &ball, Union, k);
+    assert_mass(
+        &united,
+        24.0 + 4.0 * PI / 3.0 - eighth,
+        52.0 - 3.0 * PI / 4.0 + 7.0 * PI / 2.0,
+        k,
     );
-    assert_eq!(craft3d_topo::check(&rational, &tol), []);
+    let rest = solve(&ball, &weighted(2.0), Subtract, k);
+    assert_mass(
+        &rest,
+        4.0 * PI / 3.0 - eighth,
+        7.0 * PI / 2.0 + 3.0 * PI / 4.0,
+        k,
+    );
+    // What stays refused of a rational face: weights more than a factor
+    // of a thousand apart, for which no bound on the derivatives is of
+    // any use.
+    let rational = weighted(2000.0);
     let (why, faces) = reason(&rational, &ball, Union);
-    assert!(why.contains("rational"), "{why}");
+    assert!(why.contains("rational") && why.contains("weights"), "{why}");
     assert_eq!(faces, [(Operand::A, FaceId(1))]);
     // (Until the general surface intersection came in, crossing cylinders,
     // a cone cut along its axis and a ball through the side of a cylinder

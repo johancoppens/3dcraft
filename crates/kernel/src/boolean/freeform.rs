@@ -12,16 +12,27 @@
 //!   are nearer than the best point found, so that a nearer-looking local
 //!   minimum is not taken for the nearest point;
 //! - the signed distance, by the side of the surface the point is on;
-//! - for a polynomial surface, a proof that a stretch of a curve stays
-//!   within a tolerance of it (`stretch_within`), from the distances at
-//!   its ends and a bound on the second derivatives of the surface over
-//!   its domain, again from the hull of a net;
-//! - for a polynomial surface, how fast its parameters can change per
-//!   length travelled on it (`chart.rs` needs that to follow a loop in the
-//!   chart of the parameters), from the Bézier nets of the derivatives and
-//!   of the normal field: the smallest singular value of the Jacobian is
-//!   at least `|∂u × ∂v| / sqrt(|∂u|² + |∂v|²)`, and each of those is
-//!   bounded by the hull of its net.
+//! - a proof that a stretch of a curve stays within a tolerance of it
+//!   (`stretch_within`), from the distances at its ends and a bound on the
+//!   second derivatives of the surface over its domain, again from the
+//!   hull of a net;
+//! - how fast its parameters can change per length travelled on it
+//!   (`chart.rs` needs that to follow a loop in the chart of the
+//!   parameters), from the Bézier nets of the derivatives and of the
+//!   normal field: the smallest singular value of the Jacobian is at least
+//!   `|∂u × ∂v| / sqrt(|∂u|² + |∂v|²)`, and each of those is bounded by
+//!   the hull of its net.
+//!
+//! A rational surface (weights that are not all one) lies in the hull of
+//! its control points as a polynomial one does, so the boxes and all that
+//! is built on them are the same. Its derivatives are no polynomials, but
+//! they are bounded through its nets all the same
+//! (`RationalBezierPatch::derivative_bounds`), and its normal times the
+//! cube of its weight is a polynomial with a net of its own
+//! (`RationalBezierPatch::weighted_normal_net`), so the two bounds above
+//! exist for it too. They loosen as the weights of a piece differ, and
+//! tighten as the piece shrinks (its weights even out): they are taken
+//! from the leaves of the tree.
 
 // `!(x > 0.0)` is deliberate throughout: unlike `x <= 0.0` it is also true
 // for NaN.
@@ -33,7 +44,7 @@ use craft3d_math::{Bbox3, Vec3};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
-pub(super) const RATIONAL: Reason = "a rational freeform face (weights that are not all one); polynomial Bézier and B-spline faces are handled";
+pub(super) const WEIGHTS: Reason = "a rational freeform face whose weights differ by more than a factor of a thousand within one span: its derivatives cannot be bounded usefully";
 pub(super) const IRREGULAR: Reason = "a freeform face whose parametrisation stalls or folds somewhere (a collapsed or self-overlapping patch); its chart cannot be followed";
 const TOO_MANY: Reason = "a freeform face with more pieces than booleans can index";
 
@@ -41,6 +52,9 @@ const TOO_MANY: Reason = "a freeform face with more pieces than booleans can ind
 /// a whole surface may have.
 const MAX_DEPTH: usize = 5;
 const MAX_LEAVES: usize = 1 << 15;
+/// How far apart the weights of one Bézier span of a rational surface may
+/// be: every bound on its derivatives carries a power of this ratio.
+const MAX_WEIGHT_RATIO: f64 = 1e3;
 /// Newton's iteration for the nearest point.
 const NEWTON_STEPS: usize = 40;
 
@@ -71,10 +85,9 @@ pub(super) struct PatchTree {
     surface: Surface,
     nodes: Vec<Node>,
     roots: Vec<usize>,
-    polynomial: bool,
     /// An upper bound on the lengths of the second partial derivatives of
     /// the surface over its whole domain, in its own parameters; `None`
-    /// for a rational surface.
+    /// where the nets give none.
     second: Option<f64>,
 }
 
@@ -243,24 +256,67 @@ fn clearance_of(vectors: &[Vec3]) -> f64 {
     box_distance(&Bbox3::from_points(vectors.iter().copied()), Vec3::ZERO)
 }
 
+/// Below this fraction of the product of the longest derivatives, the
+/// length of a normal is taken for nothing.
+const ROUNDING: f64 = 1e-9;
+
 /// A lower bound on the smallest singular value of the Jacobian of a
-/// polynomial patch over all of it, or zero when the nets allow a
-/// vanishing or folding normal.
-fn sigma_bound(patch: &RationalBezierPatch) -> f64 {
-    let (Some((du, dv)), Some(normal)) = (patch.derivative_nets(), patch.normal_net()) else {
+/// patch over all of it, in the parameters of the surface it is a piece
+/// of (the piece covers `width.0` by `width.1` of them), or zero when the
+/// nets allow a vanishing or folding normal.
+fn sigma_bound(patch: &RationalBezierPatch, width: (f64, f64)) -> f64 {
+    // The largest squared lengths of the two partial derivatives and the
+    // shortest normal, over the piece's own `[0, 1]²`.
+    let bounds =
+        if let (Some((du, dv)), Some(normal)) = (patch.derivative_nets(), patch.normal_net()) {
+            let longest = |net: &[Vec3]| net.iter().map(|v| v.length_squared()).fold(0.0, f64::max);
+            Some((longest(&du), longest(&dv), clearance_of(&normal)))
+        } else {
+            // Rational: the derivatives are bounded through the nets of the
+            // weighted points and of the weights, and the normal is the
+            // polynomial `w³ (∂u × ∂v)` over the cube of the weight, which is
+            // at most the heaviest.
+            (|| {
+                let bounds = patch.derivative_bounds()?;
+                let normal = patch.weighted_normal_net()?;
+                let (_, heaviest) = patch.weight_range()?;
+                Some((
+                    bounds.first_u * bounds.first_u,
+                    bounds.first_v * bounds.first_v,
+                    clearance_of(&normal) / (heaviest * heaviest * heaviest),
+                ))
+            })()
+        };
+    let Some((longest_u, longest_v, normal)) = bounds else {
         return 0.0;
     };
+    // A normal that short against the derivatives is rounding, not a
+    // bound: where a border is collapsed into a point the net of the
+    // normal is zero only up to the rounding of its products, and a box
+    // around such a net may miss the origin by an ulp. (It did: an octant
+    // of a sphere as a rational patch got a parameter speed of 1e17 in
+    // place of a refusal.)
+    if !(normal * normal > ROUNDING * ROUNDING * longest_u * longest_v) {
+        return 0.0;
+    }
+    let (wu, wv) = width;
+    if !(wu > 0.0 && wv > 0.0) {
+        return 0.0;
+    }
     // For the Jacobian J = [a b], the eigenvalues of JᵀJ have the sum
     // |a|² + |b|² and the product |a × b|²; the smaller one falls as the
     // sum grows and rises with the product, so the largest sum and the
-    // smallest product the nets allow give a bound below it.
-    let longest = |net: &[Vec3]| net.iter().map(|v| v.length_squared()).fold(0.0, f64::max);
-    let sum = longest(&du) + longest(&dv);
-    let product = clearance_of(&normal).powi(2);
-    if !(sum > 0.0 && product.is_finite()) {
+    // smallest product the nets allow give a bound below it. In the
+    // surface's parameters `a` and `b` are the piece's own over the
+    // widths of the piece.
+    let sum = longest_u / (wu * wu) + longest_v / (wv * wv);
+    let product = (normal / (wu * wv)).powi(2);
+    if !(sum > 0.0 && sum.is_finite() && product.is_finite()) {
         return 0.0;
     }
-    let least = 0.5 * (sum - (sum * sum - 4.0 * product).max(0.0).sqrt());
+    // The smaller root of x² − sum x + product, written so that a product
+    // far below the sum squared does not cancel.
+    let least = 2.0 * product / (sum + (sum * sum - 4.0 * product).max(0.0).sqrt());
     least.max(0.0).sqrt()
 }
 
@@ -396,6 +452,14 @@ impl PatchTree {
             return Err(IRREGULAR);
         }
         let polynomial = spans.iter().all(|s| s.2.is_polynomial());
+        if !polynomial {
+            for (_, _, patch) in &spans {
+                let (lightest, heaviest) = patch.weight_range().ok_or(IRREGULAR)?;
+                if !(heaviest <= MAX_WEIGHT_RATIO * lightest) {
+                    return Err(WEIGHTS);
+                }
+            }
+        }
         let second = polynomial.then(|| second_bound(&spans)).flatten();
         // Quarter each span until its pieces are small, within a budget
         // of leaves for the whole surface.
@@ -410,7 +474,6 @@ impl PatchTree {
             surface: surface.clone(),
             nodes: Vec::new(),
             roots: Vec::new(),
-            polynomial,
             second,
         };
         let whole = spans
@@ -420,6 +483,9 @@ impl PatchTree {
         for (u, v, patch) in &spans {
             let root = tree.subdivide(patch, *u, *v, depth, whole / 32.0);
             tree.roots.push(root);
+        }
+        if !polynomial {
+            tree.second = tree.second_of_leaves();
         }
         Ok(tree)
     }
@@ -433,11 +499,7 @@ impl PatchTree {
         small: f64,
     ) -> usize {
         let bbox = patch.control_bbox();
-        let sigma = if self.polynomial {
-            sigma_bound(patch)
-        } else {
-            0.0
-        };
+        let sigma = sigma_bound(patch, (u.1 - u.0, v.1 - v.0));
         let children = if depth > 0 && bbox.diagonal() > small {
             let um = 0.5 * (u.0 + u.1);
             let vm = 0.5 * (v.0 + v.1);
@@ -478,17 +540,31 @@ impl PatchTree {
         self.nodes.len() - 1
     }
 
-    pub fn is_polynomial(&self) -> bool {
-        self.polynomial
+    /// An upper bound on the second partial derivatives of a rational
+    /// surface over its whole domain, in its own parameters: the largest
+    /// over the leaves, which cover the domain, each scaled by the part of
+    /// the domain it covers (a rational piece's bound tightens as it
+    /// shrinks). `None` when a leaf has no bound.
+    fn second_of_leaves(&self) -> Option<f64> {
+        let mut bound = 0.0_f64;
+        for node in &self.nodes {
+            let Some(patch) = &node.patch else {
+                continue;
+            };
+            let (wu, wv) = (node.u.1 - node.u.0, node.v.1 - node.v.0);
+            if !(wu > 0.0 && wv > 0.0) {
+                return None;
+            }
+            let b = patch.derivative_bounds()?.over(wu, wv);
+            bound = bound.max(b.second_uu).max(b.second_uv).max(b.second_vv);
+        }
+        bound.is_finite().then_some(bound)
     }
 
     /// How far the surface's parameters can change per unit of length
-    /// travelled on it, at most; `None` when the surface is rational, or
-    /// may stall or fold (then its chart cannot be trusted).
+    /// travelled on it, at most; `None` when the surface may stall or fold
+    /// (then its chart cannot be trusted).
     pub fn parameter_speed(&self) -> Option<f64> {
-        if !self.polynomial {
-            return None;
-        }
         let sigma = self
             .roots
             .iter()
@@ -849,7 +925,6 @@ mod tests {
     fn the_nearest_point_of_a_dome_and_a_bound_below_it() {
         let surface = dome();
         let tree = PatchTree::new(&surface).unwrap();
-        assert!(tree.is_polynomial());
         let mut seed = 7_u64;
         let mut next = || {
             seed = seed
@@ -969,11 +1044,10 @@ mod tests {
         assert!(folded < patches.len() / 2, "{folded} of {}", patches.len());
     }
 
-    #[test]
-    fn a_rational_surface_is_indexed_but_has_no_parameter_speed() {
-        let frame = Frame::WORLD;
-        let circle = craft3d_geom::NurbsCurve::circle(&frame, 1.0).unwrap();
-        // A cylinder as a rational surface: the circle swept along z.
+    /// A cylinder of radius 1 and height 2 as a rational surface: the
+    /// circle swept along z. u goes once around over `[0, 1]`, v up.
+    fn rational_cylinder() -> Surface {
+        let circle = craft3d_geom::NurbsCurve::circle(&Frame::WORLD, 1.0).unwrap();
         let mut ctrl = Vec::new();
         let mut weights = Vec::new();
         for &p in circle.control_points() {
@@ -984,23 +1058,279 @@ mod tests {
             weights.push(w);
             weights.push(w);
         }
-        let surface = NurbsSurface::new(
-            2,
-            1,
-            circle.knots().to_vec(),
-            vec![0.0, 0.0, 1.0, 1.0],
-            9,
-            2,
-            ctrl,
-            weights,
+        Surface::Nurbs(
+            NurbsSurface::new(
+                2,
+                1,
+                circle.knots().to_vec(),
+                vec![0.0, 0.0, 1.0, 1.0],
+                9,
+                2,
+                ctrl,
+                weights,
+            )
+            .unwrap(),
         )
-        .unwrap();
-        let tree = PatchTree::new(&Surface::Nurbs(surface)).unwrap();
-        assert!(!tree.is_polynomial());
-        assert!(tree.parameter_speed().is_none());
+    }
+
+    #[test]
+    fn a_rational_surface_is_indexed_and_has_a_parameter_speed() {
+        // (Until rational faces came in, a rational surface had no bound
+        // on its parameter speed and its chart was refused.)
+        let surface = rational_cylinder();
+        let tree = PatchTree::new(&surface).unwrap();
         let d = tree.signed_distance(Vec3::new(3.0, 0.0, 1.0)).unwrap();
         assert!((d.abs() - 2.0).abs() < 1e-9, "{d}");
         assert!(tree.lower_bound(Vec3::new(3.0, 0.0, 1.0), 1e-9, f64::INFINITY) <= 2.0);
+        // v moves 1 per 2 of height; u moves fastest at the knots, where a
+        // quarter of the circle starts at √2 per unit of its own
+        // parameter, a quarter of u: 1 per 4√2. The slower direction of
+        // the surface is v, so the parameters move at most 1/2 per
+        // length, and the bound is not far above that.
+        let speed = tree.parameter_speed().unwrap();
+        let mut fastest = 0.0_f64;
+        for i in 0..=400 {
+            let (_, su, sv) = surface.derivatives(f64::from(i) / 400.0, 0.3);
+            // The directions are square to each other on a cylinder.
+            assert!(su.dot(sv).abs() < 1e-9);
+            fastest = fastest.max(1.0 / su.length()).max(1.0 / sv.length());
+        }
+        assert!((fastest - 0.5).abs() < 1e-12, "{fastest}");
+        assert!(speed >= fastest, "{speed} below {fastest}");
+        assert!(speed <= 1.2 * fastest, "{speed} far above {fastest}");
+    }
+
+    #[test]
+    fn the_second_derivatives_of_a_rational_surface_are_bounded() {
+        let surface = rational_cylinder();
+        let tree = PatchTree::new(&surface).unwrap();
+        let bound = tree.second.unwrap();
+        let h = 1e-6;
+        let mut steepest = 0.0_f64;
+        for i in 0..400 {
+            // Between the knots, which are at the quarters.
+            let u = (f64::from(i) + 0.5) / 400.0;
+            let (_, up, _) = surface.derivatives(u + h, 0.5);
+            let (_, down, _) = surface.derivatives(u - h, 0.5);
+            steepest = steepest.max((up - down).length() / (2.0 * h));
+        }
+        assert!(steepest <= bound, "{steepest} above the bound {bound}");
+        assert!(bound <= 1.5 * steepest, "{bound} far above {steepest}");
+        // A chord of a curve on it is proven within the tolerance when
+        // short, as on a polynomial surface, and what is proven is true.
+        let tol = 1e-4;
+        let from = surface.eval(0.1, 0.4);
+        let step = (2.0 * tol / bound).sqrt();
+        let near = surface.eval(0.1 + step, 0.4);
+        assert!(tree.stretch_within(from, near, 0.0, tol));
+        let middle = (from + near) * 0.5;
+        assert!(tree.nearest(middle).unwrap().distance <= tol);
+        let far = surface.eval(0.2, 0.4);
+        assert!(!tree.stretch_within(from, far, 0.0, tol));
+        assert!(tree.nearest((from + far) * 0.5).unwrap().distance > tol);
+    }
+
+    #[test]
+    fn the_parameter_speed_is_in_the_parameters_of_the_surface() {
+        // The same flat patch, 4 by 3, over [0, 1]² and as a B-spline
+        // over [0, 10] × [0, 5]: there u moves 10 per 4 and v 5 per 3.
+        // (The bound was the piece's own before, right only for a span
+        // one wide: on this surface it said 1/3, too slow by a factor 5,
+        // and a chart followed by it could step over a turn.)
+        let points = vec![
+            Vec3::new(0.0, 0.0, 1.0),
+            Vec3::new(0.0, 3.0, 1.0),
+            Vec3::new(4.0, 0.0, 1.0),
+            Vec3::new(4.0, 3.0, 1.0),
+        ];
+        let wide = NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 10.0, 10.0],
+            vec![0.0, 0.0, 5.0, 5.0],
+            2,
+            2,
+            points.clone(),
+            vec![1.0; 4],
+        )
+        .unwrap();
+        let tree = PatchTree::new(&Surface::Nurbs(wide)).unwrap();
+        let speed = tree.parameter_speed().unwrap();
+        assert!((speed - 2.5).abs() < 1e-9, "{speed}");
+        // With weights that are not all one the patch is the same piece
+        // of the plane, reparametrised: its parameters crowd towards the
+        // heavy corners, by no more than the weights differ.
+        let weighted = NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            2,
+            2,
+            points,
+            vec![1.0, 2.0, 2.0, 1.0],
+        )
+        .unwrap();
+        let surface = Surface::Nurbs(weighted);
+        let tree = PatchTree::new(&surface).unwrap();
+        let speed = tree.parameter_speed().unwrap();
+        let mut fastest = 0.0_f64;
+        for i in 0..=100 {
+            for j in 0..=100 {
+                let (_, su, sv) = surface.derivatives(f64::from(i) / 100.0, f64::from(j) / 100.0);
+                // The smallest singular value of [su sv].
+                let (sum, product) = (
+                    su.length_squared() + sv.length_squared(),
+                    su.cross(sv).length_squared(),
+                );
+                let least = 0.5 * (sum - (sum * sum - 4.0 * product).max(0.0).sqrt());
+                fastest = fastest.max(1.0 / least.sqrt());
+            }
+        }
+        assert!(speed >= fastest, "{speed} below {fastest}");
+        assert!(speed <= 3.0 * fastest, "{speed} far above {fastest}");
+    }
+
+    #[test]
+    fn the_bounds_of_a_weighted_roof_hold_and_are_not_far_off() {
+        // The bicubic roof of the domed block with the weights 1, 2, 0.5
+        // and 3: no quadric, and its parameters crowd where it is heavy.
+        let roof = craft3d_testkit::trimmed::domed_block(&Frame::WORLD, 4.0, 3.0, 2.0, true)
+            .unwrap()
+            .body
+            .faces
+            .iter()
+            .find_map(|f| match &f.surface {
+                Surface::Nurbs(s) => Some(s.clone()),
+                _ => None,
+            })
+            .unwrap();
+        let weights: Vec<f64> = (0..16)
+            .map(|n| [1.0, 2.0, 0.5, 3.0][(n / 4 + 3 * (n % 4) + (n / 4) * (n % 4)) % 4])
+            .collect();
+        let surface = Surface::Nurbs(
+            NurbsSurface::new(
+                3,
+                3,
+                roof.knots_u().to_vec(),
+                roof.knots_v().to_vec(),
+                4,
+                4,
+                roof.control_points().to_vec(),
+                weights,
+            )
+            .unwrap(),
+        );
+        let tree = PatchTree::new(&surface).unwrap();
+        let (mut fastest, mut steepest) = (0.0_f64, 0.0_f64);
+        let h = 1e-6;
+        for i in 0..=200 {
+            for j in 0..=200 {
+                let (u, v) = (f64::from(i) / 200.0, f64::from(j) / 200.0);
+                let (_, su, sv) = surface.derivatives(u, v);
+                let (sum, product) = (
+                    su.length_squared() + sv.length_squared(),
+                    su.cross(sv).length_squared(),
+                );
+                let least = 2.0 * product / (sum + (sum * sum - 4.0 * product).max(0.0).sqrt());
+                fastest = fastest.max(1.0 / least.sqrt());
+                let (_, au, av) = surface.derivatives((u + h).min(1.0), v);
+                let (_, bu, bv) = surface.derivatives((u - h).max(0.0), v);
+                let (_, _, cv) = surface.derivatives(u, (v + h).min(1.0));
+                let (_, _, dv) = surface.derivatives(u, (v - h).max(0.0));
+                // (At a border the difference is one-sided: half as wide.)
+                let wide = |x: f64| (x + h).min(1.0) - (x - h).max(0.0);
+                steepest = steepest
+                    .max((au - bu).length() / wide(u))
+                    .max((av - bv).length() / wide(u))
+                    .max((cv - dv).length() / wide(v));
+            }
+        }
+        // As measured: 1.84 against 1.35, and 208 against 168.
+        let speed = tree.parameter_speed().unwrap();
+        assert!(speed >= fastest, "{speed} below {fastest}");
+        assert!(speed <= 1.5 * fastest, "{speed} far above {fastest}");
+        let second = tree.second.unwrap();
+        assert!(
+            second >= steepest * (1.0 - 1e-6),
+            "{second} below {steepest}"
+        );
+        assert!(second <= 1.4 * steepest, "{second} far above {steepest}");
+    }
+
+    #[test]
+    fn a_rational_patch_with_a_collapsed_border_has_no_parameter_speed() {
+        // A quarter of a cone up to its apex: the border at the apex is
+        // one point, and the parameter around the axis stalls there. Its
+        // normal net is zero at that border only up to rounding, which
+        // must not pass for a bound.
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        // Collapsed exactly, and as a quarter turn's cosine leaves it:
+        // 6e-17 from the axis.
+        let cases = [
+            (false, 0.0),
+            (true, 0.0),
+            (false, std::f64::consts::FRAC_PI_2.cos()),
+        ];
+        for (tilted, top) in cases {
+            let frame = if tilted {
+                Frame::new(
+                    Vec3::new(1.0, -2.0, 0.5),
+                    Vec3::new(0.3, -0.4, 1.0),
+                    Vec3::new(1.0, 0.2, 0.0),
+                )
+                .unwrap()
+            } else {
+                Frame::WORLD
+            };
+            let mut ctrl = Vec::new();
+            let mut weights = Vec::new();
+            for (x, y, w) in [(1.0, 0.0, 1.0), (1.0, 1.0, s), (0.0, 1.0, 1.0)] {
+                ctrl.push(frame.point(x, y, 0.0));
+                ctrl.push(frame.point(top * x, top * y, 1.5));
+                weights.extend([w, w]);
+            }
+            let cone = NurbsSurface::new(
+                2,
+                1,
+                vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                vec![0.0, 0.0, 1.0, 1.0],
+                3,
+                2,
+                ctrl,
+                weights,
+            )
+            .unwrap();
+            let tree = PatchTree::new(&Surface::Nurbs(cone)).unwrap();
+            assert_eq!(tree.parameter_speed(), None, "tilted {tilted}, top {top}");
+        }
+    }
+
+    #[test]
+    fn weights_too_far_apart_are_refused_with_the_reason() {
+        let surface = |heavy: f64| {
+            Surface::Nurbs(
+                NurbsSurface::new(
+                    1,
+                    1,
+                    vec![0.0, 0.0, 1.0, 1.0],
+                    vec![0.0, 0.0, 1.0, 1.0],
+                    2,
+                    2,
+                    vec![
+                        Vec3::new(0.0, 0.0, 1.0),
+                        Vec3::new(0.0, 3.0, 1.0),
+                        Vec3::new(4.0, 0.0, 1.0),
+                        Vec3::new(4.0, 3.0, 1.0),
+                    ],
+                    vec![1.0, heavy, 1.0, 1.0],
+                )
+                .unwrap(),
+            )
+        };
+        assert!(PatchTree::new(&surface(900.0)).is_ok());
+        assert_eq!(PatchTree::new(&surface(1100.0)).unwrap_err(), WEIGHTS);
+        assert_eq!(PatchTree::new(&surface(1.0 / 1100.0)).unwrap_err(), WEIGHTS);
     }
 
     #[test]
