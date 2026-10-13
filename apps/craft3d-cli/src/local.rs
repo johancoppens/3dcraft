@@ -409,17 +409,27 @@ pub(crate) fn render(args: Args) -> Result<Parsed<()>, CliError> {
 
 pub(crate) fn convert(args: Args) -> Result<Parsed<()>, CliError> {
     let mut tolerance: Option<f64> = None;
-    let parsed = parse_simple(args, &["--tolerance"], |_, value| {
-        match value.parse::<f64>() {
-            Ok(t) if t.is_finite() && t > 0.0 => {
-                tolerance = Some(t);
-                Ok(())
+    // What a .dxf or .svg file is the outline of.
+    let mut outline = Map::new();
+    let parsed = parse_simple(
+        args,
+        &["--tolerance", "--sketch", "--face", "--feature"],
+        |name, value| {
+            if name != "--tolerance" {
+                outline.insert(name.trim_start_matches('-').to_string(), value.into());
+                return Ok(());
             }
-            _ => Err(CliError::Usage(format!(
-                "`--tolerance` must be a positive number, got `{value}`"
-            ))),
-        }
-    })?;
+            match value.parse::<f64>() {
+                Ok(t) if t.is_finite() && t > 0.0 => {
+                    tolerance = Some(t);
+                    Ok(())
+                }
+                _ => Err(CliError::Usage(format!(
+                    "`--tolerance` must be a positive number, got `{value}`"
+                ))),
+            }
+        },
+    )?;
     let positionals = match parsed {
         Parsed::Run(positionals) => positionals,
         Parsed::Help => return Ok(Parsed::Help),
@@ -444,6 +454,12 @@ pub(crate) fn convert(args: Args) -> Result<Parsed<()>, CliError> {
                 .to_string(),
         ));
     }
+    if native && !outline.is_empty() {
+        return Err(CliError::Usage(
+            "`--sketch`, `--face` and `--feature` say what a .dxf or .svg file is the outline of"
+                .to_string(),
+        ));
+    }
     let mut session = Session::new(Workspace::unrestricted());
     open(&mut session, input)?;
     let result = if native {
@@ -451,7 +467,7 @@ pub(crate) fn convert(args: Args) -> Result<Parsed<()>, CliError> {
     } else {
         // The engine picks the format from the extension, and says
         // which extensions it knows when this one is not among them.
-        let mut params = Map::new();
+        let mut params = outline;
         params.insert("path".into(), output.as_str().into());
         if let Some(tolerance) = tolerance {
             params.insert("tolerance".into(), tolerance.into());

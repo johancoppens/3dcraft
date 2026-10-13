@@ -423,13 +423,13 @@ fn commands_that_fail_change_nothing_and_say_why() {
         ),
         (
             "file.export",
-            json!({"path": "part.dxf"}),
-            "cannot tell the format from `part.dxf`",
+            json!({"path": "part.dwg"}),
+            "cannot tell the format from `part.dwg`",
         ),
         (
             "file.export",
-            json!({"path": "part.stl", "format": "dxf"}),
-            "unknown format `dxf`",
+            json!({"path": "part.stl", "format": "dwg"}),
+            "unknown format `dwg`",
         ),
         (
             "view.render",

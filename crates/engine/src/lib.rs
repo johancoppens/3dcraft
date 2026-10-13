@@ -13,6 +13,8 @@
 mod base64;
 mod body_cmds;
 mod commands;
+#[cfg(not(target_arch = "wasm32"))]
+mod drawing_cmds;
 mod file_cmds;
 mod params;
 mod query_cmds;
