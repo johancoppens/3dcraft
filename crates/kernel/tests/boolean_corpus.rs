@@ -80,7 +80,10 @@ use std::path::PathBuf;
 /// applies to those touch points as it does to the 48 outcomes of the
 /// same category where the surfaces meet in a curve. The developer may
 /// overturn the rule; then this goes back up.
-const AGREEING_FLOOR: usize = 6064;
+/// Raised to 11062 on 2026-10-13 when freeform faces came in: 4998 of the
+/// 5613 outcomes with a domed block agree (the rest are refused, none
+/// wrong), and the 6064 of the primitives are unchanged.
+const AGREEING_FLOOR: usize = 11062;
 
 /// Mismatches the kernel is known to have: `(case id, operation, why)`.
 /// They are bugs, listed so that the test is green while they are open and
