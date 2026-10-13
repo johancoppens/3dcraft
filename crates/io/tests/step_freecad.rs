@@ -13,11 +13,13 @@
 //! `crates/engine/tests/step_freecad.rs`. The table is printed and left in
 //! `target/tmp/step-io/report.md`.
 
+// `!(x <= bound)` on purpose: a NaN is a problem too.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    clippy::indexing_slicing
+    clippy::indexing_slicing,
+    clippy::neg_cmp_op_on_partial_ord
 )]
 
 #[path = "common/bodies.rs"]
@@ -27,6 +29,7 @@ mod harness;
 
 use craft3d_geom::Surface;
 use craft3d_io::{AngleUnit, StepBody, StepOptions, export_step};
+use craft3d_kernel::boolean::{BooleanOp, boolean};
 use craft3d_kernel::primitives;
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_meshio::Unit;
@@ -73,6 +76,7 @@ fn case(file: &str, body: &Body, lumps: usize, options: &StepOptions, to_mm: f64
         extent: extent(body),
         names: vec![file.to_string()],
         relative: RELATIVE,
+        parts: Vec::new(),
     }
 }
 
@@ -242,6 +246,268 @@ fn freecad_reads_every_kernel_body_as_the_solid_we_made() {
         .filter(|r| !r.problems.is_empty())
         .map(|r| format!("{}: {}", r.file, r.problems.join("; ")))
         .collect();
+    assert!(
+        bad.is_empty(),
+        "{} files with problems:\n{}",
+        bad.len(),
+        bad.join("\n")
+    );
+}
+
+/// The volume between the floor and the roof of
+/// `trimmed::domed_block(_, dx, dy, height, _)` over the rectangle
+/// `x` × `y` of its floor: the roof is the bicubic Bézier patch over a
+/// regular net whose heights are `height (1 + 0.15 (((7 i + 3 j) mod 5) −
+/// 2))`, a polynomial of degree 3 each way, which three-point
+/// Gauss-Legendre integrates exactly.
+fn under_the_roof(dx: f64, dy: f64, height: f64, x: (f64, f64), y: (f64, f64)) -> f64 {
+    let bernstein = |t: f64| {
+        let s = 1.0 - t;
+        [s * s * s, 3.0 * s * s * t, 3.0 * s * t * t, t * t * t]
+    };
+    let roof = |px: f64, py: f64| {
+        let (bu, bv) = (bernstein(px / dx), bernstein(py / dy));
+        let mut z = 0.0;
+        for (i, u) in bu.iter().enumerate() {
+            for (j, v) in bv.iter().enumerate() {
+                z += u * v * height * (1.0 + 0.15 * (((i * 7 + j * 3) % 5) as f64 - 2.0));
+            }
+        }
+        z
+    };
+    let gauss = [
+        (-(0.6_f64.sqrt()), 5.0 / 9.0),
+        (0.0, 8.0 / 9.0),
+        (0.6_f64.sqrt(), 5.0 / 9.0),
+    ];
+    let (mx, hx) = ((x.0 + x.1) / 2.0, (x.1 - x.0) / 2.0);
+    let (my, hy) = ((y.0 + y.1) / 2.0, (y.1 - y.0) / 2.0);
+    let mut total = 0.0;
+    for (a, wa) in gauss {
+        for (b, wb) in gauss {
+            total += wa * wb * hx * hy * roof(mx + hx * a, my + hy * b);
+        }
+    }
+    total
+}
+
+/// Booleans of the test kit's domed block (a block under a bicubic roof,
+/// as a Bézier patch and as a NURBS surface), which no command builds
+/// yet: a block through the roof, and the corpus case
+/// `contact/dome-dome/003` of `crates/kernel/tests/boolean_freeform.rs`, a
+/// corner of one roof resting on another roof, where the two together are
+/// two lumps that touch in a point and the difference is the lower one as
+/// it was.
+///
+/// The bound is `APPROXIMATED`: the cut through the roof is a curve that
+/// is no line in the roof's parameter plane, and FreeCAD's area of a
+/// spline face is a numerical integral it does not take to convergence
+/// (docs/testing.md, the boolean corpus: 6.7e-6 at worst there). The
+/// volumes of the pieces are also held to each other here:
+/// vol(A ∪ B) + vol(A ∩ B) = vol A + vol B, by FreeCAD's numbers alone.
+#[test]
+#[ignore = "needs FreeCAD: set CRAFT3D_FREECAD"]
+fn freecad_reads_booleans_of_domed_blocks() {
+    let mut cases = Vec::new();
+    let mut refused = Vec::new();
+    // Per scale and representation: the files of A, B, A ∪ B, A ∩ B.
+    let mut identities = Vec::new();
+    // Files and the volume each must have for lengths of 1.
+    let mut closed: Vec<(String, f64)> = Vec::new();
+    for (scale, tag) in [(1e-3, "milli"), (1.0, "one"), (1e6, "mega")] {
+        let tolerance = Tolerance::new(1e-6 * scale, 1e-9).unwrap();
+        let options = StepOptions {
+            tolerance,
+            ..StepOptions::default()
+        };
+        for (nurbs, kind) in [(false, "bezier"), (true, "nurbs")] {
+            // The operands themselves, added after the results.
+            let mut operands = Vec::new();
+            let mut add = |name: &str, a: &Body, b: &Body, op: BooleanOp, lumps: usize| {
+                let file = format!("{tag}-{kind}-{name}");
+                match boolean(a, b, op, &tolerance) {
+                    Ok(result) => {
+                        let mut c = case(&file, &result.body, lumps, &options, 1.0);
+                        c.relative = APPROXIMATED;
+                        c.extent = Extent::Loose;
+                        cases.push(c);
+                    }
+                    Err(e) => refused.push(format!("{file}: {e}")),
+                }
+                format!("{file}.step")
+            };
+            // A block standing in the dome and out through its roof.
+            let dome =
+                trimmed::domed_block(&tilted(scale), 2.0 * scale, 1.5 * scale, 2.5 * scale, nurbs)
+                    .unwrap();
+            let base = tilted(scale);
+            let post = primitives::block(
+                &Frame::new(
+                    base.point(0.5 * scale, 0.4 * scale, 1.5 * scale),
+                    base.z(),
+                    base.x(),
+                )
+                .unwrap(),
+                scale,
+                0.7 * scale,
+                2.0 * scale,
+            )
+            .unwrap();
+            // What they share, by the roof's own definition (the heights of
+            // `trimmed::domed_block`'s net, written out again): the part
+            // of the post under the roof, from 1.5 up.
+            let shared = under_the_roof(2.0, 1.5, 2.5, (0.5, 1.5), (0.4, 1.1)) - 0.7 * 1.5;
+            let post_volume = 1.0 * 0.7 * 2.0;
+            let both = add("dome-post-union", &dome.body, &post, BooleanOp::Union, 1);
+            closed.push((
+                both.clone(),
+                dome.volume / scale.powi(3) + post_volume - shared,
+            ));
+            let less = add(
+                "dome-post-subtract",
+                &dome.body,
+                &post,
+                BooleanOp::Subtract,
+                1,
+            );
+            closed.push((less, dome.volume / scale.powi(3) - shared));
+            let common = add(
+                "dome-post-intersect",
+                &dome.body,
+                &post,
+                BooleanOp::Intersect,
+                1,
+            );
+            closed.push((common.clone(), shared));
+            let mut c = case(&format!("{tag}-{kind}-dome"), &dome.body, 1, &options, 1.0);
+            c.relative = APPROXIMATED;
+            let alone = c.file.clone();
+            operands.push(c);
+            let c = case(&format!("{tag}-{kind}-post"), &post, 1, &options, 1.0);
+            identities.push([alone, c.file.clone(), both, common]);
+            operands.push(c);
+
+            // A corner of one roof resting on another roof.
+            let lower = trimmed::domed_block(
+                &Frame::new(
+                    Vec3::new(-2.436569322600609, -2.194065104762556, 2.6567827309250918) * scale,
+                    Vec3::new(0.6869183022974135, -0.7150994983998157, 0.12952201881213576),
+                    Vec3::new(
+                        -0.44103510150997627,
+                        -0.5518503100792028,
+                        -0.7077777013311259,
+                    ),
+                )
+                .unwrap(),
+                2.454469726218531 * scale,
+                1.233351519002846 * scale,
+                2.1578085031501213 * scale,
+                nurbs,
+            )
+            .unwrap();
+            let upper = trimmed::domed_block(
+                &Frame::new(
+                    Vec3::new(0.1340965815724604, -5.527588649130966, 5.27146697314718) * scale,
+                    Vec3::new(0.533233144706825, 0.477304375339366, -0.698457548221771),
+                    Vec3::new(
+                        0.14799983577272827,
+                        -0.8655317124360711,
+                        -0.4784881434045441,
+                    ),
+                )
+                .unwrap(),
+                1.8356596835981147 * scale,
+                2.9960054569223717 * scale,
+                1.9891773926774199 * scale,
+                nurbs,
+            )
+            .unwrap();
+            add(
+                "roof-corner-union",
+                &lower.body,
+                &upper.body,
+                BooleanOp::Union,
+                2,
+            );
+            add(
+                "roof-corner-subtract",
+                &lower.body,
+                &upper.body,
+                BooleanOp::Subtract,
+                1,
+            );
+            cases.append(&mut operands);
+        }
+    }
+    let rows = harness::check(
+        "step-io-domes",
+        "STEP: booleans of domed blocks read by FreeCAD",
+        &cases,
+    );
+    let mut bad: Vec<String> = rows
+        .iter()
+        .filter(|r| !r.problems.is_empty())
+        .map(|r| format!("{}: {}", r.file, r.problems.join("; ")))
+        .collect();
+    // Ours against the roof's definition. The cut through the roof is a
+    // spline within the modelling tolerance (1e-6 of the scale) of the
+    // exact curve, so the body is the exact one give or take a skin one
+    // tolerance thick: its volume may be off by the tolerance times its
+    // area. (Measured: 4e-8 of the volume at most, where that bound is
+    // 4e-6 to 9e-6; not alike at the three scales.)
+    for (file, volume) in &closed {
+        let Some(case) = cases.iter().find(|c| &c.file == file) else {
+            continue;
+        };
+        let scale: f64 = if file.starts_with("milli") {
+            1e-3
+        } else if file.starts_with("mega") {
+            1e6
+        } else {
+            1.0
+        };
+        let off = case.volume / (volume * scale.powi(3)) - 1.0;
+        println!("{file}: our volume over the roof's own integral - 1 = {off:+.2e}");
+        let skin = 1e-6 * scale * case.area / case.volume;
+        if !(off.abs() <= skin) {
+            bad.push(format!(
+                "{file}: our volume is {off:e} off the integral of the roof (asked {skin:e})"
+            ));
+        }
+    }
+    // The identity among FreeCAD's own volumes of our four files.
+    let theirs = |file: &str| {
+        let (row, case) = rows.iter().zip(&cases).find(|(row, _)| row.file == file)?;
+        Some(row.volume_ratio * case.volume)
+    };
+    for [a, b, both_file, common] in &identities {
+        let (Some(a), Some(b), Some(both), Some(common)) =
+            (theirs(a), theirs(b), theirs(both_file), theirs(common))
+        else {
+            continue;
+        };
+        let off = (both + common - a - b) / (a + b);
+        println!(
+            "{both_file}: vol(A ∪ B) + vol(A ∩ B) - vol A - vol B = {off:+.2e} of vol A + vol B, by FreeCAD's numbers"
+        );
+        if !(off.abs() <= 1e-7) {
+            bad.push(format!(
+                "FreeCAD's volumes of our union and intersection do not add up: {off:e}"
+            ));
+        }
+    }
+    if !refused.is_empty() {
+        println!("\n{} booleans the kernel refused:", refused.len());
+        for line in &refused {
+            println!("- {line}");
+        }
+    }
+    assert!(
+        refused.is_empty(),
+        "{} booleans refused:\n{}",
+        refused.len(),
+        refused.join("\n")
+    );
     assert!(
         bad.is_empty(),
         "{} files with problems:\n{}",
