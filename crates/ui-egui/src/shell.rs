@@ -3,6 +3,7 @@
 //! view state. It never edits a document; that takes a command
 //! (`Session::execute`), from whoever drives the session.
 
+use crate::backend::{Backend, BodyRenderer, RendererChoice, RendererReport};
 use crate::frames::{Mode, Scheduler, Ticket};
 use crate::state::{CameraState, ProjectionKind, UiState, VIEWS};
 use crate::theme::{Tokens, color, color_alpha};
@@ -28,6 +29,20 @@ pub const REST_SSAA: u32 = 2;
 /// gets a smaller image of the same shape, stretched over it.
 pub const REST_SAMPLES: u64 = 4_000_000;
 pub const MOVING_SAMPLES: u64 = 600_000;
+/// The budgets of the GPU renderer are in pixels, not samples: drawing
+/// is cheap there (under a millisecond for the draw itself), and what
+/// bounds a frame is reading the picture back, 12 bytes per pixel out of
+/// memory the driver maps uncached (measured on an Intel iGPU over
+/// Vulkan: 50 ns per pixel for a small image and more for a large one,
+/// so about 50 ms for a 1020 × 777 image and over 600 ms for 2560 × 1400),
+/// and putting it in a texture. So the GPU image is supersampled at rest
+/// within fewer pixels than the CPU's budget in samples allows, and while
+/// moving it is [`MOVING_DIVISOR`] times smaller per side, as on the CPU,
+/// within fewer pixels still. On a light model the CPU renderer is as
+/// fast as this; on a heavy one the GPU wins. Doing without the readback
+/// (the overlay's depth test on the GPU) is what would make it fast.
+pub const GPU_REST_PIXELS: u64 = 2_000_000;
+pub const GPU_MOVING_PIXELS: u64 = 400_000;
 
 /// The product's name, as the window's title ends with it.
 pub const PRODUCT: &str = "3DCraft";
@@ -140,6 +155,8 @@ pub struct RenderStats {
     /// False for the quick preview shown while the camera moves and until
     /// the sharp image is ready.
     pub sharp: bool,
+    /// Which renderer shaded the bodies.
+    pub renderer: Backend,
 }
 
 /// What the image in the viewport is made from: another image is made
@@ -173,12 +190,15 @@ struct Rendered {
     composed: Composed,
     quality: Quality,
     milliseconds: Option<f64>,
+    /// The renderer that made it, as it is after making it.
+    report: RendererReport,
 }
 
 impl RenderJob {
-    fn render(&self) -> Result<Rendered, String> {
+    fn render(&self, renderer: &mut BodyRenderer) -> Result<Rendered, String> {
         let elapsed = stopwatch();
-        let composed = viewport::compose(
+        let composed = viewport::compose_with(
+            renderer,
             self.scene.as_deref(),
             &self.camera,
             self.quality,
@@ -189,6 +209,7 @@ impl RenderJob {
             composed,
             quality: self.quality,
             milliseconds: elapsed(),
+            report: renderer.report().clone(),
         })
     }
 }
@@ -220,6 +241,11 @@ pub struct Shell {
     worker: Option<RenderWorker>,
     /// Sharp images that are ready and not on screen yet.
     arrived: Vec<Arrived>,
+    /// The renderer of this thread: previews, and sharp images when there
+    /// is no render thread.
+    renderer: BodyRenderer,
+    /// The renderer that made the image on screen, as it reported itself.
+    shown_report: Option<RendererReport>,
     stats: Option<RenderStats>,
     /// How many times the image was rendered.
     renders: u64,
@@ -268,7 +294,15 @@ fn stopwatch() -> impl FnOnce() -> Option<f64> {
 }
 
 impl Shell {
+    /// A shell that renders on the CPU, where it draws: what tests and a
+    /// host without threads use.
     pub fn new() -> Self {
+        Self::with_renderer(RendererChoice::Cpu)
+    }
+
+    /// A shell that renders with the renderer asked for (the GPU when
+    /// there is one, for [`RendererChoice::Auto`]), where it draws.
+    pub fn with_renderer(choice: RendererChoice) -> Self {
         Self {
             state: UiState::default(),
             tokens: Tokens::default(),
@@ -283,6 +317,8 @@ impl Shell {
             #[cfg(not(target_arch = "wasm32"))]
             worker: None,
             arrived: Vec::new(),
+            renderer: BodyRenderer::new(choice),
+            shown_report: None,
             stats: None,
             renders: 0,
             drag_from: None,
@@ -297,20 +333,37 @@ impl Shell {
     }
 
     /// A shell that has its sharp images made on a thread of its own, so
-    /// the thread that draws the window only ever makes quick previews:
-    /// what a window uses. [`Self::new`] makes every image where it is
-    /// drawn, which is what a host without threads needs and what makes a
-    /// frame's outcome independent of timing.
+    /// the thread that draws the window only ever makes quick previews.
+    /// [`Self::new`] makes every image where it is drawn, which is what a
+    /// host without threads needs and what makes a frame's outcome
+    /// independent of timing. Renders on the CPU; a window uses
+    /// [`Self::threaded_with`].
     ///
     /// When the thread cannot be started this is the same as `new`.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn threaded() -> Self {
-        let mut shell = Self::new();
-        let worker = RenderWorker::start(RenderJob::render, |job: &RenderJob| {
-            if let Some(ctx) = &job.wake {
-                ctx.request_repaint();
-            }
-        });
+        Self::threaded_with(RendererChoice::Cpu)
+    }
+
+    /// [`Self::threaded`] with the renderer asked for on both threads:
+    /// each has a renderer of its own (two GPU devices, for
+    /// [`RendererChoice::Auto`] on a machine with an adapter), made on the
+    /// thread that uses it. What a window uses.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn threaded_with(choice: RendererChoice) -> Self {
+        let mut shell = Self::with_renderer(choice);
+        // The thread's renderer is made on the thread, at its first job.
+        let mut renderer: Option<BodyRenderer> = None;
+        let worker = RenderWorker::start(
+            move |job: &RenderJob| {
+                job.render(renderer.get_or_insert_with(|| BodyRenderer::new(choice)))
+            },
+            |job: &RenderJob| {
+                if let Some(ctx) = &job.wake {
+                    ctx.request_repaint();
+                }
+            },
+        );
         if let Ok(worker) = worker {
             shell.worker = Some(worker);
             shell.scheduler.set_mode(Mode::Background);
@@ -322,6 +375,20 @@ impl Shell {
     #[cfg(target_arch = "wasm32")]
     pub fn threaded() -> Self {
         Self::new()
+    }
+
+    /// There are no threads here: the same as [`Self::with_renderer`].
+    #[cfg(target_arch = "wasm32")]
+    pub fn threaded_with(choice: RendererChoice) -> Self {
+        Self::with_renderer(choice)
+    }
+
+    /// What the viewport renders with: the renderer that made the image on
+    /// screen, or, before there is one, this thread's.
+    pub fn renderer_report(&self) -> RendererReport {
+        self.shown_report
+            .clone()
+            .unwrap_or_else(|| self.renderer.report().clone())
     }
 
     /// True when sharp images are made on a thread of their own.
@@ -389,6 +456,13 @@ impl Shell {
     /// The rows of the feature tree as of the last [`Self::sync`].
     pub fn tree_rows(&self) -> &[TreeRow] {
         &self.rows
+    }
+
+    /// What is drawn over the viewport's texture, in the pixels of the
+    /// image that texture holds, and that image's size: for a host that
+    /// inks the picture itself (the `snapshot` example).
+    pub fn overlay(&self) -> (&Overlay, [u32; 2]) {
+        (&self.overlay, self.overlay_size)
     }
 
     pub fn render_stats(&self) -> Option<RenderStats> {
@@ -596,8 +670,11 @@ impl Shell {
                     ui.colored_label(
                         dim,
                         format!(
-                            "CPU {}×{} · {} triangles{time}",
-                            stats.width, stats.height, stats.triangles
+                            "{} {}×{} · {} triangles{time}",
+                            stats.renderer.name().to_uppercase(),
+                            stats.width,
+                            stats.height,
+                            stats.triangles
                         ),
                     );
                 });
@@ -908,8 +985,10 @@ impl Shell {
             wake: Some(ctx.clone()),
         };
         let plan = self.scheduler.plan(key, moving);
+        let backend = self.renderer.backend();
         if plan.preview {
-            match job(image_quality(key.size, true, key.largest)).render() {
+            let job = job(image_quality_for(backend, key.size, true, key.largest));
+            match job.render(&mut self.renderer) {
                 Ok(rendered) => {
                     self.show(ctx, rendered, false);
                     self.scheduler.preview_shown(key);
@@ -920,10 +999,11 @@ impl Shell {
             }
         }
         if let Some(ticket) = plan.sharp {
-            let job = job(image_quality(key.size, false, key.largest));
+            let job = job(image_quality_for(backend, key.size, false, key.largest));
             if let Some(job) = self.hand_over(ticket, job) {
                 // No thread to do it: here and now.
-                self.arrived.push((ticket, job.render()));
+                let result = job.render(&mut self.renderer);
+                self.arrived.push((ticket, result));
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -971,6 +1051,7 @@ impl Shell {
             composed,
             quality,
             milliseconds,
+            report,
         } = rendered;
         self.renders = self.renders.saturating_add(1);
         self.stats = Some(RenderStats {
@@ -980,7 +1061,9 @@ impl Shell {
             triangles: composed.triangles,
             milliseconds,
             sharp,
+            renderer: composed.backend,
         });
+        self.shown_report = Some(report);
         let image = egui::ColorImage::from_rgb(
             [composed.width as usize, composed.height as usize],
             &composed.rgb,
@@ -998,20 +1081,34 @@ impl Shell {
     }
 }
 
-/// How to render the image for a viewport of `size` pixels: full size at
-/// rest, supersampled when that fits [`REST_SAMPLES`]; [`MOVING_DIVISOR`]
-/// times smaller and unfiltered while the camera moves, within
-/// [`MOVING_SAMPLES`]. Never larger than the backend's largest texture
-/// (`largest` pixels per side). An image that has to be smaller than the
-/// viewport keeps its shape and is stretched over it.
+/// How to render the image for a viewport of `size` pixels on the CPU:
+/// full size at rest, supersampled when that fits [`REST_SAMPLES`];
+/// [`MOVING_DIVISOR`] times smaller and unfiltered while the camera moves,
+/// within [`MOVING_SAMPLES`]. Never larger than the backend's largest
+/// texture (`largest` pixels per side). An image that has to be smaller
+/// than the viewport keeps its shape and is stretched over it.
 pub fn image_quality(size: [u32; 2], moving: bool, largest: usize) -> Quality {
+    image_quality_for(Backend::Cpu, size, moving, largest)
+}
+
+/// [`image_quality`] for either renderer: the GPU's budgets count pixels
+/// ([`GPU_REST_PIXELS`], [`GPU_MOVING_PIXELS`]), and its image at rest is
+/// supersampled whenever the CPU renderer's limits and a target of 8192
+/// pixels per side allow it.
+pub fn image_quality_for(
+    backend: Backend,
+    size: [u32; 2],
+    moving: bool,
+    largest: usize,
+) -> Quality {
     let largest = u32::try_from(largest)
         .unwrap_or(MAX_SIDE)
         .clamp(MIN_SIDE, MAX_SIDE);
-    let (divisor, budget) = if moving {
-        (MOVING_DIVISOR, MOVING_SAMPLES)
-    } else {
-        (1, REST_SAMPLES)
+    let (divisor, budget) = match (backend, moving) {
+        (Backend::Cpu, true) => (MOVING_DIVISOR, MOVING_SAMPLES),
+        (Backend::Cpu, false) => (1, REST_SAMPLES),
+        (Backend::Gpu, true) => (MOVING_DIVISOR, GPU_MOVING_PIXELS),
+        (Backend::Gpu, false) => (1, GPU_REST_PIXELS),
     };
     let (mut width, mut height) = (
         (size[0] / divisor).max(MIN_SIDE),
@@ -1033,16 +1130,24 @@ pub fn image_quality(size: [u32; 2], moving: bool, largest: usize) -> Quality {
     );
     let supersampled =
         u64::from(width) * u64::from(height) * u64::from(REST_SSAA) * u64::from(REST_SSAA);
+    let fits = match backend {
+        Backend::Cpu => supersampled <= budget,
+        Backend::Gpu => {
+            supersampled <= craft3d_render::MAX_SAMPLES
+                && u64::from(width.max(height)) * u64::from(REST_SSAA) <= GPU_TARGET_SIDE
+        }
+    };
     Quality {
         width,
         height,
-        ssaa: if !moving && supersampled <= budget {
-            REST_SSAA
-        } else {
-            1
-        },
+        ssaa: if !moving && fits { REST_SSAA } else { 1 },
     }
 }
+
+/// Every desktop adapter can render into a target this many pixels per
+/// side; the GPU renderer checks the device's own limit and the CPU
+/// renders the frame when it is smaller.
+const GPU_TARGET_SIDE: u64 = 8192;
 
 /// Paints the overlay, which is in image pixels, into `rect`, which is the
 /// same image in points.

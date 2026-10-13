@@ -1,13 +1,17 @@
-//! Times the CPU viewport: what one image costs at rest and while the
-//! camera moves, for a small and a large model.
+//! Times the viewport's renderers: what one image costs at rest and while
+//! the camera moves, for a small and a large model, on the CPU and, where
+//! there is an adapter, on the GPU, where the cost is split into the upload
+//! of the mesh (once per document revision), the draw, and reading the
+//! frame back.
 //!
 //! ```sh
 //! cargo run --release -p craft3d-ui-egui --example viewport_cost
 //! ```
 
-use craft3d_engine::{Session, Workspace};
+use craft3d_engine::{Scene, Session, Workspace};
 use craft3d_ui_egui::Tokens;
-use craft3d_ui_egui::shell::image_quality;
+use craft3d_ui_egui::backend::{Backend, BodyRenderer, RendererChoice};
+use craft3d_ui_egui::shell::{image_quality, image_quality_for};
 use craft3d_ui_egui::state::CameraState;
 use craft3d_ui_egui::viewport::{self, Quality};
 use serde_json::json;
@@ -73,6 +77,73 @@ fn time(
     Ok(())
 }
 
+/// The GPU's cost per image, split into its parts, best of five.
+fn time_gpu(
+    label: &str,
+    offscreen: &mut craft3d_gpu::Offscreen,
+    scene: &Scene,
+    camera: &CameraState,
+    quality: Quality,
+) -> Result<(), String> {
+    let tokens = Tokens::default();
+    let params = viewport::render_params(quality, &tokens);
+    let render_camera = camera.to_render();
+    let (mut upload, mut draw, mut read) = (f64::INFINITY, f64::INFINITY, f64::INFINITY);
+    for _ in 0..5 {
+        let ms = |start: Instant| start.elapsed().as_secs_f64() * 1000.0;
+        let start = Instant::now();
+        let mesh = offscreen
+            .renderer()
+            .upload(&scene.mesh)
+            .map_err(|e| e.to_string())?;
+        upload = upload.min(ms(start));
+        let start = Instant::now();
+        offscreen
+            .renderer()
+            .draw(&mesh, &render_camera, &params)
+            .map_err(|e| e.to_string())?;
+        draw = draw.min(ms(start));
+        let start = Instant::now();
+        let frame = offscreen
+            .renderer()
+            .read_frame()
+            .map_err(|e| e.to_string())?;
+        read = read.min(ms(start));
+        assert_eq!(frame.width, quality.width);
+    }
+    println!(
+        "  {label:<22} {:>4} x {:<4} ssaa {}  upload {upload:>6.1} ms  draw {draw:>6.1} ms  read back {read:>6.1} ms",
+        quality.width, quality.height, quality.ssaa
+    );
+    Ok(())
+}
+
+/// What the viewport's own path costs with either renderer: shading and
+/// the overlay, as the window asks for it.
+fn time_path(
+    label: &str,
+    renderer: &mut BodyRenderer,
+    scene: &Scene,
+    camera: &CameraState,
+    quality: Quality,
+) -> Result<(), String> {
+    let tokens = Tokens::default();
+    let mut best = f64::INFINITY;
+    for _ in 0..5 {
+        let start = Instant::now();
+        viewport::compose_with(renderer, Some(scene), camera, quality, &tokens, None)?;
+        best = best.min(start.elapsed().as_secs_f64() * 1000.0);
+    }
+    println!(
+        "  {label:<22} {:>4} x {:<4} ssaa {}  {best:>7.1} ms on the {}",
+        quality.width,
+        quality.height,
+        quality.ssaa,
+        renderer.backend().name()
+    );
+    Ok(())
+}
+
 fn measure(large: bool, tolerance: Option<f64>) -> Result<(), String> {
     let mut session = Session::new(Workspace::none());
     build(&mut session, large)?;
@@ -108,6 +179,36 @@ fn measure(large: bool, tolerance: Option<f64>) -> Result<(), String> {
                 ssaa: 2,
             },
         )?;
+    }
+    let mut gpu = BodyRenderer::new(RendererChoice::Auto);
+    println!("viewport path, {}", gpu.report().describe());
+    let mut cpu = BodyRenderer::cpu();
+    for size in [[1020, 777], [2560, 1400]] {
+        let mut camera = CameraState::default();
+        camera.fit(&scene.bbox, f64::from(size[0]) / f64::from(size[1]));
+        for (backend, renderer) in [(Backend::Cpu, &mut cpu), (Backend::Gpu, &mut gpu)] {
+            if renderer.backend() != backend {
+                continue;
+            }
+            for moving in [false, true] {
+                let quality = image_quality_for(backend, size, moving, 8192);
+                let label = if moving { "while moving" } else { "at rest" };
+                time_path(label, renderer, &scene, &camera, quality)?;
+            }
+        }
+    }
+    if gpu.backend() == Backend::Gpu {
+        let mut offscreen = craft3d_gpu::Offscreen::new().map_err(|e| e.to_string())?;
+        println!("GPU parts on {}", offscreen.adapter());
+        for size in [[1020, 777], [2560, 1400]] {
+            let mut camera = CameraState::default();
+            camera.fit(&scene.bbox, f64::from(size[0]) / f64::from(size[1]));
+            for moving in [false, true] {
+                let quality = image_quality_for(Backend::Gpu, size, moving, 8192);
+                let label = if moving { "while moving" } else { "at rest" };
+                time_gpu(label, &mut offscreen, &scene, &camera, quality)?;
+            }
+        }
     }
     Ok(())
 }

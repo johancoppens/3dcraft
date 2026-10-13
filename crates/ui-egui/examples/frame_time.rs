@@ -5,14 +5,17 @@
 //! ```sh
 //! cargo run --release -p craft3d-ui-egui --example frame_time
 //! cargo run --release -p craft3d-ui-egui --example frame_time -- --inline
+//! cargo run --release -p craft3d-ui-egui --example frame_time -- --cpu
 //! ```
 //!
 //! `--inline` renders the sharp image on the drawing thread, as a host
 //! without threads does; without it the sharp image is rendered on the
-//! worker thread, as in the window.
+//! worker thread, as in the window. `--cpu` renders with the CPU
+//! reference renderer; without it the GPU is used when there is one, as
+//! in the window.
 
 use craft3d_engine::{Session, Workspace};
-use craft3d_ui_egui::Shell;
+use craft3d_ui_egui::{RendererChoice, Shell};
 use egui::{Event, PointerButton, Pos2, pos2, vec2};
 use serde_json::json;
 use std::process::ExitCode;
@@ -88,7 +91,12 @@ fn summary(label: &str, times: &[f64]) {
     );
 }
 
-fn measure(large: bool, size: [f32; 2], inline: bool) -> Result<(), String> {
+fn measure(
+    large: bool,
+    size: [f32; 2],
+    inline: bool,
+    choice: RendererChoice,
+) -> Result<(), String> {
     let mut session = Session::new(Workspace::none());
     build(&mut session, large)?;
     let scene = session
@@ -108,10 +116,11 @@ fn measure(large: bool, size: [f32; 2], inline: bool) -> Result<(), String> {
         }
     );
     let mut shell = if inline {
-        Shell::new()
+        Shell::with_renderer(choice)
     } else {
-        Shell::threaded()
+        Shell::threaded_with(choice)
     };
+    println!("renderer: {}", shell.renderer_report().describe());
     let mut window = Window {
         ctx: egui::Context::default(),
         size: vec2(size[0], size[1]),
@@ -176,10 +185,11 @@ fn measure(large: bool, size: [f32; 2], inline: bool) -> Result<(), String> {
     summary("after an edit, until sharp", &edit);
     if let Some(stats) = shell.render_stats() {
         println!(
-            "  sharp image: {} x {} ssaa {}, rendered in {:.1} ms",
+            "  sharp image: {} x {} ssaa {} on the {}, rendered in {:.1} ms",
             stats.width,
             stats.height,
             stats.ssaa,
+            stats.renderer.name(),
             stats.milliseconds.unwrap_or(f64::NAN)
         );
     }
@@ -188,9 +198,14 @@ fn measure(large: bool, size: [f32; 2], inline: bool) -> Result<(), String> {
 
 fn main() -> ExitCode {
     let inline = std::env::args().any(|a| a == "--inline");
-    let outcome = measure(false, [1280.0, 800.0], inline)
-        .and_then(|()| measure(true, [1280.0, 800.0], inline))
-        .and_then(|()| measure(true, [2560.0, 1400.0], inline));
+    let choice = if std::env::args().any(|a| a == "--cpu") {
+        RendererChoice::Cpu
+    } else {
+        RendererChoice::Auto
+    };
+    let outcome = measure(false, [1280.0, 800.0], inline, choice)
+        .and_then(|()| measure(true, [1280.0, 800.0], inline, choice))
+        .and_then(|()| measure(true, [2560.0, 1400.0], inline, choice));
     match outcome {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

@@ -229,11 +229,13 @@ mod worker {
     }
 
     impl<J: Send + 'static, R: Send + 'static> Worker<J, R> {
-        /// Starts the thread. `render` makes the image of a job; `ready`
-        /// is called after each result is in the queue (to ask for a
-        /// repaint). An error when the thread cannot be started.
+        /// Starts the thread. `render` makes the image of a job (it may
+        /// keep state, such as a renderer of its own, which then lives on
+        /// the thread); `ready` is called after each result is in the
+        /// queue (to ask for a repaint). An error when the thread cannot
+        /// be started.
         pub fn start(
-            render: impl Fn(&J) -> Result<R, String> + Send + 'static,
+            mut render: impl FnMut(&J) -> Result<R, String> + Send + 'static,
             ready: impl Fn(&J) + Send + 'static,
         ) -> Result<Self, String> {
             let (jobs, incoming) = mpsc::channel::<(Ticket, J)>();

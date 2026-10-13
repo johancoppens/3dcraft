@@ -587,6 +587,7 @@ name = "craft3d-ui-egui"
 version = "0.0.1"
 dependencies = [
  "craft3d-engine",
+ "craft3d-gpu",
  "craft3d-math",
  "craft3d-render",
  "craft3d-tess",

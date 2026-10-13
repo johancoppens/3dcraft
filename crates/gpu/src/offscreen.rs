@@ -1,7 +1,7 @@
 //! The self-contained way in: find an adapter, make a device, render to
 //! textures and read them back.
 
-use crate::{GpuError, Renderer};
+use crate::{GpuError, GpuMesh, Renderer};
 use craft3d_render::{Camera, Frame, RenderParams};
 use craft3d_tess::Mesh;
 use std::fmt;
@@ -204,7 +204,21 @@ impl Offscreen {
         params: &RenderParams,
     ) -> Result<Frame, GpuError> {
         let uploaded = self.renderer.upload(mesh)?;
-        self.renderer.draw(&uploaded, camera, params)?;
+        self.render_uploaded(&uploaded, camera, params)
+    }
+
+    /// [`Offscreen::render`] for a mesh that is on the GPU already
+    /// (`self.renderer().upload(..)`): what a viewer does, which uploads a
+    /// model once and draws it at every camera. A lost device is reported
+    /// here as with `render`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn render_uploaded(
+        &mut self,
+        mesh: &GpuMesh,
+        camera: &Camera,
+        params: &RenderParams,
+    ) -> Result<Frame, GpuError> {
+        self.renderer.draw(mesh, camera, params)?;
         let frame = self.renderer.read_frame()?;
         self.check_uncaptured()?;
         Ok(frame)

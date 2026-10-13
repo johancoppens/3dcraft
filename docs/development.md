@@ -120,9 +120,9 @@ See [`control-protocol.md`](control-protocol.md) for every method. `.private/` i
 
 ## The viewer today
 
-`craft3d [FILE]` shows the active document: bodies shaded by the CPU renderer with their edges, sketches as lines (dimmed where a body is in front of them), the feature tree and a status bar. Drag to orbit, right-drag or shift-drag to pan, wheel to zoom, F to frame everything. File menu: New (Ctrl+N), Open (Ctrl+O), Save (Ctrl+S), Save As (Ctrl+Shift+S), with the system's file dialog (on Linux through xdg-desktop-portal, so a portal backend has to be running, as it is on GNOME and KDE); the title shows the file's name and a `*` for unsaved changes. Everything else is done with commands over the control channel.
+`craft3d [FILE]` shows the active document: bodies shaded with their edges, sketches as lines (dimmed where a body is in front of them), the feature tree and a status bar. The bodies are shaded by the wgpu renderer (`crates/gpu`) when the machine has a graphics adapter and by the CPU reference renderer otherwise; `--renderer cpu` (or `CRAFT3D_RENDERER=cpu`) asks for the CPU renderer, to compare the two. The status bar's `GPU 1440×900 …` or `CPU …` says which made the image on screen, `ui.get` reports it with the adapter's name and, when the GPU was wanted and could not be used, why (`renderer.fallback`), and the terminal prints it at start (`craft3d: viewport renderer: …`). `ui.screenshot` is always rendered by the CPU renderer: it is the oracle the GPU viewport is checked against. Drag to orbit, right-drag or shift-drag to pan, wheel to zoom, F to frame everything. File menu: New (Ctrl+N), Open (Ctrl+O), Save (Ctrl+S), Save As (Ctrl+Shift+S), with the system's file dialog (on Linux through xdg-desktop-portal, so a portal backend has to be running, as it is on GNOME and KDE); the title shows the file's name and a `*` for unsaved changes. Everything else is done with commands over the control channel.
 
-The window never waits for the renderer: the sharp image is made on a render thread while a quick preview is on screen. `cargo run --release -p craft3d-ui-egui --example frame_time` times whole frames on the drawing thread (`-- --inline` for the old behaviour); the status bar's milliseconds are the render thread's.
+The window never waits for the renderer: the sharp image is made on a render thread while a quick preview is on screen, on the GPU as well as on the CPU (each thread has a renderer of its own; a GPU frame is read back to the CPU, because the overlay is tested against its depth buffer and the picture goes on screen as a texture, as the CPU's does). That readback is what bounds the GPU viewport today (about 50 ms for a 1020 × 777 image on the development machine's Intel iGPU, the draw itself under a millisecond): with it the GPU is about twice as fast as the CPU at rest on a small window and no faster while moving, and it stays ahead on heavy models; `cargo run --release -p craft3d-ui-egui --example viewport_cost` prints the parts ([`architecture.md`](architecture.md) › Current state › Desktop app and shell). `cargo run --release -p craft3d-ui-egui --example frame_time` times whole frames on the drawing thread (`-- --inline` for the old behaviour, `-- --cpu` for the CPU renderer); the status bar's milliseconds are the render thread's.
 
 ## Watching along
 
@@ -144,10 +144,10 @@ Rules:
 ```sh
 cargo run --release -p craft3d-ui-egui --example snapshot -- \
     --out ui.png --size 1440x900 --scale 2 --open bracket.3dcraft \
-    --script '[["ui.set", {"view": "iso"}]]'
+    --script '[["ui.set", {"view": "iso"}]]' --renderer auto
 ```
 
-Renders the full UI headlessly with the real wgpu viewport. `--script` is a list of control-protocol calls (`[method, params]`), applied in order.
+The viewport as the window would show it, without a window: the shell runs headlessly (egui with no backend) with the renderer the window would use (the GPU when there is one, `--renderer cpu` for the CPU), the image it uploads as the viewport's texture is taken, and the lines it draws over it are inked on it. The panels are not in the picture (egui's own drawing needs a backend; that is not built). `--size` is the viewport in points, `--scale` the pixels per point. `--script` is a list of control-protocol calls (`[method, params]`), applied in order: the `ui.*` methods and `engine.execute {"command", "params"}`. It prints which renderer it used and how long the image took. For the oracle's picture of the same state use `ui.screenshot` or `craft3d-cli render`.
 
 ## MCP (agents)
 
@@ -188,9 +188,9 @@ See [`file-formats.md`](file-formats.md). In short: a ZIP of STORE entries (or a
 
 ## Graphics startup and device loss
 
-`--safe-gpu` starts with the CPU renderer for one launch. If the wgpu device cannot be created, or is lost while running, the viewport switches to the CPU renderer for the rest of the session and a notice says so. The app must start and show a model on a machine with no usable GPU.
+`--renderer cpu` (`CRAFT3D_RENDERER=cpu`) starts with the CPU renderer. Otherwise the viewport's renderer opens a wgpu device of its own on each of its two threads (the drawing thread for previews, the render thread for sharp images); when no adapter is found, the device cannot be made, or the graphics driver fails while that is tried, the viewport is rendered on the CPU and `ui.get` (`renderer.fallback`) and the terminal say why. A device that is lost while running, or any GPU error that is not the frame's own fault (a lost device, a failed readback, a driver that falls over inside a render), makes that thread render on the CPU for the rest of the session; the status bar shows `CPU …` from then on. A frame the device cannot take (a target or a mesh too large for it) is rendered on the CPU, and the next one on the GPU again. `cargo test -p craft3d-ui-egui --test gpu_fallback` runs the no-adapter case (in a child process with `WGPU_ADAPTER_NAME` set to a name no adapter has).
 
-Today (2026-10-12): the model is always rendered on the CPU, but the window itself is drawn by eframe on wgpu, and eframe 0.36 can only present through wgpu or OpenGL. So the window needs *some* adapter: a GPU, or a software implementation, which wgpu takes when it is the only one. With Mesa's lavapipe (`mesa-vulkan-drivers`) or llvmpipe installed the app runs without a GPU; try it with `VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json WGPU_BACKEND=vulkan craft3d`. With no adapter at all the app does not start: it prints what to install and exits with code 1. A window that needs no adapter would take a presentation path of our own (a CPU rasteriser for egui's output and a software surface), which is a second windowing stack and was not built. Nothing else needs an adapter: `craft3d-cli render`, `run`, `serve` and `mcp` work on any machine. `--safe-gpu` and device-loss handling do not exist yet.
+The window itself is drawn by eframe on wgpu, and eframe 0.36 can only present through wgpu or OpenGL. So the window needs *some* adapter: a GPU, or a software implementation, which wgpu takes when it is the only one. With Mesa's lavapipe (`mesa-vulkan-drivers`) or llvmpipe installed the app runs without a GPU (and the viewport's renderer then runs on that software adapter too); try it with `VK_DRIVER_FILES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json WGPU_BACKEND=vulkan craft3d`. With no adapter at all the app does not start: it prints what to install and exits with code 1. A window that needs no adapter would take a presentation path of our own (a CPU rasteriser for egui's output and a software surface), which is a second windowing stack and was not built. Nothing else needs an adapter: `craft3d-cli render`, `run`, `serve` and `mcp` work on any machine.
 
 ## Logs
 
@@ -203,7 +203,7 @@ The desktop app writes `log` records to standard error and to `logs/craft3d.log`
 | `CRAFT3D_CONTROL_PORT` | Same as `--control <port>` |
 | `CRAFT3D_CONTROL_TOKEN_FILE` | Read, or create for a server, the control bearer-token file |
 | `CRAFT3D_AUTOMATION_READ_ROOT` / `CRAFT3D_AUTOMATION_WRITE_ROOT` | Desktop app only: automation file roots. Headless CLI modes require the flags |
-| `CRAFT3D_CPU_VIEWPORT=1` | Force the CPU renderer in the viewport |
+| `CRAFT3D_RENDERER` | `auto` (the GPU when there is an adapter, else the CPU; the default) or `cpu`: what shades the viewport. Same as `--renderer` |
 | `CRAFT3D_CONFIG_DIR` | Settings and log directory override (tests, portable use) |
 | `CRAFT3D_THREADS` | Worker thread count (determinism tests run with 1, 2 and N) |
 | `CRAFT3D_FREECAD` | Path to a FreeCAD executable or AppImage, used only by opt-in export-validation tests |

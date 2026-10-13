@@ -10,7 +10,7 @@ use craft3d_render::{
     SHADE_AMBIENT, SHADE_DIFFUSE, SHADE_SHININESS, SHADE_SPECULAR, ViewAxes,
 };
 use craft3d_tess::Mesh;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 /// The colour targets store the bytes of [`Frame::rgb`] as they are: the
 /// shading works on display values, as the CPU renderer's does.
@@ -211,6 +211,8 @@ pub struct Renderer {
     present_layout: wgpu::BindGroupLayout,
     present_pipelines: Vec<(wgpu::TextureFormat, wgpu::RenderPipeline)>,
     targets: Option<Targets>,
+    /// The buffers frames are read back through, kept between frames.
+    staging: Mutex<Option<readback::Staging>>,
     drawn: bool,
     /// Identifies this renderer in the meshes it uploads.
     token: Arc<()>,
@@ -421,6 +423,7 @@ impl Renderer {
             present_layout,
             present_pipelines: Vec::new(),
             targets: None,
+            staging: Mutex::new(None),
             drawn: false,
             token: Arc::new(()),
         }
@@ -513,8 +516,9 @@ impl Renderer {
             .as_ref()
             .filter(|_| self.drawn)
             .ok_or(GpuError::NothingDrawn)?;
+        let mut staging = self.staging.lock().unwrap_or_else(PoisonError::into_inner);
         guarded(&self.device, || {
-            readback::start(&self.device, &self.queue, targets)
+            readback::start(&self.device, &self.queue, targets, &mut staging)
         })?
     }
 

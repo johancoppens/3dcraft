@@ -23,7 +23,7 @@ pub const UI_METHODS: &[UiMethod] = &[
     UiMethod {
         name: "ui.get",
         params: "{}",
-        summary: "Returns the UI state (camera, panels, selectedFeature, notice), the viewport size, what the scene holds, the feature tree rows and how the viewport was last rendered.",
+        summary: "Returns the UI state (camera, panels, selectedFeature, notice), the viewport size, what the scene holds, the feature tree rows, which renderer the viewport uses (gpu or cpu, the adapter, why it fell back) and how the viewport was last rendered.",
     },
     UiMethod {
         name: "ui.set",
@@ -38,7 +38,7 @@ pub const UI_METHODS: &[UiMethod] = &[
     UiMethod {
         name: "ui.screenshot",
         params: r#"{"path": string, "width": integer = the viewport's, "height": integer = the viewport's, "scale": number = the window's pixels per point}"#,
-        summary: "A PNG of the viewport as it is framed now: bodies by the CPU renderer, sketches and axes over them. Written under the write root when path is given, otherwise returned as base64.",
+        summary: "A PNG of the viewport as it is framed now: bodies by the CPU reference renderer (the oracle, whichever renderer the window uses), sketches and axes over them. Written under the write root when path is given, otherwise returned as base64.",
     },
     UiMethod {
         name: "ui.notice",
@@ -174,9 +174,15 @@ impl Shell {
                 "units": { "length": status.length_unit, "angle": status.angle_unit },
             })
         });
+        let report = self.renderer_report();
+        let renderer = json!({
+            "backend": report.backend.name(),
+            "adapter": report.adapter,
+            "fallback": report.fallback,
+        });
         let render = self.render_stats().map_or(Value::Null, |stats| {
             json!({
-                "renderer": "cpu",
+                "renderer": stats.renderer.name(),
                 "width": stats.width,
                 "height": stats.height,
                 "ssaa": stats.ssaa,
@@ -196,6 +202,7 @@ impl Shell {
             "document": document,
             "scene": scene_json,
             "features": features,
+            "renderer": renderer,
             "render": render,
             "lastCommand": self.last_command.as_ref().map(|report| json!({
                 "label": report.label, "ok": report.ok, "text": report.text,

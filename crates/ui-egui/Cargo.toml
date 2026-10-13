@@ -17,5 +17,12 @@ egui.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
+# The viewport's GPU renderer. Its blocking entry points exist on native
+# targets only; the browser renders the viewport on the CPU for now.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+craft3d-gpu.workspace = true
+
 [dev-dependencies]
 png.workspace = true
+# The GPU viewport's parity test includes the GPU crate's own comparison.
+craft3d-gpu.workspace = true
