@@ -12,7 +12,7 @@ const MAX_EDGES: usize = 2_000;
 
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("document.edges", "Edges", r#"{"feature": id or name, "between": [face name, face name]}"#,
-        "Lists the edges of a feature's body, each with the names of the faces it lies between, its curve kind and its end points. With between: only the edges between those two faces (names from document.inspect, faceNames). That is how an edge is referred to: by the faces it separates, which keeps meaning the same edge when the model changes upstream, also through booleans. There can be several, or none. The same name twice gives the seams of that face and the cuts between its pieces.", doc: true, document_edges),
+        "Lists the edges of a feature's body, each with the names of the faces it lies between, its curve kind and its end points. With between: only the edges between those two faces (names from document.inspect, faceNames; an alias from faceAliases names the same face). That is how an edge is referred to: by the faces it separates, which keeps meaning the same edge when the model changes upstream, also through booleans. There can be several, or none. The same name twice gives the seams of that face and the cuts between its pieces.", doc: true, document_edges),
 ];
 
 fn vec3(v: Vec3) -> Value {

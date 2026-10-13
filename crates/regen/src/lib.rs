@@ -34,12 +34,14 @@ pub use sketch::{
 };
 
 use craft3d_doc::{
-    Document, Expr, Feature, FeatureId, FeatureKind, NameRole, Orientation, PersistentName,
+    Document, Expr, Feature, FeatureId, FeatureKind, MAX_NAME_DEPTH, NameRole, Orientation,
+    PersistentName,
 };
 use craft3d_expr::{Dimension, Evaluation, Quantity};
 use craft3d_kernel::primitives;
 use craft3d_math::{Frame, Tolerance, Transform, Vec3};
 use craft3d_topo::Body;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// The value of a variable, in the units the document shows.
@@ -71,15 +73,101 @@ pub enum Status {
 }
 
 /// What every entity of a body is called: `faces[i]` is the name of face
-/// `FaceId(i)`, and so on. Names are unique within a body.
+/// `FaceId(i)`, and so on. A name belongs to one entity, except that the
+/// pieces a boolean cut a face into share the face's name.
+///
+/// A face that a boolean merged from faces of both operands (two flush
+/// blocks united: their tops become one face) is named after the first
+/// contributor in the kernel's order and carries the names of the others
+/// as *aliases*: a reference by any of them resolves to it
+/// (docs/architecture.md §4.1).
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Names {
     pub faces: Vec<PersistentName>,
+    /// Per face that has them (by its index in `faces`), the other names
+    /// it answers to, in the kernel's order. Empty for a body no boolean
+    /// merged faces in.
+    pub aliases: BTreeMap<usize, Vec<PersistentName>>,
     pub edges: Vec<PersistentName>,
     pub vertices: Vec<PersistentName>,
 }
 
+/// Per face of a body made from the bodies of other features, the
+/// (instance, face of the source) pairs it has a piece of: one for a face
+/// that is a piece of one face, more for a face the kernel merged from
+/// several, the one it is named after first.
+pub(crate) type Contributors = Vec<Vec<(u64, usize)>>;
+
 impl Names {
+    /// The other names face `face` answers to besides `faces[face]`.
+    pub fn aliases_of(&self, face: usize) -> &[PersistentName] {
+        self.aliases.get(&face).map_or(&[], Vec::as_slice)
+    }
+
+    /// Every name face `face` answers to: its own first, then its aliases.
+    pub fn names_of(&self, face: usize) -> impl Iterator<Item = &PersistentName> {
+        self.faces
+            .get(face)
+            .into_iter()
+            .chain(self.aliases_of(face))
+    }
+
+    /// Every name any face answers to, face by face.
+    pub fn all_face_names(&self) -> impl Iterator<Item = &PersistentName> {
+        (0..self.faces.len()).flat_map(|face| self.names_of(face))
+    }
+
+    /// True when face `face` is called `name`, by its own name or an alias.
+    pub fn face_answers_to(&self, face: usize, name: &PersistentName) -> bool {
+        self.names_of(face).any(|n| n == name)
+    }
+
+    /// The names of faces that are copies of the faces of an earlier body:
+    /// `contributors[i]` lists, for face `i`, the (instance, face of the
+    /// source) pairs it has a piece of, the one it is named after first.
+    /// `source_name(instance, face)` gives the name of that face in the
+    /// body of that instance's source. Edges and vertices get no names:
+    /// after a boolean they are referred to by the faces they lie between.
+    pub(crate) fn copied_faces<'a>(
+        feature: FeatureId,
+        contributors: &Contributors,
+        source_name: impl Fn(u64, usize) -> Option<&'a PersistentName>,
+    ) -> Result<Option<Self>, String> {
+        let mut names = Names {
+            faces: Vec::with_capacity(contributors.len()),
+            ..Names::default()
+        };
+        for (index, sources) in contributors.iter().enumerate() {
+            let mut all = Vec::with_capacity(sources.len());
+            for &(instance, face) in sources {
+                // A face is named only when the body it came from names
+                // its faces.
+                let Some(name) = source_name(instance, face) else {
+                    return Ok(None);
+                };
+                if name.depth() >= MAX_NAME_DEPTH {
+                    return Err(format!(
+                        "more than {MAX_NAME_DEPTH} features in a row each make their body from the one before"
+                    ));
+                }
+                let copy = PersistentName::copy(feature, instance, name.clone());
+                if !all.contains(&copy) {
+                    all.push(copy);
+                }
+            }
+            let mut rest = all.into_iter();
+            let Some(own) = rest.next() else {
+                return Err("the kernel gave a face without a source".to_string());
+            };
+            names.faces.push(own);
+            let aliases: Vec<PersistentName> = rest.collect();
+            if !aliases.is_empty() {
+                names.aliases.insert(index, aliases);
+            }
+        }
+        Ok(Some(names))
+    }
+
     /// The names of the entities of a primitive: each by its number. A
     /// primitive is built in a fixed order (`craft3d_kernel::primitives`),
     /// so for it the number is where the entity came from.
@@ -91,6 +179,7 @@ impl Names {
         };
         Self {
             faces: named(NameRole::Face, body.faces.len()),
+            aliases: BTreeMap::new(),
             edges: named(NameRole::Edge, body.edges.len()),
             vertices: named(NameRole::Vertex, body.vertices.len()),
         }
@@ -102,6 +191,7 @@ impl Names {
         let named = |list: &[Origin]| list.iter().map(|o| name_of(feature, o)).collect();
         Self {
             faces: named(&origins.faces),
+            aliases: BTreeMap::new(),
             edges: named(&origins.edges),
             vertices: named(&origins.vertices),
         }

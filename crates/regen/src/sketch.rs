@@ -488,7 +488,12 @@ fn resolve_face(
                 instances.len()
             ));
         };
-        if !listed.iter().any(|face| same_plane(face, link)) {
+        // By its own name or an alias: a face a boolean merged from faces
+        // of both operands answers to the name of each.
+        let names = outcome.names.as_ref();
+        let found =
+            names.is_some_and(|names| names.all_face_names().any(|face| same_plane(face, link)));
+        if !found {
             return Err(no_such_face(made_by, link, listed));
         }
         maps.push(*map);

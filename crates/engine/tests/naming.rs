@@ -743,3 +743,278 @@ fn names_that_cannot_carry_a_sketch_are_refused_with_a_reason() {
         run(&mut s, "edit.undo", json!({}));
     }
 }
+
+/// Two flush blocks united: `Plate` (F1, w x 20 x t with its low corner at
+/// the origin) and `Wing` (F2, 30 x 20 x t at x = w), joined as `Joint`
+/// (F3). Their tops, bottoms, fronts and backs continue each other and
+/// become one face each.
+fn flush_blocks(session: &mut Session) {
+    run(session, "file.new", json!({"units": "mm"}));
+    run(
+        session,
+        "variable.set",
+        json!({"name": "w", "expr": "40 mm"}),
+    );
+    run(
+        session,
+        "variable.set",
+        json!({"name": "t", "expr": "5 mm"}),
+    );
+    run(
+        session,
+        "feature.block",
+        json!({"name": "Plate", "size": ["w", 20, "t"]}),
+    );
+    run(
+        session,
+        "feature.block",
+        json!({"name": "Wing", "size": [30, 20, "t"], "position": ["w", 0, 0]}),
+    );
+    let made = run(
+        session,
+        "feature.boolean",
+        json!({"op": "union", "target": "Plate", "tool": "Wing", "name": "Joint"}),
+    );
+    assert_eq!((&made["id"], &made["status"]), (&json!("F3"), &json!("ok")));
+}
+
+fn body(session: &mut Session, name: &str) -> Value {
+    let document = run(session, "document.inspect", json!({}));
+    document["bodies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["name"] == name)
+        .unwrap_or_else(|| panic!("{name} has no body: {}", feature(session, name)))
+        .clone()
+}
+
+/// The aliases `document.inspect` lists for the face called `name`.
+fn aliases_of(session: &mut Session, body_name: &str, name: &str) -> Vec<String> {
+    let found = body(session, body_name);
+    let names = found["faceNames"].as_array().unwrap();
+    let index = names
+        .iter()
+        .position(|n| n == name)
+        .unwrap_or_else(|| panic!("no face {name} in {names:?}"));
+    match found.get("faceAliases") {
+        None => Vec::new(),
+        Some(aliases) => {
+            let aliases = aliases.as_array().unwrap();
+            assert_eq!(aliases.len(), names.len(), "one list per face");
+            aliases[index]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|a| a.as_str().unwrap().to_string())
+                .collect()
+        }
+    }
+}
+
+const PLATE_TOP: &str = "F3:copy(0)/F1:face(1)";
+const WING_TOP: &str = "F3:copy(1)/F2:face(1)";
+
+#[test]
+fn scenario_a_face_merged_from_both_operands_answers_to_both_names() {
+    // Two flush blocks united have one top. The kernel names it after the
+    // target's top; the tool's top is an alias of it, and a sketch may be
+    // put on it by either name.
+    let mut s = session();
+    flush_blocks(&mut s);
+    let joint = body(&mut s, "Joint");
+    assert_eq!(joint["faces"], 6, "{joint}");
+    assert_eq!(aliases_of(&mut s, "Joint", PLATE_TOP), [WING_TOP]);
+    assert_eq!(
+        aliases_of(&mut s, "Joint", "F3:copy(0)/F1:face(0)"),
+        ["F3:copy(1)/F2:face(0)"]
+    );
+    assert!(aliases_of(&mut s, "Joint", "F3:copy(0)/F1:face(4)").is_empty());
+    assert!(aliases_of(&mut s, "Joint", "F3:copy(1)/F2:face(5)").is_empty());
+    let names = joint["faceNames"].as_array().unwrap();
+    assert!(
+        !names.contains(&json!(WING_TOP)),
+        "an alias is not a face's own name: {names:?}"
+    );
+    // By the tool's name: the frame is the wing's top's, on the one plane
+    // the merged face lies in.
+    boss(&mut s, WING_TOP, 0.0, 10.0, 10.0);
+    assert_boss_at(&mut s, [50.0, 10.0, 7.0]);
+    let inspected = run(&mut s, "sketch.inspect", json!({"sketch": "Seat"}));
+    assert_eq!(
+        inspected["frame"],
+        json!({"origin": [40.0, 0.0, 5.0], "x": [1.0, 0.0, 0.0], "y": [0.0, 1.0, 0.0]})
+    );
+    assert_eq!(
+        inspected["plane"]["face"], WING_TOP,
+        "the stored name is the user's"
+    );
+    // Upstream edits that keep the faces flush: the seat follows the top.
+    run(&mut s, "variable.set", json!({"name": "t", "expr": "8 mm"}));
+    assert_boss_at(&mut s, [50.0, 10.0, 10.0]);
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "w", "expr": "60 mm"}),
+    );
+    assert_boss_at(&mut s, [70.0, 10.0, 10.0]);
+    assert_eq!(aliases_of(&mut s, "Joint", PLATE_TOP), [WING_TOP]);
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "edit.undo", json!({}));
+    // The wing raised by 2: the tops are no longer flush and no longer
+    // one face. The name still means the wing's top, which is there, and
+    // the seat goes with it: a name never lands on another face, and
+    // never loses the face it came from either.
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Wing", "position": ["w", 0, 2]}),
+    );
+    assert_eq!(body(&mut s, "Joint")["faces"], 10);
+    assert!(aliases_of(&mut s, "Joint", WING_TOP).is_empty());
+    assert!(aliases_of(&mut s, "Joint", PLATE_TOP).is_empty());
+    assert_boss_at(&mut s, [50.0, 10.0, 9.0]);
+    run(&mut s, "edit.undo", json!({}));
+    assert_boss_at(&mut s, [50.0, 10.0, 7.0]);
+    // The wing sunk into the plate: its top is inside the material and
+    // gone, so there is no face of that name any more, merged or not.
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Wing", "position": [5, 0, 0], "size": [30, 15, 3]}),
+    );
+    assert_eq!(body(&mut s, "Joint")["faces"], 6);
+    assert_seat_lost(&mut s, &["Joint", "no longer has a face", WING_TOP]);
+    run(&mut s, "edit.undo", json!({}));
+    assert_boss_at(&mut s, [50.0, 10.0, 7.0]);
+    // By the target's name the seat is on the same face, measured from
+    // the plate's corner.
+    run(
+        &mut s,
+        "sketch.edit",
+        json!({"sketch": "Seat", "face": PLATE_TOP}),
+    );
+    assert_boss_at(&mut s, [10.0, 10.0, 7.0]);
+}
+
+#[test]
+fn an_alias_names_the_same_face_to_document_edges() {
+    let mut s = session();
+    flush_blocks(&mut s);
+    // The rim at the far end of the merged top, by the alias and by the
+    // face's own name: the same one edge, from (70, 0, 5) to (70, 20, 5).
+    let rim = |s: &mut Session, top: &str| {
+        let found = run(
+            s,
+            "document.edges",
+            json!({"feature": "Joint", "between": [top, "F3:copy(1)/F2:face(5)"]}),
+        );
+        assert_eq!(found["count"], 1, "{found}");
+        found["edges"][0].clone()
+    };
+    let by_alias = rim(&mut s, WING_TOP);
+    assert_eq!(by_alias, rim(&mut s, PLATE_TOP));
+    let mut ends = [by_alias["start"].clone(), by_alias["end"].clone()];
+    ends.sort_by_key(|p| p.to_string());
+    assert_eq!(ends, [json!([70.0, 0.0, 5.0]), json!([70.0, 20.0, 5.0])]);
+    // The edge lists the face's own name, not the alias.
+    assert_eq!(
+        by_alias["faces"],
+        json!([PLATE_TOP, "F3:copy(1)/F2:face(5)"])
+    );
+    // The seam between the two faces that became one: none, by whichever
+    // of its names the face is asked about twice.
+    let seam = run(
+        &mut s,
+        "document.edges",
+        json!({"feature": "Joint", "between": [WING_TOP, PLATE_TOP]}),
+    );
+    assert_eq!(seam["count"], 0, "{seam}");
+    // A name of a face that is gone is refused, alias or not.
+    let error = s
+        .execute(
+            "document.edges",
+            &json!({"feature": "Joint", "between": [WING_TOP, "F3:copy(1)/F2:face(4)"]}),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("no face F3:copy(1)/F2:face(4)"), "{error}");
+}
+
+#[test]
+fn scenario_a_pattern_merges_the_caps_of_touching_instances() {
+    // Three tiles end to end: the union that joins them makes one top,
+    // named after instance 0 and answering to the names of instances 1
+    // and 2 as well.
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Tile", "size": [10, 20, 5]}),
+    );
+    let made = run(
+        &mut s,
+        "feature.pattern",
+        json!({"source": "Tile", "count": 3, "step": [10, 0, 0], "name": "Row"}),
+    );
+    assert_eq!((&made["id"], &made["status"]), (&json!("F2"), &json!("ok")));
+    assert_eq!(body(&mut s, "Row")["faces"], 6);
+    assert_eq!(
+        aliases_of(&mut s, "Row", "F2:copy(0)/F1:face(1)"),
+        ["F2:copy(1)/F1:face(1)", "F2:copy(2)/F1:face(1)"]
+    );
+    // On the last tile's top, by its name: measured from that tile's corner.
+    boss(&mut s, "F2:copy(2)/F1:face(1)", 0.0, 5.0, 10.0);
+    assert_boss_at(&mut s, [25.0, 10.0, 7.0]);
+    // Tiles that climb: they still touch, but the tops are no longer one
+    // face. The name is the last tile's top, where it is now.
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Row", "step": [10, 0, 1]}),
+    );
+    assert!(aliases_of(&mut s, "Row", "F2:copy(2)/F1:face(1)").is_empty());
+    assert_boss_at(&mut s, [25.0, 10.0, 9.0]);
+    // Apart: no union at all, and the name is the plain copy's.
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Row", "step": [14, 0, 0]}),
+    );
+    assert_eq!(body(&mut s, "Row")["faces"], 18);
+    assert!(body(&mut s, "Row").get("faceAliases").is_none());
+    assert_boss_at(&mut s, [33.0, 10.0, 7.0]);
+    // Fewer tiles: there is no instance 2.
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Row", "count": 2}),
+    );
+    assert_seat_lost(&mut s, &["Row", "2 instance", "F2:copy(2)/F1:face(1)"]);
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "edit.undo", json!({}));
+    // Stacked: the first tile's top is inside the material and gone; a
+    // sketch on it says so rather than land on the top of the stack.
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Row", "step": [0, 0, 5]}),
+    );
+    assert_eq!(body(&mut s, "Row")["faces"], 6);
+    assert_boss_at(&mut s, [5.0, 10.0, 17.0]);
+    run(
+        &mut s,
+        "sketch.edit",
+        json!({"sketch": "Seat", "face": "F2:copy(0)/F1:face(1)"}),
+    );
+    assert_seat_lost(
+        &mut s,
+        &["Row", "no longer has a face", "F2:copy(0)/F1:face(1)"],
+    );
+    // The sides of the stack are one face each, named after instance 0.
+    assert_eq!(
+        aliases_of(&mut s, "Row", "F2:copy(0)/F1:face(5)"),
+        ["F2:copy(1)/F1:face(5)", "F2:copy(2)/F1:face(5)"]
+    );
+}
