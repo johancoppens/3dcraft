@@ -79,6 +79,46 @@ fn an_overlap_ten_tolerances_deep_is_built_as_given() {
     }
 }
 
+/// A cube set on its edge and pushed ten tolerances into the top of a
+/// plate: the overlap is a prism whose section is a triangle twenty
+/// tolerances wide and ten high, and its two ends are that triangle, in
+/// which no point is further than 4.14 tolerances from every side. The
+/// searches for a point inside a face asked for four and stepped past
+/// the window between 4 and 4.14; until 2026-10-13 the booleans were
+/// refused as "a piece of a face too thin to find a point inside it" (33
+/// outcomes of the corpus: an edge ten tolerances into a face).
+#[test]
+fn an_edge_ten_tolerances_into_a_face_cuts_a_prism_with_triangles_for_ends() {
+    let s = std::f64::consts::FRAC_1_SQRT_2;
+    for k in SCALES {
+        let plate = boxed(k, [-2.0, -1.5, 0.0], [2.0, 1.5, 2.0]);
+        for deep in [10e-6, 13e-6] {
+            let frame = Frame::new(
+                Vec3::new(-0.5 * k, 0.0, (2.0 - deep) * k),
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(0.0, s, s),
+            )
+            .unwrap();
+            let cube = primitives::block(&frame, k, k, k).unwrap();
+            // The prism: one long, its section `deep` squared.
+            let common = solve(&plate, &cube, Intersect, k);
+            assert_eq!(counts(&common), (6, 9, 5, 1));
+            let prism_area = 2.0 * deep * deep + 2.0 * deep + 2.0 * 2.0_f64.sqrt() * deep;
+            assert_mass(&common, deep * deep, prism_area, k);
+            let both = solve(&plate, &cube, Union, k);
+            assert_eq!(both.body.shells.len(), 1);
+            let less = solve(&plate, &cube, Subtract, k);
+            let (plate_area, groove) = (52.0, 2.0 * 2.0_f64.sqrt() * deep - 2.0 * deep);
+            assert_mass(
+                &less,
+                24.0 - deep * deep,
+                plate_area + groove + 2.0 * deep * deep,
+                k,
+            );
+        }
+    }
+}
+
 /// A rod standing on an edge of a block that passes under the middle of
 /// its base: the bodies touch along a stretch of that edge and nowhere
 /// else, so nothing is imprinted on the base, and the point that says

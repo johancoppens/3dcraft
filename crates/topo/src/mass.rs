@@ -151,7 +151,7 @@ use crate::{Body, BodyKind, Coedge, Face};
 use craft3d_geom::{Curve3, GeomError, Sphere, Surface};
 use craft3d_math::quadrature::Rule;
 use craft3d_math::{Bbox3, Frame, Vec3};
-use std::f64::consts::FRAC_PI_2;
+use std::f64::consts::{FRAC_PI_2, PI};
 use std::fmt;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -238,8 +238,16 @@ impl Sums {
 /// `f` has their dot product, which is zero all over a cone with its apex
 /// at the origin, and the whole normal where it has one component, which
 /// is rounding all over a face that a coordinate axis lies in.
-fn integrand(surface: &Surface, u: f64, v: f64) -> Total {
-    let (s, su, sv) = surface.derivatives(u, v);
+///
+/// Positions are measured from `about`, the middle of the body: the
+/// volume of a body is what is left of terms the size of a face's area
+/// times its distance from that point, and for a small body far from the
+/// origin of the model that distance would be the whole way there (a
+/// prism of 1e-10 at 2 from the origin: 4e5 times its volume cancelling,
+/// and a volume good to 1e-6 where its vertices are good to 1e-11).
+fn integrand(surface: &Surface, u: f64, v: f64, about: Vec3) -> Total {
+    let (at, su, sv) = surface.derivatives(u, v);
+    let s = at - about;
     let n = su.cross(sv);
     let sum = Sums {
         area: n.length(),
@@ -250,12 +258,24 @@ fn integrand(surface: &Surface, u: f64, v: f64) -> Total {
         sum,
         size: Sums {
             area: n.length(),
-            volume: s.length() * n.length() / 3.0,
-            moment: Vec3::new(s.x * s.x, s.y * s.y, s.z * s.z) * (0.5 * n.length()),
+            // The offset from `about` is known no better than the point
+            // is, a few units in the last place of its coordinates: that
+            // is [`CONVERGED`] of a thousandth of them, which each offset
+            // is therefore counted as being at least.
+            volume: (s.length() + POINT_ROUNDING * at.length()) * n.length() / 3.0,
+            moment: Vec3::new(
+                (s.x.abs() + POINT_ROUNDING * at.x.abs()).powi(2),
+                (s.y.abs() + POINT_ROUNDING * at.y.abs()).powi(2),
+                (s.z.abs() + POINT_ROUNDING * at.z.abs()).powi(2),
+            ) * (0.5 * n.length()),
         },
     }
 }
 
+/// The share of a point's coordinates that its offset from the middle of
+/// the body counts for at least, in what a sum's terms are worth before
+/// they cancel (see [`integrand`]).
+const POINT_ROUNDING: f64 = 1e-3;
 const NODES: usize = 16;
 /// Panels for an inner integral, at least.
 const INNER_PANELS: usize = 2;
@@ -323,14 +343,23 @@ struct Work {
     spent: u64,
     /// What one evaluation on the face's surface counts for.
     each: u64,
+    /// The point positions are measured from in the volume and the
+    /// moments ([`integrand`]).
+    about: Vec3,
 }
 
 impl Work {
+    #[cfg(test)]
     fn new(surface: &Surface) -> Self {
+        Self::about(surface, Vec3::ZERO)
+    }
+
+    fn about(surface: &Surface, about: Vec3) -> Self {
         let freeform = matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_));
         Work {
             spent: 0,
             each: if freeform { FREEFORM } else { 1 },
+            about,
         }
     }
 
@@ -472,7 +501,7 @@ fn inner(
                 Along::U => (t, fixed),
                 Along::V => (fixed, t),
             };
-            sum.add(integrand(surface, u, v), w * sign);
+            sum.add(integrand(surface, u, v, work.about), w * sign);
         }
     };
     let knots: &[f64] = match (surface, along) {
@@ -1411,17 +1440,18 @@ fn face_integrals(
     face: &Face,
     index: usize,
     rule: &Rule,
-    size: f64,
+    (size, middle): (f64, Vec3),
 ) -> Result<Sums, MassError> {
     if face.loops.is_empty() {
-        return whole_surface(&face.surface, index, rule, &mut Work::new(&face.surface));
+        let mut work = Work::about(&face.surface, middle);
+        return whole_surface(&face.surface, index, rule, &mut work);
     }
     let own = match &face.surface {
         Surface::Sphere(sphere) => own_sphere(body, face, sphere),
         _ => None,
     };
     let surface = own.as_ref().unwrap_or(&face.surface);
-    let mut work = Work::new(surface);
+    let mut work = Work::about(surface, middle);
     integrals_in(body, face, surface, index, rule, size, &mut work)
 }
 
@@ -1491,7 +1521,14 @@ fn integrals_in(
 /// How big the body is: the extent of its vertices and of the ends and
 /// middles of its edges, across. Zero for a body without any (a closed
 /// surface without loops), or whose points are not finite.
+#[cfg(test)]
 fn body_size(body: &Body) -> f64 {
+    body_extent(body).0
+}
+
+/// [`body_size`], and the middle of that extent: the point the volume and
+/// the moments are taken about. The origin for a body without any.
+fn body_extent(body: &Body) -> (f64, Vec3) {
     let mut extent = Bbox3::EMPTY;
     for vertex in &body.vertices {
         if vertex.point.is_finite() {
@@ -1508,7 +1545,27 @@ fn body_size(body: &Body) -> f64 {
         }
     }
     let size = extent.diagonal();
-    if size.is_finite() { size } else { 0.0 }
+    // A face without loops is a whole closed surface (a sphere, a torus)
+    // and has neither vertices nor edges to say where it is: six of its
+    // points do.
+    let mut around = extent;
+    for face in body.faces.iter().filter(|face| face.loops.is_empty()) {
+        for (u, v) in [0.0, 0.5 * PI, PI, 1.5 * PI]
+            .map(|u| (u, 0.0))
+            .into_iter()
+            .chain([(0.0, 0.5 * PI), (0.0, -0.5 * PI)])
+        {
+            let point = face.surface.eval(u, v);
+            if point.is_finite() {
+                around.add(point);
+            }
+        }
+    }
+    let middle = around.center().filter(|middle| middle.is_finite());
+    (
+        if size.is_finite() { size } else { 0.0 },
+        middle.unwrap_or(Vec3::ZERO),
+    )
 }
 
 /// Area, volume and centroid of `body`. The body should pass
@@ -1526,10 +1583,10 @@ fn body_size(body: &Body) -> f64 {
 /// [`MassError::UnboundedFace`].
 pub fn mass_properties(body: &Body) -> Result<MassProperties, MassError> {
     let rule = Rule::new(NODES);
-    let size = body_size(body);
+    let (size, middle) = body_extent(body);
     let mut total = Sums::default();
     for (index, face) in body.faces.iter().enumerate() {
-        let sums = face_integrals(body, face, index, &rule, size)?;
+        let sums = face_integrals(body, face, index, &rule, (size, middle))?;
         // Area counts whichever way the face points; volume and moments
         // follow the outward normal.
         let outward = if face.reversed { -1.0 } else { 1.0 };
@@ -1547,7 +1604,8 @@ pub fn mass_properties(body: &Body) -> Result<MassProperties, MassError> {
     Ok(MassProperties {
         area: total.area,
         volume: if solid { total.volume } else { 0.0 },
-        centroid: (solid && total.volume != 0.0).then(|| total.moment * (1.0 / total.volume)),
+        centroid: (solid && total.volume != 0.0)
+            .then(|| middle + total.moment * (1.0 / total.volume)),
     })
 }
 
@@ -1774,7 +1832,11 @@ mod tests {
         let face = body.faces.first().unwrap();
         let rule = Rule::new(NODES);
         let run = |spent: u64| {
-            let mut work = Work { spent, each: 1 };
+            let mut work = Work {
+                spent,
+                each: 1,
+                about: Vec3::ZERO,
+            };
             let sums = integrals_in(&body, face, &surface, 0, &rule, body_size(&body), &mut work);
             (sums.map(|sums| sums.area), work.spent)
         };
@@ -1795,6 +1857,7 @@ mod tests {
         let mut work = Work {
             spent: BUDGET + 1,
             each: 1,
+            about: Vec3::ZERO,
         };
         assert!(matches!(
             whole_surface(&surface, 0, &rule, &mut work),

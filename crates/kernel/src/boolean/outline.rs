@@ -488,6 +488,25 @@ impl Boxes {
     }
 }
 
+/// How the searches for a point inside a face step in from its boundary:
+/// by what each step shrinks, how many steps at most, and how far from the
+/// boundary the point must be. Steps that halve find a face of ordinary
+/// width at once. A strip ten tolerances wide has room for a point only
+/// between four and six tolerances in, a window halving steps hit by
+/// chance, so where they find nothing the steps shrink by a twelfth of an
+/// octave. And the end of a sliver ten tolerances thick is a triangle
+/// twenty wide and ten high, in which no point is further than 4.14
+/// tolerances from every side: the last pass settles for three quarters
+/// of the margin.
+fn passes(margin: f64) -> [(f64, usize, f64); 3] {
+    let fine = 0.5_f64.powf(1.0 / 12.0);
+    [
+        (0.5, 64, margin),
+        (fine, 768, margin),
+        (fine, 768, 0.75 * margin),
+    ]
+}
+
 /// A point of the surface just to the left of one of the pieces `of`, seen
 /// from outside: on the side of it that the face it bounds is on, and with
 /// nothing of `all` between it and that piece. At least `margin` away from
@@ -505,7 +524,7 @@ pub(super) fn left_of(
     // tolerances) from its piece and less than half the strip (five), a
     // window halving steps hit only by chance: where they find nothing the
     // steps shrink by a twelfth of an octave instead.
-    for (shrink, most) in [(0.5, 64), (0.5_f64.powf(1.0 / 12.0), 768)] {
+    for (shrink, most, margin) in passes(margin) {
         for seg in of {
             let (point, travel) = seg.travel();
             let Some(outward) = outward_normal(sheet, reversed, point) else {
@@ -709,7 +728,7 @@ impl Outline {
         // tolerances thick, with room for a point between four and six
         // tolerances in) is hit by them only by chance, so where they find
         // nothing the steps shrink by a twelfth of an octave instead.
-        for (shrink, most) in [(0.5, 64), (0.5_f64.powf(1.0 / 12.0), 768)] {
+        for (shrink, most, margin) in passes(margin) {
             if !found.is_empty() {
                 break;
             }

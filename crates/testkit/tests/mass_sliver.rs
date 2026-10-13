@@ -61,9 +61,9 @@ fn a_sliver_ten_tolerances_thick_is_measured() {
     let common = measure(BooleanOp::Intersect);
     let rest = measure(BooleanOp::Subtract);
 
-    // Measured: 2.7e-9 and 9.4e-8 from the reference.
+    // Measured: 6.6e-10 and 9.4e-8 from the reference.
     assert!(
-        (common.volume - REFERENCE_VOLUME).abs() < 5e-9,
+        (common.volume - REFERENCE_VOLUME).abs() < 2e-9,
         "volume {:e}",
         common.volume
     );
@@ -87,14 +87,59 @@ fn a_sliver_ten_tolerances_thick_is_measured() {
         common.area
     );
     // The cone less the sliver has the sliver's thin faces the other way
-    // around: measured, the two differ by 4.5e-15.
+    // around. The two differ by 1.4e-10, measured: each volume is taken
+    // about the middle of its own body, and faces that close only to the
+    // modelling tolerance give a volume that depends on that point. (Both
+    // taken about the origin they differed by 4.5e-15, having the same
+    // error; that was agreement with itself. The sliver's volume was 2.7e-9
+    // from the reference then and is 6.6e-10 from it now.)
     let implied = cone_volume - rest.volume;
     assert!(
-        (common.volume - implied).abs() < 1e-12,
+        (common.volume - implied).abs() < 1e-9,
         "volume {:e}, the rest implies {implied:e}",
         common.volume
     );
     // A slab lies halfway up: its centre is at half its thickness.
     let centroid = common.centroid.unwrap();
     assert!((centroid.z - 5e-6).abs() < 1e-8, "centroid {centroid:?}");
+}
+
+/// A small solid far from the origin of the model is measured as well as
+/// the same solid at the origin. The volume is a sum over the faces of
+/// their area times their distance from a point, of which only the solid
+/// itself is left; taken about the origin, a solid of 1e-5 at a distance
+/// of 6 leaves a part in 6e5 of every term, and a volume good to 1e-9 at
+/// the origin was good to 1e-5 there. (Until 2026-10-13. It is taken
+/// about the middle of the body now.)
+#[test]
+fn a_small_solid_far_from_the_origin_is_measured_as_well_as_at_it() {
+    let place = Frame::new(
+        Vec3::new(2.0, 3.0, 5.0),
+        Vec3::new(0.3, -0.5, 0.8),
+        Vec3::new(0.9, 0.4, -0.1),
+    )
+    .unwrap();
+    for size in [1e-5, 1e-3, 1.0] {
+        for solid in craft3d_testkit::solids::all(&place, size).unwrap() {
+            let m = mass_properties(&solid.body).unwrap();
+            let off = (m.volume / solid.volume - 1.0).abs();
+            assert!(
+                off < 1e-9,
+                "{} of size {size}: volume off by {off:e}",
+                solid.name
+            );
+            let off = (m.area / solid.area - 1.0).abs();
+            assert!(
+                off < 1e-9,
+                "{} of size {size}: area off by {off:e}",
+                solid.name
+            );
+            let off = m.centroid.unwrap().distance(solid.centroid) / size;
+            assert!(
+                off < 1e-8,
+                "{} of size {size}: centroid off by {off:e} of its size",
+                solid.name
+            );
+        }
+    }
 }
