@@ -20,6 +20,7 @@
 //! - [`viewport`]: the rendered image and the lines drawn over it.
 //! - [`frames`]: which image is on screen, and the thread that makes the
 //!   sharp one.
+//! - [`gizmo`]: the orbit gizmo's geometry.
 //! - [`shell`]: the panels and the mouse.
 //! - [`control`]: the `ui.*` methods of the control protocol.
 //!
@@ -32,6 +33,7 @@ pub mod control;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod direct;
 pub mod frames;
+pub mod gizmo;
 pub mod shell;
 pub mod state;
 pub mod theme;

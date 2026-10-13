@@ -7,9 +7,10 @@ use crate::backend::{Backend, BodyRenderer, RendererChoice, RendererReport};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::direct::{Direct, DirectFailure};
 use crate::frames::{Mode, Scheduler, Ticket};
+use crate::gizmo;
 use crate::state::VertexRef;
 use crate::state::{
-    CameraState, EdgeRef, FaceRef, Picked, PickedEntity, PickedKind, ProjectionKind, UiState, VIEWS,
+    CameraState, EdgeRef, FaceRef, Picked, PickedEntity, PickedKind, ProjectionKind, UiState,
 };
 use crate::theme::{Tokens, color, color_alpha};
 use crate::viewport::{self, Composed, MAX_SIDE, MIN_SIDE, Overlay, Quality};
@@ -366,6 +367,10 @@ pub struct Shell {
     renders: u64,
     /// The camera when the drag in progress began.
     drag_from: Option<CameraState>,
+    /// The camera when a drag on the orbit gizmo began.
+    gizmo_drag_from: Option<CameraState>,
+    /// Where the orbit gizmo was drawn.
+    gizmo_rect: Option<egui::Rect>,
     /// The box the camera was last fitted to automatically.
     framed: Bbox3,
     themed: bool,
@@ -445,6 +450,8 @@ impl Shell {
             stats: None,
             renders: 0,
             drag_from: None,
+            gizmo_drag_from: None,
+            gizmo_rect: None,
             framed: Bbox3::EMPTY,
             themed: false,
             quit: false,
@@ -1415,7 +1422,11 @@ impl Shell {
             );
         }
 
-        // View buttons, bottom-right: camera only, so not commands.
+        // The orbit gizmo and, under it, the controls the view buttons
+        // had that it does not replace: fit, the corner view, the
+        // projection. Bottom-right, camera only, so not commands. They are
+        // widgets of their own over the viewport: a click on them is not
+        // a click in the viewport, and picks nothing.
         let mut view = None;
         let mut fit = false;
         let mut toggle = false;
@@ -1430,16 +1441,32 @@ impl Shell {
                     ProjectionKind::Orthographic => "Orthographic",
                 };
                 toggle = ui.small_button(projection).clicked();
-                for (name, ..) in VIEWS.iter().rev() {
-                    if ui.small_button(*name).clicked() {
-                        view = Some(*name);
-                    }
+                if ui.small_button("iso").clicked() {
+                    view = Some("iso");
                 }
                 fit = ui.small_button("Fit").clicked();
             });
         });
+        let side = tokens
+            .gizmo_size
+            .min(inner.width())
+            .min(inner.height() - 28.0);
+        if side >= 4.0 * tokens.gizmo_end_radius {
+            let place = egui::Rect::from_min_size(
+                egui::pos2(inner.right() - side, bar.top() - 6.0 - side),
+                egui::vec2(side, side),
+            );
+            self.gizmo_rect = Some(place);
+            if let Some(turned) = self.gizmo(ui, place) {
+                view = turned;
+            }
+        } else {
+            self.gizmo_rect = None;
+            self.gizmo_drag_from = None;
+        }
         if let Some(name) = view {
-            // The names come from the table, so this cannot fail.
+            // The names come from the table, so this cannot fail. (The
+            // gizmo has turned the camera itself.)
             let _ = self.state.camera.set_view(name);
             ui.ctx().request_repaint();
         }
@@ -1454,6 +1481,111 @@ impl Shell {
             self.fit_to(scene);
             ui.ctx().request_repaint();
         }
+    }
+
+    /// The orbit gizmo in `place`: paints it and handles its mouse.
+    /// Returns the view a click on one of its ends asked for (the camera
+    /// is then to be framed again, as after a view button); a drag orbits
+    /// the camera here and returns nothing.
+    fn gizmo(&mut self, ui: &mut egui::Ui, place: egui::Rect) -> Option<Option<&'static str>> {
+        let tokens = self.tokens;
+        let response = ui.interact(
+            place,
+            ui.id().with("orbit-gizmo"),
+            egui::Sense::click_and_drag(),
+        );
+        // The arm leaves room for the disc at its end.
+        let arm = (place.width() * 0.5 - tokens.gizmo_end_radius - 1.0).max(1.0);
+        let center = place.center();
+        let mut turned = None;
+        if response.drag_started() {
+            self.gizmo_drag_from = Some(self.state.camera);
+        }
+        if response.dragged() {
+            // As a drag in the viewport: from where it began, by how far
+            // the pointer is from there now.
+            if let (Some(from), Some(total)) = (self.gizmo_drag_from, response.total_drag_delta()) {
+                let mut camera = from;
+                camera.orbit(f64::from(total.x), f64::from(total.y));
+                self.state.camera = camera;
+            }
+            ui.ctx().request_repaint();
+        } else {
+            self.gizmo_drag_from = None;
+        }
+        if response.clicked()
+            && let Some(at) = response.interact_pointer_pos()
+        {
+            let at = [
+                f64::from(at.x - center.x) / f64::from(arm),
+                f64::from(at.y - center.y) / f64::from(arm),
+            ];
+            let reach = f64::from(tokens.gizmo_end_radius + 2.0) / f64::from(arm);
+            if let Some(end) = gizmo::end_at(&self.state.camera, at, reach) {
+                turned = Some(Some(gizmo::click(&mut self.state.camera, &end)));
+            }
+        }
+        let painter = ui.painter_at(place.expand(1.0));
+        painter.circle_filled(
+            center,
+            place.width() * 0.5,
+            color_alpha(tokens.panel_fill, tokens.gizmo_opacity),
+        );
+        let hovered = response
+            .hover_pos()
+            .map(|at| {
+                [
+                    f64::from(at.x - center.x) / f64::from(arm),
+                    f64::from(at.y - center.y) / f64::from(arm),
+                ]
+            })
+            .and_then(|at| {
+                let reach = f64::from(tokens.gizmo_end_radius + 2.0) / f64::from(arm);
+                gizmo::end_at(&self.state.camera, at, reach)
+            });
+        for end in gizmo::ends(&self.state.camera) {
+            let at = center + egui::vec2(end.offset[0] as f32, end.offset[1] as f32) * arm;
+            let ink = tokens
+                .axes
+                .get(end.axis)
+                .copied()
+                .unwrap_or(tokens.text_dim);
+            let over = hovered.is_some_and(|h| (h.axis, h.positive) == (end.axis, end.positive));
+            if end.positive {
+                painter.line_segment(
+                    [center, at],
+                    egui::Stroke::new(tokens.axis_width * 1.6, color(ink)),
+                );
+                painter.circle_filled(at, tokens.gizmo_end_radius, color(ink));
+                painter.text(
+                    at,
+                    egui::Align2::CENTER_CENTER,
+                    end.label(),
+                    egui::FontId::proportional(tokens.gizmo_end_radius * 1.25),
+                    color(tokens.notice_fill),
+                );
+            } else {
+                painter.circle_filled(
+                    at,
+                    tokens.gizmo_end_radius * 0.72,
+                    color_alpha(ink, if over { 255 } else { 120 }),
+                );
+            }
+            if over {
+                painter.circle_stroke(
+                    at,
+                    tokens.gizmo_end_radius + 1.0,
+                    egui::Stroke::new(1.5, color(tokens.text)),
+                );
+            }
+        }
+        turned
+    }
+
+    /// Where the orbit gizmo is in the window, in points, once the
+    /// viewport was drawn with room for it.
+    pub fn gizmo_rect(&self) -> Option<egui::Rect> {
+        self.gizmo_rect
     }
 
     fn fit_to(&mut self, scene: Option<&Scene>) {

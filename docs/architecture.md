@@ -608,6 +608,7 @@ Tracked in [`decisions.md`](decisions.md): target app (if any), licence, UI tool
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-13 | minor | Pointing at faces (M8.5): `render::pick`, `render::Highlight`, face names in the engine's scene, `view.pick`, the shell's click, `ui.pick` and `ui.highlight` |
+| 2026-10-13 | minor | The orbit gizmo in the viewport's corner replaces the row of view buttons (`ui-egui/src/gizmo.rs`): view state of the shell only, no command and nothing in the control protocol |
 | 2026-10-13 | minor | Pointing at vertices (M8.5): vertices in the scene and under `vertices` of `document.edges`, `Scene::vertices_named`, `UiState::highlight_vertex` |
 | 2026-10-13 | minor | Pointing at edges (M8.5): `render::Viewpoint` and `Neighbourhood`, edge names and faces in the scene, `Scene::point_at` and `edges_named`, `viewport::Marks`, `UiState::highlight_edge` |
 | 2026-10-12 | minor | Current state after M5 (sketches in the document model, the solver, sketch results in regeneration) |
