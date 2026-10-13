@@ -67,12 +67,12 @@ pub struct Tokens {
     /// How near to an edge or a vertex a click counts as a click on it, in points
     /// (the pick radius of `view.pick`, which is in pixels).
     pub pick_radius: f32,
-    /// The side of the orbit gizmo, in points.
-    pub gizmo_size: f32,
-    /// The radius of the disc at an end of the gizmo's axes, in points.
-    pub gizmo_end_radius: f32,
-    /// Opacity of the gizmo's backdrop, 0 to 255.
-    pub gizmo_opacity: u8,
+    /// The side of the view cube's place in the viewport, in points.
+    pub view_cube_size: f32,
+    /// The diameter of the dot at the end of an axis stick of the view cube, in points.
+    pub view_cube_dot: f32,
+    /// Opacity of the ring behind the view cube, 0 to 255.
+    pub view_cube_opacity: u8,
     /// The length of the see-through slider, in points.
     pub slider_width: f32,
     /// Space between the viewport's edge and what floats over it.
@@ -119,9 +119,9 @@ impl Tokens {
             highlight_width: 3.0,
             highlight_radius: 4.0,
             pick_radius: 4.0,
-            gizmo_size: 92.0,
-            gizmo_end_radius: 9.0,
-            gizmo_opacity: 110,
+            view_cube_size: 128.0,
+            view_cube_dot: 9.0,
+            view_cube_opacity: 110,
             slider_width: 90.0,
             inset: 10.0,
         }
