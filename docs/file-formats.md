@@ -36,7 +36,46 @@ thumb.png                preview (CPU renderer)
 - **Versioning.** Every change to the meaning of existing fields bumps `format_version` and adds a migration (`format/src/migrate.rs`) with a fixture of the old version in the tests. New optional fields use `#[serde(default)]`. A file from a *newer* version opens with an error that says so, never with silent data loss.
 - **Completeness is enforced at compile time:** `format` destructures every `doc` struct exhaustively, so a new document field cannot be forgotten ([`AGENTS.md`](../AGENTS.md) §8).
 - **Atomic saves:** write to a temporary file in the same directory, fsync, rename over the target. A crash or a full disk leaves the previous file intact.
-- **Autosave and crash recovery** reuse the writer, from a snapshot on a background thread, into a recovery directory keyed per launch.
+- **Autosave and crash recovery** (2026-10-13; `crates/engine/src/recovery.rs` holds the design) reuse the writer, from a snapshot on a background thread, into a recovery directory keyed per launch. See *The recovery directory* below.
+
+### The recovery directory
+
+A session that was given a recovery directory (`craft3d --recovery-dir DIR`, by default `3dcraft/recovery` in the per-user state directory: `$XDG_STATE_HOME` or `~/.local/state` on Linux, `~/Library/Application Support` on macOS, `%LOCALAPPDATA%` on Windows; `craft3d-cli serve|mcp --recovery-dir DIR`, off by default) keeps there, per launch, a lock file and, per open document with unsaved changes, a document and its record. A launch is one running process with one session; its key is 16 random hexadecimal digits.
+
+```text
+<key>.lock          empty; the launch holds an operating-system lock on it while it lives
+<key>-<n>.3dcraft   document n of that launch: exactly the bytes file.save would write
+<key>-<n>.json      its record
+.<name>.<pid>.tmp   a write in progress (removed by the next scan when its launch is gone)
+```
+
+The record is what varies between runs, so the `.3dcraft` bytes stay deterministic:
+
+```json
+{
+  "recovery_version": 1,
+  "launch": "9f0c2a6b41d7e835",
+  "pid": 48213,
+  "document": 3,
+  "name": "bracket.3dcraft",
+  "path": "/home/ann/parts/bracket.3dcraft",
+  "original": { "size": 18234, "mtime": [1791907200, 512000000] },
+  "revision": 41,
+  "features": 12,
+  "time": 1791907260,
+  "recovered": false
+}
+```
+
+`path` is the path the document was opened from or last saved to, as the request gave it (null for a document that never had one) and `name` its last part or `untitled`; `original` is the size and modification time (seconds and nanoseconds since the Unix epoch) that file had when the document was opened or last saved, null when there was none; `revision` counts the changes made to the document in that launch; `time` is when it was written, in seconds since the Unix epoch; `pid` is for a person to read and is never used to decide anything. A record of a newer `recovery_version`, one that is not JSON, or one larger than 64 KiB is not read: its document is still listed and can be opened, as `untitled`.
+
+- **Written** when a document has unsaved changes and the autosave interval (30 s by default; `--autosave-interval SECONDS`) has passed since that document's last write, or since its first change when it was never written: a burst of commands gives one write, and at most one interval of work is lost. After a caught panic every document with unwritten changes is written at once. The document is written first and its record second, each to a temporary file that is synced and renamed over the target, so a crash in mid-write leaves the previous recovery file. An empty document that was never saved is not worth a file.
+- **Removed** when the document is saved or closed, and when the launch ends on purpose (the window is closed, `ui.quit`, the server's input ends): a launch that ends cleanly leaves nothing, also of documents it did not save.
+- **Dead or alive.** A launch is alive exactly while it holds the lock on its `.lock` file; the operating system lets go of it when the process ends, however it ends. A scan (at start, and by `recovery.list`) tries each other launch's lock: got it, or no lock file, means that launch is gone and its documents are offered; "held" means it is running and its files are left alone, by `recovery.open` and `recovery.discard` as well. No process id is looked up, so none can be mistaken for a reused one. Limits: on a file system without working locks (some network mounts) every other launch looks dead, so do not share one recovery directory between machines; a lock file deleted by hand under a running launch makes it look dead.
+- **Recovered** by `recovery.open`: the file is loaded, opened as an unsaved document that remembers `path`, and renamed to the recovering launch's key, so it is that launch's autosave from then on and goes away when the document is saved or closed. Nothing is recovered or removed without being asked. A recovered document keeps everything a saved file keeps and regenerates to the same bodies; it loses the undo history, which no file holds.
+- **Never over a newer original.** `file.save` of a recovered document to its original path is refused when the file there no longer has the recorded size and modification time (or the record had none and a file is there now), and names `"overwrite": true`. Any other path needs no confirmation.
+- **Damaged files** are listed by `recovery.list` with `openable: false` and the reason (a truncated or corrupt document, a record without its document); a document without a readable record is openable and says what is unknown. Nothing in the directory can make a scan panic, and files whose names are not the ones above are never touched.
+- **A directory that cannot be written** (missing and not creatable, read-only, a full disk) is a problem that `recovery.list`, `ui.get` (`recovery.problem`) and the status bar show until a write succeeds; it is retried once per interval and never fails or delays a command.
 
 Tests: serde round trip of every feature type; save → load → regenerate gives identical bodies; cache-stripped files; migration fixtures; truncation at every offset and fuzzing never panic.
 
