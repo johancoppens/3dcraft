@@ -641,6 +641,16 @@ impl Marcher {
             || (self.lying[3] && (v - v1).abs() <= hair_v)
     }
 
+    /// True when the stationary point is within `reach` (a length) of a
+    /// border of the chart that lies on the field.
+    fn near_lying_border(&self, s: &Stationary, reach: f64) -> bool {
+        let ((u0, u1), (v0, v1)) = (self.chart.u, self.chart.v);
+        (self.lying[0] && (s.u - u0).abs() * s.lu <= reach)
+            || (self.lying[1] && (s.u - u1).abs() * s.lu <= reach)
+            || (self.lying[2] && (s.v - v0).abs() * s.lv <= reach)
+            || (self.lying[3] && (s.v - v1).abs() * s.lv <= reach)
+    }
+
     /// Seeds on an edge that lies on the border of the chart's rectangle,
     /// where a branch may come in and go out between two nodes.
     fn border_seeds(
@@ -768,7 +778,14 @@ impl Marcher {
                     _ => None,
                 };
                 if let (Some(found), Some(disc)) = (found, grazing) {
-                    if !singular.iter().any(|s| s.p.distance(found.e.p) <= merge) {
+                    // (On a border of the chart that lies on the other
+                    // surface the border is the meeting, already reported
+                    // as a curve: that the surfaces are tangent along it,
+                    // a wall and its mirror image which continues it, is
+                    // no point of its own.)
+                    if !self.near_lying_border(&found, 8.0 * finest)
+                        && !singular.iter().any(|s| s.p.distance(found.e.p) <= merge)
+                    {
                         singular.push(Singular {
                             u: found.u,
                             v: found.v,
@@ -1027,7 +1044,7 @@ impl Marcher {
         let slack = self.cut;
         let mut radius = widest;
         'radius: while radius.is_finite() && radius >= least {
-            let (mut above, mut below, mut seen) = (0_u32, 0_u32, 0_u32);
+            let (mut above, mut below, mut beyond, mut seen) = (0_u32, 0_u32, 0_u32, 0_u32);
             for (ring, count) in [(1.0, 24_u32), (2.0 / 3.0, 16), (1.0 / 3.0, 8)] {
                 for k in 0..count {
                     self.spent().ok()?;
@@ -1042,20 +1059,23 @@ impl Marcher {
                         radius *= 0.5;
                         continue 'radius;
                     };
+                    seen += u32::from(ring == 1.0);
                     // Past the edge of the other surface the distance says
-                    // nothing about sides.
+                    // nothing about sides: nothing of that surface is
+                    // there, on either side. (All around a point of a
+                    // border the two surfaces share, where one continues
+                    // the other.)
                     if e.dist > e.f.abs() + self.on {
-                        radius *= 0.5;
-                        continue 'radius;
+                        beyond += u32::from(e.dist > slack);
+                        continue;
                     }
                     above += u32::from(e.f > slack);
                     below += u32::from(e.f < -slack);
-                    seen += u32::from(ring == 1.0);
                 }
             }
             // One side only, and on the rim mostly away from the other
             // surface (not two surfaces that coincide there).
-            let (most, least_side) = (above.max(below), above.min(below));
+            let (most, least_side) = (above.max(below) + beyond, above.min(below));
             if least_side == 0 && seen > 0 && 2 * most >= seen {
                 return Some(Disc {
                     u: s.u,

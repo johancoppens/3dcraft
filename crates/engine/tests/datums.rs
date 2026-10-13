@@ -3010,3 +3010,79 @@ fn datum_points_are_saved_and_reopened_as_the_same_bodies() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A half with a smooth spline outline, mirrored in a datum plane and
+/// joined with its mirror image: the outline leaves the mirror plane at
+/// right angles, so the spline wall and its image continue each other
+/// across the plane, tangent all along the line they share, each ending
+/// where the other begins. Until 2026-10-14 that was refused as "surfaces
+/// that touch along a curve, or with more than second-order contact",
+/// while the same half with a kink at the plane worked. The whole is the
+/// two halves less the two faces in the mirror plane, a rectangle of the
+/// chord of the outline by the thickness each.
+#[test]
+fn a_half_with_a_smooth_outline_mirrored_and_joined_is_one_body() {
+    for k in [1e-2, 1.0, 1e2] {
+        let mut s = session();
+        new_document(&mut s, k);
+        let p = |x: f64, y: f64| json!([x * k, y * k]);
+        built(
+            &mut s,
+            "datum.plane",
+            json!({"from": "yz", "distance": 0, "name": "Mid"}),
+        );
+        built(
+            &mut s,
+            "sketch.create",
+            json!({"plane": "xy", "name": "Half"}),
+        );
+        built(
+            &mut s,
+            "sketch.spline",
+            json!({"sketch": "Half",
+                   "control": [p(0.0, 35.0), p(25.0, 35.0), p(55.0, 0.0), p(25.0, -35.0), p(0.0, -35.0)]}),
+        );
+        built(
+            &mut s,
+            "sketch.polyline",
+            json!({"sketch": "Half", "points": ["e5", "e1"]}),
+        );
+        built(
+            &mut s,
+            "feature.extrude",
+            json!({"sketch": "Half", "distance": 8.0 * k, "name": "HalfBase"}),
+        );
+        let half = body(&mut s, "HalfBase");
+        let (volume, area) = (
+            half["volume"].as_f64().unwrap(),
+            half["area"].as_f64().unwrap(),
+        );
+        built(
+            &mut s,
+            "feature.mirror",
+            json!({"source": "HalfBase", "plane": "Mid", "keep": true, "name": "OtherHalf"}),
+        );
+        built(
+            &mut s,
+            "feature.boolean",
+            json!({"op": "union", "target": "HalfBase", "tool": "OtherHalf", "name": "Base"}),
+        );
+        let what = format!("scale {k}");
+        assert_sound(&mut s, &what);
+        let whole = body(&mut s, "Base");
+        let in_the_plane = 70.0 * k * 8.0 * k;
+        assert_measures(
+            &whole,
+            2.0 * volume,
+            2.0 * (area - in_the_plane),
+            1e-9,
+            &what,
+        );
+        assert_near(
+            vector(&whole["centroid"]),
+            [0.0, 0.0, 4.0 * k],
+            1e-9 * 100.0 * k,
+            &what,
+        );
+    }
+}
