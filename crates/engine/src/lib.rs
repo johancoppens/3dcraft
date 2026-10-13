@@ -8,7 +8,9 @@
 //! Deviations from the plan, for now: commands run synchronously on the
 //! caller's thread (no job pool, no events). Regeneration runs after every
 //! edit and rebuilds only the features the edit touches
-//! (`craft3d_regen::RegenCache`).
+//! (`craft3d_regen::RegenCache`). The one thread the engine starts is the
+//! autosave thread of a session that was given a recovery directory
+//! (`recovery.rs`).
 
 mod base64;
 mod body_cmds;
@@ -16,6 +18,10 @@ mod commands;
 mod file_cmds;
 mod params;
 mod query_cmds;
+mod recovery;
+mod recovery_cmds;
+#[cfg(not(target_arch = "wasm32"))]
+mod recovery_store;
 mod scene;
 mod sketch_cmds;
 mod sketch_path_cmds;
@@ -24,6 +30,13 @@ mod step_cmds;
 mod sweep_cmds;
 mod workspace;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub use recovery::SystemClock;
+pub use recovery::{
+    Clock, DEFAULT_AUTOSAVE_INTERVAL, MAX_AUTOSAVE_INTERVAL, MIN_AUTOSAVE_INTERVAL, ManualClock,
+    Recoverable, RecoveryNotify, RecoveryOptions, RecoveryOverview, default_recovery_directory,
+    parse_autosave_interval,
+};
 pub use scene::{
     AUTOMATIC_RELATIVE_TOLERANCE, DISPLAY_MAX_TRIANGLES, DISPLAY_RELATIVE_TOLERANCE,
     DocumentStatus, FeatureState, MAX_ARC_SEGMENTS, MIN_CIRCLE_SEGMENTS, Scene, SceneBody,
@@ -80,11 +93,22 @@ pub struct CommandSpec {
 /// An open document with its undo history and what was derived from it.
 #[derive(Clone)]
 pub(crate) struct OpenDocument {
+    /// Which open document this is, within the process: never reused, so
+    /// a recovery file is never taken for another document's.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub id: u64,
     pub history: History,
     /// The path it was opened from or last saved to, as the request gave it.
     pub path: Option<String>,
     /// The revision that is on disk.
     pub saved_revision: Option<u64>,
+    /// What the file at `path` looked like when the document was opened
+    /// from it or last saved to it.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub disk: Option<recovery::FileStamp>,
+    /// Set while this is a document taken from a recovery file and not
+    /// saved since (`recovery.open`).
+    pub recovered: Option<recovery::Recovered>,
     /// Regeneration of `history.revision()`.
     regen: Option<(u64, Arc<Regen>)>,
     /// What the last regeneration found per feature, so the next one
@@ -92,14 +116,23 @@ pub(crate) struct OpenDocument {
     pub(crate) cache: craft3d_regen::RegenCache,
 }
 
+/// The id of the next open document.
+fn next_document_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 impl OpenDocument {
     pub(crate) fn new(document: Document, path: Option<String>) -> Self {
         let history = History::new(document);
         let saved_revision = path.is_some().then(|| history.revision());
         Self {
+            id: next_document_id(),
             history,
             path,
             saved_revision,
+            disk: None,
+            recovered: None,
             regen: None,
             cache: craft3d_regen::RegenCache::default(),
         }
@@ -136,6 +169,9 @@ pub struct Session {
     pub(crate) workspace: Workspace,
     /// What a viewer draws for the active document (`scene.rs`).
     pub(crate) scene: scene::SceneCache,
+    /// Autosave and crash recovery (`recovery.rs`); none in a clone.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub(crate) recovery: recovery::RecoveryHandle,
 }
 
 /// Most documents open at once.
@@ -148,6 +184,7 @@ impl Session {
             active: 0,
             workspace,
             scene: scene::SceneCache::default(),
+            recovery: recovery::RecoveryHandle::default(),
         }
     }
 
@@ -172,6 +209,7 @@ impl Session {
                 sweep_cmds::SPECS,
                 body_cmds::SPECS,
                 query_cmds::SPECS,
+                recovery_cmds::SPECS,
             ]
             .concat()
         })
@@ -211,6 +249,12 @@ impl Session {
     /// Never panics: a panic inside a command is caught and reported as an
     /// error (AGENTS.md, last-resort guard), and the documents stay as they
     /// were before the command, because edits are applied atomically.
+    ///
+    /// Afterwards the recovery store, when the session has one, is told
+    /// which documents changed (`recovery.rs`): no disk is touched for
+    /// that on this thread, except to remove the recovery file of a
+    /// document that was just saved or closed. After a caught panic the
+    /// last good state of every document is autosaved at once.
     pub fn execute(&mut self, id: &str, params: &Value) -> Result<Value, CommandError> {
         let Some(spec) = Self::command(id) else {
             let hint = commands::closest(id)
@@ -223,8 +267,12 @@ impl Session {
         }
         let run = spec.run;
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(self, params))) {
-            Ok(result) => result,
+            Ok(result) => {
+                self.recovery_sync(false);
+                result
+            }
             Err(payload) => {
+                self.recovery_sync(true);
                 let detail = payload
                     .downcast_ref::<&str>()
                     .map(|s| (*s).to_string())

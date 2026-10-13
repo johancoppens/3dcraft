@@ -367,13 +367,20 @@ fn command_list_returns_the_registry_and_filters() {
         .collect();
     assert_eq!(
         without_document,
-        ["file.new", "file.open", "file.list"],
+        [
+            "file.new",
+            "file.open",
+            "file.list",
+            "recovery.list",
+            "recovery.open",
+            "recovery.discard"
+        ],
         "the fixture of this test"
     );
     assert_eq!(ids(&mut s, json!({"enabled_only": true})), without_document);
     assert_eq!(
         ids(&mut s, json!({"enabled_only": true, "filter": "open"})),
-        ["file.open", "file.list"]
+        ["file.open", "file.list", "recovery.open"]
     );
     assert_eq!(
         ids(&mut s, json!({"enabled_only": true, "filter": "feature"})),

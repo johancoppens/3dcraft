@@ -50,8 +50,8 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Creates an empty document and makes it the active one.", doc: false, file_new),
     spec!("file.open", "Open", r#"{"path": string}"#,
         "Opens a .3dcraft file from the read root and makes it the active document.", doc: false, file_open),
-    spec!("file.save", "Save", r#"{"path": string = the document's own path}"#,
-        "Saves the active document as a .3dcraft file (atomically) under the write root.", doc: true, file_save),
+    spec!("file.save", "Save", r#"{"path": string = the document's own path, "overwrite": boolean = false}"#,
+        "Saves the active document as a .3dcraft file (atomically) under the write root. A recovered document (recovery.open) is not saved over its original file when that file changed since the recovery was taken, unless overwrite is true.", doc: true, file_save),
     spec!("file.close", "Close", r#"{"discard": boolean = false}"#,
         "Closes the active document. Refuses unsaved changes unless discard is true.", doc: true, file_close),
     spec!("file.export", "Export", r#"{"path": string, "format": "step|stl|stl-ascii|3mf|obj" = from the extension, "tolerance": number = automatic}"#,
@@ -361,13 +361,16 @@ fn file_open(session: &mut Session, params: &Value) -> Run {
     let document = craft3d_format::load(&resolved)
         .map_err(|e| CommandError::new(format!("file.open: cannot open `{path}`: {e}")))?;
     let features = document.features.len();
-    let index = session.add_document(OpenDocument::new(document, Some(path.to_string())))?;
+    let mut open = OpenDocument::new(document, Some(path.to_string()));
+    open.disk = crate::recovery::FileStamp::of(&resolved);
+    let index = session.add_document(open)?;
     Ok(json!({ "document": index, "path": path, "features": features }))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 fn file_save(session: &mut Session, params: &Value) -> Run {
-    let p = Params::new("file.save", params, &["path"])?;
+    let p = Params::new("file.save", params, &["path", "overwrite"])?;
+    let overwrite = p.bool("overwrite")?.unwrap_or(false);
     let path = match (p.str("path")?, &session.document()?.path) {
         (Some(path), _) => path.to_string(),
         (None, Some(own)) => own.clone(),
@@ -375,10 +378,25 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
     };
     let resolved = session.workspace.resolve_write(&path)?;
     let open = session.document_mut()?;
+    // A recovered document is older than its original file when that
+    // file was written after the recovery was taken (by another 3DCraft,
+    // or by a save the crashed one made after its last autosave).
+    if let Some(recovered) = open.recovered
+        && !overwrite
+        && open.path.as_deref() == Some(path.as_str())
+        && let Some(now) = crate::recovery::FileStamp::of(&resolved)
+        && recovered.original != Some(now)
+    {
+        return fail(format!(
+            "file.save: `{path}` changed on disk since this recovered document was autosaved, so saving would replace a file that may be newer; save under another `path`, or pass {{\"overwrite\": true}} to replace it (at the window: File, Save As, and choose the file again)"
+        ));
+    }
     craft3d_format::save(&resolved, open.history.current())
         .map_err(|e| CommandError::new(format!("file.save: cannot save `{path}`: {e}")))?;
     open.saved_revision = Some(open.history.revision());
     open.path = Some(path.clone());
+    open.disk = crate::recovery::FileStamp::of(&resolved);
+    open.recovered = None;
     Ok(json!({ "path": path }))
 }
 
