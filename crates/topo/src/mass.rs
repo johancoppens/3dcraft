@@ -15,24 +15,40 @@
 //! `v₀` to `v`. Both integrals are Gauss–Legendre sums; the boundary is
 //! followed along the edge curves, projected onto the surface.
 //!
-//! Three things make `D` more than a region of the plane.
+//! Four things make `D` more than a region of the plane.
 //!
 //! **Loops around the axis.** On a surface closed around its axis a loop may
 //! wind around it (the rim of a cone, the two ends of a cylinder wall). `G`
 //! is periodic in u, so nothing changes, except that a face whose boundary
 //! winds once in total reaches to the end of the parameter range on one
-//! side (a pole or an apex): `v₀` is then that end, where the missing
-//! boundary contributes nothing.
+//! side (an apex): `v₀` is then that end, where the missing boundary
+//! contributes nothing.
 //!
-//! **Poles and apexes on the boundary.** Where the boundary passes through
-//! a pole of a sphere or the apex of a cone (the corner of a sphere octant,
-//! the tip of a slice of a cone) that point is, in parameter space, a whole
-//! stretch of the edge of the parameter range: u runs from the direction
-//! the boundary arrives by to the one it leaves by, and no edge of the body
-//! stands for it. That stretch is added to the boundary integral. The face
-//! is always on the inner side of it, so it runs towards lower u at the
-//! upper end of v and towards higher u at the lower end, through less than
-//! a turn.
+//! **The apex of a cone.** At the apex a whole stretch of the edge of the
+//! parameter range is one point, and where the boundary passes through it
+//! no edge of the body stands for that stretch. With `v₀` at the apex `G`
+//! is zero all along it, so nothing is missing; better still, `G du` is
+//! then smooth however close to the apex the boundary passes (it is
+//! `x dy − y dx` across the axis, times a polynomial), where with any
+//! other `v₀` it has a peak as narrow as the boundary is close. So `v₀` is
+//! the apex whenever the boundary comes nearer to it than half as far as
+//! it reaches from it, and otherwise a point of the boundary itself, so
+//! that a band far from the apex is not measured as the difference of two
+//! large cones.
+//!
+//! **The poles of a sphere.** The same holds at the pole `v₀` is put at,
+//! but a sphere has two, and no choice of `G` is smooth at both: the area
+//! of a sphere is not the boundary integral of anything smooth all over
+//! it. A sphere, however, is the same surface whichever way its poles
+//! point, and the integrals do not depend on the parametrisation. So a
+//! sphere face is measured in a frame of its own, chosen for its boundary
+//! and not taken from the surface: the south pole as far from the boundary
+//! as it gets (among the axes of the boundary's circles, the direction of
+//! its mean point, and the axes and diagonals of the surface's own frame),
+//! which puts the north pole, where `v₀` is, in the middle of the
+//! boundary. What the boundary integral then gives is the face, less the
+//! whole sphere when the face holds the south pole; the area, which lies
+//! between zero and the area of the sphere, says which.
 //!
 //! **Surfaces closed both ways (the torus).** There `f du dv` is not the
 //! derivative of anything periodic in both directions: `G` gains the
@@ -46,14 +62,26 @@
 //! arbitrary, and so is which side of its loops the face is on when that
 //! is the larger one. The area settles it: it lies between zero and the
 //! area of the torus, and the same whole number applies to all five
-//! integrals. The same argument gives the part of a sphere *outside* a
-//! loop that circles neither pole.
+//! integrals.
+//!
+//! **Nothing is taken on trust.** The boundary integral of a face is
+//! computed twice, first with half the panels its edges need and then with
+//! all of them, and again with twice as many until two in a row agree to
+//! 1e-12 of the size of what was summed (or to the rounding of the face's
+//! coordinates, where that is more); a face for which they never do is an
+//! error ([`MassError::Unsupported`]), not a number. Only a plane face
+//! bounded by lines, circles and ellipses is exempt. There `G du` is a
+//! polynomial of degree four at most, in the parameter of a line or in
+//! the sine and cosine of an angle that spans no more than an eighth of a
+//! turn per panel; the rule's sixteen nodes are exact for the one and
+//! within (π/8 · 4)³² / 32! ≈ 1e-29 of the other. Along a spline the
+//! panels end at its knots: it is smooth only between them.
 
 use crate::{Body, BodyKind, Coedge, Face};
-use craft3d_geom::{Curve3, GeomError, Surface};
-use craft3d_math::Vec3;
+use craft3d_geom::{Curve3, GeomError, Sphere, Surface};
 use craft3d_math::quadrature::Rule;
-use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, TAU};
+use craft3d_math::{Bbox3, Frame, Vec3};
+use std::f64::consts::FRAC_PI_2;
 use std::fmt;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -123,16 +151,48 @@ impl Sums {
         self.volume += o.volume * s;
         self.moment += o.moment * s;
     }
+
+    /// Each of the five made positive.
+    fn abs(self) -> Sums {
+        Sums {
+            area: self.area.abs(),
+            volume: self.volume.abs(),
+            moment: Vec3::new(
+                self.moment.x.abs(),
+                self.moment.y.abs(),
+                self.moment.z.abs(),
+            ),
+        }
+    }
+
+    fn parts(self) -> [f64; 5] {
+        [
+            self.area,
+            self.volume,
+            self.moment.x,
+            self.moment.y,
+            self.moment.z,
+        ]
+    }
 }
 
-/// `f(u, v)` for the five integrals.
-fn integrand(surface: &Surface, u: f64, v: f64) -> Sums {
+/// `f(u, v)` for the five integrals, and how large each is before
+/// anything cancels: the position times the normal where `f` is their dot
+/// product, which is zero all over a cone with its apex at the origin.
+fn integrand(surface: &Surface, u: f64, v: f64) -> Total {
     let (s, su, sv) = surface.derivatives(u, v);
     let n = su.cross(sv);
-    Sums {
+    let sum = Sums {
         area: n.length(),
         volume: s.dot(n) / 3.0,
         moment: Vec3::new(s.x * s.x * n.x, s.y * s.y * n.y, s.z * s.z * n.z) * 0.5,
+    };
+    Total {
+        sum,
+        size: Sums {
+            volume: s.length() * n.length() / 3.0,
+            ..sum.abs()
+        },
     }
 }
 
@@ -141,13 +201,30 @@ const NODES: usize = 16;
 const INNER_PANELS: usize = 2;
 /// And at most: an unrolled parameter stays within a few turns.
 const MAX_INNER_PANELS: usize = 64;
-
-/// A vertex this close to a pole or apex, relative to how far the face's
-/// boundary reaches from it, is at it. Generous on purpose: two different
-/// meridians can only share a vertex at the pole, so a vertex near one is
-/// meant to be on it, and taking a true near miss for a touch costs no
-/// more than the sliver between the two.
-const AT_POLE: f64 = 1e-6;
+/// How often the panels along the boundary are doubled, starting from half
+/// of what an edge needs, before a face whose sums still change is given
+/// up.
+const MAX_DOUBLINGS: u32 = 7;
+/// Panels along one edge, at most, however often they are doubled.
+const MAX_PANELS: usize = 1 << 16;
+/// Two sums in a row agree when they differ by no more than this share of
+/// the size of what was summed: a thousand times the rounding of the sums,
+/// and, the sums converging geometrically, far more than the second of the
+/// two is off by.
+const CONVERGED: f64 = 1e-12;
+/// A face of a closed surface whose area is a smaller share than this of
+/// what was summed for it may as well be the whole surface less that: the
+/// two differ by the sign of a sum that is zero to rounding.
+const TOO_THIN: f64 = 1e-9;
+/// An edge that passes this close to an apex, relative to how far the
+/// face's boundary reaches from it, passes through it, and is cut there so
+/// that the corner it has in parameter space falls between two panels.
+/// Taking a near miss for a touch costs nothing: the cut is in the
+/// panels, not in what is integrated.
+const AT_APEX: f64 = 1e-6;
+/// Points along each edge at which a sphere face's boundary is looked at
+/// to choose its frame.
+const FRAME_SAMPLES: u32 = 32;
 
 /// The direction an inner integral runs in.
 #[derive(Clone, Copy)]
@@ -156,8 +233,36 @@ enum Along {
     V,
 }
 
+/// A sum, and the sum of the sizes of its terms (see [`integrand`]): what
+/// a difference between two sums is measured against.
+#[derive(Clone, Copy, Debug, Default)]
+struct Total {
+    sum: Sums,
+    size: Sums,
+}
+
+impl Total {
+    fn add(&mut self, term: Total, weight: f64) {
+        self.sum.add_scaled(term.sum, weight);
+        self.size.add_scaled(term.size, weight.abs());
+    }
+
+    /// Whether `finer`, the same sum with twice the panels, says the same,
+    /// given the share `noise` of every term that is rounding.
+    fn agrees_with(&self, finer: &Total, noise: f64) -> bool {
+        let size = finer.size.parts();
+        self.sum
+            .parts()
+            .into_iter()
+            .zip(finer.sum.parts())
+            .zip(size)
+            // Not `>`: a NaN agrees with nothing.
+            .all(|((a, b), size)| (a - b).abs() <= (CONVERGED + noise) * size)
+    }
+}
+
 /// `∫ f dt` from `from` to `to` along one parameter, the other one fixed.
-fn inner(surface: &Surface, rule: &Rule, along: Along, fixed: f64, from: f64, to: f64) -> Sums {
+fn inner(surface: &Surface, rule: &Rule, along: Along, fixed: f64, from: f64, to: f64) -> Total {
     let periodic = match along {
         Along::U => surface.period_u().is_some(),
         Along::V => surface.period_v().is_some(),
@@ -169,7 +274,7 @@ fn inner(surface: &Surface, rule: &Rule, along: Along, fixed: f64, from: f64, to
     } else {
         INNER_PANELS
     };
-    let mut sum = Sums::default();
+    let mut sum = Total::default();
     let width = (to - from) / count as f64;
     for k in 0..count {
         let start = from + width * k as f64;
@@ -178,150 +283,260 @@ fn inner(surface: &Surface, rule: &Rule, along: Along, fixed: f64, from: f64, to
                 Along::U => (t, fixed),
                 Along::V => (fixed, t),
             };
-            sum.add_scaled(integrand(surface, u, v), w);
+            sum.add(integrand(surface, u, v), w);
         }
     }
     sum
 }
 
-/// How many quadrature panels an edge needs: enough that each spans at most
-/// an eighth of a turn or one spline span.
-fn panels(curve: &Curve3, range: (f64, f64)) -> usize {
-    let length = (range.1 - range.0).abs();
-    match curve {
-        Curve3::Line(_) => 2,
-        Curve3::Circle(_) | Curve3::Ellipse(_) => {
-            ((length / FRAC_PI_4).ceil() as usize).clamp(1, 64)
-        }
-        Curve3::Nurbs(_) => 4,
-    }
-}
-
-/// Where the quadrature panels of a piece of an edge begin and end. A
-/// spline is only as smooth as its knots allow: a panel across a knot
-/// integrates a function with a kink in it, so the panels end at the knots
-/// and divide each span between them.
-fn panel_ends(curve: &Curve3, low: f64, high: f64) -> Vec<f64> {
-    let mut ends = vec![low];
-    if let Curve3::Nurbs(c) = curve {
-        const PER_SPAN: usize = 4;
-        let mut stops: Vec<f64> = c
-            .knots()
-            .iter()
-            .copied()
-            .filter(|&k| k > low && k < high)
-            .collect();
-        stops.push(high);
-        stops.dedup();
-        if stops.len() > 4096 {
-            stops = vec![high];
-        }
-        let mut from = low;
-        for stop in stops {
-            for k in 1..=PER_SPAN {
-                ends.push(from + (stop - from) * k as f64 / PER_SPAN as f64);
+/// The quadrature panels along a stretch of an edge, `low` to `high`, as
+/// `(start, end)` pairs: half of what the edge needs, doubled `doublings`
+/// times.
+///
+/// What an edge needs: panels of an eighth of a turn at most along a
+/// circle or an ellipse, two along a line, and two to every stretch
+/// between the knots of a spline. A spline is smooth only between its
+/// knots, and a sum over panels that straddle them converges too slowly
+/// to ever settle.
+fn panels(curve: &Curve3, (low, high): (f64, f64), doublings: u32) -> Vec<(f64, f64)> {
+    let double = 1_usize << doublings.min(16);
+    let mut stops = vec![low];
+    let per_stretch = match curve {
+        Curve3::Line(_) => double,
+        Curve3::Circle(_) | Curve3::Ellipse(_) => (((high - low) / FRAC_PI_2).ceil() as usize)
+            .clamp(1, 32)
+            .saturating_mul(double),
+        Curve3::Nurbs(c) => {
+            for &knot in c.knots() {
+                if knot > low && knot < high && stops.last().is_some_and(|&last| knot > last) {
+                    stops.push(knot);
+                }
             }
-            from = stop;
+            double
         }
-        return ends;
-    }
-    let count = panels(curve, (low, high));
-    for k in 1..=count {
-        ends.push(low + (high - low) * k as f64 / count as f64);
-    }
-    ends
-}
-
-/// An angle wrapped to `[0, 2π)`.
-fn wrap(a: f64) -> f64 {
-    let w = a.rem_euclid(TAU);
-    // rem_euclid can return TAU itself for tiny negative input.
-    if w >= TAU { 0.0 } else { w }
-}
-
-/// A point where the parametrisation of an analytic surface collapses: an
-/// end of the v range that is one point in space.
-struct Pole {
-    point: Vec3,
-    v: f64,
-    /// At the upper end of v (else the lower).
-    top: bool,
-    /// The directions u = 0 and u = π/2 point in.
-    x: Vec3,
-    y: Vec3,
-}
-
-fn poles(surface: &Surface) -> Vec<Pole> {
-    match surface {
-        Surface::Sphere(s) => {
-            let (f, r) = (s.frame(), s.radius());
-            [(r, true), (-r, false)]
-                .into_iter()
-                .map(|(z, top)| Pole {
-                    point: f.point(0.0, 0.0, z),
-                    v: if top { FRAC_PI_2 } else { -FRAC_PI_2 },
-                    top,
-                    x: f.x(),
-                    y: f.y(),
-                })
-                .collect()
+    };
+    stops.push(high);
+    let stretches = stops.len().saturating_sub(1).max(1);
+    let per_stretch = per_stretch.min(MAX_PANELS / stretches).max(1);
+    let mut panels = Vec::with_capacity(stretches.saturating_mul(per_stretch).min(MAX_PANELS));
+    for pair in stops.windows(2) {
+        let &[from, to] = pair else { continue };
+        let width = (to - from) / per_stretch as f64;
+        for k in 0..per_stretch {
+            let start = from + width * k as f64;
+            panels.push((start, start + width));
         }
-        Surface::Cone(c) => {
-            let (f, v) = (c.frame(), c.apex_v());
-            if !v.is_finite() {
-                return Vec::new();
+    }
+    panels
+}
+
+/// The frame a sphere face is measured in (see the module documentation):
+/// the same sphere with its south pole as far from the face's boundary as
+/// the candidates allow. `None` when the boundary has no finite point.
+fn own_sphere(body: &Body, face: &Face, sphere: &Sphere) -> Option<Surface> {
+    let (old, radius) = (*sphere.frame(), sphere.radius());
+    let centre = old.origin();
+    let mut points = Vec::new();
+    let mut candidates: Vec<Vec3> = Vec::new();
+    let mut circles = Vec::new();
+    for loop_id in &face.loops {
+        for coedge in &body.loop_(*loop_id)?.coedges {
+            let edge = body.edge(coedge.edge)?;
+            let (t0, t1) = edge.range;
+            for k in 0..=FRAME_SAMPLES {
+                let point = edge
+                    .curve
+                    .eval(t0 + (t1 - t0) * f64::from(k) / f64::from(FRAME_SAMPLES));
+                if point.is_finite() {
+                    points.push(point);
+                }
             }
-            vec![Pole {
-                point: f.point(0.0, 0.0, v),
-                v,
-                top: c.half_angle() < 0.0,
-                x: f.x(),
-                y: f.y(),
-            }]
+            if let Curve3::Circle(circle) = &edge.curve {
+                circles.push(circle.frame().z());
+            }
         }
-        Surface::Plane(_)
-        | Surface::Cylinder(_)
-        | Surface::Torus(_)
-        | Surface::Bezier(_)
-        | Surface::Nurbs(_) => Vec::new(),
     }
+    // The middle of the boundary, when it has one.
+    let mut mean = Vec3::ZERO;
+    for point in &points {
+        mean += (*point - centre) * (1.0 / points.len() as f64);
+    }
+    if mean.length() > 1e-3 * radius
+        && let Some(direction) = mean.normalized()
+    {
+        candidates.push(direction);
+    }
+    candidates.extend(circles);
+    candidates.extend([old.z(), old.x(), old.y()]);
+    let diagonal = 1.0 / 3.0_f64.sqrt();
+    for (x, y) in [(1.0, 1.0), (-1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)] {
+        candidates.push(old.vector(x, y, 1.0) * diagonal);
+    }
+    let mut best: Option<(f64, Vec3)> = None;
+    for candidate in candidates {
+        for north in [candidate, -candidate] {
+            let south = centre - north * radius;
+            let clear = points
+                .iter()
+                .map(|point| point.distance(south))
+                .fold(f64::INFINITY, f64::min);
+            // The first of equals: the order above is part of the result.
+            if clear.is_finite() && best.is_none_or(|(most, _)| clear > most) {
+                best = Some((clear, north));
+            }
+        }
+    }
+    let frame = Frame::from_z(centre, best?.1)?;
+    Some(Surface::Sphere(Sphere::new(frame, radius).ok()?))
 }
 
 /// A stretch of an edge as a loop runs along it, from parameter `start` to
-/// `end` (either may be the larger), with the pole it starts or ends at.
+/// `end` (either may be the larger).
 struct Piece<'a> {
     curve: &'a Curve3,
     start: f64,
     end: f64,
-    start_pole: Option<usize>,
-    end_pole: Option<usize>,
 }
 
-/// The boundary passing through a pole: the u it arrives by and leaves by.
-struct Passage {
-    v: f64,
-    top: bool,
-    u_in: f64,
-    u_out: f64,
+/// The boundary of a face: per loop its pieces in the order the loop runs.
+struct Outline<'a> {
+    loops: Vec<Vec<Piece<'a>>>,
+    /// Whether the boundary touches a point where a freeform surface's
+    /// parametrisation collapses (a collapsed patch edge).
+    collapsed: bool,
+    /// Whether every edge is a line, a circle or an ellipse.
+    conic: bool,
+    /// The share of the boundary's extent that is the rounding of its
+    /// coordinates: four units in the last place of the largest of them,
+    /// over how far the boundary reaches across. A face a million times
+    /// smaller than it is far from the origin is known to ten digits, and
+    /// its sums cannot agree to more.
+    noise: f64,
 }
 
-impl Passage {
-    /// The direction (±1) u runs in along the pole's stretch of the edge of
-    /// the parameter range, and how far: the face is below the upper edge
-    /// and above the lower one, and its boundary runs counter-clockwise
-    /// when `sense` is +1.
-    fn sweep(&self, sense: f64, face: usize) -> Result<(f64, f64), MassError> {
-        let direction = if self.top { -sense } else { sense };
-        let angle = wrap(direction * (self.u_out - self.u_in));
-        if !(angle > 1e-9 && angle < TAU - 1e-9) {
-            // No angle or a whole turn: which of the two cannot be told.
-            return Err(MassError::Unsupported {
-                face,
-                what: "a boundary that doubles back on itself at a pole or an apex",
-            });
+fn outline<'a>(
+    body: &'a Body,
+    face: &Face,
+    surface: &Surface,
+    index: usize,
+) -> Result<Outline<'a>, MassError> {
+    let invalid = MassError::Invalid { face: index };
+    let geometry = |error| MassError::Geometry { face: index, error };
+    let apex = match surface {
+        Surface::Cone(c) => {
+            let v = c.apex_v();
+            v.is_finite().then(|| c.frame().point(0.0, 0.0, v))
         }
-        Ok((direction, angle))
+        _ => None,
+    };
+    let freeform = matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_));
+
+    // How far the boundary reaches from the apex, and whether it touches a
+    // collapsed edge of a freeform surface.
+    let mut reach = 0.0_f64;
+    let mut extent = Bbox3::EMPTY;
+    let mut furthest = 0.0_f64;
+    let mut collapsed = false;
+    let mut conic = true;
+    let mut loops = Vec::with_capacity(face.loops.len());
+    for loop_id in &face.loops {
+        let loop_ = body.loop_(*loop_id).ok_or(invalid.clone())?;
+        for coedge in &loop_.coedges {
+            let edge = body.edge(coedge.edge).ok_or(invalid.clone())?;
+            if body.vertex(edge.start).is_none() || body.vertex(edge.end).is_none() {
+                return Err(invalid);
+            }
+            conic &= !matches!(edge.curve, Curve3::Nurbs(_));
+            let (t0, t1) = edge.range;
+            for t in [t0, 0.5 * (t0 + t1), t1] {
+                let point = edge.curve.eval(t);
+                if point.is_finite() {
+                    extent.add(point);
+                    furthest = furthest.max(point.length());
+                }
+                if let Some(apex) = apex {
+                    let distance = point.distance(apex);
+                    if distance.is_finite() {
+                        reach = reach.max(distance);
+                    }
+                }
+            }
+            if freeform {
+                for end in [t0, t1] {
+                    let (u, v) = surface.project(edge.curve.eval(end)).map_err(geometry)?;
+                    let (_, su, sv) = surface.derivatives(u, v);
+                    let scale = su.length() + sv.length();
+                    if su.length() <= 1e-9 * scale || sv.length() <= 1e-9 * scale {
+                        collapsed = true;
+                    }
+                }
+            }
+        }
+        loops.push(&loop_.coedges);
     }
+
+    let mut pieces = Vec::with_capacity(loops.len());
+    for coedges in loops {
+        let mut run = Vec::with_capacity(coedges.len());
+        for &Coedge { edge, reversed } in coedges {
+            let edge = body.edge(edge).ok_or(invalid.clone())?;
+            let (t0, t1) = edge.range;
+            // Where the edge passes through the apex on its way.
+            let mut cut = None;
+            if let Some(apex) = apex
+                && t1 > t0
+            {
+                let mut t = edge.curve.project(apex).map_err(geometry)?;
+                if let Some(period) = edge.curve.period() {
+                    t = t0 + (t - t0).rem_euclid(period);
+                }
+                let margin = 1e-9 * (t1 - t0);
+                if t > t0 + margin
+                    && t < t1 - margin
+                    && edge.curve.eval(t).distance(apex) <= AT_APEX * reach
+                {
+                    cut = Some(t);
+                }
+            }
+            let curve = &edge.curve;
+            let mut stretch = |start: f64, end: f64| {
+                run.push(if reversed {
+                    Piece {
+                        curve,
+                        start: end,
+                        end: start,
+                    }
+                } else {
+                    Piece { curve, start, end }
+                });
+            };
+            match (cut, reversed) {
+                (None, _) => stretch(t0, t1),
+                (Some(t), false) => {
+                    stretch(t0, t);
+                    stretch(t, t1);
+                }
+                (Some(t), true) => {
+                    stretch(t, t1);
+                    stretch(t0, t);
+                }
+            }
+        }
+        pieces.push(run);
+    }
+    let across = extent.diagonal();
+    let noise = if across > 0.0 {
+        (4.0 * f64::EPSILON * furthest / across).min(1.0)
+    } else {
+        // Smaller than its coordinates resolve: any sum is as good.
+        1.0
+    };
+    Ok(Outline {
+        loops: pieces,
+        collapsed,
+        conic,
+        noise,
+    })
 }
 
 /// One boundary sample: surface parameters, and how fast they change along
@@ -335,166 +550,23 @@ struct Sample {
     dv: f64,
 }
 
-struct Boundary {
-    /// In the order the loops run.
-    samples: Vec<Sample>,
-    passages: Vec<Passage>,
-    /// Whether the boundary touches a point where a freeform surface's
-    /// parametrisation collapses (a collapsed patch edge).
-    collapsed: bool,
-}
-
-/// The pieces of one loop in the order it runs, split wherever an edge
-/// passes through a pole between its ends.
-fn loop_pieces<'a>(
-    body: &'a Body,
+/// The boundary as quadrature samples, in the order the loops run, with
+/// half the panels every edge needs doubled `doublings` times.
+fn samples(
+    outline: &Outline,
+    surface: &Surface,
     index: usize,
-    coedges: &[Coedge],
-    poles: &[Pole],
-    reach: &[f64],
-) -> Result<Vec<Piece<'a>>, MassError> {
-    let invalid = MassError::Invalid { face: index };
-    let at = |point: Vec3| {
-        poles
-            .iter()
-            .zip(reach)
-            .position(|(pole, &reach)| point.distance(pole.point) <= AT_POLE * reach)
-    };
-    let mut pieces = Vec::new();
-    for &Coedge { edge, reversed } in coedges {
-        let edge = body.edge(edge).ok_or(invalid.clone())?;
-        let (t0, t1) = edge.range;
-        // The vertices decide, not the ends of the curve: two edges that
-        // share a vertex then agree on whether it is a pole.
-        let (Some(first), Some(last)) = (body.vertex(edge.start), body.vertex(edge.end)) else {
-            return Err(invalid);
-        };
-        let (first, last) = (at(first.point), at(last.point));
-        // Where the edge passes through a pole on its way.
-        let mut cuts: Vec<(f64, usize)> = Vec::new();
-        for (which, (pole, &reach)) in poles.iter().zip(reach).enumerate() {
-            if first == Some(which) || last == Some(which) || t1 <= t0 || (t1 - t0).is_nan() {
-                continue;
-            }
-            let mut t = edge
-                .curve
-                .project(pole.point)
-                .map_err(|error| MassError::Geometry { face: index, error })?;
-            if let Some(period) = edge.curve.period() {
-                t = t0 + (t - t0).rem_euclid(period);
-            }
-            let margin = 1e-9 * (t1 - t0);
-            if t > t0 + margin
-                && t < t1 - margin
-                && edge.curve.eval(t).distance(pole.point) <= AT_POLE * reach
-            {
-                cuts.push((t, which));
-            }
-        }
-        cuts.sort_by(|a, b| a.0.total_cmp(&b.0));
-        let mut run = Vec::with_capacity(cuts.len() + 1);
-        let mut from = (t0, first);
-        for (t, which) in cuts {
-            run.push(Piece {
-                curve: &edge.curve,
-                start: from.0,
-                end: t,
-                start_pole: from.1,
-                end_pole: Some(which),
-            });
-            from = (t, Some(which));
-        }
-        run.push(Piece {
-            curve: &edge.curve,
-            start: from.0,
-            end: t1,
-            start_pole: from.1,
-            end_pole: last,
-        });
-        if reversed {
-            run.reverse();
-            for piece in &mut run {
-                *piece = Piece {
-                    curve: piece.curve,
-                    start: piece.end,
-                    end: piece.start,
-                    start_pole: piece.end_pole,
-                    end_pole: piece.start_pole,
-                };
-            }
-        }
-        pieces.extend(run);
-    }
-    Ok(pieces)
-}
-
-/// The u a curve points along as it passes a pole: the angle of `tangent`
-/// about the surface's axis.
-fn heading(pole: &Pole, tangent: Vec3, face: usize) -> Result<f64, MassError> {
-    let (x, y) = (tangent.dot(pole.x), tangent.dot(pole.y));
-    let flat = x.hypot(y);
-    if !(flat.is_finite() && flat > 1e-9 * tangent.length()) {
-        return Err(MassError::Unsupported {
-            face,
-            what: "a boundary that has no direction where it passes a pole or an apex",
-        });
-    }
-    Ok(wrap(y.atan2(x)))
-}
-
-fn boundary(body: &Body, face: &Face, index: usize, rule: &Rule) -> Result<Boundary, MassError> {
-    let invalid = MassError::Invalid { face: index };
-    let surface = &face.surface;
-    let poles = poles(surface);
-    let freeform = matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_));
-    let mut collapsed = false;
-
-    // How far the boundary reaches from each pole, and whether it touches a
-    // collapsed edge of a freeform surface.
-    let mut reach = vec![0.0_f64; poles.len()];
-    let mut loops = Vec::with_capacity(face.loops.len());
-    for loop_id in &face.loops {
-        let loop_ = body.loop_(*loop_id).ok_or(invalid.clone())?;
-        for coedge in &loop_.coedges {
-            let edge = body.edge(coedge.edge).ok_or(invalid.clone())?;
-            let (t0, t1) = edge.range;
-            for t in [t0, 0.5 * (t0 + t1), t1] {
-                let point = edge.curve.eval(t);
-                for (pole, reach) in poles.iter().zip(&mut reach) {
-                    let distance = point.distance(pole.point);
-                    if distance.is_finite() {
-                        *reach = reach.max(distance);
-                    }
-                }
-            }
-            if freeform {
-                for end in [t0, t1] {
-                    let (u, v) = surface
-                        .project(edge.curve.eval(end))
-                        .map_err(|error| MassError::Geometry { face: index, error })?;
-                    let (_, su, sv) = surface.derivatives(u, v);
-                    let scale = su.length() + sv.length();
-                    if su.length() <= 1e-9 * scale || sv.length() <= 1e-9 * scale {
-                        collapsed = true;
-                    }
-                }
-            }
-        }
-        loops.push(&loop_.coedges);
-    }
-
+    rule: &Rule,
+    doublings: u32,
+) -> Result<Vec<Sample>, MassError> {
     let mut samples = Vec::new();
-    let mut passages = Vec::new();
-    for (loop_index, coedges) in loops.into_iter().enumerate() {
-        let pieces = loop_pieces(body, index, coedges, &poles, &reach)?;
-        let after = pieces.iter().cycle().skip(1);
-        for (piece, next) in pieces.iter().zip(after) {
+    for (loop_index, pieces) in outline.loops.iter().enumerate() {
+        for piece in pieces {
             let (low, high) = (piece.start.min(piece.end), piece.start.max(piece.end));
             let direction = if piece.end < piece.start { -1.0 } else { 1.0 };
-            let ends = panel_ends(piece.curve, low, high);
             let first = samples.len();
-            for (&start, &stop) in ends.iter().zip(ends.iter().skip(1)) {
-                for (t, w) in rule.points(start, stop) {
+            for (start, end) in panels(piece.curve, (low, high), doublings) {
+                for (t, w) in rule.points(start, end) {
                     let (point, tangent) = piece.curve.derivatives(t);
                     let (u, v) = surface
                         .project(point)
@@ -506,8 +578,8 @@ fn boundary(body: &Body, face: &Face, index: usize, rule: &Rule) -> Result<Bound
                     let (a, b, c) = (su.dot(su), su.dot(sv), sv.dot(sv));
                     let det = a * c - b * b;
                     let (ru, rv) = (tangent.dot(su), tangent.dot(sv));
-                    // Next to a pole Sᵤ vanishes and u stops changing: that
-                    // is the limit along any curve through it.
+                    // At a pole or an apex Sᵤ vanishes and u has no rate of
+                    // change; `G` is zero there or the boundary is not.
                     let (du, dv) = if det > 1e-24 * a.max(c) * a.max(c) && det.is_finite() {
                         ((c * ru - b * rv) / det, (a * rv - b * ru) / det)
                     } else if c > 0.0 {
@@ -530,32 +602,9 @@ fn boundary(body: &Body, face: &Face, index: usize, rule: &Rule) -> Result<Bound
                     block.reverse();
                 }
             }
-            match (piece.end_pole, next.start_pole) {
-                (None, None) => {}
-                (Some(a), Some(b)) if a == b => {
-                    let pole = poles.get(a).ok_or(invalid.clone())?;
-                    // Arriving, the curve points away from where it came
-                    // from; leaving, towards where it goes.
-                    let arriving = piece.curve.derivatives(piece.end).1 * direction;
-                    let leaving = next.curve.derivatives(next.start).1
-                        * if next.end < next.start { -1.0 } else { 1.0 };
-                    passages.push(Passage {
-                        v: pole.v,
-                        top: pole.top,
-                        u_in: heading(pole, -arriving, index)?,
-                        u_out: heading(pole, leaving, index)?,
-                    });
-                }
-                // The loop is not closed there.
-                _ => return Err(invalid),
-            }
         }
     }
-    Ok(Boundary {
-        samples,
-        passages,
-        collapsed,
-    })
+    Ok(samples)
 }
 
 /// `∬ f du dv` over a whole closed surface.
@@ -570,7 +619,7 @@ fn whole_surface(surface: &Surface, index: usize, rule: &Rule) -> Result<Sums, M
     for k in 0..U_PANELS {
         let start = u0 + width * k as f64;
         for (u, w) in rule.points(start, start + width) {
-            sum.add_scaled(inner(surface, rule, Along::V, u, v0, v1), w);
+            sum.add_scaled(inner(surface, rule, Along::V, u, v0, v1).sum, w);
         }
     }
     Ok(sum)
@@ -581,21 +630,32 @@ fn near(value: f64, target: f64, period: f64) -> f64 {
     value + ((target - value) / period).round() * period
 }
 
-/// A face of a surface closed in both directions (see the module
-/// documentation): `∬_D f du dv` with `D` oriented by `sense`.
-fn doubly_periodic_face(
-    face: &Face,
-    index: usize,
-    rule: &Rule,
-    mut samples: Vec<Sample>,
-    sense: f64,
+/// How the boundary integral of a face is set up. Decided once, from the
+/// coarsest samples, so that the finer sums are sums of the same thing.
+enum Plan {
+    /// `G` runs from this v.
+    From(f64),
+    /// A surface closed both ways: the parameters each loop's unrolling
+    /// starts near, and the direction the inner integral runs in.
+    Unrolled {
+        starts: Vec<(f64, f64)>,
+        along: Along,
+    },
+}
+
+/// Unrolls u and v along each loop of a surface closed both ways, each
+/// loop starting near its entry in `starts` (or wherever its first sample
+/// is). Gives where each loop started and how often it goes around the
+/// axis and around the tube before it is back at its first sample.
+fn unroll(
+    samples: &mut [Sample],
+    loops: usize,
+    starts: Option<&[(f64, f64)]>,
     (period_u, period_v): (f64, f64),
-) -> Result<Sums, MassError> {
-    let surface = &face.surface;
-    // Unroll u and v along each loop, and count how often the loop goes
-    // around either way before it is back at its first sample.
-    let mut around_axis = vec![0.0_f64; face.loops.len()];
-    let mut around_tube = vec![0.0_f64; face.loops.len()];
+) -> (Vec<(f64, f64)>, Vec<f64>, Vec<f64>) {
+    let mut began = vec![(0.0, 0.0); loops];
+    let mut around_axis = vec![0.0_f64; loops];
+    let mut around_tube = vec![0.0_f64; loops];
     let mut previous: Option<(usize, f64, f64)> = None;
     let mut first = (0.0, 0.0);
     let mut close = |loop_index: usize, last: (f64, f64), first: (f64, f64)| {
@@ -607,7 +667,7 @@ fn doubly_periodic_face(
             *tube = ((near(first.1, last.1, period_v) - first.1) / period_v).round();
         }
     };
-    for sample in &mut samples {
+    for sample in samples.iter_mut() {
         match previous {
             Some((loop_index, u, v)) if loop_index == sample.loop_index => {
                 sample.u = near(sample.u, u, period_u);
@@ -617,7 +677,14 @@ fn doubly_periodic_face(
                 if let Some((loop_index, u, v)) = other {
                     close(loop_index, (u, v), first);
                 }
+                if let Some(&(u, v)) = starts.and_then(|s| s.get(sample.loop_index)) {
+                    sample.u = near(sample.u, u, period_u);
+                    sample.v = near(sample.v, v, period_v);
+                }
                 first = (sample.u, sample.v);
+                if let Some(began) = began.get_mut(sample.loop_index) {
+                    *began = first;
+                }
             }
         }
         previous = Some((sample.loop_index, sample.u, sample.v));
@@ -625,75 +692,38 @@ fn doubly_periodic_face(
     if let Some((loop_index, u, v)) = previous {
         close(loop_index, (u, v), first);
     }
-    if around_axis.iter().sum::<f64>() != 0.0 || around_tube.iter().sum::<f64>() != 0.0 {
-        // Loops that go around without others going back do not enclose
-        // a region.
-        return Err(MassError::UnboundedFace { face: index });
-    }
-
-    let mut sum = Sums::default();
-    if around_tube.iter().all(|&turns| turns == 0.0) {
-        let v_ref = samples.first().map_or(0.0, |s| s.v);
-        for s in &samples {
-            if s.du != 0.0 {
-                sum.add_scaled(
-                    inner(surface, rule, Along::V, s.u, v_ref, s.v),
-                    -sense * s.du,
-                );
-            }
-        }
-    } else if around_axis.iter().all(|&turns| turns == 0.0) {
-        let u_ref = samples.first().map_or(0.0, |s| s.u);
-        for s in &samples {
-            if s.dv != 0.0 {
-                sum.add_scaled(
-                    inner(surface, rule, Along::U, s.v, u_ref, s.u),
-                    sense * s.dv,
-                );
-            }
-        }
-    } else {
-        return Err(MassError::Unsupported {
-            face: index,
-            what: "loops that wind around the axis and around the tube of a torus at once",
-        });
-    }
-
-    // Right up to a whole number of times the entire surface; the area
-    // says which.
-    let whole = whole_surface(surface, index, rule)?;
-    let share = sum.area / whole.area;
-    let times = share.floor();
-    if times != 0.0 {
-        let rest = share - times;
-        if !(rest > 1e-9 && rest < 1.0 - 1e-9) {
-            return Err(MassError::Unsupported {
-                face: index,
-                what: "a face too thin, or too nearly its whole surface, to tell which side of its loops it is on",
-            });
-        }
-        sum.add_scaled(whole, -times);
-    }
-    Ok(sum)
+    (began, around_axis, around_tube)
 }
 
-/// `∬_D f du dv` over one face, with `D` oriented by the surface (not by
-/// the face's `reversed` flag).
-fn face_integrals(body: &Body, face: &Face, index: usize, rule: &Rule) -> Result<Sums, MassError> {
-    let surface = &face.surface;
-    if face.loops.is_empty() {
-        return whole_surface(surface, index, rule);
-    }
-    let Boundary {
-        samples,
-        passages,
-        collapsed,
-    } = boundary(body, face, index, rule)?;
-    // Loops run counter-clockwise around the face seen from outside, which
-    // is clockwise in parameter space when the face is reversed.
-    let sense = if face.reversed { -1.0 } else { 1.0 };
+/// The plan for a face from its coarsest samples (see the module
+/// documentation), which are unrolled on the way for a surface closed
+/// both ways.
+fn plan(
+    face: &Face,
+    surface: &Surface,
+    index: usize,
+    samples: &mut [Sample],
+    sense: f64,
+) -> Result<Plan, MassError> {
     if let (Some(period_u), Some(period_v)) = (surface.period_u(), surface.period_v()) {
-        return doubly_periodic_face(face, index, rule, samples, sense, (period_u, period_v));
+        let (starts, around_axis, around_tube) =
+            unroll(samples, face.loops.len(), None, (period_u, period_v));
+        if around_axis.iter().sum::<f64>() != 0.0 || around_tube.iter().sum::<f64>() != 0.0 {
+            // Loops that go around without others going back do not enclose
+            // a region.
+            return Err(MassError::UnboundedFace { face: index });
+        }
+        let along = if around_tube.iter().all(|&turns| turns == 0.0) {
+            Along::V
+        } else if around_axis.iter().all(|&turns| turns == 0.0) {
+            Along::U
+        } else {
+            return Err(MassError::Unsupported {
+                face: index,
+                what: "loops that wind around the axis and around the tube of a torus at once",
+            });
+        };
+        return Ok(Plan::Unrolled { starts, along });
     }
     if surface.period_v().is_some() {
         return Err(MassError::Unsupported {
@@ -701,89 +731,209 @@ fn face_integrals(body: &Body, face: &Face, index: usize, rule: &Rule) -> Result
             what: "a surface closed in v only",
         });
     }
-    // A collapsed edge of a patch is, like a pole, a stretch of the edge of
-    // the parameter range that no edge of the body stands for. Refused
-    // until it is added the way poles are.
-    if collapsed {
-        return Err(MassError::Unsupported {
-            face: index,
-            what: "a boundary that passes through a collapsed edge of its surface",
-        });
-    }
     let ((_, _), (v_min, v_max)) = surface.domain();
     let first_v = samples.first().map_or(0.0, |s| s.v);
-
-    let mut stretches = Vec::with_capacity(passages.len());
-    for passage in &passages {
-        stretches.push(passage.sweep(sense, index)?);
-    }
-    let mut turns = 0.0;
-    let v_ref = match surface.period_u() {
-        None => first_v,
-        Some(period) => {
-            // Net number of times the boundary, with its stretches at the
-            // poles, goes around the axis in the surface's
-            // counter-clockwise sense.
-            let swept = samples.iter().map(|s| s.du).sum::<f64>()
-                + stretches.iter().map(|(d, angle)| d * angle).sum::<f64>();
-            turns = (sense * swept / period).round();
-            if turns == 0.0 {
-                // At a pole the boundary passes through, when there is
-                // one: what is near it then weighs next to nothing.
-                passages.first().map_or(first_v, |p| p.v)
-            } else if turns == 1.0 {
-                // The face is on the +v side of a loop running in +u.
-                v_max
-            } else if turns == -1.0 {
-                v_min
+    let v_ref = match (surface, surface.period_u()) {
+        // The north pole of the frame chosen for the face.
+        (Surface::Sphere(_), _) => v_max,
+        (_, None) => first_v,
+        (_, Some(period)) => {
+            let apex = match surface {
+                Surface::Cone(c) => Some(c.apex_v()).filter(|v| v.is_finite()),
+                _ => None,
+            };
+            let near_apex = apex.filter(|&apex| {
+                let (mut nearest, mut furthest) = (f64::INFINITY, 0.0_f64);
+                for s in samples.iter() {
+                    nearest = nearest.min((s.v - apex).abs());
+                    furthest = furthest.max((s.v - apex).abs());
+                }
+                nearest < 0.5 * furthest
+            });
+            if let Some(apex) = near_apex {
+                apex
             } else {
-                return Err(MassError::Unsupported {
-                    face: index,
-                    what: "a boundary that winds around the axis more than once",
-                });
+                // Net number of times the boundary goes around the axis in
+                // the surface's counter-clockwise sense. It stays well
+                // away from an apex here, so the sum is a good one.
+                let swept = samples.iter().map(|s| s.du).sum::<f64>();
+                let turns = (sense * swept / period).round();
+                if turns == 0.0 {
+                    first_v
+                } else if turns == 1.0 {
+                    // The face is on the +v side of a loop running in +u.
+                    v_max
+                } else if turns == -1.0 {
+                    v_min
+                } else {
+                    return Err(MassError::Unsupported {
+                        face: index,
+                        what: "a boundary that winds around the axis more than once",
+                    });
+                }
             }
         }
     };
     if !v_ref.is_finite() {
         return Err(MassError::UnboundedFace { face: index });
     }
+    Ok(Plan::From(v_ref))
+}
 
-    let mut sum = Sums::default();
-    for s in &samples {
-        if s.du != 0.0 {
-            sum.add_scaled(
-                inner(surface, rule, Along::V, s.u, v_ref, s.v),
-                -sense * s.du,
-            );
+/// The boundary integral `-∮ G du` (or `∮ H dv`) of a face by `plan`.
+fn boundary_integral(
+    face: &Face,
+    surface: &Surface,
+    rule: &Rule,
+    samples: &mut [Sample],
+    sense: f64,
+    plan: &Plan,
+    unrolled: bool,
+) -> Total {
+    let mut total = Total::default();
+    match plan {
+        Plan::From(v_ref) => {
+            for s in samples.iter() {
+                if s.du != 0.0 {
+                    total.add(
+                        inner(surface, rule, Along::V, s.u, *v_ref, s.v),
+                        -sense * s.du,
+                    );
+                }
+            }
         }
-    }
-    for (passage, (direction, angle)) in passages.iter().zip(stretches) {
-        if passage.v == v_ref {
-            continue; // G is zero all along it.
-        }
-        let count = ((angle / FRAC_PI_4).ceil() as usize).clamp(1, 8);
-        let width = angle / count as f64;
-        for k in 0..count {
-            let start = width * k as f64;
-            for (t, w) in rule.points(start, start + width) {
-                let u = passage.u_in + direction * t;
-                sum.add_scaled(
-                    inner(surface, rule, Along::V, u, v_ref, passage.v),
-                    -sense * direction * w,
+        Plan::Unrolled { starts, along } => {
+            if !unrolled
+                && let (Some(period_u), Some(period_v)) = (surface.period_u(), surface.period_v())
+            {
+                unroll(
+                    samples,
+                    face.loops.len(),
+                    Some(starts),
+                    (period_u, period_v),
                 );
+            }
+            let (u_ref, v_ref) = starts.first().copied().unwrap_or((0.0, 0.0));
+            for s in samples.iter() {
+                match along {
+                    Along::V if s.du != 0.0 => total.add(
+                        inner(surface, rule, Along::V, s.u, v_ref, s.v),
+                        -sense * s.du,
+                    ),
+                    Along::U if s.dv != 0.0 => total.add(
+                        inner(surface, rule, Along::U, s.v, u_ref, s.u),
+                        sense * s.dv,
+                    ),
+                    _ => {}
+                }
             }
         }
     }
-    // A closed surface (a sphere) has an outside of every loop too: the
-    // face whose loops circle neither pole but which holds both.
-    if turns == 0.0
-        && sum.area < 0.0
-        && surface.period_u().is_some()
-        && let Ok(whole) = whole_surface(surface, index, rule)
-    {
-        sum.add_scaled(whole, 1.0);
+    total
+}
+
+/// What a converged boundary integral says about the face.
+fn settle(surface: &Surface, index: usize, rule: &Rule, total: Total) -> Result<Sums, MassError> {
+    let mut sum = total.sum;
+    let closed_both_ways = surface.period_u().is_some() && surface.period_v().is_some();
+    if closed_both_ways {
+        // Right up to a whole number of times the entire surface; the area
+        // says which.
+        let whole = whole_surface(surface, index, rule)?;
+        let share = sum.area / whole.area;
+        let times = share.floor();
+        if times != 0.0 {
+            let rest = share - times;
+            if !(rest > 1e-9 && rest < 1.0 - 1e-9) {
+                return Err(MassError::Unsupported {
+                    face: index,
+                    what: "a face too thin, or too nearly its whole surface, to tell which side of its loops it is on",
+                });
+            }
+            sum.add_scaled(whole, -times);
+        }
+    } else if matches!(surface, Surface::Sphere(_)) {
+        // The face, less the whole sphere when the face holds the south
+        // pole; the sign of the area says which, unless the sum is zero
+        // to rounding.
+        if sum.area.abs() <= TOO_THIN * total.size.area {
+            return Err(MassError::Unsupported {
+                face: index,
+                what: "a boundary that doubles back on itself, or a face too thin, or too nearly its whole sphere, to tell which side of its loops it is on",
+            });
+        }
+        if sum.area < 0.0 {
+            sum.add_scaled(whole_surface(surface, index, rule)?, 1.0);
+        }
+    } else if sum.area < 0.0 {
+        // The loops run the wrong way around what they enclose: the face
+        // is everything outside them.
+        return Err(MassError::UnboundedFace { face: index });
     }
     Ok(sum)
+}
+
+/// `∬_D f du dv` over one face, with `D` oriented by the surface (not by
+/// the face's `reversed` flag).
+fn face_integrals(body: &Body, face: &Face, index: usize, rule: &Rule) -> Result<Sums, MassError> {
+    if face.loops.is_empty() {
+        return whole_surface(&face.surface, index, rule);
+    }
+    let own = match &face.surface {
+        Surface::Sphere(sphere) => own_sphere(body, face, sphere),
+        _ => None,
+    };
+    let surface = own.as_ref().unwrap_or(&face.surface);
+    integrals_in(body, face, surface, index, rule)
+}
+
+/// [`face_integrals`] of a face with loops, with `surface` standing in for
+/// the face's own: the same surface, parametrised to suit the face.
+fn integrals_in(
+    body: &Body,
+    face: &Face,
+    surface: &Surface,
+    index: usize,
+    rule: &Rule,
+) -> Result<Sums, MassError> {
+    let outline = outline(body, face, surface, index)?;
+    // Loops run counter-clockwise around the face seen from outside, which
+    // is clockwise in parameter space when the face is reversed.
+    let sense = if face.reversed { -1.0 } else { 1.0 };
+    // Exact with the panels an edge needs (see the module documentation).
+    let exact = outline.conic && matches!(surface, Surface::Plane(_));
+
+    let mut set_up: Option<Plan> = None;
+    let mut coarser: Option<Total> = None;
+    for doublings in u32::from(exact)..=MAX_DOUBLINGS {
+        let mut samples = samples(&outline, surface, index, rule, doublings)?;
+        let (plan, unrolled) = match set_up.take() {
+            Some(plan) => (plan, false),
+            None => {
+                let plan = plan(face, surface, index, &mut samples, sense)?;
+                // A collapsed edge of a patch is, like an apex, a stretch
+                // of the edge of the parameter range that no edge of the
+                // body stands for. Refused until it is added.
+                if outline.collapsed {
+                    return Err(MassError::Unsupported {
+                        face: index,
+                        what: "a boundary that passes through a collapsed edge of its surface",
+                    });
+                }
+                (plan, true)
+            }
+        };
+        let total = boundary_integral(face, surface, rule, &mut samples, sense, &plan, unrolled);
+        if exact || coarser.is_some_and(|coarser| coarser.agrees_with(&total, outline.noise)) {
+            return settle(surface, index, rule, total);
+        }
+        coarser = Some(total);
+        set_up = Some(plan);
+    }
+    Err(MassError::Unsupported {
+        face: index,
+        what: "a boundary integral that does not settle: the boundary is too intricate, or too close to where the surface's parametrisation collapses",
+    })
 }
 
 /// Area, volume and centroid of `body`. The body should pass
@@ -793,8 +943,10 @@ fn face_integrals(body: &Body, face: &Face, index: usize, rule: &Rule) -> Result
 /// Refused with [`MassError::Unsupported`], never guessed: a boundary
 /// through a collapsed edge of a Bézier or NURBS surface, a boundary that
 /// winds around an axis more than once, torus loops that wind around the
-/// axis and the tube at once, a boundary that turns back on itself at a
-/// pole or apex.
+/// axis and the tube at once, a face of a sphere or a torus too thin (or
+/// too nearly the whole surface) to tell which side of its loops it is
+/// on, and a face whose boundary integral does not settle. A face that is
+/// outside its own loops is [`MassError::UnboundedFace`].
 pub fn mass_properties(body: &Body) -> Result<MassProperties, MassError> {
     let rule = Rule::new(NODES);
     let mut total = Sums::default();
@@ -819,4 +971,161 @@ pub fn mass_properties(body: &Body) -> Result<MassProperties, MassError> {
         volume: if solid { total.volume } else { 0.0 },
         centroid: (solid && total.volume != 0.0).then(|| total.moment * (1.0 / total.volume)),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    //! The parts of the integrator that no body reaches from outside,
+    //! because it chooses a sphere face's frame itself: what a frame does
+    //! that it would not choose.
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing,
+        clippy::unreachable
+    )]
+
+    use super::*;
+    use crate::{Body, BodyKind, Coedge};
+    use craft3d_geom::Circle;
+    use std::f64::consts::{PI, TAU};
+
+    const RADIUS: f64 = 2.0;
+    const CENTRE: Vec3 = Vec3::new(0.3, -1.1, 0.7);
+
+    /// A cap of the sphere about `CENTRE` beyond the plane `level` along
+    /// z, as a sheet of one face; its area is 2πr (r − level).
+    fn cap(level: f64) -> Body {
+        let mut body = Body::new(BodyKind::Sheet);
+        let rim = (RADIUS * RADIUS - level * level).sqrt();
+        let frame = Frame::WORLD
+            .at(CENTRE + Vec3::new(0.0, 0.0, level))
+            .unwrap();
+        let vertex = body.add_vertex(frame.point(rim, 0.0, 0.0));
+        let edge = body.add_edge(
+            Curve3::Circle(Circle::new(frame, rim).unwrap()),
+            (0.0, TAU),
+            vertex,
+            vertex,
+        );
+        let loop_ = body.add_loop(vec![Coedge {
+            edge,
+            reversed: false,
+        }]);
+        let sphere = Sphere::new(Frame::WORLD.at(CENTRE).unwrap(), RADIUS).unwrap();
+        let face = body.add_face(Surface::Sphere(sphere), false, vec![loop_]);
+        body.add_shell(vec![face]);
+        body
+    }
+
+    /// The cap's sphere with its north pole `tilt` away from the cap's
+    /// middle.
+    fn turned(tilt: f64) -> Surface {
+        let pole = Vec3::new(tilt.sin() * 0.6, tilt.sin() * 0.8, tilt.cos());
+        let frame = Frame::new(CENTRE, pole, Vec3::new(0.8, -0.6, 0.0)).unwrap();
+        Surface::Sphere(Sphere::new(frame, RADIUS).unwrap())
+    }
+
+    fn area_in(body: &Body, surface: &Surface) -> Result<f64, MassError> {
+        let rule = Rule::new(NODES);
+        let face = body.faces.first().unwrap();
+        integrals_in(body, face, surface, 0, &rule).map(|sums| sums.area)
+    }
+
+    /// The pole `G` runs from may be anywhere: in the face, outside it,
+    /// on its boundary or a hair from it. `G du` is smooth there.
+    #[test]
+    fn the_north_pole_may_be_on_the_boundary() {
+        for level in [-1.5_f64, 0.0, 1.2] {
+            let body = cap(level);
+            let expected = TAU * RADIUS * (RADIUS - level);
+            let rim = (level / RADIUS).acos();
+            let mut tilts = vec![0.0, rim / 2.0, rim, (rim + PI) / 2.0];
+            for off in [1e-13, 1e-10, 1e-7, 1e-5, 1e-3, 0.1] {
+                tilts.extend([rim - off, rim + off]);
+            }
+            for tilt in tilts {
+                // The other pole stays clear of the boundary by 0.2.
+                if (PI - tilt - rim).abs() < 0.2 {
+                    continue;
+                }
+                let area = area_in(&body, &turned(tilt)).unwrap();
+                assert!(
+                    (area - expected).abs() <= 1e-11 * expected,
+                    "level {level}, pole {tilt}: {area} vs {expected}"
+                );
+            }
+        }
+    }
+
+    /// The other pole may not: no `G` is smooth at both. A boundary that
+    /// passes close to it takes more panels, and one that passes through
+    /// it, or closer than the panels can be made fine, is refused. What
+    /// is never returned is a number that is not the area.
+    #[test]
+    fn the_south_pole_on_the_boundary_is_refused_not_guessed() {
+        let level = 0.8_f64;
+        let body = cap(level);
+        let expected = TAU * RADIUS * (RADIUS - level);
+        let rim = (level / RADIUS).acos();
+        let mut refused = 0;
+        let mut measured = 0;
+        for off in [
+            0.0, 1e-13, -1e-13, 1e-9, -1e-9, 1e-6, -1e-6, 1e-4, -1e-4, 1e-3, -1e-3, 1e-2, -1e-2,
+            0.1, -0.1, 0.5, -0.5,
+        ] {
+            // The south pole `off` outside the rim (inside, if negative).
+            match area_in(&body, &turned(PI - rim - off)) {
+                Ok(area) => {
+                    measured += 1;
+                    assert!(
+                        (area - expected).abs() <= 1e-11 * expected,
+                        "south pole {off} from the rim: {area} vs {expected}"
+                    );
+                }
+                Err(MassError::Unsupported { what, .. }) => {
+                    refused += 1;
+                    assert!(what.contains("does not settle"), "{what}");
+                    // The finest two sums have panels 0.025 and 0.012 wide
+                    // and must agree: that takes more room than 0.01.
+                    assert!(off.abs() <= 1e-2, "refused {off} from the rim");
+                }
+                Err(other) => panic!("south pole {off} from the rim: {other}"),
+            }
+        }
+        // Through the pole it cannot be measured; a tenth away it can.
+        assert!(
+            refused >= 1 && measured >= 4,
+            "{refused} refused, {measured} measured"
+        );
+    }
+
+    /// The frame chosen for a face keeps its south pole away from the
+    /// boundary: opposite the middle of a cap, whatever frame the sphere
+    /// came with.
+    #[test]
+    fn the_chosen_frame_has_its_south_pole_clear_of_the_boundary() {
+        for level in [-1.9_f64, -0.5, 0.0, 0.5, 1.9] {
+            for tilt in [0.0, 0.4, (level / RADIUS).acos(), 2.0, PI] {
+                let mut body = cap(level);
+                body.faces[0].surface = turned(tilt);
+                let Surface::Sphere(given) = &body.faces[0].surface else {
+                    unreachable!()
+                };
+                let Some(Surface::Sphere(own)) = own_sphere(&body, &body.faces[0], given) else {
+                    panic!("no frame for level {level}");
+                };
+                // North is the pole nearer the rim: +z above the equator.
+                let north = own.frame().z();
+                let expected = if level >= 0.0 { 1.0 } else { -1.0 };
+                assert!(
+                    (north.z - expected).abs() < 1e-12,
+                    "level {level}, tilt {tilt}: north {north:?}"
+                );
+                assert_eq!(own.frame().origin(), CENTRE);
+                assert_eq!(own.radius(), RADIUS);
+            }
+        }
+    }
 }

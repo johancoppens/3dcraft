@@ -546,7 +546,7 @@ fn a_face_inside_a_spline_has_the_area_inside_the_spline() {
     for k in [1e-3, 1.0, 1e6] {
         for frame in frames(k) {
             for degree in 1..=5_usize {
-                for rational in [false] {
+                for rational in [false, true] {
                     let mut patterns: Vec<Vec<usize>> = (1..=degree).map(|m| vec![m]).collect();
                     patterns.push((1..=degree).collect());
                     for multiplicities in patterns {
