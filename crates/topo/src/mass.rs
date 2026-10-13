@@ -76,8 +76,7 @@
 //! sphere or a can swept from a rational circle). A boundary that then
 //! goes around once in total is the rim of a face that reaches to an end
 //! of v: a face only if the surface is a single point there, where `G`
-//! then runs from, as from an apex. And a point just short of such a
-//! surface's seam is looked up from both sides of it. A face without
+//! then runs from, as from an apex. A face without
 //! loops is the whole surface, summed between its knot lines both ways
 //! until two sums agree.
 //!
@@ -391,73 +390,6 @@ fn panels(
     panels
 }
 
-/// The parameters of `point`, which lies on `surface`.
-///
-/// `Surface::project`, except on a spline surface that closes on itself.
-/// There a point just short of the seam is as close to the first row of
-/// the search's samples as to the last, the search starts from the first,
-/// and its steps stop at the edge of the domain: the answer is the seam
-/// itself, on the wrong side and off by the distance to it. So an answer
-/// at an edge of the domain is tried again from the opposite edge, and
-/// whichever lands closer to the point is taken.
-fn locate(surface: &Surface, point: Vec3) -> Result<(f64, f64), GeomError> {
-    let found = surface.project(point)?;
-    if !matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_)) {
-        return Ok(found);
-    }
-    let ((u0, u1), (v0, v1)) = surface.domain();
-    let opposite = |x: f64, (start, end): (f64, f64)| {
-        if x == start {
-            Some(end)
-        } else if x == end {
-            Some(start)
-        } else {
-            None
-        }
-    };
-    let (other_u, other_v) = (opposite(found.0, (u0, u1)), opposite(found.1, (v0, v1)));
-    let mut best = (surface.eval(found.0, found.1).distance(point), found);
-    if best.0 == 0.0 {
-        return Ok(found);
-    }
-    for start in [
-        other_u.map(|u| (u, found.1)),
-        other_v.map(|v| (found.0, v)),
-        other_u.zip(other_v),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        // Gauss–Newton on S(u, v) − point, kept within the domain.
-        let (mut u, mut v) = start;
-        for _ in 0..40 {
-            let (at, su, sv) = surface.derivatives(u, v);
-            let r = point - at;
-            let (a, b, c) = (su.dot(su), su.dot(sv), sv.dot(sv));
-            let det = a * c - b * b;
-            if !(det.is_finite() && det > 1e-14 * a * c) {
-                break;
-            }
-            let (ru, rv) = (r.dot(su), r.dot(sv));
-            let next = (
-                (u + (c * ru - b * rv) / det).clamp(u0, u1),
-                (v + (a * rv - b * ru) / det).clamp(v0, v1),
-            );
-            let moved = (next.0 - u).abs() / (u1 - u0) + (next.1 - v).abs() / (v1 - v0);
-            (u, v) = next;
-            // Not `>`: a NaN has not converged, but must not loop.
-            if moved <= 1e-15 || moved.is_nan() {
-                break;
-            }
-        }
-        let distance = surface.eval(u, v).distance(point);
-        if distance < best.0 {
-            best = (distance, (u, v));
-        }
-    }
-    Ok(best.1)
-}
-
 /// The distinct knots of a spline surface strictly inside its domain, in
 /// u and in v: its knot lines, across which it is not smooth.
 fn knot_lines(surface: &Surface) -> (Vec<f64>, Vec<f64>) {
@@ -500,7 +432,7 @@ fn knot_crossings(
         return Ok(crossings);
     }
     let ((u0, u1), (v0, v1)) = surface.domain();
-    let at = |t: f64| locate(surface, curve.eval(t));
+    let at = |t: f64| surface.project(curve.eval(t));
     // The places to look at: evenly between the edge's own knots.
     let mut places = vec![low];
     let mut ends = vec![low];
@@ -809,7 +741,8 @@ fn samples(
             for (start, end) in panels(piece.curve, (low, high), &piece.crossings, doublings) {
                 for (t, w) in rule.points(start, end) {
                     let (point, tangent) = piece.curve.derivatives(t);
-                    let (u, v) = locate(surface, point)
+                    let (u, v) = surface
+                        .project(point)
                         .map_err(|error| MassError::Geometry { face: index, error })?;
                     // Solve [Sᵤ Sᵥ] (du, dv) = tangent in the least-squares
                     // sense: the edge lies on the surface, so this is exact

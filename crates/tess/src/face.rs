@@ -106,58 +106,7 @@ impl Param<'_> {
     /// point of an edge of the face and so lies on the surface.
     fn project(&self, point: Vec3) -> Result<Uv, GeomError> {
         let (u, v) = self.surface.project(point)?;
-        let uv = self.order(u, v);
-        Ok(if self.is_freeform() {
-            self.polish(uv, point)
-        } else {
-            uv
-        })
-    }
-
-    /// Improves the parameters of a projection onto a freeform surface.
-    /// `craft3d_geom`'s Gauss–Newton iteration stops where the tangent
-    /// plane degenerates (near a collapsed edge of a patch) and returns
-    /// the nearest of its samples, which is not near enough to follow a
-    /// boundary by. Levenberg–Marquardt damping (K. Levenberg 1944,
-    /// D. Marquardt 1963) keeps the step defined there: it solves
-    /// `(JᵀJ + λ m I) δ = Jᵀ r` and adapts `λ` to whether the step helped.
-    fn polish(&self, start: Uv, target: Vec3) -> Uv {
-        let [(a0, a1), (b0, b1)] = self.domain();
-        let mut uv = start;
-        let mut best = self.eval(uv).distance(target);
-        let mut lambda = 1e-3;
-        for _ in 0..80 {
-            if !positive(best) || lambda > 1e12 {
-                break;
-            }
-            let (s, [da, db]) = self.derivatives(uv);
-            let r = target - s;
-            let (e, f, g) = (da.dot(da), da.dot(db), db.dot(db));
-            let damping = lambda * e.max(g);
-            let (e, g) = (e + damping, g + damping);
-            let det = e * g - f * f;
-            if !(det.is_finite() && det > 0.0) {
-                break;
-            }
-            let (ra, rb) = (r.dot(da), r.dot(db));
-            let [a, b] = uv;
-            let next = [
-                (a + (g * ra - f * rb) / det).clamp(a0, a1),
-                (b + (e * rb - f * ra) / det).clamp(b0, b1),
-            ];
-            let distance = self.eval(next).distance(target);
-            if distance < best {
-                let gain = best - distance;
-                (uv, best) = (next, distance);
-                lambda = (lambda / 3.0).max(1e-12);
-                if gain <= 1e-3 * best && best <= 1e-13 * (1.0 + target.length()) {
-                    break;
-                }
-            } else {
-                lambda *= 4.0;
-            }
-        }
-        uv
+        Ok(self.order(u, v))
     }
 
     fn periods(&self) -> [Option<f64>; 2] {
