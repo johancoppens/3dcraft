@@ -58,7 +58,7 @@ Subcommands:
   run        Open or create a document, run commands, optionally save it
   info       Print a document's state as JSON
   render     Render a document to a PNG with the CPU renderer
-  convert    Convert a .3dcraft file to STEP, STL, 3MF, OBJ or .3dcraft
+  convert    Convert a .3dcraft file to STEP, STL, 3MF, OBJ, DXF, SVG or .3dcraft
   serve      JSON-lines server on stdin/stdout, for scripts
   mcp        Model Context Protocol server on stdin/stdout, for agents
 
@@ -116,15 +116,24 @@ Options:
 
 const HELP_CONVERT: &str = "\
 Usage: craft3d-cli convert IN OUT [--tolerance T]
+                           [--sketch S | --face F [--feature B]]
 
 Converts the .3dcraft file IN. The extension of OUT picks the format:
 .step or .stp write the bodies' exact geometry, with the document's units,
 tolerance and names; .stl, .3mf or .obj tessellate the bodies and write a
-mesh; .3dcraft writes the document again in the current format version.
+mesh; .dxf or .svg write the flat outline of a sketch or of a flat face,
+at true size, for laser cutting; .3dcraft writes the document again in the
+current format version.
 
 Options:
   --tolerance T   Chordal tolerance of the mesh, in document units.
-                  Default: chosen from the size of the model";
+                  Default: chosen from the size of the model. For .svg:
+                  how far the Béziers written for a spline of a degree
+                  above 3 may lie from it. Default: the document's
+  --sketch S      For .dxf and .svg: the sketch to draw, by id or name
+  --face F        For .dxf and .svg: the flat face to draw, by its name
+                  from `info` (faceNames), e.g. 'F2:endCap(e1,e2,e3,e4)'
+  --feature B     With --face: the body that has the face, when several do";
 
 const HELP_SERVE: &str = "\
 Usage: craft3d-cli serve [--automation-read-root DIR]

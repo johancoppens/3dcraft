@@ -420,10 +420,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft3d-drawing"
+version = "0.0.1"
+
+[[package]]
 name = "craft3d-engine"
 version = "0.0.1"
 dependencies = [
  "craft3d-doc",
+ "craft3d-drawing",
  "craft3d-format",
  "craft3d-io",
  "craft3d-math",
@@ -477,6 +482,8 @@ dependencies = [
 name = "craft3d-io"
 version = "0.0.1"
 dependencies = [
+ "craft3d-doc",
+ "craft3d-drawing",
  "craft3d-geom",
  "craft3d-kernel",
  "craft3d-math",

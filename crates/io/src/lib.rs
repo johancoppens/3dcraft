@@ -1,10 +1,16 @@
 //! Import and export orchestration.
 //!
 //! 3DCraft meshes to STL, 3MF and OBJ through `craft3d-meshio`, and bodies
-//! (the exact B-rep) to STEP through `craft3d-step`: see [`step`].
+//! (the exact B-rep) to STEP through `craft3d-step`: see [`step`]. The
+//! outline of a sketch or of a flat face goes to DXF and SVG through
+//! `craft3d-drawing`: see [`drawing`].
 
+pub mod drawing;
 pub mod step;
 
+pub use drawing::{
+    DrawingFormat, FaceOutline, SketchOutline, encode_drawing, face_outline, sketch_outline,
+};
 pub use step::{AngleUnit, StepBody, StepOptions, StepSummary, export_step, step_model};
 
 use craft3d_meshio::{self as meshio, MeshError, Model, Object, ObjectKind, Unit};

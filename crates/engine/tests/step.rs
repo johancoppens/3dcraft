@@ -295,7 +295,7 @@ fn what_cannot_be_exported_fails_with_the_reason() {
     );
     refused(
         &mut s,
-        json!({"path": "a.dxf"}),
+        json!({"path": "a.dwg"}),
         &["cannot tell the format", ".step"],
     );
     refused(

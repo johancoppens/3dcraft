@@ -492,6 +492,67 @@ fn run_builds_a_part_that_info_render_and_convert_read() {
         ran.stderr
     );
 
+    // convert to DXF and SVG: the outline of a flat face, at true size.
+    // The plate's top is 40 × 20; the pin's is a circle of radius 4.
+    let dxf = path(&dir, "top.dxf");
+    let exported = cli(&["convert", &part, &dxf, "--face", "F1:face(1)"])
+        .ok()
+        .json_lines()
+        .remove(0);
+    assert_eq!(exported["format"], "dxf", "{exported}");
+    assert_eq!(exported["lines"], 4, "{exported}");
+    assert!(close(&exported["length"], 120.0), "{exported}");
+    let text = std::fs::read_to_string(&dxf).unwrap();
+    assert!(text.contains("$INSUNITS\n 70\n4\n") && text.ends_with("  0\nEOF\n"));
+    assert_eq!(text.matches("  0\nLINE\n").count(), 4);
+    let svg = path(&dir, "pin.svg");
+    let exported = cli(&[
+        "convert",
+        &part,
+        &svg,
+        "--face",
+        "F2:face(2)",
+        "--feature",
+        "Pin",
+    ])
+    .ok()
+    .json_lines()
+    .remove(0);
+    assert_eq!(exported["circles"], 1, "{exported}");
+    assert!(
+        close(&exported["length"], 8.0 * std::f64::consts::PI),
+        "{exported}"
+    );
+    let text = std::fs::read_to_string(&svg).unwrap();
+    assert!(text.contains("width=\"8mm\" height=\"8mm\""), "{text}");
+    // Without a sketch or a face there is nothing to draw, and the other
+    // formats do not take one.
+    let ran = cli(&["convert", &part, &path(&dir, "none.dxf")]).failed(1);
+    assert!(
+        ran.stderr.contains("`sketch`") && ran.stderr.contains("`face`"),
+        "{}",
+        ran.stderr
+    );
+    let ran = cli(&[
+        "convert",
+        &part,
+        &path(&dir, "none.stl"),
+        "--face",
+        "F1:face(1)",
+    ])
+    .failed(1);
+    assert!(ran.stderr.contains(".dxf or .svg"), "{}", ran.stderr);
+    let ran = cli(&[
+        "convert",
+        &part,
+        &path(&dir, "none.3dcraft"),
+        "--sketch",
+        "S",
+    ])
+    .failed(2);
+    assert!(ran.stderr.contains("--sketch"), "{}", ran.stderr);
+    assert!(!dir.join("none.dxf").exists() && !dir.join("none.stl").exists());
+
     // convert to .3dcraft: the same document again.
     let copy = path(&dir, "copy.3dcraft");
     cli(&["convert", &part, &copy]).ok();
@@ -664,10 +725,11 @@ fn files_that_cannot_be_read_or_written_fail_with_exit_code_1() {
     std::fs::write(&junk, b"PK\x03\x04 this is not a document").unwrap();
     cli(&["info", &junk]).failed(1);
     // An extension no exporter knows: the engine names the ones it does.
-    let ran = cli(&["convert", &part, &path(&dir, "part.dxf")]).failed(1);
+    let ran = cli(&["convert", &part, &path(&dir, "part.dwg")]).failed(1);
     assert!(ran.stderr.contains(".stl"), "{}", ran.stderr);
     assert!(ran.stderr.contains(".step"), "{}", ran.stderr);
-    assert!(!dir.join("part.dxf").exists());
+    assert!(ran.stderr.contains(".dxf"), "{}", ran.stderr);
+    assert!(!dir.join("part.dwg").exists());
     // A directory that does not exist.
     cli(&["convert", &part, &path(&dir, "no/such/dir/part.stl")]).failed(1);
     // Values the engine refuses.

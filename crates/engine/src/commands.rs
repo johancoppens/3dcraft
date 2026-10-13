@@ -54,8 +54,8 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Saves the active document as a .3dcraft file (atomically) under the write root.", doc: true, file_save),
     spec!("file.close", "Close", r#"{"discard": boolean = false}"#,
         "Closes the active document. Refuses unsaved changes unless discard is true.", doc: true, file_close),
-    spec!("file.export", "Export", r#"{"path": string, "format": "step|stl|stl-ascii|3mf|obj" = from the extension, "tolerance": number = automatic}"#,
-        "Writes every body to a file under the write root. step (.step, .stp) is the exact geometry, with the document's units, its tolerance as the file's uncertainty and the bodies' names. The others are meshes: the bodies are tessellated, tolerance is the chordal tolerance in document units, and closed counts the meshes that are watertight.", doc: true, file_export),
+    spec!("file.export", "Export", r#"{"path": string, "format": "step|stl|stl-ascii|3mf|obj|dxf|svg" = from the extension, "tolerance": number = automatic, "sketch": id or name, "face": face name, "feature": id or name = the body that has the face, "construction": boolean = false}"#,
+        "Writes a file under the write root. step (.step, .stp) is the exact geometry of every body, with the document's units, its tolerance as the file's uncertainty and the bodies' names. stl, 3mf and obj are meshes of every body: tolerance is the chordal tolerance in document units, and closed counts the meshes that are watertight. dxf and svg are a flat outline for laser cutting and drawings, in the document's unit at true size: of a sketch (sketch: its lines, arcs and circles joined into chains, in the sketch's axes; construction geometry only with construction, on a layer of its own) or of a flat face of a body (face: a name from document.inspect, faceNames; its outer boundary and its holes, seen from outside the body; feature says which body when several have a face of that name). Every curve stays what it is: lines, circular arcs and circles, ellipses, splines; nothing becomes a polyline. dxf is AutoCAD 2000 ASCII with $INSUNITS; svg has width and height in mm, cm or in and y pointing up as in the model. tolerance for svg is how far the cubic Béziers written for a spline of a degree above 3 or a rational one may lie from it (default: the document's tolerance); the result says how many there were.", doc: true, file_export),
     spec!("edit.undo", "Undo", "{}", "Undoes the last change to the document.", doc: true, edit_undo),
     spec!("edit.redo", "Redo", "{}", "Redoes the change last undone.", doc: true, edit_redo),
     spec!("variable.set", "Set Variable", r#"{"name": string, "expr": expression}"#,
@@ -463,9 +463,36 @@ fn meshes(
 
 #[cfg(not(target_arch = "wasm32"))]
 fn file_export(session: &mut Session, params: &Value) -> Run {
-    let p = Params::new("file.export", params, &["path", "format", "tolerance"])?;
+    let p = Params::new(
+        "file.export",
+        params,
+        &[
+            "path",
+            "format",
+            "tolerance",
+            "sketch",
+            "face",
+            "feature",
+            "construction",
+        ],
+    )?;
     let path = p.required_str("path")?;
+    if let Some(format) = crate::drawing_cmds::wanted(p.str("format")?, path) {
+        let resolved = session.workspace.resolve_write(path)?;
+        return crate::drawing_cmds::export(session, &p, path, &resolved, format);
+    }
+    // The other formats hold every body.
+    let outline_only = || match ["sketch", "face", "feature", "construction"]
+        .into_iter()
+        .find(|key| p.has(key))
+    {
+        Some(key) => fail(format!(
+            "file.export: `{key}` is for the outline of a sketch or a face, which is a .dxf or .svg file; the other formats hold every body"
+        )),
+        None => Ok(()),
+    };
     if crate::step_cmds::wanted(p.str("format")?, path) {
+        outline_only()?;
         if p.number("tolerance")?.is_some() {
             return fail(
                 "file.export: `tolerance` is for mesh formats; STEP is exact and carries the document's tolerance",
@@ -479,17 +506,18 @@ fn file_export(session: &mut Session, params: &Value) -> Run {
         Some("stl-ascii") => MeshFormat::StlAscii,
         Some("3mf") => MeshFormat::ThreeMf,
         Some("obj") => MeshFormat::Obj,
-        Some(other) => return fail(format!("file.export: unknown format `{other}`; use step, stl, stl-ascii, 3mf or obj")),
+        Some(other) => return fail(format!("file.export: unknown format `{other}`; use step, stl, stl-ascii, 3mf, obj, dxf or svg")),
         None => std::path::Path::new(path)
             .extension()
             .and_then(|e| e.to_str())
             .and_then(MeshFormat::from_extension)
             .ok_or_else(|| {
                 CommandError::new(format!(
-                    "file.export: cannot tell the format from `{path}`; use a .step, .stp, .stl, .3mf or .obj name, or pass `format`"
+                    "file.export: cannot tell the format from `{path}`; use a .step, .stp, .stl, .3mf, .obj, .dxf or .svg name, or pass `format`"
                 ))
             })?,
     };
+    outline_only()?;
     let resolved = session.workspace.resolve_write(path)?;
     let open = session.document_mut()?;
     let tess = tolerance_param(&p, "file.export", &open.regen())?;

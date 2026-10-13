@@ -12,9 +12,11 @@ workspace = true
 craft3d-math.workspace = true
 craft3d-geom.workspace = true
 craft3d-topo.workspace = true
+craft3d-doc.workspace = true
 craft3d-kernel.workspace = true
 craft3d-tess.workspace = true
 craft3d-meshio.workspace = true
+craft3d-drawing.workspace = true
 craft3d-step.workspace = true
 
 [dev-dependencies]

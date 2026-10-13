@@ -41,8 +41,9 @@ fn wasm() -> Result<(), String> {
 }
 
 /// Runs the opt-in tests that let FreeCAD read our exports (docs/testing.md,
-/// oracle 8): the meshes, then the STEP files of bodies built on the
-/// kernel, then those of documents built by commands. Needs
+/// oracle 8): the meshes, the DXF and SVG outlines (of the writers, then
+/// of documents built by commands), then the STEP files of bodies built
+/// on the kernel, then those of documents built by commands. Needs
 /// `CRAFT3D_FREECAD`. The STEP checks leave their tables in
 /// `target/tmp/step-io/report.md` and
 /// `target/tmp/step-engine-files/report.md`.
@@ -54,6 +55,8 @@ fn freecad() -> Result<(), String> {
     }
     for (package, test) in [
         ("craft3d-io", "freecad"),
+        ("craft3d-drawing", "freecad"),
+        ("craft3d-engine", "drawing_freecad"),
         ("craft3d-io", "step_freecad"),
         ("craft3d-engine", "step_freecad"),
     ] {
