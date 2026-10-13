@@ -16,7 +16,10 @@ mod intersections;
 mod selfcheck;
 mod weld;
 
-pub use body::{tessellate_body, tessellate_body_with_threads, tessellate_edges};
+pub use body::{
+    MeshAndEdges, tessellate_body, tessellate_body_and_edges, tessellate_body_with_threads,
+    tessellate_edges,
+};
 pub use intersections::{
     Crossing, CrossingKind, SelfIntersections, self_intersection_report, self_intersections,
 };

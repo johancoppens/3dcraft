@@ -19,6 +19,10 @@
 //! 3. **Triangulation.** A constrained Delaunay triangulation of the
 //!    chains (`cdt.rs`), in parameters scaled by the size of the surface's
 //!    derivatives so that distances resemble those in space.
+//!    Before that, the face says which chords of its edges it cannot do
+//!    with (`Boundary::chords_to_refine`): those that cross another part
+//!    of the boundary, and those the parameters distort. `body.rs` has
+//!    them cut in two and comes back with the new points.
 //! 4. **Refinement.** Curved faces are seeded with a grid of interior
 //!    points sized from the surface's curvature, and then every triangle
 //!    is measured: the surface point at the mean parameters of each free
@@ -33,13 +37,17 @@
 use crate::cdt::{Cdt, CdtError, FIRST_VERTEX, Interior, P2, orient};
 use crate::edge::arc_segments;
 use crate::{TessError, TessParams};
-use craft3d_geom::{GeomError, Surface};
+use craft3d_geom::{Curve3, GeomError, Surface};
 use craft3d_math::Vec3;
 use craft3d_topo::{Body, Face};
 use std::f64::consts::FRAC_PI_2;
 
 /// Surface parameters, in the order this face works in (see [`Param`]).
 type Uv = [f64; 2];
+
+/// A chord of an edge's polyline: the edge, and the number of the chord
+/// counted from the edge's start.
+pub(crate) type Chord = (u32, u32);
 
 /// What a face adds to the mesh: its own vertices and triangles over them.
 #[derive(Debug, Default)]
@@ -190,6 +198,10 @@ struct Bv {
     /// an apex or a collapsed edge, where changing it does not move the
     /// point.
     free: Option<usize>,
+    /// The chord of an edge that runs from this vertex to the next of its
+    /// loop. (Of two vertices on a pole both name the chord that leaves
+    /// the second; the stretch between them is told apart later.)
+    chord: Option<Chord>,
 }
 
 /// One loop in parameter space. Vertex `i` is joined to `i + 1`, and the
@@ -258,13 +270,13 @@ fn shifted(uv: Uv, turns: [i32; 2], periods: [Option<f64>; 2]) -> Uv {
 }
 
 /// The points around one loop, in loop order, without repeating the point
-/// where it closes.
+/// where it closes; each with the chord that runs from it to the next.
 fn loop_points(
     body: &Body,
     edges: &[Vec<Vec3>],
     face: &Face,
     index: usize,
-) -> Result<Vec<Vec<Vec3>>, TessError> {
+) -> Result<Vec<Vec<(Vec3, Chord)>>, TessError> {
     let mut loops = Vec::with_capacity(face.loops.len());
     for (number, loop_id) in face.loops.iter().enumerate() {
         let loop_ = body.loop_(*loop_id).ok_or_else(|| {
@@ -285,10 +297,15 @@ fn loop_points(
             // Each coedge contributes all its points but the last, which is
             // the first of the next coedge.
             let count = edge.len().saturating_sub(1);
+            let chord = |k: usize| (coedge.edge.0, u32::try_from(k).unwrap_or(u32::MAX));
             if coedge.reversed {
-                points.extend(edge.iter().rev().take(count));
+                // Backwards, point `count − j` is followed by the chord
+                // that ends there.
+                let backwards = edge.iter().rev().take(count).enumerate();
+                points.extend(backwards.map(|(j, p)| (*p, chord(count - 1 - j))));
             } else {
-                points.extend(edge.iter().take(count));
+                let forwards = edge.iter().take(count).enumerate();
+                points.extend(forwards.map(|(j, p)| (*p, chord(j))));
             }
         }
         let closed = ends
@@ -312,7 +329,7 @@ fn loop_points(
 /// `(a, b)` and −1 when clockwise.
 fn build_ring(
     param: &Param,
-    points: &[Vec3],
+    points: &[(Vec3, Chord)],
     sense: f64,
     face: usize,
     number: usize,
@@ -322,7 +339,7 @@ fn build_ring(
     let mut raw: Vec<Uv> = Vec::with_capacity(points.len());
     let mut sizes: Vec<[f64; 2]> = Vec::with_capacity(points.len());
     let mut largest = [0.0_f64; 2];
-    for &point in points {
+    for &(point, _) in points {
         let uv = param.project(point).map_err(|e| TessError::Face {
             face,
             reason: format!(
@@ -361,7 +378,8 @@ fn build_ring(
             format!("every point of its loop {number} is a singular point of the surface"),
         );
     };
-    let at = |i: usize| -> Option<(Uv, Vec3)> { Some((*raw.get(i)?, *points.get(i)?)) };
+    let at = |i: usize| -> Option<(Uv, Vec3)> { Some((*raw.get(i)?, points.get(i)?.0)) };
+    let chord_at = |i: usize| -> Option<Chord> { points.get(i).map(|p| p.1) };
     let Some((first, first_pos)) = at(start) else {
         return fail(face, "an empty loop");
     };
@@ -369,6 +387,7 @@ fn build_ring(
         uv: first,
         pos: first_pos,
         free: None,
+        chord: chord_at(start),
     }];
     let mut prev = first;
     for step in 1..n {
@@ -384,6 +403,7 @@ fn build_ring(
                     uv,
                     pos,
                     free: None,
+                    chord: chord_at(i),
                 });
                 prev = uv;
             }
@@ -400,6 +420,7 @@ fn build_ring(
                     uv,
                     pos,
                     free: Some(k),
+                    chord: chord_at(i),
                 });
                 // Leave with the value of the next point. Around a closed
                 // parameter there are two ways to get there; the face is
@@ -431,6 +452,7 @@ fn build_ring(
                             uv,
                             pos,
                             free: Some(k),
+                            chord: chord_at(i),
                         });
                     }
                 }
@@ -504,13 +526,27 @@ struct Seam {
 struct Region {
     verts: Vec<Bv>,
     segs: Vec<(usize, usize)>,
+    /// Per segment, the chord of an edge it is, if any: seams and the
+    /// stretches of a pole are not.
+    chords: Vec<Option<Chord>>,
     seams: Vec<Seam>,
+    /// What is wrong with the region as it stands, when that may be the
+    /// doing of chords that are too coarse: a hole whose first point lies
+    /// outside the polygon of the loop around it. The face is refused
+    /// with this error unless finer chords make it go away.
+    doubt: Option<TessError>,
 }
 
 impl Region {
     fn add(&mut self, v: Bv) -> usize {
         self.verts.push(v);
         self.verts.len() - 1
+    }
+
+    /// A segment from vertex `i` to vertex `j`.
+    fn link(&mut self, i: usize, j: usize, chord: Option<Chord>) {
+        self.segs.push((i, j));
+        self.chords.push(chord);
     }
 
     /// A loop that does not wind, moved by whole periods.
@@ -523,8 +559,8 @@ impl Region {
                 ..*v
             });
         }
-        for i in 0..n {
-            self.segs.push((base + i, base + (i + 1) % n));
+        for (i, v) in ring.verts.iter().enumerate() {
+            self.link(base + i, base + (i + 1) % n, v.chord);
         }
     }
 
@@ -541,6 +577,7 @@ impl Region {
         let base = self.verts.len();
         let n = ring.verts.len();
         let [wa, _] = ring.winding;
+        let mut leaving: Option<Chord> = None;
         for i in 0..=n {
             let Some(v) = ring.verts.get((start + i) % n.max(1)) else {
                 continue;
@@ -552,8 +589,9 @@ impl Region {
                 ..*v
             });
             if i > 0 {
-                self.segs.push((base + i - 1, base + i));
+                self.link(base + i - 1, base + i, leaving);
             }
+            leaving = v.chord;
         }
         if wa >= 0 {
             (base, base + n)
@@ -592,7 +630,8 @@ impl Region {
 /// True when the seam from `a` to `b` cannot be used next to the
 /// boundary segment (c, d): they cross, or one passes through an end of
 /// the other. Meeting end to end is fine: a seam starts and ends on
-/// boundary vertices.
+/// boundary vertices. (Also what two segments of the boundary may not do
+/// to each other, see `Boundary::chords_to_refine`.)
 fn seam_blocked(a: Uv, b: Uv, c: Uv, d: Uv) -> bool {
     let (ta, tb, tc, td) = (tuple(a), tuple(b), tuple(c), tuple(d));
     let (side_c, side_d) = (orient(ta, tb, tc), orient(ta, tb, td));
@@ -620,6 +659,26 @@ fn place(ring: &Ring, periods: [Option<f64>; 2], probe: impl Fn(Uv) -> bool) -> 
         .iter()
         .find(|v| v.free.is_none())
         .or(ring.verts.first())?;
+    place_by(vertex, periods, probe)
+}
+
+/// A hole that [`place`] finds no place for: where it must be if any of
+/// its vertices is where it belongs (the others are then outside the
+/// polygon around it, which chords too coarse can do), and where it was
+/// found otherwise.
+fn place_in_doubt(ring: &Ring, periods: [Option<f64>; 2], probe: impl Fn(Uv) -> bool) -> [i32; 2] {
+    ring.verts
+        .iter()
+        .filter(|v| v.free.is_none())
+        .find_map(|v| place_by(v, periods, &probe))
+        .unwrap_or([0, 0])
+}
+
+fn place_by(
+    vertex: &Bv,
+    periods: [Option<f64>; 2],
+    probe: impl Fn(Uv) -> bool,
+) -> Option<[i32; 2]> {
     let range = |period: Option<f64>| if period.is_some() { -2..=2 } else { 0..=0 };
     // Nearest first, so that a loop already in place stays there.
     let mut candidates: Vec<[i32; 2]> = Vec::new();
@@ -665,19 +724,21 @@ fn patch_region(
     let mut outline = Region::default();
     outline.verts.clone_from(&region.verts);
     outline.segs.clone_from(&region.segs);
+    outline.chords.clone_from(&region.chords);
     for (i, ring) in rings.iter().enumerate() {
         if i == outer {
             continue;
         }
-        let Some(turns) = place(ring, periods, |p| outline.encloses(p)) else {
-            return fail(
+        let turns = place(ring, periods, |p| outline.encloses(p)).unwrap_or_else(|| {
+            region.doubt.get_or_insert(TessError::Face {
                 face,
-                format!(
+                reason: format!(
                     "its loops do not bound a region: loop {i} lies outside the loop that \
                      should contain it"
                 ),
-            );
-        };
+            });
+            place_in_doubt(ring, periods, |p| outline.encloses(p))
+        });
         region.add_ring(ring, turns, periods);
     }
     Ok(region)
@@ -705,6 +766,7 @@ fn pole(param: &Param, a: f64, b: f64, typical: f64, face: usize) -> Result<Bv, 
         uv: [a, b],
         pos,
         free: Some(0),
+        chord: None,
     })
 }
 
@@ -975,7 +1037,7 @@ fn band_region(
                 ..left
             };
             let ends = (region.add(left), region.add(right));
-            region.segs.push(ends);
+            region.link(ends.0, ends.1, None);
             ends
         }
     };
@@ -990,7 +1052,7 @@ fn band_region(
                 ..left
             };
             let ends = (region.add(left), region.add(right));
-            region.segs.push(ends);
+            region.link(ends.0, ends.1, None);
             ends
         }
     };
@@ -1004,17 +1066,19 @@ fn band_region(
     let mut outline = Region::default();
     outline.verts.clone_from(&region.verts);
     outline.segs.clone_from(&region.segs);
+    outline.chords.clone_from(&region.chords);
     outline.seams.clone_from(&region.seams);
     for (i, ring) in holes {
-        let Some(turns) = place(ring, periods, |p| outline.encloses(p)) else {
-            return fail(
+        let turns = place(ring, periods, |p| outline.encloses(p)).unwrap_or_else(|| {
+            region.doubt.get_or_insert(TessError::Face {
                 face,
-                format!(
+                reason: format!(
                     "its loops do not bound a region: loop {i} lies outside the region its \
                      other loops bound"
                 ),
-            );
-        };
+            });
+            place_in_doubt(ring, periods, |p| outline.encloses(p))
+        });
         region.add_ring(ring, turns, periods);
     }
     Ok(region)
@@ -1028,6 +1092,7 @@ fn torus_region(param: &Param, period_a: f64, period_b: f64) -> Result<Region, T
         uv,
         pos: param.eval([a, b]),
         free: None,
+        chord: None,
     };
     let mut region = Region::default();
     let c00 = region.add(corner([a, b]));
@@ -1245,8 +1310,7 @@ struct Work<'a> {
 
 impl Work<'_> {
     fn plane(&self, uv: Uv) -> P2 {
-        let ([a, b], [ca, cb], [sa, sb]) = (uv, self.centre, self.scale);
-        ((a - ca) * sa, (b - cb) * sb)
+        to_plane(uv, self.centre, self.scale)
     }
 
     fn vertex(&self, v: u32) -> Option<(Uv, Vec3, Option<usize>)> {
@@ -1441,16 +1505,18 @@ fn finish_boundary(
         max_segments: 0,
     };
     let old: Vec<(usize, usize)> = std::mem::take(&mut region.segs);
-    for (i, j) in old {
+    let old_chords: Vec<Option<Chord>> = std::mem::take(&mut region.chords);
+    for (n, (i, j)) in old.into_iter().enumerate() {
+        let chord = old_chords.get(n).copied().flatten();
         let (Some(&p), Some(&q)) = (region.verts.get(i), region.verts.get(j)) else {
             continue;
         };
-        let pieces = match (p.free, q.free) {
+        let (pieces, pole) = match (p.free, q.free) {
             (Some(k), Some(l)) if k == l && p.pos == q.pos => {
                 let length = (get2(q.uv, k) - get2(p.uv, k)).abs();
-                (length / get2(step, k) - 1e-9).ceil()
+                ((length / get2(step, k) - 1e-9).ceil(), true)
             }
-            _ => 1.0,
+            _ => (1.0, false),
         };
         if exceeds(pieces, limit as f64) {
             return Err(too_many());
@@ -1463,12 +1529,14 @@ fn finish_boundary(
             let ([pa, pb], [qa, qb]) = (p.uv, q.uv);
             let next = region.add(Bv {
                 uv: [pa + (qa - pa) * s, pb + (qb - pb) * s],
+                chord: None,
                 ..p
             });
-            region.segs.push((last, next));
+            region.link(last, next, None);
             last = next;
         }
-        region.segs.push((last, j));
+        // A stretch of a pole is one point in space, not a chord.
+        region.link(last, j, if pole { None } else { chord });
     }
     for seam in region.seams.clone() {
         let (Some(&from), Some(&to)) = (region.verts.get(seam.from), region.verts.get(seam.to))
@@ -1526,18 +1594,20 @@ fn finish_boundary(
                 uv,
                 pos,
                 free: None,
+                chord: None,
             });
             let twin_next = region.add(Bv {
                 uv: [a + da, b + db],
                 pos,
                 free: None,
+                chord: None,
             });
-            region.segs.push((last, next));
-            region.segs.push((twin_last, twin_next));
+            region.link(last, next, None);
+            region.link(twin_last, twin_next, None);
             (last, twin_last) = (next, twin_next);
         }
-        region.segs.push((last, seam.to));
-        region.segs.push((twin_last, seam.twin_to));
+        region.link(last, seam.to, None);
+        region.link(twin_last, seam.twin_to, None);
     }
     Ok(())
 }
@@ -1575,14 +1645,140 @@ fn grid_order(columns: u32, rows: u32) -> Vec<(u32, u32)> {
     order
 }
 
-/// Tessellates face `index` of `body`, whose edges are already points.
-pub(crate) fn tessellate_face(
+/// The boundary of a face, ready to be triangulated: its region in
+/// parameter space, and the grid and the scales that go with it.
+pub(crate) struct Boundary<'a> {
+    param: Param<'a>,
+    region: Region,
+    low: Uv,
+    high: Uv,
+    cells: [u32; 2],
+    step: Uv,
+    scale: Uv,
+    centre: Uv,
+    /// No face may grow beyond this many vertices.
+    limit: usize,
+}
+
+/// A point of parameter space in the plane the triangulation works in.
+fn to_plane(uv: Uv, centre: Uv, scale: Uv) -> P2 {
+    let ([a, b], [ca, cb], [sa, sb]) = (uv, centre, scale);
+    ((a - ca) * sa, (b - cb) * sb)
+}
+
+/// The distance from `p` to the segment from `a` to `b`.
+fn distance_to_chord(p: Vec3, a: Vec3, b: Vec3) -> f64 {
+    let along = b - a;
+    let whole = along.length_squared();
+    let s = if positive(whole) {
+        ((p - a).dot(along) / whole).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    p.distance(a + along * s)
+}
+
+impl Boundary<'_> {
+    /// The chords of edges that this face needs cut in two, because the
+    /// edges were turned into points without regard to it (`edge.rs`):
+    ///
+    /// - chords that cross or touch another segment of the boundary. The
+    ///   face's edges do not cross, so chords fine enough do not either;
+    ///   but an edge that comes nearer to another than the chordal
+    ///   tolerance may have a chord that cuts the corner (a hole close to
+    ///   a rim, a notch that stops just short of an arc).
+    /// - chords that are not what the triangulation takes them for. It
+    ///   works in parameter space, where the chord is the straight segment
+    ///   between its ends; the surface along that segment must stay near
+    ///   the chord. Close to a pole it does not: the segment runs along a
+    ///   parallel where the chord cuts across. The limit is twice the
+    ///   chordal tolerance: one for the chord's own sag from its curve,
+    ///   and one more that the segment's image may be from the curve.
+    ///
+    /// In no particular order, and a chord may be named more than once.
+    /// Empty for a boundary that is fine, and for what finer chords cannot
+    /// cure: straight edges on a surface whose straight lines are
+    /// straight in its parameters, seams, poles.
+    pub(crate) fn chords_to_refine(&self, body: &Body, tolerance: f64) -> Vec<Chord> {
+        let region = &self.region;
+        let analytic = !self.param.is_freeform();
+        // A straight edge on a plane, a cylinder or a cone is its own
+        // chord, in space and in parameters: cutting it changes nothing.
+        let curable = |chord: Option<Chord>| -> Option<Chord> {
+            let (edge, _) = chord?;
+            let curve = &body.edges.get(edge as usize)?.curve;
+            (!(analytic && matches!(curve, Curve3::Line(_)))).then_some(chord?)
+        };
+        struct Segment {
+            low: P2,
+            high: P2,
+            ends: [P2; 2],
+            chord: Option<Chord>,
+        }
+        let mut segments: Vec<Segment> = Vec::with_capacity(region.segs.len());
+        let mut wanted: Vec<Chord> = Vec::new();
+        let mut any_curable = false;
+        for (n, &(i, j)) in region.segs.iter().enumerate() {
+            let (Some(p), Some(q)) = (region.verts.get(i), region.verts.get(j)) else {
+                continue;
+            };
+            let chord = curable(region.chords.get(n).copied().flatten());
+            any_curable |= chord.is_some();
+            if let Some(chord) = chord
+                && !self.param.is_plane()
+            {
+                let ([pa, pb], [qa, qb]) = (p.uv, q.uv);
+                let image = self.param.eval([0.5 * (pa + qa), 0.5 * (pb + qb)]);
+                if exceeds(distance_to_chord(image, p.pos, q.pos), 2.0 * tolerance) {
+                    wanted.push(chord);
+                }
+            }
+            let a = to_plane(p.uv, self.centre, self.scale);
+            let b = to_plane(q.uv, self.centre, self.scale);
+            segments.push(Segment {
+                low: (a.0.min(b.0), a.1.min(b.1)),
+                high: (a.0.max(b.0), a.1.max(b.1)),
+                ends: [a, b],
+                chord,
+            });
+        }
+        if any_curable {
+            // Every pair of segments whose boxes overlap, found by going
+            // through them from left to right.
+            segments.sort_by(|x, y| x.low.0.total_cmp(&y.low.0));
+            for (n, first) in segments.iter().enumerate() {
+                for second in segments.iter().skip(n + 1) {
+                    if second.low.0 > first.high.0 {
+                        break;
+                    }
+                    if (first.chord.is_none() && second.chord.is_none())
+                        || second.low.1 > first.high.1
+                        || first.low.1 > second.high.1
+                    {
+                        continue;
+                    }
+                    // (Neighbours along a loop, and loops that touch in a
+                    // vertex, meet end to end: that is no crossing.)
+                    let ([a, b], [c, d]) = (first.ends, second.ends);
+                    if seam_blocked([a.0, a.1], [b.0, b.1], [c.0, c.1], [d.0, d.1]) {
+                        wanted.extend(first.chord);
+                        wanted.extend(second.chord);
+                    }
+                }
+            }
+        }
+        wanted
+    }
+}
+
+/// The boundary of face `index` of `body`, whose edges are already points.
+pub(crate) fn face_boundary<'a>(
     body: &Body,
     edges: &[Vec<Vec3>],
-    face: &Face,
+    face: &'a Face,
     index: usize,
     params: &TessParams,
-) -> Result<FaceMesh, TessError> {
+) -> Result<Boundary<'a>, TessError> {
     let loops = loop_points(body, edges, face, index)?;
     let tolerance = params.chordal_tolerance;
 
@@ -1736,6 +1932,33 @@ pub(crate) fn tessellate_face(
         0.5 * (get2(low, 0) + get2(high, 0)),
         0.5 * (get2(low, 1) + get2(high, 1)),
     ];
+    Ok(Boundary {
+        param,
+        region,
+        low,
+        high,
+        cells,
+        step,
+        scale,
+        centre,
+        limit,
+    })
+}
+
+/// Triangulates face `index`, given its boundary.
+pub(crate) fn mesh_face(
+    boundary: &Boundary,
+    face: &Face,
+    index: usize,
+    params: &TessParams,
+) -> Result<FaceMesh, TessError> {
+    let (param, region) = (boundary.param, &boundary.region);
+    if let Some(doubt) = &region.doubt {
+        return Err(doubt.clone());
+    }
+    let (low, high, cells, step) = (boundary.low, boundary.high, boundary.cells, boundary.step);
+    let (scale, centre, limit) = (boundary.scale, boundary.centre, boundary.limit);
+    let tolerance = params.chordal_tolerance;
 
     let explain = |error: CdtError| -> TessError {
         let reason = match error {

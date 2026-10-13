@@ -1,10 +1,17 @@
 //! Edges to points, once per edge: every face that uses an edge uses these
 //! very points, which is what makes the mesh of a solid watertight.
+//!
+//! The points are first chosen for the edge alone: within the chordal
+//! tolerance of its curve. A face may need some chords shorter than that
+//! (`face.rs`, `Boundary::chords_to_refine`); [`EdgeSamples::split`] cuts
+//! those in two, for every face that uses the edge.
 
+use crate::face::Chord;
 use crate::{TessError, TessParams};
 use craft3d_geom::Curve3;
 use craft3d_math::Vec3;
 use craft3d_topo::Body;
+use std::collections::BTreeMap;
 use std::f64::consts::{FRAC_PI_2, TAU};
 
 /// Segments for an arc of `sweep` radians on a circle of `radius` so that
@@ -53,7 +60,7 @@ fn adaptive(
     ends: (Vec3, Vec3),
     index: usize,
     params: &TessParams,
-) -> Result<Vec<Vec3>, TessError> {
+) -> Result<(Vec<Vec3>, Vec<f64>), TessError> {
     let tolerance = params.chordal_tolerance;
     let limit = (params.max_segments as usize).saturating_mul(8);
     let too_fine = |needed: usize| TessError::TooFine {
@@ -84,6 +91,7 @@ fn adaptive(
         .map(|(a, b)| (a.0, a.1, b.0, b.1, 0))
         .collect();
     let mut points = vec![ends.0];
+    let mut at: Vec<f64> = breaks.first().copied().into_iter().collect();
     while let Some((ta, pa, tb, pb, depth)) = stack.pop() {
         let fits = [0.25, 0.5, 0.75].iter().all(|&s| {
             let on_curve = curve.eval(ta + (tb - ta) * s);
@@ -91,6 +99,7 @@ fn adaptive(
         });
         if fits {
             points.push(pb);
+            at.push(tb);
             continue;
         }
         if depth >= MAX_DEPTH || points.len() + stack.len() >= limit {
@@ -106,13 +115,106 @@ fn adaptive(
         stack.push((tm, pm, tb, pb, depth + 1));
         stack.push((ta, pa, tm, pm, depth + 1));
     }
-    Ok(points)
+    Ok((points, at))
 }
 
-/// The points of every edge, from its start to its end vertex. The ends
-/// are the vertices' own positions, so edges meeting at a vertex agree.
-pub(crate) fn edge_points(body: &Body, params: &TessParams) -> Result<Vec<Vec<Vec3>>, TessError> {
-    let mut all = Vec::with_capacity(body.edges.len());
+/// The points of every edge of a body, from its start to its end vertex,
+/// and the parameters of its curve they were taken at.
+#[derive(Debug, Default)]
+pub(crate) struct EdgeSamples {
+    /// Per edge. The ends are the vertices' own positions, so edges
+    /// meeting at a vertex agree.
+    pub points: Vec<Vec<Vec3>>,
+    /// Per edge, one parameter per point, increasing.
+    at: Vec<Vec<f64>>,
+    /// Per edge, how many points it had before any chord was cut.
+    first: Vec<usize>,
+}
+
+/// How many points an edge may grow to by cutting chords, given how many
+/// it had for its own curve: four times as many (every chord cut twice,
+/// which is what a loop close to a pole may need) and 32 more (one chord
+/// cut again and again, which is what an edge needs where another comes
+/// near). It keeps the work on a body that makes no sense within a small
+/// multiple of the work on one that does: there, cutting cures nothing
+/// and every face would ask for every chord in every round.
+fn most_points(first: usize) -> usize {
+    first.saturating_mul(4).saturating_add(32)
+}
+
+impl EdgeSamples {
+    /// Cuts each of the `wanted` chords in two, at the point of the curve
+    /// half way between the parameters of its ends. Returns the edges
+    /// that changed, in order.
+    ///
+    /// A chord is left as it is when it cannot be cut: when it does not
+    /// exist, when the numbers cannot tell the new point from its ends,
+    /// or when the edge has as many points as it may have
+    /// ([`most_points`], and what `params.max_segments` allows).
+    pub(crate) fn split(&mut self, body: &Body, wanted: &[Chord], params: &TessParams) -> Vec<u32> {
+        let limit = (params.max_segments as usize).saturating_mul(8);
+        let mut by_edge: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+        for &(edge, chord) in wanted {
+            by_edge.entry(edge).or_default().push(chord);
+        }
+        let mut changed = Vec::new();
+        for (index, mut chords) in by_edge {
+            chords.sort_unstable();
+            chords.dedup();
+            let (Some(edge), Some(points), Some(at)) = (
+                body.edges.get(index as usize),
+                self.points.get_mut(index as usize),
+                self.at.get_mut(index as usize),
+            ) else {
+                continue;
+            };
+            let first = self.first.get(index as usize).copied().unwrap_or(0);
+            let mut room = most_points(first).min(limit).saturating_sub(points.len());
+            let mut new_points = Vec::with_capacity(points.len() + chords.len());
+            let mut new_at = Vec::with_capacity(points.len() + chords.len());
+            let mut cut = false;
+            let mut next = chords.iter().copied().peekable();
+            for (k, (&p, &t)) in points.iter().zip(at.iter()).enumerate() {
+                new_points.push(p);
+                new_at.push(t);
+                while next.peek().is_some_and(|&chord| (chord as usize) < k) {
+                    next.next();
+                }
+                if next.peek().is_none_or(|&chord| chord as usize != k) {
+                    continue;
+                }
+                let (Some(&q), Some(&u)) = (points.get(k + 1), at.get(k + 1)) else {
+                    continue;
+                };
+                let middle = 0.5 * (t + u);
+                let point = edge.curve.eval(middle);
+                let apart =
+                    t < middle && middle < u && point.is_finite() && point != p && point != q;
+                if room > 0 && apart {
+                    new_points.push(point);
+                    new_at.push(middle);
+                    room -= 1;
+                    cut = true;
+                }
+            }
+            if cut {
+                *points = new_points;
+                *at = new_at;
+                changed.push(index);
+            }
+        }
+        changed
+    }
+}
+
+/// The points of every edge, each within the chordal tolerance of its
+/// curve.
+pub(crate) fn edge_points(body: &Body, params: &TessParams) -> Result<EdgeSamples, TessError> {
+    let mut all = EdgeSamples {
+        points: Vec::with_capacity(body.edges.len()),
+        at: Vec::with_capacity(body.edges.len()),
+        first: Vec::with_capacity(body.edges.len()),
+    };
     for (index, edge) in body.edges.iter().enumerate() {
         let (Some(start), Some(end)) = (body.vertex(edge.start), body.vertex(edge.end)) else {
             return Err(TessError::InvalidBody(format!(
@@ -143,20 +245,22 @@ pub(crate) fn edge_points(body: &Body, params: &TessParams) -> Result<Vec<Vec<Ve
             },
             other => other,
         };
-        let points = match &edge.curve {
-            Curve3::Line(_) => vec![ends.0, ends.1],
+        let (points, at) = match &edge.curve {
+            Curve3::Line(_) => (vec![ends.0, ends.1], vec![t0, t1]),
             Curve3::Circle(c) => {
                 let segments = arc_segments(c.radius(), t1 - t0, params).map_err(with_edge)?;
                 let mut points = Vec::with_capacity(segments as usize + 1);
+                let mut at = Vec::with_capacity(segments as usize + 1);
                 points.push(ends.0);
+                at.push(t0);
                 for k in 1..segments {
-                    points.push(
-                        edge.curve
-                            .eval(t0 + (t1 - t0) * f64::from(k) / f64::from(segments)),
-                    );
+                    let t = t0 + (t1 - t0) * f64::from(k) / f64::from(segments);
+                    points.push(edge.curve.eval(t));
+                    at.push(t);
                 }
                 points.push(ends.1);
-                points
+                at.push(t1);
+                (points, at)
             }
             Curve3::Ellipse(_) => {
                 let pieces = ((t1 - t0) / FRAC_PI_2).ceil();
@@ -192,7 +296,9 @@ pub(crate) fn edge_points(body: &Body, params: &TessParams) -> Result<Vec<Vec<Ve
                 "edge {index}: its curve has points that are not finite"
             )));
         }
-        all.push(points);
+        all.first.push(points.len());
+        all.points.push(points);
+        all.at.push(at);
     }
     Ok(all)
 }
@@ -323,7 +429,7 @@ mod tests {
         let curve = ess(1.0);
         assert!(curve.eval(0.5).distance(Vec3::new(1.5, 0.0, 0.0)) < 1e-15);
         let body = one_edge(curve.clone(), (0.0, 1.0));
-        let points = &edge_points(&body, &params(0.3)).unwrap()[0];
+        let points = &edge_points(&body, &params(0.3)).unwrap().points[0];
         assert!(points.len() > 2, "the S became one chord");
         assert!(worst_chord_error(&curve, (0.0, 1.0), points) <= 0.3);
     }
@@ -351,7 +457,7 @@ mod tests {
                 let mut previous = 0;
                 for rel in [1e-1, 1e-2, 1e-3, 1e-4] {
                     let tolerance = rel * scale;
-                    let points = &edge_points(&body, &params(tolerance)).unwrap()[0];
+                    let points = &edge_points(&body, &params(tolerance)).unwrap().points[0];
                     let what = format!("{} at scale {scale}, tolerance {rel}", curve.kind());
                     assert_eq!(points[0], body.vertices[0].point, "{what}");
                     assert_eq!(*points.last().unwrap(), body.vertices[1].point, "{what}");
@@ -371,6 +477,90 @@ mod tests {
                     previous = points.len();
                 }
             }
+        }
+    }
+
+    #[test]
+    fn chords_are_cut_in_two_on_the_curve_and_no_further_than_allowed() {
+        let frame = Frame::new(
+            Vec3::new(1.0, -2.0, 0.5),
+            Vec3::new(0.3, -0.4, 1.0),
+            Vec3::new(1.0, 0.2, 0.0),
+        )
+        .unwrap();
+        let ellipse = Curve3::Ellipse(Ellipse::new(frame, 3.0, 0.8).unwrap());
+        for (curve, range) in [(ellipse, (0.4, 2.9)), (wiggle(1.0), (0.1, 0.77))] {
+            let mut body = one_edge(curve.clone(), range);
+            // A second edge, which nothing is asked of.
+            let (a, b) = (body.vertices[0].point, body.vertices[1].point);
+            let (start, end) = (craft3d_topo::VertexId(0), craft3d_topo::VertexId(1));
+            let line = Curve3::Line(craft3d_geom::Line::through(a, b).unwrap());
+            body.add_edge(line, (0.0, a.distance(b)), start, end);
+            let p = params(1e-2);
+            let mut samples = edge_points(&body, &p).unwrap();
+            let before = samples.points.clone();
+            let n = before[0].len();
+            assert!(n >= 5, "{n}");
+
+            // Chords 1 and the last, each named twice, and one that does
+            // not exist.
+            let last = (n - 2) as u32;
+            let wanted = [(0, last), (0, 1), (0, 1), (0, 999), (7, 0), (0, last)];
+            assert_eq!(samples.split(&body, &wanted, &p), vec![0]);
+            let after = &samples.points[0];
+            assert_eq!(after.len(), n + 2);
+            assert_eq!(samples.points[1], before[1]);
+            // The old points in their order, a new one after the second
+            // and one before the last.
+            let mut expected = before[0].clone();
+            let new_last = after[n];
+            let new_first = after[2];
+            expected.insert(n - 1, new_last);
+            expected.insert(2, new_first);
+            assert_eq!(*after, expected);
+            // The new points are on the curve, between their neighbours
+            // along it: where the curve is half way between them in its
+            // parameter.
+            assert_eq!(samples.at[0].len(), after.len());
+            for k in [2, n] {
+                let (t0, t, t1) = (samples.at[0][k - 1], samples.at[0][k], samples.at[0][k + 1]);
+                assert_eq!(t, 0.5 * (t0 + t1));
+                assert_eq!(after[k], curve.eval(t));
+            }
+            assert!(samples.at[0].windows(2).all(|w| w[0] < w[1]));
+            assert!(worst_chord_error(&curve, range, after) <= 1e-2);
+
+            // A straight edge can be cut too (on a freeform surface it
+            // may have to be): the new point is its middle.
+            assert_eq!(samples.split(&body, &[(1, 0)], &p), vec![1]);
+            assert_eq!(samples.points[1].len(), 3);
+            assert!(samples.points[1][1].distance(a.lerp(b, 0.5)) < 1e-12);
+
+            // Asking for every chord again and again stops at four times
+            // the first number of points and 32 more.
+            let mut rounds = 0;
+            loop {
+                let all: Vec<Chord> = (0..samples.points[0].len() as u32)
+                    .map(|k| (0, k))
+                    .collect();
+                if samples.split(&body, &all, &p).is_empty() {
+                    break;
+                }
+                rounds += 1;
+                assert!(rounds < 100);
+            }
+            assert_eq!(samples.points[0].len(), 4 * n + 32);
+            assert_eq!(samples.points[0][0], before[0][0]);
+            assert_eq!(samples.points[0].last(), before[0].last());
+            // And at what `max_segments` allows, when that is less.
+            let tight = TessParams {
+                chordal_tolerance: 1e-2,
+                max_segments: 2,
+            };
+            let mut samples = edge_points(&one_edge(curve.clone(), range), &p).unwrap();
+            let all: Vec<Chord> = (0..n as u32).map(|k| (0, k)).collect();
+            samples.split(&body, &all, &tight);
+            assert_eq!(samples.points[0].len(), n.max(16));
         }
     }
 

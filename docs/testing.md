@@ -128,7 +128,7 @@ What it cannot see, so that a clean result is not read as more than it is:
 - **Curved faces lying on each other.** A pin in a hole of its own size that is not united with it is caught when both happen to be meshed alike (their triangles are then in one plane exactly, which no approximation brings about) and is only marginal when the pin is turned about its axis.
 - **Flat faces closer than twice the modelling tolerance** count as lying on each other: a wall thinner than that is reported as an overlap. The kernel refuses to make one.
 - **Contact without overlap** (shells touching along an edge or in a point, a vertex on a face) is a marginal finding at most; `topo::check` and the boolean's own refusals cover results that are not manifolds, with one stated allowance: a solid whose skin is pinched in a single point (a profile standing on the axis of a full revolution with one corner) passes `topo::check`, because nothing in how the body hangs together shows it (`crates/topo/tests/genus.rs`).
-- **Anything the tessellator cannot mesh** is an error, not a verdict. A face narrower than the first mesh's chordal tolerance can be refused (the polygon of a curved edge crosses its neighbour); the check then tries finer meshes before giving up.
+- **Anything the tessellator cannot mesh** is an error, not a verdict; the check tries finer meshes before giving up. (Until 2026-10-13 a face narrower than the chordal tolerance was such a case: the polygon of a curved edge crossed its neighbour. The tessellator now samples the edge finer there, [`architecture.md`](architecture.md) §6, held to oracle 4 at forty tolerances in `crates/tess/tests/near_edges.rs`.)
 
 ## Test kinds per crate
 
