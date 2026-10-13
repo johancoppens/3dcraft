@@ -594,7 +594,7 @@ impl Marcher {
             let reach = speed * half;
             let monotonic = match self.eval(u, v) {
                 Some(e) if e.dist > reach => continue,
-                Some(e) => self.field.bend(e.p, reach).is_some_and(|k| {
+                Some(e) => self.field.bend_at(e.p, reach, e.dist).is_some_and(|k| {
                     let slope = if along_u { e.gu } else { e.gv };
                     slope.abs() > 1.01 * (k * speed * speed + bend) * half
                 }),
@@ -647,7 +647,7 @@ impl Marcher {
             let reach = b.lu * hu + b.lv * hv;
             let simple = match self.eval(u, v) {
                 Some(e) if e.dist > reach => continue,
-                Some(e) => self.field.bend(e.p, reach).is_some_and(|k| {
+                Some(e) => self.field.bend_at(e.p, reach, e.dist).is_some_and(|k| {
                     let (muu, muv, mvv) = (
                         k * b.lu * b.lu + b.muu,
                         k * b.lu * b.lv + b.muv,

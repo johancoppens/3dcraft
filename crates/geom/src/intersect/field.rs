@@ -315,7 +315,10 @@ impl Field {
     /// second derivative) within `reach` of `p`; `None` where there is none
     /// (near an axis, a centre or an apex). An estimate for freeform
     /// surfaces.
-    pub(super) fn bend(&self, p: Vec3, reach: f64) -> Option<f64> {
+    /// `dist` is the distance from `p` to the surface (the `dist` of its
+    /// [`Sample`]): a freeform surface then needs no second search for
+    /// the closest point.
+    pub(super) fn bend_at(&self, p: Vec3, reach: f64, dist: f64) -> Option<f64> {
         let within = |radius: f64| (radius > 2.0 * reach).then(|| 1.0 / (radius - reach));
         match self {
             Field::Plane { .. } => Some(0.0),
@@ -346,9 +349,8 @@ impl Field {
                 Some(tube.max(within(rho)?))
             }
             Field::Free(projector) => {
-                let (_, _, q) = projector.foot(p);
                 let k = projector.curvature;
-                let away = k * (q.distance(p) + reach);
+                let away = k * (dist + reach);
                 (away < 0.5).then_some(2.0 * k)
             }
         }

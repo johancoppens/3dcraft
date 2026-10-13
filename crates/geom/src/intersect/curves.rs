@@ -369,8 +369,8 @@ pub(super) fn numeric(
         let reach = speed * half;
         let monotonic = match sample(mid) {
             Some((_, s, _)) if s.dist > reach => continue,
-            Some((p, _, slope)) => field
-                .bend(p, reach)
+            Some((p, s, slope)) => field
+                .bend_at(p, reach, s.dist)
                 .is_some_and(|k| slope.abs() > 1.01 * (k * speed * speed + bend) * half),
             None => false,
         };
