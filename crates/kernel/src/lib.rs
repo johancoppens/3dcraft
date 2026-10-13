@@ -8,6 +8,7 @@
 
 pub mod boolean;
 pub mod extrude;
+pub mod extrude_to;
 pub mod primitives;
 pub mod profile;
 pub mod revolve;
@@ -111,6 +112,12 @@ pub enum KernelError {
         operation: &'static str,
         reason: &'static str,
         faces: Vec<(boolean::Operand, craft3d_topo::FaceId)>,
+    },
+    /// An extrusion up to a face has no end there; `reason` says why (the
+    /// face is parallel to the direction, behind the sketch plane, or the
+    /// profile misses it).
+    NoEnd {
+        reason: &'static str,
     },
     /// The operation leaves nothing: an intersection of bodies that do not
     /// overlap, a body minus one that contains it.
@@ -223,6 +230,7 @@ impl fmt::Display for KernelError {
                 }
                 Ok(())
             }
+            KernelError::NoEnd { reason } => write!(f, "the extrusion has no end: {reason}"),
             KernelError::EmptyResult { operation } => {
                 write!(f, "{operation} leaves nothing: the result is empty")
             }
