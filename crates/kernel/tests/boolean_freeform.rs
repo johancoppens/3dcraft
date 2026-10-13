@@ -361,3 +361,70 @@ fn a_block_on_the_tangent_plane_of_a_saddle_of_the_roof() {
         }
     }
 }
+
+/// A corner of one roof resting on another roof (the corpus case
+/// `contact/dome-dome/003`): the bodies touch at that one point. The two
+/// roofs never cross, and the corner of the one is on the other, at no
+/// distance from it. Until 2026-10-13 two faces on surfaces of one kind
+/// that do not cross were refused wherever a place on the boundary of one
+/// lay within twice the tolerance of the other ("two faces between half
+/// and twice the tolerance apart"), also at no distance at all; within
+/// half the tolerance they touch there, like a vertex on any other face.
+#[test]
+fn a_corner_of_a_roof_resting_on_another_roof() {
+    for k in SCALES {
+        for nurbs in [false, true] {
+            let lower = domed_block(
+                &Frame::new(
+                    Vec3::new(-2.436569322600609, -2.194065104762556, 2.6567827309250918) * k,
+                    Vec3::new(0.6869183022974135, -0.7150994983998157, 0.12952201881213576),
+                    Vec3::new(
+                        -0.44103510150997627,
+                        -0.5518503100792028,
+                        -0.7077777013311259,
+                    ),
+                )
+                .unwrap(),
+                2.454469726218531 * k,
+                1.233351519002846 * k,
+                2.1578085031501213 * k,
+                nurbs,
+            )
+            .unwrap();
+            let upper = domed_block(
+                &Frame::new(
+                    Vec3::new(0.1340965815724604, -5.527588649130966, 5.27146697314718) * k,
+                    Vec3::new(0.533233144706825, 0.477304375339366, -0.698457548221771),
+                    Vec3::new(
+                        0.14799983577272827,
+                        -0.8655317124360711,
+                        -0.4784881434045441,
+                    ),
+                )
+                .unwrap(),
+                1.8356596835981147 * k,
+                2.9960054569223717 * k,
+                1.9891773926774199 * k,
+                nurbs,
+            )
+            .unwrap();
+            let k3 = k * k * k;
+            let both = solve(&lower.body, &upper.body, Union, k);
+            assert_eq!(both.body.shells.len(), 2, "scale {k} nurbs {nurbs}");
+            near(
+                mass(&both.body).volume / k3,
+                (lower.volume + upper.volume) / k3,
+                1e-9,
+                "the two together",
+            );
+            let less = solve(&lower.body, &upper.body, Subtract, k);
+            near(
+                mass(&less.body).volume / k3,
+                lower.volume / k3,
+                1e-9,
+                "the lower one",
+            );
+            assert_empty(&lower.body, &upper.body, Intersect, k);
+        }
+    }
+}

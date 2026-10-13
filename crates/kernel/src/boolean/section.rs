@@ -766,9 +766,12 @@ pub(super) fn section(
                 SurfaceMeeting::Coincident { .. } => gap((oa, box_a), (ob, box_b), tol)
                     .map_err(|s| s.at(&named))?
                     .is_some_and(|g| g > 0.5 * tol),
+                // (Within half the tolerance at such a place they touch
+                // there, as a vertex of one body on a face of the other
+                // does: a contact, which the classification handles.)
                 SurfaceMeeting::None if alike => gap((oa, box_a), (ob, box_b), tol)
                     .map_err(|s| s.at(&named))?
-                    .is_some(),
+                    .is_some_and(|g| g > 0.5 * tol),
                 _ => false,
             };
             if unsure {
