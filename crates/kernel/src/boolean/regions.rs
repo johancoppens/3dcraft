@@ -38,6 +38,15 @@ pub(super) type Half = (usize, bool);
 /// put in order reliably.
 const ANGLE_GUARD: f64 = 1e-6;
 
+/// Directions closer together than this (radians) at a vertex are not
+/// trusted to be in the right order as they stand: an intersection curve
+/// is only within the tolerance of the curve it stands for, and where it
+/// arrives along another curve (the curve of two cylinders that touches a
+/// rim at its highest point) its direction at its very end may be off to
+/// the wrong side by more than `ANGLE_GUARD`. Such curves are put in order
+/// a little further along, where the tolerance no longer decides.
+const TIE: f64 = 1e-3;
+
 const TANGENT: Reason = "two curves leave a point in the same direction and stay together (tangent contact of higher order)";
 const LOST: Reason = "an imprinted face could not be divided into regions; this is a bug";
 const UNBOUNDED: Reason = "a piece of a face is not closed off by its boundary";
@@ -230,7 +239,7 @@ fn trace(
                     let here = fan.get(i).map_or(0.0, |&r| angle(r));
                     let next = fan.get((i + 1) % count).map_or(0.0, |&r| angle(r));
                     let gap = wrap(next - here);
-                    gap < ANGLE_GUARD || gap > TAU - ANGLE_GUARD
+                    gap < TIE || gap > TAU - TIE
                 })
                 .collect();
             if tied.iter().any(|&t| t) {

@@ -779,3 +779,40 @@ fn random_pairs_long_run() {
 fn random_pairs_with_every_shape_long_run() {
     hunt(1500, 2_000_000, Shapes::All);
 }
+
+/// Pairs of the runs that once went wrong, each with what it was.
+///
+/// - Seed 32 on the grid: two slots with holes whose round ends cross at
+///   right angles. A rim met a wall exactly at the seam of its circle and
+///   the crossing was lost: an invalid body.
+/// - Seeds 1000568, 1000735, 1000810, 1001320 and 1001488 on the grid,
+///   and 87 with every shape: a cylinder that lies against the plane of
+///   another cylinder's rim, so that the curve in which the two walls meet
+///   touches that rim at its highest point. The curve is a spline within
+///   the tolerance of the true one, and at its very end its direction was
+///   off to the wrong side of the rim by a few millionths of a radian:
+///   "an imprinted face could not be divided into regions".
+#[test]
+fn pairs_that_once_went_wrong() {
+    for k in SCALES {
+        for (seed, shapes) in [
+            (32, Shapes::Flat),
+            (1_000_568, Shapes::Flat),
+            (1_000_735, Shapes::Flat),
+            (1_000_810, Shapes::Flat),
+            (1_001_320, Shapes::Flat),
+            (1_001_488, Shapes::Flat),
+            (87, Shapes::All),
+        ] {
+            let mut tally = Tally::default();
+            run_pair(seed, Placement::Grid, k, shapes, &mut tally);
+            assert_eq!(
+                (tally.solved, tally.unsupported.len()),
+                (1, 0),
+                "seed {seed} at scale {k}: {:?}",
+                tally.unsupported
+            );
+            assert_eq!(tally.overlapping, 1, "seed {seed} at scale {k}");
+        }
+    }
+}
