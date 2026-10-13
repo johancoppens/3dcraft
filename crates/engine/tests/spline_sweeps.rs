@@ -839,6 +839,56 @@ fn what_cannot_be_swept_fails_with_the_reason() {
     );
     assert_eq!(made["status"], "ok", "{made}");
 
+    // A spline that ends on the axis: its face could not be measured.
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    run(
+        &mut s,
+        "sketch.spline",
+        json!({"sketch": "Profile", "control": [[0, 0], [4, 0], [6, 3], [3, 6], [0, 6]]}),
+    );
+    run(
+        &mut s,
+        "sketch.line",
+        json!({"sketch": "Profile", "from": "e5", "to": "e1"}),
+    );
+    for turn in ["360 deg", "90 deg"] {
+        let made = run(
+            &mut s,
+            "feature.revolve",
+            json!({"sketch": "Profile", "axis": "y", "angle": turn, "name": "Dome"}),
+        );
+        assert_eq!(made["status"], "failed", "{made}");
+        let reason = made["error"].as_str().unwrap();
+        assert!(
+            reason.contains("e6") && reason.contains("ends on the axis") && reason.contains("line"),
+            "{reason}"
+        );
+        run(&mut s, "edit.undo", json!({}));
+    }
+    // Its own straight side cannot be the axis either; about a line it
+    // stays clear of, the same sketch is a solid.
+    let made = run(
+        &mut s,
+        "feature.revolve",
+        json!({"sketch": "Profile", "axis": "e7", "angle": "90 deg", "name": "Dome"}),
+    );
+    assert_eq!(made["status"], "failed", "its own line is the axis: {made}");
+    run(&mut s, "edit.undo", json!({}));
+    run(
+        &mut s,
+        "sketch.line",
+        json!({"sketch": "Profile", "from": [-3, 0], "to": [-3, 6], "construction": true}),
+    );
+    let made = run(
+        &mut s,
+        "feature.revolve",
+        json!({"sketch": "Profile", "axis": "e10", "angle": "90 deg", "name": "Dome"}),
+    );
+    assert_eq!(made["status"], "ok", "{made}");
+    let check = run(&mut s, "document.check", json!({"deep": true}));
+    assert_eq!(check["ok"], true, "{check}");
+
     // A closed spline that crosses itself, and one that crosses the axis.
     let mut s = session();
     new_document(&mut s, 1.0);
