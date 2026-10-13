@@ -552,6 +552,29 @@ fn levels(a: [u8; 3], b: [u8; 3]) -> u8 {
 
 #[test]
 fn the_direct_path_draws_the_viewport_on_the_windows_device_and_matches_the_oracle() {
+    direct_path_against_the_oracle(0.0);
+}
+
+/// The same with the bodies see-through: the device draws the two layers
+/// and blends them, with the hidden parts of the bodies' edges dimmed,
+/// and the picture is still the oracle's within the tolerance (§7.2,
+/// *See-through*).
+#[test]
+fn the_direct_path_draws_see_through_bodies_and_matches_the_oracle() {
+    for transparency in [0.5, 0.9] {
+        direct_path_against_the_oracle(transparency);
+    }
+}
+
+/// The viewport drawn directly, with the bodies `transparency` see-through
+/// (0: opaque), against the CPU oracle of the same state.
+fn direct_path_against_the_oracle(transparency: f64) {
+    let see_through = transparency > 0.0;
+    let name = if see_through {
+        format!("viewport-direct-seethrough{transparency}")
+    } else {
+        "viewport-direct".to_string()
+    };
     let state = headless_render_state()
         .unwrap_or_else(|e| panic!("the direct path cannot be tested: {e}; {ADAPTER_HINT}"));
     let mut session = part();
@@ -573,6 +596,15 @@ fn the_direct_path_draws_the_viewport_on_the_windows_device_and_matches_the_orac
     println!("direct path on {adapter}, {} samples", report.msaa);
 
     let mut window = Window::new(1000.0, 700.0);
+    window.frame(&mut shell, &mut session, Vec::new());
+    if see_through {
+        call(
+            &mut shell,
+            &mut session,
+            "ui.set",
+            json!({"transparency": transparency}),
+        );
+    }
     window.frame(&mut shell, &mut session, Vec::new());
     window.frame(&mut shell, &mut session, Vec::new());
     let [w, h] = shell.viewport_size();
@@ -600,9 +632,32 @@ fn the_direct_path_draws_the_viewport_on_the_windows_device_and_matches_the_orac
         height: h,
         ssaa: 1,
     };
-    let cpu_frame = viewport::render_bodies(Some(&scene), &camera, quality, &tokens).unwrap();
+    let layer = |opacity: f64| {
+        let params = craft3d_render::RenderParams {
+            opacity,
+            ..viewport::render_params(quality, &tokens)
+        };
+        craft3d_render::render(&scene.mesh, &camera.to_render(), &params).unwrap()
+    };
+    let cpu_frame = layer(shell.opacity());
+    assert_eq!(shell.opacity(), 1.0 - transparency);
+    // The pictures whose gradients bound the colour: the frame itself,
+    // or its two layers when it is see-through.
+    let layers = if see_through {
+        vec![layer(1.0), layer(0.0)]
+    } else {
+        vec![cpu_frame.clone()]
+    };
     let slack = viewport::depth_slack(Backend::Gpu, Some(&scene), &camera);
-    let overlay = viewport::overlay_on_with(Some(&scene), &camera, &cpu_frame, None, slack);
+    let overlay = viewport::overlay_see_through(
+        Some(&scene),
+        &camera,
+        &cpu_frame,
+        None,
+        slack,
+        &viewport::Marks::default(),
+        see_through,
+    );
     let composed = Composed {
         width: w,
         height: h,
@@ -614,7 +669,11 @@ fn the_direct_path_draws_the_viewport_on_the_windows_device_and_matches_the_orac
     };
     let cpu_rgb = viewport::rasterise(composed, &tokens, 1.0).rgb;
     let render_camera = camera.to_render();
-    let band = common::band(&scene.mesh, &render_camera, &cpu_frame);
+    let band = if see_through {
+        common::band_see_through(&scene.mesh, &render_camera, &cpu_frame, 1)
+    } else {
+        common::band(&scene.mesh, &render_camera, &cpu_frame)
+    };
     let seams = common::seams(&scene.mesh, &render_camera, w, h);
     let everything = viewport::overlay(Some(&scene), &camera, w, h, None);
     let lines = near_lines(&everything, w, h, 3.5);
@@ -624,7 +683,7 @@ fn the_direct_path_draws_the_viewport_on_the_windows_device_and_matches_the_orac
     // On a seam (an interior triangle edge) a multisampled pixel may mix
     // two fragments: a pixel of gradient more (see the GPU crate's tests).
     let channel = |rgb: &[u8], i: usize, c: usize| f64::from(rgb[i * 3 + c]);
-    let gradient = |i: usize| -> f64 {
+    let gradient_of = |layer: &Frame, i: usize| -> f64 {
         let (x, y) = (i % wu, i / wu);
         let mut g: f64 = 0.0;
         for dy in -1_i64..=1 {
@@ -635,8 +694,7 @@ fn the_direct_path_draws_the_viewport_on_the_windows_device_and_matches_the_orac
                 }
                 let n = ny as usize * wu + nx as usize;
                 for c in 0..3 {
-                    g = g
-                        .max((channel(&cpu_frame.rgb, i, c) - channel(&cpu_frame.rgb, n, c)).abs());
+                    g = g.max((channel(&layer.rgb, i, c) - channel(&layer.rgb, n, c)).abs());
                 }
             }
         }
@@ -652,7 +710,8 @@ fn the_direct_path_draws_the_viewport_on_the_windows_device_and_matches_the_orac
             pixel(&cpu_rgb, w, [(i % wu) as f64, (i / wu) as f64]),
             pixel(&gpu_rgb, w, [(i % wu) as f64, (i / wu) as f64]),
         ));
-        let g = gradient(i);
+        let gradients = layers.iter().map(|layer| gradient_of(layer, i));
+        let g = gradients.clone().fold(0.0, f64::max);
         if seams[i] {
             seam += 1;
             seam_over += usize::from(diff > 1.0 + g);
@@ -660,7 +719,7 @@ fn the_direct_path_draws_the_viewport_on_the_windows_device_and_matches_the_orac
             plain += 1;
             plain_differ += usize::from(diff > 0.0);
             plain_over += usize::from(diff > color_tolerance(g));
-            allowed += differ_probability(g);
+            allowed += gradients.map(differ_probability).sum::<f64>().min(1.0);
         }
     }
     println!(
@@ -767,7 +826,34 @@ fn the_direct_path_draws_the_viewport_on_the_windows_device_and_matches_the_orac
                 }
             }
             let (c, g) = (pixel(&cpu_rgb, w, at), pixel(&gpu_rgb, w, at));
-            let diff = levels(c, g);
+            let mut diff = levels(c, g);
+            // The hidden part of a body's edge, dimmed over see-through
+            // bodies, lies on a feature edge of what is behind the front:
+            // in the band, where a multisampled pixel is a mix of the
+            // faces that meet there and the CPU's pixel is one of them.
+            // Each of those faces is among the pixel's neighbours in the
+            // CPU picture, so the GPU's pixel is, per channel, the dimmed
+            // ink over a level within the range of the CPU picture's
+            // 3 x 3 pixels around it.
+            if see_through && matches!(shown, Some(s) if s.hidden) {
+                let alpha = f64::from(tokens.hidden_opacity) / 255.0;
+                let ink = line.kind.color(&tokens);
+                let (ax, ay) = (at[0] as usize, at[1] as usize);
+                diff = (0..3)
+                    .map(|ch| {
+                        let around = (ay - 1..=ay + 1)
+                            .flat_map(|y| (ax - 1..=ax + 1).map(move |x| y * wu + x))
+                            .map(|n| channel(&cpu_frame.rgb, n, ch));
+                        let lo = around.clone().fold(f64::INFINITY, f64::min);
+                        let hi = around.fold(f64::NEG_INFINITY, f64::max);
+                        let dim = |under: f64| under + (f64::from(ink[ch]) - under) * alpha;
+                        let (lo, hi) = (dim(lo).min(dim(hi)), dim(lo).max(dim(hi)));
+                        let got = f64::from(g[ch]);
+                        (lo - got).max(got - hi).max(0.0).ceil() as u8
+                    })
+                    .max()
+                    .unwrap_or(0);
+            }
             samples += 1;
             if diff <= 8 {
                 agree += 1;
@@ -781,10 +867,20 @@ fn the_direct_path_draws_the_viewport_on_the_windows_device_and_matches_the_orac
         "lines: {samples} samples ({inked} inked, {dimmed} dimmed, {bare} hidden edges), {agree} agree; worst {:?}",
         &worst[..worst.len().min(5)]
     );
-    assert!(
-        inked > 100 && dimmed > 10 && bare > 10,
-        "the test is hollow"
-    );
+    if see_through {
+        // Through see-through bodies no stretch of an edge is left out:
+        // what is hidden is dimmed.
+        assert!(inked > 100 && dimmed > 40, "the test is hollow");
+        assert_eq!(
+            bare, 0,
+            "a hidden edge is left out of a see-through picture"
+        );
+    } else {
+        assert!(
+            inked > 100 && dimmed > 10 && bare > 10,
+            "the test is hollow"
+        );
+    }
     assert!(
         agree * 100 >= samples * 99,
         "the GPU's lines differ from the CPU's at {} of {samples} samples",
@@ -809,12 +905,12 @@ fn the_direct_path_draws_the_viewport_on_the_windows_device_and_matches_the_orac
         })
         .collect();
     for (suffix, rgb) in [("cpu", &cpu_rgb), ("gpu", &gpu_rgb), ("diff", &diff)] {
-        let path = evidence(&format!("viewport-direct-{suffix}.png"));
+        let path = evidence(&format!("{name}-{suffix}.png"));
         write_png(&path, w, h, rgb);
         println!("evidence: {}", path.display());
     }
     std::fs::write(
-        evidence("viewport-direct.txt"),
+        evidence(&format!("{name}.txt")),
         format!(
             "adapter: {adapter}, {} samples\nbodies: {plain} plain pixels, {plain_differ} differ by a level, {plain_over} over; {seam} seam pixels, {seam_over} over\nlines: {samples} samples ({inked} inked, {dimmed} dimmed, {bare} hidden edges), {agree} agree\n",
             report.msaa

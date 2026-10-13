@@ -552,6 +552,18 @@ impl Shell {
         Ok(())
     }
 
+    /// As on a device that cannot draw see-through bodies
+    /// (`craft3d_gpu::GpuError::SeeThrough`): from now on a see-through
+    /// frame is drawn by the CPU renderer, on this thread. For tests of
+    /// that fallback (a render thread's renderer is not reached).
+    pub fn without_gpu_see_through(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(direct) = &mut self.direct {
+            direct.without_see_through();
+        }
+        self.renderer.without_gpu_see_through();
+    }
+
     /// There are no threads here: the same as [`Self::new`].
     #[cfg(target_arch = "wasm32")]
     pub fn threaded() -> Self {

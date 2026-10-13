@@ -1,8 +1,9 @@
 //! The see-through viewport: `state.transparency` set through `ui.set`
 //! and by the slider, the picture it gives (the front surface over the one
 //! behind it, by the formula of `craft3d_render::render`), the hidden
-//! edges drawn dimmed, picks that still give the front-most face, and the
-//! window's GPU path handing a see-through frame to the CPU renderer.
+//! edges drawn dimmed, picks that still give the front-most face, the
+//! window's GPU path drawing a see-through frame itself, and a device that
+//! cannot handing it to the CPU renderer.
 
 #![allow(
     clippy::unwrap_used,
@@ -471,16 +472,128 @@ fn the_slider_in_the_viewport_sets_the_transparency_and_is_not_the_viewport() {
     assert_eq!(shell.state.picked, None);
 }
 
-/// The wgpu renderer does not draw the surface behind the front one yet.
-/// It refuses a see-through frame, and the window shows the CPU oracle's
-/// for as long as the bodies are see-through; opaque again, the GPU draws.
+/// The window's device draws the see-through frames itself (two depth
+/// layers and a blend, `craft3d_gpu`), so that turning a see-through model
+/// is as quick as turning an opaque one; `ui.get` says which renderer drew
+/// the frame on screen.
 #[test]
-fn a_see_through_frame_of_a_gpu_viewport_is_the_cpu_renderers() {
+fn a_see_through_frame_of_a_gpu_viewport_is_drawn_by_the_gpu() {
     let state = headless_render_state()
         .unwrap_or_else(|e| panic!("the direct path cannot be tested: {e}; {ADAPTER_HINT}"));
     let mut session = part();
     let mut shell = Shell::with_renderer(RendererChoice::Cpu);
     shell.attach_gpu(&state).unwrap();
+    let mut window = Window::new(1000.0, 700.0);
+    for _ in 0..3 {
+        window.frame(&mut shell, &mut session, Vec::new());
+    }
+    assert!(shell.draws_directly());
+    assert_eq!(shell.render_stats().unwrap().renderer, Backend::Gpu);
+    let (_, _, direct_plain) = shell.direct_picture().unwrap().unwrap();
+    let mut pictures = vec![direct_plain.clone()];
+    for transparency in [0.25, 0.5, 0.9] {
+        let before = shell.render_count();
+        call(
+            &mut shell,
+            &mut session,
+            "ui.set",
+            json!({"transparency": transparency}),
+        );
+        for _ in 0..3 {
+            window.frame(&mut shell, &mut session, Vec::new());
+        }
+        // One frame, on the device, sharp, and no other renderer's.
+        assert_eq!(shell.render_count(), before + 1);
+        let stats = shell.render_stats().unwrap();
+        assert_eq!(stats.renderer, Backend::Gpu, "{stats:?}");
+        assert!(stats.sharp);
+        assert!(shell.problem().is_none(), "{:?}", shell.problem());
+        let got = call(&mut shell, &mut session, "ui.get", json!({}));
+        assert_eq!(got["render"]["renderer"], "gpu");
+        assert_eq!(got["renderer"]["backend"], "gpu");
+        assert_eq!(got["renderer"]["direct"], true);
+        assert_eq!(got["state"]["transparency"], transparency);
+        let (w, h, picture) = shell.direct_picture().unwrap().unwrap();
+        evidence(
+            &format!("see-through-direct-{transparency}.png"),
+            w,
+            h,
+            &picture,
+        );
+        // More see-through, another picture.
+        assert!(!pictures.contains(&picture), "transparency {transparency}");
+        pictures.push(picture);
+    }
+    // Turning the model stays on the device, every frame.
+    let from = pos2(600.0, 350.0);
+    window.frame(&mut shell, &mut session, vec![Event::PointerMoved(from)]);
+    window.frame(
+        &mut shell,
+        &mut session,
+        vec![Event::PointerButton {
+            pos: from,
+            button: PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
+    let before = shell.render_count();
+    for step in 1..=5 {
+        let at = from + vec2(8.0 * step as f32, 3.0 * step as f32);
+        window.frame(&mut shell, &mut session, vec![Event::PointerMoved(at)]);
+        let moving = shell.render_stats().unwrap();
+        assert!(moving.sharp);
+        assert_eq!(moving.renderer, Backend::Gpu);
+    }
+    assert_eq!(shell.render_count(), before + 5);
+    window.frame(
+        &mut shell,
+        &mut session,
+        vec![Event::PointerButton {
+            pos: from + vec2(40.0, 15.0),
+            button: PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }],
+    );
+    // Opaque again: the opaque picture of the new view, on the device.
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"transparency": 0}),
+    );
+    for _ in 0..3 {
+        window.frame(&mut shell, &mut session, Vec::new());
+    }
+    assert_eq!(shell.render_stats().unwrap().renderer, Backend::Gpu);
+
+    // The renderer that reads frames back draws it too.
+    let mut offscreen = craft3d_gpu::Offscreen::new().unwrap();
+    let scene = session.scene(None).unwrap().unwrap();
+    let camera = shell.state.camera.to_render();
+    let [clear, opaque] = [0.5, 1.0].map(|opacity| {
+        let params = RenderParams {
+            opacity,
+            ..RenderParams::default()
+        };
+        offscreen.render(&scene.mesh, &camera, &params).unwrap()
+    });
+    assert_ne!(clear.rgb, opaque.rgb);
+    assert_eq!(clear.ids, opaque.ids, "a pick gives the front-most face");
+}
+
+/// A device that cannot draw see-through bodies refuses such a frame, and
+/// the window shows the CPU oracle's for as long as the bodies are
+/// see-through, and says so; opaque again, the device draws.
+#[test]
+fn a_device_without_see_through_hands_such_a_frame_to_the_cpu_renderer() {
+    let state = headless_render_state()
+        .unwrap_or_else(|e| panic!("the direct path cannot be tested: {e}; {ADAPTER_HINT}"));
+    let mut session = part();
+    let mut shell = Shell::with_renderer(RendererChoice::Cpu);
+    shell.attach_gpu(&state).unwrap();
+    shell.without_gpu_see_through();
     let mut window = Window::new(1000.0, 700.0);
     for _ in 0..3 {
         window.frame(&mut shell, &mut session, Vec::new());
@@ -501,6 +614,8 @@ fn a_see_through_frame_of_a_gpu_viewport_is_the_cpu_renderers() {
     window.frame(&mut shell, &mut session, Vec::new());
     let stats = shell.render_stats().unwrap();
     assert_eq!(stats.renderer, Backend::Cpu, "{stats:?}");
+    let got = call(&mut shell, &mut session, "ui.get", json!({}));
+    assert_eq!(got["render"]["renderer"], "cpu");
     assert!(
         shell.direct_picture().is_none(),
         "the device's picture is not shown"
@@ -526,27 +641,32 @@ fn a_see_through_frame_of_a_gpu_viewport_is_the_cpu_renderers() {
         "opaque again: the same picture on the device"
     );
 
-    // The renderer itself says so, rather than draw an opaque picture.
-    let mut offscreen = craft3d_gpu::Offscreen::new().unwrap();
+    // The renderer that reads frames back, the same: the shell's own
+    // renderer hands the frame to the CPU and says which one made it.
     let scene = session.scene(None).unwrap().unwrap();
-    let error = offscreen
-        .render(
-            &scene.mesh,
-            &shell.state.camera.to_render(),
-            &RenderParams {
-                opacity: 0.5,
-                ..RenderParams::default()
-            },
-        )
-        .unwrap_err();
-    assert!(error.to_string().contains("see-through"), "{error}");
-    assert!(
-        offscreen
-            .render(
-                &scene.mesh,
-                &shell.state.camera.to_render(),
-                &RenderParams::default()
-            )
-            .is_ok()
-    );
+    let tokens = craft3d_ui_egui::Tokens::default();
+    let quality = Quality {
+        width: 160,
+        height: 120,
+        ssaa: 1,
+    };
+    let mut renderer = craft3d_ui_egui::backend::BodyRenderer::new(RendererChoice::Auto);
+    assert_eq!(renderer.backend(), Backend::Gpu, "{ADAPTER_HINT}");
+    renderer.set_opacity(0.5);
+    let camera = shell.state.camera;
+    let (drawn, by) = renderer
+        .render(Some(&scene), &camera, quality, &tokens)
+        .unwrap();
+    assert_eq!(by, Backend::Gpu);
+    renderer.without_gpu_see_through();
+    let (fallen, by) = renderer
+        .render(Some(&scene), &camera, quality, &tokens)
+        .unwrap();
+    assert_eq!(by, Backend::Cpu);
+    assert_eq!(drawn.ids, fallen.ids);
+    renderer.set_opacity(1.0);
+    let (_, by) = renderer
+        .render(Some(&scene), &camera, quality, &tokens)
+        .unwrap();
+    assert_eq!(by, Backend::Gpu);
 }
