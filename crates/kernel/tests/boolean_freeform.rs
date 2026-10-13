@@ -428,3 +428,64 @@ fn a_corner_of_a_roof_resting_on_another_roof() {
         }
     }
 }
+
+/// A domed block cut in two and put together again is the domed block:
+/// the same volume and area to rounding and the same six faces, the
+/// pieces of the roof and of the walls merged back. The two pieces meet
+/// on the roof's own surface, face on face on one freeform surface, and
+/// along the cut. And the pieces are each other's complement in the
+/// block: what the block has less the one is the other.
+#[test]
+fn a_domed_block_cut_and_put_together_again_is_the_domed_block() {
+    for k in SCALES {
+        for nurbs in [false, true] {
+            let reference = domed_block(&Frame::WORLD, DX * k, DY * k, HEIGHT * k, nurbs).unwrap();
+            let whole = &reference.body;
+            let at = |x: f64, y: f64, z: f64| Frame::WORLD.at(Vec3::new(x, y, z) * k).unwrap();
+            let tools = [
+                (
+                    "a block through the roof",
+                    primitives::block(&at(1.0, 1.0, 1.0), 1.5 * k, k, 3.0 * k).unwrap(),
+                ),
+                (
+                    "a block across",
+                    primitives::block(&at(-1.0, 1.0, -1.0), 6.0 * k, k, 5.0 * k).unwrap(),
+                ),
+                (
+                    "a rod through the roof",
+                    primitives::cylinder(&at(2.0, 1.5, 0.5), 0.6 * k, 4.0 * k).unwrap(),
+                ),
+                (
+                    "a ball in the roof",
+                    primitives::sphere(&at(2.0, 1.5, 2.2), 0.8 * k).unwrap(),
+                ),
+                (
+                    "a half",
+                    primitives::block(&at(2.0, -1.0, -1.0), 5.0 * k, 5.0 * k, 6.0 * k).unwrap(),
+                ),
+            ];
+            // Every cut at scale 1, two of them at the other scales.
+            let most = if k == 1.0 { tools.len() } else { 2 };
+            for (name, tool) in tools.iter().take(most) {
+                let what = format!("{name}, scale {k}, nurbs {nurbs}");
+                let rest = solve(whole, tool, Subtract, k);
+                let common = solve(whole, tool, Intersect, k);
+                let again = solve(&rest.body, &common.body, Union, k);
+                let (m, r, c) = (mass(&again.body), mass(&rest.body), mass(&common.body));
+                near(m.volume, reference.volume, 1e-9, &what);
+                near(m.area, reference.area, 1e-9, &what);
+                assert_eq!(again.body.faces.len(), 6, "{what}");
+                assert_eq!(again.body.shells.len(), 1, "{what}");
+                assert!(has_patch(&again.body), "{what}");
+                assert_empty(&rest.body, &common.body, Intersect, k);
+                // The block less one piece is the other piece.
+                let other = solve(whole, &rest.body, Subtract, k);
+                near(mass(&other.body).volume, c.volume, 1e-9, &what);
+                near(mass(&other.body).area, c.area, 1e-9, &what);
+                let same = solve(whole, &rest.body, Intersect, k);
+                near(mass(&same.body).volume, r.volume, 1e-9, &what);
+                near(mass(&same.body).area, r.area, 1e-9, &what);
+            }
+        }
+    }
+}
