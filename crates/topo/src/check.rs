@@ -299,6 +299,17 @@ fn distance_to(surface: &Surface, p: craft3d_math::Vec3) -> Option<f64> {
 /// Euler–Poincaré. Not checked yet: self-intersection, that loops lie on
 /// the right side of each other, and that each face is bounded by its
 /// loops (`mass_properties` reports an unbounded face as an error).
+///
+/// **Allowed: a skin that touches itself in a point.** A solid whose
+/// boundary is pinched (two conical dents that meet tip to tip, which is
+/// what a profile standing on the axis of a revolution with one corner
+/// sweeps in a full turn) passes. Nothing in how such a body hangs
+/// together shows the pinch: there is no vertex at the tips, every edge is
+/// used twice, and the counts are those of the surface with the two tips
+/// told apart. It is contact without overlap, which is geometry, and is
+/// to `tess::body_self_intersections` a marginal finding at most. Two lumps
+/// that share a point are two shells; in one shell their counts fit no
+/// genus and are a [`Defect::Euler`].
 pub fn check(body: &Body, tol: &Tolerance) -> Vec<Defect> {
     let mut defects = Vec::new();
 

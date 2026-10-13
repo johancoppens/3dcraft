@@ -593,3 +593,118 @@ fn a_body_that_is_not_closed_has_no_genus() {
         assert_eq!(genus(&body), None, "{}", case.name);
     }
 }
+
+/// A solid pinched at a point: a cylinder with a conical dent in either
+/// end, the two dents meeting tip to tip in the middle (what a triangle
+/// standing on the axis with one corner sweeps in a full turn). Its skin
+/// touches itself at that one point and nowhere else.
+///
+/// `check` allows it, and this pins that down. Nothing in how the body
+/// hangs together shows the pinch: neither cone has a vertex at its apex,
+/// every edge is used twice, and the counts are those of a ball, which is
+/// what the skin is once the two tips are told apart. Seeing it takes
+/// geometry (that two faces reach the same point without sharing an edge
+/// or a vertex there), which is contact without overlap: the province of
+/// `tess::body_self_intersections`, to which it is a marginal finding at
+/// most.
+/// V = πr²h − 2 πr²(h/2)/3.
+#[test]
+fn a_solid_pinched_at_a_point_passes_and_counts_as_a_ball() {
+    for k in [1e-3, 1.0, 1e6] {
+        let tolerance = Tolerance::new(1e-6 * k, 1e-9).unwrap();
+        for frame in frames(k) {
+            let (r, h) = (2.0 * k, 2.0 * k);
+            let mut body = Body::new(BodyKind::Solid);
+            let bottom = ring(&mut body, &frame, 0.0, r);
+            let top = ring(&mut body, &frame, h, r);
+            let wall = curved(
+                &mut body,
+                Surface::Cylinder(Cylinder::new(frame, r).unwrap()),
+                false,
+                vec![vec![fwd(bottom)], vec![back(top)]],
+            );
+            // Both cones have their apex at h/2 and the solid outside.
+            let slope = (r / (h / 2.0)).atan();
+            let lower = Cone::new(frame, r, -slope).unwrap();
+            let upper = Cone::new(frame.at(frame.point(0.0, 0.0, h)).unwrap(), r, slope).unwrap();
+            let low = curved(
+                &mut body,
+                Surface::Cone(lower),
+                true,
+                vec![vec![back(bottom)]],
+            );
+            let high = curved(&mut body, Surface::Cone(upper), true, vec![vec![fwd(top)]]);
+            body.add_shell(vec![wall, low, high]);
+            assert_eq!(check(&body, &tolerance), vec![], "scale {k}");
+            assert_eq!(genus(&body), Some(0), "scale {k}");
+            let volume = PI * r * r * h * (1.0 - 1.0 / 3.0);
+            let mass = mass_properties(&body).unwrap();
+            assert!(
+                (mass.volume - volume).abs() <= 1e-11 * volume,
+                "scale {k}: {} vs {volume}",
+                mass.volume
+            );
+        }
+    }
+}
+
+/// Two cones tip to tip with the solid *inside* them are two lumps that
+/// share a point. As two shells that is two solids that touch, which
+/// `check` does not look for (`merge` makes such bodies); as one shell it
+/// is not a closed surface of any genus, and the counts say so.
+#[test]
+fn two_lumps_that_touch_in_a_point_are_two_shells_or_a_defect() {
+    use craft3d_topo::Defect;
+    let frame = frames(1.0)[1];
+    let tolerance = Tolerance::new(1e-6, 1e-9).unwrap();
+    let (r, h) = (2.0, 2.0);
+    let build = |one_shell: bool| {
+        let mut body = Body::new(BodyKind::Solid);
+        let bottom = ring(&mut body, &frame, 0.0, r);
+        let top = ring(&mut body, &frame, h, r);
+        let slope = (r / (h / 2.0)).atan();
+        let lower = Cone::new(frame, r, -slope).unwrap();
+        let upper = Cone::new(frame.at(frame.point(0.0, 0.0, h)).unwrap(), r, slope).unwrap();
+        let low = curved(
+            &mut body,
+            Surface::Cone(lower),
+            false,
+            vec![vec![fwd(bottom)]],
+        );
+        let floor = flat(
+            &mut body,
+            frame.origin(),
+            -frame.z(),
+            vec![vec![back(bottom)]],
+        );
+        let high = curved(
+            &mut body,
+            Surface::Cone(upper),
+            false,
+            vec![vec![back(top)]],
+        );
+        let lid = flat(
+            &mut body,
+            frame.point(0.0, 0.0, h),
+            frame.z(),
+            vec![vec![fwd(top)]],
+        );
+        if one_shell {
+            body.add_shell(vec![low, floor, high, lid]);
+        } else {
+            body.add_shell(vec![low, floor]);
+            body.add_shell(vec![high, lid]);
+        }
+        body
+    };
+    let two = build(false);
+    assert_eq!(check(&two, &tolerance), vec![]);
+    assert_eq!(genus(&two), Some(0));
+    let one = build(true);
+    assert_eq!(genus(&one), None);
+    assert!(
+        check(&one, &tolerance)
+            .iter()
+            .any(|d| matches!(d, Defect::Euler { .. }))
+    );
+}
