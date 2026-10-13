@@ -411,7 +411,7 @@ fn the_slider_in_the_viewport_sets_the_transparency_and_is_not_the_viewport() {
     let slider = shell.transparency_rect().unwrap();
     assert!(viewport_rect.contains_rect(slider), "{slider:?}");
     // In the row under the gizmo, to the left of the buttons.
-    let gizmo = shell.gizmo_rect().unwrap();
+    let gizmo = shell.view_cube_rect().unwrap();
     assert!(slider.top() > gizmo.bottom() && slider.right() < gizmo.right());
     assert_eq!(shell.state.transparency, 0.0);
     let camera = shell.state.camera;

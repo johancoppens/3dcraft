@@ -666,6 +666,7 @@ Tracked in [`decisions.md`](decisions.md): target app (if any), licence, UI tool
 | 2026-10-13 | minor | Pointing at faces (M8.5): `render::pick`, `render::Highlight`, face names in the engine's scene, `view.pick`, the shell's click, `ui.pick` and `ui.highlight` |
 | 2026-10-13 | minor | Reference geometry: datum planes, axes and points as features, what they are placed by, where they are used (§4.1) |
 | 2026-10-13 | minor | See-through bodies: `RenderParams::opacity` in the CPU renderer (the front surface over the one behind it), `UiState::transparency` and a slider; the wgpu renderer refuses such a frame and the window draws it on the CPU (the GPU's second layer is not built) |
+| 2026-10-14 | minor | The view cube (`ui-egui/src/view_cube.rs`) replaces the orbit gizmo: 26 facets for the standard views and the views between them, an animated turn, the projection on its ring; shell only |
 | 2026-10-13 | minor | The orbit gizmo in the viewport's corner replaces the row of view buttons (`ui-egui/src/gizmo.rs`): view state of the shell only, no command and nothing in the control protocol |
 | 2026-10-13 | minor | Pointing at vertices (M8.5): vertices in the scene and under `vertices` of `document.edges`, `Scene::vertices_named`, `UiState::highlight_vertex` |
 | 2026-10-13 | minor | Pointing at edges (M8.5): `render::Viewpoint` and `Neighbourhood`, edge names and faces in the scene, `Scene::point_at` and `edges_named`, `viewport::Marks`, `UiState::highlight_edge` |
