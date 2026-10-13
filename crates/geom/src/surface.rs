@@ -398,6 +398,61 @@ impl Surface {
         })
     }
 
+    /// A nearest point of a Bézier or NURBS surface found from `start`
+    /// alone: the descent of [`Surface::project`] without the search over
+    /// the whole surface that gives it its start. For a point known to be
+    /// near the surface's point at `start` (the next of a run of points
+    /// along a curve on the surface, started from where the last one
+    /// landed) this costs a few evaluations where `project` costs
+    /// hundreds. For the analytic kinds it is `project`, which has the
+    /// answer in closed form.
+    ///
+    /// What comes back is where the walk from `start` settled: a point
+    /// where the distance to `p` stops decreasing, to rounding, in every
+    /// direction the walk can take within the domain. That is the nearest
+    /// point only when `start` is close to it; from elsewhere the walk
+    /// may settle on another dip of the distance, and the caller that
+    /// needs the nearest point checks what it got (the distance, and that
+    /// `p − S` is square to the surface) and falls back on `project`. The
+    /// domain is taken as open, with no seam and no pole: a point across
+    /// the seam of a surface that closes on itself is found at the seam,
+    /// and one past a collapsed border at it, where the walk is held by
+    /// the border and `p − S` is not square to the surface.
+    ///
+    /// A walk that does not settle within its steps, or meets a number
+    /// that is not one, is [`GeomError::NoConvergence`]. A `start` outside
+    /// the domain begins at its border; one that is not finite is
+    /// [`GeomError::InvalidParameter`], as is a `p` that is not.
+    pub fn project_from(&self, p: Vec3, start: (f64, f64)) -> Result<(f64, f64), GeomError> {
+        if !p.is_finite() {
+            return Err(GeomError::InvalidParameter(
+                "cannot project a non-finite point",
+            ));
+        }
+        if !(start.0.is_finite() && start.1.is_finite()) {
+            return Err(GeomError::InvalidParameter(
+                "cannot start a projection from non-finite parameters",
+            ));
+        }
+        if !matches!(self, Surface::Bezier(_) | Surface::Nurbs(_)) {
+            return self.project(p);
+        }
+        let ((u0, u1), (v0, v1)) = self.domain();
+        if ![u0, u1, v0, v1].iter().all(|x| x.is_finite()) {
+            return Err(GeomError::Unsupported(
+                "numeric projection onto an unbounded surface",
+            ));
+        }
+        let start = (start.0.clamp(u0, u1), start.1.clamp(v0, v1));
+        let (_, u, v, settled) = self.descend(p, start, (false, false), [false; 4]);
+        if !(settled && u.is_finite() && v.is_finite()) {
+            return Err(GeomError::NoConvergence(
+                "the walk from the start of a projection did not settle",
+            ));
+        }
+        Ok((u, v))
+    }
+
     /// The nearest point of a Bézier or NURBS surface, numerically.
     ///
     /// The surface is sampled on a grid of [`PROJECT_GRID`] steps each
@@ -572,11 +627,11 @@ impl Surface {
         // common case, of points that are on the surface to begin with.
         let mut best: Option<(f64, f64, f64)> = None;
         if let Some(&(_, _, i, j)) = starts.first() {
-            let found = self.descend(p, at(i, j), (closed_u, closed_v), collapsed);
-            if found.0 <= 16.0 * f64::EPSILON * (p.length() + extent) {
-                return Ok((found.1, found.2));
+            let (found, u, v, _) = self.descend(p, at(i, j), (closed_u, closed_v), collapsed);
+            if found <= 16.0 * f64::EPSILON * (p.length() + extent) {
+                return Ok((u, v));
             }
-            best = Some(found);
+            best = Some((found, u, v));
         }
         // Around it the surface is then looked at four times as closely:
         // two nearest points a cell apart (the end of a tube and its side
@@ -653,7 +708,7 @@ impl Surface {
             if best.is_some_and(|(found, _, _)| d - reach > found) {
                 continue;
             }
-            let (found, u, v) = self.descend(
+            let (found, u, v, _) = self.descend(
                 p,
                 (
                     if closed_u {
@@ -684,7 +739,12 @@ impl Surface {
     }
 
     /// Walks downhill from `start` to a nearest point of `p` within the
-    /// domain of a freeform surface: `(distance, u, v)`.
+    /// domain of a freeform surface: `(distance, u, v, settled)`, where
+    /// `settled` says the walk ended where it found nothing more to gain
+    /// (on `p` itself, at a step too short to move the parameters, with
+    /// no step that helped however short, or held at a corner of the
+    /// domain) and not because it ran out of steps or met a number that
+    /// is not one.
     ///
     /// Levenberg–Marquardt (K. Levenberg 1944, D. Marquardt 1963) on the
     /// residual `S(u, v) − p`: each step solves
@@ -715,7 +775,7 @@ impl Surface {
         start: (f64, f64),
         closed: (bool, bool),
         collapsed: [bool; 4],
-    ) -> (f64, f64, f64) {
+    ) -> (f64, f64, f64, bool) {
         let ((u0, u1), (v0, v1)) = self.domain();
         // A parameter after a step: around a closed direction, or stopped
         // at the border of an open one.
@@ -787,11 +847,18 @@ impl Surface {
         // radius the surface curves with. Once steps are seen to fall
         // short, the curving is put in (Newton's method).
         let mut curved = false;
+        let mut settled = false;
         for _ in 0..PROJECT_STEPS {
             let (r, (a, b, c), (ru, rv), (hold_u, hold_v), slope) = here;
             let distance = r.length();
-            // On the surface, nowhere to go, or not a number.
-            if distance <= 0.0 || distance.is_nan() || lambda > 1e12 || (hold_u && hold_v) {
+            // Not a number: nothing to follow.
+            if distance.is_nan() {
+                break;
+            }
+            // On the surface, no step that helps however short, or held
+            // at a corner: nowhere to go.
+            if distance <= 0.0 || lambda > 1e12 || (hold_u && hold_v) {
+                settled = true;
                 break;
             }
             let (mut a, mut b, mut c) = (a, b, c);
@@ -817,6 +884,7 @@ impl Surface {
             // all has nothing to say.
             let (hold_u, hold_v) = (hold_u || a <= 0.0, hold_v || c <= 0.0);
             if hold_u && hold_v {
+                settled = true;
                 break;
             }
             let (a, c) = (a * (1.0 + lambda), c * (1.0 + lambda));
@@ -892,10 +960,11 @@ impl Surface {
             }
             // A step this small is the rounding of the parameters.
             if moved <= 4.0 * f64::EPSILON {
+                settled = true;
                 break;
             }
         }
-        (here.0.length(), u, v)
+        (here.0.length(), u, v, settled)
     }
 }
 

@@ -92,6 +92,43 @@
 //! turn per panel; the rule's sixteen nodes are exact for the one and
 //! within (π/8 · 4)³² / 32! ≈ 1e-29 of the other. Along a spline the
 //! panels end at its knots: it is smooth only between them.
+//!
+//! A spline edge of many knot spans (the curve in which two surfaces
+//! meet is fitted as a cubic Hermite spline, hundreds of spans long) is
+//! refined in a different order: its first sum takes the rule of half
+//! the nodes on one panel per span, the second the full rule on the same
+//! panel, and only the third twice the panels. A span that is one of
+//! [`MANY_STRETCHES`] or more is short against anything the integrand
+//! does, and the eight-node rule is far beyond 1e-12 on it already; the
+//! sixteen-node rule is then its check, at a quarter of the nodes two
+//! sums over doubled panels would take. Two Gauss–Legendre sums of
+//! different order on a panel converge at their own rates, so their
+//! agreement certifies the finer as the doubled panels' would; where the
+//! sum does not settle the panels double as for any other edge. Whatever
+//! the order, the panels across the face (the inner integrals) are
+//! doubled with every sum, so that the two sums that agree differ in
+//! everything that is refined.
+//!
+//! **Following the boundary.** Every node of a boundary panel is a point
+//! of an edge curve, projected onto the surface for its parameters. On a
+//! Bézier or NURBS surface a projection from nothing is a search over the
+//! whole surface (hundreds of evaluations), and a spline edge that
+//! follows the curve in which the surface meets another has hundreds of
+//! knot spans, so thousands of nodes a doubling. Nodes along one piece of
+//! an edge are close together, so each is projected from where the last
+//! one landed ([`Surface::project_from`], a few evaluations), and the
+//! search is run only for the first node of a piece and wherever the
+//! short way did not plainly land on the node's foot: the point found
+//! must be within [`ON_SURFACE`] of the body's size from the node (an
+//! edge lies on its face within the modelling tolerance, which is finer
+//! than that), with the node's offset from it square to both tangents to
+//! rounding ([`SQUARE`]). Two such feet of one node are the same point,
+//! as long as the surface curves with radii larger than that distance and
+//! does not come that close to itself: the chord between two feet would
+//! have to run along the normal, and a chord of a surface that short runs
+//! along the surface. So the short way gives the parameters the search
+//! would, to rounding, or is not taken. The same goes for the places
+//! along an edge that are looked at for crossings of knot lines.
 
 use crate::{Body, BodyKind, Coedge, Face};
 use craft3d_geom::{Curve3, GeomError, Sphere, Surface};
@@ -231,6 +268,81 @@ const AT_APEX: f64 = 1e-6;
 /// Points along each edge at which a sphere face's boundary is looked at
 /// to choose its frame.
 const FRAME_SAMPLES: u32 = 32;
+/// A spline edge with this many stretches between its knots (and knot
+/// crossings) or more is summed with the coarse rule first (see the
+/// module documentation).
+const MANY_STRETCHES: usize = 8;
+/// A boundary point this share of the body's size from the point found
+/// for it on a freeform surface is on the surface there, for the warm
+/// start of the projections (see the module documentation). An edge lies
+/// on its face within the modelling tolerance, which `mass_properties` is
+/// not told; the kernel's is a millionth of the model's scale
+/// (`Tolerance::default`), and the body's size is the scale this
+/// integrator can see. Ten times that is well within the radius any
+/// surface curves with that the search projection handles at all, and a
+/// point further off than this only takes the long way.
+const ON_SURFACE: f64 = 1e-5;
+/// A residual along a tangent of this many units in the last place of the
+/// point's size and the surface's reach is rounding: the walk of a
+/// projection stops when its steps are four of them, and the residual of
+/// a true foot is computed to a few.
+const SQUARE: f64 = 64.0 * f64::EPSILON;
+
+/// Projects a run of nearby points onto a surface, each from where the
+/// last one landed, taking the short way only where it is shown to give
+/// the search's answer (see the module documentation).
+struct Follow<'a> {
+    surface: &'a Surface,
+    /// Within this distance of the surface a point is on it; zero when
+    /// nothing is to be taken from the last point (an analytic surface,
+    /// whose projection is closed-form anyway).
+    touch: f64,
+    last: Option<(f64, f64)>,
+}
+
+impl<'a> Follow<'a> {
+    fn new(surface: &'a Surface, touch: f64) -> Self {
+        let freeform = matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_));
+        Follow {
+            surface,
+            touch: if freeform { touch } else { 0.0 },
+            last: None,
+        }
+    }
+
+    /// The parameters of the nearest point of `p`, and the surface and
+    /// its tangents there.
+    #[allow(clippy::type_complexity)]
+    fn project(&mut self, p: Vec3) -> Result<((f64, f64), (Vec3, Vec3, Vec3)), GeomError> {
+        if self.touch > 0.0
+            && let Some(start) = self.last
+            && let Ok((u, v)) = self.surface.project_from(p, start)
+        {
+            let there = self.surface.derivatives(u, v);
+            if self.is_foot(p, there) {
+                self.last = Some((u, v));
+                return Ok(((u, v), there));
+            }
+        }
+        let (u, v) = self.surface.project(p)?;
+        let there = self.surface.derivatives(u, v);
+        self.last = Some((u, v));
+        Ok(((u, v), there))
+    }
+
+    /// Whether the surface point `s` with tangents `su`, `sv` is the foot
+    /// of `p`: within `touch` of it, with `p − s` square to both tangents
+    /// to rounding. The domain is finite: the surface is freeform.
+    fn is_foot(&self, p: Vec3, (s, su, sv): (Vec3, Vec3, Vec3)) -> bool {
+        let r = p - s;
+        let ((u0, u1), (v0, v1)) = self.surface.domain();
+        let reach = su.length() * (u1 - u0) + sv.length() * (v1 - v0);
+        let slack = SQUARE * (p.length() + reach);
+        let square = |tangent: Vec3| r.dot(tangent).abs() <= slack * tangent.length();
+        // Not `>`: a NaN is no foot.
+        r.length() <= self.touch && square(su) && square(sv)
+    }
+}
 
 /// The direction an inner integral runs in.
 #[derive(Clone, Copy)]
@@ -342,9 +454,16 @@ fn inner(
     sum
 }
 
-/// The quadrature panels along a stretch of an edge, `low` to `high`, as
-/// `(start, end)` pairs: half of what the edge needs, doubled `doublings`
-/// times.
+/// A quadrature panel along an edge: a parameter range, and whether it
+/// takes the coarse rule (half the nodes) rather than the full one.
+struct Panel {
+    start: f64,
+    end: f64,
+    coarse: bool,
+}
+
+/// The quadrature panels along a stretch of an edge, `low` to `high`:
+/// half of what the edge needs, doubled `doublings` times.
 ///
 /// What an edge needs: panels of an eighth of a turn at most along a
 /// circle or an ellipse, two along a line, and two to every stretch of a
@@ -352,13 +471,16 @@ fn inner(
 /// of a spline edge, which is smooth only between them, and at `crossings`,
 /// where the edge crosses a knot line of a spline surface. A sum over
 /// panels that straddle a kink converges too slowly to ever settle.
+///
+/// A spline edge of [`MANY_STRETCHES`] stretches or more starts one step
+/// earlier: one panel a stretch with the coarse rule, then with the full
+/// one, then doubled (the module documentation says why).
 fn panels(
     curve: &Curve3,
     (low, high): (f64, f64),
     crossings: &[f64],
     doublings: u32,
-) -> Vec<(f64, f64)> {
-    let double = 1_usize << doublings.min(16);
+) -> Vec<Panel> {
     let mut stops = vec![low];
     if let Curve3::Nurbs(c) = curve {
         stops.extend(c.knots().iter().filter(|&&k| k > low && k < high));
@@ -368,6 +490,15 @@ fn panels(
     stops.sort_by(f64::total_cmp);
     stops.dedup();
     let stretches = stops.len().saturating_sub(1).max(1);
+    let many = matches!(curve, Curve3::Nurbs(_)) && stretches >= MANY_STRETCHES;
+    let (double, coarse) = if many {
+        (
+            1_usize << doublings.saturating_sub(1).min(16),
+            doublings == 0,
+        )
+    } else {
+        (1_usize << doublings.min(16), false)
+    };
     let mut panels = Vec::new();
     for pair in stops.windows(2) {
         let &[from, to] = pair else { continue };
@@ -384,7 +515,11 @@ fn panels(
         let width = (to - from) / count as f64;
         for k in 0..count {
             let start = from + width * k as f64;
-            panels.push((start, start + width));
+            panels.push(Panel {
+                start,
+                end: start + width,
+                coarse,
+            });
         }
     }
     panels
@@ -425,6 +560,7 @@ fn knot_crossings(
     curve: &Curve3,
     surface: &Surface,
     (low, high): (f64, f64),
+    touch: f64,
 ) -> Result<Vec<f64>, GeomError> {
     let (lines_u, lines_v) = knot_lines(surface);
     let mut crossings = Vec::new();
@@ -432,7 +568,10 @@ fn knot_crossings(
         return Ok(crossings);
     }
     let ((u0, u1), (v0, v1)) = surface.domain();
-    let at = |t: f64| surface.project(curve.eval(t));
+    // Each place from the one looked at before it: the next place along,
+    // or the middle of a stretch that is being narrowed.
+    let mut follow = Follow::new(surface, touch);
+    let mut at = |t: f64| follow.project(curve.eval(t)).map(|(uv, _)| uv);
     // The places to look at: evenly between the edge's own knots.
     let mut places = vec![low];
     let mut ends = vec![low];
@@ -577,6 +716,10 @@ struct Outline<'a> {
     /// smaller than it is far from the origin is known to ten digits, and
     /// its sums cannot agree to more.
     noise: f64,
+    /// How far from the surface a boundary point may be found to count
+    /// as on it, for the warm start of the projections ([`ON_SURFACE`] of
+    /// the body's size).
+    touch: f64,
 }
 
 fn outline<'a>(
@@ -584,9 +727,15 @@ fn outline<'a>(
     face: &Face,
     surface: &Surface,
     index: usize,
+    size: f64,
 ) -> Result<Outline<'a>, MassError> {
     let invalid = MassError::Invalid { face: index };
     let geometry = |error| MassError::Geometry { face: index, error };
+    let touch = if size.is_finite() && size > 0.0 {
+        ON_SURFACE * size
+    } else {
+        0.0
+    };
     let apex = match surface {
         Surface::Cone(c) => {
             let v = c.apex_v();
@@ -664,7 +813,7 @@ fn outline<'a>(
                 }
             }
             let curve = &edge.curve;
-            let crossings = knot_crossings(curve, surface, (t0, t1)).map_err(geometry)?;
+            let crossings = knot_crossings(curve, surface, (t0, t1), touch).map_err(geometry)?;
             let mut stretch = |start: f64, end: f64| {
                 let crossings = crossings.clone();
                 run.push(if reversed {
@@ -709,6 +858,7 @@ fn outline<'a>(
         collapsed,
         conic,
         noise,
+        touch,
     })
 }
 
@@ -724,12 +874,13 @@ struct Sample {
 }
 
 /// The boundary as quadrature samples, in the order the loops run, with
-/// half the panels every edge needs doubled `doublings` times.
+/// half the panels every edge needs doubled `doublings` times. `rules`
+/// is the full rule and the coarse one of half its nodes.
 fn samples(
     outline: &Outline,
     surface: &Surface,
     index: usize,
-    rule: &Rule,
+    rules: (&Rule, &Rule),
     doublings: u32,
 ) -> Result<Vec<Sample>, MassError> {
     let mut samples = Vec::new();
@@ -738,16 +889,18 @@ fn samples(
             let (low, high) = (piece.start.min(piece.end), piece.start.max(piece.end));
             let direction = if piece.end < piece.start { -1.0 } else { 1.0 };
             let first = samples.len();
-            for (start, end) in panels(piece.curve, (low, high), &piece.crossings, doublings) {
-                for (t, w) in rule.points(start, end) {
+            // Each node from the one before it along the piece.
+            let mut follow = Follow::new(surface, outline.touch);
+            for panel in panels(piece.curve, (low, high), &piece.crossings, doublings) {
+                let rule = if panel.coarse { rules.1 } else { rules.0 };
+                for (t, w) in rule.points(panel.start, panel.end) {
                     let (point, tangent) = piece.curve.derivatives(t);
-                    let (u, v) = surface
+                    let ((u, v), (_, su, sv)) = follow
                         .project(point)
                         .map_err(|error| MassError::Geometry { face: index, error })?;
                     // Solve [Sᵤ Sᵥ] (du, dv) = tangent in the least-squares
                     // sense: the edge lies on the surface, so this is exact
                     // up to the modelling tolerance.
-                    let (_, su, sv) = surface.derivatives(u, v);
                     let (a, b, c) = (su.dot(su), su.dot(sv), sv.dot(sv));
                     let det = a * c - b * b;
                     let (ru, rv) = (tangent.dot(su), tangent.dot(sv));
@@ -1112,7 +1265,13 @@ fn settle(surface: &Surface, index: usize, rule: &Rule, total: Total) -> Result<
 
 /// `∬_D f du dv` over one face, with `D` oriented by the surface (not by
 /// the face's `reversed` flag).
-fn face_integrals(body: &Body, face: &Face, index: usize, rule: &Rule) -> Result<Sums, MassError> {
+fn face_integrals(
+    body: &Body,
+    face: &Face,
+    index: usize,
+    rule: &Rule,
+    size: f64,
+) -> Result<Sums, MassError> {
     if face.loops.is_empty() {
         return whole_surface(&face.surface, index, rule);
     }
@@ -1121,29 +1280,32 @@ fn face_integrals(body: &Body, face: &Face, index: usize, rule: &Rule) -> Result
         _ => None,
     };
     let surface = own.as_ref().unwrap_or(&face.surface);
-    integrals_in(body, face, surface, index, rule)
+    integrals_in(body, face, surface, index, rule, size)
 }
 
 /// [`face_integrals`] of a face with loops, with `surface` standing in for
 /// the face's own: the same surface, parametrised to suit the face.
+/// `size` is how big the body is ([`body_size`]).
 fn integrals_in(
     body: &Body,
     face: &Face,
     surface: &Surface,
     index: usize,
     rule: &Rule,
+    size: f64,
 ) -> Result<Sums, MassError> {
-    let outline = outline(body, face, surface, index)?;
+    let outline = outline(body, face, surface, index, size)?;
     // Loops run counter-clockwise around the face seen from outside, which
     // is clockwise in parameter space when the face is reversed.
     let sense = if face.reversed { -1.0 } else { 1.0 };
     // Exact with the panels an edge needs (see the module documentation).
     let exact = outline.conic && matches!(surface, Surface::Plane(_));
 
+    let coarse = Rule::new(NODES / 2);
     let mut set_up: Option<Plan> = None;
     let mut coarser: Option<Total> = None;
     for doublings in u32::from(exact)..=MAX_DOUBLINGS {
-        let mut samples = samples(&outline, surface, index, rule, doublings)?;
+        let mut samples = samples(&outline, surface, index, (rule, &coarse), doublings)?;
         let (plan, unrolled) = match set_up.take() {
             Some(plan) => (plan, false),
             None => {
@@ -1181,6 +1343,29 @@ fn integrals_in(
     })
 }
 
+/// How big the body is: the extent of its vertices and of the ends and
+/// middles of its edges, across. Zero for a body without any (a closed
+/// surface without loops), or whose points are not finite.
+fn body_size(body: &Body) -> f64 {
+    let mut extent = Bbox3::EMPTY;
+    for vertex in &body.vertices {
+        if vertex.point.is_finite() {
+            extent.add(vertex.point);
+        }
+    }
+    for edge in &body.edges {
+        let (t0, t1) = edge.range;
+        for t in [t0, 0.5 * (t0 + t1), t1] {
+            let point = edge.curve.eval(t);
+            if point.is_finite() {
+                extent.add(point);
+            }
+        }
+    }
+    let size = extent.diagonal();
+    if size.is_finite() { size } else { 0.0 }
+}
+
 /// Area, volume and centroid of `body`. The body should pass
 /// [`crate::check`]; on an invalid one the result is meaningless or an
 /// error, never a panic.
@@ -1194,9 +1379,10 @@ fn integrals_in(
 /// outside its own loops is [`MassError::UnboundedFace`].
 pub fn mass_properties(body: &Body) -> Result<MassProperties, MassError> {
     let rule = Rule::new(NODES);
+    let size = body_size(body);
     let mut total = Sums::default();
     for (index, face) in body.faces.iter().enumerate() {
-        let sums = face_integrals(body, face, index, &rule)?;
+        let sums = face_integrals(body, face, index, &rule, size)?;
         // Area counts whichever way the face points; volume and moments
         // follow the outward normal.
         let outward = if face.reversed { -1.0 } else { 1.0 };
@@ -1275,7 +1461,7 @@ mod tests {
     fn area_in(body: &Body, surface: &Surface) -> Result<f64, MassError> {
         let rule = Rule::new(NODES);
         let face = body.faces.first().unwrap();
-        integrals_in(body, face, surface, 0, &rule).map(|sums| sums.area)
+        integrals_in(body, face, surface, 0, &rule, body_size(body)).map(|sums| sums.area)
     }
 
     /// The pole `G` runs from may be anywhere: in the face, outside it,

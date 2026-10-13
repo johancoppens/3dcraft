@@ -705,3 +705,176 @@ fn a_point_beyond_a_border_is_brought_to_the_border() {
     println!("{tried} points, {on_border} with their nearest point on the border");
     assert!(on_border * 2 > tried, "{on_border} of {tried}");
 }
+
+/// `project_from` the parameters of the point before it along a walk on
+/// the surface lands where `project` does: on the point itself, pushed
+/// off the surface by no more than an edge is, with the same parameters
+/// to rounding. Where it does not (from a start at a pole, where the
+/// parameters say nothing about where to go, the walk may be held at the
+/// seam of a surface that closes on itself, or stuck), what it returns is
+/// plainly no foot of the point: further off than an edge is from its
+/// face, or with the offset not square to the surface, which is what a
+/// caller checks before it takes the result over the search's. The walk
+/// stays within the domain, as the nodes along one piece of an edge do.
+#[test]
+fn a_projection_from_the_point_before_lands_where_the_search_does() {
+    let mut random = Random(0x5EED_F00D);
+    let mut tried = 0;
+    let mut missed = 0;
+    let mut wrong = Vec::new();
+    for k in SCALES {
+        for fixture in fixtures(k, &mut random) {
+            let surface = &fixture.surface;
+            if !matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_)) {
+                continue;
+            }
+            let size = fixture.size;
+            let (period_u, period_v) = periods(&fixture);
+            let ((u0, u1), (v0, v1)) = fixture.range;
+            let (wu, wv) = (u1 - u0, v1 - v0);
+            for _ in 0..4 {
+                // A walk of a hundred steps, each 1/150 of the range in a
+                // direction that drifts.
+                let (mut u, mut v) = (random.between(u0, u1), random.between(v0, v1));
+                let mut angle = random.between(0.0, std::f64::consts::TAU);
+                let mut last: Option<(f64, f64)> = None;
+                for _ in 0..100 {
+                    angle += random.between(-0.5, 0.5);
+                    u = (u + angle.cos() * wu / 150.0).clamp(u0, u1);
+                    v = (v + angle.sin() * wv / 150.0).clamp(v0, v1);
+                    let (origin, su, sv) = surface.derivatives(u, v);
+                    let (lu, lv) = (su.length() * wu, sv.length() * wv);
+                    let told_apart = lu > 1e-3 * size
+                        && lv > 1e-3 * size
+                        && su.cross(sv).length() * wu * wv > 1e-3 * lu * lv;
+                    let Some(start) = last.replace((u, v)) else {
+                        continue;
+                    };
+                    if !told_apart {
+                        continue;
+                    }
+                    let normal = surface.normal(u, v).unwrap_or(Vec3::ZERO);
+                    for offset in [0.0, 1e-6, -1e-6] {
+                        let p = origin + normal * (offset * size);
+                        let what = format!(
+                            "{} at scale {k}: ({u:e}, {v:e}) pushed out by {offset:e} of the size, from ({:e}, {:e})",
+                            fixture.name, start.0, start.1
+                        );
+                        tried += 1;
+                        let Ok((pu, pv)) = surface.project_from(p, start) else {
+                            missed += 1;
+                            continue;
+                        };
+                        let (found, fu, fv) = surface.derivatives(pu, pv);
+                        let landed = found.distance(origin) <= 2e-9 * size
+                            && apart(pu, u, period_u) <= 1e-9 * wu
+                            && apart(pv, v, period_v) <= 1e-9 * wv;
+                        if !landed {
+                            // Then it may not look like a foot: within
+                            // 1e-5 of the size and square to rounding.
+                            let r = p - found;
+                            let slack = 64.0
+                                * f64::EPSILON
+                                * (p.length() + fu.length() * wu + fv.length() * wv);
+                            let square = |t: Vec3| r.dot(t).abs() <= slack * t.length();
+                            if r.length() <= 1e-5 * size && square(fu) && square(fv) {
+                                wrong.push(format!(
+                                    "{what}: a foot {:e} from where it was, at ({pu:e}, {pv:e})",
+                                    found.distance(origin)
+                                ));
+                            } else {
+                                missed += 1;
+                            }
+                            continue;
+                        }
+                        // And the same as the search, where the search
+                        // found this point (it may find a nearer one
+                        // elsewhere, and does not say which it took).
+                        let Ok((su_, sv_)) = surface.project(p) else {
+                            continue;
+                        };
+                        let searched = surface.eval(su_, sv_);
+                        if searched.distance(origin) <= 2e-9 * size
+                            && !(apart(su_, pu, period_u) <= 1e-9 * wu
+                                && apart(sv_, pv, period_v) <= 1e-9 * wv)
+                        {
+                            wrong.push(format!(
+                                "{what}: ({pu:e}, {pv:e}) where the search gives ({su_:e}, {sv_:e})"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    println!("{tried} points, {missed} missed, {} wrong", wrong.len());
+    assert!(
+        wrong.is_empty(),
+        "{} of {tried} points wrong, the first of them:\n{}",
+        wrong.len(),
+        wrong
+            .iter()
+            .take(30)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    // Misses come from starts at a pole: one walk in a thousand at most.
+    assert!(missed * 1000 < tried, "{missed} of {tried} missed");
+}
+
+/// On the analytic kinds `project_from` is `project`, whatever the start;
+/// a start or a point that is not finite is an error, and a start outside
+/// the domain is as good as one inside.
+#[test]
+fn a_projection_from_a_start_is_the_search_on_analytic_surfaces_and_never_panics() {
+    let mut random = Random(0x0DD5);
+    for fixture in fixtures(1.0, &mut random) {
+        let surface = &fixture.surface;
+        let ((u0, u1), (v0, v1)) = fixture.range;
+        for _ in 0..20 {
+            let p = Vec3::new(
+                random.between(-5.0, 5.0),
+                random.between(-5.0, 5.0),
+                random.between(-5.0, 5.0),
+            );
+            let start = (random.between(u0, u1), random.between(v0, v1));
+            if !matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_)) {
+                assert_eq!(
+                    surface.project_from(p, start).ok(),
+                    surface.project(p).ok(),
+                    "{}",
+                    fixture.name
+                );
+            }
+            for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+                assert!(
+                    surface.project_from(p, (bad, start.1)).is_err(),
+                    "{}",
+                    fixture.name
+                );
+                assert!(
+                    surface.project_from(p, (start.0, bad)).is_err(),
+                    "{}",
+                    fixture.name
+                );
+                assert!(
+                    surface
+                        .project_from(Vec3::new(bad, 0.0, 0.0), start)
+                        .is_err(),
+                    "{}",
+                    fixture.name
+                );
+            }
+            // Outside the domain: brought to its border first.
+            let far = (u0 - 3.0 * (u1 - u0), v1 + 2.0 * (v1 - v0));
+            if let Ok((u, v)) = surface.project_from(p, far) {
+                assert!(
+                    u.is_finite() && v.is_finite(),
+                    "{}: ({u}, {v})",
+                    fixture.name
+                );
+            }
+        }
+    }
+}
