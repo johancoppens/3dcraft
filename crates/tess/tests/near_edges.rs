@@ -15,7 +15,7 @@
     clippy::indexing_slicing
 )]
 
-use craft3d_geom::{Circle, Curve3, Cylinder, Line, Plane, Surface};
+use craft3d_geom::{Circle, Curve3, Cylinder, Line, Plane, Sphere, Surface};
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_tess::{
     Mesh, TessError, TessParams, tessellate_body, tessellate_body_and_edges,
@@ -582,6 +582,94 @@ fn an_edge_is_sampled_finer_only_where_it_must_be() {
             added.iter().all(|angle| (angle - 0.12).abs() <= chord),
             "at {tolerance}: points were added at {added:?}"
         );
+    }
+}
+
+/// The same on a curved face, where the loops are followed through the
+/// parameters of the surface: a cap on the side of a sphere, across its
+/// seam, with a round hole that comes within a thousandth of a radian of
+/// the cap's rim. With coarse chords the hole's first point lies outside
+/// the polygon of the rim, in every turn of the parameter: the hole is
+/// then put where its other points say, the chords that cross are cut,
+/// and the face is the cap less the hole.
+#[test]
+fn a_hole_close_to_the_rim_of_a_cap_across_the_seam_of_a_sphere() {
+    let (wide, narrow, gap) = (40.0_f64.to_radians(), 15.0_f64.to_radians(), 1e-3);
+    for scale in [1e-3, 1.0, 1e6] {
+        let r = scale;
+        let sphere = Sphere::new(Frame::WORLD, r).unwrap();
+        // A circle on the sphere, `angle` from the direction `about`,
+        // that starts on the side of `start`.
+        let ring = |about: Vec3, angle: f64, start: Vec3| {
+            let frame = Frame::new(about * (r * angle.cos()), about, start).unwrap();
+            Curve3::Circle(Circle::new(frame, r * angle.sin()).unwrap())
+        };
+        // The cap about x, where the sphere's seam starts; the hole's
+        // centre off to one side and up.
+        let away = wide - narrow - gap;
+        let lean = 0.7_f64;
+        let hole_about = Vec3::new(away.cos(), away.sin() * lean.cos(), away.sin() * lean.sin());
+        // The rim starts just before the seam and is followed across it;
+        // the hole starts where it is nearest the rim, on the other side
+        // of the seam: a whole turn away in the sphere's parameter, and
+        // outside the rim's polygon when the chords are coarse.
+        let rim = ring(Vec3::X, wide, -Vec3::Y);
+        let hole = ring(hole_about, narrow, hole_about - Vec3::X);
+        let mut body = Body::new(BodyKind::Sheet);
+        let mut loops = Vec::new();
+        for (circle, reversed) in [(rim, false), (hole, true)] {
+            let vertex = body.add_vertex(circle.eval(0.0));
+            let edge = body.add_edge(circle, (0.0, TAU), vertex, vertex);
+            loops.push(body.add_loop(vec![Coedge { edge, reversed }]));
+        }
+        let face = body.add_face(Surface::Sphere(sphere), false, loops);
+        body.add_shell(vec![face]);
+        // A cap of angle a has area 2π r² (1 − cos a).
+        let expected = TAU * r * r * (narrow.cos() - wide.cos());
+        let mut refused = Vec::new();
+        for step in 0..40 {
+            let rel = 10.0_f64.powf(-1.0 - 3.0 * f64::from(step) / 39.0);
+            let tolerance = rel * scale;
+            let what = format!("at scale {scale}, tolerance {rel:.3e}");
+            let mesh = match tessellate_body(&body, &params(tolerance)) {
+                Ok(mesh) => mesh,
+                Err(e) => {
+                    refused.push(format!("{what}: {e}"));
+                    continue;
+                }
+            };
+            // Inscribed in the sphere and in its two rims: off by the
+            // order of the tolerance over the radius, of the whole.
+            assert!(
+                (mesh.area() - expected).abs() <= 10.0 * rel * expected,
+                "{what}: area {} vs {expected}",
+                mesh.area()
+            );
+            for (t, _) in mesh.triangles.iter().enumerate() {
+                let [a, b, c] = mesh.corners(t).unwrap();
+                let centroid = (a + b + c) * (1.0 / 3.0);
+                assert!(
+                    (b - a).cross(c - a).dot(centroid) > 0.0,
+                    "{what}: triangle {t} faces inward"
+                );
+                // No triangle in the hole or beyond the rim, by more
+                // than the chords cut off.
+                let from = |about: Vec3| {
+                    (centroid.dot(about) / centroid.length())
+                        .clamp(-1.0, 1.0)
+                        .acos()
+                };
+                let slack = (2.0 * rel).sqrt() * 2.0;
+                assert!(from(Vec3::X) <= wide + slack, "{what}: beyond the rim");
+                assert!(from(hole_about) >= narrow - slack, "{what}: in the hole");
+            }
+            assert_eq!(
+                mesh,
+                tessellate_body_with_threads(&body, &params(tolerance), 3).unwrap(),
+                "{what}"
+            );
+        }
+        assert!(refused.is_empty(), "{refused:#?}");
     }
 }
 
