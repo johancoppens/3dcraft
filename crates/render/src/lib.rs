@@ -753,6 +753,44 @@ fn owns_sample(weights: [f64; 3], corners: [&Projected; 3]) -> bool {
         && (wc != 0.0 || owns_edge(a, b, c))
 }
 
+/// Which edge or vertex of the mesh a sample lies exactly on, given its
+/// barycentric weights in a triangle with the corners `corners`: a number
+/// made of the coordinates of the edge's two ends (in either order) or of
+/// the vertex, the same for every triangle that shares it; 0 for a sample
+/// inside the triangle.
+///
+/// The triangles that share an edge are one surface there. A sample on the
+/// edge is inside all of them (see [`shared_edge`]), with depth keys that
+/// agree only up to rounding, so without this the surface could count as
+/// lying behind itself.
+fn shared_place(weights: [f64; 3], corners: [Vec3; 3]) -> u64 {
+    let [wa, wb, wc] = weights;
+    let [pa, pb, pc] = corners;
+    let on: &[Vec3] = match (wa == 0.0, wb == 0.0, wc == 0.0) {
+        (false, false, false) | (true, true, true) => return 0,
+        // On the edge opposite the corner whose weight is zero.
+        (true, false, false) => &[pb, pc],
+        (false, true, false) => &[pc, pa],
+        (false, false, true) => &[pa, pb],
+        // At the corner whose weight is not zero.
+        (false, true, true) => &[pa],
+        (true, false, true) => &[pb],
+        (true, true, false) => &[pc],
+    };
+    let bits = |p: Vec3| [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()];
+    let mut ends: Vec<[u64; 3]> = on.iter().map(|&p| bits(p)).collect();
+    ends.sort_unstable();
+    // FNV-1a over the coordinates.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for word in ends.iter().flatten() {
+        for byte in word.to_le_bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    hash.max(1)
+}
+
 /// First and last sample index along one axis that a span `[lo, hi]` can
 /// touch, or `None` when it misses `0..len` entirely.
 fn sample_range(lo: f64, hi: f64, len: usize) -> Option<(usize, usize)> {
@@ -808,7 +846,11 @@ fn shade(
 /// the shaded colour of the one behind, rounded. Both are the minimum of
 /// something over all triangles, so the picture does not depend on the
 /// order of the triangles (ties go to the first triangle, as in the opaque
-/// picture). What is behind is drawn opaque: one layer shows through, not
+/// picture). The triangles that share an edge or a vertex are one surface
+/// at a sample that lies exactly on it: the one that is in front there is
+/// the front as ever, and the others are not behind it, although their
+/// depth keys differ from its by rounding (a surface is never behind
+/// itself). What is behind is drawn opaque: one layer shows through, not
 /// every layer, which keeps a cavity readable and the definition exact. A
 /// highlighted face in front is not seen through, so that it stands out;
 /// behind, it shows in its own colour. The id and depth buffers are the
@@ -875,6 +917,13 @@ pub fn render(mesh: &Mesh, camera: &Camera, params: &RenderParams) -> Result<Fra
     // front one: only for a see-through picture.
     let mut behind: Vec<(f64, [u8; 3])> = if see_through {
         vec![(f64::INFINITY, params.background); w * h]
+    } else {
+        Vec::new()
+    };
+    // Per sample of a see-through picture, the edge or vertex of the mesh
+    // the front lies exactly on ([`shared_place`]); 0 for none.
+    let mut front_on: Vec<u64> = if see_through {
+        vec![0; w * h]
     } else {
         Vec::new()
     };
@@ -964,10 +1013,19 @@ pub fn render(mesh: &Mesh, camera: &Camera, params: &RenderParams) -> Result<Fra
                 // keeps the result independent of anything but mesh order.
                 // Negated, so that a key that is not a number is no front.
                 let front = key < nearest;
+                // On an edge or a vertex the front lies on too: the same
+                // surface as the front, whatever rounding made of its key.
+                let place = if see_through {
+                    shared_place(on_edge, [pa, pb, pc])
+                } else {
+                    0
+                };
+                let same_surface = place != 0 && front_on.get(i) == Some(&place);
                 if !front {
                     // Strictly further than the front, and nearer than
                     // what was behind it so far: the new one behind.
                     let nearer_behind = see_through
+                        && !same_surface
                         && key > nearest
                         && behind.get(i).is_some_and(|&(second, _)| key < second);
                     if !nearer_behind {
@@ -1002,11 +1060,16 @@ pub fn render(mesh: &Mesh, camera: &Camera, params: &RenderParams) -> Result<Fra
                     ids.get_mut(i),
                     depth.get_mut(i),
                 ) {
-                    // What was in front is now the one behind.
+                    // What was in front is now the one behind, unless it
+                    // is this surface's other triangle.
                     if nearest.is_finite()
+                        && !same_surface
                         && let Some(slot) = behind.get_mut(i)
                     {
                         *slot = (nearest, *c_slot);
+                    }
+                    if let Some(slot) = front_on.get_mut(i) {
+                        *slot = place;
                     }
                     *k_slot = key;
                     *c_slot = rgb;
@@ -1044,6 +1107,9 @@ pub fn render(mesh: &Mesh, camera: &Camera, params: &RenderParams) -> Result<Fra
                 *c_slot = cut.color;
                 *id_slot = SECTION_FACE;
                 *d_slot = dist;
+                if let Some(slot) = front_on.get_mut(i) {
+                    *slot = 0;
+                }
             } else if key > nearest
                 && let Some(slot) = behind.get_mut(i)
                 && key < slot.0
@@ -2513,6 +2579,94 @@ mod tests {
         for c in 0..3 {
             let mixed = (f64::from(front[c]) * 0.5 + f64::from(background[c]) * 0.5).round();
             assert_eq!(f64::from(at(&seen)[c]), mixed);
+        }
+    }
+
+    /// A sample exactly on the edge two triangles share is inside both,
+    /// with depth keys that differ by rounding. The sheet must not show
+    /// through itself there, and what is really behind it must.
+    #[test]
+    fn a_surface_is_not_behind_itself_on_an_edge_its_triangles_share() {
+        // A tilted square of two triangles seen head-on at 240 × 180: the
+        // centres of the pixels (60 + k, 149 - k) lie on its diagonal.
+        let sheet = |z: f64, face: u32, mesh: &mut Mesh| {
+            let corner = |x: f64, y: f64| Vec3::new(x, y, z + 0.2 * y);
+            quad(
+                [
+                    corner(-1.0, -1.0),
+                    corner(1.0, -1.0),
+                    corner(1.0, 1.0),
+                    corner(-1.0, 1.0),
+                ],
+                face,
+                mesh,
+            );
+        };
+        let camera = Camera {
+            eye: Vec3::new(0.0, 0.0, 6.0),
+            target: Vec3::ZERO,
+            up: Vec3::Y,
+            projection: Projection::Orthographic { half_height: 1.5 },
+        };
+        let see_through = RenderParams {
+            opacity: 0.5,
+            background: [0, 0, 0],
+            ..params(240, 180, 1)
+        };
+        let opaque = RenderParams {
+            opacity: 1.0,
+            ..see_through
+        };
+        let mut one = Mesh::default();
+        sheet(0.0, 4, &mut one);
+        let front = render(&one, &camera, &opaque).unwrap();
+        let half = render(&one, &camera, &see_through).unwrap();
+        let mut on_the_diagonal = 0;
+        for (i, &id) in front.ids.iter().enumerate() {
+            if id == NO_FACE {
+                continue;
+            }
+            let (x, y) = (i % 240, i / 240);
+            on_the_diagonal += usize::from(x + y == 209);
+            for c in 0..3 {
+                // Over black at a half: half the front, rounded.
+                let expected = (f64::from(front.rgb[i * 3 + c]) * 0.5).round() as u8;
+                assert_eq!(
+                    half.rgb[i * 3 + c],
+                    expected,
+                    "the sheet shows through itself at pixel ({x}, {y})"
+                );
+            }
+        }
+        assert_eq!(on_the_diagonal, 120, "the view is not on the diagonal");
+        // A second sheet behind the first is behind it on the diagonal as
+        // everywhere else, in either order of the triangles: every pixel
+        // of the first is the blend of the two.
+        for first_in_front in [true, false] {
+            let mut two = Mesh::default();
+            if first_in_front {
+                sheet(0.0, 4, &mut two);
+                sheet(-1.0, 5, &mut two);
+            } else {
+                sheet(-1.0, 5, &mut two);
+                sheet(0.0, 4, &mut two);
+            }
+            let both = render(&two, &camera, &see_through).unwrap();
+            let clear = RenderParams {
+                opacity: 0.0,
+                ..see_through
+            };
+            let behind = render(&two, &camera, &clear).unwrap();
+            assert_eq!(render(&two, &camera, &opaque).unwrap().ids, front.ids);
+            for (i, _) in front.ids.iter().enumerate().filter(|&(_, &id)| id == 4) {
+                for c in 0..3 {
+                    let mixed = (f64::from(front.rgb[i * 3 + c]) * 0.5
+                        + f64::from(behind.rgb[i * 3 + c]) * 0.5)
+                        .round() as u8;
+                    assert_eq!(both.rgb[i * 3 + c], mixed, "pixel {i}");
+                    assert!(behind.rgb[i * 3 + c] > 0, "nothing behind at pixel {i}");
+                }
+            }
         }
     }
 
