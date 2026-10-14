@@ -422,9 +422,15 @@ fn an_edge_that_ends_against_a_wall_stops_there() {
     }
 }
 
+/// A ledge's edge that runs into a wall at a slant (the slanted edge on
+/// top of the prism ends where the wall y = 1.5 begins): the chamfer ends
+/// in the plane of that wall, which grows by the section there. Refused
+/// as "does not end cleanly" before 2026-10-15 (engine-block findings E3,
+/// E4). The removed prism lies between two planes oblique to the edge
+/// (y = 1.5 and the back y = 3), so its volume is the section times the
+/// length of the line through its centroid between them.
 #[test]
-fn an_edge_that_ends_against_a_slanted_wall_is_refused() {
-    let k = 1.0;
+fn an_edge_that_ends_against_a_slanted_wall_ends_in_its_plane() {
     let points = [
         [0.0, 0.0],
         [4.0, 0.0],
@@ -433,14 +439,21 @@ fn an_edge_that_ends_against_a_slanted_wall_is_refused() {
         [1.5, 3.0],
         [0.0, 3.0],
     ];
-    let part = prism(&Frame::WORLD, k, &points, 2.0);
-    let request = equal(&part, k, [1.75, 2.25, 2.0], 0.3);
-    match chamfer(&part, &[request], &tolerance(k)) {
-        Err(KernelError::Chamfer { edge, reason, .. }) => {
-            assert_eq!(edge, Some(request.edge));
-            assert!(reason.contains("does not end cleanly"), "{reason}");
+    let whole = (4.0 * 1.5 + 0.5 * (2.0 + 1.5) * 1.5) * 2.0;
+    let d = 0.3;
+    for k in SCALES {
+        for frame in frames(k) {
+            let part = prism(&frame, k, &points, 2.0);
+            let request = equal_in(&part, &frame, k, [1.75, 2.25, 2.0], d);
+            let made = solve(&part, &[request], k);
+            let removed = 0.5 * d * d * 2.5_f64.sqrt();
+            assert_close(
+                mass(&made.body).volume,
+                (whole - removed) * k * k * k,
+                "volume",
+            );
+            assert_eq!(made.body.faces.len(), part.faces.len() + 1);
         }
-        other => panic!("expected a refusal, got {other:?}"),
     }
 }
 
@@ -1241,5 +1254,43 @@ fn a_chamfer_that_meets_an_earlier_one_of_the_same_distance() {
             chamfer(&first.body, &[past], &tolerance(k)),
             Err(KernelError::ChamferTooLarge { .. })
         ));
+    }
+}
+
+/// An upright on a plate whose end leans (one way, then the other), its
+/// foot along the plate chamfered; at the leaning end the chamfer ends in
+/// the plane of the end face (engine-block findings E3, E4). The added
+/// prism lies between the square end x = 2 and the leaning plane.
+#[test]
+fn a_root_that_ends_on_a_leaning_face() {
+    let d = 0.6;
+    let inset = d / 3.0;
+    let leans: [([[f64; 2]; 4], f64, f64); 2] = [
+        ([[2.0, 0.0], [8.0, 0.0], [6.0, 5.0], [2.0, 5.0]], 25.0, 6.0 - 0.4 * inset),
+        ([[2.0, 0.0], [7.0, 0.0], [8.0, 5.0], [2.0, 5.0]], 27.5, 5.0 + 0.2 * inset),
+    ];
+    for (outline, area, length) in leans {
+        for k in SCALES {
+            for frame in frames(k) {
+                let tol = tolerance(k);
+                let plate_frame = frame.at(frame.point(0.0, 0.0, -k)).unwrap();
+                let plate = primitives::block(&plate_frame, 10.0 * k, 10.0 * k, k).unwrap();
+                let up_frame = Frame::new(frame.point(0.0, 4.0 * k, 0.0), -frame.y(), frame.x())
+                    .unwrap();
+                let curves = scale_curves(&polygon(1, 1, &outline), k);
+                let profiles = detect_profiles(&curves, &tol).unwrap();
+                let upright = extrude(&profiles, &up_frame, 0.0, 4.0 * k, &tol)
+                    .unwrap()
+                    .body;
+                let part = boolean(&plate, &upright, BooleanOp::Union, &tol)
+                    .unwrap()
+                    .body;
+                let middle = 0.5 * (outline[0][0] + outline[1][0]);
+                let request = equal_in(&part, &frame, k, [middle, 4.0, 0.0], d);
+                let made = solve(&part, &[request], k);
+                let volume = 100.0 + 4.0 * area + 0.5 * d * d * length;
+                assert_close(mass(&made.body).volume, volume * k * k * k, "volume");
+            }
+        }
     }
 }

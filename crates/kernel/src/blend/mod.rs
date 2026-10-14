@@ -575,6 +575,11 @@ struct Plan {
     /// How far the tool goes on past the start and past the end: a
     /// length along a line, an angle along an arc.
     longer: [f64; 2],
+    /// Where the tool ends at a vertex against a plane that is not square
+    /// to the edge: a point of that plane and its normal away from the
+    /// edge. The tool is cut there, so that its end lies in the plane of
+    /// the face it runs into (see [`end_plane`]).
+    trims: [Option<(Vec3, Vec3)>; 2],
     /// Along a straight edge next to a cylinder: the blend in the plane
     /// across the edge ([`section`]). `None` between two planes and along
     /// a circle.
@@ -876,6 +881,7 @@ fn plan(body: &Body, uses: &[Vec<Use>], request: &Request, tol: f64) -> Result<P
         path,
         ends,
         longer: [0.0, 0.0],
+        trims: [None, None],
         section,
         scale,
     })
@@ -1229,13 +1235,26 @@ fn lengthen(
             tangent(&data.curve, data.range.1)?,
         ];
         let mut longer = [0.0, 0.0];
-        for (slot, (vertex, beyond)) in longer.iter_mut().zip(ends.into_iter().zip(beyond)) {
+        let mut trims = [None, None];
+        for ((slot, trim), (vertex, beyond)) in longer
+            .iter_mut()
+            .zip(trims.iter_mut())
+            .zip(ends.into_iter().zip(beyond))
+        {
             let others: Vec<Leaving> = leaving(body, uses, at, vertex)?
                 .into_iter()
                 .filter(|l| l.edge != plan.edge)
                 .collect();
             let goes_on = others.iter().any(|l| l.direction.dot(beyond) > 1.0 - 1e-9);
-            if goes_on || others.iter().any(|l| l.turn != own) {
+            if goes_on {
+                continue;
+            }
+            if others.iter().any(|l| l.turn != own) {
+                if let Some((far, reach)) = end_plane(body, uses, at, plan, vertex, beyond)? {
+                    let corner = body.vertex(vertex).ok_or_else(lost)?.point;
+                    *trim = Some((corner, far));
+                    *slot = reach;
+                }
                 continue;
             }
             match plan.path {
@@ -1272,8 +1291,108 @@ fn lengthen(
             }
         }
         plan.longer = longer;
+        plan.trims = trims;
     }
     Ok(())
+}
+
+/// Where a straight edge ends at `vertex` against the faces there in a
+/// way none of the rules above covers (not all its edges turn like the
+/// blended one, and the edge does not go on): when exactly one other face
+/// meets there and it is a plane that is not square to the edge, the
+/// blend ends in that plane, as a fillet or chamfer that runs out on a
+/// face it meets at an angle does in other modellers: the tool is made
+/// long enough to reach the plane and cut there, and its end then lies
+/// in the plane of that face, which the boolean merges it into. Gives the
+/// normal of the plane away from the edge and how far the tool has to go
+/// on past the vertex; `None` where this does not apply (the tool ends
+/// at the vertex across the edge, as before).
+fn end_plane(
+    body: &Body,
+    uses: &[Vec<Use>],
+    at: &[Vec<EdgeId>],
+    plan: &Plan,
+    vertex: VertexId,
+    beyond: Vec3,
+) -> Result<Option<(Vec3, f64)>, BlendError> {
+    if !matches!(plan.path, Path::Line { .. }) {
+        return Ok(None);
+    }
+    let mut faces = BTreeSet::new();
+    for edge in at.get(vertex.0 as usize).into_iter().flatten() {
+        for used in uses.get(edge.0 as usize).into_iter().flatten() {
+            faces.insert(used.face);
+        }
+    }
+    for face in plan.faces {
+        faces.remove(&face);
+    }
+    let [end] = faces.into_iter().collect::<Vec<_>>()[..] else {
+        return Ok(None);
+    };
+    let face = body.face(end).ok_or_else(lost)?;
+    let Surface::Plane(plane) = &face.surface else {
+        return Ok(None);
+    };
+    let normal = plane.frame().z();
+    let slope = normal.dot(beyond);
+    // Square to the edge: the tool's own end lies in the plane already.
+    // Along the edge: the plane does not cut it.
+    if slope.abs() >= 1.0 - 1e-9 || slope.abs() <= 1e-6 {
+        return Ok(None);
+    }
+    // The normal away from the edge, which lies behind the vertex.
+    let far = if slope > 0.0 { normal } else { -normal };
+    // How far past the vertex the plane is at the corners of the section
+    // (the edge, the two feet and their sum, which hold a fillet's arc).
+    let [f1, f2] = plan.feet();
+    let mut reach = 0.0_f64;
+    for offset in [f1, f2, f1 + f2] {
+        let s = -far.dot(offset) / far.dot(beyond);
+        if s.is_finite() {
+            reach = reach.max(s);
+        }
+    }
+    let largest = plan.largest();
+    if reach > 64.0 * largest {
+        return Ok(None);
+    }
+    Ok(Some((far, 1.5 * reach + largest)))
+}
+
+/// The tool cut by the plane through `point` square to `far`: what lies
+/// beyond it (along `far`) is taken off. `size` bounds the tool.
+fn trim(tool: Tool, point: Vec3, far: Vec3, size: f64, tolerance: &Tolerance) -> Result<Tool, BlendError> {
+    let frame = Frame::from_z(point, far).ok_or_else(lost)?;
+    let corner = frame.point(-size, -size, 0.0);
+    let frame = frame.at(corner).ok_or_else(lost)?;
+    let block = primitives::block(&frame, 2.0 * size, 2.0 * size, size)?;
+    let options = BooleanOptions {
+        merge: true,
+        trust_operands: true,
+    };
+    let result = boolean_with(&tool.body, &block, BooleanOp::Subtract, tolerance, &options)?;
+    let mut slope = None;
+    let mut caps = Vec::new();
+    for (index, source) in result.faces.iter().enumerate() {
+        if source.operand != Operand::A {
+            continue;
+        }
+        let id = FaceId(index_u32(index));
+        if source.face == tool.slope {
+            if slope.is_some() {
+                return Err(lost());
+            }
+            slope = Some(id);
+        } else if tool.caps.contains(&source.face) {
+            caps.push(id);
+        }
+    }
+    Ok(Tool {
+        body: result.body,
+        slope: slope.ok_or_else(lost)?,
+        caps,
+    })
 }
 
 /// A tool and which of its faces is the chamfer face.
@@ -1413,7 +1532,12 @@ fn tool(plan: &Plan, tolerance: &Tolerance) -> Result<Tool, BlendError> {
             };
             let profiles = detect_profiles(&curves, tolerance)?;
             let total = length + plan.longer[0] + plan.longer[1];
-            slope_of(extrude(&profiles, &frame, 0.0, total, tolerance)?)
+            let mut made = slope_of(extrude(&profiles, &frame, 0.0, total, tolerance)?)?;
+            for (point, far) in plan.trims.into_iter().flatten() {
+                let size = 4.0 * (total + plan.largest());
+                made = trim(made, point, far, size, tolerance)?;
+            }
+            Ok(made)
         }
         Path::Circle {
             centre,
