@@ -21,6 +21,7 @@ mod datum_cmds;
 mod drawing_cmds;
 mod face_cmds;
 mod file_cmds;
+mod helix_cmds;
 mod loft_cmds;
 mod params;
 mod pick_cmds;
@@ -229,6 +230,7 @@ impl Session {
                 blend_cmds::SPECS,
                 face_cmds::SPECS,
                 datum_cmds::SPECS,
+                helix_cmds::SPECS,
                 query_cmds::SPECS,
                 pick_cmds::SPECS,
                 recovery_cmds::SPECS,

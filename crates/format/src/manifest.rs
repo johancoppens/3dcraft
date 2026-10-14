@@ -217,7 +217,8 @@ pub enum FeatureKind {
         closed: bool,
     },
     /// A solid the one closed profile of sketch `sketch` sweeps along the
-    /// curves of sketch `path` (format version 10).
+    /// curves of sketch `path` (format version 10), or along the datum
+    /// helix `path` (format version 13).
     Sweep { sketch: u64, path: u64 },
     /// The body of feature `source`, turned by `angle` about the line
     /// through `pivot` along `axis` (three plain numbers), then shifted by
@@ -267,6 +268,17 @@ pub enum FeatureKind {
     DatumAxis { by: AxisBy },
     /// A point to place other features by; it makes no body.
     DatumPoint { at: PointRef },
+    /// A helix about `axis` that a sweep can follow; it makes no body
+    /// (format version 13). Written without `left_handed` when it is
+    /// right-handed.
+    DatumHelix {
+        axis: AxisRef,
+        start: HelixStart,
+        pitch: String,
+        extent: HelixExtent,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        left_handed: bool,
+    },
     /// Edges of the body of an earlier feature replaced by faces. Each
     /// edge is the two faces it lies between, the first distance being
     /// measured along the first; the body is that of the feature the first
@@ -327,6 +339,22 @@ pub enum AxisBy {
     Edge { between: [Name; 2] },
     Face { face: Name },
     TwoPlanes { planes: [PlaneRef; 2] },
+}
+
+/// Where a helix starts: at a radius from its axis, or at a point.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum HelixStart {
+    Radius { radius: String },
+    Point { point: PointRef },
+}
+
+/// How far a helix goes: a number of turns, or a height along its axis.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum HelixExtent {
+    Turns { turns: String },
+    Height { height: String },
 }
 
 /// How a datum plane is placed: `from` moved by `distance` along its

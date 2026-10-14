@@ -440,3 +440,104 @@ fn profiles_that_cannot_be_carried_along_a_helix_are_refused_with_the_reason() {
         .is_err()
     );
 }
+
+/// The groove of an ISO metric thread of pitch `p` on a shank of radius
+/// `major`, in the plane through the axis, centred on z = 0: the basic
+/// profile's space between two teeth (flanks at 30° to the radial
+/// direction, the root flat P/4 wide at the minor radius), carried on
+/// past the major radius by H/16 so that it cuts through the shank's
+/// surface. Ids 1 to 4: root, lower flank, outside, upper flank.
+fn iso_groove(major: f64, p: f64) -> Vec<SketchCurve> {
+    let h = 3.0_f64.sqrt() / 2.0 * p;
+    let root = major - 5.0 * h / 8.0;
+    let out = major + h / 16.0;
+    let half = 7.0 * p / 16.0 + (h / 16.0) * (PI / 6.0).tan();
+    common::polygon(
+        1,
+        1,
+        &[
+            [root, p / 8.0],
+            [root, -p / 8.0],
+            [out, -half],
+            [out, half],
+        ],
+    )
+}
+
+/// A shank of radius 5 from z = 0 to 20 with a 1 × 1 chamfer at z = 0,
+/// revolved about the z axis.
+fn shank() -> Body {
+    let outline = profile(
+        &common::polygon(
+            11,
+            1,
+            &[[0.0, 0.0], [4.0, 0.0], [5.0, 1.0], [5.0, 20.0], [0.0, 20.0]],
+        ),
+        1.0,
+    );
+    craft3d_kernel::revolve::revolve(
+        &[outline],
+        &axial(),
+        [0.0, 0.0],
+        [0.0, 1.0],
+        0.0,
+        TAU,
+        &tol(1.0),
+    )
+    .unwrap()
+    .body
+}
+
+#[test]
+fn an_iso_groove_subtracted_from_a_chamfered_shank_cuts_a_thread() {
+    let (major, p, length) = (5.0, 1.5, 12.0);
+    let h_basic = 3.0_f64.sqrt() / 2.0 * p;
+    let below = Frame::new(Vec3::new(0.0, 0.0, -p), -Vec3::Y, Vec3::X).unwrap();
+    let minor = major - 5.0 * h_basic / 8.0;
+    let h = Helix::new(
+        Vec3::new(0.0, 0.0, -p),
+        Vec3::Z,
+        Vec3::X,
+        minor,
+        p,
+        (length + p) / p,
+        false,
+    )
+    .unwrap();
+    let started = std::time::Instant::now();
+    let groove = sweep_helix(
+        &profile(&iso_groove(major, p), 1.0),
+        &below,
+        &h,
+        Some(RunOut {
+            angle: FRAC_PI_2,
+            rise: 5.0 * h_basic / 8.0 + h_basic / 8.0,
+        }),
+        &tol(1.0),
+    )
+    .unwrap();
+    eprintln!(
+        "groove: {} faces in {:?}, deviation {}",
+        groove.body.faces.len(),
+        started.elapsed(),
+        groove.deviation
+    );
+    let started = std::time::Instant::now();
+    let cut = craft3d_kernel::boolean::boolean(
+        &shank(),
+        &groove.body,
+        craft3d_kernel::boolean::BooleanOp::Subtract,
+        &tol(1.0),
+    )
+    .unwrap();
+    eprintln!(
+        "thread: {} faces in {:?}",
+        cut.body.faces.len(),
+        started.elapsed()
+    );
+    assert_eq!(check(&cut.body, &tol(1.0)), vec![]);
+    let before = mass_properties(&shank()).unwrap().volume;
+    let after = mass_properties(&cut.body).unwrap().volume;
+    eprintln!("removed {}", before - after);
+    assert!(after < before && after > 0.8 * before, "{before} {after}");
+}

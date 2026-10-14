@@ -16,7 +16,8 @@ pub mod name;
 pub mod sketch;
 
 pub use datum::{
-    AxisBy, AxisRef, DatumAxis, DatumPlane, DatumPoint, PlaneBy, PlaneRef, PointRef, WorldAxis,
+    AxisBy, AxisRef, DatumAxis, DatumHelix, DatumPlane, DatumPoint, HelixExtent, HelixStart, PlaneBy,
+    PlaneRef, PointRef, WorldAxis,
 };
 pub use name::{
     FaceLists, MAX_NAME_DEPTH, MAX_NAME_FACES, MAX_NAME_SOURCES, NameRole, PersistentName,
@@ -647,6 +648,7 @@ pub enum FeatureKind {
     DatumPlane(DatumPlane),
     DatumAxis(DatumAxis),
     DatumPoint(DatumPoint),
+    DatumHelix(DatumHelix),
     Chamfer(Chamfer),
     Fillet(Fillet),
     OffsetFace(OffsetFace),
@@ -675,6 +677,7 @@ impl FeatureKind {
             FeatureKind::DatumPlane(_) => "datumPlane",
             FeatureKind::DatumAxis(_) => "datumAxis",
             FeatureKind::DatumPoint(_) => "datumPoint",
+            FeatureKind::DatumHelix(_) => "datumHelix",
             FeatureKind::Chamfer(_) => "chamfer",
             FeatureKind::Fillet(_) => "fillet",
             FeatureKind::OffsetFace(_) => "offsetFace",
@@ -690,6 +693,7 @@ impl FeatureKind {
             FeatureKind::DatumPlane(_) => "Plane".to_string(),
             FeatureKind::DatumAxis(_) => "Axis".to_string(),
             FeatureKind::DatumPoint(_) => "Point".to_string(),
+            FeatureKind::DatumHelix(_) => "Helix".to_string(),
             other => {
                 let mut base = other.type_name().to_string();
                 if let Some(first) = base.get_mut(0..1) {
@@ -705,7 +709,10 @@ impl FeatureKind {
     pub fn is_datum(&self) -> bool {
         matches!(
             self,
-            FeatureKind::DatumPlane(_) | FeatureKind::DatumAxis(_) | FeatureKind::DatumPoint(_)
+            FeatureKind::DatumPlane(_)
+                | FeatureKind::DatumAxis(_)
+                | FeatureKind::DatumPoint(_)
+                | FeatureKind::DatumHelix(_)
         )
     }
 
@@ -747,7 +754,8 @@ impl FeatureKind {
             | FeatureKind::Boolean(_)
             | FeatureKind::DatumPlane(_)
             | FeatureKind::DatumAxis(_)
-            | FeatureKind::DatumPoint(_) => None,
+            | FeatureKind::DatumPoint(_)
+            | FeatureKind::DatumHelix(_) => None,
         }
     }
 
@@ -774,6 +782,7 @@ impl FeatureKind {
             FeatureKind::DatumPlane(datum) => datum.inputs(),
             FeatureKind::DatumAxis(datum) => datum.inputs(),
             FeatureKind::DatumPoint(datum) => datum.inputs(),
+            FeatureKind::DatumHelix(datum) => datum.inputs(),
             FeatureKind::Pattern(p) => {
                 let about = match &p.layout {
                     PatternLayout::Circular { about, .. } => *about,
@@ -862,6 +871,7 @@ impl FeatureKind {
             FeatureKind::DatumPlane(d) => out = d.exprs(),
             FeatureKind::DatumAxis(d) => out = d.exprs(),
             FeatureKind::DatumPoint(d) => out = d.exprs(),
+            FeatureKind::DatumHelix(d) => out = d.exprs(),
             FeatureKind::Fillet(f) => out = vec![named("radius", &f.radius)],
             FeatureKind::OffsetFace(o) => out = vec![named("distance", &o.distance)],
             FeatureKind::Shell(s) => out = vec![named("thickness", &s.thickness)],
@@ -944,6 +954,7 @@ impl FeatureKind {
             FeatureKind::DatumPlane(d) => d.exprs_mut(),
             FeatureKind::DatumAxis(d) => d.exprs_mut(),
             FeatureKind::DatumPoint(d) => d.exprs_mut(),
+            FeatureKind::DatumHelix(d) => d.exprs_mut(),
             FeatureKind::Fillet(f) => vec![&mut f.radius],
             FeatureKind::OffsetFace(o) => vec![&mut o.distance],
             FeatureKind::Shell(s) => vec![&mut s.thickness],
@@ -1146,6 +1157,7 @@ impl Document {
                 FeatureKind::DatumPlane(datum) => datum.names(),
                 FeatureKind::DatumAxis(datum) => datum.names(),
                 FeatureKind::DatumPoint(datum) => datum.names(),
+                FeatureKind::DatumHelix(datum) => datum.names(),
                 FeatureKind::Chamfer(chamfer) => {
                     if chamfer.edges.len() > MAX_CHAMFER_EDGES {
                         return Err(DocError::Invalid(format!(

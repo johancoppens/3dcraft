@@ -41,6 +41,7 @@ mod sweep;
 pub use cache::RegenCache;
 pub use cause::root_cause;
 pub use craft3d_kernel::extrude::{Origin, Origins, Role};
+pub use craft3d_kernel::helix::Helix;
 pub use datum::{Datum, EdgeReference, References, references};
 pub use derive::{MAX_PATTERN_FACES, MAX_PATTERN_INSTANCES};
 pub use extrude::name_of;
@@ -566,7 +567,10 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
         FeatureKind::Loft(_) => return Err("a loft needs its sketches".to_string()),
         FeatureKind::Sweep(_) => return Err("a sweep needs its sketches".to_string()),
         // Placed in `features`; reference geometry is not a body.
-        FeatureKind::DatumPlane(_) | FeatureKind::DatumAxis(_) | FeatureKind::DatumPoint(_) => {
+        FeatureKind::DatumPlane(_)
+        | FeatureKind::DatumAxis(_)
+        | FeatureKind::DatumPoint(_)
+        | FeatureKind::DatumHelix(_) => {
             return Err("a datum has no body".to_string());
         }
         // Built in `features`, which knows the earlier bodies.
@@ -738,6 +742,14 @@ fn build_feature(
         match datum::point(doc, variables, point, earlier) {
             Ok(at) => {
                 placed = Some(Datum::Point(at));
+                (Status::Ok, None)
+            }
+            Err(reason) => (Status::Failed(reason), None),
+        }
+    } else if let FeatureKind::DatumHelix(helix) = &feature.kind {
+        match datum::helix(doc, variables, helix, earlier) {
+            Ok(helix) => {
+                placed = Some(Datum::Helix(helix));
                 (Status::Ok, None)
             }
             Err(reason) => (Status::Failed(reason), None),

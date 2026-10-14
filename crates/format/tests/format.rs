@@ -168,7 +168,7 @@ fn saving_twice_gives_the_same_bytes() {
 fn the_manifest_of_a_small_document_is_exactly_this() {
     let expected = r#"{
   "format": "3dcraft",
-  "format_version": 12,
+  "format_version": 13,
   "document": {
     "units": {
       "length": "mm",
@@ -340,17 +340,17 @@ fn fix_trailing_commas(json: &str) -> String {
 
 #[test]
 fn a_newer_format_version_says_a_newer_3dcraft_is_needed() {
-    let error = load_error(&edited(&version_field(), "\"format_version\": 13"));
+    let error = load_error(&edited(&version_field(), "\"format_version\": 14"));
     assert!(matches!(
         error,
         FormatError::NewerVersion {
-            file: 13,
+            file: 14,
             supported: FORMAT_VERSION
         }
     ));
     let text = error.to_string();
     assert!(
-        text.contains("version 13")
+        text.contains("version 14")
             && text.contains(&format!("version {FORMAT_VERSION}"))
             && text.contains("newer 3DCraft is needed"),
         "{text}"
@@ -2647,7 +2647,8 @@ fn delete_face_is_written_like_this_and_round_trips() {
     assert_eq!(doc.validate(), Ok(()));
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 12);
+    // Delete face came with version 12; the current one is written.
+    assert_eq!(value["format_version"], FORMAT_VERSION);
     let features = value["document"]["features"].as_array().unwrap();
     assert_eq!(
         features[features.len() - 1]["kind"],
@@ -2659,6 +2660,118 @@ fn delete_face_is_written_like_this_and_round_trips() {
     let bare = json.replacen(
         "\"type\": \"deleteFace\",",
         "\"type\": \"deleteFace\", \"also\": 1,",
+        1,
+    );
+    assert_ne!(bare, json);
+    assert!(from_manifest_json(bare.as_bytes()).is_err());
+}
+
+/// A version-12 file, as written before the helix: a block with a face
+/// deleted. Never edit this.
+#[test]
+fn a_version_12_file_opens_unchanged_and_is_saved_as_the_current_version() {
+    let v12 = r#"{"format": "3dcraft", "format_version": 12, "document": {
+        "units": {"length": "mm", "angle": "deg"},
+        "tolerance": {"linear": 1e-6, "angular": 1e-9},
+        "variables": [],
+        "features": [
+          {"id": 1, "name": "Base", "suppressed": false, "kind": {"type": "block",
+            "position": ["0", "0", "0"], "size": ["40 mm", "30 mm", "10 mm"]}},
+          {"id": 2, "name": "Plain", "suppressed": false, "kind": {"type": "deleteFace",
+            "faces": [{"feature": 1, "role": "face", "sources": [2]}]}}],
+        "rollback": null, "next_feature_id": 3}}"#;
+    let doc = match from_manifest_json(v12.as_bytes()) {
+        Ok(doc) => doc,
+        Err(error) => panic!("{error}"),
+    };
+    assert_eq!(doc.features[1].kind.type_name(), "deleteFace");
+    let saved = to_manifest_json(&doc).unwrap();
+    assert!(saved.contains(&version_field()), "{saved}");
+    assert!(!saved.contains("datumHelix"), "{saved}");
+    assert_eq!(from_manifest_json(saved.as_bytes()).unwrap(), doc);
+    let newer = v12.replace(
+        "\"format_version\": 12",
+        &format!("\"format_version\": {}", FORMAT_VERSION + 1),
+    );
+    assert!(from_manifest_json(newer.as_bytes()).is_err());
+}
+
+/// Version 13: a helix, and a sweep along it, as they are written.
+#[test]
+fn a_helix_is_written_like_this_and_round_trips() {
+    use craft3d_doc::{
+        AxisRef, DatumHelix, Expr, HelixExtent, HelixStart, PointRef, Sweep, WorldAxis,
+    };
+    let mut doc = small();
+    let coil = doc
+        .add_feature(
+            Some("Coil"),
+            FeatureKind::DatumHelix(DatumHelix {
+                axis: AxisRef::World { axis: WorldAxis::Z },
+                start: HelixStart::Radius {
+                    radius: Expr::new("10 mm"),
+                },
+                pitch: Expr::new("4 mm"),
+                extent: HelixExtent::Turns {
+                    turns: Expr::new("2.5"),
+                },
+                left_handed: false,
+            }),
+        )
+        .unwrap();
+    doc.add_feature(
+        Some("Other"),
+        FeatureKind::DatumHelix(DatumHelix {
+            axis: AxisRef::Datum { feature: coil },
+            start: HelixStart::Point {
+                point: PointRef::At {
+                    position: [Expr::new("5"), Expr::new("0"), Expr::new("0")],
+                },
+            },
+            pitch: Expr::new("1.5 mm"),
+            extent: HelixExtent::Height {
+                height: Expr::new("12 mm"),
+            },
+            left_handed: true,
+        }),
+    )
+    .unwrap();
+    let sketch = doc.features[0].id;
+    doc.add_feature(
+        Some("Spring"),
+        FeatureKind::Sweep(Sweep {
+            sketch,
+            path: coil,
+        }),
+    )
+    .unwrap();
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["format_version"], 13);
+    let features = value["document"]["features"].as_array().unwrap();
+    let n = features.len();
+    assert_eq!(
+        features[n - 3]["kind"],
+        serde_json::json!({"type": "datumHelix",
+            "axis": {"type": "world", "axis": "z"},
+            "start": {"type": "radius", "radius": "10 mm"},
+            "pitch": "4 mm",
+            "extent": {"type": "turns", "turns": "2.5"}})
+    );
+    assert_eq!(
+        features[n - 2]["kind"],
+        serde_json::json!({"type": "datumHelix",
+            "axis": {"type": "datum", "feature": coil.0},
+            "start": {"type": "point", "point": {"type": "at", "position": ["5", "0", "0"]}},
+            "pitch": "1.5 mm",
+            "extent": {"type": "height", "height": "12 mm"},
+            "left_handed": true})
+    );
+    assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+    assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
+    let bare = json.replacen(
+        "\"type\": \"datumHelix\",",
+        "\"type\": \"datumHelix\", \"also\": 1,",
         1,
     );
     assert_ne!(bare, json);

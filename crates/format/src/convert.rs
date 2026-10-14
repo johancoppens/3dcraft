@@ -269,6 +269,33 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                     at: point_ref_to_manifest(at),
                 }
             }
+            doc::FeatureKind::DatumHelix(doc::DatumHelix {
+                axis,
+                start,
+                pitch,
+                extent,
+                left_handed,
+            }) => manifest::FeatureKind::DatumHelix {
+                axis: axis_ref_to_manifest(axis),
+                start: match start {
+                    doc::HelixStart::Radius { radius } => manifest::HelixStart::Radius {
+                        radius: expr_to_manifest(radius),
+                    },
+                    doc::HelixStart::Point { point } => manifest::HelixStart::Point {
+                        point: point_ref_to_manifest(point),
+                    },
+                },
+                pitch: expr_to_manifest(pitch),
+                extent: match extent {
+                    doc::HelixExtent::Turns { turns } => manifest::HelixExtent::Turns {
+                        turns: expr_to_manifest(turns),
+                    },
+                    doc::HelixExtent::Height { height } => manifest::HelixExtent::Height {
+                        height: expr_to_manifest(height),
+                    },
+                },
+                left_handed: *left_handed,
+            },
             doc::FeatureKind::OffsetFace(doc::OffsetFace { faces, distance }) => {
                 manifest::FeatureKind::OffsetFace {
                     faces: faces.iter().map(name_to_manifest).collect(),
@@ -1149,6 +1176,33 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
                     at: point_ref_to_doc(at),
                 })
             }
+            manifest::FeatureKind::DatumHelix {
+                axis,
+                start,
+                pitch,
+                extent,
+                left_handed,
+            } => doc::FeatureKind::DatumHelix(doc::DatumHelix {
+                axis: axis_ref_to_doc(axis),
+                start: match start {
+                    manifest::HelixStart::Radius { radius } => doc::HelixStart::Radius {
+                        radius: doc::Expr(radius),
+                    },
+                    manifest::HelixStart::Point { point } => doc::HelixStart::Point {
+                        point: point_ref_to_doc(point),
+                    },
+                },
+                pitch: doc::Expr(pitch),
+                extent: match extent {
+                    manifest::HelixExtent::Turns { turns } => doc::HelixExtent::Turns {
+                        turns: doc::Expr(turns),
+                    },
+                    manifest::HelixExtent::Height { height } => doc::HelixExtent::Height {
+                        height: doc::Expr(height),
+                    },
+                },
+                left_handed,
+            }),
             manifest::FeatureKind::OffsetFace { faces, distance } => {
                 doc::FeatureKind::OffsetFace(doc::OffsetFace {
                     faces: faces.into_iter().map(name_to_doc).collect(),
