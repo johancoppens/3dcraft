@@ -55,7 +55,8 @@ use craft3d_geom::pole::{Border, Pole, poles};
 use craft3d_geom::{BezierPatch, NurbsSurface, RationalBezierPatch, Surface};
 use craft3d_math::{Bbox3, Vec3};
 use std::cmp::Ordering;
-use std::collections::BinaryHeap;
+use std::collections::{BTreeMap, BinaryHeap};
+use std::sync::{Arc, Mutex, PoisonError};
 
 pub(super) const WEIGHTS: Reason = "a rational freeform face whose weights differ by more than a factor of a thousand within one span: its derivatives cannot be bounded usefully";
 pub(super) const IRREGULAR: Reason = "a freeform face whose parametrisation stalls or folds somewhere (a collapsed or self-overlapping patch); its chart cannot be followed";
@@ -70,6 +71,8 @@ const MAX_LEAVES: usize = 1 << 15;
 /// How far apart the weights of one Bézier span of a rational surface may
 /// be: every bound on its derivatives carries a power of this ratio.
 const MAX_WEIGHT_RATIO: f64 = 1e3;
+/// How many nearest points a tree remembers before it forgets them all.
+const MAX_MEMO: usize = 1 << 14;
 /// Newton's iteration for the nearest point.
 const NEWTON_STEPS: usize = 40;
 
@@ -110,6 +113,12 @@ pub(super) struct PatchTree {
     poles: Vec<Pole>,
     axes: Vec<Option<Vec3>>,
     wedge: Option<Result<Wedge, Reason>>,
+    /// The nearest points found so far, by the bits of the point asked
+    /// about: the same points are asked about again and again (the ends
+    /// and the bisections of a face's boundary, for every winding number
+    /// taken about a point of it). A pure function of the point, so the
+    /// answer from here is the answer the search would give.
+    memo: Mutex<BTreeMap<[u64; 3], Option<Nearest>>>,
 }
 
 /// The nearest point of the surface to a point.
@@ -821,7 +830,49 @@ impl Ord for Pending {
     }
 }
 
+/// Trees built lately, by the surface they index (written out in full, so
+/// that two surfaces are the same key only when every number of them is
+/// the same, bit for bit), the most recently used last.
+type Shelf = Vec<(String, Arc<PatchTree>)>;
+static SHELF: Mutex<Shelf> = Mutex::new(Vec::new());
+/// How many trees are kept, and how many nodes all of them have at most.
+const SHELF_TREES: usize = 32;
+const SHELF_NODES: usize = 1 << 17;
+
 impl PatchTree {
+    /// The tree of `surface`, shared with the booleans before that asked
+    /// for the same surface. A tree is a function of its surface alone, so
+    /// one built earlier is the one that would be built now; a row of
+    /// booleans on one body (each operand of the next the result of the
+    /// last, its faces on the same surfaces) indexes each surface once.
+    pub fn shared(surface: &Surface) -> Result<Arc<PatchTree>, Reason> {
+        let key = format!("{surface:?}");
+        {
+            let mut shelf = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(at) = shelf.iter().position(|(k, _)| *k == key) {
+                let entry = shelf.remove(at);
+                let tree = Arc::clone(&entry.1);
+                shelf.push(entry);
+                return Ok(tree);
+            }
+        }
+        // Built outside the lock: another thread may build the same tree
+        // meanwhile, which is only work done twice.
+        let tree = Arc::new(PatchTree::new(surface)?);
+        if tree.nodes.len() <= SHELF_NODES {
+            let mut shelf = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
+            if !shelf.iter().any(|(k, _)| *k == key) {
+                shelf.push((key, Arc::clone(&tree)));
+            }
+            while shelf.len() > SHELF_TREES
+                || shelf.iter().map(|(_, t)| t.nodes.len()).sum::<usize>() > SHELF_NODES
+            {
+                let _forgotten = shelf.remove(0);
+            }
+        }
+        Ok(tree)
+    }
+
     pub fn new(surface: &Surface) -> Result<PatchTree, Reason> {
         let spans: Vec<Span> = match surface {
             Surface::Bezier(patch) => vec![(
@@ -867,6 +918,7 @@ impl PatchTree {
             axes: pole_axes(surface, &found),
             wedge: Wedge::of(surface, &found),
             poles: found,
+            memo: Mutex::new(BTreeMap::new()),
         };
         let whole = spans
             .iter()
@@ -1120,8 +1172,9 @@ impl PatchTree {
                 None => match &node.patch {
                     Some(patch) => {
                         // The leaf's own box is in its frame, thinner than
-                        // the box of the tree that found it.
-                        let slab = Slab::around(patch);
+                        // the box of the tree that found it (kept with the
+                        // leaf, or made again).
+                        let slab = node.slab.clone().unwrap_or_else(|| Slab::around(patch));
                         if node.bbox.diagonal() > resolution {
                             pending.push((patch.clone(), slab, 0));
                             best =
@@ -1255,8 +1308,28 @@ impl PatchTree {
         }
     }
 
-    /// The point of the surface nearest to `p`.
+    /// The point of the surface nearest to `p`, remembered.
     pub fn nearest(&self, p: Vec3) -> Option<Nearest> {
+        let key = [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()];
+        if let Some(found) = self
+            .memo
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&key)
+        {
+            return *found;
+        }
+        let found = self.search(p);
+        let mut memo = self.memo.lock().unwrap_or_else(PoisonError::into_inner);
+        if memo.len() >= MAX_MEMO {
+            memo.clear();
+        }
+        memo.insert(key, found);
+        found
+    }
+
+    /// The point of the surface nearest to `p`: the search.
+    fn search(&self, p: Vec3) -> Option<Nearest> {
         if !p.is_finite() {
             return None;
         }
@@ -2235,5 +2308,54 @@ mod tests {
         }
         // A row that is not zero cannot be divided out.
         assert!(divided(&low, 2, true).is_none());
+    }
+
+    #[test]
+    fn a_nearest_point_remembered_is_the_one_the_search_finds() {
+        let surface = dome();
+        let tree = PatchTree::new(&surface).unwrap();
+        let mut seed = 3_u64;
+        let mut unit = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+        };
+        let points: Vec<Vec3> = (0..200)
+            .map(|_| Vec3::new(4.0 * unit() + 2.0, 3.0 * unit() + 1.5, 3.0 * unit() + 2.0))
+            .chain([Vec3::new(f64::NAN, 0.0, 0.0), Vec3::new(0.0, -0.0, 2.0)])
+            .collect();
+        // Asked twice: the second answer comes from the memo.
+        for _ in 0..2 {
+            for &p in &points {
+                assert_eq!(
+                    format!("{:?}", tree.nearest(p)),
+                    format!("{:?}", tree.search(p)),
+                    "{p:?}"
+                );
+            }
+        }
+        // (0, 0, 2) and (0, -0, 2) are two points to the memo, with the
+        // same answer.
+        assert_eq!(
+            format!("{:?}", tree.nearest(Vec3::new(0.0, 0.0, 2.0))),
+            format!("{:?}", tree.search(Vec3::new(0.0, -0.0, 2.0)))
+        );
+    }
+
+    #[test]
+    fn a_tree_is_shared_by_equal_surfaces_only() {
+        let a = PatchTree::shared(&dome()).unwrap();
+        let b = PatchTree::shared(&dome()).unwrap();
+        assert!(Arc::ptr_eq(&a, &b));
+        let Surface::Bezier(patch) = dome() else {
+            panic!("the dome is a Bézier patch");
+        };
+        let mut ctrl = patch.control_points().to_vec();
+        ctrl[5].z += 1e-12;
+        let moved = Surface::Bezier(BezierPatch::new(3, 3, ctrl).unwrap());
+        let c = PatchTree::shared(&moved).unwrap();
+        assert!(!Arc::ptr_eq(&a, &c));
+        assert_eq!(c.surface, moved);
     }
 }

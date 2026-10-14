@@ -11,6 +11,7 @@ use super::march::Marcher;
 use crate::{Curve3, GeomError, Surface};
 use craft3d_math::{Bbox3, Frame, Tolerance, Vec3};
 use std::cmp::Ordering;
+use std::sync::{Mutex, PoisonError};
 
 /// One curve along which two surfaces meet.
 #[derive(Clone, Debug, PartialEq)]
@@ -241,8 +242,80 @@ pub fn meet_surfaces(
     let (a, b) = ordered(a, b);
     match exact::closed_form(a, b, tolerance)? {
         Some(closed) => finish(closed, within, tolerance),
-        None => numeric(a, b, within, tolerance),
+        None => remembered(a, b, within, tolerance),
     }
+}
+
+/// The numeric intersections made lately, by what they were asked for
+/// (written out in full, so that two questions are the same only when
+/// every number of them is, bit for bit), with how much each holds; the
+/// most recently used last.
+type Shelf = Vec<(String, Result<SurfaceMeeting, GeomError>, usize)>;
+static SHELF: Mutex<Shelf> = Mutex::new(Vec::new());
+/// How many intersections are kept, and how many points of their curves
+/// all of them hold at most.
+const SHELF_SIZE: usize = 64;
+const SHELF_POINTS: usize = 1 << 18;
+
+/// How many points an intersection holds, roughly: what it costs to keep.
+fn weight(result: &Result<SurfaceMeeting, GeomError>) -> usize {
+    match result {
+        Ok(SurfaceMeeting::Meets(meeting)) => meeting
+            .curves
+            .iter()
+            .map(|c| match &c.curve {
+                Curve3::Nurbs(n) => n.control_points().len().saturating_add(1),
+                _ => 1,
+            })
+            .fold(
+                meeting.points.len().saturating_add(1),
+                usize::saturating_add,
+            ),
+        _ => 1,
+    }
+}
+
+/// [`numeric`], remembered. The numeric intersection is a function of the
+/// two surfaces, the box and the tolerance alone, and the most expensive
+/// step of a boolean: the union, difference and intersection of the same
+/// two bodies (a boolean tried one way and then another, the three of a
+/// test) ask it the same questions, as does a boolean done again on
+/// operands that did not change. The answer from here is the one it would
+/// give, refusals included.
+fn remembered(
+    a: &Surface,
+    b: &Surface,
+    within: &Bbox3,
+    tol: &Tolerance,
+) -> Result<SurfaceMeeting, GeomError> {
+    let key = format!("{a:?}|{b:?}|{within:?}|{tol:?}");
+    {
+        let mut shelf = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(at) = shelf.iter().position(|(k, _, _)| *k == key) {
+            let entry = shelf.remove(at);
+            let result = entry.1.clone();
+            shelf.push(entry);
+            return result;
+        }
+    }
+    let result = numeric(a, b, within, tol);
+    let size = weight(&result);
+    if size <= SHELF_POINTS {
+        let mut shelf = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
+        if !shelf.iter().any(|(k, _, _)| *k == key) {
+            shelf.push((key, result.clone(), size));
+        }
+        while shelf.len() > SHELF_SIZE
+            || shelf
+                .iter()
+                .map(|(_, _, n)| *n)
+                .fold(0_usize, usize::saturating_add)
+                > SHELF_POINTS
+        {
+            let _forgotten = shelf.remove(0);
+        }
+    }
+    result
 }
 
 /// [`meet_surfaces`] without its closed forms: the numeric marcher on any
@@ -257,4 +330,41 @@ pub fn meet_surfaces_numeric(
     check(within, tolerance)?;
     let (a, b) = ordered(a, b);
     numeric(a, b, within, tolerance)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{BezierPatch, Sphere};
+
+    #[test]
+    fn a_numeric_intersection_asked_again_is_the_one_made_the_first_time() {
+        let mut ctrl = Vec::new();
+        for i in 0..4 {
+            for j in 0..4 {
+                let (x, y) = (f64::from(i), f64::from(j));
+                ctrl.push(Vec3::new(x, y, 0.4 * (1.3 * x - 0.7 * y).sin()));
+            }
+        }
+        let roof = Surface::Bezier(BezierPatch::new(3, 3, ctrl).unwrap());
+        let ball = Surface::Sphere(
+            Sphere::new(Frame::WORLD.at(Vec3::new(1.4, 1.6, 0.3)).unwrap(), 0.9).unwrap(),
+        );
+        let within = Bbox3::from_points([Vec3::new(-1.0, -1.0, -2.0), Vec3::new(4.0, 4.0, 2.0)]);
+        let tol = Tolerance::default();
+        let made = meet_surfaces_numeric(&roof, &ball, &within, &tol);
+        assert!(matches!(&made, Ok(SurfaceMeeting::Meets(m)) if !m.curves.is_empty()));
+        for (a, b) in [(&roof, &ball), (&ball, &roof), (&roof, &ball)] {
+            let asked = meet_surfaces(a, b, &within, &tol);
+            assert_eq!(format!("{asked:?}"), format!("{made:?}"));
+        }
+        // Another box is another question.
+        let smaller = Bbox3::from_points([Vec3::new(-1.0, -1.0, -2.0), Vec3::new(1.6, 4.0, 2.0)]);
+        let other = meet_surfaces(&roof, &ball, &smaller, &tol);
+        assert_eq!(
+            format!("{other:?}"),
+            format!("{:?}", meet_surfaces_numeric(&roof, &ball, &smaller, &tol))
+        );
+        assert_ne!(format!("{other:?}"), format!("{made:?}"));
+    }
 }

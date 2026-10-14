@@ -15,6 +15,7 @@ use crate::pole::{Pole, poles};
 use crate::{BezierPatch, BezierSpan, DerivativeBounds, GeomError, NurbsSurface, Sphere, Surface};
 use craft3d_math::{Bbox3, Frame, Tolerance, Vec3};
 use std::f64::consts::{FRAC_PI_2, TAU};
+use std::sync::{Arc, Mutex, PoisonError};
 
 /// What a field knows at a point.
 #[derive(Clone, Copy, Debug)]
@@ -43,11 +44,47 @@ pub(super) struct Projector {
     spacing: f64,
     /// The borders of the surface that are one point.
     poles: Vec<Pole>,
+    /// The grid's nodes in order of their x coordinate (ties by index):
+    /// the nodes within some distance of a point lie in a window of it.
+    by_x: Vec<(f64, usize)>,
 }
 
 const PROJECTOR_GRID: u32 = 24;
 
+/// Projectors made lately, by the surface they are of (written out in
+/// full, so that two surfaces are the same key only when every number of
+/// them is, bit for bit), the most recently used last.
+static SHELF: Mutex<Vec<(String, Arc<Projector>)>> = Mutex::new(Vec::new());
+/// How many projectors are kept.
+const SHELF_SIZE: usize = 32;
+
 impl Projector {
+    /// The projector of `surface`, shared with every intersection before
+    /// that asked for the same surface: a projector is a function of its
+    /// surface alone, and the faces of one body, intersected with each of
+    /// the faces of another, ask for the same few many times over.
+    pub(super) fn shared(surface: &Surface) -> Result<Arc<Self>, GeomError> {
+        let key = format!("{surface:?}");
+        {
+            let mut shelf = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(at) = shelf.iter().position(|(k, _)| *k == key) {
+                let entry = shelf.remove(at);
+                let projector = Arc::clone(&entry.1);
+                shelf.push(entry);
+                return Ok(projector);
+            }
+        }
+        let projector = Arc::new(Projector::new(surface)?);
+        let mut shelf = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
+        if !shelf.iter().any(|(k, _)| *k == key) {
+            shelf.push((key, Arc::clone(&projector)));
+        }
+        while shelf.len() > SHELF_SIZE {
+            let _forgotten = shelf.remove(0);
+        }
+        Ok(projector)
+    }
+
     pub(super) fn new(surface: &Surface) -> Result<Self, GeomError> {
         let (u, v) = surface.domain();
         if ![u.0, u.1, v.0, v.1].iter().all(|x| x.is_finite()) {
@@ -109,7 +146,14 @@ impl Projector {
                 }
             }
         }
+        let mut by_x: Vec<(f64, usize)> = grid
+            .iter()
+            .enumerate()
+            .map(|(k, &(_, _, p))| (p.x, k))
+            .collect();
+        by_x.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
         Ok(Self {
+            by_x,
             surface: surface.clone(),
             u,
             v,
@@ -129,12 +173,79 @@ impl Projector {
     fn curvature_near(&self, p: Vec3, radius: f64) -> f64 {
         let within = radius + 2.0 * self.spacing;
         let mut most: Option<f64> = None;
-        for (&(_, _, q), &turn) in self.grid.iter().zip(&self.turning) {
-            if q.distance(p) <= within {
+        let mut take = |k: usize| {
+            if let (Some(&(_, _, q)), Some(&turn)) = (self.grid.get(k), self.turning.get(k))
+                && q.distance(p) <= within
+            {
                 most = Some(most.map_or(turn, |m: f64| m.max(turn)));
+            }
+        };
+        // Only the nodes whose x is within reach can be: one further
+        // along x than a little over `within` is further than `within`
+        // whatever rounding does. (The largest of the turns taken does not
+        // depend on the order they are taken in.)
+        let reach = within * (1.0 + 1e-9);
+        if reach.is_finite() && p.x.is_finite() {
+            // (The difference as the distance has it, which rounds the
+            // same way for every node: a node is passed over only when the
+            // x of its offset from `p` is beyond the reach.)
+            let first = self.by_x.partition_point(|&(x, _)| x - p.x < -reach);
+            for &(x, k) in self.by_x.iter().skip(first) {
+                if x - p.x > reach {
+                    break;
+                }
+                take(k);
+            }
+        } else {
+            for k in 0..self.grid.len() {
+                take(k);
             }
         }
         most.map_or(self.curvature, |m| 2.0 * m)
+    }
+
+    /// The node of the grid nearest to `p`: the first of them in the
+    /// grid's order when several are as near. `None` when none is nearer
+    /// than infinity.
+    fn nearest_node(&self, p: Vec3) -> Option<(f64, f64, Vec3)> {
+        // From the place of `p` in the order along x outwards, both ways:
+        // a node whose x alone is further than the nearest so far is
+        // further whatever its other coordinates (the squared distance is
+        // a sum of squares, and rounding keeps a sum at least as large as
+        // any of its terms), and so is every node beyond it.
+        let mut best: (f64, usize) = (f64::INFINITY, usize::MAX);
+        let consider = |k: usize, best: &mut (f64, usize)| -> bool {
+            let Some(&(_, _, q)) = self.grid.get(k) else {
+                return true;
+            };
+            let d = q - p;
+            if d.x * d.x > best.0 {
+                return false;
+            }
+            let squared = d.length_squared();
+            if squared < best.0 || (squared == best.0 && best.1 != usize::MAX && k < best.1) {
+                *best = (squared, k);
+            }
+            true
+        };
+        let split = self.by_x.partition_point(|&(x, _)| x < p.x);
+        let (mut left, mut right) = (split, split);
+        let (mut left_open, mut right_open) = (true, true);
+        while left_open || right_open {
+            if right_open {
+                match self.by_x.get(right) {
+                    Some(&(_, k)) if consider(k, &mut best) => right += 1,
+                    _ => right_open = false,
+                }
+            }
+            if left_open {
+                match left.checked_sub(1).and_then(|l| self.by_x.get(l)) {
+                    Some(&(_, k)) if consider(k, &mut best) => left -= 1,
+                    _ => left_open = false,
+                }
+            }
+        }
+        self.grid.get(best.1).copied()
     }
 
     /// Gauss–Newton from `(u, v)` towards the point closest to `p`.
@@ -171,13 +282,10 @@ impl Projector {
 
     /// The closest point of the surface to `p`: `(u, v, point)`.
     pub(super) fn foot(&self, p: Vec3) -> (f64, f64, Vec3) {
-        let mut best = (f64::INFINITY, 0.0, 0.0, p);
-        for &(u, v, q) in &self.grid {
-            let d = (q - p).length_squared();
-            if d < best.0 {
-                best = (d, u, v, q);
-            }
-        }
+        let best = match self.nearest_node(p) {
+            Some((u, v, q)) => ((q - p).length_squared(), u, v, q),
+            None => (f64::INFINITY, 0.0, 0.0, p),
+        };
         let (u, v, q) = self.foot_from(p, best.1, best.2);
         if (q - p).length_squared() <= best.0 {
             (u, v, q)
@@ -246,7 +354,7 @@ pub(super) enum Field {
         major: f64,
         minor: f64,
     },
-    Free(Box<Projector>),
+    Free(Arc<Projector>),
 }
 
 impl Field {
@@ -281,9 +389,7 @@ impl Field {
                 major: t.radii().0,
                 minor: t.radii().1,
             },
-            Surface::Bezier(_) | Surface::Nurbs(_) => {
-                Field::Free(Box::new(Projector::new(surface)?))
-            }
+            Surface::Bezier(_) | Surface::Nurbs(_) => Field::Free(Projector::shared(surface)?),
         })
     }
 
@@ -893,5 +999,109 @@ fn nurbs_bounds(
         b
     } else {
         estimate()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::BezierPatch;
+
+    /// A wavy bicubic patch; with `pole`, its first row is one point, so
+    /// that a row of the projector's grid is one node many times over.
+    fn patch(pole: bool, k: f64) -> Surface {
+        let mut ctrl = Vec::new();
+        for i in 0..4 {
+            for j in 0..4 {
+                let (x, y) = (f64::from(i), f64::from(j));
+                let z = 0.3 * (1.7 * x + 0.9 * y).sin() + 0.1 * x * y;
+                ctrl.push(if pole && i == 0 {
+                    Vec3::new(0.0, 1.5 * k, 0.2 * k)
+                } else {
+                    Vec3::new(x * k, y * k, z * k)
+                });
+            }
+        }
+        Surface::Bezier(BezierPatch::new(3, 3, ctrl).unwrap())
+    }
+
+    /// The scans the projector made before it kept its nodes in order
+    /// along x: every node, in the grid's order.
+    fn nearest_node_by_scan(projector: &Projector, p: Vec3) -> (f64, f64, f64, Vec3) {
+        let mut best = (f64::INFINITY, 0.0, 0.0, p);
+        for &(u, v, q) in &projector.grid {
+            let d = (q - p).length_squared();
+            if d < best.0 {
+                best = (d, u, v, q);
+            }
+        }
+        best
+    }
+
+    fn curvature_near_by_scan(projector: &Projector, p: Vec3, radius: f64) -> f64 {
+        let within = radius + 2.0 * projector.spacing;
+        let mut most: Option<f64> = None;
+        for (&(_, _, q), &turn) in projector.grid.iter().zip(&projector.turning) {
+            if q.distance(p) <= within {
+                most = Some(most.map_or(turn, |m: f64| m.max(turn)));
+            }
+        }
+        most.map_or(projector.curvature, |m| 2.0 * m)
+    }
+
+    #[test]
+    fn the_nearest_node_and_the_curvature_near_a_point_are_what_a_scan_of_every_node_gives() {
+        let mut seed = 7_u64;
+        let mut unit = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+        };
+        for k in [1e-3, 1.0, 1e6] {
+            for pole in [false, true] {
+                let projector = Projector::new(&patch(pole, k)).unwrap();
+                // Points around the patch, near and far, the nodes
+                // themselves (ties between equal nodes at the pole) and
+                // points halfway between two nodes (ties of distance).
+                let mut points: Vec<Vec3> = (0..400)
+                    .map(|_| Vec3::new(unit() * 8.0 * k, unit() * 8.0 * k, unit() * 3.0 * k))
+                    .collect();
+                points.extend(projector.grid.iter().step_by(7).map(|&(_, _, q)| q));
+                points.extend(
+                    projector
+                        .grid
+                        .iter()
+                        .zip(projector.grid.iter().skip(1))
+                        .step_by(11)
+                        .map(|(&(_, _, a), &(_, _, b))| a.lerp(b, 0.5)),
+                );
+                points.push(Vec3::new(1e300, 0.0, 0.0));
+                for p in points {
+                    let expected = nearest_node_by_scan(&projector, p);
+                    let found = match projector.nearest_node(p) {
+                        Some((u, v, q)) => ((q - p).length_squared(), u, v, q),
+                        None => (f64::INFINITY, 0.0, 0.0, p),
+                    };
+                    assert_eq!(format!("{found:?}"), format!("{expected:?}"), "{p:?}");
+                    for radius in [0.0, 1e-3 * k, 0.4 * k, 3.0 * k] {
+                        assert_eq!(
+                            projector.curvature_near(p, radius).to_bits(),
+                            curvature_near_by_scan(&projector, p, radius).to_bits(),
+                            "{p:?} within {radius}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_projector_is_shared_by_equal_surfaces_only() {
+        let a = Projector::shared(&patch(false, 1.0)).unwrap();
+        let b = Projector::shared(&patch(false, 1.0)).unwrap();
+        assert!(Arc::ptr_eq(&a, &b));
+        let c = Projector::shared(&patch(false, 1.0 + f64::EPSILON)).unwrap();
+        assert!(!Arc::ptr_eq(&a, &c));
     }
 }
