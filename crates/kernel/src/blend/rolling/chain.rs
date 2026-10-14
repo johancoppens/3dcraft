@@ -43,7 +43,7 @@
 
 use super::super::{BlendError, Reason, Size, Turn, Use, across, lost, refused, vertex_edges};
 use super::{
-    Across, BEND, End, FOLLOW_DEPTH, Item, MAX_SAMPLES, curve_through, cut_curve, out_of, Section, Shape, Side, Solver, Spine, Steps, Stop,
+    Across, BEND, End, FOLLOW_DEPTH, Item, MAX_SAMPLES, cut_curve, out_of, Section, Shape, Side, Solver, Spine, Steps, Stop,
     border, cut_back, edge_length, end_at, end_cut, first_section, insert_cut, march_out,
     outward_from, refine, refuse, scale_of, tangent_or_refused,
 };
@@ -1630,46 +1630,156 @@ fn walk(
     None
 }
 
-/// The path of the balls' centres through `balls` (in order): a cubic
-/// through them, its parameter their distance along it, from 0 to 1; with
+/// The path of the balls' centres through `balls` (in order): the cubic
+/// spline through them with continuous curvature (one piece between two
+/// balls, its parameter their distance along the chords from 0 to 1),
+/// leaving the first and reaching the last in the direction the centres
+/// move in there (square to both normals at the feet on `sides`); with
 /// each ball's parameter.
-fn path_through(balls: &[Section]) -> Option<(Curve3, Vec<f64>)> {
+fn path_through(balls: &[Section], sides: [Side<'_>; 2]) -> Option<(Curve3, Vec<f64>)> {
     let centres: Vec<Vec3> = balls.iter().map(|b| b.centre).collect::<Option<_>>()?;
-    let mut params = Vec::with_capacity(centres.len());
-    let mut sum = 0.0;
-    let mut last = *centres.first()?;
-    for c in &centres {
-        sum += c.distance(last);
-        last = *c;
-        params.push(sum);
-    }
-    if !(sum > 0.0) {
+    let n = centres.len();
+    if n < 2 {
         return None;
     }
-    for p in &mut params {
-        *p /= sum;
+    let chords: Vec<f64> = centres
+        .windows(2)
+        .filter_map(|w| match w {
+            [a, b] => Some(a.distance(*b)),
+            _ => None,
+        })
+        .collect();
+    let total: f64 = chords.iter().sum();
+    if !(total > 0.0) || chords.iter().any(|c| !(*c > 0.0)) {
+        return None;
     }
-    let curve = curve_through(&params, &centres)?;
+    let mut params = Vec::with_capacity(n);
+    let mut sum = 0.0;
+    params.push(0.0);
+    for c in &chords {
+        sum += c;
+        params.push(sum / total);
+    }
+    let steps: Vec<f64> = chords.iter().map(|c| c / total).collect();
+    let end_tangent = |i: usize, j: usize| -> Option<Vec3> {
+        let (a, b) = (*centres.get(i)?, *centres.get(j)?);
+        Some(spine_tangent(sides, balls.get(i)?, b - a)? * total)
+    };
+    let first = end_tangent(0, 1)?;
+    let last = {
+        let t = end_tangent(n - 1, n - 2)?;
+        -t
+    };
+    let tangents = clamped_tangents(&centres, &steps, first, last)?;
+    let mut ctrl = Vec::with_capacity(3 * (n - 1) + 1);
+    for i in 0..n - 1 {
+        let (p, q) = (*centres.get(i)?, *centres.get(i + 1)?);
+        let (tp, tq) = (*tangents.get(i)?, *tangents.get(i + 1)?);
+        let third = steps.get(i)? / 3.0;
+        ctrl.push(p);
+        ctrl.push(p + tp * third);
+        ctrl.push(q - tq * third);
+    }
+    ctrl.push(*centres.last()?);
+    let mut knots = vec![0.0; 4];
+    for p in params.iter().skip(1).take(n - 2) {
+        knots.extend([*p; 3]);
+    }
+    knots.extend([1.0; 4]);
+    let curve = NurbsCurve::polynomial(3, knots, ctrl).ok()?;
     Some((Curve3::Nurbs(curve), params))
 }
 
-/// Keeps at most `most` of `balls`, evenly picked, the first and the last
-/// always.
-fn thin(balls: Vec<Section>, most: usize) -> Vec<Section> {
-    let n = balls.len();
-    if n <= most || most < 2 {
-        return balls;
+/// The derivatives at `points` (at parameter steps `steps`) of the cubic
+/// spline through them with continuous curvature whose derivatives at the
+/// first and the last are `first` and `last`: the tridiagonal system of a
+/// clamped spline, solved by elimination.
+fn clamped_tangents(points: &[Vec3], steps: &[f64], first: Vec3, last: Vec3) -> Option<Vec<Vec3>> {
+    let n = points.len();
+    if n < 2 || steps.len() + 1 != n {
+        return None;
     }
-    let keep: std::collections::BTreeSet<usize> = (0..most)
-        .map(|k| (k * (n - 1) + (most - 1) / 2) / (most - 1))
-        .chain([0, n - 1])
-        .collect();
-    balls
-        .into_iter()
-        .enumerate()
-        .filter(|(i, _)| keep.contains(i))
-        .map(|(_, b)| b)
-        .collect()
+    if n == 2 {
+        return Some(vec![first, last]);
+    }
+    // Unknowns: the tangents at 1 .. n-2.
+    let m = n - 2;
+    let mut lower = vec![0.0; m];
+    let mut diagonal = vec![0.0; m];
+    let mut upper = vec![0.0; m];
+    let mut rhs = vec![Vec3::ZERO; m];
+    for k in 0..m {
+        let i = k + 1;
+        let (hb, ha) = (*steps.get(i - 1)?, *steps.get(i)?);
+        let (pb, pi, pa) = (*points.get(i - 1)?, *points.get(i)?, *points.get(i + 1)?);
+        let mut r = ((pi - pb) * (ha / hb) + (pa - pi) * (hb / ha)) * 3.0;
+        *diagonal.get_mut(k)? = 2.0 * (hb + ha);
+        if k == 0 {
+            r = r - first * ha;
+        } else {
+            *lower.get_mut(k)? = ha;
+        }
+        if k + 1 == m {
+            r = r - last * hb;
+        } else {
+            *upper.get_mut(k)? = hb;
+        }
+        *rhs.get_mut(k)? = r;
+    }
+    // Forward elimination, then back substitution.
+    for k in 1..m {
+        let w = lower.get(k)? / diagonal.get(k - 1)?;
+        let (u, r) = (*upper.get(k - 1)?, *rhs.get(k - 1)?);
+        *diagonal.get_mut(k)? -= w * u;
+        let slot = rhs.get_mut(k)?;
+        *slot = *slot - r * w;
+    }
+    let mut inner = vec![Vec3::ZERO; m];
+    for k in (0..m).rev() {
+        let next = if k + 1 < m { *inner.get(k + 1)? } else { Vec3::ZERO };
+        let d = *diagonal.get(k)?;
+        if !(d.abs() > 0.0) {
+            return None;
+        }
+        *inner.get_mut(k)? = (*rhs.get(k)? - next * *upper.get(k)?) * (1.0 / d);
+    }
+    let mut all = Vec::with_capacity(n);
+    all.push(first);
+    all.extend(inner);
+    all.push(last);
+    all.iter().all(|t| t.is_finite()).then_some(all)
+}
+
+/// About `count` of the indices into `params` (increasing), at nearly even
+/// steps of the parameter, the first and the last always.
+fn pick(params: &[f64], count: usize) -> Vec<usize> {
+    let n = params.len();
+    if n <= count || count < 2 {
+        return (0..n).collect();
+    }
+    let mut picked: Vec<usize> = Vec::with_capacity(count);
+    let mut at = 0;
+    for k in 0..count {
+        let goal = k as f64 / (count - 1) as f64;
+        while at + 1 < n && params.get(at + 1).is_some_and(|p| *p <= goal) {
+            at += 1;
+        }
+        let best = if params.get(at + 1).is_some_and(|p| (p - goal).abs() < (params.get(at).copied().unwrap_or(0.0) - goal).abs()) {
+            at + 1
+        } else {
+            at
+        };
+        if picked.last() != Some(&best) {
+            picked.push(best);
+        }
+    }
+    if picked.last() != Some(&(n - 1)) {
+        picked.push(n - 1);
+    }
+    if picked.first() != Some(&0) {
+        picked.insert(0, 0);
+    }
+    picked
 }
 
 /// Works out the fillet faces of `chain` on `body` (unchanged), following
@@ -1823,9 +1933,12 @@ fn along_spine(
             reversed: face.reversed,
         })
     };
+    // Steps of up to two radii, or a 24th of the edge where that is
+    // more: the walk only has to follow the path, which the steps adapt
+    // to where it turns.
     let step_of = |i: usize| -> (f64, f64) {
         let length = lengths.get(i).copied().unwrap_or(size);
-        let longest = (length / 6.0).min(2.0 * size).max(1e-3 * size);
+        let longest = (length / 24.0).max(2.0 * size).min(length / 3.0).max(1e-3 * size);
         ((0.5 * size).min(longest), longest)
     };
     let most_out = 8.0 * size;
@@ -1953,11 +2066,11 @@ fn along_spine(
     // the joints' planes at its ends.
     let mut paths = Vec::with_capacity(n);
     let mut kept = Vec::with_capacity(n);
-    for list in &balls {
-        let list = thin(list.clone(), 200);
-        let (curve, params) = path_through(&list).ok_or_else(unsolvable)?;
+    for (i, list) in balls.iter().enumerate() {
+        let (curve, params) =
+            path_through(list, *sides.get(i).ok_or_else(lost)?).ok_or_else(unsolvable)?;
         paths.push(curve);
-        kept.push((list, params));
+        kept.push((list.clone(), params));
     }
     let mut made = Vec::with_capacity(n);
     let limit = 0.25 * tol;
@@ -1988,15 +2101,23 @@ fn along_spine(
             shape,
             scale,
         };
+        // The surface starts from some of the balls, evenly along the
+        // path; it is refined from there.
+        let picked = pick(params, 48);
         let count = list.len();
-        let mut sections = Vec::with_capacity(count);
-        for (k, (ball, s)) in list.iter().zip(params).enumerate() {
+        let mut sections = Vec::with_capacity(picked.len());
+        let mut samples = Vec::with_capacity(picked.len());
+        for k in picked {
+            let (Some(ball), Some(s)) = (list.get(k), params.get(k)) else {
+                return Err(lost());
+            };
             let fixed = (k == 0 && before.is_some()) || (k + 1 == count && behind.is_some());
             if fixed {
                 sections.push(*ball);
             } else {
                 sections.push(solver.follow(*s, ball, *s, 0).ok_or_else(unsolvable)?);
             }
+            samples.push(*s);
         }
         // Where the cuts at the open ends are looked for: from a few
         // radii before the end of the edge to the last ball.
@@ -2012,7 +2133,7 @@ fn along_spine(
                 cut_ranges[1] = ((at - back).max(0.5 * at), 1.0);
             }
         }
-        let mut params = params.clone();
+        let mut params = samples;
         let piece_edge = pieces.get(i).ok_or_else(lost)?.edge;
         let surface = refine(&solver, &mut params, &mut sections, limit, bend)
             .ok_or_else(|| refuse(piece_edge, None, Reason::FreeApproximation))?;

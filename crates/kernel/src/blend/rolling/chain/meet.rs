@@ -99,6 +99,7 @@ struct Made {
     at: [[f64; 2]; 2],
 }
 
+/// A face of the body as a side.
 fn side_of(body: &Body, face: FaceId) -> Result<Side<'_>, BlendError> {
     let f = body.face(face).ok_or_else(lost)?;
     Ok(Side {
