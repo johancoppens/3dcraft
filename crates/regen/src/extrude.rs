@@ -504,3 +504,35 @@ pub(crate) fn build(
     }
     Ok((result.body, result.origins))
 }
+
+/// Fails when an extrusion up to a face passes through itself. An
+/// extrusion by a distance cannot: its profiles do not touch or cross
+/// (`detect_profiles`), so the prisms over them, all along one direction
+/// and as long, do not either. One up to a face is the prism cut by a
+/// tool with the target's surface for a face (`extrude_to`): its faces
+/// are pieces of the faces of the prism (one group) or of that surface,
+/// the end caps (the other), and only where the two can meet is looked
+/// at (`selfcheck::crossing_near`).
+pub(crate) fn not_through_itself(
+    body: &Body,
+    origins: &Origins,
+    names: &crate::Names,
+    linear: f64,
+) -> Result<(), String> {
+    let roles: Vec<craft3d_tess::FaceRole> = origins
+        .faces
+        .iter()
+        .map(|origin| match origin.role {
+            Role::EndCap => craft3d_tess::FaceRole::Known(1),
+            _ => craft3d_tess::FaceRole::Known(0),
+        })
+        .collect();
+    if roles.len() != body.faces.len() {
+        return Err("upTo: the extrusion lost track of its faces; this is a bug".to_string());
+    }
+    crate::selfcheck::crossing_near(body, &names.faces, linear, &roles).refused(
+        "upTo",
+        "extrusion",
+        "the cut at the face did not find where the extrusion meets it, and the result is refused rather than handed on",
+    )
+}

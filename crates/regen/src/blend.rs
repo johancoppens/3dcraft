@@ -24,10 +24,12 @@
 
 use crate::datum::listed;
 use crate::query::{edges_between, faces_named, faces_of_edges};
+use crate::selfcheck;
 use crate::{Contributors, Kept, Names, entity};
 use craft3d_doc::{FeatureId, NameRole, PersistentName};
 use craft3d_kernel::chamfer::tangent_chain;
 use craft3d_math::Vec3;
+use craft3d_tess::FaceRole;
 use craft3d_topo::{Body, EdgeId, FaceId, VertexId};
 use std::collections::BTreeMap;
 
@@ -289,4 +291,38 @@ pub(crate) fn name(
         |_| Some(names),
     );
     Ok(Some(named))
+}
+
+/// Fails when the blended body `made` passes through itself. A blend is
+/// made by booleans of the body with tools, so a face kept from the body
+/// is a piece of a face of a body that does not pass through itself,
+/// unless it was merged from several or lies next to a new face (it may
+/// have taken a tool's face that lies in its plane: a wall the end of a
+/// chamfer runs into). The new faces, those, and what is near them are
+/// looked at (`selfcheck::crossing_near`).
+pub(crate) fn not_through_itself(
+    made: &Body,
+    faces: &[Made<'_>],
+    names: Option<&Names>,
+    linear: f64,
+    roles: Roles,
+    param: &str,
+) -> Result<(), String> {
+    let mut kinds: Vec<FaceRole> = faces
+        .iter()
+        .map(|face| match face {
+            Made::Kept([_]) => FaceRole::Known(0),
+            Made::Kept(_) | Made::Blend(_) | Made::Corner(_) => FaceRole::New,
+        })
+        .collect();
+    selfcheck::with_neighbours(made, &mut kinds);
+    let named = names.map_or(&[][..], |names| names.faces.as_slice());
+    selfcheck::crossing_near(made, named, linear, &kinds).refused(
+        param,
+        &format!("{}ed body", roles.noun),
+        &format!(
+            "a {} runs into a face it does not border; make it smaller",
+            roles.noun
+        ),
+    )
 }

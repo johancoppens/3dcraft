@@ -24,7 +24,8 @@ pub use intersections::{
     Crossing, CrossingKind, SelfIntersections, self_intersection_report, self_intersections,
 };
 pub use selfcheck::{
-    FaceCrossing, SelfCheck, SelfCheckParams, ShellDefect, ShellFinding, body_self_intersections,
+    FaceCrossing, FaceRole, SelfCheck, SelfCheckParams, ShellDefect, ShellFinding, Touch, Touched,
+    body_self_intersections, body_self_intersections_near, body_touches_itself,
 };
 pub use weld::Welded;
 

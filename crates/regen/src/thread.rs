@@ -30,6 +30,7 @@
 
 use crate::boolean::combine;
 use crate::face_ops::{self, Source};
+use crate::selfcheck::{crossing_near, roles_of};
 use crate::{FeatureResult, Kept, Names, ThreadReport, length};
 use craft3d_doc::{
     BooleanOp, Document, Expr, FeatureId, NameRole, PersistentName, Thread, ThreadSize,
@@ -460,7 +461,18 @@ pub(crate) fn build(
             Some(&groove_names)
         }
     };
+    // The groove is a sweep no one looked at on its own, so its faces
+    // are new: looked at against each other and against what is near.
+    let groove_is_new = |names: Option<&Names>| {
+        let faces = names.map_or(&[][..], |names| names.faces.as_slice());
+        crossing_near(&made.body, faces, tol, &roles_of(&made.contributors, &[1])).refused(
+            "face",
+            "threaded body",
+            "make the thread shorter or the pitch finer",
+        )
+    };
     let Some(mut names) = Names::copied_faces(feature, &made.contributors, operand)? else {
+        groove_is_new(None)?;
         return Ok((made.body, None, report));
     };
     // The faces of the groove are this feature's own: not copies.
@@ -484,5 +496,6 @@ pub(crate) fn build(
         &made.vertices,
         operand,
     );
+    groove_is_new(Some(&names))?;
     Ok((made.body, Some(names), report))
 }

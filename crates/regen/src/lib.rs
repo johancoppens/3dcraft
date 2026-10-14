@@ -809,9 +809,22 @@ fn build_feature(
             FeatureKind::Extrude(extrusion) => extrude::build(doc, variables, extrusion, earlier),
             _ => Err("not a sweep".to_string()),
         };
-        match swept.and_then(|(body, origins)| checked(doc, body).map(|body| (body, origins))) {
-            Ok((body, origins)) => {
-                names = Some(Arc::new(Names::of_origins(feature.id, &origins)));
+        let up_to = matches!(
+            &feature.kind,
+            FeatureKind::Extrude(e) if matches!(e.end, craft3d_doc::ExtrudeEnd::UpToFace { .. })
+        );
+        let made = swept
+            .and_then(|(body, origins)| checked(doc, body).map(|body| (body, origins)))
+            .and_then(|(body, origins)| {
+                let named = Names::of_origins(feature.id, &origins);
+                if up_to {
+                    extrude::not_through_itself(&body, &origins, &named, doc.tolerance.linear)?;
+                }
+                Ok((body, named))
+            });
+        match made {
+            Ok((body, named)) => {
+                names = Some(Arc::new(named));
                 (Status::Ok, Some(Arc::new(body)))
             }
             Err(reason) => (Status::Failed(reason), None),

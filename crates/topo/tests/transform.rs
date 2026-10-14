@@ -303,6 +303,50 @@ fn union(a: &Bbox3, b: &Bbox3) -> Bbox3 {
 }
 
 #[test]
+fn the_boxes_of_the_faces_make_up_the_box_of_the_body() {
+    for scale in [1e-3, 1.0, 1e6] {
+        for frame in frames(scale) {
+            let margin = 1e-12 * scale;
+            let block = solids::block(&frame, 4.0 * scale, 2.0 * scale, 1.0 * scale)
+                .unwrap()
+                .body;
+            let cylinder = solids::cylinder(&frame, 1.5 * scale, 4.0 * scale)
+                .unwrap()
+                .body;
+            let sphere = solids::sphere(&frame, 2.5 * scale).unwrap().body;
+            for body in [&block, &cylinder, &sphere] {
+                let whole = body.bbox().unwrap();
+                let mut all = Bbox3::EMPTY;
+                for face in 0..body.faces.len() {
+                    let face = body.face_bbox(FaceId(face as u32)).unwrap();
+                    assert!(within(&face, &whole, margin));
+                    let (lo, hi) = face.corners().unwrap();
+                    all.add(lo);
+                    all.add(hi);
+                }
+                assert_same_box("faces", &all, &whole, margin);
+            }
+            // A side of the block is a box of its own, flat across it.
+            for face in 0..block.faces.len() {
+                let side = block.face_bbox(FaceId(face as u32)).unwrap();
+                let (lo, hi) = side.corners().unwrap();
+                let thin = (hi - lo)
+                    .x
+                    .abs()
+                    .min((hi - lo).y.abs())
+                    .min((hi - lo).z.abs());
+                if frame == Frame::WORLD {
+                    assert!(thin <= margin, "face {face}: {side:?}");
+                }
+                assert!(side.diagonal() < block.bbox().unwrap().diagonal());
+            }
+        }
+    }
+    let block = solids::block(&Frame::WORLD, 1.0, 1.0, 1.0).unwrap().body;
+    assert!(block.face_bbox(FaceId(99)).is_err());
+}
+
+#[test]
 fn boxes_of_the_primitives_are_the_closed_forms() {
     for scale in [1e-3, 1.0, 1e6] {
         for frame in frames(scale) {

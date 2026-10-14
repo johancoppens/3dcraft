@@ -290,6 +290,100 @@ impl Body {
         }
         Ok(extent.padded())
     }
+
+    /// A box that certainly contains the edge `id` and its vertices, by
+    /// the rules of [`Body::bbox`]. An error for an edge or a vertex that
+    /// does not exist, and as [`Body::bbox`].
+    pub fn edge_bbox(&self, id: EdgeId) -> Result<Bbox3, TransformError> {
+        let Some(edge) = self.edge(id) else {
+            return Err(TransformError::DanglingReference { body: 0 });
+        };
+        let mut extent = Extent::EMPTY;
+        for vertex in [edge.start, edge.end] {
+            match self.vertex(vertex) {
+                Some(v) if v.point.is_finite() => extent.add(v.point),
+                _ => return Err(TransformError::Vertex { vertex }),
+            }
+        }
+        edge_extent(&edge.curve, edge.range, id, &mut extent)?;
+        if !extent.finite {
+            return Err(TransformError::EdgeRange { edge: id });
+        }
+        Ok(extent.padded())
+    }
+
+    /// A box that certainly contains the loop `id`: its edges and their
+    /// vertices, by the rules of [`Body::bbox`]. An error for a loop, an
+    /// edge or a vertex that does not exist, and as [`Body::bbox`].
+    pub fn loop_bbox(&self, id: LoopId) -> Result<Bbox3, TransformError> {
+        let Some(loop_) = self.loop_(id) else {
+            return Err(TransformError::DanglingReference { body: 0 });
+        };
+        let mut extent = Extent::EMPTY;
+        for coedge in &loop_.coedges {
+            let Some(edge) = self.edge(coedge.edge) else {
+                return Err(TransformError::DanglingReference { body: 0 });
+            };
+            for vertex in [edge.start, edge.end] {
+                match self.vertex(vertex) {
+                    Some(v) if v.point.is_finite() => extent.add(v.point),
+                    _ => return Err(TransformError::Vertex { vertex }),
+                }
+            }
+            edge_extent(&edge.curve, edge.range, coedge.edge, &mut extent)?;
+        }
+        if !extent.finite {
+            return Err(TransformError::EdgeRange {
+                edge: loop_.coedges.first().map_or(EdgeId(u32::MAX), |c| c.edge),
+            });
+        }
+        Ok(extent.padded())
+    }
+
+    /// A box that certainly contains the face `face`, by the rules of
+    /// [`Body::bbox`] applied to the face, the edges of its loops and their
+    /// vertices: the box of the body is the union of these. An error for a
+    /// face that does not exist or refers to an edge that does not, and as
+    /// [`Body::bbox`].
+    pub fn face_bbox(&self, face: FaceId) -> Result<Bbox3, TransformError> {
+        let missing = TransformError::Face {
+            face,
+            error: GeomError::InvalidParameter("the face does not exist"),
+        };
+        let shape = self.face(face).ok_or(missing)?;
+        let mut extent = Extent::EMPTY;
+        for &loop_id in &shape.loops {
+            let Some(loop_) = self.loop_(loop_id) else {
+                return Err(TransformError::Face {
+                    face,
+                    error: GeomError::InvalidParameter("a loop of the face does not exist"),
+                });
+            };
+            for coedge in &loop_.coedges {
+                let Some(edge) = self.edge(coedge.edge) else {
+                    return Err(TransformError::Face {
+                        face,
+                        error: GeomError::InvalidParameter("an edge of the face does not exist"),
+                    });
+                };
+                for vertex in [edge.start, edge.end] {
+                    match self.vertex(vertex) {
+                        Some(v) if v.point.is_finite() => extent.add(v.point),
+                        _ => return Err(TransformError::Vertex { vertex }),
+                    }
+                }
+                edge_extent(&edge.curve, edge.range, coedge.edge, &mut extent)?;
+            }
+        }
+        face_extent(self, shape, face, &mut extent)?;
+        if !extent.finite {
+            return Err(TransformError::Face {
+                face,
+                error: GeomError::InvalidParameter("the surface is not finite"),
+            });
+        }
+        Ok(extent.padded())
+    }
 }
 
 /// A box in the making: per axis the least and the greatest coordinate
