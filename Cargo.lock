@@ -536,6 +536,7 @@ dependencies = [
  "craft3d-kernel",
  "craft3d-math",
  "craft3d-solve",
+ "craft3d-tess",
  "craft3d-topo",
 ]
 

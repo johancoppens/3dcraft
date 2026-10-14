@@ -189,6 +189,26 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 },
                 reversed: *reversed,
             },
+            doc::FeatureKind::Loft(doc::Loft {
+                sections,
+                ruled,
+                closed,
+            }) => manifest::FeatureKind::Loft {
+                sections: sections
+                    .iter()
+                    .map(
+                        |doc::LoftSection {
+                             sketch: doc::FeatureId(sketch),
+                             start,
+                         }| manifest::LoftSection {
+                            sketch: *sketch,
+                            start: start.map(|doc::EntityId(id)| id),
+                        },
+                    )
+                    .collect(),
+                ruled: *ruled,
+                closed: *closed,
+            },
             doc::FeatureKind::Revolve(doc::Revolve {
                 sketch: doc::FeatureId(sketch),
                 axis,
@@ -240,6 +260,32 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
             doc::FeatureKind::DatumPoint(doc::DatumPoint { at }) => {
                 manifest::FeatureKind::DatumPoint {
                     at: point_ref_to_manifest(at),
+                }
+            }
+            doc::FeatureKind::Chamfer(doc::Chamfer { edges, size, chain }) => {
+                manifest::FeatureKind::Chamfer {
+                    edges: edges
+                        .iter()
+                        .map(|[first, second]| [name_to_manifest(first), name_to_manifest(second)])
+                        .collect(),
+                    size: match size {
+                        doc::ChamferSize::Equal { distance } => manifest::ChamferSize::Equal {
+                            distance: expr_to_manifest(distance),
+                        },
+                        doc::ChamferSize::TwoDistances { distance, second } => {
+                            manifest::ChamferSize::TwoDistances {
+                                distance: expr_to_manifest(distance),
+                                second: expr_to_manifest(second),
+                            }
+                        }
+                        doc::ChamferSize::DistanceAngle { distance, angle } => {
+                            manifest::ChamferSize::DistanceAngle {
+                                distance: expr_to_manifest(distance),
+                                angle: expr_to_manifest(angle),
+                            }
+                        }
+                    },
+                    chain: *chain,
                 }
             }
             doc::FeatureKind::DatumAxis(doc::DatumAxis { by }) => {
@@ -470,11 +516,14 @@ fn role_to_manifest(role: doc::NameRole) -> manifest::NameRole {
         D::StartVertex => M::StartVertex,
         D::EndVertex => M::EndVertex,
         D::Copy => M::Copy,
+        D::Piece => M::Piece,
         D::Face => M::Face,
         D::Edge => M::Edge,
         D::Vertex => M::Vertex,
         D::Between => M::Between,
         D::Corner => M::Corner,
+        D::Chamfer => M::Chamfer,
+        D::ChamferCorner => M::ChamferCorner,
     }
 }
 
@@ -491,11 +540,14 @@ fn role_to_doc(role: manifest::NameRole) -> doc::NameRole {
         M::StartVertex => D::StartVertex,
         M::EndVertex => D::EndVertex,
         M::Copy => D::Copy,
+        M::Piece => D::Piece,
         M::Face => D::Face,
         M::Edge => D::Edge,
         M::Vertex => D::Vertex,
         M::Between => D::Between,
         M::Corner => D::Corner,
+        M::Chamfer => D::Chamfer,
+        M::ChamferCorner => D::ChamferCorner,
     }
 }
 
@@ -982,6 +1034,21 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
                 },
                 reversed,
             }),
+            manifest::FeatureKind::Loft {
+                sections,
+                ruled,
+                closed,
+            } => doc::FeatureKind::Loft(doc::Loft {
+                sections: sections
+                    .into_iter()
+                    .map(|manifest::LoftSection { sketch, start }| doc::LoftSection {
+                        sketch: doc::FeatureId(sketch),
+                        start: start.map(doc::EntityId),
+                    })
+                    .collect(),
+                ruled,
+                closed,
+            }),
             manifest::FeatureKind::Revolve {
                 sketch,
                 axis,
@@ -1033,6 +1100,32 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
             manifest::FeatureKind::DatumPoint { at } => {
                 doc::FeatureKind::DatumPoint(doc::DatumPoint {
                     at: point_ref_to_doc(at),
+                })
+            }
+            manifest::FeatureKind::Chamfer { edges, size, chain } => {
+                doc::FeatureKind::Chamfer(doc::Chamfer {
+                    edges: edges
+                        .into_iter()
+                        .map(|pair| pair.map(name_to_doc))
+                        .collect(),
+                    size: match size {
+                        manifest::ChamferSize::Equal { distance } => doc::ChamferSize::Equal {
+                            distance: doc::Expr(distance),
+                        },
+                        manifest::ChamferSize::TwoDistances { distance, second } => {
+                            doc::ChamferSize::TwoDistances {
+                                distance: doc::Expr(distance),
+                                second: doc::Expr(second),
+                            }
+                        }
+                        manifest::ChamferSize::DistanceAngle { distance, angle } => {
+                            doc::ChamferSize::DistanceAngle {
+                                distance: doc::Expr(distance),
+                                angle: doc::Expr(angle),
+                            }
+                        }
+                    },
+                    chain,
                 })
             }
             manifest::FeatureKind::DatumAxis { by } => {

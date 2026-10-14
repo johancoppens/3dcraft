@@ -18,9 +18,17 @@ use craft3d_topo::{Body, FaceId};
 
 /// The persistent name of an entity an extrusion made: the feature, the
 /// part the entity plays and the sketch entities it came from, such as
-/// `F2:side(e7)` or `F2:lateralEdge(e7,e8)`. It does not depend on the order
+/// `F2:side(e7)` or `F2:lateralEdge(e7,e8)`; with a number in front when
+/// those give more than one (`F2:piece(1)/F2:side(e7)`). It does not depend on the order
 /// or number of entities in the body (docs/architecture.md §4.1).
 pub fn name_of(feature: FeatureId, origin: &Origin) -> PersistentName {
+    // The second and later entities the same sources give in a role (the
+    // pieces of a cut spline, the halves of a full turn) are numbered:
+    // `F2:piece(1)/F2:side(e7)`.
+    PersistentName::piece(origin.piece, sweep_name(feature, origin))
+}
+
+fn sweep_name(feature: FeatureId, origin: &Origin) -> PersistentName {
     PersistentName::new(
         feature,
         match origin.role {

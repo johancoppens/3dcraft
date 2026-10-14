@@ -311,6 +311,36 @@ pub struct Revolve {
     pub symmetric: bool,
 }
 
+/// Most sections one loft has.
+pub const MAX_LOFT_SECTIONS: usize = 64;
+
+/// One profile of a loft: a sketch with one closed loop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoftSection {
+    pub sketch: FeatureId,
+    /// The curve of the sketch the loop starts with, which is matched
+    /// with the first curve of the other sections. `None` leaves it to
+    /// the rule (the first section: its curve with the smallest id; the
+    /// others: turned to lie nearest to the section before).
+    #[serde(default)]
+    pub start: Option<EntityId>,
+}
+
+/// A solid through a row of profiles in order: its side passes through
+/// every one of them, its ends are the first and the last.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Loft {
+    /// The profiles, in the order the loft passes through them.
+    pub sections: Vec<LoftSection>,
+    /// Straight lines between sections that follow each other, instead of
+    /// a smooth surface through all of them.
+    #[serde(default)]
+    pub ruled: bool,
+    /// The last section joins the first: a ring without ends.
+    #[serde(default)]
+    pub closed: bool,
+}
+
 fn zero3() -> [Expr; 3] {
     [Expr::new("0"), Expr::new("0"), Expr::new("0")]
 }
@@ -441,6 +471,62 @@ pub struct Boolean {
     pub keep_tool: bool,
 }
 
+/// Most edge references one chamfer holds.
+pub const MAX_CHAMFER_EDGES: usize = 1024;
+
+/// How far a chamfer cuts back the two faces of an edge. "First" and
+/// "second" are the two faces in the order the edge's reference gives
+/// them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum ChamferSize {
+    /// The same distance along both faces.
+    Equal { distance: Expr },
+    /// `distance` along the first face, `second` along the second.
+    TwoDistances { distance: Expr, second: Expr },
+    /// `distance` along the first face; the chamfer face leaves that face
+    /// at `angle`.
+    DistanceAngle { distance: Expr, angle: Expr },
+}
+
+impl ChamferSize {
+    /// The form's name, as in files and command results.
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            ChamferSize::Equal { .. } => "equal",
+            ChamferSize::TwoDistances { .. } => "twoDistances",
+            ChamferSize::DistanceAngle { .. } => "distanceAngle",
+        }
+    }
+}
+
+/// Edges of the body of an earlier feature replaced by faces: the two
+/// faces next to each edge are cut back and a new face joins the cut
+/// lines. The body goes into this feature.
+///
+/// An edge is referred to by the names of the two faces it lies between,
+/// in the order that says which face the first distance is measured
+/// along. Such a reference means every edge between those two faces (the
+/// pieces a later cut divides an edge into stay chamfered). All faces are
+/// faces of one body: the feature the first name starts with.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Chamfer {
+    pub edges: Vec<[PersistentName; 2]>,
+    pub size: ChamferSize,
+    /// With each edge, the edges that continue it smoothly (the whole rim
+    /// of a slot from one of its edges).
+    #[serde(default)]
+    pub chain: bool,
+}
+
+impl Chamfer {
+    /// The feature whose body is chamfered: the one that made the first
+    /// face referred to. `None` for a chamfer without edges.
+    pub fn source(&self) -> Option<FeatureId> {
+        self.edges.first().map(|[first, _]| first.feature)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum FeatureKind {
@@ -452,6 +538,7 @@ pub enum FeatureKind {
     Sketch(Sketch),
     Extrude(Extrude),
     Revolve(Revolve),
+    Loft(Loft),
     Transform(Transform),
     Mirror(Mirror),
     Pattern(Pattern),
@@ -459,6 +546,7 @@ pub enum FeatureKind {
     DatumPlane(DatumPlane),
     DatumAxis(DatumAxis),
     DatumPoint(DatumPoint),
+    Chamfer(Chamfer),
 }
 
 impl FeatureKind {
@@ -473,6 +561,7 @@ impl FeatureKind {
             FeatureKind::Sketch(_) => "sketch",
             FeatureKind::Extrude(_) => "extrude",
             FeatureKind::Revolve(_) => "revolve",
+            FeatureKind::Loft(_) => "loft",
             FeatureKind::Transform(_) => "transform",
             FeatureKind::Mirror(_) => "mirror",
             FeatureKind::Pattern(_) => "pattern",
@@ -480,6 +569,7 @@ impl FeatureKind {
             FeatureKind::DatumPlane(_) => "datumPlane",
             FeatureKind::DatumAxis(_) => "datumAxis",
             FeatureKind::DatumPoint(_) => "datumPoint",
+            FeatureKind::Chamfer(_) => "chamfer",
         }
     }
 
@@ -521,13 +611,15 @@ impl FeatureKind {
     }
 
     /// The one feature whose body this feature is made from (a transform,
-    /// a mirror, a pattern), and whether that feature keeps its own body.
+    /// a mirror, a pattern, a chamfer), and whether that feature keeps
+    /// its own body.
     /// `None` for every other kind; see [`FeatureKind::sources`].
     pub fn source(&self) -> Option<(FeatureId, bool)> {
         match self {
             FeatureKind::Transform(t) => Some((t.source, t.keep)),
             FeatureKind::Mirror(m) => Some((m.source, m.keep)),
             FeatureKind::Pattern(p) => Some((p.source, false)),
+            FeatureKind::Chamfer(c) => c.source().map(|id| (id, false)),
             FeatureKind::Block(_)
             | FeatureKind::Cylinder(_)
             | FeatureKind::Sphere(_)
@@ -536,6 +628,7 @@ impl FeatureKind {
             | FeatureKind::Sketch(_)
             | FeatureKind::Extrude(_)
             | FeatureKind::Revolve(_)
+            | FeatureKind::Loft(_)
             | FeatureKind::Boolean(_)
             | FeatureKind::DatumPlane(_)
             | FeatureKind::DatumAxis(_)
@@ -556,6 +649,7 @@ impl FeatureKind {
                 RevolveAxis::Datum { axis } => vec![r.sketch, axis],
                 RevolveAxis::X | RevolveAxis::Y | RevolveAxis::Line { .. } => vec![r.sketch],
             },
+            FeatureKind::Loft(l) => l.sections.iter().map(|s| s.sketch).collect(),
             FeatureKind::Sketch(sketch) => match &sketch.plane {
                 SketchPlane::Face { face, .. } => vec![face.feature],
                 SketchPlane::Datum { plane, .. } => vec![*plane],
@@ -643,10 +737,24 @@ impl FeatureKind {
                 out = triple("point", &m.point);
                 out.extend(triple("normal", &m.normal));
             }
-            FeatureKind::Boolean(_) => out = Vec::new(),
+            FeatureKind::Boolean(_) | FeatureKind::Loft(_) => out = Vec::new(),
             FeatureKind::DatumPlane(d) => out = d.exprs(),
             FeatureKind::DatumAxis(d) => out = d.exprs(),
             FeatureKind::DatumPoint(d) => out = d.exprs(),
+            FeatureKind::Chamfer(c) => {
+                out = match &c.size {
+                    ChamferSize::Equal { distance } => vec![named("size.distance", distance)],
+                    ChamferSize::TwoDistances { distance, second } => {
+                        vec![
+                            named("size.distance", distance),
+                            named("size.second", second),
+                        ]
+                    }
+                    ChamferSize::DistanceAngle { distance, angle } => {
+                        vec![named("size.distance", distance), named("size.angle", angle)]
+                    }
+                }
+            }
             FeatureKind::Pattern(p) => {
                 out = vec![named("count", &p.count)];
                 match &p.layout {
@@ -705,10 +813,15 @@ impl FeatureKind {
                 .chain([&mut t.angle])
                 .collect(),
             FeatureKind::Mirror(m) => m.point.iter_mut().chain(m.normal.iter_mut()).collect(),
-            FeatureKind::Boolean(_) => Vec::new(),
+            FeatureKind::Boolean(_) | FeatureKind::Loft(_) => Vec::new(),
             FeatureKind::DatumPlane(d) => d.exprs_mut(),
             FeatureKind::DatumAxis(d) => d.exprs_mut(),
             FeatureKind::DatumPoint(d) => d.exprs_mut(),
+            FeatureKind::Chamfer(c) => match &mut c.size {
+                ChamferSize::Equal { distance } => vec![distance],
+                ChamferSize::TwoDistances { distance, second } => vec![distance, second],
+                ChamferSize::DistanceAngle { distance, angle } => vec![distance, angle],
+            },
             FeatureKind::Pattern(p) => {
                 let mut out = vec![&mut p.count];
                 match &mut p.layout {
@@ -890,10 +1003,28 @@ impl Document {
                     ))
                 })?;
             }
+            if let FeatureKind::Loft(loft) = &feature.kind
+                && loft.sections.len() > MAX_LOFT_SECTIONS
+            {
+                return Err(DocError::Invalid(format!(
+                    "the loft `{}` has {} sections; the most is {MAX_LOFT_SECTIONS}",
+                    feature.name,
+                    loft.sections.len()
+                )));
+            }
             let referred = match &feature.kind {
                 FeatureKind::DatumPlane(datum) => datum.names(),
                 FeatureKind::DatumAxis(datum) => datum.names(),
                 FeatureKind::DatumPoint(datum) => datum.names(),
+                FeatureKind::Chamfer(chamfer) => {
+                    if chamfer.edges.len() > MAX_CHAMFER_EDGES {
+                        return Err(DocError::Invalid(format!(
+                            "`{}` has more than {MAX_CHAMFER_EDGES} edges",
+                            feature.name
+                        )));
+                    }
+                    chamfer.edges.iter().flatten().collect()
+                }
                 _ => Vec::new(),
             };
             for name in referred {

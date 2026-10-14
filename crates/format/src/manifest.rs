@@ -204,6 +204,18 @@ pub enum FeatureKind {
         #[serde(default)]
         symmetric: bool,
     },
+    /// A solid through the closed profiles of the sketches of `sections`,
+    /// in order (format version 8).
+    Loft {
+        sections: Vec<LoftSection>,
+        /// Straight between sections that follow each other. Absent
+        /// means smooth; written only when set.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        ruled: bool,
+        /// The last section joins the first. Written only when set.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        closed: bool,
+    },
     /// The body of feature `source`, turned by `angle` about the line
     /// through `pivot` along `axis` (three plain numbers), then shifted by
     /// `translate`. With `keep` the source keeps its own body.
@@ -252,6 +264,26 @@ pub enum FeatureKind {
     DatumAxis { by: AxisBy },
     /// A point to place other features by; it makes no body.
     DatumPoint { at: PointRef },
+    /// Edges of the body of an earlier feature replaced by faces. Each
+    /// edge is the two faces it lies between, the first distance being
+    /// measured along the first; the body is that of the feature the first
+    /// name starts with. With `chain` each edge stands for the edges that
+    /// continue it smoothly as well.
+    Chamfer {
+        edges: Vec<[Name; 2]>,
+        size: ChamferSize,
+        #[serde(default)]
+        chain: bool,
+    },
+}
+
+/// How far a chamfer cuts the two faces of an edge back: expressions.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum ChamferSize {
+    Equal { distance: String },
+    TwoDistances { distance: String, second: String },
+    DistanceAngle { distance: String, angle: String },
 }
 
 /// How a datum axis is placed: through two points, along the straight
@@ -334,6 +366,16 @@ pub enum BooleanOp {
     Union,
     Subtract,
     Intersect,
+}
+
+/// One profile of a loft: the sketch by the id of its feature, and the
+/// curve of it the loop starts with (an entity id), when one is given.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LoftSection {
+    pub sketch: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<u64>,
 }
 
 /// The axis of a revolution: the sketch's x or y axis, one of its lines
@@ -449,6 +491,10 @@ pub enum NameRole {
     EndVertex,
     /// The image of an entity of another body; `sources` is the instance.
     Copy,
+    /// One of several entities the name in `of` would name at once (the
+    /// faces a spline sweeps when it is cut into pieces or turned a full
+    /// turn); `sources` is its number, from 1.
+    Piece,
     /// An entity of a primitive; `sources` is its number.
     Face,
     Edge,
@@ -458,6 +504,13 @@ pub enum NameRole {
     Between,
     /// A vertex by the faces that meet in it (`faces`).
     Corner,
+    /// The face a chamfer puts in the place of an edge; `sources` is the
+    /// place of the edge in the chamfer's list and, when that reference
+    /// gave several edges, which of them.
+    Chamfer,
+    /// The flat face where three chamfers meet; `sources` are the places
+    /// of the three edges in the chamfer's list.
+    ChamferCorner,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

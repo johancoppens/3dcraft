@@ -96,6 +96,13 @@ pub enum Constraint {
         point: EntityId,
         circle: EntityId,
     },
+    /// The point lies on the spline `spline` of [`Sketch::splines`]: at no
+    /// distance from the curve, or beyond its ends from the line along its
+    /// first or last leg. One equation.
+    PointOnSpline {
+        point: EntityId,
+        spline: usize,
+    },
     /// A line parallel to the x axis.
     Horizontal {
         line: EntityId,
@@ -202,10 +209,25 @@ pub enum Constraint {
 /// The solver's input: entities and the constraints on them, in the order
 /// they were added. That order decides which constraint is blamed when two
 /// cannot hold together: the later one.
+/// A polynomial B-spline on control points that are points of the sketch:
+/// `control.len() + degree + 1` knots, clamped at both ends, so the curve
+/// starts at the first control point and ends at the last. It has no
+/// unknowns of its own and is not an entity: only
+/// [`Constraint::PointOnSpline`] refers to it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Spline {
+    /// From 1 to [`crate::MAX_SPLINE_DEGREE`].
+    pub degree: usize,
+    pub knots: Vec<f64>,
+    pub control: Vec<EntityId>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Sketch {
     pub entities: Vec<Entity>,
     pub constraints: Vec<Constraint>,
+    /// The splines points are constrained onto.
+    pub splines: Vec<Spline>,
 }
 
 impl Sketch {
@@ -236,6 +258,17 @@ impl Sketch {
     }
 
     /// Appends a constraint and returns its index.
+    /// Adds a spline for [`Constraint::PointOnSpline`] and returns its
+    /// index.
+    pub fn add_spline(&mut self, degree: usize, knots: Vec<f64>, control: Vec<EntityId>) -> usize {
+        self.splines.push(Spline {
+            degree,
+            knots,
+            control,
+        });
+        self.splines.len() - 1
+    }
+
     pub fn add_constraint(&mut self, constraint: Constraint) -> usize {
         self.constraints.push(constraint);
         self.constraints.len() - 1

@@ -102,7 +102,7 @@ impl Around {
 /// they are within `tolerance` of each other or joined by a row of such
 /// steps, so rounding in the last digits cannot change the order; what
 /// lies in one place keeps the order of its indices.
-fn sort_in_space(items: &mut [(usize, Vec3)], tolerance: f64, axis: usize) {
+pub(crate) fn sort_in_space(items: &mut [(usize, Vec3)], tolerance: f64, axis: usize) {
     let coordinate = |p: Vec3| match axis {
         0 => p.x,
         1 => p.y,

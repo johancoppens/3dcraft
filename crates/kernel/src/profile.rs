@@ -4,9 +4,19 @@
 //! Version 1 accepts simple closed loops of lines, arcs and splines joined
 //! end to end, and circles, where no two loops touch or cross. Everything
 //! else is an error that names the curves involved; a region is never
-//! guessed. (A spline that closes on itself is not a loop yet: its wall
-//! would be a surface that closes on itself, which the tessellator does
-//! not follow. Two splines that share both ends are.)
+//! guessed.
+//!
+//! A spline is a loop on its own when it closes on itself (its last
+//! control point on its first). It is then cut in two, at the inner knot
+//! nearest the middle of its domain, and is a loop of two segments with
+//! the same `source` and the `piece` numbers 0 and 1: what it sweeps is
+//! two faces, neither on a surface that closes on itself (for which
+//! `craft3d-geom` has no period, so nothing downstream could follow its
+//! seam). A spline with corners (an inner knot as often as its degree,
+//! which is every inner knot of a spline of degree 1, a polyline) is cut
+//! at them the same way, into as many segments as it has smooth pieces; a
+//! piece of degree 1 is a `Shape::Line`. The pieces are the spline
+//! exactly (knot insertion).
 //!
 //! How it works:
 //! 1. Curve ends closer than the linear tolerance are one junction. Exactly
@@ -147,6 +157,10 @@ pub enum Shape {
 pub struct Segment {
     /// The id of the sketch curve.
     pub source: u64,
+    /// Which piece of that curve, counted from its start: 0 unless the
+    /// curve was cut into several (a spline at its corners, and a spline
+    /// that closes on itself in two; see the module documentation).
+    pub piece: u32,
     /// True when the loop runs against the curve's own direction (a line
     /// from its end to its start, an arc or circle clockwise).
     pub reversed: bool,
@@ -189,6 +203,7 @@ impl Segment {
     fn opposite(&self) -> Segment {
         Segment {
             source: self.source,
+            piece: self.piece,
             reversed: !self.reversed,
             start: self.end,
             end: self.start,
@@ -408,6 +423,8 @@ impl Loop2 {
     fn sources(&self, limit: usize) -> Vec<u64> {
         let mut ids: Vec<u64> = self.segments.iter().map(|s| s.source).collect();
         ids.sort_unstable();
+        // A curve cut into pieces is one curve.
+        ids.dedup();
         ids.truncate(limit);
         ids
     }
@@ -490,14 +507,6 @@ fn validate(curve: &SketchCurve, tol: f64) -> Result<(), KernelError> {
             let b = spline.bbox();
             if (b[2] - b[0]).hypot(b[3] - b[1]) <= tol {
                 return Err(degenerate(id, "the spline has no length"));
-            }
-            if let (Some(first), Some(last)) = (spline.control.first(), spline.control.last())
-                && distance(*first, *last) <= tol
-            {
-                return Err(degenerate(
-                    id,
-                    "the spline closes on itself, and a loop of one spline is not supported yet: draw the loop as two splines that share their end points",
-                ));
             }
         }
         &Curve2::Line { start, end } => {
@@ -911,6 +920,49 @@ pub fn detect_profiles(
     for curve in &sorted {
         validate(curve, tol)?;
     }
+    // A spline is cut where its sweep would not be one smooth face that
+    // ends: at its corners, and in two when it closes on itself. The
+    // pieces are curves of their own from here on, with the spline's id; a
+    // piece of degree 1 is a line.
+    let mut pieces: Vec<u32> = Vec::with_capacity(sorted.len());
+    let mut cut: Vec<SketchCurve> = Vec::with_capacity(sorted.len());
+    for curve in sorted {
+        let Curve2::Spline(spline) = &curve.curve else {
+            pieces.push(0);
+            cut.push(curve);
+            continue;
+        };
+        let closed = matches!(
+            (spline.control.first(), spline.control.last()),
+            (Some(first), Some(last)) if distance(*first, *last) <= tol
+        );
+        for (piece, part) in spline.profile_pieces(closed).into_iter().enumerate() {
+            if cut.len() >= MAX_CURVES {
+                return Err(KernelError::TooManyCurves {
+                    count: cut.len().saturating_add(1),
+                    limit: MAX_CURVES,
+                });
+            }
+            let straight = match (part.degree, part.control.as_slice()) {
+                (1, &[start, end]) => Some(Curve2::Line { start, end }),
+                _ => None,
+            };
+            if let Some(Curve2::Line { start, end }) = straight
+                && distance(start, end) <= tol
+            {
+                return Err(degenerate(
+                    curve.id,
+                    "two control points in a row of the polyline coincide",
+                ));
+            }
+            pieces.push(u32::try_from(piece).unwrap_or(u32::MAX));
+            cut.push(SketchCurve {
+                id: curve.id,
+                curve: straight.unwrap_or(Curve2::Spline(part)),
+            });
+        }
+    }
+    let sorted = cut;
 
     // Ends: two per line or arc, consecutive.
     let mut ends = Vec::new();
@@ -950,6 +1002,7 @@ pub fn detect_profiles(
     for (i, end) in ends.iter().enumerate() {
         let other = mate_of(i).ok_or_else(internal)?;
         if other.curve == end.curve {
+            // (A spline that closes on itself was cut in two above.)
             return Err(degenerate(
                 sorted.get(end.curve).map_or(0, |c| c.id),
                 "its two ends coincide",
@@ -961,7 +1014,7 @@ pub fn detect_profiles(
 
     // Every curve in its own direction, between the representatives.
     let mut own = Vec::with_capacity(sorted.len());
-    for (curve, first) in sorted.iter().zip(&first_end) {
+    for ((curve, first), &piece) in sorted.iter().zip(&first_end).zip(&pieces) {
         let ends_of = first.and_then(|f| Some((*snapped.get(f)?, *snapped.get(f + 1)?)));
         let (start, end, shape) = match (&curve.curve, ends_of) {
             (&Curve2::Circle { center, radius }, _) => {
@@ -1002,6 +1055,7 @@ pub fn detect_profiles(
         }
         own.push(Segment {
             source: curve.id,
+            piece,
             reversed: false,
             start,
             end,

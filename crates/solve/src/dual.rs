@@ -1,13 +1,17 @@
 //! Forward-mode automatic differentiation over a handful of local variables.
 //!
-//! Every constraint equation touches at most [`SLOTS`] unknowns (four points),
-//! so a value plus a fixed array of partial derivatives is enough to get an
-//! exact Jacobian row from the same expression that computes the residual.
+//! Every constraint equation touches at most [`SLOTS`] unknowns (four
+//! points, or a point and the eight control points of a stretch of a spline
+//! of degree seven), so a value plus a fixed array of partial derivatives is
+//! enough to get an exact Jacobian row from the same expression that
+//! computes the residual.
 
 use std::ops::{Add, Div, Mul, Neg, Sub};
 
-/// The most unknowns one scalar equation can depend on (four points).
-pub(crate) const SLOTS: usize = 8;
+/// The most unknowns one scalar equation can depend on: a point and the
+/// eight control points that count at one place of a spline of degree
+/// seven (the other equations need eight: four points).
+pub(crate) const SLOTS: usize = 18;
 
 /// A value and its partial derivatives with respect to the local variables.
 #[derive(Clone, Copy, Debug, PartialEq)]

@@ -32,7 +32,7 @@ const WORK_LIMIT: usize = 5_000_000;
 
 /// How far apart, in the parameter of a curve (0 to 1), two stretches may
 /// be and still count as one.
-const RUN_GAP: f64 = 1e-9;
+pub(crate) const RUN_GAP: f64 = 1e-9;
 
 /// A control polygon that turns through less than this (radians) bounds a
 /// piece that cannot meet itself; half a turn would do, the margin is for
@@ -126,10 +126,9 @@ impl Spline2 {
         if start >= end {
             return Some("the knots of the spline span no length");
         }
-        // An inner knot repeated `degree` times is a corner (more tear the
-        // curve): the wall swept from it would be a surface with a crease,
-        // which is two faces, not one. So is every inner knot of a spline
-        // of degree 1, which is a polyline.
+        // An inner knot repeated `degree` times is a corner, where a
+        // profile cuts the spline in two ([`Spline2::profile_pieces`]);
+        // repeated more often it tears the curve apart.
         let inner = self.knots.get(p + 1..n).unwrap_or(&[]);
         let mut run = 0_usize;
         for (i, knot) in inner.iter().enumerate() {
@@ -137,13 +136,115 @@ impl Spline2 {
                 Some(before) if before == knot => run + 1,
                 _ => 1,
             };
-            if run >= p {
+            if run > p {
                 return Some(
-                    "the spline has a corner at an inner knot (a spline of degree 1 is a polyline): draw lines, or one spline up to the corner and another from it",
+                    "an inner knot of the spline is repeated more often than its degree, which tears the curve apart there",
                 );
             }
         }
         None
+    }
+
+    /// The spline cut in two at the knot value `u`, strictly inside its
+    /// domain: the same curve as two clamped splines, the first ending and
+    /// the second starting on the point at `u`. Exact up to rounding (the
+    /// knot is inserted until it is there `degree` times, Boehm's
+    /// algorithm). `None` for a spline with a [`Spline2::fault`] and for a
+    /// `u` that is not inside.
+    fn cut(&self, u: f64) -> Option<(Spline2, Spline2)> {
+        let p = self.degree;
+        let (start, end) = (*self.knots.get(p)?, *self.knots.get(self.control.len())?);
+        if self.fault().is_some() || !(u > start && u < end) {
+            return None;
+        }
+        let (mut knots, mut control) = (self.knots.clone(), self.control.clone());
+        for _ in 0..=p {
+            let times = knots.iter().filter(|k| **k == u).count();
+            if times >= p {
+                break;
+            }
+            // The span the knot goes into: the last knot not above it.
+            let k = knots.iter().rposition(|knot| *knot <= u)?;
+            let mut next = Vec::with_capacity(control.len() + 1);
+            for i in 0..=control.len() {
+                next.push(if i + p <= k {
+                    *control.get(i)?
+                } else if i > k {
+                    *control.get(i - 1)?
+                } else {
+                    let (low, high) = (*knots.get(i)?, *knots.get(i + p)?);
+                    let alpha = (u - low) / (high - low);
+                    lerp(*control.get(i - 1)?, *control.get(i)?, alpha)
+                });
+            }
+            knots.insert(k + 1, u);
+            control = next;
+        }
+        // The knot is there `degree` times from `first` on: the control
+        // point before it is the point of the curve.
+        let first = knots.iter().position(|knot| *knot == u)?;
+        let mut left_knots = knots.get(..first + p)?.to_vec();
+        left_knots.push(u);
+        let mut right_knots = vec![u];
+        right_knots.extend_from_slice(knots.get(first..)?);
+        Some((
+            Spline2 {
+                degree: p,
+                knots: left_knots,
+                control: control.get(..first)?.to_vec(),
+            },
+            Spline2 {
+                degree: p,
+                knots: right_knots,
+                control: control.get(first.checked_sub(1)?..)?.to_vec(),
+            },
+        ))
+    }
+
+    /// The pieces a profile makes of the spline, in order: cut at every
+    /// corner (an inner knot repeated `degree` times, which is every inner
+    /// knot of a spline of degree 1), and a spline that closes on itself
+    /// (`closed`) without a corner in two, at the inner knot nearest the
+    /// middle of its domain or at the middle itself. Each piece sweeps a
+    /// smooth surface that does not close on itself. One piece, the spline
+    /// as it is, when there is nothing to cut.
+    pub(crate) fn profile_pieces(&self, closed: bool) -> Vec<Spline2> {
+        let (p, n) = (self.degree, self.control.len());
+        let whole = || vec![self.clone()];
+        if self.fault().is_some() {
+            return whole();
+        }
+        let (Some(&start), Some(&end)) = (self.knots.get(p), self.knots.get(n)) else {
+            return whole();
+        };
+        let inner = self.knots.get(p + 1..n).unwrap_or(&[]);
+        let mut cuts: Vec<f64> = Vec::new();
+        for &knot in inner {
+            let times = inner.iter().filter(|k| **k == knot).count();
+            if times >= p && knot > start && knot < end && cuts.last() != Some(&knot) {
+                cuts.push(knot);
+            }
+        }
+        if cuts.is_empty() && closed {
+            let middle = start + (end - start) / 2.0;
+            let nearest = inner
+                .iter()
+                .copied()
+                .filter(|knot| *knot > start && *knot < end)
+                .min_by(|a, b| (a - middle).abs().total_cmp(&(b - middle).abs()));
+            cuts.push(nearest.unwrap_or(middle));
+        }
+        let mut pieces = Vec::with_capacity(cuts.len() + 1);
+        let mut rest = self.clone();
+        for u in cuts {
+            let Some((left, right)) = rest.cut(u) else {
+                return whole();
+            };
+            pieces.push(left);
+            rest = right;
+        }
+        pieces.push(rest);
+        pieces
     }
 
     /// The blossom of the span that starts at knot `k`, at the arguments
@@ -211,6 +312,57 @@ impl Spline2 {
             }
         }
         parts
+    }
+
+    /// The least and the greatest of `(p − origin) · normal` over the
+    /// points `p` of the curve: how far it reaches either way across the
+    /// line through `origin` at right angles to `normal`. Found on the
+    /// Bézier pieces, cut in two where their control points still allow
+    /// more than their ends reach, to about 1e-14 of the size; not finite
+    /// for a spline with a [`Spline2::fault`].
+    pub(crate) fn extent(&self, origin: P2, normal: P2) -> (f64, f64) {
+        let height = |p: &P2| dot(sub(*p, origin), normal);
+        let (mut low, mut high) = (f64::INFINITY, f64::NEG_INFINITY);
+        let mut stack: Vec<(Vec<f64>, u32)> = Vec::new();
+        for part in self.pieces() {
+            if let Piece::Bezier(points) = &part.piece {
+                stack.push((points.iter().map(height).collect(), 0));
+            }
+        }
+        if stack.is_empty() {
+            return (f64::NAN, f64::NAN);
+        }
+        let mut work = 0_usize;
+        while let Some((heights, depth)) = stack.pop() {
+            let (Some(&first), Some(&last)) = (heights.first(), heights.last()) else {
+                continue;
+            };
+            // The ends are points of the curve.
+            (low, high) = (low.min(first.min(last)), high.max(first.max(last)));
+            let least = heights.iter().copied().fold(f64::INFINITY, f64::min);
+            let most = heights.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            let slack = 1e-14 * low.abs().max(high.abs());
+            work = work.saturating_add(1);
+            if (least >= low - slack && most <= high + slack) || depth >= 60 || work > WORK_LIMIT {
+                continue;
+            }
+            // De Casteljau on the heights alone.
+            let mut row = heights;
+            let (mut left, mut right) = (Vec::new(), Vec::new());
+            while let (Some(&a), Some(&b)) = (row.first(), row.last()) {
+                left.push(a);
+                right.push(b);
+                row = row
+                    .iter()
+                    .zip(row.iter().skip(1))
+                    .map(|(a, b)| (a + b) / 2.0)
+                    .collect();
+            }
+            right.reverse();
+            stack.push((left, depth + 1));
+            stack.push((right, depth + 1));
+        }
+        (low, high)
     }
 
     /// `[min x, min y, max x, max y]` of the control points, which contain
@@ -874,6 +1026,55 @@ mod tests {
     }
 
     #[test]
+    fn the_pieces_of_a_spline_are_the_spline() {
+        // A cubic with a corner in it, a polyline, and smooth splines cut
+        // in the middle because they close.
+        let mut cornered = clamped(3, &WAVE);
+        cornered.knots = vec![0.0, 0.0, 0.0, 0.0, 0.4, 0.4, 0.4, 1.0, 1.0, 1.0, 1.0];
+        let mut polyline = clamped(1, &WAVE);
+        polyline.knots = vec![0.0, 0.0, 0.1, 0.3, 0.5, 0.6, 0.8, 1.0, 1.0];
+        let cases = [
+            (cornered, false, 2),
+            (polyline, false, 6),
+            (clamped(3, &WAVE), false, 1),
+            (clamped(3, &WAVE), true, 2),
+            (clamped(2, &WAVE), true, 2),
+            (clamped(5, &WAVE), true, 2),
+            (clamped(6, &WAVE), true, 2),
+            (clamped(3, &WAVE[..4]), true, 2),
+        ];
+        for (number, (spline, closed, count)) in cases.into_iter().enumerate() {
+            let pieces = spline.profile_pieces(closed);
+            assert_eq!(pieces.len(), count, "case {number}");
+            let (p, n) = (spline.degree, spline.control.len());
+            let (start, end) = (spline.knots[p], spline.knots[n]);
+            assert_eq!(pieces[0].control[0], spline.control[0]);
+            assert_eq!(pieces.last().unwrap().control.last(), spline.control.last());
+            for pair in pieces.windows(2) {
+                assert_eq!(pair[0].control.last(), pair[1].control.first());
+            }
+            for piece in &pieces {
+                assert_eq!(piece.fault(), None, "case {number}");
+                assert_eq!(piece.profile_pieces(false).len(), 1, "case {number}");
+                let (q, m) = (piece.degree, piece.control.len());
+                let (from, to) = (piece.knots[q], piece.knots[m]);
+                for i in 0..=200 {
+                    let s = f64::from(i) / 200.0;
+                    let u = from + (to - from) * s;
+                    // Just inside at a corner, where the two sides differ
+                    // only in which piece they belong to.
+                    let ours = de_boor(piece, s);
+                    let theirs = de_boor(&spline, (u - start) / (end - start));
+                    assert!(
+                        distance(ours, theirs) < 1e-13,
+                        "case {number} at {u}: {ours:?} {theirs:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn halves_are_the_same_curve() {
         let part = clamped(3, &WAVE[..4]).pieces().remove(0);
         let (first, second) = part.halves();
@@ -1081,7 +1282,7 @@ mod tests {
         let good = clamped(3, &WAVE);
         assert_eq!(good.fault(), None);
         type Damage = fn(&mut Spline2);
-        let broken: [Damage; 10] = [
+        let broken: [Damage; 9] = [
             |s| s.degree = 0,
             |s| s.degree = MAX_SPLINE_DEGREE + 1,
             |s| s.control.truncate(3),
@@ -1090,12 +1291,10 @@ mod tests {
             |s| s.knots.swap(4, 5),
             |s| s.knots[0] = -1.0,
             |s| s.knots = vec![0.0; 11],
-            // A triple inner knot is a corner in a cubic.
-            |s| s.knots = vec![0.0, 0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0],
-            // Every inner knot of a polyline is one.
+            // A knot four times in a cubic tears it apart.
             |s| {
-                s.degree = 1;
-                s.knots = vec![0.0, 0.0, 0.2, 0.4, 0.5, 0.6, 0.8, 1.0, 1.0];
+                s.control.push([9.0, 1.0]);
+                s.knots = vec![0.0, 0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0];
             },
         ];
         for (i, damage) in broken.into_iter().enumerate() {
@@ -1104,6 +1303,16 @@ mod tests {
             assert!(spline.fault().is_some(), "damage {i}");
             assert!(spline.pieces().is_empty(), "damage {i}");
         }
+        // A triple inner knot is a corner in a cubic, and every inner knot
+        // of a polyline is one: no fault, a profile cuts the spline there.
+        let mut corner = good.clone();
+        corner.knots = vec![0.0, 0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0];
+        assert_eq!(corner.fault(), None);
+        let mut polyline = good.clone();
+        polyline.degree = 1;
+        polyline.knots = vec![0.0, 0.0, 0.2, 0.4, 0.5, 0.6, 0.8, 1.0, 1.0];
+        assert_eq!(polyline.fault(), None);
+        assert_eq!(polyline.profile_pieces(false).len(), 6);
         // A double inner knot leaves a cubic smooth, and a spline of
         // degree 1 on two points is a line.
         let mut double = good.clone();

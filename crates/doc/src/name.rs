@@ -64,6 +64,14 @@ pub enum NameRole {
     /// instance (0 for the first, or only, one); the name of the entity it
     /// is the image of follows after `/`.
     Copy,
+    /// One of several entities that the name after `/` would otherwise
+    /// name all at once: a curve that sweeps more than one face (a spline
+    /// cut at its corners, a spline that closes on itself, a spline turned
+    /// a full turn, which is made in two halves) calls the first
+    /// `F2:side(e7)` and the others `F2:piece(1)/F2:side(e7)`, and so on;
+    /// their edges and vertices likewise. Its one source is the number,
+    /// from 1; the feature is the same before and after `/`.
+    Piece,
     /// A face of a primitive, by its number: the faces of a primitive are
     /// made in a fixed order (for a block: 0 bottom, 1 top, 2 front (-y),
     /// 3 back (+y), 4 left (-x), 5 right (+x), in its own axes; for a
@@ -79,10 +87,19 @@ pub enum NameRole {
     Between,
     /// A vertex, by the faces of its body that meet in it.
     Corner,
+    /// The face a chamfer puts in the place of an edge. Its sources are
+    /// plain numbers: the place of the edge's reference in the chamfer's
+    /// list of edges, and, when that reference gave several edges, which
+    /// of them, counted in the order of where they lie in space.
+    Chamfer,
+    /// The flat face in the corner where three chamfered edges meet. Its
+    /// sources are plain numbers: the places of the three references in
+    /// the chamfer's list, ascending.
+    ChamferCorner,
 }
 
 impl NameRole {
-    pub const ALL: [NameRole; 14] = [
+    pub const ALL: [NameRole; 17] = [
         NameRole::StartCap,
         NameRole::EndCap,
         NameRole::Side,
@@ -92,11 +109,14 @@ impl NameRole {
         NameRole::StartVertex,
         NameRole::EndVertex,
         NameRole::Copy,
+        NameRole::Piece,
         NameRole::Face,
         NameRole::Edge,
         NameRole::Vertex,
         NameRole::Between,
         NameRole::Corner,
+        NameRole::Chamfer,
+        NameRole::ChamferCorner,
     ];
 
     pub fn name(self) -> &'static str {
@@ -110,11 +130,14 @@ impl NameRole {
             NameRole::StartVertex => "startVertex",
             NameRole::EndVertex => "endVertex",
             NameRole::Copy => "copy",
+            NameRole::Piece => "piece",
             NameRole::Face => "face",
             NameRole::Edge => "edge",
             NameRole::Vertex => "vertex",
             NameRole::Between => "between",
             NameRole::Corner => "corner",
+            NameRole::Chamfer => "chamfer",
+            NameRole::ChamferCorner => "chamferCorner",
         }
     }
 
@@ -127,7 +150,12 @@ impl NameRole {
     pub fn is_face(self) -> bool {
         matches!(
             self,
-            NameRole::StartCap | NameRole::EndCap | NameRole::Side | NameRole::Face
+            NameRole::StartCap
+                | NameRole::EndCap
+                | NameRole::Side
+                | NameRole::Face
+                | NameRole::Chamfer
+                | NameRole::ChamferCorner
         )
     }
 
@@ -162,7 +190,13 @@ impl NameRole {
     /// True for a role whose name continues after `/` with the name of the
     /// entity it was made from.
     pub fn is_derived(self) -> bool {
-        matches!(self, NameRole::Copy)
+        matches!(self, NameRole::Copy | NameRole::Piece)
+    }
+
+    /// True for a role whose sources are plain numbers, one or more,
+    /// written without the `e` of a sketch entity: `chamfer(0,1)`.
+    pub fn is_counted(self) -> bool {
+        matches!(self, NameRole::Chamfer | NameRole::ChamferCorner)
     }
 
     /// True for a role with exactly one source that is a plain number (an
@@ -171,7 +205,7 @@ impl NameRole {
     pub fn is_numbered(self) -> bool {
         matches!(
             self,
-            NameRole::Copy | NameRole::Face | NameRole::Edge | NameRole::Vertex
+            NameRole::Copy | NameRole::Piece | NameRole::Face | NameRole::Edge | NameRole::Vertex
         )
     }
 }
@@ -229,6 +263,18 @@ impl PersistentName {
         Self {
             of: Some(Box::new(of)),
             ..Self::new(feature, NameRole::Copy, vec![instance])
+        }
+    }
+
+    /// Entity number `piece` of those `of` would name in its own feature
+    /// (see [`NameRole::Piece`]); `of` itself for number 0.
+    pub fn piece(piece: u32, of: PersistentName) -> Self {
+        if piece == 0 {
+            return of;
+        }
+        Self {
+            of: Some(Box::new(of.clone())),
+            ..Self::new(of.feature, NameRole::Piece, vec![u64::from(piece)])
         }
     }
 
@@ -403,6 +449,9 @@ impl PersistentName {
                 if name.role.is_numbered() && name.sources.len() != 1 {
                     return Err("a copy, face, edge or vertex has one number");
                 }
+                if name.role.is_counted() && name.sources.is_empty() {
+                    return Err("a chamfer face has at least one number");
+                }
             }
             match (name.role.is_derived(), &name.of) {
                 (true, Some(next)) => name = next,
@@ -442,11 +491,13 @@ impl PersistentName {
             }
             if !(name.role.is_by_faces() && name.sources.is_empty()) {
                 f.write_str("(")?;
-                let prefix = if name.role.is_numbered() || name.role.is_by_faces() {
-                    ""
-                } else {
-                    "e"
-                };
+                let prefix =
+                    if name.role.is_numbered() || name.role.is_by_faces() || name.role.is_counted()
+                    {
+                        ""
+                    } else {
+                        "e"
+                    };
                 for (i, source) in name.sources.iter().enumerate() {
                     if i > 0 {
                         f.write_str(",")?;
@@ -625,7 +676,12 @@ fn parse_link(
     let inner = rest
         .strip_suffix(')')
         .ok_or_else(|| wrong("it does not end with `)`"))?;
-    let sources = parse_sources(inner, role.is_numbered(), reading)?;
+    let sources = parse_sources(inner, role.is_numbered() || role.is_counted(), reading)?;
+    if role.is_counted() && sources.is_empty() {
+        return Err(wrong(
+            "this role takes at least one number, as in chamfer(0)",
+        ));
+    }
     if role.is_numbered() && sources.len() != 1 {
         return Err(wrong(
             "this role takes one number, as in copy(0) or face(2)",
@@ -701,6 +757,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_piece_is_named_after_the_first_with_its_number() {
+        let side = PersistentName::new(FeatureId(2), NameRole::Side, vec![7]);
+        assert_eq!(PersistentName::piece(0, side.clone()), side);
+        let second = PersistentName::piece(1, side.clone());
+        assert_eq!(second.to_string(), "F2:piece(1)/F2:side(e7)");
+        assert!(second.is_face() && !second.is_edge());
+        assert_eq!(second.check(), Ok(()));
+        assert_eq!(second.root(), &side);
+        assert_ne!(second, PersistentName::piece(2, side));
+    }
+
+    #[test]
     fn a_name_is_written_and_read_back() {
         let cases = [
             ("F2:side(e7)", NameRole::Side, vec![7]),
@@ -716,6 +784,12 @@ mod tests {
             ("F3:edge(11)", NameRole::Edge, vec![11]),
             ("F3:vertex(0)", NameRole::Vertex, vec![0]),
             ("F4:copy(1)/F3:face(5)", NameRole::Copy, vec![1]),
+            ("F2:piece(1)/F2:side(e7)", NameRole::Piece, vec![1]),
+            (
+                "F5:copy(0)/F2:piece(3)/F2:lateralEdge(e7,e7)",
+                NameRole::Copy,
+                vec![0],
+            ),
             (
                 "F9:copy(0)/F5:copy(11)/F2:endCap(e7,e8)",
                 NameRole::Copy,

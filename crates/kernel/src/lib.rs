@@ -3,12 +3,15 @@
 //! why it cannot (docs/architecture.md §5.3).
 //!
 //! So far: primitive solids, closed profiles from sketch curves
-//! ([`profile`]), their extrusion ([`extrude`]) and their revolution
-//! ([`revolve`]). Booleans and blends arrive with their milestones.
+//! ([`profile`]), their extrusion ([`extrude`]), their revolution
+//! ([`revolve`]), the solid through a row of them ([`loft`]), booleans
+//! ([`boolean`]) and chamfers ([`chamfer`]).
 
 pub mod boolean;
+pub mod chamfer;
 pub mod extrude;
 pub mod extrude_to;
+pub mod loft;
 pub mod primitives;
 pub mod profile;
 pub mod revolve;
@@ -124,6 +127,35 @@ pub enum KernelError {
     EmptyResult {
         operation: &'static str,
     },
+    /// A chamfer distance for which the cut line would leave `face`, one
+    /// of the two faces of `edge`: `largest` is the distance at which it
+    /// does.
+    ChamferTooLarge {
+        edge: craft3d_topo::EdgeId,
+        face: craft3d_topo::FaceId,
+        distance: f64,
+        largest: f64,
+    },
+    /// An edge that cannot be chamfered, or is not built yet, or a chamfer
+    /// that did not come out as one: the edge and the face it is about,
+    /// when there is one.
+    Chamfer {
+        edge: Option<craft3d_topo::EdgeId>,
+        face: Option<craft3d_topo::FaceId>,
+        reason: &'static str,
+    },
+    /// The boolean refused the tool of a chamfered edge.
+    ChamferBoolean {
+        edge: craft3d_topo::EdgeId,
+        error: Box<KernelError>,
+    },
+    /// A loft cannot be made through these sections (counted from 0;
+    /// empty when it is not about particular ones). `reason` counts them
+    /// from 1, as the user does.
+    Loft {
+        sections: Vec<usize>,
+        reason: String,
+    },
 }
 
 fn id_list(ids: &[u64]) -> String {
@@ -234,6 +266,31 @@ impl fmt::Display for KernelError {
             KernelError::EmptyResult { operation } => {
                 write!(f, "{operation} leaves nothing: the result is empty")
             }
+            KernelError::ChamferTooLarge {
+                edge,
+                face,
+                distance,
+                largest,
+            } => write!(
+                f,
+                "the chamfer of edge {} is too large for face {}: the cut line at {distance} \
+                 leaves the face; the distance has to stay below {largest}",
+                edge.0, face.0
+            ),
+            KernelError::Chamfer { edge, face, reason } => {
+                write!(f, "chamfer")?;
+                if let Some(edge) = edge {
+                    write!(f, " of edge {}", edge.0)?;
+                }
+                if let Some(face) = face {
+                    write!(f, " (face {})", face.0)?;
+                }
+                write!(f, ": {reason}")
+            }
+            KernelError::ChamferBoolean { edge, error } => {
+                write!(f, "chamfer of edge {}: {error}", edge.0)
+            }
+            KernelError::Loft { reason, .. } => write!(f, "{reason}"),
         }
     }
 }
