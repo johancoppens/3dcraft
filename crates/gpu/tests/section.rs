@@ -16,8 +16,8 @@ mod common;
 mod devices;
 
 use common::{
-    compare_msaa_with, compare_with, evidence, offscreens, orthographic, params, perspective,
-    write_evidence,
+    Parity, compare_msaa_with, compare_with, evidence, offscreens, orthographic, params,
+    perspective, write_evidence,
 };
 use craft3d_gpu::{
     Camera, DrawOptions, GpuError, Highlight, Mesh, Onscreen, OverlayParams, Projection,
@@ -245,6 +245,31 @@ fn record_failure(
     eprintln!("{text}");
 }
 
+/// On OpenGL only, a frame that failed is rendered once more, and when that
+/// frame passes the same strict comparison its parity stands in for the
+/// failed one's. Three gates in a row (2026-10-14) failed on 16 pixels at the
+/// right edge of a picture whose colours were random bytes over the
+/// background while the face ids were right, and the same scene rendered
+/// again came out right every time: Mesa's OpenGL (Intel, under the full
+/// gate's load) left part of the colour copy unwritten. Vulkan and lavapipe
+/// stay strict, and so does OpenGL for a frame that is wrong again: a defect
+/// of the algorithm still fails. The developer agreed to this on 2026-10-14.
+fn gl_race_rendered_again(
+    scene: &Scene,
+    adapter: &craft3d_gpu::AdapterSummary,
+    cpu: &craft3d_gpu::Frame,
+    offscreen: &mut craft3d_gpu::Offscreen,
+) -> Option<Parity> {
+    if !adapter.backend.eq_ignore_ascii_case("gl") {
+        return None;
+    }
+    let again = offscreen
+        .render(&scene.mesh, &scene.camera, &scene.params)
+        .ok()?;
+    let (parity, _) = compare_with(&scene.mesh, &scene.camera, &scene.params, cpu, &again);
+    (parity.id_outside + parity.depth_outside + parity.color_outside == 0).then_some(parity)
+}
+
 /// Renders every scene with both renderers on every adapter and checks
 /// parity. Returns the number of comparisons.
 fn check(group: &str, scenes: &[Scene]) -> usize {
@@ -258,7 +283,7 @@ fn check(group: &str, scenes: &[Scene]) -> usize {
             let gpu = offscreen
                 .render(&scene.mesh, &scene.camera, &scene.params)
                 .unwrap_or_else(|e| panic!("{} on {adapter}: {e}", scene.name));
-            let (parity, band) =
+            let (mut parity, band) =
                 compare_with(&scene.mesh, &scene.camera, &scene.params, &cpu, &gpu);
             let label = format!("{} on {adapter}", scene.name);
             if scene.evidence {
@@ -287,6 +312,14 @@ fn check(group: &str, scenes: &[Scene]) -> usize {
             log.push_str(&format!("{label}: cap pixels {caps}, {parity:?}\n"));
             if parity.id_outside + parity.depth_outside + parity.color_outside > 0 {
                 record_failure(scene, &adapter, &cpu, &gpu, &band, &mut offscreen);
+                if let Some(clean) = gl_race_rendered_again(scene, &adapter, &cpu, &mut offscreen) {
+                    eprintln!(
+                        "{label}: the frame above is counted as rendered again, which matches \
+                         ({clean:?}): Mesa's OpenGL left bytes of the colour copy unwritten \
+                         (docs/testing.md, *A race in Mesa's OpenGL*)"
+                    );
+                    parity = clean;
+                }
             }
             parity.check(&label);
             let differing: usize = parity.color_histogram.iter().skip(1).sum();
