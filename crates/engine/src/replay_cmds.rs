@@ -115,34 +115,39 @@ mod native {
     }
 
     impl Meshes {
-        fn of(
-            &mut self,
-            body: &Arc<Body>,
-            name: &str,
-            tess: &TessParams,
-        ) -> Result<Arc<Mesh>, CommandError> {
-            if let Some((_, mesh)) = self.held.iter().find(|(b, _)| Arc::ptr_eq(b, body)) {
-                return Ok(Arc::clone(mesh));
-            }
-            let mesh = Arc::new(
-                tessellate_body(body, tess)
-                    .map_err(|e| CommandError::new(format!("view.replay: {name}: {e}")))?,
-            );
-            self.held.push((Arc::clone(body), Arc::clone(&mesh)));
-            Ok(mesh)
-        }
-
-        /// One mesh of all `bodies`, face ids counting on across bodies,
-        /// exactly as `view.render` joins them.
-        fn joined(
+        /// Tessellates every body of `bodies` not held yet.
+        fn fill(
             &mut self,
             bodies: &Bodies,
             names: &dyn Fn(FeatureId) -> String,
             tess: &TessParams,
-        ) -> Result<Mesh, CommandError> {
-            let mut all = Mesh::default();
+        ) -> Result<(), CommandError> {
             for (id, body) in bodies {
-                let mesh = self.of(body, &names(*id), tess)?;
+                if self.get(body).is_none() {
+                    let mesh = tessellate_body(body, tess).map_err(|e| {
+                        CommandError::new(format!("view.replay: {}: {e}", names(*id)))
+                    })?;
+                    self.held.push((Arc::clone(body), Arc::new(mesh)));
+                }
+            }
+            Ok(())
+        }
+
+        fn get(&self, body: &Arc<Body>) -> Option<&Mesh> {
+            self.held
+                .iter()
+                .find(|(b, _)| Arc::ptr_eq(b, body))
+                .map(|(_, mesh)| mesh.as_ref())
+        }
+
+        /// One mesh of all `bodies` (filled before), face ids counting on
+        /// across bodies, exactly as `view.render` joins them.
+        fn joined(&self, bodies: &Bodies) -> Result<Mesh, CommandError> {
+            let mut all = Mesh::default();
+            for (_, body) in bodies {
+                let mesh = self
+                    .get(body)
+                    .ok_or_else(|| CommandError::new("view.replay: a body was not meshed"))?;
                 let vertex_base = u32::try_from(all.positions.len())
                     .map_err(|_| CommandError::new("view.replay: mesh too large"))?;
                 let face_base = all.face_ids.iter().copied().max().map_or(0, |m| m + 1);
@@ -155,6 +160,68 @@ mod native {
             }
             Ok(all)
         }
+    }
+
+    /// Runs `job(0)` .. `job(count - 1)` on up to `threads` threads; the
+    /// error of the lowest job that failed, so the answer does not depend
+    /// on which thread got there first.
+    fn in_parallel(
+        count: usize,
+        threads: usize,
+        job: impl Fn(usize) -> Result<(), CommandError> + Sync,
+    ) -> Result<(), CommandError> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let next = AtomicUsize::new(0);
+        let work = || -> Vec<(usize, CommandError)> {
+            let mut failed = Vec::new();
+            loop {
+                let n = next.fetch_add(1, Ordering::Relaxed);
+                if n >= count {
+                    return failed;
+                }
+                if let Err(e) = job(n) {
+                    failed.push((n, e));
+                }
+            }
+        };
+        let mut failed = Vec::new();
+        let mut stopped = false;
+        std::thread::scope(|scope| {
+            let mut workers = Vec::new();
+            for _ in 1..threads.min(count) {
+                // A thread that cannot be started is not an error: the
+                // others (at least this one) do its share.
+                if let Ok(worker) = std::thread::Builder::new().spawn_scoped(scope, work) {
+                    workers.push(worker);
+                }
+            }
+            failed.extend(work());
+            for worker in workers {
+                match worker.join() {
+                    Ok(more) => failed.extend(more),
+                    Err(_) => stopped = true,
+                }
+            }
+        });
+        if stopped {
+            return fail("view.replay: a render thread stopped unexpectedly");
+        }
+        match failed.into_iter().min_by_key(|(n, _)| *n) {
+            Some((_, e)) => Err(e),
+            None => Ok(()),
+        }
+    }
+
+    /// How many frames to render at once: the cores, as far as the
+    /// renderer's buffers for frames of this size fit in about 1.5 GB.
+    fn threads_for(width: u64, height: u64, ssaa: u32) -> usize {
+        let cores = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+        let samples = width
+            .saturating_mul(height)
+            .saturating_mul(u64::from(ssaa).pow(2))
+            .max(1);
+        let fit = 1_500_000_000_u64 / samples.saturating_mul(16);
+        cores.min(16).min(usize::try_from(fit).unwrap_or(16)).max(1)
     }
 
     /// The box the camera frames when it orbits: wide enough in x and y
@@ -322,7 +389,8 @@ mod native {
                 .map_or_else(|| id.to_string(), |f| f.name.clone())
         };
         let mut meshes = Meshes::default();
-        let end = meshes.joined(&last, &names, &tess)?;
+        meshes.fill(&last, &names, &tess)?;
+        let end = meshes.joined(&last)?;
         let model = end.bbox();
         if model.is_empty() {
             return fail(
@@ -349,38 +417,31 @@ mod native {
                 "view.replay: cannot create the directory `{dir_param}`: {e}"
             ))
         })?;
+        // What to draw where: the start, each step shown, the hold on the
+        // last one shown (or on the start when none is).
+        let mut units: Vec<(&Bodies, u64, u64)> = Vec::new();
         let mut frame = 0_u64;
-        let mut write = |mesh: &Mesh, count: u64| -> Result<(u64, u64), CommandError> {
+        let mut unit = |count: u64| -> (u64, u64) {
             let first = frame;
-            let mut png: Option<Vec<u8>> = None;
-            for _ in 0..count {
-                if orbit != 0.0 || png.is_none() {
-                    let angle = orbit * frame as f64 / frames.saturating_sub(1).max(1) as f64;
-                    let picture =
-                        craft3d_render::render(mesh, &turned(&camera, angle), &render_params)
-                            .and_then(|f| f.to_png())
-                            .map_err(|e| CommandError::new(format!("view.replay: {e}")))?;
-                    png = Some(picture);
-                }
-                if let Some(png) = &png {
-                    crate::workspace::write_atomic(&dir.join(frame_name(frame)), png)?;
-                }
-                frame += 1;
-            }
-            Ok((first, frame.saturating_sub(1)))
+            frame = frame.saturating_add(count);
+            (first, frame.saturating_sub(1))
         };
-
-        write(&meshes.joined(&start, &names, &tess)?, per_step)?;
+        let last_shown = steps.iter().rposition(|s| s.shown);
+        let start_count = per_step.saturating_add(if last_shown.is_none() { hold } else { 0 });
+        meshes.fill(&start, &names, &tess)?;
+        let (first, _) = unit(start_count);
+        units.push((&start, first, start_count));
         let mut steps_json = Vec::new();
         let mut srt = String::new();
         let mut cue = 0_u64;
-        let last_shown = steps.iter().rposition(|s| s.shown);
         for (k, step) in steps.iter().enumerate() {
             let text = caption(step.place, count, &step.name, step.kind);
             let range = if step.shown {
                 let extra = if Some(k) == last_shown { hold } else { 0 };
-                let mesh = meshes.joined(&step.bodies, &names, &tess)?;
-                let (first, last) = write(&mesh, per_step.saturating_add(extra))?;
+                let n = per_step.saturating_add(extra);
+                let (first, last) = unit(n);
+                units.push((&step.bodies, first, n));
+                meshes.fill(&step.bodies, &names, &tess)?;
                 cue += 1;
                 srt.push_str(&format!(
                     "{cue}\n{} --> {}\n{text}\n\n",
@@ -400,14 +461,43 @@ mod native {
                 "caption": text,
             }));
         }
-        // Nothing shown at all: the hold is of the start.
-        if last_shown.is_none() && hold > 0 {
-            write(&meshes.joined(&start, &names, &tess)?, hold)?;
-        }
+        // With an orbit every frame is a picture of its own; without, a
+        // unit is drawn once and written as often as it is shown.
+        let jobs: Vec<(&Bodies, u64, u64)> = if orbit == 0.0 {
+            units
+        } else {
+            units
+                .into_iter()
+                .flat_map(|(bodies, first, n)| {
+                    (first..first.saturating_add(n)).map(move |f| (bodies, f, 1))
+                })
+                .collect()
+        };
+        let meshes = &meshes;
+        let (dir, camera, render_params) = (&dir, &camera, &render_params);
+        let draw = |job: usize| -> Result<(), CommandError> {
+            let Some(&(bodies, first, n)) = jobs.get(job) else {
+                return Ok(());
+            };
+            let mesh = meshes.joined(bodies)?;
+            let angle = orbit * first as f64 / frames.saturating_sub(1).max(1) as f64;
+            let png = craft3d_render::render(&mesh, &turned(camera, angle), render_params)
+                .and_then(|f| f.to_png())
+                .map_err(|e| CommandError::new(format!("view.replay: {e}")))?;
+            for f in first..first.saturating_add(n) {
+                crate::workspace::write_atomic(&dir.join(frame_name(f)), &png)?;
+            }
+            Ok(())
+        };
+        in_parallel(
+            jobs.len(),
+            threads_for(width, height, render_params.ssaa),
+            draw,
+        )?;
         crate::workspace::write_atomic(&dir.join("captions.srt"), srt.as_bytes())?;
         // Frames an earlier, longer replay left here would run on after
         // this one's in a video made from the directory.
-        if let Ok(entries) = std::fs::read_dir(&dir) {
+        if let Ok(entries) = std::fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let name = entry.file_name();
                 if name
