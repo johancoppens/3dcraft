@@ -40,7 +40,7 @@ A feature type is data in the document plus an evaluation in the kernel.
 4. **Regeneration:** evaluate the variant in `crates/regen` (resolve references, evaluate expressions, call the kernel, map errors to a feature status). Add its cache key. Add scenarios to the topological naming suite if the feature creates or consumes named entities.
 5. **Commands:** create/edit commands per the checklist above.
 6. **Export:** check that STEP and mesh export handle any new surface or curve kind the feature can produce.
-7. **Docs:** add the feature to the tables in `architecture.md` and update `roadmap.md`.
+7. **Docs:** add the feature to the tables in `architecture.md` and update `roadmap.md`. In the roadmap a table cell holds at most one sentence; what was done goes as one line with its date under **Done** in the milestone's section, what is left as a checkbox under **Open**; how it was built (algorithms, thresholds, measurements, internal paths) goes in `architecture.md`, and the roadmap links to it.
 
 ## Adding a geometry kind
 
