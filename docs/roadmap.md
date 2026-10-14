@@ -12,9 +12,8 @@ Status legend: ✅ done · 🟡 in progress · ⬜ not started. Put the date nex
 
 1. **The boolean kernel (M7), the developer's first priority** (2026-10-13): a refusal is work owed. Next: a planar tool against a spline surface with a pole ("tangent or nearly coincident over too large an area"), "imprint lost", and the rest of the [boolean checklist](#the-boolean-checklist) in its order.
 2. **Long chains of features:** more than 32 features in a row that each make their body from the one before fail (`MAX_NAME_DEPTH` in `crates/doc/src/name.rs`; 70 holes cut one after another hit it). Needs a naming scheme that does not grow a prefix per feature, or compresses copy chains ([M8.5](#m85-a-history-that-survives-edits-datums-pointing)).
-3. **The tessellator for display:** a triangle budget per face or body (`max_triangles` in the tessellator's parameters, so one large body cannot overshoot the scene's budget) and an angle criterion for coarser display meshes ([M4](#m4-renderers-and-viewer)).
-4. **M9, the rest:** move face, thicken and draft, and what the blends leave open, beside M7 since none of it touches the boolean kernel ([M9](#m9-local-operations-and-sweeps)).
-5. **R1, the first release:** the pinned set of modelling tasks, installers, the format promise, material and colour per body, a user guide ([R1](#r1-first-release)).
+3. **M9, the rest:** move face, thicken and draft, and what the blends leave open, beside M7 since none of it touches the boolean kernel ([M9](#m9-local-operations-and-sweeps)).
+4. **R1, the first release:** the pinned set of modelling tasks, installers, the format promise, material and colour per body, a user guide ([R1](#r1-first-release)).
 
 ## Milestones
 
@@ -185,9 +184,9 @@ Oracles 1 and 4 for all primitives at three scales; exported meshes closed and o
 - An orbit gizmo (2026-10-13), replaced by a view cube (2026-10-14); a see-through slider (2026-10-13), drawn by the wgpu renderer too (2026-10-14)
 - Tabs of the open documents: switch with a click, Ctrl+Tab and Ctrl+Shift+Tab, close with `file.close` after Save / Don't Save / Cancel, Ctrl+W; the open documents in the File menu; `ui.get` › `tabs` and `closing` ([`development.md`](development.md) › *Tabs of the open documents*) (2026-10-14)
 - Every open document's scene kept within a memory budget, a quick first picture refined beside the engine thread (2026-10-14)
+- An angle criterion and a triangle budget inside a face in the tessellator, a body coarsened to its budget; the display quality at 2e-4 of the size and 12 degrees, a fifth to a sixth of the triangles (2026-10-14)
 
 #### Open
-- [ ] A triangle budget per face or body in the tessellator and an angle criterion for display meshes (Current focus)
 - [ ] A presentation path when no GPU adapter is found (eframe still needs one for the window)
 - [ ] Golden images blessed by the developer
 - [ ] An automated test with a real MCP client
