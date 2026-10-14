@@ -422,9 +422,15 @@ fn an_edge_that_ends_against_a_wall_stops_there() {
     }
 }
 
+/// A ledge's edge that runs into a wall at a slant (the slanted edge on
+/// top of the prism ends where the wall y = 1.5 begins): the chamfer ends
+/// in the plane of that wall, which grows by the section there. Refused
+/// as "does not end cleanly" before 2026-10-15 (engine-block findings E3,
+/// E4). The removed prism lies between two planes oblique to the edge
+/// (y = 1.5 and the back y = 3), so its volume is the section times the
+/// length of the line through its centroid between them.
 #[test]
-fn an_edge_that_ends_against_a_slanted_wall_is_refused() {
-    let k = 1.0;
+fn an_edge_that_ends_against_a_slanted_wall_ends_in_its_plane() {
     let points = [
         [0.0, 0.0],
         [4.0, 0.0],
@@ -433,14 +439,21 @@ fn an_edge_that_ends_against_a_slanted_wall_is_refused() {
         [1.5, 3.0],
         [0.0, 3.0],
     ];
-    let part = prism(&Frame::WORLD, k, &points, 2.0);
-    let request = equal(&part, k, [1.75, 2.25, 2.0], 0.3);
-    match chamfer(&part, &[request], &tolerance(k)) {
-        Err(KernelError::Chamfer { edge, reason, .. }) => {
-            assert_eq!(edge, Some(request.edge));
-            assert!(reason.contains("does not end cleanly"), "{reason}");
+    let whole = (4.0 * 1.5 + 0.5 * (2.0 + 1.5) * 1.5) * 2.0;
+    let d = 0.3;
+    for k in SCALES {
+        for frame in frames(k) {
+            let part = prism(&frame, k, &points, 2.0);
+            let request = equal_in(&part, &frame, k, [1.75, 2.25, 2.0], d);
+            let made = solve(&part, &[request], k);
+            let removed = 0.5 * d * d * 2.5_f64.sqrt();
+            assert_close(
+                mass(&made.body).volume,
+                (whole - removed) * k * k * k,
+                "volume",
+            );
+            assert_eq!(made.body.faces.len(), part.faces.len() + 1);
         }
-        other => panic!("expected a refusal, got {other:?}"),
     }
 }
 
@@ -1043,4 +1056,248 @@ fn seeded_random_sets_of_edges_of_random_blocks() {
         );
     }
     assert!(corners_made > 50, "{corners_made} corners");
+}
+
+/// The rim of a cap whose outline turns round tangent arcs (engine-block
+/// findings E1, E5): one equal-distance chamfer along the whole chain.
+/// The tools of a line and of the arc it goes on in are joined into one
+/// before the boolean (their faces, a plane and a cone, touch along the
+/// ruling they share), as a fillet's are.
+#[test]
+fn a_rim_chain_round_shallow_tangent_arcs() {
+    let points = [
+        [-8.8, -7.1],
+        [8.8, -7.1],
+        [8.8, 4.0],
+        [4.4, 9.5],
+        [-4.4, 9.5],
+        [-8.8, 4.0],
+    ];
+    let (big, d, height) = (1.2, 0.5, 2.0);
+    let (curves, area, lines, turns) = common::rounded_polygon(&points, &[big; 6]);
+    // The triangle's centroid lies a third of the distance in from both
+    // faces (Pappus round each arc).
+    let triangle = 0.5 * d * d;
+    let removed = triangle * (lines + turns.iter().map(|t| t * (big - d / 3.0)).sum::<f64>());
+    for k in SCALES {
+        for frame in frames(k) {
+            let profiles = detect_profiles(&scale_curves(&curves, k), &tolerance(k)).unwrap();
+            let part = extrude(&profiles, &frame, 0.0, height * k, &tolerance(k))
+                .unwrap()
+                .body;
+            let seed = edge_in(&part, &frame, k, [0.0, -7.1, height]);
+            let top = faces_of(&part, seed)
+                .into_iter()
+                .find(|f| {
+                    part.face(*f).unwrap().surface.kind() == "plane"
+                        && faces_of(&part, edge_in(&part, &frame, k, [0.0, 9.5, height]))
+                            .contains(f)
+                })
+                .unwrap();
+            let chain = tangent_chain(&part, seed, top).unwrap().unwrap();
+            assert_eq!(chain.len(), 12);
+            let edges: Vec<ChamferEdge> = chain
+                .iter()
+                .map(|(edge, first)| ChamferEdge {
+                    edge: *edge,
+                    first: *first,
+                    size: ChamferSize::Distances {
+                        first: d * k,
+                        second: d * k,
+                    },
+                })
+                .collect();
+            let made = solve(&part, &edges, k);
+            assert_close(
+                mass(&made.body).volume,
+                (area * height - removed) * k * k * k,
+                "volume",
+            );
+            let faces = made
+                .faces
+                .iter()
+                .filter(|f| matches!(f, ChamferFace::Chamfer(_)))
+                .count();
+            assert_eq!(faces, 12);
+        }
+    }
+}
+
+/// The plate of engine-block finding E1 at a tenth: an 8-gon whose six
+/// upper corners are rounded (by 1.4) and whose two lower ones are sharp,
+/// its cap rim chamfered as one chain from the right side round to the
+/// left, ending in the two sharp corners; the outline drawn with its arcs
+/// and made by filleting the sharp plate. The chain's tools are joined
+/// into one: chamfered one by one, the plane of a line's chamfer and the
+/// cone of the arc's touch along their shared ruling and the boolean
+/// refused at the finding's tolerance ("two points closer together than the tolerance can tell
+/// apart").
+#[test]
+fn a_rim_chain_that_ends_in_two_sharp_corners() {
+    let (curves, area, lines, turns, sharp) = common::plate_e1();
+    let (d, height) = (0.15, 1.4);
+    let inset = d / 3.0;
+    let path = lines - 24.0
+        + (0..8)
+            .filter(|i| !sharp.contains(i))
+            .map(|i| turns[i] * (1.4 - inset))
+            .sum::<f64>()
+        + sharp.iter().map(|i| inset / turns[*i].tan()).sum::<f64>();
+    let removed = 0.5 * d * d * path;
+    for (k, by_fillet) in SCALES.into_iter().flat_map(|k| [(k, false), (k, true)]) {
+        // The finding's: a document in millimetres (1e-6) at ten times
+        // this size, finer than `tolerance(k)` by ten.
+        let fine = craft3d_math::Tolerance::new(1e-7 * k, 1e-9).unwrap();
+        for frame in frames(k) {
+            let part = if by_fillet {
+                // The sharp 8-gon, its six upper side edges rounded first.
+                let sharp_plate = common::polygon(1, 1, &common::PLATE_E1);
+                let profiles = detect_profiles(&scale_curves(&sharp_plate, k), &fine).unwrap();
+                let plate = extrude(&profiles, &frame, 0.0, height * k, &fine)
+                    .unwrap()
+                    .body;
+                let rounds: Vec<craft3d_kernel::fillet::FilletEdge> = common::PLATE_E1[2..]
+                    .iter()
+                    .map(|p| craft3d_kernel::fillet::FilletEdge {
+                        edge: edge_in(&plate, &frame, k, [p[0], p[1], 0.5 * height]),
+                        radius: 1.4 * k,
+                    })
+                    .collect();
+                craft3d_kernel::fillet::fillet(&plate, &rounds, &fine)
+                    .unwrap()
+                    .body
+            } else {
+                let profiles = detect_profiles(&scale_curves(&curves, k), &fine).unwrap();
+                extrude(&profiles, &frame, 0.0, height * k, &fine)
+                    .unwrap()
+                    .body
+            };
+            let seed = edge_in(&part, &frame, k, [15.0, 4.5, height]);
+            let top = faces_of(&part, seed)
+                .into_iter()
+                .find(|f| {
+                    part.face(*f).unwrap().surface.kind() == "plane"
+                        && faces_of(&part, edge_in(&part, &frame, k, [0.0, 17.5, height]))
+                            .contains(f)
+                })
+                .unwrap();
+            let chain = tangent_chain(&part, seed, top).unwrap().unwrap();
+            assert_eq!(chain.len(), 13);
+            let edges: Vec<ChamferEdge> = chain
+                .iter()
+                .map(|(edge, first)| ChamferEdge {
+                    edge: *edge,
+                    first: *first,
+                    size: ChamferSize::Distances {
+                        first: d * k,
+                        second: d * k,
+                    },
+                })
+                .collect();
+            let made = match chamfer(&part, &edges, &fine) {
+                Ok(made) => made,
+                Err(e) => panic!("scale {k}, by fillet {by_fillet}: {e}"),
+            };
+            assert_eq!(check(&made.body, &fine), []);
+            assert_close(
+                mass(&made.body).volume,
+                (area * height - removed) * k * k * k,
+                "volume",
+            );
+        }
+    }
+}
+
+/// Engine-block finding E7: the two top edges along a block chamfered,
+/// then, in a second chamfer of the same distance, the top edge across
+/// its end. That edge's cut line on the end runs exactly into the corner
+/// where the end's rim leaves the earlier chamfer for the side: it fits,
+/// and the solid is the one the three chamfers make in one go (mitred).
+#[test]
+fn a_chamfer_that_meets_an_earlier_one_of_the_same_distance() {
+    for k in SCALES {
+        let block = boxed(k, [0.0, 0.0, 0.0], [4.0, 3.0, 2.0]);
+        let d = 0.5;
+        let first = solve(
+            &block,
+            &[
+                equal(&block, k, [2.0, 0.0, 2.0], d),
+                equal(&block, k, [2.0, 3.0, 2.0], d),
+            ],
+            k,
+        );
+        let end = equal(&first.body, k, [0.0, 1.5, 2.0], d);
+        let made = solve(&first.body, &[end], k);
+        let mut planes = box_planes([4.0, 3.0, 2.0]);
+        planes.push(([0.0, -1.0, 1.0], 2.0 - d));
+        planes.push(([0.0, 1.0, 1.0], 5.0 - d));
+        planes.push(([-1.0, 0.0, 1.0], 2.0 - d));
+        let m = mass(&made.body);
+        assert_close(m.volume, convex_volume(&planes) * k * k * k, "volume");
+        let at_once = solve(
+            &block,
+            &[
+                equal(&block, k, [2.0, 0.0, 2.0], d),
+                equal(&block, k, [2.0, 3.0, 2.0], d),
+                equal(&block, k, [0.0, 1.5, 2.0], d),
+            ],
+            k,
+        );
+        let once = mass(&at_once.body);
+        assert_close(m.volume, once.volume, "volume against one chamfer");
+        assert_close(m.area, once.area, "area against one chamfer");
+        assert_eq!(counts(&made), counts(&at_once));
+        // A larger distance runs past that corner into the side: refused.
+        let past = equal(&first.body, k, [0.0, 1.5, 2.0], 1.1 * d);
+        assert!(matches!(
+            chamfer(&first.body, &[past], &tolerance(k)),
+            Err(KernelError::ChamferTooLarge { .. })
+        ));
+    }
+}
+
+/// An upright on a plate whose end leans (one way, then the other), its
+/// foot along the plate chamfered; at the leaning end the chamfer ends in
+/// the plane of the end face (engine-block findings E3, E4). The added
+/// prism lies between the square end x = 2 and the leaning plane.
+#[test]
+fn a_root_that_ends_on_a_leaning_face() {
+    let d = 0.6;
+    let inset = d / 3.0;
+    let leans: [([[f64; 2]; 4], f64, f64); 2] = [
+        (
+            [[2.0, 0.0], [8.0, 0.0], [6.0, 5.0], [2.0, 5.0]],
+            25.0,
+            6.0 - 0.4 * inset,
+        ),
+        (
+            [[2.0, 0.0], [7.0, 0.0], [8.0, 5.0], [2.0, 5.0]],
+            27.5,
+            5.0 + 0.2 * inset,
+        ),
+    ];
+    for (outline, area, length) in leans {
+        for k in SCALES {
+            for frame in frames(k) {
+                let tol = tolerance(k);
+                let plate_frame = frame.at(frame.point(0.0, 0.0, -k)).unwrap();
+                let plate = primitives::block(&plate_frame, 10.0 * k, 10.0 * k, k).unwrap();
+                let up_frame =
+                    Frame::new(frame.point(0.0, 4.0 * k, 0.0), -frame.y(), frame.x()).unwrap();
+                let curves = scale_curves(&polygon(1, 1, &outline), k);
+                let profiles = detect_profiles(&curves, &tol).unwrap();
+                let upright = extrude(&profiles, &up_frame, 0.0, 4.0 * k, &tol)
+                    .unwrap()
+                    .body;
+                let part = boolean(&plate, &upright, BooleanOp::Union, &tol)
+                    .unwrap()
+                    .body;
+                let middle = 0.5 * (outline[0][0] + outline[1][0]);
+                let request = equal_in(&part, &frame, k, [middle, 4.0, 0.0], d);
+                let made = solve(&part, &[request], k);
+                let volume = 100.0 + 4.0 * area + 0.5 * d * d * length;
+                assert_close(mass(&made.body).volume, volume * k * k * k, "volume");
+            }
+        }
+    }
 }

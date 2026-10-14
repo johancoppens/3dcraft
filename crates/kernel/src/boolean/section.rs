@@ -378,9 +378,22 @@ fn edge_cuts(
                         cut(b.point, true);
                         continue;
                     }
+                    // A hit next to an end of the edge that lies on the
+                    // surface is that end: where the edge meets the
+                    // surface at a shallow angle (an ellipse or a circle
+                    // that runs onto a face it is nearly tangent to) the
+                    // hit is found only to a fraction of the tolerance,
+                    // and the end, which the other edges there share, is
+                    // exact. Two such hits of edges that meet there would
+                    // otherwise be two places closer together than the
+                    // tolerance can tell apart.
+                    let end = [a.point, b.point].into_iter().find(|end| {
+                        hit.point.distance(*end) <= 2.0 * tol
+                            && surface_distance(surface, *end) <= tol
+                    });
                     // A touch is a cut like any other: the stretches on
                     // either side of it are judged on their own.
-                    cut(hit.point, true);
+                    cut(end.unwrap_or(hit.point), true);
                 }
             }
         }

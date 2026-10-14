@@ -36,9 +36,15 @@
 //!   there. That is right when the face the blend runs into lies in that
 //!   plane (an edge of a step that ends against a wall), and when the
 //!   edge continues smoothly in another blended edge (a chain: the two
-//!   tools end against each other). In every other case the end of the
-//!   tool would be left in the result as a face nobody asked for, which
-//!   the check at the end finds and refuses.
+//!   tools end against each other).
+//! - When the one other face at the vertex is a plane at a slant to the
+//!   edge (a root that ends on a chamfer, a ledge that runs into a
+//!   slanted wall), the tool is made long enough to reach that plane and
+//!   cut there ([`end_plane`], [`trim`]): its end lies in the plane of the
+//!   face, which the boolean merges it into.
+//! - In every other case the end of the tool would be left in the result
+//!   as a face nobody asked for, which the check at the end finds and
+//!   refuses.
 //!
 //! **Corners of chamfers.** Where three chamfered edges of one kind (all
 //! convex or all concave) meet in a vertex with nothing else, the corner
@@ -575,6 +581,11 @@ struct Plan {
     /// How far the tool goes on past the start and past the end: a
     /// length along a line, an angle along an arc.
     longer: [f64; 2],
+    /// Where the tool ends at a vertex against a plane that is not square
+    /// to the edge: a point of that plane and its normal away from the
+    /// edge. The tool is cut there, so that its end lies in the plane of
+    /// the face it runs into (see [`end_plane`]).
+    trims: [Option<(Vec3, Vec3)>; 2],
     /// Along a straight edge next to a cylinder: the blend in the plane
     /// across the edge ([`section`]). `None` between two planes and along
     /// a circle.
@@ -876,6 +887,7 @@ fn plan(body: &Body, uses: &[Vec<Use>], request: &Request, tol: f64) -> Result<P
         path,
         ends,
         longer: [0.0, 0.0],
+        trims: [None, None],
         section,
         scale,
     })
@@ -937,6 +949,11 @@ fn fits(body: &Body, plans: &[Plan], tol: f64) -> Result<(), BlendError> {
                 continue;
             };
             let mut largest = f64::INFINITY;
+            // Whether `largest` is where the boundary that leaves an end
+            // of the edge turns at a corner of the face: a cut line that
+            // runs exactly into that corner still fits (a chamfer next to
+            // an earlier one of the same distance).
+            let mut into_corner = false;
             for other in face_edges(body, face) {
                 if other == plan.edge {
                     continue;
@@ -951,6 +968,16 @@ fn fits(body: &Body, plans: &[Plan], tol: f64) -> Result<(), BlendError> {
                     _ => 0.0,
                 };
                 let points = samples(body, other, matches!(plan.path, Path::Circle { .. }));
+                let mut corner = false;
+                if touches && alongside(body, plan.edge, other) {
+                    // It leaves an end of the edge the way the edge does
+                    // (a rib's foot whose arc touches the boundary of the
+                    // wall it stands on): the face pinches to nothing
+                    // between them there, and no blend fits.
+                    largest = largest.min(0.0);
+                    into_corner = false;
+                    continue;
+                }
                 let reach = match plan.path {
                     Path::Line {
                         start,
@@ -963,12 +990,36 @@ fn fits(body: &Body, plans: &[Plan], tol: f64) -> Result<(), BlendError> {
                             |p: Vec3| (plan.coordinate(side, p - start), (p - start).dot(along));
                         if touches {
                             // An edge that leaves from an end of this one
-                            // bounds the strip up to its own far end.
-                            points
+                            // bounds the strip up to its own far end, and
+                            // on along the edges of the face that continue
+                            // it smoothly (a rim that runs on round a
+                            // tangent arc, a circle split at its seam):
+                            // the face can only turn back at a corner.
+                            let mut far = points
                                 .iter()
                                 .map(|p| place(*p).0)
                                 .fold(0.0_f64, f64::max)
-                                .max(0.0)
+                                .max(0.0);
+                            let run = smooth_run(body, face, plan.edge, other, &ends);
+                            for next in &run {
+                                for p in samples(body, *next, true) {
+                                    far = far.max(place(p).0);
+                                }
+                            }
+                            // The far vertex of the run: the end of its
+                            // last edge that lies furthest into the face.
+                            let tip =
+                                body.edge(run.last().copied().unwrap_or(other))
+                                    .and_then(|e| {
+                                        [e.start, e.end]
+                                            .into_iter()
+                                            .filter(|v| !ends.contains(v))
+                                            .filter_map(|v| body.vertex(v))
+                                            .map(|v| place(v.point).0)
+                                            .reduce(f64::max)
+                                    });
+                            corner = tip.is_some_and(|tip| tip >= far - tol);
+                            far
                         } else {
                             let mut nearest = f64::INFINITY;
                             for pair in points.windows(2) {
@@ -1024,6 +1075,13 @@ fn fits(body: &Body, plans: &[Plan], tol: f64) -> Result<(), BlendError> {
                             ((offset - axis * height).length(), height)
                         };
                         let (r0, h0) = level(start);
+                        if touches && continues(body, plan.edge, other) {
+                            // It goes on from an end of the arc along the
+                            // circle's tangent: beyond the arc's sector,
+                            // beside nothing of it (the edges after it are
+                            // measured as all others are).
+                            continue;
+                        }
                         let away = points.iter().filter(|p| touches || beside(**p)).map(|p| {
                             let (r, h) = level(*p);
                             (r - r0).hypot(h - h0)
@@ -1037,8 +1095,9 @@ fn fits(body: &Body, plans: &[Plan], tol: f64) -> Result<(), BlendError> {
                         }
                     }
                 };
-                if reach.is_finite() && (reach > tol || !touches) {
-                    largest = largest.min(reach - taken);
+                if reach.is_finite() && (reach > tol || !touches) && reach - taken < largest {
+                    largest = reach - taken;
+                    into_corner = touches && corner && taken == 0.0;
                 }
             }
             // A cut line that runs into the axis leaves nothing of a face
@@ -1055,7 +1114,8 @@ fn fits(body: &Body, plans: &[Plan], tol: f64) -> Result<(), BlendError> {
                     largest = largest.min(radius / inward);
                 }
             }
-            if distance >= largest - 2.0 * tol {
+            let exactly_into_corner = into_corner && (distance - largest).abs() <= 2.0 * tol;
+            if distance >= largest - 2.0 * tol && !exactly_into_corner {
                 // A fillet is said by its radius.
                 let per = match plan.scale.get(side) {
                     Some(per) if plan.round.is_some() && per.is_finite() => *per,
@@ -1071,6 +1131,107 @@ fn fits(body: &Body, plans: &[Plan], tol: f64) -> Result<(), BlendError> {
         }
     }
     Ok(())
+}
+
+/// The edges of `face` that continue `first` smoothly, one after the
+/// other, away from the end of `first` that is an end of `edge` (`ends`):
+/// at each far vertex the one other edge of the face that leaves it
+/// straight on. Stops at a corner, at `edge`, or when the run closes.
+fn smooth_run(
+    body: &Body,
+    face: FaceId,
+    edge: EdgeId,
+    first: EdgeId,
+    ends: &[VertexId],
+) -> Vec<EdgeId> {
+    let edges = face_edges(body, face);
+    // The direction an edge leaves `vertex` in, if it ends there.
+    let away = |id: EdgeId, vertex: VertexId| -> Option<Vec3> {
+        let data = body.edge(id)?;
+        if data.start == vertex {
+            tangent(&data.curve, data.range.0).ok()
+        } else if data.end == vertex {
+            tangent(&data.curve, data.range.1).ok().map(|t| -t)
+        } else {
+            None
+        }
+    };
+    let mut run = Vec::new();
+    let Some(data) = body.edge(first) else {
+        return run;
+    };
+    let mut current = first;
+    let mut vertex = if ends.contains(&data.start) {
+        data.end
+    } else {
+        data.start
+    };
+    for _ in 0..edges.len() {
+        if ends.contains(&vertex) {
+            break;
+        }
+        let Some(arriving) = away(current, vertex) else {
+            break;
+        };
+        let mut next = edges.iter().copied().filter(|e| {
+            *e != current
+                && *e != edge
+                && away(*e, vertex).is_some_and(|d| d.dot(arriving) < -1.0 + 1e-9)
+        });
+        let (Some(found), None) = (next.next(), next.next()) else {
+            break;
+        };
+        if found == first || run.contains(&found) {
+            break;
+        }
+        run.push(found);
+        let Some(data) = body.edge(found) else {
+            break;
+        };
+        vertex = if data.start == vertex {
+            data.end
+        } else {
+            data.start
+        };
+        current = found;
+    }
+    run
+}
+
+/// True when `other` goes on from an end of `edge` straight on (the two
+/// leave their common vertex in opposite directions).
+fn continues(body: &Body, edge: EdgeId, other: EdgeId) -> bool {
+    leave_together(body, edge, other, -1.0)
+}
+
+/// True when `other` leaves a common vertex with `edge` in the direction
+/// `edge` leaves it in (they touch there).
+fn alongside(body: &Body, edge: EdgeId, other: EdgeId) -> bool {
+    leave_together(body, edge, other, 1.0)
+}
+
+/// True when at a vertex they share the directions in which `edge` and
+/// `other` leave it, the second times `sign`, agree.
+fn leave_together(body: &Body, edge: EdgeId, other: EdgeId, sign: f64) -> bool {
+    let away = |id: EdgeId, vertex: VertexId| -> Option<Vec3> {
+        let data = body.edge(id)?;
+        if data.start == vertex {
+            tangent(&data.curve, data.range.0).ok()
+        } else if data.end == vertex {
+            tangent(&data.curve, data.range.1).ok().map(|t| -t)
+        } else {
+            None
+        }
+    };
+    let Some(data) = body.edge(edge) else {
+        return false;
+    };
+    [data.start, data.end].into_iter().any(|vertex| {
+        match (away(edge, vertex), away(other, vertex)) {
+            (Some(a), Some(b)) => a.dot(b * sign) > 1.0 - 1e-9,
+            _ => false,
+        }
+    })
 }
 
 /// An edge at a vertex: which way it leaves, and how it turns.
@@ -1132,13 +1293,26 @@ fn lengthen(
             tangent(&data.curve, data.range.1)?,
         ];
         let mut longer = [0.0, 0.0];
-        for (slot, (vertex, beyond)) in longer.iter_mut().zip(ends.into_iter().zip(beyond)) {
+        let mut trims = [None, None];
+        for ((slot, trim), (vertex, beyond)) in longer
+            .iter_mut()
+            .zip(trims.iter_mut())
+            .zip(ends.into_iter().zip(beyond))
+        {
             let others: Vec<Leaving> = leaving(body, uses, at, vertex)?
                 .into_iter()
                 .filter(|l| l.edge != plan.edge)
                 .collect();
             let goes_on = others.iter().any(|l| l.direction.dot(beyond) > 1.0 - 1e-9);
-            if goes_on || others.iter().any(|l| l.turn != own) {
+            if goes_on {
+                continue;
+            }
+            if others.iter().any(|l| l.turn != own) {
+                if let Some((far, reach)) = end_plane(body, uses, at, plan, vertex, beyond)? {
+                    let corner = body.vertex(vertex).ok_or_else(lost)?.point;
+                    *trim = Some((corner, far));
+                    *slot = reach;
+                }
                 continue;
             }
             match plan.path {
@@ -1175,8 +1349,114 @@ fn lengthen(
             }
         }
         plan.longer = longer;
+        plan.trims = trims;
     }
     Ok(())
+}
+
+/// Where a straight edge ends at `vertex` against the faces there in a
+/// way none of the rules above covers (not all its edges turn like the
+/// blended one, and the edge does not go on): when exactly one other face
+/// meets there and it is a plane that is not square to the edge, the
+/// blend ends in that plane, as a fillet or chamfer that runs out on a
+/// face it meets at an angle does in other modellers: the tool is made
+/// long enough to reach the plane and cut there, and its end then lies
+/// in the plane of that face, which the boolean merges it into. Gives the
+/// normal of the plane away from the edge and how far the tool has to go
+/// on past the vertex; `None` where this does not apply (the tool ends
+/// at the vertex across the edge, as before).
+fn end_plane(
+    body: &Body,
+    uses: &[Vec<Use>],
+    at: &[Vec<EdgeId>],
+    plan: &Plan,
+    vertex: VertexId,
+    beyond: Vec3,
+) -> Result<Option<(Vec3, f64)>, BlendError> {
+    if !matches!(plan.path, Path::Line { .. }) {
+        return Ok(None);
+    }
+    let mut faces = BTreeSet::new();
+    for edge in at.get(vertex.0 as usize).into_iter().flatten() {
+        for used in uses.get(edge.0 as usize).into_iter().flatten() {
+            faces.insert(used.face);
+        }
+    }
+    for face in plan.faces {
+        faces.remove(&face);
+    }
+    let [end] = faces.into_iter().collect::<Vec<_>>()[..] else {
+        return Ok(None);
+    };
+    let face = body.face(end).ok_or_else(lost)?;
+    let Surface::Plane(plane) = &face.surface else {
+        return Ok(None);
+    };
+    let normal = plane.frame().z();
+    let slope = normal.dot(beyond);
+    // Square to the edge: the tool's own end lies in the plane already.
+    // Along the edge: the plane does not cut it.
+    if slope.abs() >= 1.0 - 1e-9 || slope.abs() <= 1e-6 {
+        return Ok(None);
+    }
+    // The normal away from the edge, which lies behind the vertex.
+    let far = if slope > 0.0 { normal } else { -normal };
+    // How far past the vertex the plane is at the corners of the section
+    // (the edge, the two feet and their sum, which hold a fillet's arc).
+    let [f1, f2] = plan.feet();
+    let mut reach = 0.0_f64;
+    for offset in [f1, f2, f1 + f2] {
+        let s = -far.dot(offset) / far.dot(beyond);
+        if s.is_finite() {
+            reach = reach.max(s);
+        }
+    }
+    let largest = plan.largest();
+    if reach > 64.0 * largest {
+        return Ok(None);
+    }
+    Ok(Some((far, 1.5 * reach + largest)))
+}
+
+/// The tool cut by the plane through `point` square to `far`: what lies
+/// beyond it (along `far`) is taken off. `size` bounds the tool.
+fn trim(
+    tool: Tool,
+    point: Vec3,
+    far: Vec3,
+    size: f64,
+    tolerance: &Tolerance,
+) -> Result<Tool, BlendError> {
+    let frame = Frame::from_z(point, far).ok_or_else(lost)?;
+    let corner = frame.point(-size, -size, 0.0);
+    let frame = frame.at(corner).ok_or_else(lost)?;
+    let block = primitives::block(&frame, 2.0 * size, 2.0 * size, size)?;
+    let options = BooleanOptions {
+        merge: true,
+        trust_operands: true,
+    };
+    let result = boolean_with(&tool.body, &block, BooleanOp::Subtract, tolerance, &options)?;
+    let mut slope = None;
+    let mut caps = Vec::new();
+    for (index, source) in result.faces.iter().enumerate() {
+        if source.operand != Operand::A {
+            continue;
+        }
+        let id = FaceId(index_u32(index));
+        if source.face == tool.slope {
+            if slope.is_some() {
+                return Err(lost());
+            }
+            slope = Some(id);
+        } else if tool.caps.contains(&source.face) {
+            caps.push(id);
+        }
+    }
+    Ok(Tool {
+        body: result.body,
+        slope: slope.ok_or_else(lost)?,
+        caps,
+    })
 }
 
 /// A tool and which of its faces is the chamfer face.
@@ -1316,7 +1596,12 @@ fn tool(plan: &Plan, tolerance: &Tolerance) -> Result<Tool, BlendError> {
             };
             let profiles = detect_profiles(&curves, tolerance)?;
             let total = length + plan.longer[0] + plan.longer[1];
-            slope_of(extrude(&profiles, &frame, 0.0, total, tolerance)?)
+            let mut made = slope_of(extrude(&profiles, &frame, 0.0, total, tolerance)?)?;
+            for (point, far) in plan.trims.into_iter().flatten() {
+                let size = 4.0 * (total + plan.largest());
+                made = trim(made, point, far, size, tolerance)?;
+            }
+            Ok(made)
         }
         Path::Circle {
             centre,
@@ -1398,12 +1683,21 @@ fn joints(
         let (Some(a), Some(b)) = (plans.get(*i), plans.get(*j)) else {
             continue;
         };
-        if i != j
-            && a.round.is_some()
-            && b.round.is_some()
-            && a.convex == b.convex
-            && one.dot(*two) < -1.0 + 1e-9
-        {
+        // Two chamfers whose sections are the same triangle at the
+        // vertex: one distance on both sides of both edges.
+        let same_chamfer = || {
+            let d = a.distances[0];
+            [a.distances, b.distances]
+                .iter()
+                .flatten()
+                .all(|x| (x - d).abs() <= 1e-12 * d.abs())
+        };
+        let kinds = match (a.round, b.round) {
+            (Some(_), Some(_)) => true,
+            (None, None) => same_chamfer(),
+            _ => false,
+        };
+        if i != j && kinds && a.convex == b.convex && one.dot(*two) < -1.0 + 1e-9 {
             found.push(Joint {
                 vertex,
                 plans: [*i, *j],
@@ -1647,7 +1941,7 @@ fn join(
     if !defects.is_empty() {
         defects.truncate(crate::MAX_REPORTED);
         return Err(BlendError::Kernel(KernelError::InvalidBody {
-            operation: "joining the tools of a chain of fillets",
+            operation: "joining the tools of a chain of blends",
             defects,
         }));
     }
@@ -2424,12 +2718,8 @@ pub(crate) fn blend(
             .map(|i| Some(VertexId(index_u32(i))))
             .collect(),
     };
-    // Fillets that continue each other are one tool (see `joints`).
-    let joined = if plans.iter().any(|p| p.round.is_some()) {
-        joints(body, &uses, &at, &plans)?
-    } else {
-        Vec::new()
-    };
+    // Blends that continue each other are one tool (see `joints`).
+    let joined = joints(body, &uses, &at, &plans)?;
     // Per plan, the least plan it is joined to, through any number of
     // joints.
     let mut group: Vec<usize> = (0..plans.len()).collect();
