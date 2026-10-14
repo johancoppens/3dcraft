@@ -621,7 +621,9 @@ fn a_chain_and_a_straight_edge_in_one_fillet() {
 
 /// What a chain does not take is refused with the reason, never built
 /// wrong: radii that differ along it, a chamfer whose wall changes at a
-/// joint, and an edge that meets the chain at an angle.
+/// joint, and an edge with another radius that meets the chain at an
+/// angle (with the same radius, the two meet at a corner whose third edge
+/// stays sharp, which is built).
 #[test]
 fn what_a_chain_refuses() {
     use craft3d_kernel::chamfer::{ChamferEdge, ChamferSize, chamfer};
@@ -674,16 +676,22 @@ fn what_a_chain_refuses() {
         .collect();
     let error = chamfer(&body, &edges, &tol).unwrap_err().to_string();
     assert!(error.contains("one of the faces changes"), "{error}");
+    // The chain and the upright edge at its start meet at a corner whose
+    // third edge stays sharp: built with one radius, refused with two.
     let corner = edge_near(&body, Vec3::new(0.0, 0.0, 0.5 * height));
-    let edges: Vec<FilletEdge> = chain
-        .iter()
-        .chain([&corner])
-        .map(|e| FilletEdge {
-            edge: *e,
-            radius: r,
-        })
-        .collect();
-    let error = fillet(&body, &edges, &tol).unwrap_err().to_string();
+    let with = |radius: f64| -> Vec<FilletEdge> {
+        chain
+            .iter()
+            .map(|e| FilletEdge { edge: *e, radius: r })
+            .chain([FilletEdge {
+                edge: corner,
+                radius,
+            }])
+            .collect()
+    };
+    let made = fillet(&body, &with(r), &tol).unwrap();
+    assert_eq!(check(&made.body, &tol), []);
+    let error = fillet(&body, &with(0.5 * r), &tol).unwrap_err().to_string();
     assert!(error.contains("meet in a vertex"), "{error}");
 }
 
@@ -892,4 +900,169 @@ fn the_foot_of_a_boss_over_a_root_fillet() {
     assert_eq!(faces, 5);
     println!("off the definition by {:e} of the tolerance, crease {crease:e}", worst / tol.linear);
     assert!(worst <= 2.0 * tol.linear, "{worst} off the rolling ball");
+}
+
+/// The nearest point to `p` of the solid cone about z with radius `a` at
+/// z = 0 narrowing to its apex at z = 3a.
+fn onto_cone(p: Vec3, a: f64) -> Vec3 {
+    let rho = p.x.hypot(p.y);
+    let (cx, cy) = if rho > 0.0 {
+        (p.x / rho, p.y / rho)
+    } else {
+        (1.0, 0.0)
+    };
+    if rho <= a - p.z / 3.0 {
+        return p;
+    }
+    let d = [-1.0 / 10f64.sqrt(), 3.0 / 10f64.sqrt()];
+    let t = (rho - a) * d[0] + p.z * d[1];
+    let apex = 3.0 * a * 10f64.sqrt() / 3.0;
+    let t = t.min(apex);
+    let (r, z) = (a + d[0] * t, d[1] * t);
+    let r = r.max(0.0);
+    Vec3::new(cx * r, cy * r, z)
+}
+
+/// The top of the half cone: the plane through (0, 0, 1.2) rising by 0.2
+/// along x, as (a point, its unit normal out of the body).
+fn tilted_top() -> (Vec3, Vec3) {
+    (
+        Vec3::new(0.0, 0.0, 1.2),
+        Vec3::new(-0.2, 0.0, 1.0).normalized().unwrap(),
+    )
+}
+
+/// The cone of radius 1 and height 3 about z, kept where y ≥ 0 and below
+/// the tilted top.
+fn tilted_half_cone(k: f64) -> Body {
+    let tol = tolerance(k);
+    let cone = craft3d_kernel::primitives::cone(&Frame::WORLD, k, 3.0 * k).unwrap();
+    let half = boxed(k, [-2.0, 0.0, -1.0], [2.0, 2.0, 4.0]);
+    let body = boolean(&cone, &half, BooleanOp::Intersect, &tol).unwrap().body;
+    let (p, n) = tilted_top();
+    let x = Vec3::new(1.0, 0.0, 0.2).normalized().unwrap();
+    let y = n.cross(x);
+    let corner = (p - n * 4.0 - x * 3.0 - y * 3.0) * k;
+    let frame = Frame::new(corner, n, x).unwrap();
+    let below = craft3d_kernel::primitives::block(&frame, 6.0 * k, 6.0 * k, 4.0 * k).unwrap();
+    boolean(&body, &below, BooleanOp::Intersect, &tol)
+        .unwrap()
+        .body
+}
+
+/// The distance from `p` to the centres of balls of radius `r` behind the
+/// top and the cone (`cone` true) or behind the top and the plane y = 0,
+/// by Dykstra's alternating projections onto the two convex sets.
+fn to_top_centres(p: Vec3, r: f64, cone: bool) -> f64 {
+    let (q, n) = tilted_top();
+    let top = |x: Vec3| {
+        let d = n.dot(x - q) + r;
+        if d > 0.0 { x - n * d } else { x }
+    };
+    let other = |x: Vec3| {
+        if cone {
+            onto_cone(x, 1.0 - r * 10f64.sqrt() / 3.0)
+        } else {
+            Vec3::new(x.x, x.y.max(r), x.z)
+        }
+    };
+    let (mut x, mut pp, mut qq) = (p, Vec3::ZERO, Vec3::ZERO);
+    for _ in 0..400 {
+        let y0 = x + pp;
+        let y = top(y0);
+        pp = y0 - y;
+        let x0 = y + qq;
+        x = other(x0);
+        qq = x0 - x;
+    }
+    p.distance(x)
+}
+
+/// A half cone cut by a tilted plane: its top is bounded by an arc of an
+/// ellipse next to the cone and a line in the cut plane, which meet at the
+/// two cut edges. Rounding both top edges and leaving the cut edges sharp,
+/// the two fillets meet at each end in the curve they share: a point of
+/// the body is kept exactly when a ball behind the top and the cone holds
+/// it and a ball behind the top and the cut plane holds it.
+#[test]
+fn two_fillets_that_meet_where_a_third_edge_stays_sharp() {
+    use craft3d_kernel::boolean::contains_points;
+    let r = 0.1;
+    for k in SCALES {
+        let tol = tolerance(k);
+        let body = tilted_half_cone(k);
+        assert_eq!(check(&body, &tol), []);
+        let rim = edge_near(&body, Vec3::new(0.0, 0.6 * k, 1.2 * k));
+        let line = edge_near(&body, Vec3::new(0.0, 0.0, 1.2 * k));
+        let made = match fillet(
+            &body,
+            &[
+                FilletEdge {
+                    edge: rim,
+                    radius: r * k,
+                },
+                FilletEdge {
+                    edge: line,
+                    radius: r * k,
+                },
+            ],
+            &tol,
+        ) {
+            Ok(m) => m,
+            Err(e) => panic!("scale {k}: {e}"),
+        };
+        assert_eq!(check(&made.body, &tol), []);
+        let deep = craft3d_tess::body_self_intersections(
+            &made.body,
+            &craft3d_tess::SelfCheckParams::new(tol.linear),
+        )
+        .unwrap();
+        assert_eq!(deep.certain_crossings, 0, "{deep:?}");
+        assert!(deep.shells.is_empty(), "{:?}", deep.shells);
+        // The fillets are tangent to the faces they round; where they run
+        // out into each other and into the cut plane, there are creases.
+        let (crease, seams) = creases(&made.body, &made.faces);
+        assert_eq!(seams, 4);
+        assert!(crease <= 10.0 * tol.linear / (r * k), "a crease of {crease}");
+        let (q, n) = tilted_top();
+        let n_grid = 15;
+        let margin = 2e-4;
+        let mut points = Vec::new();
+        let mut expected = Vec::new();
+        for i in 0..n_grid {
+            for j in 0..n_grid {
+                for l in 0..n_grid {
+                    let f = |m: usize, lo: f64, hi: f64| lo + (hi - lo) * (m as f64 + 0.37) / n_grid as f64;
+                    let p = Vec3::new(f(i, -0.75, 0.75), f(j, -0.02, 0.3), f(l, 1.0, 1.4));
+                    let cone = (1.0 - p.z / 3.0 - p.x.hypot(p.y)) * 3.0 / 10f64.sqrt();
+                    let top = -n.dot(p - q);
+                    let in_body = p.y > 0.0 && cone > 0.0 && top > 0.0;
+                    let near_body = [p.y, cone, top].iter().any(|d| d.abs() < margin);
+                    let (da, db) = (to_top_centres(p, r, true), to_top_centres(p, r, false));
+                    if near_body || (da - r).abs() < margin || (db - r).abs() < margin {
+                        continue;
+                    }
+                    points.push(p * k);
+                    expected.push(in_body && da <= r && db <= r);
+                }
+            }
+        }
+        let found = contains_points(&made.body, &points, &tol).unwrap();
+        let mut undecided = 0;
+        let mut removed = 0;
+        for ((p, want), got) in points.iter().zip(&expected).zip(&found) {
+            match got {
+                Some(got) => assert_eq!(got, want, "at {p:?}, scale {k}"),
+                None => undecided += 1,
+            }
+            let q = *p * (1.0 / k);
+            let cone = (1.0 - q.z / 3.0 - q.x.hypot(q.y)) * 3.0 / 10f64.sqrt();
+            if q.y > 0.0 && cone > 0.0 && -n.dot(q - tilted_top().0) > 0.0 && !want {
+                removed += 1;
+            }
+        }
+        println!("scale {k}: {} points, {removed} taken away, {undecided} undecided", points.len());
+        assert!(undecided * 100 < points.len(), "{undecided} undecided");
+        assert!(removed > 50, "only {removed} points in what the fillets take away");
+    }
 }

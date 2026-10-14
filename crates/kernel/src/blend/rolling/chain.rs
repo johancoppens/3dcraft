@@ -53,6 +53,21 @@ use craft3d_math::{Tolerance, Vec3};
 use craft3d_topo::{Body, Coedge, Edge, EdgeId, FaceId, Loop, LoopId, Vertex, VertexId};
 use std::collections::BTreeMap;
 
+mod meet;
+
+/// Blends the chains `which` of `chains`, which end in the `meets`, in
+/// place (see [`meet`]).
+pub(super) fn build_meets(
+    body: &mut Body,
+    chains: &[Chain],
+    which: &[usize],
+    meets: &[Meet],
+    items: &[Item],
+    tolerance: &Tolerance,
+) -> Result<Vec<(FaceId, usize)>, BlendError> {
+    meet::build_with(body, chains, which, meets, items, tolerance)
+}
+
 /// One edge of a chain, followed in the chain's direction.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Piece {
@@ -745,7 +760,7 @@ struct EndMade {
 /// face).
 enum EndKind {
     Third(EndMade),
-    Meet { meet: usize, range: (f64, f64) },
+    Meet { range: (f64, f64) },
 }
 
 struct Computed {
@@ -1129,9 +1144,21 @@ fn finish(
     tolerance: &Tolerance,
 ) -> Result<Vec<(FaceId, usize)>, BlendError> {
     let made = splice_chain(body, chain, computed, meet_ends, tolerance)?;
+    measure(body, chain, &made, tolerance)
+}
+
+/// Holds the blend faces `made` of `chain`, put into `body`, against what
+/// they have to be: each tangent to its faces along its borders, which
+/// stay on them, and to the next across a joint.
+fn measure(
+    body: &Body,
+    chain: &Chain,
+    made: &[(FaceId, EdgeId)],
+    tolerance: &Tolerance,
+) -> Result<Vec<(FaceId, usize)>, BlendError> {
     let shape = chain.pieces.first().ok_or_else(lost)?.shape;
     let mut faces = Vec::with_capacity(made.len());
-    for (piece, (face, second_border)) in chain.pieces.iter().zip(&made) {
+    for (piece, (face, second_border)) in chain.pieces.iter().zip(made) {
         tangent_or_refused(
             body,
             piece.edge,
@@ -1143,7 +1170,7 @@ fn finish(
         )?;
         faces.push((*face, piece.item));
     }
-    smooth_joints(body, chain, &made, shape, tolerance)?;
+    smooth_joints(body, chain, made, shape, tolerance)?;
     Ok(faces)
 }
 
@@ -1773,7 +1800,7 @@ fn along_spine(
                     let [x, y] = faces_of(&super::super::edge_uses(body), found.third)
                         .ok_or_else(lost)?;
                     let far = if piece.faces.contains(&x) { y } else { x };
-                    Ok(Ending::Meet { meet: index, far })
+                    Ok(Ending::Meet { far })
                 }
                 None => end_at(
                     body,
@@ -2005,8 +2032,8 @@ fn along_spine(
                 let piece = if index == 0 { 0 } else { n - 1 };
                 let range = *cut_ranges.get(index).ok_or_else(lost)?;
                 let end = match end {
-                    Ending::Meet { meet, .. } => {
-                        done.push(EndKind::Meet { meet, range });
+                    Ending::Meet { .. } => {
+                        done.push(EndKind::Meet { range });
                         continue;
                     }
                     Ending::Third(end) => end,
@@ -2069,7 +2096,7 @@ fn along_spine(
 /// other blended edge's other face).
 enum Ending {
     Third(End),
-    Meet { meet: usize, far: FaceId },
+    Meet { far: FaceId },
 }
 
 impl Ending {

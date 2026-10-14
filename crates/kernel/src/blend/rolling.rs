@@ -1895,13 +1895,12 @@ pub(super) fn blend(
     let (chains, meets) = chain::group(body, &uses, &items, tolerance)?;
     let mut out = body.clone();
     let mut blends = Vec::with_capacity(requests.len());
-    if !meets.is_empty() {
-        // Not built yet.
-        let first = meets.first().ok_or_else(lost)?;
-        let edge = items.get(first.items[1]).ok_or_else(lost)?.request.edge;
-        return Err(refused(edge, Reason::FreeMeet));
-    }
-    for found in &chains {
+    let mut with_meets = Vec::new();
+    for (index, found) in chains.iter().enumerate() {
+        if found.meets.iter().any(Option::is_some) {
+            with_meets.push(index);
+            continue;
+        }
         if let ([piece], []) = (found.pieces.as_slice(), found.joints.as_slice()) {
             let item = items.get(piece.item).ok_or_else(lost)?;
             let face = blend_one(
@@ -1916,6 +1915,16 @@ pub(super) fn blend(
         } else {
             blends.extend(chain::build(&mut out, found, &items, tolerance)?);
         }
+    }
+    if !with_meets.is_empty() {
+        blends.extend(chain::build_meets(
+            &mut out,
+            &chains,
+            &with_meets,
+            &meets,
+            &items,
+            tolerance,
+        )?);
     }
     let mut seen = std::collections::BTreeSet::new();
     for request in requests {
