@@ -133,7 +133,7 @@ fn video_codec(encoders: &str) -> &'static [&'static str] {
     if has("libx264") {
         &["-c:v", "libx264", "-crf", "18", "-preset", "slow"]
     } else if has("libopenh264") {
-        &["-c:v", "libopenh264", "-b:v", "8M"]
+        &["-c:v", "libopenh264", "-b:v", "16M"]
     } else {
         &["-q:v", "2"]
     }
