@@ -37,11 +37,13 @@ mod selfcheck;
 mod shell;
 mod sketch;
 mod sweep;
+mod thread;
 
 pub use cache::RegenCache;
 pub use cause::root_cause;
 pub use craft3d_kernel::extrude::{Origin, Origins, Role};
 pub use craft3d_kernel::helix::Helix;
+pub use craft3d_kernel::thread::{coarse_pitch, nominal_diameter};
 pub use datum::{Datum, EdgeReference, References, references};
 pub use derive::{MAX_PATTERN_FACES, MAX_PATTERN_INSTANCES};
 pub use extrude::name_of;
@@ -346,6 +348,26 @@ pub struct SweepReport {
     pub stations: usize,
 }
 
+/// What a thread says of itself: the face is marked with it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ThreadReport {
+    /// The designation, as given: `M10`.
+    pub size: String,
+    /// The major and the minor diameter of the basic profile, in model
+    /// units.
+    pub major: f64,
+    pub minor: f64,
+    pub pitch: f64,
+    /// How far it goes at full depth.
+    pub length: f64,
+    pub left_handed: bool,
+    /// Only marked on the face; the body is not changed.
+    pub cosmetic: bool,
+    /// How far the faces of the groove were found to lie from the true
+    /// sweep, at most; 0 for a cosmetic thread.
+    pub deviation: f64,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct FeatureResult {
     pub id: FeatureId,
@@ -366,6 +388,8 @@ pub struct FeatureResult {
     pub instances: Option<Arc<Vec<Transform>>>,
     /// For a sweep that was built: how its path was followed.
     pub sweep: Option<SweepReport>,
+    /// For a thread that was built: what it is.
+    pub thread: Option<ThreadReport>,
     /// The later feature this feature's body went into. The body is then
     /// no longer one of the document's bodies; it stays here because names
     /// are resolved against it.
@@ -582,7 +606,8 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
         | FeatureKind::Fillet(_)
         | FeatureKind::OffsetFace(_)
         | FeatureKind::Shell(_)
-        | FeatureKind::DeleteFace(_) => {
+        | FeatureKind::DeleteFace(_)
+        | FeatureKind::Thread(_) => {
             return Err(format!(
                 "a {} needs the body it is made from",
                 feature.kind.type_name()
@@ -707,6 +732,7 @@ fn build_feature(
     let mut taken = None;
     let mut placed = None;
     let mut followed = None;
+    let mut threaded = None;
     let (status, body) = if rolled_back {
         (Status::RolledBack, None)
     } else if feature.suppressed {
@@ -864,6 +890,19 @@ fn build_feature(
             }
             Err(reason) => (Status::Failed(reason), None),
         }
+    } else if let FeatureKind::Thread(cut) = &feature.kind {
+        match thread::build(doc, variables, feature.id, cut, earlier).and_then(
+            |(body, names, report)| checked(doc, body).map(|body| (body, names, report)),
+        ) {
+            Ok((body, made_names, report)) => {
+                names = made_names.map(Arc::new);
+                threaded = Some(report);
+                // Neither the body nor the groove moves.
+                instances = Some(Arc::new(vec![Transform::IDENTITY; 2]));
+                (Status::Ok, Some(Arc::new(body)))
+            }
+            Err(reason) => (Status::Failed(reason), None),
+        }
     } else if let FeatureKind::Shell(hollowed) = &feature.kind {
         match shell::build(doc, variables, feature.id, hollowed, earlier)
             .and_then(|(body, names)| checked(doc, body).map(|body| (body, names)))
@@ -912,6 +951,7 @@ fn build_feature(
             names,
             instances,
             sweep: followed,
+            thread: threaded,
             consumed_by: None,
         },
         taken,

@@ -25,6 +25,7 @@ pub mod revolve;
 pub mod shell;
 mod spline2;
 pub mod sweep;
+pub mod thread;
 mod tweak;
 
 use craft3d_geom::GeomError;

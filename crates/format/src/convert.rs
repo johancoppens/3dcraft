@@ -307,6 +307,23 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                     faces: faces.iter().map(name_to_manifest).collect(),
                 }
             }
+            doc::FeatureKind::Thread(doc::Thread {
+                face,
+                start,
+                size,
+                pitch,
+                length,
+                left_handed,
+                cosmetic,
+            }) => manifest::FeatureKind::Thread {
+                face: name_to_manifest(face),
+                start: name_to_manifest(start),
+                size: size.clone(),
+                pitch: expr_to_manifest(pitch),
+                length: expr_to_manifest(length),
+                left_handed: *left_handed,
+                cosmetic: *cosmetic,
+            },
             doc::FeatureKind::Shell(doc::Shell {
                 source: doc::FeatureId(source),
                 thickness,
@@ -592,6 +609,7 @@ fn role_to_manifest(role: doc::NameRole) -> manifest::NameRole {
         D::ChamferCorner => M::ChamferCorner,
         D::Fillet => M::Fillet,
         D::FilletCorner => M::FilletCorner,
+        D::Thread => M::Thread,
     }
 }
 
@@ -618,6 +636,7 @@ fn role_to_doc(role: manifest::NameRole) -> doc::NameRole {
         M::ChamferCorner => D::ChamferCorner,
         M::Fillet => D::Fillet,
         M::FilletCorner => D::FilletCorner,
+        M::Thread => D::Thread,
     }
 }
 
@@ -1214,6 +1233,23 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
                     faces: faces.into_iter().map(name_to_doc).collect(),
                 })
             }
+            manifest::FeatureKind::Thread {
+                face,
+                start,
+                size,
+                pitch,
+                length,
+                left_handed,
+                cosmetic,
+            } => doc::FeatureKind::Thread(doc::Thread {
+                face: name_to_doc(face),
+                start: name_to_doc(start),
+                size,
+                pitch: doc::Expr(pitch),
+                length: doc::Expr(length),
+                left_handed,
+                cosmetic,
+            }),
             manifest::FeatureKind::Shell {
                 source,
                 thickness,

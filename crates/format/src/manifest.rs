@@ -310,6 +310,21 @@ pub enum FeatureKind {
     /// again by the faces round them. The body is that of the feature
     /// the first name starts with.
     DeleteFace { faces: Vec<Name> },
+    /// An ISO metric thread of designation `size` (`M10`) on the
+    /// cylindrical face `face`, from the flat face `start` along it for
+    /// `length` (format version 13). Written without `left_handed` and
+    /// `cosmetic` when they are not set.
+    Thread {
+        face: Name,
+        start: Name,
+        size: String,
+        pitch: String,
+        length: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        left_handed: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        cosmetic: bool,
+    },
     /// The body of `source` made hollow, with walls of `thickness` behind
     /// every face except those of `open`, which are taken away.
     Shell {
@@ -576,6 +591,9 @@ pub enum NameRole {
     /// The piece of a ball where three fillets meet; `sources` as for
     /// `chamferCorner`.
     FilletCorner,
+    /// A face of the groove of a thread; `sources` is one plain number:
+    /// 0 the root, 1 and 2 the flanks (format version 13).
+    Thread,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

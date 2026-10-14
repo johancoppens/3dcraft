@@ -102,10 +102,16 @@ pub enum NameRole {
     /// The piece of a ball in the corner where three filleted edges meet.
     /// Its sources are as a chamfer corner's.
     FilletCorner,
+    /// A face of the groove a thread cuts. Its one source is a plain
+    /// number: 0 the root, 1 the flank that faces the start of the
+    /// thread, 2 the flank that faces away from it; the faces of the
+    /// groove are one per half turn, numbered as pieces
+    /// (`F9:piece(3)/F9:thread(1)`).
+    Thread,
 }
 
 impl NameRole {
-    pub const ALL: [NameRole; 19] = [
+    pub const ALL: [NameRole; 20] = [
         NameRole::StartCap,
         NameRole::EndCap,
         NameRole::Side,
@@ -125,6 +131,7 @@ impl NameRole {
         NameRole::ChamferCorner,
         NameRole::Fillet,
         NameRole::FilletCorner,
+        NameRole::Thread,
     ];
 
     pub fn name(self) -> &'static str {
@@ -148,6 +155,7 @@ impl NameRole {
             NameRole::ChamferCorner => "chamferCorner",
             NameRole::Fillet => "fillet",
             NameRole::FilletCorner => "filletCorner",
+            NameRole::Thread => "thread",
         }
     }
 
@@ -168,6 +176,7 @@ impl NameRole {
                 | NameRole::ChamferCorner
                 | NameRole::Fillet
                 | NameRole::FilletCorner
+                | NameRole::Thread
         )
     }
 
@@ -220,7 +229,12 @@ impl NameRole {
     pub fn is_numbered(self) -> bool {
         matches!(
             self,
-            NameRole::Copy | NameRole::Piece | NameRole::Face | NameRole::Edge | NameRole::Vertex
+            NameRole::Copy
+                | NameRole::Piece
+                | NameRole::Face
+                | NameRole::Edge
+                | NameRole::Vertex
+                | NameRole::Thread
         )
     }
 }

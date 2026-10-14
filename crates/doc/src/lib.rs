@@ -628,6 +628,37 @@ pub struct Shell {
     pub open: Vec<PersistentName>,
 }
 
+/// An ISO metric screw thread on a cylindrical face of the body of an
+/// earlier feature: external, from the flat face `start` at one end of
+/// the cylinder along it for `length`, with a run-out of a quarter turn.
+/// The body goes into this feature. A cosmetic thread changes no
+/// geometry: the face is only marked with what the thread is.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Thread {
+    /// The cylindrical face, by name.
+    pub face: PersistentName,
+    /// The flat face the thread starts at, square to the cylinder's axis,
+    /// by name: a face of the same body.
+    pub start: PersistentName,
+    /// The designation of ISO 261: `M10`. Its number is the nominal
+    /// (major) diameter in millimetres.
+    pub size: String,
+    pub pitch: Expr,
+    pub length: Expr,
+    #[serde(default)]
+    pub left_handed: bool,
+    #[serde(default)]
+    pub cosmetic: bool,
+}
+
+impl Thread {
+    /// The feature whose body the thread is cut in: the one that made the
+    /// face.
+    pub fn source(&self) -> FeatureId {
+        self.face.feature
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum FeatureKind {
@@ -654,6 +685,7 @@ pub enum FeatureKind {
     OffsetFace(OffsetFace),
     Shell(Shell),
     DeleteFace(DeleteFace),
+    Thread(Thread),
 }
 
 impl FeatureKind {
@@ -683,6 +715,7 @@ impl FeatureKind {
             FeatureKind::OffsetFace(_) => "offsetFace",
             FeatureKind::Shell(_) => "shell",
             FeatureKind::DeleteFace(_) => "deleteFace",
+            FeatureKind::Thread(_) => "thread",
         }
     }
 
@@ -741,6 +774,7 @@ impl FeatureKind {
             FeatureKind::OffsetFace(o) => o.source().map(|id| (id, false)),
             FeatureKind::Shell(s) => Some((s.source, false)),
             FeatureKind::DeleteFace(d) => d.source().map(|id| (id, false)),
+            FeatureKind::Thread(t) => Some((t.source(), false)),
             FeatureKind::Block(_)
             | FeatureKind::Cylinder(_)
             | FeatureKind::Sphere(_)
@@ -875,6 +909,9 @@ impl FeatureKind {
             FeatureKind::Fillet(f) => out = vec![named("radius", &f.radius)],
             FeatureKind::OffsetFace(o) => out = vec![named("distance", &o.distance)],
             FeatureKind::Shell(s) => out = vec![named("thickness", &s.thickness)],
+            FeatureKind::Thread(t) => {
+                out = vec![named("pitch", &t.pitch), named("length", &t.length)];
+            }
             FeatureKind::Chamfer(c) => {
                 out = match &c.size {
                     ChamferSize::Equal { distance } => vec![named("size.distance", distance)],
@@ -958,6 +995,7 @@ impl FeatureKind {
             FeatureKind::Fillet(f) => vec![&mut f.radius],
             FeatureKind::OffsetFace(o) => vec![&mut o.distance],
             FeatureKind::Shell(s) => vec![&mut s.thickness],
+            FeatureKind::Thread(t) => vec![&mut t.pitch, &mut t.length],
             FeatureKind::Chamfer(c) => match &mut c.size {
                 ChamferSize::Equal { distance } => vec![distance],
                 ChamferSize::TwoDistances { distance, second } => vec![distance, second],
@@ -1187,6 +1225,7 @@ impl Document {
                     }
                     faces.iter().collect()
                 }
+                FeatureKind::Thread(thread) => vec![&thread.face, &thread.start],
                 _ => Vec::new(),
             };
             for name in referred {
