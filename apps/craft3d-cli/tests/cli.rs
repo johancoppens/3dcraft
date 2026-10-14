@@ -360,8 +360,9 @@ fn commands_prints_the_registry_and_filters_it() {
             .stdout
             .starts_with("history.rollback\n")
     );
-    let none = cli(&["commands", "--filter", "fillet"]).ok().stdout;
-    assert_eq!(none, "No command matches `fillet`.\n");
+    // (A word no command has: until 2026-10-14 this was `fillet`.)
+    let none = cli(&["commands", "--filter", "zeppelin"]).ok().stdout;
+    assert_eq!(none, "No command matches `zeppelin`.\n");
 }
 
 // ------------------------------------------- run, info, render, convert

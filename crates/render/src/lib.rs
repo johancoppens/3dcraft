@@ -5,6 +5,10 @@
 //! and readability over speed, and is deterministic: single-threaded `f64`
 //! arithmetic, triangles drawn in mesh order.
 
+mod section;
+
+pub use section::{Cut, SECTION_FACE, SECTION_MARGIN, SECTION_SNAP, Section, section_bounds};
+
 use craft3d_math::{Bbox3, Vec3};
 use craft3d_tess::Mesh;
 use std::collections::BTreeSet;
@@ -469,6 +473,10 @@ pub struct RenderParams {
     /// 1, the default, is the opaque picture, bit for bit. A number that
     /// is not one counts as 1; one outside 0 to 1 is clamped.
     pub opacity: f64,
+    /// The plane the picture is cut open with (see [`render`], *Section*).
+    /// `None`, the default, is the whole picture, bit for bit; so is a
+    /// plane that is none ([`Cut::new`]).
+    pub section: Option<Section>,
 }
 
 impl Default for RenderParams {
@@ -481,6 +489,7 @@ impl Default for RenderParams {
             color: [198, 204, 214],
             highlight: Highlight::NONE,
             opacity: 1.0,
+            section: None,
         }
     }
 }
@@ -651,6 +660,37 @@ impl View {
         })
     }
 
+    /// Where the ray through the position (`px`, `py`) of the picture
+    /// (sample coordinates, x right and y down) meets the plane of `cut`,
+    /// when the cap can be there: the depth key, the distance along the
+    /// view direction and the point. `None` when the ray runs along the
+    /// plane, meets it at or behind the eye plane of a perspective camera,
+    /// or outside the box the cap stays in.
+    fn cap_at(&self, cut: &Cut, px: f64, py: f64) -> Option<(f64, f64, Vec3)> {
+        // The inverse of `project`: the offsets across the view at
+        // distance 1 (perspective) or at any distance (orthographic).
+        let cx = (px / self.w * 2.0 - 1.0) * self.aspect * self.half;
+        let cy = (1.0 - py / self.h * 2.0) * self.half;
+        let across = self.right * cx + self.up * cy;
+        let (start, direction) = match self.projection {
+            Projection::Perspective { .. } => (self.eye, self.forward + across),
+            Projection::Orthographic { .. } => (self.eye + across, self.forward),
+        };
+        // `direction·forward` is 1, so the parameter is the distance.
+        let dist = (cut.origin - start).dot(cut.normal) / direction.dot(cut.normal);
+        let key = match self.projection {
+            Projection::Perspective { .. } => {
+                if dist.is_nan() || dist <= 1e-12 {
+                    return None;
+                }
+                -1.0 / dist
+            }
+            Projection::Orthographic { .. } => dist,
+        };
+        let point = start + direction * dist;
+        (key.is_finite() && dist.is_finite() && cut.holds_cap(point)).then_some((key, dist, point))
+    }
+
     /// Unit vector from a surface point towards the viewer.
     fn toward_viewer(&self, p: Vec3) -> Vec3 {
         match self.projection {
@@ -676,6 +716,79 @@ fn shared_edge(p: &Projected, q: &Projected, px: f64, py: f64) -> f64 {
     } else {
         -edge(q.sx, q.sy, p.sx, p.sy, px, py)
     }
+}
+
+/// Whether a sample that lies exactly on the edge `p → q` of a triangle
+/// whose third corner is `r` belongs to that triangle: the top-left rule
+/// of rasterisers. It does when the triangle lies to the right of the edge
+/// in the picture, or, for a horizontal edge, below it. The two triangles
+/// that share an edge lie on opposite sides of it, so exactly one of them
+/// owns a sample on it.
+fn owns_edge(p: &Projected, q: &Projected, r: &Projected) -> bool {
+    // The ends in one order for both triangles, as in `shared_edge`.
+    let (a, b) = if (p.sx, p.sy) <= (q.sx, q.sy) {
+        (p, q)
+    } else {
+        (q, p)
+    };
+    let inside = edge(a.sx, a.sy, b.sx, b.sy, r.sx, r.sy) > 0.0;
+    let (dx, dy) = (b.sx - a.sx, b.sy - a.sy);
+    // The edge function one step to the right of the edge is `-dy`, one
+    // step below it `dx`.
+    if dy != 0.0 {
+        inside == (dy < 0.0)
+    } else {
+        inside == (dx > 0.0)
+    }
+}
+
+/// Whether a sample with the barycentric weights `weights` (none negative)
+/// of the triangle `corners` belongs to it: inside it does, on an edge by
+/// [`owns_edge`].
+fn owns_sample(weights: [f64; 3], corners: [&Projected; 3]) -> bool {
+    let [wa, wb, wc] = weights;
+    let [a, b, c] = corners;
+    (wa != 0.0 || owns_edge(b, c, a))
+        && (wb != 0.0 || owns_edge(c, a, b))
+        && (wc != 0.0 || owns_edge(a, b, c))
+}
+
+/// Which edge or vertex of the mesh a sample lies exactly on, given its
+/// barycentric weights in a triangle with the corners `corners`: a number
+/// made of the coordinates of the edge's two ends (in either order) or of
+/// the vertex, the same for every triangle that shares it; 0 for a sample
+/// inside the triangle.
+///
+/// The triangles that share an edge are one surface there. A sample on the
+/// edge is inside all of them (see [`shared_edge`]), with depth keys that
+/// agree only up to rounding, so without this the surface could count as
+/// lying behind itself.
+fn shared_place(weights: [f64; 3], corners: [Vec3; 3]) -> u64 {
+    let [wa, wb, wc] = weights;
+    let [pa, pb, pc] = corners;
+    let on: &[Vec3] = match (wa == 0.0, wb == 0.0, wc == 0.0) {
+        (false, false, false) | (true, true, true) => return 0,
+        // On the edge opposite the corner whose weight is zero.
+        (true, false, false) => &[pb, pc],
+        (false, true, false) => &[pc, pa],
+        (false, false, true) => &[pa, pb],
+        // At the corner whose weight is not zero.
+        (false, true, true) => &[pa],
+        (true, false, true) => &[pb],
+        (true, true, false) => &[pc],
+    };
+    let bits = |p: Vec3| [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()];
+    let mut ends: Vec<[u64; 3]> = on.iter().map(|&p| bits(p)).collect();
+    ends.sort_unstable();
+    // FNV-1a over the coordinates.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for word in ends.iter().flatten() {
+        for byte in word.to_le_bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    hash.max(1)
 }
 
 /// First and last sample index along one axis that a span `[lo, hi]` can
@@ -733,11 +846,45 @@ fn shade(
 /// the shaded colour of the one behind, rounded. Both are the minimum of
 /// something over all triangles, so the picture does not depend on the
 /// order of the triangles (ties go to the first triangle, as in the opaque
-/// picture). What is behind is drawn opaque: one layer shows through, not
+/// picture). The triangles that share an edge or a vertex are one surface
+/// at a sample that lies exactly on it: the one that is in front there is
+/// the front as ever, and the others are not behind it, although their
+/// depth keys differ from its by rounding (a surface is never behind
+/// itself). What is behind is drawn opaque: one layer shows through, not
 /// every layer, which keeps a cavity readable and the definition exact. A
 /// highlighted face in front is not seen through, so that it stands out;
 /// behind, it shows in its own colour. The id and depth buffers are the
 /// front's: a pick gives the front-most face whatever the opacity.
+///
+/// **Section** ([`RenderParams::section`]). A plane cuts the picture open:
+/// what lies in the half its normal points to is not drawn. Per sample:
+///
+/// - *The cut.* Every vertex has a distance from the plane
+///   ([`Cut::side`]: positive in the half that is cut away); across a
+///   triangle it is interpolated like every other attribute. A sample of
+///   a triangle is left out where that is positive. A triangle that lies
+///   in the plane (parallel to it, within [`SECTION_SNAP`] of the mesh's
+///   size) goes with its body: it is left out when it faces away from the
+///   cut half ([`Cut::clips`]).
+/// - *The cap.* A body cut open is closed again with a flat face in the
+///   plane, in [`Section::color`], unshaded, with [`SECTION_FACE`] as its
+///   face id. The plane is inside a body at a sample when the number of
+///   surface samples that were left out there is odd: along the ray of the
+///   sample these are the surfaces between the plane and the far end of
+///   the cut half, and a ray leaves a closed body as often as it enters
+///   it. A sample on an edge two triangles share counts for one of them
+///   (the top-left rule). The cap is then one more surface at the sample,
+///   at the depth where the ray meets the plane: the front where nothing
+///   that is kept is nearer (on a tie the triangle wins), the one behind
+///   in a see-through picture where it is the nearest surface behind the
+///   front. It lies within the box around the mesh ([`SECTION_MARGIN`]).
+/// - *What is not closed.* The count is of all triangles together. For a
+///   mesh of open sheets it means nothing (ask for no cap:
+///   [`Section::cap`]), and where two bodies overlap in space the plane
+///   through both shows no cap.
+///
+/// The id and depth buffers are of what is drawn: a pick on a cut-open
+/// model gives what is seen.
 pub fn render(mesh: &Mesh, camera: &Camera, params: &RenderParams) -> Result<Frame, RenderError> {
     let (width, height, ssaa) = (params.width, params.height, params.ssaa);
     if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
@@ -773,6 +920,26 @@ pub fn render(mesh: &Mesh, camera: &Camera, params: &RenderParams) -> Result<Fra
     } else {
         Vec::new()
     };
+    // Per sample of a see-through picture, the edge or vertex of the mesh
+    // the front lies exactly on ([`shared_place`]); 0 for none.
+    let mut front_on: Vec<u64> = if see_through {
+        vec![0; w * h]
+    } else {
+        Vec::new()
+    };
+    // The section: every vertex's distance from the plane, and per sample
+    // whether the number of surfaces left out there is odd.
+    let cut = params
+        .section
+        .and_then(|section| Cut::new(&section, &section_bounds(mesh)));
+    let sides: Vec<f64> = cut.map_or_else(Vec::new, |cut| {
+        mesh.positions.iter().map(|&p| cut.side(p)).collect()
+    });
+    let mut odd: Vec<bool> = if cut.is_some_and(|cut| cut.cap) {
+        vec![false; w * h]
+    } else {
+        Vec::new()
+    };
 
     for (t, (tri, &face)) in mesh.triangles.iter().zip(&mesh.face_ids).enumerate() {
         let vertex = |k: u32| {
@@ -782,6 +949,7 @@ pub fn render(mesh: &Mesh, camera: &Camera, params: &RenderParams) -> Result<Fra
                 _ => Err(RenderError::InvalidMesh { triangle: t }),
             }
         };
+        let side = |k: u32| sides.get(k as usize).copied().unwrap_or(0.0);
         let [ia, ib, ic] = *tri;
         let [(pa, na, a), (pb, nb, b), (pc, nc, c)] = [vertex(ia)?, vertex(ib)?, vertex(ic)?];
         let (Some(a), Some(b), Some(c)) = (a, b, c) else {
@@ -800,6 +968,12 @@ pub fn render(mesh: &Mesh, camera: &Camera, params: &RenderParams) -> Result<Fra
             continue;
         };
         let flat_normal = (pb - pa).cross(pc - pa).normalized();
+        // The section: the corners' distances from the plane, and which
+        // way the triangle faces.
+        let cut_triangle = cut.map(|cut| {
+            let facing = flat_normal.map_or(0.0, |n| n.dot(cut.normal));
+            ([side(ia), side(ib), side(ic)], facing)
+        });
         for y in y0..=y1 {
             let py = y as f64 + 0.5;
             for x in x0..=x1 {
@@ -812,10 +986,26 @@ pub fn render(mesh: &Mesh, camera: &Camera, params: &RenderParams) -> Result<Fra
                 if wa < 0.0 || wb < 0.0 || wc < 0.0 {
                     continue;
                 }
+                let on_edge = [wa, wb, wc];
                 let sum = wa + wb + wc;
                 let (wa, wb, wc) = (wa / sum, wb / sum, wc / sum);
                 let key = wa * a.key + wb * b.key + wc * c.key;
                 let i = y * w + x;
+                if let Some(([sa, sb, sc], facing)) = cut_triangle {
+                    // Interpolated like the position: perspective-correct.
+                    let (qa, qb, qc) = (wa * a.inv_w, wb * b.inv_w, wc * c.inv_w);
+                    let q = qa + qb + qc;
+                    let across = (qa * sa + qb * sb + qc * sc) / q;
+                    if cut.is_some_and(|cut| cut.clips(across, facing)) {
+                        // Left out, and counted once per surface.
+                        if let Some(slot) = odd.get_mut(i)
+                            && owns_sample(on_edge, [&a, &b, &c])
+                        {
+                            *slot = !*slot;
+                        }
+                        continue;
+                    }
+                }
                 let Some(&nearest) = depth_key.get(i) else {
                     continue;
                 };
@@ -823,10 +1013,19 @@ pub fn render(mesh: &Mesh, camera: &Camera, params: &RenderParams) -> Result<Fra
                 // keeps the result independent of anything but mesh order.
                 // Negated, so that a key that is not a number is no front.
                 let front = key < nearest;
+                // On an edge or a vertex the front lies on too: the same
+                // surface as the front, whatever rounding made of its key.
+                let place = if see_through {
+                    shared_place(on_edge, [pa, pb, pc])
+                } else {
+                    0
+                };
+                let same_surface = place != 0 && front_on.get(i) == Some(&place);
                 if !front {
                     // Strictly further than the front, and nearer than
                     // what was behind it so far: the new one behind.
                     let nearer_behind = see_through
+                        && !same_surface
                         && key > nearest
                         && behind.get(i).is_some_and(|&(second, _)| key < second);
                     if !nearer_behind {
@@ -861,17 +1060,61 @@ pub fn render(mesh: &Mesh, camera: &Camera, params: &RenderParams) -> Result<Fra
                     ids.get_mut(i),
                     depth.get_mut(i),
                 ) {
-                    // What was in front is now the one behind.
+                    // What was in front is now the one behind, unless it
+                    // is this surface's other triangle.
                     if nearest.is_finite()
+                        && !same_surface
                         && let Some(slot) = behind.get_mut(i)
                     {
                         *slot = (nearest, *c_slot);
+                    }
+                    if let Some(slot) = front_on.get_mut(i) {
+                        *slot = place;
                     }
                     *k_slot = key;
                     *c_slot = rgb;
                     *id_slot = face;
                     *d_slot = wa * a.dist + wb * b.dist + wc * c.dist;
                 }
+            }
+        }
+    }
+
+    // The cap of the section: one more surface where the plane is inside a
+    // body, drawn after the triangles, so that a triangle wins a tie.
+    if let Some(cut) = cut.filter(|cut| cut.cap) {
+        for (i, _) in odd.iter().enumerate().filter(|&(_, &inside)| inside) {
+            let (px, py) = ((i % w) as f64 + 0.5, (i / w) as f64 + 0.5);
+            let Some((key, dist, _)) = view.cap_at(&cut, px, py) else {
+                continue;
+            };
+            let (Some(k_slot), Some(c_slot), Some(id_slot), Some(d_slot)) = (
+                depth_key.get_mut(i),
+                color.get_mut(i),
+                ids.get_mut(i),
+                depth.get_mut(i),
+            ) else {
+                continue;
+            };
+            let nearest = *k_slot;
+            if key < nearest {
+                if nearest.is_finite()
+                    && let Some(slot) = behind.get_mut(i)
+                {
+                    *slot = (nearest, *c_slot);
+                }
+                *k_slot = key;
+                *c_slot = cut.color;
+                *id_slot = SECTION_FACE;
+                *d_slot = dist;
+                if let Some(slot) = front_on.get_mut(i) {
+                    *slot = 0;
+                }
+            } else if key > nearest
+                && let Some(slot) = behind.get_mut(i)
+                && key < slot.0
+            {
+                *slot = (key, cut.color);
             }
         }
     }
@@ -1003,33 +1246,154 @@ pub fn pick(
     x: f64,
     y: f64,
 ) -> Result<Option<Hit>, RenderError> {
-    if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
-        return Err(RenderError::InvalidSize { width, height });
-    }
-    if mesh.normals.len() != mesh.positions.len() || mesh.face_ids.len() != mesh.triangles.len() {
-        return Err(RenderError::InvalidMesh { triangle: 0 });
-    }
-    let view = View::new(camera, width as usize, height as usize)?;
-    // Negated, so that a position that is not a number is outside too.
-    if !(x >= 0.0 && y >= 0.0 && x < view.w && y < view.h) {
+    pick_cut(mesh, camera, width, height, x, y, None)
+}
+
+/// [`pick`] in a picture cut open by `section` ([`render`], *Section*):
+/// what is drawn there, never a face that is cut away. The cap is a hit
+/// with [`SECTION_FACE`] as its face and no triangle (`usize::MAX`), at
+/// the point of the plane under the position; [`cut_faces`] says which
+/// faces were cut away in front of it.
+pub fn pick_cut(
+    mesh: &Mesh,
+    camera: &Camera,
+    width: u32,
+    height: u32,
+    x: f64,
+    y: f64,
+    section: Option<&Section>,
+) -> Result<Option<Hit>, RenderError> {
+    let Some(sample) = Sample::new(mesh, camera, width, height, x, y, section)? else {
         return Ok(None);
-    }
-    let mut best: Option<(f64, Hit)> = None;
+    };
+    let mut state = SampleState::default();
     for (t, (tri, &face)) in mesh.triangles.iter().zip(&mesh.face_ids).enumerate() {
+        let Some(seen) = sample.seen(mesh, t, *tri, face)? else {
+            continue;
+        };
+        seen.hit(x, y, &mut state, None);
+    }
+    Ok(state.finish(&sample.view, sample.cut.as_ref(), x, y))
+}
+
+/// The face ids of the surfaces that a section leaves out at the position
+/// (`x`, `y`) of the picture [`pick_cut`] looks at, one per surface, in
+/// mesh order: what was cut away along the ray through the position. The
+/// plane is inside a body there when an odd number of them are that
+/// body's. Empty without a section, outside the picture, and where nothing
+/// is cut away.
+pub fn cut_faces(
+    mesh: &Mesh,
+    camera: &Camera,
+    width: u32,
+    height: u32,
+    x: f64,
+    y: f64,
+    section: Option<&Section>,
+) -> Result<Vec<u32>, RenderError> {
+    let Some(sample) = Sample::new(mesh, camera, width, height, x, y, section)? else {
+        return Ok(Vec::new());
+    };
+    let mut state = SampleState::default();
+    let mut faces = Vec::new();
+    for (t, (tri, &face)) in mesh.triangles.iter().zip(&mesh.face_ids).enumerate() {
+        let Some(seen) = sample.seen(mesh, t, *tri, face)? else {
+            continue;
+        };
+        seen.hit(x, y, &mut state, Some(&mut faces));
+    }
+    Ok(faces)
+}
+
+/// The picture one position is looked up in.
+struct Sample {
+    view: View,
+    cut: Option<Cut>,
+}
+
+impl Sample {
+    /// `Ok(None)` for a position outside the picture or one that is not a
+    /// number; an error for a picture [`render`] would refuse.
+    fn new(
+        mesh: &Mesh,
+        camera: &Camera,
+        width: u32,
+        height: u32,
+        x: f64,
+        y: f64,
+        section: Option<&Section>,
+    ) -> Result<Option<Self>, RenderError> {
+        if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
+            return Err(RenderError::InvalidSize { width, height });
+        }
+        if mesh.normals.len() != mesh.positions.len() || mesh.face_ids.len() != mesh.triangles.len()
+        {
+            return Err(RenderError::InvalidMesh { triangle: 0 });
+        }
+        let view = View::new(camera, width as usize, height as usize)?;
+        // Negated, so that a position that is not a number is outside too.
+        if !(x >= 0.0 && y >= 0.0 && x < view.w && y < view.h) {
+            return Ok(None);
+        }
+        let cut = section.and_then(|section| Cut::new(section, &section_bounds(mesh)));
+        Ok(Some(Self { view, cut }))
+    }
+
+    /// Triangle `t` as the picture has it; `Ok(None)` for one the renderer
+    /// does not draw.
+    fn seen(
+        &self,
+        mesh: &Mesh,
+        t: usize,
+        tri: [u32; 3],
+        face: u32,
+    ) -> Result<Option<Seen>, RenderError> {
         let vertex = |k: u32| {
             mesh.positions
                 .get(k as usize)
                 .copied()
                 .ok_or(RenderError::InvalidMesh { triangle: t })
         };
-        let [ia, ib, ic] = *tri;
+        let [ia, ib, ic] = tri;
         let corners = [vertex(ia)?, vertex(ib)?, vertex(ic)?];
-        let Some(seen) = Seen::new(&view, t, face, corners) else {
-            continue;
-        };
-        seen.hit(x, y, &mut best);
+        Ok(Seen::new(&self.view, t, face, corners, self.cut.as_ref()))
     }
-    Ok(best.map(|(_, hit)| hit))
+}
+
+/// What one position of a picture has found so far.
+#[derive(Default)]
+struct SampleState {
+    /// The nearest triangle that is drawn there, with its depth key.
+    best: Option<(f64, Hit)>,
+    /// Whether the number of surfaces left out there by a section is odd.
+    odd: bool,
+}
+
+impl SampleState {
+    /// The hit, once every triangle was looked at: the nearest triangle,
+    /// or the cap of the section where that is nearer.
+    fn finish(self, view: &View, cut: Option<&Cut>, x: f64, y: f64) -> Option<Hit> {
+        let triangle = self.best;
+        let cap = cut
+            .filter(|cut| cut.cap && self.odd)
+            .and_then(|cut| view.cap_at(cut, x, y));
+        match (triangle, cap) {
+            // Strict, as in the renderer: the triangle wins a tie.
+            (Some((nearest, _)), Some((key, dist, point))) if key < nearest => Some(Hit {
+                face: SECTION_FACE,
+                triangle: usize::MAX,
+                depth: dist,
+                point,
+            }),
+            (None, Some((_, dist, point))) => Some(Hit {
+                face: SECTION_FACE,
+                triangle: usize::MAX,
+                depth: dist,
+                point,
+            }),
+            (triangle, _) => triangle.map(|(_, hit)| hit),
+        }
+    }
 }
 
 /// A triangle of a mesh as a picture has it: its corners in space and
@@ -1042,21 +1406,39 @@ struct Seen {
     projected: [Projected; 3],
     /// Twice its signed area in the picture.
     area: f64,
+    /// In a picture with a section: the section, the corners' distances
+    /// from the plane ([`Cut::side`]) and which way the triangle faces.
+    cut: Option<(Cut, [f64; 3], f64)>,
 }
 
 impl Seen {
     /// `None` for a triangle the renderer does not draw: a corner at or
     /// behind the eye plane, no area in the picture.
-    fn new(view: &View, triangle: usize, face: u32, corners: [Vec3; 3]) -> Option<Self> {
+    fn new(
+        view: &View,
+        triangle: usize,
+        face: u32,
+        corners: [Vec3; 3],
+        cut: Option<&Cut>,
+    ) -> Option<Self> {
         let [pa, pb, pc] = corners;
         let (a, b, c) = (view.project(pa)?, view.project(pb)?, view.project(pc)?);
         let area = edge(a.sx, a.sy, b.sx, b.sy, c.sx, c.sy);
+        let cut = cut.map(|cut| {
+            let flat = (pb - pa).cross(pc - pa).normalized();
+            (
+                *cut,
+                corners.map(|p| cut.side(p)),
+                flat.map_or(0.0, |n| n.dot(cut.normal)),
+            )
+        });
         (area.is_finite() && area != 0.0).then_some(Self {
             triangle,
             face,
             corners,
             projected: [a, b, c],
             area,
+            cut,
         })
     }
 
@@ -1072,9 +1454,11 @@ impl Seen {
         ]
     }
 
-    /// Replaces `best` when this triangle is under (`px`, `py`) and nearer
-    /// than what `best` holds: the renderer's test of one sample.
-    fn hit(&self, px: f64, py: f64, best: &mut Option<(f64, Hit)>) {
+    /// Replaces the best of `state` when this triangle is under (`px`,
+    /// `py`) and nearer than what it holds: the renderer's test of one
+    /// sample. Where a section leaves the triangle out, that is counted
+    /// instead, and its face is added to `left_out`.
+    fn hit(&self, px: f64, py: f64, state: &mut SampleState, left_out: Option<&mut Vec<u32>>) {
         let [pa, pb, pc] = self.corners;
         let [a, b, c] = &self.projected;
         // The renderer visits the samples within the triangle's box only.
@@ -1091,15 +1475,28 @@ impl Seen {
         if !(wa >= 0.0 && wb >= 0.0 && wc >= 0.0) {
             return;
         }
+        let on_edge = [wa, wb, wc];
         let sum = wa + wb + wc;
         let (wa, wb, wc) = (wa / sum, wb / sum, wc / sum);
         let key = wa * a.key + wb * b.key + wc * c.key;
+        let (qa, qb, qc) = (wa * a.inv_w, wb * b.inv_w, wc * c.inv_w);
+        let q = qa + qb + qc;
+        if let Some((cut, [sa, sb, sc], facing)) = self.cut
+            && cut.clips((qa * sa + qb * sb + qc * sc) / q, facing)
+        {
+            if owns_sample(on_edge, [a, b, c]) {
+                state.odd = !state.odd;
+                if let Some(faces) = left_out {
+                    faces.push(self.face);
+                }
+            }
+            return;
+        }
+        let best = &mut state.best;
         // Strict, as in the renderer: the first triangle wins a tie.
         if best.as_ref().is_some_and(|(nearest, _)| key >= *nearest) || key.is_nan() {
             return;
         }
-        let (qa, qb, qc) = (wa * a.inv_w, wb * b.inv_w, wc * c.inv_w);
-        let q = qa + qb + qc;
         let (qa, qb, qc) = (qa / q, qb / q, qc / q);
         let point = pa * qa + pb * qb + pc * qc;
         if !point.is_finite() {
@@ -1126,7 +1523,8 @@ pub struct Neighbourhood {
     /// The box the triangles were kept for: least x, least y, greatest x,
     /// greatest y.
     within: [f64; 4],
-    size: [f64; 2],
+    view: View,
+    cut: Option<Cut>,
 }
 
 impl Neighbourhood {
@@ -1143,6 +1541,22 @@ impl Neighbourhood {
         y: f64,
         radius: f64,
     ) -> Result<Self, RenderError> {
+        Self::new_cut(mesh, camera, width, height, x, y, radius, None)
+    }
+
+    /// [`Neighbourhood::new`] for a picture cut open by `section`, as
+    /// [`pick_cut`] sees it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_cut(
+        mesh: &Mesh,
+        camera: &Camera,
+        width: u32,
+        height: u32,
+        x: f64,
+        y: f64,
+        radius: f64,
+        section: Option<&Section>,
+    ) -> Result<Self, RenderError> {
         if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
             return Err(RenderError::InvalidSize { width, height });
         }
@@ -1151,6 +1565,7 @@ impl Neighbourhood {
             return Err(RenderError::InvalidMesh { triangle: 0 });
         }
         let view = View::new(camera, width as usize, height as usize)?;
+        let cut = section.and_then(|section| Cut::new(section, &section_bounds(mesh)));
         let within = [x - radius, y - radius, x + radius, y + radius];
         let mut seen = Vec::new();
         let usable = within.iter().all(|c| c.is_finite());
@@ -1166,7 +1581,7 @@ impl Neighbourhood {
             if !usable {
                 continue;
             }
-            let Some(triangle) = Seen::new(&view, t, face, corners) else {
+            let Some(triangle) = Seen::new(&view, t, face, corners, cut.as_ref()) else {
                 continue;
             };
             let [x0, y0, x1, y1] = triangle.bounds();
@@ -1178,8 +1593,14 @@ impl Neighbourhood {
         Ok(Self {
             seen,
             within,
-            size: [view.w, view.h],
+            view,
+            cut,
         })
+    }
+
+    /// The section the picture is cut open with, made ready for the mesh.
+    pub fn cut(&self) -> Option<&Cut> {
+        self.cut.as_ref()
     }
 
     /// What [`pick`] gives for the position (`x`, `y`): the same triangle,
@@ -1187,15 +1608,15 @@ impl Neighbourhood {
     /// part of the picture this was made for.
     pub fn pick(&self, x: f64, y: f64) -> Option<Hit> {
         let [x0, y0, x1, y1] = self.within;
-        let [w, h] = self.size;
+        let (w, h) = (self.view.w, self.view.h);
         if !(x >= 0.0 && y >= 0.0 && x < w && y < h && x >= x0 && x <= x1 && y >= y0 && y <= y1) {
             return None;
         }
-        let mut best: Option<(f64, Hit)> = None;
+        let mut state = SampleState::default();
         for triangle in &self.seen {
-            triangle.hit(x, y, &mut best);
+            triangle.hit(x, y, &mut state, None);
         }
-        best.map(|(_, hit)| hit)
+        state.finish(&self.view, self.cut.as_ref(), x, y)
     }
 }
 
@@ -2158,6 +2579,94 @@ mod tests {
         for c in 0..3 {
             let mixed = (f64::from(front[c]) * 0.5 + f64::from(background[c]) * 0.5).round();
             assert_eq!(f64::from(at(&seen)[c]), mixed);
+        }
+    }
+
+    /// A sample exactly on the edge two triangles share is inside both,
+    /// with depth keys that differ by rounding. The sheet must not show
+    /// through itself there, and what is really behind it must.
+    #[test]
+    fn a_surface_is_not_behind_itself_on_an_edge_its_triangles_share() {
+        // A tilted square of two triangles seen head-on at 240 × 180: the
+        // centres of the pixels (60 + k, 149 - k) lie on its diagonal.
+        let sheet = |z: f64, face: u32, mesh: &mut Mesh| {
+            let corner = |x: f64, y: f64| Vec3::new(x, y, z + 0.2 * y);
+            quad(
+                [
+                    corner(-1.0, -1.0),
+                    corner(1.0, -1.0),
+                    corner(1.0, 1.0),
+                    corner(-1.0, 1.0),
+                ],
+                face,
+                mesh,
+            );
+        };
+        let camera = Camera {
+            eye: Vec3::new(0.0, 0.0, 6.0),
+            target: Vec3::ZERO,
+            up: Vec3::Y,
+            projection: Projection::Orthographic { half_height: 1.5 },
+        };
+        let see_through = RenderParams {
+            opacity: 0.5,
+            background: [0, 0, 0],
+            ..params(240, 180, 1)
+        };
+        let opaque = RenderParams {
+            opacity: 1.0,
+            ..see_through
+        };
+        let mut one = Mesh::default();
+        sheet(0.0, 4, &mut one);
+        let front = render(&one, &camera, &opaque).unwrap();
+        let half = render(&one, &camera, &see_through).unwrap();
+        let mut on_the_diagonal = 0;
+        for (i, &id) in front.ids.iter().enumerate() {
+            if id == NO_FACE {
+                continue;
+            }
+            let (x, y) = (i % 240, i / 240);
+            on_the_diagonal += usize::from(x + y == 209);
+            for c in 0..3 {
+                // Over black at a half: half the front, rounded.
+                let expected = (f64::from(front.rgb[i * 3 + c]) * 0.5).round() as u8;
+                assert_eq!(
+                    half.rgb[i * 3 + c],
+                    expected,
+                    "the sheet shows through itself at pixel ({x}, {y})"
+                );
+            }
+        }
+        assert_eq!(on_the_diagonal, 120, "the view is not on the diagonal");
+        // A second sheet behind the first is behind it on the diagonal as
+        // everywhere else, in either order of the triangles: every pixel
+        // of the first is the blend of the two.
+        for first_in_front in [true, false] {
+            let mut two = Mesh::default();
+            if first_in_front {
+                sheet(0.0, 4, &mut two);
+                sheet(-1.0, 5, &mut two);
+            } else {
+                sheet(-1.0, 5, &mut two);
+                sheet(0.0, 4, &mut two);
+            }
+            let both = render(&two, &camera, &see_through).unwrap();
+            let clear = RenderParams {
+                opacity: 0.0,
+                ..see_through
+            };
+            let behind = render(&two, &camera, &clear).unwrap();
+            assert_eq!(render(&two, &camera, &opaque).unwrap().ids, front.ids);
+            for (i, _) in front.ids.iter().enumerate().filter(|&(_, &id)| id == 4) {
+                for c in 0..3 {
+                    let mixed = (f64::from(front.rgb[i * 3 + c]) * 0.5
+                        + f64::from(behind.rgb[i * 3 + c]) * 0.5)
+                        .round() as u8;
+                    assert_eq!(both.rgb[i * 3 + c], mixed, "pixel {i}");
+                    assert!(behind.rgb[i * 3 + c] > 0, "nothing behind at pixel {i}");
+                }
+            }
         }
     }
 

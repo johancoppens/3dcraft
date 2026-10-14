@@ -41,6 +41,12 @@
 //!   table of the CPU renderer's own blend (`peel.rs`). At opacity 1 none
 //!   of it runs and the frame is the opaque one, bit for bit.
 //!
+//! - **A section** ([`RenderParams::section`]) is the CPU renderer's cut
+//!   and cap: fragments in the half that is cut away are dropped, a pass
+//!   of its own counts them per sample (a blend that flips a byte), and
+//!   the cap is one triangle in the plane, kept where the count is odd
+//!   (`cut.rs`). Without a section none of it runs.
+//!
 //! `f32` exists only here, at the GPU boundary: positions are stored relative
 //! to the centre of the mesh, and everything about the camera is computed in
 //! `f64` before it is narrowed.
@@ -58,12 +64,13 @@
 //! # Errors, never panics
 //!
 //! No adapter, a refused or lost device, a zero-sized or oversized target, an
-//! inconsistent mesh, a degenerate camera and a see-through picture on a
-//! device that cannot draw one are all [`GpuError`] values.
+//! inconsistent mesh, a degenerate camera and a see-through or cut-open
+//! picture on a device that cannot draw one are all [`GpuError`] values.
 //! wgpu reports validation and out-of-memory errors through error scopes,
 //! which every entry point here opens on native targets; in the browser
 //! WebGPU reports them to the console without unwinding.
 
+mod cut;
 mod mesh;
 mod offscreen;
 mod onscreen;
@@ -83,7 +90,7 @@ pub use offscreen::{adapters, render};
 
 // The types of the shared interface, so a caller needs one import.
 pub use craft3d_render::{
-    Camera, Frame, Highlight, NO_FACE, Projection, RenderError, RenderParams,
+    Camera, Frame, Highlight, NO_FACE, Projection, RenderError, RenderParams, SECTION_FACE, Section,
 };
 pub use craft3d_tess::Mesh;
 
@@ -119,6 +126,9 @@ pub enum GpuError {
     /// A see-through picture (`RenderParams::opacity` below 1) on a device
     /// that cannot draw one; the text says why. Opaque pictures are fine.
     SeeThrough(String),
+    /// A cut-open picture (`RenderParams::section`) on a device that
+    /// cannot draw one; the text says why. Whole pictures are fine.
+    Section(String),
     /// The mesh was uploaded by another renderer.
     ForeignMesh,
     /// A frame was asked for before anything was drawn, or after a draw
@@ -154,6 +164,10 @@ impl fmt::Display for GpuError {
             GpuError::SeeThrough(why) => write!(
                 f,
                 "see-through bodies cannot be drawn on this device ({why}); opaque ones can"
+            ),
+            GpuError::Section(why) => write!(
+                f,
+                "a section cannot be drawn on this device ({why}); the whole model can"
             ),
             GpuError::ForeignMesh => write!(
                 f,

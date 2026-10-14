@@ -17,6 +17,7 @@
 //! Regeneration with a [`RegenCache`] rebuilds only the features an edit
 //! touches, and gives exactly what a full regeneration gives ([`cache`]).
 
+mod blend;
 mod boolean;
 mod cache;
 mod cause;
@@ -25,6 +26,7 @@ mod datum;
 mod derive;
 mod entity;
 mod extrude;
+mod fillet;
 mod loft;
 mod query;
 mod revolve;
@@ -548,7 +550,8 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
         | FeatureKind::Mirror(_)
         | FeatureKind::Pattern(_)
         | FeatureKind::Boolean(_)
-        | FeatureKind::Chamfer(_) => {
+        | FeatureKind::Chamfer(_)
+        | FeatureKind::Fillet(_) => {
             return Err(format!(
                 "a {} needs the body it is made from",
                 feature.kind.type_name()
@@ -760,6 +763,19 @@ fn build_feature(
         }
     } else if let FeatureKind::Chamfer(chamfer) = &feature.kind {
         match chamfer::build(doc, variables, feature.id, chamfer, earlier)
+            .and_then(|(body, names)| checked(doc, body).map(|body| (body, names)))
+        {
+            Ok((body, made_names)) => {
+                names = made_names.map(Arc::new);
+                // The body does not move: a face lies where the face it
+                // came from lies.
+                instances = Some(Arc::new(vec![Transform::IDENTITY]));
+                (Status::Ok, Some(Arc::new(body)))
+            }
+            Err(reason) => (Status::Failed(reason), None),
+        }
+    } else if let FeatureKind::Fillet(fillet) = &feature.kind {
+        match fillet::build(doc, variables, feature.id, fillet, earlier)
             .and_then(|(body, names)| checked(doc, body).map(|body| (body, names)))
         {
             Ok((body, made_names)) => {

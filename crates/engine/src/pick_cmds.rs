@@ -22,6 +22,13 @@
 //!    is always nearer or as near); otherwise an edge that is near;
 //!    otherwise the face under it; otherwise nothing.
 //!
+//! In a picture that a section cuts open ([`Scene::point_at_cut`]) the
+//! answer is of what is drawn: a face in the half that is kept, never one
+//! that is cut away, and where the cap of the section is in front, the
+//! section itself, with the body that is cut there and the point of the
+//! plane. Edges and vertices in the half that is cut away are not near
+//! anything, and the cap hides what is behind it like a face.
+//!
 //! Both are questions about a [`Scene`], so that a viewer asks them of the
 //! very mesh it draws: the window of the scene in its viewport, with the
 //! viewport's camera, and `view.pick` of the scene `view.render` draws,
@@ -35,12 +42,12 @@ use crate::scene::{Scene, SceneBody};
 use crate::{CommandError, CommandSpec, Session};
 use craft3d_doc::PersistentName;
 use craft3d_math::Vec3;
-use craft3d_render::{Camera, Neighbourhood, Projection, Viewpoint};
+use craft3d_render::{Camera, Neighbourhood, Projection, SECTION_FACE, Section, Viewpoint};
 use serde_json::{Value, json};
 
 pub(crate) static SPECS: &[CommandSpec] = &[
-    spec!("view.pick", "Pick", r#"{"x": number, "y": number, "width": integer = 800, "height": integer = 600, "radius": number = 4, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the whole model, "camera": {eye, target, up, projection, fovY, height}, "tolerance": number = automatic}"#,
-        "Says what is at a position of a picture. kind says what the position points at: a vertex when one is near, otherwise an edge when one is near, otherwise the face under it. The face under the position, when there is one: the body (feature, name), the face's persistent name as document.inspect lists it under faceNames (with faceIndex, its place in that list, and aliases), and the point in space (point, depth). An edge is near when its point nearest to the position in the picture is within radius pixels (0 to 64; 0 looks at faces only) and not behind a face; the nearest one wins. It is given as edge: its body (feature, body), name (the edge's own persistent name as document.edges gives it, null when it has none, as after a boolean), faces (the names of the faces it lies between, which is how document.edges refers to an edge), index (its place in document.edges), point (the point of the edge nearest to the position), depth and distance (pixels from the position). A vertex is near when it is within radius pixels and not behind a face; it wins over an edge and is given as vertex, with the same fields: name is its own persistent name or null, faces the names of the faces that meet in it, index its index under vertices of document.edges. x and y are in pixels from the top-left corner of a picture of width by height, x to the right and y down; the centre of pixel (i, j) is (i + 0.5, j + 0.5). The picture is the one view.render makes with the same view, projection, zoom, box and tolerance, or the one seen by camera when that is given: an object with eye and target ([x, y, z]), up ([x, y, z], default [0, 0, 1]), projection (perspective, the default, or orthographic) and, for a perspective camera, fovY (the vertical field of view in degrees, default 30) or, for an orthographic one, height (the model units from the top of the picture to its bottom). hit is false when nothing is there, with outside true when the position is not in the picture: an answer, not an error. The result repeats the camera, so a second pick can pass it back.", doc: true, view_pick),
+    spec!("view.pick", "Pick", r#"{"x": number, "y": number, "width": integer = 800, "height": integer = 600, "radius": number = 4, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the whole model, "camera": {eye, target, up, projection, fovY, height}, "section": {plane, feature, point, normal, offset, flip, cap} = none, "tolerance": number = automatic}"#,
+        "Says what is at a position of a picture. kind says what the position points at: a vertex when one is near, otherwise an edge when one is near, otherwise the face under it. The face under the position, when there is one: the body (feature, name), the face's persistent name as document.inspect lists it under faceNames (with faceIndex, its place in that list, and aliases), and the point in space (point, depth). An edge is near when its point nearest to the position in the picture is within radius pixels (0 to 64; 0 looks at faces only) and not behind a face; the nearest one wins. It is given as edge: its body (feature, body), name (the edge's own persistent name as document.edges gives it, null when it has none, as after a boolean), faces (the names of the faces it lies between, which is how document.edges refers to an edge), index (its place in document.edges), point (the point of the edge nearest to the position), depth and distance (pixels from the position). A vertex is near when it is within radius pixels and not behind a face; it wins over an edge and is given as vertex, with the same fields: name is its own persistent name or null, faces the names of the faces that meet in it, index its index under vertices of document.edges. x and y are in pixels from the top-left corner of a picture of width by height, x to the right and y down; the centre of pixel (i, j) is (i + 0.5, j + 0.5). The picture is the one view.render makes with the same view, projection, zoom, box and tolerance, or the one seen by camera when that is given: an object with eye and target ([x, y, z]), up ([x, y, z], default [0, 0, 1]), projection (perspective, the default, or orthographic) and, for a perspective camera, fovY (the vertical field of view in degrees, default 30) or, for an orthographic one, height (the model units from the top of the picture to its bottom). hit is false when nothing is there, with outside true when the position is not in the picture: an answer, not an error. The result repeats the camera, so a second pick can pass it back. section cuts the picture open as in view.render (the same object); the answer is then of what that picture shows: never a face that is cut away, and where the cap of the section is in front, kind is section, with section: {feature, body, point, depth}, the body that is cut there and the point of the plane.", doc: true, view_pick),
 ];
 
 /// Most face names a vertex is referred to by.
@@ -85,12 +92,29 @@ pub struct ScenePick {
     pub depth: f64,
 }
 
+/// The cap of a section under a position of a picture: where the plane
+/// passes through the inside of a body.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SceneCut {
+    /// The feature that made the body that is cut there (`F3`) and its
+    /// name; `None` when the faces cut away in front of the cap do not say
+    /// which body it is (bodies that overlap in space).
+    pub feature: Option<String>,
+    pub body: Option<String>,
+    /// The point of the plane under the position, in model coordinates.
+    pub point: Vec3,
+    /// Its distance from the eye along the view direction.
+    pub depth: f64,
+}
+
 /// What a position of a picture points at.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PickKind {
     Face,
     Edge,
     Vertex,
+    /// The cap of a section.
+    Section,
 }
 
 impl PickKind {
@@ -100,6 +124,7 @@ impl PickKind {
             PickKind::Face => "face",
             PickKind::Edge => "edge",
             PickKind::Vertex => "vertex",
+            PickKind::Section => "section",
         }
     }
 }
@@ -156,6 +181,9 @@ pub struct ScenePointed {
     pub edge: Option<SceneNear>,
     /// The vertex near it, which is then what the position points at.
     pub vertex: Option<SceneNear>,
+    /// The cap of a section under the position, when the picture is cut
+    /// open and the cap is what it shows there; there is then no face.
+    pub section: Option<SceneCut>,
 }
 
 impl ScenePointed {
@@ -167,6 +195,8 @@ impl ScenePointed {
             Some(PickKind::Edge)
         } else if self.face.is_some() {
             Some(PickKind::Face)
+        } else if self.section.is_some() {
+            Some(PickKind::Section)
         } else {
             None
         }
@@ -194,6 +224,17 @@ impl ScenePointed {
             }
             map.insert("point".into(), vec3(pick.point));
             map.insert("depth".into(), pick.depth.into());
+        }
+        if let Some(cut) = &self.section {
+            map.insert(
+                "section".into(),
+                json!({
+                    "feature": cut.feature,
+                    "body": cut.body,
+                    "point": vec3(cut.point),
+                    "depth": cut.depth,
+                }),
+            );
         }
         match (&self.vertex, &self.edge) {
             (Some(vertex), _) => {
@@ -259,7 +300,7 @@ impl Scene {
     /// and the face's place among the faces of that body. `None` for an
     /// id no body has.
     pub fn face_of(&self, face_id: u32) -> Option<(&SceneBody, usize)> {
-        if face_id == craft3d_render::NO_FACE {
+        if face_id == craft3d_render::NO_FACE || face_id == SECTION_FACE {
             return None;
         }
         // Ids keep counting across bodies: the last body that starts at or
@@ -289,15 +330,65 @@ impl Scene {
         x: f64,
         y: f64,
     ) -> Result<Option<ScenePick>, String> {
-        let hit = craft3d_render::pick(&self.mesh, camera, width, height, x, y)
+        Ok(self.pick_cut(camera, width, height, x, y, None)?.0)
+    }
+
+    /// [`Self::pick`] in a picture cut open by `section`: the face that
+    /// picture shows under the position, or, where it shows the cap of the
+    /// section, the cap ([`SceneCut`]). Never a face that is cut away.
+    pub fn pick_cut(
+        &self,
+        camera: &Camera,
+        width: u32,
+        height: u32,
+        x: f64,
+        y: f64,
+        section: Option<&Section>,
+    ) -> Result<(Option<ScenePick>, Option<SceneCut>), String> {
+        let hit = craft3d_render::pick_cut(&self.mesh, camera, width, height, x, y, section)
             .map_err(|e| e.to_string())?;
         let Some(hit) = hit else {
-            return Ok(None);
+            return Ok((None, None));
         };
+        // The point's own distance, not the picture's depth value.
+        let depth = camera
+            .axes()
+            .map_or(hit.depth, |axes| (hit.point - axes.eye).dot(axes.forward));
+        if hit.face == SECTION_FACE {
+            // The body that is cut here: the one an odd number of whose
+            // surfaces were cut away in front of the cap.
+            let left_out =
+                craft3d_render::cut_faces(&self.mesh, camera, width, height, x, y, section)
+                    .map_err(|e| e.to_string())?;
+            let mut odd: Vec<&SceneBody> = Vec::new();
+            for face in left_out {
+                if let Some((body, _)) = self.face_of(face) {
+                    match odd.iter().position(|b| std::ptr::eq(*b, body)) {
+                        Some(at) => {
+                            odd.remove(at);
+                        }
+                        None => odd.push(body),
+                    }
+                }
+            }
+            let body = match odd.as_slice() {
+                [body] => Some(*body),
+                _ => None,
+            };
+            return Ok((
+                None,
+                Some(SceneCut {
+                    feature: body.map(|body| body.feature.clone()),
+                    body: body.map(|body| body.name.clone()),
+                    point: hit.point,
+                    depth,
+                }),
+            ));
+        }
         let Some((body, index)) = self.face_of(hit.face) else {
-            return Ok(None);
+            return Ok((None, None));
         };
-        Ok(Some(ScenePick {
+        let pick = ScenePick {
             feature: body.feature.clone(),
             body: body.name.clone(),
             face: body.face_names.get(index).cloned(),
@@ -305,11 +396,9 @@ impl Scene {
             face_index: index,
             face_id: hit.face,
             point: hit.point,
-            // The point's own distance, not the picture's depth value.
-            depth: camera
-                .axes()
-                .map_or(hit.depth, |axes| (hit.point - axes.eye).dot(axes.forward)),
-        }))
+            depth,
+        };
+        Ok((Some(pick), None))
     }
 
     /// The faces `face` names: a persistent name from `document.inspect`
@@ -405,7 +494,23 @@ impl Scene {
         y: f64,
         radius: f64,
     ) -> Result<ScenePointed, String> {
-        let face = self.pick(camera, width, height, x, y)?;
+        self.point_at_cut(camera, width, height, x, y, radius, None)
+    }
+
+    /// [`Self::point_at`] in a picture cut open by `section` (see the top
+    /// of this module).
+    #[allow(clippy::too_many_arguments)]
+    pub fn point_at_cut(
+        &self,
+        camera: &Camera,
+        width: u32,
+        height: u32,
+        x: f64,
+        y: f64,
+        radius: f64,
+        section: Option<&Section>,
+    ) -> Result<ScenePointed, String> {
+        let (face, cap) = self.pick_cut(camera, width, height, x, y, section)?;
         let inside = x >= 0.0 && y >= 0.0 && x < f64::from(width) && y < f64::from(height);
         let radius = if radius.is_finite() {
             radius.min(MAX_PICK_RADIUS)
@@ -415,14 +520,24 @@ impl Scene {
         if !inside || radius <= 0.0 {
             return Ok(ScenePointed {
                 face,
+                section: cap,
                 ..ScenePointed::default()
             });
         }
         let view = Viewpoint::new(camera, width, height).map_err(|e| e.to_string())?;
         // A point within the radius lands within the radius, give or take
         // rounding: one pixel more.
-        let near = Neighbourhood::new(&self.mesh, camera, width, height, x, y, radius + 1.0)
-            .map_err(|e| e.to_string())?;
+        let near = Neighbourhood::new_cut(
+            &self.mesh,
+            camera,
+            width,
+            height,
+            x,
+            y,
+            radius + 1.0,
+            section,
+        )
+        .map_err(|e| e.to_string())?;
         let sight = Sight {
             scene: self,
             view: &view,
@@ -431,7 +546,12 @@ impl Scene {
         };
         let vertex = self.vertex_near(&sight, x, y, radius);
         let edge = self.edge_near(&sight, x, y, radius);
-        Ok(ScenePointed { face, edge, vertex })
+        Ok(ScenePointed {
+            face,
+            edge,
+            vertex,
+            section: cap,
+        })
     }
 
     /// The vertex in sight within `radius` pixels of (`x`, `y`): the
@@ -440,6 +560,9 @@ impl Scene {
         let mut candidates: Vec<Candidate> = Vec::new();
         for (body_index, body) in self.bodies.iter().enumerate() {
             for (index, &point) in body.vertices.iter().enumerate() {
+                if sight.cut_away(point) {
+                    continue;
+                }
                 let Some([sx, sy, depth]) = sight.view.project(point) else {
                     continue;
                 };
@@ -484,30 +607,40 @@ impl Scene {
         let mut candidates: Vec<Candidate> = Vec::new();
         'bodies: for (body_index, body) in self.bodies.iter().enumerate() {
             for (index, polyline) in body.edges.iter().enumerate() {
-                let mut before: Option<(Vec3, Option<[f64; 3]>)> = None;
-                for &p in polyline {
-                    let at = sight.view.project(p);
-                    if let (Some((q, Some(a))), Some(b)) = (before, at)
-                        && q != p
-                    {
-                        for (distance, s) in samples_near(a, b, x, y, radius, perspective) {
-                            let point = q + (p - q) * s;
-                            if !point.is_finite() {
-                                continue;
-                            }
-                            if candidates.len() >= MAX_CANDIDATES {
-                                break 'bodies;
-                            }
-                            candidates.push(Candidate {
-                                distance,
-                                depth: sight.view.distance(point),
-                                body: body_index,
-                                index,
-                                point,
-                            });
-                        }
+                for pair in polyline.windows(2) {
+                    let &[q, p] = pair else {
+                        continue;
+                    };
+                    if q == p {
+                        continue;
                     }
-                    before = Some((p, at));
+                    // In a picture that is cut open: the part that is kept.
+                    let (q, p) = match sight.near.cut() {
+                        Some(cut) => match cut.clip_segment(q, p) {
+                            Some([q, p]) => (q, p),
+                            None => continue,
+                        },
+                        None => (q, p),
+                    };
+                    let (Some(a), Some(b)) = (sight.view.project(q), sight.view.project(p)) else {
+                        continue;
+                    };
+                    for (distance, s) in samples_near(a, b, x, y, radius, perspective) {
+                        let point = q + (p - q) * s;
+                        if !point.is_finite() {
+                            continue;
+                        }
+                        if candidates.len() >= MAX_CANDIDATES {
+                            break 'bodies;
+                        }
+                        candidates.push(Candidate {
+                            distance,
+                            depth: sight.view.distance(point),
+                            body: body_index,
+                            index,
+                            point,
+                        });
+                    }
                 }
             }
         }
@@ -897,6 +1030,12 @@ struct Sight<'a> {
 }
 
 impl Sight<'_> {
+    /// True when the picture is cut open and `point` is in the half that
+    /// is cut away: a line is cut where it passes through the plane.
+    fn cut_away(&self, point: Vec3) -> bool {
+        self.near.cut().is_some_and(|cut| cut.side(point) > 0.0)
+    }
+
     /// True when `point` is in the picture and no face is in front of it:
     /// the surface the picture shows at the place where the point lands is
     /// not nearer than the point is.
@@ -1045,6 +1184,7 @@ fn view_pick(session: &mut Session, params: &Value) -> Run {
             "zoom",
             "box",
             "camera",
+            "section",
             "tolerance",
         ],
     )?;
@@ -1087,9 +1227,13 @@ fn view_pick(session: &mut Session, params: &Value) -> Run {
         // The picture of view.render: the model is the box of its mesh.
         None => framing.camera(&scene.mesh.bbox(), width as f64 / height as f64)?,
     };
+    let section = match p.get("section") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(crate::section::resolve_param(session, &scene, ID, value)?),
+    };
     let outside = !(x >= 0.0 && y >= 0.0 && x < width as f64 && y < height as f64);
     let pointed = scene
-        .point_at(&camera, w, h, x, y, radius)
+        .point_at_cut(&camera, w, h, x, y, radius, section.as_ref())
         .map_err(|e| CommandError::new(format!("{ID}: {e}")))?;
     let mut result = json!({
         "x": x,

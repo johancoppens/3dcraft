@@ -1,5 +1,6 @@
-//! Blends: features that replace edges of a body by faces. A chamfer
-//! today; a fillet will live here too.
+//! Blends: features that replace edges of a body by faces: a chamfer
+//! (flat or conical faces) and a fillet (faces tangent to both their
+//! neighbours).
 //!
 //! An edge is given as the two faces it lies between, by their persistent
 //! names from `document.inspect` or `document.edges`. Whether the faces
@@ -11,18 +12,34 @@ use crate::commands::{Run, add_feature, fail, spec};
 use crate::datum_cmds::between_value;
 use crate::params::Params;
 use crate::{CommandError, CommandSpec, Session};
-use craft3d_doc::{Chamfer, ChamferSize, Expr, FeatureKind, MAX_CHAMFER_EDGES, PersistentName};
+use craft3d_doc::{
+    Chamfer, ChamferSize, Expr, FeatureKind, Fillet, MAX_CHAMFER_EDGES, MAX_FILLET_EDGES,
+    PersistentName,
+};
 use serde_json::Value;
 
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("feature.chamfer", "Chamfer", r#"{"edges": [[face name, face name], ...], "distance": expr, "second": expr, "angle": expr, "chain": boolean = false, "name": string = automatic}"#,
-        "Adds a feature that replaces edges of a body by flat or conical faces: the two faces next to an edge are cut back by a distance each, measured along the face from the edge, and a new face joins the two cut lines. An outside edge loses material, an inside edge gains it. Each edge is the two faces it lies between, by their names (document.edges lists every edge of a body with them under faces); all are edges of one body, which goes into this feature, and such a pair means every edge between those two faces. Three forms: distance alone (the same along both faces); distance and second (distance along the first face of each pair, second along the other); distance and angle (distance along the first face, and the new face leaves that face at angle). chain takes with each edge the edges that continue it smoothly (the whole rim of a slot from one of its edges). Works on straight edges between flat faces and on circular edges between a flat face, a cylinder or a cone about the circle's axis (the end of a rod, the mouth of a hole); other edges fail with their kind. Where three chamfered edges meet the corner is a flat triangle through the points where the cut lines cross; two meet in a mitre. A distance too large for a face fails with the edge, the face and the largest distance that fits. Faces keep their names with a prefix, \"F9:copy(0)/...\"; the new face of the edge at place k of edges is \"F9:chamfer(k)\" (\"F9:chamfer(k,0)\", \"F9:chamfer(k,1)\" when the pair gave several edges), a corner \"F9:chamferCorner(i,j,k)\". Change it with feature.edit: edges, distance, second, angle, chain.", doc: true, feature_chamfer),
+        "Adds a feature that replaces edges of a body by flat or conical faces (feature.fillet makes rounded ones): the two faces next to an edge are cut back by a distance each, measured along the face from the edge, and a new face joins the two cut lines. An outside edge loses material, an inside edge gains it. Each edge is the two faces it lies between, by their names (document.edges lists every edge of a body with them under faces); all are edges of one body, which goes into this feature, and such a pair means every edge between those two faces. Three forms: distance alone (the same along both faces); distance and second (distance along the first face of each pair, second along the other); distance and angle (distance along the first face, and the new face leaves that face at angle). chain takes with each edge the edges that continue it smoothly (the whole rim of a slot from one of its edges). Works on straight edges between flat faces and on circular edges between a flat face, a cylinder or a cone about the circle's axis (the end of a rod, the mouth of a hole); other edges fail with their kind. Where three chamfered edges meet the corner is a flat triangle through the points where the cut lines cross; two meet in a mitre. A distance too large for a face fails with the edge, the face and the largest distance that fits. Faces keep their names with a prefix, \"F9:copy(0)/...\"; the new face of the edge at place k of edges is \"F9:chamfer(k)\" (\"F9:chamfer(k,0)\", \"F9:chamfer(k,1)\" when the pair gave several edges), a corner \"F9:chamferCorner(i,j,k)\". Change it with feature.edit: edges, distance, second, angle, chain.", doc: true, feature_chamfer),
+    spec!("feature.fillet", "Fillet", r#"{"edges": [[face name, face name], ...], "radius": expr, "chain": boolean = false, "name": string = automatic}"#,
+        "Adds a feature that rounds edges of a body with one radius: each edge is replaced by the face a ball of that radius touches as it rolls along the edge against both faces, which runs into both without a crease. An outside edge loses material, an inside edge gains it. Each edge is the two faces it lies between, by their names (document.edges lists every edge of a body with them under faces), in either order; all are edges of one body, which goes into this feature, and such a pair means every edge between those two faces. chain takes with each edge the edges that continue it smoothly (the whole rim of a slot from one of its edges). Works on straight edges between flat faces at any angle (the new face is a piece of a cylinder) and on circular edges between a flat face, a cylinder or a cone about the circle's axis (the end of a rod, the mouth of a hole, the foot of a boss: a piece of a torus); other edges fail with their kind. Where three straight filleted edges meet the corner is a piece of a ball of the same radius; two that meet at a corner whose third edge stays sharp run out into each other. Not built, and refused with the reason: three fillets at a corner with a circular edge or a fourth edge, an outside and an inside fillet that meet, a radius of half a rod's or more on its rim. A radius too large for a face fails with the edge, the face and the largest radius that fits. Faces keep their names with a prefix, \"F9:copy(0)/...\"; the new face of the edge at place k of edges is \"F9:fillet(k)\" (\"F9:fillet(k,0)\", \"F9:fillet(k,1)\" when the pair gave several edges or a chain), the ball in a corner \"F9:filletCorner(i,j,k)\". Change it with feature.edit: edges, radius, chain.", doc: true, feature_fillet),
 ];
 
 /// The edges of a chamfer: pairs of face names.
 pub(crate) fn edges_value(
     command: &str,
     value: &Value,
+) -> Result<Vec<[PersistentName; 2]>, CommandError> {
+    edges_of(command, value, "chamfer", MAX_CHAMFER_EDGES)
+}
+
+/// The edges of a blend (`noun`: a chamfer or a fillet): pairs of face
+/// names, `most` at most.
+fn edges_of(
+    command: &str,
+    value: &Value,
+    noun: &str,
+    most: usize,
 ) -> Result<Vec<[PersistentName; 2]>, CommandError> {
     let Some(items) = value.as_array() else {
         return fail(format!(
@@ -34,9 +51,9 @@ pub(crate) fn edges_value(
             "{command}: `edges` is empty; give at least one edge"
         ));
     }
-    if items.len() > MAX_CHAMFER_EDGES {
+    if items.len() > most {
         return fail(format!(
-            "{command}: `edges` has {} edges; one chamfer takes {MAX_CHAMFER_EDGES} at most",
+            "{command}: `edges` has {} edges; one {noun} takes {most} at most",
             items.len()
         ));
     }
@@ -61,7 +78,7 @@ pub(crate) fn edges_value(
             && (first.feature != a.feature || first.feature != b.feature)
         {
             return fail(format!(
-                "{command}: `edges`: {a} and {b} are not both faces of {}, the feature of the first edge; one chamfer takes edges of one body",
+                "{command}: `edges`: {a} and {b} are not both faces of {}, the feature of the first edge; one {noun} takes edges of one body",
                 first.feature
             ));
         }
@@ -160,5 +177,40 @@ fn feature_chamfer(session: &mut Session, params: &Value) -> Run {
         ID,
         p.str("name")?,
         FeatureKind::Chamfer(Chamfer { edges, size, chain }),
+    )
+}
+
+/// `feature.edit` for a fillet: `edges` (`radius` is a plain expression
+/// and `chain` a plain flag, set where the others are).
+pub(crate) fn edit_fillet(p: &Params, fillet: &mut Fillet) -> Result<(), CommandError> {
+    if let Some(value) = p.get("edges") {
+        fillet.edges = edges_of("feature.edit", value, "fillet", MAX_FILLET_EDGES)?;
+    }
+    Ok(())
+}
+
+fn feature_fillet(session: &mut Session, params: &Value) -> Run {
+    const ID: &str = "feature.fillet";
+    let p = Params::new(ID, params, &["edges", "radius", "chain", "name"])?;
+    // The document has to be there before anything is said of the
+    // parameters.
+    session.document()?;
+    let Some(value) = p.get("edges") else {
+        return Err(p.missing("edges"));
+    };
+    let edges = edges_of(ID, value, "fillet", MAX_FILLET_EDGES)?;
+    let Some(radius) = p.expr("radius")? else {
+        return Err(p.missing("radius"));
+    };
+    let chain = p.bool("chain")?.unwrap_or(false);
+    add_feature(
+        session,
+        ID,
+        p.str("name")?,
+        FeatureKind::Fillet(Fillet {
+            edges,
+            radius: Expr::new(radius),
+            chain,
+        }),
     )
 }
