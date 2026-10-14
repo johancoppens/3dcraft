@@ -30,6 +30,7 @@ use craft3d_kernel::extrude::Role;
 use craft3d_kernel::helix::{Helix, RunOut, circle_error, sweep_helix};
 use craft3d_kernel::profile::{Profile, SketchCurve, detect_profiles};
 use craft3d_kernel::sweep::Swept;
+use craft3d_kernel::thread::{IsoThread, ThreadPlace};
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_tess::{SelfCheckParams, TessParams, body_self_intersections, tessellate_body};
 use craft3d_topo::{Body, check, mass_properties};
@@ -441,40 +442,17 @@ fn profiles_that_cannot_be_carried_along_a_helix_are_refused_with_the_reason() {
     );
 }
 
-/// The groove of an ISO metric thread of pitch `p` on a shank of radius
-/// `major`, in the plane through the axis, centred on z = 0: the basic
-/// profile's space between two teeth (flanks at 30° to the radial
-/// direction, the root flat P/4 wide at the minor radius), carried on
-/// past the major radius by H/16 so that it cuts through the shank's
-/// surface. Ids 1 to 4: root, lower flank, outside, upper flank.
-fn iso_groove(major: f64, p: f64) -> Vec<SketchCurve> {
-    let h = 3.0_f64.sqrt() / 2.0 * p;
-    let root = major - 5.0 * h / 8.0;
-    let out = major + h / 16.0;
-    let half = 7.0 * p / 16.0 + (h / 16.0) * (PI / 6.0).tan();
-    common::polygon(
-        1,
-        1,
-        &[
-            [root, p / 8.0],
-            [root, -p / 8.0],
-            [out, -half],
-            [out, half],
-        ],
-    )
-}
-
-/// A shank of radius 5 from z = 0 to 20 with a 1 × 1 chamfer at z = 0,
-/// revolved about the z axis.
-fn shank() -> Body {
-    let outline = profile(
-        &common::polygon(
-            11,
-            1,
-            &[[0.0, 0.0], [4.0, 0.0], [5.0, 1.0], [5.0, 20.0], [0.0, 20.0]],
-        ),
-        1.0,
-    );
+/// A plain shank of radius `r` from z = 0 to `top`, revolved about z;
+/// with a `chamfer` × `chamfer` lead at z = 0 when it is above 0.
+fn shank(r: f64, top: f64, chamfer: f64) -> Body {
+    let mut corners = vec![[0.0, 0.0]];
+    if chamfer > 0.0 {
+        corners.extend([[r - chamfer, 0.0], [r, chamfer]]);
+    } else {
+        corners.push([r, 0.0]);
+    }
+    corners.extend([[r, top], [0.0, top]]);
+    let outline = profile(&common::polygon(11, 1, &corners), 1.0);
     craft3d_kernel::revolve::revolve(
         &[outline],
         &axial(),
@@ -488,56 +466,170 @@ fn shank() -> Body {
     .body
 }
 
-#[test]
-fn an_iso_groove_subtracted_from_a_chamfered_shank_cuts_a_thread() {
-    let (major, p, length) = (5.0, 1.5, 12.0);
-    let h_basic = 3.0_f64.sqrt() / 2.0 * p;
-    let below = Frame::new(Vec3::new(0.0, 0.0, -p), -Vec3::Y, Vec3::X).unwrap();
-    let minor = major - 5.0 * h_basic / 8.0;
-    let h = Helix::new(
-        Vec3::new(0.0, 0.0, -p),
-        Vec3::Z,
-        Vec3::X,
-        minor,
-        p,
-        (length + p) / p,
-        false,
-    )
-    .unwrap();
-    let started = std::time::Instant::now();
-    let groove = sweep_helix(
-        &profile(&iso_groove(major, p), 1.0),
-        &below,
-        &h,
-        Some(RunOut {
-            angle: FRAC_PI_2,
-            rise: 5.0 * h_basic / 8.0 + h_basic / 8.0,
-        }),
-        &tol(1.0),
-    )
-    .unwrap();
-    eprintln!(
-        "groove: {} faces in {:?}, deviation {}",
-        groove.body.faces.len(),
-        started.elapsed(),
-        groove.deviation
-    );
-    let started = std::time::Instant::now();
+/// The groove of `thread` cut into a shank of its major diameter from
+/// z = 0, `length` long at full depth.
+fn threaded(thread: &IsoThread, top: f64, length: f64, chamfer: f64) -> (Body, Body, Swept) {
+    let blank = shank(thread.major / 2.0, top, chamfer);
+    let place = ThreadPlace {
+        start: Vec3::ZERO,
+        along: Vec3::Z,
+        across: Vec3::X,
+        length,
+        left_handed: false,
+    };
+    let (groove, _) = craft3d_kernel::thread::groove(thread, &place, &tol(1.0)).unwrap();
     let cut = craft3d_kernel::boolean::boolean(
-        &shank(),
+        &blank,
         &groove.body,
         craft3d_kernel::boolean::BooleanOp::Subtract,
         &tol(1.0),
     )
     .unwrap();
-    eprintln!(
-        "thread: {} faces in {:?}",
-        cut.body.faces.len(),
-        started.elapsed()
+    (blank, cut.body, groove)
+}
+
+/// What the groove removes from a shank of the major radius `big`: by
+/// the flux of the screw motion through the groove's plane, `∫ dθ ∫∫ r
+/// dA` over the part of the groove inside the shank. Along the thread
+/// at full depth that is `A r̄ 2π L / P` (the part cut off by the end
+/// of the shank is made up by the part beyond `L`, the groove being
+/// symmetric about its centre); along the run-out, where the groove has
+/// moved out by `ρ(φ)`, the integral is over the part of the trapezoid
+/// still inside, worked out here by Simpson's rule over φ.
+fn removed(thread: &IsoThread, length: f64) -> f64 {
+    let (p, big) = (thread.pitch, thread.major / 2.0);
+    let main = thread.groove_area() * thread.groove_centre() * TAU * length / p;
+    let root = thread.minor() / 2.0;
+    let slope = 2.0 / 3.0_f64.sqrt();
+    // ∫ (r + ρ) w(r) dr over r from the root to `to`, w(r) = P/4 +
+    // slope (r − root).
+    let moment = |rho: f64, to: f64| -> f64 {
+        if to <= root {
+            return 0.0;
+        }
+        let f = |r: f64| {
+            let s = r - root;
+            // (root + s + ρ)(P/4 + slope s), integrated in s.
+            let a = root + rho;
+            a * p / 4.0 * s + (a * slope + p / 4.0) * s * s / 2.0 + slope * s * s * s / 3.0
+        };
+        f(to) - f(root)
+    };
+    let rise = thread.depth() + thread.triangle() / 8.0;
+    let n = 2000;
+    let h = FRAC_PI_2 / n as f64;
+    let mut run = 0.0;
+    for i in 0..=n {
+        let phi = h * i as f64;
+        let rho = rise * (phi / FRAC_PI_2).powi(2);
+        let w = if i == 0 || i == n {
+            1.0
+        } else if i % 2 == 1 {
+            4.0
+        } else {
+            2.0
+        };
+        run += w * moment(rho, big - rho);
+    }
+    main + run * h / 3.0
+}
+
+#[test]
+fn an_iso_thread_removes_its_groove_and_leaves_the_minor_diameter() {
+    // M10 × 1.5 and M10 × 1.25 (fine) on a shank 20 long, 12 of thread.
+    for pitch in [1.5, 1.25] {
+        let thread = IsoThread::new(10.0, pitch).unwrap();
+        close(thread.minor(), 10.0 - 1.082_531_754_730_548 * pitch, 1e-12);
+        let (blank, cut, groove) = threaded(&thread, 20.0, 12.0, 0.0);
+        assert_eq!(check(&cut, &tol(1.0)), vec![]);
+        assert!(groove.deviation <= 0.5e-6);
+        let before = mass_properties(&blank).unwrap().volume;
+        let after = mass_properties(&cut).unwrap().volume;
+        // The groove's faces lie within half the tolerance of the true
+        // ones over an area of about 10 per turn.
+        let slack = 0.5e-6 * 10.0 * (12.0 / pitch + 2.0);
+        let expected = removed(&thread, 12.0);
+        eprintln!(
+            "M10 x {pitch}: removed {} against {expected}; deviation {}",
+            before - after,
+            groove.deviation
+        );
+        assert!(
+            ((before - after) - expected).abs() < slack,
+            "removed {} against {expected}",
+            before - after
+        );
+        let found = body_self_intersections(&cut, &SelfCheckParams::new(1e-6)).unwrap();
+        assert!(found.is_clean(), "{found}");
+        // The minor diameter, by a section through the axis of a mesh at
+        // a chordal tolerance of 1e-4: the least distance from the axis
+        // of the points where the mesh crosses the plane y = 0 on +x,
+        // along the full thread.
+        let mesh = tessellate_body(
+            &cut,
+            &TessParams {
+                chordal_tolerance: 1e-4,
+                ..TessParams::default()
+            },
+        )
+        .unwrap();
+        let mut least = f64::INFINITY;
+        for t in 0..mesh.triangles.len() {
+            let corners = mesh.corners(t).unwrap();
+            for (a, b) in [(0, 1), (1, 2), (2, 0)] {
+                let (a, b) = (corners[a], corners[b]);
+                if (a.y > 0.0) == (b.y > 0.0) {
+                    continue;
+                }
+                let at = a + (b - a) * (a.y / (a.y - b.y));
+                if at.x > 0.0 && at.z > 2.0 && at.z < 10.0 {
+                    least = least.min(at.x);
+                }
+            }
+        }
+        eprintln!("minor radius by section {least} against {}", thread.minor() / 2.0);
+        assert!(
+            (least - thread.minor() / 2.0).abs() < 2e-4,
+            "{least} against {}",
+            thread.minor() / 2.0
+        );
+    }
+}
+
+#[test]
+fn a_thread_runs_through_a_lead_chamfer() {
+    let thread = IsoThread::new(10.0, 1.5).unwrap();
+    let (blank, cut, _) = threaded(&thread, 20.0, 12.0, 1.0);
+    assert_eq!(check(&cut, &tol(1.0)), vec![]);
+    let (before, after) = (
+        mass_properties(&blank).unwrap().volume,
+        mass_properties(&cut).unwrap().volume,
     );
-    assert_eq!(check(&cut.body, &tol(1.0)), vec![]);
-    let before = mass_properties(&shank()).unwrap().volume;
-    let after = mass_properties(&cut.body).unwrap().volume;
-    eprintln!("removed {}", before - after);
-    assert!(after < before && after > 0.8 * before, "{before} {after}");
+    // Less is removed where the chamfer took material already.
+    let removed = before - after;
+    let full = super_removed(&thread);
+    assert!(removed > 0.8 * full && removed < full, "{removed} {full}");
+    let found = body_self_intersections(&cut, &SelfCheckParams::new(1e-6)).unwrap();
+    assert!(found.is_clean(), "{found}");
+}
+
+fn super_removed(thread: &IsoThread) -> f64 {
+    removed(thread, 12.0)
+}
+
+#[test]
+fn iso_sizes_and_pitches_are_read_from_their_designation() {
+    use craft3d_kernel::thread::{coarse_pitch, nominal_diameter};
+    assert_eq!(nominal_diameter("M10"), Some(10.0));
+    assert_eq!(nominal_diameter(" m2.5 "), Some(2.5));
+    for bad in ["", "M", "10", "M-3", "Mx", "M1e9", "M10x1.5", "M0"] {
+        assert_eq!(nominal_diameter(bad), None, "{bad}");
+    }
+    assert_eq!(coarse_pitch(10.0), Some(1.5));
+    assert_eq!(coarse_pitch(3.0), Some(0.5));
+    assert_eq!(coarse_pitch(24.0), Some(3.0));
+    assert_eq!(coarse_pitch(11.0), None);
+    assert!(IsoThread::new(10.0, 0.0).is_err());
+    assert!(IsoThread::new(10.0, 12.0).is_err());
+    assert!(IsoThread::new(f64::NAN, 1.0).is_err());
 }
