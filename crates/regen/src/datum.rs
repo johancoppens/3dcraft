@@ -165,7 +165,7 @@ fn named_body<'a>(
 /// As [`named_body`], for a reference made of two names of one feature
 /// (the two faces an edge lies between): a reason names both, since both
 /// are lost with the feature.
-fn named_body_of<'a>(
+pub(crate) fn named_body_of<'a>(
     doc: &Document,
     earlier: &'a [FeatureResult],
     first: &PersistentName,
@@ -209,7 +209,7 @@ fn named_body_of<'a>(
     Ok((body, names, made_by.clone()))
 }
 
-fn listed(names: &[PersistentName]) -> String {
+pub(crate) fn listed(names: &[PersistentName]) -> String {
     let there: Vec<String> = names.iter().take(12).map(ToString::to_string).collect();
     format!(
         "{}{}",

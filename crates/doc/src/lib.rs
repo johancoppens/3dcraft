@@ -441,6 +441,62 @@ pub struct Boolean {
     pub keep_tool: bool,
 }
 
+/// Most edge references one chamfer holds.
+pub const MAX_CHAMFER_EDGES: usize = 1024;
+
+/// How far a chamfer cuts back the two faces of an edge. "First" and
+/// "second" are the two faces in the order the edge's reference gives
+/// them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum ChamferSize {
+    /// The same distance along both faces.
+    Equal { distance: Expr },
+    /// `distance` along the first face, `second` along the second.
+    TwoDistances { distance: Expr, second: Expr },
+    /// `distance` along the first face; the chamfer face leaves that face
+    /// at `angle`.
+    DistanceAngle { distance: Expr, angle: Expr },
+}
+
+impl ChamferSize {
+    /// The form's name, as in files and command results.
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            ChamferSize::Equal { .. } => "equal",
+            ChamferSize::TwoDistances { .. } => "twoDistances",
+            ChamferSize::DistanceAngle { .. } => "distanceAngle",
+        }
+    }
+}
+
+/// Edges of the body of an earlier feature replaced by faces: the two
+/// faces next to each edge are cut back and a new face joins the cut
+/// lines. The body goes into this feature.
+///
+/// An edge is referred to by the names of the two faces it lies between,
+/// in the order that says which face the first distance is measured
+/// along. Such a reference means every edge between those two faces (the
+/// pieces a later cut divides an edge into stay chamfered). All faces are
+/// faces of one body: the feature the first name starts with.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Chamfer {
+    pub edges: Vec<[PersistentName; 2]>,
+    pub size: ChamferSize,
+    /// With each edge, the edges that continue it smoothly (the whole rim
+    /// of a slot from one of its edges).
+    #[serde(default)]
+    pub chain: bool,
+}
+
+impl Chamfer {
+    /// The feature whose body is chamfered: the one that made the first
+    /// face referred to. `None` for a chamfer without edges.
+    pub fn source(&self) -> Option<FeatureId> {
+        self.edges.first().map(|[first, _]| first.feature)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum FeatureKind {
@@ -459,6 +515,7 @@ pub enum FeatureKind {
     DatumPlane(DatumPlane),
     DatumAxis(DatumAxis),
     DatumPoint(DatumPoint),
+    Chamfer(Chamfer),
 }
 
 impl FeatureKind {
@@ -480,6 +537,7 @@ impl FeatureKind {
             FeatureKind::DatumPlane(_) => "datumPlane",
             FeatureKind::DatumAxis(_) => "datumAxis",
             FeatureKind::DatumPoint(_) => "datumPoint",
+            FeatureKind::Chamfer(_) => "chamfer",
         }
     }
 
@@ -521,13 +579,15 @@ impl FeatureKind {
     }
 
     /// The one feature whose body this feature is made from (a transform,
-    /// a mirror, a pattern), and whether that feature keeps its own body.
+    /// a mirror, a pattern, a chamfer), and whether that feature keeps
+    /// its own body.
     /// `None` for every other kind; see [`FeatureKind::sources`].
     pub fn source(&self) -> Option<(FeatureId, bool)> {
         match self {
             FeatureKind::Transform(t) => Some((t.source, t.keep)),
             FeatureKind::Mirror(m) => Some((m.source, m.keep)),
             FeatureKind::Pattern(p) => Some((p.source, false)),
+            FeatureKind::Chamfer(c) => c.source().map(|id| (id, false)),
             FeatureKind::Block(_)
             | FeatureKind::Cylinder(_)
             | FeatureKind::Sphere(_)
@@ -647,6 +707,20 @@ impl FeatureKind {
             FeatureKind::DatumPlane(d) => out = d.exprs(),
             FeatureKind::DatumAxis(d) => out = d.exprs(),
             FeatureKind::DatumPoint(d) => out = d.exprs(),
+            FeatureKind::Chamfer(c) => {
+                out = match &c.size {
+                    ChamferSize::Equal { distance } => vec![named("size.distance", distance)],
+                    ChamferSize::TwoDistances { distance, second } => {
+                        vec![
+                            named("size.distance", distance),
+                            named("size.second", second),
+                        ]
+                    }
+                    ChamferSize::DistanceAngle { distance, angle } => {
+                        vec![named("size.distance", distance), named("size.angle", angle)]
+                    }
+                }
+            }
             FeatureKind::Pattern(p) => {
                 out = vec![named("count", &p.count)];
                 match &p.layout {
@@ -709,6 +783,11 @@ impl FeatureKind {
             FeatureKind::DatumPlane(d) => d.exprs_mut(),
             FeatureKind::DatumAxis(d) => d.exprs_mut(),
             FeatureKind::DatumPoint(d) => d.exprs_mut(),
+            FeatureKind::Chamfer(c) => match &mut c.size {
+                ChamferSize::Equal { distance } => vec![distance],
+                ChamferSize::TwoDistances { distance, second } => vec![distance, second],
+                ChamferSize::DistanceAngle { distance, angle } => vec![distance, angle],
+            },
             FeatureKind::Pattern(p) => {
                 let mut out = vec![&mut p.count];
                 match &mut p.layout {
@@ -894,6 +973,15 @@ impl Document {
                 FeatureKind::DatumPlane(datum) => datum.names(),
                 FeatureKind::DatumAxis(datum) => datum.names(),
                 FeatureKind::DatumPoint(datum) => datum.names(),
+                FeatureKind::Chamfer(chamfer) => {
+                    if chamfer.edges.len() > MAX_CHAMFER_EDGES {
+                        return Err(DocError::Invalid(format!(
+                            "`{}` has more than {MAX_CHAMFER_EDGES} edges",
+                            feature.name
+                        )));
+                    }
+                    chamfer.edges.iter().flatten().collect()
+                }
                 _ => Vec::new(),
             };
             for name in referred {
