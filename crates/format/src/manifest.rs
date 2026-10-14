@@ -44,6 +44,42 @@ pub struct Document {
     #[serde(default)]
     pub rollback: Option<u64>,
     pub next_feature_id: u64,
+    /// The appearance and the material given to bodies, by the id of the
+    /// feature that makes each, in ascending order of that id. Absent when
+    /// there are none (and in files before version 16).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bodies: Vec<BodyProperties>,
+}
+
+/// What the body of one feature looks like and is made of.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BodyProperties {
+    pub feature: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub appearance: Option<Appearance>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material: Option<Material>,
+}
+
+/// `color` is sRGB, three bytes. `metallic` and `roughness` lie between
+/// 0 and 1.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Appearance {
+    pub color: [u8; 3],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metallic: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roughness: Option<f64>,
+}
+
+/// `density` is in kg/m³, whatever the document's length unit.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Material {
+    pub name: String,
+    pub density: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

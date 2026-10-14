@@ -28,7 +28,7 @@ type Step = fn(Value) -> Result<Value, String>;
 /// `STEPS[n]` brings a manifest from version `n + 1` to version `n + 2`.
 const STEPS: &[Step] = &[
     v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9, v9_to_v10,
-    v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15,
+    v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15, v15_to_v16,
 ];
 
 /// Version 2 adds the `cone` and `torus` feature kinds and an optional
@@ -246,6 +246,15 @@ fn v13_to_v14(mut manifest: Value) -> Result<Value, String> {
 /// have one number, says a newer 3DCraft is needed instead of refusing
 /// the names.
 fn v14_to_v15(manifest: Value) -> Result<Value, String> {
+    Ok(manifest)
+}
+
+/// Version 16 adds `bodies` to the document: an appearance (a colour) and
+/// a material (a density) per body, by the feature that makes it. A file
+/// of version 15 has none, which is what a missing `bodies` reads as, so
+/// nothing changes; the version was raised so that an older build says a
+/// newer 3DCraft is needed instead of refusing an unknown field.
+fn v15_to_v16(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
 }
 

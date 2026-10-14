@@ -50,7 +50,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 /// The format version this build writes, and the newest it reads.
-pub const FORMAT_VERSION: u32 = 15;
+pub const FORMAT_VERSION: u32 = 16;
 
 /// The file extension, without the dot.
 pub const EXTENSION: &str = "3dcraft";

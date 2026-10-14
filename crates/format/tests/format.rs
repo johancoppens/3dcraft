@@ -168,7 +168,7 @@ fn saving_twice_gives_the_same_bytes() {
 fn the_manifest_of_a_small_document_is_exactly_this() {
     let expected = r#"{
   "format": "3dcraft",
-  "format_version": 15,
+  "format_version": 16,
   "document": {
     "units": {
       "length": "mm",
@@ -340,17 +340,17 @@ fn fix_trailing_commas(json: &str) -> String {
 
 #[test]
 fn a_newer_format_version_says_a_newer_3dcraft_is_needed() {
-    let error = load_error(&edited(&version_field(), "\"format_version\": 16"));
+    let error = load_error(&edited(&version_field(), "\"format_version\": 17"));
     assert!(matches!(
         error,
         FormatError::NewerVersion {
-            file: 16,
+            file: 17,
             supported: FORMAT_VERSION
         }
     ));
     let text = error.to_string();
     assert!(
-        text.contains("version 16")
+        text.contains("version 17")
             && text.contains(&format!("version {FORMAT_VERSION}"))
             && text.contains("newer 3DCraft is needed"),
         "{text}"
@@ -2933,6 +2933,80 @@ fn a_version_13_thread_loses_its_default_pitch_and_stays_cut() {
     assert_eq!(from_manifest_json(saved.as_bytes()).unwrap(), doc);
     let newer = v13.replace(
         "\"format_version\": 13",
+        &format!("\"format_version\": {}", FORMAT_VERSION + 1),
+    );
+    assert!(from_manifest_json(newer.as_bytes()).is_err());
+}
+
+/// Version 16: a colour and a material per body, as they are written.
+#[test]
+fn body_appearances_and_materials_are_written_like_this_and_round_trip() {
+    use craft3d_doc::{Appearance, Material};
+    let mut doc = small();
+    doc.set_appearance(
+        FeatureId(1),
+        Some(Appearance {
+            color: [200, 30, 4],
+            metallic: Some(0.25),
+            roughness: None,
+        }),
+    )
+    .unwrap();
+    doc.set_material(
+        FeatureId(1),
+        Some(Material {
+            name: "Cast iron".into(),
+            density: 7200.0,
+        }),
+    )
+    .unwrap();
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        value["document"]["bodies"],
+        serde_json::json!([{
+            "feature": 1,
+            "appearance": {"color": [200, 30, 4], "metallic": 0.25},
+            "material": {"name": "Cast iron", "density": 7200.0}
+        }])
+    );
+    assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
+    // A document without any writes no `bodies` at all.
+    assert!(!to_manifest_json(&small()).unwrap().contains("bodies"));
+}
+
+#[test]
+fn a_version_15_file_opens_without_appearances_and_is_saved_as_the_current_version() {
+    let v15 = r#"{"format": "3dcraft", "format_version": 15, "document": {
+        "units": {"length": "mm", "angle": "deg"},
+        "tolerance": {"linear": 1e-6, "angular": 1e-9},
+        "variables": [],
+        "features": [
+          {"id": 1, "name": "Base", "suppressed": false, "kind": {"type": "block",
+            "position": ["0", "0", "0"], "size": ["40 mm", "30 mm", "10 mm"]}}],
+        "rollback": null, "next_feature_id": 2}}"#;
+    let doc = match from_manifest_json(v15.as_bytes()) {
+        Ok(doc) => doc,
+        Err(error) => panic!("{error}"),
+    };
+    assert!(doc.bodies.is_empty());
+    let saved = to_manifest_json(&doc).unwrap();
+    assert!(saved.contains(&version_field()), "{saved}");
+    assert_eq!(from_manifest_json(saved.as_bytes()).unwrap(), doc);
+    // `bodies` in a version-15 file is still read (the step changes
+    // nothing), but a bad entry is refused like any invalid document.
+    let bad = v15.replace(
+        "\"next_feature_id\": 2}",
+        "\"next_feature_id\": 2, \"bodies\": [{\"feature\": 5, \"appearance\": {\"color\": [1, 2, 3]}}]}",
+    );
+    assert!(from_manifest_json(bad.as_bytes()).is_err());
+    let out_of_range = v15.replace(
+        "\"next_feature_id\": 2}",
+        "\"next_feature_id\": 2, \"bodies\": [{\"feature\": 1, \"appearance\": {\"color\": [1, 2, 300]}}]}",
+    );
+    assert!(from_manifest_json(out_of_range.as_bytes()).is_err());
+    let newer = v15.replace(
+        "\"format_version\": 15",
         &format!("\"format_version\": {}", FORMAT_VERSION + 1),
     );
     assert!(from_manifest_json(newer.as_bytes()).is_err());
