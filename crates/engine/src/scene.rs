@@ -7,12 +7,12 @@
 //! cached per document and tolerance, so a shell can ask for it every frame.
 //! Nothing here can change a document: edits are commands.
 
+use crate::mass::mass_of;
 use crate::{CommandError, Session, Workspace};
 use craft3d_doc::{AngleUnit, Document, Entity, FeatureKind, Geometry, Sketch};
 use craft3d_math::{Bbox3, Vec3};
 use craft3d_regen::{Regen, SketchResult, Status};
 use craft3d_tess::{Mesh, TessError, TessParams, tessellate_body_and_edges};
-use craft3d_topo::mass_properties;
 use std::sync::Arc;
 
 /// Fewest segments a full circle is drawn with, however coarse the
@@ -352,7 +352,15 @@ pub(crate) struct SceneCache {
     /// built is remembered as its error, so a viewer asking every frame
     /// does not build it every frame.
     scenes: Vec<(SceneKey, Built)>,
+    /// The scenes of documents looked at before, newest last: making one
+    /// of them active again (`file.activate`) shows its scenes again
+    /// instead of meshing it anew, as long as it has not changed (the same
+    /// `Arc`).
+    parked: Vec<(Arc<Document>, Vec<(SceneKey, Built)>)>,
 }
+
+/// Most other documents whose scenes are kept.
+const MAX_PARKED: usize = 2;
 
 impl SceneCache {
     /// Bumps the revision when `current` is not the document seen last.
@@ -363,9 +371,39 @@ impl SceneCache {
             _ => false,
         };
         if !same {
+            let left = std::mem::take(&mut self.scenes);
+            if let Some(seen) = self.seen.take()
+                && !left.is_empty()
+            {
+                if self.parked.len() >= MAX_PARKED {
+                    drop(self.parked.remove(0));
+                }
+                self.parked.push((seen, left));
+            }
             self.seen = current.cloned();
             self.revision = self.revision.saturating_add(1);
-            self.scenes.clear();
+            let revision = self.revision;
+            if let Some(current) = current
+                && let Some(at) = self
+                    .parked
+                    .iter()
+                    .position(|(doc, _)| Arc::ptr_eq(doc, current))
+            {
+                let (_, scenes) = self.parked.remove(at);
+                // The same scenes under the revision they are shown at now.
+                self.scenes = scenes
+                    .into_iter()
+                    .map(|(key, built)| {
+                        let built = built.map(|scene| {
+                            Arc::new(Scene {
+                                revision,
+                                ..(*scene).clone()
+                            })
+                        });
+                        (key, built)
+                    })
+                    .collect();
+            }
         }
         self.revision
     }
@@ -378,7 +416,7 @@ impl SceneCache {
 fn model_size(regen: &Regen, doc: &Document) -> f64 {
     let area: f64 = regen
         .bodies()
-        .filter_map(|(_, body)| mass_properties(body).ok())
+        .filter_map(|(_, body)| mass_of(body).ok())
         .map(|m| m.area)
         .sum();
     if area.is_finite() && area > 0.0 {
@@ -648,7 +686,8 @@ fn build(
         0
     };
     let mut faces_done: usize = 0;
-    for feature in &doc.features {
+    let steps = doc.features.len();
+    for (index, feature) in doc.features.iter().enumerate() {
         let outcome = regen.feature(feature.id);
         let (state, error) = match outcome.map(|o| &o.status) {
             Some(Status::Ok) => (FeatureState::Ok, None),
@@ -686,6 +725,13 @@ fn build(
         };
         // The mesh and the edges in one go: the boundaries of the faces
         // are worked out once.
+        craft3d_regen::progress::report(&craft3d_regen::progress::Progress {
+            phase: "meshing",
+            feature: Some(feature.id.to_string()),
+            name: Some(feature.name.clone()),
+            step: index.saturating_add(1),
+            steps,
+        });
         let left = budget.map(|max| max.saturating_sub(scene.mesh.triangles.len()));
         let tess = TessParams {
             max_triangles: left,
@@ -1023,6 +1069,13 @@ impl Session {
         let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let regen = open.regen();
             let doc = open.history.current();
+            craft3d_regen::progress::report(&craft3d_regen::progress::Progress {
+                phase: "measuring",
+                feature: None,
+                name: None,
+                step: 0,
+                steps: 0,
+            });
             let size = model_size(&regen, doc);
             let automatic = size * AUTOMATIC_RELATIVE_TOLERANCE;
             match quality {

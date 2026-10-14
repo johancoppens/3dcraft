@@ -201,7 +201,8 @@ pub(crate) fn features(
     let mut results: Vec<FeatureResult> = Vec::with_capacity(doc.features.len());
     let mut stamps: BTreeMap<FeatureId, u64> = BTreeMap::new();
     let mut rolled_back = false;
-    for feature in &doc.features {
+    let steps = doc.features.len();
+    for (index, feature) in doc.features.iter().enumerate() {
         let inputs = dependencies(doc, feature)
             .into_iter()
             .map(|id| Input {
@@ -243,6 +244,13 @@ pub(crate) fn features(
             }
             None => {
                 cache.rebuilt += 1;
+                crate::progress::report(&crate::progress::Progress {
+                    phase: "regenerating",
+                    feature: Some(feature.id.to_string()),
+                    name: Some(feature.name.clone()),
+                    step: index.saturating_add(1),
+                    steps,
+                });
                 let (result, _) = build(feature, rolled_back, &results, cache);
                 // The same definition giving the same result keeps its
                 // stamp: nothing made from it has to be rebuilt.

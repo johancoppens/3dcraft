@@ -30,6 +30,7 @@ mod face_ops;
 mod fillet;
 mod loft;
 mod offset_face;
+pub mod progress;
 mod query;
 mod revolve;
 mod selfcheck;
