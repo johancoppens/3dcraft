@@ -14,7 +14,7 @@ use super::freeform::{PatchTree, is_freeform};
 use super::hits::speed_bound;
 use craft3d_geom::{Curve3, Ellipse, Surface};
 use craft3d_math::{Bbox3, Vec3};
-use std::f64::consts::FRAC_PI_2;
+use std::f64::consts::{FRAC_PI_2, PI, TAU};
 use std::sync::Arc;
 
 /// A piece of a curve in a loop.
@@ -717,8 +717,17 @@ impl Outline {
     pub fn interior_points(&self, tol: f64, margin: f64, want: usize) -> Result<Vec<Vec3>, Reason> {
         let mut found = Vec::new();
         if self.loops.is_empty() {
+            // A freeform surface is evaluated at those shares of its
+            // domain (it is no surface beyond it), the others at those
+            // parameters.
+            let ((u0, u1), (v0, v1)) = self.surface.domain();
             for (u, v) in [(0.7, 0.3), (2.9, -0.8), (4.6, 1.0), (5.5, -0.2)] {
-                let p = self.surface.eval(u, v);
+                let p = if self.tree.is_some() {
+                    let (s, t) = (u / TAU, (v + PI) / TAU);
+                    self.surface.eval(u0 + s * (u1 - u0), v0 + t * (v1 - v0))
+                } else {
+                    self.surface.eval(u, v)
+                };
                 if p.is_finite() && found.len() < want {
                     found.push(p);
                 }

@@ -51,6 +51,7 @@
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
 use super::Reason;
+use craft3d_geom::closure::closes as closure;
 use craft3d_geom::pole::{Border, Pole, poles};
 use craft3d_geom::{BezierPatch, NurbsSurface, RationalBezierPatch, Surface};
 use craft3d_math::{Bbox3, Vec3};
@@ -113,6 +114,8 @@ pub(super) struct PatchTree {
     poles: Vec<Pole>,
     axes: Vec<Option<Vec3>>,
     wedge: Option<Result<Wedge, Reason>>,
+    /// Whether the surface closes on itself in u and in v ([`closure`]).
+    closes: [bool; 2],
     /// The nearest points found so far, by the bits of the point asked
     /// about: the same points are asked about again and again (the ends
     /// and the bisections of a face's boundary, for every winding number
@@ -717,6 +720,51 @@ pub(super) fn pole_axis(
     Some(pole_axes(surface, &all).get(index).copied().flatten())
 }
 
+/// Whether a freeform surface has no border at all: it closes on itself
+/// both ways (a torus), or one way with a pole at either end of the other
+/// (a ball). A face without loops on it is the whole surface, as on a
+/// sphere or a torus.
+pub(super) fn borderless(surface: &Surface) -> bool {
+    if !is_freeform(surface) {
+        return false;
+    }
+    match closure(surface) {
+        [true, true] => true,
+        [false, false] => false,
+        [around_u, _] => {
+            let (start, end) = if around_u {
+                (Border::VStart, Border::VEnd)
+            } else {
+                (Border::UStart, Border::UEnd)
+            };
+            let found = poles(surface);
+            found.iter().any(|p| p.border == start) && found.iter().any(|p| p.border == end)
+        }
+    }
+}
+
+/// How a freeform surface that closes on itself is to be charted
+/// (`chart.rs`, `Layout`): which way it closes, its poles, and how fast
+/// its parameters can move.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Closure {
+    /// It closes in u (the share `s` around is u's, the share `t` across
+    /// is v's); else in v.
+    pub around_u: bool,
+    /// It closes in both (a torus).
+    pub both: bool,
+    /// A pole at the start and at the end of `t`.
+    pub low: bool,
+    pub high: bool,
+    /// Without poles: how far `(s, t)` can move per unit of length
+    /// travelled on the surface, at most. With them: how far `(ω ds, dt)`
+    /// can, `ω` the wedge's width (`t`, `1 − t` or their product): see
+    /// `wedge_sigma`.
+    pub speed: f64,
+}
+
+pub(super) const CLOSED_POLE: Reason = "a freeform face that closes on itself and into a point along the same parameter, or both ways round and into a point; its chart cannot be followed";
+
 /// An upper bound on the second partial derivatives of polynomial spans
 /// over all of them, in the surface's own parameters: each span's bound
 /// comes from the differences of its net over `[0, 1]²`, and is scaled by
@@ -917,6 +965,7 @@ impl PatchTree {
             second,
             axes: pole_axes(surface, &found),
             wedge: Wedge::of(surface, &found),
+            closes: closure(surface),
             poles: found,
             memo: Mutex::new(BTreeMap::new()),
         };
@@ -1077,6 +1126,83 @@ impl PatchTree {
             Some(Ok(wedge)) => wedge.chart(u, v),
             _ => (u, v),
         }
+    }
+
+    /// How the surface closes on itself, or `None` when it does not (then
+    /// [`Self::chart`] is its chart); an error when it closes in a way no
+    /// chart is built for.
+    ///
+    /// The bound on the speed is that of [`Self::chart_speed`] in the
+    /// shares of the domain: a step `(ds, dt)` is a step of the parameters
+    /// `(W_u ds, W_v dt)`, at least `min W` times as long.
+    pub fn closure(&self) -> Option<Result<Closure, Reason>> {
+        let [in_u, in_v] = self.closes;
+        if !(in_u || in_v) {
+            return None;
+        }
+        Some((|| {
+            let around_u = in_u;
+            let both = in_u && in_v;
+            let ((u0, u1), (v0, v1)) = self.surface.domain();
+            let (low, high) = match &self.wedge {
+                None => (false, false),
+                Some(Err(reason)) => return Err(*reason),
+                // The poles must be on the borders across the way round:
+                // of constant v when it closes in u.
+                Some(Ok(wedge)) if !both && wedge.across_v == around_u => (wedge.low, wedge.high),
+                Some(Ok(_)) => return Err(CLOSED_POLE),
+            };
+            let sigma = self.least_sigma().ok_or(IRREGULAR)?;
+            let speed = if low || high {
+                if self.axes.iter().any(Option::is_none) {
+                    return Err(POLE_SHAPE);
+                }
+                1.0 / sigma
+            } else {
+                let narrowest = (u1 - u0).min(v1 - v0);
+                if !(narrowest > 0.0) {
+                    return Err(IRREGULAR);
+                }
+                1.0 / (sigma * narrowest)
+            };
+            if !(speed.is_finite() && speed > 0.0) {
+                return Err(IRREGULAR);
+            }
+            Ok(Closure {
+                around_u,
+                both,
+                low,
+                high,
+                speed,
+            })
+        })())
+    }
+
+    /// The parameters as shares of the domain, `(s, t)`: around and
+    /// across the way the surface closes (see [`Closure`]).
+    pub fn shares(&self, around_u: bool, u: f64, v: f64) -> (f64, f64) {
+        let ((u0, u1), (v0, v1)) = self.surface.domain();
+        let (su, sv) = ((u - u0) / (u1 - u0), (v - v0) / (v1 - v0));
+        if around_u { (su, sv) } else { (sv, su) }
+    }
+
+    /// The point of the surface at the shares `(s, t)`.
+    pub fn at_shares(&self, around_u: bool, s: f64, t: f64) -> Vec3 {
+        let ((u0, u1), (v0, v1)) = self.surface.domain();
+        let (su, sv) = if around_u { (s, t) } else { (t, s) };
+        self.surface.eval(u0 + su * (u1 - u0), v0 + sv * (v1 - v0))
+    }
+
+    /// The size of the surface: the diagonal of the box around it.
+    pub fn size(&self) -> f64 {
+        let mut all = Bbox3::EMPTY;
+        for node in self.roots.iter().filter_map(|&r| self.nodes.get(r)) {
+            if let Some((lo, hi)) = node.bbox.corners() {
+                all.add(lo);
+                all.add(hi);
+            }
+        }
+        all.diagonal()
     }
 
     /// The unit normal `∂u × ∂v` of the surface at the nearest point

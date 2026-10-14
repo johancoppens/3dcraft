@@ -11,6 +11,7 @@
 // for NaN.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
+use crate::closure::closes;
 use crate::pole::{Pole, poles};
 use crate::{BezierPatch, BezierSpan, DerivativeBounds, GeomError, NurbsSurface, Sphere, Surface};
 use craft3d_math::{Bbox3, Frame, Tolerance, Vec3};
@@ -562,6 +563,37 @@ pub(super) struct Chart {
 }
 
 impl Chart {
+    /// The point and first derivatives of the surface at `(u, v)`. A
+    /// freeform surface that closes on itself is walked around, past the
+    /// ends of its domain, and is no surface there: its parameters are
+    /// taken around into the domain (the analytic kinds go around by
+    /// their formulas). Elsewhere `(u, v)` as given, beyond the domain
+    /// too (the marcher corrects onto what lies past a border).
+    pub(super) fn at(&self, u: f64, v: f64) -> (Vec3, Vec3, Vec3) {
+        let (u, v) = self.wrapped(u, v);
+        self.surface.derivatives(u, v)
+    }
+
+    /// `(u, v)` taken around into the domain where a freeform surface
+    /// closes on itself (see [`Chart::at`]).
+    pub(super) fn wrapped(&self, u: f64, v: f64) -> (f64, f64) {
+        if matches!(self.surface, Surface::Bezier(_) | Surface::Nurbs(_)) {
+            let around = |x: f64, periodic: bool, (lo, hi): (f64, f64)| {
+                if periodic && x.is_finite() && !(x >= lo && x <= hi) {
+                    (lo + (x - lo).rem_euclid(hi - lo)).clamp(lo, hi)
+                } else {
+                    x
+                }
+            };
+            (
+                around(u, self.periodic_u, self.u),
+                around(v, self.periodic_v, self.v),
+            )
+        } else {
+            (u, v)
+        }
+    }
+
     /// `None` when no part of the surface can be inside the box. `other`
     /// is the field of the surface it will be intersected with (a sphere is
     /// turned so that its poles are away from it).
@@ -756,12 +788,13 @@ impl Chart {
                     }
                 }
                 let (muu, muv, mvv) = b.second_derivative_bounds();
+                let [periodic_u, periodic_v] = closes(surface);
                 Chart {
                     surface: surface.clone(),
                     u: (0.0, 1.0),
                     v: (0.0, 1.0),
-                    periodic_u: false,
-                    periodic_v: false,
+                    periodic_u,
+                    periodic_v,
                     bounds: Bounds {
                         lu: m as f64 * du,
                         lv: n as f64 * dv,
@@ -774,12 +807,16 @@ impl Chart {
             Surface::Nurbs(s) => {
                 let (u, v) = s.domain();
                 let (count_u, count_v) = s.counts();
+                // A surface that closes on itself is walked around: its
+                // parameters are wrapped into the domain where it is
+                // evaluated (`Chart::at`).
+                let [periodic_u, periodic_v] = closes(surface);
                 Chart {
                     surface: surface.clone(),
                     u,
                     v,
-                    periodic_u: false,
-                    periodic_v: false,
+                    periodic_u,
+                    periodic_v,
                     bounds: nurbs_bounds(s, surface, u, v, count_u, count_v),
                 }
             }

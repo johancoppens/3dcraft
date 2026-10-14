@@ -8,12 +8,20 @@
 //! Written on 2026-10-14 while fixing `craft3d_topo::mass_properties`,
 //! which took a face's region to be the part of its surface's parameter
 //! rectangle that its loops bound; on a surface that closes on itself that
-//! is not so where a loop goes over or around the seam. The boolean charts
-//! a freeform face by the same parameters (`boolean::chart`, `Chart::Patch`)
-//! and does not know that the surface closes: it refuses every one of these
-//! cuts ("a piece of a face is not closed off by its boundary"), which is
-//! work owed, not a wrong result. This test holds it to that: the half, or
-//! an error, never another number.
+//! is not so where a loop goes over or around the seam. The boolean charted
+//! a freeform face by the same parameters and refused every one of these
+//! cuts ("a piece of a face is not closed off by its boundary"), and the
+//! test held it to "the half, or an error". The same day the boolean
+//! learned to chart such faces by an angle around (`boolean::chart`,
+//! `Layout`) and the surface intersections to walk such a surface around
+//! (`geom::intersect`, a periodic chart), and the test holds it to the
+//! half, at three scales: every refusal is now a failure.
+//!
+//! The exact measure is held to the half within 1e-7 of it (1e-9 while
+//! only the refusal was tested): the cut is a spline fitted within half
+//! the tolerance of both surfaces, so the result is not the exact half,
+//! and 1e-7 of the result is the bound the boolean corpus holds every
+//! result to. The worst seen is 9.1e-9.
 
 #![allow(
     clippy::unwrap_used,
@@ -66,7 +74,7 @@ fn vase_volume() -> f64 {
 /// that starts at `from` radians; with `around_v` the turn is the
 /// surface's second parameter. The wall is bounded by its two rims and,
 /// with `seam`, by the seam edge walked up and down.
-fn vase(from: f64, around_v: bool, seam: bool) -> Body {
+fn vase(from: f64, around_v: bool, seam: bool, k: f64) -> Body {
     let weight = FRAC_PI_4.cos();
     let ring: Vec<(f64, f64, f64)> = (0..9)
         .map(|k| {
@@ -84,7 +92,7 @@ fn vase(from: f64, around_v: bool, seam: bool) -> Body {
     let bezier = vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
     let (mut ctrl, mut weights) = (Vec::new(), Vec::new());
     let mut put = |(x, y, w): (f64, f64, f64), (rho, z): (f64, f64)| {
-        ctrl.push(Vec3::new(rho * x, rho * y, z));
+        ctrl.push(Vec3::new(rho * x, rho * y, z) * k);
         weights.push(w);
     };
     if around_v {
@@ -111,10 +119,10 @@ fn vase(from: f64, around_v: bool, seam: bool) -> Body {
     let (sin, cos) = from.sin_cos();
     let x_axis = Vec3::new(cos, sin, 0.0);
     let rim = |body: &mut Body, (rho, z): (f64, f64)| -> EdgeId {
-        let vertex = body.add_vertex(Vec3::new(rho * cos, rho * sin, z));
-        let frame = Frame::new(Vec3::new(0.0, 0.0, z), Vec3::Z, x_axis).unwrap();
+        let vertex = body.add_vertex(Vec3::new(rho * cos, rho * sin, z) * k);
+        let frame = Frame::new(Vec3::new(0.0, 0.0, z) * k, Vec3::Z, x_axis).unwrap();
         body.add_edge(
-            Curve3::Circle(Circle::new(frame, rho).unwrap()),
+            Curve3::Circle(Circle::new(frame, rho * k).unwrap()),
             (0.0, TAU),
             vertex,
             vertex,
@@ -127,7 +135,7 @@ fn vase(from: f64, around_v: bool, seam: bool) -> Body {
         let (start, end) = (body.edges[0].start, body.edges[1].start);
         let profile = VASE
             .iter()
-            .map(|&(rho, z)| Vec3::new(rho * cos, rho * sin, z))
+            .map(|&(rho, z)| Vec3::new(rho * cos, rho * sin, z) * k)
             .collect();
         let curve = Curve3::Nurbs(NurbsCurve::polynomial(3, bezier, profile).unwrap());
         let seam = body.add_edge(curve, (0.0, 1.0), start, end);
@@ -148,7 +156,7 @@ fn vase(from: f64, around_v: bool, seam: bool) -> Body {
     let floor = Frame::new(Vec3::ZERO, -Vec3::Z, x_axis).unwrap();
     let floor = body.add_face(Surface::Plane(Plane::new(floor)), false, vec![floor_loop]);
     let lid_loop = body.add_loop(vec![use_of(upper, false)]);
-    let lid = Frame::new(Vec3::new(0.0, 0.0, VASE[3].1), Vec3::Z, x_axis).unwrap();
+    let lid = Frame::new(Vec3::new(0.0, 0.0, VASE[3].1 * k), Vec3::Z, x_axis).unwrap();
     let lid = body.add_face(Surface::Plane(Plane::new(lid)), false, vec![lid_loop]);
     body.add_shell(vec![side, floor, lid]);
     body
@@ -156,56 +164,59 @@ fn vase(from: f64, around_v: bool, seam: bool) -> Body {
 
 /// The half of the vase with `x > 0`, where the seam of its surface lies
 /// inside the half (from 0), on the cut (from π/2) or outside it (from
-/// π): half the volume, by the exact measure and by the mesh, or an error.
-/// What comes back as a number that is not half is a defect.
+/// π): half the volume, by the exact measure and by the mesh, at 1e-3, 1
+/// and 1e6.
 #[test]
 fn half_of_a_vase_whose_wall_closes_on_itself() {
-    let tolerance = Tolerance::new(1e-6, 1e-9).unwrap();
-    let half = 0.5 * vase_volume();
-    let corner = Frame::WORLD.at(Vec3::new(0.0, -5.0, -1.0)).unwrap();
-    let block = primitives::block(&corner, 5.0, 10.0, 4.0).unwrap();
     let mut wrong = Vec::new();
-    for from in [0.0, 0.5 * PI, PI, 0.4] {
-        for around_v in [false, true] {
-            for seam in [true, false] {
-                let what = format!("from {from}, around v: {around_v}, seam edge: {seam}");
-                let solid = vase(from, around_v, seam);
-                assert_eq!(check(&solid, &tolerance), vec![], "{what}");
-                let whole = mass_properties(&solid).unwrap().volume;
-                assert!((whole - 2.0 * half).abs() < 1e-9 * whole, "{what}: {whole}");
-                let result = match boolean(&solid, &block, Intersect, &tolerance) {
-                    Ok(result) => result.body,
-                    Err(error) => {
-                        println!("{what}: refused: {error}");
+    for k in [1e-3, 1.0, 1e6] {
+        let tolerance = Tolerance::new(1e-6 * k, 1e-9).unwrap();
+        let half = 0.5 * vase_volume() * k * k * k;
+        let corner = Frame::WORLD.at(Vec3::new(0.0, -5.0, -1.0) * k).unwrap();
+        let block = primitives::block(&corner, 5.0 * k, 10.0 * k, 4.0 * k).unwrap();
+        for from in [0.0, 0.5 * PI, PI, 0.4] {
+            for around_v in [false, true] {
+                for seam in [true, false] {
+                    let what =
+                        format!("at {k}, from {from}, around v: {around_v}, seam edge: {seam}");
+                    let solid = vase(from, around_v, seam, k);
+                    assert_eq!(check(&solid, &tolerance), vec![], "{what}");
+                    let whole = mass_properties(&solid).unwrap().volume;
+                    assert!((whole - 2.0 * half).abs() < 1e-9 * whole, "{what}: {whole}");
+                    let result = match boolean(&solid, &block, Intersect, &tolerance) {
+                        Ok(result) => result.body,
+                        Err(error) => {
+                            wrong.push(format!("{what}: refused: {error}"));
+                            continue;
+                        }
+                    };
+                    let problems = check(&result, &tolerance);
+                    if !problems.is_empty() {
+                        wrong.push(format!("{what}: an invalid body: {problems:?}"));
                         continue;
                     }
-                };
-                let problems = check(&result, &tolerance);
-                if !problems.is_empty() {
-                    wrong.push(format!("{what}: an invalid body: {problems:?}"));
-                    continue;
-                }
-                let params = TessParams {
-                    chordal_tolerance: 1e-3,
-                    ..TessParams::default()
-                };
-                let mesh = tessellate_body(&result, &params).map(|m| m.weld());
-                let exact = mass_properties(&result);
-                match (exact, mesh) {
-                    (Ok(m), _) if (m.volume - half).abs() > 1e-9 * half => {
-                        wrong.push(format!("{what}: the exact measure says {}", m.volume));
+                    let params = TessParams {
+                        chordal_tolerance: 1e-3 * k,
+                        ..TessParams::default()
+                    };
+                    let mesh = tessellate_body(&result, &params).map(|m| m.weld());
+                    match (mass_properties(&result), mesh) {
+                        (Ok(m), _) if (m.volume - half).abs() > 1e-7 * half => {
+                            wrong.push(format!("{what}: the exact measure says {}", m.volume));
+                        }
+                        (Err(e), _) => wrong.push(format!("{what}: not measured: {e}")),
+                        (_, Ok(Ok(mesh))) if (mesh.volume() - half).abs() > 2e-2 * half => {
+                            wrong.push(format!("{what}: the mesh encloses {}", mesh.volume()));
+                        }
+                        (Ok(m), mesh) => println!(
+                            "{what}: off by {:.1e}; mesh {:?}",
+                            (m.volume - half).abs() / half,
+                            mesh.map(|m| m.map(|m| (m.volume() - half).abs() / half))
+                        ),
                     }
-                    (_, Ok(Ok(mesh))) if (mesh.volume() - half).abs() > 2e-2 * half => {
-                        wrong.push(format!("{what}: the mesh encloses {}", mesh.volume()));
-                    }
-                    (exact, mesh) => println!(
-                        "{what}: {:?} / mesh {:?}",
-                        exact.map(|m| m.volume),
-                        mesh.map(|m| m.map(|m| m.volume()))
-                    ),
                 }
             }
         }
     }
-    assert!(wrong.is_empty(), "half is {half}:\n{}", wrong.join("\n"));
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
