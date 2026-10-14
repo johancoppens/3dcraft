@@ -32,6 +32,15 @@ pub struct Tokens {
     pub axes: [Rgb; 3],
     /// The edges of a body.
     pub edge: Rgb,
+    /// Datum planes, axes and points: their lines, their dots, the fill of
+    /// a plane and their names.
+    pub datum: Rgb,
+    /// Opacity of the fill of a datum plane, 0 to 255.
+    pub datum_fill_opacity: u8,
+    /// Width of a datum's lines, in points.
+    pub datum_width: f32,
+    /// Radius of a datum point's dot, in points.
+    pub datum_point_radius: f32,
     /// Opacity of sketch lines and points behind a body, 0 to 255.
     pub hidden_opacity: u8,
     pub panel_fill: Rgb,
@@ -107,6 +116,10 @@ impl Tokens {
             sketch_selected: [255, 120, 80],
             axes: [[226, 82, 82], [96, 190, 96], [86, 136, 240]],
             edge: [22, 24, 30],
+            datum: [190, 140, 255],
+            datum_fill_opacity: 48,
+            datum_width: 1.25,
+            datum_point_radius: 4.0,
             hidden_opacity: 70,
             panel_fill: [38, 41, 49],
             text: [222, 226, 232],

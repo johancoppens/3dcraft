@@ -84,6 +84,29 @@ pub struct Segment {
     pub axis: bool,
 }
 
+/// A translucent square over the picture and under the lines: the
+/// square `center ± u ± v` in model coordinates (a datum plane), drawn
+/// where the ray through a pixel's centre meets it in front of every body
+/// (the lines' depth test), in `color` at `opacity`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Fill {
+    pub center: Vec3,
+    /// Half sides.
+    pub u: Vec3,
+    pub v: Vec3,
+    /// sRGB bytes.
+    pub color: [u8; 3],
+    /// 0 to 255.
+    pub opacity: u8,
+}
+
+/// Largest accepted number of fills.
+pub const MAX_FILLS: usize = 1 << 12;
+/// The centre, the two half sides (3 × `f32` each) and the colour.
+const FILL_VERTEX_BYTES: usize = 40;
+/// One triangle over the whole picture.
+const VERTICES_PER_FILL: usize = 3;
+
 /// What the lines are drawn with in one frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct OverlayParams {
@@ -144,6 +167,9 @@ pub struct GpuLines {
     /// The axis length the axes were last written with.
     axis_length: Cell<f64>,
     segments: usize,
+    /// The fills, drawn before the segments; `None` without any.
+    fills: Option<wgpu::Buffer>,
+    fill_vertices: u32,
     owner: Arc<()>,
 }
 
@@ -153,6 +179,32 @@ impl GpuLines {
     pub fn segment_count(&self) -> usize {
         self.segments
     }
+
+    /// Number of fills that are drawn.
+    pub fn fill_count(&self) -> usize {
+        self.fill_vertices as usize / VERTICES_PER_FILL
+    }
+}
+
+/// The three vertices of a fill, positions relative to `origin`; `None`
+/// for a fill with a number the GPU cannot represent.
+fn pack_fill(fill: &Fill, origin: Vec3) -> Option<[u8; FILL_VERTEX_BYTES * VERTICES_PER_FILL]> {
+    let center = narrow(fill.center - origin)?;
+    let u = narrow(fill.u)?;
+    let v = narrow(fill.v)?;
+    let [r, g, b] = fill.color;
+    let color =
+        u32::from(r) | (u32::from(g) << 8) | (u32::from(b) << 16) | (u32::from(fill.opacity) << 24);
+    let mut out = [0_u8; FILL_VERTEX_BYTES * VERTICES_PER_FILL];
+    for vertex in out.as_chunks_mut::<FILL_VERTEX_BYTES>().0.iter_mut() {
+        let floats = [
+            center[0], center[1], center[2], u[0], u[1], u[2], v[0], v[1], v[2],
+        ];
+        let mut bytes = float_bytes(&floats);
+        bytes.extend_from_slice(&color.to_le_bytes());
+        vertex.copy_from_slice(&bytes);
+    }
+    Some(out)
 }
 
 fn narrow(v: Vec3) -> Option<[f32; 3]> {
@@ -532,6 +584,10 @@ pub struct Onscreen {
     /// The lines into a target with one sample (the shown texture itself),
     /// when [`Onscreen::lines_pipeline`] is for several.
     lines_flat_pipeline: Option<wgpu::RenderPipeline>,
+    /// The fills (`fills.wgsl`), with the lines' bind group; and for one
+    /// sample when that pipeline is for several.
+    fills_pipeline: wgpu::RenderPipeline,
+    fills_flat_pipeline: Option<wgpu::RenderPipeline>,
     /// What draws a see-through picture, or why this device does not.
     see_through: Result<SeeThrough, String>,
     /// What draws a cut-open picture, or why this device does not; made
@@ -674,6 +730,13 @@ impl Onscreen {
         let lines_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("craft3d lines"),
             source: wgpu::ShaderSource::Wgsl(lines_source.into()),
+        });
+        let fills_source = include_str!("fills.wgsl")
+            .replace("{{DEPTH}}", depth_type)
+            .replace("{{LOAD}}", load);
+        let fills_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("craft3d fills"),
+            source: wgpu::ShaderSource::Wgsl(fills_source.into()),
         });
 
         let both = wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT;
@@ -865,6 +928,61 @@ impl Onscreen {
         };
         let lines_pipeline = lines_pipeline_for(samples);
         let lines_flat_pipeline = (samples > 1).then(|| lines_pipeline_for(1));
+        let fill_attributes = [
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x3,
+                offset: 0,
+                shader_location: 0,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x3,
+                offset: 12,
+                shader_location: 1,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x3,
+                offset: 24,
+                shader_location: 2,
+            },
+            wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Uint32,
+                offset: 36,
+                shader_location: 3,
+            },
+        ];
+        let fills_pipeline_for = |count: u32| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("craft3d fills"),
+                layout: Some(&lines_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &fills_shader,
+                    entry_point: Some("vs_fill"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: FILL_VERTEX_BYTES as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &fill_attributes,
+                    })],
+                },
+                primitive,
+                depth_stencil: None,
+                multisample: multisample(count),
+                fragment: Some(wgpu::FragmentState {
+                    module: &fills_shader,
+                    entry_point: Some("fs_fill"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: COLOR_FORMAT,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let fills_pipeline = fills_pipeline_for(samples);
+        let fills_flat_pipeline = (samples > 1).then(|| fills_pipeline_for(1));
 
         Onscreen {
             device: device.clone(),
@@ -880,6 +998,8 @@ impl Onscreen {
             data_pipeline,
             lines_pipeline,
             lines_flat_pipeline,
+            fills_pipeline,
+            fills_flat_pipeline,
             see_through: Err("it was not set up".to_string()),
             cut: None,
             cap_buffer: cut::cap_buffer(device),
@@ -912,6 +1032,22 @@ impl Onscreen {
     /// one paints over an earlier one). Segments with an end that is not
     /// finite or does not fit in `f32` are left out.
     pub fn upload_lines(&self, segments: &[Segment]) -> Result<GpuLines, GpuError> {
+        self.upload_overlay(segments, &[])
+    }
+
+    /// [`Onscreen::upload_lines`] with `fills` drawn under the segments, in
+    /// order. Fills with a number that does not fit in `f32` are left out.
+    /// Without fills the frame is the one [`Onscreen::upload_lines`] gives.
+    pub fn upload_overlay(
+        &self,
+        segments: &[Segment],
+        fills: &[Fill],
+    ) -> Result<GpuLines, GpuError> {
+        if fills.len() > MAX_FILLS {
+            return Err(GpuError::TooManyLines {
+                segments: fills.len(),
+            });
+        }
         if segments.len() > MAX_SEGMENTS {
             return Err(GpuError::TooManyLines {
                 segments: segments.len(),
@@ -964,6 +1100,30 @@ impl Onscreen {
                 buffer
             })?)
         };
+        let fill_bytes: Vec<u8> = fills
+            .iter()
+            .filter_map(|fill| pack_fill(fill, origin))
+            .flatten()
+            .collect();
+        let fill_vertices = u32::try_from(fill_bytes.len() / FILL_VERTEX_BYTES).map_err(|_| {
+            GpuError::TooManyLines {
+                segments: fills.len(),
+            }
+        })?;
+        let fill_buffer = if fill_bytes.is_empty() {
+            None
+        } else {
+            Some(guarded(&self.device, || {
+                let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("craft3d fills"),
+                    size: fill_bytes.len() as u64,
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                self.queue.write_buffer(&buffer, 0, &fill_bytes);
+                buffer
+            })?)
+        };
         Ok(GpuLines {
             buffer,
             vertices,
@@ -971,6 +1131,8 @@ impl Onscreen {
             axes,
             axis_length: Cell::new(1.0),
             segments: count,
+            fills: fill_buffer,
+            fill_vertices,
             owner: Arc::clone(&self.token),
         })
     }
@@ -1554,18 +1716,22 @@ impl Onscreen {
             // The lines over the bodies, and the resolve of the samples
             // into the shown texture; over a see-through picture, which is
             // in the shown texture already, straight onto that.
-            let (view, resolve, pipeline) = match peeled {
+            let (view, resolve, pipeline, fills_pipeline) = match peeled {
                 Some(_) => (
                     &targets.shown_view,
                     None,
                     self.lines_flat_pipeline
                         .as_ref()
                         .unwrap_or(&self.lines_pipeline),
+                    self.fills_flat_pipeline
+                        .as_ref()
+                        .unwrap_or(&self.fills_pipeline),
                 ),
                 None => (
                     color_view,
                     targets.msaa.as_ref().map(|_| &targets.shown_view),
                     &self.lines_pipeline,
+                    &self.fills_pipeline,
                 ),
             };
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1588,6 +1754,15 @@ impl Onscreen {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
+            // The fills first: the lines go over them.
+            if let Some(buffer) = &lines.fills
+                && lines.fill_vertices > 0
+            {
+                pass.set_pipeline(fills_pipeline);
+                pass.set_bind_group(0, &targets.lines_bind, &[]);
+                pass.set_vertex_buffer(0, buffer.slice(..));
+                pass.draw(0..lines.fill_vertices, 0..1);
+            }
             if let Some(buffer) = &lines.buffer
                 && lines.vertices > 0
             {
@@ -1774,6 +1949,45 @@ mod tests {
         };
         let packed = pack_segment(&axis, Vec3::ZERO, 7.0).unwrap();
         assert_eq!(floats(&packed[12..24]), [7.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn a_fill_packs_to_three_vertices_and_a_hostile_one_is_left_out() {
+        let fill = Fill {
+            center: Vec3::new(2.0, 3.0, 4.0),
+            u: Vec3::new(1.0, 0.0, 0.0),
+            v: Vec3::new(0.0, 2.0, 0.0),
+            color: [10, 20, 30],
+            opacity: 48,
+        };
+        let packed = pack_fill(&fill, Vec3::new(1.0, 1.0, 1.0)).unwrap();
+        assert_eq!(packed.len(), 3 * FILL_VERTEX_BYTES);
+        for vertex in packed.as_chunks::<FILL_VERTEX_BYTES>().0 {
+            let floats: Vec<f32> = vertex[..36]
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|b| f32::from_le_bytes(*b))
+                .collect();
+            assert_eq!(floats, [1.0, 2.0, 3.0, 1.0, 0.0, 0.0, 0.0, 2.0, 0.0]);
+            assert_eq!(&vertex[36..40], &[10, 20, 30, 48]);
+        }
+        for bad in [
+            Fill {
+                center: Vec3::new(f64::NAN, 0.0, 0.0),
+                ..fill
+            },
+            Fill {
+                u: Vec3::new(1e300, 0.0, 0.0),
+                ..fill
+            },
+            Fill {
+                v: Vec3::new(0.0, f64::INFINITY, 0.0),
+                ..fill
+            },
+        ] {
+            assert!(pack_fill(&bad, Vec3::ZERO).is_none(), "{bad:?}");
+        }
     }
 
     #[test]

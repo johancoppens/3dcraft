@@ -295,6 +295,24 @@ impl Projector {
         (x.is_finite() && y.is_finite() && depth.is_finite()).then_some(Projected { x, y, depth })
     }
 
+    /// The ray through the image point (`x`, `y`) (pixel coordinates, as
+    /// [`Projector::project`] gives them): its start and its direction,
+    /// whose component along the view direction is 1, so that a point
+    /// `start + direction * t` lies at depth `t` beyond the start's. For a
+    /// perspective camera the start is the eye; for an orthographic one it
+    /// is the point of the eye plane under the pixel.
+    pub fn ray(&self, x: f64, y: f64) -> (Vec3, Vec3) {
+        let aspect = self.width / self.height;
+        let nx = (x / self.width - 0.5) * 2.0;
+        let ny = (0.5 - y / self.height) * 2.0;
+        let across = self.right * (nx * aspect * self.half) + self.up * (ny * self.half);
+        if self.perspective {
+            (self.eye, self.forward + across)
+        } else {
+            (self.eye + across, self.forward)
+        }
+    }
+
     /// The depth at the fraction `t` of the straight line on the image
     /// from `a` to `b`, the projections of the ends of a segment in space.
     /// Along a line on the screen of a perspective camera it is the

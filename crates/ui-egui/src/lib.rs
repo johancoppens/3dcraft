@@ -45,5 +45,5 @@ pub use shell::{
     CommandReport, FileAction, RecoveryAction, RenderStats, Shell, TreeRow, autosave_text,
     window_title,
 };
-pub use state::{CameraState, Panels, ProjectionKind, UiState};
+pub use state::{CameraState, Panels, ProjectionKind, Show, UiState};
 pub use theme::Tokens;

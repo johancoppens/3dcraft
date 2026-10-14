@@ -81,7 +81,8 @@ mod renderer;
 pub use mesh::{GpuMesh, MAX_TRIANGLES};
 pub use offscreen::{AdapterSummary, Offscreen};
 pub use onscreen::{
-    DrawOptions, GpuLines, MAX_SEGMENTS, Onscreen, OverlayParams, Segment, WANTED_SAMPLES,
+    DrawOptions, Fill, GpuLines, MAX_FILLS, MAX_SEGMENTS, Onscreen, OverlayParams, Segment,
+    WANTED_SAMPLES,
 };
 pub use renderer::Renderer;
 

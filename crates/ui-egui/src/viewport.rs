@@ -17,7 +17,7 @@ use crate::backend::{Backend, BodyRenderer};
 use crate::camera::{Projected, Projector};
 use crate::state::{CameraState, EdgeRef, VertexRef};
 use crate::theme::{Rgb, Tokens};
-use craft3d_engine::Scene;
+use craft3d_engine::{Scene, SceneDatum, SceneDatumShape};
 use craft3d_math::Vec3;
 use craft3d_render::{Frame, Highlight, RenderParams};
 
@@ -44,6 +44,9 @@ pub enum LineKind {
     Edge,
     /// An edge or a vertex that is pointed at ([`Marks`]).
     Highlight,
+    /// The outline of a datum plane, a datum axis, or (as a dot) a datum
+    /// point.
+    Datum,
 }
 
 /// A line in image pixels (x right, y down, from the top-left corner).
@@ -88,6 +91,7 @@ impl LineKind {
             LineKind::Axis(axis) => tokens.axes.get(axis).copied().unwrap_or(tokens.text_dim),
             LineKind::Edge => tokens.edge,
             LineKind::Highlight => tokens.face_highlight,
+            LineKind::Datum => tokens.datum,
         }
     }
 
@@ -99,6 +103,7 @@ impl LineKind {
             LineKind::Axis(_) => tokens.axis_width,
             LineKind::Edge => tokens.edge_width,
             LineKind::Highlight => tokens.highlight_width,
+            LineKind::Datum => tokens.datum_width,
         }
     }
 
@@ -106,6 +111,7 @@ impl LineKind {
     pub fn dot_radius(self, tokens: &Tokens) -> f32 {
         match self {
             LineKind::Highlight => tokens.highlight_radius,
+            LineKind::Datum => tokens.datum_point_radius,
             _ => tokens.point_radius,
         }
     }
@@ -146,7 +152,12 @@ impl SectionCut {
 /// a body is drawn dimmed, like a sketch there, so that an edge an agent
 /// points at is found also from the wrong side. And the section the
 /// picture is cut open with: the bodies are rendered with it, their edges
-/// are drawn where it keeps them, and its outline is drawn as edges.
+/// are drawn where it keeps them, and its outline is drawn as edges. And
+/// the datums that are shown (`UiState::show`): a plane as a translucent
+/// square in the picture with its outline over it, an axis as a line, a
+/// point as a dot, in the theme's datum colour, tested against the bodies
+/// like a sketch (dimmed where a body is in front); the section does not
+/// cut them.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Marks {
     pub lines: Vec<[Vec3; 2]>,
@@ -154,10 +165,13 @@ pub struct Marks {
     pub points: Vec<Vec3>,
     /// The section, when the picture is cut open.
     pub cut: Option<SectionCut>,
+    /// The datums drawn, in history order.
+    pub datums: Vec<SceneDatum>,
 }
 
 impl Marks {
-    /// True when nothing is pointed at (a section is not a mark).
+    /// True when nothing is pointed at (a section and datums are not
+    /// marks that point).
     pub fn is_empty(&self) -> bool {
         self.lines.is_empty() && self.points.is_empty()
     }
@@ -166,6 +180,7 @@ impl Marks {
     pub fn with(mut self, other: Marks) -> Marks {
         self.lines.extend(other.lines);
         self.points.extend(other.points);
+        self.datums.extend(other.datums);
         self.cut = self.cut.or(other.cut);
         self
     }
@@ -187,6 +202,195 @@ impl Marks {
     /// The lines the section adds: the outline of its cap.
     pub fn outline(&self) -> &[[Vec3; 2]] {
         self.cut.as_ref().map_or(&[], |cut| cut.outline.as_slice())
+    }
+
+    /// The lines of the datums: the four sides of each plane's square
+    /// and each axis, in history order.
+    pub fn datum_lines(&self) -> Vec<[Vec3; 2]> {
+        let mut out = Vec::new();
+        for datum in &self.datums {
+            match datum.shape {
+                SceneDatumShape::Plane { center, u, v } => {
+                    let corners = plane_corners(center, u, v);
+                    for k in 0..4 {
+                        if let (Some(&a), Some(&b)) = (corners.get(k), corners.get((k + 1) % 4)) {
+                            out.push([a, b]);
+                        }
+                    }
+                }
+                SceneDatumShape::Axis { from, to } => out.push([from, to]),
+                SceneDatumShape::Point(_) => {}
+            }
+        }
+        out
+    }
+
+    /// The datum points, drawn as dots.
+    pub fn datum_points(&self) -> Vec<Vec3> {
+        self.datums
+            .iter()
+            .filter_map(|datum| match datum.shape {
+                SceneDatumShape::Point(p) => Some(p),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The squares of the datum planes, as (centre, half side along the
+    /// plane's x, along its y).
+    pub fn datum_planes(&self) -> Vec<(Vec3, Vec3, Vec3)> {
+        self.datums
+            .iter()
+            .filter_map(|datum| match datum.shape {
+                SceneDatumShape::Plane { center, u, v } => Some((center, u, v)),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+/// The corners of the square `center ± u ± v`, going round.
+fn plane_corners(center: Vec3, u: Vec3, v: Vec3) -> [Vec3; 4] {
+    [
+        center - u - v,
+        center + u - v,
+        center + u + v,
+        center - u + v,
+    ]
+}
+
+/// The datums of `scene` as marks, when they are shown.
+pub fn datum_marks(scene: Option<&Scene>, shown: bool) -> Marks {
+    Marks {
+        datums: if shown {
+            scene.map(|scene| scene.datums.clone()).unwrap_or_default()
+        } else {
+            Vec::new()
+        },
+        ..Marks::default()
+    }
+}
+
+/// Where the name of each datum is written in an image of `width` ×
+/// `height` seen with `camera`, in pixels: beside a corner of a plane's
+/// square, the end of an axis, a point. A datum whose place is not in
+/// front of the camera has none.
+pub fn datum_labels(
+    marks: &Marks,
+    camera: &CameraState,
+    width: u32,
+    height: u32,
+) -> Vec<([f64; 2], String)> {
+    let Some(projector) = Projector::new(&camera.to_render(), f64::from(width), f64::from(height))
+    else {
+        return Vec::new();
+    };
+    marks
+        .datums
+        .iter()
+        .filter_map(|datum| {
+            let anchor = match datum.shape {
+                SceneDatumShape::Plane { center, u, v } => center - u + v,
+                SceneDatumShape::Axis { to, .. } => to,
+                SceneDatumShape::Point(p) => p,
+            };
+            let p = projector.project(anchor)?;
+            Some(([p.x, p.y], datum.name.clone()))
+        })
+        .collect()
+}
+
+/// Fills the squares of the datum planes of `marks` into `rgb`, the
+/// picture of a frame of `width` × `height` pixels whose distances along
+/// the view are `depth`, seen with `camera`: per pixel, the ray through
+/// its centre meets the plane inside the square, in front of the camera,
+/// and not behind a body (the test of the overlay's lines, with `slack`),
+/// and then the pixel is blended with the theme's datum colour at its
+/// fill opacity, rounded. Pixels outside every square keep their bytes:
+/// without datum planes the picture does not change.
+#[allow(clippy::too_many_arguments)]
+pub fn fill_datum_planes(
+    rgb: &mut [u8],
+    width: u32,
+    height: u32,
+    depth: &[f64],
+    camera: &CameraState,
+    marks: &Marks,
+    tokens: &Tokens,
+    slack: f64,
+) {
+    let planes = marks.datum_planes();
+    if planes.is_empty() || width == 0 || height == 0 {
+        return;
+    }
+    let Some(projector) = Projector::new(&camera.to_render(), f64::from(width), f64::from(height))
+    else {
+        return;
+    };
+    let map = DepthMap::from_parts(width as usize, height as usize, depth, slack);
+    let alpha = f64::from(tokens.datum_fill_opacity) / 255.0;
+    let ink = tokens.datum;
+    let (w, h) = (width as usize, height as usize);
+    for (center, u, v) in planes {
+        let normal = u.cross(v);
+        let (uu, vv) = (u.dot(u), v.dot(v));
+        if !(uu > 0.0 && vv > 0.0 && normal.length() > 0.0) {
+            continue;
+        }
+        // The pixels the square can cover: those of its projected corners,
+        // or all of them when a corner is not in front of the camera.
+        let mut range = (0_usize, w, 0_usize, h);
+        let projected: Option<Vec<Projected>> = plane_corners(center, u, v)
+            .iter()
+            .map(|&c| projector.project(c))
+            .collect();
+        if let Some(corners) = projected {
+            let (mut x0, mut x1, mut y0, mut y1) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
+            for c in &corners {
+                x0 = x0.min(c.x);
+                x1 = x1.max(c.x);
+                y0 = y0.min(c.y);
+                y1 = y1.max(c.y);
+            }
+            let clamp = |value: f64, size: usize| value.clamp(0.0, size as f64) as usize;
+            range = (
+                clamp((x0 - 1.0).floor(), w),
+                clamp((x1 + 2.0).floor(), w),
+                clamp((y0 - 1.0).floor(), h),
+                clamp((y1 + 2.0).floor(), h),
+            );
+        }
+        let (x0, x1, y0, y1) = range;
+        for py in y0..y1 {
+            for px in x0..x1 {
+                let (x, y) = (px as f64 + 0.5, py as f64 + 0.5);
+                let (start, direction) = projector.ray(x, y);
+                let along = direction.dot(normal);
+                if along == 0.0 || !along.is_finite() {
+                    continue;
+                }
+                let t = (center - start).dot(normal) / along;
+                if !(t.is_finite() && t > projector.near()) {
+                    continue;
+                }
+                let r = start + direction * t - center;
+                if (r.dot(u) / uu).abs() > 1.0 || (r.dot(v) / vv).abs() > 1.0 {
+                    continue;
+                }
+                if map.is_some_and(|map| map.covers(x, y, t)) {
+                    continue;
+                }
+                let index = (py * w + px) * 3;
+                let Some(pixel) = rgb.get_mut(index..index + 3) else {
+                    continue;
+                };
+                for (channel, &c) in pixel.iter_mut().zip(&ink) {
+                    let under = f64::from(*channel);
+                    let blended = under + (f64::from(c) - under) * alpha;
+                    *channel = blended.round().clamp(0.0, 255.0) as u8;
+                }
+            }
+        }
     }
 }
 
@@ -295,15 +499,21 @@ impl<'a> DepthMap<'a> {
     /// `None` when the buffer is not the size it says, or the slack is
     /// not a number: nothing is hidden then, rather than the wrong thing.
     fn new(frame: &'a Frame, slack: f64) -> Option<Self> {
-        let (width, height) = (frame.width as usize, frame.height as usize);
-        (width.checked_mul(height) == Some(frame.depth.len()) && slack.is_finite()).then_some(
-            Self {
-                width,
-                height,
-                depth: &frame.depth,
-                slack,
-            },
+        Self::from_parts(
+            frame.width as usize,
+            frame.height as usize,
+            &frame.depth,
+            slack,
         )
+    }
+
+    fn from_parts(width: usize, height: usize, depth: &'a [f64], slack: f64) -> Option<Self> {
+        (width.checked_mul(height) == Some(depth.len()) && slack.is_finite()).then_some(Self {
+            width,
+            height,
+            depth,
+            slack,
+        })
     }
 
     /// True when a body is in front of the point at pixel (`x`, `y`) and
@@ -410,6 +620,27 @@ pub fn overlay(
     selected: Option<&str>,
 ) -> Overlay {
     build_overlay(scene, camera, width, height, selected, None, None)
+}
+
+/// [`overlay`] with `marks` (the highlighted edges and vertices, the
+/// datums, the section's outline), with nothing hidden.
+pub fn overlay_untested(
+    scene: Option<&Scene>,
+    camera: &CameraState,
+    width: u32,
+    height: u32,
+    selected: Option<&str>,
+    marks: &Marks,
+) -> Overlay {
+    build_overlay(
+        scene,
+        camera,
+        width,
+        height,
+        selected,
+        None,
+        Some((marks, false)),
+    )
 }
 
 /// The lines over `frame`, the image of the scene's bodies seen with
@@ -552,6 +783,10 @@ fn build_overlay(
             false,
         );
     }
+    // The datums, tested like a sketch, under the sketches.
+    for [a, b] in marks.map(Marks::datum_lines).unwrap_or_default() {
+        line(a, b, LineKind::Datum, true, true);
+    }
     for sketch in scene.into_iter().flat_map(|scene| &scene.sketches) {
         let chosen = selected == Some(sketch.feature.as_str());
         for polyline in &sketch.polylines {
@@ -587,6 +822,15 @@ fn build_overlay(
                     hidden: map.is_some_and(|map| map.covers(p.x, p.y, p.depth)),
                 });
             }
+        }
+    }
+    for point in marks.map(Marks::datum_points).unwrap_or_default() {
+        if let Some(p) = projector.project(point) {
+            out.points.push(OverlayPoint {
+                at: [p.x, p.y],
+                kind: LineKind::Datum,
+                hidden: map.is_some_and(|map| map.covers(p.x, p.y, p.depth)),
+            });
         }
     }
     for point in marks.into_iter().flat_map(|marks| &marks.points) {
@@ -706,14 +950,26 @@ pub fn compose_with(
     tokens: &Tokens,
     selected: Option<&str>,
 ) -> Result<Composed, String> {
-    let (frame, backend) = renderer.render(scene, camera, quality, tokens)?;
+    let (mut frame, backend) = renderer.render(scene, camera, quality, tokens)?;
     let coverage = frame.coverage();
+    let slack = depth_slack(backend, scene, camera);
+    let (width, height) = (frame.width, frame.height);
+    fill_datum_planes(
+        &mut frame.rgb,
+        width,
+        height,
+        &frame.depth,
+        camera,
+        renderer.marks(),
+        tokens,
+        slack,
+    );
     let overlay = overlay_see_through(
         scene,
         camera,
         &frame,
         selected,
-        depth_slack(backend, scene, camera),
+        slack,
         renderer.marks(),
         renderer.opacity() < 1.0,
     );

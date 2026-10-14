@@ -236,6 +236,8 @@ struct FrameKey {
     opacity: f64,
     /// The plane the picture is cut open with.
     section: Option<Section>,
+    /// The datums are drawn.
+    datums: bool,
     tokens: Tokens,
 }
 
@@ -837,6 +839,7 @@ impl Shell {
             self.state.highlight_edge.as_ref(),
             self.state.highlight_vertex.as_ref(),
             self.section_cut(),
+            self.state.show.datums,
         )
     }
 
@@ -1647,6 +1650,7 @@ impl Shell {
             highlight_vertex: self.state.highlight_vertex.clone(),
             opacity: self.opacity(),
             section: self.section(),
+            datums: self.state.show.datums,
             tokens,
         };
         // The direct path draws the whole picture, lines included, on the
@@ -1671,6 +1675,26 @@ impl Shell {
                 painter.image(texture.id(), rect, uv, egui::Color32::WHITE);
             }
             paint_overlay(&painter, rect, self.overlay_size, &self.overlay, &tokens);
+        }
+        // The names of the datums, on either path: text is egui's.
+        if self.state.show.datums {
+            let shown = viewport::datum_marks(scene, true);
+            let [w, h] = size;
+            for (at, name) in viewport::datum_labels(&shown, &self.state.camera, w, h) {
+                let place = egui::pos2(
+                    rect.left() + (at[0] / f64::from(w.max(1))) as f32 * rect.width(),
+                    rect.top() + (at[1] / f64::from(h.max(1))) as f32 * rect.height(),
+                );
+                if rect.contains(place) {
+                    painter.text(
+                        place + egui::vec2(tokens.datum_point_radius + 2.0, -2.0),
+                        egui::Align2::LEFT_BOTTOM,
+                        name,
+                        egui::FontId::proportional(12.0),
+                        color(tokens.datum),
+                    );
+                }
+            }
         }
 
         let inset = tokens.inset;
@@ -2199,6 +2223,7 @@ impl Shell {
             key.highlight_edge.as_ref(),
             key.highlight_vertex.as_ref(),
             cut,
+            key.datums,
         ));
         let outcome = direct.frame(
             scene,
@@ -2282,6 +2307,7 @@ impl Shell {
                 key.highlight_edge.as_ref(),
                 key.highlight_vertex.as_ref(),
                 cut.clone(),
+                key.datums,
             ),
             opacity: key.opacity,
             #[cfg(not(target_arch = "wasm32"))]
@@ -2455,13 +2481,14 @@ const GPU_TARGET_SIDE: u64 = 8192;
 
 /// Paints the overlay, which is in image pixels, into `rect`, which is the
 /// same image in points.
-/// The marks of a highlighted edge and a highlighted vertex, and the
-/// section the picture is cut open with.
+/// The marks of a highlighted edge and a highlighted vertex, the section
+/// the picture is cut open with, and the datums when they are shown.
 fn marks_of(
     scene: Option<&Scene>,
     edge: Option<&EdgeRef>,
     vertex: Option<&VertexRef>,
     cut: Option<viewport::SectionCut>,
+    datums: bool,
 ) -> viewport::Marks {
     let edges = edge.map_or_else(viewport::Marks::default, |edge| {
         viewport::edge_marks(scene, edge)
@@ -2471,7 +2498,9 @@ fn marks_of(
     });
     viewport::Marks {
         cut,
-        ..edges.with(vertices)
+        ..edges
+            .with(vertices)
+            .with(viewport::datum_marks(scene, datums))
     }
 }
 
