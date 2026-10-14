@@ -1,6 +1,6 @@
 # Roadmap
 
-> **Last updated:** 2026-10-15 · **Stage:** M7 (booleans) and M8.5 in progress, M9 started, M4 nearly done; M0–M3, M5, M6 and M8 done · **Change:** minor (the Voronoi helmet's boolean findings done)
+> **Last updated:** 2026-10-15 · **Stage:** M7 (booleans) and M8.5 in progress, M9 started, M4 nearly done; M0–M3, M5, M6 and M8 done · **Change:** minor (freeform blend chains and meets)
 
 Forward-looking plan: the **Current focus** agents pick from, one line per milestone, and per milestone what it is for, what is done, what is open and what "done" means. There is no parity percentage: 3DCraft is AI-first with a minimal UI and has no target app ([`decisions.md`](decisions.md)). Progress is measured by milestones whose acceptance tests pass. How something was built (algorithms, thresholds, measurements, file paths of internals) is in [`architecture.md`](architecture.md), and how it is tested in [`testing.md`](testing.md).
 
@@ -333,11 +333,13 @@ The blends first (chamfer and fillet, the first consumers of edge references), t
 - The ISO 261 table complete from M1 to M68: every coarse pitch (M11: 1.5 mm), and the fine pitches named when a size has none (2026-10-15)
 - A file opened by a path relative to the working directory keeps it absolute, so the window saves it back to itself under a write root (2026-10-15)
 - The engine block's blend findings (E1–E8): the estimate of what fits follows a face's boundary round tangent arcs and across a cylinder's seam, takes a cut line that runs exactly into a corner, and refuses a face that pinches to nothing; a blend ends in the plane of a face it runs into at a slant; equal-distance chamfer chains are one tool; a boolean hit next to an edge's end on the surface is that end (§5.3 › *Blend findings of the engine block*) (2026-10-15)
+- Freeform blends along chains of tangent edges, one family of balls with a face per edge, also where a face changes across a smooth edge (the turbofan casing's cut edge through its flange root, the engine block's boss foot E6 in its first form), and freeform with closed-form edges in one feature ([`architecture.md`](architecture.md) §5.3 › *Chains and meets of freeform blends*) (2026-10-15)
+- Two freeform fillets that meet at a vertex whose third edge stays sharp, convex or concave (the tip of a lofted blade rounded all round) (§5.3 › *Chains and meets of freeform blends*) (2026-10-15)
 
 #### Open
 - [ ] Move face, then thicken (a sheet given a thickness), replace face and draft (faces tilted about a neutral plane along a pull direction)
 - [ ] Vertex blends: three fillets of different radii, with a circular edge, with a fourth edge
-- [ ] Freeform blends along a chain of tangent edges (a casing's cut edge that runs on through a flange-root fillet), and freeform blends that meet: two at a vertex whose third edge stays sharp (a blade's whole tip or root, the turbofan's F2/F3), freeform and closed-form edges in one feature, a freeform chamfer by distance and angle
+- [ ] Freeform blends that are still refused: a fillet whose border runs over a smooth edge of a face beside it in the middle of an edge (the engine block's E6 in the full block, next to the waist round); concave fillets that meet round a sharp convex edge (a blade's root loop, the turbofan's F3); a chain whose ends meet at one vertex; chamfers whose face changes at a joint or that meet; a freeform chamfer by distance and angle; a vertex patch with tangency (a setback) in place of the crease where two fillets meet
 - [ ] A blend that ends in a face of its own in the middle of a chain
 - [ ] Chamfers: a reference to one of several edges between the same two faces
 - [ ] Fillets: an outside and an inside fillet that meet; the rim of a rod with half its radius or more (a spindle torus); a rim fillet along an earlier round of the same radius or more (the torus would reach its axis: all edges of a prism in two steps); variable radius (later)
@@ -460,6 +462,7 @@ Applications built on 3DCraft, not part of it (the rule in `docs/decisions.md`, 
 | 2026-10-15 | minor | M9: the engine block's blend findings E1–E8 (estimate of what fits, blends ending on a slanted face, chamfer chains joined, a boolean hit snapped to an edge's end) |
 | 2026-10-15 | minor | M9: a sweep's right-angle test uses the document's tolerance; `sketch.path` warns of an arc end off its circle |
 | 2026-10-15 | minor | M9: `sketch.path` snaps a `center` arc's end onto its circle; a sweep's tangency test at a kink uses the tolerance (F6 builds) |
+| 2026-10-15 | minor | M9: freeform blends along chains of tangent edges and with closed-form edges in one feature; two freeform fillets that meet where a third edge stays sharp |
 | 2026-10-14 | minor | M9: a thread is cosmetic unless `modeled`, as in other modellers |
 | 2026-10-14 | minor | M9: a thread's size and pitch follow the model (the size of the face, a designation or a length; the coarse pitch of the size unless given); format version 14 |
 | 2026-10-14 | minor | M9: helix and thread done (`datum.helix`, the sweep along a helix, `feature.thread`); format version 13; the showcase has a coil spring and a socket head cap screw with its thread |
