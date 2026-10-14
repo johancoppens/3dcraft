@@ -397,7 +397,11 @@ fn two_frustums_apart_unite_into_two_shells() {
         near(mass(&rest).volume, ma.volume, 1e-12, "difference");
         // The point of the far frustum's face that was taken for inside
         // the near one, by the ray casting alone.
-        let p = Vec3::new(-43.34176271351926, -23.01408217567925, 38.169427535269126) * k;
+        let p = Vec3::new(
+            -43.34176271351926,
+            -23.01408217567925,
+            38.169_427_535_269_13,
+        ) * k;
         assert_eq!(
             contains_points(&a, &[p], &tol).unwrap(),
             [Some(false)],

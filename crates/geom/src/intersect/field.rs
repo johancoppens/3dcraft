@@ -1203,7 +1203,7 @@ mod tests {
         };
         let mut ctrl = b.control_points().to_vec();
         for (j, p) in ctrl.iter_mut().take(4).enumerate() {
-            *p = *p + Vec3::new(1e-13, -2e-13, 1e-13) * (k * j as f64);
+            *p += Vec3::new(1e-13, -2e-13, 1e-13) * (k * j as f64);
         }
         Surface::Bezier(BezierPatch::new(3, 3, ctrl).unwrap())
     }
