@@ -475,7 +475,11 @@ fn automatic_tolerance(regen: &Regen) -> f64 {
     }
 }
 
-fn tolerance_param(p: &Params, command: &str, regen: &Regen) -> Result<TessParams, CommandError> {
+pub(crate) fn tolerance_param(
+    p: &Params,
+    command: &str,
+    regen: &Regen,
+) -> Result<TessParams, CommandError> {
     let chordal_tolerance = match p.number("tolerance")? {
         Some(t) if t > 0.0 => t,
         Some(_) => return fail(format!("{command}: `tolerance` must be positive")),
@@ -1993,6 +1997,12 @@ impl Framing {
             zoom,
             look_at,
         })
+    }
+
+    /// The direction from the model towards the eye, and up.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub fn direction(&self) -> (Vec3, Vec3) {
+        (self.toward_eye, self.up)
     }
 
     /// The camera for a picture of `aspect` (width over height) of a model

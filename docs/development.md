@@ -100,12 +100,28 @@ craft3d-cli run --new '{"units":"mm"}' \
     --out box.3dcraft
 craft3d-cli run bracket.3dcraft --cmd variable.set --params '{"name":"width","expr":"55 mm"}' --out wider.3dcraft
 craft3d-cli render bracket.3dcraft --out shot.png --size 1200x800 --view iso    # CPU renderer, no GPU needed
+craft3d-cli replay bracket.3dcraft --out bracket.mp4 --size 1280x720 --frames-per-step 6 --hold 60   # how it is built, as a video
 craft3d-cli commands --filter fillet                          # the command registry with params docs
 craft3d-cli serve                                             # JSON lines on stdio (see control-protocol.md)
 craft3d-cli mcp --automation-read-root work --automation-write-root work
 ```
 
 `run` prints one JSON line per command result. A script file (`--script steps.json`: `[["<id>", {…}], …]`) is the same list of commands; it is the format for agent-written scenarios and demos.
+
+### A showcase video
+
+`craft3d-cli replay` shows how a document is built: the history is rolled forward from nothing one feature at a time, and every step that changes a body becomes a frame, drawn by the CPU renderer from one camera framed on the finished model (the engine command `view.replay`, [`control-protocol.md`](control-protocol.md)). The document is not changed.
+
+```sh
+craft3d-cli replay part.3dcraft --out part.mp4 --size 1280x720 --frames-per-step 6 --hold 60 --orbit 60
+craft3d-cli replay part.3dcraft --out part.gif --size 480x360 --frames-per-step 3 --hold 20 --fps 15
+craft3d-cli replay part.3dcraft --out frames/ --from Plate --to Holes --every   # PNG frames and captions.srt only
+```
+
+- `.mp4` and `.gif` are made by `ffmpeg`, found on `PATH` or named by `CRAFT3D_FFMPEG`; the engine itself starts no program. Without ffmpeg the command fails with exit code 1 and keeps the frames in `OUT.frames/` (`frame-%05d.png` at the given fps, with `captions.srt`), which `--keep-frames` also keeps after a video is made.
+- The captions (each step's place in the history, feature name and type) are a subtitle track in the MP4 (players switch it on) when the ffmpeg build has the `mov_text` encoder (the result says `captionsTrack`; Fedora's `ffmpeg-free` lacks it) and `captions.srt` beside the frames; they are not drawn into the picture, because the renderer has no text. The result JSON lists every step with the frames it got.
+- `--frames-per-step` slows the build down, `--hold` lingers on the finished model, `--orbit DEG` turns the camera over the whole replay (the model is then framed so that it stays in the picture all round), `--from`/`--to` pick a range of the history, `--params` passes any other `view.replay` param (`projection`, `zoom`, `box`, `tolerance`).
+- Time: opening and regenerating the document once, then about the CPU renderer's time per distinct picture, spread over the cores (each step reuses what the document's regeneration built; nothing is rebuilt). The turbofan (156 features, 113 steps that change a body) takes about 4.5 s beyond opening it on 14 cores: 3 s to tessellate the model once (as `view.render` does) and 1.5 s for the 113 frames at 800x600 (0.13 to 0.25 s of CPU each, many at once); stepping through the history costs 0.1 s.
 
 ## Driving the app programmatically
 
@@ -235,6 +251,7 @@ The desktop app writes `log` records to standard error and to `logs/craft3d.log`
 | `CRAFT3D_RENDERER` | `auto` (the GPU when there is an adapter, else the CPU; the default) or `cpu`: what shades the viewport. Same as `--renderer` |
 | `CRAFT3D_CONFIG_DIR` | Settings and log directory override (tests, portable use) |
 | `CRAFT3D_THREADS` | Worker thread count (determinism tests run with 1, 2 and N) |
+| `CRAFT3D_FFMPEG` | Path to `ffmpeg`, used only by `craft3d-cli replay` to make an MP4 or a GIF; default: the first `ffmpeg` on `PATH` |
 | `CRAFT3D_FREECAD` | Path to a FreeCAD executable or AppImage, used only by opt-in export-validation tests |
 | `WGPU_BACKEND` | Pick the wgpu backend (`vulkan`, `metal`, `dx12`, `gl`) |
 | `RUST_LOG` | Log levels (see [Logs](#logs)) |
