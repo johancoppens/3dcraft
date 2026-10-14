@@ -666,8 +666,14 @@ fn what_cannot_be_measured_is_refused() {
         Err(MassError::UnboundedFace { face: 0 })
     );
 
-    // A sphere face whose boundary goes up a meridian to the pole and
-    // straight back down it encloses nothing or everything.
+    // (A sphere face whose boundary goes up a meridian to the pole and
+    // straight back down it was refused here until 2026-10-14, as one
+    // that encloses nothing or everything. It is the whole sphere: a loop
+    // that walks one edge there and back encloses no area on one side,
+    // and a face has an area, so the face is the other side; that is how
+    // a STEP file bounds a closed surface, by its seam used once each way,
+    // and how the tessellator meshes such a face. Pinned by the closed
+    // form, 4πr², here and at three scales in `mass_seams.rs`.)
     let mut body = Body::new(BodyKind::Sheet);
     let south = body.add_vertex(frame.point(0.0, 0.0, -2.0));
     let north = body.add_vertex(frame.point(0.0, 0.0, 2.0));
@@ -684,8 +690,8 @@ fn what_cannot_be_measured_is_refused() {
         vec![loop_],
     );
     body.add_shell(vec![face]);
-    let error = mass_properties(&body).unwrap_err();
-    assert!(error.to_string().contains("doubles back"), "{error}");
+    let whole = mass_properties(&body).unwrap().area;
+    assert!((whole - 16.0 * PI).abs() <= 1e-12 * whole, "{whole}");
 }
 
 /// A sphere less an octant, as a sheet: a face that holds one pole and

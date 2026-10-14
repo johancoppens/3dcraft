@@ -80,6 +80,35 @@
 //! loops is the whole surface, summed between its knot lines both ways
 //! until two sums agree.
 //!
+//! **Spline surfaces that close on themselves.** A Bézier or NURBS surface
+//! closes in a direction when its control net ends there on the row it
+//! starts with, on clamped knots (`spline_closure`); `craft3d-geom` gives
+//! it no period. Where the face goes over the seam, its region in the
+//! parameter rectangle is bounded by its loops *and* by stretches of the
+//! seam lines, which no edge stands for. A seam line of constant u adds
+//! nothing to `-∮ G du`, so a surface that closes in u needs nothing (the
+//! samples' parameters may jump across the seam: `du` is a rate, and `G`
+//! is evaluated where each sample is). A seam line of constant v does add
+//! to it; so where the boundary jumps in v by more than half the domain
+//! between two samples in a row, the roles are exchanged: `∮ H dv` with
+//! `H(u, v) = ∫ f(t, v) dt` from a value of u, to which the seam adds
+//! nothing, with everything else as for a surface closed in u (a
+//! boundary that goes around in v once in total is the rim of a face
+//! that reaches to a pole at an end of u). Where it jumps both ways (a
+//! NURBS torus with a window across both seams), u and v are unrolled
+//! along each loop as on an analytic torus, the inner integrals sum each
+//! turn beyond the domain inside it, and the area settles which whole
+//! number of entire surfaces to take away. A face whose loops run the
+//! wrong way around what they enclose is everything outside them on a
+//! surface that closes, or ends in a pole, on every side
+//! (`closed_all_around`), and that is the whole surface less what they
+//! enclose. A face whose loops only walk seam edges there and back (each
+//! edge once each way: a STEP file's whole torus or egg, or a sphere with
+//! its meridian seam) is the whole surface, on such a surface or on a
+//! sphere or a torus: the loops enclose no area on one side, and a face
+//! has an area. Before 2026-10-14 a face that closes in v was integrated
+//! against `du` alone and measured wrong without an error.
+//!
 //! **The poles of a spline surface.** A border of a Bézier or NURBS
 //! surface may be one point in space (every control point of it the
 //! same): the pole of a dome swept about an axis, the apex of a ruled
@@ -2637,6 +2666,7 @@ mod tests {
                 spent,
                 each: 1,
                 about: Vec3::ZERO,
+                wrap: [None, None],
             };
             let sums = integrals_in(&body, face, &surface, 0, &rule, body_size(&body), &mut work);
             (sums.map(|sums| sums.area), work.spent)
@@ -2659,6 +2689,7 @@ mod tests {
             spent: BUDGET + 1,
             each: 1,
             about: Vec3::ZERO,
+            wrap: [None, None],
         };
         assert!(matches!(
             whole_surface(&surface, 0, &rule, &mut work),
