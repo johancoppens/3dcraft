@@ -810,7 +810,7 @@ fn a_name_is_looked_up_in_the_scene_with_the_feature_when_it_is_ambiguous() {
     twin.feature = "F99".to_string();
     twin.name = "Twin".to_string();
     twin.first_face_id = 1000;
-    twins.bodies.push(twin);
+    std::sync::Arc::make_mut(&mut twins.bodies).push(twin);
     let error = twins.faces_named(None, &first).unwrap_err();
     assert!(
         error.contains("several bodies have a face")

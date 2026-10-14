@@ -137,7 +137,10 @@ impl SceneQuality {
 enum SceneKey {
     Automatic,
     Tolerance(u64),
-    Display { relative: u64, max_triangles: usize },
+    Display {
+        relative: u64,
+        max_triangles: usize,
+    },
     /// The quick first picture: one per document state, whatever display
     /// quality it stands in for.
     Preview,
@@ -367,9 +370,9 @@ impl Scene {
                 .saturating_mul(std::mem::size_of::<Vec3>())
         }
         fn text(names: &[String]) -> usize {
-            names
-                .iter()
-                .fold(0usize, |n, name| n.saturating_add(name.len()).saturating_add(24))
+            names.iter().fold(0usize, |n, name| {
+                n.saturating_add(name.len()).saturating_add(24)
+            })
         }
         let mut bytes = std::mem::size_of::<Scene>().saturating_add(mesh_bytes(&self.mesh));
         for body in self.bodies.iter() {
@@ -510,7 +513,9 @@ impl SceneCache {
 
     fn active_mut(&mut self) -> Option<&mut Kept> {
         let seen = self.seen.as_ref()?;
-        self.kept.iter_mut().find(|kept| Arc::ptr_eq(&kept.doc, seen))
+        self.kept
+            .iter_mut()
+            .find(|kept| Arc::ptr_eq(&kept.doc, seen))
     }
 
     /// The scene of the active document for `key`, under the current
@@ -1807,7 +1812,12 @@ mod tests {
         let mut shown = Vec::new();
         for document in 0..6 {
             activate(&mut session, document);
-            shown.push(session.scene_with(SceneQuality::display()).unwrap().unwrap());
+            shown.push(
+                session
+                    .scene_with(SceneQuality::display())
+                    .unwrap()
+                    .unwrap(),
+            );
         }
         let builds = BUILDS.get();
         for round in 0..4 {
@@ -1866,7 +1876,11 @@ mod tests {
         session.scene_with(SceneQuality::display()).unwrap();
         activate(&mut session, 1);
         let both = session.scene_bytes();
-        run(&mut session, "file.close", serde_json::json!({"discard": true}));
+        run(
+            &mut session,
+            "file.close",
+            serde_json::json!({"discard": true}),
+        );
         session.scene_with(SceneQuality::display()).unwrap();
         assert!(session.scene_bytes() < both);
     }

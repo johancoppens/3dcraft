@@ -6,6 +6,7 @@ use crate::args::Options;
 use crate::control::{ControlConfig, ControlServer, Wake};
 use crate::files::{self, Choice, Picker, SystemDialogs};
 use crate::host::{Host, Request, Route, answer_on_engine, report, route};
+use crate::refine::{Poll, Refiner};
 use crate::tabs;
 use crate::token;
 use crate::worker::{Finished, Outcome, Run, Task, Worker};
@@ -135,6 +136,9 @@ pub struct Desk {
     /// Requests that came in and wait for their turn.
     queue: VecDeque<Request>,
     worker: Option<Worker>,
+    /// Builds the display scene beside the engine thread while the window
+    /// shows the quick first picture (with the engine thread only).
+    refiner: Option<Refiner>,
     /// What the engine thread is doing for the desk, while it has the
     /// session.
     waiting: Option<Waiting>,
@@ -177,6 +181,7 @@ impl Desk {
             picker,
             queue: VecDeque::new(),
             worker: None,
+            refiner: None,
             waiting: None,
             patience: PATIENCE,
         }
@@ -187,7 +192,24 @@ impl Desk {
     /// cannot be started they run where the desk is served, as before.
     #[must_use]
     pub fn with_engine_thread(mut self, wake: Wake) -> Self {
-        self.worker = Worker::start(wake).ok();
+        self.worker = Worker::start(Arc::clone(&wake)).ok();
+        if self.worker.is_some() {
+            // Coarse first, then sharp: the engine thread builds the quick
+            // first picture, the refiner the display scene.
+            self.refiner = Some(Refiner::new(wake));
+            self.host.session.set_refine_elsewhere(true);
+        }
+        self
+    }
+
+    /// Makes every refinement wait `delay` before it starts: a slow
+    /// model, for the tests.
+    #[cfg(test)]
+    #[must_use]
+    pub(crate) fn with_slow_refinement(mut self, delay: Duration) -> Self {
+        if let Some(refiner) = &mut self.refiner {
+            refiner.delay = delay;
+        }
         self
     }
 
@@ -234,6 +256,9 @@ impl Desk {
                 changed = true;
                 continue;
             }
+            if self.refine() {
+                changed = true;
+            }
             if served >= MAX_PER_TURN || self.host.shell.quit_requested() {
                 break;
             }
@@ -247,6 +272,12 @@ impl Desk {
                     Box::new(|_| Outcome::Built),
                 );
                 continue;
+            }
+            // A screenshot shows the display scene, not the first picture:
+            // it waits for the refinement, and what came after it waits
+            // with it, in order.
+            if self.queue.front().is_some_and(|r| is_screenshot(&r.line)) && self.refining() {
+                break;
             }
             if let Some(request) = self.queue.pop_front() {
                 served += 1;
@@ -336,6 +367,34 @@ impl Desk {
             }
         }));
         Some(answered.unwrap_or_else(|_| rpc::error_reply(&Value::Null, PANICKED)))
+    }
+
+    /// Hands the refiner's results to the session and starts what it
+    /// wants next; the session is home. True when the active document's
+    /// scene changed. Where no thread can be started for a refinement,
+    /// the display scene is built on the engine thread from then on.
+    fn refine(&mut self) -> bool {
+        let quality = self.host.shell.scene_quality();
+        let Some(refiner) = &mut self.refiner else {
+            return false;
+        };
+        match refiner.poll(&mut self.host.session, quality) {
+            Poll::Changed => true,
+            Poll::Same => false,
+            Poll::CannotStart => {
+                self.refiner = None;
+                self.host.session.set_refine_elsewhere(false);
+                true
+            }
+        }
+    }
+
+    /// True while the active document's display scene is being refined.
+    fn refining(&mut self) -> bool {
+        let quality = self.host.shell.scene_quality();
+        self.refiner
+            .as_ref()
+            .is_some_and(|refiner| refiner.refining(&mut self.host.session, quality))
     }
 
     /// True when the scene the window shows is built (or could not be,
@@ -530,6 +589,19 @@ impl Desk {
             None => false,
         }
     }
+}
+
+/// True for a `ui.screenshot` request.
+fn is_screenshot(line: &str) -> bool {
+    serde_json::from_str::<Value>(line)
+        .ok()
+        .and_then(|request| {
+            request
+                .get("method")
+                .and_then(Value::as_str)
+                .map(|m| m == "ui.screenshot")
+        })
+        .unwrap_or(false)
 }
 
 /// What the window says it is doing for a request: the command it runs,

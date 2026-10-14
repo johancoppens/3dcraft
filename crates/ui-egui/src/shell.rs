@@ -1578,10 +1578,17 @@ impl Shell {
                     let time = stats
                         .milliseconds
                         .map_or_else(String::new, |ms| format!(" · {ms:.0} ms"));
+                    // The quick first picture is shown while the display
+                    // mesh is built: said here, unobtrusively.
+                    let refining = if self.shown_scene.as_ref().is_some_and(|s| s.preview) {
+                        "refining · "
+                    } else {
+                        ""
+                    };
                     ui.colored_label(
                         dim,
                         format!(
-                            "{} {}×{} · {} triangles{time}",
+                            "{refining}{} {}×{} · {} triangles{time}",
                             stats.renderer.name().to_uppercase(),
                             stats.width,
                             stats.height,
