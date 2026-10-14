@@ -198,6 +198,44 @@ impl Work {
     }
 }
 
+/// One tab of the row above the viewport: an open document as the window
+/// shows it, in the order of `file.list`. In `ui.get` under `tabs`; not
+/// part of [`UiState`]: it follows the session and cannot be set (the
+/// commands `file.activate` and `file.close` change it).
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct DocTab {
+    /// The `document` number of `file.list` and `file.activate`.
+    pub document: usize,
+    /// What the tab says: the file's name without its extension, or
+    /// `Untitled n` for a document that was never saved (n counts those
+    /// from 1, in the order of the tabs).
+    pub name: String,
+    /// The path it was opened from or last saved to.
+    pub path: Option<String>,
+    /// It has changes that are not on disk: the tab is marked.
+    pub dirty: bool,
+    /// The document the window shows and the commands act on.
+    pub active: bool,
+    /// Closing it from its tab asks first (Save, Discard, Cancel): what
+    /// `file.close` would refuse without `discard`.
+    pub asks_to_close: bool,
+}
+
+/// The question the window asks before it closes a document with unsaved
+/// changes from its tab: Save, Discard or Cancel. In `ui.get` under
+/// `closing` while it is asked; the person answers it in the window.
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Closing {
+    /// The document, by its number in `file.list`, and its tab's name and
+    /// path when it was asked: a document that is not that one any more
+    /// (an agent closed or saved it meanwhile) drops the question.
+    pub document: usize,
+    pub name: String,
+    pub path: Option<String>,
+}
+
 /// What the viewport draws besides the bodies and their edges.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields, default)]

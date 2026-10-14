@@ -31,6 +31,10 @@ const MAX_PER_PUMP: usize = 64;
 pub struct Host {
     pub session: Session,
     pub shell: Shell,
+    /// The save dialog that is open was asked for by Save in the question
+    /// before closing a document without a file: the document is closed
+    /// once it is saved there.
+    pub(crate) close_after_save: bool,
 }
 
 fn methods() -> &'static [Method] {
@@ -306,6 +310,7 @@ impl Host {
         Self {
             session,
             shell: Shell::new(),
+            close_after_save: false,
         }
     }
 
@@ -340,7 +345,7 @@ impl Host {
     }
 
     fn answer_line(&mut self, line: &str) -> Option<String> {
-        let Host { session, shell } = self;
+        let Host { session, shell, .. } = self;
         let mut handle = |session: &mut Session, method: &str, params: Option<&Value>| {
             match method {
                 // The connection authenticated before anything got here.

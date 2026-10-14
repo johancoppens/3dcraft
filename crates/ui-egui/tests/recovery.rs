@@ -219,8 +219,11 @@ fn the_bar_lists_what_was_found_and_recover_opens_it() {
         2
     );
     assert!(shell.recovery_hits().is_empty());
+    // The viewport begins where it does in a window without the bar that
+    // has documents open (the row of their tabs takes room of its own).
     assert_eq!(shell.viewport_rect().unwrap().top(), {
         let mut plain = Session::new(Workspace::none());
+        run(&mut plain, "file.new", json!({}));
         let mut other = Shell::new();
         Window::new().idle(&mut other, &mut plain);
         other.viewport_rect().unwrap().top()

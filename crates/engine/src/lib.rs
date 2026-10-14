@@ -159,6 +159,13 @@ impl OpenDocument {
         self.saved_revision != Some(self.history.revision())
     }
 
+    /// True when `file.close` refuses it without `discard`: it has changes
+    /// that are not on disk and are worth keeping (it has a file, or
+    /// features). A new document nothing was added to closes freely.
+    pub(crate) fn close_asks(&self) -> bool {
+        self.dirty() && (self.path.is_some() || !self.history.current().features.is_empty())
+    }
+
     /// The bodies and statuses of the current document.
     pub(crate) fn regen(&mut self) -> Arc<Regen> {
         let revision = self.history.revision();

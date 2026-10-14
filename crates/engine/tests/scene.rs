@@ -620,6 +620,33 @@ fn the_document_status_follows_saving() {
     run(&mut s, "feature.sphere", json!({"radius": 2}));
     assert!(s.document_status().unwrap().dirty);
 
+    // Every open document, in the order of file.list; `close_asks` is
+    // exactly when file.close refuses without `discard`.
+    run(&mut s, "file.new", json!({}));
+    let all = s.document_statuses();
+    assert_eq!(all.len(), 2);
+    assert_eq!(all[0].path.as_deref(), Some("ball.3dcraft"));
+    assert_eq!((all[0].index, all[1].index), (0, 1));
+    assert!(all.iter().all(|status| status.open == 2));
+    assert_eq!(all[1], s.document_status().unwrap());
+    assert!(all[0].dirty && all[0].close_asks);
+    // A new document nothing was added to is dirty but closes freely.
+    assert!(all[1].dirty && !all[1].close_asks);
+    let listed = run(&mut s, "file.list", json!({}));
+    for (status, row) in all.iter().zip(listed["documents"].as_array().unwrap()) {
+        assert_eq!(row["document"], status.index);
+        assert_eq!(row["dirty"], status.dirty);
+        assert_eq!(row["active"], status.index == 1);
+    }
+    run(&mut s, "file.close", json!({}));
+    assert!(
+        s.execute("file.close", &json!({}))
+            .unwrap_err()
+            .message()
+            .contains("unsaved changes")
+    );
+    assert_eq!(s.document_statuses().len(), 1);
+
     // A shell's own output goes through the write root like a command's.
     s.write_output("shot.bin", b"abc").unwrap();
     assert_eq!(std::fs::read(dir.join("shot.bin")).unwrap(), b"abc");
