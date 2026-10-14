@@ -7,7 +7,7 @@
 //!
 //! ```sh
 //! cargo run --release -p craft3d-ui-egui --example window_picture -- \
-//!     [--idle] [--active N] [--edit N] [--ask N] model.3dcraft [more.3dcraft | untitled ...] out.png
+//!     [--idle] [--active N] [--edit N] [--ask N] [--set JSON] model.3dcraft [more.3dcraft | untitled ...] out.png
 //! ```
 //!
 //! The documents are opened in order (`untitled` is a new document with a
@@ -15,7 +15,9 @@
 //! `--active`, is shown as the window shows it; `--edit N` changes
 //! document `N` after it was opened, so its tab is marked unsaved, and
 //! `--ask N` closes document `N` from its tab, which shows the question
-//! before closing when it has unsaved changes. Then,
+//! before closing when it has unsaved changes. `--set JSON` patches the
+//! window's state after the first frame, as `ui.set` does (a camera, a
+//! display quality: `{"quality": {"chordal": 1e-4}}`). Then,
 //! unless `--idle`, the shell is drawn as it is while a command runs
 //! elsewhere (`Shell::ui_away`), with a step of regeneration as the work.
 
@@ -28,13 +30,14 @@ use serde_json::json;
 
 const SIZE: [u32; 2] = [1280, 800];
 
-const USAGE: &str = "usage: window_picture [--idle] [--active N] [--edit N] [--ask N] FILE.3dcraft [FILE.3dcraft | untitled ...] OUT.png";
+const USAGE: &str = "usage: window_picture [--idle] [--active N] [--edit N] [--ask N] [--set JSON] FILE.3dcraft [FILE.3dcraft | untitled ...] OUT.png";
 
 fn main() -> Result<(), String> {
     let mut idle = false;
     let mut active = None;
     let mut edit = None;
     let mut ask = None;
+    let mut set: Option<serde_json::Value> = None;
     let mut paths = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -48,6 +51,10 @@ fn main() -> Result<(), String> {
             "--active" => active = Some(number("--active")?),
             "--edit" => edit = Some(number("--edit")?),
             "--ask" => ask = Some(number("--ask")?),
+            "--set" => {
+                let text = args.next().ok_or(format!("--set takes JSON; {USAGE}"))?;
+                set = Some(serde_json::from_str(&text).map_err(|e| format!("--set: {e}"))?);
+            }
             _ => paths.push(arg),
         }
     }
@@ -109,6 +116,13 @@ fn main() -> Result<(), String> {
     // The window as it shows the document, then as it is while work runs.
     let mut jobs = Vec::new();
     for (frame, time) in [0.0, 0.1, 0.2, 0.3].into_iter().enumerate() {
+        if frame == 1
+            && let Some(patch) = &set
+        {
+            shell
+                .handle_method(&mut session, "ui.set", Some(patch))
+                .unwrap_or(Ok(serde_json::Value::Null))?;
+        }
         if frame == 1
             && let Some(document) = ask
         {
