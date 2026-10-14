@@ -2091,14 +2091,26 @@ impl Marcher {
     ) -> Option<bool> {
         let chart = Chart::new(a, within, tol, field).ok()??;
         let mut same = None;
+        // Against a freeform surface, which ends: a point whose nearest
+        // point of it is on its border is past it (a patch lying on
+        // another that ends sooner), and says nothing. Enough of the
+        // others must be on it.
+        let mut counted = 0_usize;
         for i in 0..9 {
             for j in 0..9 {
                 let u = chart.u.0 + (chart.u.1 - chart.u.0) * (f64::from(i) + 0.5) / 9.0;
                 let v = chart.v.0 + (chart.v.1 - chart.v.0) * (f64::from(j) + 0.5) / 9.0;
-                let sample = field.sample(chart.surface.eval(u, v))?;
+                let p = chart.surface.eval(u, v);
+                if let Field::Free(projector) = field
+                    && projector.on_border(p)
+                {
+                    continue;
+                }
+                let sample = field.sample(p)?;
                 if sample.dist > tol.linear {
                     return None;
                 }
+                counted += 1;
                 if same.is_none()
                     && let Some(n) = chart.surface.normal(u, v)
                 {
@@ -2106,9 +2118,14 @@ impl Marcher {
                 }
             }
         }
-        same
+        // (Every sample of an analytic field counts.)
+        (counted >= LIES_ON_COUNTED).then_some(same).flatten()
     }
 }
+
+/// Of the 81 samples by which a surface is found to lie on another, how
+/// many must be over it (not past a border of a freeform one).
+const LIES_ON_COUNTED: usize = 16;
 
 /// The corners of the box of the control points of a freeform surface,
 /// which holds the surface (its weights are positive); `None` for the

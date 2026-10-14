@@ -347,6 +347,18 @@ impl Projector {
         (u, v, self.surface.eval(u, v))
     }
 
+    /// Whether the nearest point of the surface to `p` is on a border of
+    /// its parameters (to a billionth of the range): `p` is then past the
+    /// surface, or beside a seam or a pole.
+    pub(super) fn on_border(&self, p: Vec3) -> bool {
+        let (u, v, _) = self.foot(p);
+        let at = |x: f64, (lo, hi): (f64, f64)| {
+            let near = 1e-9 * (hi - lo);
+            !((x - lo).abs() > near) || !((hi - x).abs() > near)
+        };
+        at(u, self.u) || at(v, self.v)
+    }
+
     /// The closest point of the surface to `p`: `(u, v, point)`.
     pub(super) fn foot(&self, p: Vec3) -> (f64, f64, Vec3) {
         let best = match self.nearest_node(p) {

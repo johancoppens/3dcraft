@@ -279,7 +279,16 @@ struct Probe<'a> {
     /// A proof that a stretch between two parameters is within the
     /// tolerance of the surface throughout.
     within: Option<&'a dyn Fn(f64, f64) -> bool>,
+    /// The surface ends (a freeform patch): a curve may lie on it for a
+    /// while and leave it where it ends.
+    bounded: bool,
 }
+
+/// How long, in tolerances, a stretch within the tolerance of a surface
+/// that ends must be (and on it at its middle and quarters) to be taken
+/// for the curve lying on the surface, and cut where it leaves it rather
+/// than touched somewhere along it.
+const LIES_ALONG: f64 = 64.0;
 
 fn numeric(
     curve: &Curve3,
@@ -293,6 +302,7 @@ fn numeric(
         lower_stretch,
         bend,
         within,
+        bounded,
     } = probe;
     let (start, end) = range;
     let speed = speed_bound(curve);
@@ -421,6 +431,58 @@ fn numeric(
         }
         let before = index.checked_sub(1).and_then(|i| side(runs.get(i)));
         let after = side(runs.get(index + 1));
+        // A curve that lies on a surface that ends (an edge of one body
+        // along a patch of the other, past where the patch ends) is cut
+        // where it leaves it: at each end of the stretch that is not an
+        // end of the piece, the last place within a quarter of the
+        // tolerance before it is clear. (Somewhere along the stretch,
+        // as a touch, would be a place nothing else is.)
+        let long = curve.eval(lo).distance(curve.eval(hi)) > LIES_ALONG * tol;
+        if bounded
+            && long
+            && [0.25, 0.5, 0.75]
+                .iter()
+                .all(|&k| f(lo + (hi - lo) * k).abs() <= 0.25 * tol)
+        {
+            let leave = |inside: f64, outside: f64| {
+                let (mut a, mut b) = (inside, outside);
+                for _ in 0..80 {
+                    let mid = 0.5 * (a + b);
+                    if !(mid != a && mid != b) {
+                        break;
+                    }
+                    if f(mid).abs() <= 0.25 * tol {
+                        a = mid;
+                    } else {
+                        b = mid;
+                    }
+                }
+                a
+            };
+            let middle = 0.5 * (lo + hi);
+            let mut ends = Vec::new();
+            if before.is_some()
+                && let Some(&(clear_lo, _, _)) = index.checked_sub(1).and_then(|i| runs.get(i))
+            {
+                ends.push(leave(middle, clear_lo));
+            }
+            if after.is_some()
+                && let Some(&(_, clear_hi, _)) = runs.get(index + 1)
+            {
+                ends.push(leave(middle, clear_hi));
+            }
+            for t in ends {
+                let point = curve.eval(t);
+                if point.is_finite() && f(t).abs() <= tol {
+                    hits.push(CurveHit {
+                        t,
+                        point,
+                        tangent: false,
+                    });
+                }
+            }
+            continue;
+        }
         let (t, tangent) = match (before, after) {
             (Some(x), Some(y)) if x != y => (root(&f, lo, hi), false),
             (Some(positive), Some(_)) => (deepest(&f, lo, hi, positive, tol), true),
@@ -500,6 +562,7 @@ pub(super) fn curve_hits(
             lower_stretch: None,
             bend: bend_bound(curve, surface),
             within: None,
+            bounded: false,
         },
         tolerance.linear,
     )
@@ -664,6 +727,7 @@ fn curve_hits_freeform(
                 .map(|l| l as &dyn Fn(f64, f64, f64) -> f64),
             bend: None,
             within: within.as_ref().map(|w| w as &dyn Fn(f64, f64) -> bool),
+            bounded: true,
         },
         tolerance.linear,
     )
