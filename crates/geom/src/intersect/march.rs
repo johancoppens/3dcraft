@@ -787,8 +787,18 @@ impl Marcher {
             borders.push((false, cv.1, cu, b.lu));
         }
         let place = |fixed_u: bool, at: f64, t: f64| if fixed_u { (at, t) } else { (t, at) };
+        // The walked surface lies in the box of its control points, and a
+        // border of the field in the box of its row of them: where those
+        // boxes are apart, the border crosses nothing.
+        let walked = hull(&self.chart.surface);
         let mut seeds = Vec::new();
         for (fixed_u, at, range, speed) in borders {
+            let at_end = if fixed_u { at >= cu.1 } else { at >= cv.1 };
+            if let (Some(walked), Some(border)) = (walked, border_hull(&surface, fixed_u, at_end))
+                && apart(walked, border, self.cut)
+            {
+                continue;
+            }
             // A border that is one point is no edge.
             let (pu, pv) = place(fixed_u, at, 0.5 * (range.0 + range.1));
             if poles.iter().any(|pole| pole.holds(&surface, pu, pv)) {
@@ -2098,4 +2108,66 @@ impl Marcher {
         }
         same
     }
+}
+
+/// The corners of the box of the control points of a freeform surface,
+/// which holds the surface (its weights are positive); `None` for the
+/// other kinds.
+fn hull(surface: &Surface) -> Option<(Vec3, Vec3)> {
+    let points: Vec<Vec3> = match surface {
+        Surface::Bezier(b) => b.control_points().to_vec(),
+        Surface::Nurbs(s) => s.control_points().to_vec(),
+        _ => return None,
+    };
+    Bbox3::from_points(points).corners()
+}
+
+/// The corners of the box of the row of control points along a border of
+/// a freeform surface (`fixed_u`: the border where u is at its start or
+/// `at_end`), which holds the border where the knots are clamped there;
+/// `None` otherwise.
+fn border_hull(surface: &Surface, fixed_u: bool, at_end: bool) -> Option<(Vec3, Vec3)> {
+    let spline = match surface {
+        Surface::Bezier(b) => NurbsSurface::from_bezier(b).ok()?,
+        Surface::Nurbs(s) => s.clone(),
+        _ => return None,
+    };
+    let (degree_u, degree_v) = spline.degrees();
+    let (count_u, count_v) = spline.counts();
+    let clamped = |knots: &[f64], degree: usize, count: usize| {
+        if at_end {
+            knots.get(count) == knots.get(count + degree)
+        } else {
+            knots.first() == knots.get(degree)
+        }
+    };
+    let ctrl = spline.control_points();
+    let row: Vec<Vec3> = if fixed_u {
+        if !clamped(spline.knots_u(), degree_u, count_u) {
+            return None;
+        }
+        let i = if at_end { count_u.checked_sub(1)? } else { 0 };
+        (0..count_v)
+            .filter_map(|j| ctrl.get(i * count_v + j).copied())
+            .collect()
+    } else {
+        if !clamped(spline.knots_v(), degree_v, count_v) {
+            return None;
+        }
+        let j = if at_end { count_v.checked_sub(1)? } else { 0 };
+        (0..count_u)
+            .filter_map(|i| ctrl.get(i * count_v + j).copied())
+            .collect()
+    };
+    Bbox3::from_points(row).corners()
+}
+
+/// True when two boxes are more than `margin` apart along an axis.
+fn apart((alo, ahi): (Vec3, Vec3), (blo, bhi): (Vec3, Vec3), margin: f64) -> bool {
+    alo.x > bhi.x + margin
+        || blo.x > ahi.x + margin
+        || alo.y > bhi.y + margin
+        || blo.y > ahi.y + margin
+        || alo.z > bhi.z + margin
+        || blo.z > ahi.z + margin
 }
