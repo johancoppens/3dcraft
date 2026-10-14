@@ -13,23 +13,25 @@
 //! document's marker, revision, undo history and dirty state stay as they
 //! were, also when the replay fails half-way.
 
-use crate::commands::{Framing, Run, fail, feature_ref, spec, tolerance_param};
+use crate::commands::{Run, fail, spec};
 use crate::params::Params;
 use crate::{CommandSpec, Session};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 pub(crate) static SPECS: &[CommandSpec] = &[spec!(
     "view.replay",
     "Replay",
     r#"{"dir": string, "width": integer = 800, "height": integer = 600, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the finished model, "tolerance": number = automatic, "from": id or name = the first feature, "to": id or name = the rollback marker or the last feature, "every": boolean = false, "framesPerStep": integer = 1, "hold": integer = 0, "orbit": number = 0, "fps": integer = 30}"#,
-    "Renders how the document is built, for a showcase video: the history is rolled back to nothing and forward one feature at a time, from from to to, and each step is drawn with the CPU renderer as view.render would, from one camera framed on the model as it is at to, so the picture stays put. Writes the frames as dir/frame-00000.png, frame-00001.png, ... under the write root (frames of an earlier, longer replay there are removed) and dir/captions.srt, a subtitle per step with the feature's place, name and type, timed at fps. The first framesPerStep frames show the model before from (nothing, from the first feature), then framesPerStep frames per step, then hold more of the end; the last frame is the picture view.render gives of the document. A step that changes no body (a sketch, a datum, a failed or suppressed feature) gets no frames unless every is true. orbit turns the camera that many degrees about the vertical over the whole replay (the model is then framed so that it stays in the picture all round). The document does not change: not its rollback marker, not its undo history. At most 3600 frames, and 8e9 pixels in all. Returns the frame count, the steps (with the frames each got, or none) and the captions. craft3d-cli replay makes an MP4 or a GIF of it.",
+    "Renders how the document is built, for a showcase video: the history is rolled back to nothing and forward one feature at a time, from from to to, and each step is drawn with the CPU renderer as view.render would, from one camera framed on the model as it is at to, so the picture stays put. Writes the frames as dir/frame-00000.png, frame-00001.png, ... under the write root (frames of an earlier, longer replay there are removed) and dir/captions.srt, a subtitle per step with the feature's place, name and type, timed at fps. The first framesPerStep frames show the model before from (nothing, from the first feature), then framesPerStep frames per step, then hold more of the end; without an orbit the last frame is the picture view.render gives of the document with the same view, projection, zoom, box and tolerance. A step that changes no body (a sketch, a datum, a failed or suppressed feature) gets no frames unless every is true. orbit turns the camera that many degrees about the vertical over the whole replay (the model is then framed so that it stays in the picture all round). The document does not change: not its rollback marker, not its undo history. At most 3600 frames, and 8e9 pixels in all. Returns the frame count, the steps (with the frames each got, or none) and the captions. craft3d-cli replay makes an MP4 or a GIF of it.",
     doc: true,
     view_replay
 )];
 
 /// Most frames one replay writes.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub const MAX_REPLAY_FRAMES: u64 = 3600;
 /// Most pixels one replay renders, over all its frames.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub const MAX_REPLAY_PIXELS: u64 = 8_000_000_000;
 
 #[cfg(target_arch = "wasm32")]
@@ -44,11 +46,13 @@ fn view_replay(session: &mut Session, params: &Value) -> Run {
 }
 
 /// The caption of a step: its place in the history, name and type.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn caption(place: usize, count: usize, name: &str, kind: &str) -> String {
     format!("{place}/{count}  {name} ({kind})")
 }
 
-/// `seconds` as an SRT time stamp, `00:01:02,500`.
+/// The time of frame `frame` at `fps` as an SRT time stamp, `00:01:02,500`.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn srt_time(frame: u64, fps: u64) -> String {
     let millis = frame.saturating_mul(1000) / fps.max(1);
     let (h, rest) = (millis / 3_600_000, millis % 3_600_000);
@@ -58,11 +62,13 @@ fn srt_time(frame: u64, fps: u64) -> String {
 }
 
 /// The name of frame `index`.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn frame_name(index: u64) -> String {
     format!("frame-{index:05}.png")
 }
 
 /// The index of a file named as [`frame_name`] names one.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn frame_index(name: &str) -> Option<u64> {
     let digits = name.strip_prefix("frame-")?.strip_suffix(".png")?;
     (digits.len() == 5 && digits.bytes().all(|b| b.is_ascii_digit()))
@@ -74,13 +80,14 @@ fn frame_index(name: &str) -> Option<u64> {
 mod native {
     use super::*;
     use crate::CommandError;
-    use crate::commands::vec3;
+    use crate::commands::{Framing, feature_ref, tolerance_param, vec3};
     use craft3d_doc::FeatureId;
     use craft3d_math::{Bbox3, Vec3};
     use craft3d_regen::Status;
     use craft3d_render::{Camera, Projection, RenderParams};
     use craft3d_tess::{Mesh, TessParams, tessellate_body};
     use craft3d_topo::Body;
+    use serde_json::json;
     use std::sync::Arc;
 
     /// The bodies of one state of the history, in the order of the

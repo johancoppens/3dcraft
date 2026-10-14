@@ -2000,6 +2000,7 @@ impl Framing {
     }
 
     /// The direction from the model towards the eye, and up.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub fn direction(&self) -> (Vec3, Vec3) {
         (self.toward_eye, self.up)
     }
