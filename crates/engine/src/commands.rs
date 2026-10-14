@@ -501,6 +501,8 @@ pub(crate) fn tolerance_param(
 struct BodyMesh {
     name: String,
     mesh: Mesh,
+    /// The body's own (for an export's object; a picture colours faces).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     appearance: Option<craft3d_doc::Appearance>,
     faces: Vec<Option<craft3d_doc::Appearance>>,
 }
