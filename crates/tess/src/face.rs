@@ -956,6 +956,26 @@ fn seam_blocked(a: Uv, b: Uv, c: Uv, d: Uv) -> bool {
         || (side_b == 0.0 && within(tb, tc, td))
 }
 
+/// `p`, or the end of a seam it is but for rounding.
+///
+/// The end of a seam on a loop is that loop's vertex moved by whole
+/// periods, computed the way the seam needs it (the upper loop of a band
+/// that runs clockwise: a period back, then so many on); the loop's own
+/// segments that end there are moved by whole periods at once. The two
+/// can differ in the last bit, and the segments then cross the seam they
+/// only touch: every straight seam to such a vertex was refused. (That
+/// is how the wall of a shank with a long thread came to have no seam
+/// at fine tolerances, and to ask for finer chords round after round.)
+fn snapped(p: Uv, ends: [Uv; 2], period: f64) -> Uv {
+    const ROUNDING: f64 = 1e-13;
+    let same = |x: Uv, y: Uv| {
+        let ([xa, xb], [ya, yb]) = (x, y);
+        (xa - ya).abs() <= ROUNDING * (xa.abs() + ya.abs() + period.abs())
+            && (xb - yb).abs() <= ROUNDING * (xb.abs() + yb.abs())
+    };
+    ends.into_iter().find(|&end| same(p, end)).unwrap_or(p)
+}
+
 /// Moves a loop that does not wind by whole periods until `probe` says
 /// its first proper vertex is where it belongs.
 fn place(ring: &Ring, periods: [Option<f64>; 2], probe: impl Fn(Uv) -> bool) -> Option<[i32; 2]> {
@@ -1237,8 +1257,8 @@ fn band_region(
                 let b_turns = if period_b.is_some() { -2..=2 } else { 0..=0 };
                 for tb in b_turns {
                     for ta in around - 1..=around + 1 {
-                        let p = shifted(v.uv, [ta, tb], periods);
-                        let q = shifted(w.uv, [ta, tb], periods);
+                        let p = snapped(shifted(v.uv, [ta, tb], periods), [from, to], period);
+                        let q = snapped(shifted(w.uv, [ta, tb], periods), [from, to], period);
                         if seam_blocked(from, to, p, q) {
                             return true;
                         }
@@ -1266,14 +1286,9 @@ fn band_region(
             match upper {
                 Some(up) => {
                     let (j, turns) = nearest_vertex(up, a)?;
-                    let end = up.verts.get(j)?;
-                    // The vertex as the loop has it when moved by whole
-                    // periods: `left_a` and then `turns` periods would be
-                    // the same point but for rounding, which would make the
-                    // loop's own segments that end there cross the seam.
-                    let [wa, _] = up.winding;
-                    let around = turns.checked_sub(i32::from(wa < 0))?;
-                    let end = shifted(end.uv, [around, upper_turns_b], periods);
+                    let (end_a, end) = (left_a(up, j)?, up.verts.get(j)?);
+                    let [_, end_b] = shifted(end.uv, [0, upper_turns_b], periods);
+                    let end = [end_a + f64::from(turns) * period, end_b];
                     (
                         Cut {
                             a,
