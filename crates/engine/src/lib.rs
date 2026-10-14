@@ -20,6 +20,7 @@ mod datum_cmds;
 #[cfg(not(target_arch = "wasm32"))]
 mod drawing_cmds;
 mod file_cmds;
+mod loft_cmds;
 mod params;
 mod pick_cmds;
 mod query_cmds;
@@ -218,6 +219,7 @@ impl Session {
                 sketch_path_cmds::SPECS,
                 sketch_spline_cmds::SPECS,
                 sweep_cmds::SPECS,
+                loft_cmds::SPECS,
                 body_cmds::SPECS,
                 blend_cmds::SPECS,
                 datum_cmds::SPECS,

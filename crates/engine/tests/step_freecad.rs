@@ -18,6 +18,9 @@
 //! failed: that is the kernel's work, not the export's. The tables are
 //! printed and left in `target/tmp/step-engine-files/report.md`.
 //!
+//! A third test, in `step_freecad/lofts.rs`, has the lofts
+//! (`target/tmp/step-loft-files/report.md`).
+//!
 //! A second test, in `step_freecad/features.rs`, has the documents of
 //! extrusion ends, datums, spline profiles and slivers, compared body by
 //! body, with closed forms and with the mesh exports
@@ -36,6 +39,8 @@ mod chamfers;
 mod features;
 #[path = "../../io/tests/common/step_harness.rs"]
 mod harness;
+#[path = "step_freecad/lofts.rs"]
+mod lofts;
 
 use craft3d_engine::{Access, Session, Workspace};
 use harness::{APPROXIMATED, Case, Extent, RELATIVE};

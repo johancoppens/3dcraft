@@ -1,0 +1,137 @@
+//! Lofts in regeneration: the one closed profile of each section's solved
+//! sketch, in the order of the feature, goes to the kernel; the body it
+//! makes is searched for places where it passes through itself before it
+//! is handed on.
+
+use crate::extrude::swept;
+use crate::{FeatureResult, Names, entity};
+use craft3d_doc::{Document, FeatureId, Loft, MAX_LOFT_SECTIONS, NameRole, PersistentName};
+use craft3d_kernel::extrude::{Origin, Role};
+use craft3d_kernel::loft::{Options, Section, loft};
+use craft3d_tess::{SelfCheckParams, body_self_intersections};
+use craft3d_topo::Body;
+
+/// The persistent name of a face a loft made: `F9:side(e3,e7)` after the
+/// matched curves of the sections it passes through, `F9:startCap(…)` and
+/// `F9:endCap(…)` after the curves of the first and the last section.
+fn name_of(feature: FeatureId, origin: &Origin) -> PersistentName {
+    let role = match origin.role {
+        Role::StartCap => NameRole::StartCap,
+        Role::EndCap => NameRole::EndCap,
+        // A loft makes faces only; anything else would be a side.
+        _ => NameRole::Side,
+    };
+    PersistentName::new(feature, role, origin.sources.clone())
+}
+
+pub(crate) fn build(
+    doc: &Document,
+    id: FeatureId,
+    feature: &Loft,
+    earlier: &[FeatureResult],
+) -> Result<(Body, Names), String> {
+    let count = feature.sections.len();
+    let least = if feature.closed { 3 } else { 2 };
+    if count < least || count > MAX_LOFT_SECTIONS {
+        return Err(format!(
+            "sections: a {}loft passes through at least {least} sketches and at most {MAX_LOFT_SECTIONS}, this one has {count}",
+            if feature.closed { "closed " } else { "" }
+        ));
+    }
+    let mut sections = Vec::with_capacity(count);
+    let mut tolerance = None;
+    for (index, section) in feature.sections.iter().enumerate() {
+        let number = index + 1;
+        if let Some(again) = feature
+            .sections
+            .iter()
+            .take(index)
+            .position(|s| s.sketch == section.sketch)
+        {
+            let name = doc
+                .feature(section.sketch)
+                .map_or_else(|| section.sketch.to_string(), |f| f.name.clone());
+            return Err(format!(
+                "sections: `{name}` is section {} and section {number}; a loft passes through each sketch once",
+                again + 1
+            ));
+        }
+        // What `swept` says of a sketch, as what it says of this section.
+        let made = swept(doc, earlier, section.sketch, "loft").map_err(|reason| {
+            let reason = reason.strip_prefix("sketch: ").unwrap_or(&reason);
+            format!("sections: section {number}: {reason}")
+        })?;
+        let name = made.name;
+        let [profile] = made.profiles.as_slice() else {
+            return Err(format!(
+                "sections: section {number}: sketch `{name}` has {} closed profiles; a section of a loft is one closed loop",
+                made.profiles.len()
+            ));
+        };
+        if !profile.holes.is_empty() {
+            return Err(format!(
+                "sections: section {number}: the profile of sketch `{name}` has a hole; a section of a loft is one closed loop (loft the hole on its own and cut it out)"
+            ));
+        }
+        if let Some(start) = section.start
+            && !profile.outer.segments.iter().any(|s| s.source == start.0)
+        {
+            return Err(format!(
+                "sections: section {number}: {start} is not a curve of the profile of sketch `{name}`; `start` names the curve the loop starts with"
+            ));
+        }
+        tolerance = Some(made.tolerance);
+        sections.push(Section {
+            plane: made.plane,
+            outline: profile.outer.clone(),
+            start: section.start.map(|e| e.0),
+        });
+    }
+    let tolerance =
+        tolerance.ok_or_else(|| "sections: a loft needs sketches to pass through".to_string())?;
+    let options = Options {
+        ruled: feature.ruled,
+        closed: feature.closed,
+    };
+    let made = loft(&sections, &options, &tolerance).map_err(|e| format!("sections: {e}"))?;
+    let faces: Vec<PersistentName> = made.faces.iter().map(|o| name_of(id, o)).collect();
+
+    // A loft whose sections are matched with too much twist, or that
+    // bends back into itself, is a valid body in how it hangs together
+    // and passes through itself all the same. It is never handed on.
+    let advice = "give a section another `start` (the curve its loop starts with), or move the sections apart";
+    let found = body_self_intersections(&made.body, &SelfCheckParams::new(tolerance.linear))
+        .map_err(|error| {
+            format!(
+                "sections: the loft cannot be meshed to see whether it passes through itself ({error}); its sections are probably matched with a twist: {advice}"
+            )
+        })?;
+    if !found.is_clean() {
+        let between = found
+            .crossings
+            .iter()
+            .find(|c| c.certain)
+            .map(|c| {
+                let name = |face: u32| {
+                    faces
+                        .get(face as usize)
+                        .map_or_else(|| format!("face {face}"), ToString::to_string)
+                };
+                let [a, b] = c.faces;
+                format!(": {} and {} cross", name(a), name(b))
+            })
+            .unwrap_or_default();
+        return Err(format!(
+            "sections: the loft passes through itself{between}; {advice}"
+        ));
+    }
+
+    let by_faces = entity::by_faces(id, &made.body, &faces, tolerance.linear);
+    let names = Names {
+        faces,
+        edges: by_faces.edges,
+        vertices: by_faces.vertices,
+        ..Names::default()
+    };
+    Ok((made.body, names))
+}

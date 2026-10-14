@@ -189,6 +189,26 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 },
                 reversed: *reversed,
             },
+            doc::FeatureKind::Loft(doc::Loft {
+                sections,
+                ruled,
+                closed,
+            }) => manifest::FeatureKind::Loft {
+                sections: sections
+                    .iter()
+                    .map(
+                        |doc::LoftSection {
+                             sketch: doc::FeatureId(sketch),
+                             start,
+                         }| manifest::LoftSection {
+                            sketch: *sketch,
+                            start: start.map(|doc::EntityId(id)| id),
+                        },
+                    )
+                    .collect(),
+                ruled: *ruled,
+                closed: *closed,
+            },
             doc::FeatureKind::Revolve(doc::Revolve {
                 sketch: doc::FeatureId(sketch),
                 axis,
@@ -1011,6 +1031,21 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
                     },
                 },
                 reversed,
+            }),
+            manifest::FeatureKind::Loft {
+                sections,
+                ruled,
+                closed,
+            } => doc::FeatureKind::Loft(doc::Loft {
+                sections: sections
+                    .into_iter()
+                    .map(|manifest::LoftSection { sketch, start }| doc::LoftSection {
+                        sketch: doc::FeatureId(sketch),
+                        start: start.map(doc::EntityId),
+                    })
+                    .collect(),
+                ruled,
+                closed,
             }),
             manifest::FeatureKind::Revolve {
                 sketch,

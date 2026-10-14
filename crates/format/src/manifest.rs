@@ -204,6 +204,18 @@ pub enum FeatureKind {
         #[serde(default)]
         symmetric: bool,
     },
+    /// A solid through the closed profiles of the sketches of `sections`,
+    /// in order (format version 8).
+    Loft {
+        sections: Vec<LoftSection>,
+        /// Straight between sections that follow each other. Absent
+        /// means smooth; written only when set.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        ruled: bool,
+        /// The last section joins the first. Written only when set.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        closed: bool,
+    },
     /// The body of feature `source`, turned by `angle` about the line
     /// through `pivot` along `axis` (three plain numbers), then shifted by
     /// `translate`. With `keep` the source keeps its own body.
@@ -354,6 +366,16 @@ pub enum BooleanOp {
     Union,
     Subtract,
     Intersect,
+}
+
+/// One profile of a loft: the sketch by the id of its feature, and the
+/// curve of it the loop starts with (an entity id), when one is given.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LoftSection {
+    pub sketch: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<u64>,
 }
 
 /// The axis of a revolution: the sketch's x or y axis, one of its lines
