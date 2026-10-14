@@ -8,8 +8,9 @@ mod boolean_common;
 mod common;
 
 use boolean_common::*;
+use craft3d_kernel::KernelError;
 use craft3d_kernel::boolean::BooleanOp::{Intersect, Subtract, Union};
-use craft3d_kernel::boolean::boolean;
+use craft3d_kernel::boolean::{boolean, contains_points};
 use craft3d_kernel::loft::{Options, Section, loft};
 use craft3d_kernel::profile::{Curve2, SketchCurve, Spline2, detect_profiles};
 use craft3d_kernel::revolve::revolve;
@@ -190,6 +191,80 @@ const CELL3: Cell = Cell {
     vent: 14.0,
 };
 
+/// Cell 63 (polar angle 54°), against the shell with a vent.
+const CELL63: Cell = Cell {
+    near: &[
+        [-9.16175, 4.71317],
+        [3.31517, 9.18747],
+        [6.08775, 7.75556],
+        [8.20351, -6.11715],
+        [-5.17689, -8.12045],
+        [-9.50355, 3.96532],
+    ],
+    from: 100.0,
+    far: &[
+        [-15.57497, 8.01239],
+        [5.63579, 15.61871],
+        [10.34917, 13.18445],
+        [13.94597, -10.39915],
+        [-8.80072, -13.80477],
+        [-16.15603, 6.74104],
+    ],
+    axis: [-0.716481518039, 0.697606073875, 0.0],
+    angle: 54.314665287,
+    vent: 14.0,
+};
+
+/// Cells 12 and 54 from 60 mm (polar angles 23° and 50°, some 29° apart:
+/// they do not meet).
+const CELL12: Cell = Cell {
+    near: &[
+        [3.2489, 4.40096],
+        [-2.59632, 4.73781],
+        [-5.60987, -2.58366],
+        [-5.4072, -3.09794],
+        [1.79008, -5.3116],
+        [5.4606, -2.68955],
+    ],
+    from: 60.0,
+    far: &[
+        [9.20523, 12.4694],
+        [-7.35624, 13.42379],
+        [-15.89463, -7.32038],
+        [-15.32039, -8.7775],
+        [5.0719, -15.04954],
+        [15.47171, -7.62038],
+    ],
+    axis: [0.624707383802, -0.780858940285, 0.0],
+    angle: 22.581637152,
+    vent: 14.0,
+};
+
+const CELL54: Cell = Cell {
+    near: &[
+        [4.73289, 2.9341],
+        [-2.89332, 5.42169],
+        [-3.44412, 5.09354],
+        [-5.13789, -3.23214],
+        [-4.47979, -4.03896],
+        [3.52227, -4.72607],
+        [4.85925, -3.36936],
+    ],
+    from: 60.0,
+    far: &[
+        [13.40986, 8.31329],
+        [-8.19775, 15.36147],
+        [-9.75835, 14.43169],
+        [-14.55735, -9.15772],
+        [-12.69272, -11.44373],
+        [9.97975, -13.39054],
+        [13.76788, -9.54651],
+    ],
+    axis: [0.396100439176, -0.918207189083, 0.0],
+    angle: 49.959170756,
+    vent: 14.0,
+};
+
 fn cell(k: f64, c: &Cell) -> Body {
     frustum(
         k,
@@ -282,5 +357,51 @@ fn a_frustum_with_freeform_sides_cuts_a_shell_around_its_pole() {
 fn a_frustum_with_freeform_sides_cuts_a_shell_with_a_vent() {
     for k in SCALES {
         cuts(&CELL3, k);
+    }
+}
+
+#[test]
+fn a_frustum_with_freeform_sides_cuts_a_shell_low_on_its_side() {
+    for k in SCALES {
+        cuts(&CELL63, k);
+    }
+}
+
+/// Two cells that do not meet: their union is both, as two shells, they
+/// have nothing in common, and the one less the other is the one. (The
+/// bound below the distance from a segment to a lofted side was cut short
+/// once it fell under its threshold and returned the nearest piece seen so
+/// far, not the nearest piece: a ray through the frustum was proven clear
+/// of the side it leaves by, the far frustum's face was taken for inside
+/// the near one and left out, and the result had edges used once.)
+#[test]
+fn two_frustums_apart_unite_into_two_shells() {
+    for k in SCALES {
+        let tol = tolerance(k);
+        let (a, b) = (cell(k, &CELL12), cell(k, &CELL54));
+        let (ma, mb) = (mass(&a), mass(&b));
+        let run = |op| match boolean(&a, &b, op, &tol) {
+            Ok(r) => {
+                assert_eq!(check(&r.body, &tol), [], "{op:?} at {k}");
+                Some(r.body)
+            }
+            Err(KernelError::EmptyResult { .. }) => None,
+            Err(e) => panic!("{op:?} at {k}: {e}"),
+        };
+        let both = run(Union).unwrap();
+        assert_eq!(both.shells.len(), 2, "at {k}");
+        near(mass(&both).volume, ma.volume + mb.volume, 1e-12, "union");
+        near(mass(&both).area, ma.area + mb.area, 1e-12, "union area");
+        assert!(run(Intersect).is_none(), "at {k}");
+        let rest = run(Subtract).unwrap();
+        near(mass(&rest).volume, ma.volume, 1e-12, "difference");
+        // The point of the far frustum's face that was taken for inside
+        // the near one, by the ray casting alone.
+        let p = Vec3::new(-43.34176271351926, -23.01408217567925, 38.169427535269126) * k;
+        assert_eq!(
+            contains_points(&a, &[p], &tol).unwrap(),
+            [Some(false)],
+            "at {k}"
+        );
     }
 }
