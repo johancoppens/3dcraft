@@ -6,7 +6,7 @@
 //! ([`profile`]), their extrusion ([`extrude`]), their revolution
 //! ([`revolve`]), the solid through a row of them ([`loft`]), booleans
 //! ([`boolean`]), chamfers ([`chamfer`]), fillets ([`fillet`]) and the
-//! face operations ([`offset_face`]).
+//! face operations ([`offset_face`], [`shell`]).
 
 mod blend;
 pub mod boolean;
@@ -19,6 +19,7 @@ pub mod offset_face;
 pub mod primitives;
 pub mod profile;
 pub mod revolve;
+pub mod shell;
 mod spline2;
 mod tweak;
 
