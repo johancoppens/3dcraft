@@ -232,6 +232,7 @@ Made by the agent, overnight; the developer can overturn any of them.
 Made by the agent, overnight; the developer can overturn any of them.
 
 - **A feature added while the history is rolled back goes in right after the marker, and the marker moves onto it.** The alternatives were to leave the marker where it is (the new feature would then be rolled back at once, which is what happened before and what no modeller does) or to clear the marker (rolling everything forward behind the user's back). It is done in the engine, in one function every feature-adding command calls (`commands::insert_feature`), not in `Document::add_feature`: the document's own method stays a plain append, which the format and regeneration tests build documents with, marker or not. A command added later that calls `doc.add_feature` directly would append; use `insert_feature`.
+- **The feature tree's marks are ✔ ⚠ ⏸ ○**, in the state's colour. The round dot (U+25CF) the tree drew before is not in egui's default fonts and was drawn as the replacement box; the four marks are, and a test checks it. The reason of a failed feature stays under its row (it was there already) and is also its hover text; the cause is a link under the row. A click on the link selects the cause and does not toggle, unlike a click on a row.
 
 ## Open decisions
 

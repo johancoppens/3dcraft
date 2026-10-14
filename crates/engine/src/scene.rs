@@ -242,6 +242,10 @@ pub struct SceneFeature {
     /// not be solved.
     pub dof: Option<usize>,
     pub is_sketch: bool,
+    /// When it failed because something it is made from failed: the id of
+    /// the feature at the start of that chain (`F3`), the one to fix, as
+    /// `document.inspect` gives it under `causedBy`.
+    pub caused_by: Option<String>,
 }
 
 /// Everything a viewer draws for one state of the active document.
@@ -620,6 +624,8 @@ fn build(
             error,
             dof: solved.and_then(|s| s.dof),
             is_sketch: matches!(feature.kind, FeatureKind::Sketch(_)),
+            caused_by: craft3d_regen::root_cause(doc, &regen.features, feature.id)
+                .map(|root| root.to_string()),
         });
         // A suppressed or rolled-back sketch is not drawn, like its body
         // would not be.
