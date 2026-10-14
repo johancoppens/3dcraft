@@ -1066,3 +1066,152 @@ fn two_fillets_that_meet_where_a_third_edge_stays_sharp() {
         assert!(removed > 50, "only {removed} points in what the fillets take away");
     }
 }
+
+/// A cubic Bézier of a blade section, turned by `angle` and scaled by `s`.
+fn section_curve(id: u64, control: [[f64; 2]; 4], s: f64, angle: f64, k: f64) -> SketchCurve {
+    use craft3d_kernel::profile::Spline2;
+    let (sin, cos) = angle.sin_cos();
+    SketchCurve {
+        id,
+        curve: Curve2::Spline(Spline2 {
+            degree: 3,
+            knots: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            control: control
+                .iter()
+                .map(|p| {
+                    let (x, y) = (p[0] * s, p[1] * s);
+                    [(x * cos - y * sin) * k, (x * sin + y * cos) * k]
+                })
+                .collect(),
+        }),
+    }
+}
+
+/// The suction and the pressure side of the blade's sections, from the
+/// leading edge to the trailing edge and back: cambered, thin, with sharp
+/// edges (a wedge of about 17° at the leading edge).
+const SUCTION: [[f64; 2]; 4] = [[-1.0, 0.0], [-0.5, 0.3], [0.4, 0.3], [1.0, 0.0]];
+const PRESSURE: [[f64; 2]; 4] = [[1.0, 0.0], [0.4, 0.12], [-0.5, 0.12], [-1.0, 0.0]];
+
+/// A blade lofted through three such sections, smaller and turned further
+/// towards the tip at z = 3.
+fn lofted_blade(k: f64) -> Body {
+    use craft3d_kernel::loft::{Options, Section as LoftSection, loft};
+    let tol = tolerance(k);
+    let levels = [(0.0, 1.0, 0.0), (1.5, 0.9, 0.15), (3.0, 0.8, 0.3)];
+    let sections: Vec<LoftSection> = levels
+        .iter()
+        .map(|(z, s, angle)| {
+            let curves = [
+                section_curve(1, SUCTION, *s, *angle, k),
+                section_curve(2, PRESSURE, *s, *angle, k),
+            ];
+            let profiles = detect_profiles(&curves, &tol).unwrap();
+            LoftSection {
+                plane: Frame::WORLD.at(Vec3::new(0.0, 0.0, z * k)).unwrap(),
+                outline: profiles[0].outer.clone(),
+                start: None,
+            }
+        })
+        .collect();
+    loft(&sections, &Options::default(), &tol).unwrap().body
+}
+
+/// The point of a section's Bézier at `t`, turned and scaled as the tip's.
+fn at_tip(control: [[f64; 2]; 4], t: f64) -> [f64; 2] {
+    let s = 1.0 - t;
+    let b = [s * s * s, 3.0 * s * s * t, 3.0 * s * t * t, t * t * t];
+    let (x, y) = (0..4).fold((0.0, 0.0), |(x, y), i| {
+        (x + b[i] * control[i][0] * 0.8, y + b[i] * control[i][1] * 0.8)
+    });
+    let (sin, cos) = 0.3_f64.sin_cos();
+    [x * cos - y * sin, x * sin + y * cos]
+}
+
+/// The tip of a lofted blade rounded all round: the two rims of its tip
+/// face meet at the leading and at the trailing edge, which stay sharp.
+/// Every fillet face, where it is a face of the result (its mesh), is made
+/// of balls that touch the tip and the side of its edge, from inside;
+/// the body passes the checks, through itself nowhere, and the fillets are
+/// tangent to the faces they round.
+#[test]
+fn the_tip_of_a_lofted_blade_rounded_all_round() {
+    use craft3d_tess::{SelfCheckParams, TessParams, body_self_intersections, tessellate_body};
+    let r = 0.02;
+    for k in SCALES {
+        let tol = tolerance(k);
+        let body = lofted_blade(k);
+        assert_eq!(check(&body, &tol), []);
+        let rims: Vec<EdgeId> = [SUCTION, PRESSURE]
+            .iter()
+            .map(|c| {
+                let p = at_tip(*c, 0.5);
+                edge_near(&body, Vec3::new(p[0] * k, p[1] * k, 3.0 * k))
+            })
+            .collect();
+        let edges: Vec<FilletEdge> = rims
+            .iter()
+            .map(|e| FilletEdge {
+                edge: *e,
+                radius: r * k,
+            })
+            .collect();
+        let made = match fillet(&body, &edges, &tol) {
+            Ok(m) => m,
+            Err(e) => panic!("scale {k}: {e}"),
+        };
+        assert_eq!(check(&made.body, &tol), []);
+        let deep = body_self_intersections(&made.body, &SelfCheckParams::new(tol.linear)).unwrap();
+        assert_eq!(deep.certain_crossings, 0, "{deep:?}");
+        let (crease, seams) = creases(&made.body, &made.faces);
+        assert_eq!(seams, 4);
+        assert!(crease <= 10.0 * tol.linear / (r * k), "a crease of {crease}");
+        // Each fillet's own side of the blade: the face its edge had
+        // besides the tip.
+        let own: Vec<&craft3d_geom::Surface> = rims
+            .iter()
+            .map(|e| {
+                let side = faces_of(&body, *e)
+                    .into_iter()
+                    .find(|f| matches!(body.faces[f.0 as usize].surface, craft3d_geom::Surface::Nurbs(_)))
+                    .unwrap();
+                &made.body.faces[side.0 as usize].surface
+            })
+            .collect();
+        let params = TessParams {
+            chordal_tolerance: 1e-3 * k,
+            ..TessParams::default()
+        };
+        let mesh = tessellate_body(&made.body, &params).unwrap();
+        let mut worst = 0.0_f64;
+        let mut seen = 0;
+        for (t, face) in mesh.face_ids.iter().enumerate() {
+            let face = *face as usize;
+            if !matches!(made.faces[face], FilletFace::Fillet(_)) {
+                continue;
+            }
+            let FilletFace::Fillet(of) = &made.faces[face] else { continue };
+            let side = own[of[0]];
+            let f = &made.body.faces[face];
+            for q in mesh.corners(t).unwrap() {
+                let (u, v) = f.surface.project(q).unwrap();
+                let n = f.surface.normal(u, v).unwrap();
+                let n = if f.reversed { -n } else { n };
+                let c = f.surface.eval(u, v) - n * (r * k);
+                let to_tip = (3.0 * k - c.z - r * k).abs();
+                let to_side = {
+                    let (a, b) = side.project(c).unwrap();
+                    side.eval(a, b).distance(c)
+                };
+                worst = worst.max(to_tip).max((to_side - r * k).abs());
+                seen += 1;
+            }
+        }
+        println!(
+            "scale {k}: {seen} mesh points of the fillets, off the definition by {:e} of the tolerance, crease {crease:e}",
+            worst / tol.linear
+        );
+        assert!(seen > 100);
+        assert!(worst <= 4.0 * tol.linear, "{worst} off the rolling ball");
+    }
+}
