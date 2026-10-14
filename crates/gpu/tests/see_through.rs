@@ -145,13 +145,15 @@ fn check(name: &str, mesh: &Mesh, camera: &Camera, params: &RenderParams) -> Dra
 /// sheet show through itself (the front taken for its own "behind", the
 /// z-fighting of a surface with itself), at any slope.
 ///
-/// The first view is not compared with the CPU renderer, only checked for
-/// that: its pixel centres lie exactly on the diagonal the sheet's two
-/// triangles share, where the CPU renderer counts a sample in both
-/// triangles and, when rounding puts the second a hair behind the first,
-/// takes the sheet for its own "behind" (8 pixels of this picture come
-/// out opaque on the CPU; measured 2026-10-14, see docs/architecture.md
-/// §7.2). The GPU's rasteriser gives such a sample to one triangle.
+/// In the first view the pixel centres lie exactly on the diagonal the
+/// sheet's two triangles share. The CPU renderer has such a sample inside
+/// both triangles, with depth keys that agree only up to rounding; it
+/// used to take the sheet for its own "behind" there (8 pixels of this
+/// picture came out opaque; measured 2026-10-14). Since the same day the
+/// triangles that share an edge are one surface at a sample on it
+/// (`craft3d_render::render`, *See-through*), and this view is compared
+/// like the others. The GPU's rasteriser gives such a sample to one
+/// triangle.
 #[test]
 fn a_surface_is_never_behind_itself() {
     for (name, eye, target, projection) in [
@@ -196,11 +198,7 @@ fn a_surface_is_never_behind_itself() {
             projection,
         };
         let scene = format!("sheet-{name}");
-        let drawn = if name == "on-the-diagonal" {
-            draw(&scene, &mesh, &camera, &params)
-        } else {
-            check(&scene, &mesh, &camera, &params)
-        };
+        let drawn = check(&scene, &mesh, &camera, &params);
         // Over black at a half, a sheet that showed through itself would
         // be as bright as the opaque sheet: no pixel may be.
         let opaque = RenderParams {
@@ -217,10 +215,7 @@ fn a_surface_is_never_behind_itself() {
                 .count()
         };
         assert!(front.coverage() > 0.02, "{name}");
-        println!("{name}: {} such pixels on the CPU", leaked(&drawn.cpu));
-        if name != "on-the-diagonal" {
-            assert_eq!(leaked(&drawn.cpu), 0, "{name}");
-        }
+        assert_eq!(leaked(&drawn.cpu), 0, "{name}: on the CPU");
         for (label, gpu) in &drawn.gpu {
             assert_eq!(leaked(gpu), 0, "{label}: the sheet shows through itself");
         }

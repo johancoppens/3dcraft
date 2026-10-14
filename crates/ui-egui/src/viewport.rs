@@ -111,21 +111,53 @@ impl LineKind {
     }
 }
 
-/// What is drawn over the picture to point at something: the edges that
-/// are highlighted, as the pieces of line the scene draws them with. Both
-/// paths of the viewport draw them from here (the lines of [`Overlay`] and
-/// the segments of [`crate::direct::segments_marked`]), over everything
-/// else, in the theme's highlight colour; the part behind a body is drawn
-/// dimmed, like a sketch there, so that an edge an agent points at is
-/// found also from the wrong side.
+/// The section a frame is cut open with, made ready for the scene's mesh:
+/// what the renderers take, and what the lines over the picture are cut
+/// with.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SectionCut {
+    /// For the renderers (`RenderParams::section`).
+    pub section: craft3d_render::Section,
+    /// The same plane with the tolerance of the scene's mesh: the edges of
+    /// the bodies are drawn where this keeps them.
+    pub cut: craft3d_render::Cut,
+    /// Where the plane crosses the surface of the bodies: the outline of
+    /// the cap, drawn as edges.
+    pub outline: std::sync::Arc<Vec<[Vec3; 2]>>,
+}
+
+impl SectionCut {
+    /// `section` for the mesh of `scene`; `None` for a plane that is none.
+    pub fn new(scene: &Scene, section: craft3d_render::Section) -> Option<Self> {
+        let cut = craft3d_render::Cut::new(&section, &craft3d_render::section_bounds(&scene.mesh))?;
+        Some(Self {
+            section,
+            cut,
+            outline: std::sync::Arc::new(cut.outline(&scene.mesh)),
+        })
+    }
+}
+
+/// What a frame shows besides the bodies as they are. The edges and the
+/// vertices that are pointed at, as the pieces of line the scene draws
+/// them with: both paths of the viewport draw them from here (the lines
+/// of [`Overlay`] and the segments of [`crate::direct::segments_marked`]),
+/// over everything else, in the theme's highlight colour; the part behind
+/// a body is drawn dimmed, like a sketch there, so that an edge an agent
+/// points at is found also from the wrong side. And the section the
+/// picture is cut open with: the bodies are rendered with it, their edges
+/// are drawn where it keeps them, and its outline is drawn as edges.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Marks {
     pub lines: Vec<[Vec3; 2]>,
     /// The highlighted vertices, drawn as dots.
     pub points: Vec<Vec3>,
+    /// The section, when the picture is cut open.
+    pub cut: Option<SectionCut>,
 }
 
 impl Marks {
+    /// True when nothing is pointed at (a section is not a mark).
     pub fn is_empty(&self) -> bool {
         self.lines.is_empty() && self.points.is_empty()
     }
@@ -134,7 +166,27 @@ impl Marks {
     pub fn with(mut self, other: Marks) -> Marks {
         self.lines.extend(other.lines);
         self.points.extend(other.points);
+        self.cut = self.cut.or(other.cut);
         self
+    }
+
+    /// The section for the renderers.
+    pub fn section(&self) -> Option<craft3d_render::Section> {
+        self.cut.as_ref().map(|cut| cut.section)
+    }
+
+    /// The part of the segment from `a` to `b` that the section keeps:
+    /// all of it without a section, `None` when it is cut away.
+    pub fn kept(&self, a: Vec3, b: Vec3) -> Option<[Vec3; 2]> {
+        match &self.cut {
+            Some(section) => section.cut.clip_segment(a, b),
+            None => Some([a, b]),
+        }
+    }
+
+    /// The lines the section adds: the outline of its cap.
+    pub fn outline(&self) -> &[[Vec3; 2]] {
+        self.cut.as_ref().map_or(&[], |cut| cut.outline.as_slice())
     }
 }
 
@@ -470,14 +522,25 @@ fn build_overlay(
     };
     // The edges of the bodies first, then the world axes over them (an
     // edge along an axis must not paint it out), then the sketches.
+    // In a picture that is cut open an edge is drawn where it is kept, and
+    // the outline of the cut is drawn as edges.
+    let kept = |a: Vec3, b: Vec3| match marks {
+        Some(marks) => marks.kept(a, b),
+        None => Some([a, b]),
+    };
     for body in scene.into_iter().flat_map(|scene| &scene.bodies) {
         for edge in &body.edges {
             for pair in edge.windows(2) {
-                if let [a, b] = *pair {
+                if let [a, b] = *pair
+                    && let Some([a, b]) = kept(a, b)
+                {
                     line(a, b, LineKind::Edge, true, see_through);
                 }
             }
         }
+    }
+    for &[a, b] in marks.into_iter().flat_map(Marks::outline) {
+        line(a, b, LineKind::Edge, true, see_through);
     }
     let length = camera.distance * AXIS_LENGTH;
     for (axis, direction) in [Vec3::X, Vec3::Y, Vec3::Z].into_iter().enumerate() {
@@ -506,7 +569,9 @@ fn build_overlay(
     }
     // What is pointed at, over everything else.
     for &[a, b] in marks.into_iter().flat_map(|marks| &marks.lines) {
-        line(a, b, LineKind::Highlight, true, true);
+        if let Some([a, b]) = kept(a, b) {
+            line(a, b, LineKind::Highlight, true, true);
+        }
     }
     for sketch in scene.into_iter().flat_map(|scene| &scene.sketches) {
         let kind = if selected == Some(sketch.feature.as_str()) {
@@ -525,7 +590,9 @@ fn build_overlay(
         }
     }
     for point in marks.into_iter().flat_map(|marks| &marks.points) {
-        if let Some(p) = projector.project(*point) {
+        if kept(*point, *point).is_some()
+            && let Some(p) = projector.project(*point)
+        {
             out.points.push(OverlayPoint {
                 at: [p.x, p.y],
                 kind: LineKind::Highlight,
@@ -556,6 +623,7 @@ pub fn render_params(quality: Quality, tokens: &Tokens) -> RenderParams {
         color: tokens.body,
         highlight: Highlight::NONE,
         opacity: 1.0,
+        section: None,
     }
 }
 

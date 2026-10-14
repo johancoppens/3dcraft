@@ -29,6 +29,7 @@ mod recovery_cmds;
 #[cfg(not(target_arch = "wasm32"))]
 mod recovery_store;
 mod scene;
+mod section;
 mod sketch_cmds;
 mod sketch_path_cmds;
 mod sketch_spline_cmds;
@@ -38,8 +39,8 @@ mod sweep_cmds;
 mod workspace;
 
 pub use pick_cmds::{
-    DEFAULT_PICK_RADIUS, MAX_CORNER_FACES, MAX_PICK_RADIUS, PickKind, SceneEdges, SceneFaces,
-    SceneNear, ScenePick, ScenePointed, SceneVertices,
+    DEFAULT_PICK_RADIUS, MAX_CORNER_FACES, MAX_PICK_RADIUS, PickKind, SceneCut, SceneEdges,
+    SceneFaces, SceneNear, ScenePick, ScenePointed, SceneVertices,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use recovery::SystemClock;
@@ -54,6 +55,7 @@ pub use scene::{
     SceneFeature, ScenePolyline, SceneQuality, SceneSketch, SketchCurve, arc_segments,
     base64 as encode_base64,
 };
+pub use section::{MAX_SECTION_EXTENT, SECTION_CAP_COLOR, SectionPlane, SectionSpec};
 pub use workspace::{Access, Workspace};
 
 use craft3d_doc::Document;

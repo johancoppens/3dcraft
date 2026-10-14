@@ -209,13 +209,93 @@ pub struct VertexRef {
 /// Most face names a [`VertexRef`] keeps.
 pub const MAX_CORNER_FACES: usize = craft3d_engine::MAX_CORNER_FACES;
 
-/// What a click was on: a face, or an edge or a vertex near the position.
+/// The section plane of the viewport: a plane that cuts the picture open,
+/// to look inside a shell, a pocket or a cavity. A view, like the camera:
+/// the document and its bodies do not change, and nothing is regenerated.
+///
+/// The plane is `plane` (a base plane, a datum plane, or a flat face by
+/// its name) or `point` and `normal`, moved by `offset` along its normal.
+/// What lies on the side the normal points to is not drawn (a face's
+/// normal points out of its body); `flip` keeps that half and cuts the
+/// other away.
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct SectionState {
+    /// Whether the picture is cut.
+    pub on: bool,
+    /// `xy`, `yz` or `zx`, a datum plane by its feature's id (`F5`) or
+    /// name, or a flat face by its persistent name. When the section is
+    /// switched on with no plane at all, it is `xy`.
+    pub plane: Option<String>,
+    /// Which body has the face, by the id of its feature or its name;
+    /// needed only when several bodies have a face of that name.
+    pub feature: Option<String>,
+    /// A plane given directly, in place of `plane`: a point of it (the
+    /// origin when only the normal is given) and its normal.
+    pub point: Option<[f64; 3]>,
+    pub normal: Option<[f64; 3]>,
+    /// How far the plane is moved along its normal, in model units.
+    pub offset: f64,
+    /// Keep the other half.
+    pub flip: bool,
+}
+
+impl SectionState {
+    /// The same section with everything in range; a number that is not
+    /// finite is an error.
+    pub fn validated(mut self) -> Result<Self, String> {
+        self.offset = finite("section.offset", self.offset)?.clamp(-MAX_EXTENT, MAX_EXTENT);
+        for (name, triple) in [("point", &mut self.point), ("normal", &mut self.normal)] {
+            if let Some(triple) = triple {
+                for value in triple.iter_mut() {
+                    *value =
+                        finite(&format!("section.{name}"), *value)?.clamp(-MAX_EXTENT, MAX_EXTENT);
+                }
+            }
+        }
+        self.plane = self
+            .plane
+            .map(|name| cut(&name, MAX_FACE_NAME_CHARS))
+            .filter(|name| !name.is_empty());
+        self.feature = self
+            .feature
+            .map(|id| cut(&id, MAX_SELECTION_CHARS))
+            .filter(|id| !id.is_empty());
+        if self.normal.is_some() && self.point.is_none() && self.plane.is_none() {
+            self.point = Some([0.0; 3]);
+        }
+        if self.on && self.plane.is_none() && self.normal.is_none() {
+            self.plane = Some("xy".to_string());
+            self.point = None;
+        }
+        Ok(self)
+    }
+
+    /// What the engine resolves ([`craft3d_engine::Session::section_plane`]).
+    pub fn spec(&self) -> craft3d_engine::SectionSpec {
+        craft3d_engine::SectionSpec {
+            plane: self.plane.clone(),
+            feature: self.feature.clone(),
+            point: self.point,
+            normal: self.normal,
+            offset: self.offset,
+            flip: self.flip,
+        }
+    }
+}
+
+/// What a click was on: a face, or an edge or a vertex near the position,
+/// or the cap of the section.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PickedKind {
     Face,
     Edge,
     Vertex,
+    /// The cap of the section: `feature` and `name` are then the body
+    /// that is cut there and `point` the point of the plane; there is no
+    /// face.
+    Section,
 }
 
 /// The edge or the vertex a click was on.
@@ -301,6 +381,11 @@ pub struct UiState {
     /// (`craft3d_render::render`, *See-through*). The slider in the
     /// viewport sets it; `ui.set` too.
     pub transparency: f64,
+    /// The plane the viewport's picture is cut open with. The control near
+    /// the view cube sets it; `ui.set` too. A plane whose name no body or
+    /// feature has any more switches the section off (`ui.get` says why
+    /// under `section`).
+    pub section: SectionState,
     /// The last click in the viewport. Read-only over the control channel:
     /// `ui.pick` with `select` makes one.
     pub picked: Option<Picked>,
@@ -375,6 +460,7 @@ impl UiState {
         self.camera = self.camera.validated()?;
         self.quality = self.quality.validated()?;
         self.transparency = finite("transparency", self.transparency)?.clamp(0.0, MAX_TRANSPARENCY);
+        self.section = self.section.validated()?;
         self.notice = one_line(&self.notice, MAX_NOTICE_CHARS);
         self.selected_feature = self
             .selected_feature
@@ -463,6 +549,27 @@ impl UiState {
                 moved_by_hand = (camera.contains_key("target") || camera.contains_key("distance"))
                     && !camera.contains_key("autoFit");
             }
+            if key == "section"
+                && let (Value::Object(given), Value::Object(map)) = (value, &mut merged)
+                && let Some(Value::Object(section)) = map.get_mut("section")
+            {
+                // Another plane, not the one before with a field changed:
+                // a plane by its name replaces a plane by point and
+                // normal and the other way round, and a face without
+                // `feature` is looked for in every body.
+                let names = |key: &str| given.contains_key(key);
+                if names("plane") {
+                    for other in ["point", "normal", "feature"] {
+                        if !names(other) {
+                            section.insert(other.to_string(), Value::Null);
+                        }
+                    }
+                } else if names("point") || names("normal") {
+                    for other in ["plane", "feature"] {
+                        section.insert(other.to_string(), Value::Null);
+                    }
+                }
+            }
             if key == "highlight" || key == "highlightEdge" || key == "highlightVertex" {
                 // Another face, not the same one with a field changed: a
                 // highlight without `feature` looks in every body.
@@ -547,6 +654,16 @@ mod tests {
                 corner: Vec::new(),
             }),
             transparency: 0.5,
+            // Added with the section plane (2026-10-14).
+            section: SectionState {
+                on: true,
+                plane: Some("F3:face(2)".to_string()),
+                feature: Some("F3".to_string()),
+                point: None,
+                normal: None,
+                offset: -2.5,
+                flip: true,
+            },
             picked: Some(Picked {
                 serial: 4,
                 x: 120.5,
@@ -584,6 +701,8 @@ mod tests {
                                   "between": ["F3:face(0)", "F3:face(2)"]},
                 "highlightVertex": {"feature": null, "vertex": "F3:vertex(1)", "corner": []},
                 "transparency": 0.5,
+                "section": {"on": true, "plane": "F3:face(2)", "feature": "F3", "point": null,
+                            "normal": null, "offset": -2.5, "flip": true},
                 "picked": {"serial": 4, "x": 120.5, "y": 80.25, "feature": "F3",
                            "name": "Post", "face": "F3:face(2)", "faceIndex": 2,
                            "point": [1.0, 2.0, 3.5], "kind": "edge",
