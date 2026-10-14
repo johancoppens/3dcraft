@@ -602,11 +602,45 @@ pub(crate) fn resolve_face(
         if !found {
             return Err(no_such_face(made_by, link, listed));
         }
-        maps.push(*map);
+        // A face operation moves faces one by one, which no map of the
+        // whole body says: the face is found where it lies now.
+        let moved = match source.kind {
+            FeatureKind::OffsetFace(_) | FeatureKind::Shell(_) => {
+                let index = names.and_then(|names| {
+                    (0..names.faces.len())
+                        .find(|&face| names.names_of(face).any(|own| same_plane(own, link)))
+                });
+                let face = index.and_then(|index| outcome.body.as_ref()?.faces.get(index));
+                match face.map(|face| (&face.surface, face.reversed)) {
+                    Some((craft3d_geom::Surface::Plane(plane), reversed)) => {
+                        let outward = if reversed {
+                            -plane.frame().z()
+                        } else {
+                            plane.frame().z()
+                        };
+                        // The faces of a shell's hollow (instance 1)
+                        // look the other way than the faces they lie
+                        // behind.
+                        let hollow = matches!(source.kind, FeatureKind::Shell(_))
+                            && link.sources.first() == Some(&1);
+                        Some((plane.frame().origin(), outward, hollow))
+                    }
+                    Some((surface, _)) => {
+                        return Err(format!(
+                            "plane: the face {name} is a {} face; a sketch needs a flat one",
+                            surface.kind()
+                        ));
+                    }
+                    None => return Err(no_such_face(made_by, link, listed)),
+                }
+            }
+            _ => None,
+        };
+        maps.push((*map, moved));
         link = of;
     }
     let mut frame = made_face(doc, earlier, link, name)?;
-    for map in maps.iter().rev() {
+    for (map, moved) in maps.iter().rev() {
         // Seen from outside the moved body: z is the image of the normal
         // and x the image of x. After a mirror that leaves y pointing the
         // other way than the image of y, as a right-handed frame must.
@@ -616,6 +650,21 @@ pub(crate) fn resolve_face(
             map.vector(frame.x()),
         )
         .ok_or_else(|| format!("plane: the face {name} has a degenerate plane"))?;
+        if let Some((on, outward, hollow)) = moved {
+            // The origin dropped straight onto the plane the face lies in
+            // now; the axes stay what they were. The face of a hollow
+            // looks into it: its z is the face's own normal and its x
+            // stays, so its y is the other way round, as when a wall is
+            // looked at from behind.
+            let z = if *hollow { *outward } else { frame.z() };
+            let origin = frame.origin() + z * (*on - frame.origin()).dot(z);
+            frame = if *hollow {
+                Frame::new(origin, z, frame.x())
+            } else {
+                frame.at(origin)
+            }
+            .ok_or_else(|| format!("plane: the face {name} has a degenerate plane"))?;
+        }
     }
     Ok(frame)
 }

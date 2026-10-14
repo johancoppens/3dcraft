@@ -6,7 +6,8 @@
 //! ([`profile`]), their extrusion ([`extrude`]), their revolution
 //! ([`revolve`]), the solid through a row of them ([`loft`]), the solid one
 //! of them sweeps along a path ([`sweep`]), booleans ([`boolean`]),
-//! chamfers ([`chamfer`]) and fillets ([`fillet`]).
+//! chamfers ([`chamfer`]), fillets ([`fillet`]) and the face operations
+//! ([`offset_face`], [`shell`]).
 
 mod blend;
 pub mod boolean;
@@ -15,11 +16,14 @@ pub mod extrude;
 pub mod extrude_to;
 pub mod fillet;
 pub mod loft;
+pub mod offset_face;
 pub mod primitives;
 pub mod profile;
 pub mod revolve;
+pub mod shell;
 mod spline2;
 pub mod sweep;
+mod tweak;
 
 use craft3d_geom::GeomError;
 use craft3d_topo::Defect;
@@ -175,6 +179,30 @@ pub enum KernelError {
         edge: craft3d_topo::EdgeId,
         error: Box<KernelError>,
     },
+    /// A face operation (offset face, shell) that is refused:
+    /// the faces and the edge it is about, when there are.
+    FaceOp {
+        operation: &'static str,
+        faces: Vec<craft3d_topo::FaceId>,
+        edge: Option<craft3d_topo::EdgeId>,
+        reason: &'static str,
+    },
+    /// A face operation whose distance or thickness `value` is so large
+    /// that `edge`, or a face of `faces`, would vanish (`reason` says
+    /// which and how): `largest` is a size that still fits.
+    FaceOpTooFar {
+        operation: &'static str,
+        faces: Vec<craft3d_topo::FaceId>,
+        edge: Option<craft3d_topo::EdgeId>,
+        reason: &'static str,
+        value: f64,
+        largest: f64,
+    },
+    /// The boolean refused a step of a face operation.
+    FaceOpBoolean {
+        operation: &'static str,
+        error: Box<KernelError>,
+    },
     /// A loft cannot be made through these sections (counted from 0;
     /// empty when it is not about particular ones). `reason` counts them
     /// from 1, as the user does.
@@ -194,6 +222,24 @@ pub enum KernelError {
 fn id_list(ids: &[u64]) -> String {
     let parts: Vec<String> = ids.iter().map(u64::to_string).collect();
     parts.join(", ")
+}
+
+fn face_op_entities(
+    f: &mut fmt::Formatter<'_>,
+    faces: &[craft3d_topo::FaceId],
+    edge: Option<craft3d_topo::EdgeId>,
+) -> fmt::Result {
+    if let Some(edge) = edge {
+        write!(f, " at edge {}", edge.0)?;
+    }
+    for (index, face) in faces.iter().take(MAX_REPORTED).enumerate() {
+        let lead = if index == 0 { " (face " } else { ", " };
+        write!(f, "{lead}{}", face.0)?;
+    }
+    if !faces.is_empty() {
+        write!(f, ")")?;
+    }
+    Ok(())
 }
 
 impl fmt::Display for KernelError {
@@ -347,6 +393,34 @@ impl fmt::Display for KernelError {
             }
             KernelError::FilletBoolean { edge, error } => {
                 write!(f, "fillet of edge {}: {error}", edge.0)
+            }
+            KernelError::FaceOp {
+                operation,
+                faces,
+                edge,
+                reason,
+            } => {
+                write!(f, "{operation}")?;
+                face_op_entities(f, faces, *edge)?;
+                write!(f, ": {reason}")
+            }
+            KernelError::FaceOpTooFar {
+                operation,
+                faces,
+                edge,
+                reason,
+                value,
+                largest,
+            } => {
+                write!(f, "{operation}")?;
+                face_op_entities(f, faces, *edge)?;
+                write!(
+                    f,
+                    ": {value} is too far: {reason}; the largest that fits is below {largest}"
+                )
+            }
+            KernelError::FaceOpBoolean { operation, error } => {
+                write!(f, "{operation}: {error}")
             }
             KernelError::Loft { reason, .. } | KernelError::Sweep { reason, .. } => {
                 write!(f, "{reason}")

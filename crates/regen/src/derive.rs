@@ -248,7 +248,7 @@ fn instances(
 
 /// The names of instance `instance`: every entity is the copy of the one
 /// it is the image of.
-fn copied(
+pub(crate) fn copied(
     feature: FeatureId,
     instance: u64,
     names: &[PersistentName],
@@ -268,7 +268,7 @@ fn copied(
 /// The aliases of instance `instance`, whose entities start at `first`
 /// in the body: the copies of the aliases of the entities they are the
 /// images of.
-fn copied_aliases(
+pub(crate) fn copied_aliases(
     feature: FeatureId,
     instance: u64,
     aliases: &std::collections::BTreeMap<usize, Vec<PersistentName>>,

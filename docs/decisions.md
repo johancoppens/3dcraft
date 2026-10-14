@@ -251,6 +251,19 @@ Made by the agent, overnight; the developer can overturn any of them.
 - **`regen` depends on `tess`** (a lower layer), for the self-intersection check of every loft: the kernel cannot use the tessellator (same layer), and a loft that passes through itself must never be handed on. The check is the one of `document.check {"deep": true}`, with its parameters; it costs a mesh per rebuilt loft (the showcase hull with its hollowing: 0.6 s for the whole script).
 - **Smooth means interpolation in homogeneous coordinates** for sections with arcs. Where the weights of the surface between the sections would not stay positive the loft fails and says so (make it ruled, or draw the sections with splines); none of the tested shapes does.
 
+### 2026-10-14: Decisions made while building offset face and shell
+
+Made by the agent, overnight; the developer can overturn any of them.
+
+- **Offset face is a local operation, not a tool and the boolean** (unlike both blends). Outward the new material is bounded by the neighbours' continued surfaces, so a tool would be built from the very computation that closes the body directly; done directly, the faces stay the faces they were (a block whose top moves keeps six faces) and every entity keeps its number, so naming is the copy rule and needs no matching. The shell uses the boolean only to take the hollow out of the solid. See [`architecture.md`](architecture.md) §5.3 › *Face operations as built*.
+- **The open faces of a shell are moved outward by the thickness,** so the hollow reaches through them and the opening is as wide as the hollow is there. The alternative, keeping the open face's own plane, puts the hollow's face flush with it and asks the boolean for coincident faces at every opening; the result is the same solid where nothing stands on the open face.
+- **A face of a shell's hollow is the copy in instance 1 of the face it lies behind** (`F9:copy(1)/F1:face(0)`), not a new role such as `inner(...)`: no name role, no format change, and the instance machinery (sketches on copied faces, aliases) works as it is. The price is a name that says "the second copy" rather than "the inner face".
+- **A sketch on a face that an offset moved keeps the axes it had and lies where the face is now;** a sketch on a face of the hollow looks into the hollow, so its y axis is mirrored against a sketch on the face it lies behind. (Found on the way, not changed: a sketch on a face that a subtraction's tool gave, such as the floor of a pocket, looks into the material, as the tool's face did; a pin extruded from it goes down.)
+- **One format version, 11, for both feature kinds** (`offsetFace`, `shell`), raised for the same reason as the last four: an older build should report the version, not an unknown kind. They were made as version 10 beside the sweep, which reached `work` first with 10; merging `work` into this branch made them 11.
+- **A thickness at or beyond the radius of a rounded edge is refused** (with the round and the largest thickness that fits) rather than giving the hollow a sharp edge there: that needs the hollow's topology to change, which the local operation does not do. Delete face is what would make it possible.
+- **A distance too far is found by halving,** 48 times at most, each a whole local operation and its checks; when no distance at all works the refusal is about the geometry, not the size.
+- **Delete face, move face, replace face, thicken and draft are not built** in this round; offset face and shell were taken first because the shell is what users ask for and is made of the offset.
+
 ## Open decisions
 
 | # | Question | Options | Needed by | Default if nobody decides |

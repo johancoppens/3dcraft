@@ -269,6 +269,21 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                     at: point_ref_to_manifest(at),
                 }
             }
+            doc::FeatureKind::OffsetFace(doc::OffsetFace { faces, distance }) => {
+                manifest::FeatureKind::OffsetFace {
+                    faces: faces.iter().map(name_to_manifest).collect(),
+                    distance: expr_to_manifest(distance),
+                }
+            }
+            doc::FeatureKind::Shell(doc::Shell {
+                source: doc::FeatureId(source),
+                thickness,
+                open,
+            }) => manifest::FeatureKind::Shell {
+                source: *source,
+                thickness: expr_to_manifest(thickness),
+                open: open.iter().map(name_to_manifest).collect(),
+            },
             doc::FeatureKind::Fillet(doc::Fillet {
                 edges,
                 radius,
@@ -1129,6 +1144,21 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
                     at: point_ref_to_doc(at),
                 })
             }
+            manifest::FeatureKind::OffsetFace { faces, distance } => {
+                doc::FeatureKind::OffsetFace(doc::OffsetFace {
+                    faces: faces.into_iter().map(name_to_doc).collect(),
+                    distance: doc::Expr(distance),
+                })
+            }
+            manifest::FeatureKind::Shell {
+                source,
+                thickness,
+                open,
+            } => doc::FeatureKind::Shell(doc::Shell {
+                source: doc::FeatureId(source),
+                thickness: doc::Expr(thickness),
+                open: open.into_iter().map(name_to_doc).collect(),
+            }),
             manifest::FeatureKind::Fillet {
                 edges,
                 radius,

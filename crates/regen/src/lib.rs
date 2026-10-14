@@ -26,11 +26,14 @@ mod datum;
 mod derive;
 mod entity;
 mod extrude;
+mod face_ops;
 mod fillet;
 mod loft;
+mod offset_face;
 mod query;
 mod revolve;
 mod selfcheck;
+mod shell;
 mod sketch;
 mod sweep;
 
@@ -571,7 +574,9 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
         | FeatureKind::Pattern(_)
         | FeatureKind::Boolean(_)
         | FeatureKind::Chamfer(_)
-        | FeatureKind::Fillet(_) => {
+        | FeatureKind::Fillet(_)
+        | FeatureKind::OffsetFace(_)
+        | FeatureKind::Shell(_) => {
             return Err(format!(
                 "a {} needs the body it is made from",
                 feature.kind.type_name()
@@ -815,6 +820,33 @@ fn build_feature(
                 // The body does not move: a face lies where the face it
                 // came from lies.
                 instances = Some(Arc::new(vec![Transform::IDENTITY]));
+                (Status::Ok, Some(Arc::new(body)))
+            }
+            Err(reason) => (Status::Failed(reason), None),
+        }
+    } else if let FeatureKind::OffsetFace(offset) = &feature.kind {
+        match offset_face::build(doc, variables, feature.id, offset, earlier)
+            .and_then(|(body, names)| checked(doc, body).map(|body| (body, names)))
+        {
+            Ok((body, made_names)) => {
+                names = made_names.map(Arc::new);
+                // The body as a whole does not move; a face that did is
+                // found where it lies now (`sketch::resolve_face`).
+                instances = Some(Arc::new(vec![Transform::IDENTITY]));
+                (Status::Ok, Some(Arc::new(body)))
+            }
+            Err(reason) => (Status::Failed(reason), None),
+        }
+    } else if let FeatureKind::Shell(hollowed) = &feature.kind {
+        match shell::build(doc, variables, feature.id, hollowed, earlier)
+            .and_then(|(body, names)| checked(doc, body).map(|body| (body, names)))
+        {
+            Ok((body, made_names)) => {
+                names = made_names.map(Arc::new);
+                // Instance 0 is the skin, 1 the hollow; neither moves as
+                // a whole (`sketch::resolve_face` finds a face of the
+                // hollow where it lies).
+                instances = Some(Arc::new(vec![Transform::IDENTITY; 2]));
                 (Status::Ok, Some(Arc::new(body)))
             }
             Err(reason) => (Status::Failed(reason), None),

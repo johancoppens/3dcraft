@@ -89,7 +89,11 @@ fn name_value(
 }
 
 /// A face by its name.
-fn face_value(command: &str, key: &str, value: &Value) -> Result<PersistentName, CommandError> {
+pub(crate) fn face_value(
+    command: &str,
+    key: &str,
+    value: &Value,
+) -> Result<PersistentName, CommandError> {
     let name = name_value(command, key, value, "a face name such as \"F2:endCap(e1)\"")?;
     if !name.is_face() {
         return fail(format!(
