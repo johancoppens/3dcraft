@@ -2538,6 +2538,11 @@ enum Action {
     Keep,
     SplitEdge(usize),
     SplitTriangle,
+    /// Within the tolerance, but the normals at its corners are further
+    /// apart than the angle criterion allows: the side to cut, which is
+    /// free and not shorter than the floor. Where no point fits there,
+    /// the triangle is kept as it is.
+    Turn(usize),
 }
 
 /// The triangulation of one face while it is refined.
@@ -2552,6 +2557,9 @@ struct Work<'a> {
     centre: Uv,
     scale: Uv,
     tolerance: f64,
+    /// `TessParams::max_angle`, and the shortest side held to it.
+    angle: Option<f64>,
+    angle_floor: f64,
 }
 
 impl Work<'_> {
@@ -2717,6 +2725,37 @@ impl Work<'_> {
                     Some((_, i)) => Action::SplitEdge(i),
                     None => Action::SplitTriangle,
                 };
+            }
+        }
+        if let Some(angle) = self.angle {
+            // The normals at the corners, as far apart as they are; a
+            // corner without one (an apex) tells nothing.
+            let normals = corners.map(|c| self.param.normal(c.0));
+            let turn = [(0, 1), (1, 2), (2, 0)]
+                .into_iter()
+                .filter_map(|(i, j)| {
+                    let (Some(Some(x)), Some(Some(y))) = (normals.get(i), normals.get(j)) else {
+                        return None;
+                    };
+                    crate::angle_between(*x, *y)
+                })
+                .fold(0.0_f64, f64::max);
+            if turn > angle {
+                // The longest free side, if it is not below the floor.
+                let mut longest: Option<(f64, usize)> = None;
+                for (i, constrained) in [c0, c1, c2].into_iter().enumerate() {
+                    let [p, q] = pair(i);
+                    let length = p.1.distance(q.1);
+                    if !constrained
+                        && length >= self.angle_floor
+                        && longest.is_none_or(|(l, _)| length > l)
+                    {
+                        longest = Some((length, i));
+                    }
+                }
+                if let Some((_, i)) = longest {
+                    return Action::Turn(i);
+                }
             }
         }
         Action::Keep
@@ -3447,6 +3486,28 @@ pub(crate) fn mesh_face(
         centre,
         scale,
         tolerance,
+        angle: params.max_angle.filter(|_| !param.is_plane()),
+        angle_floor: crate::ANGLE_FLOOR * tolerance,
+    };
+    // With a triangle budget, the face stops as soon as it is certain to
+    // have more triangles than that on its own. The count it gives is
+    // then a floor of what it would have had: the region in parameter
+    // space is a polygon with holes, and a triangulation of it with `i`
+    // points inside has `2 i + b + 2 h - 2` triangles (`b` points on the
+    // boundary, `h` holes), of which at most `b` lose their area at a
+    // pole (each has a side of the boundary between two points that are
+    // one point in space, and each such side has one triangle). So the
+    // mesh has at least `2 i - 2` triangles, and every point added
+    // (seeding or refinement) is inside. A function of the face and the
+    // parameters, as the order of the points is.
+    let over_budget = |interior: usize| -> Option<TessError> {
+        let max_triangles = params.max_triangles?;
+        let floor = interior.saturating_mul(2).saturating_sub(2);
+        (floor > max_triangles).then_some(TessError::OverBudget {
+            triangles: floor,
+            faces: 1,
+            max_triangles,
+        })
     };
 
     // Boundary points, in an order that jumps around the boundary (a
@@ -3523,6 +3584,9 @@ pub(crate) fn mesh_face(
             if let Interior::Added(v) = added {
                 let pos = work.param.eval(uv);
                 work.record(v, uv, pos, None).map_err(explain)?;
+                if let Some(over) = over_budget(work.uv.len() - boundary_vertices) {
+                    return Err(over);
+                }
             }
         }
 
@@ -3586,6 +3650,9 @@ pub(crate) fn mesh_face(
                 done = true;
                 break;
             }
+            if let Some(over) = over_budget(work.uv.len() - boundary_vertices) {
+                return Err(over);
+            }
             for (t, generation, action) in failing {
                 // Changed by an earlier split in this round: next round.
                 if work.cdt.triangle(t).map(|view| view.generation) != Some(generation) {
@@ -3594,6 +3661,17 @@ pub(crate) fn mesh_face(
                 let split = match action {
                     Action::SplitEdge(i) => match work.split_edge(t, i) {
                         Err(CdtError::Degenerate) => work.split_triangle(t),
+                        other => other,
+                    },
+                    Action::Turn(i) => match work.split_edge(t, i) {
+                        // No room for a point: the angle is a wish, the
+                        // triangle stays as it is.
+                        Err(CdtError::Degenerate) => {
+                            if let Some(slot) = measured.get_mut(t) {
+                                *slot = generation;
+                            }
+                            Ok(())
+                        }
                         other => other,
                     },
                     _ => work.split_triangle(t),

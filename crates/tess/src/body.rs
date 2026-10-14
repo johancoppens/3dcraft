@@ -334,6 +334,8 @@ fn closes_along_edges(
 fn triangles_of(result: Option<&FaceResult>) -> usize {
     match result {
         Some(Ok(mesh)) => mesh.triangles.len(),
+        // A face that stopped at the budget: as many as it had then.
+        Some(Err(TessError::OverBudget { triangles, .. })) => *triangles,
         Some(Err(_)) | None => 0,
     }
 }
@@ -631,6 +633,10 @@ fn part_shared_rungs(
             .get(index)
             .is_some_and(|face| !matches!(face.surface, Surface::Plane(_)))
     };
+    let unbounded = TessParams {
+        max_triangles: None,
+        ..*params
+    };
     // Per face, the rungs it must not have, over all rounds.
     let mut splits: Vec<Vec<(Vec3, Vec3)>> = vec![Vec::new(); results.len()];
     for round in 0..=RUNG_ROUNDS {
@@ -672,7 +678,7 @@ fn part_shared_rungs(
             let mut starved = false;
             let made = face_boundary(body, points, face, index, params, &mut starved).and_then(
                 |boundary| {
-                    let made = mesh_face(&boundary, face, index, params, list)?;
+                    let made = mesh_face(&boundary, face, index, &unbounded, list)?;
                     closes_along_edges(body, points, face, index, &made.border)?;
                     Ok(made)
                 },
@@ -707,10 +713,7 @@ pub fn tessellate_body_with_threads(
     params: &TessParams,
     threads: usize,
 ) -> Result<Mesh, TessError> {
-    let tol = params.chordal_tolerance;
-    if !(tol.is_finite() && tol > 0.0) {
-        return Err(TessError::InvalidTolerance(tol));
-    }
+    params.validate()?;
     let threads = if threads == 0 {
         automatic_threads()
     } else {
@@ -752,10 +755,7 @@ fn assemble(patches: Vec<Option<FaceResult>>) -> Result<Mesh, TessError> {
 /// edge is finer here too. A face that cannot be tessellated is no error
 /// here. The result depends on the body and the parameters only.
 pub fn tessellate_edges(body: &Body, params: &TessParams) -> Result<Vec<Vec<Vec3>>, TessError> {
-    let tol = params.chordal_tolerance;
-    if !(tol.is_finite() && tol > 0.0) {
-        return Err(TessError::InvalidTolerance(tol));
-    }
+    params.validate()?;
     let (edges, _) = tessellate(body, params, automatic_threads(), false)?;
     Ok(edges.points)
 }
@@ -777,10 +777,7 @@ pub fn tessellate_body_and_edges(
     body: &Body,
     params: &TessParams,
 ) -> Result<MeshAndEdges, TessError> {
-    let tol = params.chordal_tolerance;
-    if !(tol.is_finite() && tol > 0.0) {
-        return Err(TessError::InvalidTolerance(tol));
-    }
+    params.validate()?;
     let (edges, patches) = tessellate(body, params, automatic_threads(), true)?;
     Ok(MeshAndEdges {
         mesh: assemble(patches),
