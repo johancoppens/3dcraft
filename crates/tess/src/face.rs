@@ -5,7 +5,9 @@
 //!    loop, keeping the parameters continuous across the seam of a
 //!    surface that closes on itself: a point's parameter is the one
 //!    nearest its predecessor's, never the raw projection, which may come
-//!    back as 0 or as a rounding error below a whole period.
+//!    back as 0 or as a rounding error below a whole period. The analytic
+//!    surfaces say how they close; for a spline surface it is read from
+//!    its control net ([`Closure`]).
 //! 2. **Region.** The loops become closed chains of segments in the
 //!    parameter plane. A loop that winds once around the axis is cut open
 //!    along a *seam*, a line from it to the loop on the other side (or to
@@ -29,8 +31,10 @@
 //!    of the boundary, and those the parameters distort. `body.rs` has
 //!    them cut in two and comes back with the new points.
 //! 4. **Refinement.** Curved faces are seeded with a grid of interior
-//!    points sized from the surface's curvature, and then every triangle
-//!    is measured: the surface point at the mean parameters of each free
+//!    points sized from the surface's curvature (for a spline surface
+//!    from proven bounds on its second derivatives over the face's part
+//!    of it, [`spline_second_bounds`]), and then every triangle is
+//!    measured: the surface point at the mean parameters of each free
 //!    edge and of the triangle must be within the chordal tolerance of the
 //!    edge's midpoint and the triangle's centroid, and the triangle must
 //!    face the way the surface does. A triangle that fails gets a point on
@@ -1965,8 +1969,15 @@ fn arc_cells(
 }
 
 /// How many grid cells the box `low..high` of the surface's own `(u, v)`
-/// needs in each direction for a first guess at the tolerance. Only a
-/// guess: every triangle is measured afterwards.
+/// needs in each direction for a cell of the grid, cut in two triangles,
+/// to be within the tolerance of the surface: by the arc for the analytic
+/// kinds, by bounds on the second derivatives for a Bézier patch (its
+/// control net's, over the whole patch) and for a spline surface (proven
+/// ones over the box, [`spline_second_bounds`]; until 2026-10-14 sampled
+/// second differences times 1.5, which promised nothing). The triangles
+/// are not all cells of the grid: those along the boundary are not, and
+/// grid points too near the boundary are left out. So every triangle is
+/// measured afterwards all the same.
 fn seed_cells(
     surface: &Surface,
     closure: &Closure,
@@ -2031,33 +2042,292 @@ fn seed_cells(
             let (muu, muv, mvv) = b.second_derivative_bounds();
             from_second_derivatives(muu, muv, mvv)
         }
-        Surface::Nurbs(_) => {
-            // No bound on the derivatives of a rational surface at hand:
-            // second differences on a lattice, with a margin.
-            const SAMPLES: u32 = 8;
-            let (hu, hv) = (
-                span_u / f64::from(2 * SAMPLES),
-                span_v / f64::from(2 * SAMPLES),
-            );
-            let (mut muu, mut muv, mut mvv) = (0.0_f64, 0.0_f64, 0.0_f64);
-            for i in 0..SAMPLES {
-                for j in 0..SAMPLES {
-                    let u = low.0 + hu * f64::from(2 * i + 1);
-                    let v = low.1 + hv * f64::from(2 * j + 1);
-                    let [wrap_u, wrap_v] = closure.wrap;
-                    let s = |du: f64, dv: f64| {
-                        surface.eval(wrapped(u + du * hu, wrap_u), wrapped(v + dv * hv, wrap_v))
-                    };
-                    let centre = s(0.0, 0.0);
-                    muu = muu.max((s(1.0, 0.0) + s(-1.0, 0.0) - centre * 2.0).length() / (hu * hu));
-                    mvv = mvv.max((s(0.0, 1.0) + s(0.0, -1.0) - centre * 2.0).length() / (hv * hv));
-                    let mixed = s(1.0, 1.0) - s(1.0, -1.0) - s(-1.0, 1.0) + s(-1.0, -1.0);
-                    muv = muv.max(mixed.length() / (4.0 * hu * hv));
-                }
-            }
-            from_second_derivatives(1.5 * muu, 1.5 * muv, 1.5 * mvv)
+        Surface::Nurbs(spline) => {
+            let (muu, muv, mvv) = spline_second_bounds(spline, closure, low, high);
+            let (nu, nv) = spline_cells(
+                (muu + muv, mvv + muv),
+                (span_u, span_v),
+                tolerance,
+                f64::from(params.max_segments),
+            )
+            .map_err(|needed_segments| TessError::TooFine {
+                patch: face,
+                needed_segments,
+                max_segments: params.max_segments,
+            })?;
+            // In range: `spline_cells` keeps within the limit.
+            Ok(((nu as u32).max(1), (nv as u32).max(1)))
         }
     }
+}
+
+/// The cells of the grid over a face on a spline surface, in u and in v:
+/// whole numbers, at most `limit` each, or as an error the number that
+/// would be needed.
+///
+/// `(a, b)` are `(Muu + Muv, Mvv + Muv)` from bounds on the second
+/// derivatives over the face's box, which is `span` wide. Over a right
+/// triangle with legs `hu` and `hv` along the parameters a surface is
+/// within `(Muu hu² + 2 Muv hu hv + Mvv hv²) / 8` of the plane through
+/// its corners (Filip, Magedson & Markot 1986, as for a Bézier patch
+/// above), and `2 hu hv ≤ hu² + hv²`, so the cells do when
+///
+/// `a hu² + b hv² ≤ 8 × tolerance`.
+///
+/// Each parameter gets half of that: `a hu² = b hv² = 4 × tolerance`. A
+/// surface far more curved one way than the other is then not as fine
+/// both ways as its tighter direction asks (the wall an extruded spline
+/// sweeps is straight along the sweep: one cell), and the cells are
+/// never more than with one step for both, the geometric mean against
+/// the arithmetic one. Where one parameter would need more cells than
+/// the limit and the other has room, it gets the limit and the other
+/// what is then left of the sum: finer there, up to a factor √2 in
+/// reach.
+fn spline_cells(
+    (a, b): (f64, f64),
+    (span_u, span_v): (f64, f64),
+    tolerance: f64,
+    limit: f64,
+) -> Result<(f64, f64), f64> {
+    let cells = |bound: f64, span: f64, share: f64| (bound / share).sqrt() * span;
+    let even = 4.0 * tolerance;
+    let (nu, nv) = (cells(a, span_u, even).ceil(), cells(b, span_v, even).ceil());
+    let needed = nu.max(nv);
+    // (Negated comparisons: a number that is not one is over the limit.)
+    match (nu <= limit, nv <= limit) {
+        (true, true) => Ok((nu, nv)),
+        (false, true) => {
+            let left = 8.0 * tolerance - a * (span_u / limit) * (span_u / limit);
+            let nv = cells(b, span_v, left).ceil();
+            if left > 0.0 && nv <= limit {
+                Ok((limit, nv))
+            } else {
+                Err(needed)
+            }
+        }
+        (true, false) => {
+            let left = 8.0 * tolerance - b * (span_v / limit) * (span_v / limit);
+            let nu = cells(a, span_u, left).ceil();
+            if left > 0.0 && nu <= limit {
+                Ok((nu, limit))
+            } else {
+                Err(needed)
+            }
+        }
+        (false, false) => Err(needed),
+    }
+}
+
+/// The least part of a knot span a patch is cut down to before its
+/// derivatives are bounded: the differences of control points that the
+/// bounds are made of lose their digits on a patch much narrower.
+const LEAST_PART: f64 = 1.0 / 16.0;
+
+/// How often a patch is cut in halves before its derivatives are bounded
+/// ([`patch_second_bounds`]). Measured on surfaces of revolution, whose
+/// rational arcs around the axis are where the hull of the control net
+/// is loosest (`tests::the_bounds_on_a_spline_surface_are_above_its_second_differences`):
+/// uncut, the bounds are 2.7 to 4.7 times the largest second
+/// differences; cut three times 1.6 to 2.4 times, four times 1.5 to 2.1
+/// times, six times 1.4 to 1.8 times (on a polynomial surface 1.2 times,
+/// cut or not). The cells of the grid go by the root of that. Every cut
+/// doubles the pieces, and both ways of cutting are tried: 60 nets are
+/// bounded for four cuts, 252 for six.
+const HALVINGS: u32 = 4;
+
+/// Bounds `(Muu, Muv, Mvv)` on the second derivatives of `patch`, which
+/// is a part of a surface `width` wide in the surface's parameters.
+///
+/// The bound of a patch is that of the hull of its control net
+/// (`RationalBezierPatch::derivative_bounds`), which is the nearer to
+/// the patch the smaller the patch is; so the patch is cut in halves
+/// [`HALVINGS`] times, each time across the parameter in which that
+/// brings the bounds down most (a surface of revolution gains by being
+/// cut around its axis, where its weights vary, and nothing along it),
+/// and the bound is the largest over the pieces. Every round bounds the
+/// same patch, so the smallest bound of all rounds stands.
+fn patch_second_bounds(
+    patch: craft3d_geom::RationalBezierPatch,
+    width: (f64, f64),
+) -> Option<(f64, f64, f64)> {
+    use craft3d_geom::RationalBezierPatch;
+    let over = |pieces: &[RationalBezierPatch], width: (f64, f64)| -> Option<(f64, f64, f64)> {
+        let (mut uu, mut uv, mut vv) = (0.0_f64, 0.0_f64, 0.0_f64);
+        for piece in pieces {
+            let bounds = piece.derivative_bounds()?.over(width.0, width.1);
+            uu = uu.max(bounds.second_uu);
+            uv = uv.max(bounds.second_uv);
+            vv = vv.max(bounds.second_vv);
+        }
+        Some((uu, uv, vv))
+    };
+    // What the cells of the grid go by.
+    let weight = |(uu, uv, vv): (f64, f64, f64)| uu + 2.0 * uv + vv;
+    let mut pieces = vec![patch];
+    let mut width = width;
+    let mut best = over(&pieces, width)?;
+    for _ in 0..HALVINGS {
+        let in_u: Vec<RationalBezierPatch> = pieces
+            .iter()
+            .flat_map(|piece| {
+                let (a, b) = piece.split_u(0.5);
+                [a, b]
+            })
+            .collect();
+        let in_v: Vec<RationalBezierPatch> = pieces
+            .iter()
+            .flat_map(|piece| {
+                let (a, b) = piece.split_v(0.5);
+                [a, b]
+            })
+            .collect();
+        let (half_u, half_v) = ((width.0 / 2.0, width.1), (width.0, width.1 / 2.0));
+        let (bound_u, bound_v) = (over(&in_u, half_u)?, over(&in_v, half_v)?);
+        let bound = if weight(bound_u) <= weight(bound_v) {
+            (pieces, width) = (in_u, half_u);
+            bound_u
+        } else {
+            (pieces, width) = (in_v, half_v);
+            bound_v
+        };
+        best = (
+            best.0.min(bound.0),
+            best.1.min(bound.1),
+            best.2.min(bound.2),
+        );
+    }
+    Some(best)
+}
+
+/// The stretches of `low..high` as they lie in the range `from..to` of a
+/// parameter: the one stretch within the range, or, when the surface
+/// closes in this parameter (`wrap`), the stretches of each turn brought
+/// back into the range.
+fn stretches(
+    low: f64,
+    high: f64,
+    (from, to): (f64, f64),
+    wrap: Option<(f64, f64)>,
+) -> Vec<(f64, f64)> {
+    let whole = vec![(from, to)];
+    let period = to - from;
+    if !(low.is_finite() && high.is_finite() && period.is_finite() && period > 0.0) {
+        return whole;
+    }
+    if wrap.is_none() {
+        let (a, b) = (low.max(from), high.min(to));
+        return if b > a { vec![(a, b)] } else { whole };
+    }
+    let (first, last) = (
+        ((low - from) / period).floor(),
+        ((high - from) / period).floor(),
+    );
+    // More than a turn and a bit: all of it.
+    if exceeds(last - first, 2.0) || exceeds(high - low, period) {
+        return whole;
+    }
+    let mut parts = Vec::new();
+    let mut turn = first;
+    while turn <= last {
+        let start = from + turn * period;
+        let (a, b) = (
+            low.max(start) - turn * period,
+            high.min(start + period) - turn * period,
+        );
+        if b > a {
+            parts.push((a.max(from), b.min(to)));
+        }
+        turn += 1.0;
+    }
+    if parts.is_empty() { whole } else { parts }
+}
+
+/// Upper bounds `(Muu, Muv, Mvv)` on the lengths of the second partial
+/// derivatives of a spline surface over the box `low..high` of its
+/// parameters: proven ones, not sampled. The surface is a rational Bézier
+/// patch on each of its knot spans (`NurbsSurface::bezier_spans`); each
+/// patch the box reaches is cut down to the part the box covers, and the
+/// derivatives of that part are bounded from its control net
+/// (`RationalBezierPatch::derivative_bounds`: the hull of the net bounds
+/// the patch and its weights). The bound is the largest over the parts.
+///
+/// A part is never cut narrower than [`LEAST_PART`] of its span; a wider
+/// part bounds a narrower one. Each part is bounded in [`HALVINGS`]
+/// rounds of halves, which brings the bound nearer to the surface. Infinite when no bound is found (a span
+/// that cannot be split out), which ends as `TessError::TooFine`.
+fn spline_second_bounds(
+    surface: &craft3d_geom::NurbsSurface,
+    closure: &Closure,
+    low: (f64, f64),
+    high: (f64, f64),
+) -> (f64, f64, f64) {
+    let unbounded = (f64::INFINITY, f64::INFINITY, f64::INFINITY);
+    let Ok(spans) = surface.bezier_spans() else {
+        return unbounded;
+    };
+    let (domain_u, domain_v) = surface.domain();
+    let [wrap_u, wrap_v] = closure.wrap;
+    let across_u = stretches(low.0, high.0, domain_u, wrap_u);
+    let across_v = stretches(low.1, high.1, domain_v, wrap_v);
+    // The part `0..1` of a span that a stretch covers, at least
+    // `LEAST_PART` wide; whole when it is all but whole.
+    let part = |span: (f64, f64), stretch: (f64, f64)| -> Option<(f64, f64)> {
+        let width = span.1 - span.0;
+        let (a, b) = (stretch.0.max(span.0), stretch.1.min(span.1));
+        if !(b > a && width > 0.0) {
+            return None;
+        }
+        let (mut s0, mut s1) = ((a - span.0) / width, (b - span.0) / width);
+        if s1 - s0 < LEAST_PART {
+            s0 = (0.5 * (s0 + s1 - LEAST_PART)).clamp(0.0, 1.0 - LEAST_PART);
+            s1 = s0 + LEAST_PART;
+        }
+        const ALL_BUT: f64 = 1e-9;
+        Some((
+            if s0 < ALL_BUT { 0.0 } else { s0 },
+            if s1 > 1.0 - ALL_BUT { 1.0 } else { s1 },
+        ))
+    };
+    let (mut muu, mut muv, mut mvv) = (0.0_f64, 0.0_f64, 0.0_f64);
+    let mut found = false;
+    for span in &spans {
+        for &stretch_u in &across_u {
+            let Some((s0, s1)) = part(span.u, stretch_u) else {
+                continue;
+            };
+            for &stretch_v in &across_v {
+                let Some((t0, t1)) = part(span.v, stretch_v) else {
+                    continue;
+                };
+                // The patch over `s0..s1` by `t0..t1`.
+                let mut patch = span.patch.clone();
+                if s0 > 0.0 {
+                    patch = patch.split_u(s0).1;
+                }
+                if s1 < 1.0 {
+                    patch = patch.split_u((s1 - s0) / (1.0 - s0)).0;
+                }
+                if t0 > 0.0 {
+                    patch = patch.split_v(t0).1;
+                }
+                if t1 < 1.0 {
+                    patch = patch.split_v((t1 - t0) / (1.0 - t0)).0;
+                }
+                let width = (
+                    (span.u.1 - span.u.0) * (s1 - s0),
+                    (span.v.1 - span.v.0) * (t1 - t0),
+                );
+                let Some((uu, uv, vv)) = patch_second_bounds(patch, width) else {
+                    return unbounded;
+                };
+                muu = muu.max(uu);
+                muv = muv.max(uv);
+                mvv = mvv.max(vv);
+                found = true;
+            }
+        }
+    }
+    if found { (muu, muv, mvv) } else { unbounded }
 }
 
 /// How far `target` is from the surface, starting the search at `uv`.
@@ -3193,4 +3463,342 @@ pub(crate) fn mesh_face(
         );
     }
     Ok(mesh)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use craft3d_geom::NurbsSurface;
+    use std::f64::consts::FRAC_PI_4;
+
+    /// Nine rational quadratic control points `(x, y, w)` of the unit
+    /// circle, and their knots.
+    fn ring() -> (Vec<(f64, f64, f64)>, Vec<f64>) {
+        let weight = FRAC_PI_4.cos();
+        let points = (0..9)
+            .map(|k| {
+                let (sin, cos) = (FRAC_PI_4 * f64::from(k)).sin_cos();
+                if k % 2 == 0 {
+                    (cos, sin, 1.0)
+                } else {
+                    (cos / weight, sin / weight, weight)
+                }
+            })
+            .collect();
+        let knots = vec![
+            0.0, 0.0, 0.0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1.0, 1.0, 1.0,
+        ];
+        (points, knots)
+    }
+
+    /// The profile `(ρ, z)` (a clamped spline of `degree` on uniform
+    /// knots) turned about the z axis: u around the axis, v along it.
+    fn revolved(profile: &[(f64, f64)], degree: usize) -> NurbsSurface {
+        let (ring, ring_knots) = ring();
+        let spans = profile.len() - degree;
+        let mut knots = vec![0.0; degree + 1];
+        knots.extend((1..spans).map(|i| i as f64 / spans as f64));
+        knots.extend(vec![1.0; degree + 1]);
+        let mut ctrl = Vec::new();
+        let mut weights = Vec::new();
+        for &(x, y, w) in &ring {
+            for &(rho, z) in profile {
+                ctrl.push(Vec3::new(rho * x, rho * y, z));
+                weights.push(w);
+            }
+        }
+        NurbsSurface::new(
+            2,
+            degree,
+            ring_knots,
+            knots,
+            9,
+            profile.len(),
+            ctrl,
+            weights,
+        )
+        .unwrap()
+    }
+
+    const VASE: [(f64, f64); 7] = [
+        (3.0, 0.0),
+        (5.5, 1.0),
+        (6.0, 4.0),
+        (1.0, 5.5),
+        (1.5, 8.0),
+        (3.5, 9.0),
+        (2.0, 10.0),
+    ];
+
+    #[test]
+    fn a_net_closes_where_its_first_row_is_its_last() {
+        let vase = revolved(&VASE, 3);
+        let closure = Closure::of(&Surface::Nurbs(vase.clone()));
+        assert_eq!(closure.periods, [Some(1.0), None]);
+        assert_eq!(closure.wrap, [Some((0.0, 1.0)), None]);
+        // The analytic kinds say so themselves and are not wrapped.
+        let cylinder = Surface::Cylinder(
+            craft3d_geom::Cylinder::new(craft3d_math::Frame::WORLD, 2.0).unwrap(),
+        );
+        let closure = Closure::of(&cylinder);
+        assert_eq!(closure.periods, [Some(std::f64::consts::TAU), None]);
+        assert_eq!(closure.wrap, [None, None]);
+
+        let (count_u, count_v) = vase.counts();
+        let ctrl = vase.control_points().to_vec();
+        let weights = vase.weights().to_vec();
+        assert_eq!(
+            net_closes(count_u, count_v, &ctrl, Some(&weights)),
+            [true, false]
+        );
+        // A last row that is off by more than rounding does not close...
+        let mut open = ctrl.clone();
+        open[(count_u - 1) * count_v + 2] += Vec3::new(1e-6, 0.0, 0.0);
+        assert_eq!(
+            net_closes(count_u, count_v, &open, Some(&weights)),
+            [false, false]
+        );
+        // ... one off by rounding does ...
+        let mut near = ctrl.clone();
+        near[(count_u - 1) * count_v + 2] += Vec3::new(1e-12, 0.0, 0.0);
+        assert_eq!(
+            net_closes(count_u, count_v, &near, Some(&weights)),
+            [true, false]
+        );
+        // ... and weights in another proportion are another curve.
+        let mut heavier = weights.clone();
+        heavier[(count_u - 1) * count_v + 2] *= 1.5;
+        assert_eq!(
+            net_closes(count_u, count_v, &ctrl, Some(&heavier)),
+            [false, false]
+        );
+        let scaled: Vec<f64> = weights
+            .iter()
+            .enumerate()
+            .map(|(i, w)| {
+                if i >= (count_u - 1) * count_v {
+                    w * 3.0
+                } else {
+                    *w
+                }
+            })
+            .collect();
+        assert_eq!(
+            net_closes(count_u, count_v, &ctrl, Some(&scaled)),
+            [true, false]
+        );
+        // A net whose every row is one row is a curve, not a tube; and a
+        // net that is not what its counts say closes nothing.
+        let flat: Vec<Vec3> = (0..count_u * count_v).map(|n| ctrl[n % count_v]).collect();
+        assert_eq!(net_closes(count_u, count_v, &flat, None), [false, false]);
+        assert_eq!(
+            net_closes(count_u, count_v + 1, &ctrl, None),
+            [false, false]
+        );
+        assert_eq!(net_closes(0, 0, &[], None), [false, false]);
+        let nan = vec![Vec3::new(f64::NAN, 0.0, 0.0); count_u * count_v];
+        assert_eq!(net_closes(count_u, count_v, &nan, None), [false, false]);
+        // Knots that are not clamped: the net does not show the closure.
+        assert!(clamped(vase.knots_u(), 2));
+        assert!(!clamped(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0], 2));
+        assert!(!clamped(&[], 2));
+    }
+
+    #[test]
+    fn parameters_beyond_a_closed_spline_surface_are_brought_back() {
+        assert_eq!(wrapped(0.25, Some((0.0, 1.0))), 0.25);
+        assert_eq!(wrapped(0.0, Some((0.0, 1.0))), 0.0);
+        assert_eq!(wrapped(1.0, Some((0.0, 1.0))), 1.0);
+        assert_eq!(wrapped(1.25, Some((0.0, 1.0))), 0.25);
+        assert_eq!(wrapped(-0.25, Some((0.0, 1.0))), 0.75);
+        assert_eq!(wrapped(7.5, Some((2.0, 4.0))), 3.5);
+        assert_eq!(wrapped(7.5, None), 7.5);
+        assert!(wrapped(f64::NAN, Some((0.0, 1.0))).is_nan());
+        assert_eq!(wrapped(f64::INFINITY, Some((0.0, 1.0))), f64::INFINITY);
+    }
+
+    /// The cells keep the deviation `(a hu² + b hv²) / 8` within the
+    /// tolerance, also where one parameter is held at the limit.
+    #[test]
+    fn the_cells_of_a_spline_face_keep_the_bound_within_the_tolerance() {
+        let within = |(a, b): (f64, f64), span: (f64, f64), tolerance: f64, limit: f64| {
+            let (nu, nv) = spline_cells((a, b), span, tolerance, limit)?;
+            assert!(nu <= limit && nv <= limit && nu == nu.floor() && nv == nv.floor());
+            let (hu, hv) = (span.0 / nu.max(1.0), span.1 / nv.max(1.0));
+            let deviation = (a * hu * hu + b * hv * hv) / 8.0;
+            assert!(
+                deviation <= tolerance * (1.0 + 1e-12),
+                "{deviation} for {tolerance}"
+            );
+            Ok::<_, f64>((nu, nv))
+        };
+        // Curved alike both ways: the cells of one step for both.
+        assert_eq!(
+            within((8.0, 8.0), (1.0, 1.0), 1e-2, 1024.0),
+            Ok((15.0, 15.0))
+        );
+        // Straight along v: no cells that way (one, when it comes to it).
+        assert_eq!(
+            within((8.0, 0.0), (1.0, 3.0), 1e-2, 1024.0),
+            Ok((15.0, 0.0))
+        );
+        // More curved along u, and a box that is not square.
+        assert_eq!(
+            within((100.0, 1.0), (0.5, 2.0), 1e-3, 1024.0),
+            Ok((80.0, 32.0))
+        );
+        // Over the limit along u by less than √2, with room along v: u is
+        // held at the limit and v made finer for it.
+        let even = within((100.0, 1.0), (1.0, 1.0), 2e-5, 1e6).unwrap();
+        assert_eq!(even, (1119.0, 112.0));
+        let held = within((100.0, 1.0), (1.0, 1.0), 2e-5, 1024.0).unwrap();
+        assert_eq!(held.0, 1024.0);
+        assert!(held.1 > even.1 && held.1 < 1024.0, "{held:?}");
+        let other = within((1.0, 100.0), (1.0, 1.0), 2e-5, 1024.0).unwrap();
+        assert_eq!(other, (held.1, held.0));
+        // Beyond that, or with no room in the other, it is too fine, and
+        // says how fine.
+        assert_eq!(within((100.0, 1.0), (1.0, 1.0), 1e-5, 1024.0), Err(1582.0));
+        assert_eq!(within((100.0, 99.0), (1.0, 1.0), 2e-5, 1024.0), Err(1119.0));
+        assert_eq!(
+            within((100.0, 100.0), (1.0, 1.0), 2e-5, 1024.0),
+            Err(1119.0)
+        );
+        // Nothing that is not a number passes for a count.
+        assert!(within((f64::INFINITY, 1.0), (1.0, 1.0), 1e-3, 1024.0).is_err());
+        assert!(within((f64::NAN, 1.0), (1.0, 1.0), 1e-3, 1024.0).is_err());
+        assert!(within((1.0, 1.0), (1.0, 1.0), 0.0, 1024.0).is_err());
+    }
+
+    #[test]
+    fn a_box_is_cut_into_its_stretches_within_the_range() {
+        assert_eq!(stretches(0.2, 0.6, (0.0, 1.0), None), vec![(0.2, 0.6)]);
+        assert_eq!(stretches(-0.2, 1.6, (0.0, 1.0), None), vec![(0.0, 1.0)]);
+        assert_eq!(
+            stretches(0.2, 0.6, (0.0, 1.0), Some((0.0, 1.0))),
+            vec![(0.2, 0.6)]
+        );
+        let across = stretches(0.75, 1.25, (0.0, 1.0), Some((0.0, 1.0)));
+        assert_eq!(across, vec![(0.75, 1.0), (0.0, 0.25)]);
+        let below = stretches(-0.5, 0.25, (0.0, 1.0), Some((0.0, 1.0)));
+        assert_eq!(below, vec![(0.5, 1.0), (0.0, 0.25)]);
+        // A whole turn from anywhere, and anything that is not a number.
+        assert_eq!(stretches(0.3, 1.3, (0.0, 1.0), Some((0.0, 1.0))).len(), 2);
+        assert_eq!(
+            stretches(0.0, 5.0, (0.0, 1.0), Some((0.0, 1.0))),
+            vec![(0.0, 1.0)]
+        );
+        assert_eq!(stretches(f64::NAN, 1.0, (0.0, 1.0), None), vec![(0.0, 1.0)]);
+    }
+
+    /// The largest second differences of `surface` on a lattice over the
+    /// box, as `(Muu, Muv, Mvv)`: what the bounds must not be below.
+    fn sampled(
+        surface: &NurbsSurface,
+        closure: &Closure,
+        low: (f64, f64),
+        high: (f64, f64),
+    ) -> (f64, f64, f64) {
+        const SAMPLES: u32 = 40;
+        let (hu, hv) = (
+            (high.0 - low.0) / f64::from(2 * SAMPLES),
+            (high.1 - low.1) / f64::from(2 * SAMPLES),
+        );
+        let [wrap_u, wrap_v] = closure.wrap;
+        let (mut muu, mut muv, mut mvv) = (0.0_f64, 0.0_f64, 0.0_f64);
+        for i in 0..SAMPLES {
+            for j in 0..SAMPLES {
+                let u = low.0 + hu * f64::from(2 * i + 1);
+                let v = low.1 + hv * f64::from(2 * j + 1);
+                let s = |du: f64, dv: f64| {
+                    surface.eval(wrapped(u + du * hu, wrap_u), wrapped(v + dv * hv, wrap_v))
+                };
+                let centre = s(0.0, 0.0);
+                muu = muu.max((s(1.0, 0.0) + s(-1.0, 0.0) - centre * 2.0).length() / (hu * hu));
+                mvv = mvv.max((s(0.0, 1.0) + s(0.0, -1.0) - centre * 2.0).length() / (hv * hv));
+                let mixed = s(1.0, 1.0) - s(1.0, -1.0) - s(-1.0, 1.0) + s(-1.0, -1.0);
+                muv = muv.max(mixed.length() / (4.0 * hu * hv));
+            }
+        }
+        (muu, muv, mvv)
+    }
+
+    /// The bounds the seed grid is sized by are bounds: nowhere below the
+    /// second differences of the surface, on whole surfaces, on parts of
+    /// one knot span, across knots and across the seam; and not so far
+    /// above them that the grid is wasted.
+    #[test]
+    fn the_bounds_on_a_spline_surface_are_above_its_second_differences() {
+        let wavy = {
+            // A polynomial B-spline sheet, 6 by 5 control points.
+            let knots = |degree: usize, count: usize| {
+                let spans = count - degree;
+                let mut knots = vec![0.0; degree + 1];
+                knots.extend((1..spans).map(|i| i as f64 / spans as f64));
+                knots.extend(vec![1.0; degree + 1]);
+                knots
+            };
+            let mut ctrl = Vec::new();
+            for i in 0..6 {
+                for j in 0..5 {
+                    let z = f64::from((i * 7 + j * 3) % 5) - 2.0;
+                    ctrl.push(Vec3::new(f64::from(i), f64::from(j), 0.4 * z));
+                }
+            }
+            let weights = vec![1.0; 30];
+            NurbsSurface::new(3, 2, knots(3, 6), knots(2, 5), 6, 5, ctrl, weights).unwrap()
+        };
+        let surfaces = [
+            ("vase", revolved(&VASE, 3)),
+            ("vase of degree 5", revolved(&VASE, 5)),
+            (
+                "barrel",
+                revolved(&[(1.0, 0.0), (1.3, 0.5), (1.3, 1.5), (1.0, 2.0)], 3),
+            ),
+            ("wavy sheet", wavy),
+        ];
+        let boxes = [
+            ((0.0, 0.0), (1.0, 1.0)),
+            ((0.1, 0.2), (0.2, 0.9)),
+            ((0.2, 0.1), (0.8, 0.3)),
+            ((0.26, 0.51), (0.27, 0.52)),
+            ((0.24, 0.24), (0.26, 0.26)),
+            ((0.5, 0.0), (0.5 + 1e-7, 1.0)),
+        ];
+        let mut loosest = 0.0_f64;
+        for (name, surface) in &surfaces {
+            let closure = Closure::of(&Surface::Nurbs(surface.clone()));
+            let mut all = boxes.to_vec();
+            if closure.wrap[0].is_some() {
+                // Across the seam, as a face that goes around is laid out.
+                all.push(((0.7, 0.0), (1.7, 1.0)));
+                all.push(((0.9, 0.3), (1.2, 0.6)));
+                all.push(((-0.3, 0.3), (0.1, 0.6)));
+            }
+            for (low, high) in all {
+                let (muu, muv, mvv) = spline_second_bounds(surface, &closure, low, high);
+                let (suu, suv, svv) = sampled(surface, &closure, low, high);
+                let what = format!("{name} over {low:?}..{high:?}");
+                for (bound, seen, which) in [(muu, suu, "uu"), (muv, suv, "uv"), (mvv, svv, "vv")] {
+                    assert!(bound.is_finite(), "{what}: no bound on {which}");
+                    // (Second differences are means of the derivative,
+                    // so they do not exceed its bound but for rounding;
+                    // a box narrower than the lattice can resolve, the
+                    // last one, has none worth the name.)
+                    let resolved = high.0 - low.0 > 1e-6;
+                    assert!(
+                        !resolved || bound >= seen * (1.0 - 1e-6) - 1e-6,
+                        "{what}: the bound {bound} on {which} is below {seen}"
+                    );
+                }
+                // How loose: the cells of the grid go by the root of this.
+                if high.0 - low.0 >= 0.3 && high.1 - low.1 >= 0.3 {
+                    let ratio = (muu + 2.0 * muv + mvv) / (suu + 2.0 * suv + svv);
+                    println!("{what}: bound / seen = {ratio:.2}");
+                    loosest = loosest.max(ratio);
+                }
+            }
+        }
+        println!("loosest: {loosest:.2}");
+    }
 }
