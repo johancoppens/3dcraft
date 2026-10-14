@@ -915,7 +915,10 @@ pub fn render_bodies(
     let params = render_params(quality, tokens);
     let empty = craft3d_tess::Mesh::default();
     let mesh = scene.map_or(&empty, |scene| &scene.mesh);
-    craft3d_render::render(mesh, &camera.to_render(), &params).map_err(|e| e.to_string())
+    let no_colors = craft3d_render::FaceColors::new();
+    let colors = scene.map_or(&no_colors, |scene| &scene.face_colors);
+    craft3d_render::render_colored(mesh, colors, &camera.to_render(), &params)
+        .map_err(|e| e.to_string())
 }
 
 /// One image of the viewport as the window shows it: the bodies as
