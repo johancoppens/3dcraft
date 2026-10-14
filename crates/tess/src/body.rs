@@ -460,7 +460,7 @@ fn tessellate(
             };
             let wanted = boundary.chords_to_refine(body, tolerance);
             let result = (mesh && (last || wanted.is_empty())).then(|| {
-                let mut made = mesh_face(&boundary, face, index, params)?;
+                let mut made = mesh_face(&boundary, face, index, params, &[])?;
                 closes_along_edges(body, points, face, index, &made.border)?;
                 made.border = Vec::new();
                 Ok(made)
@@ -529,7 +529,119 @@ fn tessellate(
             })
             .collect();
     }
+    if mesh {
+        part_shared_rungs(body, params, &edges.points, &mut results)?;
+    }
     Ok((edges, results))
+}
+
+/// How often faces are done again to part them where they share a rung.
+const RUNG_ROUNDS: usize = 3;
+
+/// The rungs two faces share: per pair, the segment and the two faces,
+/// the lower first; in the order of the segments' keys.
+fn shared_rungs(results: &[Option<FaceResult>]) -> Vec<((Vec3, Vec3), usize, usize)> {
+    type Key = ([u64; 3], [u64; 3]);
+    let mut all: Vec<(Key, usize, (Vec3, Vec3))> = Vec::new();
+    for (index, result) in results.iter().enumerate() {
+        let Some(Ok(made)) = result else { continue };
+        for &(from, to) in &made.rungs {
+            let (a, b) = (place(from), place(to));
+            all.push((if a <= b { (a, b) } else { (b, a) }, index, (from, to)));
+        }
+    }
+    all.sort_by_key(|(key, index, _)| (*key, *index));
+    all.iter()
+        .zip(all.iter().skip(1))
+        .filter(|(one, other)| one.0 == other.0 && one.1 != other.1)
+        .map(|(one, other)| (one.2, one.1, other.1))
+        .collect()
+}
+
+/// Parts the meshes of faces that share a rung.
+///
+/// A rung is a side of a triangle that joins two points of the face's
+/// boundary across the face. Two faces can have the same one: where the
+/// body between them is thinner than the tolerance (a neck of a face
+/// between two stretches of one edge, with the neighbour's face across
+/// the same edge just behind it), both take the chord between the same
+/// two edge points for their surface. Each mesh is right, and together
+/// they are closed, but four triangles then meet in that chord: the
+/// welded mesh is no manifold, and a program that reads it calls it open.
+///
+/// One of the two faces gets a point of its own surface in the middle of
+/// the rung (the curved one; of two curved ones the lower in face order),
+/// which takes its mesh off the chord by less than the tolerance, and is
+/// done again. A few rounds, each a function of the body, the parameters
+/// and the round before; a rung still shared after them is an error at
+/// the face. (A triangle budget is not looked at again here: the points
+/// added are a handful.)
+fn part_shared_rungs(
+    body: &Body,
+    params: &TessParams,
+    points: &[Vec<Vec3>],
+    results: &mut [Option<FaceResult>],
+) -> Result<(), TessError> {
+    let curved = |index: usize| {
+        body.faces
+            .get(index)
+            .is_some_and(|face| !matches!(face.surface, Surface::Plane(_)))
+    };
+    // Per face, the rungs it must not have, over all rounds.
+    let mut splits: Vec<Vec<(Vec3, Vec3)>> = vec![Vec::new(); results.len()];
+    for round in 0..=RUNG_ROUNDS {
+        // (Two plane faces with a side in common lie in one plane and
+        // overlap: no mesh parts them, and that is the body's to answer
+        // for, `craft3d_topo::check` and the self-intersection test.)
+        let mut shared = shared_rungs(results);
+        shared.retain(|&(_, first, second)| curved(first) || curved(second));
+        let Some(&(_, first, second)) = shared.first() else {
+            return Ok(());
+        };
+        if round == RUNG_ROUNDS {
+            return Err(TessError::Face {
+                face: first,
+                reason: format!(
+                    "its mesh and that of face {second} share a side that is on no edge: the \
+                     body between them is thinner than the tolerance there; use a finer tolerance"
+                ),
+            });
+        }
+        let mut again: Vec<usize> = Vec::new();
+        for (rung, first, second) in shared {
+            let face = if curved(first) || !curved(second) {
+                first
+            } else {
+                second
+            };
+            if let Some(list) = splits.get_mut(face) {
+                list.push(rung);
+                again.push(face);
+            }
+        }
+        again.sort_unstable();
+        again.dedup();
+        for index in again {
+            let (Some(face), Some(list)) = (body.faces.get(index), splits.get(index)) else {
+                continue;
+            };
+            let mut starved = false;
+            let made = face_boundary(body, points, face, index, params, &mut starved).and_then(
+                |boundary| {
+                    let made = mesh_face(&boundary, face, index, params, list)?;
+                    closes_along_edges(body, points, face, index, &made.border)?;
+                    Ok(made)
+                },
+            );
+            if let Some(slot) = results.get_mut(index) {
+                *slot = Some(made.map(|mut made| {
+                    made.border = Vec::new();
+                    made
+                }));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Tessellates every face of `body`. Triangle `face_ids` are face indices;
@@ -729,5 +841,32 @@ mod tests {
             .map(|&(a, b)| (negative(a), negative(b)))
             .collect();
         assert_eq!(closes_along_edges(&body, &points, face, 1, &signed), Ok(()));
+    }
+
+    /// Two faces that both have the side between the same two points are
+    /// found, whichever way round each has it; a face alone with a side,
+    /// or with it twice, is not.
+    #[test]
+    fn rungs_that_two_faces_share_are_found() {
+        let p = |x: f64| Vec3::new(x, 1.0, -0.0);
+        let face = |rungs: Vec<(Vec3, Vec3)>| -> Option<FaceResult> {
+            Some(Ok(FaceMesh {
+                rungs,
+                ..FaceMesh::default()
+            }))
+        };
+        let results = vec![
+            face(vec![(p(0.0), p(1.0)), (p(2.0), p(3.0)), (p(2.0), p(3.0))]),
+            None,
+            face(vec![(p(4.0), p(5.0))]),
+            Some(Err(TessError::TooManyVertices)),
+            face(vec![(p(1.0), Vec3::new(0.0, 1.0, 0.0)), (p(6.0), p(7.0))]),
+            face(vec![(p(7.0), p(6.0)), (p(5.0), p(4.5))]),
+        ];
+        let shared = shared_rungs(&results);
+        let faces: Vec<(usize, usize)> = shared.iter().map(|&(_, a, b)| (a, b)).collect();
+        assert_eq!(faces, vec![(0, 4), (4, 5)]);
+        assert_eq!(shared[0].0, (p(0.0), p(1.0)));
+        assert!(shared_rungs(&[]).is_empty());
     }
 }

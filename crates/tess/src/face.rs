@@ -70,6 +70,10 @@ pub(crate) struct FaceMesh {
     /// outward, runs. `body.rs` holds this against the edges of the face
     /// (`closes_along_edges`).
     pub border: Vec<(Vec3, Vec3)>,
+    /// The sides of triangles that join two points of the boundary across
+    /// the face, each once. Two faces may have the same one (see
+    /// `body.rs`, `shared_rungs`).
+    pub rungs: Vec<(Vec3, Vec3)>,
 }
 
 fn fail<T>(face: usize, reason: impl Into<String>) -> Result<T, TessError> {
@@ -112,6 +116,12 @@ struct Closure {
 /// of a face's boundary is rounding of the projection (see
 /// [`face_boundary`]).
 const NO_REGION: f64 = 1e-9;
+
+/// How slowly, against where it moves fastest along the loop, a spline
+/// surface may move with a parameter at a boundary point for the
+/// parameter found there by the search to be taken as it is (see
+/// [`build_ring`]).
+const NEAR_POLE: f64 = 1e-3;
 
 /// How near, as a part of the size of the control net, two rows of control
 /// points must be to count as the same row.
@@ -488,6 +498,51 @@ fn build_ring(
         }
     };
     let n = points.len();
+    // Near a pole of a spline surface, short of it, a parameter is not
+    // free but nearly so: the search that projects a point finds it to
+    // rounding over how slowly the surface moves with it, which a few
+    // millionths of the surface's size from the pole is no digits at all.
+    // A boundary whose points zigzag in that parameter bounds triangles
+    // that stand inside out, which no refinement cures. Such a point is
+    // projected again by descent from its neighbour along the loop, away
+    // from the pole, where the parameter is known: from there the descent
+    // moves it only as far as the point asks. (Where the analytic kinds
+    // have a pole their parameters are in closed form.)
+    if param.is_freeform() {
+        let near_pole = |i: usize| -> bool {
+            let [sa, sb] = sizes.get(i).copied().unwrap_or([1.0, 1.0]);
+            let [la, lb] = largest;
+            free_at(i).is_none() && (sa <= NEAR_POLE * la || sb <= NEAR_POLE * lb)
+        };
+        let mut walked = vec![false; n];
+        let forwards = (0..n).map(|i| (i, (i + n - 1) % n));
+        let backwards = (0..n).rev().map(|i| (i, (i + 1) % n));
+        for (i, from) in forwards.chain(backwards) {
+            let known = free_at(from).is_none()
+                && (!near_pole(from) || walked.get(from).copied().unwrap_or(false));
+            if !near_pole(i) || walked.get(i).copied().unwrap_or(true) || !known {
+                continue;
+            }
+            let (Some(&start), Some(&(point, _)), Some(&found)) =
+                (raw.get(from), points.get(i), raw.get(i))
+            else {
+                continue;
+            };
+            let Ok((u, v)) = param.surface.project_from(point, param.raw(start)) else {
+                continue;
+            };
+            let uv = param.order(u, v);
+            // Taken when it is a foot of the point as good as the search's.
+            let off = |uv: Uv| param.eval(uv).distance(point);
+            if uv.iter().all(|x| x.is_finite())
+                && off(uv) <= off(found).max(1e-12 * off(start))
+                && let (Some(slot), Some(done)) = (raw.get_mut(i), walked.get_mut(i))
+            {
+                *slot = uv;
+                *done = true;
+            }
+        }
+    }
     let Some(start) = (0..n).find(|&i| free_at(i).is_none()) else {
         return fail(
             face,
@@ -2380,6 +2435,11 @@ fn distance_to_surface(param: &Param, uv: Uv, target: Vec3) -> f64 {
     if found < at_uv { found } else { at_uv }
 }
 
+/// The part of (the size of its coordinates times its longest side) below
+/// which twice the area of a triangle is rounding: some thousands of the
+/// unit in the last place of the products it is the difference of.
+const ROUNDED_AWAY: f64 = 1e-12;
+
 /// What to do with a triangle that is not good enough.
 enum Action {
     Keep,
@@ -2512,6 +2572,25 @@ impl Work<'_> {
         // parameters decides when it is clear; otherwise the normal at the
         // nearest surface point does.
         let facing = (b.1 - a.1).cross(c.1 - a.1);
+        // A triangle whose area is within the rounding of its own corners
+        // faces no way that can be told: `facing` is then the difference
+        // of products that agree to their last digits. Such triangles
+        // lie where a boundary runs into a pole (between points of an
+        // edge a millionth of the face's size from the pole, which is one
+        // point however many vertices it has in parameter space); cut in
+        // two they only get smaller, and there is nothing to mend. (On a
+        // spline surface: at the apex of a cone or a pole of a sphere the
+        // parameters are exact and such a triangle is mended by a cut.)
+        let reach = [a.1, b.1, c.1].iter().fold(0.0_f64, |m, p| {
+            m.max(p.x.abs()).max(p.y.abs()).max(p.z.abs())
+        });
+        let longest =
+            a.1.distance(b.1)
+                .max(b.1.distance(c.1))
+                .max(c.1.distance(a.1));
+        if self.param.is_freeform() && facing.length() <= ROUNDED_AWAY * reach * longest {
+            return Action::Keep;
+        }
         let (_, [da, db]) = self.param.derivatives(middle);
         let reference = da.cross(db);
         let agreement = facing.dot(reference);
@@ -3167,11 +3246,17 @@ pub(crate) fn face_boundary<'a>(
 }
 
 /// Triangulates face `index`, given its boundary.
+///
+/// `splits` are sides the mesh must not have: segments between two points
+/// of the boundary that the mesh of another face has as well
+/// (`body.rs`, `shared_rungs`). On a curved face each gets a point of the
+/// surface in its middle; a plane face is left as it is.
 pub(crate) fn mesh_face(
     boundary: &Boundary,
     face: &Face,
     index: usize,
     params: &TessParams,
+    splits: &[(Vec3, Vec3)],
 ) -> Result<FaceMesh, TessError> {
     let (param, region) = (boundary.param, &boundary.region);
     if let Some(doubt) = &region.doubt {
@@ -3324,6 +3409,8 @@ pub(crate) fn mesh_face(
             "its loops do not bound a region: they enclose no area on the surface",
         );
     }
+    // What was added so far is the boundary.
+    let boundary_vertices = work.uv.len();
 
     if !work.param.is_plane() {
         // Seed with the grid, away from the boundary: a point just inside
@@ -3342,6 +3429,38 @@ pub(crate) fn mesh_face(
             if let Interior::Added(v) = added {
                 let pos = work.param.eval(uv);
                 work.record(v, uv, pos, None).map_err(explain)?;
+            }
+        }
+
+        // The sides this mesh may not have, each cut in its middle (the
+        // triangles change with every cut: look again after each).
+        for _ in 0..splits.len() {
+            let mut cut = None;
+            'search: for t in 0..work.cdt.triangle_count() {
+                let Some(view) = work.cdt.triangle(t).filter(|view| view.inside) else {
+                    continue;
+                };
+                let [Some(a), Some(b), Some(c)] = view.v.map(|v| work.vertex(v)) else {
+                    continue;
+                };
+                let [c0, c1, c2] = view.constrained;
+                let sides = [(c0, b.1, c.1), (c1, c.1, a.1), (c2, a.1, b.1)];
+                for (i, (constrained, from, to)) in sides.into_iter().enumerate() {
+                    let named =
+                        |&(p, q): &(Vec3, Vec3)| (p == from && q == to) || (p == to && q == from);
+                    if !constrained && splits.iter().any(named) {
+                        cut = Some((t, i));
+                        break 'search;
+                    }
+                }
+            }
+            let Some((t, i)) = cut else { break };
+            match work.split_edge(t, i) {
+                Ok(()) => {}
+                // No room for a point there: `body.rs` finds the side
+                // still shared and says so.
+                Err(CdtError::Degenerate) => break,
+                Err(e) => return Err(explain(e)),
             }
         }
 
@@ -3416,10 +3535,26 @@ pub(crate) fn mesh_face(
         // are one segment, and what lies beyond the one that is no
         // constraint ends on it.
         let [c0, c1, c2] = view.constrained;
-        for (constrained, (from, to)) in [(c0, (b, c)), (c1, (c, a)), (c2, (a, b))] {
-            if constrained && from.1 != to.1 {
+        let [va, vb, vc] = view.v;
+        let on_boundary = |v: u32| {
+            v.checked_sub(FIRST_VERTEX)
+                .is_some_and(|i| (i as usize) < boundary_vertices)
+        };
+        let sides = [
+            (c0, (b, c), (vb, vc)),
+            (c1, (c, a), (vc, va)),
+            (c2, (a, b), (va, vb)),
+        ];
+        for (constrained, (from, to), (v, w)) in sides {
+            if from.1 == to.1 {
+                continue;
+            }
+            if constrained {
                 mesh.border
                     .push(if flip { (to.1, from.1) } else { (from.1, to.1) });
+            } else if v < w && on_boundary(v) && on_boundary(w) {
+                // (Each such side is seen from both its triangles.)
+                mesh.rungs.push((from.1, to.1));
             }
         }
         if a.1 == b.1 || b.1 == c.1 || c.1 == a.1 {
