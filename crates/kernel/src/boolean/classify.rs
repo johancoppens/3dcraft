@@ -2,7 +2,7 @@
 //! solid, and which of them the operation keeps.
 
 use super::hits::{curve_hits, signed_distance};
-use super::outline::{Outline, Side, boxes_meet, line_in_box};
+use super::outline::{Outline, Side, boxes_meet, line_in_box, surface_distance};
 use super::regions::{self, Half};
 use super::section::Solid;
 use super::{
@@ -151,6 +151,14 @@ fn classify(
         for p in fresh {
             for &(face, same_normal) in coincident {
                 let outline = other.outlines.get(face).ok_or(Stop::of(LOST))?;
+                // Coincident surfaces may overlap only in part: a point of
+                // this one that is not on the other's (a rational patch
+                // on the cylinder it is a quarter of, with a point of the
+                // cylinder beyond the patch) is off the face, and has no
+                // place in a chart that is taken from the patch.
+                if surface_distance(outline.sheet(), p) > tol {
+                    continue;
+                }
                 match outline
                     .side(p, tol)
                     .map_err(|r| Stop::of(r).at(&[other.name(face)]))?

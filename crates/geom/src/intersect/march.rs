@@ -78,8 +78,14 @@ use craft3d_math::{Bbox3, Tolerance, Vec3};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Cells looked at before the surfaces are declared too close to tangent
-/// (or coincident) over too large an area.
-const MAX_CELLS: usize = 400_000;
+/// (or coincident) over too large an area. A flat face against a domed
+/// roof at a point where it is tangent stays near the roof over much of
+/// it, and the cells there are simple only when small: two such pairs of
+/// the corpus (tangent/block-spline/005, tangent/cylinder-spline/008) need
+/// 401,264 and 440,000, in about 1.6 s, and their common volumes agree
+/// with the volume integrated directly to 1e-7. (400,000 until
+/// 2026-10-14.)
+const MAX_CELLS: usize = 1_000_000;
 const MAX_FLOOR_CELLS: usize = 2_000;
 const MAX_POINTS: usize = 16_000;
 const MAX_BRANCHES: usize = 512;

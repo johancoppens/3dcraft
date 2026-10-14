@@ -88,7 +88,7 @@ use std::path::PathBuf;
 /// of a crossing the surfaces are a tenth of a tolerance apart at is no
 /// longer drawn twice: four `near` cases of a block or a dome against a
 /// roof).
-const AGREEING_FLOOR: usize = 11564;
+const AGREEING_FLOOR: usize = 11573;
 
 /// Mismatches the kernel is known to have: `(case id, operation, why)`.
 /// They are bugs, listed so that the test is green while they are open and
@@ -1083,13 +1083,11 @@ fn run_case(case: &Value, snap: Option<&Value>, verbose: bool) -> Vec<Outcome> {
             other => other,
         };
         if verbose {
+            // One print per outcome, so that cases run side by side do
+            // not interleave their lines.
             println!(
-                "{id} {name}: {outcome:?} ({booleans_ms:.0} ms boolean, {:.0} ms in all)",
-                started.elapsed().as_secs_f64() * 1e3
-            );
-            println!("    ours      {ours:?}");
-            println!(
-                "    reference {}",
+                "{id} {name}: {outcome:?} ({booleans_ms:.0} ms boolean, {:.0} ms in all)\n    ours      {ours:?}\n    reference {}",
+                started.elapsed().as_secs_f64() * 1e3,
                 case.get("freecad")
                     .and_then(|f| f.get(field))
                     .map_or("none".to_string(), Value::to_string)
