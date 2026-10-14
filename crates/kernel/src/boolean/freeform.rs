@@ -59,7 +59,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BinaryHeap};
 use std::sync::{Arc, Mutex, PoisonError};
 
-pub(super) const WEIGHTS: Reason = "a rational freeform face whose weights differ so much within one span that splitting it does not even them out (a weight function that comes too near zero): its derivatives cannot be bounded usefully";
+pub(super) const WEIGHTS: Reason = "a rational freeform face whose weights differ by more than a factor of a thousand within one span: its derivatives cannot be bounded usefully";
 pub(super) const IRREGULAR: Reason = "a freeform face whose parametrisation stalls or folds somewhere (a collapsed or self-overlapping patch); its chart cannot be followed";
 pub(super) const POLES_BOTH_WAYS: Reason = "a freeform face whose patch closes into a point on two adjacent sides (collapsed borders both along u and along v); its chart cannot be followed";
 pub(super) const POLE_SHAPE: Reason = "a freeform face that closes into a point too sharply or too unevenly for the directions around that point to be told apart (a cusp, or a point the surface folds back over)";
@@ -70,14 +70,8 @@ const TOO_MANY: Reason = "a freeform face with more pieces than booleans can ind
 const MAX_DEPTH: usize = 5;
 const MAX_LEAVES: usize = 1 << 15;
 /// How far apart the weights of one Bézier span of a rational surface may
-/// be before it is split ([`evened_out`]): every bound on its derivatives
-/// carries a power of this ratio.
+/// be: every bound on its derivatives carries a power of this ratio.
 const MAX_WEIGHT_RATIO: f64 = 1e3;
-/// A span whose weights are further apart than [`MAX_WEIGHT_RATIO`] is
-/// split until those of each piece are within this of each other.
-const EVEN_WEIGHT_RATIO: f64 = 16.0;
-/// How many times such a span is halved both ways at most.
-const MAX_WEIGHT_SPLITS: usize = 24;
 /// How many nearest points a tree remembers before it forgets them all.
 const MAX_MEMO: usize = 1 << 14;
 /// Newton's iteration for the nearest point.
@@ -1315,51 +1309,6 @@ static SHELF: Mutex<Shelf> = Mutex::new(Vec::new());
 const SHELF_TREES: usize = 32;
 const SHELF_NODES: usize = 1 << 17;
 
-/// The spans of a rational surface with every span whose weights are more
-/// than [`MAX_WEIGHT_RATIO`] apart split into pieces whose weights are
-/// within [`EVEN_WEIGHT_RATIO`]: every bound on the derivatives of a piece
-/// carries a power of that ratio, and a piece's weights even out as it
-/// shrinks (its control weights tend to the weight function, which is
-/// positive, so over a small piece nearly constant). The pieces are in a
-/// fixed order (each span's in the order of a depth-first quartering).
-/// Spans within the ratio are kept as they are. An error when a weight is
-/// not positive, or the pieces would be too many or too small.
-fn evened_out(spans: Vec<Span>) -> Result<Vec<Span>, Reason> {
-    let mut out: Vec<Span> = Vec::with_capacity(spans.len());
-    for (u, v, patch) in spans {
-        let (lightest, heaviest) = patch.weight_range().ok_or(IRREGULAR)?;
-        if heaviest <= MAX_WEIGHT_RATIO * lightest {
-            out.push((u, v, patch));
-            continue;
-        }
-        let mut stack = vec![(u, v, patch, 0_usize)];
-        while let Some((u, v, patch, depth)) = stack.pop() {
-            let (lightest, heaviest) = patch.weight_range().ok_or(IRREGULAR)?;
-            if heaviest <= EVEN_WEIGHT_RATIO * lightest {
-                out.push((u, v, patch));
-                if out.len() > MAX_LEAVES {
-                    return Err(TOO_MANY);
-                }
-                continue;
-            }
-            if depth >= MAX_WEIGHT_SPLITS || stack.len() + out.len() > MAX_LEAVES {
-                return Err(WEIGHTS);
-            }
-            let um = 0.5 * (u.0 + u.1);
-            let vm = 0.5 * (v.0 + v.1);
-            let (left, right) = patch.split_u(0.5);
-            let (ll, lh) = left.split_v(0.5);
-            let (rl, rh) = right.split_v(0.5);
-            // Popped in the order low-low, low-high, high-low, high-high.
-            stack.push(((um, u.1), (vm, v.1), rh, depth + 1));
-            stack.push(((um, u.1), (v.0, vm), rl, depth + 1));
-            stack.push(((u.0, um), (vm, v.1), lh, depth + 1));
-            stack.push(((u.0, um), (v.0, vm), ll, depth + 1));
-        }
-    }
-    Ok(out)
-}
-
 impl PatchTree {
     /// The tree of `surface`, shared with the booleans before that asked
     /// for the same surface. A tree is a function of its surface alone, so
@@ -1412,11 +1361,14 @@ impl PatchTree {
             return Err(IRREGULAR);
         }
         let polynomial = spans.iter().all(|s| s.2.is_polynomial());
-        let spans = if polynomial {
-            spans
-        } else {
-            evened_out(spans)?
-        };
+        if !polynomial {
+            for (_, _, patch) in &spans {
+                let (lightest, heaviest) = patch.weight_range().ok_or(IRREGULAR)?;
+                if !(heaviest <= MAX_WEIGHT_RATIO * lightest) {
+                    return Err(WEIGHTS);
+                }
+            }
+        }
         let second = polynomial.then(|| second_bound(&spans)).flatten();
         // Quarter each span until its pieces are small, within a budget
         // of leaves for the whole surface.
@@ -2459,12 +2411,8 @@ mod tests {
         }
     }
 
-    /// Weights more than a thousand apart in one span are evened out by
-    /// splitting it (refused until 2026-10-15); only a weight function that
-    /// comes so near zero that two dozen halvings do not even it out is
-    /// refused.
     #[test]
-    fn weights_too_far_apart_are_split_or_refused_with_the_reason() {
+    fn weights_too_far_apart_are_refused_with_the_reason() {
         let surface = |heavy: f64| {
             Surface::Nurbs(
                 NurbsSurface::new(
@@ -2485,29 +2433,9 @@ mod tests {
                 .unwrap(),
             )
         };
-        assert_eq!(PatchTree::new(&surface(900.0)).unwrap().roots.len(), 1);
-        for heavy in [1100.0, 1.0 / 1100.0, 1e6, 1e-6] {
-            let tree = PatchTree::new(&surface(heavy)).unwrap();
-            assert!(tree.roots.len() > 1, "{heavy}");
-            // The pieces cover the domain once, and their weights are even.
-            let mut area = 0.0;
-            for &root in &tree.roots {
-                let node = &tree.nodes[root];
-                area += (node.u.1 - node.u.0) * (node.v.1 - node.v.0);
-            }
-            assert!((area - 1.0).abs() < 1e-12, "{heavy}: {area}");
-            assert!(tree.chart_speed().is_ok(), "{heavy}");
-            // Points of the surface are on it, as the tree measures.
-            for (u, v) in [(0.1, 0.9), (0.0, 1.0), (0.5, 0.5), (0.99, 0.01)] {
-                let p = surface(heavy).eval(u, v);
-                assert!(
-                    tree.nearest(p).unwrap().distance < 1e-9,
-                    "{heavy} ({u}, {v})"
-                );
-            }
-        }
-        assert_eq!(PatchTree::new(&surface(1e15)).unwrap_err(), WEIGHTS);
-        assert_eq!(PatchTree::new(&surface(1e-15)).unwrap_err(), WEIGHTS);
+        assert!(PatchTree::new(&surface(900.0)).is_ok());
+        assert_eq!(PatchTree::new(&surface(1100.0)).unwrap_err(), WEIGHTS);
+        assert_eq!(PatchTree::new(&surface(1.0 / 1100.0)).unwrap_err(), WEIGHTS);
     }
 
     #[test]

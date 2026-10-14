@@ -795,29 +795,28 @@ fn what_is_not_supported_says_so() {
         7.0 * PI / 2.0 + 3.0 * PI / 4.0,
         k,
     );
-    // Weights more than a factor of a thousand apart were refused until
-    // 2026-10-15; such a span is now split until each piece's weights are
-    // within sixteen of each other, and the results are the same solids
-    // (the expectation changed from a refusal to the closed forms above).
-    for heavy in [2000.0, 1e6] {
-        let united = solve(&weighted(heavy), &ball, Union, k);
-        assert_mass(
-            &united,
-            24.0 + 4.0 * PI / 3.0 - eighth,
-            52.0 - 3.0 * PI / 4.0 + 7.0 * PI / 2.0,
-            k,
-        );
-        let rest = solve(&ball, &weighted(heavy), Subtract, k);
-        assert_mass(
-            &rest,
-            4.0 * PI / 3.0 - eighth,
-            7.0 * PI / 2.0 + 3.0 * PI / 4.0,
-            k,
-        );
+    // Weights a hundred apart (2026-10-15, the reproducer for what is
+    // owed of "rational weights a thousand apart", `docs/roadmap.md`): the
+    // patch moves a hundred times faster with its parameters near its
+    // light corners than near its heavy ones, and the winding numbers,
+    // which halve the loops by one bound on the chart's speed over the
+    // whole face, give up. (Tried: that bound taken near each piece of a
+    // loop builds this union, but its measure does not settle; and spans
+    // with weights more than a thousand apart split into even pieces are
+    // refused the same way.)
+    match boolean(&weighted(100.0), &ball, Union, &tol) {
+        Err(KernelError::Unsupported { reason, .. }) => {
+            assert!(reason.contains("too close"), "{reason}");
+        }
+        other => panic!(
+            "weights a hundred apart: {:?}; say so in the docs and hold it to the closed forms",
+            other.map(|r| counts(&r))
+        ),
     }
-    // What stays refused: weights so far apart that two dozen halvings do
-    // not even them out.
-    let rational = weighted(1e15);
+    // What stays refused of a rational face: weights more than a factor
+    // of a thousand apart, for which no bound on the derivatives is of
+    // any use.
+    let rational = weighted(2000.0);
     let (why, faces) = reason(&rational, &ball, Union);
     assert!(why.contains("rational") && why.contains("weights"), "{why}");
     assert_eq!(faces, [(Operand::A, FaceId(1))]);
