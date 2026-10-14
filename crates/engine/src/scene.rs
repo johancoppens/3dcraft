@@ -390,6 +390,14 @@ pub struct Scene {
 }
 
 impl Scene {
+    /// How the bodies were sampled: the chordal tolerance and the angle
+    /// criterion. Two scenes of one revision with the same sampling have
+    /// the same meshes; a viewer that keeps what it uploaded keys it by
+    /// this.
+    pub fn sampling(&self) -> (f64, Option<f64>) {
+        (self.tolerance, self.max_angle)
+    }
+
     pub fn triangles(&self) -> usize {
         self.mesh.triangles.len()
     }

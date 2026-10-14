@@ -4,8 +4,7 @@
 //! (AGENTS.md rule 9). Nothing here belongs to a document.
 
 use craft3d_engine::{
-    DISPLAY_MAX_ANGLE, DISPLAY_MAX_ANGLE_DEGREES, DISPLAY_MAX_TRIANGLES,
-    DISPLAY_RELATIVE_TOLERANCE, SceneQuality,
+    DISPLAY_MAX_ANGLE_DEGREES, DISPLAY_MAX_TRIANGLES, DISPLAY_RELATIVE_TOLERANCE, SceneQuality,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -737,6 +736,7 @@ fn merge(into: &mut Value, key: &str, value: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use craft3d_engine::DISPLAY_MAX_ANGLE;
     use serde_json::json;
 
     #[test]

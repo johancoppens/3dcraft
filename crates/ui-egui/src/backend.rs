@@ -326,7 +326,7 @@ mod gpu {
         /// The scene's mesh on the GPU, with the revision it is of and the
         /// bits of its tolerance: the quick first picture and the display
         /// scene that replaces it are two meshes of one revision.
-        uploaded: Option<((u64, u64), GpuMesh)>,
+        uploaded: Option<((u64, u64, Option<u64>), GpuMesh)>,
     }
 
     fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
@@ -375,8 +375,15 @@ mod gpu {
         ) -> Result<Frame, Failure> {
             let camera = camera.to_render();
             let empty = craft3d_tess::Mesh::default();
-            let (revision, mesh) = scene.map_or(((u64::MAX, 0), &empty), |s| {
-                ((s.revision, s.tolerance.to_bits()), &*s.mesh)
+            let (revision, mesh) = scene.map_or(((u64::MAX, 0, None), &empty), |s| {
+                (
+                    (
+                        s.revision,
+                        s.tolerance.to_bits(),
+                        s.max_angle.map(f64::to_bits),
+                    ),
+                    &*s.mesh,
+                )
             });
             // A render that panics inside wgpu (a driver bug) must not end
             // the thread; it ends the GPU's use.

@@ -1241,6 +1241,28 @@ fn the_viewport_asks_for_the_display_quality_and_ui_set_changes_it() {
     );
     assert_eq!(shell.render_stats().unwrap().triangles, coarse.triangles());
 
+    // Only the angle changes: another mesh at the same tolerance, and the
+    // picture follows it (the viewer keys what it uploaded by both).
+    let rendered = shell.render_count();
+    call(
+        &mut shell,
+        &mut session,
+        "ui.set",
+        json!({"quality": {"angle": 5}}),
+    )
+    .unwrap();
+    window.idle(&mut shell, &mut session, 2);
+    let round = shell.sync(&mut session).unwrap();
+    assert_eq!(round.tolerance, coarse.tolerance);
+    assert!(round.triangles() > coarse.triangles());
+    assert!(
+        shell.render_count() > rendered,
+        "the picture follows the angle"
+    );
+    assert_eq!(shell.render_stats().unwrap().triangles, round.triangles());
+    let got = call(&mut shell, &mut session, "ui.get", json!({})).unwrap();
+    assert_eq!(got["scene"]["angle"].as_f64().map(f64::round), Some(5.0));
+
     // The smallest budget: coarsened towards the first picture's
     // tolerance, and `ui.get` says so.
     call(
