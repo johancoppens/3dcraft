@@ -36,10 +36,20 @@
 //! per pixel (OpenGL) there are no keys: the second pass compares its
 //! depth with the front's (`peel.wgsl`).
 //!
+//! **A section** (`RenderParams::section`; `cut.rs`) adds a pass before
+//! the bodies that counts, per sample, the fragments that are cut away,
+//! and draws the bodies with entries that leave those out and, after the
+//! triangles, the cap: one triangle in the plane, kept on the samples
+//! where the count is odd (`cut_samples.wgsl`; `cut_flat.wgsl` with one
+//! sample per pixel). The cap is in the depth buffer, so the lines behind
+//! it are hidden like behind any face. Seen through, the cap is a surface
+//! of both layers. The capture counts again at one sample per pixel.
+//!
 //! Everything a test needs is still there: [`Onscreen::read_rgb`] reads
 //! the shown picture back, [`Onscreen::read_frame`] the picture with the
 //! captured ids and distances as a [`Frame`]. The window never calls them.
 
+use crate::cut;
 use crate::mesh::{GpuMesh, VERTEX_BYTES};
 use crate::peel;
 use crate::readback;
@@ -49,7 +59,7 @@ use crate::renderer::{
 };
 use crate::{GpuError, Mesh};
 use craft3d_math::{Bbox3, Vec3};
-use craft3d_render::{Camera, Frame, NO_FACE, RenderParams};
+use craft3d_render::{Camera, Cut, Frame, NO_FACE, RenderParams};
 use std::cell::Cell;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -205,6 +215,204 @@ struct Targets {
     capture: Option<Capture>,
     /// What a see-through picture needs besides; made for the first one.
     peel: Option<PeelTargets>,
+    /// What a cut-open picture needs besides; made for the first one.
+    cut: Option<CutTargets>,
+}
+
+/// The count of a cut-open picture (`cut.rs`), with the samples of the
+/// renderer.
+struct CutTargets {
+    parity: wgpu::TextureView,
+    cap_bind: wgpu::BindGroup,
+    /// The count with the front's keys (or depth buffer), for the cap
+    /// behind the front of a see-through picture; made for the first one.
+    cap_behind_bind: Option<wgpu::BindGroup>,
+    /// The count at one sample per pixel, for the capture of a renderer
+    /// with several; made for the first capture.
+    flat: Option<(wgpu::TextureView, wgpu::BindGroup)>,
+}
+
+/// The pipelines of a cut-open picture (`cut.rs`), made for the first one.
+struct CutPipelines {
+    /// Counts what is left out, with the samples of the renderer.
+    parity: wgpu::RenderPipeline,
+    color: wgpu::RenderPipeline,
+    depth_only: wgpu::RenderPipeline,
+    cap: wgpu::RenderPipeline,
+    cap_depth_only: wgpu::RenderPipeline,
+    cap_layout: wgpu::BindGroupLayout,
+    /// The capture, at one sample per pixel: its own count when the
+    /// renderer has several samples, the scene's data and the cap's.
+    parity_flat: Option<wgpu::RenderPipeline>,
+    data: wgpu::RenderPipeline,
+    cap_data: wgpu::RenderPipeline,
+    /// The group of `cap_data` when it is not `cap_layout`.
+    cap_flat_layout: Option<wgpu::BindGroupLayout>,
+    /// For a see-through picture; `None` on a device that draws none.
+    peeled: Option<CutPeeled>,
+}
+
+struct CutPeeled {
+    front: wgpu::RenderPipeline,
+    cap_front: wgpu::RenderPipeline,
+    behind: wgpu::RenderPipeline,
+    cap_behind: wgpu::RenderPipeline,
+    cap_behind_layout: wgpu::BindGroupLayout,
+}
+
+impl CutPipelines {
+    fn build(
+        device: &wgpu::Device,
+        scene_layout: &wgpu::BindGroupLayout,
+        peel_layout: Option<&wgpu::BindGroupLayout>,
+        samples: u32,
+    ) -> CutPipelines {
+        let multisampled = samples > 1;
+        let module = cut::module(device, multisampled);
+        let cap_layout = cut::cap_layout(device, multisampled, false);
+        let scene = [Some(scene_layout)];
+        let capped = [Some(scene_layout), Some(&cap_layout)];
+        let hidden = Some(wgpu::ColorTargetState {
+            format: COLOR_FORMAT,
+            blend: None,
+            write_mask: wgpu::ColorWrites::empty(),
+        });
+        let cap_entry = if multisampled {
+            "fs_cap_samples"
+        } else {
+            "fs_cap_color"
+        };
+        let build = |module: &wgpu::ShaderModule,
+                     entry: &str,
+                     groups: &[Option<&wgpu::BindGroupLayout>],
+                     targets: &[Option<wgpu::ColorTargetState>],
+                     count: u32,
+                     depth: bool| {
+            cut::pipeline(device, module, entry, groups, targets, count, depth)
+        };
+        let parity = build(
+            &module,
+            "fs_parity",
+            &scene,
+            &[cut::parity_target()],
+            samples,
+            false,
+        );
+        let color = build(
+            &module,
+            "fs_color_cut",
+            &scene,
+            &[target(COLOR_FORMAT)],
+            samples,
+            true,
+        );
+        let depth_only = build(
+            &module,
+            "fs_color_cut",
+            &scene,
+            std::slice::from_ref(&hidden),
+            samples,
+            true,
+        );
+        let cap = build(
+            &module,
+            cap_entry,
+            &capped,
+            &[target(COLOR_FORMAT)],
+            samples,
+            true,
+        );
+        let cap_depth_only = build(
+            &module,
+            cap_entry,
+            &capped,
+            std::slice::from_ref(&hidden),
+            samples,
+            true,
+        );
+        // The capture has one sample per pixel whatever the renderer has.
+        let flat_module = multisampled.then(|| cut::module(device, false));
+        let cap_flat_layout = multisampled.then(|| cut::cap_layout(device, false, false));
+        let flat = flat_module.as_ref().unwrap_or(&module);
+        let capped_flat = [
+            Some(scene_layout),
+            Some(cap_flat_layout.as_ref().unwrap_or(&cap_layout)),
+        ];
+        let parity_flat = multisampled
+            .then(|| build(flat, "fs_parity", &scene, &[cut::parity_target()], 1, false));
+        let data = build(flat, "fs_data_cut", &scene, &[target(DATA_FORMAT)], 1, true);
+        let cap_data = build(
+            flat,
+            "fs_cap_data",
+            &capped_flat,
+            &[target(DATA_FORMAT)],
+            1,
+            true,
+        );
+        let peeled = peel_layout.map(|peel_layout| {
+            let cap_behind_layout = cut::cap_layout(device, multisampled, true);
+            let layer = [target(COLOR_FORMAT)];
+            let with_key = [target(COLOR_FORMAT), target(COLOR_FORMAT)];
+            let (front_entry, cap_front_entry, behind_entry, cap_behind_entry) = if multisampled {
+                (
+                    "fs_front_samples_cut",
+                    "fs_cap_front_samples",
+                    "fs_behind_samples_cut",
+                    "fs_cap_behind_samples",
+                )
+            } else {
+                (
+                    "fs_front_color_cut",
+                    "fs_cap_color",
+                    "fs_behind_cut",
+                    "fs_cap_behind",
+                )
+            };
+            let front_targets: &[Option<wgpu::ColorTargetState>] =
+                if multisampled { &with_key } else { &layer };
+            CutPeeled {
+                front: build(&module, front_entry, &scene, front_targets, samples, true),
+                cap_front: build(
+                    &module,
+                    cap_front_entry,
+                    &capped,
+                    front_targets,
+                    samples,
+                    true,
+                ),
+                behind: build(
+                    &module,
+                    behind_entry,
+                    &[Some(scene_layout), Some(peel_layout)],
+                    &layer,
+                    samples,
+                    true,
+                ),
+                cap_behind: build(
+                    &module,
+                    cap_behind_entry,
+                    &[Some(scene_layout), Some(&cap_behind_layout)],
+                    &layer,
+                    samples,
+                    true,
+                ),
+                cap_behind_layout,
+            }
+        });
+        CutPipelines {
+            parity,
+            color,
+            depth_only,
+            cap,
+            cap_depth_only,
+            cap_layout,
+            parity_flat,
+            data,
+            cap_data,
+            cap_flat_layout,
+            peeled,
+        }
+    }
 }
 
 /// The two layers of a see-through picture, with the samples of the
@@ -313,6 +521,7 @@ pub struct Onscreen {
     queue: wgpu::Queue,
     samples: u32,
     scene_uniforms: wgpu::Buffer,
+    scene_layout: wgpu::BindGroupLayout,
     scene_bind: wgpu::BindGroup,
     lines_uniforms: wgpu::Buffer,
     lines_layout: wgpu::BindGroupLayout,
@@ -325,6 +534,11 @@ pub struct Onscreen {
     lines_flat_pipeline: Option<wgpu::RenderPipeline>,
     /// What draws a see-through picture, or why this device does not.
     see_through: Result<SeeThrough, String>,
+    /// What draws a cut-open picture, or why this device does not; made
+    /// for the first one.
+    cut: Option<Result<CutPipelines, String>>,
+    /// The triangle of the cap, written every cut-open frame.
+    cap_buffer: wgpu::Buffer,
     targets: Option<Targets>,
     staging: Mutex<Option<readback::Staging>>,
     drawn: bool,
@@ -388,14 +602,39 @@ impl Onscreen {
         if !matches!(samples, 1 | 2 | 4 | 8) {
             return Err(GpuError::Unsupported("that number of samples per pixel"));
         }
-        let (mut onscreen, scene_layout) = guarded(device, || Self::build(device, queue, samples))?;
+        let mut onscreen = guarded(device, || Self::build(device, queue, samples))?;
         // On its own: a device that cannot do this still draws opaque
         // pictures, and says why when asked for a see-through one.
         onscreen.see_through = guarded(device, || {
-            SeeThrough::build(device, queue, &scene_layout, samples)
+            SeeThrough::build(device, queue, &onscreen.scene_layout, samples)
         })
         .map_err(|e| e.to_string());
         Ok(onscreen)
+    }
+
+    /// As on a device that cannot draw a cut-open picture: one with a
+    /// section is refused from now on ([`GpuError::Section`]). For tests
+    /// of what a caller does then.
+    pub fn without_section(&mut self) {
+        self.cut = Some(Err("it was turned off".to_string()));
+    }
+
+    /// Makes the pipelines of a cut-open picture, once; the error says why
+    /// this device has none.
+    fn ensure_cut(&mut self) -> Result<(), GpuError> {
+        if self.cut.is_none() {
+            let peel_layout = self.see_through.as_ref().ok().map(|s| &s.peel_layout);
+            let built = guarded(&self.device, || {
+                CutPipelines::build(&self.device, &self.scene_layout, peel_layout, self.samples)
+            })
+            .map_err(|e| e.to_string());
+            self.cut = Some(built);
+        }
+        match &self.cut {
+            Some(Ok(_)) => Ok(()),
+            Some(Err(why)) => Err(GpuError::Section(why.clone())),
+            None => Err(GpuError::NothingDrawn),
+        }
     }
 
     /// As on a device that cannot draw see-through bodies: such a picture
@@ -413,11 +652,7 @@ impl Onscreen {
             .map_err(String::as_str)
     }
 
-    fn build(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        samples: u32,
-    ) -> (Onscreen, wgpu::BindGroupLayout) {
+    fn build(device: &wgpu::Device, queue: &wgpu::Queue, samples: u32) -> Onscreen {
         let scene_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("craft3d scene"),
             source: wgpu::ShaderSource::Wgsl(include_str!("scene.wgsl").into()),
@@ -631,11 +866,12 @@ impl Onscreen {
         let lines_pipeline = lines_pipeline_for(samples);
         let lines_flat_pipeline = (samples > 1).then(|| lines_pipeline_for(1));
 
-        let onscreen = Onscreen {
+        Onscreen {
             device: device.clone(),
             queue: queue.clone(),
             samples,
             scene_uniforms,
+            scene_layout,
             scene_bind,
             lines_uniforms,
             lines_layout,
@@ -645,13 +881,14 @@ impl Onscreen {
             lines_pipeline,
             lines_flat_pipeline,
             see_through: Err("it was not set up".to_string()),
+            cut: None,
+            cap_buffer: cut::cap_buffer(device),
             targets: None,
             staging: Mutex::new(None),
             drawn: false,
             captured: false,
             token: Arc::new(()),
-        };
-        (onscreen, scene_layout)
+        }
     }
 
     /// Samples per pixel of the picture.
@@ -767,13 +1004,20 @@ impl Onscreen {
         if see_through && let Err(why) = &self.see_through {
             return Err(GpuError::SeeThrough(why.clone()));
         }
-        let scene = scene_uniforms(mesh, camera, params)?;
+        let cut = cut::frame_cut(mesh, params);
+        if cut.is_some() {
+            self.ensure_cut()?;
+        }
+        let scene = scene_uniforms(mesh, camera, params, cut.as_ref())?;
         let line_uniforms = lines_uniforms(lines, camera, params, overlay, self.samples)?;
         let device = self.device.clone();
         guarded(&device, || {
             self.ensure_targets(params, options.capture);
             if see_through {
                 self.ensure_peel_targets();
+            }
+            if cut.is_some() {
+                self.ensure_cut_targets(see_through, options.capture);
             }
             self.encode(
                 mesh,
@@ -783,6 +1027,7 @@ impl Onscreen {
                 params,
                 overlay,
                 options,
+                cut.as_ref(),
             )
         })??;
         self.drawn = true;
@@ -960,7 +1205,50 @@ impl Onscreen {
             lines_bind,
             capture,
             peel: None,
+            cut: None,
         });
+    }
+
+    /// The count of a cut-open picture, at the size of the targets; for a
+    /// see-through one the group of the cap behind the front, and for a
+    /// capture of a renderer with several samples the count at one.
+    fn ensure_cut_targets(&mut self, see_through: bool, capture: bool) {
+        let (Some(targets), Some(Ok(pipelines))) = (&mut self.targets, &self.cut) else {
+            return;
+        };
+        let device = &self.device;
+        if targets.cut.is_none() {
+            let parity = cut::parity_view(device, targets.width, targets.height, self.samples);
+            let cap_bind = cut::cap_bind(device, &pipelines.cap_layout, None, &parity);
+            targets.cut = Some(CutTargets {
+                parity,
+                cap_bind,
+                cap_behind_bind: None,
+                flat: None,
+            });
+        }
+        let Some(count) = &mut targets.cut else {
+            return;
+        };
+        if see_through
+            && count.cap_behind_bind.is_none()
+            && let (Some(peeled), Some(peel)) = (&pipelines.peeled, &targets.peel)
+        {
+            count.cap_behind_bind = Some(cut::cap_bind(
+                device,
+                &peeled.cap_behind_layout,
+                Some(peel.key.as_ref().unwrap_or(&targets.depth)),
+                &count.parity,
+            ));
+        }
+        if capture
+            && count.flat.is_none()
+            && let Some(layout) = &pipelines.cap_flat_layout
+        {
+            let parity = cut::parity_view(device, targets.width, targets.height, 1);
+            let bind = cut::cap_bind(device, layout, None, &parity);
+            count.flat = Some((parity, bind));
+        }
     }
 
     /// The layers of a see-through picture, at the size of the targets.
@@ -1077,6 +1365,7 @@ impl Onscreen {
         params: &RenderParams,
         overlay: &OverlayParams,
         options: DrawOptions,
+        cut: Option<&Cut>,
     ) -> Result<(), GpuError> {
         let targets = self.targets.as_ref().ok_or(GpuError::NothingDrawn)?;
         self.queue
@@ -1144,6 +1433,39 @@ impl Onscreen {
                 stencil_ops: None,
             })
         };
+        // The passes of a cut-open picture, when it is one: its pipelines,
+        // its count and, when the plane has a cap, the cap's triangle.
+        let cut_open = match cut {
+            Some(cut) => {
+                let pipelines = match &self.cut {
+                    Some(Ok(pipelines)) => pipelines,
+                    Some(Err(why)) => return Err(GpuError::Section(why.clone())),
+                    None => return Err(GpuError::NothingDrawn),
+                };
+                let count = targets.cut.as_ref().ok_or(GpuError::NothingDrawn)?;
+                let cap = cut::cap_vertices(mesh, cut);
+                if let Some(bytes) = &cap {
+                    self.queue.write_buffer(&self.cap_buffer, 0, bytes);
+                }
+                Some((pipelines, count, cap.is_some()))
+            }
+            None => None,
+        };
+        let cut_peeled = match (cut_open, peeled) {
+            (Some((pipelines, ..)), Some(_)) => {
+                Some(pipelines.peeled.as_ref().ok_or(GpuError::NothingDrawn)?)
+            }
+            _ => None,
+        };
+        if let Some((pipelines, count, true)) = cut_open {
+            cut::count_pass(
+                &mut encoder,
+                &count.parity,
+                &pipelines.parity,
+                &self.scene_bind,
+                mesh,
+            );
+        }
         {
             // The bodies. Seen through, this is the front layer: its alpha
             // says where it is seen through (0 where nothing is drawn).
@@ -1168,13 +1490,22 @@ impl Onscreen {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(match peeled {
-                Some((pipelines, _)) => &pipelines.front_pipeline,
-                None if options.bodies => &self.color_pipeline,
-                None => &self.depth_only_pipeline,
-            });
+            // The triangles' pipeline and, for a cut-open picture, the
+            // cap's.
+            let (bodies, cap) = match (cut_open, cut_peeled, peeled) {
+                (Some(_), Some(cut), _) => (&cut.front, Some(&cut.cap_front)),
+                (Some((cut, ..)), None, _) if options.bodies => (&cut.color, Some(&cut.cap)),
+                (Some((cut, ..)), None, _) => (&cut.depth_only, Some(&cut.cap_depth_only)),
+                (None, _, Some((pipelines, _))) => (&pipelines.front_pipeline, None),
+                (None, _, None) if options.bodies => (&self.color_pipeline, None),
+                (None, _, None) => (&self.depth_only_pipeline, None),
+            };
+            pass.set_pipeline(bodies);
             pass.set_bind_group(0, &self.scene_bind, &[]);
             draw_mesh(&mut pass);
+            if let (Some(cap), Some((_, count, true))) = (cap, cut_open) {
+                cut::draw_cap(&mut pass, cap, &count.cap_bind, &self.cap_buffer);
+            }
         }
         if let Some((pipelines, peel)) = peeled {
             {
@@ -1190,10 +1521,17 @@ impl Onscreen {
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
-                pass.set_pipeline(&pipelines.behind_pipeline);
+                pass.set_pipeline(cut_peeled.map_or(&pipelines.behind_pipeline, |cut| &cut.behind));
                 pass.set_bind_group(0, &self.scene_bind, &[]);
                 pass.set_bind_group(1, &peel.peel_bind, &[]);
                 draw_mesh(&mut pass);
+                if let (Some(cut_peeled), Some((_, count, true))) = (cut_peeled, cut_open) {
+                    let bind = count
+                        .cap_behind_bind
+                        .as_ref()
+                        .ok_or(GpuError::NothingDrawn)?;
+                    cut::draw_cap(&mut pass, &cut_peeled.cap_behind, bind, &self.cap_buffer);
+                }
             }
             // The front over the one behind, per sample, into the shown
             // texture.
@@ -1259,6 +1597,21 @@ impl Onscreen {
                 pass.draw(0..lines.vertices, 0..1);
             }
         }
+        // The count of a cut-open capture: the picture's own with one
+        // sample per pixel, counted again at one sample otherwise.
+        let capture_cap = match cut_open {
+            Some((pipelines, count, true)) if options.capture => {
+                match (&pipelines.parity_flat, &count.flat) {
+                    (Some(parity), Some((view, bind))) => {
+                        cut::count_pass(&mut encoder, view, parity, &self.scene_bind, mesh);
+                        Some(bind)
+                    }
+                    (Some(_), None) => return Err(GpuError::NothingDrawn),
+                    (None, _) => Some(&count.cap_bind),
+                }
+            }
+            _ => None,
+        };
         if options.capture {
             let capture = targets.capture.as_ref().ok_or(GpuError::NothingDrawn)?;
             // Where nothing is drawn: no face, at an infinite distance, as
@@ -1292,11 +1645,14 @@ impl Onscreen {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.data_pipeline);
+            pass.set_pipeline(cut_open.map_or(&self.data_pipeline, |(cut, ..)| &cut.data));
             pass.set_bind_group(0, &self.scene_bind, &[]);
             for chunk in &mesh.chunks {
                 pass.set_vertex_buffer(0, chunk.buffer.slice(..));
                 pass.draw(0..chunk.vertices, 0..1);
+            }
+            if let (Some(bind), Some((pipelines, ..))) = (capture_cap, cut_open) {
+                cut::draw_cap(&mut pass, &pipelines.cap_data, bind, &self.cap_buffer);
             }
         }
         self.queue.submit([encoder.finish()]);

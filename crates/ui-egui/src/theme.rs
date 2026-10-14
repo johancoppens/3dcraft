@@ -18,6 +18,10 @@ pub struct Tokens {
     /// or the one an agent points at (`ui.highlight`). Shaded like the
     /// body, so the face keeps its shape.
     pub face_highlight: Rgb,
+    /// The cap of the section plane: where the plane passes through the
+    /// inside of a body. Drawn as it is, not shaded, so a cut reads as a
+    /// cut whatever the light.
+    pub section_cap: Rgb,
     /// Sketch geometry that is part of a profile.
     pub sketch: Rgb,
     /// Construction geometry of a sketch.
@@ -73,8 +77,13 @@ pub struct Tokens {
     pub view_cube_dot: f32,
     /// Opacity of the ring behind the view cube, 0 to 255.
     pub view_cube_opacity: u8,
-    /// The length of the see-through slider, in points.
+    /// The length of the see-through slider and of the section's offset
+    /// slider, in points.
     pub slider_width: f32,
+    /// The height of a row of controls over the viewport, and the space
+    /// between two rows, in points.
+    pub bar_height: f32,
+    pub bar_gap: f32,
     /// Space between the viewport's edge and what floats over it.
     pub inset: f32,
 }
@@ -92,6 +101,7 @@ impl Tokens {
             viewport_background: [30, 33, 40],
             body: [198, 204, 214],
             face_highlight: [64, 196, 212],
+            section_cap: craft3d_engine::SECTION_CAP_COLOR,
             sketch: [255, 196, 64],
             sketch_construction: [110, 170, 235],
             sketch_selected: [255, 120, 80],
@@ -123,6 +133,8 @@ impl Tokens {
             view_cube_dot: 9.0,
             view_cube_opacity: 110,
             slider_width: 90.0,
+            bar_height: 22.0,
+            bar_gap: 6.0,
             inset: 10.0,
         }
     }

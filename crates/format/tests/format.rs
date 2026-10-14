@@ -168,7 +168,7 @@ fn saving_twice_gives_the_same_bytes() {
 fn the_manifest_of_a_small_document_is_exactly_this() {
     let expected = r#"{
   "format": "3dcraft",
-  "format_version": 8,
+  "format_version": 9,
   "document": {
     "units": {
       "length": "mm",
@@ -340,17 +340,17 @@ fn fix_trailing_commas(json: &str) -> String {
 
 #[test]
 fn a_newer_format_version_says_a_newer_3dcraft_is_needed() {
-    let error = load_error(&edited(&version_field(), "\"format_version\": 9"));
+    let error = load_error(&edited(&version_field(), "\"format_version\": 10"));
     assert!(matches!(
         error,
         FormatError::NewerVersion {
-            file: 9,
+            file: 10,
             supported: FORMAT_VERSION
         }
     ));
     let text = error.to_string();
     assert!(
-        text.contains("version 8")
+        text.contains("version 10")
             && text.contains(&format!("version {FORMAT_VERSION}"))
             && text.contains("newer 3DCraft is needed"),
         "{text}"
@@ -1708,7 +1708,7 @@ fn datum_planes_are_written_like_this_and_round_trip() {
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     // Datums raised no version: nothing an earlier file holds changed
-    // meaning. (7 is the chamfer's, 8 the loft's.)
+    // meaning. (7 is the chamfer's, 8 the loft's, 9 the fillet's.)
     assert_eq!(value["format_version"], FORMAT_VERSION);
     let face_json = |n: u64| serde_json::json!({"feature": 1, "role": "face", "sources": [n]});
     let kinds: Vec<&serde_json::Value> = value["document"]["features"]
@@ -2262,7 +2262,8 @@ fn a_loft_is_written_like_this_and_round_trips() {
     .unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 8);
+    // Lofts came with version 8; the current one is written.
+    assert_eq!(value["format_version"], FORMAT_VERSION);
     let features = value["document"]["features"].as_array().unwrap();
     assert_eq!(
         features[features.len() - 2]["kind"],
@@ -2326,4 +2327,103 @@ fn a_version_7_file_opens_unchanged_and_is_saved_as_the_current_version() {
     assert!(saved.contains(&version_field()), "{saved}");
     assert!(!saved.contains("loft"), "{saved}");
     assert_eq!(from_manifest_json(saved.as_bytes()).unwrap(), doc);
+}
+
+/// A version-8 file, as written before fillets: a loft, and a chamfer
+/// with a sketch's plane on its face. Never edit this.
+#[test]
+fn a_version_8_file_opens_unchanged_and_is_saved_as_the_current_version() {
+    let v8 = r#"{"format": "3dcraft", "format_version": 8, "document": {
+        "units": {"length": "mm", "angle": "deg"},
+        "tolerance": {"linear": 1e-6, "angular": 1e-9},
+        "variables": [{"name": "d", "expr": "8 mm"}],
+        "features": [
+          {"id": 1, "name": "Base", "suppressed": false, "kind": {"type": "block",
+            "position": ["0", "0", "0"], "size": ["40 mm", "30 mm", "d"]}},
+          {"id": 2, "name": "Bevel", "suppressed": false, "kind": {"type": "chamfer",
+            "edges": [[{"feature": 1, "role": "face", "sources": [1]},
+                       {"feature": 1, "role": "face", "sources": [2]}]],
+            "size": {"type": "twoDistances", "distance": "2 mm", "second": "d / 8"},
+            "chain": true}},
+          {"id": 3, "name": "On the bevel", "suppressed": false, "kind": {"type": "datumPlane",
+            "by": {"type": "offset",
+              "from": {"type": "face", "face": {"feature": 2, "role": "chamfer", "sources": [0]}},
+              "distance": "1 mm"}}},
+          {"id": 4, "name": "Hull", "suppressed": false, "kind": {"type": "loft",
+            "sections": [{"sketch": 7}, {"sketch": 9, "start": 3}, {"sketch": 8}]}}],
+        "rollback": null, "next_feature_id": 5}}"#;
+    let doc = match from_manifest_json(v8.as_bytes()) {
+        Ok(doc) => doc,
+        Err(error) => panic!("{error}"),
+    };
+    assert_eq!(doc.features[1].kind.type_name(), "chamfer");
+    assert_eq!(doc.features[3].kind.type_name(), "loft");
+    let saved = to_manifest_json(&doc).unwrap();
+    assert!(saved.contains(&version_field()), "{saved}");
+    assert!(!saved.contains("fillet"), "{saved}");
+    assert_eq!(from_manifest_json(saved.as_bytes()).unwrap(), doc);
+}
+
+/// Version 9: fillets, as they are written.
+#[test]
+fn a_fillet_is_written_like_this_and_round_trips() {
+    use craft3d_doc::{Fillet, NameRole, PersistentName};
+    let face = |n: u64| PersistentName::new(FeatureId(1), NameRole::Face, vec![n]);
+    let face_json = |n: u64| serde_json::json!({"feature": 1, "role": "face", "sources": [n]});
+    let mut doc = small();
+    doc.add_feature(
+        Some("Round"),
+        FeatureKind::Fillet(Fillet {
+            edges: vec![[face(1), face(2)], [face(5), face(1)]],
+            radius: Expr::new("width / 20"),
+            chain: false,
+        }),
+    )
+    .unwrap();
+    // The roles a fillet adds: its faces and the ball in a corner.
+    for (role, sources) in [
+        (NameRole::Fillet, vec![0]),
+        (NameRole::Fillet, vec![1, 2]),
+        (NameRole::FilletCorner, vec![0, 1, 2]),
+    ] {
+        let name = PersistentName::new(FeatureId(2), role, sources);
+        assert_eq!(name.to_string().parse::<PersistentName>().unwrap(), name);
+        assert_eq!(name.check(), Ok(()));
+        assert!(name.is_face());
+    }
+    assert_eq!(
+        PersistentName::new(FeatureId(2), NameRole::Fillet, vec![1, 2]).to_string(),
+        "F2:fillet(1,2)"
+    );
+    assert_eq!(
+        PersistentName::new(FeatureId(2), NameRole::FilletCorner, vec![0, 1, 2]).to_string(),
+        "F2:filletCorner(0,1,2)"
+    );
+    assert!("F2:fillet()".parse::<PersistentName>().is_err());
+    assert!("F2:fillet(e1)".parse::<PersistentName>().is_err());
+    assert_eq!(doc.validate(), Ok(()));
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["format_version"], 9);
+    assert_eq!(
+        value["document"]["features"][1]["kind"],
+        serde_json::json!({
+            "type": "fillet",
+            "edges": [[face_json(1), face_json(2)], [face_json(5), face_json(1)]],
+            "radius": "width / 20",
+            "chain": false
+        })
+    );
+    assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+    assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
+    // `chain` may be left out; an unknown field is refused.
+    let without = json.replacen(",\n          \"chain\": false", "", 1);
+    assert_ne!(without, json);
+    assert_eq!(from_manifest_json(without.as_bytes()).unwrap(), doc);
+    let unknown = json.replacen("\"chain\": false", "\"chain\": false, \"size\": 1", 1);
+    assert!(from_manifest_json(unknown.as_bytes()).is_err());
+    // A fillet without a radius is not a fillet.
+    let bare = json.replacen("\"radius\": \"width / 20\",", "", 1);
+    assert_ne!(bare, json);
+    assert!(from_manifest_json(bare.as_bytes()).is_err());
 }

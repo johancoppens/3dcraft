@@ -498,13 +498,14 @@ fn a_rational_face_on_the_surface_it_equals_is_refused_or_right() {
     }
 }
 
-/// What stays refused of a rational face that is not coincident with
-/// anything: an octant of a ball as a rational patch has a border
-/// collapsed into the pole, where its parameters stall (as those of a
-/// polynomial patch with a collapsed border do). The body is valid; the
-/// boolean says why it does not take it.
+/// An octant of a ball as a rational patch has a border collapsed into
+/// the pole, where its parameters stall (as those of a polynomial patch
+/// with a collapsed border do). It was refused as an operand until
+/// 2026-10-14; a pole is an ordinary point of the face's chart now, and
+/// the patch is cut like the sphere it is (`boolean_poles.rs` has the
+/// cuts around and through the pole).
 #[test]
-fn a_rational_patch_with_a_pole_is_a_valid_body_and_a_refused_operand() {
+fn a_rational_patch_with_a_pole_is_a_valid_body_and_an_operand() {
     for k in SCALES {
         // The octant of `craft3d_testkit`: its sphere's pole is the
         // corner where two of the face's three arcs meet.
@@ -528,18 +529,14 @@ fn a_rational_patch_with_a_pole_is_a_valid_body_and_a_refused_operand() {
             assert!(patch.eval(u, 1.0).distance(pole) < 1e-12 * k);
         }
         let tool = boxed(k, [0.8, 0.7, 0.9], [2.5, 2.5, 2.5]);
-        // (The analytic octant is an operand like any other.)
-        solve(&octant, &tool, Intersect, k);
         for op in [Union, Intersect, Subtract] {
-            match boolean(&twin, &tool, op, &tolerance(k)) {
-                Err(KernelError::Unsupported { reason, .. }) => {
-                    assert!(reason.contains("stalls or folds"), "{reason}");
-                }
-                other => panic!(
-                    "{op:?} at {k}: expected a refusal, got {:?}",
-                    other.map(|r| counts(&r))
-                ),
-            }
+            let what = format!("{op:?} at {k}");
+            let expected = solve(&octant, &tool, op, k);
+            let result = solve(&twin, &tool, op, k);
+            let (want, got) = (mass(&expected.body), mass(&result.body));
+            near(got.volume, want.volume, 1e-6, &format!("{what}: volume"));
+            near(got.area, want.area, 1e-6, &format!("{what}: area"));
+            meshes(&result.body, k, &what);
         }
     }
 }

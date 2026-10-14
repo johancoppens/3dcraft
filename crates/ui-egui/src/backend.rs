@@ -130,7 +130,10 @@ pub struct BodyRenderer {
 
 impl BodyRenderer {
     /// What `viewport::compose_with` draws over the frames made from now
-    /// on to point at something: the highlighted edges.
+    /// on to point at something (the highlighted edges), and the section
+    /// those frames are cut open with: both renderers draw that; a device
+    /// that cannot (`craft3d_gpu::GpuError::Section`) hands such a frame
+    /// to the CPU renderer.
     pub fn set_marks(&mut self, marks: crate::viewport::Marks) {
         self.marks = marks;
     }
@@ -163,6 +166,16 @@ impl BodyRenderer {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(gpu) = &mut self.gpu {
             gpu.without_see_through();
+        }
+    }
+
+    /// As on a device that cannot draw a cut-open picture: from now on a
+    /// frame with a section is the CPU renderer's. For tests of that
+    /// fallback; a CPU renderer is not changed by it.
+    pub fn without_gpu_section(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(gpu) = &mut self.gpu {
+            gpu.without_section();
         }
     }
 
@@ -259,6 +272,9 @@ impl BodyRenderer {
         let params = RenderParams {
             highlight: self.highlight,
             opacity: self.opacity(),
+            // The section travels with the marks: the lines over the
+            // picture are cut by the same plane.
+            section: self.marks.section(),
             ..render_params(quality, tokens)
         };
         #[cfg(not(target_arch = "wasm32"))]
@@ -345,6 +361,10 @@ mod gpu {
             self.offscreen.renderer().without_see_through();
         }
 
+        pub(super) fn without_section(&mut self) {
+            self.offscreen.renderer().without_section();
+        }
+
         pub(super) fn render(
             &mut self,
             scene: Option<&Scene>,
@@ -386,7 +406,8 @@ mod gpu {
             | GpuError::MeshTooLarge { .. }
             | GpuError::TooManyLines { .. }
             | GpuError::OutOfRange(_)
-            | GpuError::SeeThrough(_) => Failure::ThisFrame,
+            | GpuError::SeeThrough(_)
+            | GpuError::Section(_) => Failure::ThisFrame,
             GpuError::NoAdapter(_)
             | GpuError::Device(_)
             | GpuError::ForeignMesh

@@ -96,10 +96,16 @@ pub enum NameRole {
     /// sources are plain numbers: the places of the three references in
     /// the chamfer's list, ascending.
     ChamferCorner,
+    /// The face a fillet puts in the place of an edge: a piece of a
+    /// cylinder or of a torus. Its sources are as a chamfer face's.
+    Fillet,
+    /// The piece of a ball in the corner where three filleted edges meet.
+    /// Its sources are as a chamfer corner's.
+    FilletCorner,
 }
 
 impl NameRole {
-    pub const ALL: [NameRole; 17] = [
+    pub const ALL: [NameRole; 19] = [
         NameRole::StartCap,
         NameRole::EndCap,
         NameRole::Side,
@@ -117,6 +123,8 @@ impl NameRole {
         NameRole::Corner,
         NameRole::Chamfer,
         NameRole::ChamferCorner,
+        NameRole::Fillet,
+        NameRole::FilletCorner,
     ];
 
     pub fn name(self) -> &'static str {
@@ -138,6 +146,8 @@ impl NameRole {
             NameRole::Corner => "corner",
             NameRole::Chamfer => "chamfer",
             NameRole::ChamferCorner => "chamferCorner",
+            NameRole::Fillet => "fillet",
+            NameRole::FilletCorner => "filletCorner",
         }
     }
 
@@ -156,6 +166,8 @@ impl NameRole {
                 | NameRole::Face
                 | NameRole::Chamfer
                 | NameRole::ChamferCorner
+                | NameRole::Fillet
+                | NameRole::FilletCorner
         )
     }
 
@@ -196,7 +208,10 @@ impl NameRole {
     /// True for a role whose sources are plain numbers, one or more,
     /// written without the `e` of a sketch entity: `chamfer(0,1)`.
     pub fn is_counted(self) -> bool {
-        matches!(self, NameRole::Chamfer | NameRole::ChamferCorner)
+        matches!(
+            self,
+            NameRole::Chamfer | NameRole::ChamferCorner | NameRole::Fillet | NameRole::FilletCorner
+        )
     }
 
     /// True for a role with exactly one source that is a plain number (an
@@ -450,7 +465,7 @@ impl PersistentName {
                     return Err("a copy, face, edge or vertex has one number");
                 }
                 if name.role.is_counted() && name.sources.is_empty() {
-                    return Err("a chamfer face has at least one number");
+                    return Err("a chamfer or fillet face has at least one number");
                 }
             }
             match (name.role.is_derived(), &name.of) {

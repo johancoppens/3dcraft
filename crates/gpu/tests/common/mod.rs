@@ -93,6 +93,47 @@
 //!   of its layers does, so the probabilities of the two layers add.
 //!
 //! Face ids and distances are the front's and keep their tolerances.
+//!
+//! # Cut-open pictures
+//!
+//! With `RenderParams::section` two things are added to a picture, and the
+//! tolerances above cover both without being loosened.
+//!
+//! **The cut.** A fragment is left out where its distance from the plane
+//! is positive. The GPU computes that distance in `f32` from positions
+//! relative to the mesh centre: an error of at most `F32_PATH` times the
+//! mesh's size, a few 10⁻⁷ of it. The two renderers can therefore decide
+//! differently only for a sample whose surface point is that near to the
+//! plane, which on screen is a strip along the line where the plane
+//! crosses the surface, far narrower than a pixel unless the surface runs
+//! along the plane (and a triangle that lies *in* the plane is decided as
+//! a whole, by the same rule in both: `Cut::clips`). That line is known
+//! from the mesh and the plane alone (`Cut::outline`), so **the band**
+//! also holds every pixel within one pixel of the projected outline of
+//! the section. Where the cut shows another surface behind it, the id
+//! changes there too and the pixel was in the band already; the outline
+//! adds the places where the surface behind has the same id (the inside
+//! of a ball that is one face).
+//!
+//! **The cap.** It is where the number of fragments left out at a sample
+//! is odd. The renderers count the same fragments except within `2^-8`
+//! pixel of a triangle's edge, and a miscount shows only where it changes
+//! the parity: not at an edge two triangles of the cut-away part share (a
+//! sample is in exactly one of them in either renderer) and not at a
+//! silhouette of the cut-away part (a sample is in both of its triangles
+//! or in neither: the count changes by two), but only at the outline of
+//! the section and at an edge with one triangle, both of which are in the
+//! band. Outside the band the cap's id is therefore equal, its **colour**
+//! is equal exactly (it is not shaded: one byte triple in both, and the
+//! tolerance of one level is not used), and its **distance** is the
+//! distance of a point of a plane, within the tolerance of any other
+//! surface. Inside the band the same 1/128 holds: an edge passes within a
+//! grid step of a pixel centre with that probability whether the edge is
+//! a triangle's or the plane's.
+//!
+//! A see-through cut-open picture has both arguments at once: its two
+//! layers are the CPU frames at opacity 1 and 0 with the section, and the
+//! face behind the front is found with the section too ([`behind_ids`]).
 
 #![allow(
     dead_code,
@@ -103,9 +144,11 @@
 )]
 
 use craft3d_gpu::{
-    ADAPTER_HINT, Camera, Frame, Mesh, NO_FACE, Offscreen, Projection, RenderParams,
+    ADAPTER_HINT, Camera, Frame, Mesh, NO_FACE, Offscreen, Projection, RenderParams, SECTION_FACE,
+    Section,
 };
 use craft3d_math::Vec3;
+use craft3d_render::{Cut, section_bounds};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -351,6 +394,40 @@ fn neighbours(x: usize, y: usize, w: usize, h: usize) -> impl Iterator<Item = us
 /// so surfaces closer together than a billionth of the scene's depth
 /// count as one.
 pub fn behind_ids(mesh: &Mesh, camera: &Camera, width: u32, height: u32, ssaa: u32) -> Vec<u32> {
+    behind_ids_cut(mesh, camera, width, height, ssaa, None)
+}
+
+/// The depth key and the point of the plane of `cut` under the position
+/// (`px`, `py`) of a picture of `w` × `h` pixels, from the definition of
+/// the camera: where the ray through the position meets the plane.
+fn cap_key(camera: &Camera, cut: &Cut, px: f64, py: f64, w: f64, h: f64) -> Option<f64> {
+    let axes = camera.axes().ok()?;
+    let across = axes.right * ((px / w * 2.0 - 1.0) * (w / h) * axes.half)
+        + axes.up * ((1.0 - py / h * 2.0) * axes.half);
+    let perspective = matches!(axes.projection, Projection::Perspective { .. });
+    let (start, direction) = if perspective {
+        (axes.eye, axes.forward + across)
+    } else {
+        (axes.eye + across, axes.forward)
+    };
+    let dist = (cut.origin - start).dot(cut.normal) / direction.dot(cut.normal);
+    let key = if perspective { -1.0 / dist } else { dist };
+    let visible = !perspective || dist > 0.0;
+    (key.is_finite() && visible && cut.holds_cap(start + direction * dist)).then_some(key)
+}
+
+/// [`behind_ids`] of a picture cut open by `section`: fragments in the
+/// half that is cut away are left out and counted, and where their number
+/// is odd the cap is one more surface, with [`SECTION_FACE`] as its face.
+pub fn behind_ids_cut(
+    mesh: &Mesh,
+    camera: &Camera,
+    width: u32,
+    height: u32,
+    ssaa: u32,
+    section: Option<&Section>,
+) -> Vec<u32> {
+    let cut = section.and_then(|section| Cut::new(section, &section_bounds(mesh)));
     let (w, h) = (width as usize, height as usize);
     let perspective = matches!(camera.projection, Projection::Perspective { .. });
     let offset = 0.5 / f64::from(ssaa.max(1));
@@ -370,10 +447,33 @@ pub fn behind_ids(mesh: &Mesh, camera: &Camera, width: u32, height: u32, ssaa: u
     // Per pixel: the key and the face of the front and of the one behind.
     let nothing = (f64::INFINITY, NO_FACE);
     let mut layers = vec![(nothing, nothing); w * h];
+    let mut odd = vec![false; w * h];
+    let put = |layer: &mut ((f64, u32), (f64, u32)), key: f64, face: u32| {
+        let (front, behind) = layer;
+        if key < front.0 - eps {
+            // A new front: the old one is behind it now.
+            if front.0.is_finite() {
+                *behind = *front;
+            }
+            *front = (key, face);
+        } else if key > front.0 + eps && key < behind.0 {
+            *behind = (key, face);
+        }
+    };
     for (tri, &face) in mesh.triangles.iter().zip(&mesh.face_ids) {
         let [Some(a), Some(b), Some(c)] = tri.map(|k| projected[k as usize]) else {
             continue;
         };
+        // The corners' distances from the plane, and which way the
+        // triangle faces it.
+        let cut_triangle = cut.map(|cut| {
+            let [pa, pb, pc] = tri.map(|k| mesh.positions[k as usize]);
+            let facing = (pb - pa)
+                .cross(pc - pa)
+                .normalized()
+                .map_or(0.0, |n| n.dot(cut.normal));
+            ([cut.side(pa), cut.side(pb), cut.side(pc)], facing)
+        });
         let area = (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0);
         if area == 0.0 || !area.is_finite() {
             continue;
@@ -394,20 +494,110 @@ pub fn behind_ids(mesh: &Mesh, camera: &Camera, width: u32, height: u32, ssaa: u
                     continue;
                 }
                 let key = (wa * a.2 + wb * b.2 + wc * c.2) / (wa + wb + wc);
-                let (front, behind) = &mut layers[y as usize * w + x as usize];
-                if key < front.0 - eps {
-                    // A new front: the old one is behind it now.
-                    if front.0.is_finite() {
-                        *behind = *front;
+                let i = y as usize * w + x as usize;
+                if let (Some(cut), Some(([sa, sb, sc], facing))) = (cut, cut_triangle) {
+                    // Perspective-correct: weighted by one over the
+                    // distance, which the key holds in perspective.
+                    let inv = |p: (f64, f64, f64)| if perspective { -p.2 } else { 1.0 };
+                    let (qa, qb, qc) = (wa * inv(a), wb * inv(b), wc * inv(c));
+                    if cut.clips((qa * sa + qb * sb + qc * sc) / (qa + qb + qc), facing) {
+                        odd[i] = !odd[i];
+                        continue;
                     }
-                    *front = (key, face);
-                } else if key > front.0 + eps && key < behind.0 {
-                    *behind = (key, face);
                 }
+                put(&mut layers[i], key, face);
+            }
+        }
+    }
+    if let Some(cut) = cut.filter(|cut| cut.cap) {
+        for i in (0..w * h).filter(|&i| odd[i]) {
+            let (px, py) = ((i % w) as f64 + offset, (i / w) as f64 + offset);
+            if let Some(key) = cap_key(camera, &cut, px, py, w as f64, h as f64) {
+                put(&mut layers[i], key, SECTION_FACE);
             }
         }
     }
     layers.into_iter().map(|(_, behind)| behind.1).collect()
+}
+
+/// Marks every pixel within one pixel of the projected outline of the
+/// section in `band` (see the module docs, *Cut-open pictures*).
+fn mark_outline(
+    mesh: &Mesh,
+    camera: &Camera,
+    section: &Section,
+    w: usize,
+    h: usize,
+    band: &mut [bool],
+) {
+    let Some(cut) = Cut::new(section, &section_bounds(mesh)) else {
+        return;
+    };
+    let mut mark = |x: f64, y: f64| {
+        let (cx, cy) = (x.floor() as i64, y.floor() as i64);
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                let (px, py) = (cx + dx, cy + dy);
+                if px >= 0 && py >= 0 && (px as usize) < w && (py as usize) < h {
+                    band[py as usize * w + px as usize] = true;
+                }
+            }
+        }
+    };
+    for [a, b] in cut.outline(mesh) {
+        let (Some(a), Some(b)) = (
+            project(camera, a, w as f64, h as f64),
+            project(camera, b, w as f64, h as f64),
+        ) else {
+            continue;
+        };
+        let length = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
+        let steps = ((length * 2.0).ceil() as usize).clamp(1, 8 * (w + h));
+        for i in 0..=steps {
+            let t = i as f64 / steps as f64;
+            mark(a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
+        }
+    }
+}
+
+/// The band of a picture with `params`: [`band`], the outline of its
+/// section, and for a see-through picture the changes of the face behind.
+pub fn band_of(mesh: &Mesh, camera: &Camera, params: &RenderParams, cpu: &Frame) -> Vec<bool> {
+    let (w, h) = (cpu.width as usize, cpu.height as usize);
+    let mut band = band(mesh, camera, cpu);
+    if let Some(section) = &params.section {
+        mark_outline(mesh, camera, section, w, h, &mut band);
+    }
+    if params.opacity() < 1.0 {
+        let behind = behind_ids_cut(
+            mesh,
+            camera,
+            cpu.width,
+            cpu.height,
+            params.ssaa,
+            params.section.as_ref(),
+        );
+        mark_changes(&behind, w, h, &mut band);
+    }
+    band
+}
+
+/// Compares a GPU frame with the CPU frame of the same scene, cut open or
+/// not, see-through or not (see the module docs).
+pub fn compare_with(
+    mesh: &Mesh,
+    camera: &Camera,
+    params: &RenderParams,
+    cpu: &Frame,
+    gpu: &Frame,
+) -> (Parity, Vec<bool>) {
+    let band = band_of(mesh, camera, params, cpu);
+    if params.opacity() < 1.0 {
+        let [front, back] = layers(mesh, camera, params);
+        compare_layered(mesh, camera, cpu, gpu, band, &[&front, &back])
+    } else {
+        compare_layered(mesh, camera, cpu, gpu, band, &[cpu])
+    }
 }
 
 /// The band of a see-through picture: [`band`], and every pixel within one
@@ -730,6 +920,24 @@ pub fn compare_msaa_see_through(
     let band = band_see_through(mesh, camera, cpu, params.ssaa);
     let [front, back] = layers(mesh, camera, params);
     compare_msaa_layered(mesh, camera, cpu, gpu, band, &[&front, &back])
+}
+
+/// [`compare_msaa`] for a picture with `params`: cut open or not,
+/// see-through or not, with the band of [`band_of`].
+pub fn compare_msaa_with(
+    mesh: &Mesh,
+    camera: &Camera,
+    params: &RenderParams,
+    cpu: &Frame,
+    gpu: &Frame,
+) -> (MsaaParity, Vec<bool>) {
+    let band = band_of(mesh, camera, params, cpu);
+    if params.opacity() < 1.0 {
+        let [front, back] = layers(mesh, camera, params);
+        compare_msaa_layered(mesh, camera, cpu, gpu, band, &[&front, &back])
+    } else {
+        compare_msaa_layered(mesh, camera, cpu, gpu, band, &[cpu])
+    }
 }
 
 fn compare_msaa_layered(

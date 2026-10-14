@@ -21,3 +21,5 @@ pollster.workspace = true
 
 [dev-dependencies]
 craft3d-testkit.workspace = true
+# The hollow body of the section tests is made by a boolean.
+craft3d-kernel.workspace = true
