@@ -1187,6 +1187,97 @@ impl RationalBezierPatch {
     }
 }
 
+impl RationalBezierPatch {
+    /// The same patch with its parameters exchanged: the point at
+    /// `(s, t)` is this patch's at `(t, s)`. Its normal points the other
+    /// way.
+    pub fn transposed(&self) -> Self {
+        let (m, n) = (self.degree_u, self.degree_v);
+        let mut homogeneous = Vec::with_capacity(self.homogeneous.len());
+        for j in 0..=n {
+            for i in 0..=m {
+                homogeneous.push(self.row(i).get(j).copied().unwrap_or(ZERO));
+            }
+        }
+        Self {
+            degree_u: n,
+            degree_v: m,
+            homogeneous,
+        }
+    }
+
+    /// The Bézier nets of `w² ∂u` (degrees `(2 degree_u − 1, 2
+    /// degree_v)`) and `w² ∂v` (degrees `(2 degree_u, 2 degree_v − 1)`):
+    /// the partial derivatives of the patch times the square of its
+    /// weight, which are polynomials where the derivatives themselves are
+    /// not. With `S = A / w`,
+    ///
+    /// `w² S_u = A_u w − A w_u`
+    ///
+    /// and the products of Bernstein forms are Bernstein forms whose
+    /// coefficients blend theirs with binomial weights. Each field lies
+    /// in the convex hull of its net, so a derivative is no longer than
+    /// the longest vector of its net over the square of the lightest
+    /// weight, and a net with a row of zeros shows the derivative
+    /// vanishing all along that border (a border collapsed into a point).
+    /// The control points are taken from the first of them, which changes
+    /// nothing in the fields and keeps the products small far from the
+    /// origin. `None` when a weight is not positive and finite.
+    pub fn weighted_derivative_nets(&self) -> Option<(Vec<Vec3>, Vec<Vec3>)> {
+        let (m, n) = (self.degree_u, self.degree_v);
+        self.weight_range()?;
+        let first = self.homogeneous.first()?;
+        let origin = first.p * (1.0 / first.w);
+        let local: Vec<H> = self
+            .homogeneous
+            .iter()
+            .map(|h| H {
+                p: h.p - origin * h.w,
+                w: h.w,
+            })
+            .collect();
+        let at = |i: usize, j: usize| local.get(i * (n + 1) + j).copied().unwrap_or(ZERO);
+        let mut along_u = Vec::with_capacity(m * (n + 1));
+        for i in 0..m {
+            for j in 0..=n {
+                let (a, b) = (at(i, j), at(i + 1, j));
+                along_u.push(H {
+                    p: (b.p - a.p) * (m as f64),
+                    w: (b.w - a.w) * (m as f64),
+                });
+            }
+        }
+        let mut along_v = Vec::with_capacity((m + 1) * n);
+        for i in 0..=m {
+            for j in 0..n {
+                let (a, b) = (at(i, j), at(i, j + 1));
+                along_v.push(H {
+                    p: (b.p - a.p) * (n as f64),
+                    w: (b.w - a.w) * (n as f64),
+                });
+            }
+        }
+        let whole = Grid { m, n, c: local };
+        let du = Grid {
+            m: m.saturating_sub(1),
+            n,
+            c: along_u,
+        };
+        let dv = Grid {
+            m,
+            n: n.saturating_sub(1),
+            c: along_v,
+        };
+        // `A' w − A w'` from the coefficients of a derivative and of the
+        // patch.
+        let field = |d: H, whole: H| d.p * whole.w - whole.p * d.w;
+        Some((
+            bernstein_product(&du, &whole, field).c,
+            bernstein_product(&dv, &whole, field).c,
+        ))
+    }
+}
+
 /// Upper bounds on the lengths of the first and second partial derivatives
 /// of a patch over all of it.
 #[derive(Clone, Copy, Debug, PartialEq)]
