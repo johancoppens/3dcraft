@@ -1,23 +1,34 @@
 # 3DCraft
 
-A parametric 3D CAD modeller for AI, in pure Rust, with its own kernel, constraint solver, tessellator and renderers.
-Every action is a command, so the same engine can be driven from a UI, the CLI, a JSON control
-channel or an MCP server.
+A parametric 3D CAD modeller built for AI, in pure Rust, with its own B-rep kernel, constraint solver,
+tessellator and renderers: no OpenCascade, no Parasolid, no third-party geometry of any kind. Every action
+is a command, so the same engine is driven from the window, the command line, a JSON control channel or an
+MCP server, and an agent can build a model in the window you are watching.
 
-![A part modelled with six commands: a plate, a post with a knob, and a peg](docs/img/part.png)
+![The 3DCraft window: tabs of five open documents, the feature tree of a socket head cap screw with a cut M10 thread, the view cube, and the controls for sketches, datums, the section plane and see-through](docs/img/viewer.png)
 
-**Status: the kernel is being made professional.** A part is modelled from primitive solids (block, cylinder,
-sphere, cone, torus) and from sketches: lines, polylines, circles, arcs, paths of lines and arcs and B-splines
-under sixteen kinds of constraint, solved by 3DCraft's own solver, extruded (to a distance, through all, or up
-to a face, flat or curved) or revolved into solids, which are moved, mirrored, patterned and combined by
-booleans (union, subtract, intersect), with variables and formulas throughout. Datum planes, axes and points
-place sketches, mirrors, revolves and patterns where no face is. Documents are saved as `.3dcraft`, reopened
-and changed (only what an edit touches is regenerated), rendered on the CPU or the GPU, and exported as STEP,
-STL, 3MF or OBJ, and a sketch or a flat face as DXF or SVG, all through commands: from the command line, a
-JSON-lines server or an MCP server. A native window shows the model while an agent builds it, also over MCP.
-Freeform (Bézier and B-spline) faces take part in booleans and are measured against FreeCAD on a corpus of
-3996 cases, and FreeCAD reads back what the commands build as valid solids of our volume. There are no
-fillets, no lofts and no sweeps yet; [`docs/roadmap.md`](docs/roadmap.md) says what comes next.
+## What it does today
+
+- **Parametric modelling.** Variables and formulas drive everything; sketches of lines, arcs, circles and
+  B-splines under sixteen kinds of constraint, solved by 3DCraft's own solver. Change one number and the
+  model regenerates, only from the feature the change touches.
+- **Features.** Extrude (to a distance, symmetric, through all, up to a face), revolve, loft, sweep along
+  a path or a helix, booleans, mirror and patterns, chamfers and fillets, offset face, shell, delete face,
+  and ISO metric threads (cut, or cosmetic as other modellers default to). Datum planes, axes, points and
+  helices.
+- **Stable references.** Every face, edge and vertex has a persistent name made of where it came from, so a
+  fillet stays on its edge through upstream edits and booleans; a feature that loses its edge fails, names
+  what it lost and the feature that caused it, and is repaired with `feature.edit`.
+- **A boolean kernel that is checked, not hoped.** Booleans of every analytic surface kind and of polynomial
+  and rational freeform faces agree with a reference kernel in 11,573 of 11,988 cases of a corpus, with
+  none wrong; the rest are refused by name rather than answered badly.
+- **Formats.** `.3dcraft` (the history, not the geometry: it regenerates bit for bit), STEP AP214 export that
+  FreeCAD reads back as valid solids of our volume, STL, 3MF and OBJ, and DXF and SVG of sketches and flat faces.
+- **A native window** (egui on wgpu; Vulkan, Metal, DX12 or OpenGL) that stays responsive while a heavy model
+  regenerates, shows a quick picture first and the sharp one after, and keeps a tab per open document; a view
+  cube, a section plane, see-through bodies, and the feature tree with what failed and why.
+- **Never crashes.** A bad file, a bad parameter or a degenerate model gives an error you can act on; a fuzzing
+  test runs every command with hostile input.
 
 ```sh
 cargo build --release -p craft3d-cli
@@ -26,13 +37,11 @@ target/release/craft3d-cli run --new '{}' \
     --cmd feature.block --params '{"size":["width","width * 2 / 3","8 mm"]}' \
     --cmd document.measure --out part.3dcraft
 target/release/craft3d-cli render part.3dcraft --out part.png
-target/release/craft3d-cli convert part.3dcraft part.3mf
-target/release/craft3d-cli commands          # everything it can do
+target/release/craft3d-cli convert part.3dcraft part.step
+target/release/craft3d-cli commands          # all 63 commands, with their parameters
 ```
 
-The viewer, after an agent built this bracket in it through the MCP bridge (36 commands):
-
-![The 3DCraft window showing an L bracket with a tab, its sketches drawn over it](docs/img/viewer.png)
+The window, and an agent driving it over MCP:
 
 ```sh
 cargo build --release -p craft3d -p craft3d-cli
@@ -41,10 +50,24 @@ claude mcp add craft3d -- "$PWD/target/release/craft3d-cli" mcp \
     --bridge 7878 --control-token-file "$PWD/.private/control.token"
 ```
 
+## One variable, three screws
+
+The [parametric screw](docs/showcase/pscrew.steps.json) is fifteen commands. Its head, hex socket, rounds,
+chamfer and thread all follow the nominal diameter `d`; the thread takes the ISO 261 size and coarse pitch of
+whatever diameter the shank has. Setting `d` to 8, 10 and 12 mm gives an M8 × 1.25, an M10 × 1.5 and an
+M12 × 1.75, each a valid solid regenerated in about three seconds, thread cut and all:
+
+```sh
+target/release/craft3d-cli run --new '{"units":"mm"}' --script docs/showcase/pscrew.steps.json \
+    --cmd variable.set --params '{"name":"d","expr":"12 mm"}' --out m12.3dcraft
+```
+
+![Three socket head cap screws of the same model, M8, M10 and M12, at the same scale](docs/img/screw-sizes.png)
+
 ## Showcase
 
-Sixteen models built with the commands that exist today; the first eight were driven step by step into the
-window while the developer watched, the others were built headless. The pictures are the CPU renderer's
+Twenty-three models built with the commands that exist today; the first eight were driven step by step into
+the window while the developer watched, the others were built headless or by a script. The pictures are the CPU renderer's
 (`craft3d-cli render`). The `.3dcraft` files and the step scripts are in
 [`docs/showcase/`](docs/showcase/); any of them is rebuilt headless with
 
@@ -63,7 +86,9 @@ target/release/craft3d-cli run --new '{"units":"mm"}' --script docs/showcase/gea
 | ![Bent pipe with a flange](docs/showcase/pipe.png) **Bent pipe with a flange**: a ring (the wall and the bore) carried along a line, a quarter bend and a line by `feature.sweep`: two cylinders and a piece of a torus inside and out, exact and without a seam; a flange extruded and joined. | ![Handle on a plate](docs/showcase/handle.png) **Handle on a plate**: a circle swept along a path of three lines and two bends drawn in a sketch that stands on the plate, joined to the plate at once (`join`). |
 | ![Gasket](docs/showcase/gasket.png) **Gasket**: an obround section (two lines, two half circles) carried round a closed path, a rounded rectangle: a ring without ends, its flat faces one face each all the way round. | ![Hose](docs/showcase/hose.png) **Hose**: a ring swept along a spline. Along a spline the faces are B-spline surfaces within half the document's tolerance of the true sweep; the feature says how far off they were found to be (1.4e-7 mm here, through 85 stations). |
 | ![Tray, cut open](docs/showcase/tray.png) **Shelled tray, cut open**: a block with its upright edges rounded, made hollow by `feature.shell` (3 mm walls, open at the top; the inner rounds have the radius less the wall), a bored boss sketched on the floor of the hollow, then made taller and its bore wider by `feature.offsetFace`. Its volume is the closed form to the last digit. Rendered with the section plane. | ![Coil spring](docs/showcase/spring.png) **Coil spring**: a wire of 1.5 mm on a plane square to a helix (`datum.helix`, six turns of pitch 5), carried along it by its screw motion (`feature.sweep` with the helix as its path): one face per quarter of the wire per half turn, B-spline surfaces 1.1e-9 mm from the true sweep through 217 stations; its volume is the wire's area times the helix's length to 4e-13. |
-| ![Socket head cap screw](docs/showcase/screw.png) **Socket head cap screw M10 × 40**: head and shank, a hex socket with its drill point, rounds and chamfers, and `feature.thread`: an ISO metric thread of 26 mm cut through the lead chamfer by the groove of the basic profile swept along a helix, with a run-out of a quarter turn. | |
+| ![Socket head cap screw](docs/showcase/screw.png) **Socket head cap screw M10 × 40**: head and shank, a hex socket with its drill point, rounds and chamfers, and `feature.thread`: an ISO metric thread of 26 mm cut through the lead chamfer by the groove of the basic profile swept along a helix, with a run-out of a quarter turn. | ![Parametric screw](docs/showcase/pscrew.png) **Parametric screw**: the same screw driven by one variable `d`: head `1.5 d`, socket `0.8 d` (three slabs turned 60° and intersected), rounds and chamfer given by the faces of the first body and followed through every boolean, and a thread that takes the ISO size and coarse pitch of whatever diameter the shank has. |
+| ![Aircraft](docs/showcase/aircraft.png) **Aircraft**: a fuselage turned from a spline, wings lofted through four cambered sections (tapered, swept back, rising towards the tip and twisted 3.5° there), mirrored; a tailplane and a fin; five unions of freeform faces into one solid. | ![Voronoi helmet](docs/showcase/helmet.png) **Voronoi helmet**: a 4 mm shell turned from two splines, 70 Voronoi cells (computed on the sphere) cut through it as radial frustums: one solid. Not the organic look of a lattice tool: its struts are flat and its rims sharp. |
+| ![Modernist villa](docs/showcase/villa.png) **Modernist villa**, in metres: slabs, glazing, columns, a cantilevered floor and two upper wings at an angle under flared roofs (ruled lofts), a pool cut into the terrace, curved loungers (a closed spline extruded), filleted sofas, turned planters and a fire bowl: 49 bodies. | |
 
 ## First field test: an agent that only knew the command list
 

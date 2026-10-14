@@ -1,0 +1,1577 @@
+[
+ [
+  "feature.block",
+  {
+   "size": [
+    50,
+    5,
+    0.15
+   ],
+   "position": [
+    -6,
+    -14,
+    -0.6
+   ],
+   "name": "Lawn"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    42,
+    23,
+    0.6
+   ],
+   "position": [
+    -2,
+    -9,
+    -0.6
+   ],
+   "name": "Plinth"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    28,
+    3.5,
+    0.46
+   ],
+   "position": [
+    2,
+    -8,
+    -0.45
+   ],
+   "name": "PoolVoid"
+  }
+ ],
+ [
+  "feature.boolean",
+  {
+   "op": "subtract",
+   "target": "Plinth",
+   "tool": "PoolVoid",
+   "name": "Terrace"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    28,
+    3.5,
+    0.33
+   ],
+   "position": [
+    2,
+    -8,
+    -0.45
+   ],
+   "name": "Water"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    30,
+    12,
+    0.3
+   ],
+   "position": [
+    0,
+    0,
+    0
+   ],
+   "name": "GroundSlab"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    29.0,
+    0.6,
+    3.3
+   ],
+   "position": [
+    0.5,
+    11.4,
+    0.3
+   ],
+   "name": "StoneWall"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    0.6,
+    7.4,
+    3.3
+   ],
+   "position": [
+    0.5,
+    4,
+    0.3
+   ],
+   "name": "SideWall"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    1.2,
+    5.4,
+    3.3
+   ],
+   "position": [
+    14,
+    6,
+    0.3
+   ],
+   "name": "Fireplace"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    28.4,
+    0.04,
+    3.3
+   ],
+   "position": [
+    1.1,
+    0.6,
+    0.3
+   ],
+   "name": "GroundGlass"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    0.12,
+    0.12,
+    3.3
+   ],
+   "position": [
+    1.1,
+    0.5,
+    0.3
+   ],
+   "name": "Mullion0"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    0.12,
+    0.12,
+    3.3
+   ],
+   "position": [
+    3.5,
+    0.5,
+    0.3
+   ],
+   "name": "Mullion1"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    0.12,
+    0.12,
+    3.3
+   ],
+   "position": [
+    5.9,
+    0.5,
+    0.3
+   ],
+   "name": "Mullion2"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    0.12,
+    0.12,
+    3.3
+   ],
+   "position": [
+    8.3,
+    0.5,
+    0.3
+   ],
+   "name": "Mullion3"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    0.12,
+    0.12,
+    3.3
+   ],
+   "position": [
+    10.7,
+    0.5,
+    0.3
+   ],
+   "name": "Mullion4"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    0.12,
+    0.12,
+    3.3
+   ],
+   "position": [
+    13.1,
+    0.5,
+    0.3
+   ],
+   "name": "Mullion5"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    0.12,
+    0.12,
+    3.3
+   ],
+   "position": [
+    15.5,
+    0.5,
+    0.3
+   ],
+   "name": "Mullion6"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    0.12,
+    0.12,
+    3.3
+   ],
+   "position": [
+    17.9,
+    0.5,
+    0.3
+   ],
+   "name": "Mullion7"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    0.12,
+    0.12,
+    3.3
+   ],
+   "position": [
+    20.3,
+    0.5,
+    0.3
+   ],
+   "name": "Mullion8"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    0.12,
+    0.12,
+    3.3
+   ],
+   "position": [
+    22.7,
+    0.5,
+    0.3
+   ],
+   "name": "Mullion9"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    0.12,
+    0.12,
+    3.3
+   ],
+   "position": [
+    25.1,
+    0.5,
+    0.3
+   ],
+   "name": "Mullion10"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    0.12,
+    0.12,
+    3.3
+   ],
+   "position": [
+    27.5,
+    0.5,
+    0.3
+   ],
+   "name": "Mullion11"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    0.18,
+    0.18,
+    3.6
+   ],
+   "position": [
+    18,
+    -2.2,
+    0
+   ],
+   "name": "Column0"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    0.18,
+    0.18,
+    3.6
+   ],
+   "position": [
+    20.6,
+    -2.2,
+    0
+   ],
+   "name": "Column1"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    0.18,
+    0.18,
+    3.6
+   ],
+   "position": [
+    23.2,
+    -2.2,
+    0
+   ],
+   "name": "Column2"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    0.18,
+    0.18,
+    3.6
+   ],
+   "position": [
+    25.8,
+    -2.2,
+    0
+   ],
+   "name": "Column3"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    0.18,
+    0.18,
+    3.6
+   ],
+   "position": [
+    28.4,
+    -2.2,
+    0
+   ],
+   "name": "Column4"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    32,
+    15.6,
+    0.4
+   ],
+   "position": [
+    -1,
+    -2.6,
+    3.6
+   ],
+   "name": "FirstSlab"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    16,
+    10,
+    2.9
+   ],
+   "position": [
+    1,
+    1,
+    4.0
+   ],
+   "name": "WingAGlass"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    1.0,
+    0.05,
+    2.8
+   ],
+   "position": [
+    1.6,
+    0.95,
+    4.0
+   ],
+   "name": "CurtainA1"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    1,
+    0.05,
+    2.8
+   ],
+   "position": [
+    9,
+    0.95,
+    4.0
+   ],
+   "name": "CurtainA2"
+  }
+ ],
+ [
+  "sketch.create",
+  {
+   "plane": "xy",
+   "offset": "6.9 m",
+   "name": "RoofAS0"
+  }
+ ],
+ [
+  "sketch.line",
+  {
+   "sketch": "RoofAS0",
+   "from": [
+    1.0,
+    1.0
+   ],
+   "to": [
+    17.0,
+    1.0
+   ]
+  }
+ ],
+ [
+  "sketch.line",
+  {
+   "sketch": "RoofAS0",
+   "from": "e2",
+   "to": [
+    17.0,
+    11.0
+   ]
+  }
+ ],
+ [
+  "sketch.line",
+  {
+   "sketch": "RoofAS0",
+   "from": "e4",
+   "to": [
+    1.0,
+    11.0
+   ]
+  }
+ ],
+ [
+  "sketch.line",
+  {
+   "sketch": "RoofAS0",
+   "from": "e6",
+   "to": "e1"
+  }
+ ],
+ [
+  "sketch.create",
+  {
+   "plane": "xy",
+   "offset": "7.7 m",
+   "name": "RoofAS1"
+  }
+ ],
+ [
+  "sketch.line",
+  {
+   "sketch": "RoofAS1",
+   "from": [
+    0.1,
+    0.1
+   ],
+   "to": [
+    17.9,
+    0.1
+   ]
+  }
+ ],
+ [
+  "sketch.line",
+  {
+   "sketch": "RoofAS1",
+   "from": "e2",
+   "to": [
+    17.9,
+    11.9
+   ]
+  }
+ ],
+ [
+  "sketch.line",
+  {
+   "sketch": "RoofAS1",
+   "from": "e4",
+   "to": [
+    0.1,
+    11.9
+   ]
+  }
+ ],
+ [
+  "sketch.line",
+  {
+   "sketch": "RoofAS1",
+   "from": "e6",
+   "to": "e1"
+  }
+ ],
+ [
+  "feature.loft",
+  {
+   "sections": [
+    "RoofAS0",
+    "RoofAS1"
+   ],
+   "ruled": true,
+   "name": "RoofA"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    12,
+    10,
+    2.9
+   ],
+   "position": [
+    17,
+    1,
+    4.0
+   ],
+   "angle": "14 deg",
+   "name": "WingBGlass"
+  }
+ ],
+ [
+  "sketch.create",
+  {
+   "plane": "xy",
+   "offset": "6.9 m",
+   "name": "RoofBS0"
+  }
+ ],
+ [
+  "sketch.line",
+  {
+   "sketch": "RoofBS0",
+   "from": [
+    17.0,
+    1.0
+   ],
+   "to": [
+    28.64355,
+    3.90306
+   ]
+  }
+ ],
+ [
+  "sketch.line",
+  {
+   "sketch": "RoofBS0",
+   "from": "e2",
+   "to": [
+    26.22433,
+    13.60602
+   ]
+  }
+ ],
+ [
+  "sketch.line",
+  {
+   "sketch": "RoofBS0",
+   "from": "e4",
+   "to": [
+    14.58078,
+    10.70296
+   ]
+  }
+ ],
+ [
+  "sketch.line",
+  {
+   "sketch": "RoofBS0",
+   "from": "e6",
+   "to": "e1"
+  }
+ ],
+ [
+  "sketch.create",
+  {
+   "plane": "xy",
+   "offset": "7.9 m",
+   "name": "RoofBS1"
+  }
+ ],
+ [
+  "sketch.line",
+  {
+   "sketch": "RoofBS1",
+   "from": [
+    16.19879,
+    -0.33344
+   ],
+   "to": [
+    29.97699,
+    3.10185
+   ]
+  }
+ ],
+ [
+  "sketch.line",
+  {
+   "sketch": "RoofBS1",
+   "from": "e2",
+   "to": [
+    27.02554,
+    14.93946
+   ]
+  }
+ ],
+ [
+  "sketch.line",
+  {
+   "sketch": "RoofBS1",
+   "from": "e4",
+   "to": [
+    13.24734,
+    11.50417
+   ]
+  }
+ ],
+ [
+  "sketch.line",
+  {
+   "sketch": "RoofBS1",
+   "from": "e6",
+   "to": "e1"
+  }
+ ],
+ [
+  "feature.loft",
+  {
+   "sections": [
+    "RoofBS0",
+    "RoofBS1"
+   ],
+   "ruled": true,
+   "name": "RoofB"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    1,
+    0.05,
+    2.8
+   ],
+   "position": [
+    21.8636,
+    2.1611,
+    4.0
+   ],
+   "angle": "14 deg",
+   "name": "CurtainB"
+  }
+ ],
+ [
+  "sketch.create",
+  {
+   "plane": "zx",
+   "offset": "-3.9 m",
+   "name": "ChaiseSide0"
+  }
+ ],
+ [
+  "sketch.spline",
+  {
+   "sketch": "ChaiseSide0",
+   "through": [
+    [
+     0.3,
+     23.6
+    ],
+    [
+     0.38,
+     24.05
+    ],
+    [
+     0.33,
+     24.55
+    ],
+    [
+     0.4,
+     24.95
+    ],
+    [
+     0.7,
+     25.3
+    ],
+    [
+     0.98,
+     25.52
+    ],
+    [
+     1.02,
+     25.46
+    ],
+    [
+     0.74,
+     25.22
+    ],
+    [
+     0.47,
+     24.9
+    ],
+    [
+     0.4,
+     24.55
+    ],
+    [
+     0.45,
+     24.05
+    ],
+    [
+     0.37,
+     23.62
+    ]
+   ],
+   "closed": true
+  }
+ ],
+ [
+  "feature.extrude",
+  {
+   "sketch": "ChaiseSide0",
+   "distance": "0.7 m",
+   "name": "Chaise0"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    0.1,
+    0.6,
+    0.33
+   ],
+   "position": [
+    23.85,
+    -3.85,
+    0
+   ],
+   "name": "ChaiseFoot0"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    0.1,
+    0.6,
+    0.42
+   ],
+   "position": [
+    24.8,
+    -3.85,
+    0
+   ],
+   "name": "ChaiseLeg0"
+  }
+ ],
+ [
+  "sketch.create",
+  {
+   "plane": "zx",
+   "offset": "-3.9 m",
+   "name": "ChaiseSide1"
+  }
+ ],
+ [
+  "sketch.spline",
+  {
+   "sketch": "ChaiseSide1",
+   "through": [
+    [
+     0.3,
+     25.4
+    ],
+    [
+     0.38,
+     25.85
+    ],
+    [
+     0.33,
+     26.35
+    ],
+    [
+     0.4,
+     26.75
+    ],
+    [
+     0.7,
+     27.1
+    ],
+    [
+     0.98,
+     27.32
+    ],
+    [
+     1.02,
+     27.26
+    ],
+    [
+     0.74,
+     27.02
+    ],
+    [
+     0.47,
+     26.7
+    ],
+    [
+     0.4,
+     26.35
+    ],
+    [
+     0.45,
+     25.85
+    ],
+    [
+     0.37,
+     25.42
+    ]
+   ],
+   "closed": true
+  }
+ ],
+ [
+  "feature.extrude",
+  {
+   "sketch": "ChaiseSide1",
+   "distance": "0.7 m",
+   "name": "Chaise1"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    0.1,
+    0.6,
+    0.33
+   ],
+   "position": [
+    25.65,
+    -3.85,
+    0
+   ],
+   "name": "ChaiseFoot1"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    0.1,
+    0.6,
+    0.42
+   ],
+   "position": [
+    26.6,
+    -3.85,
+    0
+   ],
+   "name": "ChaiseLeg1"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    3.0,
+    1.0,
+    0.42
+   ],
+   "position": [
+    2.0,
+    -3.4,
+    0
+   ],
+   "name": "SofaSeat"
+  }
+ ],
+ [
+  "feature.fillet",
+  {
+   "edges": [
+    [
+     "F48:face(1)",
+     "F48:face(2)"
+    ],
+    [
+     "F48:face(1)",
+     "F48:face(3)"
+    ],
+    [
+     "F48:face(1)",
+     "F48:face(4)"
+    ],
+    [
+     "F48:face(1)",
+     "F48:face(5)"
+    ],
+    [
+     "F48:face(2)",
+     "F48:face(4)"
+    ],
+    [
+     "F48:face(2)",
+     "F48:face(5)"
+    ],
+    [
+     "F48:face(3)",
+     "F48:face(4)"
+    ],
+    [
+     "F48:face(3)",
+     "F48:face(5)"
+    ]
+   ],
+   "radius": "0.08 m",
+   "name": "SofaSeatRound"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    3.0,
+    0.4,
+    0.8
+   ],
+   "position": [
+    2.0,
+    -2.6,
+    0
+   ],
+   "name": "SofaBack"
+  }
+ ],
+ [
+  "feature.fillet",
+  {
+   "edges": [
+    [
+     "F50:face(1)",
+     "F50:face(2)"
+    ],
+    [
+     "F50:face(1)",
+     "F50:face(3)"
+    ],
+    [
+     "F50:face(1)",
+     "F50:face(4)"
+    ],
+    [
+     "F50:face(1)",
+     "F50:face(5)"
+    ],
+    [
+     "F50:face(2)",
+     "F50:face(4)"
+    ],
+    [
+     "F50:face(2)",
+     "F50:face(5)"
+    ],
+    [
+     "F50:face(3)",
+     "F50:face(4)"
+    ],
+    [
+     "F50:face(3)",
+     "F50:face(5)"
+    ]
+   ],
+   "radius": "0.08 m",
+   "name": "SofaBackRound"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    0.3,
+    1.2,
+    0.6
+   ],
+   "position": [
+    2.0,
+    -3.4,
+    0
+   ],
+   "name": "SofaArm"
+  }
+ ],
+ [
+  "feature.fillet",
+  {
+   "edges": [
+    [
+     "F52:face(1)",
+     "F52:face(2)"
+    ],
+    [
+     "F52:face(1)",
+     "F52:face(3)"
+    ],
+    [
+     "F52:face(1)",
+     "F52:face(4)"
+    ],
+    [
+     "F52:face(1)",
+     "F52:face(5)"
+    ],
+    [
+     "F52:face(2)",
+     "F52:face(4)"
+    ],
+    [
+     "F52:face(2)",
+     "F52:face(5)"
+    ],
+    [
+     "F52:face(3)",
+     "F52:face(4)"
+    ],
+    [
+     "F52:face(3)",
+     "F52:face(5)"
+    ]
+   ],
+   "radius": "0.06 m",
+   "name": "SofaArmRound"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    1.0,
+    0.8,
+    0.4
+   ],
+   "position": [
+    3.0,
+    -4.6,
+    0
+   ],
+   "name": "Ottoman"
+  }
+ ],
+ [
+  "feature.fillet",
+  {
+   "edges": [
+    [
+     "F54:face(1)",
+     "F54:face(2)"
+    ],
+    [
+     "F54:face(1)",
+     "F54:face(3)"
+    ],
+    [
+     "F54:face(1)",
+     "F54:face(4)"
+    ],
+    [
+     "F54:face(1)",
+     "F54:face(5)"
+    ],
+    [
+     "F54:face(2)",
+     "F54:face(4)"
+    ],
+    [
+     "F54:face(2)",
+     "F54:face(5)"
+    ],
+    [
+     "F54:face(3)",
+     "F54:face(4)"
+    ],
+    [
+     "F54:face(3)",
+     "F54:face(5)"
+    ]
+   ],
+   "radius": "0.12 m",
+   "name": "OttomanRound"
+  }
+ ],
+ [
+  "sketch.create",
+  {
+   "plane": "zx",
+   "offset": "0 m",
+   "name": "TableProfile"
+  }
+ ],
+ [
+  "sketch.line",
+  {
+   "sketch": "TableProfile",
+   "from": [
+    0,
+    0
+   ],
+   "to": [
+    0,
+    0.42
+   ]
+  }
+ ],
+ [
+  "sketch.line",
+  {
+   "sketch": "TableProfile",
+   "from": "e2",
+   "to": [
+    0.04,
+    0.42
+   ]
+  }
+ ],
+ [
+  "sketch.spline",
+  {
+   "sketch": "TableProfile",
+   "control": [
+    "e4",
+    [
+     0.1,
+     0.1
+    ],
+    [
+     0.5,
+     0.06
+    ],
+    [
+     0.71,
+     0.09
+    ]
+   ]
+  }
+ ],
+ [
+  "sketch.line",
+  {
+   "sketch": "TableProfile",
+   "from": "e8",
+   "to": [
+    0.71,
+    0.7
+   ]
+  }
+ ],
+ [
+  "sketch.line",
+  {
+   "sketch": "TableProfile",
+   "from": "e10",
+   "to": [
+    0.75,
+    0.7
+   ]
+  }
+ ],
+ [
+  "sketch.line",
+  {
+   "sketch": "TableProfile",
+   "from": "e12",
+   "to": [
+    0.75,
+    0
+   ]
+  }
+ ],
+ [
+  "sketch.line",
+  {
+   "sketch": "TableProfile",
+   "from": "e14",
+   "to": "e1"
+  }
+ ],
+ [
+  "feature.revolve",
+  {
+   "sketch": "TableProfile",
+   "axis": "x",
+   "name": "TableAtOrigin"
+  }
+ ],
+ [
+  "feature.transform",
+  {
+   "source": "TableAtOrigin",
+   "translate": [
+    "9 m",
+    "-2.0 m",
+    "0 m"
+   ],
+   "name": "Table"
+  }
+ ],
+ [
+  "sketch.create",
+  {
+   "plane": "zx",
+   "offset": "0 m",
+   "name": "PotProfile"
+  }
+ ],
+ [
+  "sketch.line",
+  {
+   "sketch": "PotProfile",
+   "from": [
+    0,
+    0
+   ],
+   "to": [
+    0,
+    0.22
+   ]
+  }
+ ],
+ [
+  "sketch.spline",
+  {
+   "sketch": "PotProfile",
+   "control": [
+    "e2",
+    [
+     0.2,
+     0.36
+    ],
+    [
+     0.55,
+     0.36
+    ],
+    [
+     0.72,
+     0.28
+    ]
+   ]
+  }
+ ],
+ [
+  "sketch.line",
+  {
+   "sketch": "PotProfile",
+   "from": "e6",
+   "to": [
+    0.72,
+    0
+   ]
+  }
+ ],
+ [
+  "sketch.line",
+  {
+   "sketch": "PotProfile",
+   "from": "e8",
+   "to": "e1"
+  }
+ ],
+ [
+  "feature.revolve",
+  {
+   "sketch": "PotProfile",
+   "axis": "x",
+   "name": "Pot"
+  }
+ ],
+ [
+  "sketch.create",
+  {
+   "plane": "zx",
+   "offset": "0 m",
+   "name": "ShrubProfile"
+  }
+ ],
+ [
+  "sketch.line",
+  {
+   "sketch": "ShrubProfile",
+   "from": [
+    0.6,
+    0
+   ],
+   "to": [
+    1.45,
+    0
+   ]
+  }
+ ],
+ [
+  "sketch.spline",
+  {
+   "sketch": "ShrubProfile",
+   "control": [
+    "e2",
+    [
+     1.45,
+     0.42
+    ],
+    [
+     0.62,
+     0.46
+    ],
+    [
+     0.6,
+     0.12
+    ],
+    "e1"
+   ]
+  }
+ ],
+ [
+  "feature.revolve",
+  {
+   "sketch": "ShrubProfile",
+   "axis": "x",
+   "name": "Shrub"
+  }
+ ],
+ [
+  "feature.boolean",
+  {
+   "op": "union",
+   "target": "Pot",
+   "tool": "Shrub",
+   "name": "Planter"
+  }
+ ],
+ [
+  "feature.transform",
+  {
+   "source": "Planter",
+   "translate": [
+    "29.3 m",
+    "-1.2 m",
+    "0 m"
+   ],
+   "keep": true,
+   "name": "Planter0"
+  }
+ ],
+ [
+  "feature.transform",
+  {
+   "source": "Planter",
+   "translate": [
+    "31.2 m",
+    "-3.0 m",
+    "0 m"
+   ],
+   "keep": true,
+   "name": "Planter1"
+  }
+ ],
+ [
+  "feature.transform",
+  {
+   "source": "Planter",
+   "translate": [
+    "0.6 m",
+    "-1.4 m",
+    "0 m"
+   ],
+   "keep": true,
+   "name": "Planter2"
+  }
+ ],
+ [
+  "sketch.create",
+  {
+   "plane": "zx",
+   "offset": "0 m",
+   "name": "FireProfile"
+  }
+ ],
+ [
+  "sketch.line",
+  {
+   "sketch": "FireProfile",
+   "from": [
+    0,
+    0
+   ],
+   "to": [
+    0,
+    0.55
+   ]
+  }
+ ],
+ [
+  "sketch.line",
+  {
+   "sketch": "FireProfile",
+   "from": "e2",
+   "to": [
+    0.38,
+    0.62
+   ]
+  }
+ ],
+ [
+  "sketch.line",
+  {
+   "sketch": "FireProfile",
+   "from": "e4",
+   "to": [
+    0.42,
+    0.54
+   ]
+  }
+ ],
+ [
+  "sketch.spline",
+  {
+   "sketch": "FireProfile",
+   "control": [
+    "e6",
+    [
+     0.12,
+     0.45
+    ],
+    [
+     0.16,
+     0.12
+    ],
+    [
+     0.16,
+     0
+    ]
+   ]
+  }
+ ],
+ [
+  "sketch.line",
+  {
+   "sketch": "FireProfile",
+   "from": "e10",
+   "to": "e1"
+  }
+ ],
+ [
+  "feature.revolve",
+  {
+   "sketch": "FireProfile",
+   "axis": "x",
+   "name": "FireAtOrigin"
+  }
+ ],
+ [
+  "feature.transform",
+  {
+   "source": "FireAtOrigin",
+   "translate": [
+    "14.6 m",
+    "-3.2 m",
+    "0 m"
+   ],
+   "name": "FireBowl"
+  }
+ ],
+ [
+  "document.check",
+  {
+   "deep": true
+  }
+ ]
+]

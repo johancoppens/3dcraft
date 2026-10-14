@@ -1,0 +1,200 @@
+[
+ [
+  "variable.set",
+  {
+   "name": "d",
+   "expr": "10 mm"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "L",
+   "expr": "40 mm"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "k",
+   "expr": "d"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "dk",
+   "expr": "1.5 * d"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "s",
+   "expr": "0.8 * d"
+  }
+ ],
+ [
+  "variable.set",
+  {
+   "name": "t",
+   "expr": "0.5 * d"
+  }
+ ],
+ [
+  "feature.cylinder",
+  {
+   "radius": "dk / 2",
+   "height": "k",
+   "name": "Head"
+  }
+ ],
+ [
+  "feature.cylinder",
+  {
+   "radius": "d / 2",
+   "height": "L",
+   "position": [
+    "0 mm",
+    "0 mm",
+    "-L"
+   ],
+   "name": "Shank"
+  }
+ ],
+ [
+  "feature.boolean",
+  {
+   "op": "union",
+   "target": "Head",
+   "tool": "Shank",
+   "name": "Blank"
+  }
+ ],
+ [
+  "feature.block",
+  {
+   "size": [
+    "s",
+    "3 * s",
+    "t + 1 mm"
+   ],
+   "position": [
+    "-s / 2",
+    "-1.5 * s",
+    "k - t"
+   ],
+   "name": "Flat0"
+  }
+ ],
+ [
+  "feature.transform",
+  {
+   "source": "Flat0",
+   "angle": "60 deg",
+   "axis": [
+    0,
+    0,
+    1
+   ],
+   "keep": true,
+   "name": "Flat1"
+  }
+ ],
+ [
+  "feature.transform",
+  {
+   "source": "Flat0",
+   "angle": "120 deg",
+   "axis": [
+    0,
+    0,
+    1
+   ],
+   "keep": true,
+   "name": "Flat2"
+  }
+ ],
+ [
+  "feature.boolean",
+  {
+   "op": "intersect",
+   "target": "Flat0",
+   "tool": "Flat1",
+   "name": "Hex01"
+  }
+ ],
+ [
+  "feature.boolean",
+  {
+   "op": "intersect",
+   "target": "Hex01",
+   "tool": "Flat2",
+   "name": "Hex"
+  }
+ ],
+ [
+  "feature.boolean",
+  {
+   "op": "subtract",
+   "target": "Blank",
+   "tool": "Hex",
+   "name": "Socket"
+  }
+ ],
+ [
+  "feature.fillet",
+  {
+   "edges": [
+    [
+     "F1:face(1)",
+     "F2:face(0)"
+    ]
+   ],
+   "radius": "0.04 * d",
+   "name": "UnderHead"
+  }
+ ],
+ [
+  "feature.fillet",
+  {
+   "edges": [
+    [
+     "F1:face(0)",
+     "F1:face(2)"
+    ]
+   ],
+   "radius": "0.08 * d",
+   "name": "HeadTop"
+  }
+ ],
+ [
+  "feature.chamfer",
+  {
+   "edges": [
+    [
+     "F2:face(0)",
+     "F2:face(1)"
+    ]
+   ],
+   "distance": "0.1 * d",
+   "name": "Lead"
+  }
+ ],
+ [
+  "feature.thread",
+  {
+   "face": "F2:face(0)",
+   "start": "F2:face(1)",
+   "length": "0.6 * L",
+   "name": "Thread",
+   "modeled": true
+  }
+ ],
+ [
+  "document.check",
+  {
+   "deep": true
+  }
+ ]
+]
