@@ -23,6 +23,12 @@ use craft3d_math::Bbox3;
 use craft3d_render::{Highlight, Section};
 use std::sync::Arc;
 
+mod tabs;
+pub use tabs::{
+    CLOSE_MARK, CloseAnswer, DocAction, TabPart, UNSAVED_MARK, close_shortcut, doc_tabs,
+    next_shortcut, previous_shortcut, tab_name,
+};
+
 /// The viewport's size before the window has laid it out, in pixels: what
 /// `ui.screenshot` renders in a host without a window.
 pub const DEFAULT_VIEWPORT: [u32; 2] = [960, 640];
@@ -465,6 +471,19 @@ pub struct Shell {
     shown_status: Option<DocumentStatus>,
     /// The work being done on the host's engine thread, if any.
     work: Option<Work>,
+    /// The open documents as of the last sync: the row of tabs.
+    tabs: Vec<crate::state::DocTab>,
+    /// The question before closing a document, while it is asked.
+    closing: Option<crate::state::Closing>,
+    /// What a tab, the File menu or a shortcut asked for, until the host
+    /// takes it.
+    doc_action: Option<DocAction>,
+    /// Where the last frame drew the tabs and their close buttons.
+    tab_hits: Vec<(TabPart, egui::Rect)>,
+    /// Where the last frame drew the question's buttons.
+    closing_hits: Vec<(CloseAnswer, egui::Rect)>,
+    /// The tab that was last brought into view, by its place in the row.
+    tab_scrolled: Option<usize>,
 }
 
 impl Default for Shell {
@@ -552,6 +571,12 @@ impl Shell {
             shown_scene: None,
             shown_status: None,
             work: None,
+            tabs: Vec::new(),
+            closing: None,
+            doc_action: None,
+            tab_hits: Vec::new(),
+            closing_hits: Vec::new(),
+            tab_scrolled: None,
         }
     }
 
@@ -1127,6 +1152,7 @@ impl Shell {
     /// it follows the model. Called every frame and after every request.
     pub fn sync(&mut self, session: &mut Session) -> Option<Arc<Scene>> {
         let scene = self.sync_scene(session);
+        self.sync_tabs(session);
         self.shown_status = session.document_status();
         self.shown_scene.clone_from(&scene);
         scene
@@ -1288,10 +1314,11 @@ impl Shell {
             None => (self.shown_scene.clone(), self.shown_status.clone()),
         };
         self.file_shortcuts(ui, status.is_some());
+        self.tab_shortcuts(ui);
         egui::Panel::top("craft3d-menu")
             .resizable(false)
             .show(ui, |ui| self.menu_bar(ui, status.is_some()));
-        if self.file_action.is_some() {
+        if self.file_action.is_some() || self.doc_action.is_some() {
             // The host does it between frames: have one come.
             ui.ctx().request_repaint();
         }
@@ -1308,6 +1335,25 @@ impl Shell {
             self.recovery_hits.clear();
             self.discard_armed = None;
         }
+        if self.tabs.is_empty() {
+            self.tab_hits.clear();
+        } else {
+            let tokens = self.tokens;
+            egui::Panel::top("craft3d-tabs")
+                .resizable(false)
+                .show_separator_line(false)
+                .frame(
+                    egui::Frame::new()
+                        .fill(color(tokens.panel_fill))
+                        .inner_margin(egui::Margin {
+                            left: 4,
+                            right: 4,
+                            top: 3,
+                            bottom: 0,
+                        }),
+                )
+                .show(ui, |ui| self.tab_row(ui));
+        }
         if self.state.panels.status {
             egui::Panel::bottom("craft3d-status")
                 .resizable(false)
@@ -1321,6 +1367,7 @@ impl Shell {
                 .show(ui, |ui| self.tree(ui, status.is_some()));
         }
         egui::CentralPanel::no_frame().show(ui, |ui| self.viewport(ui, scene.as_ref()));
+        self.closing_dialog(ui);
     }
 
     /// The File shortcuts, wherever the pointer is.
@@ -1352,6 +1399,7 @@ impl Shell {
                         ui.close();
                     }
                 }
+                self.menu_documents(ui);
             });
         });
     }

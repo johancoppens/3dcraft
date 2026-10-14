@@ -102,6 +102,21 @@ pub struct Tokens {
     pub work_track: Rgb,
     pub work_spinner_width: f32,
     pub work_bar: f32,
+    /// The row of document tabs above the viewport: the fill of a tab, of
+    /// the active one and of one under the pointer, and the active one's
+    /// underline.
+    pub tab_fill: Rgb,
+    pub tab_active_fill: Rgb,
+    pub tab_hover_fill: Rgb,
+    pub tab_accent: Rgb,
+    /// A tab's height, its widest and narrowest width (a longer name is
+    /// cut with an ellipsis), the space between two tabs and the width of
+    /// the active one's underline, in points.
+    pub tab_height: f32,
+    pub tab_max_width: f32,
+    pub tab_min_width: f32,
+    pub tab_gap: f32,
+    pub tab_accent_width: f32,
 }
 
 impl Default for Tokens {
@@ -160,6 +175,15 @@ impl Tokens {
             work_track: [58, 62, 72],
             work_spinner_width: 2.5,
             work_bar: 4.0,
+            tab_fill: [44, 47, 56],
+            tab_active_fill: [30, 33, 40],
+            tab_hover_fill: [52, 56, 66],
+            tab_accent: [64, 196, 212],
+            tab_height: 26.0,
+            tab_max_width: 200.0,
+            tab_min_width: 72.0,
+            tab_gap: 2.0,
+            tab_accent_width: 2.0,
         }
     }
 

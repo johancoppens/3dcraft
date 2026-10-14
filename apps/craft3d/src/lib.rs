@@ -14,6 +14,8 @@
 //!   the thread that owns them.
 //! - [`files`]: New, Open, Save and Save As for the person at the window,
 //!   with the system's file dialog.
+//! - [`tabs`]: what the tabs of the open documents ask for, done with
+//!   `file.activate`, `file.close` and `file.save`.
 //! - [`worker`]: the engine thread, where commands run while the window
 //!   keeps drawing.
 //! - [`app`]: the eframe window.
@@ -26,6 +28,7 @@ pub mod args;
 pub mod control;
 pub mod files;
 pub mod host;
+pub mod tabs;
 pub mod token;
 pub mod worker;
 

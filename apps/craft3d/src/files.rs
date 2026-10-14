@@ -408,10 +408,28 @@ impl Host {
                 let _ = self.open_as_user(&path);
             }
             Ok(Choice::Save(path)) => {
-                let _ = self.save_chosen_as_user(&path);
+                let saved = self.save_chosen_as_user(&path);
+                if std::mem::take(&mut self.close_after_save) && saved.is_ok() {
+                    let session = &mut self.session;
+                    let closed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        crate::tabs::close_when_saved(session, saved, true)
+                    }))
+                    .unwrap_or_else(|_| {
+                        Err("internal error (a bug in 3DCraft, please report it); the document was kept"
+                            .to_string())
+                    });
+                    self.report("file.close", &closed);
+                    self.shell.sync(&mut self.session);
+                }
             }
-            Ok(Choice::Cancelled(label)) => self.report(label, &Err("cancelled".to_string())),
-            Err(error) => self.report("file", &Err(error)),
+            Ok(Choice::Cancelled(label)) => {
+                self.close_after_save = false;
+                self.report(label, &Err("cancelled".to_string()));
+            }
+            Err(error) => {
+                self.close_after_save = false;
+                self.report("file", &Err(error));
+            }
         }
     }
 
@@ -426,6 +444,10 @@ impl Host {
         }
         if let Some(action) = self.shell.take_file_action() {
             self.file_action(action, picker);
+            did = true;
+        }
+        if let Some(action) = self.shell.take_doc_action() {
+            self.doc_action(action, picker);
             did = true;
         }
         did

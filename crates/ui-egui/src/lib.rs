@@ -21,7 +21,7 @@
 //! - [`frames`]: which image is on screen, and the thread that makes the
 //!   sharp one.
 //! - [`view_cube`]: the view cube's geometry.
-//! - [`shell`]: the panels and the mouse.
+//! - [`shell`]: the panels, the tabs of the open documents and the mouse.
 //! - [`control`]: the `ui.*` methods of the control protocol.
 //!
 //! `ui.screenshot` always renders on the CPU: it is the oracle the GPU
@@ -42,8 +42,8 @@ pub mod viewport;
 pub use backend::{Backend, BodyRenderer, RendererChoice, RendererReport};
 pub use control::{UI_METHODS, UiMethod};
 pub use shell::{
-    CommandReport, FileAction, RecoveryAction, RenderStats, Shell, TreeRow, autosave_text,
-    window_title,
+    CloseAnswer, CommandReport, DocAction, FileAction, RecoveryAction, RenderStats, Shell, TabPart,
+    TreeRow, autosave_text, window_title,
 };
-pub use state::{CameraState, Panels, ProjectionKind, Show, UiState, Work};
+pub use state::{CameraState, Closing, DocTab, Panels, ProjectionKind, Show, UiState, Work};
 pub use theme::Tokens;

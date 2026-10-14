@@ -450,10 +450,7 @@ fn file_close(session: &mut Session, params: &Value) -> Run {
     let p = Params::new("file.close", params, &["discard"])?;
     let discard = p.bool("discard")?.unwrap_or(false);
     let open = session.document()?;
-    if open.dirty()
-        && !discard
-        && (open.path.is_some() || !open.history.current().features.is_empty())
-    {
+    if open.close_asks() && !discard {
         return fail(
             "file.close: the document has unsaved changes; save it, or pass {\"discard\": true}",
         );
