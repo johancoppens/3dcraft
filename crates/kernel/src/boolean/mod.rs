@@ -64,6 +64,7 @@ use outline::locate;
 use regions::Half;
 use section::Solid;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Mutex, PoisonError};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum BooleanOp {
@@ -230,6 +231,43 @@ fn geometry(error: GeomError, faces: &[(Operand, FaceId)]) -> Stop {
         },
         other => Stop::Error(KernelError::Geometry(other)),
     }
+}
+
+/// Bodies that passed `craft3d_topo::check` lately, each written out in
+/// full with the tolerance it was checked with (so that two are the same
+/// only when every number of them is, bit for bit), the most recent last.
+static PASSED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// How many are remembered, and how long all of them are at most.
+const PASSED_BODIES: usize = 8;
+const PASSED_BYTES: usize = 1 << 25;
+
+/// `craft3d_topo::check` of `body`, remembering the bodies that pass. In a
+/// row of booleans each result is the first operand of the next, and is
+/// checked as a result and again as an operand; written out, a body is
+/// compared at a small part of what checking it costs.
+pub(crate) fn checked(body: &Body, tolerance: &Tolerance) -> Vec<craft3d_topo::Defect> {
+    let key = format!("{tolerance:?}{body:?}");
+    {
+        let mut passed = PASSED.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(at) = passed.iter().position(|k| *k == key) {
+            let entry = passed.remove(at);
+            passed.push(entry);
+            return Vec::new();
+        }
+    }
+    let defects = check(body, tolerance);
+    if defects.is_empty() && key.len() <= PASSED_BYTES {
+        let mut passed = PASSED.lock().unwrap_or_else(PoisonError::into_inner);
+        if !passed.contains(&key) {
+            passed.push(key);
+        }
+        while passed.len() > PASSED_BODIES
+            || passed.iter().map(String::len).sum::<usize>() > PASSED_BYTES
+        {
+            let _forgotten = passed.remove(0);
+        }
+    }
+    defects
 }
 
 fn face_id(index: usize) -> FaceId {
@@ -566,7 +604,7 @@ fn run(
         merge::merge(&mut work, &sections.coincident_a, a.body, b.body, tol)?;
     }
     let result = sew::finish(work)?;
-    let mut defects = check(&result.body, tolerance);
+    let mut defects = checked(&result.body, tolerance);
     if !defects.is_empty() {
         defects.truncate(MAX_REPORTED);
         return Err(Stop::Error(KernelError::InvalidBody {
@@ -699,6 +737,31 @@ pub fn contains_points(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_body_that_passed_the_check_passes_again_and_one_that_did_not_fails_again() {
+        let tolerance = Tolerance::default();
+        let frame = craft3d_math::Frame::WORLD;
+        let good = crate::primitives::block(&frame, 2.0, 3.0, 4.0).unwrap();
+        let mut bad = good.clone();
+        bad.vertices[0].point = Vec3::new(-1.0, 0.0, 0.0);
+        let defects = check(&bad, &tolerance);
+        assert!(!defects.is_empty());
+        for _ in 0..2 {
+            assert!(checked(&good, &tolerance).is_empty());
+            assert_eq!(checked(&bad, &tolerance), defects);
+        }
+        // Checked with another tolerance it is checked again: a vertex
+        // 1e-3 off its edges passes with a tolerance of 1e-2 only.
+        let mut near = good.clone();
+        near.vertices[0].point = Vec3::new(1e-3, 0.0, 0.0);
+        let loose = Tolerance {
+            linear: 1e-2,
+            ..tolerance
+        };
+        assert!(checked(&near, &loose).is_empty());
+        assert!(!checked(&near, &tolerance).is_empty());
+    }
 
     #[test]
     fn points_within_half_the_tolerance_are_one_vertex() {

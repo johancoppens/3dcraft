@@ -17,7 +17,7 @@ use craft3d_geom::Surface;
 use craft3d_geom::intersect::CurveIntersection;
 use craft3d_geom::intersect::{MeetingCurve, SurfaceMeeting, meet_surfaces};
 use craft3d_math::{Bbox3, Tolerance, Vec3};
-use craft3d_topo::{Body, BodyKind, EdgeId, FaceId, VertexId, check};
+use craft3d_topo::{Body, BodyKind, EdgeId, FaceId, VertexId};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// One operand, prepared.
@@ -110,7 +110,7 @@ pub(super) fn prepare<'a>(
     let mut defects = if trusted {
         Vec::new()
     } else {
-        check(body, tolerance)
+        super::checked(body, tolerance)
     };
     if !defects.is_empty() {
         defects.truncate(MAX_REPORTED);

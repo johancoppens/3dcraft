@@ -604,7 +604,7 @@ impl Outline {
         margin: f64,
     ) -> Result<Outline, Reason> {
         let tree = if is_freeform(&surface) {
-            Some(Arc::new(PatchTree::new(&surface)?))
+            Some(PatchTree::shared(&surface)?)
         } else {
             None
         };
