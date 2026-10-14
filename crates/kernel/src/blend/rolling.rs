@@ -846,7 +846,11 @@ fn blend_one(
                 break;
             }
             if past > most_out {
-                return Err(refuse(edge, ends.get(index).map(|e| e.third), Reason::FreeEnd));
+                return Err(refuse(
+                    edge,
+                    ends.get(index).map(|e| e.third),
+                    Reason::FreeEnd,
+                ));
             }
         }
     }

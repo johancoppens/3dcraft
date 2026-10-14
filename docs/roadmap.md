@@ -326,13 +326,15 @@ The blends first (chamfer and fillet, the first consumers of edge references), t
 - A thread's size and pitch follow the model: `size` left out (the size of the face), a length (`"d"`) or a designation; the coarse pitch of the size unless given; `v13_to_v14`; format version 14 (2026-10-14)
 - A face that winds along a thread is meshed; every triangulation has a work budget (2026-10-14)
 - A smooth loft through slender twisted sections builds (the rotor blade with its tip right after 18 m, also from a circle): a face whose triangles cannot follow a chord of its boundary has that chord cut finer (2026-10-14)
+- Blends along a straight edge next to a cylinder (the cut edges of a halved rod or tube, the tip of a lens of two arcs), worked out in the plane across the edge; both tip rims of a lens blade, after two surgical changes to the boolean ([`architecture.md`](architecture.md) §5.3 › *Blends next to a cylinder*) (2026-10-14)
+- Blends along freeform edges (a straight edge next to a cone, the edge between two lofted faces, a spline wall's edge): a rolling-ball fillet or a ruled chamfer as a spline surface within the tolerance, built in place, each end a corner of three faces (§5.3 › *Blends along freeform edges*) (2026-10-14)
 
 #### Open
 - [ ] Move face, then thicken (a sheet given a thickness), replace face and draft (faces tilted about a neutral plane along a pull direction)
 - [ ] Vertex blends: three fillets of different radii, with a circular edge, with a fourth edge
-- [ ] Blends on elliptic and freeform edges (a chamfer's ruled face; a fillet's canal surface, by a NURBS approximation)
+- [ ] Freeform blends that meet: two at a vertex whose third edge stays sharp (a blade's whole tip or root, the turbofan's F2/F3), a closed edge without a vertex (a ring), freeform and closed-form edges in one feature, a freeform chamfer by distance and angle
 - [ ] A blend that ends in a face of its own in the middle of a chain
-- [ ] Chamfers: on a straight edge next to a curved face, on a rim against a sphere or a torus, one that ends against a slanted wall; a reference to one of several edges between the same two faces
+- [ ] Chamfers: one that ends against a slanted wall; a reference to one of several edges between the same two faces
 - [ ] Fillets: an outside and an inside fillet that meet; the rim of a rod with half its radius or more (a spindle torus); variable radius (later)
 - [ ] Offset face: a neighbour tangent to the moved face, a vertex of four or more faces that would become an edge, an elliptic or freeform edge next to a moved face
 - [ ] Shell: a thickness at a rounded edge's radius or more
