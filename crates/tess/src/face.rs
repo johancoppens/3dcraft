@@ -2538,10 +2538,10 @@ enum Action {
     Keep,
     SplitEdge(usize),
     SplitTriangle,
-    /// Within the tolerance, but the normals at its corners are further
-    /// apart than the angle criterion allows: the side to cut, which is
-    /// free and not shorter than the floor. Where no point fits there,
-    /// the triangle is kept as it is.
+    /// Within the tolerance, but the normals at the ends of this free
+    /// side, not shorter than the floor, are further apart than the angle
+    /// criterion allows: the side to cut. Where no point fits there, the
+    /// triangle is kept as it is.
     Turn(usize),
 }
 
@@ -2728,34 +2728,39 @@ impl Work<'_> {
             }
         }
         if let Some(angle) = self.angle {
-            // The normals at the corners, as far apart as they are; a
-            // corner without one (an apex) tells nothing.
+            // The free side over which the surface's normal turns most,
+            // of those that turn it further than the angle and are not
+            // below the floor. A side on the boundary is a chord of an
+            // edge, which the edge holds to the angle by its tangent and
+            // which no point of the face can change; a corner without a
+            // normal (an apex) tells nothing.
             let normals = corners.map(|c| self.param.normal(c.0));
-            let turn = [(0, 1), (1, 2), (2, 0)]
-                .into_iter()
-                .filter_map(|(i, j)| {
-                    let (Some(Some(x)), Some(Some(y))) = (normals.get(i), normals.get(j)) else {
-                        return None;
-                    };
-                    crate::angle_between(*x, *y)
-                })
-                .fold(0.0_f64, f64::max);
-            if turn > angle {
-                // The longest free side, if it is not below the floor.
-                let mut longest: Option<(f64, usize)> = None;
-                for (i, constrained) in [c0, c1, c2].into_iter().enumerate() {
-                    let [p, q] = pair(i);
-                    let length = p.1.distance(q.1);
-                    if !constrained
-                        && length >= self.angle_floor
-                        && longest.is_none_or(|(l, _)| length > l)
-                    {
-                        longest = Some((length, i));
-                    }
+            let mut worst: Option<(f64, usize)> = None;
+            for (i, constrained) in [c0, c1, c2].into_iter().enumerate() {
+                if constrained {
+                    continue;
                 }
-                if let Some((_, i)) = longest {
-                    return Action::Turn(i);
+                let (j, k) = match i {
+                    0 => (1, 2),
+                    1 => (2, 0),
+                    _ => (0, 1),
+                };
+                let (Some(Some(x)), Some(Some(y))) = (normals.get(j), normals.get(k)) else {
+                    continue;
+                };
+                let [p, q] = pair(i);
+                let Some(turn) = crate::angle_between(*x, *y) else {
+                    continue;
+                };
+                if crate::turns_beyond(turn, angle)
+                    && p.1.distance(q.1) >= self.angle_floor
+                    && worst.is_none_or(|(w, _)| turn > w)
+                {
+                    worst = Some((turn, i));
                 }
+            }
+            if let Some((_, i)) = worst {
+                return Action::Turn(i);
             }
         }
         Action::Keep
@@ -3021,7 +3026,8 @@ impl Boundary<'_> {
     /// Empty for a boundary that is fine, and for what finer chords cannot
     /// cure: straight edges on a surface whose straight lines are
     /// straight in its parameters, seams, poles.
-    pub(crate) fn chords_to_refine(&self, body: &Body, tolerance: f64) -> Vec<Chord> {
+    pub(crate) fn chords_to_refine(&self, body: &Body, params: &TessParams) -> Vec<Chord> {
+        let tolerance = params.chordal_tolerance;
         let region = &self.region;
         let analytic = !self.param.is_freeform();
         // A straight edge on a plane, a cylinder or a cone is its own
@@ -3069,6 +3075,19 @@ impl Boundary<'_> {
                 let off = distance_to_chord(image, p.pos, q.pos);
                 if exceeds(off, 2.0 * tolerance) {
                     wanted.push(chord);
+                } else if let Some(angle) = params.angle_for(p.pos.distance(q.pos)) {
+                    // The angle criterion along the face: the edge holds
+                    // its own tangent to it, but the surface's normal may
+                    // turn further along the chord than the tangent does
+                    // (an ellipse cut obliquely from a cylinder).
+                    let turn = self
+                        .param
+                        .normal(p.uv)
+                        .zip(self.param.normal(q.uv))
+                        .and_then(|(x, y)| crate::angle_between(x, y));
+                    if turn.is_some_and(|turn| crate::turns_beyond(turn, angle)) {
+                        wanted.push(chord);
+                    }
                 }
                 // How far the surface there lies beside the chord, along
                 // the surface: a chord of a rim is off a cylinder by its

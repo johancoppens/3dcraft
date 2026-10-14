@@ -150,9 +150,9 @@ fn turns_within(curve: &Curve3, ta: f64, tb: f64, angle: f64) -> bool {
         tangent(0.5 * (ta + tb)),
         tangent(tb - inside),
     );
-    [(a, b), (a, m), (m, b)]
-        .into_iter()
-        .all(|(x, y)| crate::angle_between(x, y).is_none_or(|turn| turn <= angle))
+    [(a, b), (a, m), (m, b)].into_iter().all(|(x, y)| {
+        crate::angle_between(x, y).is_none_or(|turn| !crate::turns_beyond(turn, angle))
+    })
 }
 
 /// The points of every edge of a body, from its start to its end vertex,

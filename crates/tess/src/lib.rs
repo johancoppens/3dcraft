@@ -17,8 +17,8 @@ mod selfcheck;
 mod weld;
 
 pub use body::{
-    MeshAndEdges, tessellate_body, tessellate_body_and_edges, tessellate_body_with_threads,
-    tessellate_edges,
+    MeshAndEdges, WithinBudget, tessellate_body, tessellate_body_and_edges,
+    tessellate_body_with_threads, tessellate_edges, tessellate_within_budget,
 };
 pub use intersections::{
     Crossing, CrossingKind, SelfIntersections, self_intersection_report, self_intersections,
@@ -139,6 +139,14 @@ impl TessParams {
         self.max_angle
             .filter(|_| length >= ANGLE_FLOOR * self.chordal_tolerance)
     }
+}
+
+/// Whether a turn is beyond the angle criterion. A millionth of the angle
+/// is rounding: an arc cut in chords of exactly the angle turns by it to
+/// the last bits either way, and a face must not ask to cut its edges
+/// again for that.
+pub(crate) fn turns_beyond(turn: f64, angle: f64) -> bool {
+    turn > angle * (1.0 + 1e-6)
 }
 
 /// The angle between two vectors, in radians, or `None` when either has
