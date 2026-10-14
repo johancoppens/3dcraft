@@ -435,7 +435,10 @@ impl Loop2 {
         (turn / TAU).round()
     }
 
-    fn bbox(&self) -> [f64; 4] {
+    /// `[min x, min y, max x, max y]` of the loop: its ends and the
+    /// extremes of its arcs and circles, and the control points of its
+    /// splines, so it contains the loop.
+    pub(crate) fn bbox(&self) -> [f64; 4] {
         let mut b = [
             f64::INFINITY,
             f64::INFINITY,

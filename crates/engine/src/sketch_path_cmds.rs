@@ -42,7 +42,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     // params: `panic_hunt` reads every quoted word before a colon in the
     // params as a parameter of the command itself.
     spec!("sketch.path", "Sketch Path", r#"{"sketch": id or name, "start": point id or [x, y], "segments": [segment, ...], "closed": boolean = false, "construction": boolean = false}"#,
-        "Adds a chain of lines and arcs in one undo step. Each segment runs from where the one before it ended (the first from start) to its own end, and consecutive segments share that corner point. A segment is {\"line\": end}, {\"arc\": end, \"center\": point id or [x, y], \"clockwise\": boolean = false}, {\"arc\": end, \"through\": [x, y]}, {\"arc\": end, \"radius\": number, \"large\": boolean = false, \"clockwise\": boolean = false} or {\"arc\": end, \"tangent\": true}. An end is a point id, coordinates [x, y], or the word \"start\" for the path's own start point, which closes the loop with that segment; closed adds a straight line back to the start instead. An arc is given by its center (walked counter-clockwise unless clockwise), by a point it passes through, by its radius (the shorter way round unless large; counter-clockwise unless clockwise), or by tangent alone: it then leaves in the direction the segment before it arrives. \"tangent\": true on any segment, a line too, also adds a tangent constraint between it and the segment before it; on the first segment that is the last one, in a path that ends at its start. Returns points (the corners in order, the start first), entities (one per segment, entities[i] from points[i] to points[i+1], then the closing line), centers (the centre point of each entity, null for a line) and constraints (the tangent constraints added).", doc: true, sketch_path),
+        "Adds a chain of lines and arcs in one undo step. Each segment runs from where the one before it ended (the first from start) to its own end, and consecutive segments share that corner point. A segment is {\"line\": end}, {\"arc\": end, \"center\": point id or [x, y], \"clockwise\": boolean = false}, {\"arc\": end, \"through\": [x, y]}, {\"arc\": end, \"radius\": number, \"large\": boolean = false, \"clockwise\": boolean = false} or {\"arc\": end, \"tangent\": true}. An end is a point id, coordinates [x, y], or the word \"start\" for the path's own start point, which closes the loop with that segment; closed adds a straight line back to the start instead. An arc is given by its center (walked counter-clockwise unless clockwise), by a point it passes through, by its radius (the shorter way round unless large; counter-clockwise unless clockwise), or by tangent alone: it then leaves in the direction the segment before it arrives. \"tangent\": true on any segment, a line too, also adds a tangent constraint between it and the segment before it; on the first segment that is the last one, in a path that ends at its start. Returns points (the corners in order, the start first), entities (one per segment, entities[i] from points[i] to points[i+1], then the closing line), centers (the centre point of each entity, null for a line) and constraints (the tangent constraints added). An arc given by its center whose end is farther than the document's tolerance from the circle about that center through its start is drawn as given, and the result then has warnings: one line per such segment (segments[i]: ...) with the distance, what the solver does (it moves the start, the end and the centre as little as it can until both ends are on one circle, and with them the segments that share those points, which can tilt a line before the arc) and where the end would have to be for the start to stay.", doc: true, sketch_path),
 ];
 
 type Xy = (f64, f64);
@@ -96,6 +96,8 @@ struct Built {
     entities: Vec<EntityId>,
     centers: Vec<Option<EntityId>>,
     constraints: Vec<ConstraintId>,
+    /// What the solver will have to put right, one line per segment.
+    warnings: Vec<String>,
 }
 
 // ---------------------------------------------------------------- parsing
@@ -366,6 +368,40 @@ struct Step {
     end_at: Xy,
     center: Option<EntityId>,
     drawn: Drawn,
+    /// An arc given by its centre whose end is not on the circle through
+    /// its start: what is wrong and what the solver will do.
+    warning: Option<String>,
+}
+
+/// The warning for an arc about `center` from `from` that is given the
+/// end `to`: `None` when `to` is within `tolerance` of the circle through
+/// `from`. The solver keeps both ends of an arc on one circle about its
+/// centre, by the smallest move of all the points (`craft3d_solve`), so it
+/// moves the start, the end and the centre, and with them the segments
+/// that share those points; the warning says so, and where the end would
+/// have to be for the start to stay.
+fn off_circle(center: Xy, from: Xy, to: Xy, tolerance: f64) -> Option<String> {
+    let radius = sub(from, center);
+    let radius = radius.0.hypot(radius.1);
+    let reach = sub(to, center);
+    let off = reach.1.hypot(reach.0) - radius;
+    if !(off.is_finite() && off.abs() > tolerance) {
+        return None;
+    }
+    let (ux, uy) = unit(reach)?;
+    let on = finite((center.0 + ux * radius, center.1 + uy * radius))?;
+    Some(format!(
+        "the arc's end ({}, {}) is {} {} the circle about its centre ({}, {}) through its start (radius {}): the solver moves the start, the end and the centre, as little as it can, until both ends are on one circle, and with them the segments that share those points; to keep the start where it is, end the arc at ({}, {})",
+        to.0,
+        to.1,
+        off.abs(),
+        if off > 0.0 { "outside" } else { "inside" },
+        center.0,
+        center.1,
+        radius,
+        on.0,
+        on.1
+    ))
 }
 
 fn draw_segment(
@@ -403,6 +439,7 @@ fn draw_segment(
                 end_at,
                 center: None,
                 drawn: Drawn { entity, arrives },
+                warning: None,
             });
         }
         Shape::Center { center, clockwise } => (center.place(s)?, !clockwise),
@@ -429,6 +466,10 @@ fn draw_segment(
         }
     };
     let center_at = s.point(center)?;
+    let warning = match segment.shape {
+        Shape::Center { .. } => off_circle(center_at, from_at, end_at, tolerance),
+        _ => None,
+    };
     for (name, corner) in [("start", from_at), ("end", end_at)] {
         let radius = sub(corner, center_at);
         let radius = radius.0.hypot(radius.1);
@@ -452,6 +493,7 @@ fn draw_segment(
         end_at,
         center: Some(center),
         drawn: Drawn { entity, arrives },
+        warning,
     })
 }
 
@@ -466,6 +508,7 @@ fn build(s: &mut Sketch, path: &Path) -> Result<Built, SketchError> {
         entities: Vec::with_capacity(path.segments.len().saturating_add(1)),
         centers: Vec::with_capacity(path.segments.len().saturating_add(1)),
         constraints: Vec::new(),
+        warnings: Vec::new(),
     };
     let mut first: Option<EntityId> = None;
     let mut before: Option<Drawn> = None;
@@ -483,6 +526,9 @@ fn build(s: &mut Sketch, path: &Path) -> Result<Built, SketchError> {
                 .push(s.add_constraint(tangent).map_err(within(index))?);
         }
         first.get_or_insert(step.drawn.entity);
+        if let Some(warning) = step.warning {
+            built.warnings.push(format!("segments[{index}]: {warning}"));
+        }
         built.points.push(step.end);
         built.entities.push(step.drawn.entity);
         built.centers.push(step.center);
@@ -590,16 +636,18 @@ fn sketch_path(session: &mut Session, params: &Value) -> Run {
         .map(|center| center.map_or(Value::Null, |id| id.to_string().into()))
         .collect();
     let constraints: Vec<String> = built.constraints.iter().map(|c| c.to_string()).collect();
-    sketch_result(
-        session,
-        id,
-        json!({
-            "points": ids(&built.points),
-            "entities": ids(&built.entities),
-            "centers": centers,
-            "constraints": constraints,
-        }),
-    )
+    let mut own = json!({
+        "points": ids(&built.points),
+        "entities": ids(&built.entities),
+        "centers": centers,
+        "constraints": constraints,
+    });
+    // Only when there is something to say, so a path without one answers
+    // as it always did.
+    if let (false, Some(map)) = (built.warnings.is_empty(), own.as_object_mut()) {
+        map.insert("warnings".into(), built.warnings.into());
+    }
+    sketch_result(session, id, own)
 }
 
 #[cfg(test)]

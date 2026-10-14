@@ -10,7 +10,7 @@
 //! bisects the corner.
 //!
 //! **Where the profile sits.** The profile lies in a plane that the path
-//! crosses at a right angle (within [`SMOOTH`]): for an open path at one
+//! crosses at a right angle (within the tolerance, below): for an open path at one
 //! of its ends (the one on the profile's plane; of two, the one nearer to
 //! the centre of the profile), which is where the sweep starts; for a
 //! closed path anywhere along it (of several crossings the one nearest to
@@ -18,8 +18,17 @@
 //! path, nor even contain it: every point of it keeps its place in the
 //! frame the path carries, whose axes are the path's direction, its
 //! normal in the path's plane (to the left) and the normal of that plane.
-//! A profile whose plane is not at a right angle to the path there is
-//! refused; one within [`SMOOTH`] of it is laid into the plane that is.
+//! A profile whose plane leans away from square to the path there is laid
+//! into the plane that is square, by a rigid motion (its origin to its
+//! foot on that plane, its x axis to the direction of its shadow there),
+//! when that moves no point of the profile by more than the linear
+//! tolerance: measured exactly at the corners of a box that contains the
+//! profile, which bound the movement because the motion is affine. The
+//! body is then the exact sweep of the laid-in profile, and as every
+//! station carries the profile rigidly, no point of it is farther than
+//! that from the sweep of the profile as drawn. A larger lean (at the
+//! default tolerance of 1e-6, a lean of 2e-7 radians across a profile 5
+//! wide, about) is refused, naming the angle and the movement.
 //!
 //! **Pieces.** Along a line the profile slides (an extrusion), along an
 //! arc it turns about the arc's axis (a revolution), along a spline it
@@ -102,8 +111,9 @@ pub const MAX_PATH_CURVES: usize = 1024;
 pub const MAX_SWEEP_FACES: usize = 100_000;
 
 /// The angle (in radians, as a sine) within which two directions count as
-/// one: curves of the path that meet within it are tangent, and a profile
-/// whose plane is within it of square to the path is square to it.
+/// one: curves of the path that meet within it are tangent. (Whether a
+/// profile is square to the path is a matter of the linear tolerance:
+/// see the module documentation.)
 pub const SMOOTH: f64 = 1e-6;
 
 /// How a polynomial span of a spline path is followed, tried in this
@@ -1772,6 +1782,33 @@ impl Builder {
     }
 }
 
+/// How far `map` moves the profile of `plane` when it lays it into the
+/// plane of `home`: the largest distance between a point of the profile
+/// where it was drawn and where the sweep puts it, over the box `bbox`
+/// (`[min x, min y, max x, max y]` in the profile's sketch) that contains
+/// it. The map is affine, so that distance is a convex function of the
+/// point and the largest is at a corner of the box. NaN when a corner is
+/// not finite.
+///
+/// When the path crosses the profile's plane at a right angle the map is
+/// a rigid motion within one plane and this is a rounding error. When the
+/// path leans by an angle `a`, the map takes the sketch's origin to its
+/// foot on the square plane and the sketch's x axis to the direction of
+/// its shadow there, rigidly: a point moves by about its distance from the
+/// sketch's origin times `sin a`.
+fn laid_in(map: &Map2, home: &Station, plane: &Frame, bbox: [f64; 4]) -> f64 {
+    let [x0, y0, x1, y1] = bbox;
+    let mut most: f64 = 0.0;
+    for p in [[x0, y0], [x1, y0], [x0, y1], [x1, y1]] {
+        let moved = plane.point(p[0], p[1], 0.0).distance(home.at(map.at(p)));
+        if moved.is_nan() {
+            return f64::NAN;
+        }
+        most = most.max(moved);
+    }
+    most
+}
+
 /// How two pieces of the path meet.
 #[derive(Clone, Copy)]
 enum Joint {
@@ -1842,18 +1879,27 @@ pub fn sweep(
     let all: Vec<u64> = legs.iter().map(|l| l.source).collect();
 
     // The frame the path carries, where it passes through the profile's
-    // plane, and the profile in it.
+    // plane, and the profile in it. A profile whose plane is not quite
+    // square to the path is laid into the plane that is (see `laid_in`).
     let along = direction(tangent);
     let lean = profile_plane.z().cross(along).length();
     let facing = profile_plane.z().dot(along);
-    if lean.is_nan() || lean > SMOOTH {
-        return Err(refuse(
+    let leans = |moved: Option<f64>| {
+        let degrees = lean.clamp(0.0, 1.0).asin().to_degrees();
+        let moved = moved.map_or(String::new(), |moved| {
+            format!(
+                ", and laying the profile square to it would move it by up to {moved}, more than the tolerance {tol}"
+            )
+        });
+        refuse(
             &all,
             format!(
-                "the path does not cross the plane of the profile at a right angle: where it passes through it, it leans {}° away from square to it; draw the profile on a plane square to the path there (a datum plane through the end of the path, normal to it)",
-                lean.clamp(0.0, 1.0).asin().to_degrees()
+                "the path does not cross the plane of the profile at a right angle: where it passes through it, it leans {degrees}° away from square to it{moved}; draw the profile on a plane square to the path there (a datum plane through the end of the path, normal to it)"
             ),
-        ));
+        )
+    };
+    if !lean.is_finite() {
+        return Err(leans(None));
     }
     let home = Station {
         origin: lift(origin),
@@ -1861,7 +1907,9 @@ pub fn sweep(
         b: b_axis,
         square: true,
     };
-    let x = unit(home.local(home.origin + profile_plane.x())).ok_or_else(internal)?;
+    let Some(x) = unit(home.local(home.origin + profile_plane.x())) else {
+        return Err(leans(None));
+    };
     let mirrored = facing < 0.0;
     let map = Map2 {
         origin: home.local(profile_plane.origin()),
@@ -1873,6 +1921,10 @@ pub fn sweep(
         },
         mirrored,
     };
+    let moved = laid_in(&map, &home, profile_plane, profile.outer.bbox());
+    if moved.is_nan() || moved > tol {
+        return Err(leans(Some(moved)));
+    }
     let follows = legs.iter().any(|l| matches!(l.track, Track::Spline(_)));
     let mut loops: Vec<Vec<Element>> = Vec::with_capacity(1 + profile.holes.len());
     for path in std::iter::once(&profile.outer).chain(&profile.holes) {
