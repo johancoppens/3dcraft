@@ -45,14 +45,18 @@
 //! ends: the sections go round it, the surface is the closed cubic through
 //! them, and the blend face is the ring between its two borders.
 //!
+//! **Chains and meets.** Edges that go on smoothly into each other are
+//! blended as one chain, and two fillets that end in one vertex at an
+//! angle meet there: see [`chain`].
+//!
 //! **What is refused** (with the reason): an edge that ends in a vertex of
-//! more than three faces, or where another blended edge ends; a closed
-//! edge whose vertex other edges pass through; a chamfer given by an
-//! angle; a blend whose
-//! borders leave the edges at its ends (too large); a surface that cannot
-//! be followed (a ball that does not settle, an arc of half a turn or
-//! more); an approximation that does not come within the tolerance in the
-//! samples allowed. The body is changed in place (every other entity
+//! more than three faces, or where blended edges meet in any other way
+//! than a chain or a meet; a closed edge whose vertex other edges pass
+//! through; a chamfer given by an angle; a blend whose borders leave the
+//! edges at its ends (too large), or run off a face beside the edge along
+//! the way; a surface that cannot be followed (a ball that does not
+//! settle, an arc of half a turn or more); an approximation that does not
+//! come within the tolerance in the samples allowed. The body is changed in place (every other entity
 //! keeps its number), passes `craft3d_topo::check` and the tangency test
 //! of [`super`]; whether a large blend runs into a face further away is
 //! not seen here: the caller looks for places where the body passes
