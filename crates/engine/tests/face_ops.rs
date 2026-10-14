@@ -1312,3 +1312,387 @@ fn bad_parameters_of_a_shell_are_errors_and_shells_are_saved() {
     let check = run(&mut s, "document.check", json!({"deep": true}));
     assert_eq!(check["ok"], true, "{check}");
 }
+
+// ------------------------------------------------------------- delete face
+
+const FRONT: &str = "F1:face(2)";
+
+/// The faces of `Base` as copies through the features `prefixes` (the
+/// last feature first).
+fn base_faces(prefixes: &[&str]) -> Vec<String> {
+    (0..6)
+        .map(|i| {
+            let mut name = format!("F1:face({i})");
+            for prefix in prefixes.iter().rev() {
+                name = format!("{prefix}/{name}");
+            }
+            name
+        })
+        .collect()
+}
+
+#[test]
+fn a_fillet_or_a_chamfer_deleted_gives_the_block_back() {
+    for k in SCALES {
+        for (blend, params) in [
+            ("feature.fillet", json!({"radius": k})),
+            ("feature.chamfer", json!({"distance": 1.5 * k})),
+        ] {
+            let mut s = session();
+            new_document(&mut s, k);
+            base(&mut s, k);
+            let mut params = params;
+            params["edges"] = json!([[TOP, FRONT]]);
+            params["name"] = json!("Blend");
+            built(&mut s, blend, params);
+            let made = body(&mut s, "Blend");
+            assert_eq!(made["faces"], 7);
+            let face = if blend == "feature.fillet" {
+                "F2:fillet(0)"
+            } else {
+                "F2:chamfer(0)"
+            };
+            let deleted = built(
+                &mut s,
+                "feature.deleteFace",
+                json!({"faces": [face], "name": "Plain"}),
+            );
+            assert_eq!(deleted["id"], "F3");
+            let found = assert_solid(&mut s, "Plain", 500.0, Some(block_area(10.0, 10.0, 5.0)), k);
+            assert_eq!(found["faces"], 6);
+            // The faces that stay are copies of what they were; the
+            // original names do not answer, the copies of them do.
+            assert_eq!(names_of(&found), base_faces(&["F3:copy(0)", "F2:copy(0)"]));
+            assert_eq!(body_names(&mut s), ["Plain"]);
+            // The block's twelve edges are back, named by their faces;
+            // the sharp edge is there to build on.
+            let listed = run(&mut s, "document.edges", json!({"feature": "Plain"}));
+            assert_eq!(listed["edges"].as_array().unwrap().len(), 12, "{listed}");
+            built(
+                &mut s,
+                "feature.chamfer",
+                json!({"edges": [["F3:copy(0)/F2:copy(0)/F1:face(1)",
+                                  "F3:copy(0)/F2:copy(0)/F1:face(2)"]],
+                       "distance": k, "name": "Again"}),
+            );
+            assert_solid(&mut s, "Again", 500.0 - 10.0 * 0.5, None, k);
+        }
+    }
+}
+
+/// Faces of the cutter of `pocketed` that are the pocket: its floor and
+/// its four walls.
+const POCKET: [&str; 5] = [
+    "F3:copy(1)/F2:face(0)",
+    "F3:copy(1)/F2:face(2)",
+    "F3:copy(1)/F2:face(3)",
+    "F3:copy(1)/F2:face(4)",
+    "F3:copy(1)/F2:face(5)",
+];
+const STUD_TOP: &str = "F3:copy(1)/F2:face(2)";
+
+#[test]
+fn a_hole_a_boss_and_a_pocket_deleted_give_the_block_back() {
+    for k in SCALES {
+        for (make, faces) in [
+            (drilled as fn(&mut Session, f64), vec![WALL]),
+            (bossed, vec![WALL, STUD_TOP]),
+            (pocketed, POCKET.to_vec()),
+        ] {
+            let mut s = session();
+            new_document(&mut s, k);
+            make(&mut s, k);
+            built(
+                &mut s,
+                "feature.deleteFace",
+                json!({"faces": faces, "name": "Plain"}),
+            );
+            let found = assert_solid(&mut s, "Plain", 500.0, Some(block_area(10.0, 10.0, 5.0)), k);
+            assert_eq!(found["faces"], 6);
+            assert_eq!(names_of(&found), base_faces(&["F4:copy(0)", "F3:copy(0)"]));
+        }
+    }
+}
+
+#[test]
+fn a_deletion_follows_upstream_edits_and_fails_by_name_when_its_face_goes() {
+    for k in SCALES {
+        let mut s = session();
+        new_document(&mut s, k);
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "r", "expr": 2.0 * k}),
+        );
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "x", "expr": 5.0 * k}),
+        );
+        base(&mut s, k);
+        built(
+            &mut s,
+            "feature.cylinder",
+            json!({"name": "Drill", "position": ["x", 5.0 * k, -k],
+                   "radius": "r", "height": 7.0 * k}),
+        );
+        built(
+            &mut s,
+            "feature.boolean",
+            json!({"op": "subtract", "target": "Base", "tool": "Drill", "name": "Drilled"}),
+        );
+        built(
+            &mut s,
+            "feature.deleteFace",
+            json!({"faces": [WALL], "name": "Plain"}),
+        );
+        // A pin on the top that was drilled: the top is whole again.
+        built(
+            &mut s,
+            "sketch.create",
+            json!({"name": "Mark", "face": "F4:copy(0)/F3:copy(0)/F1:face(1)"}),
+        );
+        run(
+            &mut s,
+            "sketch.circle",
+            json!({"sketch": "Mark", "center": [5.0 * k, 5.0 * k], "radius": 0.5 * k}),
+        );
+        built(
+            &mut s,
+            "feature.extrude",
+            json!({"sketch": "Mark", "distance": k, "name": "Pin"}),
+        );
+        let pin = body(&mut s, "Pin");
+        assert_close(&pin["bbox"][0][2], 5.0 * k, "the pin's foot");
+        assert_close(&pin["bbox"][1][2], 6.0 * k, "the pin's top");
+        assert_solid(&mut s, "Plain", 500.0, None, k);
+        // A wider hole and one elsewhere: the deletion follows.
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "r", "expr": 3.0 * k}),
+        );
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "x", "expr": 4.0 * k}),
+        );
+        assert_eq!(feature(&mut s, "Plain")["status"], "ok");
+        assert_solid(&mut s, "Plain", 500.0, None, k);
+        // The drill misses the block: there is no wall. The deletion
+        // fails with the parameter, the feature and the name; what is
+        // built on it says it is the cause.
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "x", "expr": 30.0 * k}),
+        );
+        let plain = feature(&mut s, "Plain");
+        assert_eq!(plain["status"], "failed", "{plain}");
+        let reason = plain["error"].as_str().unwrap();
+        assert!(
+            reason.starts_with(
+                "faces.0: `Drilled` no longer has a face F3:copy(1)/F2:face(0); its faces are: "
+            ),
+            "{reason}"
+        );
+        assert_eq!(feature(&mut s, "Mark")["causedBy"], "F4");
+        assert_eq!(feature(&mut s, "Pin")["causedBy"], "F4");
+        assert_eq!(feature(&mut s, "Drilled")["status"], "ok");
+        // Back again repairs all three.
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "x", "expr": 5.0 * k}),
+        );
+        for name in ["Plain", "Mark", "Pin"] {
+            assert_eq!(feature(&mut s, name)["status"], "ok", "{name}");
+        }
+    }
+}
+
+#[test]
+fn a_deletion_is_pointed_at_other_faces_with_feature_edit() {
+    let k = 1.0;
+    let mut s = session();
+    new_document(&mut s, k);
+    bossed(&mut s, k);
+    // The wall alone: the boss's top cannot reach the block.
+    let reason = failed(
+        &mut s,
+        "feature.deleteFace",
+        json!({"faces": [WALL], "name": "Plain"}),
+    );
+    assert!(reason.starts_with("faces: "), "{reason}");
+    assert!(reason.contains(WALL), "{reason}");
+    // The top too: the boss is gone.
+    built(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Plain", "faces": [WALL, STUD_TOP]}),
+    );
+    let repaired = assert_solid(&mut s, "Plain", 500.0, None, k);
+    // The one built that way from the start.
+    let mut fresh = session();
+    new_document(&mut fresh, k);
+    bossed(&mut fresh, k);
+    built(
+        &mut fresh,
+        "feature.deleteFace",
+        json!({"faces": [WALL, STUD_TOP], "name": "Plain"}),
+    );
+    let again = body(&mut fresh, "Plain");
+    assert_eq!(again["faceNames"], repaired["faceNames"]);
+    assert_eq!(again["volume"], repaired["volume"]);
+    // Bad faces in an edit are refused like in the command.
+    refused(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Plain", "faces": []}),
+    );
+    refused(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Plain", "faces": [WALL, WALL]}),
+    );
+}
+
+#[test]
+fn what_delete_face_does_not_build_is_refused_with_the_faces() {
+    let k = 1.0;
+    let mut s = session();
+    new_document(&mut s, k);
+    base(&mut s, k);
+    // The top of a block: its sides never meet.
+    let reason = failed(&mut s, "feature.deleteFace", json!({"faces": [TOP]}));
+    assert!(reason.starts_with("faces: "), "{reason}");
+    assert!(reason.contains("cannot be collapsed"), "{reason}");
+    run(&mut s, "edit.undo", json!({}));
+    // Three fillets in a corner: the ball is refused by its name, a
+    // fillet next to it because a blend goes on at its end.
+    built(
+        &mut s,
+        "feature.fillet",
+        json!({"edges": [[TOP, FRONT], [TOP, "F1:face(4)"], [FRONT, "F1:face(4)"]],
+               "radius": 1.0, "name": "Round"}),
+    );
+    let reason = failed(
+        &mut s,
+        "feature.deleteFace",
+        json!({"faces": ["F2:filletCorner(0,1,2)"]}),
+    );
+    assert!(
+        reason.starts_with("faces.0: F2:filletCorner(0,1,2) is the corner"),
+        "{reason}"
+    );
+    run(&mut s, "edit.undo", json!({}));
+    let reason = failed(
+        &mut s,
+        "feature.deleteFace",
+        json!({"faces": ["F2:fillet(0)"]}),
+    );
+    assert!(reason.contains("tangent"), "{reason}");
+    assert!(reason.contains("F2:fillet(0)"), "{reason}");
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(body_names(&mut s), ["Round"]);
+}
+
+#[test]
+fn bad_parameters_of_a_deletion_are_errors_and_deletions_are_saved() {
+    let dir = workdir("delete-files");
+    let mut s = Session::new(Workspace {
+        read: Access::Root(dir.clone()),
+        write: Access::Root(dir.clone()),
+    });
+    refused(&mut s, "feature.deleteFace", json!({"faces": [TOP]}));
+    let k = 1.0;
+    new_document(&mut s, k);
+    base(&mut s, k);
+    built(
+        &mut s,
+        "feature.block",
+        json!({"name": "Other", "position": [20.0, 0.0, 0.0], "size": [1.0, 1.0, 1.0]}),
+    );
+    for params in [
+        json!({}),
+        json!({"faces": []}),
+        json!({"faces": TOP}),
+        json!({"faces": [7]}),
+        json!({"faces": ["nonsense"]}),
+        json!({"faces": [TOP, TOP]}),
+        json!({"faces": [TOP, "F2:face(1)"]}),
+        json!({"faces": ["F1:edge(1)"]}),
+        json!({"faces": [TOP], "distance": 1.0}),
+        json!({"faces": [TOP], "name": 3}),
+    ] {
+        refused(&mut s, "feature.deleteFace", params);
+    }
+    for (params, starts) in [
+        (
+            json!({"faces": ["F1:face(9)"]}),
+            "faces.0: `Base` no longer has a face F1:face(9)",
+        ),
+        (
+            json!({"faces": ["F9:face(1)"]}),
+            "faces.0: there is no feature F9",
+        ),
+    ] {
+        let reason = failed(&mut s, "feature.deleteFace", params.clone());
+        assert!(reason.starts_with(starts), "{params}: {reason}");
+        run(&mut s, "edit.undo", json!({}));
+    }
+    assert_eq!(body_names(&mut s), ["Base", "Other"]);
+    // A round deleted again, saved, reopened, undone and redone.
+    built(
+        &mut s,
+        "feature.fillet",
+        json!({"edges": [[TOP, FRONT]], "radius": "3 mm / 2", "name": "Round"}),
+    );
+    built(
+        &mut s,
+        "feature.deleteFace",
+        json!({"faces": ["F3:fillet(0)"], "name": "Plain"}),
+    );
+    assert_solid(&mut s, "Plain", 500.0, None, k);
+    let before = inspect(&mut s);
+    run(&mut s, "edit.undo", json!({}));
+    assert_ne!(inspect(&mut s)["bodies"], before["bodies"]);
+    run(&mut s, "edit.redo", json!({}));
+    assert_eq!(inspect(&mut s)["bodies"], before["bodies"]);
+    run(&mut s, "file.save", json!({"path": "delete.3dcraft"}));
+    run(&mut s, "file.close", json!({}));
+    run(&mut s, "file.open", json!({"path": "delete.3dcraft"}));
+    let after = inspect(&mut s);
+    assert_eq!(after["bodies"], before["bodies"]);
+    assert_eq!(after["features"], before["features"]);
+    let check = run(&mut s, "document.check", json!({"deep": true}));
+    assert_eq!(check["ok"], true, "{check}");
+}
+
+#[test]
+fn a_deletion_added_while_rolled_back_goes_in_at_the_marker() {
+    let k = 1.0;
+    let mut s = session();
+    new_document(&mut s, k);
+    drilled(&mut s, k);
+    built(
+        &mut s,
+        "feature.block",
+        json!({"name": "Other", "position": [20.0, 0.0, 0.0], "size": [1.0, 1.0, 1.0]}),
+    );
+    run(&mut s, "history.rollback", json!({"feature": "Drilled"}));
+    built(
+        &mut s,
+        "feature.deleteFace",
+        json!({"faces": [WALL], "name": "Plain"}),
+    );
+    let names: Vec<String> = inspect(&mut s)["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["name"].as_str().unwrap().to_string())
+        .collect();
+    let plain = names.iter().position(|n| n == "Plain").unwrap();
+    let other = names.iter().position(|n| n == "Other").unwrap();
+    assert!(plain < other, "{names:?}");
+}

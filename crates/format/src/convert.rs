@@ -275,6 +275,11 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                     distance: expr_to_manifest(distance),
                 }
             }
+            doc::FeatureKind::DeleteFace(doc::DeleteFace { faces }) => {
+                manifest::FeatureKind::DeleteFace {
+                    faces: faces.iter().map(name_to_manifest).collect(),
+                }
+            }
             doc::FeatureKind::Shell(doc::Shell {
                 source: doc::FeatureId(source),
                 thickness,
@@ -1148,6 +1153,11 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
                 doc::FeatureKind::OffsetFace(doc::OffsetFace {
                     faces: faces.into_iter().map(name_to_doc).collect(),
                     distance: doc::Expr(distance),
+                })
+            }
+            manifest::FeatureKind::DeleteFace { faces } => {
+                doc::FeatureKind::DeleteFace(doc::DeleteFace {
+                    faces: faces.into_iter().map(name_to_doc).collect(),
                 })
             }
             manifest::FeatureKind::Shell {

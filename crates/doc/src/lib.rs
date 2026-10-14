@@ -567,7 +567,7 @@ impl Fillet {
     }
 }
 
-/// Most faces one face operation (offset face, the open faces of a
+/// Most faces one face operation (offset face, delete face, the open faces of a
 /// shell) holds.
 pub const MAX_FACE_OP_FACES: usize = 1024;
 
@@ -586,6 +586,27 @@ pub struct OffsetFace {
 }
 
 impl OffsetFace {
+    /// The feature whose body the faces are of: the one that made the
+    /// first face referred to. `None` without faces.
+    pub fn source(&self) -> Option<FeatureId> {
+        self.faces.first().map(|first| first.feature)
+    }
+}
+
+/// Faces of the body of an earlier feature taken out, and the body closed
+/// again where they were by the faces round them: a hole, a boss or a
+/// pocket filled from the faces it was cut into or stood on, a chamfer or
+/// a fillet collapsed into the edge between its neighbours. The body goes
+/// into this feature.
+///
+/// A face is referred to by its name. All faces are faces of one body:
+/// the feature the first name starts with.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteFace {
+    pub faces: Vec<PersistentName>,
+}
+
+impl DeleteFace {
     /// The feature whose body the faces are of: the one that made the
     /// first face referred to. `None` without faces.
     pub fn source(&self) -> Option<FeatureId> {
@@ -630,6 +651,7 @@ pub enum FeatureKind {
     Fillet(Fillet),
     OffsetFace(OffsetFace),
     Shell(Shell),
+    DeleteFace(DeleteFace),
 }
 
 impl FeatureKind {
@@ -657,6 +679,7 @@ impl FeatureKind {
             FeatureKind::Fillet(_) => "fillet",
             FeatureKind::OffsetFace(_) => "offsetFace",
             FeatureKind::Shell(_) => "shell",
+            FeatureKind::DeleteFace(_) => "deleteFace",
         }
     }
 
@@ -710,6 +733,7 @@ impl FeatureKind {
             FeatureKind::Fillet(f) => f.source().map(|id| (id, false)),
             FeatureKind::OffsetFace(o) => o.source().map(|id| (id, false)),
             FeatureKind::Shell(s) => Some((s.source, false)),
+            FeatureKind::DeleteFace(d) => d.source().map(|id| (id, false)),
             FeatureKind::Block(_)
             | FeatureKind::Cylinder(_)
             | FeatureKind::Sphere(_)
@@ -829,7 +853,10 @@ impl FeatureKind {
                 out = triple("point", &m.point);
                 out.extend(triple("normal", &m.normal));
             }
-            FeatureKind::Boolean(_) | FeatureKind::Loft(_) | FeatureKind::Sweep(_) => {
+            FeatureKind::Boolean(_)
+            | FeatureKind::Loft(_)
+            | FeatureKind::Sweep(_)
+            | FeatureKind::DeleteFace(_) => {
                 out = Vec::new();
             }
             FeatureKind::DatumPlane(d) => out = d.exprs(),
@@ -910,7 +937,10 @@ impl FeatureKind {
                 .chain([&mut t.angle])
                 .collect(),
             FeatureKind::Mirror(m) => m.point.iter_mut().chain(m.normal.iter_mut()).collect(),
-            FeatureKind::Boolean(_) | FeatureKind::Loft(_) | FeatureKind::Sweep(_) => Vec::new(),
+            FeatureKind::Boolean(_)
+            | FeatureKind::Loft(_)
+            | FeatureKind::Sweep(_)
+            | FeatureKind::DeleteFace(_) => Vec::new(),
             FeatureKind::DatumPlane(d) => d.exprs_mut(),
             FeatureKind::DatumAxis(d) => d.exprs_mut(),
             FeatureKind::DatumPoint(d) => d.exprs_mut(),
@@ -1135,6 +1165,7 @@ impl Document {
                     fillet.edges.iter().flatten().collect()
                 }
                 FeatureKind::OffsetFace(OffsetFace { faces, .. })
+                | FeatureKind::DeleteFace(DeleteFace { faces })
                 | FeatureKind::Shell(Shell { open: faces, .. }) => {
                     if faces.len() > MAX_FACE_OP_FACES {
                         return Err(DocError::Invalid(format!(

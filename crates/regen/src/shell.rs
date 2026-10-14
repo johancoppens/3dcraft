@@ -75,6 +75,7 @@ pub(crate) fn build(
         &names.faces,
         "thickness",
         "shell",
+        "too far: ",
         &source.tolerance,
     )?;
     Ok((made.body, Some(names)))

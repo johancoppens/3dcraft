@@ -294,6 +294,10 @@ pub enum FeatureKind {
     /// following. The body is that of the feature the first name starts
     /// with.
     OffsetFace { faces: Vec<Name>, distance: String },
+    /// Faces of the body of an earlier feature taken out, the body closed
+    /// again by the faces round them. The body is that of the feature
+    /// the first name starts with.
+    DeleteFace { faces: Vec<Name> },
     /// The body of `source` made hollow, with walls of `thickness` behind
     /// every face except those of `open`, which are taken away.
     Shell {

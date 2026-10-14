@@ -64,6 +64,7 @@ const CANNOT_TELL: &str = "whether a loop the faces deleted leave in a face roun
 const NO_VOLUME: &str = "what is left encloses no volume: the faces are the outside of the body";
 const TANGENT_END: &str = "the face at an end of the strip is tangent to it or to a face beside it: another blend goes on there (a chain, or a corner where blends meet), which would have to be continued too; that is not built";
 const NO_COLLAPSE: &str = "the faces beside it, continued, do not meet where it was in a line or a circle (they are parallel, or meet in another curve): it cannot be collapsed into an edge between them";
+const CROWDED_END: &str = "more than three faces meet where the strip ends (another blend meets it there, or a corner of the part): collapsing it is not built";
 const SIDES: &str = "the strip's sides do not run between two different faces that stay (a seam, or a face deleted too)";
 const MERGED_FACE: &str = "the faces beside the strip already meet along another edge at its end, or an end face is one of them: collapsing it is not built";
 
@@ -129,8 +130,10 @@ impl Work {
         refuse(OPERATION, named, edge, reason)
     }
 
-    fn tweak_error(&self, error: TweakError) -> KernelError {
-        match error {
+    /// A refusal of the local operation, in the numbers of the body given,
+    /// about the face `deleted` (of the body given) first.
+    fn tweak_error(&self, deleted: FaceId, error: TweakError) -> KernelError {
+        let error = match error {
             TweakError::Kernel(error) => error,
             TweakError::Unsupported {
                 faces,
@@ -149,6 +152,24 @@ impl Work {
                 };
                 self.refused(&faces, edge, reason)
             }
+        };
+        match error {
+            KernelError::FaceOp {
+                operation,
+                mut faces,
+                edge,
+                reason,
+            } => {
+                faces.retain(|f| *f != deleted);
+                faces.insert(0, deleted);
+                KernelError::FaceOp {
+                    operation,
+                    faces,
+                    edge,
+                    reason,
+                }
+            }
+            other => other,
         }
     }
 }
@@ -565,6 +586,14 @@ fn ends_of(body: &Body, coedge: Coedge) -> Option<(VertexId, VertexId)> {
     body.coedge_ends(coedge)
 }
 
+/// How many edges end in `vertex` (a closed edge once).
+fn valence(body: &Body, vertex: VertexId) -> usize {
+    body.edges
+        .iter()
+        .filter(|e| e.start == vertex || e.end == vertex)
+        .count()
+}
+
 /// The loop of `face` with the coedge of `edge` in it, and where.
 fn find_use(body: &Body, face: FaceId, edge: EdgeId) -> Option<(LoopId, usize)> {
     body.face(face)?.loops.iter().find_map(|l| {
@@ -659,6 +688,11 @@ fn collapse(
                 {
                     return Err(work.refused(&[face, e], Some(end.edge), TANGENT_END));
                 }
+                // Three faces at each end vertex: the strip, its side and
+                // the end face. More is another blend meeting it there.
+                if valence(body, from) != 3 || valence(body, to) != 3 {
+                    return Err(work.refused(&[face, e], Some(end.edge), CROWDED_END));
+                }
                 end_faces.push((e, from, to));
                 change.merged.insert(to, from);
                 also.push(from);
@@ -718,7 +752,7 @@ fn collapse(
         OPERATION,
         tolerance,
     )
-    .map_err(|error| changed.tweak_error(error))?;
+    .map_err(|error| changed.tweak_error(work.original_face(face), error))?;
     Ok(Work {
         body: made,
         ..changed

@@ -426,11 +426,11 @@ fn what_is_not_built_is_refused_with_the_faces() {
     let message = refused(&made.body, &[FaceId(one as u32)], k);
     assert!(message.contains("tangent"), "{message}");
     // Two fillets that run into each other (a mitre): one alone ends
-    // against the other, which is tangent to the face beside it.
+    // against the other, in a vertex where four faces meet.
     let two = [corner[0], corner[1]];
     let (round, blends) = filleted(&block, &two, 0.5, k);
     let message = refused(&round, &blends[..1], k);
-    assert!(message.contains("tangent"), "{message}");
+    assert!(message.contains("more than three faces meet"), "{message}");
     // Both at once meet: they are no holes, and only one strip at a time
     // is collapsed.
     refused(&round, &blends, k);
@@ -444,4 +444,37 @@ fn a_face_between_two_faces_that_never_meet_is_refused() {
     let top = faces_through(&wall, k, "plane", [2.0, 0.25, 2.0]);
     let message = refused(&wall, &top, k);
     assert!(message.contains("cannot be collapsed"), "{message}");
+}
+
+#[test]
+fn a_chamfer_in_a_mitre_or_a_flat_corner_is_refused() {
+    let k = 1.0;
+    let block = boxed(k, [0.0, 0.0, 0.0], [4.0, 3.0, 2.0]);
+    let top_front = edge_at(&block, k, [2.0, 0.0, 2.0]);
+    let top_left = edge_at(&block, k, [0.0, 1.5, 2.0]);
+    let upright = edge_at(&block, k, [0.0, 0.0, 1.0]);
+    let size = ChamferSize::Distances {
+        first: 0.5,
+        second: 0.5,
+    };
+    for edges in [
+        vec![top_front, top_left],
+        vec![top_front, top_left, upright],
+    ] {
+        let request: Vec<ChamferEdge> = edges
+            .iter()
+            .map(|edge| ChamferEdge {
+                edge: *edge,
+                first: faces_of(&block, *edge)[0],
+                size,
+            })
+            .collect();
+        let made = chamfer(&block, &request, &tolerance(k)).unwrap();
+        for (index, face) in made.faces.iter().enumerate() {
+            if !matches!(face, ChamferFace::Kept(_)) {
+                let message = refused(&made.body, &[FaceId(index as u32)], k);
+                assert!(message.contains("delete face"), "{message}");
+            }
+        }
+    }
 }

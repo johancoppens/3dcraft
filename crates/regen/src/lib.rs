@@ -23,6 +23,7 @@ mod cache;
 mod cause;
 mod chamfer;
 mod datum;
+mod delete_face;
 mod derive;
 mod entity;
 mod extrude;
@@ -576,7 +577,8 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
         | FeatureKind::Chamfer(_)
         | FeatureKind::Fillet(_)
         | FeatureKind::OffsetFace(_)
-        | FeatureKind::Shell(_) => {
+        | FeatureKind::Shell(_)
+        | FeatureKind::DeleteFace(_) => {
             return Err(format!(
                 "a {} needs the body it is made from",
                 feature.kind.type_name()
@@ -832,6 +834,19 @@ fn build_feature(
                 names = made_names.map(Arc::new);
                 // The body as a whole does not move; a face that did is
                 // found where it lies now (`sketch::resolve_face`).
+                instances = Some(Arc::new(vec![Transform::IDENTITY]));
+                (Status::Ok, Some(Arc::new(body)))
+            }
+            Err(reason) => (Status::Failed(reason), None),
+        }
+    } else if let FeatureKind::DeleteFace(deletion) = &feature.kind {
+        match delete_face::build(doc, feature.id, deletion, earlier)
+            .and_then(|(body, names)| checked(doc, body).map(|body| (body, names)))
+        {
+            Ok((body, made_names)) => {
+                names = made_names.map(Arc::new);
+                // Nothing moves: a face lies where the face it is a copy
+                // of lies, on the surface it had.
                 instances = Some(Arc::new(vec![Transform::IDENTITY]));
                 (Status::Ok, Some(Arc::new(body)))
             }
