@@ -6,6 +6,15 @@ Decisions that shape the project, newest first, each with its reason. An agent t
 
 ## Taken
 
+### 2026-10-14: The boolean remembers what it asked (branch `bool-speed`, decided by an agent, for the developer to overturn)
+
+Taken while making the booleans faster without changing a bit of their results ([`architecture.md`](architecture.md) §5.3 › *Speed (2026-10-14)*).
+
+- **Memos that outlive one boolean are process-wide statics** (`Mutex<Vec<…>>`, least recently used out, bounded in count and size): the patch trees and checked bodies in `kernel::boolean`, the projectors and numeric intersections in `geom::intersect`. A boolean takes bodies and returns a body; there is no session or document to hang a cache on below the engine, and a row of booleans in one regeneration, or the same boolean again after an edit elsewhere, is exactly where the work repeats. Each memoised function is pure, so a hit returns what the work would return, and the results do not depend on what ran before, on threads, or on the order. Memory at most: some 75 MB of trees and 50 MB of the nearest points they remember (16 384 per tree), 32 MB of bodies written out, 2¹⁸ curve points of intersections, a few MB of projectors. *Overturn by:* caches owned by the caller (a regeneration context passed down), which would need a change of the kernel's API.
+- **A key is the value written out in full (`{:?}`), not a hash.** Formatting a body of the aircraft costs about 1 ms against some 15 ms to check it; a 64-bit hash would be cheaper to keep but would let two different bodies share an answer on a collision, which a checker must never do.
+- **Refusals of `meet_surfaces` are remembered too:** a refusal after a million cells costs as much as an answer, and asking again cannot change it.
+- **Not taken, because the results would change** (equally valid curves, other vertices): a `meet_surfaces` box per pair of faces instead of per pair of bodies; tighter derivative bounds or a curvature-driven step in the marcher. These are where the remaining time is (about half of each union) and want a decision of their own: they change every curve the marcher makes, so the corpus outcomes would have to be re-judged rather than compared bit for bit.
+
 ### 2026-10-14: The exact measure on spline surfaces that close on themselves (decided by an agent overnight, for the developer to overturn)
 
 Taken while repairing `topo::mass_properties`, which measured a face on a spline surface that closes in v wrong without an error (2.555 for a vase of 7.758; [`architecture.md`](architecture.md) §5 › *Mass properties*); nobody was awake to ask.
