@@ -162,8 +162,7 @@ fn hole_wall(session: &mut Session, feature: &str) -> String {
         .unwrap()
         .iter()
         .map(|n| n.as_str().unwrap())
-        .filter(|n| n.contains(":side("))
-        .last()
+        .rfind(|n| n.contains(":side("))
         .unwrap_or_else(|| panic!("{feature} has no side: {body}"))
         .to_string()
 }
