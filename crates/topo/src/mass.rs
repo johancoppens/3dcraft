@@ -550,6 +550,18 @@ fn inner(
     work: &mut Work,
 ) -> Total {
     let work_wrap = work.wrap;
+    // The fixed parameter too may be unrolled beyond the domain.
+    let across = match along {
+        Along::U => work_wrap[1],
+        Along::V => work_wrap[0],
+    };
+    let fixed = match across {
+        Some((low, high)) if !(fixed >= low && fixed <= high) => {
+            let back = low + (fixed - low).rem_euclid(high - low);
+            if back.is_finite() { back } else { fixed }
+        }
+        _ => fixed,
+    };
     let mut sum = Total::default();
     let mut panel = |start: f64, end: f64, sign: f64| {
         work.add(NODES as u64);
@@ -1025,10 +1037,8 @@ fn jumps(samples: &[Sample], pick: impl Fn(&Sample) -> f64, width: f64) -> bool 
 
 /// Whether a face whose every edge its loops use twice, once each way (a
 /// seam walked there and back: nothing else bounds it), is its whole
-/// surface: the surface closes on itself or ends in a pole on every side.
-/// A sphere and a torus do; a Bézier or NURBS surface when each of its
-/// directions closes ([`spline_closure`]) or ends in a pole at both
-/// borders of the other.
+/// surface: the surface closes on itself or ends in a pole on every side
+/// ([`closed_all_around`]).
 fn seams_only(body: &Body, face: &Face) -> bool {
     let mut uses: Vec<(u32, bool)> = Vec::new();
     for loop_id in &face.loops {
@@ -1045,14 +1055,19 @@ fn seams_only(body: &Body, face: &Face) -> bool {
     let paired = uses
         .chunks(2)
         .all(|pair| matches!(pair, [(a, false), (b, true)] if a == b));
-    if !paired {
-        return false;
-    }
-    match &face.surface {
+    paired && closed_all_around(&face.surface)
+}
+
+/// Whether a surface closes on itself or ends in a pole on every side, so
+/// that it bounds a region of space on its own: a sphere and a torus do; a
+/// Bézier or NURBS surface when each of its directions closes
+/// ([`spline_closure`]) or ends in a pole at both of its borders.
+fn closed_all_around(surface: &Surface) -> bool {
+    match surface {
         Surface::Sphere(_) | Surface::Torus(_) => true,
         Surface::Bezier(_) | Surface::Nurbs(_) => {
-            let [closes_u, closes_v] = spline_closure(&face.surface);
-            let poles = craft3d_geom::pole::poles(&face.surface);
+            let [closes_u, closes_v] = spline_closure(surface);
+            let poles = craft3d_geom::pole::poles(surface);
             // Both borders of constant v (`across_v`) are poles, or both
             // of constant u.
             let both_ends = |across_v: bool| poles.iter().filter(|p| p.across_v() == across_v).count() >= 2;
@@ -2185,8 +2200,20 @@ fn settle(
         }
     } else if sum.area < 0.0 {
         // The loops run the wrong way around what they enclose: the face
-        // is everything outside them.
-        return Err(MassError::UnboundedFace { face: index });
+        // is everything outside them. On a spline surface that closes on
+        // itself all around (a NURBS torus, an egg) that is the whole
+        // surface less what they enclose, unless the sum is zero to
+        // rounding, as on a sphere.
+        if !closed_all_around(surface) {
+            return Err(MassError::UnboundedFace { face: index });
+        }
+        if sum.area.abs() <= TOO_THIN * total.size.area {
+            return Err(MassError::Unsupported {
+                face: index,
+                what: "a face too thin, or too nearly its whole surface, to tell which side of its loops it is on",
+            });
+        }
+        sum.add_scaled(whole_surface(surface, index, rule, work)?, 1.0);
     }
     Ok(sum)
 }

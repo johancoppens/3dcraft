@@ -261,22 +261,18 @@ fn meshes_as(body: &Body, profile: &Profile, what: &str, fine: bool) {
     let k = profile[0].0;
     let (volume, area) = exact(profile);
     assert_eq!(check(body, &Tolerance::default()), vec![], "{what}");
-    // (The exact measure follows a wall that closes in the surface's first
-    // parameter; one that closes in the second it gets wrong, see
-    // `the_exact_measure_of_a_wall_that_closes_in_v`.)
-    if !body.faces[0].reversed {
-        let measured = mass_properties(body).unwrap();
-        assert!(
-            (measured.volume - volume).abs() < 1e-9 * volume,
-            "{what}: the exact measure gives {} for {volume}",
-            measured.volume
-        );
-        assert!(
-            (measured.area - area).abs() < 1e-9 * area,
-            "{what}: the exact measure gives the area {} for {area}",
-            measured.area
-        );
-    }
+    // The exact measure, whichever parameter the surface closes in.
+    let measured = mass_properties(body).unwrap_or_else(|e| panic!("{what}: {e}"));
+    assert!(
+        (measured.volume - volume).abs() < 1e-9 * volume,
+        "{what}: the exact measure gives {} for {volume}",
+        measured.volume
+    );
+    assert!(
+        (measured.area - area).abs() < 1e-9 * area,
+        "{what}: the exact measure gives the area {} for {area}",
+        measured.area
+    );
     let mut last = f64::INFINITY;
     for relative in [0.1, 1e-2, 1e-3, 1e-4] {
         if relative < 1e-3 && !fine {
@@ -402,30 +398,31 @@ fn the_seam_of_the_surface_may_lie_anywhere_and_in_either_parameter() {
 
 /// Not the tessellator's: `craft3d_topo::mass_properties` on the same
 /// walls when the surface closes in its second parameter (the profile
-/// along u, the turn along v, the face reversed). The bodies pass `check`
-/// and their meshes converge on the closed form (the test above); the
-/// measure refuses some of them (`UnboundedFace`, or an integral that
-/// does not settle) and gives a wrong volume for others without an error:
-/// 2.555 for the vase of 7.758.
+/// along u, the turn along v, the face reversed). Until 2026-10-14 the
+/// measure refused some of them and gave a wrong volume for others without
+/// an error (2.555 for the vase of 7.758): its boundary integral ran
+/// against `du`, and the seam where the surface closes in v, which no edge
+/// stands for in the parameter plane, is a line along u. Every one of them
+/// is measured now, to the closed form.
 #[test]
-#[ignore = "craft3d-topo: mass_properties is wrong, without an error, for a face on a spline \
-            surface that closes in v"]
 fn the_exact_measure_of_a_wall_that_closes_in_v() {
     let mut wrong = Vec::new();
     for (name, profile) in [("vase", vase(1.0)), ("barrel", barrel(1.0))] {
-        let (volume, _) = exact(&profile);
+        let (volume, area) = exact(&profile);
         for wall in [Wall::Seam, Wall::Circles] {
             for from in [0.0, 0.4, 2.0, -1.3] {
                 let body = turned(&profile, wall, from, true);
                 assert_eq!(check(&body, &Tolerance::default()), vec![]);
                 let what = format!("{name}, {wall:?} from {from}");
                 match mass_properties(&body) {
-                    Ok(measured) if (measured.volume - volume).abs() < 1e-9 * volume => {}
+                    Ok(measured)
+                        if (measured.volume - volume).abs() < 1e-9 * volume
+                            && (measured.area - area).abs() < 1e-9 * area => {}
                     Ok(measured) => wrong.push(format!(
-                        "{what}: {} for {volume}, without an error",
-                        measured.volume
+                        "{what}: {} for {volume}, area {} for {area}",
+                        measured.volume, measured.area
                     )),
-                    Err(error) => println!("{what}: refused: {error}"),
+                    Err(error) => wrong.push(format!("{what}: refused: {error}")),
                 }
             }
         }
@@ -565,10 +562,9 @@ fn a_window_across_the_seam_and_the_wall_around_it() {
     }
 }
 
-/// A surface that closes in both parameters: a torus as a NURBS surface.
-/// `step` gives it as a STEP file does, with its two seams as edges that
-/// the one loop walks there and back; otherwise it has no edges at all.
-fn nurbs_torus(major: f64, minor: f64, step: bool) -> Body {
+/// A torus about the z axis as a NURBS surface: u around the axis from
+/// the x axis, v around the tube from its outer equator; both close.
+fn torus_surface(major: f64, minor: f64) -> Surface {
     let (ring, knots) = ring(0.0);
     let mut ctrl = Vec::new();
     let mut weights = Vec::new();
@@ -579,8 +575,14 @@ fn nurbs_torus(major: f64, minor: f64, step: bool) -> Body {
             weights.push(w * tw);
         }
     }
-    let surface =
-        Surface::Nurbs(NurbsSurface::new(2, 2, knots.clone(), knots, 9, 9, ctrl, weights).unwrap());
+    Surface::Nurbs(NurbsSurface::new(2, 2, knots.clone(), knots, 9, 9, ctrl, weights).unwrap())
+}
+
+/// A surface that closes in both parameters: a torus as a NURBS surface.
+/// `step` gives it as a STEP file does, with its two seams as edges that
+/// the one loop walks there and back; otherwise it has no edges at all.
+fn nurbs_torus(major: f64, minor: f64, step: bool) -> Body {
+    let surface = torus_surface(major, minor);
     let mut body = Body::new(BodyKind::Solid);
     let loops = if step {
         let vertex = body.add_vertex(Vec3::new(major + minor, 0.0, 0.0));
@@ -785,4 +787,390 @@ fn what_is_not_followed_is_refused() {
         assert_eq!(check(&body, &Tolerance::default()), vec![]);
         refused(&body, &format!("knots not clamped, seam: {with_seam}"), "");
     }
+}
+
+/// The exact measure of `body` is the closed form, to 1e-12; and the mesh
+/// at a thousandth of `k` encloses what the exact measure says, within
+/// the area times that tolerance.
+fn measures_as(body: &Body, expected: (f64, f64), k: f64, what: &str) {
+    measured_as(body, expected, what);
+    if body.kind == BodyKind::Sheet {
+        return;
+    }
+    let volume = mass_properties(body).unwrap().volume;
+    let tolerance = 1e-3 * k;
+    let mesh = tessellate_body(body, &params(tolerance))
+        .unwrap_or_else(|e| panic!("{what}: {e}"))
+        .weld()
+        .unwrap();
+    assert!(mesh.is_closed(), "{what}: the mesh is not closed");
+    assert!(
+        (mesh.volume() - volume).abs() <= expected.1 * tolerance,
+        "{what}: the mesh encloses {} where the exact measure says {volume}",
+        mesh.volume(),
+    );
+}
+
+/// The exact measure of `body` is the closed form, to 1e-12 (measured:
+/// 4e-15 in the area, 1.4e-14 in the volume, at worst).
+fn measured_as(body: &Body, (volume, area): (f64, f64), what: &str) {
+    assert_eq!(check(body, &Tolerance::default()), vec![], "{what}");
+    let measured = mass_properties(body).unwrap_or_else(|e| panic!("{what}: {e}"));
+    println!(
+        "{what}: area off by {:.1e}, volume by {:.1e}",
+        (measured.area - area).abs() / area,
+        (measured.volume - volume).abs() / volume.abs().max(f64::MIN_POSITIVE)
+    );
+    assert!(
+        (measured.area - area).abs() < 1e-12 * area,
+        "{what}: the area {} for {area}",
+        measured.area
+    );
+    if body.kind == BodyKind::Sheet {
+        return;
+    }
+    assert!(
+        (measured.volume - volume).abs() < 1e-12 * volume,
+        "{what}: the volume {} for {volume}",
+        measured.volume
+    );
+}
+
+/// A straight profile: the wall of a cylinder of radius `k` and height
+/// `2k`, as a cubic.
+fn straight(k: f64) -> Profile {
+    [
+        (k, 0.0),
+        (k, 2.0 * k / 3.0),
+        (k, 4.0 * k / 3.0),
+        (k, 2.0 * k),
+    ]
+}
+
+/// Walls of revolution on a surface that closes around the axis, in
+/// either parameter, with a seam edge or between two circles: a NURBS
+/// cylinder (`π r² h`) and the vase (Pappus: `π ∫ ρ² dz`, which the
+/// profile's Bézier form gives exactly), at three scales.
+#[test]
+fn walls_that_close_are_measured_at_three_scales() {
+    for k in [1e-3, 1.0, 1e6] {
+        let cylinder = straight(k);
+        let (r, h) = (k, 2.0 * k);
+        let closed_form = (PI * r * r * h, TAU * r * h + 2.0 * PI * r * r);
+        let (volume, area) = exact(&cylinder);
+        assert!((volume - closed_form.0).abs() < 1e-12 * closed_form.0);
+        assert!((area - closed_form.1).abs() < 1e-12 * closed_form.1);
+        for (name, profile, expected) in [
+            ("cylinder", cylinder, closed_form),
+            ("vase", vase(k), exact(&vase(k))),
+        ] {
+            for wall in [Wall::Seam, Wall::Circles] {
+                for (from, around_v) in [(0.0, false), (2.0, false), (0.0, true), (2.0, true)] {
+                    measures_as(
+                        &turned(&profile, wall, from, around_v),
+                        expected,
+                        k,
+                        &format!("{name} of size {k}, {wall:?} from {from}, around v: {around_v}"),
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// A NURBS torus, closed both ways: without edges, with its two seams as
+/// edges walked there and back (a STEP file's whole torus), and cut in two
+/// by a window across both seams (the window, and the torus around it as
+/// a face of its own, whose loop is the window's backwards: the boundary
+/// is unrolled as on an analytic torus). At three scales.
+#[test]
+fn a_nurbs_torus_is_measured_at_three_scales() {
+    for k in [1e-3, 1.0, 1e6] {
+        let (major, minor) = (3.0 * k, k);
+        let whole = (
+            2.0 * PI * PI * major * minor * minor,
+            4.0 * PI * PI * major * minor,
+        );
+        for step in [false, true] {
+            measures_as(
+                &nurbs_torus(major, minor, step),
+                whole,
+                k,
+                &format!("torus of size {k}, seams as edges: {step}"),
+            );
+        }
+        // Around the axis from φ0 to φ1, around the tube from θ0 to θ1:
+        // both ranges go over the seams at 0.
+        for ((f0, f1), (t0, t1)) in [((-0.5, 0.6), (-0.4, 0.7)), ((2.0, 2.5), (-1.0, 0.3))] {
+            let pane = minor * (f1 - f0) * (major * (t1 - t0) + minor * (t1.sin() - t0.sin()));
+            let window = |body: &mut Body, hole: bool| -> LoopId {
+                let at = |f: f64, t: f64| {
+                    let rho = major + minor * t.cos();
+                    Vec3::new(rho * f.cos(), rho * f.sin(), minor * t.sin())
+                };
+                let corners = [
+                    body.add_vertex(at(f0, t0)),
+                    body.add_vertex(at(f1, t0)),
+                    body.add_vertex(at(f1, t1)),
+                    body.add_vertex(at(f0, t1)),
+                ];
+                // Around the axis at tube angle `t`, from φ0.
+                let around = |t: f64| {
+                    let x_axis = Vec3::new(f0.cos(), f0.sin(), 0.0);
+                    let frame =
+                        Frame::new(Vec3::new(0.0, 0.0, minor * t.sin()), Vec3::Z, x_axis).unwrap();
+                    Curve3::Circle(Circle::new(frame, major + minor * t.cos()).unwrap())
+                };
+                // Around the tube at axis angle `f`, from its outer equator.
+                let tube = |f: f64| {
+                    let radial = Vec3::new(f.cos(), f.sin(), 0.0);
+                    let frame = Frame::new(radial * major, radial.cross(Vec3::Z), radial).unwrap();
+                    Curve3::Circle(Circle::new(frame, minor).unwrap())
+                };
+                let below = body.add_edge(around(t0), (0.0, f1 - f0), corners[0], corners[1]);
+                let right = body.add_edge(tube(f1), (t0, t1), corners[1], corners[2]);
+                let above = body.add_edge(around(t1), (0.0, f1 - f0), corners[3], corners[2]);
+                let left = body.add_edge(tube(f0), (t0, t1), corners[0], corners[3]);
+                let use_of = |edge: EdgeId, reversed: bool| Coedge { edge, reversed };
+                body.add_loop(if hole {
+                    vec![
+                        use_of(left, false),
+                        use_of(above, false),
+                        use_of(right, true),
+                        use_of(below, true),
+                    ]
+                } else {
+                    vec![
+                        use_of(below, false),
+                        use_of(right, false),
+                        use_of(above, true),
+                        use_of(left, true),
+                    ]
+                })
+            };
+            let what = format!("torus of size {k}, window {f0}..{f1} by {t0}..{t1}");
+            let alone = sheet(torus_surface(major, minor), false, |body| {
+                vec![window(body, false)]
+            });
+            measures_as(&alone, (0.0, pane), k, &format!("{what}: the window"));
+            let around = sheet(torus_surface(major, minor), false, |body| {
+                vec![window(body, true)]
+            });
+            measures_as(
+                &around,
+                (0.0, whole.1 - pane),
+                k,
+                &format!("{what}: the torus around it"),
+            );
+            // Both faces on the same edges: the whole torus as a solid.
+            let mut body = Body::new(BodyKind::Solid);
+            let inside = window(&mut body, false);
+            let edges: Vec<Coedge> = body.loops[inside.0 as usize]
+                .coedges
+                .iter()
+                .rev()
+                .map(|c| Coedge {
+                    edge: c.edge,
+                    reversed: !c.reversed,
+                })
+                .collect();
+            let outside = body.add_loop(edges);
+            let a = body.add_face(torus_surface(major, minor), false, vec![inside]);
+            let b = body.add_face(torus_surface(major, minor), false, vec![outside]);
+            body.add_shell(vec![a, b]);
+            // (The tessellator declines the face around the window: see
+            // `what_the_tessellator_declines_on_closed_freeform`.)
+            measured_as(&body, whole, &format!("{what}: both faces"));
+        }
+    }
+}
+
+/// Closed around the axis and to a point at both ends (the egg), in
+/// either parameter, without edges and with its seam from pole to pole as
+/// an edge walked there and back. At three scales.
+#[test]
+fn an_egg_is_measured_at_three_scales() {
+    for k in [1e-3, 1.0, 1e6] {
+        let profile = egg(k);
+        let expected = (
+            PI * along(&profile, |(rho, _), (_, dz)| rho * rho * dz),
+            TAU * along(&profile, |(rho, _), (dr, dz)| rho * dr.hypot(dz)),
+        );
+        for around_v in [false, true] {
+            for (from, seam) in [(0.0, false), (1.1, false), (0.0, true), (1.1, true)] {
+                let mut body = Body::new(BodyKind::Solid);
+                let surface = Surface::Nurbs(revolved(&profile, from, around_v));
+                let loops = if seam {
+                    let (low, high) = (
+                        body.add_vertex(Vec3::ZERO),
+                        body.add_vertex(Vec3::new(0.0, 0.0, profile[3].1)),
+                    );
+                    let edge = body.add_edge(profile_curve(&profile, from), (0.0, 1.0), low, high);
+                    let use_of = |reversed: bool| Coedge { edge, reversed };
+                    vec![body.add_loop(vec![use_of(false), use_of(true)])]
+                } else {
+                    Vec::new()
+                };
+                let face = body.add_face(surface, around_v, loops);
+                body.add_shell(vec![face]);
+                let what =
+                    format!("egg of size {k} from {from}, seam: {seam}, around v: {around_v}");
+                // (The tessellator declines a face without loops on a
+                // surface that closes in its second parameter: see
+                // `what_the_tessellator_declines_on_closed_freeform`.)
+                if around_v && !seam {
+                    measured_as(&body, expected, &what);
+                } else {
+                    measures_as(&body, expected, k, &what);
+                }
+            }
+        }
+    }
+}
+
+/// A window across the seam of a surface that closes in v, and the wall
+/// around it: their areas, which the boundary integral against `dv` gives
+/// (sheets: no volume). At three scales.
+#[test]
+fn a_window_across_a_seam_in_v_is_measured() {
+    for k in [1e-3, 1.0, 1e6] {
+        let profile = vase(k);
+        let (t0, t1) = (0.3, 0.7);
+        for (a0, a1) in [(-0.5, 0.6), (0.3, 1.4)] {
+            let side = |range: (f64, f64)| {
+                along_part(&profile, range, |(rho, _), (dr, dz)| rho * dr.hypot(dz))
+            };
+            let strip = TAU * side((0.0, 1.0));
+            let pane = (a1 - a0) * side((t0, t1));
+            let window = |body: &mut Body, hole: bool| -> LoopId {
+                let ((low, _), (high, _)) = (bernstein(&profile, t0), bernstein(&profile, t1));
+                let corner = |(rho, z): (f64, f64), a: f64| Vec3::new(rho * a.cos(), rho * a.sin(), z);
+                let corners = [
+                    body.add_vertex(corner(low, a0)),
+                    body.add_vertex(corner(low, a1)),
+                    body.add_vertex(corner(high, a1)),
+                    body.add_vertex(corner(high, a0)),
+                ];
+                let arc = |(rho, z): (f64, f64)| {
+                    let x_axis = Vec3::new(a0.cos(), a0.sin(), 0.0);
+                    let frame = Frame::new(Vec3::new(0.0, 0.0, z), Vec3::Z, x_axis).unwrap();
+                    Curve3::Circle(Circle::new(frame, rho).unwrap())
+                };
+                let below = body.add_edge(arc(low), (0.0, a1 - a0), corners[0], corners[1]);
+                let above = body.add_edge(arc(high), (0.0, a1 - a0), corners[3], corners[2]);
+                let right = body.add_edge(profile_curve(&profile, a1), (t0, t1), corners[1], corners[2]);
+                let left = body.add_edge(profile_curve(&profile, a0), (t0, t1), corners[0], corners[3]);
+                let use_of = |edge: EdgeId, reversed: bool| Coedge { edge, reversed };
+                body.add_loop(if hole {
+                    vec![
+                        use_of(left, false),
+                        use_of(above, false),
+                        use_of(right, true),
+                        use_of(below, true),
+                    ]
+                } else {
+                    vec![
+                        use_of(below, false),
+                        use_of(right, false),
+                        use_of(above, true),
+                        use_of(left, true),
+                    ]
+                })
+            };
+            for around_v in [false, true] {
+                let surface = || Surface::Nurbs(revolved(&profile, 0.0, around_v));
+                let what = format!("size {k}, between {a0} and {a1}, around v: {around_v}");
+                let alone = sheet(surface(), around_v, |body| vec![window(body, false)]);
+                measures_as(&alone, (0.0, pane), k, &format!("a window, {what}"));
+                let around = sheet(surface(), around_v, |body| {
+                    let rim = |body: &mut Body, (rho, z): (f64, f64)| -> EdgeId {
+                        let vertex = body.add_vertex(Vec3::new(rho, 0.0, z));
+                        let frame = Frame::new(Vec3::new(0.0, 0.0, z), Vec3::Z, Vec3::X).unwrap();
+                        let circle = Curve3::Circle(Circle::new(frame, rho).unwrap());
+                        body.add_edge(circle, (0.0, TAU), vertex, vertex)
+                    };
+                    let lower = rim(body, profile[0]);
+                    let upper = rim(body, profile[3]);
+                    let use_of = |edge: EdgeId, reversed: bool| Coedge { edge, reversed };
+                    vec![
+                        body.add_loop(vec![use_of(lower, false)]),
+                        body.add_loop(vec![use_of(upper, true)]),
+                        window(body, true),
+                    ]
+                });
+                measures_as(&around, (0.0, strip - pane), k, &format!("the wall around, {what}"));
+            }
+        }
+    }
+}
+
+/// Not the exact measure's, which takes both (the tests above): two faces
+/// of closed freeform surfaces that the tessellator declines with an error
+/// (not a wrong mesh), found on 2026-10-14. The egg turned about the axis
+/// in its surface's second parameter, as a face without loops ("a face
+/// without loops on a surface that is not closed"); and a NURBS torus
+/// around a window across both of its seams, the window's loop backwards
+/// ("its loops do not bound a region").
+#[test]
+#[ignore = "craft3d-tess: declines an egg without loops that closes in v, and a NURBS torus around \
+            a window across both seams"]
+fn what_the_tessellator_declines_on_closed_freeform() {
+    let profile = egg(1.0);
+    let mut body = Body::new(BodyKind::Solid);
+    let face = body.add_face(Surface::Nurbs(revolved(&profile, 0.0, true)), true, Vec::new());
+    body.add_shell(vec![face]);
+    let expected = (
+        PI * along(&profile, |(rho, _), (_, dz)| rho * rho * dz),
+        TAU * along(&profile, |(rho, _), (dr, dz)| rho * dr.hypot(dz)),
+    );
+    measures_as(&body, expected, 1.0, "egg without loops, around v");
+
+    let (major, minor) = (3.0, 1.0);
+    let ((f0, f1), (t0, t1)) = ((-0.5, 0.6), (-0.4, 0.7));
+    let at = |f: f64, t: f64| {
+        let rho = major + minor * t.cos();
+        Vec3::new(rho * f.cos(), rho * f.sin(), minor * t.sin())
+    };
+    let mut body = Body::new(BodyKind::Solid);
+    let corners = [
+        body.add_vertex(at(f0, t0)),
+        body.add_vertex(at(f1, t0)),
+        body.add_vertex(at(f1, t1)),
+        body.add_vertex(at(f0, t1)),
+    ];
+    let around = |t: f64| {
+        let x_axis = Vec3::new(f0.cos(), f0.sin(), 0.0);
+        let frame = Frame::new(Vec3::new(0.0, 0.0, minor * t.sin()), Vec3::Z, x_axis).unwrap();
+        Curve3::Circle(Circle::new(frame, major + minor * t.cos()).unwrap())
+    };
+    let tube = |f: f64| {
+        let radial = Vec3::new(f.cos(), f.sin(), 0.0);
+        let frame = Frame::new(radial * major, radial.cross(Vec3::Z), radial).unwrap();
+        Curve3::Circle(Circle::new(frame, minor).unwrap())
+    };
+    let below = body.add_edge(around(t0), (0.0, f1 - f0), corners[0], corners[1]);
+    let right = body.add_edge(tube(f1), (t0, t1), corners[1], corners[2]);
+    let above = body.add_edge(around(t1), (0.0, f1 - f0), corners[3], corners[2]);
+    let left = body.add_edge(tube(f0), (t0, t1), corners[0], corners[3]);
+    let use_of = |edge: EdgeId, reversed: bool| Coedge { edge, reversed };
+    let inside = body.add_loop(vec![
+        use_of(below, false),
+        use_of(right, false),
+        use_of(above, true),
+        use_of(left, true),
+    ]);
+    let outside = body.add_loop(vec![
+        use_of(left, false),
+        use_of(above, false),
+        use_of(right, true),
+        use_of(below, true),
+    ]);
+    let a = body.add_face(torus_surface(major, minor), false, vec![inside]);
+    let b = body.add_face(torus_surface(major, minor), false, vec![outside]);
+    body.add_shell(vec![a, b]);
+    let whole = (
+        2.0 * PI * PI * major * minor * minor,
+        4.0 * PI * PI * major * minor,
+    );
+    measures_as(&body, whole, 1.0, "torus around a window across both seams");
 }
