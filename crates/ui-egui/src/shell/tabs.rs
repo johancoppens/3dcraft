@@ -385,7 +385,7 @@ impl Shell {
                         if tab.dirty {
                             let mark = painter.layout_no_wrap(
                                 UNSAVED_MARK.to_string(),
-                                font.clone(),
+                                egui::FontId::proportional(20.0),
                                 color(tokens.attention),
                             );
                             let size = mark.size();

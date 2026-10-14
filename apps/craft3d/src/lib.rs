@@ -4,7 +4,7 @@
 //!
 //! Phase 1 is a viewer: the window draws the active document and does
 //! not model. Every change is a command, sent over the control channel;
-//! the window itself only opens and saves files.
+//! the window itself only opens, saves, switches and closes documents.
 //!
 //! - [`args`]: the command line and its environment variables.
 //! - [`token`]: the control token and its file.
