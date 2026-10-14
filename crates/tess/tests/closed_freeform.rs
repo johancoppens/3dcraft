@@ -1044,7 +1044,8 @@ fn a_window_across_a_seam_in_v_is_measured() {
             let pane = (a1 - a0) * side((t0, t1));
             let window = |body: &mut Body, hole: bool| -> LoopId {
                 let ((low, _), (high, _)) = (bernstein(&profile, t0), bernstein(&profile, t1));
-                let corner = |(rho, z): (f64, f64), a: f64| Vec3::new(rho * a.cos(), rho * a.sin(), z);
+                let corner =
+                    |(rho, z): (f64, f64), a: f64| Vec3::new(rho * a.cos(), rho * a.sin(), z);
                 let corners = [
                     body.add_vertex(corner(low, a0)),
                     body.add_vertex(corner(low, a1)),
@@ -1058,8 +1059,18 @@ fn a_window_across_a_seam_in_v_is_measured() {
                 };
                 let below = body.add_edge(arc(low), (0.0, a1 - a0), corners[0], corners[1]);
                 let above = body.add_edge(arc(high), (0.0, a1 - a0), corners[3], corners[2]);
-                let right = body.add_edge(profile_curve(&profile, a1), (t0, t1), corners[1], corners[2]);
-                let left = body.add_edge(profile_curve(&profile, a0), (t0, t1), corners[0], corners[3]);
+                let right = body.add_edge(
+                    profile_curve(&profile, a1),
+                    (t0, t1),
+                    corners[1],
+                    corners[2],
+                );
+                let left = body.add_edge(
+                    profile_curve(&profile, a0),
+                    (t0, t1),
+                    corners[0],
+                    corners[3],
+                );
                 let use_of = |edge: EdgeId, reversed: bool| Coedge { edge, reversed };
                 body.add_loop(if hole {
                     vec![
@@ -1098,7 +1109,12 @@ fn a_window_across_a_seam_in_v_is_measured() {
                         window(body, true),
                     ]
                 });
-                measures_as(&around, (0.0, strip - pane), k, &format!("the wall around, {what}"));
+                measures_as(
+                    &around,
+                    (0.0, strip - pane),
+                    k,
+                    &format!("the wall around, {what}"),
+                );
             }
         }
     }
@@ -1117,7 +1133,11 @@ fn a_window_across_a_seam_in_v_is_measured() {
 fn what_the_tessellator_declines_on_closed_freeform() {
     let profile = egg(1.0);
     let mut body = Body::new(BodyKind::Solid);
-    let face = body.add_face(Surface::Nurbs(revolved(&profile, 0.0, true)), true, Vec::new());
+    let face = body.add_face(
+        Surface::Nurbs(revolved(&profile, 0.0, true)),
+        true,
+        Vec::new(),
+    );
     body.add_shell(vec![face]);
     let expected = (
         PI * along(&profile, |(rho, _), (_, dz)| rho * rho * dz),

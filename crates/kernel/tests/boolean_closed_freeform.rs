@@ -53,7 +53,9 @@ fn vase_volume() -> f64 {
             let b = [s * s * s, 3.0 * s * s * t, 3.0 * s * t * t, t * t * t];
             let d = [s * s, 2.0 * s * t, t * t];
             let rho: f64 = (0..4).map(|k| b[k] * VASE[k].0).sum();
-            let dz: f64 = (0..3).map(|k| 3.0 * d[k] * (VASE[k + 1].1 - VASE[k].1)).sum();
+            let dz: f64 = (0..3)
+                .map(|k| 3.0 * d[k] * (VASE[k + 1].1 - VASE[k].1))
+                .sum();
             sum += rho * rho * dz * w / 200.0;
         }
     }

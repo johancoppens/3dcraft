@@ -961,7 +961,10 @@ fn spline_closure(surface: &Surface) -> [Option<(f64, f64)>; 2] {
                     s.control_points(),
                     Some(s.weights()),
                     s.counts(),
-                    [clamped(s.knots_u(), degree_u), clamped(s.knots_v(), degree_v)],
+                    [
+                        clamped(s.knots_u(), degree_u),
+                        clamped(s.knots_v(), degree_v),
+                    ],
                 )
             }
             _ => return [None, None],
@@ -994,7 +997,8 @@ fn spline_closure(surface: &Surface) -> [Option<(f64, f64)>; 2] {
             };
             // `w / first == x / last`, without dividing. Not `>`: a NaN
             // closes nothing.
-            if !(p.distance(q) <= near && (w * last - x * first).abs() <= SAME_ROW * (w * last).abs())
+            if !(p.distance(q) <= near
+                && (w * last - x * first).abs() <= SAME_ROW * (w * last).abs())
             {
                 return false;
             }
@@ -1099,7 +1103,8 @@ fn closed_all_around(surface: &Surface) -> bool {
             let poles = craft3d_geom::pole::poles(surface);
             // Both borders of constant v (`across_v`) are poles, or both
             // of constant u.
-            let both_ends = |across_v: bool| poles.iter().filter(|p| p.across_v() == across_v).count() >= 2;
+            let both_ends =
+                |across_v: bool| poles.iter().filter(|p| p.across_v() == across_v).count() >= 2;
             (closes_u.is_some() || both_ends(false)) && (closes_v.is_some() || both_ends(true))
         }
         _ => false,
@@ -1369,8 +1374,8 @@ fn outline<'a>(
             cuts.sort_by(f64::total_cmp);
             cuts.dedup();
             let curve = &edge.curve;
-            let crossings =
-                knot_crossings(curve, surface, (t0, t1), touch, (split, seams)).map_err(geometry)?;
+            let crossings = knot_crossings(curve, surface, (t0, t1), touch, (split, seams))
+                .map_err(geometry)?;
             let mut stops = Vec::with_capacity(cuts.len() + 2);
             stops.push(t0);
             stops.extend(cuts);

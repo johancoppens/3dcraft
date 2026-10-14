@@ -37,7 +37,8 @@ fn sphere_with_seam(centre: Vec3, r: f64) -> Body {
             reversed: true,
         },
     ]);
-    let surface = Surface::Sphere(Sphere::new(Frame::new(centre, Vec3::Z, Vec3::X).unwrap(), r).unwrap());
+    let surface =
+        Surface::Sphere(Sphere::new(Frame::new(centre, Vec3::Z, Vec3::X).unwrap(), r).unwrap());
     let face = body.add_face(surface, false, vec![seam]);
     body.add_shell(vec![face]);
     body
