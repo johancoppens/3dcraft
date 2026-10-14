@@ -16,8 +16,8 @@
 //! - **The cap.** One triangle in the plane, large enough to hold the box
 //!   around the mesh, drawn after the triangles of the mesh in every pass
 //!   that draws them, through the same vertex stage and the same depth
-//!   test (`Less`: a triangle of the mesh wins a tie, as on the CPU). Its
-//!   fragments are kept where the count is odd.
+//!   test (`Greater` on the reversed depth: a triangle of the mesh wins a
+//!   tie, as on the CPU). Its fragments are kept where the count is odd.
 //!
 //! With one sample per pixel the cap reads the count at its pixel
 //! (`cut_flat.wgsl`); with several it reads it per sample and keeps those

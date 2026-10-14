@@ -74,7 +74,7 @@ fn fs_behind_cut(in: CutOut) -> @location(0) vec4<f32> {
         discard;
     }
     let front = textureLoad(front_depth, vec2<i32>(in.clip.xy), 0).r;
-    if !(in.clip.z > front) {
+    if !(in.clip.z < front) {
         discard;
     }
     return shade_of(whole_of(in));
@@ -89,7 +89,7 @@ fn fs_cap_behind(in: CutOut) -> @location(0) vec4<f32> {
         discard;
     }
     let front = textureLoad(front_depth, vec2<i32>(in.clip.xy), 0).r;
-    if !(in.clip.z > front) {
+    if !(in.clip.z < front) {
         discard;
     }
     return cap_color();

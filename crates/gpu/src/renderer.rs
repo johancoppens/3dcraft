@@ -165,10 +165,12 @@ pub(crate) fn scene_uniforms(
         Some(cut) if cut.cap => depth_range(&axes, &cut::cap_bounds(mesh), perspective),
         _ => depth_range(&axes, &mesh.bounds, perspective),
     };
-    let depth_scale = if perspective {
-        far / (far - near)
+    // Reversed depth (`scene.wgsl`, `vs_main`): near / dist in
+    // perspective, (far - dist) / (far - near) in orthographic.
+    let depth = if perspective {
+        [near, 1.0]
     } else {
-        1.0 / (far - near)
+        [far, 1.0 / (far - near)]
     };
     let light = axes.light();
     let l = light.unwrap_or(craft3d_math::Vec3::ZERO);
@@ -204,7 +206,7 @@ pub(crate) fn scene_uniforms(
         ],
         [eye.x, eye.y, eye.z, 0.0],
         [l.x, l.y, l.z, if light.is_some() { 1.0 } else { 0.0 }],
-        [near, depth_scale, 0.0, 0.0],
+        [depth[0], depth[1], 0.0, 0.0],
         [r, g, b, 0.0],
         [
             SHADE_AMBIENT,
@@ -424,7 +426,8 @@ pub struct Renderer {
 
 /// The state every pass over the triangles shares: both sides of every
 /// triangle (sheets are seen from either side, as on the CPU), and
-/// `Less`, so that on a tie the triangle drawn first stays.
+/// `Greater` (the depth is reversed, `scene.wgsl`), so that on a tie the
+/// triangle drawn first stays.
 pub(crate) fn scene_primitive() -> wgpu::PrimitiveState {
     wgpu::PrimitiveState {
         topology: wgpu::PrimitiveTopology::TriangleList,
@@ -437,7 +440,7 @@ pub(crate) fn scene_depth() -> wgpu::DepthStencilState {
     wgpu::DepthStencilState {
         format: DEPTH_FORMAT,
         depth_write_enabled: Some(true),
-        depth_compare: Some(wgpu::CompareFunction::Less),
+        depth_compare: Some(wgpu::CompareFunction::Greater),
         stencil: wgpu::StencilState::default(),
         bias: wgpu::DepthBiasState::default(),
     }
@@ -679,11 +682,12 @@ impl Renderer {
                 cull_mode: None,
                 ..wgpu::PrimitiveState::default()
             },
-            // `Less`: on a tie the triangle drawn first stays.
+            // `Greater` (reversed depth, `scene.wgsl`): on a tie the
+            // triangle drawn first stays.
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: DEPTH_FORMAT,
                 depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Less),
+                depth_compare: Some(wgpu::CompareFunction::Greater),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
@@ -1251,7 +1255,7 @@ impl Renderer {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &targets.samples_depth,
                     depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
+                        load: wgpu::LoadOp::Clear(0.0),
                         store: if peeled.is_some() {
                             wgpu::StoreOp::Store
                         } else {
@@ -1288,7 +1292,7 @@ impl Renderer {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &peel.depth,
                     depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
+                        load: wgpu::LoadOp::Clear(0.0),
                         store: wgpu::StoreOp::Discard,
                     }),
                     stencil_ops: None,
