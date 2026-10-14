@@ -310,20 +310,27 @@ pub enum FeatureKind {
     /// again by the faces round them. The body is that of the feature
     /// the first name starts with.
     DeleteFace { faces: Vec<Name> },
-    /// An ISO metric thread of designation `size` (`M10`) on the
-    /// cylindrical face `face`, from the flat face `start` along it for
-    /// `length` (format version 13). Written without `left_handed` and
-    /// `cosmetic` when they are not set.
+    /// An ISO metric thread on the cylindrical face `face`, from the flat
+    /// face `start` along it for `length` (format version 13). `size` is
+    /// the designation (`"M10"`), or `{"diameter": "d"}`, the nominal
+    /// diameter as an expression of a length, or absent: the size whose
+    /// nominal diameter the face has (version 14). `pitch` is absent for
+    /// the coarse pitch of the size (version 14; version 13 always wrote
+    /// it). Written without `left_handed` and `modeled` when they are
+    /// not set. A thread is cosmetic unless `modeled` (version 14;
+    /// version 13 wrote `cosmetic` and cut a thread that did not say it).
     Thread {
         face: Name,
         start: Name,
-        size: String,
-        pitch: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        size: Option<ThreadSize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pitch: Option<String>,
         length: String,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         left_handed: bool,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        cosmetic: bool,
+        modeled: bool,
     },
     /// The body of `source` made hollow, with walls of `thickness` behind
     /// every face except those of `open`, which are taken away.
@@ -333,6 +340,22 @@ pub enum FeatureKind {
         #[serde(default)]
         open: Vec<Name>,
     },
+}
+
+/// The size of a thread: a designation of ISO 261 (`"M10"`), or the
+/// nominal diameter as an expression of a length (`{"diameter": "d"}`).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ThreadSize {
+    Designation(String),
+    Diameter(ThreadDiameter),
+}
+
+/// A thread's nominal diameter, an expression of a length.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ThreadDiameter {
+    pub diameter: String,
 }
 
 /// How far a chamfer cuts the two faces of an edge back: expressions.

@@ -46,7 +46,7 @@ fn a_cut_thread_meshes_at_the_display_tolerance_in_seconds() {
     run(
         &mut s,
         "feature.thread",
-        json!({"face": "F1:face(0)", "start": "F1:face(1)", "size": "M10", "length": "24 mm", "name": "Thread"}),
+        json!({"face": "F1:face(0)", "start": "F1:face(1)", "size": "M10", "length": "24 mm", "modeled": true, "name": "Thread"}),
     );
     // 0.0015 is where it hung; the display rule asks for a little less
     // here, which happened to escape the rounding.

@@ -314,15 +314,24 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 pitch,
                 length,
                 left_handed,
-                cosmetic,
+                modeled,
             }) => manifest::FeatureKind::Thread {
                 face: name_to_manifest(face),
                 start: name_to_manifest(start),
-                size: size.clone(),
-                pitch: expr_to_manifest(pitch),
+                size: size.as_ref().map(|size| match size {
+                    doc::ThreadSize::Designation(text) => {
+                        manifest::ThreadSize::Designation(text.clone())
+                    }
+                    doc::ThreadSize::Diameter { diameter } => {
+                        manifest::ThreadSize::Diameter(manifest::ThreadDiameter {
+                            diameter: expr_to_manifest(diameter),
+                        })
+                    }
+                }),
+                pitch: pitch.as_ref().map(expr_to_manifest),
                 length: expr_to_manifest(length),
                 left_handed: *left_handed,
-                cosmetic: *cosmetic,
+                modeled: *modeled,
             },
             doc::FeatureKind::Shell(doc::Shell {
                 source: doc::FeatureId(source),
@@ -1240,15 +1249,22 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
                 pitch,
                 length,
                 left_handed,
-                cosmetic,
+                modeled,
             } => doc::FeatureKind::Thread(doc::Thread {
                 face: name_to_doc(face),
                 start: name_to_doc(start),
-                size,
-                pitch: doc::Expr(pitch),
+                size: size.map(|size| match size {
+                    manifest::ThreadSize::Designation(text) => doc::ThreadSize::Designation(text),
+                    manifest::ThreadSize::Diameter(manifest::ThreadDiameter { diameter }) => {
+                        doc::ThreadSize::Diameter {
+                            diameter: doc::Expr(diameter),
+                        }
+                    }
+                }),
+                pitch: pitch.map(doc::Expr),
                 length: doc::Expr(length),
                 left_handed,
-                cosmetic,
+                modeled,
             }),
             manifest::FeatureKind::Shell {
                 source,

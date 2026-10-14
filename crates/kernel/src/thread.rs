@@ -67,6 +67,23 @@ pub fn coarse_pitch(nominal: f64) -> Option<f64> {
         .map(|(_, p)| *p)
 }
 
+/// The sizes of ISO 261 that [`coarse_pitch`] knows, as nominal
+/// diameter and coarse pitch in millimetres, from the smallest.
+pub fn iso_sizes() -> &'static [(f64, f64)] {
+    &COARSE
+}
+
+/// The designation of a nominal diameter in millimetres: `M10`, `M2.5`,
+/// the number rounded to a millionth of a millimetre; `None` for a
+/// diameter that is not a finite positive number.
+pub fn designation(nominal: f64) -> Option<String> {
+    if !(nominal.is_finite() && nominal > 0.0 && nominal < 1e9) {
+        return None;
+    }
+    let rounded = (nominal * 1e6).round() / 1e6;
+    (rounded > 0.0).then(|| format!("M{rounded}"))
+}
+
 /// The nominal diameter in millimetres of a designation such as `M10`,
 /// `m10` or `M2.5`; `None` for anything else.
 pub fn nominal_diameter(size: &str) -> Option<f64> {

@@ -334,6 +334,9 @@ pub struct DocumentStatus {
     pub path: Option<String>,
     /// True when it has changes that are not on disk.
     pub dirty: bool,
+    /// True when `file.close` refuses to close it without `discard`:
+    /// unsaved changes worth keeping (it has a file, or features).
+    pub close_asks: bool,
     pub length_unit: &'static str,
     pub angle_unit: &'static str,
 }
@@ -1186,13 +1189,27 @@ impl Session {
 
     /// The active document as a status bar shows it.
     pub fn document_status(&self) -> Option<DocumentStatus> {
-        let open = self.documents.get(self.active)?;
+        self.status_of(self.active)
+    }
+
+    /// Every open document as a status bar shows it, in the order of
+    /// `file.list` (`index` is the `document` number `file.activate`
+    /// takes): what a row of tabs shows. Reads only; runs no command.
+    pub fn document_statuses(&self) -> Vec<DocumentStatus> {
+        (0..self.documents.len())
+            .filter_map(|index| self.status_of(index))
+            .collect()
+    }
+
+    fn status_of(&self, index: usize) -> Option<DocumentStatus> {
+        let open = self.documents.get(index)?;
         let doc = open.history.current();
         Some(DocumentStatus {
-            index: self.active,
+            index,
             open: self.documents.len(),
             path: open.path.clone(),
             dirty: open.dirty(),
+            close_asks: open.close_asks(),
             length_unit: doc.units.length.symbol(),
             angle_unit: match doc.units.angle {
                 AngleUnit::Degree => "deg",
