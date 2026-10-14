@@ -2494,7 +2494,10 @@ fn a_version_9_file_opens_unchanged_and_is_saved_as_the_current_version() {
     assert!(!saved.contains("sweep"), "{saved}");
     assert_eq!(from_manifest_json(saved.as_bytes()).unwrap(), doc);
     // The same file from a version this build does not know is refused.
-    let newer = v9.replace("\"format_version\": 9", "\"format_version\": 11");
+    let newer = v9.replace(
+        "\"format_version\": 9",
+        &format!("\"format_version\": {}", FORMAT_VERSION + 1),
+    );
     assert!(from_manifest_json(newer.as_bytes()).is_err());
 }
 
