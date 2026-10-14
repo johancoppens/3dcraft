@@ -1922,7 +1922,7 @@ pub fn sweep(
         mirrored,
     };
     let moved = laid_in(&map, &home, profile_plane, profile.outer.bbox());
-    if !(moved <= tol) {
+    if moved.is_nan() || moved > tol {
         return Err(leans(Some(moved)));
     }
     let follows = legs.iter().any(|l| matches!(l.track, Track::Spline(_)));
