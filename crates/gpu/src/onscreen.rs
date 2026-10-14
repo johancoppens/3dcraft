@@ -4,7 +4,7 @@
 //! edges of the bodies, sketches, the world axes, sketch points) are drawn
 //! on the GPU with the depth test the CPU viewport does on its overlay.
 //!
-//! Three passes per frame:
+//! Three passes per frame of opaque bodies:
 //!
 //! 1. **Scene.** The mesh, with `scene.wgsl`, into a multisampled colour
 //!    target and depth buffer ([`Onscreen::samples`] samples; one when the
@@ -23,15 +23,29 @@
 //!    per pixel, for picking and for the tests that compare the picture
 //!    with the CPU renderer's.
 //!
+//! **See-through bodies** (`RenderParams::opacity` below 1; `peel.rs`) take
+//! other passes before the lines: the front into a multisampled target of
+//! its own, with its depth buffer and, per sample, a key of the triangle
+//! that is in front there; the scene again, each fragment kept only on the
+//! samples where its triangle is not the front (`peel_samples.wgsl`),
+//! which leaves the nearest surface behind; and a pass that blends the two
+//! per sample with the CPU renderer's blend and writes the mean of the
+//! samples into the shown texture. The lines are then drawn straight onto
+//! the shown texture, at one sample (they are inked by distance, not by
+//! coverage), tested against the front's depth as ever. With one sample
+//! per pixel (OpenGL) there are no keys: the second pass compares its
+//! depth with the front's (`peel.wgsl`).
+//!
 //! Everything a test needs is still there: [`Onscreen::read_rgb`] reads
 //! the shown picture back, [`Onscreen::read_frame`] the picture with the
 //! captured ids and distances as a [`Frame`]. The window never calls them.
 
 use crate::mesh::{GpuMesh, VERTEX_BYTES};
+use crate::peel;
 use crate::readback;
 use crate::renderer::{
     COLOR_FORMAT, DATA_FORMAT, DEPTH_FORMAT, MESH_ATTRIBUTES, SCENE_FLOATS, check_params,
-    float_bytes, guarded, scene_uniforms, target, uniform_entry,
+    float_bytes, guarded, scene_pipeline, scene_uniforms, target, uniform_entry,
 };
 use crate::{GpuError, Mesh};
 use craft3d_math::{Bbox3, Vec3};
@@ -189,6 +203,101 @@ struct Targets {
     shown_view: wgpu::TextureView,
     lines_bind: wgpu::BindGroup,
     capture: Option<Capture>,
+    /// What a see-through picture needs besides; made for the first one.
+    peel: Option<PeelTargets>,
+}
+
+/// The two layers of a see-through picture, with the samples of the
+/// renderer.
+struct PeelTargets {
+    front: wgpu::TextureView,
+    /// Which triangle is in front at each sample (`peel_samples.wgsl`),
+    /// with several samples per pixel.
+    key: Option<wgpu::TextureView>,
+    behind: wgpu::TextureView,
+    /// The depth buffer of the pass behind the front.
+    depth: wgpu::TextureView,
+    /// The front's keys, or with one sample per pixel its depth buffer,
+    /// for the pass behind it.
+    peel_bind: wgpu::BindGroup,
+    blend_bind: wgpu::BindGroup,
+}
+
+/// The pipelines of a see-through picture (`peel.rs`).
+struct SeeThrough {
+    front_pipeline: wgpu::RenderPipeline,
+    behind_pipeline: wgpu::RenderPipeline,
+    blend_pipeline: wgpu::RenderPipeline,
+    peel_layout: wgpu::BindGroupLayout,
+    blend_layout: wgpu::BindGroupLayout,
+    blend_uniforms: wgpu::Buffer,
+    table: peel::Table,
+}
+
+impl SeeThrough {
+    fn build(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        scene_layout: &wgpu::BindGroupLayout,
+        samples: u32,
+    ) -> SeeThrough {
+        let multisampled = samples > 1;
+        let module = peel::scene_module(device, multisampled);
+        let peel_layout = peel::peel_layout(device, multisampled);
+        let blend_layout = peel::blend_layout(device, multisampled, false);
+        // With several samples the front also writes its keys, which the
+        // pass behind it reads in place of the depth buffer.
+        let (front_entry, behind_entry) = if multisampled {
+            ("fs_front_samples", "fs_behind_samples")
+        } else {
+            ("fs_front_color", "fs_behind")
+        };
+        let front_targets: &[Option<wgpu::ColorTargetState>] = if multisampled {
+            &[target(COLOR_FORMAT), target(COLOR_FORMAT)]
+        } else {
+            &[target(COLOR_FORMAT)]
+        };
+        let front_pipeline = scene_pipeline(
+            device,
+            "craft3d front",
+            &module,
+            front_entry,
+            &[Some(scene_layout)],
+            front_targets,
+            samples,
+        );
+        let behind_pipeline = scene_pipeline(
+            device,
+            "craft3d behind",
+            &module,
+            behind_entry,
+            &[Some(scene_layout), Some(&peel_layout)],
+            &[target(COLOR_FORMAT)],
+            samples,
+        );
+        let blend_pipeline = peel::blend_pipeline(
+            device,
+            &peel::blend_module(device, multisampled),
+            &blend_layout,
+            false,
+        );
+        let blend_uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("craft3d blend uniforms"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&blend_uniforms, 0, &peel::blend_uniforms(samples));
+        SeeThrough {
+            front_pipeline,
+            behind_pipeline,
+            blend_pipeline,
+            peel_layout,
+            blend_layout,
+            blend_uniforms,
+            table: peel::Table::new(device),
+        }
+    }
 }
 
 /// The targets of the capture pass.
@@ -211,6 +320,11 @@ pub struct Onscreen {
     depth_only_pipeline: wgpu::RenderPipeline,
     data_pipeline: wgpu::RenderPipeline,
     lines_pipeline: wgpu::RenderPipeline,
+    /// The lines into a target with one sample (the shown texture itself),
+    /// when [`Onscreen::lines_pipeline`] is for several.
+    lines_flat_pipeline: Option<wgpu::RenderPipeline>,
+    /// What draws a see-through picture, or why this device does not.
+    see_through: Result<SeeThrough, String>,
     targets: Option<Targets>,
     staging: Mutex<Option<readback::Staging>>,
     drawn: bool,
@@ -274,10 +388,36 @@ impl Onscreen {
         if !matches!(samples, 1 | 2 | 4 | 8) {
             return Err(GpuError::Unsupported("that number of samples per pixel"));
         }
-        guarded(device, || Self::build(device, queue, samples))
+        let (mut onscreen, scene_layout) = guarded(device, || Self::build(device, queue, samples))?;
+        // On its own: a device that cannot do this still draws opaque
+        // pictures, and says why when asked for a see-through one.
+        onscreen.see_through = guarded(device, || {
+            SeeThrough::build(device, queue, &scene_layout, samples)
+        })
+        .map_err(|e| e.to_string());
+        Ok(onscreen)
     }
 
-    fn build(device: &wgpu::Device, queue: &wgpu::Queue, samples: u32) -> Onscreen {
+    /// As on a device that cannot draw see-through bodies: such a picture
+    /// is refused from now on ([`GpuError::SeeThrough`]). For tests of what
+    /// a caller does then.
+    pub fn without_see_through(&mut self) {
+        self.see_through = Err("it was turned off".to_string());
+    }
+
+    /// Whether this renderer draws see-through bodies, or why not.
+    pub fn see_through(&self) -> Result<(), &str> {
+        self.see_through
+            .as_ref()
+            .map(|_| ())
+            .map_err(String::as_str)
+    }
+
+    fn build(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        samples: u32,
+    ) -> (Onscreen, wgpu::BindGroupLayout) {
         let scene_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("craft3d scene"),
             source: wgpu::ShaderSource::Wgsl(include_str!("scene.wgsl").into()),
@@ -454,40 +594,44 @@ impl Onscreen {
                 shader_location: 5,
             },
         ];
-        let lines_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("craft3d lines"),
-            layout: Some(&lines_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &lines_shader,
-                entry_point: Some("vs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: LINE_VERTEX_BYTES as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &line_attributes,
-                })],
-            },
-            primitive,
-            // The depth test is in the fragment shader, against the scene's
-            // depth buffer as a texture.
-            depth_stencil: None,
-            multisample: multisample(samples),
-            fragment: Some(wgpu::FragmentState {
-                module: &lines_shader,
-                entry_point: Some("fs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: COLOR_FORMAT,
-                    // under + (ink - under) * alpha, as the CPU blends.
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        let lines_pipeline_for = |count: u32| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("craft3d lines"),
+                layout: Some(&lines_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &lines_shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: LINE_VERTEX_BYTES as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &line_attributes,
+                    })],
+                },
+                primitive,
+                // The depth test is in the fragment shader, against the
+                // scene's depth buffer as a texture.
+                depth_stencil: None,
+                multisample: multisample(count),
+                fragment: Some(wgpu::FragmentState {
+                    module: &lines_shader,
+                    entry_point: Some("fs_main"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: COLOR_FORMAT,
+                        // under + (ink - under) * alpha, as the CPU blends.
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let lines_pipeline = lines_pipeline_for(samples);
+        let lines_flat_pipeline = (samples > 1).then(|| lines_pipeline_for(1));
 
-        Onscreen {
+        let onscreen = Onscreen {
             device: device.clone(),
             queue: queue.clone(),
             samples,
@@ -499,12 +643,15 @@ impl Onscreen {
             depth_only_pipeline,
             data_pipeline,
             lines_pipeline,
+            lines_flat_pipeline,
+            see_through: Err("it was not set up".to_string()),
             targets: None,
             staging: Mutex::new(None),
             drawn: false,
             captured: false,
             token: Arc::new(()),
-        }
+        };
+        (onscreen, scene_layout)
     }
 
     /// Samples per pixel of the picture.
@@ -615,11 +762,19 @@ impl Onscreen {
             ));
         }
         check_params(params, self.device.limits().max_texture_dimension_2d)?;
+        // Bodies that are not shaded have nothing to see through.
+        let see_through = options.bodies && params.opacity() < 1.0;
+        if see_through && let Err(why) = &self.see_through {
+            return Err(GpuError::SeeThrough(why.clone()));
+        }
         let scene = scene_uniforms(mesh, camera, params)?;
         let line_uniforms = lines_uniforms(lines, camera, params, overlay, self.samples)?;
         let device = self.device.clone();
         guarded(&device, || {
             self.ensure_targets(params, options.capture);
+            if see_through {
+                self.ensure_peel_targets();
+            }
             self.encode(
                 mesh,
                 lines,
@@ -804,6 +959,75 @@ impl Onscreen {
             shown_view,
             lines_bind,
             capture,
+            peel: None,
+        });
+    }
+
+    /// The layers of a see-through picture, at the size of the targets.
+    fn ensure_peel_targets(&mut self) {
+        let (Some(targets), Ok(pipelines)) = (&mut self.targets, &self.see_through) else {
+            return;
+        };
+        if targets.peel.is_some() {
+            return;
+        }
+        let device = &self.device;
+        let texture = |label: &str, format, usage| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width: targets.width,
+                    height: targets.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: self.samples,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage,
+                view_formats: &[],
+            })
+        };
+        let view = |t: &wgpu::Texture| t.create_view(&wgpu::TextureViewDescriptor::default());
+        let layer = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+        let front = view(&texture("craft3d front", COLOR_FORMAT, layer));
+        let key =
+            (self.samples > 1).then(|| view(&texture("craft3d front keys", COLOR_FORMAT, layer)));
+        let behind = view(&texture("craft3d behind", COLOR_FORMAT, layer));
+        let depth = view(&texture(
+            "craft3d depth behind",
+            DEPTH_FORMAT,
+            wgpu::TextureUsages::RENDER_ATTACHMENT,
+        ));
+        let bound = |binding, view| wgpu::BindGroupEntry {
+            binding,
+            resource: wgpu::BindingResource::TextureView(view),
+        };
+        let peel_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("craft3d front"),
+            layout: &pipelines.peel_layout,
+            entries: &[bound(0, key.as_ref().unwrap_or(&targets.depth))],
+        });
+        let blend_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("craft3d blend"),
+            layout: &pipelines.blend_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: pipelines.blend_uniforms.as_entire_binding(),
+                },
+                bound(1, &front),
+                bound(2, &behind),
+                bound(3, &pipelines.table.view),
+            ],
+        });
+        targets.peel = Some(PeelTargets {
+            front,
+            key,
+            behind,
+            depth,
+            peel_bind,
+            blend_bind,
         });
     }
 
@@ -879,50 +1103,137 @@ impl Onscreen {
                 label: Some("craft3d viewport"),
             });
         let color_view = targets.msaa.as_ref().unwrap_or(&targets.shown_view);
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("craft3d bodies"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: color_view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(background),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &targets.depth,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(if options.bodies {
-                &self.color_pipeline
-            } else {
-                &self.depth_only_pipeline
-            });
-            pass.set_bind_group(0, &self.scene_bind, &[]);
+        let opacity = params.opacity();
+        // The passes of a see-through picture, when it is one.
+        let peeled = if options.bodies && opacity < 1.0 {
+            let pipelines = self
+                .see_through
+                .as_ref()
+                .map_err(|why| GpuError::SeeThrough(why.clone()))?;
+            let peel = targets.peel.as_ref().ok_or(GpuError::NothingDrawn)?;
+            pipelines.table.set(&self.queue, opacity);
+            Some((pipelines, peel))
+        } else {
+            None
+        };
+        let draw_mesh = |pass: &mut wgpu::RenderPass<'_>| {
             // In mesh order: the depth test's tie rule depends on it.
             for chunk in &mesh.chunks {
                 pass.set_vertex_buffer(0, chunk.buffer.slice(..));
                 pass.draw(0..chunk.vertices, 0..1);
             }
+        };
+        let color_attachment = |view, load| {
+            Some(wgpu::RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })
+        };
+        let depth_attachment = |view, store| {
+            Some(wgpu::RenderPassDepthStencilAttachment {
+                view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store,
+                }),
+                stencil_ops: None,
+            })
+        };
+        {
+            // The bodies. Seen through, this is the front layer: its alpha
+            // says where it is seen through (0 where nothing is drawn).
+            let (view, clear) = match peeled {
+                Some((_, peel)) => (&peel.front, wgpu::Color { r, g, b, a: 0.0 }),
+                None => (color_view, background),
+            };
+            // Where there is no front there is no fragment to compare a key
+            // with: any clear value will do.
+            let key = peeled.and_then(|(_, peel)| peel.key.as_ref());
+            let attachments = [
+                color_attachment(view, wgpu::LoadOp::Clear(clear)),
+                key.and_then(|key| color_attachment(key, wgpu::LoadOp::Clear(wgpu::Color::BLACK))),
+            ];
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("craft3d bodies"),
+                color_attachments: attachments
+                    .get(..1 + usize::from(key.is_some()))
+                    .unwrap_or(&[]),
+                depth_stencil_attachment: depth_attachment(&targets.depth, wgpu::StoreOp::Store),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(match peeled {
+                Some((pipelines, _)) => &pipelines.front_pipeline,
+                None if options.bodies => &self.color_pipeline,
+                None => &self.depth_only_pipeline,
+            });
+            pass.set_bind_group(0, &self.scene_bind, &[]);
+            draw_mesh(&mut pass);
+        }
+        if let Some((pipelines, peel)) = peeled {
+            {
+                // The surface behind the front one.
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("craft3d behind"),
+                    color_attachments: &[color_attachment(
+                        &peel.behind,
+                        wgpu::LoadOp::Clear(background),
+                    )],
+                    depth_stencil_attachment: depth_attachment(&peel.depth, wgpu::StoreOp::Discard),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                pass.set_pipeline(&pipelines.behind_pipeline);
+                pass.set_bind_group(0, &self.scene_bind, &[]);
+                pass.set_bind_group(1, &peel.peel_bind, &[]);
+                draw_mesh(&mut pass);
+            }
+            // The front over the one behind, per sample, into the shown
+            // texture.
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("craft3d blend"),
+                color_attachments: &[color_attachment(
+                    &targets.shown_view,
+                    wgpu::LoadOp::Clear(background),
+                )],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&pipelines.blend_pipeline);
+            pass.set_bind_group(0, &peel.blend_bind, &[]);
+            pass.draw(0..3, 0..1);
         }
         {
             // The lines over the bodies, and the resolve of the samples
-            // into the shown texture.
-            let resolve = targets.msaa.as_ref().map(|_| &targets.shown_view);
+            // into the shown texture; over a see-through picture, which is
+            // in the shown texture already, straight onto that.
+            let (view, resolve, pipeline) = match peeled {
+                Some(_) => (
+                    &targets.shown_view,
+                    None,
+                    self.lines_flat_pipeline
+                        .as_ref()
+                        .unwrap_or(&self.lines_pipeline),
+                ),
+                None => (
+                    color_view,
+                    targets.msaa.as_ref().map(|_| &targets.shown_view),
+                    &self.lines_pipeline,
+                ),
+            };
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("craft3d lines"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: color_view,
+                    view,
                     depth_slice: None,
                     resolve_target: resolve,
                     ops: wgpu::Operations {
@@ -942,7 +1253,7 @@ impl Onscreen {
             if let Some(buffer) = &lines.buffer
                 && lines.vertices > 0
             {
-                pass.set_pipeline(&self.lines_pipeline);
+                pass.set_pipeline(pipeline);
                 pass.set_bind_group(0, &targets.lines_bind, &[]);
                 pass.set_vertex_buffer(0, buffer.slice(..));
                 pass.draw(0..lines.vertices, 0..1);

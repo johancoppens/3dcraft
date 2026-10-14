@@ -20,6 +20,7 @@
 mod boolean;
 mod cache;
 mod cause;
+mod chamfer;
 mod datum;
 mod derive;
 mod entity;
@@ -544,7 +545,8 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
         FeatureKind::Transform(_)
         | FeatureKind::Mirror(_)
         | FeatureKind::Pattern(_)
-        | FeatureKind::Boolean(_) => {
+        | FeatureKind::Boolean(_)
+        | FeatureKind::Chamfer(_) => {
             return Err(format!(
                 "a {} needs the body it is made from",
                 feature.kind.type_name()
@@ -740,6 +742,19 @@ fn build_feature(
                 // Neither operand moves: a face of the result lies where
                 // the face it came from lies.
                 instances = Some(Arc::new(vec![Transform::IDENTITY; 2]));
+                (Status::Ok, Some(Arc::new(body)))
+            }
+            Err(reason) => (Status::Failed(reason), None),
+        }
+    } else if let FeatureKind::Chamfer(chamfer) = &feature.kind {
+        match chamfer::build(doc, variables, feature.id, chamfer, earlier)
+            .and_then(|(body, names)| checked(doc, body).map(|body| (body, names)))
+        {
+            Ok((body, made_names)) => {
+                names = made_names.map(Arc::new);
+                // The body does not move: a face lies where the face it
+                // came from lies.
+                instances = Some(Arc::new(vec![Transform::IDENTITY]));
                 (Status::Ok, Some(Arc::new(body)))
             }
             Err(reason) => (Status::Failed(reason), None),

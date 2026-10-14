@@ -30,6 +30,8 @@
     clippy::indexing_slicing
 )]
 
+#[path = "step_freecad/chamfers.rs"]
+mod chamfers;
 #[path = "step_freecad/features.rs"]
 mod features;
 #[path = "../../io/tests/common/step_harness.rs"]

@@ -252,6 +252,26 @@ pub enum FeatureKind {
     DatumAxis { by: AxisBy },
     /// A point to place other features by; it makes no body.
     DatumPoint { at: PointRef },
+    /// Edges of the body of an earlier feature replaced by faces. Each
+    /// edge is the two faces it lies between, the first distance being
+    /// measured along the first; the body is that of the feature the first
+    /// name starts with. With `chain` each edge stands for the edges that
+    /// continue it smoothly as well.
+    Chamfer {
+        edges: Vec<[Name; 2]>,
+        size: ChamferSize,
+        #[serde(default)]
+        chain: bool,
+    },
+}
+
+/// How far a chamfer cuts the two faces of an edge back: expressions.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum ChamferSize {
+    Equal { distance: String },
+    TwoDistances { distance: String, second: String },
+    DistanceAngle { distance: String, angle: String },
 }
 
 /// How a datum axis is placed: through two points, along the straight
@@ -462,6 +482,13 @@ pub enum NameRole {
     Between,
     /// A vertex by the faces that meet in it (`faces`).
     Corner,
+    /// The face a chamfer puts in the place of an edge; `sources` is the
+    /// place of the edge in the chamfer's list and, when that reference
+    /// gave several edges, which of them.
+    Chamfer,
+    /// The flat face where three chamfers meet; `sources` are the places
+    /// of the three edges in the chamfer's list.
+    ChamferCorner,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

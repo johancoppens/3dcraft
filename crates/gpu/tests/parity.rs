@@ -11,7 +11,10 @@
 
 mod common;
 
-use common::{compare, evidence, offscreens, orthographic, params, perspective, write_evidence};
+use common::{
+    compare, compare_see_through, evidence, offscreens, orthographic, params, perspective,
+    write_evidence,
+};
 use craft3d_gpu::{Camera, Frame, Mesh, NO_FACE, Projection, RenderParams};
 use craft3d_math::Vec3;
 use craft3d_tess::{TessParams, tessellate_body, tessellate_patches};
@@ -287,6 +290,281 @@ fn a_highlight_above_the_ids_a_float_holds_is_refused() {
         assert!(error.to_string().contains("highlighted faces"), "{error}");
         // And the renderer goes on.
         offscreen.render(&mesh, &camera, &params).unwrap();
+    }
+}
+
+/// [`check`] for see-through scenes: the CPU frame once per scene, the
+/// comparison of `common`'s *See-through pictures*. Returns the number of
+/// comparisons.
+fn check_see_through(scenes: &[Scene]) -> usize {
+    let mut compared = 0;
+    let mut log = String::new();
+    let mut renderers = offscreens();
+    for scene in scenes {
+        assert!(scene.params.opacity() < 1.0, "{}", scene.name);
+        let cpu = craft3d_render::render(&scene.mesh, &scene.camera, &scene.params).unwrap();
+        // The scene is one where the opacity shows: the picture is not the
+        // opaque one. (Highlighted faces are not seen through, and they
+        // may be all that faces the eye.)
+        let opaque = RenderParams {
+            opacity: 1.0,
+            ..scene.params
+        };
+        let front = craft3d_render::render(&scene.mesh, &scene.camera, &opaque).unwrap();
+        let changed = cpu
+            .rgb
+            .chunks(3)
+            .zip(front.rgb.chunks(3))
+            .filter(|(a, b)| a != b)
+            .count();
+        assert!(
+            changed > cpu.ids.len() / 100 || !scene.params.highlight.is_empty(),
+            "{}: only {changed} pixels are seen through",
+            scene.name
+        );
+        for offscreen in &mut renderers {
+            let adapter = offscreen.adapter().clone();
+            let gpu = offscreen
+                .render(&scene.mesh, &scene.camera, &scene.params)
+                .unwrap_or_else(|e| panic!("{} on {adapter}: {e}", scene.name));
+            let (parity, band) =
+                compare_see_through(&scene.mesh, &scene.camera, &scene.params, &cpu, &gpu);
+            let label = format!("{} on {adapter}", scene.name);
+            if scene.evidence {
+                let file = format!(
+                    "{}-{}-{}.png",
+                    scene.name,
+                    adapter.backend.to_lowercase(),
+                    adapter.device_type.to_lowercase()
+                );
+                let path = write_evidence(&file, &cpu, &gpu, &band);
+                println!("evidence: {}", path.display());
+            }
+            log.push_str(&format!("{label}: {parity:?}\n"));
+            println!("{label}: {parity:?}");
+            parity.check(&label);
+            compared += 1;
+        }
+    }
+    if let Some(first) = scenes.first() {
+        let group = first.name.split('-').next().unwrap_or("scenes");
+        std::fs::write(evidence(&format!("parity-{group}.txt")), log).unwrap();
+    }
+    compared
+}
+
+/// The opacities of the see-through scenes: nearly clear, half, nearly
+/// opaque.
+const OPACITIES: [f64; 3] = [0.1, 0.5, 0.9];
+
+/// Every other face, or one run of three, highlighted (as
+/// [`highlighted_scenes`]).
+fn highlight_some(scene: &mut Scene, every_other: bool) {
+    let faces = scene
+        .mesh
+        .face_ids
+        .iter()
+        .copied()
+        .max()
+        .map_or(0, |m| m + 1);
+    let chosen: Vec<u32> = if every_other {
+        (0..faces).step_by(2).collect()
+    } else {
+        (faces / 2..faces).take(3).collect()
+    };
+    scene.params.highlight = craft3d_gpu::Highlight::new([255, 150, 40], chosen).0;
+}
+
+/// The reference solids seen through: the first round at every opacity,
+/// the other rounds (a thousandth, a million times, ten million units
+/// away) at one each, every third scene with faces highlighted.
+#[test]
+fn see_through_reference_solids_match_the_cpu_renderer() {
+    let mut scenes = Vec::new();
+    for (index, scene) in solid_scenes().into_iter().enumerate() {
+        let opacities: &[f64] = if index < 16 {
+            &OPACITIES
+        } else {
+            &[OPACITIES[index % 3]]
+        };
+        for &opacity in opacities {
+            let mut seen = Scene {
+                name: scene
+                    .name
+                    .replacen("solids-", &format!("seethrough{opacity}-"), 1),
+                mesh: scene.mesh.clone(),
+                camera: scene.camera,
+                params: RenderParams {
+                    opacity,
+                    ..scene.params
+                },
+                evidence: opacity == 0.5 && [0, 5, 6, 12, 14].contains(&index),
+            };
+            if scenes.len() % 3 == 2 {
+                highlight_some(&mut seen, scenes.len() % 2 == 0);
+                seen.name.push_str("-highlight");
+            }
+            scenes.push(seen);
+        }
+    }
+    assert_eq!(scenes.len(), 96);
+    assert_eq!(
+        check_see_through(&scenes),
+        scenes.len() * offscreens().len()
+    );
+}
+
+fn merged(parts: &[Mesh]) -> Mesh {
+    let mut out = Mesh::default();
+    let mut first_face = 0;
+    for part in parts {
+        let base = out.positions.len() as u32;
+        out.positions.extend(&part.positions);
+        out.normals.extend(&part.normals);
+        out.triangles
+            .extend(part.triangles.iter().map(|t| t.map(|k| k + base)));
+        out.face_ids
+            .extend(part.face_ids.iter().map(|f| f + first_face));
+        first_face += part.face_ids.iter().copied().max().map_or(0, |m| m + 1);
+    }
+    out
+}
+
+/// A block with a cavity (a second block inside it) and a sphere and a
+/// cone in the cavity: four layers along most rays.
+fn nested_mesh() -> Mesh {
+    let frame = |x, y, z| craft3d_math::Frame::new(Vec3::new(x, y, z), Vec3::Z, Vec3::X).unwrap();
+    let tess = TessParams {
+        chordal_tolerance: 0.01,
+        ..TessParams::default()
+    };
+    let mesh =
+        |solid: &craft3d_testkit::solids::Reference| tessellate_body(&solid.body, &tess).unwrap();
+    merged(&[
+        mesh(&solids::block(&frame(-4.0, -3.0, -2.5), 8.0, 6.0, 5.0).unwrap()),
+        mesh(&solids::block(&frame(-3.5, -2.5, -2.0), 7.0, 5.0, 4.0).unwrap()),
+        mesh(&solids::sphere(&frame(-1.2, 0.3, 0.0), 1.4).unwrap()),
+        mesh(&solids::cone(&frame(1.6, -0.8, -1.5), 1.0, 2.6).unwrap()),
+    ])
+}
+
+/// The teapot, a plate with a hole drilled through it and a body inside a
+/// hollow body, seen through at every opacity, plain and with a highlight.
+#[test]
+fn see_through_models_match_the_cpu_renderer() {
+    let frame = craft3d_math::Frame::new(Vec3::ZERO, Vec3::new(0.2, 0.1, 1.0), Vec3::X).unwrap();
+    let tess = TessParams {
+        chordal_tolerance: 0.005,
+        ..TessParams::default()
+    };
+    let plate = tessellate_body(
+        &trimmed::plate_with_round_hole(&frame, 6.0, 4.0, 1.0, 1.2)
+            .unwrap()
+            .body,
+        &tess,
+    )
+    .unwrap();
+    let models = [
+        (
+            "teapot",
+            teapot_mesh(),
+            TEAPOT_VIEW,
+            Vec3::new(-1.0, 0.4, 0.2),
+        ),
+        (
+            "plate",
+            plate,
+            Vec3::new(0.9, -1.4, 1.0),
+            Vec3::new(-0.3, 0.2, -1.0),
+        ),
+        (
+            "nested",
+            nested_mesh(),
+            Vec3::new(1.0, -1.6, 0.8),
+            Vec3::new(-1.0, 0.2, 0.1),
+        ),
+    ];
+    let mut scenes = Vec::new();
+    for (name, mesh, first_view, second_view) in &models {
+        for (k, &opacity) in OPACITIES.iter().enumerate() {
+            for highlighted in [false, true] {
+                // The views, sizes and projections alternate.
+                let variant = k + usize::from(highlighted);
+                let params = RenderParams {
+                    opacity,
+                    ..[
+                        params(400, 300, 1),
+                        params(320, 240, 2),
+                        params(233, 177, 3),
+                    ][variant % 3]
+                };
+                let toward_eye = if variant % 2 == 0 {
+                    *first_view
+                } else {
+                    *second_view
+                };
+                let camera = if variant % 2 == 0 {
+                    perspective(mesh, toward_eye, 35.0, &params)
+                } else {
+                    orthographic(mesh, toward_eye, &params)
+                };
+                let mut scene = Scene {
+                    name: format!(
+                        "seethroughmodels-{name}-{opacity}{}",
+                        if highlighted { "-highlight" } else { "" }
+                    ),
+                    mesh: mesh.clone(),
+                    camera,
+                    params,
+                    evidence: opacity == 0.5,
+                };
+                if highlighted {
+                    highlight_some(&mut scene, true);
+                }
+                scenes.push(scene);
+            }
+        }
+    }
+    assert_eq!(scenes.len(), 18);
+    assert_eq!(
+        check_see_through(&scenes),
+        scenes.len() * offscreens().len()
+    );
+}
+
+/// At opacity 1, and at an opacity that is not a number or is above 1, the
+/// picture is the opaque one, bit for bit, also right after a see-through
+/// picture on the same renderer.
+#[test]
+fn at_opacity_one_the_frame_is_the_opaque_one_bit_for_bit() {
+    let mesh = nested_mesh();
+    for ssaa in [1, 2] {
+        let plain = params(200, 150, ssaa);
+        let camera = perspective(&mesh, Vec3::new(1.0, -1.6, 0.8), 35.0, &plain);
+        for mut offscreen in offscreens() {
+            let opaque = offscreen.render(&mesh, &camera, &plain).unwrap();
+            let clear = RenderParams {
+                opacity: 0.3,
+                ..plain
+            };
+            assert_ne!(offscreen.render(&mesh, &camera, &clear).unwrap(), opaque);
+            for opacity in [1.0, 7.0, f64::NAN, f64::INFINITY] {
+                let same = RenderParams { opacity, ..plain };
+                assert_eq!(
+                    offscreen.render(&mesh, &camera, &same).unwrap(),
+                    opaque,
+                    "opacity {opacity} on {}",
+                    offscreen.adapter()
+                );
+            }
+            // Below 0 is 0: the layer behind alone.
+            let [below, zero] = [-3.0, 0.0].map(|opacity| {
+                let params = RenderParams { opacity, ..plain };
+                offscreen.render(&mesh, &camera, &params).unwrap()
+            });
+            assert_eq!(below, zero);
+            assert_ne!(zero, opaque);
+        }
     }
 }
 

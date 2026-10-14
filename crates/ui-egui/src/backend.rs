@@ -140,10 +140,10 @@ impl BodyRenderer {
     }
 
     /// How opaque the bodies of the frames made from now on are, 0 to 1
-    /// (`RenderParams::opacity`). Below 1 the frame is the CPU renderer's
-    /// whatever this renderer is: the wgpu renderer does not draw the
-    /// surface behind the front one yet and refuses, rather than show a
-    /// picture that is not the oracle's.
+    /// (`RenderParams::opacity`). Below 1 the bodies are see-through: both
+    /// renderers draw that; a device that cannot
+    /// (`craft3d_gpu::GpuError::SeeThrough`) hands such a frame to the CPU
+    /// renderer rather than show a picture that is not the oracle's.
     pub fn set_opacity(&mut self, opacity: f64) {
         self.opacity = opacity;
     }
@@ -153,6 +153,16 @@ impl BodyRenderer {
             self.opacity.clamp(0.0, 1.0)
         } else {
             1.0
+        }
+    }
+
+    /// As on a device that cannot draw see-through bodies: from now on a
+    /// see-through frame is the CPU renderer's. For tests of that
+    /// fallback; a CPU renderer is not changed by it.
+    pub fn without_gpu_see_through(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(gpu) = &mut self.gpu {
+            gpu.without_see_through();
         }
     }
 
@@ -331,6 +341,10 @@ mod gpu {
             self.offscreen.adapter()
         }
 
+        pub(super) fn without_see_through(&mut self) {
+            self.offscreen.renderer().without_see_through();
+        }
+
         pub(super) fn render(
             &mut self,
             scene: Option<&Scene>,
@@ -371,7 +385,8 @@ mod gpu {
             GpuError::TargetTooLarge { .. }
             | GpuError::MeshTooLarge { .. }
             | GpuError::TooManyLines { .. }
-            | GpuError::OutOfRange(_) => Failure::ThisFrame,
+            | GpuError::OutOfRange(_)
+            | GpuError::SeeThrough(_) => Failure::ThisFrame,
             GpuError::NoAdapter(_)
             | GpuError::Device(_)
             | GpuError::ForeignMesh
@@ -398,6 +413,7 @@ mod gpu {
                 },
                 GpuError::MeshTooLarge { triangles: 1 << 30 },
                 GpuError::OutOfRange("the camera"),
+                GpuError::SeeThrough("no such pipeline".into()),
             ] {
                 assert!(matches!(classify(this_frame), Failure::ThisFrame));
             }

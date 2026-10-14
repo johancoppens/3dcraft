@@ -168,7 +168,7 @@ fn saving_twice_gives_the_same_bytes() {
 fn the_manifest_of_a_small_document_is_exactly_this() {
     let expected = r#"{
   "format": "3dcraft",
-  "format_version": 6,
+  "format_version": 7,
   "document": {
     "units": {
       "length": "mm",
@@ -340,17 +340,17 @@ fn fix_trailing_commas(json: &str) -> String {
 
 #[test]
 fn a_newer_format_version_says_a_newer_3dcraft_is_needed() {
-    let error = load_error(&edited(&version_field(), "\"format_version\": 7"));
+    let error = load_error(&edited(&version_field(), "\"format_version\": 8"));
     assert!(matches!(
         error,
         FormatError::NewerVersion {
-            file: 7,
+            file: 8,
             supported: FORMAT_VERSION
         }
     ));
     let text = error.to_string();
     assert!(
-        text.contains("version 7")
+        text.contains("version 8")
             && text.contains(&format!("version {FORMAT_VERSION}"))
             && text.contains("newer 3DCraft is needed"),
         "{text}"
@@ -1530,7 +1530,7 @@ fn a_spline_is_written_like_this_and_round_trips() {
     doc.validate().unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 6);
+    assert_eq!(value["format_version"], 7);
     let entities = &value["document"]["features"][1]["kind"]["entities"];
     assert_eq!(
         entities[4],
@@ -1707,8 +1707,9 @@ fn datum_planes_are_written_like_this_and_round_trip() {
 
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    // No new version: nothing an earlier file holds changed meaning.
-    assert_eq!(value["format_version"], 6);
+    // Datums raised no version: nothing an earlier file holds changed
+    // meaning. (7 is the chamfer's.)
+    assert_eq!(value["format_version"], 7);
     let face_json = |n: u64| serde_json::json!({"feature": 1, "role": "face", "sources": [n]});
     let kinds: Vec<&serde_json::Value> = value["document"]["features"]
         .as_array()
@@ -1885,7 +1886,7 @@ fn datum_axes_are_written_like_this_and_round_trip() {
 
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 6);
+    assert_eq!(value["format_version"], 7);
     let face_json = |n: u64| serde_json::json!({"feature": 1, "role": "face", "sources": [n]});
     let kind = |index: usize| &value["document"]["features"][index]["kind"];
     let written = [
@@ -1992,7 +1993,7 @@ fn datum_points_are_written_like_this_and_round_trip() {
     assert_eq!(doc.features[1].name, "Point1");
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 6);
+    assert_eq!(value["format_version"], 7);
     let face_json = |n: u64| serde_json::json!({"feature": 1, "role": "face", "sources": [n]});
     let written = [
         serde_json::json!({"type": "datumPoint",
@@ -2112,5 +2113,122 @@ fn a_name_by_faces_is_written_like_this_and_round_trips() {
         ),
     ] {
         assert!(with(damaged).is_err(), "{why}");
+    }
+}
+
+/// A version-6 file, as written before chamfers. Never edit this.
+#[test]
+fn a_version_6_file_opens_unchanged_and_is_saved_as_the_current_version() {
+    let v6 = r#"{"format": "3dcraft", "format_version": 6, "document": {
+        "units": {"length": "mm", "angle": "deg"},
+        "tolerance": {"linear": 1e-6, "angular": 1e-9},
+        "variables": [{"name": "d", "expr": "8 mm"}],
+        "features": [
+          {"id": 1, "name": "Profile", "suppressed": false, "kind": {"type": "sketch",
+            "plane": {"type": "world", "plane": "xy", "offset": "0"},
+            "entities": [
+              {"id": 1, "construction": false, "geometry": {"type": "point", "x": 0.0, "y": 0.0}},
+              {"id": 2, "construction": false, "geometry": {"type": "point", "x": 4.0, "y": 0.0}},
+              {"id": 3, "construction": false, "geometry": {"type": "point", "x": 4.0, "y": 3.0}},
+              {"id": 4, "construction": false, "geometry": {"type": "point", "x": 0.0, "y": 3.0}},
+              {"id": 5, "construction": false, "geometry": {"type": "spline", "degree": 3, "control": [1, 2, 3, 4]}},
+              {"id": 6, "construction": false, "geometry": {"type": "line", "start": 4, "end": 1}}],
+            "constraints": [],
+            "next_entity_id": 7, "next_constraint_id": 1}},
+          {"id": 2, "name": "Body", "suppressed": false,
+            "kind": {"type": "extrude", "sketch": 1, "distance": "d", "symmetric": false}},
+          {"id": 3, "name": "Top", "suppressed": false,
+            "kind": {"type": "datumPlane", "by": {"type": "offset",
+              "from": {"type": "face", "face": {"feature": 2, "role": "endCap", "sources": [5, 6]}},
+              "distance": "1 mm"}}}],
+        "rollback": null, "next_feature_id": 4}}"#;
+    let doc = match from_manifest_json(v6.as_bytes()) {
+        Ok(doc) => doc,
+        Err(error) => panic!("{error}"),
+    };
+    assert_eq!(doc.features[1].kind.type_name(), "extrude");
+    assert_eq!(doc.features[2].kind.type_name(), "datumPlane");
+    let saved = to_manifest_json(&doc).unwrap();
+    assert!(saved.contains(&version_field()), "{saved}");
+    assert!(!saved.contains("chamfer"), "{saved}");
+    assert_eq!(from_manifest_json(saved.as_bytes()).unwrap(), doc);
+}
+
+#[test]
+fn a_chamfer_is_written_like_this_and_round_trips() {
+    use craft3d_doc::{Chamfer, ChamferSize, NameRole, PersistentName};
+    let face = |n: u64| PersistentName::new(FeatureId(1), NameRole::Face, vec![n]);
+    let face_json = |n: u64| serde_json::json!({"feature": 1, "role": "face", "sources": [n]});
+    let sizes = [
+        (
+            ChamferSize::Equal {
+                distance: Expr::new("width / 20"),
+            },
+            serde_json::json!({"type": "equal", "distance": "width / 20"}),
+        ),
+        (
+            ChamferSize::TwoDistances {
+                distance: Expr::new("2 mm"),
+                second: Expr::new("1 mm"),
+            },
+            serde_json::json!({"type": "twoDistances", "distance": "2 mm", "second": "1 mm"}),
+        ),
+        (
+            ChamferSize::DistanceAngle {
+                distance: Expr::new("2 mm"),
+                angle: Expr::new("30 deg"),
+            },
+            serde_json::json!({"type": "distanceAngle", "distance": "2 mm", "angle": "30 deg"}),
+        ),
+    ];
+    for (size, size_json) in sizes {
+        let mut doc = small();
+        doc.add_feature(
+            Some("Bevel"),
+            FeatureKind::Chamfer(Chamfer {
+                edges: vec![[face(1), face(2)], [face(5), face(1)]],
+                size,
+                chain: false,
+            }),
+        )
+        .unwrap();
+        // A sketch on the chamfer face and one on the corner: the roles a
+        // chamfer adds.
+        for (role, sources) in [
+            (NameRole::Chamfer, vec![0]),
+            (NameRole::Chamfer, vec![1, 2]),
+            (NameRole::ChamferCorner, vec![0, 1, 2]),
+        ] {
+            let name = PersistentName::new(FeatureId(2), role, sources);
+            assert_eq!(name.to_string().parse::<PersistentName>().unwrap(), name);
+            assert_eq!(name.check(), Ok(()));
+        }
+        assert_eq!(
+            PersistentName::new(FeatureId(2), NameRole::Chamfer, vec![1, 2]).to_string(),
+            "F2:chamfer(1,2)"
+        );
+        assert!("F2:chamfer()".parse::<PersistentName>().is_err());
+        assert!("F2:chamfer(e1)".parse::<PersistentName>().is_err());
+        assert_eq!(doc.validate(), Ok(()));
+        let json = to_manifest_json(&doc).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["format_version"], 7);
+        assert_eq!(
+            value["document"]["features"][1]["kind"],
+            serde_json::json!({
+                "type": "chamfer",
+                "edges": [[face_json(1), face_json(2)], [face_json(5), face_json(1)]],
+                "size": size_json,
+                "chain": false
+            })
+        );
+        assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+        assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
+        // `chain` may be left out; an unknown field is refused.
+        let without = json.replacen(",\n          \"chain\": false", "", 1);
+        assert_ne!(without, json);
+        assert_eq!(from_manifest_json(without.as_bytes()).unwrap(), doc);
+        let unknown = json.replacen("\"chain\": false", "\"chain\": false, \"radius\": 1", 1);
+        assert!(from_manifest_json(unknown.as_bytes()).is_err());
     }
 }

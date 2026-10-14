@@ -7,12 +7,12 @@ use crate::backend::{Backend, BodyRenderer, RendererChoice, RendererReport};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::direct::{Direct, DirectFailure};
 use crate::frames::{Mode, Scheduler, Ticket};
-use crate::gizmo;
 use crate::state::VertexRef;
 use crate::state::{
     CameraState, EdgeRef, FaceRef, Picked, PickedEntity, PickedKind, ProjectionKind, UiState,
 };
 use crate::theme::{Tokens, color, color_alpha};
+use crate::view_cube;
 use crate::viewport::{self, Composed, MAX_SIDE, MIN_SIDE, Overlay, Quality};
 use craft3d_engine::{
     DocumentStatus, FeatureState, PickKind, Recoverable, RecoveryOverview, Scene, SceneNear,
@@ -172,6 +172,21 @@ pub struct RenderStats {
     pub renderer: Backend,
     /// Samples per pixel: 1 without multisampling.
     pub msaa: u32,
+}
+
+/// How long the camera takes to turn to the view a click on the view
+/// cube asked for.
+const TURN_SECONDS: f64 = 0.25;
+
+/// A turn of the camera in progress.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Turn {
+    from: CameraState,
+    to: CameraState,
+    /// egui's time when it began.
+    started: f64,
+    /// The camera it set last: another one means something else moved it.
+    last: CameraState,
 }
 
 /// What the image in the viewport is made from: another image is made
@@ -371,10 +386,12 @@ pub struct Shell {
     renders: u64,
     /// The camera when the drag in progress began.
     drag_from: Option<CameraState>,
-    /// The camera when a drag on the orbit gizmo began.
-    gizmo_drag_from: Option<CameraState>,
-    /// Where the orbit gizmo was drawn.
-    gizmo_rect: Option<egui::Rect>,
+    /// The camera when a drag on the view cube began.
+    cube_drag_from: Option<CameraState>,
+    /// Where the view cube was drawn.
+    view_cube_rect: Option<egui::Rect>,
+    /// The turn a click on the view cube started, while it lasts.
+    turn: Option<Turn>,
     /// Where the see-through slider was drawn.
     transparency_rect: Option<egui::Rect>,
     /// The box the camera was last fitted to automatically.
@@ -456,8 +473,9 @@ impl Shell {
             stats: None,
             renders: 0,
             drag_from: None,
-            gizmo_drag_from: None,
-            gizmo_rect: None,
+            cube_drag_from: None,
+            view_cube_rect: None,
+            turn: None,
             transparency_rect: None,
             framed: Bbox3::EMPTY,
             themed: false,
@@ -550,6 +568,18 @@ impl Shell {
         self.direct = Some(direct);
         self.direct_fallback = None;
         Ok(())
+    }
+
+    /// As on a device that cannot draw see-through bodies
+    /// (`craft3d_gpu::GpuError::SeeThrough`): from now on a see-through
+    /// frame is drawn by the CPU renderer, on this thread. For tests of
+    /// that fallback (a render thread's renderer is not reached).
+    pub fn without_gpu_see_through(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(direct) = &mut self.direct {
+            direct.without_see_through();
+        }
+        self.renderer.without_gpu_see_through();
     }
 
     /// There are no threads here: the same as [`Self::new`].
@@ -1343,7 +1373,8 @@ impl Shell {
             }
         }
 
-        let moving = self.pointer(ui, &response, rect, scene) || resized;
+        let turning = self.advance_turn(ui, scene);
+        let moving = self.pointer(ui, &response, rect, scene) || resized || turning;
         // A click that was not a drag points at what is under it.
         if response.clicked()
             && let Some(at) = response.interact_pointer_pos()
@@ -1447,25 +1478,19 @@ impl Shell {
             );
         }
 
-        // The orbit gizmo and, under it, the controls the view buttons
+        // The view cube and, under it, the controls the view buttons
         // had that it does not replace: fit, the corner view, the
         // projection. Bottom-right, camera only, so not commands. They are
         // widgets of their own over the viewport: a click on them is not
         // a click in the viewport, and picks nothing.
         let mut view = None;
         let mut fit = false;
-        let mut toggle = false;
         let bar = egui::Rect::from_min_max(
             egui::pos2(inner.left(), inner.bottom() - 22.0),
             inner.right_bottom(),
         );
         ui.scope_builder(egui::UiBuilder::new().max_rect(bar), |ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let projection = match self.state.camera.projection {
-                    ProjectionKind::Perspective => "Perspective",
-                    ProjectionKind::Orthographic => "Orthographic",
-                };
-                toggle = ui.small_button(projection).clicked();
                 if ui.small_button("iso").clicked() {
                     view = Some("iso");
                 }
@@ -1496,33 +1521,24 @@ impl Shell {
             });
         });
         let side = tokens
-            .gizmo_size
+            .view_cube_size
             .min(inner.width())
             .min(inner.height() - 28.0);
-        if side >= 4.0 * tokens.gizmo_end_radius {
+        if side >= 4.0 * tokens.view_cube_dot {
             let place = egui::Rect::from_min_size(
                 egui::pos2(inner.right() - side, bar.top() - 6.0 - side),
                 egui::vec2(side, side),
             );
-            self.gizmo_rect = Some(place);
-            if let Some(turned) = self.gizmo(ui, place) {
-                view = turned;
-            }
+            self.view_cube_rect = Some(place);
+            self.view_cube(ui, place, scene);
         } else {
-            self.gizmo_rect = None;
-            self.gizmo_drag_from = None;
+            self.view_cube_rect = None;
+            self.cube_drag_from = None;
         }
         if let Some(name) = view {
-            // The names come from the table, so this cannot fail. (The
-            // gizmo has turned the camera itself.)
+            self.turn = None;
+            // The names come from the table, so this cannot fail.
             let _ = self.state.camera.set_view(name);
-            ui.ctx().request_repaint();
-        }
-        if toggle {
-            self.state.camera.projection = match self.state.camera.projection {
-                ProjectionKind::Perspective => ProjectionKind::Orthographic,
-                ProjectionKind::Orthographic => ProjectionKind::Perspective,
-            };
             ui.ctx().request_repaint();
         }
         if fit || view.is_some() {
@@ -1531,109 +1547,213 @@ impl Shell {
         }
     }
 
-    /// The orbit gizmo in `place`: paints it and handles its mouse.
-    /// Returns the view a click on one of its ends asked for (the camera
-    /// is then to be framed again, as after a view button); a drag orbits
-    /// the camera here and returns nothing.
-    fn gizmo(&mut self, ui: &mut egui::Ui, place: egui::Rect) -> Option<Option<&'static str>> {
+    /// The view cube in `place`: paints it and handles its mouse. A click
+    /// on a facet starts a turn of the camera to that side (see
+    /// [`Self::advance_turn`]), a click on the ring around the cube
+    /// switches between perspective and orthographic, and a drag orbits
+    /// the camera.
+    fn view_cube(&mut self, ui: &mut egui::Ui, place: egui::Rect, scene: Option<&Scene>) {
         let tokens = self.tokens;
         let response = ui.interact(
             place,
-            ui.id().with("orbit-gizmo"),
+            ui.id().with("view-cube"),
             egui::Sense::click_and_drag(),
         );
-        // The arm leaves room for the disc at its end.
-        let arm = (place.width() * 0.5 - tokens.gizmo_end_radius - 1.0).max(1.0);
+        // The radius of the cube's picture, in points: the ring and the
+        // ends of the axis sticks are outside it.
+        let arm = (place.width() * 0.5 / 1.3).max(1.0);
         let center = place.center();
-        let mut turned = None;
+        let unit = |at: egui::Pos2| {
+            [
+                f64::from(at.x - center.x) / f64::from(arm),
+                f64::from(at.y - center.y) / f64::from(arm),
+            ]
+        };
         if response.drag_started() {
-            self.gizmo_drag_from = Some(self.state.camera);
+            self.cube_drag_from = Some(self.state.camera);
+            self.turn = None;
         }
         if response.dragged() {
             // As a drag in the viewport: from where it began, by how far
             // the pointer is from there now.
-            if let (Some(from), Some(total)) = (self.gizmo_drag_from, response.total_drag_delta()) {
+            if let (Some(from), Some(total)) = (self.cube_drag_from, response.total_drag_delta()) {
                 let mut camera = from;
                 camera.orbit(f64::from(total.x), f64::from(total.y));
                 self.state.camera = camera;
             }
             ui.ctx().request_repaint();
         } else {
-            self.gizmo_drag_from = None;
+            self.cube_drag_from = None;
         }
         if response.clicked()
             && let Some(at) = response.interact_pointer_pos()
         {
-            let at = [
-                f64::from(at.x - center.x) / f64::from(arm),
-                f64::from(at.y - center.y) / f64::from(arm),
-            ];
-            let reach = f64::from(tokens.gizmo_end_radius + 2.0) / f64::from(arm);
-            if let Some(end) = gizmo::end_at(&self.state.camera, at, reach) {
-                turned = Some(Some(gizmo::click(&mut self.state.camera, &end)));
+            match view_cube::facet_at(&self.state.camera, unit(at)) {
+                Some(facet) => {
+                    let side = view_cube::clicked(&self.state.camera, &facet);
+                    let mut to = view_cube::turned(&self.state.camera, side);
+                    // Framed there, as the view buttons framed.
+                    if let Some(scene) = scene.filter(|scene| !scene.bbox.is_empty()) {
+                        to.fit(&scene.bbox, self.aspect());
+                        to.auto_fit = true;
+                    }
+                    self.turn = Some(Turn {
+                        from: self.state.camera,
+                        to,
+                        started: ui.input(|i| i.time),
+                        last: self.state.camera,
+                    });
+                }
+                // Beside the cube, on the ring: the other projection.
+                None => {
+                    self.turn = None;
+                    self.state.camera.projection = match self.state.camera.projection {
+                        ProjectionKind::Perspective => ProjectionKind::Orthographic,
+                        ProjectionKind::Orthographic => ProjectionKind::Perspective,
+                    };
+                }
             }
+            ui.ctx().request_repaint();
         }
+        let hover = response.hover_pos().map(unit);
+        let hovered = hover.and_then(|at| view_cube::facet_at(&self.state.camera, at));
+        let on_ring = hover.is_some() && hovered.is_none();
         let painter = ui.painter_at(place.expand(1.0));
-        painter.circle_filled(
+        let at = |p: [f64; 2]| center + egui::vec2(p[0] as f32, p[1] as f32) * arm;
+        let mix = |a: [u8; 3], b: [u8; 3], t: f64| -> [u8; 3] {
+            let t = t.clamp(0.0, 1.0);
+            let mut out = [0; 3];
+            for ((slot, x), y) in out.iter_mut().zip(a).zip(b) {
+                // Between two bytes.
+                *slot = (f64::from(x) + (f64::from(y) - f64::from(x)) * t).round() as u8;
+            }
+            out
+        };
+        // The ring: the projection's switch, with its name along the
+        // bottom. Brighter under the pointer.
+        let ring = place.width() * 0.5;
+        painter.circle(
             center,
-            place.width() * 0.5,
-            color_alpha(tokens.panel_fill, tokens.gizmo_opacity),
+            ring - 1.0,
+            color_alpha(tokens.panel_fill, tokens.view_cube_opacity),
+            egui::Stroke::new(
+                if on_ring { 2.0 } else { 1.0 },
+                color(if on_ring {
+                    tokens.text
+                } else {
+                    tokens.text_dim
+                }),
+            ),
         );
-        let hovered = response
-            .hover_pos()
-            .map(|at| {
-                [
-                    f64::from(at.x - center.x) / f64::from(arm),
-                    f64::from(at.y - center.y) / f64::from(arm),
-                ]
-            })
-            .and_then(|at| {
-                let reach = f64::from(tokens.gizmo_end_radius + 2.0) / f64::from(arm);
-                gizmo::end_at(&self.state.camera, at, reach)
-            });
-        for end in gizmo::ends(&self.state.camera) {
-            let at = center + egui::vec2(end.offset[0] as f32, end.offset[1] as f32) * arm;
-            let ink = tokens
-                .axes
-                .get(end.axis)
-                .copied()
-                .unwrap_or(tokens.text_dim);
-            let over = hovered.is_some_and(|h| (h.axis, h.positive) == (end.axis, end.positive));
-            if end.positive {
+        let projection = match self.state.camera.projection {
+            ProjectionKind::Perspective => "perspective",
+            ProjectionKind::Orthographic => "orthographic",
+        };
+        painter.text(
+            egui::pos2(center.x, place.bottom() - 3.0),
+            egui::Align2::CENTER_BOTTOM,
+            projection,
+            egui::FontId::proportional(9.5),
+            color(if on_ring {
+                tokens.text
+            } else {
+                tokens.text_dim
+            }),
+        );
+        let stick = |axis: usize, front: bool| {
+            if let Some((from, to, toward)) = view_cube::axis_stick(&self.state.camera, axis)
+                && toward == front
+            {
+                let ink = tokens.axes.get(axis).copied().unwrap_or(tokens.text_dim);
                 painter.line_segment(
-                    [center, at],
+                    [at(from), at(to)],
                     egui::Stroke::new(tokens.axis_width * 1.6, color(ink)),
                 );
-                painter.circle_filled(at, tokens.gizmo_end_radius, color(ink));
-                painter.text(
-                    at,
-                    egui::Align2::CENTER_CENTER,
-                    end.label(),
-                    egui::FontId::proportional(tokens.gizmo_end_radius * 1.25),
-                    color(tokens.notice_fill),
-                );
-            } else {
-                painter.circle_filled(
-                    at,
-                    tokens.gizmo_end_radius * 0.72,
-                    color_alpha(ink, if over { 255 } else { 120 }),
-                );
+                painter.circle_filled(at(to), tokens.view_cube_dot * 0.45, color(ink));
             }
-            if over {
-                painter.circle_stroke(
-                    at,
-                    tokens.gizmo_end_radius + 1.0,
-                    egui::Stroke::new(1.5, color(tokens.text)),
+        };
+        // The sticks that point away first, then the gem, then the ones
+        // that point at the viewer.
+        for axis in 0..3 {
+            stick(axis, false);
+        }
+        for facet in view_cube::facets(&self.state.camera) {
+            let points: Vec<egui::Pos2> = facet.outline.iter().map(|&p| at(p)).collect();
+            // A face carries the colour of the axis it is across; the cut
+            // facets are the gem's own, darker, and all are lit by how
+            // much they face the viewer.
+            let base = match facet.axis() {
+                Some(axis) => mix(
+                    tokens.body,
+                    tokens.axes.get(axis).copied().unwrap_or(tokens.body),
+                    0.38,
+                ),
+                None => mix(tokens.panel_fill, tokens.body, 0.45),
+            };
+            let lit = mix(tokens.notice_fill, base, 0.45 + 0.55 * facet.toward);
+            let over = hovered.as_ref().is_some_and(|h| h.side == facet.side);
+            let fill = if over {
+                mix(lit, tokens.face_highlight, 0.75)
+            } else {
+                lit
+            };
+            painter.add(egui::Shape::convex_polygon(
+                points,
+                color(fill),
+                egui::Stroke::new(1.0, color(tokens.edge)),
+            ));
+            if let Some(label) = facet.label().filter(|_| facet.toward > 0.55) {
+                painter.text(
+                    at(facet.center()),
+                    egui::Align2::CENTER_CENTER,
+                    label,
+                    egui::FontId::proportional(arm * 0.21),
+                    color_alpha(
+                        tokens.notice_fill,
+                        (255.0 * facet.toward.clamp(0.0, 1.0)) as u8,
+                    ),
                 );
             }
         }
-        turned
+        for axis in 0..3 {
+            stick(axis, true);
+        }
     }
 
-    /// Where the orbit gizmo is in the window, in points, once the
+    /// Moves the camera along the turn a click on the view cube started:
+    /// a quarter of a second from where it was to the view asked for,
+    /// framed. Anything else that moves the camera meanwhile (a drag,
+    /// `ui.set`) ends the turn where it is. Returns true while it turns.
+    fn advance_turn(&mut self, ui: &egui::Ui, scene: Option<&Scene>) -> bool {
+        let Some(turn) = self.turn else {
+            return false;
+        };
+        if self.state.camera != turn.last {
+            self.turn = None;
+            return false;
+        }
+        let elapsed = ui.input(|i| i.time) - turn.started;
+        let camera = view_cube::between(&turn.from, &turn.to, elapsed / TURN_SECONDS);
+        self.state.camera = camera;
+        ui.ctx().request_repaint();
+        if camera == turn.to {
+            self.turn = None;
+            if let Some(scene) = scene.filter(|_| turn.to.auto_fit) {
+                self.framed = scene.bbox;
+            }
+            return false;
+        }
+        self.turn = Some(Turn {
+            last: camera,
+            ..turn
+        });
+        true
+    }
+
+    /// Where the view cube is in the window, in points, once the
     /// viewport was drawn with room for it.
-    pub fn gizmo_rect(&self) -> Option<egui::Rect> {
-        self.gizmo_rect
+    pub fn view_cube_rect(&self) -> Option<egui::Rect> {
+        self.view_cube_rect
     }
 
     fn fit_to(&mut self, scene: Option<&Scene>) {

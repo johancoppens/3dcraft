@@ -5,6 +5,8 @@
 //! that is shown, split into the upload of the mesh and the lines, once
 //! per document revision, and the frame until the GPU is done), and the
 //! path that reads back, split into the upload, the draw and the readback.
+//! The direct path and the CPU are timed with the bodies opaque and
+//! see-through (two depth layers and a blend).
 //!
 //! ```sh
 //! cargo run --release -p craft3d-ui-egui --example viewport_cost
@@ -14,10 +16,10 @@ use craft3d_engine::{Scene, Session, Workspace};
 use craft3d_gpu::{DrawOptions, Onscreen, OverlayParams};
 use craft3d_ui_egui::Tokens;
 use craft3d_ui_egui::backend::{Backend, BodyRenderer, RendererChoice};
-use craft3d_ui_egui::direct::{direct_size, headless_render_state, segments};
+use craft3d_ui_egui::direct::{direct_size, headless_render_state, segments_marked};
 use craft3d_ui_egui::shell::{image_quality, image_quality_for};
 use craft3d_ui_egui::state::CameraState;
-use craft3d_ui_egui::viewport::{self, AXIS_LENGTH, Quality, depth_slack};
+use craft3d_ui_egui::viewport::{self, AXIS_LENGTH, Marks, Quality, depth_slack};
 use egui_wgpu::wgpu;
 use serde_json::json;
 use std::process::ExitCode;
@@ -66,13 +68,19 @@ fn time(
     scene: &craft3d_engine::Scene,
     camera: &CameraState,
     quality: Quality,
+    opacity: f64,
 ) -> Result<(), String> {
     let tokens = Tokens::default();
     let runs = 5;
     let mut best = f64::INFINITY;
+    let params = craft3d_render::RenderParams {
+        opacity,
+        ..viewport::render_params(quality, &tokens)
+    };
     for _ in 0..runs {
         let start = Instant::now();
-        viewport::render_bodies(Some(scene), camera, quality, &tokens)?;
+        craft3d_render::render(&scene.mesh, &camera.to_render(), &params)
+            .map_err(|e| e.to_string())?;
         best = best.min(start.elapsed().as_secs_f64() * 1000.0);
     }
     println!(
@@ -133,6 +141,7 @@ fn time_direct(
     scene: &Scene,
     camera: &CameraState,
     size: [u32; 2],
+    opacity: f64,
 ) -> Result<(), String> {
     let tokens = Tokens::default();
     let [width, height] = direct_size(size, device.limits().max_texture_dimension_2d);
@@ -143,7 +152,7 @@ fn time_direct(
         background: tokens.viewport_background,
         color: tokens.body,
         highlight: craft3d_render::Highlight::NONE,
-        opacity: 1.0,
+        opacity,
     };
     let overlay = OverlayParams {
         slack: depth_slack(Backend::Gpu, Some(scene), camera),
@@ -158,7 +167,14 @@ fn time_direct(
         let start = Instant::now();
         let mesh = onscreen.upload(&scene.mesh).map_err(|e| e.to_string())?;
         let lines = onscreen
-            .upload_lines(&segments(Some(scene), None, &tokens, 1.0))
+            .upload_lines(&segments_marked(
+                Some(scene),
+                None,
+                &tokens,
+                1.0,
+                &Marks::default(),
+                opacity < 1.0,
+            ))
             .map_err(|e| e.to_string())?;
         segment_count = lines.segment_count();
         upload = upload.min(ms(start));
@@ -230,12 +246,26 @@ fn measure(large: bool, tolerance: Option<f64>) -> Result<(), String> {
     for size in [[1020, 777], [1652, 993], [2560, 1400]] {
         let mut camera = CameraState::default();
         camera.fit(&scene.bbox, f64::from(size[0]) / f64::from(size[1]));
-        time("at rest", &scene, &camera, image_quality(size, false, 8192))?;
+        time(
+            "at rest",
+            &scene,
+            &camera,
+            image_quality(size, false, 8192),
+            1.0,
+        )?;
+        time(
+            "at rest, see-through",
+            &scene,
+            &camera,
+            image_quality(size, false, 8192),
+            0.5,
+        )?;
         time(
             "while moving",
             &scene,
             &camera,
             image_quality(size, true, 8192),
+            1.0,
         )?;
         time(
             "full size, 4 samples",
@@ -246,6 +276,7 @@ fn measure(large: bool, tolerance: Option<f64>) -> Result<(), String> {
                 height: size[1],
                 ssaa: 2,
             },
+            1.0,
         )?;
     }
     match headless_render_state() {
@@ -260,14 +291,17 @@ fn measure(large: bool, tolerance: Option<f64>) -> Result<(), String> {
             for size in [[1020, 777], [1280, 800], [2560, 1400]] {
                 let mut camera = CameraState::default();
                 camera.fit(&scene.bbox, f64::from(size[0]) / f64::from(size[1]));
-                time_direct(
-                    "every frame",
-                    &mut onscreen,
-                    &state.device,
-                    &scene,
-                    &camera,
-                    size,
-                )?;
+                for (label, opacity) in [("every frame", 1.0), ("see-through", 0.5)] {
+                    time_direct(
+                        label,
+                        &mut onscreen,
+                        &state.device,
+                        &scene,
+                        &camera,
+                        size,
+                        opacity,
+                    )?;
+                }
             }
         }
         Err(why) => println!("no direct path: {why}"),

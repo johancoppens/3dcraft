@@ -26,7 +26,7 @@ use serde_json::Value;
 type Step = fn(Value) -> Result<Value, String>;
 
 /// `STEPS[n]` brings a manifest from version `n + 1` to version `n + 2`.
-const STEPS: &[Step] = &[v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6];
+const STEPS: &[Step] = &[v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7];
 
 /// Version 2 adds the `cone` and `torus` feature kinds and an optional
 /// `orientation` on block, cylinder, cone and torus. Nothing a version-1
@@ -64,6 +64,14 @@ fn v4_to_v5(manifest: Value) -> Result<Value, String> {
 /// file contains changes meaning; the version was raised so that an older
 /// build reports the version and not an unknown kind.
 fn v5_to_v6(manifest: Value) -> Result<Value, String> {
+    Ok(manifest)
+}
+
+/// Version 7 adds the `chamfer` feature kind and the name roles `chamfer`
+/// and `chamferCorner` for the faces it makes. Nothing a version-6 file
+/// contains changes meaning; the version was raised so that an older
+/// build reports the version and not an unknown kind.
+fn v6_to_v7(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
 }
 
