@@ -454,7 +454,7 @@ impl ConstraintKind {
     pub fn roles(type_name: &str) -> Option<&'static [&'static [Role]]> {
         Some(match type_name {
             "coincident" => &[&[Point, Point]],
-            "pointOn" => &[&[Point, Line], &[Point, Round]],
+            "pointOn" => &[&[Point, Line], &[Point, Round], &[Point, Spline]],
             "horizontal" | "vertical" => &[&[Line], &[Point, Point]],
             "parallel" | "perpendicular" | "angle" => &[&[Line, Line]],
             "tangent" => &[
@@ -1356,7 +1356,6 @@ mod tests {
         assert!(s.add_constraint(tangent(other, e(8))).is_ok());
         // What a spline cannot be given to says so.
         for (type_name, entities) in [
-            ("pointOn", vec![e(1), spline]),
             ("equal", vec![spline, other]),
             ("parallel", vec![spline, e(5)]),
             ("fixed", vec![spline]),
@@ -1370,6 +1369,11 @@ mod tests {
                 "{type_name}: {error}"
             );
         }
+        // A point on a spline is taken (since 2026-10-14).
+        let on =
+            ConstraintKind::from_parts("pointOn", &[e(1), spline], None, DistanceDirection::Direct)
+                .unwrap();
+        assert_eq!(s.check_constraint(&on), Ok(()));
         assert_eq!(s.validate(), Ok(()));
     }
 

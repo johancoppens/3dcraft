@@ -57,6 +57,53 @@ pub enum Role {
 pub struct Origin {
     pub role: Role,
     pub sources: Vec<u64>,
+    /// Which of the entities these sources give in this role, when they
+    /// give more than one; 0 for the first, and for the only one. A curve
+    /// gives several where it was cut into pieces (a spline at its corners,
+    /// a spline that closes on itself in two: [`Segment::piece`]), and
+    /// where a full revolution is made in two halves
+    /// ([`crate::revolve`]). For a vertex or a lateral edge it is the
+    /// number of the curve the loop leaves by.
+    pub piece: u32,
+}
+
+impl Origin {
+    /// The first, or only, entity `sources` give in `role`.
+    pub fn new(role: Role, sources: &[u64]) -> Self {
+        Self::of_piece(role, sources, 0)
+    }
+
+    pub fn of_piece(role: Role, sources: &[u64], piece: u32) -> Self {
+        Self {
+            role,
+            sources: sources.to_vec(),
+            piece,
+        }
+    }
+}
+
+/// The curves of a loop without repeats, ascending: what a cap is named
+/// after (a curve cut into pieces counts once).
+pub(crate) fn cap_sources(path: &Loop2) -> Vec<u64> {
+    let mut sources: Vec<u64> = path.segments.iter().map(|s| s.source).collect();
+    sources.sort_unstable();
+    sources.dedup();
+    sources
+}
+
+/// Errors when a piece of a curve is used by more than one segment:
+/// origins are only unique when each is used once.
+pub(crate) fn each_curve_once(profiles: &[Profile]) -> Result<(), KernelError> {
+    let mut ids: Vec<(u64, u32)> = profiles
+        .iter()
+        .flat_map(|p| std::iter::once(&p.outer).chain(&p.holes))
+        .flat_map(|l| l.segments.iter().map(|s| (s.source, s.piece)))
+        .collect();
+    ids.sort_unstable();
+    if ids.iter().zip(ids.iter().skip(1)).any(|(a, b)| a == b) {
+        return Err(invalid("a curve id is used by more than one segment"));
+    }
+    Ok(())
 }
 
 /// Where every entity of the body came from: `faces[i]` belongs to face
@@ -93,11 +140,8 @@ struct Builder<'a> {
 }
 
 impl Builder<'_> {
-    fn vertex(&mut self, p: [f64; 2], z: f64, role: Role, sources: [u64; 2]) -> VertexId {
-        self.origins.vertices.push(Origin {
-            role,
-            sources: sources.to_vec(),
-        });
+    fn vertex(&mut self, p: [f64; 2], z: f64, origin: Origin) -> VertexId {
+        self.origins.vertices.push(origin);
         self.body.add_vertex(self.plane.point(p[0], p[1], z))
     }
 
@@ -106,13 +150,9 @@ impl Builder<'_> {
         curve: Curve3,
         range: (f64, f64),
         ends: (VertexId, VertexId),
-        role: Role,
-        sources: &[u64],
+        origin: Origin,
     ) -> EdgeId {
-        self.origins.edges.push(Origin {
-            role,
-            sources: sources.to_vec(),
-        });
+        self.origins.edges.push(origin);
         self.body.add_edge(curve, range, ends.0, ends.1)
     }
 
@@ -121,10 +161,9 @@ impl Builder<'_> {
         surface: Surface,
         reversed: bool,
         loops: Vec<LoopId>,
-        role: Role,
-        sources: Vec<u64>,
+        origin: Origin,
     ) -> FaceId {
-        self.origins.faces.push(Origin { role, sources });
+        self.origins.faces.push(origin);
         self.body.add_face(surface, reversed, loops)
     }
 
@@ -144,7 +183,7 @@ impl Builder<'_> {
         ends: (VertexId, VertexId),
         role: Role,
     ) -> Result<(EdgeId, bool), KernelError> {
-        let sources = [segment.source];
+        let origin = Origin::of_piece(role, &[segment.source], segment.piece);
         match &segment.shape {
             Shape::Spline(spline) => {
                 let control = spline
@@ -162,7 +201,7 @@ impl Builder<'_> {
                     ends
                 };
                 Ok((
-                    self.edge(Curve3::Nurbs(curve), range, own, role, &sources),
+                    self.edge(Curve3::Nurbs(curve), range, own, origin),
                     segment.reversed,
                 ))
             }
@@ -171,7 +210,7 @@ impl Builder<'_> {
                 let end = self.plane.point(segment.end[0], segment.end[1], z);
                 let line = Curve3::Line(Line::through(start, end)?);
                 let range = (0.0, start.distance(end));
-                Ok((self.edge(line, range, ends, role, &sources), false))
+                Ok((self.edge(line, range, ends, origin), false))
             }
             &Shape::Arc { center, radius } => {
                 let (begin, sweep) = segment.angles().ok_or(invalid("an arc without angles"))?;
@@ -189,15 +228,12 @@ impl Builder<'_> {
                 } else {
                     ends
                 };
-                Ok((
-                    self.edge(circle, range, own, role, &sources),
-                    segment.reversed,
-                ))
+                Ok((self.edge(circle, range, own, origin), segment.reversed))
             }
             &Shape::Circle { center, radius } => {
                 let circle = Curve3::Circle(Circle::new(self.frame_at(center, z)?, radius)?);
                 Ok((
-                    self.edge(circle, (0.0, TAU), ends, role, &sources),
+                    self.edge(circle, (0.0, TAU), ends, origin),
                     segment.reversed,
                 ))
             }
@@ -233,9 +269,9 @@ impl Builder<'_> {
         // Vertex i is where segment i starts: the loop arrives by the
         // segment before it and leaves by segment i.
         let before = segments.iter().cycle().skip(n - 1);
-        let names: Vec<[u64; 2]> = before
+        let names: Vec<([u64; 2], u32)> = before
             .zip(segments)
-            .map(|(arriving, leaving)| [arriving.source, leaving.source])
+            .map(|(arriving, leaving)| ([arriving.source, leaving.source], leaving.piece))
             .collect();
         let mut layers = Vec::with_capacity(2);
         for (z, vertex_role, edge_role) in [
@@ -245,7 +281,10 @@ impl Builder<'_> {
             let vertices: Vec<VertexId> = segments
                 .iter()
                 .zip(&names)
-                .map(|(segment, name)| self.vertex(segment.start, z, vertex_role, *name))
+                .map(|(segment, (name, piece))| {
+                    let origin = Origin::of_piece(vertex_role, name, *piece);
+                    self.vertex(segment.start, z, origin)
+                })
                 .collect();
             let after = vertices.iter().cycle().skip(1);
             let mut edges = Vec::with_capacity(n);
@@ -262,14 +301,17 @@ impl Builder<'_> {
 
         let mut laterals = Vec::with_capacity(n);
         if !whole_circle {
-            for ((&low, &high), name) in bottom_vertices.iter().zip(&top_vertices).zip(&names) {
+            for ((&low, &high), (name, piece)) in
+                bottom_vertices.iter().zip(&top_vertices).zip(&names)
+            {
                 let (Some(a), Some(b)) = (self.body.vertex(low), self.body.vertex(high)) else {
                     return Err(invalid("a loop lost a vertex"));
                 };
                 let (a, b) = (a.point, b.point);
                 let line = Curve3::Line(Line::through(a, b)?);
                 let range = (0.0, a.distance(b));
-                laterals.push(self.edge(line, range, (low, high), Role::LateralEdge, name));
+                let origin = Origin::of_piece(Role::LateralEdge, name, *piece);
+                laterals.push(self.edge(line, range, (low, high), origin));
             }
         }
 
@@ -338,7 +380,8 @@ impl Builder<'_> {
                     )
                 }
             };
-            faces.push(self.face(surface, reversed, loops, Role::Side, vec![segment.source]));
+            let origin = Origin::of_piece(Role::Side, &[segment.source], segment.piece);
+            faces.push(self.face(surface, reversed, loops, origin));
         }
         Ok(Swept {
             faces,
@@ -390,16 +433,7 @@ pub fn extrude(
     if profiles.is_empty() {
         return Err(KernelError::NoProfile);
     }
-    // Origins are only unique when every curve is used once.
-    let mut ids: Vec<u64> = profiles
-        .iter()
-        .flat_map(|p| std::iter::once(&p.outer).chain(&p.holes))
-        .flat_map(|l| l.segments.iter().map(|s| s.source))
-        .collect();
-    ids.sort_unstable();
-    if ids.iter().zip(ids.iter().skip(1)).any(|(a, b)| a == b) {
-        return Err(invalid("a curve id is used by more than one segment"));
-    }
+    each_curve_once(profiles)?;
 
     let mut b = Builder {
         body: Body::new(BodyKind::Solid),
@@ -428,21 +462,18 @@ pub fn extrude(
             floor_loops.push(b.body.add_loop(backwards.collect()));
             lid_loops.push(b.body.add_loop(swept.end));
         }
-        let mut sources: Vec<u64> = profile.outer.segments.iter().map(|s| s.source).collect();
-        sources.sort_unstable();
+        let sources = cap_sources(&profile.outer);
         faces.push(b.face(
             Surface::Plane(Plane::new(floor)),
             false,
             floor_loops,
-            Role::StartCap,
-            sources.clone(),
+            Origin::new(Role::StartCap, &sources),
         ));
         faces.push(b.face(
             Surface::Plane(Plane::new(lid)),
             false,
             lid_loops,
-            Role::EndCap,
-            sources,
+            Origin::new(Role::EndCap, &sources),
         ));
         b.body.add_shell(faces);
     }

@@ -388,6 +388,7 @@ enum Outline {
 fn turned(segment: &Segment) -> Segment {
     Segment {
         source: segment.source,
+        piece: segment.piece,
         reversed: !segment.reversed,
         start: segment.end,
         end: segment.start,
@@ -925,7 +926,13 @@ impl Builder {
         sources: Vec<u64>,
     ) -> FaceId {
         let loops = loops.into_iter().map(|l| self.body.add_loop(l)).collect();
-        self.faces.push(Origin { role, sources });
+        // Parts of one cut curve share a side's name in a loft: no piece
+        // number of its own.
+        self.faces.push(Origin {
+            role,
+            sources,
+            piece: 0,
+        });
         self.body.add_face(surface, reversed, loops)
     }
 }

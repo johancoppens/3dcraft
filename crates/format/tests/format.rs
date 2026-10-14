@@ -1278,7 +1278,10 @@ fn a_sketch_on_a_face_is_written_like_this_and_round_trips() {
             panic!()
         };
         sketch.plane = SketchPlane::Face {
-            face: if role.is_derived() {
+            face: if role == NameRole::Piece {
+                // The fourth face that the name after it would name.
+                PersistentName::piece(3, face.clone())
+            } else if role.is_derived() {
                 PersistentName::copy(FeatureId(6), 3, face.clone())
             } else if role.is_numbered() {
                 PersistentName::new(FeatureId(6), role, vec![3])

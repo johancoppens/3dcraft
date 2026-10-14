@@ -685,6 +685,7 @@ fn extrusion_refuses_profiles_that_are_not_closed_boundaries() {
     // An arc whose ends coincide, a zero-length line, NaN.
     let segment = |shape: Shape, start: [f64; 2], end: [f64; 2]| Segment {
         source: 9,
+        piece: 0,
         reversed: false,
         start,
         end,

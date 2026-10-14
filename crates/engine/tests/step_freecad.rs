@@ -1091,3 +1091,176 @@ fn freecad_reads_what_the_commands_build() {
         bad.join("\n")
     );
 }
+
+/// What a spline sweeps beyond a wall between two caps (2026-10-14): a
+/// profile with splines in it turned about an axis (faces on rational
+/// B-spline surfaces of revolution: a full turn, in two halves, and a
+/// third of one, with caps bounded by splines), a spline that closes on
+/// itself (cut in two) extruded and turned, and a polyline. Counts,
+/// validity, box, area and volume as for every case; the volume also by
+/// the quadrature over what FreeCAD imported, as for the other spline
+/// solids (see [`SPLINE`]).
+#[test]
+#[ignore = "needs FreeCAD: set CRAFT3D_FREECAD"]
+fn freecad_reads_revolved_and_closed_splines() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("step-spline-sweeps");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut set = Set {
+        dir,
+        cases: Vec::new(),
+        refused: Vec::new(),
+        unmeasured: Vec::new(),
+        per_body: false,
+        meshes: None,
+    };
+    // The section of a hollow vase (the showcase's, a tenth of its size):
+    // sketch x is the height, y the distance from the axis.
+    let vase = |s: &mut Session, k: f64, turn: &str| {
+        run(
+            s,
+            "sketch.create",
+            json!({"name": "Section", "plane": "zx"}),
+        );
+        let p = |x: f64, y: f64| json!([x * k, y * k]);
+        run(
+            s,
+            "sketch.line",
+            json!({"sketch": "Section", "from": p(0.0, 0.0), "to": p(0.0, 3.0)}),
+        );
+        run(
+            s,
+            "sketch.spline",
+            json!({"sketch": "Section", "control": ["e2", p(2.0, 5.8), p(7.5, 7.2),
+                   p(12.0, 1.8), p(15.0, 2.0), p(17.8, 4.8), p(20.0, 3.6)]}),
+        );
+        run(
+            s,
+            "sketch.line",
+            json!({"sketch": "Section", "from": "e9", "to": p(20.0, 3.2)}),
+        );
+        run(
+            s,
+            "sketch.spline",
+            json!({"sketch": "Section", "control": ["e11", p(17.8, 4.4), p(15.0, 1.6),
+                   p(12.0, 1.4), p(7.5, 6.8), p(2.0, 5.4), p(0.6, 2.6)]}),
+        );
+        run(
+            s,
+            "sketch.line",
+            json!({"sketch": "Section", "from": "e18", "to": p(0.6, 0.0)}),
+        );
+        run(
+            s,
+            "sketch.line",
+            json!({"sketch": "Section", "from": "e20", "to": "e1"}),
+        );
+        run(
+            s,
+            "feature.revolve",
+            json!({"sketch": "Section", "axis": "x", "angle": turn, "name": "Vase"}),
+        );
+    };
+    let egg = |s: &mut Session, k: f64, degree: u32| {
+        run(s, "sketch.create", json!({"name": "Outline"}));
+        let p = |x: f64, y: f64| json!([x * k, y * k]);
+        run(
+            s,
+            "sketch.spline",
+            json!({"sketch": "Outline", "closed": true, "degree": degree,
+                   "control": [p(4.0, 2.0), p(8.0, 1.0), p(10.0, 5.0), p(7.0, 9.0),
+                               p(3.0, 8.0), p(2.0, 4.0)]}),
+        );
+    };
+    for (k, tag) in [(1e-3, "milli"), (1.0, "one"), (1e6, "mega")] {
+        set.add(&format!("{tag}-spline-vase"), "mm", k, SPLINE, |s, k| {
+            vase(s, k, "360 deg");
+            Ok(())
+        });
+        set.add(
+            &format!("{tag}-spline-vase-third"),
+            "mm",
+            k,
+            SPLINE,
+            |s, k| {
+                vase(s, k, "120 deg");
+                Ok(())
+            },
+        );
+        set.add(&format!("{tag}-spline-egg"), "mm", k, SPLINE, |s, k| {
+            egg(s, k, 3);
+            run(
+                s,
+                "feature.extrude",
+                json!({"sketch": "Outline", "distance": 2.5 * k, "name": "Egg"}),
+            );
+            Ok(())
+        });
+        set.add(
+            &format!("{tag}-spline-egg-ring"),
+            "mm",
+            k,
+            SPLINE,
+            |s, k| {
+                egg(s, k, 4);
+                run(
+                    s,
+                    "feature.revolve",
+                    json!({"sketch": "Outline", "axis": "y", "name": "Ring"}),
+                );
+                Ok(())
+            },
+        );
+        set.add(&format!("{tag}-spline-polyline"), "mm", k, EXACT, |s, k| {
+            run(s, "sketch.create", json!({"name": "Outline"}));
+            let p = |x: f64, y: f64| json!([x * k, y * k]);
+            run(
+                s,
+                "sketch.spline",
+                json!({"sketch": "Outline", "closed": true, "degree": 1,
+                       "control": [p(1.0, 0.0), p(7.0, 1.0), p(6.0, 5.0), p(3.0, 3.0), p(2.0, 6.0)]}),
+            );
+            run(
+                s,
+                "feature.revolve",
+                json!({"sketch": "Outline", "axis": "y", "angle": "200 deg", "name": "Spun"}),
+            );
+            Ok(())
+        });
+    }
+    assert!(set.refused.is_empty(), "{:?}", set.refused);
+    assert!(set.unmeasured.is_empty(), "{:?}", set.unmeasured);
+    let rows = harness::check(
+        "step-spline-sweeps-files",
+        "STEP: revolved splines, closed splines and polylines, read by FreeCAD",
+        &set.cases,
+    );
+    assert_eq!(rows.len(), 15, "five solids at three scales");
+    for row in rows.iter().filter(|r| !r.file.contains("polyline")) {
+        let ratio = row
+            .quadrature_volume_ratio
+            .unwrap_or_else(|| panic!("{}: no volume by quadrature", row.file));
+        println!(
+            "{}: the volume of FreeCAD's geometry over ours - 1 = {:+.2e}",
+            row.file,
+            ratio - 1.0
+        );
+        assert!(
+            (ratio - 1.0).abs() <= SPLINE_QUADRATURE,
+            "{}: FreeCAD's geometry has {ratio} times our volume",
+            row.file
+        );
+    }
+    let bad: Vec<String> = rows
+        .iter()
+        .filter(|r| !r.problems.is_empty())
+        .map(|r| format!("{}: {}", r.file, r.problems.join("; ")))
+        .collect();
+    assert!(
+        bad.is_empty(),
+        "{} of {} files with problems:\n{}",
+        bad.len(),
+        rows.len(),
+        bad.join("\n")
+    );
+}

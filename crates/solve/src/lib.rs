@@ -27,6 +27,11 @@
 //!
 //! # Method
 //!
+//! A point is also held on a B-spline whose control points are points of
+//! the sketch ([`Constraint::PointOnSpline`]): one equation, the signed
+//! distance from the curve at the foot of the point, with no unknown for
+//! the curve's parameter (it is eliminated by the projection).
+//!
 //! The unknowns are the point coordinates and the circle radii. Every
 //! constraint is one or two scalar equations; an arc adds the built-in
 //! equation that its two ends are equally far from its centre. The system
@@ -79,13 +84,16 @@ mod error;
 mod factor;
 mod model;
 mod solver;
+mod spline;
 
 pub use error::{Site, SolveError};
 pub use model::{
     Constraint, ConstraintReport, ConstraintStatus, Entity, EntityId, EntityKind, Sketch, Solution,
-    SolveOptions,
+    SolveOptions, Spline,
 };
 
+/// The highest degree of a spline a point can be constrained onto.
+pub const MAX_SPLINE_DEGREE: usize = spline::MAX_SPLINE_DEGREE;
 /// Most entities in a sketch.
 pub const MAX_ENTITIES: usize = 100_000;
 /// Most unknowns (two per point, one per circle).

@@ -216,10 +216,7 @@ fn profiles_that_touch_the_axis_match_pappus() {
 }
 
 fn origin(role: Role, sources: &[u64]) -> Origin {
-    Origin {
-        role,
-        sources: sources.to_vec(),
-    }
+    Origin::new(role, sources)
 }
 
 fn face_kind(result: &OpResult, role: Role, sources: &[u64]) -> Option<&'static str> {

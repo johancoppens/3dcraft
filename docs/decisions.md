@@ -6,6 +6,17 @@ Decisions that shape the project, newest first, each with its reason. An agent t
 
 ## Taken
 
+### 2026-10-14: Decided by an agent overnight, for the developer to overturn
+
+Taken while building revolved and closed splines (`architecture.md` §4.1 › *Revolved splines, closed splines and corners*); nobody was awake to ask.
+
+- **No face on a spline surface that closes on itself.** A full turn of a spline is two faces of half a turn, a closed spline is two pieces. The alternatives were one face with a seam edge walked there and back, or a period for spline surfaces in `geom`: either needs the tessellator, the exact measure and the booleans to follow a seam they cannot see today, and the first try (a seam edge) gave a mesh that was silently not watertight. With ordinary patches all three worked unchanged, booleans included. The price is two faces where a cylinder has one, and an edge between them that is smooth.
+- **The second and later entities a curve sweeps are numbered pieces:** `F2:piece(1)/F2:side(e7)`, a new role written like a copy, the first keeping the plain name. The alternative was to let both halves answer to `F2:side(e7)` (a name already may resolve to several faces after a boolean), which reads better and would let "the wall" mean both halves, but leaves a vertex or an edge of a sweep without a name of its own. To overturn: drop `piece` in `regen::extrude::name_of`.
+- **Analytic faces next to a revolved spline stay whole** (their loop is two arcs); only the spline's faces are in halves.
+- **A spline that ends on the axis is built by the kernel and refused by the feature.** `kernel::revolve` makes the body (valid, watertight as a mesh, of the volume Pappus gives), but the exact measure and the booleans decline its face (the border of the surface is one point there), so `document.measure` would fail and `document.check` would never be ok for a document with a dome in it. `feature.revolve` therefore fails with that reason and the way round (end the spline off the axis, close with a line). To overturn, or when the measure takes such a face: remove the check in `regen/src/revolve.rs`; the reproducer is the ignored test in `crates/kernel/tests/spline_sweeps.rs`.
+- **A polyline's legs become lines** (planes, cylinders and cones when swept), not degree-1 spline faces.
+- **A point on a spline is one equation with the curve's parameter eliminated** (the distance at the foot of the point), not two equations with the parameter as an extra unknown: nothing new for the solver to store, to guess a start for or to count, and a solution stays a solution when solved again. Beyond its ends the spline counts as going on straight (a point can slide off the end onto the line of the last leg), as a point on a line is on the whole line; holding it between the ends needs a constraint that does not exist for lines either.
+
 ### 2026-10-13: Decided by the developer
 
 - **The boolean kernel is the first priority:** it is what makes 3DCraft a professional tool. A case the kernel refuses is work owed, not an end state; the checklist is in [`roadmap.md`](roadmap.md).

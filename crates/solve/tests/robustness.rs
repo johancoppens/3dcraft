@@ -319,6 +319,7 @@ fn run(seed: u64, count: usize, hostile: bool, most_constraints: usize) -> Tally
                 let again = Sketch {
                     entities: solution.entities.clone(),
                     constraints: sketch.constraints.clone(),
+                    splines: sketch.splines.clone(),
                 };
                 // The property a caller that stores solutions relies on:
                 // the same verdict, and nothing moved beyond tolerance.

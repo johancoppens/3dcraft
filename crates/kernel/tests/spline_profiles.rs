@@ -360,10 +360,7 @@ fn the_wall_of_a_spline_is_named_after_it_and_points_outwards() {
     let profiles = detect_profiles(&case.curves, &tol).unwrap();
     let frame = &frames(1.0)[1];
     let result = extrude(&profiles, frame, 0.0, 3.0, &tol).unwrap();
-    let origin = |role: Role, sources: &[u64]| Origin {
-        role,
-        sources: sources.to_vec(),
-    };
+    let origin = |role: Role, sources: &[u64]| Origin::new(role, sources);
     let faces = &result.origins.faces;
     assert_eq!(
         faces,
@@ -523,10 +520,8 @@ fn a_spline_that_cannot_bound_a_profile_says_why() {
         other => panic!("{other:?}"),
     };
     let closing = line(9, BULGE[4], BULGE[0]);
-    // Closed on itself: not a loop yet.
-    let mut ring = BULGE.to_vec();
-    ring.push(BULGE[0]);
-    assert!(reason(&[spline(7, 3, &ring)]).contains("closes on itself"));
+    // (A spline that closes on itself is a loop since 2026-10-14:
+    // `closed_splines.rs`.)
     // No length, a broken knot vector, a coordinate that is not a number.
     let dot = [[1.0, 1.0], [1.0, 1.0 + 1e-8], [1.0 + 1e-8, 1.0]];
     assert!(reason(&[spline(7, 2, &dot), closing.clone()]).contains("no length"));
@@ -604,13 +599,17 @@ fn ends_that_meet_within_tolerance_are_made_one_point() {
     assert_eq!(check(&result.body, &tol), []);
 }
 
+/// Since 2026-10-14 a spline is revolved (`spline_revolve.rs` has the
+/// tests); until then this test pinned the refusal.
 #[test]
-fn a_spline_profile_is_not_revolved_yet() {
+fn a_spline_profile_is_revolved() {
     let tol = Tolerance::default();
     let case = cases(1.0).remove(1);
     let profiles = detect_profiles(&case.curves, &tol).unwrap();
-    // About the y axis, which the D's straight side lies on.
-    let error = revolve(
+    // About the y axis, which the D's straight side lies on: by Pappus the
+    // volume is the angle times the area times the distance of its
+    // centroid from the axis.
+    let result = revolve(
         &profiles,
         &frames(1.0)[0],
         [0.0, 0.0],
@@ -619,12 +618,24 @@ fn a_spline_profile_is_not_revolved_yet() {
         1.0,
         &tol,
     )
-    .unwrap_err();
+    .unwrap();
+    assert_eq!(check(&result.body, &tol), []);
+    let chord = 1e-3;
+    let params = TessParams {
+        chordal_tolerance: chord,
+        ..TessParams::default()
+    };
+    let welded = tessellate_body(&result.body, &params)
+        .unwrap()
+        .weld()
+        .unwrap();
+    assert!(welded.is_closed());
+    let volume = case.area * case.centroid[0];
     assert!(
-        matches!(error, KernelError::UnsupportedCurve { id: 7, .. }),
-        "{error:?}"
+        (welded.volume() - volume).abs() <= 400.0 * chord,
+        "{} against {volume}",
+        welded.volume()
     );
-    assert!(error.to_string().contains("rational"), "{error}");
 }
 
 #[test]

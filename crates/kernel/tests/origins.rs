@@ -25,10 +25,7 @@ fn build(curves: &[SketchCurve], frame: &Frame, from: f64, to: f64) -> OpResult 
 }
 
 fn origin(role: Role, sources: &[u64]) -> Origin {
-    Origin {
-        role,
-        sources: sources.to_vec(),
-    }
+    Origin::new(role, sources)
 }
 
 fn vertex_at(result: &OpResult, role: Role, sources: &[u64]) -> Vec3 {
