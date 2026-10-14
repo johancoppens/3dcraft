@@ -168,7 +168,9 @@ fn an_m10_thread_removes_its_groove_and_follows_its_parameters() {
     assert_eq!(report["size"], "M10");
     assert_eq!(report["pitch"], 1.5);
     assert_eq!(report["major"], 10.0);
-    assert!((report["minor"].as_f64().unwrap() - (10.0 - 1.082_531_754_730_548 * 1.5)).abs() < 1e-12);
+    assert!(
+        (report["minor"].as_f64().unwrap() - (10.0 - 1.082_531_754_730_548 * 1.5)).abs() < 1e-12
+    );
     assert!(report["deviation"].as_f64().unwrap() <= 0.5e-6);
     deep(&mut s);
     let found = blank - volume(&mut s, "Thread");
@@ -273,7 +275,8 @@ fn what_cannot_be_threaded_fails_with_the_reason() {
         (json!({"face": "F1:edge(0)"}), "not a face"),
         (json!({"length": null}), "length"),
     ] {
-        let mut all = json!({"face": "F1:face(0)", "start": "F1:face(1)", "size": "M10", "length": "12 mm"});
+        let mut all =
+            json!({"face": "F1:face(0)", "start": "F1:face(1)", "size": "M10", "length": "12 mm"});
         for (key, value) in params.as_object().unwrap() {
             if value.is_null() {
                 all.as_object_mut().unwrap().remove(key);

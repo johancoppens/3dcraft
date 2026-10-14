@@ -220,17 +220,40 @@ fn bad_helices_are_refused_or_fail_with_the_parameter() {
             json!({"axis": "z", "radius": 1, "pitch": 1, "turns": 1, "height": 3}),
             "either",
         ),
-        (json!({"axis": "w", "radius": 1, "pitch": 1, "turns": 1}), "axis"),
+        (
+            json!({"axis": "w", "radius": 1, "pitch": 1, "turns": 1}),
+            "axis",
+        ),
     ] {
         let error = refused(&mut s, "datum.helix", params.clone());
         assert!(error.contains(says), "{params}: {error}");
     }
     for (name, params, says) in [
-        ("Flat", json!({"radius": 0, "pitch": 1, "turns": 1}), "radius"),
-        ("Still", json!({"radius": 1, "pitch": 0, "turns": 1}), "pitch"),
-        ("None", json!({"radius": 1, "pitch": 1, "turns": -2}), "turns"),
-        ("Low", json!({"radius": 1, "pitch": 1, "height": "0 mm"}), "height"),
-        ("Odd", json!({"radius": "1 deg", "pitch": 1, "turns": 1}), "radius"),
+        (
+            "Flat",
+            json!({"radius": 0, "pitch": 1, "turns": 1}),
+            "radius",
+        ),
+        (
+            "Still",
+            json!({"radius": 1, "pitch": 0, "turns": 1}),
+            "pitch",
+        ),
+        (
+            "None",
+            json!({"radius": 1, "pitch": 1, "turns": -2}),
+            "turns",
+        ),
+        (
+            "Low",
+            json!({"radius": 1, "pitch": 1, "height": "0 mm"}),
+            "height",
+        ),
+        (
+            "Odd",
+            json!({"radius": "1 deg", "pitch": 1, "turns": 1}),
+            "radius",
+        ),
         (
             "Onaxis",
             json!({"start": [0, 0, 5], "pitch": 1, "turns": 1}),
@@ -271,11 +294,7 @@ fn a_ring_wire_along_a_helix_follows_pappus_at_every_scale() {
         );
         assert!(path["deviation"].as_f64().unwrap() <= 0.5e-6 * k.max(1.0));
         deep(&mut s);
-        close(
-            volume(&mut s, "Spring"),
-            PI * a * a * TAU * r * turns,
-            2e-6,
-        );
+        close(volume(&mut s, "Spring"), PI * a * a * TAU * r * turns, 2e-6);
         let names = body(&mut s, "Spring")["faceNames"].clone();
         let names: Vec<&str> = names
             .as_array()
@@ -309,7 +328,11 @@ fn a_coil_spring_square_to_its_helix_is_its_wire_times_the_helix_length() {
         "datum.plane",
         json!({"through": [[r, 0, 0], [r + 1.0, 0, 0], [r, k / n, -r / n]], "name": "Across"}),
     );
-    run(&mut s, "sketch.create", json!({"plane": "Across", "name": "Wire"}));
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"plane": "Across", "name": "Wire"}),
+    );
     run(
         &mut s,
         "sketch.circle",
@@ -337,7 +360,11 @@ fn a_spring_follows_edits_survives_a_file_and_keeps_the_set_identities() {
         write: Access::Root(dir.clone()),
     });
     run(&mut s, "file.new", json!({}));
-    run(&mut s, "variable.set", json!({"name": "pitch", "expr": "4 mm"}));
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "pitch", "expr": "4 mm"}),
+    );
     run(
         &mut s,
         "datum.helix",
@@ -352,7 +379,11 @@ fn a_spring_follows_edits_survives_a_file_and_keeps_the_set_identities() {
     let ring = PI * TAU * 10.0;
     close(volume(&mut s, "Spring"), ring * 2.0, 2e-6);
     // The pitch follows its variable: a pitch is no volume of its own.
-    run(&mut s, "variable.set", json!({"name": "pitch", "expr": "3 mm"}));
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "pitch", "expr": "3 mm"}),
+    );
     close(volume(&mut s, "Spring"), ring * 2.0, 2e-6);
     run(
         &mut s,
@@ -365,10 +396,18 @@ fn a_spring_follows_edits_survives_a_file_and_keeps_the_set_identities() {
     run(&mut s, "edit.redo", json!({}));
     close(volume(&mut s, "Spring"), ring * 3.0, 2e-6);
     // Too short a pitch for the wire: one turn runs into the next.
-    run(&mut s, "variable.set", json!({"name": "pitch", "expr": "1.5 mm"}));
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "pitch", "expr": "1.5 mm"}),
+    );
     let error = failure(&mut s, "Spring");
     assert!(error.contains("pitch") && error.contains("Coil"), "{error}");
-    run(&mut s, "variable.set", json!({"name": "pitch", "expr": "3 mm"}));
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "pitch", "expr": "3 mm"}),
+    );
     let before = inspect(&mut s)["bodies"].clone();
     run(&mut s, "file.save", json!({"path": "spring.3dcraft"}));
     run(&mut s, "file.close", json!({}));
@@ -402,8 +441,14 @@ fn a_spring_follows_edits_survives_a_file_and_keeps_the_set_identities() {
     // tolerance times the area of the cut, which is less than 100.
     let (union, common, difference) = (volumes[0], volumes[1], volumes[2]);
     let slack = 1e-6 * 100.0;
-    assert!((union + common - spring - other).abs() < slack, "{volumes:?} {spring}");
-    assert!((difference - spring + common).abs() < slack, "{volumes:?} {spring}");
+    assert!(
+        (union + common - spring - other).abs() < slack,
+        "{volumes:?} {spring}"
+    );
+    assert!(
+        (difference - spring + common).abs() < slack,
+        "{volumes:?} {spring}"
+    );
     assert!(common > 0.0 && common < spring.min(other));
 }
 
@@ -423,9 +468,16 @@ fn what_cannot_be_swept_along_a_helix_fails_with_the_reason() {
         json!({"sketch": "Around", "path": "Coil", "name": "A"}),
     );
     let error = failure(&mut s, "A");
-    assert!(error.starts_with("path: helix `Coil`") && error.contains("axis"), "{error}");
+    assert!(
+        error.starts_with("path: helix `Coil`") && error.contains("axis"),
+        "{error}"
+    );
     // Not on the plane the helix starts on.
-    run(&mut s, "sketch.create", json!({"plane": "xy", "name": "Flat", "offset": 1}));
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"plane": "xy", "name": "Flat", "offset": 1}),
+    );
     run(
         &mut s,
         "sketch.circle",
@@ -439,7 +491,11 @@ fn what_cannot_be_swept_along_a_helix_fails_with_the_reason() {
     let error = failure(&mut s, "B");
     assert!(error.contains("starts"), "{error}");
     // A block is no path.
-    run(&mut s, "feature.block", json!({"size": [1, 1, 1], "name": "Box"}));
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [1, 1, 1], "name": "Box"}),
+    );
     let error = refused(
         &mut s,
         "feature.sweep",
@@ -452,5 +508,8 @@ fn what_cannot_be_swept_along_a_helix_fails_with_the_reason() {
         "feature.revolve",
         json!({"sketch": "Around", "axis": "Coil"}),
     );
-    assert!(error.contains("datumHelix") || error.contains("helix"), "{error}");
+    assert!(
+        error.contains("datumHelix") || error.contains("helix"),
+        "{error}"
+    );
 }

@@ -457,7 +457,10 @@ fn follow(
 }
 
 fn internal() -> KernelError {
-    refuse(&[], "the sweep along a helix lost track of a curve; this is a bug")
+    refuse(
+        &[],
+        "the sweep along a helix lost track of a curve; this is a bug",
+    )
 }
 
 fn point_text(p: Vec3) -> String {
@@ -519,7 +522,7 @@ pub fn sweep_helix(
     // The helix starts on the profile's plane.
     let begin = helix.point(0.0);
     let off = (begin - profile_plane.origin()).dot(profile_plane.z());
-    if !(off.abs() <= tol) {
+    if off.is_nan() || off.abs() > tol {
         return Err(refuse(
             &[],
             format!(
@@ -615,7 +618,8 @@ pub fn sweep_helix(
                 ));
             }
             let speed = helix.velocity(p);
-            if !(forward.dot(speed) > 1e-6 * speed.length()) {
+            let across = forward.dot(speed);
+            if across.is_nan() || across <= 1e-6 * speed.length() {
                 return Err(refuse(
                     &[element.source],
                     format!(
@@ -630,7 +634,8 @@ pub fn sweep_helix(
             (low, high) = (low.min(level), high.max(level));
         }
     }
-    if !(high - low < helix.pitch - tol) {
+    let long = high - low;
+    if !long.is_finite() || long >= helix.pitch - tol {
         return Err(refuse(
             &[],
             format!(
@@ -800,13 +805,7 @@ pub fn sweep_helix(
                             other => other,
                         })?,
                 };
-                shell.push(b.face(
-                    surface,
-                    reversed,
-                    around,
-                    Role::Side,
-                    vec![element.source],
-                ));
+                shell.push(b.face(surface, reversed, around, Role::Side, vec![element.source]));
             }
         }
         station = next;

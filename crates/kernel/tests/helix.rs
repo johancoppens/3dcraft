@@ -102,7 +102,11 @@ fn sound(swept: &Swept, size: f64, tolerance: &Tolerance) -> f64 {
         let now = (mesh_volume(body, fine * size) - mass.volume).abs() / mass.volume;
         assert!(now < 4.0 * fine, "mesh volume off by {now} at {fine}");
     }
-    assert!(swept.deviation <= tolerance.linear / 2.0, "{}", swept.deviation);
+    assert!(
+        swept.deviation <= tolerance.linear / 2.0,
+        "{}",
+        swept.deviation
+    );
     mass.volume
 }
 
@@ -177,6 +181,7 @@ fn the_plans_follow_the_unit_circle_as_closely_as_their_degree_allows() {
         .iter()
         .map(|&(per_turn, degree)| circle_error(per_turn, degree).unwrap())
         .collect();
+    eprintln!("circle errors (4,5) (4,7) (4,9) (8,9) (16,9): {errors:?}");
     assert!(errors.windows(2).all(|w| w[1] < w[0]), "{errors:?}");
     assert!(errors[0] < 1e-4 && errors[0] > 1e-7, "{errors:?}");
     assert!(errors[4] < 1e-14, "{errors:?}");
@@ -220,6 +225,12 @@ fn a_coil_spring_is_the_area_of_its_wire_times_the_length_of_its_helix() {
             let (swept, h, a) = spring(k, left);
             close(swept.length, h.length(), 1e-15);
             let volume = sound(&swept, a, &tol(k));
+            eprintln!(
+                "spring at {k}: deviation {}, stations {}, volume off by {:e}",
+                swept.deviation,
+                swept.stations,
+                volume / (PI * a * a * h.length()) - 1.0
+            );
             close(volume, PI * a * a * h.length(), 2e-6);
             // Four quarters of the wire per half turn, five half turns,
             // and two ends.
@@ -587,7 +598,10 @@ fn an_iso_thread_removes_its_groove_and_leaves_the_minor_diameter() {
                 }
             }
         }
-        eprintln!("minor radius by section {least} against {}", thread.minor() / 2.0);
+        eprintln!(
+            "minor radius by section {least} against {}",
+            thread.minor() / 2.0
+        );
         assert!(
             (least - thread.minor() / 2.0).abs() < 2e-4,
             "{least} against {}",

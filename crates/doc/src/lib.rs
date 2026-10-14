@@ -16,8 +16,8 @@ pub mod name;
 pub mod sketch;
 
 pub use datum::{
-    AxisBy, AxisRef, DatumAxis, DatumHelix, DatumPlane, DatumPoint, HelixExtent, HelixStart, PlaneBy,
-    PlaneRef, PointRef, WorldAxis,
+    AxisBy, AxisRef, DatumAxis, DatumHelix, DatumPlane, DatumPoint, HelixExtent, HelixStart,
+    PlaneBy, PlaneRef, PointRef, WorldAxis,
 };
 pub use name::{
     FaceLists, MAX_NAME_DEPTH, MAX_NAME_FACES, MAX_NAME_SOURCES, NameRole, PersistentName,

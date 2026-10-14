@@ -14,9 +14,9 @@ use craft3d_doc::{
     AxisBy, AxisRef, DatumAxis, DatumHelix, DatumPlane, DatumPoint, Document, Expr, FeatureId,
     HelixExtent, HelixStart, PersistentName, PlaneBy, PlaneRef, PointRef, WorldAxis, WorldPlane,
 };
-use craft3d_kernel::helix::Helix;
 use craft3d_expr::Evaluation;
 use craft3d_geom::{Curve3, Surface};
+use craft3d_kernel::helix::Helix;
 use craft3d_math::{Frame, Tolerance, Transform, Vec3};
 use craft3d_topo::Body;
 
@@ -685,16 +685,8 @@ pub(crate) fn helix(
             craft3d_kernel::helix::MAX_TURNS
         ));
     }
-    Helix::new(
-        origin,
-        axis,
-        start,
-        radius,
-        pitch,
-        turns,
-        datum.left_handed,
-    )
-    .map_err(|error| error.to_string())
+    Helix::new(origin, axis, start, radius, pitch, turns, datum.left_handed)
+        .map_err(|error| error.to_string())
 }
 
 fn document_tolerance(doc: &Document) -> Result<Tolerance, String> {

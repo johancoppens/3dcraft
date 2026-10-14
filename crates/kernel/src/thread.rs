@@ -71,7 +71,9 @@ pub fn coarse_pitch(nominal: f64) -> Option<f64> {
 /// `m10` or `M2.5`; `None` for anything else.
 pub fn nominal_diameter(size: &str) -> Option<f64> {
     let digits = size.trim().strip_prefix(['M', 'm'])?;
-    if digits.is_empty() || digits.len() > 8 || !digits.chars().all(|c| c.is_ascii_digit() || c == '.')
+    if digits.is_empty()
+        || digits.len() > 8
+        || !digits.chars().all(|c| c.is_ascii_digit() || c == '.')
     {
         return None;
     }

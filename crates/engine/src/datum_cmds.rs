@@ -299,7 +299,12 @@ fn datum_result(session: &mut Session, id: FeatureId) -> Run {
 }
 
 /// Adds the datum, or gives the datum `replace` names this definition.
-pub(crate) fn store(session: &mut Session, command: &'static str, p: &Params, kind: FeatureKind) -> Run {
+pub(crate) fn store(
+    session: &mut Session,
+    command: &'static str,
+    p: &Params,
+    kind: FeatureKind,
+) -> Run {
     let name = p.str("name")?;
     let id = if p.get("replace").is_some() {
         if name.is_some() {

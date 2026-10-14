@@ -2739,10 +2739,7 @@ fn a_helix_is_written_like_this_and_round_trips() {
     let sketch = doc.features[0].id;
     doc.add_feature(
         Some("Spring"),
-        FeatureKind::Sweep(Sweep {
-            sketch,
-            path: coil,
-        }),
+        FeatureKind::Sweep(Sweep { sketch, path: coil }),
     )
     .unwrap();
     let json = to_manifest_json(&doc).unwrap();

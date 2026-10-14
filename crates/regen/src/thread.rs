@@ -198,7 +198,7 @@ pub(crate) fn build(
             thread.size
         )
     })?;
-    if !(pitch > tol) {
+    if pitch.is_nan() || pitch <= tol {
         return Err(format!("pitch: {pitch} {unit} is not above the tolerance"));
     }
     if !(run.is_finite() && run > tol) {

@@ -1184,7 +1184,11 @@ fn revolved(curve: &NurbsCurve, frame: &Frame, angle: f64) -> Result<NurbsSurfac
 
 /// True when the outside of a face, which is towards `outward` at its
 /// point `at`, is against the normal of its surface.
-pub(crate) fn against_normal(surface: &Surface, at: Vec3, outward: Vec3) -> Result<bool, KernelError> {
+pub(crate) fn against_normal(
+    surface: &Surface,
+    at: Vec3,
+    outward: Vec3,
+) -> Result<bool, KernelError> {
     let (u, v) = surface.project(at)?;
     let normal = surface.normal(u, v).ok_or_else(internal)?;
     let along = normal.dot(outward);

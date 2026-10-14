@@ -891,9 +891,9 @@ fn build_feature(
             Err(reason) => (Status::Failed(reason), None),
         }
     } else if let FeatureKind::Thread(cut) = &feature.kind {
-        match thread::build(doc, variables, feature.id, cut, earlier).and_then(
-            |(body, names, report)| checked(doc, body).map(|body| (body, names, report)),
-        ) {
+        match thread::build(doc, variables, feature.id, cut, earlier)
+            .and_then(|(body, names, report)| checked(doc, body).map(|body| (body, names, report)))
+        {
             Ok((body, made_names, report)) => {
                 names = made_names.map(Arc::new);
                 threaded = Some(report);
