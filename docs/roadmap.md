@@ -1,6 +1,6 @@
 # Roadmap
 
-> **Last updated:** 2026-10-14 · **Stage:** M7 (booleans) and M8.5 in progress, M9 started, M4 nearly done; M0–M3, M5, M6 and M8 done · **Change:** minor (restructured: one line per milestone, a section per milestone, the boolean checklist on its own)
+> **Last updated:** 2026-10-15 · **Stage:** M7 (booleans) and M8.5 in progress, M9 started, M4 nearly done; M0–M3, M5, M6 and M8 done · **Change:** minor (the Voronoi helmet's boolean findings done)
 
 Forward-looking plan: the **Current focus** agents pick from, one line per milestone, and per milestone what it is for, what is done, what is open and what "done" means. There is no parity percentage: 3DCraft is AI-first with a minimal UI and has no target app ([`decisions.md`](decisions.md)). Progress is measured by milestones whose acceptance tests pass. How something was built (algorithms, thresholds, measurements, file paths of internals) is in [`architecture.md`](architecture.md), and how it is tested in [`testing.md`](testing.md).
 
@@ -10,7 +10,7 @@ Status legend: ✅ done · 🟡 in progress · ⬜ not started. Put the date nex
 
 ## Current focus
 
-1. **The boolean kernel (M7), the developer's first priority** (2026-10-13): a refusal is work owed. Next: a planar tool against a spline surface with a pole ("tangent or nearly coincident over too large an area"), "imprint lost", and the rest of the [boolean checklist](#the-boolean-checklist) in its order.
+1. **The boolean kernel (M7), the developer's first priority** (2026-10-13): a refusal is work owed. Next: the rest of the [boolean checklist](#the-boolean-checklist) in its order (cuts through a pole that are still refused, coincident freeform faces, fourth-order contact).
 2. **M9, the rest:** move face, thicken and draft, and what the blends leave open, beside M7 since none of it touches the boolean kernel ([M9](#m9-local-operations-and-sweeps)).
 3. **R1, the first release:** the pinned set of modelling tasks, installers, the format promise, material and colour per body, a user guide ([R1](#r1-first-release)).
 
@@ -56,13 +56,10 @@ The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item i
 7. 🟡 **Speed on bodies with thousands of faces** (a spatial index).
 8. 🟡 **Never an invalid body:** the mesh detector exists (`tess::body_self_intersections`, `document.check` with `deep`) and found nothing in 39,834 boolean results (2026-10-13); it is not yet run inside every operation.
 
-**Measured (2026-10-14, morning):** 11573 of 11988 corpus outcomes agree, 249 refused (all in the category near, about 250 being the tolerance rule itself: cases built one tolerance apart or into each other), 0 wrong, 0 invalid. Speed (2026-10-13): 1024 holes one by one in 7.1 s, a cylinder through a plate of 1030 faces in 36.5 ms; the corpus test takes about 230 s on 14 threads on an idle machine (640 s at noon on 2026-10-13) and is the gate's longest binary.
+**Measured (2026-10-14, morning; the same on 2026-10-15 after the helmet's findings):** 11573 of 11988 corpus outcomes agree, 249 refused (all in the category near, about 250 being the tolerance rule itself: cases built one tolerance apart or into each other), 0 wrong, 0 invalid. Speed (2026-10-13): 1024 holes one by one in 7.1 s, a cylinder through a plate of 1030 faces in 36.5 ms; the corpus test takes about 230 s on 14 threads on an idle machine (640 s at noon on 2026-10-13) and is the gate's longest binary.
 
 **Owed, in order:**
 
-- [ ] A planar tool against a spline surface with a pole: a frustum's planar side against a revolved spline shell refuses "tangent or nearly coincident over too large an area" at the pole; with a vent instead of the pole the same cuts pass (the Voronoi helmet, 2026-10-14).
-- [ ] "Imprint lost: a curve in which two faces cross does not divide them": one cell of the helmet's 71, and an octant against a torus through the pole, tilted, at scale 1e6 (pinned).
-- [ ] A union of radial frustums that nearly meet towards the centre built an invalid body; the check caught it and the boolean refused (never returned).
 - [ ] Cuts through a pole: eight kinds that the tessellator declines or meshes with a gap (pinned, with a reproducer); poles both ways across a patch; a cusp.
 - [ ] A rational face on its analytic twin moved along itself, and two freeform faces on one surface (coincident freeform faces).
 - [ ] A cylinder inside a torus's tube touching its top with its axis square to the torus' axis (fourth-order contact; the random runs' seed 2001169).
@@ -254,6 +251,7 @@ Surface/surface intersection, imprint, classify and sew; union, subtract and int
 - Freeform faces with a pole, measured (`topo::mass_properties`) and cut; `feature.revolve` no longer refuses a spline that ends on the axis ([`architecture.md`](architecture.md) §5.3) (2026-10-14)
 - Every edge and vertex named after a boolean by its faces (`F7:between[…]`, `F7:corner[…]`) (2026-10-14)
 - What is asked again is answered from memory (pure results remembered) (2026-10-14)
+- The Voronoi helmet's findings: a lofted tool against a spline shell with a pole, pieces of curve between a freeform face's borders, a pole border that is no curve, a loop through a cut, a bound below the distance that is one; the octant against a torus through its pole at 1e6 ([`architecture.md`](architecture.md) §5.3) (2026-10-15)
 
 #### Open
 The [boolean checklist](#the-boolean-checklist) › *Owed*.
