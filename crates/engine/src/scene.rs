@@ -1102,31 +1102,51 @@ fn build(
             steps,
         });
         let left = budget.map(|max| max.saturating_sub(scene.mesh.triangles.len()));
-        let meshed = match per_body.filter(|_| budget.is_none()) {
-            Some(most) => tessellate_within_budget(
-                body,
-                &TessParams {
-                    max_triangles: Some(most),
-                    ..tess
-                },
-            )
-            .map(|within| {
-                if within.tolerance > tolerance {
-                    scene.coarsened = true;
-                }
-                (within.mesh, within.edges)
-            }),
-            None => tessellate_body_and_edges(
-                body,
-                &TessParams {
-                    max_triangles: left,
-                    ..tess
-                },
-            )
-            .and_then(|both| both.mesh.map(|mesh| (mesh, both.edges))),
+        // The mesh and the edges with the angle criterion `max_angle`, and
+        // whether the tolerance was coarsened for the body.
+        let mesh_with = |max_angle: Option<f64>| {
+            let meshed = match per_body.filter(|_| budget.is_none()) {
+                Some(most) => tessellate_within_budget(
+                    body,
+                    &TessParams {
+                        max_triangles: Some(most),
+                        max_angle,
+                        ..tess
+                    },
+                )
+                .map(|within| (within.mesh, within.edges, within.tolerance > tolerance)),
+                None => tessellate_body_and_edges(
+                    body,
+                    &TessParams {
+                        max_triangles: left,
+                        max_angle,
+                        ..tess
+                    },
+                )
+                .and_then(|both| both.mesh.map(|mesh| (mesh, both.edges, false))),
+            };
+            #[cfg(test)]
+            let meshed = tests::tessellated(meshed, max_angle.is_some());
+            meshed
         };
-        #[cfg(test)]
-        let meshed = tests::tessellated(meshed);
+        let meshed = match mesh_with(angle) {
+            // The angle is a wish: a body that cannot be meshed with it is
+            // drawn without it, as `view.render` draws it, rather than not
+            // at all. (Not a body over the budget, nor one a coarser
+            // tolerance is about to be tried for.)
+            Err(error)
+                if angle.is_some()
+                    && !matches!(error, TessError::OverBudget { .. })
+                    && !(budget.is_some() && matches!(error, TessError::TooFine { .. })) =>
+            {
+                mesh_with(None).map_err(|_| error)
+            }
+            other => other,
+        }
+        .map(|(mesh, edges, coarsened)| {
+            scene.coarsened |= coarsened;
+            (mesh, edges)
+        });
         let (mesh, edges) = match meshed {
             Ok(both) => both,
             Err(TessError::OverBudget {
@@ -1839,15 +1859,61 @@ mod tests {
         /// error.
         static TESSELLATION_FAILS: std::cell::RefCell<Option<TessError>> =
             const { std::cell::RefCell::new(None) };
+        /// Makes every body fail to tessellate with the angle criterion.
+        static ANGLE_FAILS: Cell<bool> = const { Cell::new(false) };
     }
 
     /// Called with what the tessellator made of each body: replaced by the
     /// error a test asked for.
-    pub(super) fn tessellated<T>(meshed: Result<T, TessError>) -> Result<T, TessError> {
+    pub(super) fn tessellated<T>(
+        meshed: Result<T, TessError>,
+        with_angle: bool,
+    ) -> Result<T, TessError> {
         match TESSELLATION_FAILS.with_borrow(Clone::clone) {
             Some(error) => Err(error),
+            None if with_angle && ANGLE_FAILS.get() => Err(TessError::Face {
+                face: 0,
+                reason: "the angle criterion fails here, on purpose".into(),
+            }),
             None => meshed,
         }
+    }
+
+    /// A body the angle criterion cannot be met on is drawn without it,
+    /// in the display scene and in the quick first picture's fall-back
+    /// alike, rather than not at all; nothing else changes.
+    #[test]
+    fn a_body_that_cannot_be_meshed_with_the_angle_is_drawn_without_it() {
+        let mut session = Session::new(Workspace::none());
+        run(&mut session, "file.new", serde_json::json!({}));
+        run(
+            &mut session,
+            "feature.cylinder",
+            serde_json::json!({"radius": 3, "height": 5}),
+        );
+        let quality = SceneQuality::Display {
+            relative: DISPLAY_RELATIVE_TOLERANCE,
+            max_triangles: DISPLAY_MAX_TRIANGLES,
+            max_angle: None,
+        };
+        let plain = session.scene_with(quality).unwrap().unwrap();
+        assert!(plain.problems.is_empty() && !plain.mesh.triangles.is_empty());
+        let mut session = Session::new(Workspace::none());
+        run(&mut session, "file.new", serde_json::json!({}));
+        run(
+            &mut session,
+            "feature.cylinder",
+            serde_json::json!({"radius": 3, "height": 5}),
+        );
+        ANGLE_FAILS.set(true);
+        let scene = session.scene_with(SceneQuality::display());
+        ANGLE_FAILS.set(false);
+        let scene = scene.unwrap().unwrap();
+        assert!(scene.problems.is_empty(), "{:?}", scene.problems);
+        assert_eq!(scene.max_angle, Some(DISPLAY_MAX_ANGLE));
+        // The mesh of the scene without the angle, at the same tolerance.
+        assert_eq!(scene.tolerance.to_bits(), plain.tolerance.to_bits());
+        assert_eq!(*scene.mesh, *plain.mesh);
     }
 
     /// The display rule tries coarser tolerances only for what a coarser

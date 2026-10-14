@@ -166,7 +166,10 @@ pub enum TessError {
     InvalidAngle(f64),
     /// The tolerance asks for more points than `TessParams::max_segments`
     /// allows. `patch` is the index of the patch, the face or (when the
-    /// edges are being turned into points) the edge.
+    /// edges are being turned into points) the edge. `needed_segments` is
+    /// infinite when the tolerance is finer than the face's coordinates
+    /// can resolve (no point fits between the corners of a triangle that
+    /// is still as large as the tolerance): there is no count to give.
     TooFine {
         patch: usize,
         needed_segments: f64,
@@ -213,6 +216,15 @@ impl fmt::Display for TessError {
                 f,
                 "the angle criterion must be an angle above 0 and at most a turn (in radians), \
                  got {a}"
+            ),
+            TessError::TooFine {
+                patch,
+                needed_segments,
+                ..
+            } if !needed_segments.is_finite() => write!(
+                f,
+                "patch {patch} asks for a tolerance finer than its coordinates can resolve; use \
+                 a larger tolerance"
             ),
             TessError::TooFine {
                 patch,
