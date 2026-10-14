@@ -38,25 +38,38 @@ use craft3d_expr::Evaluation;
 use craft3d_geom::Surface;
 use craft3d_kernel::extrude::Role;
 use craft3d_kernel::thread::{
-    IsoThread, RUN_OUT, ThreadPlace, designation, groove, iso_sizes, nominal_diameter,
+    IsoThread, RUN_OUT, ThreadPlace, coarse_pitch, designation, groove, iso_261_sizes, iso_sizes,
+    no_coarse_pitch, nominal_diameter,
 };
 use craft3d_math::Vec3;
 use craft3d_topo::{Body, FaceId};
 
 const NOUN: &str = "a thread";
 
+/// A cylindrical face to thread: its axis, radius and faces, and whether
+/// it is a hole (the material outside it).
+struct Cylindrical {
+    origin: Vec3,
+    axis: Vec3,
+    radius: f64,
+    faces: Vec<FaceId>,
+    hole: bool,
+}
+
 /// The axis and radius of the cylindrical face `name`.
 fn cylinder(
     name: &PersistentName,
     source_id: FeatureId,
     source: &Source<'_>,
-) -> Result<(Vec3, Vec3, f64, Vec<FaceId>), String> {
+) -> Result<Cylindrical, String> {
     let faces = face_ops::pick(std::slice::from_ref(name), "face", NOUN, source_id, source)?;
     let mut found: Option<(Vec3, Vec3, f64)> = None;
+    let mut hole = None;
     for face in &faces {
-        let Some(surface) = source.body.face(*face).map(|f| &f.surface) else {
+        let Some(face) = source.body.face(*face) else {
             continue;
         };
+        let surface = &face.surface;
         let Surface::Cylinder(c) = surface else {
             return Err(format!(
                 "face: {name} is a {} face; a thread is cut on a cylinder",
@@ -64,6 +77,19 @@ fn cylinder(
             ));
         };
         let here = (c.frame().origin(), c.frame().z(), c.radius());
+        // The surface's normal points away from the axis; the face's
+        // outside is the other way round when it is reversed: a hole.
+        let away = surface
+            .normal(0.0, 0.0)
+            .map(|n| n.dot(surface.eval(0.0, 0.0) - here.0))
+            .unwrap_or(1.0);
+        let inward = (away < 0.0) != face.reversed;
+        if hole.is_some_and(|h| h != inward) {
+            return Err(format!(
+                "face: the faces named {name} are a hole in one place and a shank in another"
+            ));
+        }
+        hole = Some(inward);
         match found {
             None => found = Some(here),
             // The pieces a cut divided the face into lie on one cylinder.
@@ -82,7 +108,13 @@ fn cylinder(
     }
     let (origin, axis, radius) =
         found.ok_or_else(|| format!("face: `{}` has no face {name}", source.made_by))?;
-    Ok((origin, axis, radius, faces))
+    Ok(Cylindrical {
+        origin,
+        axis,
+        radius,
+        faces,
+        hole: hole.unwrap_or(false),
+    })
 }
 
 /// The size of a thread as regeneration found it.
@@ -95,13 +127,20 @@ struct Size {
     iso: IsoThread,
 }
 
-/// Whether a face of `radius` takes the thread `iso`: the nominal
-/// diameter within half the tooth's depth below (a shank turned a little
-/// under size) and the groove's overshoot above (it has to break
-/// through).
-fn fits(iso: &IsoThread, radius: f64) -> bool {
-    radius <= iso.major / 2.0 + iso.overshoot() / 2.0
-        && radius >= iso.major / 2.0 - iso.depth() / 2.0
+/// Whether a face of `radius` takes the thread `iso`. A shank: the
+/// nominal diameter within half the tooth's depth below (a shank turned a
+/// little under size) and the groove's overshoot above (it has to break
+/// through). A hole: from the minor diameter less half the groove's
+/// overshoot inside it (the groove has to break through) to the tap
+/// drill's diameter, `D − P`, and an eighth of the pitch over it.
+fn fits(iso: &IsoThread, radius: f64, hole: bool) -> bool {
+    if hole {
+        radius >= iso.minor() / 2.0 - iso.overshoot() / 2.0
+            && radius <= (iso.tap_drill() + iso.pitch / 8.0) / 2.0
+    } else {
+        radius <= iso.major / 2.0 + iso.overshoot() / 2.0
+            && radius >= iso.major / 2.0 - iso.depth() / 2.0
+    }
 }
 
 /// The size and pitch of `thread` on a face of `radius`: the designation
@@ -114,6 +153,7 @@ fn resolve(
     variables: &Evaluation,
     thread: &Thread,
     radius: f64,
+    hole: bool,
     tol: f64,
 ) -> Result<Size, String> {
     let unit = doc.units.length.symbol();
@@ -167,16 +207,14 @@ fn resolve(
                 },
             }
         }
-        None => from_face(thread, radius, mm, given, unit)?,
+        None => from_face(thread, radius, hole, mm, given, unit)?,
     };
     let pitch = match given {
         Some(pitch) => pitch,
         None => match tabled(nominal_mm) {
             Some((_, pitch_mm)) => pitch_mm * mm,
             None => {
-                return Err(format!(
-                    "pitch: {name} has no coarse pitch in ISO 261; give `pitch`"
-                ));
+                return Err(format!("pitch: {}", no_coarse_pitch(&name, nominal_mm)));
             }
         },
     };
@@ -194,19 +232,25 @@ fn resolve(
 }
 
 /// The size of ISO 261 whose nominal diameter a face of `radius` has:
-/// the one (of the table) that would take the face if it were given, the
-/// nearest when two would. `given` is the pitch, when it is given; the
-/// margins are the ones of a thread of that pitch.
+/// the one (of the table, M1 to M68, with or without a coarse pitch) that
+/// would take the face if it were given, the nearest when two would.
+/// `given` is the pitch, when it is given; the margins are the ones of a
+/// thread of that pitch (else of the coarse pitch, or of the coarsest
+/// fine pitch of a size that has no coarse one).
 fn from_face(
     thread: &Thread,
     radius: f64,
+    hole: bool,
     mm: f64,
     given: Option<f64>,
     unit: &str,
 ) -> Result<(String, f64, f64), String> {
     let diameter = 2.0 * radius;
-    let mut best: Option<(f64, f64)> = None;
-    for (d, coarse) in iso_sizes() {
+    let mut best: Option<(f64, f64, IsoThread)> = None;
+    for (d, fine) in iso_261_sizes() {
+        let Some(coarse) = coarse_pitch(*d).or_else(|| fine.first().copied()) else {
+            continue;
+        };
         let nominal = d * mm;
         // A pitch given that no thread of this size can have is said by
         // the caller, for the size the face has: the size is found with
@@ -218,18 +262,41 @@ fn from_face(
         else {
             continue;
         };
-        if fits(&iso, radius)
-            && best.is_none_or(|(_, b)| (nominal - diameter).abs() < (b * mm - diameter).abs())
+        // A hole is nearest its size's tap drill.
+        let target = |iso: &IsoThread| {
+            if hole {
+                (iso.tap_drill() - diameter).abs()
+            } else {
+                (iso.major - diameter).abs()
+            }
+        };
+        if fits(&iso, radius, hole)
+            && best
+                .as_ref()
+                .is_none_or(|(_, _, b): &(f64, f64, IsoThread)| target(&iso) < target(b))
         {
-            best = Some((nominal, *d));
+            best = Some((nominal, *d, iso));
         }
     }
-    if let Some((nominal, d)) = best {
+    if let Some((nominal, d, _)) = best {
         return Ok((designation(d).unwrap_or_default(), d, nominal));
     }
-    // The sizes of the table on either side, for the message.
-    let below = iso_sizes().iter().rev().find(|(d, _)| d * mm < diameter);
-    let above = iso_sizes().iter().find(|(d, _)| d * mm >= diameter);
+    // The sizes of the table on either side, for the message: by their
+    // tap drills for a hole.
+    let across = |d: f64| {
+        if hole {
+            d - coarse_pitch(d).unwrap_or(0.0)
+        } else {
+            d
+        }
+    };
+    let below = iso_261_sizes()
+        .iter()
+        .rev()
+        .find(|(d, _)| across(*d) * mm < diameter);
+    let above = iso_261_sizes()
+        .iter()
+        .find(|(d, _)| across(*d) * mm >= diameter);
     let near: Vec<String> = [below, above]
         .into_iter()
         .flatten()
@@ -241,8 +308,13 @@ fn from_face(
             )
         })
         .collect();
+    let what = if hole {
+        "a hole of that diameter is tapped for no ISO metric size of the table (its diameter is between the minor diameter and the tap drill's, D − P)"
+    } else {
+        "which is the nominal diameter of no ISO metric size of the table"
+    };
     Err(format!(
-        "size: {} is {diameter} {unit} across, which is the nominal diameter of no ISO metric size of the table{}; give `size` (a designation such as M10, or a length) or make the face a size's diameter",
+        "size: {} is {diameter} {unit} across, {what}{}; give `size` (a designation such as M10, or a length) or make the face a size's diameter",
         thread.face,
         if near.is_empty() {
             String::new()
@@ -298,7 +370,13 @@ pub(crate) fn build(
             thread.start, thread.start.feature, source.made_by
         ));
     }
-    let (origin, axis, radius, faces) = cylinder(&thread.face, source_id, &source)?;
+    let Cylindrical {
+        origin,
+        axis,
+        radius,
+        faces,
+        hole,
+    } = cylinder(&thread.face, source_id, &source)?;
 
     // Where the axis passes through the start face, and which way the
     // cylinder goes from there.
@@ -350,7 +428,7 @@ pub(crate) fn build(
     };
 
     let unit = doc.units.length.symbol();
-    let size = resolve(doc, variables, thread, radius, tol)?;
+    let size = resolve(doc, variables, thread, radius, hole, tol)?;
     let (nominal, pitch, iso) = (size.nominal, size.pitch, size.iso);
     let run = length(doc, variables, "length", &thread.length)?;
     if pitch.is_nan() || pitch <= tol {
@@ -360,13 +438,23 @@ pub(crate) fn build(
         return Err(format!("length: {run} {unit} is not a length above 0"));
     }
     let diameter = 2.0 * radius;
-    if !fits(&iso, radius) {
-        return Err(format!(
-            "face: {} is {diameter} {unit} across; {} is cut on a cylinder of its nominal diameter, {nominal} {unit} (minor diameter {} {unit})",
-            thread.face,
-            size.designation,
-            iso.minor()
-        ));
+    if !fits(&iso, radius, hole) {
+        return Err(if hole {
+            format!(
+                "face: {} is a hole {diameter} {unit} across; {} is tapped in a hole of its tap drill's diameter, {} {unit} (the minor diameter {} {unit} up to that)",
+                thread.face,
+                size.designation,
+                iso.tap_drill(),
+                iso.minor()
+            )
+        } else {
+            format!(
+                "face: {} is {diameter} {unit} across; {} is cut on a cylinder of its nominal diameter, {nominal} {unit} (minor diameter {} {unit})",
+                thread.face,
+                size.designation,
+                iso.minor()
+            )
+        });
     }
     // The groove is half a pitch wide at most on either side of its
     // centre, and the run-out takes it a quarter of a pitch further.
@@ -387,6 +475,7 @@ pub(crate) fn build(
         left_handed: thread.left_handed,
         cosmetic: !thread.modeled,
         deviation: 0.0,
+        internal: hole,
     };
 
     if !thread.modeled {
@@ -418,6 +507,7 @@ pub(crate) fn build(
         across,
         length: run,
         left_handed: thread.left_handed,
+        internal: hole,
     };
     let (swept, _) = groove(&iso, &place, &source.tolerance)
         .map_err(|error| format!("the groove of the thread cannot be made: {error}"))?;

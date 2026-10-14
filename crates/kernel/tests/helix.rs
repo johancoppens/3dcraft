@@ -487,6 +487,7 @@ fn threaded(thread: &IsoThread, top: f64, length: f64, chamfer: f64) -> (Body, B
         across: Vec3::X,
         length,
         left_handed: false,
+        internal: false,
     };
     let (groove, _) = craft3d_kernel::thread::groove(thread, &place, &tol(1.0)).unwrap();
     let cut = craft3d_kernel::boolean::boolean(
@@ -642,7 +643,11 @@ fn iso_sizes_and_pitches_are_read_from_their_designation() {
     assert_eq!(coarse_pitch(10.0), Some(1.5));
     assert_eq!(coarse_pitch(3.0), Some(0.5));
     assert_eq!(coarse_pitch(24.0), Some(3.0));
-    assert_eq!(coarse_pitch(11.0), None);
+    // ISO 261: M11 is a third-choice size with a coarse pitch of 1.5
+    // (2026-10-15: the table had left it out); M15 has fine pitches only.
+    assert_eq!(coarse_pitch(11.0), Some(1.5));
+    assert_eq!(coarse_pitch(15.0), None);
+    assert_eq!(coarse_pitch(70.0), None);
     assert!(IsoThread::new(10.0, 0.0).is_err());
     assert!(IsoThread::new(10.0, 12.0).is_err());
     assert!(IsoThread::new(f64::NAN, 1.0).is_err());
@@ -658,7 +663,7 @@ fn a_nominal_diameter_has_a_designation_and_the_table_is_in_order() {
         assert_eq!(designation(bad), None, "{bad}");
     }
     let sizes = iso_sizes();
-    assert_eq!(sizes.len(), 26);
+    assert_eq!(sizes.len(), 40);
     for pair in sizes.windows(2) {
         assert!(pair[0].0 < pair[1].0, "{pair:?}");
     }
@@ -667,4 +672,248 @@ fn a_nominal_diameter_has_a_designation_and_the_table_is_in_order() {
         // Every designation reads back as its diameter.
         assert_eq!(nominal_diameter(&designation(*d).unwrap()), Some(*d));
     }
+}
+
+/// The ISO 261 table from M1 to M68, against the standard's values
+/// written out here (coarse pitch, or none, and the fine pitches): every
+/// size, first, second and third choice. ISO 262's selected sizes and
+/// pitches are among them.
+#[test]
+fn the_iso_261_table_has_every_size_from_m1_to_m68() {
+    use craft3d_kernel::thread::{
+        coarse_pitch, fine_pitches, iso_261_sizes, iso_sizes, no_coarse_pitch,
+    };
+    #[rustfmt::skip]
+    let iso_261: [(f64, Option<f64>, &[f64]); 55] = [
+        (1.0, Some(0.25), &[0.2]), (1.1, Some(0.25), &[0.2]), (1.2, Some(0.25), &[0.2]),
+        (1.4, Some(0.3), &[0.2]), (1.6, Some(0.35), &[0.2]), (1.8, Some(0.35), &[0.2]),
+        (2.0, Some(0.4), &[0.25]), (2.2, Some(0.45), &[0.25]), (2.5, Some(0.45), &[0.35]),
+        (3.0, Some(0.5), &[0.35]), (3.5, Some(0.6), &[0.35]), (4.0, Some(0.7), &[0.5]),
+        (4.5, Some(0.75), &[0.5]), (5.0, Some(0.8), &[0.5]), (5.5, None, &[0.5]),
+        (6.0, Some(1.0), &[0.75]), (7.0, Some(1.0), &[0.75]), (8.0, Some(1.25), &[1.0, 0.75]),
+        (9.0, Some(1.25), &[1.0, 0.75]), (10.0, Some(1.5), &[1.25, 1.0, 0.75]),
+        (11.0, Some(1.5), &[1.0, 0.75]), (12.0, Some(1.75), &[1.5, 1.25, 1.0]),
+        (14.0, Some(2.0), &[1.5, 1.25, 1.0]), (15.0, None, &[1.5, 1.0]),
+        (16.0, Some(2.0), &[1.5, 1.0]), (17.0, None, &[1.5, 1.0]),
+        (18.0, Some(2.5), &[2.0, 1.5, 1.0]), (20.0, Some(2.5), &[2.0, 1.5, 1.0]),
+        (22.0, Some(2.5), &[2.0, 1.5, 1.0]), (24.0, Some(3.0), &[2.0, 1.5, 1.0]),
+        (25.0, None, &[2.0, 1.5, 1.0]), (26.0, None, &[1.5]),
+        (27.0, Some(3.0), &[2.0, 1.5, 1.0]), (28.0, None, &[2.0, 1.5, 1.0]),
+        (30.0, Some(3.5), &[3.0, 2.0, 1.5, 1.0]), (32.0, None, &[2.0, 1.5]),
+        (33.0, Some(3.5), &[3.0, 2.0, 1.5]), (35.0, None, &[1.5]),
+        (36.0, Some(4.0), &[3.0, 2.0, 1.5]), (38.0, None, &[1.5]),
+        (39.0, Some(4.0), &[3.0, 2.0, 1.5]), (40.0, None, &[3.0, 2.0, 1.5]),
+        (42.0, Some(4.5), &[4.0, 3.0, 2.0, 1.5]), (45.0, Some(4.5), &[4.0, 3.0, 2.0, 1.5]),
+        (48.0, Some(5.0), &[4.0, 3.0, 2.0, 1.5]), (50.0, None, &[3.0, 2.0, 1.5]),
+        (52.0, Some(5.0), &[4.0, 3.0, 2.0, 1.5]), (55.0, None, &[4.0, 3.0, 2.0, 1.5]),
+        (56.0, Some(5.5), &[4.0, 3.0, 2.0, 1.5]), (58.0, None, &[4.0, 3.0, 2.0, 1.5]),
+        (60.0, Some(5.5), &[4.0, 3.0, 2.0, 1.5]), (62.0, None, &[4.0, 3.0, 2.0, 1.5]),
+        (64.0, Some(6.0), &[4.0, 3.0, 2.0, 1.5]), (65.0, None, &[4.0, 3.0, 2.0, 1.5]),
+        (68.0, Some(6.0), &[4.0, 3.0, 2.0, 1.5]),
+    ];
+    assert_eq!(iso_261_sizes().len(), iso_261.len());
+    for (&(d, coarse, fine), (td, tfine)) in iso_261.iter().zip(iso_261_sizes()) {
+        assert_eq!(d, *td);
+        assert_eq!(coarse_pitch(d), coarse, "M{d}");
+        assert_eq!(fine_pitches(d), Some(fine), "M{d}");
+        assert_eq!(*tfine, fine, "M{d}");
+        // The fine pitches are finer than the coarse one, coarsest first.
+        for pair in fine.windows(2) {
+            assert!(pair[0] > pair[1], "M{d}");
+        }
+        if let Some(coarse) = coarse {
+            assert!(fine[0] < coarse, "M{d}");
+        }
+    }
+    // The coarse table is the sizes that have a coarse pitch.
+    let with_coarse: Vec<(f64, f64)> = iso_261
+        .iter()
+        .filter_map(|(d, c, _)| c.map(|c| (*d, c)))
+        .collect();
+    assert_eq!(iso_sizes(), with_coarse.as_slice());
+    assert_eq!(fine_pitches(13.0), None);
+    let said = no_coarse_pitch("M15", 15.0);
+    assert!(
+        said.contains("1.5, 1 mm") && said.contains("give `pitch`"),
+        "{said}"
+    );
+    let said = no_coarse_pitch("M70", 70.0);
+    assert!(said.contains("no size of its table"), "{said}");
+}
+
+/// A tube about z from z = 0 to `top`: a hole of radius `hole` in a
+/// cylinder of radius `outer`.
+fn tube(hole: f64, outer: f64, top: f64) -> Body {
+    let corners = [[hole, 0.0], [outer, 0.0], [outer, top], [hole, top]];
+    let outline = profile(&common::polygon(11, 1, &corners), 1.0);
+    craft3d_kernel::revolve::revolve(
+        &[outline],
+        &axial(),
+        [0.0, 0.0],
+        [0.0, 1.0],
+        0.0,
+        TAU,
+        &tol(1.0),
+    )
+    .unwrap()
+    .body
+}
+
+/// What the groove of an internal thread removes from the wall round a
+/// hole of radius `hole`, as [`removed`] does for a shank: the flux of
+/// the screw motion, `∫ dθ ∫∫ r dA` over the part of the groove outside
+/// the hole. The groove is `P/8 + 2 s tan 30°` wide at `s` in from the
+/// major radius; along the run-out it has moved in by `ρ(φ)`.
+fn removed_internal(thread: &IsoThread, hole: f64, length: f64) -> f64 {
+    let (p, big) = (thread.pitch, thread.major / 2.0);
+    let slope = 2.0 / 3.0_f64.sqrt();
+    let deepest = thread.depth() + thread.overshoot();
+    // ∫ (big − s − ρ) (P/8 + slope s) ds over s from 0 to where the
+    // groove leaves the wall.
+    let moment = |rho: f64| -> f64 {
+        let to = (big - rho - hole).clamp(0.0, deepest);
+        let a = big - rho;
+        let f = |s: f64| {
+            a * p / 8.0 * s + (a * slope - p / 8.0) * s * s / 2.0 - slope * s * s * s / 3.0
+        };
+        f(to)
+    };
+    let main = moment(0.0) * TAU * length / p;
+    let rise = thread.depth() + thread.triangle() / 8.0;
+    let n = 2000;
+    let h = FRAC_PI_2 / n as f64;
+    let mut run = 0.0;
+    for i in 0..=n {
+        let phi = h * i as f64;
+        let rho = rise * (phi / FRAC_PI_2).powi(2);
+        let w = if i == 0 || i == n {
+            1.0
+        } else if i % 2 == 1 {
+            4.0
+        } else {
+            2.0
+        };
+        run += w * moment(rho);
+    }
+    main + run * h / 3.0
+}
+
+/// Tapped holes: the groove of the internal thread (the nut's basic
+/// profile) cut into the wall of a tube from z = 0, 12 long at full
+/// depth, for M10 × 1.5 in a hole of its tap drill (8.5) and M6 × 1 in a
+/// hole of its minor diameter. Valid, not through itself, the volume
+/// removed the flux integral of the groove outside the hole, and the
+/// thread's root at the major diameter (a section through the axis).
+/// The groove alone has the area `(P/8 + 3P/4)/2 · 5H/8` at its centre
+/// radius inside the major diameter: with the external groove's, a
+/// pitch times the tooth's depth.
+#[test]
+fn an_internal_thread_is_cut_into_the_wall_of_a_hole() {
+    for (major, pitch, at_drill) in [(10.0, 1.5, true), (6.0, 1.0, false)] {
+        let thread = IsoThread::new(major, pitch).unwrap();
+        close(
+            thread.groove_area() + thread.internal_groove_area(),
+            pitch * thread.depth(),
+            1e-12,
+        );
+        let hole = if at_drill {
+            thread.tap_drill() / 2.0
+        } else {
+            thread.minor() / 2.0
+        };
+        let blank = tube(hole, 0.9 * major, 20.0);
+        let place = ThreadPlace {
+            start: Vec3::ZERO,
+            along: Vec3::Z,
+            across: Vec3::X,
+            length: 12.0,
+            left_handed: false,
+            internal: true,
+        };
+        let (groove, _) = craft3d_kernel::thread::groove(&thread, &place, &tol(1.0)).unwrap();
+        assert!(groove.deviation <= 0.5e-6);
+        let cut = craft3d_kernel::boolean::boolean(
+            &blank,
+            &groove.body,
+            craft3d_kernel::boolean::BooleanOp::Subtract,
+            &tol(1.0),
+        )
+        .unwrap()
+        .body;
+        assert_eq!(check(&cut, &tol(1.0)), vec![]);
+        let removed =
+            mass_properties(&blank).unwrap().volume - mass_properties(&cut).unwrap().volume;
+        let expected = removed_internal(&thread, hole, 12.0);
+        let slack = 0.5e-6 * 10.0 * (12.0 / pitch + 2.0);
+        eprintln!(
+            "M{major} x {pitch} internal: removed {removed} against {expected}; deviation {}",
+            groove.deviation
+        );
+        assert!(
+            (removed - expected).abs() < slack,
+            "removed {removed} against {expected}"
+        );
+        let found = body_self_intersections(&cut, &SelfCheckParams::new(1e-6)).unwrap();
+        assert!(found.is_clean(), "{found}");
+        // The root, by a section of a mesh through the axis along the
+        // full thread: the farthest crossing from the axis on +x.
+        let mesh = tessellate_body(
+            &cut,
+            &TessParams {
+                chordal_tolerance: 1e-4,
+                ..TessParams::default()
+            },
+        )
+        .unwrap();
+        let mut most: f64 = 0.0;
+        for t in 0..mesh.triangles.len() {
+            let corners = mesh.corners(t).unwrap();
+            for (a, b) in [(0, 1), (1, 2), (2, 0)] {
+                let (a, b) = (corners[a], corners[b]);
+                if (a.y > 0.0) == (b.y > 0.0) {
+                    continue;
+                }
+                let at = a + (b - a) * (a.y / (a.y - b.y));
+                if at.x > 0.0 && at.x < 0.8 * major && at.z > 2.0 && at.z < 10.0 {
+                    most = most.max(at.x);
+                }
+            }
+        }
+        assert!(
+            (most - major / 2.0).abs() < 2e-4,
+            "root at {most} against {}",
+            major / 2.0
+        );
+    }
+}
+
+/// The internal groove's run-out goes towards the axis; one that would
+/// reach it is refused.
+#[test]
+fn a_run_out_towards_the_axis_stays_clear_of_it() {
+    let h = helix(4.0, 1.5, 2.0, false);
+    let why = refusal(sweep_helix(
+        &groove(1.0, 4.0, 5.0, 1.0),
+        &axial(),
+        &h,
+        Some(RunOut {
+            angle: FRAC_PI_2,
+            rise: -4.5,
+        }),
+        &tol(1.0),
+    ));
+    assert!(why.contains("towards the axis"), "{why}");
+    assert!(
+        sweep_helix(
+            &groove(1.0, 4.0, 5.0, 1.0),
+            &axial(),
+            &h,
+            Some(RunOut {
+                angle: FRAC_PI_2,
+                rise: -1.0,
+            }),
+            &tol(1.0),
+        )
+        .is_ok()
+    );
 }
