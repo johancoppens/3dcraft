@@ -78,7 +78,7 @@ mod native {
     use craft3d_doc::FeatureId;
     use craft3d_math::{Bbox3, Vec3};
     use craft3d_regen::Status;
-    use craft3d_render::{Camera, RenderParams};
+    use craft3d_render::{Camera, Projection, RenderParams};
     use craft3d_tess::{Mesh, TessParams, tessellate_body};
     use craft3d_topo::Body;
     use std::sync::Arc;
@@ -224,17 +224,73 @@ mod native {
         cores.min(16).min(usize::try_from(fit).unwrap_or(16)).max(1)
     }
 
-    /// The box the camera frames when it orbits: wide enough in x and y
-    /// that the model turned about the vertical through its centre stays
-    /// inside it.
-    fn orbit_box(model: &Bbox3) -> Option<Bbox3> {
-        let (lo, hi) = model.corners()?;
-        let c = model.center()?;
-        let r = (hi.x - c.x).hypot(hi.y - c.y);
-        Some(Bbox3::from_points([
-            Vec3::new(c.x - r, c.y - r, lo.z),
-            Vec3::new(c.x + r, c.y + r, hi.z),
-        ]))
+    /// The camera of an orbit: framed so that the box `framed` stays in
+    /// the picture, with the same 5 % margin as `view.render`, from every
+    /// angle the camera turns through (sampled every 2 degrees; between
+    /// samples the margin covers the difference). The angles are of the
+    /// camera about the vertical through the box's centre; seen from the
+    /// camera, the box turns the other way.
+    fn orbit_camera(framing: &Framing, framed: &Bbox3, orbit: f64, aspect: f64) -> Option<Camera> {
+        let center = framed.center()?;
+        let (lo, hi) = framed.corners()?;
+        let (toward_eye, up) = framing.direction();
+        let dir = toward_eye.normalized()?;
+        let right = up.cross(dir).normalized()?;
+        let view_up = dir.cross(right);
+        let sweep = orbit.abs().min(360.0);
+        // Bounded: at most 180 samples.
+        let samples = (sweep / 2.0).ceil().clamp(1.0, 180.0) as u32;
+        let mut points = Vec::new();
+        for k in 0..=samples {
+            let angle = -orbit.signum() * sweep * f64::from(k) / f64::from(samples);
+            let (s, c) = angle.to_radians().sin_cos();
+            for x in [lo.x, hi.x] {
+                for y in [lo.y, hi.y] {
+                    for z in [lo.z, hi.z] {
+                        let r = Vec3::new(x, y, z) - center;
+                        points.push(Vec3::new(c * r.x - s * r.y, s * r.x + c * r.y, r.z));
+                    }
+                }
+            }
+        }
+        let projection;
+        let distance;
+        if framing.orthographic {
+            let (mut half_height, mut reach) = (0.0_f64, 0.0_f64);
+            for r in &points {
+                half_height = half_height
+                    .max(r.dot(view_up).abs())
+                    .max(r.dot(right).abs() / aspect);
+                reach = reach.max(r.dot(dir));
+            }
+            let half_height = half_height * 1.05;
+            distance = reach * 1.05 + half_height;
+            projection = Projection::Orthographic { half_height };
+            if !(half_height.is_finite() && half_height > 0.0) {
+                return None;
+            }
+        } else {
+            let fov_y_deg = 30.0_f64;
+            let half_y = (fov_y_deg.to_radians() * 0.5).tan();
+            let half_x = half_y * aspect;
+            let mut far = 0.0_f64;
+            for r in &points {
+                let along = r.dot(dir);
+                far = far
+                    .max(along + r.dot(right).abs() / half_x)
+                    .max(along + r.dot(view_up).abs() / half_y);
+            }
+            distance = far * 1.05;
+            projection = Projection::Perspective { fov_y_deg };
+        }
+        (distance.is_finite() && distance > 0.0).then_some(())?;
+        Camera {
+            eye: center + dir * distance,
+            target: center,
+            up,
+            projection,
+        }
+        .zoomed(framing.zoom)
     }
 
     /// `camera` turned by `degrees` about the vertical through its target.
@@ -401,9 +457,8 @@ mod native {
         let camera = if orbit == 0.0 {
             framing.camera(&model, aspect)?
         } else {
-            let wide = orbit_box(&model)
-                .ok_or_else(|| CommandError::new("view.replay: cannot frame the model"))?;
-            framing.camera(&wide, aspect)?
+            orbit_camera(&framing, &framing.look_at.unwrap_or(model), orbit, aspect)
+                .ok_or_else(|| CommandError::new("view.replay: cannot frame the model"))?
         };
         // Both are within 16..=4096.
         let render_params = RenderParams {

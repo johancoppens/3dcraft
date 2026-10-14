@@ -65,7 +65,15 @@ fn find_ffmpeg() -> Option<PathBuf> {
 }
 
 /// The arguments for `ffmpeg` that make `out` of the frames in `frames`.
-fn ffmpeg_args(kind: Output, frames: &Path, count: u64, fps: u64, out: &str) -> Vec<String> {
+fn ffmpeg_args(
+    kind: Output,
+    frames: &Path,
+    count: u64,
+    fps: u64,
+    out: &str,
+    captions_track: bool,
+    codec: &[&str],
+) -> Vec<String> {
     let pattern = frames.join("frame-%05d.png");
     let captions = frames.join("captions.srt");
     let mut a: Vec<String> = ["-y", "-hide_banner", "-loglevel", "error", "-framerate"]
@@ -74,15 +82,15 @@ fn ffmpeg_args(kind: Output, frames: &Path, count: u64, fps: u64, out: &str) -> 
     a.push(fps.to_string());
     a.push("-i".into());
     a.push(pattern.to_string_lossy().into_owned());
-    let has_captions = std::fs::metadata(&captions).is_ok_and(|m| m.len() > 0);
     match kind {
         Output::Mp4 => {
-            if has_captions {
+            if captions_track {
                 // A subtitle track the player can switch on: no font is
                 // needed to make the video.
                 a.extend(["-i".into(), captions.to_string_lossy().into_owned()]);
                 a.extend(["-map", "0:v", "-map", "1:s", "-c:s", "mov_text"].map(String::from));
             }
+            a.extend(codec.iter().map(|s| (*s).to_string()));
             // H.264 wants even sides and 4:2:0 for players to show it.
             a.extend(
                 [
@@ -111,6 +119,24 @@ fn ffmpeg_args(kind: Output, frames: &Path, count: u64, fps: u64, out: &str) -> 
     }
     a.extend(["-frames:v".into(), count.to_string(), out.to_string()]);
     a
+}
+
+/// The video encoder for an MP4: H.264 by x264 or OpenH264 when this
+/// ffmpeg has one (what browsers and players expect), else ffmpeg's own
+/// choice for the container (MPEG-4 part 2 in builds without H.264).
+fn video_codec(encoders: &str) -> &'static [&'static str] {
+    let has = |name: &str| {
+        encoders
+            .lines()
+            .any(|line| line.split_whitespace().nth(1) == Some(name))
+    };
+    if has("libx264") {
+        &["-c:v", "libx264", "-crf", "18", "-preset", "slow"]
+    } else if has("libopenh264") {
+        &["-c:v", "libopenh264", "-b:v", "8M"]
+    } else {
+        &["-q:v", "2"]
+    }
 }
 
 /// Removes what `view.replay` wrote into `frames`, and the directory when
@@ -247,15 +273,43 @@ pub(crate) fn replay(mut args: Args) -> Result<Parsed<()>, CliError> {
             )));
         };
         let frames = Path::new(&frames_dir);
-        let ran = Command::new(&ffmpeg)
-            .args(ffmpeg_args(kind, frames, count, fps, &out))
-            .output()
-            .map_err(|e| {
-                CliError::Failed(format!(
-                    "cannot run `{}`: {e}; the frames are in `{frames_dir}`",
-                    ffmpeg.display()
+        let codec = match kind {
+            Output::Mp4 => Command::new(&ffmpeg)
+                .args(["-hide_banner", "-encoders"])
+                .output()
+                .map(|o| video_codec(&String::from_utf8_lossy(&o.stdout)))
+                .unwrap_or(&[]),
+            _ => &[],
+        };
+        let make = |captions_track: bool| {
+            Command::new(&ffmpeg)
+                .args(ffmpeg_args(
+                    kind,
+                    frames,
+                    count,
+                    fps,
+                    &out,
+                    captions_track,
+                    codec,
                 ))
-            })?;
+                .output()
+                .map_err(|e| {
+                    CliError::Failed(format!(
+                        "cannot run `{}`: {e}; the frames are in `{frames_dir}`",
+                        ffmpeg.display()
+                    ))
+                })
+        };
+        // An MP4 gets the captions as a subtitle track, when this ffmpeg
+        // has the encoder for it (mov_text; some builds leave it out).
+        let wanted = kind == Output::Mp4
+            && std::fs::metadata(frames.join("captions.srt")).is_ok_and(|m| m.len() > 0);
+        let mut ran = make(wanted)?;
+        let mut captions_track = wanted;
+        if wanted && !ran.status.success() {
+            ran = make(false)?;
+            captions_track = false;
+        }
         if !ran.status.success() {
             let said = String::from_utf8_lossy(&ran.stderr);
             return Err(CliError::Failed(format!(
@@ -263,6 +317,11 @@ pub(crate) fn replay(mut args: Args) -> Result<Parsed<()>, CliError> {
                 ran.status,
                 said.trim()
             )));
+        }
+        if let Some(map) = result.as_object_mut()
+            && kind == Output::Mp4
+        {
+            map.insert("captionsTrack".into(), captions_track.into());
         }
         if let Some(map) = result.as_object_mut() {
             map.insert("video".into(), out.clone().into());
@@ -293,7 +352,7 @@ mod tests {
 
     #[test]
     fn ffmpeg_reads_the_frames_at_the_frame_rate_and_stops_at_the_count() {
-        let a = ffmpeg_args(Output::Gif, Path::new("d"), 12, 24, "o.gif");
+        let a = ffmpeg_args(Output::Gif, Path::new("d"), 12, 24, "o.gif", false, &[]);
         let joined = a.join(" ");
         assert!(
             joined.contains("-framerate 24 -i d/frame-%05d.png"),
@@ -301,7 +360,34 @@ mod tests {
         );
         assert!(joined.ends_with("-frames:v 12 o.gif"), "{joined}");
         assert!(joined.contains("palettegen"), "{joined}");
-        let a = ffmpeg_args(Output::Mp4, Path::new("d"), 3, 30, "o.mp4").join(" ");
+        let a = ffmpeg_args(Output::Mp4, Path::new("d"), 3, 30, "o.mp4", true, &[]).join(" ");
         assert!(a.contains("yuv420p"), "{a}");
+        assert!(
+            a.contains("-i d/captions.srt") && a.contains("mov_text"),
+            "{a}"
+        );
+        let a = ffmpeg_args(
+            Output::Mp4,
+            Path::new("d"),
+            3,
+            30,
+            "o.mp4",
+            false,
+            &["-c:v", "x"],
+        )
+        .join(" ");
+        assert!(!a.contains("captions"), "{a}");
+        assert!(a.contains("-c:v x -vf"), "{a}");
+    }
+
+    #[test]
+    fn h264_is_preferred_when_this_ffmpeg_has_it() {
+        let list = " V....D libx264  x264\n V....D libopenh264  OpenH264\n";
+        assert_eq!(video_codec(list)[1], "libx264");
+        assert_eq!(
+            video_codec(" V....D libopenh264  OpenH264\n")[1],
+            "libopenh264"
+        );
+        assert_eq!(video_codec(" V....D mpeg4  MPEG-4\n"), &["-q:v", "2"]);
     }
 }

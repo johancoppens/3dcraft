@@ -248,8 +248,21 @@ fn an_orbit_turns_the_camera_and_ends_where_it_says() {
     let a = decode(&out.join("frame-00006.png")).2;
     let b = decode(&out.join("frame-00007.png")).2;
     assert_ne!(a, b);
-    let last = decode(&out.join("frame-00008.png")).2;
-    assert!(last.chunks(3).any(|p| p != BACKGROUND));
+    // Every frame has the model in it and nothing of it on the border:
+    // the framing holds from every angle.
+    for i in 1..9 {
+        let (w, h, rgb) = decode(&out.join(format!("frame-{i:05}.png")));
+        assert!(rgb.chunks(3).any(|p| p != BACKGROUND), "frame {i} is empty");
+        let at = |x: usize, y: usize| &rgb[(y * w + x) * 3..(y * w + x) * 3 + 3];
+        for x in 0..w {
+            assert_eq!(at(x, 0), BACKGROUND, "frame {i}");
+            assert_eq!(at(x, h - 1), BACKGROUND, "frame {i}");
+        }
+        for y in 0..h {
+            assert_eq!(at(0, y), BACKGROUND, "frame {i}");
+            assert_eq!(at(w - 1, y), BACKGROUND, "frame {i}");
+        }
+    }
 }
 
 #[test]

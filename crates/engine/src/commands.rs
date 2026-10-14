@@ -1999,6 +1999,11 @@ impl Framing {
         })
     }
 
+    /// The direction from the model towards the eye, and up.
+    pub fn direction(&self) -> (Vec3, Vec3) {
+        (self.toward_eye, self.up)
+    }
+
     /// The camera for a picture of `aspect` (width over height) of a model
     /// that fills `model`.
     pub fn camera(&self, model: &craft3d_math::Bbox3, aspect: f64) -> Result<Camera, CommandError> {
