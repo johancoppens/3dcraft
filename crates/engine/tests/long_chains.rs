@@ -3,8 +3,9 @@
 //! the growing body in as the tool every time. Until 2026-10-14 a name
 //! grew a link per feature and the 33rd such feature failed ("more than
 //! 32 features in a row each make their body from the one before"); a
-//! copy of a copy is now one link (docs/architecture.md §4.1), so the
-//! names stay short however long the row is.
+//! run of copies that each take instance 0, or that each take another
+//! instance, is now one link (docs/architecture.md §4.1, *Copies of
+//! copies*), so the names stay short however long the row is.
 //!
 //! The timing at a thousand holes is ignored by default:
 //! `cargo test --release -p craft3d-engine --test long_chains -- --ignored --nocapture`.

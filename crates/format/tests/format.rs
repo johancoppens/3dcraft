@@ -1466,7 +1466,8 @@ fn moved_mirrored_and_repeated_bodies_are_written_like_this_and_round_trip() {
     }
     assert!(with(9, "/kind/plane/face", deep).is_err());
     // A copy of a copy in the long form, as a version-14 file has it, is
-    // read as the one link it is now, however long the row of copies.
+    // read in the short form, however long the row of copies: the run of
+    // instance 0 is one link, the tool one more.
     let mut long = serde_json::json!({"feature": 6, "role": "endCap", "sources": [1]});
     for feature in 0..40 {
         let instance = u64::from(feature == 0);

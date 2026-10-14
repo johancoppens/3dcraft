@@ -628,6 +628,12 @@ pub(crate) fn resolve_face(
     Ok(frame)
 }
 
+/// What one step of the way of a copy does to a face's frame: the map of
+/// its instance, where a face operation moved the face (the point on its
+/// plane, its outward normal, and whether it is the face of a hollow),
+/// and whether a subtraction turned it inside out.
+type Carried = (craft3d_math::Transform, Option<(Vec3, Vec3, bool)>, bool);
+
 /// One step of the way of a copy (see [`resolve_face`]): `link` is what
 /// the face is called in the body of `feature`, where it is in instance
 /// `instance`. Pushes the map of that instance, and how the feature moved
@@ -639,7 +645,7 @@ fn walk_copy(
     feature: craft3d_doc::FeatureId,
     instance: u64,
     link: &PersistentName,
-    maps: &mut Vec<(craft3d_math::Transform, Option<(Vec3, Vec3, bool)>, bool)>,
+    maps: &mut Vec<Carried>,
 ) -> Result<(), String> {
     let (source, outcome, _) = maker(doc, earlier, feature, name)?;
     let made_by = &source.name;
