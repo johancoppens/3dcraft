@@ -6,6 +6,19 @@ Decisions that shape the project, newest first, each with its reason. An agent t
 
 ## Taken
 
+### 2026-10-14: The boolean's leftovers of the night (branch `contact-2`), decided by an agent, for the developer to overturn
+
+Taken while clearing the refusals the tangent-contact work left (architecture §5.1 and §5.3); nobody was awake to ask.
+
+- **A touch that dips through a surface by less than half the tolerance sits where it dips deepest**, between the two crossings it stands for (`hits.rs::deepest`), not on whichever crossing the search for the nearest point happened on. Half the tolerance is the rule the boolean already uses for faces that go through each other ("touching"). A deeper dip keeps a crossing, on the surface: putting the vertex at the deepest point there moved `near/cone-torus/011` (one tolerance in) from agreeing to refused, so it was not done. The previous agent's diagnosis of `near/cone-dome/005` (a boundary stretch not cut at a rim vertex) was right about the symptom; cutting stretches at rim vertices in `mod.rs` was built, made the next check fail (the cut piece was "inside" one face and on the rim of the other), and was dropped for the cause.
+- **A circle about the axis of a cone, sphere or torus is decided by one point** when its offset from the axis plus its radius times its tilt is at most a quarter of the tolerance, and by the root isolation otherwise. Where the root isolation succeeded the answer is the same; it only changes where it gave up.
+- **A line along a ruling of a cone through its apex is on the cone on the cone's side and meets it at the apex, a touch**, when it is within a quarter of the tolerance of the ruling over the piece; on the other side it is left to the root isolation. The apex is the one place such an edge has to be cut; where the piece starts on the cone is its own vertex.
+- **A torus in a torus from inside needs the middle circles' radii more than the tube's radius plus a tolerance apart**; nearer, the second curve does not reach the plane (two loops), and the pair goes to the marcher as before. The position must fit within half a tolerance, as for the cylinder.
+- **The marcher may look at a million cells** before it calls a near-tangency too large an area (it was 400,000): two corpus pairs needed 401,264 and 440,000 and are right by the integrated common volume. A refusal of that kind now takes up to two and a half times as long to come. *Overturn by:* tighter derivative bounds near a point of tangency, which would cut the cell count rather than allow more.
+- **A coincident pair with a freeform face is not merged across operands**, and a point of one coincident surface that is not on the other is off the other face. Merging a piece of a cylinder into a face on a rational patch made a face that ran off its patch (an invalid body, caught by the checker).
+- **`blend::join` stays.** With fillet chains not joined (an experiment, reverted) every fillet and chamfer test passes, but none of them has two arcs of a chain next to each other, so whether the boolean now builds such a chain's separate tools is not shown. *Overturn by:* a fillet test of an S-shaped rim with `join` off.
+- **The corpus prints each outcome's three lines in one print**, so that a run's verbose output can be compared case by case with another's (the lines of parallel cases interleaved before).
+
 ### 2026-10-14: Freeform faces with a pole, decided by an agent overnight, for the developer to overturn
 
 Taken while making a face with a collapsed border measurable and a boolean operand (`architecture.md` §5.3 › *Freeform faces with a pole*); nobody was awake to ask.

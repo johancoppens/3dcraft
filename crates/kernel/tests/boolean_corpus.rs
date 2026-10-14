@@ -88,7 +88,7 @@ use std::path::PathBuf;
 /// of a crossing the surfaces are a tenth of a tolerance apart at is no
 /// longer drawn twice: four `near` cases of a block or a dome against a
 /// roof).
-const AGREEING_FLOOR: usize = 11564;
+const AGREEING_FLOOR: usize = 11573;
 
 /// Mismatches the kernel is known to have: `(case id, operation, why)`.
 /// They are bugs, listed so that the test is green while they are open and
