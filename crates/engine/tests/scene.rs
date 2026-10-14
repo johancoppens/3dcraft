@@ -745,6 +745,12 @@ fn mesh_area(scene: &Scene) -> f64 {
         .sum()
 }
 
+/// A display tolerance well below the first picture's, for the tests of
+/// the triangle budget: the display rule's default until 2026-10-14,
+/// before the angle criterion let it go to `DISPLAY_RELATIVE_TOLERANCE`.
+const FINE: f64 = 3e-5;
+
+/// The display rule at `relative` with the chordal tolerance alone.
 fn display(session: &mut Session, relative: f64, max_triangles: usize) -> Arc<Scene> {
     session
         .scene_with(SceneQuality::Display {
@@ -840,14 +846,14 @@ fn the_triangle_budget_coarsens_the_display_down_to_the_first_pictures_tolerance
     let mut s = session();
     part(&mut s);
     let automatic = first_picture(&mut s);
-    let fine = display(&mut s, DISPLAY_RELATIVE_TOLERANCE, usize::MAX);
+    let fine = display(&mut s, FINE, usize::MAX);
     assert!(!fine.coarsened);
     assert!(fine.triangles() > automatic.triangles() + 100);
 
     // A budget between the two: a scene that fits it, coarser than asked,
     // finer than automatic, and complete.
     let budget = (automatic.triangles() + fine.triangles()) / 2;
-    let fitted = display(&mut s, DISPLAY_RELATIVE_TOLERANCE, budget);
+    let fitted = display(&mut s, FINE, budget);
     assert!(fitted.coarsened);
     assert!(
         fitted.triangles() <= budget,
@@ -860,12 +866,12 @@ fn the_triangle_budget_coarsens_the_display_down_to_the_first_pictures_tolerance
     assert!(fitted.problems.is_empty(), "{:?}", fitted.problems);
     // The budget is the exact count: one more triangle and the fit is
     // the same scene; the fitted count itself is not refused.
-    let again = display(&mut s, DISPLAY_RELATIVE_TOLERANCE, fitted.triangles());
+    let again = display(&mut s, FINE, fitted.triangles());
     assert!(again.triangles() <= fitted.triangles());
 
     // A budget no scene can meet: the first picture, bit for bit, over
     // budget and said to be coarsened (and no longer a preview).
-    let floor = display(&mut s, DISPLAY_RELATIVE_TOLERANCE, 1);
+    let floor = display(&mut s, FINE, 1);
     assert!(floor.coarsened);
     assert_eq!(floor.tolerance, automatic.tolerance);
     assert_eq!(floor.mesh, automatic.mesh);
@@ -961,14 +967,14 @@ fn a_scene_under_a_budget_is_the_scene_at_its_tolerance_without_one() {
     let mut s = session();
     part(&mut s);
     let automatic = first_picture(&mut s);
-    let fine = display(&mut s, DISPLAY_RELATIVE_TOLERANCE, usize::MAX);
+    let fine = display(&mut s, FINE, usize::MAX);
     let (least, most) = (automatic.triangles(), fine.triangles());
     let mut last = automatic.tolerance;
     let mut within = 0;
     for step in 0..=12 {
         // From below the automatic scene's count to the fine scene's own.
         let budget = least / 2 + (most - least / 2) * step / 12;
-        let shown = display(&mut s, DISPLAY_RELATIVE_TOLERANCE, budget);
+        let shown = display(&mut s, FINE, budget);
         println!(
             "budget {budget:>6}: tolerance {:.6}, {} triangles",
             shown.tolerance,

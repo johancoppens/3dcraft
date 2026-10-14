@@ -9,8 +9,8 @@
 )]
 
 use craft3d_engine::{
-    AUTOMATIC_RELATIVE_TOLERANCE, DISPLAY_MAX_TRIANGLES, DISPLAY_RELATIVE_TOLERANCE, FeatureState,
-    SceneQuality, Session, Workspace,
+    AUTOMATIC_RELATIVE_TOLERANCE, DISPLAY_MAX_ANGLE_DEGREES, DISPLAY_MAX_TRIANGLES,
+    DISPLAY_RELATIVE_TOLERANCE, FeatureState, SceneQuality, Session, Workspace,
 };
 use craft3d_ui_egui::camera::{ORBIT_DEGREES_PER_POINT, Projector};
 use craft3d_ui_egui::shell::image_quality;
@@ -1207,7 +1207,7 @@ fn the_viewport_asks_for_the_display_quality_and_ui_set_changes_it() {
     let got = call(&mut shell, &mut session, "ui.get", json!({})).unwrap();
     assert_eq!(
         got["state"]["quality"],
-        json!({"chordal": DISPLAY_RELATIVE_TOLERANCE, "maxTriangles": DISPLAY_MAX_TRIANGLES})
+        json!({"chordal": DISPLAY_RELATIVE_TOLERANCE, "maxTriangles": DISPLAY_MAX_TRIANGLES, "angle": DISPLAY_MAX_ANGLE_DEGREES})
     );
     assert_eq!(got["scene"]["tolerance"], shown.tolerance);
     assert_eq!(got["scene"]["coarsened"], false);
@@ -1221,12 +1221,12 @@ fn the_viewport_asks_for_the_display_quality_and_ui_set_changes_it() {
         &mut shell,
         &mut session,
         "ui.set",
-        json!({"quality": {"chordal": AUTOMATIC_RELATIVE_TOLERANCE}}),
+        json!({"quality": {"chordal": AUTOMATIC_RELATIVE_TOLERANCE, "angle": 0}}),
     )
     .unwrap();
     assert_eq!(
         set["state"]["quality"],
-        json!({"chordal": AUTOMATIC_RELATIVE_TOLERANCE, "maxTriangles": DISPLAY_MAX_TRIANGLES})
+        json!({"chordal": AUTOMATIC_RELATIVE_TOLERANCE, "maxTriangles": DISPLAY_MAX_TRIANGLES, "angle": 0.0})
     );
     window.idle(&mut shell, &mut session, 2);
     let coarse = shell.sync(&mut session).unwrap();
@@ -1267,6 +1267,7 @@ fn the_viewport_asks_for_the_display_quality_and_ui_set_changes_it() {
         json!({"quality": {"chordal": "fine"}}),
         json!({"quality": {"maxTriangles": -5}}),
         json!({"quality": {"maxTriangles": 2.5}}),
+        json!({"quality": {"angle": "round"}}),
         json!({"quality": {"level": 2}}),
         json!({"quality": {"chordal": 1e-4}, "bogus": true}),
     ] {

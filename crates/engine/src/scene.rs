@@ -64,7 +64,10 @@ pub const DISPLAY_RELATIVE_TOLERANCE: f64 = 2e-4;
 /// it a polygon of a few sides (docs/architecture.md §6, *What a viewer
 /// draws*). The quick first picture has the chordal tolerance alone: it
 /// is there to be quick.
-pub const DISPLAY_MAX_ANGLE: f64 = 12.0 * std::f64::consts::PI / 180.0;
+pub const DISPLAY_MAX_ANGLE: f64 = DISPLAY_MAX_ANGLE_DEGREES * (std::f64::consts::PI / 180.0);
+
+/// [`DISPLAY_MAX_ANGLE`] in degrees, as `ui.set quality` takes it.
+pub const DISPLAY_MAX_ANGLE_DEGREES: f64 = 12.0;
 
 /// The display rule's default triangle budget: the mesh is coarsened
 /// until the scene has at most this many triangles, but never beyond the
@@ -1412,12 +1415,13 @@ fn build_for_display(
             ..preview.clone()
         }
     } else {
-        // Each body within the budget on its own, as in the first picture.
+        // No budget, but each body within the display's default on its
+        // own, as in the first picture.
         let sampling = Sampling {
             tolerance,
             angle,
             budget: None,
-            per_body: Some(max_triangles),
+            per_body: Some(DISPLAY_MAX_TRIANGLES),
         };
         match build(doc, regen, revision, sampling, Some(cancel)) {
             (_, Some(Stop::Cancelled)) => return None,

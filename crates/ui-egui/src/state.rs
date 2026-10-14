@@ -4,7 +4,8 @@
 //! (AGENTS.md rule 9). Nothing here belongs to a document.
 
 use craft3d_engine::{
-    DISPLAY_MAX_ANGLE, DISPLAY_MAX_TRIANGLES, DISPLAY_RELATIVE_TOLERANCE, SceneQuality,
+    DISPLAY_MAX_ANGLE, DISPLAY_MAX_ANGLE_DEGREES, DISPLAY_MAX_TRIANGLES,
+    DISPLAY_RELATIVE_TOLERANCE, SceneQuality,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -74,7 +75,7 @@ impl Default for DisplayQuality {
         Self {
             chordal: DISPLAY_RELATIVE_TOLERANCE,
             max_triangles: u64::try_from(DISPLAY_MAX_TRIANGLES).unwrap_or(u64::MAX),
-            angle: DISPLAY_MAX_ANGLE.to_degrees(),
+            angle: DISPLAY_MAX_ANGLE_DEGREES,
         }
     }
 }
@@ -94,7 +95,7 @@ impl DisplayQuality {
         SceneQuality::Display {
             relative: self.chordal,
             max_triangles: usize::try_from(self.max_triangles).unwrap_or(usize::MAX),
-            max_angle: (self.angle > 0.0).then(|| self.angle.to_radians()),
+            max_angle: (self.angle > 0.0).then(|| self.angle * (std::f64::consts::PI / 180.0)),
         }
     }
 }
@@ -827,7 +828,7 @@ mod tests {
                 "panels": {"tree": false, "status": true, "recovery": false},
                 "selectedFeature": "F3",
                 "notice": "Step 2: the post",
-                "quality": {"chordal": 1e-4, "maxTriangles": 500_000},
+                "quality": {"chordal": 1e-4, "maxTriangles": 500_000, "angle": 20.0},
                 "highlight": {"feature": "F3", "face": "F3:face(2)"},
                 "highlightEdge": {"feature": "F3", "edge": null,
                                   "between": ["F3:face(0)", "F3:face(2)"]},
@@ -1055,7 +1056,7 @@ mod tests {
             DisplayQuality {
                 chordal: DISPLAY_RELATIVE_TOLERANCE,
                 max_triangles: DISPLAY_MAX_TRIANGLES as u64,
-                angle: DISPLAY_MAX_ANGLE.to_degrees(),
+                angle: DISPLAY_MAX_ANGLE_DEGREES,
             }
         );
         assert_eq!(state.quality.scene_quality(), SceneQuality::display());
@@ -1074,7 +1075,7 @@ mod tests {
             SceneQuality::Display {
                 relative: 1e-4,
                 max_triangles: 250_000,
-                max_angle: Some(DISPLAY_MAX_ANGLE.to_degrees().to_radians()),
+                max_angle: Some(DISPLAY_MAX_ANGLE),
             }
         );
         // The angle in degrees; none at 0, clamped above.

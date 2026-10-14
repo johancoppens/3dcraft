@@ -1233,7 +1233,7 @@ fn a_change_of_display_quality_reaches_the_direct_path() {
         &mut shell,
         &mut session,
         "ui.set",
-        json!({"quality": {"chordal": 1e-3}}),
+        json!({"quality": {"chordal": 1e-3, "angle": 0}}),
     );
     window.frame(&mut shell, &mut session, Vec::new());
     assert_eq!(shell.render_count(), renders + 1);
@@ -1437,10 +1437,34 @@ fn the_flange_holes_are_round_at_the_display_quality() {
             );
             print!("{line}");
             log.push_str(&line);
+            // How far the rim of the hole, as meshed, strays from the
+            // circle: the sag of its longest chord, in pixels. Since
+            // 2026-10-14 the display quality's angle criterion, not its
+            // chordal tolerance, decides it on a hole this small.
+            let rim_sag_mm = scene
+                .bodies
+                .iter()
+                .flat_map(|body| &body.edges)
+                .filter(|edge| {
+                    edge.len() > 2
+                        && edge.iter().all(|p| {
+                            ((p.x - 30.0).hypot(p.y) - 4.0).abs() < 1e-6
+                                && (p.z - 10.0).abs() < 1e-6
+                        })
+                })
+                .flat_map(|edge| edge.windows(2))
+                .map(|w| {
+                    let mid = w[0].lerp(w[1], 0.5);
+                    4.0 - (mid.x - 30.0).hypot(mid.y)
+                })
+                .fold(f64::NAN, f64::max);
+            let rim_px = rim_sag_mm * px_per_mm;
+            print!("  rim of the hole: {rim_sag_mm:.5} mm, {rim_px:.3} px\n");
             if label == "display" {
                 assert!(!scene.coarsened);
                 assert!(chord_px < 1.0 / 3.0, "{chord_px} px");
-                assert!(chord_px * 4.0 < 1.0, "{chord_px} px at four times the zoom");
+                assert!(rim_px < 1.0 / 3.0, "{rim_px} px");
+                assert!(rim_px * 4.0 < 1.0, "{rim_px} px at four times the zoom");
             } else {
                 assert!(chord_px > 1.0 / 3.0, "{chord_px} px");
             }
