@@ -1402,7 +1402,7 @@ fn a_kink_the_profile_turns_through_within_the_tolerance_is_swept() {
             if what == "a spline after a kink" {
                 // A straight spline, leaving the arc's end turned by `a`.
                 let Curve2::Arc { center, end, .. } = path[1].curve else {
-                    unreachable!()
+                    panic!("the second piece is an arc")
                 };
                 let out = [end[0] - center[0], end[1] - center[1]];
                 let heading = turned([-out[1] / (5.0 * k), out[0] / (5.0 * k)], a);

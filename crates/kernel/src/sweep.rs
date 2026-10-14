@@ -1824,7 +1824,7 @@ impl Builder {
 /// end rounded to four decimals gives, is 1.5e-5) is not a distance any
 /// point of the body is off.
 fn kink_movement(turn: f64, same: f64, reach: f64) -> f64 {
-    if !(same > 0.0) {
+    if same.is_nan() || same <= 0.0 {
         return f64::INFINITY;
     }
     // 1 - cos a, without the cancellation.
@@ -2223,7 +2223,7 @@ pub fn sweep(
                 let next = if square {
                     let stretch = next.u.length();
                     let drawn_in = reach * (stretch - 1.0).abs();
-                    if !(drawn_in <= tol / 2.0) {
+                    if drawn_in.is_nan() || drawn_in > tol / 2.0 {
                         return Err(refuse(
                             &[leg.source],
                             format!(
@@ -2330,7 +2330,7 @@ pub fn sweep(
                 // The end of the path is square to it, within the tolerance.
                 if !closed && last {
                     let skew = reach * sin;
-                    if !(skew <= tol / 2.0) {
+                    if skew.is_nan() || skew > tol / 2.0 {
                         return Err(refuse(
                             &[leg.source],
                             format!(
