@@ -1106,24 +1106,24 @@ fn build(
         // whether the tolerance was coarsened for the body.
         let mesh_with = |max_angle: Option<f64>| {
             let meshed = match per_body.filter(|_| budget.is_none()) {
-            Some(most) => tessellate_within_budget(
-                body,
-                &TessParams {
-                    max_triangles: Some(most),
-                    max_angle,
-                    ..tess
-                },
-            )
-            .map(|within| (within.mesh, within.edges, within.tolerance > tolerance)),
-            None => tessellate_body_and_edges(
-                body,
-                &TessParams {
-                    max_triangles: left,
-                    max_angle,
-                    ..tess
-                },
-            )
-            .and_then(|both| both.mesh.map(|mesh| (mesh, both.edges, false))),
+                Some(most) => tessellate_within_budget(
+                    body,
+                    &TessParams {
+                        max_triangles: Some(most),
+                        max_angle,
+                        ..tess
+                    },
+                )
+                .map(|within| (within.mesh, within.edges, within.tolerance > tolerance)),
+                None => tessellate_body_and_edges(
+                    body,
+                    &TessParams {
+                        max_triangles: left,
+                        max_angle,
+                        ..tess
+                    },
+                )
+                .and_then(|both| both.mesh.map(|mesh| (mesh, both.edges, false))),
             };
             #[cfg(test)]
             let meshed = tests::tessellated(meshed, max_angle.is_some());

@@ -3702,8 +3702,7 @@ pub(crate) fn mesh_face(
                 // moves towards the chord without end. (The plane is
                 // scaled to lengths in space.)
                 if in_bulge.is_none_or(|(o, _)| off < o)
-                    && chord_bulge(&work.param, p, q)
-                        .is_some_and(|aside| off <= NEAR_BULGE * aside)
+                    && chord_bulge(&work.param, p, q).is_some_and(|aside| off <= NEAR_BULGE * aside)
                 {
                     in_bulge = Some((off, *chord));
                 }
@@ -3734,7 +3733,11 @@ pub(crate) fn mesh_face(
             let [Some(a), Some(b), Some(c)] = view.v.map(|v| work.vertex(v)) else {
                 return None;
             };
-            Some(a.1.distance(b.1).max(b.1.distance(c.1)).max(c.1.distance(a.1)))
+            Some(
+                a.1.distance(b.1)
+                    .max(b.1.distance(c.1))
+                    .max(c.1.distance(a.1)),
+            )
         });
         match longest {
             Some(longest) if longest < work.tolerance => TessError::Face {
