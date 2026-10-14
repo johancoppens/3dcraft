@@ -299,3 +299,247 @@ fn the_cut_edge_of_a_casing_through_its_root_fillet() {
         assert!(removed > 9.0 * corner * k.powi(3) && removed < 10.0 * corner * k.powi(3));
     }
 }
+
+/// A cubic Bézier in the plane.
+#[derive(Clone, Copy)]
+struct Bez([[f64; 2]; 4]);
+
+impl Bez {
+    fn d(&self, t: f64) -> [f64; 2] {
+        let s = 1.0 - t;
+        let p = self.0;
+        let c = [3.0 * s * s, 6.0 * s * t, 3.0 * t * t];
+        let q = |i: usize, k: usize| p[i + 1][k] - p[i][k];
+        [
+            c[0] * q(0, 0) + c[1] * q(1, 0) + c[2] * q(2, 0),
+            c[0] * q(0, 1) + c[1] * q(1, 1) + c[2] * q(2, 1),
+        ]
+    }
+
+    /// Its length, by Gauss-Legendre over 64 pieces.
+    fn length(&self) -> f64 {
+        let nodes = [
+            (-0.906_179_845_938_664, 0.236_926_885_056_189),
+            (-0.538_469_310_105_683, 0.478_628_670_499_366),
+            (0.0, 0.568_888_888_888_889),
+            (0.538_469_310_105_683, 0.478_628_670_499_366),
+            (0.906_179_845_938_664, 0.236_926_885_056_189),
+        ];
+        let n = 64;
+        let mut sum = 0.0;
+        for i in 0..n {
+            let (a, b) = (f64::from(i) / f64::from(n), f64::from(i + 1) / f64::from(n));
+            for (x, w) in nodes {
+                let d = self.d(0.5 * (a + b) + 0.5 * (b - a) * x);
+                sum += 0.5 * (b - a) * w * d[0].hypot(d[1]);
+            }
+        }
+        sum
+    }
+
+    fn scaled(&self, k: f64) -> Bez {
+        Bez(self.0.map(|p| [p[0] * k, p[1] * k]))
+    }
+}
+
+/// What a fillet of radius `r` along the rim of the cap of a prism whose
+/// walls stand square on it takes away, when the rim is `length` long and
+/// turns by `turning` (counter-clockwise seen from outside the cap, the
+/// material to the left): in every plane across the rim the corner of a
+/// square of side r less a quarter of the disc, swept along the rim; a
+/// strip at distance w in from the wall is shortened by the factor
+/// (1 − κw) where the rim curves by κ, so the volume is the area times the
+/// length less the section's first moment about the wall times the
+/// turning (Pappus-Guldinus along a plane curve). The ends, if any, have
+/// to be square to the rim.
+fn swept_corner(r: f64, length: f64, turning: f64) -> f64 {
+    let area = r * r * (1.0 - std::f64::consts::FRAC_PI_4);
+    let moment = r * r * r * (5.0 / 6.0 - std::f64::consts::FRAC_PI_4);
+    area * length - moment * turning
+}
+
+fn bezier(id: u64, b: &Bez) -> SketchCurve {
+    use craft3d_kernel::profile::Spline2;
+    SketchCurve {
+        id,
+        curve: Curve2::Spline(Spline2 {
+            degree: 3,
+            knots: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            control: b.0.to_vec(),
+        }),
+    }
+}
+
+/// The prism of `curves` in `frame` from 0 to `height`.
+fn prism(curves: &[SketchCurve], frame: &Frame, height: f64, k: f64) -> Body {
+    use craft3d_kernel::extrude::extrude;
+    let tol = tolerance(k);
+    let profiles = detect_profiles(curves, &tol).unwrap();
+    extrude(&profiles, frame, 0.0, height, &tol).unwrap().body
+}
+
+/// The edges of the top cap's rim near the given points of the outline.
+fn rim(body: &Body, frame: &Frame, height: f64, points: &[[f64; 2]]) -> Vec<EdgeId> {
+    points
+        .iter()
+        .map(|p| edge_near(body, frame.point(p[0], p[1], height)))
+        .collect()
+}
+
+/// A smooth closed outline of a line, a half circle and a Bézier, all
+/// tangent where they meet, extruded: its top rim is one chain of three
+/// edges between the cap and three walls (a plane, a cylinder, a spline
+/// surface), each joint a place where the wall changes across a smooth
+/// edge. Rounded, it loses exactly the swept corner over the whole rim,
+/// which turns once round.
+#[test]
+fn the_rim_of_a_smooth_outline_all_round() {
+    let (a, b) = (1.0, 1.0);
+    let s = Bez([[a, b], [a - 3.0, b], [-a - 3.0, -b], [-a, -b]]);
+    let r = 0.1;
+    let height = 2.0;
+    let length = 2.0 * a + std::f64::consts::PI * b + s.length();
+    let tilted = Frame::new(
+        Vec3::new(0.3, -0.2, 0.1),
+        Vec3::new(0.2, -0.3, 1.0),
+        Vec3::new(1.0, 0.4, 0.0),
+    )
+    .unwrap();
+    for (k, frame) in SCALES
+        .iter()
+        .map(|k| (*k, Frame::WORLD))
+        .chain([(1.0, tilted)])
+    {
+        let tol = tolerance(k);
+        let frame = frame.at(frame.origin() * k).unwrap();
+        let curves = vec![
+            SketchCurve {
+                id: 1,
+                curve: Curve2::Line {
+                    start: [-a * k, -b * k],
+                    end: [a * k, -b * k],
+                },
+            },
+            SketchCurve {
+                id: 2,
+                curve: Curve2::Arc {
+                    center: [a * k, 0.0],
+                    start: [a * k, -b * k],
+                    end: [a * k, b * k],
+                },
+            },
+            bezier(3, &s.scaled(k)),
+        ];
+        let body = prism(&curves, &frame, height * k, k);
+        let chain = rim(
+            &body,
+            &frame,
+            height * k,
+            &[[0.0, -b * k], [(a + b) * k, 0.0], [-2.25 * k, 0.0]],
+        );
+        let edges: Vec<FilletEdge> = chain
+            .iter()
+            .map(|e| FilletEdge {
+                edge: *e,
+                radius: r * k,
+            })
+            .collect();
+        let made = match fillet(&body, &edges, &tol) {
+            Ok(m) => m,
+            Err(e) => panic!("scale {k}: {e}"),
+        };
+        assert_eq!(check(&made.body, &tol), []);
+        let removed = mass(&body).volume - mass(&made.body).volume;
+        let expected = swept_corner(r * k, length * k, std::f64::consts::TAU);
+        let (crease, seams) = creases(&made.body, &made.faces);
+        println!(
+            "scale {k}: removed {removed:e}, expected {expected:e} (off by {:e} of the tolerance times the fillet's area), crease {crease:e} over {seams}",
+            (removed - expected) / (tol.linear * length * k * r * k * std::f64::consts::FRAC_PI_2)
+        );
+        // Three faces with two borders each, and three joints.
+        assert_eq!(seams, 9);
+        assert!(crease <= 10.0 * tol.linear / (r * k), "a crease of {crease}");
+        // The fillet faces are within a quarter of the tolerance of the
+        // true surface, whose area is the quarter cylinder's along the
+        // rim, about.
+        let bound = 0.25 * tol.linear * length * k * r * k * std::f64::consts::FRAC_PI_2;
+        assert!(
+            (removed - expected).abs() <= bound,
+            "removed {removed} instead of {expected}, more than {bound} off"
+        );
+    }
+}
+
+/// An open outline: a line, a half circle and a Bézier, tangent where they
+/// meet, closed by a straight back that is square to both ends of that
+/// chain. Its top rim from corner to corner is one chain; the fillet ends
+/// in the back wall, which lies in the plane across the chain at both
+/// ends, so it loses exactly the swept corner, turning by half a turn.
+#[test]
+fn a_chain_from_corner_to_corner() {
+    let (l1, rr, h) = (2.0, 1.0, 3.0);
+    let s = Bez([[l1, 2.0 * rr], [1.2, 2.0 * rr], [0.8, h], [0.0, h]]);
+    let r = 0.1;
+    let height = 1.5;
+    let length = l1 + std::f64::consts::PI * rr + s.length();
+    for k in SCALES {
+        let tol = tolerance(k);
+        let frame = Frame::WORLD;
+        let line = |id: u64, a: [f64; 2], b: [f64; 2]| SketchCurve {
+            id,
+            curve: Curve2::Line {
+                start: [a[0] * k, a[1] * k],
+                end: [b[0] * k, b[1] * k],
+            },
+        };
+        let curves = vec![
+            line(1, [0.0, 0.0], [l1, 0.0]),
+            SketchCurve {
+                id: 2,
+                curve: Curve2::Arc {
+                    center: [l1 * k, rr * k],
+                    start: [l1 * k, 0.0],
+                    end: [l1 * k, 2.0 * rr * k],
+                },
+            },
+            bezier(3, &s.scaled(k)),
+            line(4, [0.0, h], [0.0, 0.0]),
+        ];
+        let body = prism(&curves, &frame, height * k, k);
+        let chain = rim(
+            &body,
+            &frame,
+            height * k,
+            &[[0.5 * l1 * k, 0.0], [(l1 + rr) * k, rr * k], [k, 2.5 * k]],
+        );
+        let edges: Vec<FilletEdge> = chain
+            .iter()
+            .map(|e| FilletEdge {
+                edge: *e,
+                radius: r * k,
+            })
+            .collect();
+        let made = match fillet(&body, &edges, &tol) {
+            Ok(m) => m,
+            Err(e) => panic!("scale {k}: {e}"),
+        };
+        assert_eq!(check(&made.body, &tol), []);
+        let removed = mass(&body).volume - mass(&made.body).volume;
+        let expected = swept_corner(r * k, length * k, std::f64::consts::PI);
+        let (crease, seams) = creases(&made.body, &made.faces);
+        println!(
+            "scale {k}: removed {removed:e}, expected {expected:e} (off by {:e} of the tolerance times the fillet's area), crease {crease:e} over {seams}",
+            (removed - expected) / (tol.linear * length * k * r * k * std::f64::consts::FRAC_PI_2)
+        );
+        assert_eq!(seams, 8);
+        assert!(crease <= 10.0 * tol.linear / (r * k), "a crease of {crease}");
+        // The fillet faces are within a quarter of the tolerance of the
+        // true surface, whose area is the quarter cylinder's along the
+        // rim, about.
+        let bound = 0.25 * tol.linear * length * k * r * k * std::f64::consts::FRAC_PI_2;
+        assert!(
+            (removed - expected).abs() <= bound,
+            "removed {removed} instead of {expected}, more than {bound} off"
+        );
+    }
+}
