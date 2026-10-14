@@ -303,22 +303,22 @@ impl IsoThread {
         let root = self.major / 2.0;
         let inner = self.minor() / 2.0 - self.overshoot();
         let half = 3.0 * p / 8.0 + self.overshoot() / 3.0_f64.sqrt();
+        // The root first, as for the external groove.
         let corners = [
+            [root, p / 16.0],
             [root, -p / 16.0],
             [inner, -half],
             [inner, half],
-            [root, p / 16.0],
         ];
-        // The root first, as for the external groove.
-        let order = [3, 0, 1, 2];
-        order
+        corners
             .iter()
+            .zip(corners.iter().cycle().skip(1))
             .zip(1..)
-            .map(|(&i, id)| SketchCurve {
+            .map(|((start, end), id)| SketchCurve {
                 id,
                 curve: Curve2::Line {
-                    start: corners[i % 4],
-                    end: corners[(i + 1) % 4],
+                    start: *start,
+                    end: *end,
                 },
             })
             .collect()
