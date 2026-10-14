@@ -169,6 +169,82 @@ fn scenes_of(name: &str, mesh: &Mesh, cap: bool, start: usize, out: &mut Vec<Sce
     }
 }
 
+/// What a failing comparison leaves behind, before it fails: the CPU
+/// picture, the GPU picture and their differences
+/// (`failed-<scene>-<backend>-<kind>.png` in the evidence directory), and a
+/// text with every pixel outside the band whose colour is two or more
+/// levels off, the box around them, and the scene rendered three times
+/// more on the same renderer: a frame that comes out right again is a race
+/// (in our passes or in the driver), one that is wrong every time is a
+/// defect of the algorithm. The text also goes to stderr, so a gate log
+/// has it. A rare failure on Mesa's OpenGL in the full gate (16 pixels, 3+
+/// levels off, ids right) could not be reproduced outside it; this is what
+/// will tell its cause the next time.
+fn record_failure(
+    scene: &Scene,
+    adapter: &craft3d_gpu::AdapterSummary,
+    cpu: &craft3d_gpu::Frame,
+    gpu: &craft3d_gpu::Frame,
+    band: &[bool],
+    offscreen: &mut craft3d_gpu::Offscreen,
+) {
+    let base = format!(
+        "failed-{}-{}-{}",
+        scene.name,
+        adapter.backend.to_lowercase(),
+        adapter.device_type.to_lowercase()
+    );
+    let png = write_evidence(&format!("{base}.png"), cpu, gpu, band);
+    let w = cpu.width as usize;
+    let mut text = format!(
+        "{} on {adapter}: {}x{}, ssaa {}, pictures in {}\n",
+        scene.name,
+        cpu.width,
+        cpu.height,
+        scene.params.ssaa,
+        png.display()
+    );
+    let off = |frame: &craft3d_gpu::Frame, i: usize| {
+        (0..3)
+            .map(|c| cpu.rgb[i * 3 + c].abs_diff(frame.rgb[i * 3 + c]))
+            .max()
+            .unwrap_or(0)
+    };
+    let mut bounds: Option<(usize, usize, usize, usize)> = None;
+    for i in (0..cpu.ids.len()).filter(|&i| !band[i] && off(gpu, i) >= 2) {
+        let (x, y) = (i % w, i / w);
+        bounds = Some(bounds.map_or((x, y, x, y), |(x0, y0, x1, y1)| {
+            (x0.min(x), y0.min(y), x1.max(x), y1.max(y))
+        }));
+        text.push_str(&format!(
+            "  ({x}, {y}): cpu {:?} id {}, gpu {:?} id {}\n",
+            &cpu.rgb[i * 3..i * 3 + 3],
+            cpu.ids[i],
+            &gpu.rgb[i * 3..i * 3 + 3],
+            gpu.ids[i]
+        ));
+    }
+    if let Some((x0, y0, x1, y1)) = bounds {
+        text.push_str(&format!("  within x {x0}..={x1}, y {y0}..={y1}\n"));
+    }
+    for again in 1..=3 {
+        match offscreen.render(&scene.mesh, &scene.camera, &scene.params) {
+            Ok(next) => {
+                let still = (0..cpu.ids.len())
+                    .filter(|&i| !band[i] && off(&next, i) >= 2)
+                    .count();
+                text.push_str(&format!(
+                    "  rendered again ({again}): {} the failing frame, {still} pixels off\n",
+                    if next == *gpu { "the same as" } else { "not" }
+                ));
+            }
+            Err(e) => text.push_str(&format!("  rendered again ({again}): {e}\n")),
+        }
+    }
+    let _ = std::fs::write(evidence(&format!("{base}.txt")), &text);
+    eprintln!("{text}");
+}
+
 /// Renders every scene with both renderers on every adapter and checks
 /// parity. Returns the number of comparisons.
 fn check(group: &str, scenes: &[Scene]) -> usize {
@@ -209,6 +285,9 @@ fn check(group: &str, scenes: &[Scene]) -> usize {
             }
             let caps = cpu.ids.iter().filter(|&&id| id == SECTION_FACE).count();
             log.push_str(&format!("{label}: cap pixels {caps}, {parity:?}\n"));
+            if parity.id_outside + parity.depth_outside + parity.color_outside > 0 {
+                record_failure(scene, &adapter, &cpu, &gpu, &band, &mut offscreen);
+            }
             parity.check(&label);
             let differing: usize = parity.color_histogram.iter().skip(1).sum();
             worst.0 = worst.0.max(differing);
@@ -264,10 +343,9 @@ fn cut_open_reference_solids_match_the_cpu_renderer() {
     assert_eq!(compared, all.len() * 14 * offscreens().len());
 }
 
-#[test]
-fn cut_open_solids_at_other_scales_match_the_cpu_renderer() {
-    // A thousandth, a million times, and ten million units from the
-    // origin: one plane and one opacity each.
+/// A thousandth, a million times, and ten million units from the origin:
+/// for every reference solid one plane, opaque or see-through.
+fn scales_scenes() -> Vec<Scene> {
     let near = Vec3::new(3.0, -2.0, 5.0);
     let mut scenes = Vec::new();
     for (round, (scale, origin)) in [
@@ -296,8 +374,90 @@ fn cut_open_solids_at_other_scales_match_the_cpu_renderer() {
             scenes.extend(of_solid.into_iter().skip(pick).take(1));
         }
     }
+    scenes
+}
+
+#[test]
+fn cut_open_solids_at_other_scales_match_the_cpu_renderer() {
+    let scenes = scales_scenes();
     assert!(scenes.len() > 30);
     check("scales", &scenes);
+}
+
+fn env_count(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+/// A stress test for races, not run by default: the scenes of the test
+/// above, drawn over and over on every adapter by `CRAFT3D_REPEAT_THREADS`
+/// threads at once (each with its own devices) for `CRAFT3D_REPEAT_ROUNDS`
+/// rounds. Every frame must be the first frame of its scene, bit for bit;
+/// a frame that is not is written to the evidence directory
+/// (`repeat-<scene>-…png`: the first frame, this one, their differences).
+/// The image size changes from one scene to the next, so the targets and
+/// the readback buffers are made anew for every frame.
+#[test]
+#[ignore = "a stress test for races; run it on purpose"]
+fn frames_repeat_bit_for_bit_under_load() {
+    let threads = env_count("CRAFT3D_REPEAT_THREADS", 4);
+    let rounds = env_count("CRAFT3D_REPEAT_ROUNDS", 10);
+    let scenes = scales_scenes();
+    let repeat = |thread: usize| {
+        let mut bad = 0;
+        for mut offscreen in offscreens() {
+            let adapter = offscreen.adapter().clone();
+            let render = |offscreen: &mut craft3d_gpu::Offscreen, s: &Scene| {
+                offscreen.render(&s.mesh, &s.camera, &s.params).unwrap()
+            };
+            let firsts: Vec<_> = scenes.iter().map(|s| render(&mut offscreen, s)).collect();
+            for round in 0..rounds {
+                for (scene, first) in scenes.iter().zip(&firsts) {
+                    let frame = render(&mut offscreen, scene);
+                    if frame == *first {
+                        continue;
+                    }
+                    bad += 1;
+                    let w = frame.width as usize;
+                    let off: Vec<String> = (0..frame.ids.len())
+                        .filter(|&i| {
+                            frame.rgb[i * 3..i * 3 + 3] != first.rgb[i * 3..i * 3 + 3]
+                                || frame.ids[i] != first.ids[i]
+                        })
+                        .map(|i| format!("({}, {})", i % w, i / w))
+                        .collect();
+                    let name = format!(
+                        "repeat-{}-{}-thread{thread}-round{round}",
+                        scene.name,
+                        adapter.backend.to_lowercase()
+                    );
+                    let none = vec![false; frame.ids.len()];
+                    write_evidence(&format!("{name}.png"), first, &frame, &none);
+                    eprintln!(
+                        "{} on {adapter}, thread {thread}, round {round}: {} pixels differ \
+                         from the first frame: {}",
+                        scene.name,
+                        off.len(),
+                        off.join(" ")
+                    );
+                }
+            }
+            println!(
+                "thread {thread} on {adapter}: {} frames",
+                rounds * scenes.len()
+            );
+        }
+        bad
+    };
+    let bad: usize = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..threads)
+            .map(|thread| scope.spawn(move || repeat(thread)))
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).sum()
+    });
+    assert_eq!(bad, 0, "frames that are not the first frame of their scene");
 }
 
 #[test]
