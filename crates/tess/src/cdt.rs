@@ -46,6 +46,10 @@ pub(crate) enum CdtError {
     TooMany,
     /// The triangulation's own bookkeeping is inconsistent (a bug).
     Internal,
+    /// The work went beyond what the points so far justify
+    /// ([`Cdt::spend`]): point location, flips or the recovery of a
+    /// constraint did not converge.
+    TooSlow,
 }
 
 /// Twice the signed area of (a, b, c): positive when counter-clockwise.
@@ -158,6 +162,14 @@ enum Toward {
 /// searched for constraints ([`Cdt::insert_interior`]).
 const NEAR_TRIANGLES: usize = 64;
 
+/// The work budget of a triangulation ([`Cdt::spend`]): steps allowed
+/// whatever the number of points,
+const WORK_BASE: f64 = 65536.0;
+/// per point,
+const WORK_PER_POINT: f64 = 4096.0;
+/// and per point times the square root of their number.
+const WORK_PER_ROOT: f64 = 64.0;
+
 /// The result of offering an interior point.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Interior {
@@ -175,6 +187,58 @@ pub(crate) struct Cdt {
     max_points: usize,
     /// Where the next point location starts.
     hint: u32,
+    /// The steps taken so far, for the work budget ([`Self::spend`]).
+    work: u64,
+    /// The box the points were said to lie in.
+    bounds: (P2, P2),
+    /// Where a walk that ran out of steps starts again
+    /// ([`Self::locate_from_grid`]); made the first time it is needed.
+    grid: Option<Grid>,
+}
+
+/// Vertices by where they lie: a box cut into cells of about one point
+/// each, with the last vertex added in each cell. It gives a walk that ran
+/// out of steps a start next to its point (on a long, thin region, such
+/// as the land of a thread in its parameters, a walk from the last point
+/// crosses a number of triangles that grows with all of them, and every
+/// point would cost as much as all the points before it).
+struct Grid {
+    origin: P2,
+    cell: P2,
+    columns: usize,
+    rows: usize,
+    cells: Vec<u32>,
+    /// The points there were when it was made: it is made again, finer,
+    /// when there are twice as many.
+    made_for: usize,
+}
+
+/// The most cells a [`Grid`] has.
+const MOST_CELLS: usize = 1 << 20;
+
+impl Grid {
+    fn cell_of(&self, p: P2) -> (usize, usize) {
+        let along = |x: f64, origin: f64, size: f64, count: usize| -> usize {
+            let k = ((x - origin) / size).floor();
+            if k.is_nan() || k < 0.0 {
+                0
+            } else {
+                // In range: clamped to the last cell.
+                (k as usize).min(count.saturating_sub(1))
+            }
+        };
+        (
+            along(p.0, self.origin.0, self.cell.0, self.columns),
+            along(p.1, self.origin.1, self.cell.1, self.rows),
+        )
+    }
+
+    fn put(&mut self, p: P2, v: u32) {
+        let (i, j) = self.cell_of(p);
+        if let Some(slot) = self.cells.get_mut(j * self.columns + i) {
+            *slot = v;
+        }
+    }
 }
 
 impl Cdt {
@@ -210,7 +274,36 @@ impl Cdt {
             vert_tri: vec![0, 0, 0, 1],
             max_points,
             hint: 0,
+            work: 0,
+            bounds: (min, max),
+            grid: None,
         })
+    }
+
+    /// Counts `steps` of work (a triangle walked through or looked at, a
+    /// flip, a crossed edge) against the budget: the work a triangulation
+    /// of `n` points may take is [`WORK_BASE`] plus `n` times
+    /// ([`WORK_PER_POINT`] plus [`WORK_PER_ROOT`] times `√n`), where `n` is
+    /// the number of points so far. A walk from a far hint costs about
+    /// `√n` steps, so that is what any order of insertion costs at most
+    /// on the way; work that grows as `n` per point (a walk that cannot
+    /// find its way, or flips that undo each other) runs out of it, with
+    /// [`CdtError::TooSlow`], in time of the order of `n^1.5` instead of
+    /// running on.
+    fn spend(&mut self, steps: usize) -> Result<(), CdtError> {
+        self.work = self.work.saturating_add(steps as u64);
+        if self.work > self.allowance() {
+            return Err(CdtError::TooSlow);
+        }
+        Ok(())
+    }
+
+    /// The work [`Self::spend`] allows for the points so far.
+    fn allowance(&self) -> u64 {
+        let n = self.pts.len() as f64;
+        let allowed = WORK_BASE + n * (WORK_PER_POINT + WORK_PER_ROOT * n.sqrt());
+        // Far below 2⁶³: the points are in memory.
+        allowed as u64
     }
 
     pub(crate) fn triangle_count(&self) -> usize {
@@ -280,6 +373,9 @@ impl Cdt {
         let index = u32::try_from(self.pts.len()).map_err(|_| CdtError::TooMany)?;
         self.pts.push(p);
         self.vert_tri.push(NONE);
+        if let Some(grid) = &mut self.grid {
+            grid.put(p, index);
+        }
         Ok(index)
     }
 
@@ -325,7 +421,7 @@ impl Cdt {
     }
 
     /// The triangle that holds `p`, by walking from the hint towards it.
-    fn locate(&self, p: P2) -> Result<Location, CdtError> {
+    fn locate(&mut self, p: P2) -> Result<Location, CdtError> {
         let mut t = if (self.hint as usize) < self.tris.len() {
             self.hint
         } else {
@@ -335,7 +431,9 @@ impl Cdt {
         // away. Without the Delaunay property everywhere (constraints) it
         // can in theory go round in circles: then every triangle is tried.
         let budget = 64 + 8 * (self.tris.len() as f64).sqrt() as usize;
+        let mut steps = 0;
         'walk: for _ in 0..budget {
+            steps += 1;
             let tri = self.t(t)?;
             let [a, b, c] = self.corners(&tri)?;
             let mut o = [0.0; 3];
@@ -351,8 +449,20 @@ impl Cdt {
                 }
                 put(&mut o, i, side);
             }
+            self.spend(steps)?;
             return self.classify_location(t, &tri, o, p);
         }
+        self.spend(steps)?;
+        if let Some(found) = self.locate_from_grid(p)? {
+            return Ok(found);
+        }
+        self.spend(self.tris.len())?;
+        self.scan(p)
+    }
+
+    /// The first triangle, in the order they were made, that holds `p`:
+    /// what [`Self::locate`] answers when the walk runs out of steps.
+    fn scan(&self, p: P2) -> Result<Location, CdtError> {
         for (index, tri) in self.tris.iter().enumerate() {
             let [a, b, c] = self.corners(tri)?;
             let o = [orient(b, c, p), orient(c, a, p), orient(a, b, p)];
@@ -361,6 +471,157 @@ impl Cdt {
             }
         }
         Err(CdtError::Degenerate)
+    }
+
+    /// What [`Self::scan`] answers, found by a walk from a vertex near
+    /// `p` instead of by looking at every triangle; `None` when that does
+    /// not settle it (the walk does not arrive, or `p` is on or next to a
+    /// vertex), and the scan must.
+    ///
+    /// Only the triangle of a point on an edge can differ between a walk
+    /// and the scan: there two triangles hold it, and the scan takes the
+    /// one made first. So the triangle the walk ends in and its three
+    /// neighbours are looked at in the order they were made, the first
+    /// that holds `p` is the answer, and the triangulation comes out the
+    /// same whichever way it was found.
+    fn locate_from_grid(&mut self, p: P2) -> Result<Option<Location>, CdtError> {
+        let points = self.pts.len().saturating_sub(FIRST_VERTEX as usize);
+        let stale = self
+            .grid
+            .as_ref()
+            .is_none_or(|grid| points > grid.made_for.saturating_mul(2));
+        if stale {
+            self.make_grid(points)?;
+        }
+        let Some(start) = self.near_vertex(p)? else {
+            return Ok(None);
+        };
+        let mut t = start;
+        let mut walked = None;
+        'walk: for _ in 0..=self.tris.len() {
+            self.spend(1)?;
+            let tri = self.t(t)?;
+            let [a, b, c] = self.corners(&tri)?;
+            let mut o = [0.0; 3];
+            for (i, (from, to)) in [(b, c), (c, a), (a, b)].into_iter().enumerate() {
+                let side = orient(from, to, p);
+                if side < 0.0 {
+                    let next = pick(tri.n, i);
+                    if next == NONE {
+                        return Err(CdtError::Degenerate); // Outside the square.
+                    }
+                    t = next;
+                    continue 'walk;
+                }
+                put(&mut o, i, side);
+            }
+            walked = Some((t, tri, o));
+            break;
+        }
+        let Some((t, tri, o)) = walked else {
+            return Ok(None);
+        };
+        if o.iter().filter(|x| **x == 0.0).count() >= 2 {
+            return Ok(None);
+        }
+        let mut candidates: Vec<u32> = std::iter::once(t)
+            .chain(tri.n.into_iter().filter(|&u| u != NONE))
+            .collect();
+        candidates.sort_unstable();
+        for u in candidates {
+            let tri = self.t(u)?;
+            let [a, b, c] = self.corners(&tri)?;
+            let o = [orient(b, c, p), orient(c, a, p), orient(a, b, p)];
+            if o.iter().all(|x| *x >= 0.0) {
+                return self.classify_location(u, &tri, o, p).map(Some);
+            }
+        }
+        Ok(None)
+    }
+
+    /// Makes the [`Grid`] for `points` points, from the vertices so far.
+    fn make_grid(&mut self, points: usize) -> Result<(), CdtError> {
+        let (min, max) = self.bounds;
+        let (width, height) = (max.0 - min.0, max.1 - min.1);
+        let positive = |x: f64| if x.is_finite() && x > 0.0 { x } else { 0.0 };
+        let (width, height) = (positive(width), positive(height));
+        let target = points.clamp(1, MOST_CELLS) as f64;
+        // Square cells where the box allows, about one point each.
+        let (columns, rows) = if width > 0.0 && height > 0.0 {
+            let columns = (target * width / height).sqrt().ceil().clamp(1.0, target);
+            let rows = (target / columns).ceil().clamp(1.0, target);
+            (columns, rows)
+        } else if width > 0.0 {
+            (target, 1.0)
+        } else {
+            (1.0, target)
+        };
+        // In range: at most `MOST_CELLS` each.
+        let (columns, rows) = (columns as usize, rows as usize);
+        let cells = columns.saturating_mul(rows);
+        self.spend(cells.saturating_add(points))?;
+        let size = |extent: f64, count: usize| {
+            let size = extent / count as f64;
+            if size.is_finite() && size > 0.0 {
+                size
+            } else {
+                1.0
+            }
+        };
+        let mut grid = Grid {
+            origin: min,
+            cell: (size(width, columns), size(height, rows)),
+            columns,
+            rows,
+            cells: vec![NONE; cells],
+            made_for: points.max(1),
+        };
+        for (v, &p) in self.pts.iter().enumerate().skip(FIRST_VERTEX as usize) {
+            let Ok(v) = u32::try_from(v) else { break };
+            grid.put(p, v);
+        }
+        self.grid = Some(grid);
+        Ok(())
+    }
+
+    /// A triangle at a vertex in the cell of `p`, or in the nearest ring
+    /// of cells around it that has one.
+    fn near_vertex(&mut self, p: P2) -> Result<Option<u32>, CdtError> {
+        let Some(grid) = &self.grid else {
+            return Ok(None);
+        };
+        let (ci, cj) = grid.cell_of(p);
+        let (columns, rows) = (grid.columns, grid.rows);
+        let triangle_at = |i: usize, j: usize| -> Option<u32> {
+            let v = *grid.cells.get(j.checked_mul(columns)?.checked_add(i)?)?;
+            let t = *self.vert_tri.get(v as usize)?;
+            (v != NONE && t != NONE).then_some(t)
+        };
+        let mut looked = 0_usize;
+        let mut found = None;
+        'rings: for r in 0..columns.max(rows) {
+            let (i0, i1) = (ci.saturating_sub(r), ci.saturating_add(r).min(columns - 1));
+            let (j0, j1) = (cj.saturating_sub(r), cj.saturating_add(r).min(rows - 1));
+            for j in j0..=j1 {
+                // The whole row on the ring's top and bottom, its two ends
+                // on the rows between.
+                let edge_row = j + r == cj || j == cj + r;
+                let step = if edge_row { 1 } else { (i1 - i0).max(1) };
+                let mut i = i0;
+                while i <= i1 {
+                    looked += 1;
+                    if (i + r == ci || i == ci + r || edge_row)
+                        && let Some(t) = triangle_at(i, j)
+                    {
+                        found = Some(t);
+                        break 'rings;
+                    }
+                    i += step;
+                }
+            }
+        }
+        self.spend(looked)?;
+        Ok(found)
     }
 
     /// Splits triangle `t` into three around `p`, which is certainly
@@ -472,6 +733,7 @@ impl Cdt {
                     return Ok(()); // Valid as it is, only less Delaunay.
                 }
                 budget -= 1;
+                self.spend(1)?;
                 let u = self.flip(t, i)?;
                 stack.push((t, 0));
                 stack.push((u, 0));
@@ -619,9 +881,16 @@ impl Cdt {
         }
     }
 
+    /// [`Self::fan`], its triangles counted as work.
+    fn spent_fan(&mut self, a: u32) -> Result<Vec<(u32, usize)>, CdtError> {
+        let fan = self.fan(a)?;
+        self.spend(fan.len())?;
+        Ok(fan)
+    }
+
     /// The triangle with the directed edge `a → b`, and that edge's index.
-    fn find_edge(&self, a: u32, b: u32) -> Result<Option<(u32, usize)>, CdtError> {
-        for (t, k) in self.fan(a)? {
+    fn find_edge(&mut self, a: u32, b: u32) -> Result<Option<(u32, usize)>, CdtError> {
+        for (t, k) in self.spent_fan(a)? {
             if pick(self.t(t)?.v, k + 1) == b {
                 return Ok(Some((t, k + 2)));
             }
@@ -630,9 +899,9 @@ impl Cdt {
     }
 
     /// How the segment from `a` to `b` leaves `a`.
-    fn toward(&self, a: u32, b: u32) -> Result<Toward, CdtError> {
+    fn toward(&mut self, a: u32, b: u32) -> Result<Toward, CdtError> {
         let (pa, pb) = (self.p(a)?, self.p(b)?);
-        let fan = self.fan(a)?;
+        let fan = self.spent_fan(a)?;
         for &(t, k) in &fan {
             let tri = self.t(t)?;
             let q = pick(tri.v, k + 1);
@@ -708,6 +977,7 @@ impl Cdt {
                 }
                 Toward::Crossing(t, k) => {
                     let (crossed, end) = self.crossed_edges(a, b, t, k)?;
+                    self.spend(crossed.len())?;
                     self.remove_crossings(a, end, crossed, &mut created)?;
                 }
             }
@@ -774,6 +1044,7 @@ impl Cdt {
                 return Err(CdtError::Degenerate);
             }
             budget -= 1;
+            self.spend(1)?;
             let Some((t, i)) = self.find_edge(q, r)? else {
                 return Err(CdtError::Internal);
             };
@@ -1434,5 +1705,82 @@ mod tests {
         }
         // Most random closed chains cross themselves, but not all.
         assert!(answered > 20, "only {answered} were triangulated");
+    }
+
+    /// The points of a long, thin strip (the land of a thread laid out
+    /// in its parameters: forty turns side by side), in the order the
+    /// tessellator inserts boundary points, which jumps along the whole
+    /// strip at every step.
+    fn strip(count: usize) -> Vec<P2> {
+        let mut random = Random(0x9E37_79B9_7F4A_7C15);
+        let points: Vec<P2> = (0..count)
+            .map(|i| {
+                let along = 1000.0 * i as f64 / count as f64;
+                (along, random.between(0.0, 1.0) + 0.02 * along)
+            })
+            .collect();
+        let mut stride = ((count as f64) * 0.618) as usize;
+        let coprime = |mut a: usize, mut b: usize| {
+            while b != 0 {
+                (a, b) = (b, a % b);
+            }
+            a == 1
+        };
+        while stride > 1 && !coprime(stride, count) {
+            stride -= 1;
+        }
+        (0..count).map(|n| points[(n * stride) % count]).collect()
+    }
+
+    /// Where a walk runs out of steps, a walk from a vertex near the
+    /// point gives the answer looking at every triangle would give, so
+    /// the triangulation is the same either way; and on a long, thin
+    /// strip in jumping order the work per point stays far below the
+    /// work of looking at every triangle (before, every point there cost
+    /// as much as all the points before it).
+    #[test]
+    fn a_walk_that_runs_out_of_steps_starts_again_near_its_point() {
+        let points = strip(20_000);
+        let (min, max) = ((0.0, 0.0), (1000.0, 21.0));
+        let mut cdt = Cdt::new(min, max, points.len()).unwrap();
+        let mut fallbacks = 0;
+        for (n, &p) in points.iter().enumerate() {
+            if n % 97 == 0 {
+                // The answer the scan gives and the one from the grid
+                // agree wherever the grid gives one.
+                let scanned = cdt.scan(p).unwrap();
+                if let Some(found) = cdt.locate_from_grid(p).unwrap() {
+                    fallbacks += 1;
+                    let same = match (found, scanned) {
+                        (Location::Inside(a), Location::Inside(b)) => a == b,
+                        (Location::OnEdge(a, i), Location::OnEdge(b, j)) => a == b && i == j,
+                        (Location::Vertex(a), Location::Vertex(b)) => a == b,
+                        (Location::Near, Location::Near) => true,
+                        _ => false,
+                    };
+                    assert!(same, "point {n}");
+                }
+            }
+            cdt.insert_boundary(p).unwrap();
+        }
+        assert!(fallbacks > 100, "{fallbacks}");
+        let per_point = cdt.work as f64 / points.len() as f64;
+        assert!(per_point < 2000.0, "{per_point} steps per point");
+    }
+
+    /// Work beyond what the points so far allow is an error, not more
+    /// time: a triangulation that does not converge says so.
+    #[test]
+    fn work_beyond_the_budget_is_an_error() {
+        let mut cdt = Cdt::new((0.0, 0.0), (1.0, 1.0), 100).unwrap();
+        for p in [(0.2, 0.2), (0.8, 0.3), (0.5, 0.9)] {
+            cdt.insert_boundary(p).unwrap();
+        }
+        let allowed = cdt.allowance();
+        assert!(allowed >= WORK_BASE as u64);
+        assert_eq!(cdt.spend((allowed - cdt.work) as usize), Ok(()));
+        assert_eq!(cdt.spend(1), Err(CdtError::TooSlow));
+        // And it stays an error for whatever comes next.
+        assert_eq!(cdt.insert_boundary((0.4, 0.4)), Err(CdtError::TooSlow));
     }
 }

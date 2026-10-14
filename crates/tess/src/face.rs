@@ -956,6 +956,26 @@ fn seam_blocked(a: Uv, b: Uv, c: Uv, d: Uv) -> bool {
         || (side_b == 0.0 && within(tb, tc, td))
 }
 
+/// `p`, or the end of a seam it is but for rounding.
+///
+/// The end of a seam on a loop is that loop's vertex moved by whole
+/// periods, computed the way the seam needs it (the upper loop of a band
+/// that runs clockwise: a period back, then so many on); the loop's own
+/// segments that end there are moved by whole periods at once. The two
+/// can differ in the last bit, and the segments then cross the seam they
+/// only touch: every straight seam to such a vertex was refused. (That
+/// is how the wall of a shank with a long thread came to have no seam
+/// at fine tolerances, and to ask for finer chords round after round.)
+fn snapped(p: Uv, ends: [Uv; 2], period: f64) -> Uv {
+    const ROUNDING: f64 = 1e-13;
+    let same = |x: Uv, y: Uv| {
+        let ([xa, xb], [ya, yb]) = (x, y);
+        (xa - ya).abs() <= ROUNDING * (xa.abs() + ya.abs() + period.abs())
+            && (xb - yb).abs() <= ROUNDING * (xb.abs() + yb.abs())
+    };
+    ends.into_iter().find(|&end| same(p, end)).unwrap_or(p)
+}
+
 /// Moves a loop that does not wind by whole periods until `probe` says
 /// its first proper vertex is where it belongs.
 fn place(ring: &Ring, periods: [Option<f64>; 2], probe: impl Fn(Uv) -> bool) -> Option<[i32; 2]> {
@@ -1076,6 +1096,13 @@ fn pole(param: &Param, a: f64, b: f64, typical: f64, face: usize) -> Result<Bv, 
         chord: None,
     })
 }
+
+/// What a face is told when its triangulation (or the one the search for
+/// its seam lays out) runs out of its work budget (`Cdt::spend`).
+const SLOW_TRIANGULATION: &str = "its triangulation did not converge: placing its points took \
+                                  more work than their number justifies (the boundary is too \
+                                  fine or too tangled in parameter space); use a larger \
+                                  tolerance";
 
 /// How many places are tried for the seam of a face that goes around its
 /// surface.
@@ -1230,8 +1257,8 @@ fn band_region(
                 let b_turns = if period_b.is_some() { -2..=2 } else { 0..=0 };
                 for tb in b_turns {
                     for ta in around - 1..=around + 1 {
-                        let p = shifted(v.uv, [ta, tb], periods);
-                        let q = shifted(w.uv, [ta, tb], periods);
+                        let p = snapped(shifted(v.uv, [ta, tb], periods), [from, to], period);
+                        let q = snapped(shifted(w.uv, [ta, tb], periods), [from, to], period);
                         if seam_blocked(from, to, p, q) {
                             return true;
                         }
@@ -1248,6 +1275,57 @@ fn band_region(
     if upper.is_none() {
         pole(param, a_low, b_high, typical, face)?;
     }
+    // A straight seam from vertex `s` of the loop it starts on (the lower
+    // winding loop, or the upper one when there is no lower), when nothing
+    // lies across it.
+    let straight_from = |anchor: &Ring, s: usize| -> Option<Cut> {
+        let v = anchor.verts.get(s).filter(|v| v.free.is_none())?;
+        let a = left_a(anchor, s)?;
+        let [_, b] = v.uv;
+        let (candidate, [from, to]) = if lower.is_some() {
+            match upper {
+                Some(up) => {
+                    let (j, turns) = nearest_vertex(up, a)?;
+                    let (end_a, end) = (left_a(up, j)?, up.verts.get(j)?);
+                    let [_, end_b] = shifted(end.uv, [0, upper_turns_b], periods);
+                    let end = [end_a + f64::from(turns) * period, end_b];
+                    (
+                        Cut {
+                            a,
+                            upper_a: a,
+                            lower_start: Some(s),
+                            upper_start: Some((j, turns)),
+                            via: Vec::new(),
+                        },
+                        [[a, b], end],
+                    )
+                }
+                None => (
+                    Cut {
+                        a,
+                        upper_a: a,
+                        lower_start: Some(s),
+                        upper_start: None,
+                        via: Vec::new(),
+                    },
+                    [[a, b], [a, b_high]],
+                ),
+            }
+        } else {
+            (
+                Cut {
+                    a,
+                    upper_a: a,
+                    lower_start: None,
+                    upper_start: Some((s, 0)),
+                    via: Vec::new(),
+                },
+                [[a, b_low], [a, b]],
+            )
+        };
+        (from.iter().chain(&to).all(|x| x.is_finite()) && !crosses_a_loop(from, to))
+            .then_some(candidate)
+    };
     let anchor = lower.or(upper);
     let mut cut: Option<Cut> = None;
     match anchor {
@@ -1274,90 +1352,63 @@ fn band_region(
         Some(anchor) => {
             let n = anchor.verts.len();
             let tries = n.min(SEAM_TRIES);
-            for c in 0..tries {
-                let s = c * n / tries;
-                let Some(v) = anchor.verts.get(s).filter(|v| v.free.is_none()) else {
-                    continue;
-                };
-                let Some(a) = left_a(anchor, s) else { continue };
-                let [_, b] = v.uv;
-                let candidate = if lower.is_some() {
-                    match upper {
-                        Some(up) => {
-                            let Some((j, turns)) = nearest_vertex(up, a) else {
-                                continue;
-                            };
-                            let (Some(end_a), Some(end)) = (left_a(up, j), up.verts.get(j)) else {
-                                continue;
-                            };
-                            let [_, end_b] = shifted(end.uv, [0, upper_turns_b], periods);
-                            (
-                                Cut {
-                                    a,
-                                    upper_a: a,
-                                    lower_start: Some(s),
-                                    upper_start: Some((j, turns)),
-                                    via: Vec::new(),
-                                },
-                                [[a, b], [end_a + f64::from(turns) * period, end_b]],
-                            )
-                        }
-                        None => (
-                            Cut {
-                                a,
-                                upper_a: a,
-                                lower_start: Some(s),
-                                upper_start: None,
-                                via: Vec::new(),
-                            },
-                            [[a, b], [a, b_high]],
-                        ),
-                    }
-                } else {
-                    (
-                        Cut {
-                            a,
-                            upper_a: a,
-                            lower_start: None,
-                            upper_start: Some((s, 0)),
-                            via: Vec::new(),
-                        },
-                        [[a, b_low], [a, b]],
-                    )
-                };
-                let (candidate, [from, to]) = candidate;
-                if from.iter().chain(&to).all(|x| x.is_finite()) && !crosses_a_loop(from, to) {
-                    cut = Some(candidate);
-                    break;
-                }
-            }
+            cut = (0..tries)
+                .map(|c| c * n / tries)
+                .find_map(|s| straight_from(anchor, s));
         }
     }
     // No straight seam: one in pieces, from loop to loop.
-    let cut = match cut {
-        Some(cut) => cut,
-        None => {
-            let search = Routes {
-                param,
-                lower,
-                upper,
-                holes: &holes,
-                upper_turns_b,
-                crosses_a_loop: &crosses_a_loop,
-            };
-            let Some(cut) = search.cut() else {
-                // Chords too coarse may be what closes the way (two loops
-                // nearer to each other than the tolerance): the face asks
-                // for finer ones before this error stands.
-                *starved = true;
-                return unsupported(
-                    face,
-                    "a face around the axis of its surface with no way for a seam between its \
-                     loops",
-                );
-            };
-            cut
-        }
+    if cut.is_none() {
+        let search = Routes {
+            param,
+            lower,
+            upper,
+            holes: &holes,
+            upper_turns_b,
+            crosses_a_loop: &crosses_a_loop,
+        };
+        cut = search.cut().map_err(|error| TessError::Face {
+            face,
+            reason: error.into(),
+        })?;
+    }
+    // Nor one in pieces: a straight seam from the far side of the loop it
+    // starts on. A loop can run round the axis many times on its way (the
+    // land of a thread winds up and back down, one helical edge after the
+    // other); the vertices spread along it then all lie below other turns
+    // of it, and the search in pieces, which lays the loops out only a
+    // turn either way, finds no way past them either. Nothing of the loop
+    // lies across the way up from its highest vertex (down from the
+    // lowest of an upper loop), and the surface has no hole there.
+    if cut.is_none()
+        && let Some(anchor) = anchor
+    {
+        let mut extreme: Vec<usize> = (0..anchor.verts.len())
+            .filter(|&s| anchor.verts.get(s).is_some_and(|v| v.free.is_none()))
+            .collect();
+        let height = |s: &usize| anchor.verts.get(*s).map_or(0.0, |v| get2(v.uv, 1));
+        extreme.sort_by(|x, y| {
+            let order = height(x).total_cmp(&height(y)).then(x.cmp(y));
+            if lower.is_some() {
+                order.reverse()
+            } else {
+                order
+            }
+        });
+        cut = extreme
+            .into_iter()
+            .take(SEAM_TRIES)
+            .find_map(|s| straight_from(anchor, s));
+    }
+    let Some(cut) = cut else {
+        // Chords too coarse may be what closes the way (two loops nearer
+        // to each other than the tolerance): the face asks for finer ones
+        // before this error stands.
+        *starved = true;
+        return unsupported(
+            face,
+            "a face around the axis of its surface with no way for a seam between its loops",
+        );
     };
 
     let mut region = Region::default();
@@ -1549,12 +1600,30 @@ impl Routes<'_> {
     }
 
     /// Every piece a seam may be made of, ordered by the station it
-    /// leaves and then by length.
+    /// leaves and then by length; an error when the triangulation does
+    /// not converge.
     fn bridges(
         &self,
         stations: &[Station],
         low_end: usize,
         high_end: usize,
+    ) -> Result<Option<Vec<Bridge>>, &'static str> {
+        let mut slow = false;
+        let bridges = self.laid_out_bridges(stations, low_end, high_end, &mut slow);
+        if slow {
+            return Err(SLOW_TRIANGULATION);
+        }
+        Ok(bridges)
+    }
+
+    /// [`Self::bridges`]; `slow` is set when the triangulation does not
+    /// converge.
+    fn laid_out_bridges(
+        &self,
+        stations: &[Station],
+        low_end: usize,
+        high_end: usize,
+        slow: &mut bool,
     ) -> Option<Vec<Bridge>> {
         let periods = self.param.periods();
         // Parameters scaled by how fast the surface moves with them, so
@@ -1624,8 +1693,13 @@ impl Routes<'_> {
                 continue;
             };
             // A point too close to another to tell them apart is left out.
-            let Ok(id) = cdt.insert_boundary(point.plane) else {
-                continue;
+            let id = match cdt.insert_boundary(point.plane) {
+                Ok(id) => id,
+                Err(CdtError::TooSlow) => {
+                    *slow = true;
+                    return None;
+                }
+                Err(_) => continue,
             };
             if let Some(slot) = id_of.get_mut(i) {
                 *slot = Some(id);
@@ -1670,8 +1744,10 @@ impl Routes<'_> {
                     );
                     if let (Some(p), Some(q)) = ids
                         && p != q
+                        && cdt.constrain(p, q) == Err(CdtError::TooSlow)
                     {
-                        let _ = cdt.constrain(p, q);
+                        *slow = true;
+                        return None;
                     }
                 }
             }
@@ -1759,10 +1835,10 @@ impl Routes<'_> {
         Some(bridges)
     }
 
-    /// The seam in pieces, if there is a way for one.
-    fn cut(&self) -> Option<Cut> {
+    /// The seam in pieces, if there is a way for one; an error when the
+    /// triangulation of the loops does not converge.
+    fn cut(&self) -> Result<Option<Cut>, &'static str> {
         let periods = self.param.periods();
-        let [_, (b_low, b_high)] = self.param.domain();
         let mut stations: Vec<Station> = Vec::new();
         let (mut source, mut target) = (None, None);
         if let Some(ring) = self.lower {
@@ -1794,7 +1870,24 @@ impl Routes<'_> {
         let low_end = stations.len();
         let high_end = low_end + 1;
         let (source, target) = (source.unwrap_or(low_end), target.unwrap_or(high_end));
-        let bridges = self.bridges(&stations, low_end, high_end)?;
+        let Some(bridges) = self.bridges(&stations, low_end, high_end)? else {
+            return Ok(None);
+        };
+        Ok(self.route(&stations, &bridges, source, target))
+    }
+
+    /// The shortest chain of `bridges` from station `source` to station
+    /// `target`, as a seam.
+    fn route(
+        &self,
+        stations: &[Station],
+        bridges: &[Bridge],
+        source: usize,
+        target: usize,
+    ) -> Option<Cut> {
+        let periods = self.param.periods();
+        let [_, (b_low, b_high)] = self.param.domain();
+        let high_end = stations.len() + 1;
 
         // A piece in parameters, when the station it leaves is moved by
         // `turns` periods.
@@ -3326,6 +3419,7 @@ pub(crate) fn mesh_face(
                     "face {index}: the triangulation lost track of its own triangles"
                 ));
             }
+            CdtError::TooSlow => SLOW_TRIANGULATION,
         };
         TessError::Face {
             face: index,

@@ -796,6 +796,8 @@ fn build(
         };
         let meshed = tessellate_body_and_edges(body, &tess)
             .and_then(|both| both.mesh.map(|mesh| (mesh, both.edges)));
+        #[cfg(test)]
+        let meshed = tests::tessellated(meshed);
         let (mesh, edges) = match meshed {
             Ok(both) => both,
             Err(TessError::OverBudget {
@@ -1260,6 +1262,82 @@ mod tests {
         static FALL_OVER: Cell<bool> = const { Cell::new(false) };
         /// How many scenes this thread has started to build.
         static BUILDS: Cell<u32> = const { Cell::new(0) };
+        /// Makes every body fail to tessellate on this thread, with this
+        /// error.
+        static TESSELLATION_FAILS: std::cell::RefCell<Option<TessError>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
+    /// Called with what the tessellator made of each body: replaced by the
+    /// error a test asked for.
+    pub(super) fn tessellated<T>(meshed: Result<T, TessError>) -> Result<T, TessError> {
+        match TESSELLATION_FAILS.with_borrow(Clone::clone) {
+            Some(error) => Err(error),
+            None => meshed,
+        }
+    }
+
+    /// The display rule tries coarser tolerances only for what a coarser
+    /// tolerance cures (a triangle budget exceeded, a patch too fine for
+    /// the tessellator), and each such try ends as soon as that is
+    /// certain. A body that fails in any other way, also a triangulation
+    /// that ran out of its work budget (`craft3d_tess`, a face that does
+    /// not converge), is a problem of the scene after one build: its cost
+    /// is not paid again for every attempt.
+    #[test]
+    fn the_display_rule_does_not_repeat_a_failure_coarser_tolerances_do_not_cure() {
+        let mut session = Session::new(Workspace::none());
+        let run = |session: &mut Session, id: &str, params: serde_json::Value| {
+            session.execute(id, &params).unwrap()
+        };
+        run(&mut session, "file.new", serde_json::json!({}));
+        run(
+            &mut session,
+            "feature.sphere",
+            serde_json::json!({"radius": 2}),
+        );
+        let slow = TessError::Face {
+            face: 0,
+            reason: "its triangulation did not converge".into(),
+        };
+        TESSELLATION_FAILS.set(Some(slow));
+        let builds = BUILDS.get();
+        let scene = session
+            .scene_with(SceneQuality::display())
+            .unwrap()
+            .unwrap();
+        assert_eq!(BUILDS.get(), builds + 1, "built once");
+        assert!(scene.bodies.is_empty() && !scene.coarsened);
+        assert!(
+            scene.problems.len() == 1 && scene.problems[0].contains("did not converge"),
+            "{:?}",
+            scene.problems
+        );
+
+        // What a coarser tolerance cures is tried again, a few times at
+        // most, and then shown at the automatic tolerance.
+        run(
+            &mut session,
+            "feature.sphere",
+            serde_json::json!({"radius": 3}),
+        );
+        TESSELLATION_FAILS.set(Some(TessError::TooFine {
+            patch: 0,
+            needed_segments: 2048.0,
+            max_segments: 1024,
+        }));
+        let builds = BUILDS.get();
+        let scene = session
+            .scene_with(SceneQuality::display())
+            .unwrap()
+            .unwrap();
+        let tries = BUILDS.get() - builds;
+        assert!(
+            (2..=MAX_DISPLAY_ATTEMPTS as u32 + 1).contains(&tries),
+            "{tries} builds"
+        );
+        assert!(scene.coarsened && scene.bodies.is_empty());
+        TESSELLATION_FAILS.set(None);
     }
 
     /// Called at the start of every build: counts it, and panics when a
