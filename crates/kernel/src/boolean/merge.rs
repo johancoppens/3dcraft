@@ -76,9 +76,11 @@ fn merge_faces(
             // A face on a freeform patch ends where the patch does: a
             // piece of the other body's face beyond it (the cylinder a
             // rational quarter cylinder lies on) is not on the patch, and
-            // two patches on one surface need not cover each other.
-            && !super::freeform::is_freeform(&first.surface)
-            && !super::freeform::is_freeform(&second.surface)
+            // two patches on one surface need not cover each other. Pieces
+            // of one patch (a roof cut in two and put together again) are.
+            && (first.surface == second.surface
+                || !(super::freeform::is_freeform(&first.surface)
+                    || super::freeform::is_freeform(&second.surface)))
         {
             let (of_a, of_b) = if first.source.operand == Operand::A {
                 (first, second)
