@@ -446,18 +446,41 @@ fn clip(
     // An end of the curve next to a place where an edge meets a surface
     // is that place.
     // (Not the seam of a closed spline: no stretch may run across that.)
+    // A curve that begins and ends in one such place (a loop through it)
+    // has that place at each end, but a place is found on the curve once,
+    // at whichever end is nearer: the other end is the place too, and is
+    // kept as it (a figure eight of a torus and the plane it touches,
+    // through the pole of a patch, lost the lobe back into the face).
     if !closed {
-        let places: Vec<Vec3> = along
-            .iter()
-            .filter(|cut| !cut.end)
-            .map(|cut| cut.point)
-            .collect();
-        along.retain(|cut| {
-            !cut.end
-                || !places
-                    .iter()
-                    .any(|p| p.distance(cut.point) < vertices.guard)
-        });
+        let places: Vec<Cut> = along.iter().filter(|cut| !cut.end).copied().collect();
+        let mut kept = Vec::with_capacity(along.len());
+        for cut in along {
+            if !cut.end {
+                kept.push(cut);
+                continue;
+            }
+            let near: Vec<&Cut> = places
+                .iter()
+                .filter(|p| p.point.distance(cut.point) < vertices.guard)
+                .collect();
+            let Some(&&place) = near.first() else {
+                kept.push(cut);
+                continue;
+            };
+            // Found at this end: the curve stays at the place between the
+            // two.
+            let here = near
+                .iter()
+                .any(|p| curve.eval(0.5 * (p.t + cut.t)).distance(cut.point) < vertices.guard);
+            if !here {
+                kept.push(Cut {
+                    t: cut.t,
+                    end: false,
+                    ..place
+                });
+            }
+        }
+        along = kept;
     }
     let mut cuts: Vec<Cut> = Vec::new();
     for cut in along {
