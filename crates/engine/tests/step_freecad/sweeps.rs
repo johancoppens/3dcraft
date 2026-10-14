@@ -377,7 +377,7 @@ fn thread(s: &mut Session, k: f64) -> Forms {
         "feature.thread",
         json!({"face": "F2:copy(0)/F1:face(0)", "start": "F2:copy(0)/F1:face(1)",
                "size": format!("M{}", 10.0 * k), "pitch": 1.5 * k, "length": 12.0 * k,
-               "name": "Thread"}),
+               "modeled": true, "name": "Thread"}),
     )?;
     Ok(Vec::new())
 }

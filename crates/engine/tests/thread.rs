@@ -139,7 +139,7 @@ fn shank(s: &mut Session) {
 }
 
 fn thread(s: &mut Session, params: Value) -> Value {
-    let mut all = json!({"face": "F1:face(0)", "start": "F1:face(1)", "size": "M10", "length": "12 mm", "name": "Thread"});
+    let mut all = json!({"face": "F1:face(0)", "start": "F1:face(1)", "size": "M10", "length": "12 mm", "modeled": true, "name": "Thread"});
     for (key, value) in params.as_object().unwrap() {
         all[key] = value.clone();
     }
@@ -246,6 +246,7 @@ fn an_m10_thread_removes_its_groove_and_follows_its_parameters() {
         json!({"feature": "Thread", "cosmetic": true}),
     );
     assert_eq!(cosmetic["thread"]["cosmetic"], true, "{cosmetic}");
+    assert_eq!(cosmetic["thread"]["modeled"], false, "{cosmetic}");
     assert!((volume(&mut s, "Thread") - blank).abs() < 1e-9 * blank);
     deep(&mut s);
 }
@@ -269,7 +270,8 @@ fn what_cannot_be_threaded_fails_with_the_reason() {
     shank(&mut s);
     // Refused by the command.
     for (params, says) in [
-        (json!({"size": "X10"}), "ISO metric"),
+        (json!({"size": "M10x1.25"}), "ISO metric"),
+        (json!({"size": "  "}), "ISO metric"),
         (json!({"size": 10}), "size"),
         (json!({"size": "M11"}), "coarse pitch"),
         (json!({"face": "F1:edge(0)"}), "not a face"),
@@ -292,6 +294,9 @@ fn what_cannot_be_threaded_fails_with_the_reason() {
         ("Flat", json!({"face": "F1:face(1)"}), "cylinder"),
         ("Round", json!({"start": "F1:face(0)"}), "flat"),
         ("Large", json!({"size": "M12"}), "diameter"),
+        // Any other text is a length, and `X10` is no variable.
+        ("Unknown", json!({"size": "X10"}), "ISO metric"),
+        ("Angle", json!({"size": "10 deg"}), "length"),
         ("Long", json!({"length": "19.5 mm"}), "shorter"),
         ("Zero", json!({"length": "0 mm"}), "length"),
         ("Steep", json!({"pitch": "12 mm"}), "pitch"),
