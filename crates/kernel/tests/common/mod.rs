@@ -511,9 +511,10 @@ pub fn catalogue(k: f64) -> Vec<Case> {
         .collect()
 }
 
-/// A convex polygon (counter-clockwise) whose corner `i` is rounded by a
+/// A polygon (counter-clockwise) whose corner `i` is rounded by a
 /// tangent arc of radius `radii[i]` (0: left sharp): the sketch, its area,
-/// the length of its straight pieces, and the turn of each corner.
+/// the length of its straight pieces, and the turn of each corner (left
+/// positive).
 pub fn rounded_polygon(points: &[[f64; 2]], radii: &[f64]) -> (Vec<SketchCurve>, f64, f64, Vec<f64>) {
     let n = points.len();
     let mut corners = Vec::new();
@@ -533,10 +534,13 @@ pub fn rounded_polygon(points: &[[f64; 2]], radii: &[f64]) -> (Vec<SketchCurve>,
         let (a, b) = (unit(prev, here), unit(here, next));
         let turn = (a[0] * b[1] - a[1] * b[0]).atan2(a[0] * b[0] + a[1] * b[1]);
         let big = radii[i];
-        let back = big * (turn / 2.0).tan();
+        // A corner that turns right (an inside corner) is rounded the
+        // other way round: its arc's centre lies to the right.
+        let side = turn.signum();
+        let back = big * (turn.abs() / 2.0).tan();
         let t_in = [here[0] - a[0] * back, here[1] - a[1] * back];
         let t_out = [here[0] + b[0] * back, here[1] + b[1] * back];
-        let centre = [t_in[0] - a[1] * big, t_in[1] + a[0] * big];
+        let centre = [t_in[0] - a[1] * big * side, t_in[1] + a[0] * big * side];
         corners.push((t_in, t_out, centre, turn, big));
     }
     let mut curves = Vec::new();
@@ -546,14 +550,20 @@ pub fn rounded_polygon(points: &[[f64; 2]], radii: &[f64]) -> (Vec<SketchCurve>,
     for i in 0..n {
         let (t_in, t_out, centre, turn, big) = corners[i];
         if big > 0.0 {
-            curves.push(arc(id, centre, t_in, t_out));
+            if turn > 0.0 {
+                curves.push(arc(id, centre, t_in, t_out));
+            } else {
+                curves.push(arc(id, centre, t_out, t_in));
+            }
             id += 1;
         }
         let next_in = corners[(i + 1) % n].0;
         curves.push(line(id, t_out, next_in));
         id += 1;
         lines += (next_in[0] - t_out[0]).hypot(next_in[1] - t_out[1]);
-        cut += big * big * ((turn / 2.0).tan() - turn / 2.0);
+        // What the arc cuts off an outside corner, or fills in an inside
+        // one.
+        cut += turn.signum() * big * big * ((turn.abs() / 2.0).tan() - turn.abs() / 2.0);
     }
     let turns = corners.iter().map(|c| c.3).collect();
     (curves, polygon_area - cut, lines, turns)

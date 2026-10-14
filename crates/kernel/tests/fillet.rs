@@ -1583,3 +1583,59 @@ fn a_root_that_ends_on_a_leaning_face() {
         }
     }
 }
+
+/// An L-shaped upright on a plate, its inside corner rounded by 0.8 and
+/// the ledge beyond the arc only 0.4 long before the outline turns away:
+/// the root of the upright rounded as one chain (engine-block finding E3,
+/// the bellhousing's rail root). The estimate measured the short ledge as
+/// what bounds the plate beside the arc ("below 0.094"); it lies beyond
+/// the arc's sector and bounds nothing of it. The bead's centroid runs
+/// round the arc at `0.8 - inset` and along both lines to the square ends.
+#[test]
+fn a_root_chain_round_an_inside_arc_with_a_short_ledge() {
+    let outline = [
+        [0.0, 0.0],
+        [2.2, 0.0],
+        [2.2, 1.0],
+        [1.0, 1.0],
+        [1.0, 4.0],
+        [0.0, 4.0],
+    ];
+    let (big, r, height) = (0.8, 0.3, 2.0);
+    let (curves, area, _, turns) =
+        common::rounded_polygon(&outline, &[0.0, 0.0, 0.0, big, 0.0, 0.0]);
+    let inset = r * (10.0 - 3.0 * PI) / (12.0 - 3.0 * PI);
+    let path = 0.4 + 2.2 + turns[3].abs() * (big - inset);
+    let added = SPANDREL * r * r * path;
+    for k in SCALES {
+        for frame in frames(k) {
+            let tol = tolerance(k);
+            let plate_frame = frame.at(frame.point(-k, -k, -k)).unwrap();
+            let plate = primitives::block(&plate_frame, 5.0 * k, 6.0 * k, k).unwrap();
+            let profiles = detect_profiles(&scale_curves(&curves, k), &tol).unwrap();
+            let upright = extrude(&profiles, &frame, 0.0, height * k, &tol)
+                .unwrap()
+                .body;
+            let part = boolean(&plate, &upright, BooleanOp::Union, &tol)
+                .unwrap()
+                .body;
+            let seed = edge_in(&part, &frame, k, [1.0, 2.9, 0.0]);
+            let floor = faces_of(&part, seed)
+                .into_iter()
+                .find(|f| faces_of(&part, edge_in(&part, &frame, k, [2.0, 1.0, 0.0])).contains(f))
+                .unwrap();
+            let chain = tangent_chain(&part, seed, floor).unwrap().unwrap();
+            assert_eq!(chain.len(), 3);
+            let edges: Vec<FilletEdge> = chain
+                .iter()
+                .map(|(edge, _)| FilletEdge {
+                    edge: *edge,
+                    radius: r * k,
+                })
+                .collect();
+            let made = solve(&part, &edges, k);
+            let volume = 5.0 * 6.0 + area * height + added;
+            assert_close(mass(&made.body).volume, volume * k * k * k, "volume");
+        }
+    }
+}

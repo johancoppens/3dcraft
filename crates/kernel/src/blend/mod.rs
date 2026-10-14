@@ -1060,6 +1060,13 @@ fn fits(body: &Body, plans: &[Plan], tol: f64) -> Result<(), BlendError> {
                             ((offset - axis * height).length(), height)
                         };
                         let (r0, h0) = level(start);
+                        if touches && continues(body, plan.edge, other) {
+                            // It goes on from an end of the arc along the
+                            // circle's tangent: beyond the arc's sector,
+                            // beside nothing of it (the edges after it are
+                            // measured as all others are).
+                            continue;
+                        }
                         let away = points.iter().filter(|p| touches || beside(**p)).map(|p| {
                             let (r, h) = level(*p);
                             (r - r0).hypot(h - h0)
@@ -1174,6 +1181,30 @@ fn smooth_run(
         current = found;
     }
     run
+}
+
+/// True when `other` goes on from an end of `edge` straight on (the two
+/// leave their common vertex in opposite directions).
+fn continues(body: &Body, edge: EdgeId, other: EdgeId) -> bool {
+    let away = |id: EdgeId, vertex: VertexId| -> Option<Vec3> {
+        let data = body.edge(id)?;
+        if data.start == vertex {
+            tangent(&data.curve, data.range.0).ok()
+        } else if data.end == vertex {
+            tangent(&data.curve, data.range.1).ok().map(|t| -t)
+        } else {
+            None
+        }
+    };
+    let Some(data) = body.edge(edge) else {
+        return false;
+    };
+    [data.start, data.end].into_iter().any(|vertex| {
+        match (away(edge, vertex), away(other, vertex)) {
+            (Some(a), Some(b)) => a.dot(b) < -1.0 + 1e-9,
+            _ => false,
+        }
+    })
 }
 
 /// An edge at a vertex: which way it leaves, and how it turns.
