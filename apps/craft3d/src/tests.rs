@@ -1675,6 +1675,7 @@ mod engine_thread {
     fn replies_keep_the_order_of_the_requests_across_connections() {
         let window = Window::open();
         let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let start = std::time::Instant::now();
         let spawn = |name: &'static str, delay: u64, method: &'static str, params: Value| {
             let (address, order) = (window.address, Arc::clone(&order));
             std::thread::spawn(move || {
@@ -1682,7 +1683,7 @@ mod engine_thread {
                 client.call("auth", json!({"token": TOKEN}));
                 std::thread::sleep(Duration::from_millis(delay));
                 let reply = client.call(method, params);
-                order.lock().unwrap().push(name);
+                order.lock().unwrap().push((name, start.elapsed()));
                 reply
             })
         };
@@ -1708,10 +1709,19 @@ mod engine_thread {
         // there was nothing to frame when it was sent.
         let fit = third.join().unwrap();
         assert_eq!(fit["ok"], true, "{fit}");
-        // The batch and the fit are answered in the same turn once the
-        // slow command is done, so only these two are in a fixed order.
+        // `ui.get` is answered while the slow command runs, so first. The
+        // batch, sent 200 ms in, waited for the slow command: its reply
+        // came no earlier than the slow command's 900 ms. (Which client
+        // thread wakes first once both replies are sent is up to the
+        // scheduler, so the slow and the batch replies are not compared
+        // by the order the threads note them in.)
         let order = order.lock().unwrap();
-        assert_eq!(order[..2], ["ui.get", "slow"], "{order:?}");
+        assert_eq!(order.first().map(|o| o.0), Some("ui.get"), "{order:?}");
+        let batch = order.iter().find(|o| o.0 == "batch").map(|o| o.1);
+        assert!(
+            batch.is_some_and(|at| at >= Duration::from_millis(900)),
+            "{order:?}"
+        );
     }
 
     /// `ui.quit` while work runs: answered at once, the loop stops, and
