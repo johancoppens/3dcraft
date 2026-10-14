@@ -1,6 +1,6 @@
 # Roadmap
 
-> **Last updated:** 2026-10-14 · **Stage:** M7 (booleans) and M8.5 in progress, M9 started, M4 nearly done; M0–M3, M5, M6 and M8 done · **Change:** minor (restructured: one line per milestone, a section per milestone, the boolean checklist on its own)
+> **Last updated:** 2026-10-15 · **Stage:** M7 (booleans) and M8.5 in progress, M9 started, M4 nearly done; M0–M3, M5, M6 and M8 done · **Change:** minor (the Voronoi helmet's boolean findings done)
 
 Forward-looking plan: the **Current focus** agents pick from, one line per milestone, and per milestone what it is for, what is done, what is open and what "done" means. There is no parity percentage: 3DCraft is AI-first with a minimal UI and has no target app ([`decisions.md`](decisions.md)). Progress is measured by milestones whose acceptance tests pass. How something was built (algorithms, thresholds, measurements, file paths of internals) is in [`architecture.md`](architecture.md), and how it is tested in [`testing.md`](testing.md).
 
@@ -58,7 +58,7 @@ The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item i
 7. 🟡 **Speed on bodies with thousands of faces** (a spatial index).
 8. 🟡 **Never an invalid body:** the mesh detector exists (`tess::body_self_intersections`, `document.check` with `deep`) and found nothing in 39,834 boolean results (2026-10-13); it is not yet run inside every operation.
 
-**Measured (2026-10-14, morning):** 11573 of 11988 corpus outcomes agree, 249 refused (all in the category near, about 250 being the tolerance rule itself: cases built one tolerance apart or into each other), 0 wrong, 0 invalid. Speed (2026-10-13): 1024 holes one by one in 7.1 s, a cylinder through a plate of 1030 faces in 36.5 ms; the corpus test takes about 230 s on 14 threads on an idle machine (640 s at noon on 2026-10-13) and is the gate's longest binary.
+**Measured (2026-10-14, morning; the same on 2026-10-15 after the helmet's findings):** 11573 of 11988 corpus outcomes agree, 249 refused (all in the category near, about 250 being the tolerance rule itself: cases built one tolerance apart or into each other), 0 wrong, 0 invalid. Speed (2026-10-13): 1024 holes one by one in 7.1 s, a cylinder through a plate of 1030 faces in 36.5 ms; the corpus test takes about 230 s on 14 threads on an idle machine (640 s at noon on 2026-10-13) and is the gate's longest binary.
 
 **Owed, in order:**
 
