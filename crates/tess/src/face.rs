@@ -956,6 +956,41 @@ fn seam_blocked(a: Uv, b: Uv, c: Uv, d: Uv) -> bool {
         || (side_b == 0.0 && within(tb, tc, td))
 }
 
+/// True when an end of the boundary segment (c, d) that is not an end of
+/// the seam from `a` to `b` lies on the seam but for rounding, strictly
+/// between its ends, or an end of the seam on the segment. A seam along
+/// a straight edge of the loop it starts on (a line of the surface, as a
+/// bore with a stepped bottom has at `a = ±π`) runs through the vertex
+/// where that edge ends; computed a period further, the seam can lean a
+/// last bit away from it, so that [`seam_blocked`]'s exact test sees
+/// neither a crossing nor a touch, and the seam swallowed the edge: the
+/// face's mesh had no side on its chord (the engine block's bored
+/// mounts, 2026-10-15).
+fn seam_grazes(a: Uv, b: Uv, c: Uv, d: Uv, period: f64) -> bool {
+    const ROUNDING: f64 = 1e-12;
+    let scale = [a, b, c, d]
+        .iter()
+        .flat_map(|p| p.iter())
+        .fold(period.abs(), |m, x| m.max(x.abs()));
+    let slack = ROUNDING * scale;
+    // `p` within `slack` of the segment (q, r), strictly between its ends
+    // and not at either of them.
+    let on = |p: Uv, q: Uv, r: Uv| -> bool {
+        let (p, q, r) = (tuple(p), tuple(q), tuple(r));
+        let (dx, dy) = (r.0 - q.0, r.1 - q.1);
+        let whole = dx * dx + dy * dy;
+        if !(whole > 0.0 && whole.is_finite()) {
+            return false;
+        }
+        let (px, py) = (p.0 - q.0, p.1 - q.1);
+        let along = px * dx + py * dy;
+        let away = (px * dy - py * dx).abs() / whole.sqrt();
+        let near_end = |e: P2| (p.0 - e.0).abs() <= slack && (p.1 - e.1).abs() <= slack;
+        away <= slack && along > 0.0 && along < whole && !near_end(q) && !near_end(r)
+    };
+    on(c, a, b) || on(d, a, b) || on(a, c, d) || on(b, c, d)
+}
+
 /// `p`, or the end of a seam it is but for rounding.
 ///
 /// The end of a seam on a loop is that loop's vertex moved by whole
@@ -1259,7 +1294,7 @@ fn band_region(
                     for ta in around - 1..=around + 1 {
                         let p = snapped(shifted(v.uv, [ta, tb], periods), [from, to], period);
                         let q = snapped(shifted(w.uv, [ta, tb], periods), [from, to], period);
-                        if seam_blocked(from, to, p, q) {
+                        if seam_blocked(from, to, p, q) || seam_grazes(from, to, p, q, period) {
                             return true;
                         }
                     }
