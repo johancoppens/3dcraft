@@ -27,16 +27,19 @@ pub(super) enum Shape {
         e1: Vec3,
         e2: Vec3,
     },
-    /// `o + a cos ψ + b cos² ψ + c sin ψ √(1 + cos² ψ)`: the closed curve
-    /// in which two tubes of one radius cross whose spines, a line and a
-    /// circle, are tangent (see `exact::continued`). It has no exact
-    /// NURBS: a piece of it is fitted, and `slack` is how far the surfaces
-    /// are from the position the formula is for.
+    /// `o + a cos ψ √(1 + k cos² ψ) + b cos² ψ + c sin ψ √(1 + cos² ψ)`:
+    /// the closed curve in which two tubes of one radius cross whose
+    /// spines, a line and a circle (`k = 0`) or two circles, are tangent
+    /// in one plane (see `exact::continued` and `exact::continued_tori`).
+    /// `k > −1`. It has no exact NURBS: a piece of it is fitted, and
+    /// `slack` is how far the surfaces are from the position the formula
+    /// is for.
     Lobe {
         o: Vec3,
         a: Vec3,
         b: Vec3,
         c: Vec3,
+        k: f64,
         slack: f64,
     },
 }
@@ -111,9 +114,11 @@ impl Shape {
             }
             Shape::Parabola { o, d1, d2 } => *o + *d1 * t + *d2 * (t * t),
             Shape::Hyperbola { c, e1, e2 } => *c + *e1 * t.cosh() + *e2 * t.sinh(),
-            Shape::Lobe { o, a, b, c, .. } => {
+            Shape::Lobe { o, a, b, c, k, .. } => {
                 let (s, co) = t.sin_cos();
-                *o + *a * co + *b * (co * co) + *c * (s * (1.0 + co * co).sqrt())
+                *o + *a * (co * (1.0 + k * co * co).sqrt())
+                    + *b * (co * co)
+                    + *c * (s * (1.0 + co * co).sqrt())
             }
         }
     }
@@ -121,12 +126,17 @@ impl Shape {
     /// The derivative of a [`Shape::Lobe`] by its parameter; it is never
     /// zero where `a` and `c` are not.
     fn lobe_derivative(&self, t: f64) -> Option<Vec3> {
-        let Shape::Lobe { a, b, c, .. } = self else {
+        let Shape::Lobe { a, b, c, k, .. } = self else {
             return None;
         };
         let (s, co) = t.sin_cos();
         let w = (1.0 + co * co).sqrt();
-        Some(*a * (-s) + *b * (-2.0 * co * s) + *c * (co * w - s * s * co / w))
+        let v = (1.0 + k * co * co).sqrt();
+        Some(
+            *a * (-s * (1.0 + 2.0 * k * co * co) / v)
+                + *b * (-2.0 * co * s)
+                + *c * (co * w - s * s * co / w),
+        )
     }
 
     /// The parameters at which `pick` of the curve's point equals `bound`.

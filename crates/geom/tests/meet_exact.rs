@@ -689,6 +689,134 @@ fn a_cylinder_that_goes_on_in_a_torus() {
     }
 }
 
+/// Two tubes of one radius whose middle circles lie in one plane and touch,
+/// from outside or from inside, with their axes the same way or opposite:
+/// what a fillet along two arcs of a chain is made of. They are tangent
+/// along the circle of the tube's radius across the point of contact `O`,
+/// and cross along a second closed curve through its top and bottom. That
+/// curve is held to both tori's own equations and, independently of how
+/// it was derived, to `|δ₁| = |δ₂|` and `z² = r² − δ₁²` (in-plane signed
+/// distances to the two middle circles); nothing is missing, by a scan of
+/// the first torus for changes of sign of the second's equation.
+#[test]
+fn a_torus_that_goes_on_in_a_torus() {
+    let mut crossings = 0;
+    for setup in setups() {
+        let (s, f) = (setup.s, &setup.f);
+        // (R₁, R₂, r, from outside, direction to the second centre, flip)
+        for (r1, r2, minor, outside, turn, flip) in [
+            (4.0, 2.5, 1.0, true, 0.7_f64, false),
+            (3.0, 3.0, 0.5, true, 2.9, true),
+            (5.0, 2.0, 0.8, false, -1.3, false),
+            (6.0, 1.5, 1.2, false, 0.2, true),
+        ] {
+            let (r1, r2, minor) = (r1 * s, r2 * s, minor * s);
+            let first = torus(*f, r1, minor);
+            let toward = f.vector(turn.cos(), turn.sin(), 0.0);
+            let apart = if outside { r1 + r2 } else { r1 - r2 };
+            let centre2 = f.origin() + toward * apart;
+            let axis2 = if flip { f.z() * -1.0 } else { f.z() };
+            let second = torus(Frame::new(centre2, axis2, f.x()).unwrap(), r2, minor);
+            let at = f.origin() + toward * r1;
+            let m = meeting(setup.meet(&first, &second));
+            assert!(m.points.is_empty());
+            assert_eq!(m.curves.len(), 4, "{m:?}");
+            let (top, bottom) = (at + f.z() * minor, at - f.z() * minor);
+            let along = f.z().cross(toward);
+            let signed = |p: Vec3, centre: Vec3, major: f64| {
+                let q = p - centre;
+                (q - f.z() * q.dot(f.z())).length() - major
+            };
+            let (mut halves, mut lobes) = (0, 0);
+            for curve in &m.curves {
+                let (a, b) = (start(curve), end(curve));
+                let ends = a.distance(top).min(a.distance(bottom))
+                    + b.distance(top).min(b.distance(bottom));
+                assert!(ends <= 1e-9 * s && a.distance(b) > minor, "{curve:?}");
+                if curve.tangent {
+                    halves += 1;
+                    let Curve3::Circle(circle) = &curve.curve else {
+                        panic!("expected a circle, got {curve:?}");
+                    };
+                    assert!(circle.frame().origin().distance(at) <= 1e-9 * s);
+                    assert!((circle.radius() - minor).abs() <= 1e-12 * s);
+                } else {
+                    lobes += 1;
+                    assert!(!curve.exact);
+                    let side = (samples(curve, 2)[1] - at).dot(along);
+                    let near = setup.t.linear;
+                    let mut furthest = 0.0_f64;
+                    for p in samples(curve, 400) {
+                        let x = (p - at).dot(along);
+                        let z = (p - at).dot(f.z());
+                        let (d1, d2) = (signed(p, f.origin(), r1), signed(p, centre2, r2));
+                        assert!(x * side >= -near, "a lobe stays on its side");
+                        assert!((d1.abs() - d2.abs()).abs() <= 4.0 * near, "{d1} {d2}");
+                        assert!((z * z + d1 * d1 - minor * minor).abs() <= 4.0 * minor * near);
+                        furthest = furthest.max(d1.abs());
+                    }
+                    // It reaches the plane, where |δ| = r.
+                    assert!((furthest - minor).abs() <= 1e-3 * minor, "{furthest}");
+                }
+            }
+            assert_eq!((halves, lobes), (2, 2));
+            // Nothing missing: a grid on the first torus near the contact.
+            let lines = Lines::of(&m, 4000);
+            let value = |p: Vec3| {
+                let q = p - centre2;
+                let h = q.dot(f.z());
+                let rho = (q - f.z() * h).length();
+                (rho - r2).hypot(h) - minor
+            };
+            let base = turn;
+            let reach = 2.5 * (minor / r1.min(r2)).sqrt() * (r1.min(r2) / r1);
+            let point = |angle: f64, around: f64| {
+                let dir = f.vector(angle.cos(), angle.sin(), 0.0);
+                f.origin() + dir * (r1 + minor * around.cos()) + f.z() * (minor * around.sin())
+            };
+            for i in 0..=96 {
+                let around = TAU * (f64::from(i) + 0.37) / 97.0;
+                for k in 0..200 {
+                    let (mut lo, mut hi) = (
+                        base - reach + 2.0 * reach * f64::from(k) / 200.0,
+                        base - reach + 2.0 * reach * f64::from(k + 1) / 200.0,
+                    );
+                    let (below, above) = (value(point(lo, around)), value(point(hi, around)));
+                    if (below < 0.0) == (above < 0.0) {
+                        continue;
+                    }
+                    for _ in 0..60 {
+                        let mid = 0.5 * (lo + hi);
+                        if (value(point(mid, around)) < 0.0) == (below < 0.0) {
+                            lo = mid;
+                        } else {
+                            hi = mid;
+                        }
+                    }
+                    let p = point(lo, around);
+                    assert!(
+                        lines.distance(p) <= 1e-3 * s,
+                        "a crossing off every curve: {p:?}"
+                    );
+                    crossings += 1;
+                }
+            }
+            // A tube a hair too thick is not this case.
+            let thick = torus(
+                Frame::new(centre2, axis2, f.x()).unwrap(),
+                r2,
+                minor + 3.0 * setup.t.linear,
+            );
+            if let Ok(SurfaceMeeting::Meets(other)) =
+                meet_surfaces(&first, &thick, &setup.within, &setup.t)
+            {
+                assert!(other.curves.iter().all(|c| !c.tangent), "{other:?}");
+            }
+        }
+    }
+    assert!(crossings >= 500, "the scan found {crossings} crossings");
+}
+
 /// The value at `p` of a function that is zero on the own nappe of the
 /// cone with this apex, axis and half-angle, and changes sign through it
 /// (and nowhere else).

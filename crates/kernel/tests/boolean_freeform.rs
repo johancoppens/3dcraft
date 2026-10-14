@@ -489,3 +489,99 @@ fn a_domed_block_cut_and_put_together_again_is_the_domed_block() {
         }
     }
 }
+
+/// A block whose face lies on the tangent plane of a roof at a point where
+/// the roof curves little (the corpus case tangent/block-spline/005, with
+/// its numbers): the face stays within a few tolerances of the roof over
+/// much of it, and the marcher needed 401,264 cells where it allowed
+/// 400,000 ("tangent or nearly coincident over too large an area"). What
+/// they share is integrated without either, along lines parallel to the
+/// dome's axis (FreeCAD's three results disagree with each other by 2e-4
+/// of the volumes here; its common volume is 0.5 % short of the integral).
+#[test]
+fn a_block_on_the_tangent_plane_where_the_roof_curves_little() {
+    let size = Vec3::new(1.387800469253947, 1.2886008002976646, 1.630799678011141);
+    let dome_at = (
+        Vec3::new(2.089716356022527, -2.06913969814077, 3.0542559409801813),
+        Vec3::new(0.7672978832982469, 0.11464690034722816, 0.630959623531334),
+        Vec3::new(0.5740821006083017, -0.5612871801649014, -0.5961429720660081),
+    );
+    let block_size = Vec3::new(1.9442837908071051, 2.782753791201996, 1.737231975138398);
+    let block_at = (
+        Vec3::new(2.985417665961272, -2.2108682025991393, 4.551423711243999),
+        Vec3::new(0.11906307316166609, 0.7238169787213927, -0.6796417923611926),
+        Vec3::new(0.6494129821441759, 0.4610188734358479, 0.6047515001705657),
+    );
+    let frame = |at: (Vec3, Vec3, Vec3), k: f64| Frame::new(at.0 * k, at.1, at.2).unwrap();
+    let (dome_frame, block_frame) = (frame(dome_at, 1.0), frame(block_at, 1.0));
+    let roof = |x: f64, y: f64| {
+        let b = |i: usize, t: f64| {
+            let s = 1.0 - t;
+            [s * s * s, 3.0 * s * s * t, 3.0 * s * t * t, t * t * t][i]
+        };
+        let (u, v) = (x / size.x, y / size.y);
+        let mut z = 0.0;
+        for i in 0..4 {
+            for j in 0..4 {
+                let h = size.z * (1.0 + 0.15 * (((i * 7 + j * 3) % 5) as f64 - 2.0));
+                z += b(i, u) * b(j, v) * h;
+            }
+        }
+        z
+    };
+    let shared = |n: usize| {
+        let axes = [block_frame.x(), block_frame.y(), block_frame.z()];
+        let most = [block_size.x, block_size.y, block_size.z];
+        let up = dome_frame.z();
+        let mut sum = 0.0;
+        for i in 0..n {
+            for j in 0..n {
+                let (x, y) = (
+                    size.x * (i as f64 + 0.5) / n as f64,
+                    size.y * (j as f64 + 0.5) / n as f64,
+                );
+                let foot = block_frame.local(dome_frame.point(x, y, 0.0));
+                let foot = [foot.0, foot.1, foot.2];
+                let (mut low, mut high) = (0.0_f64, roof(x, y));
+                for ((at, axis), most) in foot.iter().zip(axes).zip(most) {
+                    let along = up.dot(axis);
+                    if along.abs() < 1e-15 {
+                        if *at < 0.0 || *at > most {
+                            high = low;
+                        }
+                        continue;
+                    }
+                    let (a, b) = ((0.0 - at) / along, (most - at) / along);
+                    low = low.max(a.min(b));
+                    high = high.min(a.max(b));
+                }
+                sum += (high - low).max(0.0);
+            }
+        }
+        sum * size.x * size.y / (n * n) as f64
+    };
+    let (coarse, expected) = (shared(1024), shared(2048));
+    assert!(
+        (expected - coarse).abs() < 1e-5 * expected,
+        "the integral has not settled: {coarse} then {expected}"
+    );
+    for k in SCALES {
+        let dome =
+            domed_block(&frame(dome_at, k), size.x * k, size.y * k, size.z * k, true).unwrap();
+        let block = primitives::block(
+            &frame(block_at, k),
+            block_size.x * k,
+            block_size.y * k,
+            block_size.z * k,
+        )
+        .unwrap();
+        let k3 = k * k * k;
+        let (vd, vb) = (dome.volume / k3, block_size.x * block_size.y * block_size.z);
+        let common = mass(&solve(&dome.body, &block, Intersect, k).body).volume / k3;
+        near(common, expected, 1e-5, "block and roof");
+        let rest = mass(&solve(&dome.body, &block, Subtract, k).body).volume / k3;
+        near(rest, vd - common, 1e-8, "dome less block");
+        let united = mass(&solve(&dome.body, &block, Union, k).body).volume / k3;
+        near(united, vd + vb - common, 1e-8, "dome and block");
+    }
+}

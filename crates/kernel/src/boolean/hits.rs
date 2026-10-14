@@ -202,11 +202,36 @@ fn root(f: &dyn Fn(f64) -> f64, mut lo: f64, mut hi: f64) -> f64 {
 /// The parameter in `[lo, hi]` where `|f|` is least, as far as sampling and
 /// then narrowing in on the best sample finds it.
 fn closest(f: &dyn Fn(f64) -> f64, lo: f64, hi: f64) -> f64 {
+    least(&|t| f(t).abs(), lo, hi)
+}
+
+/// Where a curve that touches the surface from the side `positive` comes
+/// nearest to it or, where it dips through it by less than half the
+/// tolerance on the way (which counts as touching, as for faces), goes
+/// deepest: one place for the touch, between the two crossings it stands
+/// for, where the nearest point to the surface would be either crossing,
+/// whichever the search happens on. A dip deeper than that is left at a
+/// crossing, on the surface, as before. Where the curve stays on its side
+/// it is [`closest`].
+fn deepest(f: &dyn Fn(f64) -> f64, lo: f64, hi: f64, positive: bool, tol: f64) -> f64 {
+    let sign = if positive { 1.0 } else { -1.0 };
+    let t = least(&|t| sign * f(t), lo, hi);
+    if f(t).abs() <= 0.5 * tol {
+        t
+    } else {
+        closest(f, lo, hi)
+    }
+}
+
+/// Where `g` is least over `[lo, hi]`: the least of seventeen samples,
+/// refined by a ternary search about it.
+fn least(g: &dyn Fn(f64) -> f64, lo: f64, hi: f64) -> f64 {
+    let f = g;
     const SAMPLES: u32 = 16;
     let at = |k: u32| lo + (hi - lo) * f64::from(k) / f64::from(SAMPLES);
     let mut best = (f64::INFINITY, lo);
     for k in 0..=SAMPLES {
-        let value = f(at(k)).abs();
+        let value = f(at(k));
         if value < best.0 {
             best = (value, at(k));
         }
@@ -218,14 +243,14 @@ fn closest(f: &dyn Fn(f64) -> f64, lo: f64, hi: f64) -> f64 {
         if !(m1 > a && m2 < b && m1 < m2) {
             break;
         }
-        if f(m1).abs() <= f(m2).abs() {
+        if f(m1) <= f(m2) {
             b = m2;
         } else {
             a = m1;
         }
     }
     let t = 0.5 * (a + b);
-    if f(t).abs() <= best.0 { t } else { best.1 }
+    if f(t) <= best.0 { t } else { best.1 }
 }
 
 /// The hits of the piece of `curve` over `range` with the zero set of
@@ -398,7 +423,7 @@ fn numeric(
         let after = side(runs.get(index + 1));
         let (t, tangent) = match (before, after) {
             (Some(x), Some(y)) if x != y => (root(&f, lo, hi), false),
-            (Some(_), Some(_)) => (closest(&f, lo, hi), true),
+            (Some(positive), Some(_)) => (deepest(&f, lo, hi, positive, tol), true),
             // The piece starts or ends within the tolerance of the
             // surface: on it there, unless it crosses on the way.
             (None, Some(positive)) if f(lo) != 0.0 && (f(lo) > 0.0) != positive => {
@@ -452,6 +477,12 @@ pub(super) fn curve_hits(
             other => return other,
         }
     }
+    if let Some(found) = coaxial(curve, sheet, tolerance.linear) {
+        return Ok(found);
+    }
+    if let Some(found) = ruling(curve, range, sheet, tolerance) {
+        return Ok(found);
+    }
     if is_freeform(surface) {
         // The index gives the distance to the nearest point, and a bound
         // below it that a stretch is called clear by.
@@ -472,6 +503,120 @@ pub(super) fn curve_hits(
         },
         tolerance.linear,
     )
+}
+
+/// A circle about the axis of a cone, a sphere or a torus is at one
+/// distance from it all round: on it or clear of it, decided by one point.
+/// The numeric path cannot settle such a circle when it runs a few
+/// tolerances from a cone (whose distance has no bound on its bend, so
+/// that the stretches it is cut into must each be shorter than that
+/// distance; two cones whose rims are ten tolerances apart). A circle that
+/// is only nearly about the axis is within `δ`, its centre's distance from
+/// the axis plus its radius times its tilt, of one that is (each point
+/// moves by no more), and the distance to the surface by no more than
+/// that: decided here only when `δ` leaves no doubt, and left to the
+/// numeric path otherwise. `None` for every other curve and surface.
+fn coaxial(curve: &Curve3, sheet: Sheet, tol: f64) -> Option<CurveIntersection> {
+    let Curve3::Circle(circle) = curve else {
+        return None;
+    };
+    let frame = circle.frame();
+    let (origin, axis) = match sheet.surface {
+        Surface::Cone(s) => (s.frame().origin(), s.frame().z()),
+        Surface::Torus(s) => (s.frame().origin(), s.frame().z()),
+        // Every line through the centre is an axis of a sphere.
+        Surface::Sphere(s) => (s.frame().origin(), frame.z()),
+        _ => return None,
+    };
+    let (n, radius) = (frame.z(), circle.radius());
+    let tilt = n.cross(axis).length().atan2(n.dot(axis).abs());
+    let offset = frame.origin() - origin;
+    let along = axis * offset.dot(axis);
+    let off_axis = (offset - along).length();
+    let delta = off_axis + radius * tilt;
+    if !(delta.is_finite() && delta <= 0.25 * tol) {
+        return None;
+    }
+    // A point of the circle about the axis at the same height and radius.
+    let across = frame.x() - axis * frame.x().dot(axis);
+    let point = origin + along + across.normalized()? * radius;
+    let distance = signed_distance(sheet, point)?.abs();
+    if !distance.is_finite() {
+        return None;
+    }
+    if distance - delta > tol {
+        Some(CurveIntersection::Hits(Vec::new()))
+    } else if distance + delta <= tol {
+        Some(CurveIntersection::OnSurface)
+    } else {
+        None
+    }
+}
+
+/// A line along a ruling of a cone, through its apex: on the cone on the
+/// side of the apex where the cone is, and leaving it at the apex. Its
+/// distance there is within the tolerance over the whole stretch, which
+/// the numeric path can only cut into pieces the size of the tolerance
+/// (a cone's distance has no bound on its bend), and gives up on: a
+/// straight edge of one solid that lies along a cone's ruling (the corpus
+/// case contact/cone-dome/002). The piece is on the surface when it lies
+/// wholly on the cone's side, and meets it at the apex, a touch, when the
+/// apex is inside it; on the other side it is left to the numeric path,
+/// which settles a line that moves away from the surface. Decided only
+/// when the ruling and the line are within a quarter of the tolerance of
+/// each other over the piece. `None` otherwise.
+fn ruling(
+    curve: &Curve3,
+    range: (f64, f64),
+    sheet: Sheet,
+    tolerance: &Tolerance,
+) -> Option<CurveIntersection> {
+    let (Curve3::Line(line), Surface::Cone(cone)) = (curve, sheet.surface) else {
+        return None;
+    };
+    let tol = tolerance.linear;
+    let (frame, alpha) = (cone.frame(), cone.half_angle());
+    let tangent = alpha.tan();
+    if !(tangent.is_finite() && tangent != 0.0) {
+        return None;
+    }
+    let apex = frame.point(0.0, 0.0, -cone.radius() / tangent);
+    // From the apex into the cone.
+    let into = frame.z() * alpha.signum();
+    let (o, d) = (line.origin(), line.direction());
+    let at = (apex - o).dot(d);
+    let (t0, t1) = range;
+    if !(at.is_finite() && t0.is_finite() && t1.is_finite() && t1 > t0) {
+        return None;
+    }
+    // The way along the line that goes into the cone from the apex.
+    let way = if d.dot(into) >= 0.0 { 1.0 } else { -1.0 };
+    let ray = d * way;
+    // How far the ruling with the line's direction from the apex is from
+    // the line over the piece: the apex's distance from the line, and the
+    // angle between the line and the cone (from the axis) times the reach.
+    let miss = (o + d * at).distance(apex);
+    let angle = (ray.dot(into).clamp(-1.0, 1.0).acos() - alpha.abs()).abs();
+    let reach = (t0 - at).abs().max((t1 - at).abs());
+    // (False for NaN as well.)
+    let close = miss + angle * reach <= 0.25 * tol;
+    if !close {
+        return None;
+    }
+    // The parameters on the cone's side of the apex.
+    let on = |t: f64| (t - at) * way >= 0.0;
+    if on(t0) && on(t1) {
+        return Some(CurveIntersection::OnSurface);
+    }
+    if !on(t0) && !on(t1) {
+        return None;
+    }
+    let point = apex;
+    Some(CurveIntersection::Hits(vec![CurveHit {
+        t: at,
+        point,
+        tangent: true,
+    }]))
 }
 
 /// The root isolation against an indexed freeform surface.

@@ -448,11 +448,18 @@ fn a_rational_face_in_tangent_contact_and_with_an_edge_on_it() {
 /// A rational face that lies on the surface of a face of the other body:
 /// a rational quarter cylinder against the analytic cylinder it is a
 /// piece of, against its analytic twin lifted along the axis, and against
-/// itself lifted. Faces that coincide are found by the kind of their
-/// surfaces, and a freeform surface that happens to be a cylinder is not
-/// recognised as one: today each of these is refused, with a reason. What
-/// is held here is that it is never a wrong body: a refusal, or the solid
-/// the analytic twin gives.
+/// itself lifted; and a rational quarter of a zone of a ball against the
+/// ball. The first and the last are built since 2026-10-14 and held to the
+/// analytic twin: geometry finds that the patch lies on the cylinder, a
+/// point of the cylinder beyond the patch is off the face rather than
+/// placed in the patch's chart, and a face on a patch is not merged with
+/// the other body's face on the same surface (it would run off the
+/// patch). The other two are still refused, with a reason (the twin lifted:
+/// a stretch along the shared straight edge that is not cut where a
+/// curve the marcher drew along the patch's border ends on it; the two
+/// patches: a freeform surface lying on a freeform surface is not
+/// recognised). What is held for them is that it is never a wrong body: a
+/// refusal, or the solid the analytic twin gives.
 #[test]
 fn a_rational_face_on_the_surface_it_equals_is_refused_or_right() {
     for k in SCALES {
@@ -464,31 +471,47 @@ fn a_rational_face_on_the_surface_it_equals_is_refused_or_right() {
                 "the rod it lies on, higher",
                 rod(k, [0.0, 0.0, 1.0], 2.0, 4.0),
                 rod(k, [0.0, 0.0, 1.0], 2.0, 4.0),
+                true,
             ),
             (
                 "its analytic twin, lifted",
                 solid.body.transformed(&lift).unwrap(),
                 solid.body.transformed(&lift).unwrap(),
+                false,
             ),
             (
                 "itself, lifted",
                 twin.transformed(&lift).unwrap(),
                 solid.body.transformed(&lift).unwrap(),
+                false,
             ),
         ];
-        for (name, tool, plain_tool) in cases {
+        let zone = ball_zone(k);
+        let (zone_twin, _) = rationalized(&zone.body, 0.0, false);
+        let pairs = cases
+            .into_iter()
+            .map(|(name, tool, plain, built)| (name, &twin, &solid.body, tool, plain, built))
+            .chain([(
+                "a rational ball zone and the ball it lies on",
+                &zone_twin,
+                &zone.body,
+                ball(k, [0.0, 0.0, 0.0], 2.0),
+                ball(k, [0.0, 0.0, 0.0], 2.0),
+                true,
+            )]);
+        for (name, twin, plain, tool, plain_tool, built) in pairs {
             for op in [Union, Intersect, Subtract] {
                 let what = format!("{name}, {op:?} at {k}");
-                match outcome(&twin, &tool, op, k, &what) {
+                match outcome(twin, &tool, op, k, &what) {
                     Outcome::Refused(reason) => {
+                        assert!(!built, "{what}: refused: {reason}");
                         assert!(!reason.is_empty(), "{what}");
-                        // (Pinned so that the day this is built, the
-                        // test says so and is tightened.)
                     }
                     found => {
-                        let analytic = outcome(&solid.body, &plain_tool, op, k, &what);
+                        let analytic = outcome(plain, &plain_tool, op, k, &what);
                         same(&found, &analytic, k, &what);
-                        panic!(
+                        assert!(
+                            built,
                             "{what}: no longer refused, and right: say so in the docs and hold it to the analytic twin here"
                         );
                     }

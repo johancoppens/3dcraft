@@ -610,3 +610,146 @@ fn cones_that_share_a_ruling() {
     // The narrower cone did come out of the wider one in some of them.
     assert!(crossed >= 6, "{crossed}");
 }
+
+/// A cone standing a tenth of a tolerance over (or into) the top of a block
+/// whose edges its rim touches in the plane: the corpus case
+/// near/cone-dome/005 with a block for the dome. Under the rim the cone's
+/// side, carried on below its base, crosses the edge twice, half a
+/// millimetre apart at scale 1 and never more than a twentieth of a
+/// tolerance past it between the crossings: one touch, which the root
+/// isolation put on either crossing (wherever its search for the nearest
+/// point happened to go), so that the edge was cut there and the rim, which
+/// touches the edge between them, at the touch, and the pieces did not
+/// match. The touch is now where the curve goes deepest.
+///
+/// The faces under the cone are one surface within the tolerance, facing
+/// each other: the union is one body, a cone on a block, with neither face
+/// where they overlap (the disc less the segment beyond the block's far
+/// edge); the intersection is empty; each difference is the body it
+/// starts from.
+#[test]
+fn a_rim_that_touches_an_edge_a_tenth_of_a_tolerance_over_a_face() {
+    let (radius, height) = (0.75_f64, 1.5_f64);
+    // The block's top is x in [0.75, 2], y in [0, 1.75], z = 0; the rim's
+    // centre is 0.5 from x = 0.75 and touches x = 2 and y = 0.
+    let (centre, beyond) = ([1.25, 0.75], 0.5_f64);
+    let segment = radius * radius * (beyond / radius).acos()
+        - beyond * (radius * radius - beyond * beyond).sqrt();
+    let overlap = PI * radius * radius - segment;
+    for k in SCALES {
+        let block = boxed(k, [0.75, 0.0, -3.0], [2.0, 1.75, 0.0]);
+        for gap in [0.1, -0.1, 0.3] {
+            let cone = spike(k, [centre[0], centre[1], gap * 1e-6], radius, height);
+            let (mb, mc) = (mass(&block), mass(&cone));
+            let both = solve(&block, &cone, Union, k);
+            assert_eq!(both.body.shells.len(), 1, "gap {gap} at {k}");
+            let m = mass(&both.body);
+            // Glued across the gap, which is within the tolerance.
+            let sum = mb.volume + mc.volume;
+            let slack = gap.abs() * 1e-6 * PI * radius * radius * k * k * k + 1e-9 * sum;
+            assert!(
+                (m.volume - sum).abs() <= slack,
+                "gap {gap} at {k}: volume {} instead of {sum}",
+                m.volume
+            );
+            let area = mb.area + mc.area - 2.0 * overlap * k * k;
+            assert!(
+                (m.area - area).abs() <= 1e-6 * area,
+                "gap {gap} at {k}: area {} instead of {area}",
+                m.area
+            );
+            assert_empty(&block, &cone, Intersect, k);
+            for (x, y, mx) in [(&block, &cone, mb), (&cone, &block, mc)] {
+                let less = solve(x, y, Subtract, k);
+                let m = mass(&less.body);
+                assert_close(m.volume, mx.volume, "volume of the difference");
+                assert_close(m.area, mx.area, "area of the difference");
+            }
+        }
+    }
+}
+
+/// A block that lies against a cone along a ruling, with an edge on the
+/// ruling that runs on past the apex (the corpus case
+/// contact/cone-dome/002 with a block for the dome): its face is the
+/// cone's tangent plane along the ruling. The root isolation could not
+/// settle the edge against the cone (it lies on it up to the apex and
+/// leaves it there, and a cone's distance has no bound on its bend), and
+/// refused "a curve that runs along a surface"; the edge now meets the cone
+/// at the apex. They only touch: the union is both, the intersection
+/// empty, each difference the body it starts from.
+#[test]
+fn a_block_against_a_cone_along_a_ruling_past_its_apex() {
+    let (radius, height) = (0.75_f64, 1.875_f64);
+    let slant = radius.hypot(height);
+    for k in SCALES {
+        let cone = spike(k, [0.0, 0.0, 0.0], radius, height);
+        // Along the ruling in the xz plane, from below the rim up past
+        // the apex; out of the cone along its normal there.
+        let up = Vec3::new(-radius, 0.0, height) * (1.0 / slant);
+        let out = Vec3::new(height, 0.0, radius) * (1.0 / slant);
+        for (from, length, wide) in [(-0.1, 1.5, 1.0), (0.2, 1.2, 0.6)] {
+            let start = Vec3::new(radius, 0.0, 0.0) + up * (from * slant);
+            for side in [1.0, -1.0] {
+                // The block's x along the normal, z along the ruling (up
+                // it, or down it from the top end), so its y is to one
+                // side of the ruling or the other.
+                let base = if side > 0.0 {
+                    start
+                } else {
+                    start + up * (length * slant)
+                };
+                let frame = Frame::new(base * k, up * side, out).unwrap();
+                let block = craft3d_kernel::primitives::block(
+                    &frame,
+                    0.5 * k,
+                    wide * k,
+                    length * slant * k,
+                )
+                .unwrap();
+                let (mb, mc) = (mass(&block), mass(&cone));
+                let both = solve(&block, &cone, Union, k);
+                let m = mass(&both.body);
+                assert_close(m.volume, mb.volume + mc.volume, "volume of the union");
+                assert_close(m.area, mb.area + mc.area, "area of the union");
+                assert_empty(&block, &cone, Intersect, k);
+                assert_empty(&cone, &block, Intersect, k);
+                for (x, y, mx) in [(&block, &cone, mb), (&cone, &block, mc)] {
+                    let less = solve(x, y, Subtract, k);
+                    let m = mass(&less.body);
+                    assert_close(m.volume, mx.volume, "volume of the difference");
+                    assert_close(m.area, mx.area, "area of the difference");
+                }
+            }
+        }
+    }
+}
+
+/// A rod inside a cone on its axis, its top rim a few tolerances inside
+/// the cone's side (the corpus case near/cone-cone/002 has two cone rims
+/// ten tolerances apart): a circle about the cone's axis is at one distance
+/// from it all round, which the root isolation could not prove (it cut the
+/// circle into pieces shorter than that distance and gave up). The rod is
+/// inside: the intersection is the rod, the union the cone, the cone less
+/// the rod has a cavity.
+#[test]
+fn a_rim_a_few_tolerances_inside_a_coaxial_cone() {
+    let (radius, height) = (2.0_f64, 4.0_f64);
+    for k in SCALES {
+        let cone = spike(k, [0.0, 0.0, 0.0], radius, height);
+        for tolerances in [3.0, 5.0, 40.0] {
+            // The rod's top at z = 2, where the cone's radius is 1.
+            let r = 1.0 - tolerances * 1e-6 * (radius.hypot(height) / height);
+            let rod = rod(k, [0.0, 0.0, 0.5], r, 1.5);
+            let (vr, vc) = (mass(&rod).volume, mass(&cone).volume);
+            let common = solve(&cone, &rod, Intersect, k);
+            assert_close(mass(&common.body).volume, vr, "the rod");
+            let both = solve(&cone, &rod, Union, k);
+            assert_close(mass(&both.body).volume, vc, "the cone");
+            let less = solve(&cone, &rod, Subtract, k);
+            assert_close(mass(&less.body).volume, vc - vr, "the cone less the rod");
+            assert_eq!(less.body.shells.len(), 2, "{tolerances} at {k}");
+            assert_empty(&rod, &cone, Subtract, k);
+        }
+    }
+}
