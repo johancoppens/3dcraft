@@ -120,13 +120,17 @@ pub(crate) fn source_of(
     from.map(|(id, _)| *id)
 }
 
-/// The way of a copy through the history: for `F9:copy(0,1)/F2:side(e7)`
-/// each feature it passes, with the instance the face is in there, from
-/// the outside in (`[(F9, 0), (F7, 1)]` when F9's target is F7 and F7's
-/// tool is F2), and the name it ends at (`F2:side(e7)`). After the numbers
-/// the way goes on through instance 0 until it reaches the feature of that
-/// name (docs/architecture.md §4.1). `None` for a name that is not a copy,
-/// and for a way that does not lead there in the history as it is.
+/// The way of a copy through the history: for
+/// `F9:copy(0)/F4:copy(1)/F3:side(e1)` each feature it passes, with the
+/// instance the face is in there, from the outside in (`[(F9, 0), (F7, 0),
+/// (F5, 0), (F4, 1)]` when F9, F7 and F5 each took the body before as
+/// their target and F4 took F3's as its tool), and the name it ends at
+/// (`F3:side(e1)`, which is no copy). A link with the one number 0 goes on
+/// through instance 0 until it reaches the feature of the link after it;
+/// a link with other numbers takes them one step each, the last onto
+/// that feature (docs/architecture.md §4.1). `None` for a name that is
+/// not a copy, and for a way that does not lead there in the history as
+/// it is.
 pub(crate) fn steps<'a>(
     doc: &Document,
     earlier: &[FeatureResult],
@@ -135,23 +139,36 @@ pub(crate) fn steps<'a>(
     if name.role != NameRole::Copy {
         return None;
     }
-    let end = name.of.as_deref()?;
     let mut steps = Vec::new();
-    let mut at = name.feature;
-    for &instance in &name.sources {
-        steps.push((at, instance));
-        at = source_of(doc, earlier, at, instance)?;
-    }
+    let mut link = name;
     // Each body is made from an earlier one, so the way is no longer than
     // the history; bounded all the same, for a bad file.
-    for _ in 0..=earlier.len() {
-        if at == end.feature {
-            return Some((steps, end));
+    let mut budget = earlier.len().saturating_add(1);
+    while link.role == NameRole::Copy {
+        let next = link.of.as_deref()?;
+        let mut at = link.feature;
+        if link.sources == [0] {
+            loop {
+                budget = budget.checked_sub(1)?;
+                steps.push((at, 0));
+                at = source_of(doc, earlier, at, 0)?;
+                if at == next.feature {
+                    break;
+                }
+            }
+        } else {
+            for &instance in &link.sources {
+                budget = budget.checked_sub(1)?;
+                steps.push((at, instance));
+                at = source_of(doc, earlier, at, instance)?;
+            }
+            if at != next.feature {
+                return None;
+            }
         }
-        steps.push((at, 0));
-        at = source_of(doc, earlier, at, 0)?;
+        link = next;
     }
-    None
+    Some((steps, link))
 }
 
 /// The name, in the newest body of its chain, of the face `name` of an

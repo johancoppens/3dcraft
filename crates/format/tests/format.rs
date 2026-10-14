@@ -1480,7 +1480,7 @@ fn moved_mirrored_and_repeated_bodies_are_written_like_this_and_round_trip() {
     let SketchPlane::Face { face, .. } = &sketch.plane else {
         panic!()
     };
-    let short = format!("F11:copy({}1)/F6:endCap(e1)", "0,".repeat(39));
+    let short = "F11:copy(0)/F50:copy(1)/F6:endCap(e1)";
     assert_eq!(face.to_string(), short);
 }
 

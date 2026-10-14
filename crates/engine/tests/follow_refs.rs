@@ -221,6 +221,23 @@ fn bolt_prefix(index: usize, name: &str) -> String {
     out
 }
 
+/// The same name in the short form regeneration names faces by (a copy
+/// of a copy is one link, its numbers the instances on the way, zeros at
+/// the end left out): written out here from the bolt's history, not by
+/// the code under test.
+fn bolt_short(index: usize, name: &str) -> String {
+    // The outermost copy is the last blend's, or the cut's (F9).
+    let head = if index == 0 { 9 } else { 9 + index };
+    if name.starts_with("F1:") {
+        // The head: instance 0 all the way down.
+        format!("F{head}:copy(0)/{name}")
+    } else {
+        // The shank: instance 0 through the blends, F9 and F6, then the
+        // tool of F3.
+        format!("F{head}:copy(0)/F3:copy(1)/{name}")
+    }
+}
+
 fn bolt(session: &mut Session, short: bool) {
     bolt_blank(session);
     for (index, (command, name, [a, b], size)) in BOLT_BLENDS.iter().enumerate() {
@@ -261,7 +278,7 @@ fn the_screw_blended_by_the_names_its_parts_were_made_with_is_the_screw_of_full_
         assert_eq!(given["params"]["edges"], json!([[a, b]]), "{name}");
         assert_eq!(
             given["followed"]["edges"],
-            json!([[bolt_prefix(index, a), bolt_prefix(index, b)]]),
+            json!([[bolt_short(index, a), bolt_short(index, b)]]),
             "{name}"
         );
         let full = feature(&mut long, name);
@@ -491,10 +508,7 @@ fn a_feature_inserted_between_is_followed_through_and_a_move_changes_the_chain()
     assert_eq!(foot["status"], "ok", "{foot}");
     assert_eq!(
         foot["followed"]["edges"],
-        json!([[
-            "F4:copy(0)/F2:copy(0)/F1:face(0)",
-            "F4:copy(0)/F2:copy(0)/F1:face(2)"
-        ]])
+        json!([["F4:copy(0)/F1:face(0)", "F4:copy(0)/F1:face(2)"]])
     );
     let all = bodies(&mut s);
     assert_eq!(all.as_array().unwrap().len(), 1, "{all}");
@@ -548,10 +562,7 @@ fn a_feature_inserted_between_is_followed_through_and_a_move_changes_the_chain()
     );
     assert_eq!(
         feature(&mut s, "Bevel")["followed"]["edges"],
-        json!([[
-            "F3:copy(0)/F2:copy(0)/F1:face(1)",
-            "F3:copy(0)/F2:copy(0)/F1:face(3)"
-        ]])
+        json!([["F3:copy(0)/F1:face(1)", "F3:copy(0)/F1:face(3)"]])
     );
     let moved = bodies(&mut s);
     assert_eq!(moved.as_array().unwrap().len(), 1, "{moved}");

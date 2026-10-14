@@ -1207,7 +1207,7 @@ fn a_shell_fails_by_name_when_its_open_face_goes_and_is_repaired() {
     let inner = 81.0 * 4.0 - 25.0 * 2.0 - 16.0 * 0.5;
     let solid = 500.0 - 16.0 * 3.0;
     assert_close(&hollow["volume"], solid - inner, "volume");
-    assert!(names_of(&hollow).contains(&"F5:copy(1)/F3:copy(1)/F2:face(0)".to_string()));
+    assert!(names_of(&hollow).contains(&"F5:copy(1,1)/F2:face(0)".to_string()));
     // The pocket goes through: there is no floor.
     run(
         &mut s,
@@ -1362,7 +1362,7 @@ fn a_fillet_or_a_chamfer_deleted_gives_the_block_back() {
             assert_eq!(found["faces"], 6);
             // The faces that stay are copies of what they were; the
             // original names do not answer, the copies of them do.
-            assert_eq!(names_of(&found), base_faces(&["F3:copy(0)", "F2:copy(0)"]));
+            assert_eq!(names_of(&found), base_faces(&["F3:copy(0)"]));
             assert_eq!(body_names(&mut s), ["Plain"]);
             // The block's twelve edges are back, named by their faces;
             // the sharp edge is there to build on.
@@ -1409,7 +1409,7 @@ fn a_hole_a_boss_and_a_pocket_deleted_give_the_block_back() {
             );
             let found = assert_solid(&mut s, "Plain", 500.0, Some(block_area(10.0, 10.0, 5.0)), k);
             assert_eq!(found["faces"], 6);
-            assert_eq!(names_of(&found), base_faces(&["F4:copy(0)", "F3:copy(0)"]));
+            assert_eq!(names_of(&found), base_faces(&["F4:copy(0)"]));
         }
     }
 }
