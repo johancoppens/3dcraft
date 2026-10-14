@@ -76,8 +76,8 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Adds a ring torus about axis, centred at position: major is the radius of the ring, minor of the tube.", doc: true, feature_torus),
     spec!("feature.extrude", "Extrude", r#"{"sketch": id or name, "distance": expr, "throughAll": boolean = false, "upTo": face name, "symmetric": boolean = false, "reversed": boolean = false, "cut": id or name, "join": id or name, "intersect": id or name, "name": string = automatic}"#,
         "Adds a solid by sweeping the closed profiles of a sketch along its normal: loops of lines and arcs, and circles; a loop inside another is a hole. Give one end: distance (a negative one goes the other way; symmetric puts half on each side of the sketch plane), throughAll (past every body the features before this one have built that lies in the way; symmetric goes through on both sides) or upTo (a face name from document.inspect: the solid ends on that face's surface, flat or curved, and follows it when the face moves). reversed goes against the sketch's normal. With cut, join or intersect (a feature with a body) the solid is combined with that body at once: two features are added in one undo step, the extrusion and a boolean, and the result is the boolean's (the one to build on; name applies to it) with the extrusion under sweep. A hole through a plate: sketch a circle on its top, extrude with throughAll, reversed and cut.", doc: true, feature_extrude),
-    spec!("feature.edit", "Edit Feature", r#"{"feature": id or name, "sketch": id or name, "sections": [sketch, or {sketch, start}; ...], "ruled": boolean, "closed": boolean, "source": id or name, "target": id or name, "tool": id or name, "op": "union|subtract|intersect", "size": [expr; 3], "position": [expr; 3], "axis": [number; 3] or datum axis or "x|y" or line id, "angle": expr, "radius": expr, "height": expr, "major": expr, "minor": expr, "distance": expr, "throughAll": boolean, "upTo": face name, "symmetric": boolean, "reversed": boolean, "translate": [expr; 3], "pivot": [expr; 3], "point": [expr; 3], "normal": [number; 3], "plane": datum plane id or name, "step": [expr; 3], "count": expr, "keep": boolean, "keepTool": boolean, "edges": [[face name, face name], ...], "second": expr, "chain": boolean}"#,
-        "Changes parameters of a feature; give only the ones to change. Which ones a feature has depends on its kind (document.inspect shows them under params). The end of an extrusion is changed by giving the new one: distance, throughAll or upTo. A mirror is pointed at a datum plane with plane, and back at a plane of its own with normal or point; a circular pattern at a datum axis with axis (its name or id), and back at a line of its own with axis as a direction or point. What a feature is made from is changed the same way, which is how a feature that lost it is repaired: sketch for an extrusion or a revolution, axis for a revolution (x, y, a line of the sketch or a datum axis), source for a moved, mirrored or patterned body, target, tool and op for a boolean, edges for a chamfer or a fillet (which is also how its body is chosen: the body of the feature the faces are of); the feature keeps its id and its place in the history, and the names of its faces are those of a feature built that way from the start. A chamfer's size: distance alone changes the first distance and keeps the form; with second it becomes two distances, with angle a distance and an angle (give second the same as distance for equal ones). A fillet's radius is changed with radius. A datum plane's distance or angle and the position of a datum point at coordinates are changed here; what a datum is placed by, with datum.plane, datum.axis or datum.point and replace.", doc: true, feature_edit),
+    spec!("feature.edit", "Edit Feature", r#"{"feature": id or name, "sketch": id or name, "path": id or name, "sections": [sketch, or {sketch, start}; ...], "ruled": boolean, "closed": boolean, "source": id or name, "target": id or name, "tool": id or name, "op": "union|subtract|intersect", "size": [expr; 3], "position": [expr; 3], "axis": [number; 3] or datum axis or "x|y" or line id, "angle": expr, "radius": expr, "height": expr, "major": expr, "minor": expr, "distance": expr, "throughAll": boolean, "upTo": face name, "symmetric": boolean, "reversed": boolean, "translate": [expr; 3], "pivot": [expr; 3], "point": [expr; 3], "normal": [number; 3], "plane": datum plane id or name, "step": [expr; 3], "count": expr, "keep": boolean, "keepTool": boolean, "edges": [[face name, face name], ...], "second": expr, "chain": boolean}"#,
+        "Changes parameters of a feature; give only the ones to change. Which ones a feature has depends on its kind (document.inspect shows them under params). The end of an extrusion is changed by giving the new one: distance, throughAll or upTo. A mirror is pointed at a datum plane with plane, and back at a plane of its own with normal or point; a circular pattern at a datum axis with axis (its name or id), and back at a line of its own with axis as a direction or point. What a feature is made from is changed the same way, which is how a feature that lost it is repaired: sketch for an extrusion, a revolution or a sweep (its profile), path for a sweep, axis for a revolution (x, y, a line of the sketch or a datum axis), source for a moved, mirrored or patterned body, target, tool and op for a boolean, edges for a chamfer or a fillet (which is also how its body is chosen: the body of the feature the faces are of); the feature keeps its id and its place in the history, and the names of its faces are those of a feature built that way from the start. A chamfer's size: distance alone changes the first distance and keeps the form; with second it becomes two distances, with angle a distance and an angle (give second the same as distance for equal ones). A fillet's radius is changed with radius. A datum plane's distance or angle and the position of a datum point at coordinates are changed here; what a datum is placed by, with datum.plane, datum.axis or datum.point and replace.", doc: true, feature_edit),
     spec!("feature.rename", "Rename Feature", r#"{"feature": id or name, "name": string}"#,
         "Renames a feature.", doc: true, feature_rename),
     spec!("feature.suppress", "Suppress Feature", r#"{"feature": id or name, "suppressed": boolean = true}"#,
@@ -305,6 +305,9 @@ pub(crate) fn feature_result(session: &mut Session, id: FeatureId) -> Run {
         }
         if let Some(root) = craft3d_regen::root_cause(doc, &regen.features, id) {
             map.insert("causedBy".into(), root.to_string().into());
+        }
+        if let Some(report) = &outcome.sweep {
+            map.insert("path".into(), crate::sweep_path_cmds::report_json(report));
         }
     }
     Ok(result)
@@ -832,7 +835,7 @@ fn symmetric_fits(end: &ExtrudeEnd, symmetric: bool, command: &str) -> Result<()
 }
 
 /// The parameters `feature.edit` can change, by name.
-const EDITABLE: [&str; 33] = [
+const EDITABLE: [&str; 34] = [
     "sketch",
     "sections",
     "ruled",
@@ -866,6 +869,7 @@ const EDITABLE: [&str; 33] = [
     "edges",
     "second",
     "chain",
+    "path",
 ];
 
 fn feature_edit(session: &mut Session, params: &Value) -> Run {
@@ -936,11 +940,12 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
     // has to be there now; whether it can be used (it comes earlier, it
     // has a body nothing else took) is for regeneration to say, as when
     // the feature was added.
-    let mut made_from: [(&str, Option<FeatureId>); 4] = [
+    let mut made_from: [(&str, Option<FeatureId>); 5] = [
         ("sketch", None),
         ("source", None),
         ("target", None),
         ("tool", None),
+        ("path", None),
     ];
     for (key, found) in &mut made_from {
         if p.get(key).is_some() {
@@ -951,7 +956,7 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
                     "feature.edit: `{key}` is the feature itself; a feature cannot be made from itself"
                 ));
             }
-            if *key == "sketch" {
+            if *key == "sketch" || *key == "path" {
                 doc.sketch(other).map_err(doc_error("feature.edit"))?;
             }
             *found = Some(other);
@@ -962,6 +967,7 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
         (_, new_source),
         (_, new_target),
         (_, new_tool),
+        (_, new_path),
     ] = made_from;
     let new_op = match p.str("op")? {
         None => None,
@@ -1104,6 +1110,10 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
                 ("ruled", Slot::Flag(&mut l.ruled)),
                 ("closed", Slot::Flag(&mut l.closed)),
             ],
+        ),
+        FeatureKind::Sweep(_) => (
+            "sweep",
+            vec![("sketch", Slot::Elsewhere), ("path", Slot::Elsewhere)],
         ),
         FeatureKind::Transform(t) => (
             "transform",
@@ -1292,6 +1302,15 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
                 return fail("feature.edit: a closed loft passes through at least 3 sketches");
             }
         }
+        FeatureKind::Sweep(sweep) => {
+            sweep.sketch = new_sketch.unwrap_or(sweep.sketch);
+            sweep.path = new_path.unwrap_or(sweep.path);
+            if sweep.sketch == sweep.path {
+                return fail(
+                    "feature.edit: `sketch` and `path` are the same sketch; the path is drawn in a sketch of its own",
+                );
+            }
+        }
         FeatureKind::Transform(transform) => {
             transform.source = new_source.unwrap_or(transform.source);
         }
@@ -1476,6 +1495,13 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
             outcome.and_then(|o| o.datum.as_ref()),
         ) {
             map.insert("datum".into(), crate::datum_cmds::datum_json(datum));
+        }
+        // A sweep: how its path was followed.
+        if let (Some(map), Some(report)) = (
+            entry.as_object_mut(),
+            outcome.and_then(|o| o.sweep.as_ref()),
+        ) {
+            map.insert("path".into(), crate::sweep_path_cmds::report_json(report));
         }
         // A body that went into a later feature is no longer listed under
         // bodies; this says where it went.

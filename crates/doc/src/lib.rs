@@ -341,6 +341,17 @@ pub struct Loft {
     pub closed: bool,
 }
 
+/// The solid one closed profile sweeps out as it is carried along a path
+/// in a plane, staying square to it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Sweep {
+    /// The sketch feature whose one closed profile is carried.
+    pub sketch: FeatureId,
+    /// The sketch feature whose curves are the path: one chain of lines,
+    /// arcs and splines, open or closed, or a circle.
+    pub path: FeatureId,
+}
+
 fn zero3() -> [Expr; 3] {
     [Expr::new("0"), Expr::new("0"), Expr::new("0")]
 }
@@ -568,6 +579,7 @@ pub enum FeatureKind {
     Extrude(Extrude),
     Revolve(Revolve),
     Loft(Loft),
+    Sweep(Sweep),
     Transform(Transform),
     Mirror(Mirror),
     Pattern(Pattern),
@@ -592,6 +604,7 @@ impl FeatureKind {
             FeatureKind::Extrude(_) => "extrude",
             FeatureKind::Revolve(_) => "revolve",
             FeatureKind::Loft(_) => "loft",
+            FeatureKind::Sweep(_) => "sweep",
             FeatureKind::Transform(_) => "transform",
             FeatureKind::Mirror(_) => "mirror",
             FeatureKind::Pattern(_) => "pattern",
@@ -661,6 +674,7 @@ impl FeatureKind {
             | FeatureKind::Extrude(_)
             | FeatureKind::Revolve(_)
             | FeatureKind::Loft(_)
+            | FeatureKind::Sweep(_)
             | FeatureKind::Boolean(_)
             | FeatureKind::DatumPlane(_)
             | FeatureKind::DatumAxis(_)
@@ -682,6 +696,7 @@ impl FeatureKind {
                 RevolveAxis::X | RevolveAxis::Y | RevolveAxis::Line { .. } => vec![r.sketch],
             },
             FeatureKind::Loft(l) => l.sections.iter().map(|s| s.sketch).collect(),
+            FeatureKind::Sweep(s) => vec![s.sketch, s.path],
             FeatureKind::Sketch(sketch) => match &sketch.plane {
                 SketchPlane::Face { face, .. } => vec![face.feature],
                 SketchPlane::Datum { plane, .. } => vec![*plane],
@@ -769,7 +784,9 @@ impl FeatureKind {
                 out = triple("point", &m.point);
                 out.extend(triple("normal", &m.normal));
             }
-            FeatureKind::Boolean(_) | FeatureKind::Loft(_) => out = Vec::new(),
+            FeatureKind::Boolean(_) | FeatureKind::Loft(_) | FeatureKind::Sweep(_) => {
+                out = Vec::new();
+            }
             FeatureKind::DatumPlane(d) => out = d.exprs(),
             FeatureKind::DatumAxis(d) => out = d.exprs(),
             FeatureKind::DatumPoint(d) => out = d.exprs(),
@@ -846,7 +863,7 @@ impl FeatureKind {
                 .chain([&mut t.angle])
                 .collect(),
             FeatureKind::Mirror(m) => m.point.iter_mut().chain(m.normal.iter_mut()).collect(),
-            FeatureKind::Boolean(_) | FeatureKind::Loft(_) => Vec::new(),
+            FeatureKind::Boolean(_) | FeatureKind::Loft(_) | FeatureKind::Sweep(_) => Vec::new(),
             FeatureKind::DatumPlane(d) => d.exprs_mut(),
             FeatureKind::DatumAxis(d) => d.exprs_mut(),
             FeatureKind::DatumPoint(d) => d.exprs_mut(),
