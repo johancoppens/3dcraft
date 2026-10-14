@@ -168,7 +168,7 @@ fn saving_twice_gives_the_same_bytes() {
 fn the_manifest_of_a_small_document_is_exactly_this() {
     let expected = r#"{
   "format": "3dcraft",
-  "format_version": 13,
+  "format_version": 14,
   "document": {
     "units": {
       "length": "mm",
@@ -340,17 +340,17 @@ fn fix_trailing_commas(json: &str) -> String {
 
 #[test]
 fn a_newer_format_version_says_a_newer_3dcraft_is_needed() {
-    let error = load_error(&edited(&version_field(), "\"format_version\": 14"));
+    let error = load_error(&edited(&version_field(), "\"format_version\": 15"));
     assert!(matches!(
         error,
         FormatError::NewerVersion {
-            file: 14,
+            file: 15,
             supported: FORMAT_VERSION
         }
     ));
     let text = error.to_string();
     assert!(
-        text.contains("version 14")
+        text.contains("version 15")
             && text.contains(&format!("version {FORMAT_VERSION}"))
             && text.contains("newer 3DCraft is needed"),
         "{text}"
@@ -2744,7 +2744,7 @@ fn a_helix_is_written_like_this_and_round_trips() {
     .unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 13);
+    assert_eq!(value["format_version"], FORMAT_VERSION);
     let features = value["document"]["features"].as_array().unwrap();
     let n = features.len();
     assert_eq!(
@@ -2773,4 +2773,138 @@ fn a_helix_is_written_like_this_and_round_trips() {
     );
     assert_ne!(bare, json);
     assert!(from_manifest_json(bare.as_bytes()).is_err());
+}
+
+/// Version 14: a thread's size given as a designation, as a diameter or
+/// not at all, its pitch given or not, as they are written.
+#[test]
+fn a_thread_is_written_like_this_and_round_trips() {
+    use craft3d_doc::{Expr, NameRole, PersistentName, Thread, ThreadSize};
+    let face = |n: u64| PersistentName::new(FeatureId(1), NameRole::Face, vec![n]);
+    let mut doc = small();
+    for (size, pitch) in [
+        (None, None),
+        (Some(ThreadSize::Designation("M10".into())), None),
+        (
+            Some(ThreadSize::Diameter {
+                diameter: Expr::new("d"),
+            }),
+            Some(Expr::new("1.25 mm")),
+        ),
+    ] {
+        doc.add_feature(
+            None,
+            FeatureKind::Thread(Thread {
+                face: face(0),
+                start: face(1),
+                size,
+                pitch,
+                length: Expr::new("12 mm"),
+                left_handed: false,
+                cosmetic: true,
+            }),
+        )
+        .unwrap();
+    }
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["format_version"], FORMAT_VERSION);
+    let features = value["document"]["features"].as_array().unwrap();
+    let n = features.len();
+    let face = |n: u32| serde_json::json!({"feature": 1, "role": "face", "sources": [n]});
+    assert_eq!(
+        features[n - 3]["kind"],
+        serde_json::json!({"type": "thread", "face": face(0), "start": face(1),
+            "length": "12 mm", "cosmetic": true})
+    );
+    assert_eq!(
+        features[n - 2]["kind"],
+        serde_json::json!({"type": "thread", "face": face(0), "start": face(1),
+            "size": "M10", "length": "12 mm", "cosmetic": true})
+    );
+    assert_eq!(
+        features[n - 1]["kind"],
+        serde_json::json!({"type": "thread", "face": face(0), "start": face(1),
+            "size": {"diameter": "d"}, "pitch": "1.25 mm", "length": "12 mm", "cosmetic": true})
+    );
+    assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+    assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
+    // A diameter with anything else beside it is not read.
+    let bare = json.replacen(
+        "\"diameter\": \"d\"",
+        "\"diameter\": \"d\", \"also\": 1",
+        1,
+    );
+    assert_ne!(bare, json);
+    assert!(from_manifest_json(bare.as_bytes()).is_err());
+}
+
+/// A version-13 file, as written before a thread's pitch could follow its
+/// size: the pitch the command wrote when it was given none (the coarse
+/// pitch of the designation, as text) is taken out, so it follows the
+/// size; every other pitch stays. Never edit this.
+#[test]
+fn a_version_13_thread_loses_the_pitch_it_was_given_by_default() {
+    let v13 = r#"{"format": "3dcraft", "format_version": 13, "document": {
+        "units": {"length": "mm", "angle": "deg"},
+        "tolerance": {"linear": 1e-6, "angular": 1e-9},
+        "variables": [{"name": "d", "expr": "10 mm"}],
+        "features": [
+          {"id": 1, "name": "Shank", "suppressed": false, "kind": {"type": "cylinder",
+            "position": ["0", "0", "0"], "radius": "d / 2", "height": "20 mm"}},
+          {"id": 2, "name": "Coarse", "suppressed": false, "kind": {"type": "thread",
+            "face": {"feature": 1, "role": "face", "sources": [0]},
+            "start": {"feature": 1, "role": "face", "sources": [1]},
+            "size": "M10", "pitch": "1.5 mm", "length": "12 mm", "cosmetic": true}},
+          {"id": 3, "name": "Fine", "suppressed": false, "kind": {"type": "thread",
+            "face": {"feature": 1, "role": "face", "sources": [0]},
+            "start": {"feature": 1, "role": "face", "sources": [1]},
+            "size": "M10", "pitch": "1.25 mm", "length": "12 mm"}},
+          {"id": 4, "name": "Six", "suppressed": false, "kind": {"type": "thread",
+            "face": {"feature": 1, "role": "face", "sources": [0]},
+            "start": {"feature": 1, "role": "face", "sources": [1]},
+            "size": "M6", "pitch": "1 mm", "length": "12 mm", "left_handed": true}},
+          {"id": 5, "name": "Number", "suppressed": false, "kind": {"type": "thread",
+            "face": {"feature": 1, "role": "face", "sources": [0]},
+            "start": {"feature": 1, "role": "face", "sources": [1]},
+            "size": "M10", "pitch": "1.5", "length": "12 mm"}},
+          {"id": 6, "name": "Formula", "suppressed": false, "kind": {"type": "thread",
+            "face": {"feature": 1, "role": "face", "sources": [0]},
+            "start": {"feature": 1, "role": "face", "sources": [1]},
+            "size": "M2.5", "pitch": "0.45 mm * 1", "length": "1 mm"}}],
+        "rollback": null, "next_feature_id": 7}}"#;
+    let doc = match from_manifest_json(v13.as_bytes()) {
+        Ok(doc) => doc,
+        Err(error) => panic!("{error}"),
+    };
+    let threads: Vec<_> = doc
+        .features
+        .iter()
+        .filter_map(|f| match &f.kind {
+            FeatureKind::Thread(t) => Some((
+                t.size.clone(),
+                t.pitch.as_ref().map(|p| p.source().to_string()),
+            )),
+            _ => None,
+        })
+        .collect();
+    use craft3d_doc::ThreadSize::Designation;
+    assert_eq!(
+        threads,
+        [
+            (Some(Designation("M10".into())), None),
+            (Some(Designation("M10".into())), Some("1.25 mm".into())),
+            (Some(Designation("M6".into())), None),
+            (Some(Designation("M10".into())), Some("1.5".into())),
+            (Some(Designation("M2.5".into())), Some("0.45 mm * 1".into())),
+        ]
+    );
+    let saved = to_manifest_json(&doc).unwrap();
+    assert!(saved.contains(&version_field()), "{saved}");
+    assert_eq!(from_manifest_json(saved.as_bytes()).unwrap(), doc);
+    let newer = v13.replace(
+        "\"format_version\": 13",
+        &format!("\"format_version\": {}", FORMAT_VERSION + 1),
+    );
+    assert!(from_manifest_json(newer.as_bytes()).is_err());
 }

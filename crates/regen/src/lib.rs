@@ -354,13 +354,17 @@ pub struct SweepReport {
 /// What a thread says of itself: the face is marked with it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ThreadReport {
-    /// The designation, as given: `M10`.
+    /// The designation, as given or as found from the diameter given or
+    /// the face's: `M10`.
     pub size: String,
     /// The major and the minor diameter of the basic profile, in model
     /// units.
     pub major: f64,
     pub minor: f64,
     pub pitch: f64,
+    /// The pitch was given; otherwise it is the coarse pitch of ISO 261
+    /// for the size, looked up at every regeneration.
+    pub pitch_given: bool,
     /// How far it goes at full depth.
     pub length: f64,
     pub left_handed: bool,

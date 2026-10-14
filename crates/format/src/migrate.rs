@@ -28,7 +28,7 @@ type Step = fn(Value) -> Result<Value, String>;
 /// `STEPS[n]` brings a manifest from version `n + 1` to version `n + 2`.
 const STEPS: &[Step] = &[
     v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9, v9_to_v10,
-    v10_to_v11, v11_to_v12, v12_to_v13,
+    v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14,
 ];
 
 /// Version 2 adds the `cone` and `torus` feature kinds and an optional
@@ -128,6 +128,94 @@ fn v11_to_v12(manifest: Value) -> Result<Value, String> {
 /// contains changes meaning; the version was raised so that an older
 /// build reports the version and not an unknown kind.
 fn v12_to_v13(manifest: Value) -> Result<Value, String> {
+    Ok(manifest)
+}
+
+/// The coarse pitches of ISO 261 as the version-13 build knew them
+/// (nominal diameter, pitch, in millimetres): what [`v13_to_v14`] has to
+/// recognise. Frozen with the version, never edited: a later change of the
+/// thread table does not change what a version-13 file wrote.
+const V13_COARSE: [(f64, f64); 26] = [
+    (1.0, 0.25),
+    (1.2, 0.25),
+    (1.4, 0.3),
+    (1.6, 0.35),
+    (1.8, 0.35),
+    (2.0, 0.4),
+    (2.5, 0.45),
+    (3.0, 0.5),
+    (3.5, 0.6),
+    (4.0, 0.7),
+    (5.0, 0.8),
+    (6.0, 1.0),
+    (8.0, 1.25),
+    (10.0, 1.5),
+    (12.0, 1.75),
+    (14.0, 2.0),
+    (16.0, 2.0),
+    (20.0, 2.5),
+    (24.0, 3.0),
+    (30.0, 3.5),
+    (36.0, 4.0),
+    (42.0, 4.5),
+    (48.0, 5.0),
+    (56.0, 5.5),
+    (64.0, 6.0),
+    (68.0, 6.0),
+];
+
+/// The pitch text the version-13 `feature.thread` wrote when it was given
+/// none: the coarse pitch of the designation, `"1.5 mm"` for `M10`.
+fn v13_default_pitch(size: &str) -> Option<String> {
+    let digits = size.trim().strip_prefix(['M', 'm'])?;
+    if digits.is_empty()
+        || digits.len() > 8
+        || !digits.chars().all(|c| c.is_ascii_digit() || c == '.')
+    {
+        return None;
+    }
+    let nominal: f64 = digits.parse().ok()?;
+    V13_COARSE
+        .iter()
+        .find(|(d, _)| (d - nominal).abs() < 1e-9)
+        .map(|(_, pitch)| format!("{pitch} mm"))
+}
+
+/// Version 14 lets a thread's `size` be the nominal diameter as an
+/// expression (`{"diameter": "d"}`) or be absent (the size the face has),
+/// and its `pitch` be absent: the coarse pitch of the size, looked up at
+/// every regeneration so that it follows the size. Version 13 always
+/// wrote the pitch, and when the command was given none it wrote the
+/// coarse pitch of the size as text (`"1.5 mm"` for `M10`), fixed from
+/// then on: a later change of the size kept it. That text is taken out
+/// here, so the pitch of such a thread follows its size. A pitch that was
+/// given as exactly that text cannot be told from it and follows the size
+/// too; it is the same pitch until the size changes, and then the coarse
+/// pitch of the new size is what that pitch meant (docs/decisions.md, 14
+/// October 2026). Any other pitch stays.
+fn v13_to_v14(mut manifest: Value) -> Result<Value, String> {
+    let Some(features) = manifest
+        .get_mut("document")
+        .and_then(|d| d.get_mut("features"))
+        .and_then(Value::as_array_mut)
+    else {
+        return Ok(manifest);
+    };
+    for feature in features {
+        let Some(kind) = feature.get_mut("kind").and_then(Value::as_object_mut) else {
+            continue;
+        };
+        if kind.get("type").and_then(Value::as_str) != Some("thread") {
+            continue;
+        }
+        let default = kind
+            .get("size")
+            .and_then(Value::as_str)
+            .and_then(v13_default_pitch);
+        if default.is_some() && kind.get("pitch").and_then(Value::as_str) == default.as_deref() {
+            kind.remove("pitch");
+        }
+    }
     Ok(manifest)
 }
 

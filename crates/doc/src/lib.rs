@@ -640,10 +640,15 @@ pub struct Thread {
     /// The flat face the thread starts at, square to the cylinder's axis,
     /// by name: a face of the same body.
     pub start: PersistentName,
-    /// The designation of ISO 261: `M10`. Its number is the nominal
-    /// (major) diameter in millimetres.
-    pub size: String,
-    pub pitch: Expr,
+    /// The size: a designation of ISO 261 (`M10`), a nominal diameter as
+    /// an expression of a length (`d`), or `None` for the size whose
+    /// nominal diameter the face has, found at every regeneration.
+    #[serde(default)]
+    pub size: Option<ThreadSize>,
+    /// The pitch; `None` for the coarse pitch of ISO 261 of the size,
+    /// looked up at every regeneration, so that it follows the size.
+    #[serde(default)]
+    pub pitch: Option<Expr>,
     pub length: Expr,
     #[serde(default)]
     pub left_handed: bool,
@@ -657,6 +662,18 @@ impl Thread {
     pub fn source(&self) -> FeatureId {
         self.face.feature
     }
+}
+
+/// The size of a thread, when it is given.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ThreadSize {
+    /// The designation of ISO 261: `M10`, `M2.5`. Its number is the
+    /// nominal (major) diameter in millimetres, whatever the document's
+    /// unit.
+    Designation(String),
+    /// The nominal (major) diameter: an expression of a length, `d`.
+    Diameter { diameter: Expr },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -910,7 +927,14 @@ impl FeatureKind {
             FeatureKind::OffsetFace(o) => out = vec![named("distance", &o.distance)],
             FeatureKind::Shell(s) => out = vec![named("thickness", &s.thickness)],
             FeatureKind::Thread(t) => {
-                out = vec![named("pitch", &t.pitch), named("length", &t.length)];
+                out = Vec::new();
+                if let Some(ThreadSize::Diameter { diameter }) = &t.size {
+                    out.push(named("size", diameter));
+                }
+                if let Some(pitch) = &t.pitch {
+                    out.push(named("pitch", pitch));
+                }
+                out.push(named("length", &t.length));
             }
             FeatureKind::Chamfer(c) => {
                 out = match &c.size {
@@ -995,7 +1019,17 @@ impl FeatureKind {
             FeatureKind::Fillet(f) => vec![&mut f.radius],
             FeatureKind::OffsetFace(o) => vec![&mut o.distance],
             FeatureKind::Shell(s) => vec![&mut s.thickness],
-            FeatureKind::Thread(t) => vec![&mut t.pitch, &mut t.length],
+            FeatureKind::Thread(t) => {
+                let mut out = Vec::new();
+                if let Some(ThreadSize::Diameter { diameter }) = &mut t.size {
+                    out.push(diameter);
+                }
+                if let Some(pitch) = &mut t.pitch {
+                    out.push(pitch);
+                }
+                out.push(&mut t.length);
+                out
+            }
             FeatureKind::Chamfer(c) => match &mut c.size {
                 ChamferSize::Equal { distance } => vec![distance],
                 ChamferSize::TwoDistances { distance, second } => vec![distance, second],

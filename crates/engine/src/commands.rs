@@ -865,6 +865,9 @@ fn symmetric_fits(end: &ExtrudeEnd, symmetric: bool, command: &str) -> Result<()
 }
 
 /// The parameters `feature.edit` can change, by name.
+/// The parameters of a thread that `feature.edit` takes as null.
+const THREAD_NULLS: [&str; 2] = ["size", "pitch"];
+
 const EDITABLE: [&str; 42] = [
     "sketch",
     "sections",
@@ -920,6 +923,17 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
         "feature.edit",
         "feature",
     )?;
+    // A thread's size and pitch may be given as null: back to the size
+    // of the face, the coarse pitch of the size.
+    let is_thread = matches!(
+        session
+            .document()?
+            .history
+            .current()
+            .feature(id)
+            .map(|f| &f.kind),
+        Some(FeatureKind::Thread(_))
+    );
     // Validate the shape of everything given before touching anything.
     // An axis given as a string is a datum axis, for a circular pattern.
     // (For every other kind an axis is a direction, and a string is
@@ -1033,7 +1047,7 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
         }
         // The size of a thread is a designation (`M10`), checked with
         // the kind.
-        if key == "size" && matches!(p.get("size"), Some(Value::String(_))) {
+        if key == "size" && (is_thread || matches!(p.get("size"), Some(Value::String(_)))) {
             continue;
         }
         p.expr3(key)?;
@@ -1067,7 +1081,7 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
     };
     let given: Vec<&str> = EDITABLE
         .into_iter()
-        .filter(|key| p.get(key).is_some())
+        .filter(|key| p.get(key).is_some() || (is_thread && THREAD_NULLS.contains(key) && p.has(key)))
         .collect();
     if given.is_empty() {
         return fail(format!(
@@ -1260,9 +1274,11 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
         FeatureKind::Thread(thread) => (
             "thread",
             vec![
-                // Applied below: a designation, not an expression.
+                // Applied below: a designation or an expression, and
+                // either may be null (back to the face's size, the
+                // coarse pitch).
                 ("size", Slot::Elsewhere),
-                ("pitch", Slot::One(&mut thread.pitch)),
+                ("pitch", Slot::Elsewhere),
                 ("length", Slot::One(&mut thread.length)),
                 ("leftHanded", Slot::Flag(&mut thread.left_handed)),
                 ("cosmetic", Slot::Flag(&mut thread.cosmetic)),
@@ -1374,10 +1390,16 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
         }
         (_, None) => {}
     }
-    if let FeatureKind::Thread(thread) = &mut kind
-        && let Some(size) = p.str("size")?
-    {
-        thread.size = crate::helix_cmds::size_value("feature.edit", size)?;
+    if let FeatureKind::Thread(thread) = &mut kind {
+        if p.has("size") {
+            thread.size = match p.get("size") {
+                Some(size) => Some(crate::helix_cmds::size_value("feature.edit", size)?),
+                None => None,
+            };
+        }
+        if p.has("pitch") {
+            thread.pitch = p.expr("pitch")?.map(Expr::new);
+        }
     }
     if let FeatureKind::DatumHelix(helix) = &mut kind {
         match (p.expr("turns")?, p.expr("height")?) {

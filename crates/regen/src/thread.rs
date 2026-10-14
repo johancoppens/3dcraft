@@ -30,11 +30,16 @@
 use crate::boolean::combine;
 use crate::face_ops::{self, Source};
 use crate::{FeatureResult, Kept, Names, ThreadReport, length};
-use craft3d_doc::{BooleanOp, Document, Expr, FeatureId, NameRole, PersistentName, Thread};
+use craft3d_doc::{
+    BooleanOp, Document, Expr, FeatureId, NameRole, PersistentName, Thread, ThreadSize,
+};
 use craft3d_expr::Evaluation;
 use craft3d_geom::Surface;
 use craft3d_kernel::extrude::Role;
-use craft3d_kernel::thread::{IsoThread, RUN_OUT, ThreadPlace, groove, nominal_diameter};
+use craft3d_kernel::thread::{
+    IsoThread, RUN_OUT, ThreadPlace, designation, groove, iso_sizes,
+    nominal_diameter,
+};
 use craft3d_math::Vec3;
 use craft3d_topo::{Body, FaceId};
 
@@ -78,6 +83,166 @@ fn cylinder(
     let (origin, axis, radius) =
         found.ok_or_else(|| format!("face: `{}` has no face {name}", source.made_by))?;
     Ok((origin, axis, radius, faces))
+}
+
+/// The size of a thread as regeneration found it.
+struct Size {
+    /// `M10`.
+    designation: String,
+    /// The nominal diameter and the pitch, in model units.
+    nominal: f64,
+    pitch: f64,
+    iso: IsoThread,
+}
+
+/// Whether a face of `radius` takes the thread `iso`: the nominal
+/// diameter within half the tooth's depth below (a shank turned a little
+/// under size) and the groove's overshoot above (it has to break
+/// through).
+fn fits(iso: &IsoThread, radius: f64) -> bool {
+    radius <= iso.major / 2.0 + iso.overshoot() / 2.0
+        && radius >= iso.major / 2.0 - iso.depth() / 2.0
+}
+
+/// The size and pitch of `thread` on a face of `radius`: the designation
+/// or the diameter given, or the size of ISO 261 whose nominal diameter
+/// the face has; the pitch given, or the coarse pitch of that size.
+/// Looked up at every regeneration, so that a thread follows the
+/// variables its face and its size are made from.
+fn resolve(
+    doc: &Document,
+    variables: &Evaluation,
+    thread: &Thread,
+    radius: f64,
+    tol: f64,
+) -> Result<Size, String> {
+    let unit = doc.units.length.symbol();
+    // A millimetre in model units: designations and the table are in
+    // millimetres whatever the document's unit.
+    let mm = length(doc, variables, "size", &Expr::new("1 mm"))?;
+    let given = match &thread.pitch {
+        Some(pitch) => Some(length(doc, variables, "pitch", pitch)?),
+        None => None,
+    };
+    // A size of the table within the tolerance of `nominal_mm`.
+    let tabled = |nominal_mm: f64| {
+        let slack = (tol / mm).max(1e-9);
+        iso_sizes()
+            .iter()
+            .find(|(d, _)| (d - nominal_mm).abs() <= slack)
+            .copied()
+    };
+    let (name, nominal_mm, nominal) = match &thread.size {
+        Some(ThreadSize::Designation(text)) => {
+            let Some(nominal_mm) = nominal_diameter(text) else {
+                return Err(format!(
+                    "size: `{text}` is not an ISO metric size; give M and the nominal diameter in millimetres, such as M10"
+                ));
+            };
+            (text.trim().to_string(), nominal_mm, nominal_mm * mm)
+        }
+        Some(ThreadSize::Diameter { diameter }) => {
+            let nominal = length(doc, variables, "size", diameter).map_err(|error| {
+                format!(
+                    "{error}; size is an ISO metric size (M and the nominal diameter in millimetres, such as M10) or a length"
+                )
+            })?;
+            if !(nominal.is_finite() && nominal > tol) {
+                return Err(format!(
+                    "size: `{}` is {nominal} {unit}; a thread's diameter is a length above 0",
+                    diameter.source()
+                ));
+            }
+            let nominal_mm = nominal / mm;
+            match tabled(nominal_mm) {
+                Some((d, _)) => (designation(d).unwrap_or_default(), d, nominal),
+                None => match designation(nominal_mm) {
+                    Some(name) => (name, nominal_mm, nominal),
+                    None => {
+                        return Err(format!(
+                            "size: `{}` is {nominal} {unit}, which is no thread's diameter",
+                            diameter.source()
+                        ));
+                    }
+                },
+            }
+        }
+        None => from_face(thread, radius, mm, given, unit)?,
+    };
+    let pitch = match given {
+        Some(pitch) => pitch,
+        None => match tabled(nominal_mm) {
+            Some((_, pitch_mm)) => pitch_mm * mm,
+            None => {
+                return Err(format!(
+                    "pitch: {name} has no coarse pitch in ISO 261; give `pitch`"
+                ));
+            }
+        },
+    };
+    let iso = IsoThread::new(nominal, pitch).map_err(|_| {
+        format!(
+            "pitch: {pitch} {unit} is not a pitch for {name}: it has to be above 0 and below the diameter"
+        )
+    })?;
+    Ok(Size {
+        designation: name,
+        nominal,
+        pitch,
+        iso,
+    })
+}
+
+/// The size of ISO 261 whose nominal diameter a face of `radius` has:
+/// the one (of the table) that would take the face if it were given, the
+/// nearest when two would. `given` is the pitch, when it is given.
+fn from_face(
+    thread: &Thread,
+    radius: f64,
+    mm: f64,
+    given: Option<f64>,
+    unit: &str,
+) -> Result<(String, f64, f64), String> {
+    let diameter = 2.0 * radius;
+    let mut best: Option<(f64, f64)> = None;
+    for (d, coarse) in iso_sizes() {
+        let nominal = d * mm;
+        let pitch = given.unwrap_or(coarse * mm);
+        let Ok(iso) = IsoThread::new(nominal, pitch) else {
+            continue;
+        };
+        if fits(&iso, radius)
+            && best.is_none_or(|(_, b)| (nominal - diameter).abs() < (b * mm - diameter).abs())
+        {
+            best = Some((nominal, *d));
+        }
+    }
+    if let Some((nominal, d)) = best {
+        return Ok((designation(d).unwrap_or_default(), d, nominal));
+    }
+    // The sizes of the table on either side, for the message.
+    let below = iso_sizes().iter().rev().find(|(d, _)| d * mm < diameter);
+    let above = iso_sizes().iter().find(|(d, _)| d * mm >= diameter);
+    let near: Vec<String> = [below, above]
+        .into_iter()
+        .flatten()
+        .map(|(d, _)| {
+            format!(
+                "{} ({} {unit})",
+                designation(*d).unwrap_or_default(),
+                d * mm
+            )
+        })
+        .collect();
+    Err(format!(
+        "size: {} is {diameter} {unit} across, which is the nominal diameter of no ISO metric size of the table{}; give `size` (a designation such as M10, or a length) or make the face a size's diameter",
+        thread.face,
+        if near.is_empty() {
+            String::new()
+        } else {
+            format!(" (the nearest: {})", near.join(", "))
+        }
+    ))
 }
 
 /// The points of the faces' vertices.
@@ -178,26 +343,9 @@ pub(crate) fn build(
     };
 
     let unit = doc.units.length.symbol();
-    let Some(nominal_mm) = nominal_diameter(&thread.size) else {
-        return Err(format!(
-            "size: `{}` is not an ISO metric size; give M and the nominal diameter in millimetres, such as M10",
-            thread.size
-        ));
-    };
-    let nominal = length(
-        doc,
-        variables,
-        "size",
-        &Expr::new(format!("{nominal_mm} mm")),
-    )?;
-    let pitch = length(doc, variables, "pitch", &thread.pitch)?;
+    let size = resolve(doc, variables, thread, radius, tol)?;
+    let (nominal, pitch, iso) = (size.nominal, size.pitch, size.iso);
     let run = length(doc, variables, "length", &thread.length)?;
-    let iso = IsoThread::new(nominal, pitch).map_err(|_| {
-        format!(
-            "pitch: {pitch} {unit} is not a pitch for {}: it has to be above 0 and below the diameter",
-            thread.size
-        )
-    })?;
     if pitch.is_nan() || pitch <= tol {
         return Err(format!("pitch: {pitch} {unit} is not above the tolerance"));
     }
@@ -205,12 +353,11 @@ pub(crate) fn build(
         return Err(format!("length: {run} {unit} is not a length above 0"));
     }
     let diameter = 2.0 * radius;
-    if radius > nominal / 2.0 + iso.overshoot() / 2.0 || radius < nominal / 2.0 - iso.depth() / 2.0
-    {
+    if !fits(&iso, radius) {
         return Err(format!(
             "face: {} is {diameter} {unit} across; {} is cut on a cylinder of its nominal diameter, {nominal} {unit} (minor diameter {} {unit})",
             thread.face,
-            thread.size,
+            size.designation,
             iso.minor()
         ));
     }
@@ -224,10 +371,11 @@ pub(crate) fn build(
         ));
     }
     let mut report = ThreadReport {
-        size: thread.size.clone(),
+        size: size.designation,
         major: nominal,
         minor: iso.minor(),
         pitch,
+        pitch_given: thread.pitch.is_some(),
         length: run,
         left_handed: thread.left_handed,
         cosmetic: thread.cosmetic,
