@@ -208,6 +208,7 @@ fn problem(doc: &Document, variables: &Evaluation, sketch: &Sketch) -> Result<Pr
             _ => Err(format!("{id} is not a line")),
         }
     };
+    let mut splines: BTreeMap<EntityId, usize> = BTreeMap::new();
     for constraint in &sketch.constraints {
         let id = constraint.id;
         let name = format!("{id}.value");
@@ -218,7 +219,32 @@ fn problem(doc: &Document, variables: &Evaluation, sketch: &Sketch) -> Result<Pr
                 b: find(*b)?,
             },
             ConstraintKind::PointOn { point, curve } => {
-                if is_line(*curve) {
+                if let Ok(Geometry::Spline { degree, control }) =
+                    sketch.entity(*curve).map(|e| &e.geometry)
+                {
+                    // The solver has the spline as its control points, in
+                    // a list of its own; each spline is given once.
+                    let number = match splines.get(curve) {
+                        Some(number) => *number,
+                        None => {
+                            let points = control
+                                .iter()
+                                .map(|id| find(*id))
+                                .collect::<Result<Vec<_>, _>>()?;
+                            let number = input.add_spline(
+                                usize::try_from(*degree).unwrap_or(usize::MAX),
+                                craft3d_doc::clamped_uniform_knots(*degree, control.len()),
+                                points,
+                            );
+                            splines.insert(*curve, number);
+                            number
+                        }
+                    };
+                    S::PointOnSpline {
+                        point: find(*point)?,
+                        spline: number,
+                    }
+                } else if is_line(*curve) {
                     S::PointOnLine {
                         point: find(*point)?,
                         line: find(*curve)?,

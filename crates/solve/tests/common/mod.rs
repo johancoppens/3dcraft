@@ -31,6 +31,7 @@ pub fn resolved(sketch: &Sketch, solution: &Solution) -> Sketch {
     Sketch {
         entities: solution.entities.clone(),
         constraints: sketch.constraints.clone(),
+        splines: sketch.splines.clone(),
     }
 }
 

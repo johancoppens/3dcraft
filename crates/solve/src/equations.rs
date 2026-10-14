@@ -11,11 +11,14 @@ use std::f64::consts::{PI, TAU};
 use crate::dual::{Dual, SLOTS, angle_of, length};
 use crate::error::{Site, SolveError};
 use crate::model::{Constraint, Entity, EntityId, Sketch};
+use crate::spline::{Foot, SplineVars};
 use crate::{MAX_ENTITIES, MAX_EQUATIONS, MAX_UNKNOWNS};
 
 const SHORT_LINE: &str = "a line shorter than the linear tolerance has no direction";
 const NEGATIVE_RADIUS: &str = "a circle with a negative radius";
 const SMALL_ARC: &str = "an arc smaller than the linear tolerance has no tangent";
+const STALLED_SPLINE: &str =
+    "a spline that stands still where the point is nearest to it has no direction there";
 
 /// Why an equation has no value at some point.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -24,9 +27,18 @@ pub(crate) enum Fail {
     NonFinite,
 }
 
+/// The line of a spline's end leg without length is the spline standing
+/// still there.
+fn stalled(fail: Fail) -> Fail {
+    match fail {
+        Fail::Degenerate(_) => Fail::Degenerate(STALLED_SPLINE),
+        other => other,
+    }
+}
+
 /// A point: the index of its x unknown; y follows it.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct Pt(usize);
+pub(crate) struct Pt(pub(crate) usize);
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Ln {
@@ -65,6 +77,9 @@ pub(crate) enum Equation {
     PointOnLine(Pt, Ln),
     /// `|p - c| - r`.
     PointOnRound(Pt, Round),
+    /// Signed distance of the point from spline number `spline`, at its
+    /// foot on the curve (`crate::spline`).
+    PointOnSpline { p: Pt, spline: usize },
     /// Sine of the angle between the directions.
     Parallel(Ln, Ln),
     /// Cosine of the angle between the directions.
@@ -134,6 +149,7 @@ pub(crate) struct Evaluated {
 struct Ctx<'a> {
     x: &'a [f64],
     min_len: f64,
+    splines: &'a [SplineVars],
     slots: [usize; SLOTS],
     used: usize,
 }
@@ -141,10 +157,11 @@ struct Ctx<'a> {
 type Vec2 = [Dual; 2];
 
 impl<'a> Ctx<'a> {
-    fn new(x: &'a [f64], min_len: f64) -> Self {
+    fn new(x: &'a [f64], min_len: f64, splines: &'a [SplineVars]) -> Self {
         Ctx {
             x,
             min_len,
+            splines,
             slots: [0; SLOTS],
             used: 0,
         }
@@ -195,6 +212,77 @@ impl<'a> Ctx<'a> {
         Ok((dx * (py - ay) - dy * (px - ax)) / len)
     }
 
+    /// Signed distance of `p` from the spline, positive on its left: at
+    /// the foot of `p`, with the foot and the normal held where they are
+    /// (their changes do not change the distance to first order), or from
+    /// the line of an end leg when the foot would be beyond that end.
+    fn spline_distance(&mut self, p: Pt, spline: usize) -> Result<Dual, Fail> {
+        let splines = self.splines;
+        let s = splines.get(spline).ok_or(Fail::NonFinite)?;
+        let place = |x: &[f64], pt: Pt| -> Result<[f64; 2], Fail> {
+            match (x.get(pt.0), pt.0.checked_add(1).and_then(|i| x.get(i))) {
+                (Some(a), Some(b)) => Ok([*a, *b]),
+                _ => Err(Fail::NonFinite),
+            }
+        };
+        let target = place(self.x, p)?;
+        let mut points = Vec::with_capacity(s.control.len());
+        for control in &s.control {
+            points.push(place(self.x, *control)?);
+        }
+        let foot = s.foot(&points, target).ok_or(Fail::NonFinite)?;
+        let leg = |from: Option<&Pt>, to: Option<&Pt>| match (from, to) {
+            (Some(a), Some(b)) => Ok(Ln { a: *a, b: *b }),
+            _ => Err(Fail::NonFinite),
+        };
+        let n = s.control.len();
+        let at = match foot {
+            Foot::BeforeStart => {
+                let line = leg(s.control.first(), s.control.get(1))?;
+                let point = self.pt(p)?;
+                return self.signed_distance(point, line).map_err(stalled);
+            }
+            Foot::AfterEnd => {
+                let line = leg(
+                    n.checked_sub(2).and_then(|i| s.control.get(i)),
+                    s.control.last(),
+                )?;
+                let point = self.pt(p)?;
+                return self.signed_distance(point, line).map_err(stalled);
+            }
+            Foot::On(at) | Foot::Corner(at) => at,
+        };
+        let [tx, ty] = at.tangent;
+        let speed = tx.hypot(ty);
+        if !speed.is_finite() {
+            return Err(Fail::NonFinite);
+        }
+        // The tangent is per unit of the parameter, whose whole range the
+        // curve is drawn over: a curve no longer than the tolerance there.
+        if speed <= self.min_len {
+            return Err(Fail::Degenerate(STALLED_SPLINE));
+        }
+        // Across the curve; at a corner that the point is nearest to,
+        // from the corner to the point (unless it is on it already).
+        let away = [target[0] - at.point[0], target[1] - at.point[1]];
+        let far = away[0].hypot(away[1]);
+        let normal = match foot {
+            Foot::Corner(_) if far > self.min_len => [away[0] / far, away[1] / far],
+            _ => [-ty / speed, tx / speed],
+        };
+        let (nx, ny) = (Dual::constant(normal[0]), Dual::constant(normal[1]));
+        let [px, py] = self.pt(p)?;
+        let (mut cx, mut cy) = (Dual::constant(0.0), Dual::constant(0.0));
+        for (r, weight) in at.basis.iter().take(s.degree + 1).enumerate() {
+            let control = s.control.get(at.first + r).ok_or(Fail::NonFinite)?;
+            let [x, y] = self.pt(*control)?;
+            let weight = Dual::constant(*weight);
+            cx = cx + x * weight;
+            cy = cy + y * weight;
+        }
+        Ok(nx * (px - cx) + ny * (py - cy))
+    }
+
     fn radius(&mut self, r: Round) -> Result<Dual, Fail> {
         match r {
             Round::Circle { r, .. } => {
@@ -238,6 +326,7 @@ impl<'a> Ctx<'a> {
                 let p = self.pt(p)?;
                 one(self.signed_distance(p, l)?)
             }
+            Equation::PointOnSpline { p, spline } => one(self.spline_distance(p, spline)?),
             Equation::PointOnRound(p, round) => {
                 one(self.distance(round.center(), p)? - self.radius(round)?)
             }
@@ -363,8 +452,19 @@ impl Equation {
 
     /// Residuals and gradients at `x`. Lines whose direction is needed must
     /// be longer than `min_len`.
+    #[cfg(test)]
     pub(crate) fn eval(&self, x: &[f64], min_len: f64) -> Result<Evaluated, Fail> {
-        let mut ctx = Ctx::new(x, min_len);
+        self.eval_with(x, min_len, &[])
+    }
+
+    /// As [`Equation::eval`], for a sketch with `splines` in it.
+    pub(crate) fn eval_with(
+        &self,
+        x: &[f64],
+        min_len: f64,
+        splines: &[SplineVars],
+    ) -> Result<Evaluated, Fail> {
+        let mut ctx = Ctx::new(x, min_len, splines);
         let (count, rows) = ctx.eval(self)?;
         if rows.iter().take(count).any(|r| !r.is_finite()) {
             return Err(Fail::NonFinite);
@@ -385,6 +485,8 @@ pub(crate) struct Prepared {
     /// Per entity: the index of its first unknown (points: x; circles:
     /// radius), if it has one.
     pub entity_var: Vec<Option<usize>>,
+    /// The splines of the sketch, by their index in it.
+    pub splines: Vec<SplineVars>,
     /// Arc equations first, then the constraints in input order.
     pub equations: Vec<Equation>,
     /// Per equation: the constraint, or the arc entity, it came from.
@@ -398,6 +500,7 @@ pub(crate) struct Prepared {
 
 struct Builder<'a> {
     sketch: &'a Sketch,
+    splines: Vec<SplineVars>,
     entity_var: Vec<Option<usize>>,
     x0: Vec<f64>,
     min_len: f64,
@@ -560,7 +663,7 @@ impl Builder<'_> {
 
     /// The value of a one-row equation at the starting guess.
     fn probe(&self, index: usize, eq: &Equation) -> Result<f64, SolveError> {
-        match eq.eval(&self.x0, self.min_len) {
+        match eq.eval_with(&self.x0, self.min_len, &self.splines) {
             Ok(e) => Ok(e.rows.first().map_or(0.0, |r| r.v)),
             Err(fail) => Err(start_failure(Site::Constraint(index), fail)),
         }
@@ -603,6 +706,18 @@ impl Builder<'_> {
             }
             Constraint::PointOnCircle { point, circle } => {
                 Equation::PointOnRound(self.pt(at, point)?, self.round(at, circle)?)
+            }
+            Constraint::PointOnSpline { point, spline } => {
+                if spline >= self.splines.len() {
+                    return Err(SolveError::Unsupported {
+                        constraint: index,
+                        what: "it refers to a spline the sketch does not have",
+                    });
+                }
+                Equation::PointOnSpline {
+                    p: self.pt(at, point)?,
+                    spline,
+                }
             }
             Constraint::Horizontal { line } => {
                 let l = self.ln(at, line)?;
@@ -833,14 +948,41 @@ pub(crate) fn prepare(sketch: &Sketch, min_len: f64) -> Result<Prepared, SolveEr
     too_large("unknowns", x0.len(), MAX_UNKNOWNS)?;
 
     let (class, on) = incidences(sketch);
-    let builder = Builder {
+    let mut builder = Builder {
         sketch,
+        splines: Vec::new(),
         entity_var,
         x0,
         min_len,
         class,
         on,
     };
+
+    // Every spline is one, on points, used by a constraint or not. (A
+    // fault of a spline is reported at its first control point.)
+    too_large("splines", sketch.splines.len(), MAX_ENTITIES)?;
+    let mut splines = Vec::with_capacity(sketch.splines.len());
+    for spline in &sketch.splines {
+        let first = spline.control.first().map_or(0, |id| id.index());
+        if let Some(reason) =
+            crate::spline::fault(spline.degree, &spline.knots, spline.control.len())
+        {
+            return Err(SolveError::InvalidEntity {
+                entity: first,
+                reason,
+            });
+        }
+        let mut control = Vec::with_capacity(spline.control.len());
+        for id in &spline.control {
+            control.push(builder.pt(Site::Entity(first), *id)?);
+        }
+        splines.push(SplineVars {
+            degree: spline.degree,
+            knots: spline.knots.clone(),
+            control,
+        });
+    }
+    builder.splines = splines;
 
     // Every entity must refer to points, used by a constraint or not.
     let mut equations = Vec::new();
@@ -927,6 +1069,7 @@ pub(crate) fn prepare(sketch: &Sketch, min_len: f64) -> Result<Prepared, SolveEr
     }
 
     Ok(Prepared {
+        splines: builder.splines,
         x0: builder.x0,
         entity_var: builder.entity_var,
         equations,
@@ -1056,6 +1199,82 @@ mod tests {
                     assert!(
                         (got - want).abs() <= 1e-7,
                         "{eq:?} row {row} d/dx{j}: {got} vs {want}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The distance from a spline is taken at the foot of the point, with
+    /// the foot and the normal held still for the gradient. That this is
+    /// the gradient of the distance itself (which finds its foot anew at
+    /// every place) is what central differences say here.
+    #[test]
+    fn the_gradient_of_the_distance_from_a_spline_matches_finite_differences() {
+        let control = [
+            [0.0, 0.0],
+            [1.0, 2.0],
+            [2.5, -1.0],
+            [4.0, 3.0],
+            [5.0, 0.5],
+            [6.5, 1.0],
+            [8.0, 0.0],
+            [9.0, 2.0],
+            [11.0, 1.0],
+        ];
+        for degree in 1..=crate::spline::MAX_SPLINE_DEGREE {
+            let count = control.len();
+            let spans = count - degree;
+            let mut knots = vec![0.0; degree + 1];
+            knots.extend((1..spans).map(|i| i as f64 / spans as f64));
+            knots.extend(vec![1.0; degree + 1]);
+            let splines = [SplineVars {
+                degree,
+                knots,
+                control: (0..count).map(|i| Pt(2 * i)).collect(),
+            }];
+            // On either side of the curve, near and far, and beyond both
+            // ends (where the distance is from the line of the end leg).
+            // (A polyline's distance has a kink where the foot is a
+            // corner: for degree 1, one place whose foot is inside a leg.)
+            let targets: &[[f64; 2]] = if degree == 1 {
+                &[[2.45, 1.3], [-1.0, -3.0], [12.5, 0.2]]
+            } else {
+                &[
+                    [2.0, 3.0],
+                    [4.2, -2.0],
+                    [6.1, 2.5],
+                    [3.1, 0.7],
+                    [-1.0, -3.0],
+                    [12.5, 0.2],
+                ]
+            };
+            for &target in targets {
+                let mut x: Vec<f64> = control.iter().flatten().copied().collect();
+                x.extend(target);
+                let eq = Equation::PointOnSpline {
+                    p: Pt(2 * count),
+                    spline: 0,
+                };
+                let e = eq.eval_with(&x, 1e-9, &splines).unwrap();
+                assert_eq!(e.count, 1);
+                assert!(e.used <= SLOTS);
+                let mut gradient = vec![0.0; x.len()];
+                for slot in 0..e.used {
+                    gradient[e.slots[slot]] += e.rows[0].d[slot];
+                }
+                let h = 1e-6;
+                for i in 0..x.len() {
+                    let (mut lo, mut hi) = (x.clone(), x.clone());
+                    lo[i] -= h;
+                    hi[i] += h;
+                    let want = (eq.eval_with(&hi, 1e-9, &splines).unwrap().rows[0].v
+                        - eq.eval_with(&lo, 1e-9, &splines).unwrap().rows[0].v)
+                        / (2.0 * h);
+                    assert!(
+                        (gradient[i] - want).abs() < 1e-6,
+                        "degree {degree} {target:?} unknown {i}: {} against {want}",
+                        gradient[i]
                     );
                 }
             }

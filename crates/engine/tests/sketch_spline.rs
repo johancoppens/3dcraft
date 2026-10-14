@@ -846,10 +846,9 @@ fn what_a_spline_cannot_do_yet_is_refused_with_the_reason() {
     let mut s = session();
     new_document(&mut s, 1.0);
     draw_d(&mut s, 1.0, 3);
-    // A point on a spline, and the other constraints that take lines or
-    // circles.
+    // The constraints that take lines or circles. (A point on a spline
+    // is taken since 2026-10-14: `a_point_is_held_on_a_spline`.)
     for (kind, entities) in [
-        ("pointOn", json!(["e3", "e6"])),
         ("parallel", json!(["e6", "e7"])),
         ("equal", json!(["e6", "e7"])),
         ("horizontal", json!(["e6"])),
@@ -1260,4 +1259,249 @@ fn a_spline_is_drawn_as_a_polyline_on_its_curve() {
     }
     // The control points are drawn as the points they are.
     assert_eq!(sketch.points.len(), 5);
+}
+
+/// How far `p` is from the sketch spline of `degree` on `control`: the
+/// nearest of the chords between 100 000 places de Boor's algorithm gives.
+fn off_spline(degree: usize, control: &[P], p: P) -> f64 {
+    let steps = 100_000;
+    let mut least = f64::INFINITY;
+    let mut before = control[0];
+    for i in 1..=steps {
+        let here = spline_point(degree, control, f64::from(i) / f64::from(steps));
+        let d = [here[0] - before[0], here[1] - before[1]];
+        let l2 = d[0] * d[0] + d[1] * d[1];
+        let t = if l2 > 0.0 {
+            (((p[0] - before[0]) * d[0] + (p[1] - before[1]) * d[1]) / l2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        least = least.min((p[0] - before[0] - d[0] * t).hypot(p[1] - before[1] - d[1] * t));
+        before = here;
+    }
+    least
+}
+
+/// Where the entities `ids` of sketch `Profile` are.
+fn places(session: &mut Session, ids: &[usize]) -> Vec<P> {
+    let inspected = run(session, "sketch.inspect", json!({"sketch": "Profile"}));
+    ids.iter()
+        .map(|&id| {
+            let entity = &inspected["entities"][id - 1];
+            assert_eq!(entity["id"], format!("e{id}"), "{entity}");
+            [entity["x"].as_f64().unwrap(), entity["y"].as_f64().unwrap()]
+        })
+        .collect()
+}
+
+#[test]
+fn a_point_is_held_on_a_spline() {
+    for k in [1e-3, 1.0, 1e6] {
+        for degree in [2, 3, 4] {
+            let name = format!("degree {degree} x{k}");
+            let dir = workdir(&format!("on-{degree}-{k}"));
+            let mut s = session_in(&dir);
+            new_document(&mut s, k);
+            draw_d(&mut s, k, degree);
+            // A point beside the bulge: two more degrees of freedom, and
+            // one less once it is on the spline.
+            let point = run(
+                &mut s,
+                "sketch.point",
+                json!({"sketch": "Profile", "at": [8.0 * k, 2.0 * k]}),
+            );
+            assert_eq!(
+                (&point["entity"], &point["dof"]),
+                (&json!("e8"), &json!(12))
+            );
+            let on = run(
+                &mut s,
+                "sketch.constrain",
+                json!({"sketch": "Profile", "type": "pointOn", "entities": ["e8", "e6"]}),
+            );
+            assert_eq!(on["status"], "ok", "{name}: {on}");
+            assert_eq!(on["dof"], 11, "{name}: {on}");
+            assert!(on.get("redundant").is_none() && on.get("conflicting").is_none());
+            let control = places(&mut s, &[1, 2, 3, 4, 5]);
+            // The point is on the spline (both gave way: what is not
+            // constrained moves as little as it can, all taken together).
+            let at = places(&mut s, &[8])[0];
+            assert!(
+                off_spline(degree, &control, at) <= 1e-6 * k,
+                "{name}: {at:?}"
+            );
+
+            // Twice is once too many, and says so.
+            let twice = run(
+                &mut s,
+                "sketch.constrain",
+                json!({"sketch": "Profile", "type": "pointOn", "entities": ["e8", "e6"]}),
+            );
+            assert_eq!(twice["redundant"], json!(["c2"]), "{name}: {twice}");
+            assert_eq!(twice["dof"], 11, "{name}");
+            run(&mut s, "edit.undo", json!({}));
+
+            // Held at a height, on a spline whose points are held: nothing
+            // is free. Then one control point is moved by a variable, and
+            // the point goes with the curve.
+            for id in [1, 2, 4, 5] {
+                run(
+                    &mut s,
+                    "sketch.constrain",
+                    json!({"sketch": "Profile", "type": "fixed", "entities": [format!("e{id}")]}),
+                );
+            }
+            run(
+                &mut s,
+                "variable.set",
+                json!({"name": "bulge", "expr": format!("{}", 7.0 * k)}),
+            );
+            for (direction, value) in [
+                ("horizontal", "bulge".to_string()),
+                ("vertical", format!("{}", 3.0 * k)),
+            ] {
+                run(
+                    &mut s,
+                    "sketch.constrain",
+                    json!({"sketch": "Profile", "type": "distance", "entities": ["e1", "e3"],
+                           "direction": direction, "value": value}),
+                );
+            }
+            let held = run(
+                &mut s,
+                "sketch.constrain",
+                json!({"sketch": "Profile", "type": "distance", "entities": ["e1", "e8"],
+                       "direction": "vertical", "value": format!("{}", 2.0 * k)}),
+            );
+            assert_eq!(
+                (&held["status"], &held["dof"]),
+                (&json!("ok"), &json!(0)),
+                "{name}: {held}"
+            );
+            let mut seen = Vec::new();
+            for bulge in [7.0, 9.0, 5.5, 8.0, 7.0] {
+                // (`run` holds every step to a full regeneration.)
+                run(
+                    &mut s,
+                    "variable.set",
+                    json!({"name": "bulge", "expr": format!("{}", bulge * k)}),
+                );
+                let inspected = run(&mut s, "sketch.inspect", json!({"sketch": "Profile"}));
+                assert_eq!(
+                    inspected["status"], "ok",
+                    "{name} bulge {bulge}: {inspected}"
+                );
+                let control = places(&mut s, &[1, 2, 3, 4, 5]);
+                // (Measured from e1, which gave way a little with the rest
+                // when the point was put on the spline.)
+                let origin = control[0];
+                assert!(
+                    (control[2][0] - origin[0] - bulge * k).abs() <= 1e-6 * k,
+                    "{name}"
+                );
+                let at = places(&mut s, &[8])[0];
+                assert!(
+                    off_spline(degree, &control, at) <= 1e-6 * k,
+                    "{name} bulge {bulge}: {at:?}"
+                );
+                assert!(
+                    (at[1] - origin[1] - 2.0 * k).abs() <= 1e-6 * k,
+                    "{name} bulge {bulge}"
+                );
+                seen.push(at[0]);
+            }
+            // Further out with the bulge, back in with it, and back where
+            // it was.
+            assert!(seen[1] > seen[0] && seen[2] < seen[0], "{name}: {seen:?}");
+            assert!((seen[4] - seen[0]).abs() <= 1e-6 * k, "{name}: {seen:?}");
+
+            // The body follows, and the file brings the same sketch back.
+            let made = run(
+                &mut s,
+                "feature.extrude",
+                json!({"sketch": "Profile", "distance": 2.0 * k, "name": "Hull"}),
+            );
+            assert_eq!(made["status"], "ok", "{name}: {made}");
+            let before = run(&mut s, "sketch.inspect", json!({"sketch": "Profile"}));
+            let measured = run(&mut s, "document.measure", json!({}));
+            run(&mut s, "file.save", json!({"path": "on.3dcraft"}));
+            run(&mut s, "file.close", json!({}));
+            run(&mut s, "file.open", json!({"path": "on.3dcraft"}));
+            assert_eq!(
+                run(&mut s, "sketch.inspect", json!({"sketch": "Profile"})),
+                before,
+                "{name}"
+            );
+            assert_eq!(
+                run(&mut s, "document.measure", json!({})),
+                measured,
+                "{name}"
+            );
+
+            // A point held somewhere else cannot be on the spline as
+            // well: the later constraint is named, nothing panics, and
+            // the sketch keeps what it had.
+            let clash = run(
+                &mut s,
+                "sketch.constrain",
+                json!({"sketch": "Profile", "type": "distance", "entities": ["e1", "e8"],
+                       "direction": "horizontal", "value": format!("{}", 30.0 * k)}),
+            );
+            assert!(
+                clash["conflicting"]
+                    .as_array()
+                    .is_some_and(|c| c.len() == 1),
+                "{name}: {clash}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_point_on_a_spline_takes_bad_parameters_as_errors() {
+    let mut s = session();
+    new_document(&mut s, 1.0);
+    draw_d(&mut s, 1.0, 3);
+    run(
+        &mut s,
+        "sketch.point",
+        json!({"sketch": "Profile", "at": [8, 2]}),
+    );
+    for (entities, word) in [
+        (json!(["e6", "e8"]), "a point and a spline"),
+        (json!(["e6", "e6"]), "pointOn"),
+        (json!(["e8"]), "pointOn"),
+        (json!(["e8", "e99"]), "e99"),
+        (json!(["e8", "e6", "e7"]), "pointOn"),
+    ] {
+        let refused = error(
+            &mut s,
+            "sketch.constrain",
+            json!({"sketch": "Profile", "type": "pointOn", "entities": entities}),
+        );
+        assert!(refused.contains(word), "{entities}: {refused}");
+    }
+    let refused = error(
+        &mut s,
+        "sketch.constrain",
+        json!({"sketch": "Profile", "type": "pointOn", "entities": ["e8", "e6"], "value": 3}),
+    );
+    assert!(refused.contains("value"), "{refused}");
+    // An end of the spline is on it already; a control point in between
+    // can be put on its own curve.
+    let end = run(
+        &mut s,
+        "sketch.constrain",
+        json!({"sketch": "Profile", "type": "pointOn", "entities": ["e1", "e6"]}),
+    );
+    assert_eq!(end["redundant"], json!(["c1"]), "{end}");
+    run(&mut s, "edit.undo", json!({}));
+    let own = run(
+        &mut s,
+        "sketch.constrain",
+        json!({"sketch": "Profile", "type": "pointOn", "entities": ["e3", "e6"]}),
+    );
+    assert_eq!(own["status"], "ok", "{own}");
+    let control = places(&mut s, &[1, 2, 3, 4, 5]);
+    assert!(off_spline(3, &control, control[2]) <= 1e-6, "{control:?}");
 }
