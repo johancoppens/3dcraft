@@ -60,9 +60,10 @@
 //! the same parameter, placed in the exact frame of the path where that
 //! frame's plane contains it. What was reached is [`Swept::deviation`].
 //! The ends of the piece are exact, so caps and neighbouring pieces are.
-//! (A cubic through equally spaced stations, which is what a loft is,
-//! needs some sixty stations per span for a tolerance of a millionth of
-//! the size, and as many knot lines in every face; these need ten.)
+//! (A cubic through equally spaced stations, which is what a loft is, has
+//! a knot line per station in every face; the exact measure gave up on
+//! such faces. The S of the tests, three spans, takes 43 stations at a
+//! tolerance of a millionth of its size.)
 //!
 //! **What is refused, before anything is built:** a path that branches,
 //! is in several parts or has a corner at an arc or a spline; a mitre so
@@ -204,12 +205,12 @@ fn named(ids: &[u64]) -> String {
 /// A side is named after the curve of the profile and the curve of the
 /// path it comes from, in that order; the one face of a line of the
 /// profile that is parallel to the path's plane after that line alone.
-/// Faces with the same sources (a curve cut into pieces: a spline at its
-/// corners, a circle that is the whole path, a whole circle of the profile
-/// along a spline, the polynomial spans of nothing: a spline of the path
-/// is one face) are numbered by [`Origin::piece`] in the order they are
-/// made: along the profile's loop first, then along the path. The caps of
-/// an open path are named after the curves of the profile's outer loop.
+/// Faces with the same sources (a spline of the profile or of the path
+/// cut at its corners or where it closes, a circle that is the whole
+/// path, a whole circle of the profile along a spline) are numbered by
+/// [`Origin::piece`] in the order they are made: piece of the path by
+/// piece, and round the profile's loop within one. The caps of an open
+/// path are named after the curves of the profile's outer loop.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Swept {
     pub body: Body,
