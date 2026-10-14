@@ -54,6 +54,9 @@
 //!   on any surface (`face.rs`, `mesh_face`);
 //! - a face whose mesh does not close along its edges (see above): a
 //!   mistake of the tessellator, caught before it leaves.
+//! - two faces whose meshes share a side that is on no edge and cannot
+//!   be parted (`part_shared_rungs`): the body between them is thinner
+//!   than the tolerance resolves.
 //!
 //! Faces are independent once the edges are points, so they are done on
 //! several threads and put together in face order: the mesh does not
