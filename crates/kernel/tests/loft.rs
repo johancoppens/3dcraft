@@ -142,7 +142,6 @@ fn mesh_volume(body: &Body, fine: f64) -> f64 {
         body,
         &TessParams {
             chordal_tolerance: size * fine,
-            max_segments: 8192,
             ..TessParams::default()
         },
     )
