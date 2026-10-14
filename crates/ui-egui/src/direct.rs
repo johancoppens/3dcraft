@@ -197,7 +197,11 @@ pub fn segments_marked(
     for [a, b] in marks.datum_lines() {
         line(a, b, LineKind::Datum, true, true, false);
     }
-    for sketch in scene.into_iter().flat_map(|scene| &scene.sketches) {
+    for sketch in scene
+        .into_iter()
+        .flat_map(|scene| &scene.sketches)
+        .filter(|_| !marks.hide_sketches)
+    {
         let chosen = selected == Some(sketch.feature.as_str());
         for polyline in &sketch.polylines {
             let kind = match (polyline.construction, chosen) {
@@ -217,7 +221,11 @@ pub fn segments_marked(
             line(a, b, LineKind::Highlight, true, true, false);
         }
     }
-    for sketch in scene.into_iter().flat_map(|scene| &scene.sketches) {
+    for sketch in scene
+        .into_iter()
+        .flat_map(|scene| &scene.sketches)
+        .filter(|_| !marks.hide_sketches)
+    {
         let kind = if selected == Some(sketch.feature.as_str()) {
             LineKind::Selected
         } else {

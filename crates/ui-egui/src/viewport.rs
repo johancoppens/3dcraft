@@ -17,7 +17,7 @@ use crate::backend::{Backend, BodyRenderer};
 use crate::camera::{Projected, Projector};
 use crate::state::{CameraState, EdgeRef, VertexRef};
 use crate::theme::{Rgb, Tokens};
-use craft3d_engine::{Scene, SceneDatum, SceneDatumShape};
+use craft3d_engine::{Scene, SceneDatum, SceneDatumShape, SceneSketch};
 use craft3d_math::Vec3;
 use craft3d_render::{Frame, Highlight, RenderParams};
 
@@ -167,6 +167,8 @@ pub struct Marks {
     pub cut: Option<SectionCut>,
     /// The datums drawn, in history order.
     pub datums: Vec<SceneDatum>,
+    /// The sketches are not drawn (`UiState::show`).
+    pub hide_sketches: bool,
 }
 
 impl Marks {
@@ -182,6 +184,7 @@ impl Marks {
         self.points.extend(other.points);
         self.datums.extend(other.datums);
         self.cut = self.cut.or(other.cut);
+        self.hide_sketches |= other.hide_sketches;
         self
     }
 
@@ -257,6 +260,19 @@ fn plane_corners(center: Vec3, u: Vec3, v: Vec3) -> [Vec3; 4] {
         center + u + v,
         center - u + v,
     ]
+}
+
+/// The sketches of `scene` that are drawn: all of them, unless the
+/// marks hide them.
+fn shown_sketches<'a>(
+    scene: Option<&'a Scene>,
+    marks: Option<&Marks>,
+) -> impl Iterator<Item = &'a SceneSketch> {
+    let hidden = marks.is_some_and(|marks| marks.hide_sketches);
+    scene
+        .into_iter()
+        .flat_map(|scene| &scene.sketches)
+        .filter(move |_| !hidden)
 }
 
 /// The datums of `scene` as marks, when they are shown.
@@ -787,7 +803,7 @@ fn build_overlay(
     for [a, b] in marks.map(Marks::datum_lines).unwrap_or_default() {
         line(a, b, LineKind::Datum, true, true);
     }
-    for sketch in scene.into_iter().flat_map(|scene| &scene.sketches) {
+    for sketch in shown_sketches(scene, marks) {
         let chosen = selected == Some(sketch.feature.as_str());
         for polyline in &sketch.polylines {
             let kind = match (polyline.construction, chosen) {
@@ -808,7 +824,7 @@ fn build_overlay(
             line(a, b, LineKind::Highlight, true, true);
         }
     }
-    for sketch in scene.into_iter().flat_map(|scene| &scene.sketches) {
+    for sketch in shown_sketches(scene, marks) {
         let kind = if selected == Some(sketch.feature.as_str()) {
             LineKind::Selected
         } else {

@@ -198,18 +198,22 @@ impl Work {
     }
 }
 
-/// What the viewport draws besides the bodies, the edges and the
-/// sketches.
+/// What the viewport draws besides the bodies and their edges.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields, default)]
 pub struct Show {
     /// Datum planes, axes and points (shown by default).
     pub datums: bool,
+    /// The sketches: their lines and points (shown by default).
+    pub sketches: bool,
 }
 
 impl Default for Show {
     fn default() -> Self {
-        Self { datums: true }
+        Self {
+            datums: true,
+            sketches: true,
+        }
     }
 }
 
@@ -451,8 +455,9 @@ pub struct UiState {
     /// The last click in the viewport. Read-only over the control channel:
     /// `ui.pick` with `select` makes one.
     pub picked: Option<Picked>,
-    /// What the viewport draws besides the bodies, their edges and the
-    /// sketches: `ui.set {"show": {"datums": false}}` hides the datums.
+    /// What the viewport draws besides the bodies and their edges:
+    /// `ui.set {"show": {"datums": false}}` hides the datums,
+    /// `{"show": {"sketches": false}}` the sketches.
     pub show: Show,
 }
 
@@ -750,7 +755,10 @@ mod tests {
                 vertex: None,
             }),
             // Added with datums in the viewport (2026-10-14).
-            show: Show { datums: false },
+            show: Show {
+                datums: false,
+                sketches: false,
+            },
         };
         let json = serde_json::to_value(&state).unwrap();
         assert_eq!(
@@ -777,7 +785,7 @@ mod tests {
                                     "index": 1, "faces": ["F3:face(0)", "F3:face(2)"],
                                     "point": [1.0, 2.0, 3.0]},
                            "vertex": null},
-                "show": {"datums": false},
+                "show": {"datums": false, "sketches": false},
             })
         );
         let back: UiState = serde_json::from_value(json).unwrap();

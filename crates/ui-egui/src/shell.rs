@@ -238,6 +238,8 @@ struct FrameKey {
     section: Option<Section>,
     /// The datums are drawn.
     datums: bool,
+    /// The sketches are drawn.
+    sketches: bool,
     tokens: Tokens,
 }
 
@@ -437,6 +439,8 @@ pub struct Shell {
     /// Where the section's controls were drawn: `toggle` and, while the
     /// section is on, `x`, `y`, `z`, `offset` and `flip`.
     section_hits: Vec<(&'static str, egui::Rect)>,
+    /// Where the Sketches and Datums toggles were drawn.
+    show_hits: Vec<(&'static str, egui::Rect)>,
     /// Where the last frame drew each "caused by" link of the tree: the
     /// row's feature id, the id of the feature it names, and the link.
     cause_hits: Vec<(String, String, egui::Rect)>,
@@ -534,6 +538,7 @@ impl Shell {
             turn: None,
             transparency_rect: None,
             section_hits: Vec::new(),
+            show_hits: Vec::new(),
             cause_hits: Vec::new(),
             section_cache: None,
             section_lost: None,
@@ -871,6 +876,7 @@ impl Shell {
             self.state.highlight_vertex.as_ref(),
             self.section_cut(),
             self.state.show.datums,
+            self.state.show.sketches,
         )
     }
 
@@ -922,6 +928,12 @@ impl Shell {
     /// `x`, `y`, `z`, `offset` (the slider) and `flip`.
     pub fn section_hits(&self) -> &[(&'static str, egui::Rect)] {
         &self.section_hits
+    }
+
+    /// Where the toggles of what is drawn are in the window, in points,
+    /// once the viewport was drawn: `sketches` and `datums`.
+    pub fn show_hits(&self) -> &[(&'static str, egui::Rect)] {
+        &self.show_hits
     }
 
     /// Where the last frame drew the "caused by" links of the feature tree:
@@ -1766,6 +1778,7 @@ impl Shell {
             opacity: self.opacity(),
             section: self.section(),
             datums: self.state.show.datums,
+            sketches: self.state.show.sketches,
             tokens,
         };
         // The direct path draws the whole picture, lines included, on the
@@ -1935,6 +1948,13 @@ impl Shell {
         } else {
             self.section_hits.clear();
         }
+        // What is drawn besides the bodies, in the row above.
+        let above = strip.translate(egui::vec2(0.0, -(tokens.bar_height + tokens.bar_gap)));
+        if above.width() > tokens.slider_width && above.top() > inner.top() {
+            self.show_control(ui, above);
+        } else {
+            self.show_hits.clear();
+        }
         if let Some(name) = view {
             self.turn = None;
             // The names come from the table, so this cannot fail.
@@ -1943,6 +1963,42 @@ impl Shell {
         }
         if fit || view.is_some() {
             self.fit_to(scene);
+            ui.ctx().request_repaint();
+        }
+    }
+
+    /// The toggles of what the viewport draws besides the bodies, in
+    /// `strip` from the right: Sketches and Datums ([`UiState::show`],
+    /// which `ui.set` sets too). Widgets over the viewport, like the
+    /// section's: a click on them picks nothing.
+    fn show_control(&mut self, ui: &mut egui::Ui, strip: egui::Rect) {
+        let mut show = self.state.show;
+        let mut hits: Vec<(&'static str, egui::Rect)> = Vec::new();
+        ui.scope_builder(egui::UiBuilder::new().max_rect(strip), |ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let datums = ui
+                    .add(egui::Button::new("Datums").small().selected(show.datums))
+                    .on_hover_text("Show or hide the datum planes, axes and points");
+                hits.push(("datums", datums.rect));
+                if datums.clicked() {
+                    show.datums = !show.datums;
+                }
+                let sketches = ui
+                    .add(
+                        egui::Button::new("Sketches")
+                            .small()
+                            .selected(show.sketches),
+                    )
+                    .on_hover_text("Show or hide the sketches");
+                hits.push(("sketches", sketches.rect));
+                if sketches.clicked() {
+                    show.sketches = !show.sketches;
+                }
+            });
+        });
+        self.show_hits = hits;
+        if show != self.state.show {
+            self.state.show = show;
             ui.ctx().request_repaint();
         }
     }
@@ -2343,6 +2399,7 @@ impl Shell {
             key.highlight_vertex.as_ref(),
             cut,
             key.datums,
+            key.sketches,
         ));
         let outcome = direct.frame(
             scene,
@@ -2427,6 +2484,7 @@ impl Shell {
                 key.highlight_vertex.as_ref(),
                 cut.clone(),
                 key.datums,
+                key.sketches,
             ),
             opacity: key.opacity,
             #[cfg(not(target_arch = "wasm32"))]
@@ -2608,6 +2666,7 @@ fn marks_of(
     vertex: Option<&VertexRef>,
     cut: Option<viewport::SectionCut>,
     datums: bool,
+    sketches: bool,
 ) -> viewport::Marks {
     let edges = edge.map_or_else(viewport::Marks::default, |edge| {
         viewport::edge_marks(scene, edge)
@@ -2617,6 +2676,7 @@ fn marks_of(
     });
     viewport::Marks {
         cut,
+        hide_sketches: !sketches,
         ..edges
             .with(vertices)
             .with(viewport::datum_marks(scene, datums))
