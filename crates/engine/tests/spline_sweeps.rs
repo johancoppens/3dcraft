@@ -789,6 +789,231 @@ fn booleans_with_a_vase_and_with_a_closed_spline_keep_the_set_identities() {
     }
 }
 
+/// A dome between two points of the axis, where its spline ends.
+const DOME: [P; 5] = [[0.0, 0.0], [4.0, 0.0], [6.0, 3.0], [3.0, 6.0], [0.0, 6.0]];
+/// The wall of a vase with a round bottom: from the axis at (0, 0) out
+/// and up to its rim at (2.5, 9).
+const ROUND: [P; 6] = [
+    [0.0, 0.0],
+    [3.0, 0.0],
+    [5.0, 1.0],
+    [5.5, 4.0],
+    [2.0, 6.0],
+    [2.5, 9.0],
+];
+
+/// The dome's section in sketch `Profile`: the spline e6 from e1 on the
+/// axis to e5 on the axis, and the line e7 back down the axis.
+fn draw_dome(session: &mut Session, k: f64) {
+    run(
+        session,
+        "sketch.spline",
+        json!({"sketch": "Profile", "control": scaled(&DOME, k)}),
+    );
+    run(
+        session,
+        "sketch.line",
+        json!({"sketch": "Profile", "from": "e5", "to": "e1"}),
+    );
+}
+
+/// The section of a vase with a round bottom: the spline e7 from e1 on
+/// the axis to e6, the rim from e6 to the axis and the axis back down.
+fn draw_round_vase(session: &mut Session, k: f64) {
+    run(
+        session,
+        "sketch.spline",
+        json!({"sketch": "Profile", "control": scaled(&ROUND, k)}),
+    );
+    run(
+        session,
+        "sketch.line",
+        json!({"sketch": "Profile", "from": "e6", "to": [0.0, 9.0 * k]}),
+    );
+    run(
+        session,
+        "sketch.line",
+        json!({"sketch": "Profile", "from": "e8", "to": "e1"}),
+    );
+}
+
+/// A spline that ends on the axis sweeps a face whose surface closes into
+/// a point there (a pole). Refused until 2026-10-14, when the measure and
+/// the booleans learnt to take such a face: a dome whose spline starts
+/// and ends on the axis and a vase with a round bottom are solids of the
+/// size Pappus gives, pass the deep check, mesh watertight and come back
+/// from a file as they were saved.
+#[test]
+fn a_spline_that_ends_on_the_axis_sweeps_a_dome() {
+    type Draw = fn(&mut Session, f64);
+    let shapes: [(&str, Draw, &[P], f64); 2] = [
+        ("dome", draw_dome, &DOME, 0.0),
+        ("round vase", draw_round_vase, &ROUND, 2.5),
+    ];
+    for k in [1e-3, 1.0, 1e6] {
+        for (shape, draw, control, rim) in shapes {
+            for turn in ["360 deg", "90 deg"] {
+                let name = format!("{shape} x{k} through {turn}");
+                let dir = workdir(&format!("pole-{shape}-{k}-{turn}"));
+                let mut s = session_in(&dir);
+                new_document(&mut s, k);
+                draw(&mut s, k);
+                let made = run(
+                    &mut s,
+                    "feature.revolve",
+                    json!({"sketch": "Profile", "axis": "y", "angle": turn, "name": "Solid"}),
+                );
+                assert_eq!(made["status"], "ok", "{name}: {made}");
+                let sums = along(3, &scaled(control, k));
+                let rim = rim * k;
+                let (section, per_radian, surface) =
+                    (sums[0].abs(), sums[1].abs(), sums[2] + rim * rim / 2.0);
+                let full = turn == "360 deg";
+                let angle = if full { TAU } else { PI / 2.0 };
+                let caps = if full { 0.0 } else { 2.0 * section };
+                let solid = body(&mut s, "Solid");
+                assert_eq!(solid["kind"], "solid", "{name}");
+                close(
+                    solid["volume"].as_f64().unwrap(),
+                    angle * per_radian,
+                    1e-9,
+                    &name,
+                );
+                close(
+                    solid["area"].as_f64().unwrap(),
+                    angle * surface + caps,
+                    1e-9,
+                    &format!("{name} area"),
+                );
+                let check = run(&mut s, "document.check", json!({"deep": true}));
+                assert_eq!(check["ok"], true, "{name}: {check}");
+                let exported = run(
+                    &mut s,
+                    "file.export",
+                    json!({"path": "solid.3mf", "tolerance": 1e-3 * k}),
+                );
+                assert_eq!(
+                    (&exported["bodies"], &exported["closed"]),
+                    (&json!(1), &json!(1)),
+                    "{name}"
+                );
+                let before = run(&mut s, "document.measure", json!({}));
+                let inspected = run(&mut s, "document.inspect", json!({}));
+                run(&mut s, "file.save", json!({"path": "solid.3dcraft"}));
+                run(&mut s, "file.close", json!({}));
+                run(&mut s, "file.open", json!({"path": "solid.3dcraft"}));
+                assert_eq!(run(&mut s, "document.measure", json!({})), before, "{name}");
+                assert_eq!(
+                    run(&mut s, "document.inspect", json!({}))["bodies"],
+                    inspected["bodies"],
+                    "{name}"
+                );
+            }
+        }
+    }
+}
+
+/// Booleans through the commands on what a spline sweeps that ends on the
+/// axis: a block through the side of the dome and one over its pole, a
+/// block through the round bottom of the vase, a cylinder across it; the
+/// result passes the deep check, and the three results keep the
+/// identities of sets. One of them saved and reopened.
+#[test]
+fn booleans_with_a_dome_keep_the_set_identities() {
+    for k in [1e-3, 1.0, 1e6] {
+        let solid = |draw: fn(&mut Session, f64), turn: &'static str| {
+            move |s: &mut Session| {
+                draw(s, k);
+                let made = run(
+                    s,
+                    "feature.revolve",
+                    json!({"sketch": "Profile", "axis": "y", "angle": turn, "name": "Body"}),
+                );
+                assert_eq!(made["status"], "ok", "{made}");
+            }
+        };
+        let block = |size: [f64; 3], position: [f64; 3]| {
+            move |s: &mut Session| {
+                run(
+                    s,
+                    "feature.block",
+                    json!({"name": "Tool", "size": size.map(|v| v * k),
+                           "position": position.map(|v| v * k)}),
+                );
+            }
+        };
+        let cylinder = |radius: f64, height: f64, position: [f64; 3], axis: [f64; 3]| {
+            move |s: &mut Session| {
+                run(
+                    s,
+                    "feature.cylinder",
+                    json!({"name": "Tool", "radius": radius * k, "height": height * k,
+                           "position": position.map(|v| v * k), "axis": axis}),
+                );
+            }
+        };
+        identities(
+            &format!("dome and block x{k}"),
+            &solid(draw_dome, "360 deg"),
+            &block([6.0, 2.0, 2.0], [2.0, 1.5, -1.0]),
+            k,
+        );
+        identities(
+            &format!("dome and a block over its pole x{k}"),
+            &solid(draw_dome, "360 deg"),
+            &block([2.2, 2.0, 2.4], [-0.9, 5.0, -1.1]),
+            k,
+        );
+        if k == 1.0 {
+            identities(
+                &format!("round vase and a block through its bottom x{k}"),
+                &solid(draw_round_vase, "360 deg"),
+                &block([2.4, 3.0, 2.0], [-1.1, -1.0, -0.8]),
+                k,
+            );
+            identities(
+                &format!("quarter of a round vase and cylinder x{k}"),
+                &solid(draw_round_vase, "90 deg"),
+                &cylinder(1.3, 9.0, [-1.0, 3.0, -1.5], [1.0, 0.2, 0.9]),
+                k,
+            );
+        }
+    }
+    // Cut, saved and reopened: the same bodies.
+    let dir = workdir("pole-boolean");
+    let mut s = session_in(&dir);
+    new_document(&mut s, 1.0);
+    draw_dome(&mut s, 1.0);
+    run(
+        &mut s,
+        "feature.revolve",
+        json!({"sketch": "Profile", "axis": "y", "name": "Body"}),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Tool", "size": [2.2, 2.0, 2.4], "position": [-0.9, 5.0, -1.1]}),
+    );
+    let made = run(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Body", "tool": "Tool", "name": "Notched"}),
+    );
+    assert_eq!(made["status"], "ok", "{made}");
+    let check = run(&mut s, "document.check", json!({"deep": true}));
+    assert_eq!(check["ok"], true, "{check}");
+    let before = run(&mut s, "document.measure", json!({}));
+    let inspected = run(&mut s, "document.inspect", json!({}));
+    run(&mut s, "file.save", json!({"path": "notched.3dcraft"}));
+    run(&mut s, "file.close", json!({}));
+    run(&mut s, "file.open", json!({"path": "notched.3dcraft"}));
+    assert_eq!(run(&mut s, "document.measure", json!({})), before);
+    assert_eq!(
+        run(&mut s, "document.inspect", json!({}))["bodies"],
+        inspected["bodies"]
+    );
+}
+
 #[test]
 fn what_cannot_be_swept_fails_with_the_reason() {
     let mut s = session();
@@ -839,7 +1064,8 @@ fn what_cannot_be_swept_fails_with_the_reason() {
     );
     assert_eq!(made["status"], "ok", "{made}");
 
-    // A spline that ends on the axis: its face could not be measured.
+    // (A spline that ends on the axis is no failure any more: see
+    // `a_spline_that_ends_on_the_axis_sweeps_a_dome`.)
     let mut s = session();
     new_document(&mut s, 1.0);
     run(
@@ -852,28 +1078,15 @@ fn what_cannot_be_swept_fails_with_the_reason() {
         "sketch.line",
         json!({"sketch": "Profile", "from": "e5", "to": "e1"}),
     );
-    for turn in ["360 deg", "90 deg"] {
-        let made = run(
-            &mut s,
-            "feature.revolve",
-            json!({"sketch": "Profile", "axis": "y", "angle": turn, "name": "Dome"}),
-        );
-        assert_eq!(made["status"], "failed", "{made}");
-        let reason = made["error"].as_str().unwrap();
-        assert!(
-            reason.contains("e6") && reason.contains("ends on the axis") && reason.contains("line"),
-            "{reason}"
-        );
-        run(&mut s, "edit.undo", json!({}));
-    }
-    // Its own straight side cannot be the axis either; about a line it
-    // stays clear of, the same sketch is a solid.
+    // Its own straight side as the axis is that same dome (it was the
+    // same refusal); about a line it stays clear of, the sketch is a
+    // solid too.
     let made = run(
         &mut s,
         "feature.revolve",
         json!({"sketch": "Profile", "axis": "e7", "angle": "90 deg", "name": "Dome"}),
     );
-    assert_eq!(made["status"], "failed", "its own line is the axis: {made}");
+    assert_eq!(made["status"], "ok", "its own line is the axis: {made}");
     run(&mut s, "edit.undo", json!({}));
     run(
         &mut s,
