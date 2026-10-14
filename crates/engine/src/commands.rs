@@ -475,7 +475,11 @@ fn automatic_tolerance(regen: &Regen) -> f64 {
     }
 }
 
-fn tolerance_param(p: &Params, command: &str, regen: &Regen) -> Result<TessParams, CommandError> {
+pub(crate) fn tolerance_param(
+    p: &Params,
+    command: &str,
+    regen: &Regen,
+) -> Result<TessParams, CommandError> {
     let chordal_tolerance = match p.number("tolerance")? {
         Some(t) if t > 0.0 => t,
         Some(_) => return fail(format!("{command}: `tolerance` must be positive")),

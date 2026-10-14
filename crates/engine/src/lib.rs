@@ -31,6 +31,7 @@ mod recovery;
 mod recovery_cmds;
 #[cfg(not(target_arch = "wasm32"))]
 mod recovery_store;
+mod replay_cmds;
 mod scene;
 mod section;
 mod sketch_cmds;
@@ -244,6 +245,7 @@ impl Session {
                 query_cmds::SPECS,
                 pick_cmds::SPECS,
                 recovery_cmds::SPECS,
+                replay_cmds::SPECS,
             ]
             .concat()
         })
