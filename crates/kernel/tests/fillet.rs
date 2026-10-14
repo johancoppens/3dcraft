@@ -1219,17 +1219,15 @@ fn corners_that_are_not_built_are_refused_and_say_why() {
         }
         other => panic!("expected a refusal, got {other:?}"),
     }
-    // A straight edge next to a cone: half a cone, cut through its axis.
+    // A straight edge next to a cone that runs into its apex, where only
+    // the cone and the cut meet: half a cone, cut through its axis.
     let part = primitives::cone(&Frame::WORLD, k, 3.0 * k).unwrap();
     let halved = boolean(&part, &half, BooleanOp::Intersect, &tol)
         .unwrap()
         .body;
     match fillet(&halved, &[round(&halved, k, [0.5, 0.0, 1.5], 0.2)], &tol) {
         Err(KernelError::Fillet { reason, .. }) => {
-            assert!(
-                reason.contains("neither a plane nor a cylinder"),
-                "{reason}"
-            );
+            assert!(reason.contains("does not end cleanly"), "{reason}");
         }
         other => panic!("expected a refusal, got {other:?}"),
     }
@@ -1298,7 +1296,8 @@ fn bad_requests_are_errors() {
     };
     match fillet(&cut, &[request], &tol) {
         Err(KernelError::Fillet { reason, .. }) => {
-            assert!(reason.contains("elliptic edge"), "{reason}");
+            // A whole ellipse has no vertex to end at.
+            assert!(reason.contains("closed edge"), "{reason}");
         }
         other => panic!("expected a refusal, got {other:?}"),
     }

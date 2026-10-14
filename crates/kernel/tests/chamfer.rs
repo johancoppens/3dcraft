@@ -772,8 +772,10 @@ fn what_is_not_built_is_refused_with_its_kind() {
     let k = 1.0;
     let tol = tolerance(k);
     // The straight edges of a cone cut in half through its axis lie
-    // between a plane and the cone. (Those of a rod cut likewise, between
-    // a plane and a cylinder, are built: `blend_cylinders.rs`.)
+    // between a plane and the cone and run into its apex, where only those
+    // two faces meet: the chamfer cannot end there. (Those of a rod cut
+    // likewise are built: `blend_cylinders.rs`; those of a frustum, which
+    // end in its flat ends: `blend_freeform.rs`.)
     let part = primitives::cone(&Frame::WORLD, k, 3.0 * k).unwrap();
     let half = boxed(k, [-2.0, 0.0, -1.0], [2.0, 2.0, 4.0]);
     let halved = boolean(&part, &half, BooleanOp::Intersect, &tol)
@@ -782,10 +784,7 @@ fn what_is_not_built_is_refused_with_its_kind() {
     let side = equal(&halved, k, [0.5, 0.0, 1.5], 0.2);
     match chamfer(&halved, &[side], &tol) {
         Err(KernelError::Chamfer { reason, .. }) => {
-            assert!(
-                reason.contains("neither a plane nor a cylinder"),
-                "{reason}"
-            );
+            assert!(reason.contains("does not end cleanly"), "{reason}");
         }
         other => panic!("expected a refusal, got {other:?}"),
     }

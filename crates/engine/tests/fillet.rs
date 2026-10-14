@@ -932,10 +932,8 @@ fn bad_parameters_are_errors_and_what_is_not_built_says_its_kind() {
         json!({"edges": [ellipse["faces"]], "radius": 0.1, "name": "Round"}),
     );
     assert!(reason.starts_with("edges.0 (between "), "{reason}");
-    assert!(
-        reason.contains("an elliptic edge is not built yet"),
-        "{reason}"
-    );
+    // A whole ellipse: a freeform blend needs vertices to end at.
+    assert!(reason.contains("closed edge"), "{reason}");
     // A fillet face is no place for a sketch: refused, with the reason.
     run(&mut s, "feature.delete", json!({"feature": "Round"}));
     run(&mut s, "feature.delete", json!({"feature": "Cut"}));

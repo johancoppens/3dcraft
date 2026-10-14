@@ -93,6 +93,7 @@ use craft3d_topo::{Body, BodyKind, EdgeId, FaceId, VertexId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::{PI, TAU};
 
+mod rolling;
 mod section;
 use section::{Section, Trace};
 
@@ -171,6 +172,14 @@ pub(crate) enum Reason {
     CornerKind,
     NotTangent,
     Lost,
+    FreeEnd,
+    FreeClosed,
+    FreeAngle,
+    FreeSurface,
+    FreeApproximation,
+    FreeTooLarge,
+    FreeMeet,
+    FreeMixed,
 }
 
 impl Reason {
@@ -228,6 +237,30 @@ impl Reason {
             Reason::TooMany => "more edges than one chamfer takes",
             Reason::NoCorner | Reason::CornerRadii | Reason::CornerKind | Reason::NotTangent => {
                 "the corner where three chamfers meet could not be made flat"
+            }
+            Reason::FreeEnd => {
+                "the chamfer of a freeform edge does not end cleanly: each end of the edge has to be a corner of exactly three faces whose third face the chamfer runs into across the edge"
+            }
+            Reason::FreeClosed => {
+                "a chamfer along a closed edge without a vertex (a ring) on a freeform face is not built yet"
+            }
+            Reason::FreeAngle => {
+                "a chamfer of a freeform edge by a distance and an angle is not built yet: give two distances"
+            }
+            Reason::FreeSurface => {
+                "the chamfer face along this edge could not be followed: the distance does not fit on a face somewhere along it"
+            }
+            Reason::FreeApproximation => {
+                "the chamfer face along this edge could not be approximated within the tolerance"
+            }
+            Reason::FreeTooLarge => {
+                "the chamfer reaches past an edge at the end of the edge: the distance is too large for that face"
+            }
+            Reason::FreeMeet => {
+                "chamfers of freeform edges that meet in a vertex are not built yet: chamfer them one by one, or leave one out"
+            }
+            Reason::FreeMixed => {
+                "a freeform edge cannot be chamfered together with edges between planes, cylinders and cones yet: chamfer them in two features"
             }
             Reason::Lost => "the chamfer lost track of an entity; this is a bug",
         }
@@ -287,6 +320,28 @@ impl Reason {
             }
             Reason::NotTangent => {
                 "the fillet face came out not tangent to a face it should run into smoothly; this is a bug"
+            }
+            Reason::FreeEnd => {
+                "the fillet of a freeform edge does not end cleanly: each end of the edge has to be a corner of exactly three faces whose third face the fillet runs into across the edge"
+            }
+            Reason::FreeClosed => {
+                "a fillet along a closed edge without a vertex (a ring) on a freeform face is not built yet"
+            }
+            Reason::FreeAngle => "a fillet has no angle",
+            Reason::FreeSurface => {
+                "the rolling ball along this edge could not be followed: the radius does not fit between the faces somewhere along it, or a face turns too sharply under it"
+            }
+            Reason::FreeApproximation => {
+                "the fillet face along this edge could not be approximated within the tolerance"
+            }
+            Reason::FreeTooLarge => {
+                "the fillet reaches past an edge at the end of the edge: the radius is too large for that face"
+            }
+            Reason::FreeMeet => {
+                "fillets of freeform edges that meet in a vertex are not built yet: fillet them one by one, or leave one out"
+            }
+            Reason::FreeMixed => {
+                "a freeform edge cannot be filleted together with edges between planes, cylinders and cones yet: fillet them in two features"
             }
             Reason::Lost => "the fillet lost track of an entity; this is a bug",
         }
@@ -2325,11 +2380,26 @@ pub(crate) fn blend(
     let at = vertex_edges(body);
     let mut seen = BTreeSet::new();
     let mut plans = Vec::with_capacity(edges.len());
+    // Edges none of the closed forms covers go to `rolling`, all of them
+    // together.
+    let mut free = Vec::new();
     for request in edges {
         if !seen.insert(request.edge) {
             return Err(refused(request.edge, Reason::Twice));
         }
-        plans.push(plan(body, &uses, request, tol)?);
+        match plan(body, &uses, request, tol) {
+            Ok(made) => plans.push(made),
+            Err(BlendError::Refused { reason, .. }) if rolling::takes(reason) => {
+                free.push(*request);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    if let Some(first) = free.first() {
+        if !plans.is_empty() {
+            return Err(refused(first.edge, Reason::FreeMixed));
+        }
+        return rolling::blend(body, &free, tolerance);
     }
     fits(body, &plans, tol)?;
     lengthen(body, &uses, &at, &mut plans)?;
