@@ -378,6 +378,10 @@ pub struct Scene {
     /// All bodies as one mesh for a renderer; face ids keep counting across
     /// bodies, as in `view.render`.
     pub mesh: Arc<Mesh>,
+    /// The faces of [`Scene::mesh`] that have a colour of their own (a
+    /// body's appearance, `body.appearance`); the others are drawn in the
+    /// theme's colour.
+    pub face_colors: Arc<craft3d_render::FaceColors>,
     pub sketches: Vec<SceneSketch>,
     /// The datums that are placed, in history order. They are not in
     /// [`Scene::bbox`]: they are sized to it.
@@ -1027,6 +1031,7 @@ fn build(
         preview: false,
         bodies: Arc::new(Vec::new()),
         mesh: Arc::new(Mesh::default()),
+        face_colors: Arc::new(craft3d_render::FaceColors::new()),
         sketches: Vec::new(),
         datums: Vec::new(),
         features: Vec::new(),
@@ -1255,6 +1260,14 @@ fn build(
         for list in &mut vertex_faces {
             list.sort_unstable();
         }
+        crate::appearance::color_faces(
+            Arc::make_mut(&mut scene.face_colors),
+            doc,
+            regen,
+            feature.id,
+            first_face_id,
+            body.faces.len(),
+        );
         Arc::make_mut(&mut scene.bodies).push(SceneBody {
             feature: feature.id.to_string(),
             name: feature.name.clone(),

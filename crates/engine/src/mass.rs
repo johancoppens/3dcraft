@@ -11,7 +11,7 @@
 //! body while the entry exists. The answer is the very value a fresh
 //! measure gives; only the time differs.
 
-use craft3d_topo::{Body, MassError, MassProperties, mass_properties};
+use craft3d_topo::{Body, Inertia, MassError, MassProperties, inertia, mass_properties};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 
 /// Most bodies remembered; the oldest go first.
@@ -34,6 +34,37 @@ pub(crate) fn mass_of(body: &Arc<Body>) -> Measured {
     let measured = mass_properties(body);
     let mut remembered = REMEMBERED.lock().unwrap_or_else(PoisonError::into_inner);
     // Bodies that are gone are forgotten.
+    remembered.retain(|(seen, _)| seen.strong_count() > 0);
+    if !remembered.iter().any(|(seen, _)| seen.ptr_eq(&key)) {
+        if remembered.len() >= MAX_REMEMBERED {
+            drop(remembered.remove(0));
+        }
+        remembered.push((key, measured.clone()));
+    }
+    measured
+}
+
+type Turned = Result<Inertia, MassError>;
+
+static REMEMBERED_INERTIA: Mutex<Vec<(Weak<Body>, Turned)>> = Mutex::new(Vec::new());
+
+/// `inertia(body)`, measured at most once per body, like [`mass_of`]:
+/// only bodies with a material are asked for it, and summing the second
+/// moments of a body with spline faces takes as long as its volume.
+pub(crate) fn inertia_of(body: &Arc<Body>) -> Turned {
+    let key = Arc::downgrade(body);
+    {
+        let remembered = REMEMBERED_INERTIA
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some((_, measured)) = remembered.iter().find(|(seen, _)| seen.ptr_eq(&key)) {
+            return measured.clone();
+        }
+    }
+    let measured = inertia(body);
+    let mut remembered = REMEMBERED_INERTIA
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
     remembered.retain(|(seen, _)| seen.strong_count() > 0);
     if !remembered.iter().any(|(seen, _)| seen.ptr_eq(&key)) {
         if remembered.len() >= MAX_REMEMBERED {
