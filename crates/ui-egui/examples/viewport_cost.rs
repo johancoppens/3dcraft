@@ -6,7 +6,10 @@
 //! per document revision, and the frame until the GPU is done), and the
 //! path that reads back, split into the upload, the draw and the readback.
 //! The direct path and the CPU are timed with the bodies opaque and
-//! see-through (two depth layers and a blend).
+//! see-through (two depth layers and a blend), whole and cut open by a
+//! section plane across the middle of the model (a pass that counts what
+//! is cut away, and the cap); and what moving the plane costs besides: its
+//! outline on the bodies and the lines over the picture, made again.
 //!
 //! ```sh
 //! cargo run --release -p craft3d-ui-egui --example viewport_cost
@@ -19,7 +22,7 @@ use craft3d_ui_egui::backend::{Backend, BodyRenderer, RendererChoice};
 use craft3d_ui_egui::direct::{direct_size, headless_render_state, segments_marked};
 use craft3d_ui_egui::shell::{image_quality, image_quality_for};
 use craft3d_ui_egui::state::CameraState;
-use craft3d_ui_egui::viewport::{self, AXIS_LENGTH, Marks, Quality, depth_slack};
+use craft3d_ui_egui::viewport::{self, AXIS_LENGTH, Marks, Quality, SectionCut, depth_slack};
 use egui_wgpu::wgpu;
 use serde_json::json;
 use std::process::ExitCode;
@@ -69,12 +72,14 @@ fn time(
     camera: &CameraState,
     quality: Quality,
     opacity: f64,
+    cut: Option<&SectionCut>,
 ) -> Result<(), String> {
     let tokens = Tokens::default();
     let runs = 5;
     let mut best = f64::INFINITY;
     let params = craft3d_render::RenderParams {
         opacity,
+        section: cut.map(|cut| cut.section),
         ..viewport::render_params(quality, &tokens)
     };
     for _ in 0..runs {
@@ -134,6 +139,7 @@ fn time_gpu(
 /// The direct path's cost per frame, split into its parts, best of five:
 /// the uploads (once per document revision) and the frame, submitted and
 /// then waited for.
+#[allow(clippy::too_many_arguments)]
 fn time_direct(
     label: &str,
     onscreen: &mut Onscreen,
@@ -142,9 +148,14 @@ fn time_direct(
     camera: &CameraState,
     size: [u32; 2],
     opacity: f64,
+    cut: Option<&SectionCut>,
 ) -> Result<(), String> {
     let tokens = Tokens::default();
     let [width, height] = direct_size(size, device.limits().max_texture_dimension_2d);
+    let marks = Marks {
+        cut: cut.cloned(),
+        ..Marks::default()
+    };
     let params = craft3d_render::RenderParams {
         width,
         height,
@@ -153,6 +164,7 @@ fn time_direct(
         color: tokens.body,
         highlight: craft3d_render::Highlight::NONE,
         opacity,
+        section: marks.section(),
     };
     let overlay = OverlayParams {
         slack: depth_slack(Backend::Gpu, Some(scene), camera),
@@ -172,7 +184,7 @@ fn time_direct(
                 None,
                 &tokens,
                 1.0,
-                &Marks::default(),
+                &marks,
                 opacity < 1.0,
             ))
             .map_err(|e| e.to_string())?;
@@ -243,6 +255,43 @@ fn measure(large: bool, tolerance: Option<f64>) -> Result<(), String> {
         scene.triangles(),
         scene.tolerance
     );
+    // A section across z through the middle of the model, as the window
+    // makes it: the plane for the renderers, and its outline on the
+    // bodies, which is what moving the plane costs besides the frame.
+    let (lo, hi) = scene.bbox.corners().ok_or("an empty scene")?;
+    let tokens = Tokens::default();
+    let section = craft3d_render::Section {
+        origin: (lo + hi) * 0.5,
+        normal: craft3d_math::Vec3::Z,
+        cap: true,
+        color: tokens.section_cap,
+    };
+    let mut outline_ms = f64::INFINITY;
+    let mut cut = None;
+    for _ in 0..5 {
+        let start = Instant::now();
+        cut = SectionCut::new(&scene, section);
+        outline_ms = outline_ms.min(start.elapsed().as_secs_f64() * 1000.0);
+    }
+    let cut = cut.ok_or("no section")?;
+    let start = Instant::now();
+    let moved = segments_marked(
+        Some(&scene),
+        None,
+        &tokens,
+        1.0,
+        &Marks {
+            cut: Some(cut.clone()),
+            ..Marks::default()
+        },
+        false,
+    );
+    println!(
+        "section across z: its outline ({} segments) in {outline_ms:.1} ms, the lines over the picture ({} segments) in {:.1} ms: once per move of the plane",
+        cut.outline.len(),
+        moved.len(),
+        start.elapsed().as_secs_f64() * 1000.0
+    );
     for size in [[1020, 777], [1652, 993], [2560, 1400]] {
         let mut camera = CameraState::default();
         camera.fit(&scene.bbox, f64::from(size[0]) / f64::from(size[1]));
@@ -252,6 +301,7 @@ fn measure(large: bool, tolerance: Option<f64>) -> Result<(), String> {
             &camera,
             image_quality(size, false, 8192),
             1.0,
+            None,
         )?;
         time(
             "at rest, see-through",
@@ -259,6 +309,23 @@ fn measure(large: bool, tolerance: Option<f64>) -> Result<(), String> {
             &camera,
             image_quality(size, false, 8192),
             0.5,
+            None,
+        )?;
+        time(
+            "at rest, section",
+            &scene,
+            &camera,
+            image_quality(size, false, 8192),
+            1.0,
+            Some(&cut),
+        )?;
+        time(
+            "section, see-through",
+            &scene,
+            &camera,
+            image_quality(size, false, 8192),
+            0.5,
+            Some(&cut),
         )?;
         time(
             "while moving",
@@ -266,6 +333,7 @@ fn measure(large: bool, tolerance: Option<f64>) -> Result<(), String> {
             &camera,
             image_quality(size, true, 8192),
             1.0,
+            None,
         )?;
         time(
             "full size, 4 samples",
@@ -277,6 +345,7 @@ fn measure(large: bool, tolerance: Option<f64>) -> Result<(), String> {
                 ssaa: 2,
             },
             1.0,
+            None,
         )?;
     }
     match headless_render_state() {
@@ -291,7 +360,12 @@ fn measure(large: bool, tolerance: Option<f64>) -> Result<(), String> {
             for size in [[1020, 777], [1280, 800], [2560, 1400]] {
                 let mut camera = CameraState::default();
                 camera.fit(&scene.bbox, f64::from(size[0]) / f64::from(size[1]));
-                for (label, opacity) in [("every frame", 1.0), ("see-through", 0.5)] {
+                for (label, opacity, cut) in [
+                    ("every frame", 1.0, None),
+                    ("see-through", 0.5, None),
+                    ("section", 1.0, Some(&cut)),
+                    ("section, see-through", 0.5, Some(&cut)),
+                ] {
                     time_direct(
                         label,
                         &mut onscreen,
@@ -300,6 +374,7 @@ fn measure(large: bool, tolerance: Option<f64>) -> Result<(), String> {
                         &camera,
                         size,
                         opacity,
+                        cut,
                     )?;
                 }
             }

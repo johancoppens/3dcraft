@@ -135,7 +135,8 @@ pub fn segments(
     segments_marked(scene, selected, tokens, scale, &Marks::default(), false)
 }
 
-/// [`segments`] with `marks` drawn over the lines, as
+/// [`segments`] with `marks` drawn over the lines and the picture cut open
+/// by the section of `marks`, as
 /// `viewport::overlay_see_through` lists them: the lines after the
 /// sketches' lines, the dots after their points. With `see_through` (the
 /// bodies are see-through) the hidden part of a body's edge is drawn
@@ -165,14 +166,21 @@ pub fn segments_marked(
             axis,
         });
     };
+    // In a picture that is cut open an edge is drawn where it is kept, and
+    // the outline of the cut is drawn as edges.
     for body in scene.into_iter().flat_map(|scene| &scene.bodies) {
         for edge in &body.edges {
             for pair in edge.windows(2) {
-                if let [a, b] = *pair {
+                if let [a, b] = *pair
+                    && let Some([a, b]) = marks.kept(a, b)
+                {
                     line(a, b, LineKind::Edge, true, see_through, false);
                 }
             }
         }
+    }
+    for &[a, b] in marks.outline() {
+        line(a, b, LineKind::Edge, true, see_through, false);
     }
     for (axis, direction) in [Vec3::X, Vec3::Y, Vec3::Z].into_iter().enumerate() {
         line(
@@ -200,7 +208,9 @@ pub fn segments_marked(
         }
     }
     for &[a, b] in &marks.lines {
-        line(a, b, LineKind::Highlight, true, true, false);
+        if let Some([a, b]) = marks.kept(a, b) {
+            line(a, b, LineKind::Highlight, true, true, false);
+        }
     }
     for sketch in scene.into_iter().flat_map(|scene| &scene.sketches) {
         let kind = if selected == Some(sketch.feature.as_str()) {
@@ -220,7 +230,11 @@ pub fn segments_marked(
             });
         }
     }
-    for point in &marks.points {
+    for point in marks
+        .points
+        .iter()
+        .filter(|point| marks.kept(**point, **point).is_some())
+    {
         out.push(Segment {
             from: *point,
             to: *point,
@@ -279,7 +293,8 @@ fn classify(error: GpuError) -> DirectFailure {
         | GpuError::MeshTooLarge { .. }
         | GpuError::TooManyLines { .. }
         | GpuError::OutOfRange(_)
-        | GpuError::SeeThrough(_) => DirectFailure::ThisFrame(text),
+        | GpuError::SeeThrough(_)
+        | GpuError::Section(_) => DirectFailure::ThisFrame(text),
         GpuError::NoAdapter(_)
         | GpuError::Device(_)
         | GpuError::ForeignMesh
@@ -364,6 +379,13 @@ impl Direct {
     /// of that fallback.
     pub fn without_see_through(&mut self) {
         self.onscreen.without_see_through();
+    }
+
+    /// As on a device that cannot draw a cut-open picture: from now on a
+    /// frame with a section is refused here and drawn another way. For
+    /// tests of that fallback.
+    pub fn without_section(&mut self) {
+        self.onscreen.without_section();
     }
 
     /// The egui texture that shows the picture, once one was drawn.
@@ -505,6 +527,7 @@ impl Direct {
             color: wanted.tokens.body,
             highlight: wanted.highlight,
             opacity: wanted.opacity,
+            section: wanted.marks.section(),
         };
         let overlay = OverlayParams {
             slack: depth_slack(Backend::Gpu, scene, &wanted.camera),

@@ -9,17 +9,18 @@ use crate::direct::{Direct, DirectFailure};
 use crate::frames::{Mode, Scheduler, Ticket};
 use crate::state::VertexRef;
 use crate::state::{
-    CameraState, EdgeRef, FaceRef, Picked, PickedEntity, PickedKind, ProjectionKind, UiState,
+    CameraState, EdgeRef, FaceRef, Picked, PickedEntity, PickedKind, ProjectionKind, SectionState,
+    UiState,
 };
 use crate::theme::{Tokens, color, color_alpha};
 use crate::view_cube;
 use crate::viewport::{self, Composed, MAX_SIDE, MIN_SIDE, Overlay, Quality};
 use craft3d_engine::{
     DocumentStatus, FeatureState, PickKind, Recoverable, RecoveryOverview, Scene, SceneNear,
-    ScenePointed, SceneQuality, Session,
+    ScenePointed, SceneQuality, SectionPlane, Session,
 };
 use craft3d_math::Bbox3;
-use craft3d_render::Highlight;
+use craft3d_render::{Highlight, Section};
 use std::sync::Arc;
 
 /// The viewport's size before the window has laid it out, in pixels: what
@@ -211,7 +212,22 @@ struct FrameKey {
     highlight_vertex: Option<VertexRef>,
     /// How opaque the bodies are.
     opacity: f64,
+    /// The plane the picture is cut open with.
+    section: Option<Section>,
     tokens: Tokens,
+}
+
+/// The section of the viewport as it lies in the scene that is shown:
+/// resolved once per scene and per state, not per frame.
+struct SectionCache {
+    revision: u64,
+    tolerance: f64,
+    state: SectionState,
+    cap: crate::theme::Rgb,
+    plane: SectionPlane,
+    /// The offsets between which the plane passes through the bodies.
+    range: Option<[f64; 2]>,
+    cut: Option<viewport::SectionCut>,
 }
 
 /// One image to make.
@@ -394,6 +410,13 @@ pub struct Shell {
     turn: Option<Turn>,
     /// Where the see-through slider was drawn.
     transparency_rect: Option<egui::Rect>,
+    /// Where the section's controls were drawn: `toggle` and, while the
+    /// section is on, `x`, `y`, `z`, `offset` and `flip`.
+    section_hits: Vec<(&'static str, egui::Rect)>,
+    /// The section as it lies in the scene, while it is on.
+    section_cache: Option<SectionCache>,
+    /// Why the section was switched off: its plane was lost.
+    section_lost: Option<String>,
     /// The box the camera was last fitted to automatically.
     framed: Bbox3,
     themed: bool,
@@ -477,6 +500,9 @@ impl Shell {
             view_cube_rect: None,
             turn: None,
             transparency_rect: None,
+            section_hits: Vec::new(),
+            section_cache: None,
+            section_lost: None,
             framed: Bbox3::EMPTY,
             themed: false,
             quit: false,
@@ -580,6 +606,17 @@ impl Shell {
             direct.without_see_through();
         }
         self.renderer.without_gpu_see_through();
+    }
+
+    /// As on a device that cannot draw a cut-open picture: from now on a
+    /// frame with a section is the CPU renderer's. For tests of that
+    /// fallback.
+    pub fn without_gpu_section(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(direct) = &mut self.direct {
+            direct.without_section();
+        }
+        self.renderer.without_gpu_section();
     }
 
     /// There are no threads here: the same as [`Self::new`].
@@ -765,14 +802,105 @@ impl Shell {
             })
     }
 
-    /// What the viewport draws over the picture to point at something:
-    /// the highlighted edge and the highlighted vertex.
+    /// What the viewport draws over the picture to point at something
+    /// (the highlighted edge and the highlighted vertex), and the section
+    /// the picture is cut open with.
     pub fn marks(&self, scene: Option<&Scene>) -> viewport::Marks {
         marks_of(
             scene,
             self.state.highlight_edge.as_ref(),
             self.state.highlight_vertex.as_ref(),
+            self.section_cut(),
         )
+    }
+
+    /// The plane the viewport's picture is cut open with, as the
+    /// renderers take it: `None` when the section is off, and before the
+    /// first [`Self::sync`] with a document.
+    pub fn section(&self) -> Option<Section> {
+        self.section_cache
+            .as_ref()
+            .map(|cache| cache.plane.section(cache.cap))
+    }
+
+    /// The section made ready for the scene that is shown.
+    fn section_cut(&self) -> Option<viewport::SectionCut> {
+        self.section_cache
+            .as_ref()
+            .and_then(|cache| cache.cut.clone())
+    }
+
+    /// What `ui.get` says about the section: where the plane lies and the
+    /// offsets between which it passes through the bodies, or why it was
+    /// switched off; `None` when it is off and nothing was lost.
+    pub fn section_report(&self) -> Option<serde_json::Value> {
+        let vec3 = |v: craft3d_math::Vec3| serde_json::json!([v.x, v.y, v.z]);
+        match (&self.section_cache, &self.section_lost) {
+            (Some(cache), _) => Some(serde_json::json!({
+                "point": vec3(cache.plane.origin),
+                "normal": vec3(cache.plane.normal),
+                "range": cache.range,
+                "lost": null,
+            })),
+            (None, Some(why)) => Some(serde_json::json!({ "lost": why })),
+            (None, None) => None,
+        }
+    }
+
+    /// Why the section was switched off, when its plane was lost.
+    pub fn section_lost(&self) -> Option<&str> {
+        self.section_lost.as_deref()
+    }
+
+    /// Forgets why the section was switched off: it was set again.
+    pub fn clear_section_lost(&mut self) {
+        self.section_lost = None;
+    }
+
+    /// Where the section's controls are in the window, in points, once
+    /// the viewport was drawn: `toggle` and, while the section is on,
+    /// `x`, `y`, `z`, `offset` (the slider) and `flip`.
+    pub fn section_hits(&self) -> &[(&'static str, egui::Rect)] {
+        &self.section_hits
+    }
+
+    /// Brings the section up to date with the scene: where its plane lies
+    /// now. A plane that no longer resolves (its face or datum is gone)
+    /// switches the section off, with the reason kept for `ui.get`.
+    fn resolve_section(&mut self, session: &mut Session, scene: &Scene) {
+        if !self.state.section.on {
+            self.section_cache = None;
+            return;
+        }
+        let cap = self.tokens.section_cap;
+        let current = self.section_cache.as_ref().is_some_and(|cache| {
+            cache.revision == scene.revision
+                && cache.tolerance == scene.tolerance
+                && cache.state == self.state.section
+                && cache.cap == cap
+        });
+        if current {
+            return;
+        }
+        match session.section_plane(scene, &self.state.section.spec()) {
+            Ok(plane) => {
+                self.section_cache = Some(SectionCache {
+                    revision: scene.revision,
+                    tolerance: scene.tolerance,
+                    state: self.state.section.clone(),
+                    cap,
+                    plane,
+                    range: plane.range(&craft3d_render::section_bounds(&scene.mesh)),
+                    cut: viewport::SectionCut::new(scene, plane.section(cap)),
+                });
+                self.section_lost = None;
+            }
+            Err(why) => {
+                self.state.section.on = false;
+                self.section_cache = None;
+                self.section_lost = Some(why);
+            }
+        }
     }
 
     /// How opaque the viewport draws the bodies, 0.1 to 1: one minus
@@ -830,10 +958,18 @@ impl Shell {
             let stretch = f64::from(width) / f64::from(self.size[0].max(1));
             self.pick_radius() * stretch
         });
+        // Of the picture as it is shown: cut open when the section is on.
+        let section = self.section();
         let found = match scene {
-            Some(scene) => {
-                scene.point_at(&self.state.camera.to_render(), width, height, x, y, radius)?
-            }
+            Some(scene) => scene.point_at_cut(
+                &self.state.camera.to_render(),
+                width,
+                height,
+                x,
+                y,
+                radius,
+                section.as_ref(),
+            )?,
             None => ScenePointed::default(),
         };
         if select && x.is_finite() && y.is_finite() {
@@ -847,19 +983,30 @@ impl Shell {
                 faces: near.faces.clone(),
                 point: [near.point.x, near.point.y, near.point.z],
             };
+            // On the cap of the section: the body that is cut there and
+            // the point of the plane, and no face.
+            let cap = found.section.as_ref().filter(|_| hit.is_none());
             self.state.picked = Some(Picked {
                 serial: self.picks,
                 x,
                 y,
-                feature: hit.map(|hit| hit.feature.clone()),
-                name: hit.map(|hit| hit.body.clone()),
+                feature: hit
+                    .map(|hit| hit.feature.clone())
+                    .or_else(|| cap.and_then(|cap| cap.feature.clone())),
+                name: hit
+                    .map(|hit| hit.body.clone())
+                    .or_else(|| cap.and_then(|cap| cap.body.clone())),
                 face: hit.and_then(|hit| hit.face.clone()),
                 face_index: hit.and_then(|hit| u64::try_from(hit.face_index).ok()),
-                point: hit.map(|hit| [hit.point.x, hit.point.y, hit.point.z]),
+                point: hit
+                    .map(|hit| hit.point)
+                    .or(cap.map(|cap| cap.point))
+                    .map(|p| [p.x, p.y, p.z]),
                 kind: found.kind().map(|kind| match kind {
                     PickKind::Face => PickedKind::Face,
                     PickKind::Edge => PickedKind::Edge,
                     PickKind::Vertex => PickedKind::Vertex,
+                    PickKind::Section => PickedKind::Section,
                 }),
                 edge: found
                     .edge
@@ -919,8 +1066,12 @@ impl Shell {
             self.state.highlight_vertex = None;
             self.state.picked = None;
             self.framed = Bbox3::EMPTY;
+            // The section stays as it is set: it is resolved again when
+            // there is a document to cut.
+            self.section_cache = None;
             return None;
         };
+        self.resolve_section(session, &scene);
         if let Some(first) = scene.problems.first() {
             self.problem = Some(first.clone());
         }
@@ -1406,6 +1557,7 @@ impl Shell {
             highlight_edge: self.state.highlight_edge.clone(),
             highlight_vertex: self.state.highlight_vertex.clone(),
             opacity: self.opacity(),
+            section: self.section(),
             tokens,
         };
         // The direct path draws the whole picture, lines included, on the
@@ -1486,7 +1638,7 @@ impl Shell {
         let mut view = None;
         let mut fit = false;
         let bar = egui::Rect::from_min_max(
-            egui::pos2(inner.left(), inner.bottom() - 22.0),
+            egui::pos2(inner.left(), inner.bottom() - tokens.bar_height),
             inner.right_bottom(),
         );
         ui.scope_builder(egui::UiBuilder::new().max_rect(bar), |ui| {
@@ -1523,10 +1675,11 @@ impl Shell {
         let side = tokens
             .view_cube_size
             .min(inner.width())
-            .min(inner.height() - 28.0);
-        if side >= 4.0 * tokens.view_cube_dot {
+            .min(inner.height() - tokens.bar_height - tokens.bar_gap);
+        let cube_shown = side >= 4.0 * tokens.view_cube_dot;
+        if cube_shown {
             let place = egui::Rect::from_min_size(
-                egui::pos2(inner.right() - side, bar.top() - 6.0 - side),
+                egui::pos2(inner.right() - side, bar.top() - tokens.bar_gap - side),
                 egui::vec2(side, side),
             );
             self.view_cube_rect = Some(place);
@@ -1534,6 +1687,21 @@ impl Shell {
         } else {
             self.view_cube_rect = None;
             self.cube_drag_from = None;
+        }
+        // The section, in a row above the bar, beside the view cube.
+        let cube_left = if cube_shown {
+            inner.right() - side - tokens.bar_gap
+        } else {
+            inner.right()
+        };
+        let strip = egui::Rect::from_min_max(
+            egui::pos2(inner.left(), bar.top() - tokens.bar_gap - tokens.bar_height),
+            egui::pos2(cube_left, bar.top() - tokens.bar_gap),
+        );
+        if strip.width() > tokens.slider_width && strip.top() > inner.top() {
+            self.section_control(ui, strip, scene);
+        } else {
+            self.section_hits.clear();
         }
         if let Some(name) = view {
             self.turn = None;
@@ -1543,6 +1711,93 @@ impl Shell {
         }
         if fit || view.is_some() {
             self.fit_to(scene);
+            ui.ctx().request_repaint();
+        }
+    }
+
+    /// The section's controls in `strip`, from the right: the toggle and,
+    /// while the section is on, the axis the plane is across (X, Y, Z),
+    /// a slider that moves the plane across the model's extent, and Flip,
+    /// which keeps the other half. View state, like the camera: they set
+    /// [`UiState::section`], which `ui.set` sets too. They are widgets of
+    /// their own over the viewport: a click on them picks nothing.
+    fn section_control(&mut self, ui: &mut egui::Ui, strip: egui::Rect, scene: Option<&Scene>) {
+        let tokens = self.tokens;
+        let mut section = self.state.section.clone();
+        let range = self.section_cache.as_ref().and_then(|cache| cache.range);
+        // The middle of the model along a base plane's normal: where a
+        // plane that is chosen here starts.
+        let middle = |axis: usize| {
+            scene
+                .and_then(|scene| scene.bbox.corners())
+                .map_or(0.0, |(lo, hi)| {
+                    let (lo, hi) = ([lo.x, lo.y, lo.z], [hi.x, hi.y, hi.z]);
+                    match (lo.get(axis), hi.get(axis)) {
+                        (Some(lo), Some(hi)) => (lo + hi) * 0.5,
+                        _ => 0.0,
+                    }
+                })
+        };
+        let mut hits: Vec<(&'static str, egui::Rect)> = Vec::new();
+        ui.scope_builder(egui::UiBuilder::new().max_rect(strip), |ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let toggle = ui
+                    .add(egui::Button::new("Section").small().selected(section.on))
+                    .on_hover_text("Cut the picture open with a plane, to look inside");
+                hits.push(("toggle", toggle.rect));
+                if toggle.clicked() {
+                    section.on = !section.on;
+                    if section.on && section.plane.is_none() && section.normal.is_none() {
+                        section.plane = Some("xy".to_string());
+                        section.offset = middle(2);
+                    }
+                }
+                if !section.on {
+                    return;
+                }
+                // Right to left, so that they read X, Y, Z.
+                for (label, name, plane, axis) in [
+                    ("Z", "z", "xy", 2),
+                    ("Y", "y", "zx", 1),
+                    ("X", "x", "yz", 0),
+                ] {
+                    let chosen = section.plane.as_deref() == Some(plane);
+                    let button = ui
+                        .add(egui::Button::new(label).small().selected(chosen))
+                        .on_hover_text(format!("Cut across {label}"));
+                    hits.push((name, button.rect));
+                    if button.clicked() && !chosen {
+                        section.plane = Some(plane.to_string());
+                        section.feature = None;
+                        section.point = None;
+                        section.normal = None;
+                        section.offset = middle(axis);
+                    }
+                }
+                if let Some([lo, hi]) = range.filter(|[lo, hi]| lo < hi) {
+                    let mut offset = section.offset.clamp(lo, hi);
+                    ui.spacing_mut().slider_width = tokens.slider_width;
+                    let slider = ui
+                        .add(egui::Slider::new(&mut offset, lo..=hi).show_value(false))
+                        .on_hover_text("Where the plane cuts: across the model");
+                    hits.push(("offset", slider.rect));
+                    if slider.changed() && offset.is_finite() {
+                        section.offset = offset;
+                    }
+                }
+                let flip = ui.small_button("Flip").on_hover_text("Keep the other half");
+                hits.push(("flip", flip.rect));
+                if flip.clicked() {
+                    section.flip = !section.flip;
+                }
+            });
+        });
+        self.section_hits = hits;
+        if section != self.state.section
+            && let Ok(section) = section.validated()
+        {
+            self.state.section = section;
+            self.section_lost = None;
             ui.ctx().request_repaint();
         }
     }
@@ -1844,6 +2099,7 @@ impl Shell {
     /// there is no direct path, or this frame has to be made another way.
     #[cfg(not(target_arch = "wasm32"))]
     fn direct_frame(&mut self, scene: Option<&Scene>, key: &FrameKey) -> bool {
+        let cut = self.section_cut().filter(|_| key.section.is_some());
         let Some(direct) = &mut self.direct else {
             return false;
         };
@@ -1853,6 +2109,7 @@ impl Shell {
             scene,
             key.highlight_edge.as_ref(),
             key.highlight_vertex.as_ref(),
+            cut,
         ));
         let outcome = direct.frame(
             scene,
@@ -1923,6 +2180,7 @@ impl Shell {
             // image can be made would ask for the sharp one every frame.)
             self.scheduler.forget();
         }
+        let cut = self.section_cut().filter(|_| key.section.is_some());
         let job = |quality: Quality| RenderJob {
             scene: scene.cloned(),
             camera: key.camera,
@@ -1934,6 +2192,7 @@ impl Shell {
                 scene.map(Arc::as_ref),
                 key.highlight_edge.as_ref(),
                 key.highlight_vertex.as_ref(),
+                cut.clone(),
             ),
             opacity: key.opacity,
             #[cfg(not(target_arch = "wasm32"))]
@@ -2107,11 +2366,13 @@ const GPU_TARGET_SIDE: u64 = 8192;
 
 /// Paints the overlay, which is in image pixels, into `rect`, which is the
 /// same image in points.
-/// The marks of a highlighted edge and a highlighted vertex.
+/// The marks of a highlighted edge and a highlighted vertex, and the
+/// section the picture is cut open with.
 fn marks_of(
     scene: Option<&Scene>,
     edge: Option<&EdgeRef>,
     vertex: Option<&VertexRef>,
+    cut: Option<viewport::SectionCut>,
 ) -> viewport::Marks {
     let edges = edge.map_or_else(viewport::Marks::default, |edge| {
         viewport::edge_marks(scene, edge)
@@ -2119,7 +2380,10 @@ fn marks_of(
     let vertices = vertex.map_or_else(viewport::Marks::default, |vertex| {
         viewport::vertex_marks(scene, vertex)
     });
-    edges.with(vertices)
+    viewport::Marks {
+        cut,
+        ..edges.with(vertices)
+    }
 }
 
 /// A vertex as a highlight refers to it: by its own name when it has one,

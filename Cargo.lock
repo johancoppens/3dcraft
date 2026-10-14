@@ -470,6 +470,7 @@ dependencies = [
 name = "craft3d-gpu"
 version = "0.0.1"
 dependencies = [
+ "craft3d-kernel",
  "craft3d-math",
  "craft3d-render",
  "craft3d-tess",

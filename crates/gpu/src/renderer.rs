@@ -2,13 +2,14 @@
 //! per-frame numbers.
 
 use crate::GpuError;
+use crate::cut;
 use crate::mesh::{GpuMesh, VERTEX_BYTES};
 use crate::peel;
 use crate::readback;
 use craft3d_math::Bbox3;
 use craft3d_render::{
-    Camera, Frame, MAX_SAMPLES, MAX_SIDE, MAX_SSAA, NO_FACE, Projection, RenderError, RenderParams,
-    SHADE_AMBIENT, SHADE_DIFFUSE, SHADE_HIGHLIGHT_AMBIENT, SHADE_HIGHLIGHT_DIFFUSE,
+    Camera, Cut, Frame, MAX_SAMPLES, MAX_SIDE, MAX_SSAA, NO_FACE, Projection, RenderError,
+    RenderParams, SHADE_AMBIENT, SHADE_DIFFUSE, SHADE_HIGHLIGHT_AMBIENT, SHADE_HIGHLIGHT_DIFFUSE,
     SHADE_SHININESS, SHADE_SPECULAR, ViewAxes,
 };
 use craft3d_tess::Mesh;
@@ -24,9 +25,9 @@ pub(crate) const DATA_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg32Uin
 pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 /// Number of `f32` in the scene uniform block: eight `vec4` for the view
-/// and the shading, one for the highlight's colour, one for its light and
-/// four for its runs of faces.
-pub(crate) const SCENE_FLOATS: usize = 56;
+/// and the shading, one for the highlight's colour, one for its light,
+/// four for its runs of faces and four for the section.
+pub(crate) const SCENE_FLOATS: usize = 72;
 
 /// Face ids are compared as `f32` in the shader: exact below this.
 const MAX_HIGHLIGHT_FACE: u32 = 1 << 24;
@@ -152,13 +153,18 @@ pub(crate) fn scene_uniforms(
     mesh: &GpuMesh,
     camera: &Camera,
     params: &RenderParams,
+    cut: Option<&Cut>,
 ) -> Result<[f32; SCENE_FLOATS], GpuError> {
     let axes = camera.axes()?;
     let perspective = matches!(axes.projection, Projection::Perspective { .. });
     // The same ratio as the CPU renderer's: the supersampled sizes cancel.
     let aspect = f64::from(params.width) / f64::from(params.height);
     let eye = axes.eye - mesh.origin;
-    let (near, far) = depth_range(&axes, &mesh.bounds, perspective);
+    // The cap of a section may lie in the margin around the mesh.
+    let (near, far) = match cut {
+        Some(cut) if cut.cap => depth_range(&axes, &cut::cap_bounds(mesh), perspective),
+        _ => depth_range(&axes, &mesh.bounds, perspective),
+    };
     let depth_scale = if perspective {
         far / (far - near)
     } else {
@@ -181,6 +187,7 @@ pub(crate) fn scene_uniforms(
         }
     }
     let [run0, run1, run2, run3] = runs;
+    let [section, section_cap, section_lo, section_hi] = cut::section_uniforms(mesh, cut);
     let wide = [
         [
             axes.right.x,
@@ -211,6 +218,10 @@ pub(crate) fn scene_uniforms(
         run1,
         run2,
         run3,
+        section,
+        section_cap,
+        section_lo,
+        section_hi,
     ];
     let mut out = [0.0_f32; SCENE_FLOATS];
     for (slot, value) in out.iter_mut().zip(wide.iter().flatten()) {
@@ -247,6 +258,116 @@ pub(crate) struct Targets {
     present_bind: wgpu::BindGroup,
     /// What a see-through picture needs besides; made for the first one.
     peel: Option<PeelTargets>,
+    /// What a cut-open picture needs besides; made for the first one.
+    cut: Option<CutTargets>,
+}
+
+/// The count of a cut-open picture (`cut.rs`), at the size of the samples.
+struct CutTargets {
+    parity: wgpu::TextureView,
+    cap_bind: wgpu::BindGroup,
+    /// The count with the front's depth buffer, for the cap behind the
+    /// front of a see-through picture; made for the first one.
+    cap_behind_bind: Option<wgpu::BindGroup>,
+}
+
+/// The pipelines of a cut-open picture (`cut.rs`), made for the first one.
+struct CutPipelines {
+    /// Counts what is left out.
+    parity: wgpu::RenderPipeline,
+    /// The scene without what is cut away.
+    scene: wgpu::RenderPipeline,
+    /// The cap, also as the front of a see-through picture.
+    cap: wgpu::RenderPipeline,
+    cap_layout: wgpu::BindGroupLayout,
+    /// For a see-through picture; `None` on a device that draws none.
+    peeled: Option<CutPeeled>,
+}
+
+struct CutPeeled {
+    front: wgpu::RenderPipeline,
+    behind: wgpu::RenderPipeline,
+    cap_behind: wgpu::RenderPipeline,
+    cap_behind_layout: wgpu::BindGroupLayout,
+}
+
+impl CutPipelines {
+    fn build(
+        device: &wgpu::Device,
+        scene_layout: &wgpu::BindGroupLayout,
+        peel_layout: Option<&wgpu::BindGroupLayout>,
+    ) -> CutPipelines {
+        let module = cut::module(device, false);
+        let cap_layout = cut::cap_layout(device, false, false);
+        let frame = [target(COLOR_FORMAT), target(DATA_FORMAT)];
+        let parity = cut::pipeline(
+            device,
+            &module,
+            "fs_parity",
+            &[Some(scene_layout)],
+            &[cut::parity_target()],
+            1,
+            false,
+        );
+        let scene = cut::pipeline(
+            device,
+            &module,
+            "fs_main_cut",
+            &[Some(scene_layout)],
+            &frame,
+            1,
+            true,
+        );
+        let cap = cut::pipeline(
+            device,
+            &module,
+            "fs_cap",
+            &[Some(scene_layout), Some(&cap_layout)],
+            &frame,
+            1,
+            true,
+        );
+        let peeled = peel_layout.map(|peel_layout| {
+            let cap_behind_layout = cut::cap_layout(device, false, true);
+            CutPeeled {
+                front: cut::pipeline(
+                    device,
+                    &module,
+                    "fs_front_cut",
+                    &[Some(scene_layout)],
+                    &frame,
+                    1,
+                    true,
+                ),
+                behind: cut::pipeline(
+                    device,
+                    &module,
+                    "fs_behind_cut",
+                    &[Some(scene_layout), Some(peel_layout)],
+                    &[target(COLOR_FORMAT)],
+                    1,
+                    true,
+                ),
+                cap_behind: cut::pipeline(
+                    device,
+                    &module,
+                    "fs_cap_behind",
+                    &[Some(scene_layout), Some(&cap_behind_layout)],
+                    &[target(COLOR_FORMAT)],
+                    1,
+                    true,
+                ),
+                cap_behind_layout,
+            }
+        });
+        CutPipelines {
+            parity,
+            scene,
+            cap,
+            cap_layout,
+            peeled,
+        }
+    }
 }
 
 /// The targets of the layer behind the front one, at the size of the
@@ -278,6 +399,7 @@ pub struct Renderer {
     queue: wgpu::Queue,
     scene_pipeline: wgpu::RenderPipeline,
     scene_uniforms: wgpu::Buffer,
+    scene_layout: wgpu::BindGroupLayout,
     scene_bind: wgpu::BindGroup,
     resolve_pipeline: wgpu::RenderPipeline,
     resolve_layout: wgpu::BindGroupLayout,
@@ -288,6 +410,11 @@ pub struct Renderer {
     targets: Option<Targets>,
     /// What draws a see-through picture, or why this device does not.
     see_through: Result<SeeThrough, String>,
+    /// What draws a cut-open picture, or why this device does not; made
+    /// for the first one.
+    cut: Option<Result<CutPipelines, String>>,
+    /// The triangle of the cap, written every cut-open frame.
+    cap_buffer: wgpu::Buffer,
     /// The buffers frames are read back through, kept between frames.
     staging: Mutex<Option<readback::Staging>>,
     drawn: bool,
@@ -449,12 +576,38 @@ impl Renderer {
     /// Builds the pipelines on `device`. Nothing is drawn or allocated for
     /// an image until the first [`Renderer::draw`].
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Result<Renderer, GpuError> {
-        let (mut renderer, scene_layout) = guarded(device, || Self::build(device, queue))?;
+        let mut renderer = guarded(device, || Self::build(device, queue))?;
         // On its own: a device that cannot do this still draws opaque
         // pictures, and says why when asked for a see-through one.
         renderer.see_through =
-            guarded(device, || SeeThrough::build(device, &scene_layout)).map_err(|e| e.to_string());
+            guarded(device, || SeeThrough::build(device, &renderer.scene_layout))
+                .map_err(|e| e.to_string());
         Ok(renderer)
+    }
+
+    /// As on a device that cannot draw a cut-open picture: one with a
+    /// section is refused from now on ([`GpuError::Section`]). For tests
+    /// of what a caller does then.
+    pub fn without_section(&mut self) {
+        self.cut = Some(Err("it was turned off".to_string()));
+    }
+
+    /// Makes the pipelines of a cut-open picture, once; the error says why
+    /// this device has none.
+    fn ensure_cut(&mut self) -> Result<(), GpuError> {
+        if self.cut.is_none() {
+            let peel_layout = self.see_through.as_ref().ok().map(|s| &s.peel_layout);
+            let built = guarded(&self.device, || {
+                CutPipelines::build(&self.device, &self.scene_layout, peel_layout)
+            })
+            .map_err(|e| e.to_string());
+            self.cut = Some(built);
+        }
+        match &self.cut {
+            Some(Ok(_)) => Ok(()),
+            Some(Err(why)) => Err(GpuError::Section(why.clone())),
+            None => Err(GpuError::NothingDrawn),
+        }
     }
 
     /// As on a device that cannot draw see-through bodies: such a picture
@@ -464,7 +617,7 @@ impl Renderer {
         self.see_through = Err("it was turned off".to_string());
     }
 
-    fn build(device: &wgpu::Device, queue: &wgpu::Queue) -> (Renderer, wgpu::BindGroupLayout) {
+    fn build(device: &wgpu::Device, queue: &wgpu::Queue) -> Renderer {
         let scene_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("craft3d scene"),
             source: wgpu::ShaderSource::Wgsl(include_str!("scene.wgsl").into()),
@@ -592,11 +745,12 @@ impl Renderer {
             entries: &[texture_entry(0, UNFILTERED)],
         });
 
-        let renderer = Renderer {
+        Renderer {
             device: device.clone(),
             queue: queue.clone(),
             scene_pipeline,
             scene_uniforms,
+            scene_layout,
             scene_bind,
             resolve_pipeline,
             resolve_layout,
@@ -606,11 +760,12 @@ impl Renderer {
             present_pipelines: Vec::new(),
             targets: None,
             see_through: Err("it was not set up".to_string()),
+            cut: None,
+            cap_buffer: cut::cap_buffer(device),
             staging: Mutex::new(None),
             drawn: false,
             token: Arc::new(()),
-        };
-        (renderer, scene_layout)
+        }
     }
 
     /// The device this renderer draws on.
@@ -777,11 +932,18 @@ impl Renderer {
         if see_through && let Err(why) = &self.see_through {
             return Err(GpuError::SeeThrough(why.clone()));
         }
-        let scene = scene_uniforms(mesh, camera, params)?;
+        let cut = cut::frame_cut(mesh, params);
+        if cut.is_some() {
+            self.ensure_cut()?;
+        }
+        let scene = scene_uniforms(mesh, camera, params, cut.as_ref())?;
         let device = self.device.clone();
         guarded(&device, || {
             self.ensure_targets(params, see_through);
-            self.encode(mesh, &scene, params, present)
+            if cut.is_some() {
+                self.ensure_cut_targets(see_through);
+            }
+            self.encode(mesh, &scene, params, cut.as_ref(), present)
         })??;
         self.drawn = true;
         Ok(())
@@ -858,6 +1020,40 @@ impl Renderer {
             peel_bind,
             blend_bind,
         });
+    }
+
+    /// The count of a cut-open picture, at the size of the samples, and
+    /// for a see-through one the group of the cap behind the front.
+    fn ensure_cut_targets(&mut self, see_through: bool) {
+        let (Some(targets), Some(Ok(pipelines))) = (&mut self.targets, &self.cut) else {
+            return;
+        };
+        let device = &self.device;
+        if targets.cut.is_none() {
+            let parity = cut::parity_view(
+                device,
+                targets.width.saturating_mul(targets.ssaa),
+                targets.height.saturating_mul(targets.ssaa),
+                1,
+            );
+            let cap_bind = cut::cap_bind(device, &pipelines.cap_layout, None, &parity);
+            targets.cut = Some(CutTargets {
+                parity,
+                cap_bind,
+                cap_behind_bind: None,
+            });
+        }
+        if see_through
+            && let (Some(cut), Some(peeled)) = (&mut targets.cut, &pipelines.peeled)
+            && cut.cap_behind_bind.is_none()
+        {
+            cut.cap_behind_bind = Some(cut::cap_bind(
+                device,
+                &peeled.cap_behind_layout,
+                Some(&targets.samples_depth),
+                &cut.parity,
+            ));
+        }
     }
 
     fn ensure_frame_targets(&mut self, params: &RenderParams) {
@@ -949,6 +1145,7 @@ impl Renderer {
             resolve_bind,
             present_bind,
             peel: None,
+            cut: None,
         });
     }
 
@@ -957,6 +1154,7 @@ impl Renderer {
         mesh: &GpuMesh,
         scene: &[f32; SCENE_FLOATS],
         params: &RenderParams,
+        cut: Option<&Cut>,
         present: Option<(&wgpu::TextureView, wgpu::TextureFormat)>,
     ) -> Result<(), GpuError> {
         let targets = self.targets.as_ref().ok_or(GpuError::NothingDrawn)?;
@@ -1013,6 +1211,33 @@ impl Renderer {
                 pass.draw(0..chunk.vertices, 0..1);
             }
         };
+        // The passes of a cut-open picture, when it is one: its pipelines,
+        // its count and, when the plane has a cap, the cap's triangle.
+        let cut_open = match cut {
+            Some(cut) => {
+                let pipelines = match &self.cut {
+                    Some(Ok(pipelines)) => pipelines,
+                    Some(Err(why)) => return Err(GpuError::Section(why.clone())),
+                    None => return Err(GpuError::NothingDrawn),
+                };
+                let count = targets.cut.as_ref().ok_or(GpuError::NothingDrawn)?;
+                let cap = cut::cap_vertices(mesh, cut);
+                if let Some(bytes) = &cap {
+                    self.queue.write_buffer(&self.cap_buffer, 0, bytes);
+                }
+                Some((pipelines, count, cap.is_some()))
+            }
+            None => None,
+        };
+        if let Some((pipelines, count, true)) = cut_open {
+            cut::count_pass(
+                &mut encoder,
+                &count.parity,
+                &pipelines.parity,
+                &self.scene_bind,
+                mesh,
+            );
+        }
         {
             // The front. Seen through, its alpha says where (0 where
             // nothing is drawn) and its depth is kept for the next pass.
@@ -1039,12 +1264,21 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(match peeled {
-                Some((pipelines, _)) => &pipelines.front_pipeline,
-                None => &self.scene_pipeline,
-            });
+            let front = match (cut_open, peeled) {
+                (Some((cut, ..)), Some(_)) => {
+                    let peeled = cut.peeled.as_ref().ok_or(GpuError::NothingDrawn)?;
+                    &peeled.front
+                }
+                (Some((cut, ..)), None) => &cut.scene,
+                (None, Some((pipelines, _))) => &pipelines.front_pipeline,
+                (None, None) => &self.scene_pipeline,
+            };
+            pass.set_pipeline(front);
             pass.set_bind_group(0, &self.scene_bind, &[]);
             draw_mesh(&mut pass);
+            if let Some((pipelines, count, true)) = cut_open {
+                cut::draw_cap(&mut pass, &pipelines.cap, &count.cap_bind, &self.cap_buffer);
+            }
         }
         if let Some((pipelines, peel)) = peeled {
             // The surface behind the front one.
@@ -1063,10 +1297,21 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&pipelines.behind_pipeline);
+            let cut_peeled = match cut_open {
+                Some((cut, ..)) => Some(cut.peeled.as_ref().ok_or(GpuError::NothingDrawn)?),
+                None => None,
+            };
+            pass.set_pipeline(cut_peeled.map_or(&pipelines.behind_pipeline, |cut| &cut.behind));
             pass.set_bind_group(0, &self.scene_bind, &[]);
             pass.set_bind_group(1, &peel.peel_bind, &[]);
             draw_mesh(&mut pass);
+            if let (Some(cut_peeled), Some((_, count, true))) = (cut_peeled, cut_open) {
+                let bind = count
+                    .cap_behind_bind
+                    .as_ref()
+                    .ok_or(GpuError::NothingDrawn)?;
+                cut::draw_cap(&mut pass, &cut_peeled.cap_behind, bind, &self.cap_buffer);
+            }
         }
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

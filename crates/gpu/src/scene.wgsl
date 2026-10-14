@@ -29,6 +29,17 @@ struct Scene {
     // as first and last. A run whose first is above its last is empty.
     // Ids as floats: the renderer refuses a highlight above 2^24.
     runs: array<vec4<f32>, 4>,
+    // The section plane (`cut.wgsl`). xyz: its unit normal, into the half
+    // that is cut away. w: its offset along the normal from the mesh
+    // origin.
+    section: vec4<f32>,
+    // rgb: the colour of the cap, as bytes over 255. w: how near to the
+    // plane a triangle parallel to it lies in it (`Cut::snap`).
+    section_cap: vec4<f32>,
+    // xyz: the corners of the box the cap is drawn in, relative to the
+    // mesh origin.
+    section_lo: vec4<f32>,
+    section_hi: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> scene: Scene;
@@ -58,8 +69,7 @@ struct VertexOut {
     @location(4) dist_w: f32,
 }
 
-@vertex
-fn vs_main(in: VertexIn) -> VertexOut {
+fn vertex(in: VertexIn) -> VertexOut {
     var out: VertexOut;
     // View::project: rel = p - eye, then the three dot products.
     let rel = in.position - scene.eye.xyz;
@@ -85,6 +95,11 @@ fn vs_main(in: VertexIn) -> VertexOut {
     out.flat_normal = in.flat_normal;
     out.face = in.face;
     return out;
+}
+
+@vertex
+fn vs_main(in: VertexIn) -> VertexOut {
+    return vertex(in);
 }
 
 struct FragmentOut {
