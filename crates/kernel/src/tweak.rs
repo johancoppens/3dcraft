@@ -187,7 +187,7 @@ fn meet(surfaces: &[&Surface], start: Vec3, tol: f64) -> Option<Vec3> {
 }
 
 /// The angle nearest `near` that is `angle` up to whole turns.
-fn unwrapped(angle: f64, near: f64) -> f64 {
+pub(crate) fn unwrapped(angle: f64, near: f64) -> f64 {
     let mut difference = (angle - near) % TAU;
     if difference > PI {
         difference -= TAU;
@@ -365,7 +365,7 @@ fn sampled(body: &Body, edge: EdgeId) -> Vec<Vec3> {
 }
 
 /// The points of a loop in order, each edge in the loop's direction.
-fn loop_points(body: &Body, loop_: craft3d_topo::LoopId) -> Vec<Vec3> {
+pub(crate) fn loop_points(body: &Body, loop_: craft3d_topo::LoopId) -> Vec<Vec3> {
     let mut points = Vec::new();
     for coedge in body.loop_(loop_).into_iter().flat_map(|l| &l.coedges) {
         let mut along = sampled(body, coedge.edge);
@@ -511,6 +511,21 @@ pub(crate) fn resurface(
     operation: &'static str,
     tolerance: &Tolerance,
 ) -> Result<Body, TweakError> {
+    resurface_at(body, surfaces, &BTreeSet::new(), operation, tolerance)
+}
+
+/// [`resurface`], with the vertices of `also` found again too, although
+/// none of their faces has a new surface: the vertices a change of
+/// topology put where they do not lie yet (delete face merges the two
+/// ends of a strip into one vertex, which lies where the faces round it
+/// meet). The edges that end in them are made again likewise.
+pub(crate) fn resurface_at(
+    body: &Body,
+    surfaces: &BTreeMap<FaceId, Surface>,
+    also: &BTreeSet<VertexId>,
+    operation: &'static str,
+    tolerance: &Tolerance,
+) -> Result<Body, TweakError> {
     let tol = tolerance.linear;
     let uses = edge_faces(body);
     let mut made = body.clone();
@@ -537,10 +552,10 @@ pub(crate) fn resurface(
     }
     let mut moved_vertices: BTreeSet<VertexId> = BTreeSet::new();
     for (index, faces) in around.iter().enumerate() {
-        if !faces.iter().any(|face| surfaces.contains_key(face)) {
+        let vertex = VertexId(index_u32(index));
+        if !(also.contains(&vertex) || faces.iter().any(|face| surfaces.contains_key(face))) {
             continue;
         }
-        let vertex = VertexId(index_u32(index));
         let Some(was) = body.vertex(vertex).map(|v| v.point) else {
             continue;
         };
