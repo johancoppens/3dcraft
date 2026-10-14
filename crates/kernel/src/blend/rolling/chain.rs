@@ -91,6 +91,23 @@ pub(super) struct Chain {
     pub pieces: Vec<Piece>,
     pub joints: Vec<Joint>,
     pub closed: bool,
+    /// For an open chain, the meet (an index into the meets of
+    /// [`group`]) at its start and at its end, where there is one.
+    pub meets: [Option<usize>; 2],
+}
+
+/// Two blended edges that end in one vertex without going on into each
+/// other, the vertex's third edge left sharp (the tip of a blade: the
+/// rims of its tip face meet at its leading edge). See [`meet`].
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Meet {
+    pub vertex: VertexId,
+    /// The two requests.
+    pub items: [usize; 2],
+    /// The face both edges lie on.
+    pub shared: FaceId,
+    /// The vertex's third edge, between the other faces of the two.
+    pub third: EdgeId,
 }
 
 /// The shape of a request's blend, with a chamfer's distances in the
@@ -312,14 +329,14 @@ impl Around<'_> {
 
 /// The requests grouped into chains of edges that go on smoothly into
 /// each other (a request on its own is a chain of one), in the order of
-/// their first requests. Blended edges that meet in any other way are
-/// refused.
+/// their first requests, and the meets of chains that end in one vertex
+/// at an angle. Blended edges that meet in any other way are refused.
 pub(super) fn group(
     body: &Body,
     uses: &[Vec<Use>],
     items: &[Item],
     tolerance: &Tolerance,
-) -> Result<Vec<Chain>, BlendError> {
+) -> Result<(Vec<Chain>, Vec<Meet>), BlendError> {
     let edge_of = |i: usize| -> Result<&Edge, BlendError> {
         let item = items.get(i).ok_or_else(lost)?;
         body.edge(item.request.edge).ok_or_else(lost)
@@ -339,14 +356,37 @@ pub(super) fn group(
             return Err(refused(edge, Reason::FreeMeet));
         }
     }
+    let at = vertex_edges(body);
+    // Two requests at a vertex go on into each other (a joint) or meet
+    // there at an angle.
+    let mut meets = Vec::new();
+    let mut linked: BTreeMap<VertexId, [usize; 2]> = BTreeMap::new();
+    for (vertex, list) in &meeting {
+        let [a, b] = list.as_slice() else { continue };
+        let leaving = |i: usize| -> Result<Option<Vec3>, BlendError> {
+            let data = edge_of(i)?;
+            Ok(direction(data, data.start == *vertex, false))
+        };
+        let tangent = match (leaving(*a)?, leaving(*b)?) {
+            (Some(da), Some(db)) => {
+                let cosine = (-da.dot(db)).clamp(-1.0, 1.0);
+                cosine > 1.0 - 1e-9 || cosine.acos() <= tolerance.angular
+            }
+            _ => false,
+        };
+        if tangent {
+            linked.insert(*vertex, [*a, *b]);
+        } else {
+            meets.push(meet(body, uses, &at, items, *vertex, [*a, *b])?);
+        }
+    }
     let partner = |i: usize, vertex: VertexId| -> Option<usize> {
-        match meeting.get(&vertex)?.as_slice() {
+        match linked.get(&vertex)? {
             [a, b] if *a == i => Some(*b),
             [a, b] if *b == i => Some(*a),
             _ => None,
         }
     };
-    let at = vertex_edges(body);
     let around = Around {
         body,
         uses,
@@ -364,7 +404,7 @@ pub(super) fn group(
         if data.start == data.end {
             // A ring: on its own (another request at its vertex would have
             // two partners there, or meet it).
-            if partner(first, data.start).is_some() {
+            if meeting.get(&data.start).is_some_and(|l| l.len() > 1) {
                 let edge = items.get(first).ok_or_else(lost)?.request.edge;
                 return Err(refused(edge, Reason::FreeMeet));
             }
@@ -433,13 +473,92 @@ pub(super) fn group(
             }
             piece = next_piece;
         }
+        // The meets at the ends of an open chain.
+        let mut ends = [None, None];
+        if !closed {
+            let (Some(head), Some(tail)) = (pieces.first(), pieces.last()) else {
+                return Err(lost());
+            };
+            let at_vertex = [
+                (head.item, vertex_of(edge_of(head.item)?, head.forward, false)),
+                (tail.item, vertex_of(edge_of(tail.item)?, tail.forward, true)),
+            ];
+            for (slot, (item, vertex)) in ends.iter_mut().zip(at_vertex) {
+                *slot = meets
+                    .iter()
+                    .position(|m: &Meet| m.vertex == vertex && m.items.contains(&item));
+            }
+        }
         chains.push(Chain {
             pieces,
             joints,
             closed,
+            meets: ends,
         });
     }
-    Ok(chains)
+    Ok((chains, meets))
+}
+
+/// The meet of the requests `pair` at `vertex`, or the refusal: the
+/// vertex has three edges and three faces, the two edges share one face,
+/// all three edges turn the same way (all convex or all concave) and the
+/// two are filleted with one radius.
+fn meet(
+    body: &Body,
+    uses: &[Vec<Use>],
+    at: &[Vec<EdgeId>],
+    items: &[Item],
+    vertex: VertexId,
+    pair: [usize; 2],
+) -> Result<Meet, BlendError> {
+    let [a, b] = pair;
+    let (ia, ib) = (
+        items.get(a).ok_or_else(lost)?,
+        items.get(b).ok_or_else(lost)?,
+    );
+    let refuse_meet = || refused(ib.request.edge, Reason::FreeMeet);
+    let edges = at.get(vertex.0 as usize).ok_or_else(lost)?;
+    let [x, y, z] = edges.as_slice() else {
+        return Err(refuse_meet());
+    };
+    let third = [*x, *y, *z]
+        .into_iter()
+        .find(|e| *e != ia.request.edge && *e != ib.request.edge)
+        .ok_or_else(refuse_meet)?;
+    let shared: Vec<FaceId> = ia
+        .faces
+        .iter()
+        .copied()
+        .filter(|f| ib.faces.contains(f))
+        .collect();
+    let [shared] = shared.as_slice() else {
+        return Err(refuse_meet());
+    };
+    let other = |item: &Item| item.faces.iter().copied().find(|f| f != shared);
+    let (Some(fa), Some(fb)) = (other(ia), other(ib)) else {
+        return Err(refuse_meet());
+    };
+    let Some(third_faces) = faces_of(uses, third) else {
+        return Err(refuse_meet());
+    };
+    let turn = across(body, uses, third)?.map(|t| t.turn);
+    let same = match (ia.convex, ib.convex, turn) {
+        (true, true, Some(Turn::Convex)) | (false, false, Some(Turn::Concave)) => true,
+        _ => false,
+    };
+    let radii = match (ia.request.size, ib.request.size) {
+        (Size::Radius(p), Size::Radius(q)) => (p - q).abs() <= 1e-12 * p.abs().max(q.abs()),
+        _ => false,
+    };
+    if !(third_faces.contains(&fa) && third_faces.contains(&fb) && same && radii) {
+        return Err(refuse_meet());
+    }
+    Ok(Meet {
+        vertex,
+        items: pair,
+        shared: *shared,
+        third,
+    })
 }
 
 /// A section's curve as an edge's: the rational quadratic arc of a ball
@@ -619,10 +738,29 @@ struct EndMade {
     at: [f64; 2],
 }
 
+/// How an open chain ends at one of its ends: cut by the third face
+/// there, or at a meet with another blend, which trims it later
+/// ([`meet`]); `range` is where along the face that trim is looked for
+/// (from a few radii before the vertex to the last ball, out of the far
+/// face).
+enum EndKind {
+    Third(EndMade),
+    Meet { meet: usize, range: (f64, f64) },
+}
+
 struct Computed {
     pieces: Vec<PieceMade>,
     joints: Vec<JointMade>,
-    ends: Option<[EndMade; 2]>,
+    ends: Option<[EndKind; 2]>,
+}
+
+/// What a meet gives the end of a chain: the vertices where the borders
+/// end (per side of the face) and the edges from the first to the second
+/// (each with whether it runs that way against its curve).
+#[derive(Clone, Debug)]
+pub(super) struct MeetEnd {
+    corners: [VertexId; 2],
+    edges: Vec<(EdgeId, bool)>,
 }
 
 fn sides_of<'a>(body: &'a Body, faces: [FaceId; 2]) -> Result<[Side<'a>; 2], BlendError> {
@@ -925,9 +1063,9 @@ fn compute(
                         span.1 = *s;
                     }
                 }
-                done.push(EndMade { end, cut, at });
+                done.push(EndKind::Third(EndMade { end, cut, at }));
             }
-            let [a, b] = <[EndMade; 2]>::try_from(done).map_err(|_| lost())?;
+            let [a, b] = <[EndKind; 2]>::try_from(done).map_err(|_| lost())?;
             Some([a, b])
         }
     };
@@ -962,11 +1100,35 @@ pub(super) fn build(
     items: &[Item],
     tolerance: &Tolerance,
 ) -> Result<Vec<(FaceId, usize)>, BlendError> {
-    let computed = match chain.pieces.first().ok_or_else(lost)?.shape {
-        Shape::Ball { .. } => along_spine(body, chain, items, tolerance)?,
-        Shape::Cut { .. } => compute(body, chain, items, tolerance)?,
-    };
-    let made = splice_chain(body, chain, computed, tolerance)?;
+    let computed = prepare(body, chain, items, &[], tolerance)?;
+    finish(body, chain, computed, [None, None], tolerance)
+}
+
+/// Works out the blend faces of `chain` on `body` (not changed yet): the
+/// ends at meets are left for [`meet`] to trim.
+fn prepare(
+    body: &Body,
+    chain: &Chain,
+    items: &[Item],
+    meets: &[Meet],
+    tolerance: &Tolerance,
+) -> Result<Computed, BlendError> {
+    match chain.pieces.first().ok_or_else(lost)?.shape {
+        Shape::Ball { .. } => along_spine(body, chain, items, meets, tolerance),
+        Shape::Cut { .. } => compute(body, chain, items, tolerance),
+    }
+}
+
+/// Puts the worked-out blend faces of `chain` into `body` (with what the
+/// meets give its ends) and measures them.
+fn finish(
+    body: &mut Body,
+    chain: &Chain,
+    computed: Computed,
+    meet_ends: [Option<MeetEnd>; 2],
+    tolerance: &Tolerance,
+) -> Result<Vec<(FaceId, usize)>, BlendError> {
+    let made = splice_chain(body, chain, computed, meet_ends, tolerance)?;
     let shape = chain.pieces.first().ok_or_else(lost)?.shape;
     let mut faces = Vec::with_capacity(made.len());
     for (piece, (face, second_border)) in chain.pieces.iter().zip(&made) {
@@ -1041,6 +1203,7 @@ fn splice_chain(
     body: &mut Body,
     chain: &Chain,
     computed: Computed,
+    meet_ends: [Option<MeetEnd>; 2],
     tolerance: &Tolerance,
 ) -> Result<Vec<(FaceId, EdgeId)>, BlendError> {
     let tol = tolerance.linear;
@@ -1110,13 +1273,28 @@ fn splice_chain(
     // The ends of an open chain.
     let mut end_vertices = Vec::with_capacity(2);
     if let Some(ends) = &ends {
-        for (index, em) in ends.iter().enumerate() {
-            let piece = if index == 0 { 0 } else { n - 1 };
-            let faces = pieces.get(piece).ok_or_else(lost)?.faces;
-            let [b1, b2] = borders.get(piece).ok_or_else(lost)?;
-            let [s1, s2] = em.at;
-            let added = cut_back(body, &em.end, faces, [b1.eval(s1), b2.eval(s2)], tol, &too_large)?;
-            end_vertices.push([em.end.vertex, added]);
+        for (index, kind) in ends.iter().enumerate() {
+            match kind {
+                EndKind::Third(em) => {
+                    let piece = if index == 0 { 0 } else { n - 1 };
+                    let faces = pieces.get(piece).ok_or_else(lost)?.faces;
+                    let [b1, b2] = borders.get(piece).ok_or_else(lost)?;
+                    let [s1, s2] = em.at;
+                    let added = cut_back(
+                        body,
+                        &em.end,
+                        faces,
+                        [b1.eval(s1), b2.eval(s2)],
+                        tol,
+                        &too_large,
+                    )?;
+                    end_vertices.push([em.end.vertex, added]);
+                }
+                EndKind::Meet { .. } => {
+                    let given = meet_ends.get(index).and_then(Option::as_ref).ok_or_else(lost)?;
+                    end_vertices.push(given.corners);
+                }
+            }
         }
     }
     let start_of = |i: usize| -> Option<[VertexId; 2]> {
@@ -1171,20 +1349,30 @@ fn splice_chain(
             },
         )?);
     }
-    let mut cut_edges = Vec::with_capacity(2);
+    // Per open end, the edges from the first side's corner to the
+    // second's: the cut, or what the meet gives.
+    let mut cut_edges: Vec<Vec<(EdgeId, bool)>> = Vec::with_capacity(2);
     if let Some(ends) = &ends {
-        for (em, [v0, v1]) in ends.iter().zip(&end_vertices) {
-            let id = new_edge(
-                body,
-                Edge {
-                    curve: Curve3::Nurbs(em.cut.clone()),
-                    range: (0.0, 1.0),
-                    start: *v0,
-                    end: *v1,
-                },
-            )?;
-            insert_cut(body, &em.end, id, *v1)?;
-            cut_edges.push(id);
+        for (index, (kind, [v0, v1])) in ends.iter().zip(&end_vertices).enumerate() {
+            match kind {
+                EndKind::Third(em) => {
+                    let id = new_edge(
+                        body,
+                        Edge {
+                            curve: Curve3::Nurbs(em.cut.clone()),
+                            range: (0.0, 1.0),
+                            start: *v0,
+                            end: *v1,
+                        },
+                    )?;
+                    insert_cut(body, &em.end, id, *v1)?;
+                    cut_edges.push(vec![(id, false)]);
+                }
+                EndKind::Meet { .. } => {
+                    let given = meet_ends.get(index).and_then(Option::as_ref).ok_or_else(lost)?;
+                    cut_edges.push(given.edges.clone());
+                }
+            }
         }
     }
     // The faces beside the chain: the second side uses the second border
@@ -1229,37 +1417,42 @@ fn splice_chain(
         .ok_or_else(lost)?;
     let mut faces = Vec::with_capacity(n);
     for (i, (piece, m)) in pieces.iter().zip(made).enumerate() {
-        let start_edge = if i == 0 && !chain.closed {
-            cut_edges.first().copied()
+        // From the first side's corner to the second's, at the start and
+        // at the end of the face.
+        let start_edges: Vec<(EdgeId, bool)> = if i == 0 && !chain.closed {
+            cut_edges.first().cloned()
         } else {
-            joint_edges.get((i + n - 1) % n).copied()
+            joint_edges.get((i + n - 1) % n).map(|e| vec![(*e, false)])
         }
         .ok_or_else(lost)?;
-        let finish_edge = if i + 1 == n && !chain.closed {
-            cut_edges.get(1).copied()
+        let finish_edges: Vec<(EdgeId, bool)> = if i + 1 == n && !chain.closed {
+            cut_edges.get(1).cloned()
         } else {
-            joint_edges.get(i).copied()
+            joint_edges.get(i).map(|e| vec![(*e, false)])
         }
         .ok_or_else(lost)?;
         let second_border = *second_borders.get(i).ok_or_else(lost)?;
         let reversed_first = *first_reversed.get(i).ok_or_else(lost)?;
         let coedge = |edge: EdgeId, reversed: bool| Coedge { edge, reversed };
-        let coedges = if reversed_first {
-            // The first face runs the border backwards: this face forwards.
-            vec![
-                coedge(piece.edge, false),
-                coedge(finish_edge, false),
-                coedge(second_border, true),
-                coedge(start_edge, true),
-            ]
-        } else {
-            vec![
-                coedge(piece.edge, true),
-                coedge(start_edge, false),
-                coedge(second_border, false),
-                coedge(finish_edge, true),
-            ]
+        let forwards = |list: &[(EdgeId, bool)]| -> Vec<Coedge> {
+            list.iter().map(|(e, r)| coedge(*e, *r)).collect()
         };
+        let backwards = |list: &[(EdgeId, bool)]| -> Vec<Coedge> {
+            list.iter().rev().map(|(e, r)| coedge(*e, !*r)).collect()
+        };
+        let mut coedges = Vec::with_capacity(4 + start_edges.len() + finish_edges.len());
+        if reversed_first {
+            // The first face runs the border backwards: this face forwards.
+            coedges.push(coedge(piece.edge, false));
+            coedges.extend(forwards(&finish_edges));
+            coedges.push(coedge(second_border, true));
+            coedges.extend(backwards(&start_edges));
+        } else {
+            coedges.push(coedge(piece.edge, true));
+            coedges.extend(forwards(&start_edges));
+            coedges.push(coedge(second_border, false));
+            coedges.extend(backwards(&finish_edges));
+        }
         let ring = LoopId(u32::try_from(body.loops.len()).map_err(|_| lost())?);
         body.loops.push(Loop { coedges });
         let PieceMade {
@@ -1466,6 +1659,7 @@ fn along_spine(
     body: &Body,
     chain: &Chain,
     items: &[Item],
+    meets: &[Meet],
     tolerance: &Tolerance,
 ) -> Result<Computed, BlendError> {
     let tol = tolerance.linear;
@@ -1571,13 +1765,32 @@ fn along_spine(
             *datas.first().ok_or_else(lost)?,
             *datas.last().ok_or_else(lost)?,
         );
+        let [at_start, at_end] = chain.meets;
+        let ending = |piece: &Piece, data: &Edge, at_end: bool, meet: Option<usize>| {
+            match meet {
+                Some(index) => {
+                    let found = meets.get(index).ok_or_else(lost)?;
+                    let [x, y] = faces_of(&super::super::edge_uses(body), found.third)
+                        .ok_or_else(lost)?;
+                    let far = if piece.faces.contains(&x) { y } else { x };
+                    Ok(Ending::Meet { meet: index, far })
+                }
+                None => end_at(
+                    body,
+                    piece.edge,
+                    piece.faces,
+                    vertex_of(data, piece.forward, at_end),
+                )
+                .map(Ending::Third),
+            }
+        };
         Some([
-            end_at(body, first.edge, first.faces, vertex_of(fd, first.forward, false))?,
-            end_at(body, last.edge, last.faces, vertex_of(ld, last.forward, true))?,
+            ending(&first, fd, false, at_start)?,
+            ending(&last, ld, true, at_end)?,
         ])
     };
-    let third_of = |end: &End| -> Result<Side<'_>, BlendError> {
-        let face = body.face(end.third).ok_or_else(lost)?;
+    let third_of = |end: &Ending| -> Result<Side<'_>, BlendError> {
+        let face = body.face(end.third()).ok_or_else(lost)?;
         Ok(Side {
             surface: &face.surface,
             reversed: face.reversed,
@@ -1625,7 +1838,7 @@ fn along_spine(
                 most_out,
                 tol,
             )
-            .ok_or_else(|| refuse(edge, Some(end.third), Reason::FreeEnd))?;
+            .ok_or_else(|| refuse(edge, Some(end.third()), Reason::FreeEnd))?;
             list.extend(walked.balls);
             break;
         }
@@ -1700,7 +1913,7 @@ fn along_spine(
             most_out,
             tol,
         )
-        .ok_or_else(|| refuse(edge, Some(end.third), Reason::FreeEnd))?;
+        .ok_or_else(|| refuse(edge, Some(end.third()), Reason::FreeEnd))?;
         walked.balls
     };
     {
@@ -1790,9 +2003,22 @@ fn along_spine(
             let mut done = Vec::with_capacity(2);
             for (index, end) in [start, finish].into_iter().enumerate() {
                 let piece = if index == 0 { 0 } else { n - 1 };
+                let range = *cut_ranges.get(index).ok_or_else(lost)?;
+                let end = match end {
+                    Ending::Meet { meet, .. } => {
+                        done.push(EndKind::Meet { meet, range });
+                        continue;
+                    }
+                    Ending::Third(end) => end,
+                };
                 let surface = &made.get(piece).ok_or_else(lost)?.surface;
-                let (inner, outer) = *cut_ranges.get(index).ok_or_else(lost)?;
-                let (cut, at) = cut_curve(surface, third_of(&end)?, inner, outer, limit, scale)
+                let (inner, outer) = range;
+                let third = body.face(end.third).ok_or_else(lost)?;
+                let side = Side {
+                    surface: &third.surface,
+                    reversed: third.reversed,
+                };
+                let (cut, at) = cut_curve(surface, side, inner, outer, limit, scale)
                     .ok_or_else(|| {
                         refuse(
                             pieces.get(piece).map_or(edge, |p| p.edge),
@@ -1809,9 +2035,9 @@ fn along_spine(
                         span.1 = *s;
                     }
                 }
-                done.push(EndMade { end, cut, at });
+                done.push(EndKind::Third(EndMade { end, cut, at }));
             }
-            let [a, b] = <[EndMade; 2]>::try_from(done).map_err(|_| lost())?;
+            let [a, b] = <[EndKind; 2]>::try_from(done).map_err(|_| lost())?;
             Some([a, b])
         }
     };
@@ -1836,6 +2062,24 @@ fn along_spine(
         joints,
         ends,
     })
+}
+
+/// How an open chain ends, before it is cut: at a corner of three faces,
+/// or at a meet, running on past the vertex out of the far face (the
+/// other blended edge's other face).
+enum Ending {
+    Third(End),
+    Meet { meet: usize, far: FaceId },
+}
+
+impl Ending {
+    /// The face the blend runs out of past the vertex.
+    fn third(&self) -> FaceId {
+        match self {
+            Ending::Third(end) => end.third,
+            Ending::Meet { far, .. } => *far,
+        }
+    }
 }
 
 /// The length of the path through the balls' centres.

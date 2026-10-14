@@ -1892,9 +1892,15 @@ pub(super) fn blend(
     }
     // Edges that go on into each other are blended as one chain; no
     // other two may share a vertex.
-    let chains = chain::group(body, &uses, &items, tolerance)?;
+    let (chains, meets) = chain::group(body, &uses, &items, tolerance)?;
     let mut out = body.clone();
     let mut blends = Vec::with_capacity(requests.len());
+    if !meets.is_empty() {
+        // Not built yet.
+        let first = meets.first().ok_or_else(lost)?;
+        let edge = items.get(first.items[1]).ok_or_else(lost)?.request.edge;
+        return Err(refused(edge, Reason::FreeMeet));
+    }
     for found in &chains {
         if let ([piece], []) = (found.pieces.as_slice(), found.joints.as_slice()) {
             let item = items.get(piece.item).ok_or_else(lost)?;
