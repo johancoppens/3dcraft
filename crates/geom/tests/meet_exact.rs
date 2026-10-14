@@ -572,3 +572,119 @@ fn hostile_input_is_an_error() {
         assert!(meet_surfaces(&a, &b, &within, &angular).is_err());
     }
 }
+
+/// A cylinder that goes on in a torus (the tube's radius, its axis tangent
+/// to the tube's middle circle): tangent along the circle they share, and
+/// crossing in a closed curve through the top and bottom of that circle.
+/// In the frame at the place of contact (x along the cylinder, y to the
+/// torus' centre, z along its axis) the second curve is `x² = 4 R y`,
+/// `y² + z² = r²`, which the test holds the points to; that nothing is
+/// missing is checked against a scan of the cylinder for changes of sign
+/// of the torus' own equation.
+#[test]
+fn a_cylinder_that_goes_on_in_a_torus() {
+    for setup in setups() {
+        let (s, f) = (setup.s, &setup.f);
+        for (major, minor, turn) in [(4.0, 1.0, 0.7_f64), (0.7, 0.3, 2.9), (25.0, 0.5, -1.3)] {
+            let (major, minor) = (major * s, minor * s);
+            let ring = torus(*f, major, minor);
+            let at = f.point(major * turn.cos(), major * turn.sin(), 0.0);
+            let along = f.vector(-turn.sin(), turn.cos(), 0.0);
+            let inward = f.vector(-turn.cos(), -turn.sin(), 0.0);
+            let lying = Frame::new(at - along * (3.0 * s), along, f.z()).unwrap();
+            let rod = cylinder(lying, minor);
+            let m = meeting(setup.meet(&rod, &ring));
+            assert!(m.points.is_empty());
+            assert_eq!(m.curves.len(), 4, "{m:?}");
+            let (top, bottom) = (at + f.z() * minor, at - f.z() * minor);
+            let local = |p: Vec3| {
+                (
+                    (p - at).dot(along),
+                    (p - at).dot(inward),
+                    (p - at).dot(f.z()),
+                )
+            };
+            let (mut halves, mut lobes) = (0, 0);
+            for curve in &m.curves {
+                // Each runs between the top and the bottom of the circle.
+                let (a, b) = (start(curve), end(curve));
+                let ends = a.distance(top).min(a.distance(bottom))
+                    + b.distance(top).min(b.distance(bottom));
+                assert!(ends <= 1e-9 * s && a.distance(b) > minor, "{curve:?}");
+                assert!(!curve.closed);
+                if curve.tangent {
+                    halves += 1;
+                    let Curve3::Circle(circle) = &curve.curve else {
+                        panic!("expected a circle, got {curve:?}");
+                    };
+                    assert!(circle.frame().origin().distance(at) <= 1e-9 * s);
+                    assert!((circle.radius() - minor).abs() <= 1e-12 * s);
+                    for p in samples(curve, 16) {
+                        assert!(local(p).0.abs() <= 1e-9 * s);
+                    }
+                } else {
+                    lobes += 1;
+                    assert!(!curve.exact);
+                    let side = local(samples(curve, 2)[1]).0;
+                    for p in samples(curve, 400) {
+                        let (x, y, z) = local(p);
+                        let near = setup.t.linear;
+                        assert!(x * side >= -near, "a lobe stays on its side");
+                        assert!((x * x - 4.0 * major * y).abs() <= 8.0 * major.max(x.abs()) * near);
+                        assert!((y * y + z * z - minor * minor).abs() <= 4.0 * minor * near);
+                    }
+                }
+            }
+            assert_eq!((halves, lobes), (2, 2));
+            // Nothing missing: every place where the torus' equation
+            // changes sign along a grid on the cylinder is on a curve.
+            let lines = Lines::of(&m, 4000);
+            let value = |x: f64, angle: f64| {
+                let p = at + along * x + (inward * angle.cos() + f.z() * angle.sin()) * minor;
+                let q = p - f.origin();
+                let h = q.dot(f.z());
+                let rho = (q - f.z() * h).length();
+                (rho - major).hypot(h) - minor
+            };
+            let reach = 2.5 * (major * minor).sqrt();
+            let mut found = 0;
+            for i in 0..=96 {
+                let angle = TAU * (f64::from(i) + 0.37) / 97.0;
+                for k in 0..200 {
+                    let (mut lo, mut hi) = (
+                        -reach + 2.0 * reach * f64::from(k) / 200.0,
+                        -reach + 2.0 * reach * f64::from(k + 1) / 200.0,
+                    );
+                    let (below, above) = (value(lo, angle), value(hi, angle));
+                    if (below < 0.0) == (above < 0.0) {
+                        continue;
+                    }
+                    for _ in 0..60 {
+                        let mid = 0.5 * (lo + hi);
+                        if (value(mid, angle) < 0.0) == (below < 0.0) {
+                            lo = mid;
+                        } else {
+                            hi = mid;
+                        }
+                    }
+                    let p = at + along * lo + (inward * angle.cos() + f.z() * angle.sin()) * minor;
+                    assert!(lines.distance(p) <= 1e-3 * s, "a crossing off every curve");
+                    found += 1;
+                }
+            }
+            assert!(found >= 90, "the scan found {found} crossings");
+            // In a box that cuts the second curve, pieces of it.
+            let small = cube(top, 0.5 * minor);
+            let cut = meeting(meet_surfaces(&rod, &ring, &small, &setup.t).unwrap());
+            check_meeting(&cut, &rod, &ring, &small, &setup.t);
+            assert_eq!(cut.curves.len(), 4, "{cut:?}");
+            // A rod that is a hair too thick is not this case.
+            let thick = cylinder(lying, minor + 3.0 * setup.t.linear);
+            if let Ok(SurfaceMeeting::Meets(other)) =
+                meet_surfaces(&thick, &ring, &setup.within, &setup.t)
+            {
+                assert!(other.curves.iter().all(|c| !c.tangent), "{other:?}");
+            }
+        }
+    }
+}

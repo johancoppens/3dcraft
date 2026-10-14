@@ -1283,55 +1283,98 @@ fn bad_requests_are_errors() {
     }
 }
 
-/// What the boolean kernel refuses of fillets, kept as the smallest case:
-/// a quarter cylinder that goes on in a quarter torus across the border
-/// the two faces share, as the fillets of a straight edge and of the arc
-/// it continues in do along the rim of a slot. The two surfaces are
-/// tangent along that border (a circle), and beyond it they cross in a
-/// second curve that leaves the border at its end. `fillet` does not ask
-/// this of the boolean: it joins the tools of such edges into one tool
-/// first (`blend::join`). When the boolean takes it, the join can go.
+/// The contact fillets make where one goes on in the next, kept as the
+/// smallest case: a quarter cylinder that continues in a quarter torus
+/// across the border the two faces share, as the fillets of a straight
+/// edge and of the arc it continues in do along the rim of a slot. The two
+/// surfaces are tangent along that border (a circle), and beyond it they
+/// cross in a second curve that leaves the border at its end
+/// (`geom::intersect` has both in closed form since 2026-10-14; the
+/// boolean refused the pair before). `fillet` does not ask this of the
+/// boolean yet: it joins the tools of such edges into one tool first
+/// (`blend::join`), a step that can go now.
+///
+/// The bar with its rounded edge and the tool of the arc's fillet share
+/// that quarter circle where the tool starts, and half a turn on the tool
+/// ends flat against the bar's end, so the union is both in one piece
+/// (less that end, twice) and the difference is the bar; the volumes are
+/// closed forms (the tool's by Pappus: half a turn of the corner a round
+/// of radius r leaves).
 #[test]
-#[ignore = "refused by the boolean: surfaces that touch along a curve, or with more than second-order contact, without a closed form"]
-fn a_cylinder_that_goes_on_in_a_torus_is_a_contact_the_boolean_refuses() {
+fn a_cylinder_that_goes_on_in_a_torus_touches_it_along_their_border() {
     use craft3d_kernel::revolve::revolve;
-    let k = 1.0;
-    let tol = tolerance(k);
-    let r = 0.3;
-    // A bar along x from -3 to 0 with one edge rounded: the edge y = 0,
-    // z = 2.
-    let bar = [
-        line(1, [0.0, 0.0], [2.0, 0.0]),
-        line(2, [2.0, 0.0], [2.0, 2.0]),
-        line(3, [2.0, 2.0], [r, 2.0]),
-        arc(4, [r, 2.0 - r], [r, 2.0], [0.0, 2.0 - r]),
-        line(5, [0.0, 2.0 - r], [0.0, 0.0]),
-    ];
-    let frame = Frame::new(Vec3::new(-3.0, 0.0, 0.0), Vec3::X, Vec3::Y).unwrap();
-    let profiles = detect_profiles(&bar, &tol).unwrap();
-    let bar = extrude(&profiles, &frame, 0.0, 3.0, &tol).unwrap().body;
-    // The tool of the arc that edge continues in, about the upright axis
-    // through (0, 1): the corner at distance 1 from the axis, turned half
-    // way round from where the bar ends.
-    let section = [
-        line(1, [1.0, 2.0], [1.0 - r, 2.0]),
-        arc(2, [1.0 - r, 2.0 - r], [1.0, 2.0 - r], [1.0 - r, 2.0]),
-        line(3, [1.0, 2.0 - r], [1.0, 2.0]),
-    ];
-    let from = -Vec3::Y;
-    let frame = Frame::new(Vec3::new(0.0, 1.0, 0.0), from.cross(Vec3::Z), from).unwrap();
-    let profiles = detect_profiles(&section, &tol).unwrap();
-    let tool = revolve(&profiles, &frame, [0.0, 0.0], [0.0, 1.0], 0.0, PI, &tol)
-        .unwrap()
-        .body;
-    // They lie end to end: the union is both, the difference the bar.
-    let union = boolean(&bar, &tool, BooleanOp::Union, &tol).unwrap();
-    assert_eq!(check(&union.body, &tol), []);
-    assert_close(
-        mass(&union.body).volume,
-        mass(&bar).volume + mass(&tool).volume,
-        "volume",
-    );
-    let difference = boolean(&bar, &tool, BooleanOp::Subtract, &tol).unwrap();
-    assert_close(mass(&difference.body).volume, mass(&bar).volume, "volume");
+    for k in SCALES {
+        let tol = tolerance(k);
+        let r = 0.3;
+        // A bar along x from -3 to 0 with one edge rounded: the edge y = 0,
+        // z = 2.
+        let bar = scale_curves(
+            &[
+                line(1, [0.0, 0.0], [2.0, 0.0]),
+                line(2, [2.0, 0.0], [2.0, 2.0]),
+                line(3, [2.0, 2.0], [r, 2.0]),
+                arc(4, [r, 2.0 - r], [r, 2.0], [0.0, 2.0 - r]),
+                line(5, [0.0, 2.0 - r], [0.0, 0.0]),
+            ],
+            k,
+        );
+        let frame = Frame::new(Vec3::new(-3.0 * k, 0.0, 0.0), Vec3::X, Vec3::Y).unwrap();
+        let profiles = detect_profiles(&bar, &tol).unwrap();
+        let bar = extrude(&profiles, &frame, 0.0, 3.0 * k, &tol).unwrap().body;
+        // The tool of the arc that edge continues in, about the upright axis
+        // through (0, 1): the corner at distance 1 from the axis, turned half
+        // way round from where the bar ends.
+        let section = scale_curves(
+            &[
+                line(1, [1.0, 2.0], [1.0 - r, 2.0]),
+                arc(2, [1.0 - r, 2.0 - r], [1.0, 2.0 - r], [1.0 - r, 2.0]),
+                line(3, [1.0, 2.0 - r], [1.0, 2.0]),
+            ],
+            k,
+        );
+        let from = -Vec3::Y;
+        let frame = Frame::new(Vec3::new(0.0, k, 0.0), from.cross(Vec3::Z), from).unwrap();
+        let profiles = detect_profiles(&section, &tol).unwrap();
+        let tool = revolve(&profiles, &frame, [0.0, 0.0], [0.0, 1.0], 0.0, PI, &tol)
+            .unwrap()
+            .body;
+        let bar_volume = 3.0 * (4.0 - SPANDREL * r * r) * k * k * k;
+        // ∫ρ dA over the square corner less the quarter disc, times π.
+        let tool_volume = PI
+            * (r * r * (1.0 - r / 2.0) - ((1.0 - r) * PI * r * r / 4.0 + r * r * r / 3.0))
+            * k
+            * k
+            * k;
+        assert_close(mass(&bar).volume, bar_volume, "the bar");
+        assert_close(mass(&tool).volume, tool_volume, "the tool");
+        // They lie against each other: the union is both, the difference
+        // the bar, and they have nothing in common.
+        let union = boolean(&bar, &tool, BooleanOp::Union, &tol).unwrap();
+        assert_eq!(check(&union.body, &tol), []);
+        assert_eq!(union.body.shells.len(), 1);
+        let both = mass(&union.body);
+        assert_close(both.volume, bar_volume + tool_volume, "volume");
+        let end = SPANDREL * r * r * k * k;
+        assert_close(
+            both.area,
+            mass(&bar).area + mass(&tool).area - 2.0 * end,
+            "area",
+        );
+        // The tool's far end and its top are gone into the bar's.
+        assert_eq!(
+            union.body.faces.len(),
+            bar.faces.len() + tool.faces.len() - 2
+        );
+        let difference = boolean(&bar, &tool, BooleanOp::Subtract, &tol).unwrap();
+        assert_eq!(check(&difference.body, &tol), []);
+        assert_close(mass(&difference.body).volume, bar_volume, "volume");
+        assert_close(mass(&difference.body).area, mass(&bar).area, "area");
+        assert_eq!(difference.body.faces.len(), bar.faces.len());
+        let other = boolean(&tool, &bar, BooleanOp::Subtract, &tol).unwrap();
+        assert_close(mass(&other.body).volume, tool_volume, "volume");
+        assert!(matches!(
+            boolean(&bar, &tool, BooleanOp::Intersect, &tol),
+            Err(KernelError::EmptyResult { .. })
+        ));
+    }
 }

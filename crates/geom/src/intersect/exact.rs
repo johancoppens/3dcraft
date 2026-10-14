@@ -95,8 +95,84 @@ pub(super) fn closed_form(
             Some(found) => Ok(Some(found)),
             None => cone_translates(c, d, tol),
         },
+        (Surface::Cylinder(c), Surface::Torus(t)) => match coaxial(a, b, tol)? {
+            Some(found) => Ok(Some(found)),
+            None => continued(c, t, tol),
+        },
         _ => coaxial(a, b, tol),
     }
+}
+
+/// A cylinder that goes on in a torus: the cylinder's radius is the
+/// tube's, and its axis lies in the plane of the tube's middle circle and
+/// is tangent to it (the fillet of a straight edge and of the arc that
+/// edge continues in). `None` for any other position.
+///
+/// Both are the points at the distance `r` from a spine, a line and a
+/// circle of radius `R` in one plane that touch at `O`. With `x` along the
+/// line, `y` from `O` to the circle's centre and `z` along the torus'
+/// axis, and `δ₁ = y`, `δ₂ = R − ρ` the distances to the spines within the
+/// plane (`ρ` from the centre), a point is on both where `δ₁² = δ₂²` and
+/// `z² = r² − δ₁²`:
+///
+/// - `δ₁ = δ₂` is the line `x = 0`: the circle of radius `r` about `O`
+///   across the line, along which the two are tangent and do not cross;
+/// - `δ₁ = −δ₂` is the parabola `x² = 4 R y`, on which `y = r cos² ψ`
+///   with `x = 2 √(R r) cos ψ`, so `z = r sin ψ √(1 + cos² ψ)`: a closed
+///   curve along which they cross, through the top and the bottom of that
+///   circle and at right angles to it.
+///
+/// Curves end where they cross: two half circles and the two halves of
+/// the second curve, all four between the top and the bottom.
+fn continued(c: &Cylinder, t: &Torus, tol: &Tolerance) -> Result<Option<Closed>, GeomError> {
+    let (cf, tf) = (c.frame(), t.frame());
+    let (major, minor) = t.radii();
+    let (a, n) = (cf.z(), tf.z());
+    let r = c.radius();
+    if !(major > minor + tol.linear) || a.dot(n).abs() > tol.angular {
+        return Ok(None);
+    }
+    // The point of the axis nearest the torus' centre.
+    let foot = cf.origin() + a * (tf.origin() - cf.origin()).dot(a);
+    let out = foot - tf.origin();
+    let lift = out.dot(n);
+    let radial = across(out, n);
+    let reach = radial.length();
+    // How far the position is from the one the formula is for: with the
+    // fit of the second curve it stays within the tolerance.
+    let slack = (r - minor).abs() + lift.abs() + (reach - major).abs();
+    if !(slack <= 0.5 * tol.linear) || !(reach > 0.0) {
+        return Ok(None);
+    }
+    let inward = radial * (-1.0 / reach);
+    let frame = Frame::new(foot, a, n).ok_or_else(degenerate)?;
+    let circle = Circle::new(frame, r)?;
+    let half = std::f64::consts::FRAC_PI_2;
+    let lobe = Shape::Lobe {
+        o: foot,
+        a: a * (2.0 * (major * r).sqrt()),
+        b: inward * r,
+        c: frame.x() * r,
+        slack,
+    };
+    if !lobe.eval(0.0).is_finite() {
+        return Err(degenerate());
+    }
+    let piece = |shape: &Shape, range: (f64, f64), tangent: bool| ExactCurve {
+        shape: shape.clone(),
+        range,
+        tangent,
+    };
+    let round = Shape::Circle(circle);
+    Ok(Some(meets(
+        vec![
+            piece(&round, (0.0, 2.0 * half), true),
+            piece(&round, (2.0 * half, 4.0 * half), true),
+            piece(&lobe, (-half, half), false),
+            piece(&lobe, (half, 3.0 * half), false),
+        ],
+        Vec::new(),
+    )))
 }
 
 fn plane_sphere(p: &Plane, s: &Sphere, tol: &Tolerance) -> Result<Closed, GeomError> {
