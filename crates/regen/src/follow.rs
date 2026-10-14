@@ -211,6 +211,7 @@ pub(crate) fn feature(
         FeatureKind::Fillet(fillet) => pairs(doc, earlier, &mut fillet.edges)?,
         FeatureKind::OffsetFace(offset) => faces(doc, earlier, &mut offset.faces, "faces")?,
         FeatureKind::MoveFace(moving) => faces(doc, earlier, &mut moving.faces, "faces")?,
+        FeatureKind::Thicken(layer) => faces(doc, earlier, &mut layer.faces, "faces")?,
         FeatureKind::DeleteFace(deletion) => faces(doc, earlier, &mut deletion.faces, "faces")?,
         FeatureKind::Shell(shell) => {
             // The body to hollow is followed as its faces are: the shell

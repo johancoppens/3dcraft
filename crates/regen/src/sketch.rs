@@ -608,7 +608,10 @@ pub(crate) fn resolve_face(
         // A face operation moves faces one by one, which no map of the
         // whole body says: the face is found where it lies now.
         let moved = match source.kind {
-            FeatureKind::OffsetFace(_) | FeatureKind::MoveFace(_) | FeatureKind::Shell(_) => {
+            FeatureKind::OffsetFace(_)
+            | FeatureKind::MoveFace(_)
+            | FeatureKind::Thicken(_)
+            | FeatureKind::Shell(_) => {
                 let index = names.and_then(|names| {
                     (0..names.faces.len())
                         .find(|&face| names.names_of(face).any(|own| same_plane(own, link)))
@@ -624,8 +627,11 @@ pub(crate) fn resolve_face(
                         // The faces of a shell's hollow (instance 1)
                         // look the other way than the faces they lie
                         // behind.
-                        let hollow = matches!(source.kind, FeatureKind::Shell(_))
-                            && link.sources.first() == Some(&1);
+                        // So do the faces a layer has from under the
+                        // faces it thickens.
+                        let hollow =
+                            matches!(source.kind, FeatureKind::Shell(_) | FeatureKind::Thicken(_))
+                                && link.sources.first() == Some(&1);
                         // A moved face may also have turned.
                         let turns = matches!(source.kind, FeatureKind::MoveFace(_));
                         Some((plane.frame().origin(), outward, hollow, turns))

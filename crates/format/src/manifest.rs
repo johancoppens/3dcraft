@@ -311,6 +311,14 @@ pub enum FeatureKind {
     /// along `axis`, then shifted by `translate`; the faces next to them
     /// follow. The body is that of the feature the first name starts
     /// with. A new kind: no format version changed with it.
+    /// A solid of its own: faces of the body of an earlier feature given
+    /// `thickness`, to `side` of them (`outside`, `inside` or `both`;
+    /// written always). A new kind: no format version changed with it.
+    Thicken {
+        faces: Vec<Name>,
+        thickness: String,
+        side: ThickenSide,
+    },
     MoveFace {
         faces: Vec<Name>,
         translate: [String; 3],
@@ -352,6 +360,15 @@ pub enum FeatureKind {
         #[serde(default)]
         open: Vec<Name>,
     },
+}
+
+/// Where the layer of a `thicken` lies against its faces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThickenSide {
+    Outside,
+    Inside,
+    Both,
 }
 
 /// The size of a thread: a designation of ISO 261 (`"M10"`), or the

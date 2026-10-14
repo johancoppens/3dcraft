@@ -568,8 +568,8 @@ impl Fillet {
     }
 }
 
-/// Most faces one face operation (offset face, move face, delete face,
-/// the open faces of a shell) holds.
+/// Most faces one face operation (offset face, move face, thicken, delete
+/// face, the open faces of a shell) holds.
 pub const MAX_FACE_OP_FACES: usize = 1024;
 
 /// Faces of the body of an earlier feature moved along their normals by
@@ -617,6 +617,42 @@ pub struct MoveFace {
 }
 
 impl MoveFace {
+    /// The feature whose body the faces are of: the one that made the
+    /// first face referred to. `None` without faces.
+    pub fn source(&self) -> Option<FeatureId> {
+        self.faces.first().map(|first| first.feature)
+    }
+}
+
+/// Where the layer of a [`Thicken`] lies against its faces.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThickenSide {
+    /// Outside the body: on the faces, away from the material.
+    #[default]
+    Outside,
+    /// Inside the body: under the faces, in the material.
+    Inside,
+    /// Half of the thickness on each side of the faces.
+    Both,
+}
+
+/// A solid of its own: faces of the body of an earlier feature given
+/// `thickness`, to `side` of them. At its rim the layer is bounded by the
+/// faces round them, continued. The body keeps its own body: this
+/// feature makes a new one.
+///
+/// A face is referred to by its name. All faces are faces of one body:
+/// the feature the first name starts with.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Thicken {
+    pub faces: Vec<PersistentName>,
+    pub thickness: Expr,
+    #[serde(default)]
+    pub side: ThickenSide,
+}
+
+impl Thicken {
     /// The feature whose body the faces are of: the one that made the
     /// first face referred to. `None` without faces.
     pub fn source(&self) -> Option<FeatureId> {
@@ -733,6 +769,7 @@ pub enum FeatureKind {
     Fillet(Fillet),
     OffsetFace(OffsetFace),
     MoveFace(MoveFace),
+    Thicken(Thicken),
     Shell(Shell),
     DeleteFace(DeleteFace),
     Thread(Thread),
@@ -764,6 +801,7 @@ impl FeatureKind {
             FeatureKind::Fillet(_) => "fillet",
             FeatureKind::OffsetFace(_) => "offsetFace",
             FeatureKind::MoveFace(_) => "moveFace",
+            FeatureKind::Thicken(_) => "thicken",
             FeatureKind::Shell(_) => "shell",
             FeatureKind::DeleteFace(_) => "deleteFace",
             FeatureKind::Thread(_) => "thread",
@@ -824,6 +862,8 @@ impl FeatureKind {
             FeatureKind::Fillet(f) => f.source().map(|id| (id, false)),
             FeatureKind::OffsetFace(o) => o.source().map(|id| (id, false)),
             FeatureKind::MoveFace(m) => m.source().map(|id| (id, false)),
+            // The body stays: the layer is a body of its own.
+            FeatureKind::Thicken(t) => t.source().map(|id| (id, true)),
             FeatureKind::Shell(s) => Some((s.source, false)),
             FeatureKind::DeleteFace(d) => d.source().map(|id| (id, false)),
             FeatureKind::Thread(t) => Some((t.source(), false)),
@@ -960,6 +1000,7 @@ impl FeatureKind {
             FeatureKind::DatumHelix(d) => out = d.exprs(),
             FeatureKind::Fillet(f) => out = vec![named("radius", &f.radius)],
             FeatureKind::OffsetFace(o) => out = vec![named("distance", &o.distance)],
+            FeatureKind::Thicken(t) => out = vec![named("thickness", &t.thickness)],
             FeatureKind::MoveFace(m) => {
                 out = triple("translate", &m.translate);
                 out.extend(triple("pivot", &m.pivot));
@@ -1059,6 +1100,7 @@ impl FeatureKind {
             FeatureKind::DatumHelix(d) => d.exprs_mut(),
             FeatureKind::Fillet(f) => vec![&mut f.radius],
             FeatureKind::OffsetFace(o) => vec![&mut o.distance],
+            FeatureKind::Thicken(t) => vec![&mut t.thickness],
             FeatureKind::MoveFace(m) => m
                 .translate
                 .iter_mut()
@@ -1298,6 +1340,7 @@ impl Document {
                 }
                 FeatureKind::OffsetFace(OffsetFace { faces, .. })
                 | FeatureKind::MoveFace(MoveFace { faces, .. })
+                | FeatureKind::Thicken(Thicken { faces, .. })
                 | FeatureKind::DeleteFace(DeleteFace { faces })
                 | FeatureKind::Shell(Shell { open: faces, .. }) => {
                     if faces.len() > MAX_FACE_OP_FACES {

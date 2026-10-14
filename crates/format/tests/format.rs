@@ -2957,3 +2957,39 @@ fn move_face_is_written_like_this_and_round_trips() {
     assert_ne!(bare, json);
     assert!(from_manifest_json(bare.as_bytes()).is_err());
 }
+
+/// Thicken, as it is written: a new kind, no version came with it.
+#[test]
+fn thicken_is_written_like_this_and_round_trips() {
+    use craft3d_doc::{NameRole, PersistentName, Thicken, ThickenSide};
+    let face = |n: u64| PersistentName::new(FeatureId(1), NameRole::Face, vec![n]);
+    let face_json = |n: u64| serde_json::json!({"feature": 1, "role": "face", "sources": [n]});
+    let mut doc = small();
+    for (name, side) in [("Plate", ThickenSide::Outside), ("Skin", ThickenSide::Both)] {
+        doc.add_feature(
+            Some(name),
+            FeatureKind::Thicken(Thicken {
+                faces: vec![face(1), face(2)],
+                thickness: Expr::new("width / 20"),
+                side,
+            }),
+        )
+        .unwrap();
+    }
+    assert_eq!(doc.validate(), Ok(()));
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["format_version"], FORMAT_VERSION);
+    assert_eq!(
+        value["document"]["features"][1]["kind"],
+        serde_json::json!({"type": "thicken", "faces": [face_json(1), face_json(2)],
+            "thickness": "width / 20", "side": "outside"})
+    );
+    assert_eq!(value["document"]["features"][2]["kind"]["side"], "both");
+    assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+    assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
+    // A side that is none of the three is refused.
+    let bad = json.replacen("\"side\": \"both\"", "\"side\": \"up\"", 1);
+    assert_ne!(bad, json);
+    assert!(from_manifest_json(bad.as_bytes()).is_err());
+}

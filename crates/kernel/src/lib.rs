@@ -26,6 +26,7 @@ pub mod revolve;
 pub mod shell;
 mod spline2;
 pub mod sweep;
+pub mod thicken;
 pub mod thread;
 mod tweak;
 
