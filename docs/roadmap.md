@@ -325,6 +325,7 @@ The blends first (chamfer and fillet, the first consumers of edge references), t
 - A thread is cosmetic unless `modeled: true`, as in other modellers (2026-10-14)
 - A thread's size and pitch follow the model: `size` left out (the size of the face), a length (`"d"`) or a designation; the coarse pitch of the size unless given; `v13_to_v14`; format version 14 (2026-10-14)
 - A face that winds along a thread is meshed; every triangulation has a work budget (2026-10-14)
+- A smooth loft through slender twisted sections builds (the rotor blade with its tip right after 18 m, also from a circle): a face whose triangles cannot follow a chord of its boundary has that chord cut finer (2026-10-14)
 
 #### Open
 - [ ] Move face, then thicken (a sheet given a thickness), replace face and draft (faces tilted about a neutral plane along a pull direction)
