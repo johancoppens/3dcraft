@@ -154,12 +154,20 @@ struct Across {
 }
 
 /// The edge as a family of planes across it: `s` from 0 at its start to
-/// 1 at its end, and along the curve continued past either end.
+/// 1 at its end, and along the curve continued past either end. `range`
+/// runs from the curve's parameter at `s = 0` to the one at `s = 1`, so an
+/// edge followed against its curve has it the other way round.
 struct Spine<'a> {
     curve: &'a Curve3,
     range: (f64, f64),
     /// A closed edge: `s` goes round, a whole turn per unit.
     closed: bool,
+    /// Planes the family turns into at `s = 0` and `s = 1` (the joints of
+    /// a chain, where the next edge's blend face begins): over `turn` of
+    /// `s` from that end the plane across the edge is blended into it, so
+    /// the section at the end lies in exactly that plane.
+    joints: [Option<Across>; 2],
+    turn: f64,
 }
 
 impl Spine<'_> {
@@ -171,7 +179,33 @@ impl Spine<'_> {
         let t = t0 + s * (t1 - t0);
         let (point, d) = self.curve.derivatives(t);
         let normal = (d * (t1 - t0)).normalized()?;
-        point.is_finite().then_some(Across { point, normal })
+        let mut across = Across { point, normal };
+        let [first, last] = self.joints;
+        for (end, joint) in [(0.0, first), (1.0, last)] {
+            let Some(joint) = joint else { continue };
+            if !(self.turn > 0.0) {
+                return None;
+            }
+            let x = (1.0 - (s - end).abs() / self.turn).clamp(0.0, 1.0);
+            if !(x > 0.0) {
+                continue;
+            }
+            // A smooth step from 0 to 1, flat at both ends; the planes
+            // between are those of the pencil through the two.
+            let w = x * x * (3.0 - 2.0 * x);
+            let n = across.normal * (1.0 - w) + joint.normal * w;
+            let d = across.normal.dot(across.point) * (1.0 - w) + joint.normal.dot(joint.point) * w;
+            let length = n.length();
+            if !(length > 1e-3) {
+                return None;
+            }
+            let shift = (d - n.dot(across.point)) / (length * length);
+            across = Across {
+                point: across.point + n * shift,
+                normal: n * (1.0 / length),
+            };
+        }
+        (across.point.is_finite() && across.normal.is_finite()).then_some(across)
     }
 }
 
@@ -747,76 +781,21 @@ fn blend_one(
             reversed: fb.reversed,
         },
     ];
-    let start = data.curve.eval(data.range.0);
-    let finish = data.curve.eval(data.range.1);
-    let scale = start
-        .length()
-        .max(finish.length())
-        .max(shape.size())
-        .max(tol);
+    let scale = scale_of(&data, shape.size(), tol);
     let solver = Solver {
         spine: Spine {
             curve: &data.curve,
             range: data.range,
             closed,
+            joints: [None, None],
+            turn: 0.0,
         },
         sides,
         shape,
         scale,
     };
     let unsolvable = || refuse(edge, None, Reason::FreeSurface);
-    // The first section, from the edge's middle and the flat estimate.
-    let middle = solver.spine.at(0.5).ok_or_else(unsolvable)?;
-    let mut seed_params = [(0.0, 0.0); 2];
-    let mut seed_feet = [middle.point; 2];
-    for k in 0..2 {
-        let side = sides.get(k).ok_or_else(lost)?;
-        let uv = side
-            .surface
-            .project(middle.point)
-            .map_err(|_| unsolvable())?;
-        if let Some(p) = seed_params.get_mut(k) {
-            *p = uv;
-        }
-    }
-    let size = shape.size();
-    for k in 0..2 {
-        if let (Some(f), Some(i), Some(p)) =
-            (seed_feet.get_mut(k), into.get(k), seed_params.get_mut(k))
-        {
-            let side = sides.get(k).ok_or_else(lost)?;
-            let (uv, foot) = side
-                .foot(middle.point + *i * size, *p)
-                .ok_or_else(unsolvable)?;
-            *f = foot;
-            *p = uv;
-        }
-    }
-    let [b1, b2] = into;
-    let spread = 1.0 + b1.dot(b2);
-    let centre = match shape {
-        Shape::Ball { radius, .. } if spread > 1e-9 => {
-            let half_cos = (0.5 * spread).sqrt();
-            let half_sin = (1.0 - 0.5 * spread).max(0.0).sqrt();
-            if !(half_sin > 1e-9) {
-                return Err(refused(edge, Reason::Smooth));
-            }
-            Some(
-                middle.point
-                    + (b1 + b2).normalized().ok_or_else(unsolvable)?
-                        * (radius / half_sin)
-                        * half_cos.signum(),
-            )
-        }
-        Shape::Ball { .. } => return Err(refused(edge, Reason::Smooth)),
-        Shape::Cut { .. } => None,
-    };
-    let seed = Section {
-        feet: seed_feet,
-        params: seed_params,
-        centre,
-    };
-    let seed = solver.section(0.5, &seed).ok_or_else(unsolvable)?;
+    let seed = first_section(&solver, 0.5, into, edge)?;
     if closed {
         let (surface, params, sections) = ring(&solver, seed, &data, tolerance)
             .ok_or_else(|| refuse(edge, None, Reason::FreeApproximation))?;
@@ -838,23 +817,12 @@ fn blend_one(
         end_at(body, edge, [first, second], data.start)?,
         end_at(body, edge, [first, second], data.end)?,
     ];
-    // Sections from the middle outwards, each from its neighbour: along
-    // the edge in steps of a few radii, past its ends in steps of a
-    // quarter of the radius until the section is wholly out of the third
-    // face there.
-    let length = start.distance(finish).max(
-        data.curve
-            .eval(0.5 * (data.range.0 + data.range.1))
-            .distance(start),
-    );
+    let length = edge_length(&data);
     if !(length > 0.0) {
         return Err(unsolvable());
     }
-    // One step along the edge and past it, so the samples are evenly
-    // spaced (an interpolating spline overshoots where they are not).
-    let inside_step = (size / length).clamp(1.0 / 200.0, 1.0 / 24.0);
-    let outside_step = inside_step.min(0.5 * size / length);
-    let most_out = 8.0 * size / length;
+    let size = shape.size();
+    let steps = Steps::of(size, length);
     let thirds: Vec<Side<'_>> = ends
         .iter()
         .map(|end| {
@@ -864,50 +832,23 @@ fn blend_one(
             })
         })
         .collect::<Result<_, _>>()?;
-    let out_of = |third: &Side<'_>, section: &Section| -> bool {
-        (0..=8).all(|k| {
-            section.eval(f64::from(k) / 8.0).is_some_and(|p| {
-                third
-                    .surface
-                    .project(p)
-                    .ok()
-                    .and_then(|uv| third.signed(p, uv))
-                    .is_some_and(|(d, _)| d > 2.0 * tol)
-            })
-        })
-    };
+    // Sections from the middle outwards, each from its neighbour: along
+    // the edge in steps of a few radii, past its ends in steps of a
+    // quarter of the radius until the section is wholly out of the third
+    // face there.
     let mut solved: Vec<(f64, Section)> = vec![(0.5, seed)];
     let mut reach = [0.0_f64; 2];
-    for (index, direction) in [(0_usize, -1.0_f64), (1, 1.0)] {
-        let third = thirds.get(index).ok_or_else(lost)?;
-        let mut last = seed;
-        let mut s = 0.5;
-        let edge_end = if direction < 0.0 { 0.0 } else { 1.0 };
-        loop {
-            let past = (s - edge_end) * direction;
-            let step = if past >= -1e-12 {
-                outside_step
-            } else {
-                inside_step
-            };
-            let next = s + direction * step;
-            last = solver.section(next, &last).ok_or_else(unsolvable)?;
-            s = next;
-            solved.push((s, last));
-            let past = (s - edge_end) * direction;
-            if past >= -1e-12 && out_of(third, &last) {
-                if let Some(slot) = reach.get_mut(index) {
-                    *slot = past;
-                }
-                break;
-            }
-            if past > most_out {
-                return Err(refuse(
-                    edge,
-                    ends.get(index).map(|e| e.third),
-                    Reason::FreeEnd,
-                ));
-            }
+    for (index, end) in [(0_usize, 0.0_f64), (1, 1.0)] {
+        let third = *thirds.get(index).ok_or_else(lost)?;
+        let (more, past) = march_out(&solver, (0.5, seed), end, third, steps, tol).map_err(
+            |stop| match stop {
+                Stop::Unsolvable => unsolvable(),
+                Stop::TooFar => refuse(edge, ends.get(index).map(|e| e.third), Reason::FreeEnd),
+            },
+        )?;
+        solved.extend(more);
+        if let Some(slot) = reach.get_mut(index) {
+            *slot = past;
         }
     }
     solved.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -920,21 +861,9 @@ fn blend_one(
     // The cuts at the ends.
     let mut cuts = Vec::with_capacity(2);
     for (index, end) in ends.iter().enumerate() {
-        let third = face(end.third)?;
-        let side = Side {
-            surface: &third.surface,
-            reversed: third.reversed,
-        };
-        // From a few radii before the end, where the face is still behind
-        // the third face's surface near the corner (from further in, a
-        // curved third face may be nearer on its other side).
-        let back = (4.0 * size / length).min(0.5);
-        let (inner, outer) = if index == 0 {
-            (back, -reach[0])
-        } else {
-            (1.0 - back, 1.0 + reach[1])
-        };
-        let cut = cut_curve(&surface, side, inner, outer, limit, scale)
+        let third = *thirds.get(index).ok_or_else(lost)?;
+        let past = *reach.get(index).ok_or_else(lost)?;
+        let cut = end_cut(&surface, third, index == 1, past, size / length, limit, scale)
             .ok_or_else(|| refuse(edge, Some(end.third), Reason::FreeEnd))?;
         cuts.push(cut);
     }
@@ -963,6 +892,192 @@ fn blend_one(
         shape,
         tolerance,
     )
+}
+
+/// The size of the numbers about an edge: what "settled" is measured
+/// against.
+fn scale_of(data: &Edge, size: f64, tol: f64) -> f64 {
+    let start = data.curve.eval(data.range.0);
+    let finish = data.curve.eval(data.range.1);
+    start.length().max(finish.length()).max(size).max(tol)
+}
+
+/// The length of an edge, roughly: the larger of its chord and the
+/// distance from its start to its middle.
+fn edge_length(data: &Edge) -> f64 {
+    let start = data.curve.eval(data.range.0);
+    let finish = data.curve.eval(data.range.1);
+    start.distance(finish).max(
+        data.curve
+            .eval(0.5 * (data.range.0 + data.range.1))
+            .distance(start),
+    )
+}
+
+/// The steps in `s` between sections: one along the edge, and a smaller
+/// one past its ends, so the samples are evenly spaced (an interpolating
+/// spline overshoots where they are not); and how far past an end a
+/// blend may go before it is refused.
+#[derive(Clone, Copy, Debug)]
+struct Steps {
+    inside: f64,
+    outside: f64,
+    most_out: f64,
+}
+
+impl Steps {
+    fn of(size: f64, length: f64) -> Steps {
+        let inside = (size / length).clamp(1.0 / 200.0, 1.0 / 24.0);
+        Steps {
+            inside,
+            outside: inside.min(0.5 * size / length),
+            most_out: 8.0 * size / length,
+        }
+    }
+}
+
+/// The first section of a blend, in the plane at `s`: from the flat
+/// estimate (the ball between the two tangent planes along `into`, the
+/// directions into the faces), settled on the surfaces.
+fn first_section(
+    solver: &Solver<'_>,
+    s: f64,
+    into: [Vec3; 2],
+    edge: EdgeId,
+) -> Result<Section, BlendError> {
+    let unsolvable = || refuse(edge, None, Reason::FreeSurface);
+    let middle = solver.spine.at(s).ok_or_else(unsolvable)?;
+    let sides = solver.sides;
+    let mut seed_params = [(0.0, 0.0); 2];
+    let mut seed_feet = [middle.point; 2];
+    for k in 0..2 {
+        let side = sides.get(k).ok_or_else(lost)?;
+        let uv = side
+            .surface
+            .project(middle.point)
+            .map_err(|_| unsolvable())?;
+        if let Some(p) = seed_params.get_mut(k) {
+            *p = uv;
+        }
+    }
+    let size = solver.shape.size();
+    for k in 0..2 {
+        if let (Some(f), Some(i), Some(p)) =
+            (seed_feet.get_mut(k), into.get(k), seed_params.get_mut(k))
+        {
+            let side = sides.get(k).ok_or_else(lost)?;
+            let (uv, foot) = side
+                .foot(middle.point + *i * size, *p)
+                .ok_or_else(unsolvable)?;
+            *f = foot;
+            *p = uv;
+        }
+    }
+    let [b1, b2] = into;
+    let spread = 1.0 + b1.dot(b2);
+    let centre = match solver.shape {
+        Shape::Ball { radius, .. } if spread > 1e-9 => {
+            let half_cos = (0.5 * spread).sqrt();
+            let half_sin = (1.0 - 0.5 * spread).max(0.0).sqrt();
+            if !(half_sin > 1e-9) {
+                return Err(refused(edge, Reason::Smooth));
+            }
+            Some(
+                middle.point
+                    + (b1 + b2).normalized().ok_or_else(unsolvable)?
+                        * (radius / half_sin)
+                        * half_cos.signum(),
+            )
+        }
+        Shape::Ball { .. } => return Err(refused(edge, Reason::Smooth)),
+        Shape::Cut { .. } => None,
+    };
+    let seed = Section {
+        feet: seed_feet,
+        params: seed_params,
+        centre,
+    };
+    solver.section(s, &seed).ok_or_else(unsolvable)
+}
+
+/// Why a march past the end of an edge stopped.
+#[derive(Clone, Copy, Debug)]
+enum Stop {
+    /// A section could not be found.
+    Unsolvable,
+    /// The blend went too far past the end without leaving the third
+    /// face.
+    TooFar,
+}
+
+/// Sections from `from` along the edge to its end at `end` (0 or 1) and
+/// past it, until a whole section lies outside the third face there;
+/// with how far past the end that was.
+fn march_out(
+    solver: &Solver<'_>,
+    from: (f64, Section),
+    end: f64,
+    third: Side<'_>,
+    steps: Steps,
+    tol: f64,
+) -> Result<(Vec<(f64, Section)>, f64), Stop> {
+    let out_of = |section: &Section| -> bool {
+        (0..=8).all(|k| {
+            section.eval(f64::from(k) / 8.0).is_some_and(|p| {
+                third
+                    .surface
+                    .project(p)
+                    .ok()
+                    .and_then(|uv| third.signed(p, uv))
+                    .is_some_and(|(d, _)| d > 2.0 * tol)
+            })
+        })
+    };
+    let direction = if end < 0.5 { -1.0 } else { 1.0 };
+    let (mut s, mut last) = from;
+    let mut solved = Vec::new();
+    loop {
+        let past = (s - end) * direction;
+        let step = if past >= -1e-12 {
+            steps.outside
+        } else {
+            steps.inside
+        };
+        let next = s + direction * step;
+        last = solver.section(next, &last).ok_or(Stop::Unsolvable)?;
+        s = next;
+        solved.push((s, last));
+        let past = (s - end) * direction;
+        if past >= -1e-12 && out_of(&last) {
+            return Ok((solved, past));
+        }
+        if past > steps.most_out {
+            return Err(Stop::TooFar);
+        }
+    }
+}
+
+/// The cut at one end of a blend face (`last`: the end at `s = 1`), which
+/// reaches `past` beyond it: from a few sizes before the end (where the
+/// face is still behind the third face's surface near the corner; from
+/// further in, a curved third face may be nearer on its other side).
+/// `relative` is the blend's size over the edge's length.
+fn end_cut(
+    surface: &NurbsSurface,
+    third: Side<'_>,
+    last: bool,
+    past: f64,
+    relative: f64,
+    limit: f64,
+    scale: f64,
+) -> Option<(NurbsCurve, [f64; 2])> {
+    let back = (4.0 * relative).min(0.5);
+    let (inner, outer) = if last {
+        (1.0 - back, 1.0 + past)
+    } else {
+        (back, -past)
+    };
+    cut_curve(surface, third, inner, outer, limit, scale)
 }
 
 /// Which way is out of the blend face, at the sample nearest the middle
