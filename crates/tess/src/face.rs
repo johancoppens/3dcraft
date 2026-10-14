@@ -956,6 +956,53 @@ fn seam_blocked(a: Uv, b: Uv, c: Uv, d: Uv) -> bool {
         || (side_b == 0.0 && within(tb, tc, td))
 }
 
+/// True when an end of the boundary segment (c, d) that is not an end of
+/// the seam from `a` to `b` lies on the seam but for rounding, strictly
+/// between its ends, or an end of the seam on the segment. A seam along
+/// a straight edge of the loop it starts on (a line of the surface, as a
+/// bore with a stepped bottom has at `a = ±π`) runs through the vertex
+/// where that edge ends; computed a period further, the seam can lean a
+/// last bit away from it, so that [`seam_blocked`]'s exact test sees
+/// neither a crossing nor a touch, and the seam swallowed the edge: the
+/// face's mesh had no side on its chord (the engine block's bored
+/// mounts, 2026-10-15).
+fn seam_grazes(a: Uv, b: Uv, c: Uv, d: Uv, period: f64) -> bool {
+    const ROUNDING: f64 = 1e-12;
+    // Rounding per parameter: of the angle around (and its period), and
+    // of the other parameter, which may be a length of any size. Each is
+    // measured in its own rounding, so that the test is the same for a
+    // body at any scale.
+    let reach = |k: usize, start: f64| {
+        [a, b, c, d]
+            .iter()
+            .fold(start, |m, p| m.max(get2(*p, k).abs()))
+    };
+    let (slack_a, slack_b) = (ROUNDING * reach(0, period.abs()), ROUNDING * reach(1, 0.0));
+    if !(slack_a > 0.0 && slack_b > 0.0) {
+        return false;
+    }
+    let norm = |p: Uv| -> P2 {
+        let [x, y] = p;
+        (x / slack_a, y / slack_b)
+    };
+    let (a, b, c, d) = (norm(a), norm(b), norm(c), norm(d));
+    // `p` within one rounding of the segment (q, r), strictly between its
+    // ends and not at either of them.
+    let on = |p: P2, q: P2, r: P2| -> bool {
+        let (dx, dy) = (r.0 - q.0, r.1 - q.1);
+        let whole = dx * dx + dy * dy;
+        if !(whole > 0.0 && whole.is_finite()) {
+            return false;
+        }
+        let (px, py) = (p.0 - q.0, p.1 - q.1);
+        let along = px * dx + py * dy;
+        let away = (px * dy - py * dx).abs() / whole.sqrt();
+        let near_end = |e: P2| (p.0 - e.0).abs() <= 1.0 && (p.1 - e.1).abs() <= 1.0;
+        away <= 1.0 && along > 0.0 && along < whole && !near_end(q) && !near_end(r)
+    };
+    on(c, a, b) || on(d, a, b) || on(a, c, d) || on(b, c, d)
+}
+
 /// `p`, or the end of a seam it is but for rounding.
 ///
 /// The end of a seam on a loop is that loop's vertex moved by whole
@@ -1259,7 +1306,7 @@ fn band_region(
                     for ta in around - 1..=around + 1 {
                         let p = snapped(shifted(v.uv, [ta, tb], periods), [from, to], period);
                         let q = snapped(shifted(w.uv, [ta, tb], periods), [from, to], period);
-                        if seam_blocked(from, to, p, q) {
+                        if seam_blocked(from, to, p, q) || seam_grazes(from, to, p, q, period) {
                             return true;
                         }
                     }
@@ -2116,6 +2163,71 @@ fn arc_cells(
     Ok(cells.max(least as u32))
 }
 
+/// The cells of a grid over a sphere or a torus, in `u` (around the axis)
+/// and in `v`, from what each direction needs (`cells_u`, `cells_v`,
+/// given the parameters to size by).
+///
+/// With the angle criterion, a cell of the grid is cut in two along a
+/// diagonal, over which the surface's normal turns by both of its sides
+/// at once: about `√(tu² + tv²)` for turns `tu` and `tv` along them (the
+/// normal of either surface turns by at most `du` around the axis, by
+/// `dv` along a meridian, and the two turns are square to each other).
+/// Each side held to the angle, the diagonal was not, and the refinement
+/// cut every diagonal of the grid. So `v` gets what `u` leaves of the
+/// angle: `tv = √(angle² − tu²)`, with `u` held to `angle / √2` where it
+/// needs more (otherwise, as before, its own count: the chordal
+/// tolerance usually asks for more cells around a ring than the angle
+/// does).
+///
+/// A side shorter than the floor (`ANGLE_FLOOR` tolerances) is not held
+/// to the angle, and `cells_v` leaves the angle out where the side across
+/// would be that short (a fillet thinner than the tolerance: two cells
+/// across the tube). But the diagonal is as long as the side around the
+/// axis (`radius_u` times the step in `u`) and, where that is not below
+/// the floor, is held to the angle: it turned by the tube's whole
+/// crossing and the refinement cut it until its length around was below
+/// the floor, a dozen points per cell. There `v` gets the cells the angle
+/// asks for, floor or no floor (`span_v / tv`, as many as the angle
+/// gives a whole turn at most, and no more than the grid's limit): a
+/// count of the angle alone, not of a length.
+fn both_ways(
+    cells_u: impl Fn(&TessParams) -> Result<u32, TessError>,
+    cells_v: impl Fn(&TessParams) -> Result<u32, TessError>,
+    (radius_u, span_u): (f64, f64),
+    span_v: f64,
+    params: &TessParams,
+) -> Result<(u32, u32), TessError> {
+    let Some(angle) = params.max_angle else {
+        return Ok((cells_u(params)?, cells_v(params)?));
+    };
+    let mut nu = cells_u(params)?;
+    let mut turn_u = span_u.abs() / f64::from(nu.max(1));
+    let most = angle * std::f64::consts::FRAC_1_SQRT_2;
+    if turn_u > most {
+        nu = cells_u(&TessParams {
+            max_angle: Some(most),
+            ..*params
+        })?;
+        turn_u = span_u.abs() / f64::from(nu.max(1));
+    }
+    let left = (angle * angle - turn_u * turn_u).max(0.0).sqrt().max(most);
+    let mut nv = cells_v(&TessParams {
+        max_angle: Some(left),
+        ..*params
+    })?;
+    let side_u = radius_u.abs() * turn_u;
+    let by_angle = (span_v.abs() / left - 1e-9).ceil();
+    let limit = f64::from(params.max_segments);
+    if side_u >= crate::ANGLE_FLOOR * params.chordal_tolerance
+        && by_angle > f64::from(nv)
+        && by_angle <= limit
+    {
+        // In range by the check above.
+        nv = by_angle as u32;
+    }
+    Ok((nu, nv))
+}
+
 /// How many grid cells the box `low..high` of the surface's own `(u, v)`
 /// needs in each direction for a cell of the grid, cut in two triangles,
 /// to be within the tolerance of the surface: by the arc for the analytic
@@ -2174,17 +2286,23 @@ fn seed_cells(
             } else {
                 low.1.cos().max(high.1.cos()).max(0.0)
             };
-            Ok((
-                arc_cells(s.radius() * widest, span_u, half, params, face)?,
-                arc_cells(s.radius(), span_v, half, params, face)?,
-            ))
+            both_ways(
+                |p| arc_cells(s.radius() * widest, span_u, half, p, face),
+                |p| arc_cells(s.radius(), span_v, half, p, face),
+                (s.radius() * widest, span_u),
+                span_v,
+                params,
+            )
         }
         Surface::Torus(t) => {
             let (major, minor) = t.radii();
-            Ok((
-                arc_cells(major + minor, span_u, half, params, face)?,
-                arc_cells(minor, span_v, half, params, face)?,
-            ))
+            both_ways(
+                |p| arc_cells(major + minor, span_u, half, p, face),
+                |p| arc_cells(minor, span_v, half, p, face),
+                (major + minor, span_u),
+                span_v,
+                params,
+            )
         }
         Surface::Bezier(b) => {
             let (muu, muv, mvv) = b.second_derivative_bounds();
@@ -2976,6 +3094,10 @@ pub(crate) struct Boundary<'a> {
     cells: [u32; 2],
     step: Uv,
     scale: Uv,
+    /// How much further than lengths in space the plane is scaled, per
+    /// parameter: 1 but where it is the plane of the grid (see
+    /// `face_boundary`).
+    stretch: Uv,
     centre: Uv,
     /// No face may grow beyond this many vertices.
     limit: usize,
@@ -3155,12 +3277,14 @@ impl Boundary<'_> {
             }
             let a = to_plane(p.uv, self.centre, self.scale);
             let b = to_plane(q.uv, self.centre, self.scale);
-            // (The plane is scaled to lengths in space, so the reach of a
-            // bulge there is about its reach in space.)
+            // (The plane is scaled to lengths in space, or `stretch` times
+            // that, so the reach of a bulge there is about its reach in
+            // space, times `stretch`.)
             let reach = bulge.map_or(0.0, |bulge| NEAR_BULGE * bulge.aside);
+            let [ra, rb] = self.stretch.map(|k| k * reach);
             segments.push(Segment {
-                low: (a.0.min(b.0) - reach, a.1.min(b.1) - reach),
-                high: (a.0.max(b.0) + reach, a.1.max(b.1) + reach),
+                low: (a.0.min(b.0) - ra, a.1.min(b.1) - rb),
+                high: (a.0.max(b.0) + ra, a.1.max(b.1) + rb),
                 ends: [a, b],
                 chord,
                 pos: [p.pos, q.pos],
@@ -3426,6 +3550,30 @@ pub(crate) fn face_boundary<'a>(
             scale = [sa, sb * column / tall];
         }
     }
+    // With the angle criterion, a torus or a sphere is triangulated in
+    // the plane of its grid: each parameter scaled so that a cell of the
+    // grid is square. The grid is sized per direction (the chordal
+    // tolerance and the angle, each in its own direction), and on a thin
+    // fillet the two differ by a hundred: around the axis the surface's
+    // normal turns slowly over a long way, across the tube fast over a
+    // short one. Scaled to lengths in space such a cell is a sliver, and
+    // every point the refinement put in one (its diagonal turns the
+    // normal by more than the angle) was joined by Delaunay's rule to
+    // points rows away, whose sides turned too far again: the stripes
+    // and flange roots of the turbofan had a hundred times the triangles
+    // they needed (2026-10-15). In the grid's plane a point added stays
+    // among its neighbours. Without the angle the plane is as it was, so
+    // that export meshes do not change.
+    let mut stretch = [1.0_f64; 2];
+    if params.max_angle.is_some() && matches!(face.surface, Surface::Torus(_) | Surface::Sphere(_))
+    {
+        let ([sa, sb], [da, db]) = (scale, step);
+        let square = sa * da / db;
+        if square.is_finite() && square > 0.0 && sb > 0.0 {
+            stretch = [1.0, square / sb];
+            scale = [sa, square];
+        }
+    }
     let centre = [
         0.5 * (get2(low, 0) + get2(high, 0)),
         0.5 * (get2(low, 1) + get2(high, 1)),
@@ -3438,6 +3586,7 @@ pub(crate) fn face_boundary<'a>(
         cells,
         step,
         scale,
+        stretch,
         centre,
         limit,
     })

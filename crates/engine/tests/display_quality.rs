@@ -128,9 +128,19 @@ fn a_thin_fillet_beside_a_plane_meshes_with_the_angle_criterion() {
             let eight = tessellate_body_with_threads(body, &params, 8).unwrap();
             assert_eq!(one, mesh, "fillet {radius} at {tolerance}: one thread");
             assert_eq!(eight, mesh, "fillet {radius} at {tolerance}: eight threads");
+            let plain = tessellate_body_with_threads(
+                body,
+                &TessParams {
+                    max_angle: None,
+                    ..params
+                },
+                0,
+            )
+            .unwrap();
             println!(
-                "fillet {radius} at {tolerance}: {} triangles in {took:?}",
-                mesh.triangles.len()
+                "fillet {radius} at {tolerance}: {} triangles in {took:?}, {} without the angle",
+                mesh.triangles.len(),
+                plain.triangles.len()
             );
         }
     }
@@ -176,8 +186,9 @@ fn models() -> Vec<PathBuf> {
 
 /// Every body of every model meshes with the angle criterion at the
 /// display scene's tolerance and at its quick first picture's (the
-/// coarsest the display rule goes), closed; and the display scene has no
-/// problems. Tessellated directly, not through the scene, which draws a
+/// coarsest the display rule goes), and without it at the export's
+/// automatic tolerance and four times finer; every solid closed; and the
+/// display scene has no problems. Tessellated directly, not through the scene, which draws a
 /// body it cannot mesh with the angle without it.
 #[test]
 #[cfg_attr(debug_assertions, ignore = "whole models: for release builds")]
@@ -196,45 +207,45 @@ fn every_body_of_the_showcase_meshes_at_the_display_quality() {
             failures.push(format!("{name}: {:?}", scene.problems));
         }
         let (mut triangles, mut slowest) = (0, (0.0, String::new()));
+        let automatic = s.scene_with(SceneQuality::Automatic).unwrap().unwrap();
         for (body_name, body) in bodies(&path) {
-            for tolerance in [scene.tolerance, first.tolerance] {
+            // The display (with the angle) at the display scene's tolerance
+            // and at the first picture's; the export (without) at the
+            // automatic tolerance and four times finer.
+            let display_tolerances = [scene.tolerance, first.tolerance].map(|t| (t, true));
+            let export_tolerances =
+                [automatic.tolerance, automatic.tolerance / 4.0].map(|t| (t, false));
+            for (tolerance, angle) in display_tolerances.into_iter().chain(export_tolerances) {
+                let params = if angle {
+                    display(tolerance)
+                } else {
+                    TessParams {
+                        chordal_tolerance: tolerance,
+                        ..TessParams::default()
+                    }
+                };
+                let what = if angle { "display" } else { "export" };
                 let start = Instant::now();
-                match tessellate_body_and_edges(&body, &display(tolerance))
-                    .and_then(|both| both.mesh)
-                {
+                match tessellate_body_and_edges(&body, &params).and_then(|both| both.mesh) {
                     Ok(mesh) => {
                         let seconds = start.elapsed().as_secs_f64();
                         if seconds > slowest.0 {
-                            slowest = (seconds, format!("{body_name} at {tolerance:.3}"));
+                            slowest = (seconds, format!("{body_name} {what} at {tolerance:.3}"));
                         }
-                        if tolerance == scene.tolerance {
+                        if angle && tolerance == scene.tolerance {
                             triangles += mesh.triangles.len();
                         }
-                        // Closed wherever the chordal tolerance alone
-                        // closes it: the angle opens nothing. (A body that
-                        // is not a solid is not held to it; the showcase's
-                        // hull is a solid whose mesh does not close
-                        // without the angle either, owed elsewhere.)
+                        // Every solid meshes closed (the hull did not until
+                        // 2026-10-15: its walls touched along the bow).
                         if body.kind == craft3d_topo::BodyKind::Solid && !closed(&mesh) {
-                            let plain = TessParams {
-                                max_angle: None,
-                                ..display(tolerance)
-                            };
-                            let without = tessellate_body_with_threads(&body, &plain, 0);
-                            if without.is_ok_and(|mesh| closed(&mesh)) {
-                                failures.push(format!(
-                                    "{name}/{body_name} at {tolerance}: not closed, though it is \
-                                     without the angle"
-                                ));
-                            } else {
-                                println!(
-                                    "{name}/{body_name} at {tolerance}: not closed, nor without \
-                                     the angle"
-                                );
-                            }
+                            failures.push(format!(
+                                "{name}/{body_name} {what} at {tolerance}: not closed"
+                            ));
                         }
                     }
-                    Err(e) => failures.push(format!("{name}/{body_name} at {tolerance}: {e}")),
+                    Err(e) => {
+                        failures.push(format!("{name}/{body_name} {what} at {tolerance}: {e}"))
+                    }
                 }
             }
         }

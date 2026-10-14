@@ -181,6 +181,8 @@ Oracles 1 and 4 for all primitives at three scales; exported meshes closed and o
 - Tabs of the open documents: switch with a click, Ctrl+Tab and Ctrl+Shift+Tab, close with `file.close` after Save / Don't Save / Cancel, Ctrl+W; the open documents in the File menu; `ui.get` › `tabs` and `closing` ([`development.md`](development.md) › *Tabs of the open documents*) (2026-10-14)
 - Every open document's scene kept within a memory budget, a quick first picture refined beside the engine thread (2026-10-14)
 - An angle criterion and a triangle budget inside a face in the tessellator, a body coarsened to its budget; the display quality at 2e-4 of the size and 12 degrees, a fifth to a sixth of the triangles (2026-10-14)
+- The angle criterion on thin fillets costs what it needs: tori and spheres refined in the plane of their grid, the grid's diagonals held to the angle; the turbofan's display mesh 129,532 triangles instead of 579,314 (2.0 times its mesh without the angle, was 9.1) ([`architecture.md`](architecture.md) §6, *The angle on a thin fillet*) (2026-10-15)
+- Every solid of the showcase, the turbofan and the engine block meshes closed at the display quality and at export tolerances (`display_quality.rs` strict): the hull's bow got a wall, a seam no longer runs along a straight edge at the wrap of a cylinder (2026-10-15)
 - `view.replay` and `craft3d-cli replay`: a showcase video (frames, MP4, GIF) of how a document is built, one fixed camera, an optional orbit, captions as subtitles; the document is not touched (2026-10-14)
 
 #### Open
@@ -460,6 +462,7 @@ Applications built on 3DCraft, not part of it (the rule in `docs/decisions.md`, 
 |---|---|---|
 | 2026-10-14 | minor | Restructured: current focus on top, one line per milestone, a section per milestone (Goal, Done, Open, Acceptance), the boolean checklist on its own, ideas apart; how things were built left to `architecture.md` |
 | 2026-10-15 | minor | M9: the engine block's blend findings E1–E8 (estimate of what fits, blends ending on a slanted face, chamfer chains joined, a boolean hit snapped to an edge's end) |
+| 2026-10-15 | minor | M4: the angle criterion on thin fillets without slivers (turbofan 9.1 to 2.0 times the triangles of the plain mesh); every showcase solid meshes closed (the hull's bow, a seam along a line at the wrap) |
 | 2026-10-15 | minor | M9: a sweep's right-angle test uses the document's tolerance; `sketch.path` warns of an arc end off its circle |
 | 2026-10-15 | minor | M9: `sketch.path` snaps a `center` arc's end onto its circle; a sweep's tangency test at a kink uses the tolerance (F6 builds) |
 | 2026-10-15 | minor | M9: freeform blends along chains of tangent edges and with closed-form edges in one feature; two freeform fillets that meet where a third edge stays sharp |
