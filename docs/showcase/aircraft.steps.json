@@ -1,0 +1,581 @@
+[
+ [
+  "sketch.create",
+  {
+   "plane": "xy",
+   "name": "Body"
+  }
+ ],
+ [
+  "sketch.spline",
+  {
+   "sketch": "Body",
+   "control": [
+    [
+     -320,
+     0
+    ],
+    [
+     -320,
+     38
+    ],
+    [
+     -250,
+     64
+    ],
+    [
+     -60,
+     68
+    ],
+    [
+     250,
+     60
+    ],
+    [
+     520,
+     30
+    ],
+    [
+     700,
+     12
+    ]
+   ]
+  }
+ ],
+ [
+  "sketch.line",
+  {
+   "sketch": "Body",
+   "from": "e7",
+   "to": [
+    700,
+    0
+   ]
+  }
+ ],
+ [
+  "sketch.line",
+  {
+   "sketch": "Body",
+   "from": "e9",
+   "to": "e1"
+  }
+ ],
+ [
+  "feature.revolve",
+  {
+   "sketch": "Body",
+   "axis": "x",
+   "name": "Fuselage"
+  }
+ ],
+ [
+  "sketch.create",
+  {
+   "plane": "xy",
+   "offset": "40.0 mm",
+   "name": "Rib0"
+  }
+ ],
+ [
+  "sketch.spline",
+  {
+   "sketch": "Rib0",
+   "control": [
+    [
+     -20.0,
+     -18.0
+    ],
+    [
+     -20.0,
+     -0.75
+    ],
+    [
+     49.0,
+     13.05
+    ],
+    [
+     210.0,
+     -18.0
+    ]
+   ]
+  }
+ ],
+ [
+  "sketch.spline",
+  {
+   "sketch": "Rib0",
+   "control": [
+    "e4",
+    [
+     83.5,
+     -28.35
+    ],
+    [
+     -20.0,
+     -28.35
+    ],
+    "e1"
+   ]
+  }
+ ],
+ [
+  "sketch.create",
+  {
+   "plane": "xy",
+   "offset": "226.66666666666666 mm",
+   "name": "Rib1"
+  }
+ ],
+ [
+  "sketch.spline",
+  {
+   "sketch": "Rib1",
+   "control": [
+    [
+     16.676168,
+     -12.622354
+    ],
+    [
+     16.956129,
+     1.124796
+    ],
+    [
+     72.168695,
+     11.002673
+    ],
+    [
+     199.971496,
+     -16.355161
+    ]
+   ]
+  }
+ ],
+ [
+  "sketch.spline",
+  {
+   "sketch": "Rib1",
+   "control": [
+    "e4",
+    [
+     98.991089,
+     -22.550407
+    ],
+    [
+     16.508192,
+     -20.870643
+    ],
+    "e1"
+   ]
+  }
+ ],
+ [
+  "sketch.create",
+  {
+   "plane": "xy",
+   "offset": "413.3333333333333 mm",
+   "name": "Rib2"
+  }
+ ],
+ [
+  "sketch.spline",
+  {
+   "sketch": "Rib2",
+   "control": [
+    [
+     53.361662,
+     1.168808
+    ],
+    [
+     53.778971,
+     11.41031
+    ],
+    [
+     95.078824,
+     17.934274
+    ],
+    [
+     189.915015,
+     -4.395314
+    ]
+   ]
+  }
+ ],
+ [
+  "sketch.spline",
+  {
+   "sketch": "Rib2",
+   "control": [
+    "e4",
+    [
+     114.560285,
+     -7.479948
+    ],
+    [
+     53.111276,
+     -4.976092
+    ],
+    "e1"
+   ]
+  }
+ ],
+ [
+  "sketch.create",
+  {
+   "plane": "xy",
+   "offset": "600.0 mm",
+   "name": "Rib3"
+  }
+ ],
+ [
+  "sketch.spline",
+  {
+   "sketch": "Rib3",
+   "control": [
+    [
+     90.041967,
+     23.373592
+    ],
+    [
+     90.454045,
+     30.111002
+    ],
+    [
+     117.733346,
+     33.852619
+    ],
+    [
+     179.874099,
+     17.879224
+    ]
+   ]
+  }
+ ],
+ [
+  "sketch.spline",
+  {
+   "sketch": "Rib3",
+   "control": [
+    "e4",
+    [
+     130.21918,
+     16.85868
+    ],
+    [
+     89.79472,
+     19.331146
+    ],
+    "e1"
+   ]
+  }
+ ],
+ [
+  "feature.loft",
+  {
+   "sections": [
+    "Rib0",
+    "Rib1",
+    "Rib2",
+    "Rib3"
+   ],
+   "name": "RightWing"
+  }
+ ],
+ [
+  "feature.mirror",
+  {
+   "source": "RightWing",
+   "normal": [
+    0,
+    0,
+    1
+   ],
+   "keep": true,
+   "name": "LeftWing"
+  }
+ ],
+ [
+  "sketch.create",
+  {
+   "plane": "xy",
+   "offset": "10 mm",
+   "name": "Tail0"
+  }
+ ],
+ [
+  "sketch.spline",
+  {
+   "sketch": "Tail0",
+   "control": [
+    [
+     545.0,
+     6.0
+    ],
+    [
+     545.0,
+     12.6
+    ],
+    [
+     578.0,
+     13.92
+    ],
+    [
+     655.0,
+     6.0
+    ]
+   ]
+  }
+ ],
+ [
+  "sketch.spline",
+  {
+   "sketch": "Tail0",
+   "control": [
+    "e4",
+    [
+     594.5,
+     -1.92
+    ],
+    [
+     545.0,
+     -0.6
+    ],
+    "e1"
+   ]
+  }
+ ],
+ [
+  "sketch.create",
+  {
+   "plane": "xy",
+   "offset": "200 mm",
+   "name": "Tail1"
+  }
+ ],
+ [
+  "sketch.spline",
+  {
+   "sketch": "Tail1",
+   "control": [
+    [
+     590.0,
+     12.0
+    ],
+    [
+     590.0,
+     15.6
+    ],
+    [
+     608.0,
+     16.32
+    ],
+    [
+     650.0,
+     12.0
+    ]
+   ]
+  }
+ ],
+ [
+  "sketch.spline",
+  {
+   "sketch": "Tail1",
+   "control": [
+    "e4",
+    [
+     617.0,
+     7.68
+    ],
+    [
+     590.0,
+     8.4
+    ],
+    "e1"
+   ]
+  }
+ ],
+ [
+  "feature.loft",
+  {
+   "sections": [
+    "Tail0",
+    "Tail1"
+   ],
+   "name": "RightTail"
+  }
+ ],
+ [
+  "feature.mirror",
+  {
+   "source": "RightTail",
+   "normal": [
+    0,
+    0,
+    1
+   ],
+   "keep": true,
+   "name": "LeftTail"
+  }
+ ],
+ [
+  "sketch.create",
+  {
+   "plane": "zx",
+   "offset": "10 mm",
+   "name": "Fin0"
+  }
+ ],
+ [
+  "sketch.spline",
+  {
+   "sketch": "Fin0",
+   "control": [
+    [
+     0.0,
+     530.0
+    ],
+    [
+     9.0,
+     530.0
+    ],
+    [
+     10.8,
+     575.0
+    ],
+    [
+     0.0,
+     680.0
+    ]
+   ]
+  }
+ ],
+ [
+  "sketch.spline",
+  {
+   "sketch": "Fin0",
+   "control": [
+    "e4",
+    [
+     -10.8,
+     597.5
+    ],
+    [
+     -9.0,
+     530.0
+    ],
+    "e1"
+   ]
+  }
+ ],
+ [
+  "sketch.create",
+  {
+   "plane": "zx",
+   "offset": "180 mm",
+   "name": "Fin1"
+  }
+ ],
+ [
+  "sketch.spline",
+  {
+   "sketch": "Fin1",
+   "control": [
+    [
+     0.0,
+     620.0
+    ],
+    [
+     4.2,
+     620.0
+    ],
+    [
+     5.04,
+     641.0
+    ],
+    [
+     0.0,
+     690.0
+    ]
+   ]
+  }
+ ],
+ [
+  "sketch.spline",
+  {
+   "sketch": "Fin1",
+   "control": [
+    "e4",
+    [
+     -5.04,
+     651.5
+    ],
+    [
+     -4.2,
+     620.0
+    ],
+    "e1"
+   ]
+  }
+ ],
+ [
+  "feature.loft",
+  {
+   "sections": [
+    "Fin0",
+    "Fin1"
+   ],
+   "name": "Fin"
+  }
+ ],
+ [
+  "feature.boolean",
+  {
+   "op": "union",
+   "target": "Fuselage",
+   "tool": "RightWing",
+   "name": "J1"
+  }
+ ],
+ [
+  "feature.boolean",
+  {
+   "op": "union",
+   "target": "J1",
+   "tool": "LeftWing",
+   "name": "J2"
+  }
+ ],
+ [
+  "feature.boolean",
+  {
+   "op": "union",
+   "target": "J2",
+   "tool": "RightTail",
+   "name": "J3"
+  }
+ ],
+ [
+  "feature.boolean",
+  {
+   "op": "union",
+   "target": "J3",
+   "tool": "LeftTail",
+   "name": "J4"
+  }
+ ],
+ [
+  "feature.boolean",
+  {
+   "op": "union",
+   "target": "J4",
+   "tool": "Fin",
+   "name": "Plane"
+  }
+ ],
+ [
+  "document.check",
+  {
+   "deep": true
+  }
+ ]
+]
