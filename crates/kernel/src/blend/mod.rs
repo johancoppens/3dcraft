@@ -963,12 +963,22 @@ fn fits(body: &Body, plans: &[Plan], tol: f64) -> Result<(), BlendError> {
                             |p: Vec3| (plan.coordinate(side, p - start), (p - start).dot(along));
                         if touches {
                             // An edge that leaves from an end of this one
-                            // bounds the strip up to its own far end.
-                            points
+                            // bounds the strip up to its own far end, and
+                            // on along the edges of the face that continue
+                            // it smoothly (a rim that runs on round a
+                            // tangent arc, a circle split at its seam):
+                            // the face can only turn back at a corner.
+                            let mut far = points
                                 .iter()
                                 .map(|p| place(*p).0)
                                 .fold(0.0_f64, f64::max)
-                                .max(0.0)
+                                .max(0.0);
+                            for next in smooth_run(body, face, plan.edge, other, &ends) {
+                                for p in samples(body, next, true) {
+                                    far = far.max(place(p).0);
+                                }
+                            }
+                            far
                         } else {
                             let mut nearest = f64::INFINITY;
                             for pair in points.windows(2) {
@@ -1071,6 +1081,71 @@ fn fits(body: &Body, plans: &[Plan], tol: f64) -> Result<(), BlendError> {
         }
     }
     Ok(())
+}
+
+/// The edges of `face` that continue `first` smoothly, one after the
+/// other, away from the end of `first` that is an end of `edge` (`ends`):
+/// at each far vertex the one other edge of the face that leaves it
+/// straight on. Stops at a corner, at `edge`, or when the run closes.
+fn smooth_run(
+    body: &Body,
+    face: FaceId,
+    edge: EdgeId,
+    first: EdgeId,
+    ends: &[VertexId],
+) -> Vec<EdgeId> {
+    let edges = face_edges(body, face);
+    // The direction an edge leaves `vertex` in, if it ends there.
+    let away = |id: EdgeId, vertex: VertexId| -> Option<Vec3> {
+        let data = body.edge(id)?;
+        if data.start == vertex {
+            tangent(&data.curve, data.range.0).ok()
+        } else if data.end == vertex {
+            tangent(&data.curve, data.range.1).ok().map(|t| -t)
+        } else {
+            None
+        }
+    };
+    let mut run = Vec::new();
+    let Some(data) = body.edge(first) else {
+        return run;
+    };
+    let mut current = first;
+    let mut vertex = if ends.contains(&data.start) {
+        data.end
+    } else {
+        data.start
+    };
+    for _ in 0..edges.len() {
+        if ends.contains(&vertex) {
+            break;
+        }
+        let Some(arriving) = away(current, vertex) else {
+            break;
+        };
+        let mut next = edges.iter().copied().filter(|e| {
+            *e != current
+                && *e != edge
+                && away(*e, vertex).is_some_and(|d| d.dot(arriving) < -1.0 + 1e-9)
+        });
+        let (Some(found), None) = (next.next(), next.next()) else {
+            break;
+        };
+        if found == first || run.contains(&found) {
+            break;
+        }
+        run.push(found);
+        let Some(data) = body.edge(found) else {
+            break;
+        };
+        vertex = if data.start == vertex {
+            data.end
+        } else {
+            data.start
+        };
+        current = found;
+    }
+    run
 }
 
 /// An edge at a vertex: which way it leaves, and how it turns.

@@ -557,3 +557,79 @@ fn both_tip_edges_of_a_cambered_blade() {
         }
     }
 }
+
+/// The foot of a boss whose axis stands `d` outside a wall, rounded with
+/// a radius whose touch line on the boss crosses the cylinder's seam
+/// (engine-block finding E2): the result must not depend on where the
+/// seam lies.
+#[test]
+fn a_boss_root_fillet_does_not_depend_on_the_seam() {
+    // The wall: the block below y = 0, from x = -4 to 4 and y = -3.
+    // The boss: a rod of radius `big` about (0, d), as high as the block.
+    let (big, d, r, height) = (1.0_f64, 0.3_f64, 0.5_f64, 2.0_f64);
+    let ex = (big * big - d * d).sqrt();
+    // The ball is `r` off the wall and `big + r` from the axis.
+    let mx = ((big + r) * (big + r) - (r - d) * (r - d)).sqrt();
+    let m = [mx, r];
+    let psi = angle([0.0, d], m);
+    let phi = angle([0.0, d], [ex, 0.0]);
+    // The touch line on the boss lies past its widest point, where a
+    // seam at 0 or 180 degrees runs.
+    assert!(psi > 0.0 && phi < 0.0);
+    let added = area(&[
+        Piece::Line([ex, 0.0], [mx, 0.0]),
+        Piece::Arc {
+            centre: m,
+            radius: r,
+            from: -PI / 2.0,
+            to: psi - PI,
+        },
+        Piece::Arc {
+            centre: [0.0, d],
+            radius: big,
+            from: psi,
+            to: phi,
+        },
+    ]);
+    assert!(added > 0.0);
+    // The disc's part above the wall: the side of the chord at distance
+    // d below the centre that holds the centre.
+    let cap = big * big * (PI - (d / big).acos()) + d * ex;
+    let section = 8.0 * 3.0 + cap + 2.0 * added;
+    for k in SCALES {
+        for frame in frames(k) {
+            let mut volumes = Vec::new();
+            for degrees in [0.0_f64, 45.0, 90.0, 180.0, 270.0] {
+                let turn = degrees.to_radians();
+                let wall_frame = frame.at(frame.point(-4.0 * k, -3.0 * k, 0.0)).unwrap();
+                let wall = primitives::block(&wall_frame, 8.0 * k, 3.0 * k, height * k).unwrap();
+                let boss_frame = Frame::new(
+                    frame.point(0.0, d * k, 0.0),
+                    frame.z(),
+                    frame.vector(turn.cos(), turn.sin(), 0.0),
+                )
+                .unwrap();
+                let boss = primitives::cylinder(&boss_frame, big * k, height * k).unwrap();
+                let body = boolean(&wall, &boss, BooleanOp::Union, &tolerance(k))
+                    .unwrap()
+                    .body;
+                let edges = [
+                    round(&body, &frame, k, [ex, 0.0], height, r),
+                    round(&body, &frame, k, [-ex, 0.0], height, r),
+                ];
+                let made = match fillet(&body, &edges, &tolerance(k)) {
+                    Ok(made) => made,
+                    Err(e) => panic!("scale {k}, seam at {degrees} degrees: {e}"),
+                };
+                assert_eq!(check(&made.body, &tolerance(k)), [], "seam {degrees}");
+                assert_smooth(&body, &edges, &made);
+                let got = mass(&made.body).volume;
+                assert_close(got, section * height * k * k * k, "volume");
+                volumes.push(got);
+            }
+            for v in &volumes {
+                assert_close(*v, volumes[0], "volume against the seam at 0 degrees");
+            }
+        }
+    }
+}
