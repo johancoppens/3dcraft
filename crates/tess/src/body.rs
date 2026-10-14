@@ -515,6 +515,9 @@ fn tessellate(
                 *slot = result;
             }
         }
+        if !last {
+            wanted.extend(coincident_chords(body, &edges.points));
+        }
         if last || wanted.is_empty() {
             break;
         }
@@ -536,6 +539,44 @@ fn tessellate(
         part_shared_rungs(body, params, &edges.points, &mut results)?;
     }
     Ok((edges, results))
+}
+
+/// The chords of curved edges that are the chord of another edge as well:
+/// between the same two points, as the one chord of an arc flatter than
+/// the tolerance is the line between its ends, when there is such a line
+/// (the two sides of a body thinner than the tolerance). Four faces then
+/// meet in one segment: every face's mesh is right and the whole is
+/// closed, but no manifold. Cut in two, the curved edge leaves the
+/// other. (A face between the two edges asks for this itself, as a face
+/// that encloses nothing; where the two edges bound no common face, at a
+/// joint between two stretches of a sweep, nobody did.)
+fn coincident_chords(body: &Body, points: &[Vec<Vec3>]) -> Vec<Chord> {
+    type Key = ([u64; 3], [u64; 3]);
+    let mut all: Vec<(Key, u32, u32)> = Vec::new();
+    for (edge, polyline) in points.iter().enumerate() {
+        let Ok(edge) = u32::try_from(edge) else { break };
+        for (k, (from, to)) in polyline.iter().zip(polyline.iter().skip(1)).enumerate() {
+            let (a, b) = (place(*from), place(*to));
+            let k = u32::try_from(k).unwrap_or(u32::MAX);
+            all.push((if a <= b { (a, b) } else { (b, a) }, edge, k));
+        }
+    }
+    all.sort_unstable();
+    let straight = |edge: u32| {
+        body.edges
+            .get(edge as usize)
+            .is_none_or(|e| matches!(e.curve, Curve3::Line(_)))
+    };
+    let mut wanted = Vec::new();
+    for group in all.chunk_by(|x, y| x.0 == y.0) {
+        if group
+            .iter()
+            .any(|x| group.first().is_some_and(|y| x.1 != y.1))
+        {
+            wanted.extend(group.iter().filter(|x| !straight(x.1)).map(|x| (x.1, x.2)));
+        }
+    }
+    wanted
 }
 
 /// How often faces are done again to part them where they share a rung.
@@ -871,5 +912,37 @@ mod tests {
         assert_eq!(faces, vec![(0, 4), (4, 5)]);
         assert_eq!(shared[0].0, (p(0.0), p(1.0)));
         assert!(shared_rungs(&[]).is_empty());
+    }
+
+    /// A lens between a line and an arc flatter than the tolerance, as
+    /// two edges that bound no common face: the arc's one chord is the
+    /// line, and is asked to be cut.
+    #[test]
+    fn a_chord_that_is_another_edge_s_chord_is_asked_to_be_cut() {
+        use craft3d_geom::{Circle, Line};
+        use craft3d_topo::BodyKind;
+        let mut body = Body::new(BodyKind::Sheet);
+        let (low, high) = (Vec3::new(1.0, -1.0, 0.0), Vec3::new(1.0, 1.0, 0.0));
+        let (a, b) = (body.add_vertex(low), body.add_vertex(high));
+        let line = Curve3::Line(Line::through(low, high).unwrap());
+        let frame = Frame::WORLD.at(Vec3::new(-9.0, 0.0, 0.0)).unwrap();
+        let radius = 101.0_f64.sqrt();
+        let half = (1.0 / radius).asin();
+        let arc = Curve3::Circle(Circle::new(frame, radius).unwrap());
+        body.add_edge(line, (0.0, 2.0), a, b);
+        body.add_edge(arc, (-half, half), a, b);
+        let coarse = TessParams {
+            chordal_tolerance: 0.25,
+            ..TessParams::default()
+        };
+        let points = edge_points(&body, &coarse).unwrap().points;
+        assert_eq!(coincident_chords(&body, &points), vec![(1, 0)]);
+        // Fine enough for the arc to have a point of its own: nothing.
+        let fine = TessParams {
+            chordal_tolerance: 0.01,
+            ..TessParams::default()
+        };
+        let points = edge_points(&body, &fine).unwrap().points;
+        assert!(coincident_chords(&body, &points).is_empty());
     }
 }
