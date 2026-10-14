@@ -139,7 +139,8 @@ fn faces_whose_loops_bound_no_region_are_errors_that_say_why() {
 /// until 2026-10-14, and are meshed now: each is held to its closed form.
 /// (What is still refused, and never comes out as a mesh of something
 /// else: `tests/closed_freeform.rs` for a surface that closes without the
-/// tessellator seeing it, `tests/bodies.rs` for a loop that winds twice.)
+/// tessellator seeing it, `tests/bodies.rs` for a loop around both the
+/// axis and the tube of a torus.)
 #[test]
 fn faces_once_beyond_the_method_are_meshed() {
     use craft3d_geom::{Circle, NurbsSurface, Sphere};
