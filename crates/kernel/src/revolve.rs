@@ -858,9 +858,9 @@ impl Builder {
 
 /// The control polygon of an arc about the origin, as rational quadratic
 /// pieces: per control point its x, y and weight, with the knots.
-struct Ring {
-    points: Vec<(f64, f64, f64)>,
-    knots: Vec<f64>,
+pub(crate) struct Ring {
+    pub(crate) points: Vec<(f64, f64, f64)>,
+    pub(crate) knots: Vec<f64>,
 }
 
 /// The unit arc from the angle `from` through `sweep` (at most a full
@@ -868,7 +868,7 @@ struct Ring {
 /// quadratic Bézier arc whose middle control point is where the tangents
 /// at its ends meet, with the cosine of half its angle as weight (*The
 /// NURBS Book* §7.3). The parameter runs over `[0, 1]`.
-fn arcs_about(from: f64, sweep: f64) -> Ring {
+pub(crate) fn arcs_about(from: f64, sweep: f64) -> Ring {
     let pieces = if sweep > 1.5 * PI + 1e-9 {
         4_u8
     } else if sweep > PI + 1e-9 {

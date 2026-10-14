@@ -493,7 +493,7 @@ fn degenerate(id: u64, reason: &'static str) -> KernelError {
 }
 
 /// A curve must be finite, within range and longer than the tolerance.
-fn validate(curve: &SketchCurve, tol: f64) -> Result<(), KernelError> {
+pub(crate) fn validate(curve: &SketchCurve, tol: f64) -> Result<(), KernelError> {
     let id = curve.id;
     let not_finite = "a coordinate is not finite or is out of range";
     match &curve.curve {
