@@ -2,7 +2,11 @@
 //! points once (`edge.rs`), and every face that uses the edge uses those
 //! same points. Faces therefore meet without gaps or T-junctions, and
 //! welding the mesh of a valid solid gives a closed manifold
-//! (docs/architecture.md §6).
+//! (docs/architecture.md §6). That is checked, not assumed: the mesh of
+//! every face is held against the chords of the face's edges before it
+//! is returned (`closes_along_edges`), and a face whose mesh does not
+//! end on them, each as often and in the direction its loops use it, is
+//! an error.
 //!
 //! Each face gets its own vertices, so it can carry its own normals; shared
 //! positions are bit-identical and `Mesh::weld` joins them.
@@ -19,7 +23,14 @@
 //! a sphere but for holes whose loops do not go around its axis (the face
 //! is then everything *outside* its loops, which all run clockwise: a
 //! ball with a hole drilled through it across the sphere's axis);
-//! reversed faces.
+//! reversed faces. A Bézier or NURBS surface that closes on itself (its
+//! control net ends on the row it starts with, on clamped knots) is a
+//! closed surface like those: a face may go around it, cross its seam or
+//! reach a row that is one point, in either parameter or in both. And a
+//! closed surface may be given with its seam as an edge: one that the
+//! loop walks there and back between two loops that go around (the face
+//! is then a patch one period wide), or from pole to pole (the loop
+//! turns around each pole).
 //!
 //! Not handled, each an `Unsupported` error that names the face:
 //! - a loop that winds around its surface more than once, or around both
@@ -36,11 +47,13 @@
 //!   whose loop goes around neither the axis nor the tube), or on any
 //!   surface that is not closed, where it would have no end: the loops
 //!   run clockwise, as they do on an invalid face;
-//! - a face on a freeform surface that closes on itself (a NURBS tube):
-//!   `craft3d-geom` reports no period for it, so its seam cannot be
-//!   followed;
-//! - a whole closed surface given with its seam as an edge that the loop
-//!   walks there and back.
+//! - a face across the seam of a spline surface that closes on itself
+//!   without its control net showing it (knots that are not clamped): no
+//!   period is found for it, its boundary jumps from one end of the
+//!   parameter range to the other, and a boundary that jumps is refused
+//!   on any surface (`face.rs`, `mesh_face`);
+//! - a face whose mesh does not close along its edges (see above): a
+//!   mistake of the tessellator, caught before it leaves.
 //!
 //! Faces are independent once the edges are points, so they are done on
 //! several threads and put together in face order: the mesh does not
