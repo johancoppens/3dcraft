@@ -17,18 +17,18 @@ use craft3d_math::Tolerance;
 use craft3d_topo::Body;
 
 /// What the kernel's boolean made.
-struct Combined {
-    body: Body,
+pub(crate) struct Combined {
+    pub(crate) body: Body,
     /// For every face the operands (0 the target, 1 the tool) and the
     /// faces of them it has a piece of, the one it is named after first.
-    contributors: Contributors,
+    pub(crate) contributors: Contributors,
     /// For every edge and vertex the operand and the entity of it that
     /// it is, when it is one.
-    edges: Kept,
-    vertices: Kept,
+    pub(crate) edges: Kept,
+    pub(crate) vertices: Kept,
 }
 
-fn combine(
+pub(crate) fn combine(
     target: &Body,
     tool: &Body,
     op: BooleanOp,

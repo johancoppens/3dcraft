@@ -161,7 +161,7 @@ pub(crate) fn plane_value(
 /// An axis: a world axis, the straight edge between two faces, or a
 /// datum axis by id or name. A world axis's name wins over a feature of
 /// the same name.
-fn axis_value(
+pub(crate) fn axis_value(
     doc: &Document,
     command: &str,
     key: &str,
@@ -196,7 +196,7 @@ fn axis_value(
 /// A point: coordinates `[x, y, z]`, a vertex by its name, the centre of
 /// the circular edge between two faces (`{"center": [face, face]}`), or a
 /// datum point by id or name.
-fn point_value(
+pub(crate) fn point_value(
     doc: &Document,
     p: &Params,
     key: &str,
@@ -268,6 +268,19 @@ pub(crate) fn datum_json(datum: &Datum) -> Value {
             "origin": vec3(*origin),
             "direction": vec3(*direction),
         }),
+        Datum::Helix(helix) => json!({
+            "kind": "helix",
+            "origin": vec3(helix.origin),
+            "axis": vec3(helix.axis),
+            "start": vec3(helix.point(0.0)),
+            "end": vec3(helix.point(helix.angle())),
+            "radius": helix.radius,
+            "pitch": helix.pitch,
+            "turns": helix.turns,
+            "height": helix.height(),
+            "length": helix.length(),
+            "leftHanded": helix.left_handed,
+        }),
     }
 }
 
@@ -286,7 +299,12 @@ fn datum_result(session: &mut Session, id: FeatureId) -> Run {
 }
 
 /// Adds the datum, or gives the datum `replace` names this definition.
-fn store(session: &mut Session, command: &'static str, p: &Params, kind: FeatureKind) -> Run {
+pub(crate) fn store(
+    session: &mut Session,
+    command: &'static str,
+    p: &Params,
+    kind: FeatureKind,
+) -> Run {
     let name = p.str("name")?;
     let id = if p.get("replace").is_some() {
         if name.is_some() {

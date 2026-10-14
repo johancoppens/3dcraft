@@ -1,13 +1,15 @@
 //! Sweeps in regeneration: the one closed profile of a solved sketch is
-//! carried along the curves of another; the body the kernel makes is
+//! carried along the curves of another, or along a datum helix; the body the kernel makes is
 //! searched for places where it passes through itself before it is
 //! handed on.
 
+use crate::datum::datum_helix;
 use crate::extrude::{drawn, name_of, profile_error, swept};
 use crate::selfcheck::{Crossing, crossing};
 use crate::{FeatureResult, Names, SweepReport, entity};
-use craft3d_doc::{Document, FeatureId, PersistentName, Sweep};
+use craft3d_doc::{Document, FeatureId, FeatureKind, PersistentName, Sweep};
 use craft3d_kernel::KernelError;
+use craft3d_kernel::helix::sweep_helix;
 use craft3d_kernel::sweep::sweep;
 use craft3d_topo::Body;
 
@@ -33,29 +35,50 @@ pub(crate) fn build(
             made.profiles.len()
         ));
     };
-    // What `drawn` says of a sketch, as what it says of the path.
-    let path = drawn(doc, earlier, feature.path).map_err(|reason| {
-        let reason = reason.strip_prefix("sketch: ").unwrap_or(&reason);
-        format!("path: {reason}")
-    })?;
-    let along = path.name;
-    let swept = sweep(
-        profile,
-        &made.plane,
-        &path.curves,
-        &path.plane,
-        &made.tolerance,
-    )
-    .map_err(|error| match &error {
-        // The kernel names the curves of the path as the sketch does.
-        KernelError::Sweep { reason, .. } => format!("path: sketch `{along}`: {reason}"),
-        KernelError::DegenerateCurve { .. }
-        | KernelError::DuplicateCurveId { .. }
-        | KernelError::TooManyCurves { .. } => {
-            format!("path: sketch `{along}`: {}", profile_error(&error))
-        }
-        other => format!("path: {other}"),
-    })?;
+    let helical = doc
+        .feature(feature.path)
+        .is_some_and(|f| matches!(f.kind, FeatureKind::DatumHelix(_)));
+    let swept = if helical {
+        let helix = datum_helix(doc, earlier, feature.path, "path")?;
+        let along = doc
+            .feature(feature.path)
+            .map_or_else(|| feature.path.to_string(), |f| f.name.clone());
+        sweep_helix(profile, &made.plane, &helix, None, &made.tolerance).map_err(|error| {
+            match &error {
+                KernelError::Sweep { reason, .. } => format!("path: helix `{along}`: {reason}"),
+                KernelError::DegenerateCurve { .. }
+                | KernelError::DuplicateCurveId { .. }
+                | KernelError::TooManyCurves { .. } => {
+                    format!("path: helix `{along}`: {}", profile_error(&error))
+                }
+                other => format!("path: helix `{along}`: {other}"),
+            }
+        })?
+    } else {
+        // What `drawn` says of a sketch, as what it says of the path.
+        let path = drawn(doc, earlier, feature.path).map_err(|reason| {
+            let reason = reason.strip_prefix("sketch: ").unwrap_or(&reason);
+            format!("path: {reason}")
+        })?;
+        let along = path.name;
+        sweep(
+            profile,
+            &made.plane,
+            &path.curves,
+            &path.plane,
+            &made.tolerance,
+        )
+        .map_err(|error| match &error {
+            // The kernel names the curves of the path as the sketch does.
+            KernelError::Sweep { reason, .. } => format!("path: sketch `{along}`: {reason}"),
+            KernelError::DegenerateCurve { .. }
+            | KernelError::DuplicateCurveId { .. }
+            | KernelError::TooManyCurves { .. } => {
+                format!("path: sketch `{along}`: {}", profile_error(&error))
+            }
+            other => format!("path: {other}"),
+        })?
+    };
     let faces: Vec<PersistentName> = swept.faces.iter().map(|o| name_of(id, o)).collect();
 
     // A path that comes back near itself carries the profile through

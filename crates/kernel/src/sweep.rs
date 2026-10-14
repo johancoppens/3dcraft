@@ -125,17 +125,17 @@ const PLANS: [(usize, usize); 9] = [
 /// of a spline path, as a part of that radius.
 const CLEAR_OF_FOLD: f64 = 0.02;
 
-type P2 = [f64; 2];
+pub(crate) type P2 = [f64; 2];
 
-fn sub(a: P2, b: P2) -> P2 {
+pub(crate) fn sub(a: P2, b: P2) -> P2 {
     [a[0] - b[0], a[1] - b[1]]
 }
 
-fn add(a: P2, b: P2) -> P2 {
+pub(crate) fn add(a: P2, b: P2) -> P2 {
     [a[0] + b[0], a[1] + b[1]]
 }
 
-fn scaled(a: P2, s: f64) -> P2 {
+pub(crate) fn scaled(a: P2, s: f64) -> P2 {
     [a[0] * s, a[1] * s]
 }
 
@@ -175,7 +175,7 @@ fn wrap(a: f64) -> f64 {
     if w >= TAU { 0.0 } else { w }
 }
 
-fn refuse(curves: &[u64], reason: impl Into<String>) -> KernelError {
+pub(crate) fn refuse(curves: &[u64], reason: impl Into<String>) -> KernelError {
     let mut curves = curves.to_vec();
     curves.truncate(MAX_REPORTED);
     KernelError::Sweep {
@@ -184,7 +184,7 @@ fn refuse(curves: &[u64], reason: impl Into<String>) -> KernelError {
     }
 }
 
-fn internal() -> KernelError {
+pub(crate) fn internal() -> KernelError {
     refuse(&[], "the sweep lost track of a curve; this is a bug")
 }
 
@@ -734,7 +734,7 @@ fn start(
 /// What a curve of the profile is, in the axes the path carries: `a` to
 /// the left of the path in its plane, `b` along the normal of that plane.
 #[derive(Clone, Debug)]
-enum Form {
+pub(crate) enum Form {
     Line,
     /// About `center` from the angle `from` through `sweep`:
     /// counter-clockwise when positive.
@@ -761,19 +761,19 @@ enum Form {
 
 /// One curve of the profile's loop, in the direction the loop is walked.
 #[derive(Clone, Debug)]
-struct Element {
-    source: u64,
-    start: P2,
-    end: P2,
-    form: Form,
+pub(crate) struct Element {
+    pub(crate) source: u64,
+    pub(crate) start: P2,
+    pub(crate) end: P2,
+    pub(crate) form: Form,
     /// A line parallel to the path's plane: it sweeps one plane.
-    flat: bool,
+    pub(crate) flat: bool,
 }
 
 impl Element {
     /// True when the loop runs against the direction of the element's
     /// edges: an arc's are counter-clockwise, a spline's its own.
-    fn against(&self) -> bool {
+    pub(crate) fn against(&self) -> bool {
         match &self.form {
             Form::Line => false,
             Form::Arc { sweep, .. } => *sweep < 0.0,
@@ -784,12 +784,12 @@ impl Element {
         }
     }
 
-    fn whole(&self) -> bool {
+    pub(crate) fn whole(&self) -> bool {
         matches!(self.form, Form::Circle { .. })
     }
 
     /// The same curve walked the other way.
-    fn flipped(&self) -> Element {
+    pub(crate) fn flipped(&self) -> Element {
         let form = match &self.form {
             Form::Line => Form::Line,
             &Form::Arc {
@@ -868,7 +868,7 @@ impl Element {
 
     /// A point of a line, an arc or a circle away from its ends, and the
     /// direction the loop runs in there.
-    fn middle(&self) -> (P2, P2) {
+    pub(crate) fn middle(&self) -> (P2, P2) {
         let on_circle = |center: P2, radius: f64, angle: f64, forward: bool| {
             let (s, c) = angle.sin_cos();
             let along = if forward { [-s, c] } else { [s, -c] };
@@ -909,12 +909,12 @@ impl Element {
 
 /// A rigid motion of the plane, or one with a reflection: from the
 /// profile's sketch to the axes the path carries.
-struct Map2 {
-    origin: P2,
-    x: P2,
-    y: P2,
+pub(crate) struct Map2 {
+    pub(crate) origin: P2,
+    pub(crate) x: P2,
+    pub(crate) y: P2,
     /// The motion turns the plane over.
-    mirrored: bool,
+    pub(crate) mirrored: bool,
 }
 
 impl Map2 {
@@ -922,7 +922,7 @@ impl Map2 {
         add(self.origin, add(scaled(self.x, p[0]), scaled(self.y, p[1])))
     }
 
-    fn element(&self, segment: &Segment, tol: f64) -> Result<Element, KernelError> {
+    pub(crate) fn element(&self, segment: &Segment, tol: f64) -> Result<Element, KernelError> {
         let (mut start, mut end) = (self.at(segment.start), self.at(segment.end));
         if !(start.iter().chain(&end).all(|v| v.is_finite())) {
             return Err(KernelError::InvalidProfile {
@@ -1001,7 +1001,7 @@ impl Map2 {
 }
 
 /// A whole circle as four quarter arcs from where it starts.
-fn quarters(element: &Element) -> Vec<Element> {
+pub(crate) fn quarters(element: &Element) -> Vec<Element> {
     let &Form::Circle {
         center,
         radius,
@@ -1044,29 +1044,29 @@ fn quarters(element: &Element) -> Vec<Element> {
 /// it is at `origin + a u + b b`. Square to the path `u` is a unit vector;
 /// at a mitre it is longer and leans along the path.
 #[derive(Clone, Copy, Debug)]
-struct Station {
-    origin: Vec3,
-    u: Vec3,
-    b: Vec3,
-    square: bool,
+pub(crate) struct Station {
+    pub(crate) origin: Vec3,
+    pub(crate) u: Vec3,
+    pub(crate) b: Vec3,
+    pub(crate) square: bool,
 }
 
 impl Station {
-    fn at(&self, p: P2) -> Vec3 {
+    pub(crate) fn at(&self, p: P2) -> Vec3 {
         self.origin + self.u * p[0] + self.b * p[1]
     }
 
-    fn vector(&self, d: P2) -> Vec3 {
+    pub(crate) fn vector(&self, d: P2) -> Vec3 {
         self.u * d[0] + self.b * d[1]
     }
 
     /// The unit normal of the station's plane, the way the path goes.
-    fn forward(&self) -> Result<Vec3, KernelError> {
+    pub(crate) fn forward(&self) -> Result<Vec3, KernelError> {
         self.u.cross(self.b).normalized().ok_or_else(internal)
     }
 
     /// The coordinates of a point of the station's plane.
-    fn local(&self, p: Vec3) -> P2 {
+    pub(crate) fn local(&self, p: Vec3) -> P2 {
         let d = p - self.origin;
         [d.dot(self.u) / self.u.length_squared(), d.dot(self.b)]
     }
@@ -1104,7 +1104,7 @@ fn arc_net(center: P2, radius: f64, begin: f64, span: f64) -> (Vec<P2>, Vec<f64>
 
 /// The element at a station as a spline, in the direction of its edge,
 /// from `ends.0` to `ends.1` (the vertices, to the bit).
-fn curve_at(
+pub(crate) fn curve_at(
     element: &Element,
     station: &Station,
     ends: (Vec3, Vec3),
@@ -1127,7 +1127,7 @@ fn curve_at(
 }
 
 /// The ends of an element at a station, in the direction of its edge.
-fn edge_ends(element: &Element, station: &Station) -> (Vec3, Vec3) {
+pub(crate) fn edge_ends(element: &Element, station: &Station) -> (Vec3, Vec3) {
     let (start, end) = (station.at(element.start), station.at(element.end));
     if element.against() {
         (end, start)
@@ -1137,7 +1137,7 @@ fn edge_ends(element: &Element, station: &Station) -> (Vec3, Vec3) {
 }
 
 /// How the profile gets from one station to the next.
-enum Motion {
+pub(crate) enum Motion {
     /// Straight along a unit direction.
     Slide { along: Vec3 },
     /// About the z axis of `frame`, counter-clockwise through `angle`,
@@ -1184,7 +1184,11 @@ fn revolved(curve: &NurbsCurve, frame: &Frame, angle: f64) -> Result<NurbsSurfac
 
 /// True when the outside of a face, which is towards `outward` at its
 /// point `at`, is against the normal of its surface.
-fn against_normal(surface: &Surface, at: Vec3, outward: Vec3) -> Result<bool, KernelError> {
+pub(crate) fn against_normal(
+    surface: &Surface,
+    at: Vec3,
+    outward: Vec3,
+) -> Result<bool, KernelError> {
     let (u, v) = surface.project(at)?;
     let normal = surface.normal(u, v).ok_or_else(internal)?;
     let along = normal.dot(outward);
@@ -1196,7 +1200,7 @@ fn against_normal(surface: &Surface, at: Vec3, outward: Vec3) -> Result<bool, Ke
 
 /// The B-spline surface, or the plane it lies in when it lies in one; an
 /// error when its normal vanishes somewhere.
-fn flat_or(
+pub(crate) fn flat_or(
     surface: NurbsSurface,
     tol: f64,
     profile: u64,
@@ -1243,7 +1247,7 @@ fn flat_or(
 /// to 1: the ends and the Chebyshev points between them, through which a
 /// polynomial of degree `degree` follows a smooth curve about as well as
 /// one of that degree can.
-fn stations_of(degree: usize) -> Vec<f64> {
+pub(crate) fn stations_of(degree: usize) -> Vec<f64> {
     (0..=degree)
         .map(|j| {
             if j == 0 {
@@ -1260,7 +1264,7 @@ fn stations_of(degree: usize) -> Vec<f64> {
 /// The band that joins the stations of `parts` parts of a path, each
 /// followed by one polynomial of degree `degree` through its stations at
 /// `at` (see [`stations_of`]); the parts are joined where they meet.
-fn part_band(parts: usize, degree: usize, at: &[f64]) -> Result<Band, KernelError> {
+pub(crate) fn part_band(parts: usize, degree: usize, at: &[f64]) -> Result<Band, KernelError> {
     let count = parts
         .checked_mul(degree)
         .and_then(|n| n.checked_add(1))
@@ -1520,30 +1524,30 @@ fn follow(
 /// runs against it. A line that sweeps one plane has an edge only at the
 /// ends of an open path.
 #[derive(Clone)]
-struct Ring {
-    vertices: Vec<Vec<VertexId>>,
-    edges: Vec<Vec<Option<(EdgeId, bool)>>>,
+pub(crate) struct Ring {
+    pub(crate) vertices: Vec<Vec<VertexId>>,
+    pub(crate) edges: Vec<Vec<Option<(EdgeId, bool)>>>,
 }
 
-struct Builder {
-    body: Body,
-    faces: Vec<Origin>,
-    tol: f64,
+pub(crate) struct Builder {
+    pub(crate) body: Body,
+    pub(crate) faces: Vec<Origin>,
+    pub(crate) tol: f64,
 }
 
-fn coedge(edge: EdgeId, reversed: bool) -> Coedge {
+pub(crate) fn coedge(edge: EdgeId, reversed: bool) -> Coedge {
     Coedge { edge, reversed }
 }
 
 impl Builder {
-    fn point(&self, vertex: VertexId) -> Result<Vec3, KernelError> {
+    pub(crate) fn point(&self, vertex: VertexId) -> Result<Vec3, KernelError> {
         self.body
             .vertex(vertex)
             .map(|v| v.point)
             .ok_or_else(internal)
     }
 
-    fn face(
+    pub(crate) fn face(
         &mut self,
         surface: Surface,
         reversed: bool,
@@ -1560,7 +1564,7 @@ impl Builder {
         self.body.add_face(surface, reversed, loops)
     }
 
-    fn ring(
+    pub(crate) fn ring(
         &mut self,
         loops: &[Vec<Element>],
         station: &Station,
@@ -1632,7 +1636,7 @@ impl Builder {
 
     /// The edge a vertex of the profile sweeps between two stations, and
     /// its length.
-    fn rail(
+    pub(crate) fn rail(
         &mut self,
         motion: &Motion,
         at: P2,
@@ -1684,7 +1688,7 @@ impl Builder {
 
     /// The surface `element` sweeps from `station` by `motion`, and
     /// whether the outside is against its normal.
-    fn surface(
+    pub(crate) fn surface(
         &self,
         motion: &Motion,
         element: &Element,

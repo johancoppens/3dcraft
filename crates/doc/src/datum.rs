@@ -352,3 +352,86 @@ impl DatumPlane {
         }
     }
 }
+
+/// Where a helix starts.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum HelixStart {
+    /// At this distance from the axis, level with the axis's own point,
+    /// towards the first of the world's x, y and z axes that is the least
+    /// along the axis (x for an upright axis).
+    Radius { radius: Expr },
+    /// At a point off the axis: its distance from the axis is the radius,
+    /// and the helix starts level with it.
+    Point { point: PointRef },
+}
+
+/// How far a helix goes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum HelixExtent {
+    /// So many turns, a number that need not be whole.
+    Turns { turns: Expr },
+    /// So far along the axis.
+    Height { height: Expr },
+}
+
+/// A helix as a feature: a curve about an axis that a sweep can follow
+/// (a coil spring, the groove of a thread). It advances one pitch along
+/// the axis per turn, counter-clockwise seen from the tip of the axis
+/// unless it is left-handed. It makes no body.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DatumHelix {
+    pub axis: AxisRef,
+    pub start: HelixStart,
+    pub pitch: Expr,
+    pub extent: HelixExtent,
+    #[serde(default)]
+    pub left_handed: bool,
+}
+
+impl DatumHelix {
+    /// Every persistent name the helix refers to, in a fixed order.
+    pub fn names(&self) -> Vec<&PersistentName> {
+        let mut out = self.axis.names();
+        if let HelixStart::Point { point } = &self.start {
+            out.extend(point.names());
+        }
+        out
+    }
+
+    /// Every feature the helix is placed relative to, in a fixed order.
+    pub fn inputs(&self) -> Vec<FeatureId> {
+        let mut out = self.axis.inputs();
+        if let HelixStart::Point { point } = &self.start {
+            out.extend(point.inputs());
+        }
+        out
+    }
+
+    pub fn exprs(&self) -> Vec<(String, &Expr)> {
+        let mut out = match &self.start {
+            HelixStart::Radius { radius } => vec![("radius".to_string(), radius)],
+            HelixStart::Point { point } => point.exprs("start"),
+        };
+        out.push(("pitch".to_string(), &self.pitch));
+        out.push(match &self.extent {
+            HelixExtent::Turns { turns } => ("turns".to_string(), turns),
+            HelixExtent::Height { height } => ("height".to_string(), height),
+        });
+        out
+    }
+
+    pub(crate) fn exprs_mut(&mut self) -> Vec<&mut Expr> {
+        let mut out = match &mut self.start {
+            HelixStart::Radius { radius } => vec![radius],
+            HelixStart::Point { point } => point.exprs_mut(),
+        };
+        out.push(&mut self.pitch);
+        out.push(match &mut self.extent {
+            HelixExtent::Turns { turns } => turns,
+            HelixExtent::Height { height } => height,
+        });
+        out
+    }
+}

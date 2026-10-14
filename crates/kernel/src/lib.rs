@@ -16,6 +16,7 @@ pub mod delete_face;
 pub mod extrude;
 pub mod extrude_to;
 pub mod fillet;
+pub mod helix;
 pub mod loft;
 pub mod offset_face;
 pub mod primitives;
@@ -24,6 +25,7 @@ pub mod revolve;
 pub mod shell;
 mod spline2;
 pub mod sweep;
+pub mod thread;
 mod tweak;
 
 use craft3d_geom::GeomError;

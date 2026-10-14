@@ -217,7 +217,8 @@ pub enum FeatureKind {
         closed: bool,
     },
     /// A solid the one closed profile of sketch `sketch` sweeps along the
-    /// curves of sketch `path` (format version 10).
+    /// curves of sketch `path` (format version 10), or along the datum
+    /// helix `path` (format version 13).
     Sweep { sketch: u64, path: u64 },
     /// The body of feature `source`, turned by `angle` about the line
     /// through `pivot` along `axis` (three plain numbers), then shifted by
@@ -267,6 +268,17 @@ pub enum FeatureKind {
     DatumAxis { by: AxisBy },
     /// A point to place other features by; it makes no body.
     DatumPoint { at: PointRef },
+    /// A helix about `axis` that a sweep can follow; it makes no body
+    /// (format version 13). Written without `left_handed` when it is
+    /// right-handed.
+    DatumHelix {
+        axis: AxisRef,
+        start: HelixStart,
+        pitch: String,
+        extent: HelixExtent,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        left_handed: bool,
+    },
     /// Edges of the body of an earlier feature replaced by faces. Each
     /// edge is the two faces it lies between, the first distance being
     /// measured along the first; the body is that of the feature the first
@@ -298,6 +310,21 @@ pub enum FeatureKind {
     /// again by the faces round them. The body is that of the feature
     /// the first name starts with.
     DeleteFace { faces: Vec<Name> },
+    /// An ISO metric thread of designation `size` (`M10`) on the
+    /// cylindrical face `face`, from the flat face `start` along it for
+    /// `length` (format version 13). Written without `left_handed` and
+    /// `cosmetic` when they are not set.
+    Thread {
+        face: Name,
+        start: Name,
+        size: String,
+        pitch: String,
+        length: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        left_handed: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        cosmetic: bool,
+    },
     /// The body of `source` made hollow, with walls of `thickness` behind
     /// every face except those of `open`, which are taken away.
     Shell {
@@ -327,6 +354,22 @@ pub enum AxisBy {
     Edge { between: [Name; 2] },
     Face { face: Name },
     TwoPlanes { planes: [PlaneRef; 2] },
+}
+
+/// Where a helix starts: at a radius from its axis, or at a point.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum HelixStart {
+    Radius { radius: String },
+    Point { point: PointRef },
+}
+
+/// How far a helix goes: a number of turns, or a height along its axis.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum HelixExtent {
+    Turns { turns: String },
+    Height { height: String },
 }
 
 /// How a datum plane is placed: `from` moved by `distance` along its
@@ -548,6 +591,9 @@ pub enum NameRole {
     /// The piece of a ball where three fillets meet; `sources` as for
     /// `chamferCorner`.
     FilletCorner,
+    /// A face of the groove of a thread; `sources` is one plain number:
+    /// 0 the root, 1 and 2 the flanks (format version 13).
+    Thread,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

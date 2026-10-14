@@ -624,6 +624,50 @@ fn scene_sketch(
     }
 }
 
+/// Most points a helix is drawn with.
+const MAX_HELIX_POINTS: f64 = 65_536.0;
+
+/// A datum helix as a curve: a sketch of one spline on the plane square
+/// to its axis through its start, with points close enough that no chord
+/// is further than `tolerance` from the helix.
+fn scene_helix(
+    feature: &craft3d_doc::Feature,
+    helix: &craft3d_regen::Helix,
+    tolerance: f64,
+) -> Option<SceneSketch> {
+    let step = if tolerance < helix.radius {
+        2.0 * (1.0 - tolerance / helix.radius).acos()
+    } else {
+        std::f64::consts::FRAC_PI_2
+    };
+    let count = (helix.angle() / step.clamp(1e-6, std::f64::consts::FRAC_PI_2))
+        .ceil()
+        .clamp(1.0, MAX_HELIX_POINTS);
+    if !count.is_finite() {
+        return None;
+    }
+    let count = count as usize;
+    let points: Vec<Vec3> = (0..=count)
+        .map(|i| helix.point(helix.angle() * i as f64 / count as f64))
+        .collect();
+    let y_axis = helix.axis.cross(helix.start);
+    points.iter().all(|p| p.is_finite()).then(|| SceneSketch {
+        feature: feature.id.to_string(),
+        name: feature.name.clone(),
+        origin: helix.origin,
+        x_axis: helix.start,
+        y_axis,
+        normal: helix.axis,
+        polylines: vec![ScenePolyline {
+            entity: "helix".to_string(),
+            curve: SketchCurve::Spline,
+            construction: false,
+            points,
+        }],
+        points: Vec::new(),
+    })
+}
+
 /// Why a build with a triangle budget stopped before its last body.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Stop {
@@ -722,6 +766,13 @@ fn build(
             scene
                 .sketches
                 .push(scene_sketch(feature, sketch, solved, tolerance));
+        }
+        // A helix is drawn as a curve, like a spline of a sketch.
+        if let (Some(craft3d_regen::Datum::Helix(helix)), FeatureState::Ok) =
+            (outcome.and_then(|o| o.datum), state)
+            && let Some(drawn) = scene_helix(feature, &helix, tolerance)
+        {
+            scene.sketches.push(drawn);
         }
         let Some(body) = outcome.and_then(|o| o.own_body()) else {
             continue;
@@ -913,6 +964,7 @@ fn scene_datums(doc: &Document, regen: &Regen, bbox: &Bbox3) -> Vec<SceneDatum> 
             craft3d_regen::Datum::Plane(frame) => frame.origin(),
             craft3d_regen::Datum::Axis { origin, .. } => *origin,
             craft3d_regen::Datum::Point(point) => *point,
+            craft3d_regen::Datum::Helix(helix) => helix.origin,
         }))
     } else {
         *bbox
@@ -946,6 +998,8 @@ fn scene_datums(doc: &Document, regen: &Regen, bbox: &Bbox3) -> Vec<SceneDatum> 
                 craft3d_regen::Datum::Point(point) => {
                     finite(&[point]).then_some(SceneDatumShape::Point(point))?
                 }
+                // Drawn with the sketches, as a curve.
+                craft3d_regen::Datum::Helix(_) => return None,
             };
             Some(SceneDatum {
                 feature: feature.id.to_string(),

@@ -277,6 +277,7 @@ pub(crate) fn features(
                         names: None,
                         instances: None,
                         sweep: None,
+                        thread: None,
                         consumed_by: None,
                         followed: None,
                     },

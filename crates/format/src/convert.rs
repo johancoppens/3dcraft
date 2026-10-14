@@ -269,6 +269,33 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                     at: point_ref_to_manifest(at),
                 }
             }
+            doc::FeatureKind::DatumHelix(doc::DatumHelix {
+                axis,
+                start,
+                pitch,
+                extent,
+                left_handed,
+            }) => manifest::FeatureKind::DatumHelix {
+                axis: axis_ref_to_manifest(axis),
+                start: match start {
+                    doc::HelixStart::Radius { radius } => manifest::HelixStart::Radius {
+                        radius: expr_to_manifest(radius),
+                    },
+                    doc::HelixStart::Point { point } => manifest::HelixStart::Point {
+                        point: point_ref_to_manifest(point),
+                    },
+                },
+                pitch: expr_to_manifest(pitch),
+                extent: match extent {
+                    doc::HelixExtent::Turns { turns } => manifest::HelixExtent::Turns {
+                        turns: expr_to_manifest(turns),
+                    },
+                    doc::HelixExtent::Height { height } => manifest::HelixExtent::Height {
+                        height: expr_to_manifest(height),
+                    },
+                },
+                left_handed: *left_handed,
+            },
             doc::FeatureKind::OffsetFace(doc::OffsetFace { faces, distance }) => {
                 manifest::FeatureKind::OffsetFace {
                     faces: faces.iter().map(name_to_manifest).collect(),
@@ -280,6 +307,23 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                     faces: faces.iter().map(name_to_manifest).collect(),
                 }
             }
+            doc::FeatureKind::Thread(doc::Thread {
+                face,
+                start,
+                size,
+                pitch,
+                length,
+                left_handed,
+                cosmetic,
+            }) => manifest::FeatureKind::Thread {
+                face: name_to_manifest(face),
+                start: name_to_manifest(start),
+                size: size.clone(),
+                pitch: expr_to_manifest(pitch),
+                length: expr_to_manifest(length),
+                left_handed: *left_handed,
+                cosmetic: *cosmetic,
+            },
             doc::FeatureKind::Shell(doc::Shell {
                 source: doc::FeatureId(source),
                 thickness,
@@ -565,6 +609,7 @@ fn role_to_manifest(role: doc::NameRole) -> manifest::NameRole {
         D::ChamferCorner => M::ChamferCorner,
         D::Fillet => M::Fillet,
         D::FilletCorner => M::FilletCorner,
+        D::Thread => M::Thread,
     }
 }
 
@@ -591,6 +636,7 @@ fn role_to_doc(role: manifest::NameRole) -> doc::NameRole {
         M::ChamferCorner => D::ChamferCorner,
         M::Fillet => D::Fillet,
         M::FilletCorner => D::FilletCorner,
+        M::Thread => D::Thread,
     }
 }
 
@@ -1149,6 +1195,33 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
                     at: point_ref_to_doc(at),
                 })
             }
+            manifest::FeatureKind::DatumHelix {
+                axis,
+                start,
+                pitch,
+                extent,
+                left_handed,
+            } => doc::FeatureKind::DatumHelix(doc::DatumHelix {
+                axis: axis_ref_to_doc(axis),
+                start: match start {
+                    manifest::HelixStart::Radius { radius } => doc::HelixStart::Radius {
+                        radius: doc::Expr(radius),
+                    },
+                    manifest::HelixStart::Point { point } => doc::HelixStart::Point {
+                        point: point_ref_to_doc(point),
+                    },
+                },
+                pitch: doc::Expr(pitch),
+                extent: match extent {
+                    manifest::HelixExtent::Turns { turns } => doc::HelixExtent::Turns {
+                        turns: doc::Expr(turns),
+                    },
+                    manifest::HelixExtent::Height { height } => doc::HelixExtent::Height {
+                        height: doc::Expr(height),
+                    },
+                },
+                left_handed,
+            }),
             manifest::FeatureKind::OffsetFace { faces, distance } => {
                 doc::FeatureKind::OffsetFace(doc::OffsetFace {
                     faces: faces.into_iter().map(name_to_doc).collect(),
@@ -1160,6 +1233,23 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
                     faces: faces.into_iter().map(name_to_doc).collect(),
                 })
             }
+            manifest::FeatureKind::Thread {
+                face,
+                start,
+                size,
+                pitch,
+                length,
+                left_handed,
+                cosmetic,
+            } => doc::FeatureKind::Thread(doc::Thread {
+                face: name_to_doc(face),
+                start: name_to_doc(start),
+                size,
+                pitch: doc::Expr(pitch),
+                length: doc::Expr(length),
+                left_handed,
+                cosmetic,
+            }),
             manifest::FeatureKind::Shell {
                 source,
                 thickness,

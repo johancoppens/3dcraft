@@ -28,7 +28,7 @@ type Step = fn(Value) -> Result<Value, String>;
 /// `STEPS[n]` brings a manifest from version `n + 1` to version `n + 2`.
 const STEPS: &[Step] = &[
     v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9, v9_to_v10,
-    v10_to_v11, v11_to_v12,
+    v10_to_v11, v11_to_v12, v12_to_v13,
 ];
 
 /// Version 2 adds the `cone` and `torus` feature kinds and an optional
@@ -120,6 +120,14 @@ fn v10_to_v11(manifest: Value) -> Result<Value, String> {
 /// regeneration reads the face, not of what the file says, and is not
 /// migrated: docs/decisions.md, 14 October 2026.)
 fn v11_to_v12(manifest: Value) -> Result<Value, String> {
+    Ok(manifest)
+}
+
+/// Version 13 adds the feature kinds `datumHelix` and `thread`, and a
+/// sweep whose `path` is a datum helix. Nothing a version-12 file
+/// contains changes meaning; the version was raised so that an older
+/// build reports the version and not an unknown kind.
+fn v12_to_v13(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
 }
 

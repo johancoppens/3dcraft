@@ -1,0 +1,7 @@
+[["datum.helix", {"axis": "z", "radius": 10, "pitch": 5, "turns": 6, "name": "Coil"}],
+ ["datum.plane", {"through": [[10, 0, 0], [11, 0, 0], [10, 0.07932669684365855, -0.9968486721503291]], "name": "Across"}],
+ ["sketch.create", {"plane": "Across", "name": "Wire"}],
+ ["sketch.circle", {"sketch": "Wire", "center": [0, 0], "radius": 1.5}],
+ ["feature.sweep", {"sketch": "Wire", "path": "Coil", "name": "Spring"}],
+ ["document.check", {"deep": true}],
+ ["document.inspect", {}]]

@@ -338,26 +338,53 @@ fn bar_drilled(s: &mut Session, k: f64) -> Forms {
     Ok(Vec::new())
 }
 
+/// A coil spring: a ring wire in the plane through the axis, carried
+/// along a helix by its screw motion (Pappus: `π a² · 2π r · turns`).
+fn spring(s: &mut Session, k: f64) -> Forms {
+    step(
+        s,
+        "datum.helix",
+        json!({"axis": "z", "radius": 10.0 * k, "pitch": 4.0 * k, "turns": 2.5, "name": "Coil"}),
+    )?;
+    round(s, "Section", [0.0, 10.0 * k], k)?;
+    step(
+        s,
+        "feature.sweep",
+        json!({"sketch": "Section", "path": "Coil", "name": "Spring"}),
+    )?;
+    Ok(vec![Closed {
+        body: "Spring",
+        volume: PI * TAU * 10.0 * 2.5,
+        area: None,
+    }])
+}
+
+/// An M10 thread (scaled with the model: `M0.01` at 1e-3) cut 12 along a
+/// shank 20 long with a lead chamfer.
+fn thread(s: &mut Session, k: f64) -> Forms {
+    step(
+        s,
+        "feature.cylinder",
+        json!({"radius": 5.0 * k, "height": 20.0 * k, "name": "Shank"}),
+    )?;
+    step(
+        s,
+        "feature.chamfer",
+        json!({"edges": [["F1:face(0)", "F1:face(1)"]], "distance": k, "name": "Lead"}),
+    )?;
+    step(
+        s,
+        "feature.thread",
+        json!({"face": "F2:copy(0)/F1:face(0)", "start": "F2:copy(0)/F1:face(1)",
+               "size": format!("M{}", 10.0 * k), "pitch": 1.5 * k, "length": 12.0 * k,
+               "name": "Thread"}),
+    )?;
+    Ok(Vec::new())
+}
+
 #[test]
 #[ignore = "needs FreeCAD: set CRAFT3D_FREECAD"]
 fn freecad_reads_sweeps() {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("step-sweep");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    let mut set = Set {
-        dir: dir.clone(),
-        cases: Vec::new(),
-        refused: Vec::new(),
-        unmeasured: Vec::new(),
-        per_body: true,
-        meshes: Some(Vec::new()),
-    };
-    let mut forms_text = String::from(
-        "\n## Ours against the closed forms\n\n| file | body | volume - 1 | area - 1 |\n|---|---|---|---|\n",
-    );
-    let mut forms_bad = Vec::new();
-
-    type Build<'a> = Box<dyn Fn(&mut Session, f64) -> Forms + 'a>;
     let cases: Vec<(&str, Expect, Build)> = vec![
         // A face on a torus: FreeCAD's box is not compared (`RING`).
         ("sweep-pipe", RING, Box::new(pipe)),
@@ -389,9 +416,72 @@ fn freecad_reads_sweeps() {
         ("sweep-spline-rail", SPLINE, Box::new(rail)),
         ("sweep-bar-drilled", APPROX, Box::new(bar_drilled)),
     ];
-    for (k, tag) in [(1e-3, "milli"), (1.0, "one"), (1e6, "mega")] {
+    check_sweeps(
+        "step-sweep",
+        "STEP: sweeps along a path, read by FreeCAD",
+        cases,
+        &[],
+    );
+}
+
+/// A spring and a thread: sweeps along a helix
+/// (`target/tmp/step-helix-files/report.md`).
+#[test]
+#[ignore = "needs FreeCAD: set CRAFT3D_FREECAD"]
+fn freecad_reads_sweeps_along_a_helix() {
+    let cases: Vec<(&str, Expect, Build)> = vec![
+        // Along a helix: B-spline faces of degree 7 per half turn.
+        ("sweep-spline-helix-spring", SPLINE, Box::new(spring)),
+        // The groove's B-spline faces meet the shank's cylinder and cone
+        // in curves the boolean approximates, and FreeCAD approximates
+        // them again on import (`APPROXIMATED`); its own quadrature does
+        // not take this file, so the name has no `spline`.
+        ("sweep-helix-thread", APPROX, Box::new(thread)),
+    ];
+    check_sweeps(
+        "step-helix",
+        "STEP: sweeps along a helix and threads, read by FreeCAD",
+        cases,
+        &[(
+            "helix-thread",
+            7,
+            "the shank's wall between the turns of the groove is one face of ours that winds round the cylinder eight times; FreeCAD cuts it at the cylinder's seam into eight (it adds 16 seam edges and 7 faces, and finds the solid valid)",
+        )],
+    );
+}
+
+type Build<'a> = Box<dyn Fn(&mut Session, f64) -> Forms + 'a>;
+
+/// Builds `cases` at three scales, has FreeCAD read them, and holds both
+/// to what they must be; the report goes to `target/tmp/<tag>-files`.
+///
+/// `split` names the files (by a part of their name) in which FreeCAD
+/// may have a given number of faces more than we do, and why.
+fn check_sweeps(
+    tag: &str,
+    title: &str,
+    cases: Vec<(&str, Expect, Build)>,
+    split: &[(&str, usize, &str)],
+) {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(tag);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut set = Set {
+        dir: dir.clone(),
+        cases: Vec::new(),
+        refused: Vec::new(),
+        unmeasured: Vec::new(),
+        per_body: true,
+        meshes: Some(Vec::new()),
+    };
+    let mut forms_text = String::from(
+        "\n## Ours against the closed forms\n\n| file | body | volume - 1 | area - 1 |\n|---|---|---|---|\n",
+    );
+    let mut forms_bad = Vec::new();
+
+    for (k, scale) in [(1e-3, "milli"), (1.0, "one"), (1e6, "mega")] {
         for (name, expect, build) in &cases {
-            let file = format!("{tag}-{name}");
+            let file = format!("{scale}-{name}");
             let mut forms = Vec::new();
             let before = set.cases.len();
             set.add(&file, "mm", k, *expect, |s, k| {
@@ -428,12 +518,28 @@ fn freecad_reads_sweeps() {
     }
     let meshes = set.meshes.take();
 
-    let rows = harness::check(
-        "step-sweep-files",
-        "STEP: sweeps along a path, read by FreeCAD",
-        &set.cases,
-    );
-    let files = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("step-sweep-files");
+    let files_tag = format!("{tag}-files");
+    let mut rows = harness::check(&files_tag, title, &set.cases);
+    let mut notes = String::new();
+    for row in &mut rows {
+        for (part, extra, why) in split {
+            if !row.file.contains(part) {
+                continue;
+            }
+            let ours: usize = row
+                .counts
+                .split('/')
+                .next()
+                .and_then(|n| n.trim().parse().ok())
+                .unwrap_or(0);
+            let expected = format!("{} faces in FreeCAD, {ours} ours", ours + extra);
+            if let Some(at) = row.problems.iter().position(|p| *p == expected) {
+                row.problems.remove(at);
+                writeln!(notes, "- {}: {expected}: {why}", row.file).unwrap();
+            }
+        }
+    }
+    let files = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(&files_tag);
     let mut report = std::fs::read_to_string(files.join("report.md")).unwrap();
     report.push_str(
         "\n## Body by body: FreeCAD's solid over ours\n\n| file | body | volume - 1 | area - 1 | centre off |\n|---|---|---|---|---|\n",
@@ -453,6 +559,10 @@ fn freecad_reads_sweeps() {
         }
     }
     report.push_str(&forms_text);
+    if !notes.is_empty() {
+        report.push_str("\n## Faces FreeCAD splits\n\n");
+        report.push_str(&notes);
+    }
 
     let mut bad: Vec<String> = Vec::new();
     report.push_str("\n## By quadrature over FreeCAD's geometry\n\n");

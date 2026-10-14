@@ -16,7 +16,8 @@ pub mod name;
 pub mod sketch;
 
 pub use datum::{
-    AxisBy, AxisRef, DatumAxis, DatumPlane, DatumPoint, PlaneBy, PlaneRef, PointRef, WorldAxis,
+    AxisBy, AxisRef, DatumAxis, DatumHelix, DatumPlane, DatumPoint, HelixExtent, HelixStart,
+    PlaneBy, PlaneRef, PointRef, WorldAxis,
 };
 pub use name::{
     FaceLists, MAX_NAME_DEPTH, MAX_NAME_FACES, MAX_NAME_SOURCES, NameRole, PersistentName,
@@ -627,6 +628,37 @@ pub struct Shell {
     pub open: Vec<PersistentName>,
 }
 
+/// An ISO metric screw thread on a cylindrical face of the body of an
+/// earlier feature: external, from the flat face `start` at one end of
+/// the cylinder along it for `length`, with a run-out of a quarter turn.
+/// The body goes into this feature. A cosmetic thread changes no
+/// geometry: the face is only marked with what the thread is.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Thread {
+    /// The cylindrical face, by name.
+    pub face: PersistentName,
+    /// The flat face the thread starts at, square to the cylinder's axis,
+    /// by name: a face of the same body.
+    pub start: PersistentName,
+    /// The designation of ISO 261: `M10`. Its number is the nominal
+    /// (major) diameter in millimetres.
+    pub size: String,
+    pub pitch: Expr,
+    pub length: Expr,
+    #[serde(default)]
+    pub left_handed: bool,
+    #[serde(default)]
+    pub cosmetic: bool,
+}
+
+impl Thread {
+    /// The feature whose body the thread is cut in: the one that made the
+    /// face.
+    pub fn source(&self) -> FeatureId {
+        self.face.feature
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum FeatureKind {
@@ -647,11 +679,13 @@ pub enum FeatureKind {
     DatumPlane(DatumPlane),
     DatumAxis(DatumAxis),
     DatumPoint(DatumPoint),
+    DatumHelix(DatumHelix),
     Chamfer(Chamfer),
     Fillet(Fillet),
     OffsetFace(OffsetFace),
     Shell(Shell),
     DeleteFace(DeleteFace),
+    Thread(Thread),
 }
 
 impl FeatureKind {
@@ -675,11 +709,13 @@ impl FeatureKind {
             FeatureKind::DatumPlane(_) => "datumPlane",
             FeatureKind::DatumAxis(_) => "datumAxis",
             FeatureKind::DatumPoint(_) => "datumPoint",
+            FeatureKind::DatumHelix(_) => "datumHelix",
             FeatureKind::Chamfer(_) => "chamfer",
             FeatureKind::Fillet(_) => "fillet",
             FeatureKind::OffsetFace(_) => "offsetFace",
             FeatureKind::Shell(_) => "shell",
             FeatureKind::DeleteFace(_) => "deleteFace",
+            FeatureKind::Thread(_) => "thread",
         }
     }
 
@@ -690,6 +726,7 @@ impl FeatureKind {
             FeatureKind::DatumPlane(_) => "Plane".to_string(),
             FeatureKind::DatumAxis(_) => "Axis".to_string(),
             FeatureKind::DatumPoint(_) => "Point".to_string(),
+            FeatureKind::DatumHelix(_) => "Helix".to_string(),
             other => {
                 let mut base = other.type_name().to_string();
                 if let Some(first) = base.get_mut(0..1) {
@@ -705,7 +742,10 @@ impl FeatureKind {
     pub fn is_datum(&self) -> bool {
         matches!(
             self,
-            FeatureKind::DatumPlane(_) | FeatureKind::DatumAxis(_) | FeatureKind::DatumPoint(_)
+            FeatureKind::DatumPlane(_)
+                | FeatureKind::DatumAxis(_)
+                | FeatureKind::DatumPoint(_)
+                | FeatureKind::DatumHelix(_)
         )
     }
 
@@ -734,6 +774,7 @@ impl FeatureKind {
             FeatureKind::OffsetFace(o) => o.source().map(|id| (id, false)),
             FeatureKind::Shell(s) => Some((s.source, false)),
             FeatureKind::DeleteFace(d) => d.source().map(|id| (id, false)),
+            FeatureKind::Thread(t) => Some((t.source(), false)),
             FeatureKind::Block(_)
             | FeatureKind::Cylinder(_)
             | FeatureKind::Sphere(_)
@@ -747,7 +788,8 @@ impl FeatureKind {
             | FeatureKind::Boolean(_)
             | FeatureKind::DatumPlane(_)
             | FeatureKind::DatumAxis(_)
-            | FeatureKind::DatumPoint(_) => None,
+            | FeatureKind::DatumPoint(_)
+            | FeatureKind::DatumHelix(_) => None,
         }
     }
 
@@ -774,6 +816,7 @@ impl FeatureKind {
             FeatureKind::DatumPlane(datum) => datum.inputs(),
             FeatureKind::DatumAxis(datum) => datum.inputs(),
             FeatureKind::DatumPoint(datum) => datum.inputs(),
+            FeatureKind::DatumHelix(datum) => datum.inputs(),
             FeatureKind::Pattern(p) => {
                 let about = match &p.layout {
                     PatternLayout::Circular { about, .. } => *about,
@@ -862,9 +905,13 @@ impl FeatureKind {
             FeatureKind::DatumPlane(d) => out = d.exprs(),
             FeatureKind::DatumAxis(d) => out = d.exprs(),
             FeatureKind::DatumPoint(d) => out = d.exprs(),
+            FeatureKind::DatumHelix(d) => out = d.exprs(),
             FeatureKind::Fillet(f) => out = vec![named("radius", &f.radius)],
             FeatureKind::OffsetFace(o) => out = vec![named("distance", &o.distance)],
             FeatureKind::Shell(s) => out = vec![named("thickness", &s.thickness)],
+            FeatureKind::Thread(t) => {
+                out = vec![named("pitch", &t.pitch), named("length", &t.length)];
+            }
             FeatureKind::Chamfer(c) => {
                 out = match &c.size {
                     ChamferSize::Equal { distance } => vec![named("size.distance", distance)],
@@ -944,9 +991,11 @@ impl FeatureKind {
             FeatureKind::DatumPlane(d) => d.exprs_mut(),
             FeatureKind::DatumAxis(d) => d.exprs_mut(),
             FeatureKind::DatumPoint(d) => d.exprs_mut(),
+            FeatureKind::DatumHelix(d) => d.exprs_mut(),
             FeatureKind::Fillet(f) => vec![&mut f.radius],
             FeatureKind::OffsetFace(o) => vec![&mut o.distance],
             FeatureKind::Shell(s) => vec![&mut s.thickness],
+            FeatureKind::Thread(t) => vec![&mut t.pitch, &mut t.length],
             FeatureKind::Chamfer(c) => match &mut c.size {
                 ChamferSize::Equal { distance } => vec![distance],
                 ChamferSize::TwoDistances { distance, second } => vec![distance, second],
@@ -1146,6 +1195,7 @@ impl Document {
                 FeatureKind::DatumPlane(datum) => datum.names(),
                 FeatureKind::DatumAxis(datum) => datum.names(),
                 FeatureKind::DatumPoint(datum) => datum.names(),
+                FeatureKind::DatumHelix(datum) => datum.names(),
                 FeatureKind::Chamfer(chamfer) => {
                     if chamfer.edges.len() > MAX_CHAMFER_EDGES {
                         return Err(DocError::Invalid(format!(
@@ -1175,6 +1225,7 @@ impl Document {
                     }
                     faces.iter().collect()
                 }
+                FeatureKind::Thread(thread) => vec![&thread.face, &thread.start],
                 _ => Vec::new(),
             };
             for name in referred {

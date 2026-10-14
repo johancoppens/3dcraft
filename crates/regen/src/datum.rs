@@ -11,11 +11,12 @@ use crate::cause::FIX_IT_FIRST;
 use crate::query::{edges_between, faces_named};
 use crate::{FeatureResult, Status, angle, length};
 use craft3d_doc::{
-    AxisBy, AxisRef, DatumAxis, DatumPlane, DatumPoint, Document, Expr, FeatureId, PersistentName,
-    PlaneBy, PlaneRef, PointRef, WorldAxis, WorldPlane,
+    AxisBy, AxisRef, DatumAxis, DatumHelix, DatumPlane, DatumPoint, Document, Expr, FeatureId,
+    HelixExtent, HelixStart, PersistentName, PlaneBy, PlaneRef, PointRef, WorldAxis, WorldPlane,
 };
 use craft3d_expr::Evaluation;
 use craft3d_geom::{Curve3, Surface};
+use craft3d_kernel::helix::Helix;
 use craft3d_math::{Frame, Tolerance, Transform, Vec3};
 use craft3d_topo::Body;
 
@@ -30,6 +31,8 @@ pub enum Datum {
         direction: Vec3,
     },
     Point(Vec3),
+    /// A helix: its axis, start, radius, pitch, turns and handedness.
+    Helix(Helix),
 }
 
 impl Datum {
@@ -39,6 +42,7 @@ impl Datum {
             Datum::Plane(_) => "datum plane",
             Datum::Axis { .. } => "datum axis",
             Datum::Point(_) => "datum point",
+            Datum::Helix(_) => "datum helix",
         }
     }
 }
@@ -588,6 +592,101 @@ pub(crate) fn point(
     } else {
         Err("the point is not finite".to_string())
     }
+}
+
+/// The helix of the datum helix `id`.
+pub(crate) fn datum_helix(
+    doc: &Document,
+    earlier: &[FeatureResult],
+    id: FeatureId,
+    role: &str,
+) -> Result<Helix, String> {
+    match datum_of(doc, earlier, id, role, "datum helix")? {
+        Datum::Helix(helix) => Ok(helix),
+        other => Err(not_a(doc, id, role, &other, "datum helix")),
+    }
+}
+
+/// The first of the world's x, y and z axes that is the least along
+/// `axis`, made square to it: where a helix given by its radius starts.
+pub(crate) fn across(axis: Vec3) -> Vec3 {
+    let mut best = Vec3::X;
+    for candidate in [Vec3::Y, Vec3::Z] {
+        if candidate.dot(axis).abs() < best.dot(axis).abs() {
+            best = candidate;
+        }
+    }
+    best - axis * best.dot(axis)
+}
+
+/// Where a datum helix lies.
+pub(crate) fn helix(
+    doc: &Document,
+    variables: &Evaluation,
+    datum: &DatumHelix,
+    earlier: &[FeatureResult],
+) -> Result<Helix, String> {
+    let tolerance = document_tolerance(doc)?;
+    let line = axis_ref(doc, earlier, &datum.axis, &tolerance, "axis")?;
+    let axis = line
+        .direction
+        .normalized()
+        .ok_or_else(|| "axis: the axis has no direction".to_string())?;
+    let (origin, start, radius) = match &datum.start {
+        HelixStart::Radius { radius } => {
+            let radius = length(doc, variables, "radius", radius)?;
+            if !(radius.is_finite() && radius > tolerance.linear) {
+                return Err(format!(
+                    "radius: {radius} is not a radius; a helix is further from its axis than the tolerance"
+                ));
+            }
+            (line.origin, across(axis), radius)
+        }
+        HelixStart::Point { point } => {
+            let at = point_ref(doc, variables, earlier, point, "start")?;
+            let foot = line.origin + axis * (at - line.origin).dot(axis);
+            let radius = at.distance(foot);
+            if !(radius.is_finite() && radius > tolerance.linear) {
+                return Err(
+                    "start: the point is on the axis; a helix starts away from its axis"
+                        .to_string(),
+                );
+            }
+            (foot, at - foot, radius)
+        }
+    };
+    let pitch = length(doc, variables, "pitch", &datum.pitch)?;
+    if !(pitch.is_finite() && pitch > tolerance.linear) {
+        return Err(format!(
+            "pitch: {pitch} is not a pitch; a helix advances along its axis by more than the tolerance per turn"
+        ));
+    }
+    let turns = match &datum.extent {
+        HelixExtent::Turns { turns } => {
+            let turns = crate::number(variables, "turns", turns)?;
+            if !(turns.is_finite() && turns > 0.0) {
+                return Err(format!("turns: {turns} is not a number of turns above 0"));
+            }
+            turns
+        }
+        HelixExtent::Height { height } => {
+            let height = length(doc, variables, "height", height)?;
+            if !(height.is_finite() && height > tolerance.linear) {
+                return Err(format!(
+                    "height: {height} is not a height; a helix rises by more than the tolerance"
+                ));
+            }
+            height / pitch
+        }
+    };
+    if turns > craft3d_kernel::helix::MAX_TURNS {
+        return Err(format!(
+            "the helix has {turns} turns; at most {} are made",
+            craft3d_kernel::helix::MAX_TURNS
+        ));
+    }
+    Helix::new(origin, axis, start, radius, pitch, turns, datum.left_handed)
+        .map_err(|error| error.to_string())
 }
 
 fn document_tolerance(doc: &Document) -> Result<Tolerance, String> {
