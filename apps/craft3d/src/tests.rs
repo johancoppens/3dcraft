@@ -17,6 +17,30 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+/// `debug.slow {"ms": n, "steps": k}`: a command that takes `ms`
+/// milliseconds in `k` steps and reports each as regeneration reports a
+/// feature, answered on the engine thread like any command.
+pub(crate) fn slow(params: Option<&Value>) -> Value {
+    let number = |key: &str, default: u64| {
+        params
+            .and_then(|p| p.get(key))
+            .and_then(Value::as_u64)
+            .unwrap_or(default)
+    };
+    let (ms, steps) = (number("ms", 500), number("steps", 5).max(1));
+    for step in 1..=steps {
+        craft3d_regen::progress::report(&craft3d_regen::progress::Progress {
+            phase: "regenerating",
+            feature: Some(format!("F{step}")),
+            name: Some(format!("Slow{step}")),
+            step: step as usize,
+            steps: steps as usize,
+        });
+        std::thread::sleep(Duration::from_millis(ms / steps));
+    }
+    json!({ "slept": ms })
+}
+
 /// The panic a test injects into a handler (`debug.panic`).
 pub(crate) fn fall_over() -> ! {
     panic!("a handler fell over, on purpose")
@@ -1481,4 +1505,259 @@ fn mcp_message_takes_one_line_and_hostile_lines_do_no_harm() {
         assert!(reply["error"]["code"].is_i64(), "{reply}");
     }
     assert_eq!(replies[3], json!({"jsonrpc": "2.0", "id": 5, "result": {}}));
+}
+
+// The window with an engine thread: commands run there, and the thread
+// that draws keeps turning.
+
+mod engine_thread {
+    use super::*;
+    use crate::app::Desk;
+    use crate::files::{Picker, SystemDialogs};
+
+    /// A desk with an engine thread, served on a thread of its own that
+    /// turns it like frames do (every few milliseconds), counting the
+    /// turns and how long the longest one took.
+    struct Window {
+        address: SocketAddr,
+        stop: Arc<AtomicBool>,
+        turns: Arc<AtomicUsize>,
+        longest: Arc<std::sync::Mutex<Duration>>,
+        quit: Arc<AtomicBool>,
+        frames: Option<JoinHandle<()>>,
+        _server: ControlServer,
+    }
+
+    impl Window {
+        fn open() -> Self {
+            let (requests, incoming) = mpsc::channel::<Request>();
+            let wake: Wake = Arc::new(|| {});
+            let server = ControlServer::start(
+                ControlConfig::new(0, TOKEN.to_string()),
+                requests,
+                Arc::clone(&wake),
+            )
+            .unwrap();
+            let stop = Arc::new(AtomicBool::new(false));
+            let turns = Arc::new(AtomicUsize::new(0));
+            let longest = Arc::new(std::sync::Mutex::new(Duration::ZERO));
+            let quit = Arc::new(AtomicBool::new(false));
+            let (for_stop, for_turns, for_longest, for_quit) = (
+                Arc::clone(&stop),
+                Arc::clone(&turns),
+                Arc::clone(&longest),
+                Arc::clone(&quit),
+            );
+            let frames = std::thread::spawn(move || {
+                let picker = Picker::new(Arc::new(SystemDialogs), Arc::new(|| {}));
+                let host = Host::new(Session::new(Workspace::none()));
+                let mut desk = Desk::new(host, incoming, picker).with_engine_thread(wake);
+                while !for_stop.load(Ordering::SeqCst) {
+                    let start = Instant::now();
+                    let turn = desk.turn();
+                    let took = start.elapsed();
+                    let mut longest = for_longest.lock().unwrap();
+                    *longest = (*longest).max(took);
+                    drop(longest);
+                    for_turns.fetch_add(1, Ordering::SeqCst);
+                    if turn.quit {
+                        for_quit.store(true, Ordering::SeqCst);
+                        // Closing: the work still running gets its moment.
+                        assert!(desk.settle(Duration::from_secs(10)));
+                        assert!(!desk.away());
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(4));
+                }
+            });
+            Self {
+                address: server.address(),
+                stop,
+                turns,
+                longest,
+                quit,
+                frames: Some(frames),
+                _server: server,
+            }
+        }
+
+        fn client(&self) -> Client {
+            let mut client = Client::connect(self.address);
+            let reply = client.call("auth", json!({"token": TOKEN}));
+            assert_eq!(reply["result"], json!({"authenticated": true}), "{reply}");
+            client
+        }
+    }
+
+    impl Drop for Window {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            if let Some(frames) = self.frames.take() {
+                let _ = frames.join();
+            }
+        }
+    }
+
+    /// Waits until `ready` holds, for at most ten seconds.
+    fn until(mut ready: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !ready() {
+            assert!(Instant::now() < deadline, "timed out");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// The developer's report: opening a large document froze the window
+    /// for seconds. A command that takes its time runs on the engine
+    /// thread; the turns go on meanwhile, each one short, and `ui.get`
+    /// says what is being done.
+    #[test]
+    fn a_long_command_does_not_hold_up_the_window_and_says_what_it_does() {
+        let window = Window::open();
+        let mut agent = window.client();
+        agent.execute("file.new", json!({}));
+        let address = window.address;
+        let slow = std::thread::spawn(move || {
+            let mut client = Client::connect(address);
+            client.call("auth", json!({"token": TOKEN}));
+            let started = Instant::now();
+            let result = client.ok("debug.slow", json!({"ms": 1200, "steps": 6}));
+            (result, started.elapsed())
+        });
+        // Wait until the work shows, then look at it while it runs.
+        let mut seen = Value::Null;
+        until(|| {
+            let state = agent.ok("ui.get", json!({}));
+            let busy = state["work"]["phase"] == "regenerating";
+            if busy {
+                seen = state;
+            }
+            busy
+        });
+        let turns_before = window.turns.load(Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(300));
+        let turns_during = window.turns.load(Ordering::SeqCst) - turns_before;
+        let work = &seen["work"];
+        assert_eq!(work["label"], "debug.slow", "{seen}");
+        assert!(work["step"].as_u64().unwrap() >= 1, "{seen}");
+        assert_eq!(work["steps"], 6, "{seen}");
+        assert!(work["name"].as_str().unwrap().starts_with("Slow"), "{seen}");
+        // The document shown is the one before the command: whole.
+        assert_eq!(seen["document"]["open"], 1, "{seen}");
+        let (result, took) = slow.join().unwrap();
+        assert_eq!(result["slept"], 1200);
+        assert!(took >= Duration::from_millis(1100), "{took:?}");
+        // Turns came all along (one every few milliseconds), and none of
+        // them waited for the command (only a moment, `PATIENCE`).
+        assert!(turns_during >= 20, "{turns_during} turns in 300 ms");
+        let longest = *window.longest.lock().unwrap();
+        assert!(
+            longest < Duration::from_millis(250),
+            "a turn took {longest:?}"
+        );
+        // Idle again.
+        let state = agent.ok("ui.get", json!({}));
+        assert_eq!(state["work"], Value::Null, "{state}");
+        assert_eq!(state["lastCommand"]["label"], "file.new", "{state}");
+    }
+
+    /// Commands stay in the order they were sent, whichever connection
+    /// sent them: a second waits for the first. Only `ui.get` (and
+    /// `ui.quit`) is answered while work runs.
+    #[test]
+    fn replies_keep_the_order_of_the_requests_across_connections() {
+        let window = Window::open();
+        let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let spawn = |name: &'static str, delay: u64, method: &'static str, params: Value| {
+            let (address, order) = (window.address, Arc::clone(&order));
+            std::thread::spawn(move || {
+                let mut client = Client::connect(address);
+                client.call("auth", json!({"token": TOKEN}));
+                std::thread::sleep(Duration::from_millis(delay));
+                let reply = client.call(method, params);
+                order.lock().unwrap().push(name);
+                reply
+            })
+        };
+        let first = spawn("slow", 0, "debug.slow", json!({"ms": 900, "steps": 3}));
+        let second = spawn(
+            "file.new",
+            200,
+            "engine.execute",
+            json!({"command": "file.new", "params": {}}),
+        );
+        let third = spawn("ui.fit", 300, "ui.fit", json!({}));
+        let look = spawn("ui.get", 400, "ui.get", json!({}));
+        let looked = look.join().unwrap();
+        assert_eq!(looked["result"]["work"]["label"], "debug.slow", "{looked}");
+        // Before the file.new that was sent before it ran: no document.
+        assert_eq!(looked["result"]["document"], Value::Null, "{looked}");
+        assert_eq!(first.join().unwrap()["ok"], true);
+        assert_eq!(second.join().unwrap()["ok"], true);
+        // Framing waited for the document file.new made: there was none
+        // when it was sent, and the fit says there is nothing to frame.
+        let fit = third.join().unwrap();
+        assert!(
+            fit["error"].as_str().unwrap().contains("nothing to frame"),
+            "{fit}"
+        );
+        assert_eq!(
+            *order.lock().unwrap(),
+            ["ui.get", "slow", "file.new", "ui.fit"]
+        );
+    }
+
+    /// `ui.quit` while work runs: answered at once, the loop stops, and
+    /// the session comes back before the application ends.
+    #[test]
+    fn quitting_while_work_runs_is_answered_at_once_and_waits_for_the_session() {
+        let window = Window::open();
+        let address = window.address;
+        let slow = std::thread::spawn(move || {
+            let mut client = Client::connect(address);
+            client.call("auth", json!({"token": TOKEN}));
+            client.call("debug.slow", json!({"ms": 800, "steps": 4}))
+        });
+        let mut agent = window.client();
+        until(|| agent.ok("ui.get", json!({}))["work"] != Value::Null);
+        let asked = Instant::now();
+        let quit = agent.ok("ui.quit", json!({}));
+        assert_eq!(quit["quitting"], true);
+        assert!(asked.elapsed() < Duration::from_millis(400));
+        until(|| window.quit.load(Ordering::SeqCst));
+        // The work that was running finished and was answered.
+        assert_eq!(slow.join().unwrap()["ok"], true);
+    }
+
+    /// A slow command over MCP runs on the engine thread too; listing the
+    /// tools does not need to.
+    #[test]
+    fn mcp_tool_calls_go_to_the_engine_thread_and_the_rest_stays() {
+        use crate::host::{Route, route};
+        let mcp = |message: Value| {
+            json!({"id": 1, "method": "mcp.message", "params": {"line": message.to_string()}})
+                .to_string()
+        };
+        let call = |name: &str| {
+            mcp(json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": name, "arguments": {}}}))
+        };
+        assert_eq!(route(&call("command_run")), Route::Engine);
+        assert_eq!(route(&call("control_call")), Route::Window);
+        assert_eq!(
+            route(&mcp(
+                json!({"jsonrpc": "2.0", "id": 3, "method": "tools/list"})
+            )),
+            Route::Window
+        );
+        let execute = r#"{"id":1,"method":"engine.execute","params":{"command":"file.new"}}"#;
+        assert_eq!(route(execute), Route::Engine);
+        assert_eq!(
+            route(r#"{"id":1,"method":"batch","params":{"steps":[]}}"#),
+            Route::Engine
+        );
+        assert_eq!(route(r#"{"id":1,"method":"ui.get"}"#), Route::Anytime);
+        assert_eq!(route(r#"{"id":1,"method":"ui.screenshot"}"#), Route::Window);
+        assert_eq!(route("not json"), Route::Window);
+    }
 }

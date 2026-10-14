@@ -1112,6 +1112,19 @@ impl Session {
         scene.map(Some)
     }
 
+    /// True when [`Self::scene_with`] for `quality` would answer at once:
+    /// the scene is built (or known to fail), no document is open, or the
+    /// quality is refused. A host that keeps a window drawing builds the
+    /// scene elsewhere when this is false.
+    pub fn scene_ready(&mut self, quality: SceneQuality) -> bool {
+        if quality.validate().is_err() || !self.has_document() {
+            return true;
+        }
+        self.scene_revision();
+        let key = quality.key();
+        self.scene.scenes.iter().any(|(k, _)| *k == key)
+    }
+
     /// The active document as a status bar shows it.
     pub fn document_status(&self) -> Option<DocumentStatus> {
         let open = self.documents.get(self.active)?;

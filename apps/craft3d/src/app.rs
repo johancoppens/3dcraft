@@ -4,23 +4,29 @@
 
 use crate::args::Options;
 use crate::control::{ControlConfig, ControlServer, Wake};
-use crate::files::{Picker, SystemDialogs};
-use crate::host::{Host, Request};
+use crate::files::{self, Choice, Picker, SystemDialogs};
+use crate::host::{Host, Request, Route, answer_on_engine, report, route};
 use crate::token;
+use crate::worker::{Finished, Outcome, Run, Task, Worker};
+use craft3d_automation::rpc;
 use craft3d_engine::{Access, RecoveryOptions, Session, Workspace};
 use craft3d_ui_egui::{Shell, window_title};
 use eframe::UserEvent;
 use eframe::egui;
-use serde_json::json;
+use serde_json::{Value, json};
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, DeviceId, StartCause, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::WindowId;
+
+/// How long a closing application waits for work still running.
+const SETTLE: Duration = Duration::from_secs(3);
 
 /// The window's title: the product name, as users read it.
 pub const TITLE: &str = "3DCraft";
@@ -111,12 +117,45 @@ pub fn control(
 /// workspace, minimised, fully covered, a locked screen) no frame
 /// callbacks, winit then delivers no redraw, and work that waits for a
 /// frame waits until the window is looked at again.
+///
+/// With an engine thread ([`Self::with_engine_thread`]) commands run
+/// there: the session is handed over with the request and comes back with
+/// the reply, and meanwhile the window draws what it showed before and
+/// what is being done ([`Shell::ui_away`]). Requests stay in the order
+/// they came in; only `ui.get` and `ui.quit` are answered at once while
+/// work runs. Without one (tests, or a machine that cannot start a thread)
+/// every request is answered on the thread that serves the desk, as it
+/// comes.
 pub struct Desk {
     pub host: Host,
     requests: Receiver<Request>,
     /// The open and save dialogs.
     picker: Picker,
+    /// Requests that came in and wait for their turn.
+    queue: VecDeque<Request>,
+    worker: Option<Worker>,
+    /// What the engine thread is doing for the desk, while it has the
+    /// session.
+    waiting: Option<Waiting>,
+    /// How long a turn waits for a task it just started before it lets the
+    /// window draw: a quick command is answered in the same turn, a slow
+    /// one does not hold up a frame.
+    patience: Duration,
 }
+
+/// Who waits for the task on the engine thread.
+enum Waiting {
+    /// A request: its reply goes back when the task is done.
+    Request(Request),
+    /// A file chosen in a dialog: the outcome goes to the status bar.
+    File(&'static str),
+    /// Only the scene the window shows.
+    Scene,
+}
+
+/// How long a turn waits for a task it started, by default: well under a
+/// frame at 60 Hz.
+pub const PATIENCE: Duration = Duration::from_millis(12);
 
 /// What one turn of serving did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -127,27 +166,342 @@ pub struct Turn {
     pub quit: bool,
 }
 
+const PANICKED: &str = "internal error (a bug in 3DCraft, please report it); the document was kept";
+
 impl Desk {
     pub fn new(host: Host, requests: Receiver<Request>, picker: Picker) -> Self {
         Self {
             host,
             requests,
             picker,
+            queue: VecDeque::new(),
+            worker: None,
+            waiting: None,
+            patience: PATIENCE,
         }
+    }
+
+    /// Runs commands on an engine thread of their own from now on, which
+    /// calls `wake` when there is something new to show. When the thread
+    /// cannot be started they run where the desk is served, as before.
+    #[must_use]
+    pub fn with_engine_thread(mut self, wake: Wake) -> Self {
+        self.worker = Worker::start(wake).ok();
+        self
+    }
+
+    /// How long a turn waits for a task it started ([`PATIENCE`]).
+    #[must_use]
+    pub fn with_patience(mut self, patience: Duration) -> Self {
+        self.patience = patience;
+        self
+    }
+
+    /// True while the session is on the engine thread: draw with
+    /// [`Shell::ui_away`] and take the title from what the shell shows.
+    pub fn away(&self) -> bool {
+        self.waiting.is_some()
     }
 
     /// Answers the requests that are waiting, then does what the File menu
     /// asked for in the last frame and what a dialog answered since.
     /// Needs no frame and no window.
     pub fn turn(&mut self) -> Turn {
-        let answered = self.host.pump(&self.requests) > 0;
-        let filed = self.host.pump_files(&mut self.picker);
+        if self.worker.is_none() {
+            let answered = self.host.pump(&self.requests) > 0;
+            let filed = self.host.pump_files(&mut self.picker);
+            return Turn {
+                changed: answered || filed,
+                quit: self.host.shell.quit_requested(),
+            };
+        }
+        let mut changed = self.collect();
+        let mut served = 0;
+        let mut scenes = 0;
+        loop {
+            if self.waiting.is_some() {
+                let finished = self.worker.as_ref().and_then(Worker::try_finished);
+                let Some(finished) = finished else {
+                    // Progress to show.
+                    changed = true;
+                    break;
+                };
+                self.complete(finished);
+                changed = true;
+                continue;
+            }
+            if served >= MAX_PER_TURN || self.host.shell.quit_requested() {
+                break;
+            }
+            // The scene the window shows is built on the engine thread,
+            // never by a frame or a request on this one.
+            if scenes == 0 && !self.scene_ready() {
+                scenes += 1;
+                self.start(
+                    Waiting::Scene,
+                    "meshing".to_string(),
+                    Box::new(|_| Outcome::Built),
+                );
+                continue;
+            }
+            if let Some(request) = self.queue.pop_front() {
+                served += 1;
+                changed = true;
+                match route(&request.line) {
+                    Route::Engine => {
+                        let label = request_label(&request.line);
+                        let line = request.line.clone();
+                        self.start(
+                            Waiting::Request(request),
+                            label,
+                            Box::new(move |session| {
+                                Outcome::Reply(answer_on_engine(session, &line))
+                            }),
+                        );
+                    }
+                    Route::Window | Route::Anytime => self.host.answer(request),
+                }
+                continue;
+            }
+            if self.pump_files() {
+                changed = true;
+                continue;
+            }
+            break;
+        }
+        self.show_work();
         Turn {
-            changed: answered || filed,
+            changed,
             quit: self.host.shell.quit_requested(),
         }
     }
+
+    /// Takes the requests that came in: queued in order, but for `ui.get`
+    /// and `ui.quit` while the engine thread has the session, which are
+    /// answered at once from what the window shows.
+    fn collect(&mut self) -> bool {
+        let mut any = false;
+        while let Ok(request) = self.requests.try_recv() {
+            any = true;
+            if self.away() && route(&request.line) == Route::Anytime {
+                self.show_work();
+                let reply = self.answer_away(&request.line);
+                let _ = request.reply.send(reply);
+            } else {
+                self.queue.push_back(request);
+            }
+        }
+        any
+    }
+
+    /// `ui.get` or `ui.quit` while the session is away. Never panics.
+    fn answer_away(&mut self, line: &str) -> Option<String> {
+        let shell = &mut self.host.shell;
+        let answered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let request: Value = serde_json::from_str(line).unwrap_or(Value::Null);
+            let id = request.get("id").cloned().unwrap_or(Value::Null);
+            let params = request.get("params");
+            let result = match request.get("method").and_then(Value::as_str) {
+                Some("ui.get") => shell.ui_get_away(params),
+                _ => {
+                    shell.request_quit();
+                    Ok(json!({ "quitting": true }))
+                }
+            };
+            match result {
+                Ok(result) => rpc::ok_reply(&id, &result),
+                Err(error) => rpc::error_reply(&id, &error),
+            }
+        }));
+        Some(answered.unwrap_or_else(|_| rpc::error_reply(&Value::Null, PANICKED)))
+    }
+
+    /// True when the scene the window shows is built (or could not be,
+    /// and that is known), so nothing on this thread builds it.
+    fn scene_ready(&mut self) -> bool {
+        let quality = self.host.shell.scene_quality();
+        self.host.session.scene_ready(quality)
+    }
+
+    /// Hands the session to the engine thread with a task, and waits a
+    /// moment for it ([`Self::with_patience`]).
+    fn start(&mut self, waiting: Waiting, label: String, run: Run) {
+        let task = Task {
+            label,
+            run,
+            quality: self.host.shell.scene_quality(),
+        };
+        let Some(worker) = &self.worker else {
+            let outcome = Worker::run_here(&mut self.host.session, task);
+            self.finish(waiting, outcome);
+            return;
+        };
+        let session = std::mem::replace(&mut self.host.session, Session::new(Workspace::none()));
+        match worker.submit(session, task) {
+            Ok(()) => {
+                self.waiting = Some(waiting);
+                if let Some(finished) = worker.wait_finished(self.patience) {
+                    self.complete(finished);
+                }
+            }
+            // The engine thread is gone: here, then.
+            Err((session, task)) => {
+                self.host.session = session;
+                self.worker = None;
+                let outcome = Worker::run_here(&mut self.host.session, task);
+                self.finish(waiting, outcome);
+            }
+        }
+    }
+
+    /// The session is back: answer whoever waited.
+    fn complete(&mut self, finished: Finished) {
+        self.host.session = finished.session;
+        if let Some(waiting) = self.waiting.take() {
+            self.finish(waiting, finished.outcome);
+        }
+        self.show_work();
+    }
+
+    fn finish(&mut self, waiting: Waiting, outcome: Outcome) {
+        let host = &mut self.host;
+        let (reply_to, reply) = match waiting {
+            Waiting::Request(request) => {
+                let reply = match outcome {
+                    Outcome::Reply(reply) => reply,
+                    Outcome::Panicked | Outcome::Ran(_) | Outcome::Built => {
+                        Some(rpc::error_reply(&Value::Null, PANICKED))
+                    }
+                };
+                if let Some(reply) = &reply {
+                    // The status bar's line: not worth a panic.
+                    let line = request.line.as_str();
+                    if let Ok(Some(report)) = std::panic::catch_unwind(|| report(line, reply)) {
+                        host.shell.last_command = Some(report);
+                    }
+                }
+                (Some(request.reply), reply)
+            }
+            Waiting::File(label) => {
+                let outcome = match outcome {
+                    Outcome::Ran(outcome) => outcome,
+                    Outcome::Panicked | Outcome::Reply(_) | Outcome::Built => {
+                        Err(PANICKED.to_string())
+                    }
+                };
+                host.report(label, &outcome);
+                (None, None)
+            }
+            Waiting::Scene => (None, None),
+        };
+        // The camera follows the model, the tree its features: from the
+        // scene the engine thread built. Guarded like a request.
+        let synced = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            host.shell.sync(&mut host.session);
+        }));
+        if synced.is_err() {
+            host.autosave_after_a_panic();
+        }
+        if let Some(reply_to) = reply_to {
+            // A requester that has gone away is not an error.
+            let _ = reply_to.send(reply);
+        }
+    }
+
+    /// What the menu asked for and what a dialog answered: a file chosen
+    /// to open or to save as is opened or saved on the engine thread.
+    fn pump_files(&mut self) -> bool {
+        if let Some(choice) = self.picker.poll() {
+            match choice {
+                Ok(Choice::Open(path)) => self.start(
+                    Waiting::File("file.open"),
+                    "file.open".to_string(),
+                    Box::new(move |session| {
+                        Outcome::Ran(files::run_as_user(session, "file.open", &path, false, None))
+                    }),
+                ),
+                Ok(Choice::Save(path)) => self.start(
+                    Waiting::File("file.save"),
+                    "file.save".to_string(),
+                    Box::new(move |session| {
+                        let confirmed = Some((files::CONFIRMED.0, Value::Bool(files::CONFIRMED.1)));
+                        Outcome::Ran(files::run_as_user(
+                            session,
+                            "file.save",
+                            &path,
+                            true,
+                            confirmed,
+                        ))
+                    }),
+                ),
+                other => self.host.file_choice(other),
+            }
+            return true;
+        }
+        if let Some(action) = self.host.shell.take_file_action() {
+            self.host.file_action(action, &mut self.picker);
+            return true;
+        }
+        false
+    }
+
+    /// Tells the shell what the engine thread is doing.
+    fn show_work(&mut self) {
+        let work = if self.away() {
+            self.worker.as_ref().and_then(Worker::work)
+        } else {
+            None
+        };
+        self.host.shell.set_work(work);
+    }
+
+    /// Waits at most `timeout` for the work in progress, so the session is
+    /// back: for an application that is closing. False when it did not
+    /// come back in time.
+    pub fn settle(&mut self, timeout: Duration) -> bool {
+        if !self.away() {
+            return true;
+        }
+        let finished = self
+            .worker
+            .as_ref()
+            .and_then(|worker| worker.wait_finished(timeout));
+        match finished {
+            Some(finished) => {
+                self.complete(finished);
+                true
+            }
+            None => false,
+        }
+    }
 }
+
+/// What the window says it is doing for a request: the command it runs,
+/// `batch of N`, or the method.
+fn request_label(line: &str) -> String {
+    let request: Value = serde_json::from_str(line).unwrap_or(Value::Null);
+    let params = request.get("params");
+    let label = match request.get("method").and_then(Value::as_str) {
+        Some("engine.execute") => params
+            .and_then(|p| p.get("command"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        Some("batch") => params
+            .and_then(|p| p.get("steps"))
+            .and_then(Value::as_array)
+            .map(|steps| format!("batch of {}", steps.len())),
+        Some("mcp.message") => Some("MCP tool call".to_string()),
+        Some(method) => Some(method.to_string()),
+        None => None,
+    };
+    label
+        .map(|label| label.chars().take(80).collect())
+        .unwrap_or_else(|| "request".to_string())
+}
+
+/// Most requests a turn takes from the queue, so a flood of quick ones
+/// cannot keep the window from drawing.
+const MAX_PER_TURN: usize = 64;
 
 struct Viewer {
     desk: Rc<RefCell<Desk>>,
@@ -170,7 +524,11 @@ impl eframe::App for Viewer {
             // Show what changed, and look for more.
             ctx.request_repaint();
         }
-        let title = window_title(desk.host.session.document_status().as_ref());
+        let title = if desk.away() {
+            window_title(desk.host.shell.shown_status())
+        } else {
+            window_title(desk.host.session.document_status().as_ref())
+        };
         if title != self.title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.title = title;
@@ -182,8 +540,12 @@ impl eframe::App for Viewer {
         let Ok(mut desk) = self.desk.try_borrow_mut() else {
             return;
         };
-        let Host { session, shell } = &mut desk.host;
-        shell.ui(ui, session);
+        if desk.away() {
+            desk.host.shell.ui_away(ui);
+        } else {
+            let Host { session, shell } = &mut desk.host;
+            shell.ui(ui, session);
+        }
     }
 }
 
@@ -335,7 +697,9 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
     let host = Host::new(session);
     let title = window_title(host.session.document_status().as_ref());
     let picker = Picker::new(Arc::new(SystemDialogs), Arc::clone(&wake));
-    let desk = Rc::new(RefCell::new(Desk::new(host, requests, picker)));
+    let desk = Rc::new(RefCell::new(
+        Desk::new(host, requests, picker).with_engine_thread(Arc::clone(&wake)),
+    ));
     let native = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(&title)
@@ -384,10 +748,18 @@ pub fn run(options: &Options, announce: &dyn Fn(&str)) -> Result<(), String> {
         context: Arc::clone(&context),
     };
     let ran = event_loop.run_app(&mut driver);
+    // The window goes at once, also when work is still running.
+    let desk = Rc::clone(&driver.desk);
+    drop(driver);
     // The window was closed, or could not be made: either way the
     // application ends on purpose, and leaves no recovery files. (A crash
-    // or a kill never gets here, and leaves them.)
-    if let Ok(mut desk) = driver.desk.try_borrow_mut() {
+    // or a kill never gets here, and leaves them.) Work that is still
+    // running gets a moment to bring the session back; work that takes
+    // longer is left, and so are the recovery files of the documents with
+    // unsaved changes, as after a crash: nothing is lost.
+    if let Ok(mut desk) = desk.try_borrow_mut()
+        && desk.settle(SETTLE)
+    {
         desk.host.session.end_recovery();
     }
     ran.map_err(|e| window_error(&eframe::Error::WinitEventLoop(e)))?;

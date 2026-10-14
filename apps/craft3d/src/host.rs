@@ -153,7 +153,7 @@ fn shorten(text: &str) -> String {
 }
 
 /// What the status bar says about a request, when it ran a command.
-fn report(line: &str, reply: &str) -> Option<CommandReport> {
+pub(crate) fn report(line: &str, reply: &str) -> Option<CommandReport> {
     let request: Value = serde_json::from_str(line).ok()?;
     let label = match request.get("method")?.as_str()? {
         "engine.execute" => request.get("params")?.get("command")?.as_str()?.to_string(),
@@ -205,6 +205,100 @@ fn report(line: &str, reply: &str) -> Option<CommandReport> {
         ok,
         text: shorten(&text),
     })
+}
+
+/// Where a request is answered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Route {
+    /// On the thread that draws the window, at once: what needs the shell
+    /// (the `ui.*` methods, MCP's `control_call`) and what costs nothing
+    /// (`auth`, `methods`, `engine.commands`, a line that is not a
+    /// request at all).
+    Window,
+    /// On the engine thread, with the session: what runs commands
+    /// (`engine.execute`, `batch`, MCP tool calls but `control_call`).
+    Engine,
+    /// At once even while the engine thread works, from what the window
+    /// shows: `ui.get` and `ui.quit`.
+    Anytime,
+}
+
+/// Where `line` is answered ([`Route`]).
+pub fn route(line: &str) -> Route {
+    let Ok(request) = serde_json::from_str::<Value>(line) else {
+        return Route::Window;
+    };
+    match request.get("method").and_then(Value::as_str) {
+        Some("engine.execute" | "batch") => Route::Engine,
+        #[cfg(test)]
+        Some("debug.slow") => Route::Engine,
+        Some("ui.get" | "ui.quit") => Route::Anytime,
+        Some("mcp.message") => {
+            let message = request
+                .get("params")
+                .and_then(|p| p.get("line"))
+                .and_then(Value::as_str)
+                .and_then(|line| serde_json::from_str::<Value>(line).ok());
+            let tool = message.as_ref().and_then(|m| {
+                (m.get("method")?.as_str()? == "tools/call")
+                    .then(|| m.get("params")?.get("name")?.as_str())
+                    .flatten()
+            });
+            match tool {
+                Some("control_call") | None => Route::Window,
+                Some(_) => Route::Engine,
+            }
+        }
+        _ => Route::Window,
+    }
+}
+
+/// Answers a request that runs commands, with the session alone: on the
+/// engine thread, where the shell is not. The methods the protocol lists
+/// are the window's, so `methods` says the same wherever it is answered;
+/// one that needs the shell is answered by the window and never sent
+/// here ([`route`]), and is refused if it were.
+pub fn answer_on_engine(session: &mut Session, line: &str) -> Option<String> {
+    let not_here = |method: &str| {
+        Some(Err(format!(
+            "{method} is answered by the window, not while a command runs; send it on its own"
+        )))
+    };
+    let mut handle = |session: &mut Session, method: &str, params: Option<&Value>| match method {
+        "auth" => Some(Ok(serde_json::json!({ "authenticated": true }))),
+        // A command that takes its time, reporting steps as regeneration
+        // does: for the tests of a window that keeps drawing meanwhile.
+        #[cfg(test)]
+        "debug.slow" => Some(Ok(crate::tests::slow(params))),
+        "mcp.message" => {
+            let line = match params {
+                Some(Value::Object(map)) if map.len() == 1 => {
+                    map.get("line").and_then(Value::as_str)
+                }
+                _ => None,
+            };
+            let Some(line) = line else {
+                return Some(Err(
+                    "mcp.message: its one parameter is `line`, a string holding one MCP message"
+                        .into(),
+                ));
+            };
+            let mut inner = |_: &mut Session, method: &str, _: Option<&Value>| not_here(method);
+            let mut extension = Extension {
+                methods: mcp_methods(),
+                handle: &mut inner,
+            };
+            let reply = craft3d_automation::mcp::handle_line_with(session, line, &mut extension);
+            Some(Ok(serde_json::json!({ "reply": reply })))
+        }
+        _ if UI_METHODS.iter().any(|m| m.name == method) => not_here(method),
+        _ => None,
+    };
+    let mut extension = Extension {
+        methods: methods(),
+        handle: &mut handle,
+    };
+    rpc::handle_line_with(session, line, &mut extension)
 }
 
 impl Host {

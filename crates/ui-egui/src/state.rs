@@ -151,6 +151,53 @@ pub struct Panels {
     pub recovery: bool,
 }
 
+/// Work the window is doing on its engine thread while it keeps drawing:
+/// a command, opening a file, meshing the model. Shown over the viewport
+/// and in `ui.get` under `work`; `None` when the window is idle. Not part
+/// of [`UiState`]: it cannot be set, only watched.
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Work {
+    /// What was asked for: the command (`file.open`), `batch of 3`, or
+    /// `meshing` when only the picture is being made.
+    pub label: String,
+    /// What is being done right now: `running` before the first step,
+    /// then `regenerating`, `measuring` or `meshing`.
+    pub phase: String,
+    /// The feature of the step (`F17`) and its name, when the step is one.
+    pub feature: Option<String>,
+    pub name: Option<String>,
+    /// The step, counted from 1, of how many (the document's features); 0
+    /// of 0 when the phase has no steps.
+    pub step: usize,
+    pub steps: usize,
+    /// How long the work has run, in seconds.
+    pub seconds: f64,
+}
+
+impl Work {
+    /// One line for the window: `file.open: regenerating J2 (17 of 20), 3 s`.
+    pub fn describe(&self) -> String {
+        let mut text = format!("{}: {}", self.label, self.phase);
+        if let Some(what) = self.name.as_ref().or(self.feature.as_ref()) {
+            text.push(' ');
+            text.push_str(what);
+        }
+        if self.steps > 0 {
+            text.push_str(&format!(" ({} of {})", self.step, self.steps));
+        }
+        if self.seconds.is_finite() && self.seconds >= 1.0 {
+            text.push_str(&format!(", {:.0} s", self.seconds.floor()));
+        }
+        text
+    }
+
+    /// How far along the steps are, 0 to 1; `None` without steps.
+    pub fn fraction(&self) -> Option<f32> {
+        (self.steps > 0).then(|| (self.step as f32 / self.steps as f32).clamp(0.0, 1.0))
+    }
+}
+
 /// What the viewport draws besides the bodies, the edges and the
 /// sketches.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

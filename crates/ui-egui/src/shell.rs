@@ -10,7 +10,7 @@ use crate::frames::{Mode, Scheduler, Ticket};
 use crate::state::VertexRef;
 use crate::state::{
     CameraState, EdgeRef, FaceRef, Picked, PickedEntity, PickedKind, ProjectionKind, SectionState,
-    UiState,
+    UiState, Work,
 };
 use crate::theme::{Tokens, color, color_alpha};
 use crate::view_cube;
@@ -455,6 +455,12 @@ pub struct Shell {
     problem: Option<String>,
     /// Why the image could not be made; cleared by the next image.
     render_problem: Option<String>,
+    /// The scene and the document's status as of the last [`Self::sync`]:
+    /// what is drawn while the session is away doing work.
+    shown_scene: Option<Arc<Scene>>,
+    shown_status: Option<DocumentStatus>,
+    /// The work being done on the host's engine thread, if any.
+    work: Option<Work>,
 }
 
 impl Default for Shell {
@@ -538,6 +544,9 @@ impl Shell {
             file_action: None,
             problem: None,
             render_problem: None,
+            shown_scene: None,
+            shown_status: None,
+            work: None,
         }
     }
 
@@ -796,6 +805,28 @@ impl Shell {
     /// Why there is no picture, or not the right one, when that is so.
     pub fn problem(&self) -> Option<&str> {
         self.problem.as_deref().or(self.render_problem.as_deref())
+    }
+
+    /// Says what the host's engine thread is doing (`None`: nothing). The
+    /// window shows it over the viewport, `ui.get` under `work`.
+    pub fn set_work(&mut self, work: Option<Work>) {
+        self.work = work;
+    }
+
+    /// The work in progress, as last set.
+    pub fn work(&self) -> Option<&Work> {
+        self.work.as_ref()
+    }
+
+    /// The document's status as of the last [`Self::sync`]: what the
+    /// window shows while the session is away.
+    pub fn shown_status(&self) -> Option<&DocumentStatus> {
+        self.shown_status.as_ref()
+    }
+
+    /// The scene as of the last [`Self::sync`].
+    pub fn shown_scene_arc(&self) -> Option<Arc<Scene>> {
+        self.shown_scene.clone()
     }
 
     /// True once something asked the application to close.
@@ -1083,6 +1114,13 @@ impl Shell {
     /// active document, the tree rows, the selection, and the camera when
     /// it follows the model. Called every frame and after every request.
     pub fn sync(&mut self, session: &mut Session) -> Option<Arc<Scene>> {
+        let scene = self.sync_scene(session);
+        self.shown_status = session.document_status();
+        self.shown_scene.clone_from(&scene);
+        scene
+    }
+
+    fn sync_scene(&mut self, session: &mut Session) -> Option<Arc<Scene>> {
         self.recovery = session.recovery_overview();
         let scene = match session.scene_with(self.scene_quality()) {
             Ok(scene) => {
@@ -1216,12 +1254,27 @@ impl Shell {
 
     /// Draws the whole shell into `ui` (the window's root) for one frame.
     pub fn ui(&mut self, ui: &mut egui::Ui, session: &mut Session) {
+        self.ui_with(ui, Some(session));
+    }
+
+    /// Draws the shell for one frame while its session is away, doing work
+    /// on the host's engine thread ([`Self::set_work`]): the scene and the
+    /// status of the last [`Self::sync`], the camera still turns, and the
+    /// work in progress is shown over the viewport. What needs the session
+    /// (the recovery bar's buttons) waits.
+    pub fn ui_away(&mut self, ui: &mut egui::Ui) {
+        self.ui_with(ui, None);
+    }
+
+    fn ui_with(&mut self, ui: &mut egui::Ui, mut session: Option<&mut Session>) {
         if !self.themed {
             self.tokens.apply(ui.ctx());
             self.themed = true;
         }
-        let scene = self.sync(session);
-        let status = session.document_status();
+        let (scene, status) = match session.as_deref_mut() {
+            Some(session) => (self.sync(session), session.document_status()),
+            None => (self.shown_scene.clone(), self.shown_status.clone()),
+        };
         self.file_shortcuts(ui, status.is_some());
         egui::Panel::top("craft3d-menu")
             .resizable(false)
@@ -1235,7 +1288,7 @@ impl Shell {
                 .resizable(false)
                 .show(ui, |ui| self.recovery_bar(ui))
                 .inner;
-            if let Some(action) = clicked {
+            if let (Some(action), Some(session)) = (clicked, session) {
                 self.recovery_act(session, action);
                 ui.ctx().request_repaint();
             }
@@ -1582,6 +1635,68 @@ impl Shell {
         }
     }
 
+    /// The work in progress, over the middle of the viewport: a spinner,
+    /// what is being done, and how far along the steps are.
+    fn work_plate(&self, ui: &egui::Ui, painter: &egui::Painter, inner: egui::Rect, work: &Work) {
+        let tokens = self.tokens;
+        let text = work.describe();
+        let galley = painter.layout_no_wrap(
+            text,
+            egui::FontId::proportional(15.0),
+            color(tokens.notice_text),
+        );
+        let text_size = galley.size();
+        let spinner = text_size.y * 1.2;
+        let gap = tokens.inset * 0.6;
+        let bar = tokens.work_bar;
+        let width = (spinner + gap + text_size.x).max(tokens.slider_width);
+        let height = spinner.max(text_size.y) + gap + bar;
+        let plate = egui::Rect::from_center_size(inner.center(), egui::vec2(width, height))
+            .expand(tokens.inset * 0.8);
+        painter.rect_filled(
+            plate,
+            egui::CornerRadius::same(tokens.notice_radius),
+            color_alpha(tokens.notice_fill, tokens.notice_opacity),
+        );
+        let top = plate.shrink(tokens.inset * 0.8);
+        // The spinner: an arc that turns with the clock, so a frozen
+        // window would show as a spinner that stopped.
+        let centre = egui::pos2(top.left() + spinner * 0.5, top.top() + spinner * 0.5);
+        let radius = spinner * 0.38;
+        let time = ui.input(|i| i.time);
+        let start = (time * 4.0).rem_euclid(std::f64::consts::TAU) as f32;
+        let points: Vec<egui::Pos2> = (0..=24)
+            .map(|k| {
+                let angle = start + k as f32 / 24.0 * std::f32::consts::PI * 1.5;
+                centre + radius * egui::vec2(angle.cos(), angle.sin())
+            })
+            .collect();
+        painter.add(egui::Shape::line(
+            points,
+            egui::Stroke::new(tokens.work_spinner_width, color(tokens.work_accent)),
+        ));
+        painter.galley(
+            egui::pos2(top.left() + spinner + gap, centre.y - text_size.y * 0.5),
+            galley,
+            color(tokens.notice_text),
+        );
+        let track = egui::Rect::from_min_size(
+            egui::pos2(top.left(), top.bottom() - bar),
+            egui::vec2(top.width(), bar),
+        );
+        let round = egui::CornerRadius::same(tokens.radius);
+        painter.rect_filled(track, round, color(tokens.work_track));
+        if let Some(fraction) = work.fraction() {
+            let done = egui::Rect::from_min_size(
+                track.min,
+                egui::vec2(track.width() * fraction, track.height()),
+            );
+            painter.rect_filled(done, round, color(tokens.work_accent));
+        }
+        // The spinner turns: have the next frame come.
+        ui.ctx().request_repaint();
+    }
+
     fn viewport(&mut self, ui: &mut egui::Ui, shared: Option<&Arc<Scene>>) {
         let scene = shared.map(Arc::as_ref);
         let tokens = self.tokens;
@@ -1741,6 +1856,10 @@ impl Shell {
                 galley,
                 color(tokens.notice_text),
             );
+        }
+
+        if let Some(work) = &self.work {
+            self.work_plate(ui, &painter, inner, work);
         }
 
         // The view cube and, under it, the controls the view buttons

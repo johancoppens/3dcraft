@@ -147,8 +147,26 @@ impl Shell {
     }
 
     fn ui_get(&mut self, session: &mut Session, params: Option<&Value>) -> Result<Value, String> {
+        self.ui_get_with(Some(session), params)
+    }
+
+    /// `ui.get` while the session is away doing work on the host's engine
+    /// thread: the state as the window shows it (the scene and document
+    /// of the last sync), with `work` saying what is being done.
+    pub fn ui_get_away(&mut self, params: Option<&Value>) -> Result<Value, String> {
+        self.ui_get_with(None, params)
+    }
+
+    fn ui_get_with(
+        &mut self,
+        session: Option<&mut Session>,
+        params: Option<&Value>,
+    ) -> Result<Value, String> {
         fields("ui.get", params, &[])?;
-        let scene = self.sync(session);
+        let (scene, status) = match session {
+            Some(session) => (self.sync(session), session.document_status()),
+            None => (self.shown_scene_arc(), self.shown_status().cloned()),
+        };
         let [width, height] = self.viewport_size();
         let vec3 = |v: craft3d_math::Vec3| json!([v.x, v.y, v.z]);
         let scene_json = scene.as_deref().map_or(Value::Null, |scene| {
@@ -179,7 +197,7 @@ impl Shell {
                 })
             })
             .collect();
-        let document = session.document_status().map_or(Value::Null, |status| {
+        let document = status.map_or(Value::Null, |status| {
             json!({
                 "index": status.index,
                 "open": status.open,
@@ -227,6 +245,7 @@ impl Shell {
             })),
             "recovery": self.recovery().to_json(),
             "problem": self.problem(),
+            "work": self.work(),
         }))
     }
 

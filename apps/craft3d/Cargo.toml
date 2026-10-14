@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 craft3d-engine.workspace = true
+craft3d-regen.workspace = true
 craft3d-automation.workspace = true
 craft3d-ui-egui.workspace = true
 eframe.workspace = true
