@@ -10,20 +10,27 @@
 //! something else (docs/architecture.md §4.1).
 //!
 //! A feature that makes its body out of another body (a transform, a
-//! mirror, a pattern) names what it makes after what it was made from:
-//! `F5:copy(2)/F2:side(e7)` is the image, in instance 2 of F5, of the face
-//! F2 calls `side(e7)`. The part after `/` is a name of its own.
+//! mirror, a pattern, a boolean, a blend) names what it makes after what it
+//! was made from: `F5:copy(2)/F2:side(e7)` is the image, in instance 2 of
+//! F5, of the face F2 calls `side(e7)`. The part after `/` is a name of its
+//! own.
 //!
-//! A feature whose body the kernel puts together out of other bodies (a
-//! boolean, a pattern whose instances are joined) names its edges and
-//! vertices by the faces of that body they lie on:
-//! `F7:between[F7:copy(0)/F1:face(1),F7:copy(1)/F2:face(0)]` is the edge
-//! between those two faces, `F7:corner[a,b,c]` the vertex where those
-//! faces meet. When several edges or vertices lie on the same faces, the
-//! faces at their ends (for a vertex: at the other ends of its edges)
-//! follow after `|`, and when that does not tell them apart either a
-//! number follows in brackets: `F7:corner[a,b|c,d](1)`
-//! (docs/architecture.md §4.1).
+//! A copy of a copy does not grow a link per feature. A face that a row of
+//! features each kept as instance 0 (the target of every cut of a plate,
+//! the body every blend rounds) is one link, named after the first
+//! feature of the row: `F2001:copy(0)/F1:face(1)` is the top of a plate a
+//! thousand cuts went through, the way going on through instance 0 of
+//! each body until it reaches F1. Steps in a row that are not instance 0
+//! (the tool of each union, an instance of a pattern of a pattern) are one
+//! link too, their instances listed: `F9:copy(1,3)/F2:side(e7)` is in
+//! instance 1 of F9, which is instance 3 of the body F9's tool was made
+//! from, which is F2's. So a name has a link per change between instance 0
+//! and other instances along the way, not per feature, and the features in
+//! between are the ones the history says each instance was made from.
+//! Every name of the old long form (one link per feature) has exactly one
+//! short form and the other way round: [`PersistentName::canonical`] makes
+//! it, and reading a name (text or file) does so (docs/architecture.md
+//! §4.1).
 
 use crate::FeatureId;
 use serde::{Deserialize, Serialize};
@@ -38,8 +45,10 @@ pub const MAX_NAME_SOURCES: usize = 4096;
 /// after `|` included.
 pub const MAX_NAME_FACES: usize = 256;
 
-/// Most names one name is made of (`a/b/c` is three): how many features in
-/// a row can each make their body out of the one before.
+/// Most links one name is made of (`a/b/c` is three). A name regeneration
+/// makes has three at most (a copy, a piece, the name it was first given):
+/// a copy of a copy is one link ([`PersistentName::copy`]). The cap is for
+/// a name read from text or a file, in its long form or hostile.
 pub const MAX_NAME_DEPTH: usize = 32;
 
 /// The part an entity plays in the feature that made it.
@@ -60,9 +69,16 @@ pub enum NameRole {
     StartVertex,
     EndVertex,
     /// The image of an entity of another body, in a feature that moves,
-    /// mirrors or repeats that body. Its one source is the number of the
-    /// instance (0 for the first, or only, one); the name of the entity it
-    /// is the image of follows after `/`.
+    /// mirrors or repeats that body, or combines it with others. Its
+    /// sources are the instances along the way: either the one number 0,
+    /// when the entity is in instance 0 (for a boolean the target) of this
+    /// feature, and of the body that was made from, and so on until the
+    /// way reaches the feature of the name after `/`; or numbers none of
+    /// which is 0: the instance in this feature (for a boolean 1 is the
+    /// tool), then the instance in the body that instance was made from,
+    /// and so on, the last of them made from the body the name after `/`
+    /// is of. The name after `/` is the name of the entity it is the image
+    /// of there.
     Copy,
     /// One of several entities that the name after `/` would otherwise
     /// name all at once: a curve that sweeps more than one face (a spline
@@ -215,26 +231,26 @@ impl NameRole {
     }
 
     /// True for a role whose sources are plain numbers, one or more,
-    /// written without the `e` of a sketch entity: `chamfer(0,1)`.
+    /// written without the `e` of a sketch entity: `chamfer(0,1)`,
+    /// `copy(0,1)`.
     pub fn is_counted(self) -> bool {
         matches!(
             self,
-            NameRole::Chamfer | NameRole::ChamferCorner | NameRole::Fillet | NameRole::FilletCorner
+            NameRole::Copy
+                | NameRole::Chamfer
+                | NameRole::ChamferCorner
+                | NameRole::Fillet
+                | NameRole::FilletCorner
         )
     }
 
-    /// True for a role with exactly one source that is a plain number (an
-    /// instance, or the number of an entity of a primitive) and is written
+    /// True for a role with exactly one source that is a plain number (a
+    /// piece, or the number of an entity of a primitive) and is written
     /// without the `e` of a sketch entity.
     pub fn is_numbered(self) -> bool {
         matches!(
             self,
-            NameRole::Copy
-                | NameRole::Piece
-                | NameRole::Face
-                | NameRole::Edge
-                | NameRole::Vertex
-                | NameRole::Thread
+            NameRole::Piece | NameRole::Face | NameRole::Edge | NameRole::Vertex | NameRole::Thread
         )
     }
 }
@@ -251,9 +267,9 @@ pub struct PersistentName {
     /// or a vertex named by its faces: empty, or the one number that tells
     /// it from the others on the same faces.
     pub sources: Vec<u64>,
-    /// For a derived role (a copy): the name, in the body this feature
-    /// was made from, of the entity this one is the image of. `None` for
-    /// every other role.
+    /// For a derived role (a copy, a piece): the name of the entity this
+    /// one is the image of, in the body the way of the copy ends in (see
+    /// [`NameRole::Copy`]). `None` for every other role.
     pub of: Option<Box<PersistentName>>,
     /// For an edge or a vertex named by its faces (`between`, `corner`)
     /// that lists any: the faces. `None` for every other role. Behind a
@@ -287,12 +303,104 @@ impl PersistentName {
     }
 
     /// The image of `of` in instance `instance` of `feature`:
-    /// `F5:copy(2)/F2:side(e7)`.
+    /// `F5:copy(2)/F2:side(e7)`. `of` is a name of the body that instance
+    /// was made from. When `of` is a copy that goes the same way (instance
+    /// 0 and instance 0, or two that are not 0) the two are one link:
+    /// `F9:copy(0)` of `F7:copy(0)/F2:side(e7)` is `F9:copy(0)/F2:side(e7)`,
+    /// `F9:copy(1)` of `F7:copy(3)/F2:side(e7)` is `F9:copy(1,3)/F2:side(e7)`
+    /// (see [`NameRole::Copy`]). So a name grows by a link only where the
+    /// way changes between instance 0 and others, not per feature.
     pub fn copy(feature: FeatureId, instance: u64, of: PersistentName) -> Self {
+        Self::copy_along(feature, vec![instance], of)
+    }
+
+    /// The copy in `feature` whose way starts with the instances `path`,
+    /// directly followed by `of` (a name of the body the last of them was
+    /// made from): one link with `of` when they go the same way.
+    fn copy_along(feature: FeatureId, path: Vec<u64>, of: PersistentName) -> Self {
+        let zero = |p: &[u64]| p == [0];
+        let none_zero = |p: &[u64]| !p.is_empty() && p.iter().all(|&i| i != 0);
+        let (sources, of) = match of {
+            PersistentName {
+                role: NameRole::Copy,
+                sources: inner,
+                of: Some(next),
+                by: None,
+                feature: inner_feature,
+            } => {
+                if zero(&path) && zero(&inner) {
+                    // Instance 0 on and on: the way through instance 0
+                    // starts here now.
+                    (path, next)
+                } else if none_zero(&path) && none_zero(&inner) {
+                    let mut sources = path;
+                    sources.extend(inner);
+                    (sources, next)
+                } else {
+                    let inner = PersistentName {
+                        role: NameRole::Copy,
+                        sources: inner,
+                        of: Some(next),
+                        by: None,
+                        feature: inner_feature,
+                    };
+                    (path, Box::new(inner))
+                }
+            }
+            of => (path, Box::new(of)),
+        };
         Self {
-            of: Some(Box::new(of)),
-            ..Self::new(feature, NameRole::Copy, vec![instance])
+            of: Some(of),
+            ..Self::new(feature, NameRole::Copy, sources)
         }
+    }
+
+    /// The same name in its short form: copies of copies that go the same
+    /// way one link (see [`PersistentName::copy`]), and the faces an edge
+    /// or a vertex lists the same way, in the order names are compared in.
+    /// A name regeneration makes is in this form already; one read in the
+    /// long form (`F9:copy(0)/F7:copy(0)/F2:side(e7)`, as files and names
+    /// written before format version 15 have it) means the same entity in
+    /// it (`F9:copy(0)/F2:side(e7)`). In a short name two links in a row
+    /// never go the same way, so a name in either form reads as one
+    /// entity.
+    pub fn canonical(self) -> Self {
+        self.canonical_with(true)
+    }
+
+    /// [`PersistentName::canonical`]; the faces a link lists only when
+    /// `lists` (they list none themselves, so this goes one list deep).
+    fn canonical_with(self, lists: bool) -> Self {
+        // In a loop, from the innermost link out: a hostile chain cannot
+        // overflow the stack.
+        let mut links = Vec::new();
+        let mut next = Some(self);
+        while let Some(mut link) = next {
+            next = link.of.take().map(|boxed| *boxed);
+            links.push(link);
+        }
+        let mut built: Option<PersistentName> = None;
+        while let Some(mut link) = links.pop() {
+            if lists && let Some(by) = link.by.take() {
+                let FaceLists { on, near } = *by;
+                let short = |names: Vec<PersistentName>| -> Vec<PersistentName> {
+                    names.into_iter().map(|n| n.canonical_with(false)).collect()
+                };
+                link = link.with_faces(short(on), short(near));
+            }
+            link = match built.take() {
+                Some(of) if link.role == NameRole::Copy && link.by.is_none() => {
+                    Self::copy_along(link.feature, link.sources, of)
+                }
+                of => {
+                    link.of = of.map(Box::new);
+                    link
+                }
+            };
+            built = Some(link);
+        }
+        // There is always at least one link; the fallback is never used.
+        built.unwrap_or_else(|| Self::new(FeatureId(0), NameRole::Side, Vec::new()))
     }
 
     /// Entity number `piece` of those `of` would name in its own feature
@@ -427,7 +535,8 @@ impl PersistentName {
     }
 
     /// Whether the name is one that can be written and read back: a copy
-    /// has one instance number and the name it is a copy of, nothing else
+    /// has one or more instance numbers and the name it is a copy of, a
+    /// piece one number and the name it is a piece of, nothing else
     /// is followed by another name, only an edge or a vertex named by its
     /// faces lists faces (plain face names, which list none themselves),
     /// and the caps on depth, sources and faces hold. A name read from
@@ -476,10 +585,16 @@ impl PersistentName {
                     return Err("only a between and a corner list faces");
                 }
                 if name.role.is_numbered() && name.sources.len() != 1 {
-                    return Err("a copy, face, edge or vertex has one number");
+                    return Err("a piece, face, edge or vertex has one number");
+                }
+                if name.role == NameRole::Copy
+                    && name.sources.len() > 1
+                    && name.sources.contains(&0)
+                {
+                    return Err("a copy's numbers are one 0, or numbers none of which is 0");
                 }
                 if name.role.is_counted() && name.sources.is_empty() {
-                    return Err("a chamfer or fillet face has at least one number");
+                    return Err("a copy, a chamfer or a fillet face has at least one number");
                 }
             }
             match (name.role.is_derived(), &name.of) {
@@ -708,13 +823,11 @@ fn parse_link(
     let sources = parse_sources(inner, role.is_numbered() || role.is_counted(), reading)?;
     if role.is_counted() && sources.is_empty() {
         return Err(wrong(
-            "this role takes at least one number, as in chamfer(0)",
+            "this role takes at least one number, as in copy(0) or chamfer(0)",
         ));
     }
     if role.is_numbered() && sources.len() != 1 {
-        return Err(wrong(
-            "this role takes one number, as in copy(0) or face(2)",
-        ));
+        return Err(wrong("this role takes one number, as in face(2)"));
     }
     Ok(PersistentName::new(FeatureId(feature), role, sources))
 }
@@ -767,7 +880,8 @@ impl FromStr for PersistentName {
             sources: MAX_NAME_SOURCES,
             faces: MAX_NAME_FACES,
         };
-        let name = parse_chain(text, &mut reading, true)?;
+        // Read in the long form or the short one, it is the same name.
+        let name = parse_chain(text, &mut reading, true)?.canonical();
         name.check().map_err(wrong)?;
         Ok(name)
     }
@@ -824,6 +938,7 @@ mod tests {
                 NameRole::Copy,
                 vec![0],
             ),
+            ("F9:copy(1,3,2)/F2:side(e7)", NameRole::Copy, vec![1, 3, 2]),
         ];
         for (text, role, sources) in cases {
             let name: PersistentName = text.parse().unwrap();
@@ -865,36 +980,146 @@ mod tests {
         assert_eq!(copy.of.as_deref(), Some(&side));
         assert_eq!((copy.depth(), copy.root()), (2, &side));
         assert!(copy.is_face() && !copy.role.is_face());
-        let twice = PersistentName::copy(FeatureId(9), 0, copy.clone());
-        assert_eq!(twice.to_string().parse::<PersistentName>().unwrap(), twice);
-        assert_eq!((twice.depth(), twice.root()), (3, &side));
         let edge: PersistentName = "F7:copy(0)/F2:lateralEdge(e7,e8)".parse().unwrap();
         assert!(!edge.is_face());
-        // The deepest name that is accepted, and one deeper.
-        let deep = "F1:copy(0)/".repeat(MAX_NAME_DEPTH - 1) + "F2:side(e7)";
-        let name: PersistentName = deep.parse().unwrap();
-        assert_eq!(name.depth(), MAX_NAME_DEPTH);
-        assert_eq!(name.to_string(), deep);
-        assert!(
-            ("F1:copy(0)/".to_string() + &deep)
-                .parse::<PersistentName>()
-                .is_err()
-        );
         // Built from parts, a name can be one that cannot be written.
-        assert_eq!(name.check(), Ok(()));
-        assert!(PersistentName::copy(FeatureId(1), 0, name).check().is_err());
         let mut bare = copy.clone();
         bare.of = None;
         assert!(bare.check().is_err());
-        let mut two = copy.clone();
-        two.sources.push(1);
-        assert!(two.check().is_err());
+        let mut none = copy.clone();
+        none.sources.clear();
+        assert!(none.check().is_err());
         let mut tail = side.clone();
         tail.of = Some(Box::new(side.clone()));
         assert!(tail.check().is_err());
         let mut wide = side.clone();
         wide.sources = vec![1; MAX_NAME_SOURCES + 1];
         assert!(wide.check().is_err());
+        // Too many links: pieces of pieces, which nothing makes.
+        let mut deep = side.clone();
+        for _ in 0..MAX_NAME_DEPTH {
+            deep = PersistentName {
+                of: Some(Box::new(deep)),
+                ..PersistentName::new(FeatureId(2), NameRole::Piece, vec![1])
+            };
+        }
+        assert_eq!(deep.check(), Err("it is made of too many names"));
+    }
+
+    #[test]
+    fn a_copy_of_a_copy_that_goes_the_same_way_is_one_link() {
+        let side: PersistentName = "F2:side(e7)".parse().unwrap();
+        let copy = PersistentName::copy(FeatureId(5), 2, side.clone());
+        // Instance 1 of F9 of instance 2 of F5: one link.
+        let twice = PersistentName::copy(FeatureId(9), 1, copy.clone());
+        assert_eq!(twice.to_string(), "F9:copy(1,2)/F2:side(e7)");
+        assert_eq!((twice.depth(), twice.root()), (2, &side));
+        assert_eq!(twice.to_string().parse::<PersistentName>().unwrap(), twice);
+        // Instance 0 of F9 of instance 2 of F5: the way changes, two links.
+        let target = PersistentName::copy(FeatureId(9), 0, copy.clone());
+        assert_eq!(target.to_string(), "F9:copy(0)/F5:copy(2)/F2:side(e7)");
+        // A face a row of features each kept as instance 0 has one name of
+        // two links, after the first feature of the row.
+        let mut kept = PersistentName::copy(FeatureId(3), 0, side.clone());
+        for feature in 4..2000 {
+            kept = PersistentName::copy(FeatureId(feature), 0, kept);
+        }
+        assert_eq!(kept.to_string(), "F1999:copy(0)/F2:side(e7)");
+        assert_eq!(kept.check(), Ok(()));
+        // The wall of the first of a thousand holes: the tool of the first
+        // cut, then the target of every later one.
+        let mut wall = PersistentName::copy(FeatureId(4), 1, side.clone());
+        for feature in 5..2000 {
+            wall = PersistentName::copy(FeatureId(feature), 0, wall);
+        }
+        assert_eq!(wall.to_string(), "F1999:copy(0)/F4:copy(1)/F2:side(e7)");
+        let through = PersistentName::copy(FeatureId(2001), 1, wall);
+        assert_eq!(
+            through.to_string(),
+            "F2001:copy(1)/F1999:copy(0)/F4:copy(1)/F2:side(e7)"
+        );
+        // A tool of a tool of a tool: one link, an instance per step.
+        let mut tool = side.clone();
+        for feature in 3..10 {
+            tool = PersistentName::copy(FeatureId(feature), 1, tool);
+        }
+        assert_eq!(tool.to_string(), "F9:copy(1,1,1,1,1,1,1)/F2:side(e7)");
+        // The long form is read as the short one: the same name.
+        for (long, short) in [
+            (
+                "F9:copy(0)/F5:copy(2)/F2:side(e7)",
+                "F9:copy(0)/F5:copy(2)/F2:side(e7)",
+            ),
+            (
+                "F9:copy(1)/F5:copy(2)/F2:side(e7)",
+                "F9:copy(1,2)/F2:side(e7)",
+            ),
+            (
+                "F11:copy(0)/F10:copy(0)/F9:copy(0)/F3:copy(1)/F2:face(0)",
+                "F11:copy(0)/F3:copy(1)/F2:face(0)",
+            ),
+            (
+                "F11:copy(0)/F10:copy(0)/F9:copy(0)/F6:copy(0)/F3:copy(0)/F1:face(0)",
+                "F11:copy(0)/F1:face(0)",
+            ),
+            (
+                "F7:copy(1)/F5:copy(0)/F2:side(e7)",
+                "F7:copy(1)/F5:copy(0)/F2:side(e7)",
+            ),
+            (
+                "F9:copy(1)/F8:copy(3)/F7:copy(0)/F6:copy(0)/F3:copy(2)/F2:piece(1)/F2:side(e7)",
+                "F9:copy(1,3)/F7:copy(0)/F3:copy(2)/F2:piece(1)/F2:side(e7)",
+            ),
+            (
+                "F9:copy(0)/F8:copy(1)/F7:between[F7:copy(0)/F3:copy(0)/F1:face(1),F7:copy(1)/F2:side(e1)]",
+                "F9:copy(0)/F8:copy(1)/F7:between[F7:copy(0)/F1:face(1),F7:copy(1)/F2:side(e1)]",
+            ),
+        ] {
+            let read: PersistentName = long.parse().unwrap();
+            assert_eq!(read.to_string(), short, "{long}");
+            assert_eq!(read, short.parse::<PersistentName>().unwrap(), "{long}");
+            assert_eq!(read.clone().canonical(), read, "{long}");
+        }
+        // A file has the long form link by link; built so, it is the same.
+        let built = PersistentName {
+            of: Some(Box::new(PersistentName {
+                of: Some(Box::new(side.clone())),
+                ..PersistentName::new(FeatureId(5), NameRole::Copy, vec![1])
+            })),
+            ..PersistentName::new(FeatureId(9), NameRole::Copy, vec![2])
+        };
+        assert_eq!(built.to_string(), "F9:copy(2)/F5:copy(1)/F2:side(e7)");
+        assert_eq!(built.canonical().to_string(), "F9:copy(2,1)/F2:side(e7)");
+        // A way with a 0 among other numbers is not a name: it is two
+        // links.
+        for text in ["F9:copy(1,0)/F2:side(e7)", "F9:copy(0,1)/F2:side(e7)"] {
+            let error = text.parse::<PersistentName>().unwrap_err();
+            assert!(error.contains("none of which is 0"), "{text}: {error}");
+        }
+        // The faces an edge lists are put in order again: their short
+        // forms can compare otherwise than their long ones did.
+        let a = "F7:copy(0)/F5:copy(0)/F1:face(1)";
+        let b = "F7:copy(0)/F3:side(e1)";
+        let edge: PersistentName = format!("F7:between[{a},{b}]").parse().unwrap();
+        assert_eq!(
+            edge.to_string(),
+            "F7:between[F7:copy(0)/F1:face(1),F7:copy(0)/F3:side(e1)]"
+        );
+        // Hostile: a long form beyond the cap is refused before it is made
+        // short, and a deep chain built by hand is made short in a loop.
+        assert!(
+            ("F1:copy(0)/".repeat(MAX_NAME_DEPTH) + "F2:side(e7)")
+                .parse::<PersistentName>()
+                .is_err()
+        );
+        let mut deep = side.clone();
+        for _ in 0..100_000 {
+            deep = PersistentName {
+                of: Some(Box::new(deep)),
+                ..PersistentName::new(FeatureId(1), NameRole::Copy, vec![0])
+            };
+        }
+        assert_eq!(deep.canonical().to_string(), "F1:copy(0)/F2:side(e7)");
     }
 
     #[test]
@@ -916,7 +1141,8 @@ mod tests {
             ("F5:copy(2)", "followed by `/`"),
             ("F5:copy(2)/", "no `:`"),
             ("F5:copy()/F2:side(e7)", "one number"),
-            ("F5:copy(1,2)/F2:side(e7)", "one number"),
+            ("F5:copy(1,e2)/F2:side(e7)", "plain number"),
+            ("F5:copy(1,)/F2:side(e7)", "plain number"),
             ("F3:face()", "one number"),
             ("F3:face(e1)", "plain number"),
             ("F3:edge(1,2)", "one number"),
@@ -1139,14 +1365,15 @@ mod tests {
                 .unwrap_err()
                 .contains("too many sources")
         );
+        // A long form within the cap is read as its short form.
         let deep = "F1:copy(0)/".repeat(MAX_NAME_DEPTH - 1) + "F2:side(e7)";
         let corner = format!("F1:corner[{deep}]");
         assert_eq!(
-            corner.parse::<PersistentName>().unwrap().depth(),
-            MAX_NAME_DEPTH
+            corner.parse::<PersistentName>().unwrap().to_string(),
+            "F1:corner[F1:copy(0)/F2:side(e7)]"
         );
         assert!(
-            format!("F0:copy(0)/{corner}")
+            format!("F1:corner[F1:copy(0)/{deep}]")
                 .parse::<PersistentName>()
                 .is_err()
         );

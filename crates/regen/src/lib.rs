@@ -56,8 +56,7 @@ pub use sketch::{
 };
 
 use craft3d_doc::{
-    Document, Expr, Feature, FeatureId, FeatureKind, MAX_NAME_DEPTH, NameRole, Orientation,
-    PersistentName,
+    Document, Expr, Feature, FeatureId, FeatureKind, NameRole, Orientation, PersistentName,
 };
 use craft3d_expr::{Dimension, Evaluation, Quantity};
 use craft3d_kernel::primitives;
@@ -271,18 +270,15 @@ impl Names {
                 let Some(name) = there.faces.get(face) else {
                     return Ok(None);
                 };
-                if name.depth() >= MAX_NAME_DEPTH {
-                    return Err(format!(
-                        "more than {MAX_NAME_DEPTH} features in a row each make their body from the one before"
-                    ));
-                }
                 let copy = PersistentName::copy(feature, instance, name.clone());
+                copy.check().map_err(too_long)?;
                 if !all.contains(&copy) {
                     all.push(copy);
                 }
                 for alias in there.aliases_of(face) {
-                    if alias.depth() < MAX_NAME_DEPTH {
-                        inherited.push(PersistentName::copy(feature, instance, alias.clone()));
+                    let copy = PersistentName::copy(feature, instance, alias.clone());
+                    if copy.check().is_ok() {
+                        inherited.push(copy);
                     }
                 }
             }
@@ -639,6 +635,16 @@ fn checked(doc: &Document, body: Body) -> Result<Body, String> {
         None => Ok(body),
         Some(defect) => Err(format!("the result is not a valid body: {defect}")),
     }
+}
+
+/// Why a feature fails when a name it would give its entities is beyond
+/// the caps of a name (`PersistentName::check`). A copy of a copy is one
+/// link, so this takes a body that was the tool, or a later instance, of
+/// thousands of features in a row.
+pub(crate) fn too_long(reason: &str) -> String {
+    format!(
+        "a name this feature would give cannot be written ({reason}): the body went in as a tool or a later instance too many times in a row"
+    )
 }
 
 /// What to say of a feature that a reference needs and that comes later

@@ -28,7 +28,7 @@ type Step = fn(Value) -> Result<Value, String>;
 /// `STEPS[n]` brings a manifest from version `n + 1` to version `n + 2`.
 const STEPS: &[Step] = &[
     v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9, v9_to_v10,
-    v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14,
+    v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15,
 ];
 
 /// Version 2 adds the `cone` and `torus` feature kinds and an optional
@@ -233,6 +233,19 @@ fn v13_to_v14(mut manifest: Value) -> Result<Value, String> {
             Some(_) => {}
         }
     }
+    Ok(manifest)
+}
+
+/// Version 15 writes a copy of a copy as one link whose numbers are the
+/// instances along the way (`F9:copy(0,1)/F2:side(e7)` for what version 14
+/// wrote `F9:copy(0)/F7:copy(1)/F2:side(e7)`), so that a name does not
+/// grow a link per feature (docs/architecture.md §4.1). The long form
+/// means the same entity and is read into the short one by every version
+/// (`PersistentName::canonical`, in `convert`), so nothing changes here;
+/// the version was raised so that an older build, which takes a copy to
+/// have one number, says a newer 3DCraft is needed instead of refusing
+/// the names.
+fn v14_to_v15(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
 }
 

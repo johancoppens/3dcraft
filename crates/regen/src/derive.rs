@@ -7,9 +7,7 @@
 
 use crate::cause::FIX_IT_FIRST;
 use crate::{Contributors, FeatureResult, Kept, Names, Status, angle, length, number};
-use craft3d_doc::{
-    Document, Expr, Feature, FeatureId, FeatureKind, MAX_NAME_DEPTH, PatternLayout, PersistentName,
-};
+use craft3d_doc::{Document, Expr, Feature, FeatureId, FeatureKind, PatternLayout, PersistentName};
 use craft3d_expr::Evaluation;
 use craft3d_math::{Transform, Vec3};
 use craft3d_topo::Body;
@@ -255,12 +253,9 @@ pub(crate) fn copied(
     out: &mut Vec<PersistentName>,
 ) -> Result<(), String> {
     for name in names {
-        if name.depth() >= MAX_NAME_DEPTH {
-            return Err(format!(
-                "more than {MAX_NAME_DEPTH} features in a row each make their body from the one before"
-            ));
-        }
-        out.push(PersistentName::copy(feature, instance, name.clone()));
+        let copy = PersistentName::copy(feature, instance, name.clone());
+        copy.check().map_err(crate::too_long)?;
+        out.push(copy);
     }
     Ok(())
 }
@@ -278,8 +273,8 @@ pub(crate) fn copied_aliases(
     for (index, list) in aliases {
         let copies: Vec<PersistentName> = list
             .iter()
-            .filter(|name| name.depth() < MAX_NAME_DEPTH)
             .map(|name| PersistentName::copy(feature, instance, name.clone()))
+            .filter(|copy| copy.check().is_ok())
             .collect();
         if !copies.is_empty() {
             out.insert(first.saturating_add(*index), copies);

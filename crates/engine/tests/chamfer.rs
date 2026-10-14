@@ -1193,7 +1193,7 @@ fn a_sketch_on_the_chamfer_face_and_a_chamfer_on_an_edge_of_a_chamfer() {
             "{names:?}"
         );
         assert!(
-            names.contains(&"F3:copy(0)/F2:copy(0)/F1:face(1)".to_string()),
+            names.contains(&"F3:copy(0)/F1:face(1)".to_string()),
             "{names:?}"
         );
         // The first chamfer grows: the second follows its edge.

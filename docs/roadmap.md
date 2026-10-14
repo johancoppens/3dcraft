@@ -11,9 +11,8 @@ Status legend: ✅ done · 🟡 in progress · ⬜ not started. Put the date nex
 ## Current focus
 
 1. **The boolean kernel (M7), the developer's first priority** (2026-10-13): a refusal is work owed. Next: a planar tool against a spline surface with a pole ("tangent or nearly coincident over too large an area"), "imprint lost", and the rest of the [boolean checklist](#the-boolean-checklist) in its order.
-2. **Long chains of features:** more than 32 features in a row that each make their body from the one before fail (`MAX_NAME_DEPTH` in `crates/doc/src/name.rs`; 70 holes cut one after another hit it). Needs a naming scheme that does not grow a prefix per feature, or compresses copy chains ([M8.5](#m85-a-history-that-survives-edits-datums-pointing)).
-3. **M9, the rest:** move face, thicken and draft, and what the blends leave open, beside M7 since none of it touches the boolean kernel ([M9](#m9-local-operations-and-sweeps)).
-4. **R1, the first release:** the pinned set of modelling tasks, installers, the format promise, material and colour per body, a user guide ([R1](#r1-first-release)).
+2. **M9, the rest:** move face, thicken and draft, and what the blends leave open, beside M7 since none of it touches the boolean kernel ([M9](#m9-local-operations-and-sweeps)).
+3. **R1, the first release:** the pinned set of modelling tasks, installers, the format promise, material and colour per body, a user guide ([R1](#r1-first-release)).
 
 ## Milestones
 
@@ -295,9 +294,10 @@ What M9 needs before it starts. A feature that cannot be built is marked failed 
 - The window's feature tree shows failed, suppressed and rolled-back features, the reason on hover and the cause as a link that selects it (2026-10-14)
 - Every edge and vertex of every body has a name of its own, so a datum at a vertex of a body a boolean or a joined pattern made works ([`architecture.md`](architecture.md) §4.1) (2026-10-14)
 - Datums drawn in the viewport in both renderers, hidden with `ui.set {"show": {"datums": false}}` (2026-10-14)
+- Rows of features that each make their body from the one before have no length limit: a copy of a copy is one link per run of instance 0 or of other instances, so 1000 holes cut one after another regenerate; format 15 ([`architecture.md`](architecture.md) §4.1, *Copies of copies*) (2026-10-14)
 
 #### Open
-- [ ] Chains of more than 32 features that each make their body from the one before (Current focus)
+- [ ] A way that switches between target and tool more than about 30 times in a row still hits the 32-link cap of a name
 - [ ] An extrude that ends at a cone face
 - [ ] Datums in `view.render`; picking a datum
 - [ ] The section plane: hatching, more than one plane, a cap where two bodies overlap
