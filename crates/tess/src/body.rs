@@ -618,3 +618,103 @@ pub fn tessellate_body_and_edges(
         edges: edges.points,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use craft3d_math::Frame;
+    use craft3d_testkit::solids;
+
+    /// The border the mesh of face `index` must have: the chords of its
+    /// edges as its loops run.
+    fn border_of(body: &Body, points: &[Vec<Vec3>], index: usize) -> Vec<(Vec3, Vec3)> {
+        let mut border = Vec::new();
+        for id in &body.faces[index].loops {
+            for coedge in &body.loop_(*id).unwrap().coedges {
+                let edge = &points[coedge.edge.0 as usize];
+                for pair in edge.windows(2) {
+                    border.push(if coedge.reversed {
+                        (pair[1], pair[0])
+                    } else {
+                        (pair[0], pair[1])
+                    });
+                }
+            }
+        }
+        border
+    }
+
+    fn reason(result: Result<(), TessError>) -> String {
+        match result {
+            Err(TessError::Face { face: 1, reason }) => reason,
+            other => panic!("expected an error at face 1, got {other:?}"),
+        }
+    }
+
+    /// The check that holds a face's mesh against its edges says what is
+    /// wrong with a border that is not the one the loops ask for. (No
+    /// face of the suites has such a mesh: the borders here are made up.)
+    #[test]
+    fn a_mesh_that_does_not_close_along_an_edge_is_named() {
+        let body = solids::cylinder(&Frame::WORLD, 1.0, 2.0).unwrap().body;
+        let params = TessParams {
+            chordal_tolerance: 1e-2,
+            ..TessParams::default()
+        };
+        let points = edge_points(&body, &params).unwrap().points;
+        let face = &body.faces[1];
+        let whole = border_of(&body, &points, 1);
+        assert!(whole.len() > 8);
+        assert_eq!(closes_along_edges(&body, &points, face, 1, &whole), Ok(()));
+        // In any order.
+        let mut shuffled = whole.clone();
+        shuffled.reverse();
+        shuffled.swap(1, 5);
+        assert_eq!(
+            closes_along_edges(&body, &points, face, 1, &shuffled),
+            Ok(())
+        );
+
+        // A chord no triangle ends on: the mesh is open there.
+        let mut open = whole.clone();
+        open.remove(3);
+        let why = reason(closes_along_edges(&body, &points, face, 1, &open));
+        assert!(why.contains("not closed along edge"), "{why}");
+        assert!(why.contains("shares with face 0"), "{why}");
+        assert!(why.contains("the side of 0 of its triangles"), "{why}");
+        // A chord two triangles end on, and one the wrong way round.
+        let mut twice = whole.clone();
+        twice.push(whole[3]);
+        let why = reason(closes_along_edges(&body, &points, face, 1, &twice));
+        assert!(why.contains("the side of 2 of its triangles"), "{why}");
+        let mut backwards = whole.clone();
+        backwards[3] = (whole[3].1, whole[3].0);
+        let why = reason(closes_along_edges(&body, &points, face, 1, &backwards));
+        assert!(why.contains("not closed along edge"), "{why}");
+        // A side that is no chord of any edge, used once: a seam whose
+        // other side is missing, or a chord with a point that is not the
+        // edge's.
+        let (from, to) = whole[3];
+        let mut stray = whole.clone();
+        stray.push((from, Vec3::new(0.0, 0.0, 1.0)));
+        let why = reason(closes_along_edges(&body, &points, face, 1, &stray));
+        assert!(why.contains("where the face has no edge"), "{why}");
+        let mut moved = whole.clone();
+        moved[3] = (from, to + Vec3::new(1e-12, 0.0, 0.0));
+        assert!(closes_along_edges(&body, &points, face, 1, &moved).is_err());
+        // Both sides of a seam cancel; a side without length is nothing.
+        let mut seamed = whole.clone();
+        seamed.push((from, Vec3::new(0.0, 0.0, 1.0)));
+        seamed.push((Vec3::new(0.0, 0.0, 1.0), from));
+        seamed.push((to, to));
+        assert_eq!(closes_along_edges(&body, &points, face, 1, &seamed), Ok(()));
+        // −0 is 0.
+        let negative =
+            |p: Vec3| Vec3::new(p.x + 0.0, p.y + 0.0, if p.z == 0.0 { -0.0 } else { p.z });
+        let signed: Vec<(Vec3, Vec3)> = whole
+            .iter()
+            .map(|&(a, b)| (negative(a), negative(b)))
+            .collect();
+        assert_eq!(closes_along_edges(&body, &points, face, 1, &signed), Ok(()));
+    }
+}
