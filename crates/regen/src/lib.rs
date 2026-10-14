@@ -25,6 +25,7 @@ mod datum;
 mod derive;
 mod entity;
 mod extrude;
+mod loft;
 mod query;
 mod revolve;
 mod sketch;
@@ -537,6 +538,7 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
         // Built in `features`, which knows the sketch's result.
         FeatureKind::Extrude(_) => return Err("an extrusion needs its sketch".to_string()),
         FeatureKind::Revolve(_) => return Err("a revolution needs its sketch".to_string()),
+        FeatureKind::Loft(_) => return Err("a loft needs its sketches".to_string()),
         // Placed in `features`; reference geometry is not a body.
         FeatureKind::DatumPlane(_) | FeatureKind::DatumAxis(_) | FeatureKind::DatumPoint(_) => {
             return Err("a datum has no body".to_string());
@@ -729,6 +731,16 @@ fn build_feature(
         match swept.and_then(|(body, origins)| checked(doc, body).map(|body| (body, origins))) {
             Ok((body, origins)) => {
                 names = Some(Arc::new(Names::of_origins(feature.id, &origins)));
+                (Status::Ok, Some(Arc::new(body)))
+            }
+            Err(reason) => (Status::Failed(reason), None),
+        }
+    } else if let FeatureKind::Loft(lofted) = &feature.kind {
+        match loft::build(doc, feature.id, lofted, earlier)
+            .and_then(|(body, names)| checked(doc, body).map(|body| (body, names)))
+        {
+            Ok((body, made_names)) => {
+                names = Some(Arc::new(made_names));
                 (Status::Ok, Some(Arc::new(body)))
             }
             Err(reason) => (Status::Failed(reason), None),

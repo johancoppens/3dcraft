@@ -311,6 +311,36 @@ pub struct Revolve {
     pub symmetric: bool,
 }
 
+/// Most sections one loft has.
+pub const MAX_LOFT_SECTIONS: usize = 64;
+
+/// One profile of a loft: a sketch with one closed loop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoftSection {
+    pub sketch: FeatureId,
+    /// The curve of the sketch the loop starts with, which is matched
+    /// with the first curve of the other sections. `None` leaves it to
+    /// the rule (the first section: its curve with the smallest id; the
+    /// others: turned to lie nearest to the section before).
+    #[serde(default)]
+    pub start: Option<EntityId>,
+}
+
+/// A solid through a row of profiles in order: its side passes through
+/// every one of them, its ends are the first and the last.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Loft {
+    /// The profiles, in the order the loft passes through them.
+    pub sections: Vec<LoftSection>,
+    /// Straight lines between sections that follow each other, instead of
+    /// a smooth surface through all of them.
+    #[serde(default)]
+    pub ruled: bool,
+    /// The last section joins the first: a ring without ends.
+    #[serde(default)]
+    pub closed: bool,
+}
+
 fn zero3() -> [Expr; 3] {
     [Expr::new("0"), Expr::new("0"), Expr::new("0")]
 }
@@ -508,6 +538,7 @@ pub enum FeatureKind {
     Sketch(Sketch),
     Extrude(Extrude),
     Revolve(Revolve),
+    Loft(Loft),
     Transform(Transform),
     Mirror(Mirror),
     Pattern(Pattern),
@@ -530,6 +561,7 @@ impl FeatureKind {
             FeatureKind::Sketch(_) => "sketch",
             FeatureKind::Extrude(_) => "extrude",
             FeatureKind::Revolve(_) => "revolve",
+            FeatureKind::Loft(_) => "loft",
             FeatureKind::Transform(_) => "transform",
             FeatureKind::Mirror(_) => "mirror",
             FeatureKind::Pattern(_) => "pattern",
@@ -596,6 +628,7 @@ impl FeatureKind {
             | FeatureKind::Sketch(_)
             | FeatureKind::Extrude(_)
             | FeatureKind::Revolve(_)
+            | FeatureKind::Loft(_)
             | FeatureKind::Boolean(_)
             | FeatureKind::DatumPlane(_)
             | FeatureKind::DatumAxis(_)
@@ -616,6 +649,7 @@ impl FeatureKind {
                 RevolveAxis::Datum { axis } => vec![r.sketch, axis],
                 RevolveAxis::X | RevolveAxis::Y | RevolveAxis::Line { .. } => vec![r.sketch],
             },
+            FeatureKind::Loft(l) => l.sections.iter().map(|s| s.sketch).collect(),
             FeatureKind::Sketch(sketch) => match &sketch.plane {
                 SketchPlane::Face { face, .. } => vec![face.feature],
                 SketchPlane::Datum { plane, .. } => vec![*plane],
@@ -703,7 +737,7 @@ impl FeatureKind {
                 out = triple("point", &m.point);
                 out.extend(triple("normal", &m.normal));
             }
-            FeatureKind::Boolean(_) => out = Vec::new(),
+            FeatureKind::Boolean(_) | FeatureKind::Loft(_) => out = Vec::new(),
             FeatureKind::DatumPlane(d) => out = d.exprs(),
             FeatureKind::DatumAxis(d) => out = d.exprs(),
             FeatureKind::DatumPoint(d) => out = d.exprs(),
@@ -779,7 +813,7 @@ impl FeatureKind {
                 .chain([&mut t.angle])
                 .collect(),
             FeatureKind::Mirror(m) => m.point.iter_mut().chain(m.normal.iter_mut()).collect(),
-            FeatureKind::Boolean(_) => Vec::new(),
+            FeatureKind::Boolean(_) | FeatureKind::Loft(_) => Vec::new(),
             FeatureKind::DatumPlane(d) => d.exprs_mut(),
             FeatureKind::DatumAxis(d) => d.exprs_mut(),
             FeatureKind::DatumPoint(d) => d.exprs_mut(),
@@ -968,6 +1002,15 @@ impl Document {
                         feature.name
                     ))
                 })?;
+            }
+            if let FeatureKind::Loft(loft) = &feature.kind
+                && loft.sections.len() > MAX_LOFT_SECTIONS
+            {
+                return Err(DocError::Invalid(format!(
+                    "the loft `{}` has {} sections; the most is {MAX_LOFT_SECTIONS}",
+                    feature.name,
+                    loft.sections.len()
+                )));
             }
             let referred = match &feature.kind {
                 FeatureKind::DatumPlane(datum) => datum.names(),

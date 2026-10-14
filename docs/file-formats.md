@@ -1,6 +1,6 @@
 # File formats
 
-> **Last updated:** 2026-10-14 · **Status:** `.3dcraft` (version 7), mesh export (STL, 3MF, OBJ), STEP export and DXF/SVG export of flat outlines work and are tested; STEP import is the plan.
+> **Last updated:** 2026-10-14 · **Status:** `.3dcraft` (version 8), mesh export (STL, 3MF, OBJ), STEP export and DXF/SVG export of flat outlines work and are tested; STEP import is the plan.
 
 | Format | Read | Write | Carries | Crates | Milestone |
 |---|---|---|---|---|---|
@@ -16,7 +16,7 @@ Formats live in standalone crates with their own format-level model and no works
 
 ## Native format: `.3dcraft`
 
-**Implemented today (format version 7; version 1 to 6 files open unchanged; 7 added the `chamfer` feature kind and the name roles `chamfer` and `chamferCorner`, below; 5 added the `transform`, `mirror` and `pattern` feature kinds and names that are copies of names; 6 added the `spline` kind of sketch entity, written `{"type": "spline", "degree": 3, "control": [1, 2, 3, 4]}` with the ids of its control points, its knots being clamped and uniform by definition):** a ZIP of stored entries with one entry, `manifest.json` (below). Unknown extra entries are ignored on load and not preserved on save. `blobs/`, `thumb.png`, the directory layout, autosave and crash recovery are the plan, not built.
+**Implemented today (format version 8; version 1 to 7 files open unchanged; 8 added the `loft` feature kind, written `{"type": "loft", "sections": [{"sketch": 7}, {"sketch": 9, "start": 3}]}` with the feature id of each section's sketch in the order the loft passes through them, the entity id of the curve a section starts with when one was given, and `"ruled": true` and `"closed": true` only when set; 7 added the `chamfer` feature kind and the name roles `chamfer` and `chamferCorner`, below; 5 added the `transform`, `mirror` and `pattern` feature kinds and names that are copies of names; 6 added the `spline` kind of sketch entity, written `{"type": "spline", "degree": 3, "control": [1, 2, 3, 4]}` with the ids of its control points, its knots being clamped and uniform by definition):** a ZIP of stored entries with one entry, `manifest.json` (below). Unknown extra entries are ignored on load and not preserved on save. `blobs/`, `thumb.png`, the directory layout, autosave and crash recovery are the plan, not built.
 
 A `.3dcraft` file is a ZIP of STORE (uncompressed) entries, or a directory with the same layout (useful in git and for debugging):
 

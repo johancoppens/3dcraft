@@ -168,7 +168,7 @@ fn saving_twice_gives_the_same_bytes() {
 fn the_manifest_of_a_small_document_is_exactly_this() {
     let expected = r#"{
   "format": "3dcraft",
-  "format_version": 7,
+  "format_version": 8,
   "document": {
     "units": {
       "length": "mm",
@@ -340,11 +340,11 @@ fn fix_trailing_commas(json: &str) -> String {
 
 #[test]
 fn a_newer_format_version_says_a_newer_3dcraft_is_needed() {
-    let error = load_error(&edited(&version_field(), "\"format_version\": 8"));
+    let error = load_error(&edited(&version_field(), "\"format_version\": 9"));
     assert!(matches!(
         error,
         FormatError::NewerVersion {
-            file: 8,
+            file: 9,
             supported: FORMAT_VERSION
         }
     ));
@@ -1527,7 +1527,7 @@ fn a_spline_is_written_like_this_and_round_trips() {
     doc.validate().unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 7);
+    assert_eq!(value["format_version"], FORMAT_VERSION);
     let entities = &value["document"]["features"][1]["kind"]["entities"];
     assert_eq!(
         entities[4],
@@ -1705,8 +1705,8 @@ fn datum_planes_are_written_like_this_and_round_trip() {
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     // Datums raised no version: nothing an earlier file holds changed
-    // meaning. (7 is the chamfer's.)
-    assert_eq!(value["format_version"], 7);
+    // meaning. (7 is the chamfer's, 8 the loft's.)
+    assert_eq!(value["format_version"], FORMAT_VERSION);
     let face_json = |n: u64| serde_json::json!({"feature": 1, "role": "face", "sources": [n]});
     let kinds: Vec<&serde_json::Value> = value["document"]["features"]
         .as_array()
@@ -1883,7 +1883,7 @@ fn datum_axes_are_written_like_this_and_round_trip() {
 
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 7);
+    assert_eq!(value["format_version"], FORMAT_VERSION);
     let face_json = |n: u64| serde_json::json!({"feature": 1, "role": "face", "sources": [n]});
     let kind = |index: usize| &value["document"]["features"][index]["kind"];
     let written = [
@@ -1990,7 +1990,7 @@ fn datum_points_are_written_like_this_and_round_trip() {
     assert_eq!(doc.features[1].name, "Point1");
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 7);
+    assert_eq!(value["format_version"], FORMAT_VERSION);
     let face_json = |n: u64| serde_json::json!({"feature": 1, "role": "face", "sources": [n]});
     let written = [
         serde_json::json!({"type": "datumPoint",
@@ -2209,7 +2209,7 @@ fn a_chamfer_is_written_like_this_and_round_trips() {
         assert_eq!(doc.validate(), Ok(()));
         let json = to_manifest_json(&doc).unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(value["format_version"], 7);
+        assert_eq!(value["format_version"], FORMAT_VERSION);
         assert_eq!(
             value["document"]["features"][1]["kind"],
             serde_json::json!({
@@ -2228,4 +2228,99 @@ fn a_chamfer_is_written_like_this_and_round_trips() {
         let unknown = json.replacen("\"chain\": false", "\"chain\": false, \"radius\": 1", 1);
         assert!(from_manifest_json(unknown.as_bytes()).is_err());
     }
+}
+
+/// Version 8: lofts, as they are written.
+#[test]
+fn a_loft_is_written_like_this_and_round_trips() {
+    use craft3d_doc::{EntityId, FeatureId, Loft, LoftSection, MAX_LOFT_SECTIONS};
+    let mut doc = small();
+    let section = |sketch: u64, start: Option<u64>| LoftSection {
+        sketch: FeatureId(sketch),
+        start: start.map(EntityId),
+    };
+    doc.add_feature(
+        Some("Hull"),
+        FeatureKind::Loft(Loft {
+            sections: vec![section(7, None), section(9, Some(3)), section(8, None)],
+            ruled: false,
+            closed: false,
+        }),
+    )
+    .unwrap();
+    doc.add_feature(
+        Some("Ring"),
+        FeatureKind::Loft(Loft {
+            sections: vec![section(7, None), section(9, None), section(8, None)],
+            ruled: true,
+            closed: true,
+        }),
+    )
+    .unwrap();
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["format_version"], 8);
+    let features = value["document"]["features"].as_array().unwrap();
+    assert_eq!(
+        features[features.len() - 2]["kind"],
+        serde_json::json!({"type": "loft", "sections": [
+            {"sketch": 7}, {"sketch": 9, "start": 3}, {"sketch": 8}]})
+    );
+    assert_eq!(
+        features[features.len() - 1]["kind"],
+        serde_json::json!({"type": "loft", "sections": [
+            {"sketch": 7}, {"sketch": 9}, {"sketch": 8}], "ruled": true, "closed": true})
+    );
+    assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+    assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
+    // `sections` is required; a field a section does not have is refused,
+    // and so are more sections than a loft can have.
+    let without = json.replace(r#""sections": ["#, r#""profiles": ["#);
+    assert!(from_manifest_json(without.as_bytes()).is_err());
+    let extra = json.replace(r#""start": 3"#, r#""start": 3, "twist": 1"#);
+    assert_ne!(extra, json);
+    assert!(from_manifest_json(extra.as_bytes()).is_err());
+    let mut long = small();
+    long.add_feature(
+        None,
+        FeatureKind::Loft(Loft {
+            sections: vec![section(1, None); MAX_LOFT_SECTIONS + 1],
+            ruled: false,
+            closed: false,
+        }),
+    )
+    .unwrap();
+    assert!(
+        to_manifest_json(&long).is_err() || {
+            let json = to_manifest_json(&long).unwrap();
+            from_manifest_json(json.as_bytes()).is_err()
+        }
+    );
+}
+
+/// A version-7 file, as written before lofts existed. Never edit this.
+#[test]
+fn a_version_7_file_opens_unchanged_and_is_saved_as_the_current_version() {
+    let v7 = r#"{"format": "3dcraft", "format_version": 7, "document": {
+        "units": {"length": "mm", "angle": "deg"},
+        "tolerance": {"linear": 1e-6, "angular": 1e-9},
+        "variables": [{"name": "c", "expr": "1 mm"}],
+        "features": [
+          {"id": 1, "name": "Block", "suppressed": false, "kind":
+            {"type": "block", "position": ["0", "0", "0"], "size": ["10", "8", "6"]}},
+          {"id": 2, "name": "Edge", "suppressed": false, "kind":
+            {"type": "chamfer",
+             "edges": [[{"feature": 1, "role": "face", "sources": [1]},
+                        {"feature": 1, "role": "face", "sources": [2]}]],
+             "size": {"type": "equal", "distance": "c"}, "chain": false}}],
+        "rollback": null, "next_feature_id": 3}}"#;
+    let doc = match from_manifest_json(v7.as_bytes()) {
+        Ok(doc) => doc,
+        Err(error) => panic!("{error}"),
+    };
+    assert_eq!(doc.features[1].kind.type_name(), "chamfer");
+    let saved = to_manifest_json(&doc).unwrap();
+    assert!(saved.contains(&version_field()), "{saved}");
+    assert!(!saved.contains("loft"), "{saved}");
+    assert_eq!(from_manifest_json(saved.as_bytes()).unwrap(), doc);
 }

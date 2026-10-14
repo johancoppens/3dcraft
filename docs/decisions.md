@@ -165,6 +165,18 @@ Proposed by the agent that wrote the first docs; the developer can overturn any 
 - **UI toolkit: egui/eframe on wgpu,** as in PhotoCraft, for the phase-1 viewer. The engine seam keeps it replaceable.
 - **Not adopted from the storytold apps for now:** the private `craftrules` standards (not available next to this checkout), `craft-libs`, `craft-fonts`, the contributor-credits machinery, release packaging and the parity/scorecard documents.
 
+### 2026-10-14: Decisions made while building loft
+
+Made by the agent, overnight; the developer can overturn any of them.
+
+- **Format version 8 for the `loft` feature kind.** Nothing a version-7 file holds changes meaning, and AGENTS.md §8 asks for a new version only then; `crates/format/src/migrate.rs` asks for one whenever an older build could not read what a new kind writes, so that it reports the version and not an unknown kind (as versions 2, 3, 5, 6 and, for the chamfer the same night, 7 did). The second rule was followed: a build that knows version 7 knows chamfers and not lofts. The four features of 2026-10-13 that went in as optional fields without a new version are untouched. **For the developer to confirm**, with the question of which rule stands (and whether two kinds added in one night before any release should share a version).
+- **How sections are matched.** Loops are walked the same way round by geometry (counter-clockwise looking back along the loft), not by how their sketch planes face, so there is no `reverse` parameter. The first section starts at its smallest curve id; later sections are turned to lie nearest to the one before, and `start` overrides that per section. The alternative, every section from its smallest id, twists a loft by default whenever a sketch plane faces the other way or a profile was drawn from another corner; the price of the rule chosen is that the matching, and with it the names of the side faces, follows the geometry: an edit that turns a section past the next corner changes them (references then fail; they never point at another face). Giving `start` on every section pins the matching.
+- **Sections with different numbers of curves are cut by length,** at the fractions of the loop where the other sections have their corners, rather than refused. Corners within a thousandth of the loop of each other count as one, so that a sliver of a face is not made for a difference nobody drew.
+- **A whole circle is four faces** in a loft with B-spline sides (four quarter arcs), and one face without a seam only where the side is a cylinder or a cone. A B-spline face that closes on itself would need a seam edge, which the tessellator and the measure handle on analytic surfaces only.
+- **The parts a curve was cut in share its name** (`F9:side(e2,e2)` four times for a quartered circle), as the pieces of a face a boolean cut do. A name role with a part number would tell them apart; it was not added, to leave `doc/src/name.rs` alone while other features are being built on it.
+- **`regen` depends on `tess`** (a lower layer), for the self-intersection check of every loft: the kernel cannot use the tessellator (same layer), and a loft that passes through itself must never be handed on. The check is the one of `document.check {"deep": true}`, with its parameters; it costs a mesh per rebuilt loft (the showcase hull with its hollowing: 0.6 s for the whole script).
+- **Smooth means interpolation in homogeneous coordinates** for sections with arcs. Where the weights of the surface between the sections would not stay positive the loft fails and says so (make it ruled, or draw the sections with splines); none of the tested shapes does.
+
 ## Open decisions
 
 | # | Question | Options | Needed by | Default if nobody decides |
