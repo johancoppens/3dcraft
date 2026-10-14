@@ -15,7 +15,7 @@
 //! `v₀` to `v`. Both integrals are Gauss–Legendre sums; the boundary is
 //! followed along the edge curves, projected onto the surface.
 //!
-//! Four things make `D` more than a region of the plane.
+//! Five things make `D` more than a region of the plane.
 //!
 //! **Loops around the axis.** On a surface closed around its axis a loop may
 //! wind around it (the rim of a cone, the two ends of a cylinder wall). `G`
@@ -79,6 +79,47 @@
 //! then runs from, as from an apex. A face without
 //! loops is the whole surface, summed between its knot lines both ways
 //! until two sums agree.
+//!
+//! **The poles of a spline surface.** A border of a Bézier or NURBS
+//! surface may be one point in space (every control point of it the
+//! same): the pole of a dome swept about an axis, the apex of a ruled
+//! cone, the top of the teapot's lid. Like an apex it is a whole side of
+//! the parameter range that no edge of the body stands for, and a
+//! boundary that passes through it (at the end of an edge or on an edge's
+//! way, where the edge is then cut so that its corner in parameter space
+//! falls between two panels) is closed in parameter space by a stretch of
+//! that border. With the inner integral running from the pole, `G` is
+//! zero all along that stretch and nothing is missing; the integrand of
+//! the inner integral is smooth up to the pole (the normal's length goes
+//! to zero there in proportion to the distance from the border, which is
+//! what makes the area element integrable). For a pole on a border of
+//! constant u the roles of u and v are exchanged, as on a torus.
+//!
+//! A boundary may pass through the poles at both ends (the face a spline
+//! sweeps that starts and ends on the axis runs from pole to pole between
+//! two meridians and has no other edge: every `du` along it is zero, and
+//! all of its area lies between the two stretches no edge stands for).
+//! No `G` is zero at both. The face is therefore divided along a line of
+//! constant parameter between the poles: on the near side of it the
+//! inner integral runs from the near pole, beyond it from the far pole.
+//! The two differ by the integral over the whole way between the poles,
+//! `W`, which depends on the other parameter alone; along a stretch of
+//! the boundary beyond the line that difference sums to the integral of
+//! `W` between where the stretch goes over the line and where it comes
+//! back, which is the integral of `f` over a rectangle and is summed as
+//! one. The crossings are found from the samples (two in a row on
+//! different sides) by bisection along the edge, and the panels of the
+//! boundary end at them. Where the boundary goes around the pole or
+//! which way the edges leave it never enters: both integrals vanish at
+//! their own pole however the boundary passes through it. A boundary
+//! through two poles that also crosses the seam of a surface that closes
+//! on itself is declined (the rectangle would have to go around).
+//!
+//! A boundary that only comes close to a pole without passing through it
+//! (further than [`AT_APEX`] of its reach from it) is measured as on any
+//! other spline surface, from a point of the boundary itself: its sums
+//! have a peak as narrow as the boundary is close, and settle or are
+//! declined.
 //!
 //! **Nothing is taken on trust.** The boundary integral of a face is
 //! computed twice, first with half the panels its edges need and then with
@@ -441,10 +482,16 @@ impl<'a> Follow<'a> {
 }
 
 /// The direction an inner integral runs in.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Along {
     U,
     V,
+}
+
+impl Along {
+    fn same(self, other: Along) -> bool {
+        matches!((self, other), (Along::U, Along::U) | (Along::V, Along::V))
+    }
 }
 
 /// A sum, and the sum of the sizes of its terms (see [`integrand`]): what
@@ -659,8 +706,16 @@ fn knot_crossings(
     surface: &Surface,
     (low, high): (f64, f64),
     touch: f64,
+    split: Option<(Along, f64)>,
 ) -> Result<Vec<f64>, GeomError> {
-    let (lines_u, lines_v) = knot_lines(surface);
+    let (mut lines_u, mut lines_v) = knot_lines(surface);
+    // The line a face through two poles is divided along is one more
+    // that its boundary's panels end at.
+    match split {
+        Some((Along::V, v)) => lines_v.push(v),
+        Some((Along::U, u)) => lines_u.push(u),
+        None => {}
+    }
     let mut crossings = Vec::new();
     if (lines_u.is_empty() && lines_v.is_empty()) || high <= low || (high - low).is_nan() {
         return Ok(crossings);
@@ -790,6 +845,105 @@ fn own_sphere(body: &Body, face: &Face, sphere: &Sphere) -> Option<Surface> {
     Some(Surface::Sphere(Sphere::new(frame, radius).ok()?))
 }
 
+/// A border of a freeform surface's parameter range that is one point in
+/// space: a pole.
+struct Pole {
+    /// The direction across the border: `V` for a border of constant v
+    /// (the surface does not move with u there).
+    along: Along,
+    /// The parameter the border is at.
+    at: f64,
+    point: Vec3,
+}
+
+/// The poles of a Bézier or NURBS surface (`craft3d_geom::pole`: the
+/// borders whose control points are all one point), as the integrals
+/// take them: borders of constant v first.
+fn poles(surface: &Surface) -> Vec<Pole> {
+    let mut found: Vec<Pole> = craft3d_geom::pole::poles(surface)
+        .into_iter()
+        .map(|pole| Pole {
+            along: if pole.across_v() { Along::V } else { Along::U },
+            at: pole.at(surface),
+            point: pole.point,
+        })
+        .collect();
+    // Stable: the start of a parameter before its end.
+    found.sort_by_key(|pole| matches!(pole.along, Along::U));
+    found
+}
+
+/// Where the line lies along which a face through two poles is divided,
+/// as a share of the way from one pole to the other: not a share at which
+/// a knot line or the edge of a face is likely to lie, since an edge along
+/// the line is on neither side of it.
+const DIVIDE: f64 = 0.381_966_011_250_105;
+
+/// How a face is measured whose boundary passes through poles of its
+/// surface (see the module documentation).
+#[derive(Clone, Copy, Debug)]
+struct Poled {
+    /// The direction the inner integral runs in: across the poles'
+    /// borders.
+    along: Along,
+    /// The pole it runs from: the parameter of its border.
+    from: f64,
+    /// When the boundary passes through the pole at the other end too:
+    /// the parameter of the line the face is divided along, and that
+    /// pole's, which the inner integral runs from beyond the line.
+    far: Option<(f64, f64)>,
+}
+
+impl Poled {
+    /// For a boundary through the `touched` ones of `poles`: across the
+    /// borders of constant v when it passes through one of those, across
+    /// those of constant u otherwise. A boundary through poles of both
+    /// kinds is closed in parameter space by the first kind alone: along
+    /// a border of constant u the other parameter does not change.
+    fn choose(poles: &[Pole], touched: &[bool]) -> Option<Poled> {
+        let touched = |along: Along| {
+            poles
+                .iter()
+                .zip(touched)
+                .filter(move |(pole, touched)| **touched && pole.along.same(along))
+                .map(|(pole, _)| pole.at)
+        };
+        let along = if touched(Along::V).next().is_some() {
+            Along::V
+        } else {
+            Along::U
+        };
+        let mut at = touched(along);
+        let from = at.next()?;
+        let far = at.next().map(|far| (from + (far - from) * DIVIDE, far));
+        Some(Poled { along, from, far })
+    }
+
+    /// Whether the parameter `r` across the borders is on the side of the
+    /// dividing line that the pole `from` is on.
+    fn near(&self, r: f64) -> bool {
+        self.far
+            .is_none_or(|(split, _)| (r - split) * (self.from - split) > 0.0)
+    }
+
+    /// Where the inner integral to `r` runs from.
+    fn reference(&self, r: f64) -> f64 {
+        match self.far {
+            Some((_, far)) if !self.near(r) => far,
+            _ => self.from,
+        }
+    }
+
+    /// Of a boundary sample: its parameter along the borders, the one
+    /// across them, and how fast the first changes.
+    fn pick(&self, s: &Sample) -> (f64, f64, f64) {
+        match self.along {
+            Along::V => (s.u, s.v, s.du),
+            Along::U => (s.v, s.u, s.dv),
+        }
+    }
+}
+
 /// A stretch of an edge as a loop runs along it, from parameter `start` to
 /// `end` (either may be the larger).
 struct Piece<'a> {
@@ -803,9 +957,9 @@ struct Piece<'a> {
 /// The boundary of a face: per loop its pieces in the order the loop runs.
 struct Outline<'a> {
     loops: Vec<Vec<Piece<'a>>>,
-    /// Whether the boundary touches a point where a freeform surface's
-    /// parametrisation collapses (a collapsed patch edge).
-    collapsed: bool,
+    /// How the face is measured when its boundary passes through a pole
+    /// of its freeform surface (a border collapsed into a point).
+    poled: Option<Poled>,
     /// Whether every edge is a line, a circle or an ellipse.
     conic: bool,
     /// The share of the boundary's extent that is the rounding of its
@@ -847,14 +1001,13 @@ fn outline<'a>(
         }
         _ => None,
     };
-    let freeform = matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_));
+    let poles = poles(surface);
 
-    // How far the boundary reaches from the apex, and whether it touches a
-    // collapsed edge of a freeform surface.
+    // How far the boundary reaches from the apex and from every pole.
     let mut reach = 0.0_f64;
+    let mut reaches = vec![0.0_f64; poles.len()];
     let mut extent = Bbox3::EMPTY;
     let mut furthest = 0.0_f64;
-    let mut collapsed = false;
     let mut conic = true;
     let mut loops = Vec::with_capacity(face.loops.len());
     for loop_id in &face.loops {
@@ -878,14 +1031,10 @@ fn outline<'a>(
                         reach = reach.max(distance);
                     }
                 }
-            }
-            if freeform {
-                for end in [t0, t1] {
-                    let (u, v) = surface.project(edge.curve.eval(end)).map_err(geometry)?;
-                    let (_, su, sv) = surface.derivatives(u, v);
-                    let scale = su.length() + sv.length();
-                    if su.length() <= 1e-9 * scale || sv.length() <= 1e-9 * scale {
-                        collapsed = true;
+                for (pole, reach) in poles.iter().zip(reaches.iter_mut()) {
+                    let distance = point.distance(pole.point);
+                    if distance.is_finite() {
+                        *reach = reach.max(distance);
                     }
                 }
             }
@@ -893,32 +1042,88 @@ fn outline<'a>(
         loops.push(&loop_.coedges);
     }
 
+    // Where an edge passes through a point (an apex, a pole) on its way.
+    let passes = |curve: &Curve3, (t0, t1): (f64, f64), point: Vec3, reach: f64| {
+        if t1.is_nan() || t0.is_nan() || t1 <= t0 {
+            return Ok(None);
+        }
+        let mut t = curve.project(point)?;
+        if let Some(period) = curve.period() {
+            t = t0 + (t - t0).rem_euclid(period);
+        }
+        let margin = 1e-9 * (t1 - t0);
+        Ok::<_, GeomError>(
+            (t > t0 + margin
+                && t < t1 - margin
+                && curve.eval(t).distance(point) <= AT_APEX * reach)
+                .then_some(t),
+        )
+    };
+    // The poles the boundary passes through, at the end of an edge or on
+    // its way, and where: an edge that cannot say how near it comes
+    // counts as one that stays clear.
+    let mut touched = vec![false; poles.len()];
+    let mut through: Vec<Vec<f64>> = Vec::new();
+    if !poles.is_empty() {
+        for coedges in &loops {
+            for coedge in coedges.iter() {
+                let edge = body.edge(coedge.edge).ok_or(invalid.clone())?;
+                let (t0, t1) = edge.range;
+                let mut cuts = Vec::new();
+                for ((pole, &reach), touched) in poles.iter().zip(&reaches).zip(touched.iter_mut())
+                {
+                    for end in [t0, t1] {
+                        // Not `>`: a NaN touches nothing.
+                        if edge.curve.eval(end).distance(pole.point) <= AT_APEX * reach {
+                            *touched = true;
+                        }
+                    }
+                    if let Ok(Some(t)) = passes(&edge.curve, (t0, t1), pole.point, reach) {
+                        *touched = true;
+                        cuts.push(t);
+                    }
+                }
+                through.push(cuts);
+            }
+        }
+    }
+    let poled = Poled::choose(&poles, &touched);
+    let split = poled.and_then(|p| p.far.map(|(split, _)| (p.along, split)));
+
     let mut pieces = Vec::with_capacity(loops.len());
+    let mut through = through.into_iter();
     for coedges in loops {
         let mut run = Vec::with_capacity(coedges.len());
         for &Coedge { edge, reversed } in coedges {
             let edge = body.edge(edge).ok_or(invalid.clone())?;
             let (t0, t1) = edge.range;
-            // Where the edge passes through the apex on its way.
-            let mut cut = None;
+            // Where the edge passes through the apex or a pole on its way.
+            let mut cuts = through.next().unwrap_or_default();
             if let Some(apex) = apex
-                && t1 > t0
+                && let Some(t) = passes(&edge.curve, (t0, t1), apex, reach).map_err(geometry)?
             {
-                let mut t = edge.curve.project(apex).map_err(geometry)?;
-                if let Some(period) = edge.curve.period() {
-                    t = t0 + (t - t0).rem_euclid(period);
-                }
-                let margin = 1e-9 * (t1 - t0);
-                if t > t0 + margin
-                    && t < t1 - margin
-                    && edge.curve.eval(t).distance(apex) <= AT_APEX * reach
-                {
-                    cut = Some(t);
-                }
+                cuts.push(t);
             }
+            cuts.sort_by(f64::total_cmp);
+            cuts.dedup();
             let curve = &edge.curve;
-            let crossings = knot_crossings(curve, surface, (t0, t1), touch).map_err(geometry)?;
-            let mut stretch = |start: f64, end: f64| {
+            let crossings =
+                knot_crossings(curve, surface, (t0, t1), touch, split).map_err(geometry)?;
+            let mut stops = Vec::with_capacity(cuts.len() + 2);
+            stops.push(t0);
+            stops.extend(cuts);
+            stops.push(t1);
+            let mut stretches: Vec<(f64, f64)> = stops
+                .windows(2)
+                .filter_map(|pair| match pair {
+                    &[start, end] => Some((start, end)),
+                    _ => None,
+                })
+                .collect();
+            if reversed {
+                stretches.reverse();
+            }
+            for (start, end) in stretches {
                 let crossings = crossings.clone();
                 run.push(if reversed {
                     Piece {
@@ -935,17 +1140,6 @@ fn outline<'a>(
                         crossings,
                     }
                 });
-            };
-            match (cut, reversed) {
-                (None, _) => stretch(t0, t1),
-                (Some(t), false) => {
-                    stretch(t0, t);
-                    stretch(t, t1);
-                }
-                (Some(t), true) => {
-                    stretch(t, t1);
-                    stretch(t0, t);
-                }
             }
         }
         pieces.push(run);
@@ -959,7 +1153,7 @@ fn outline<'a>(
     };
     Ok(Outline {
         loops: pieces,
-        collapsed,
+        poled,
         conic,
         noise,
         rounding: 4.0 * f64::EPSILON * furthest,
@@ -1005,6 +1199,9 @@ impl Outline<'_> {
 struct Sample {
     /// Which loop of the face it belongs to.
     loop_index: usize,
+    /// Which piece of that loop, and the parameter of its curve there.
+    piece: usize,
+    t: f64,
     u: f64,
     v: f64,
     du: f64,
@@ -1024,7 +1221,7 @@ fn samples(
 ) -> Result<Vec<Sample>, MassError> {
     let mut samples = Vec::new();
     for (loop_index, pieces) in outline.loops.iter().enumerate() {
-        for piece in pieces {
+        for (piece_index, piece) in pieces.iter().enumerate() {
             let (low, high) = (piece.start.min(piece.end), piece.start.max(piece.end));
             let direction = if piece.end < piece.start { -1.0 } else { 1.0 };
             let first = samples.len();
@@ -1048,9 +1245,12 @@ fn samples(
                     let det = a * c - b * b;
                     let (ru, rv) = (tangent.dot(su), tangent.dot(sv));
                     // At a pole or an apex Sᵤ vanishes and u has no rate of
-                    // change; `G` is zero there or the boundary is not.
+                    // change; `G` is zero there or the boundary is not. (At
+                    // a pole of a freeform surface it may be Sᵥ and v.)
                     let (du, dv) = if det > 1e-24 * a.max(c) * a.max(c) && det.is_finite() {
                         ((c * ru - b * rv) / det, (a * rv - b * ru) / det)
+                    } else if a > c {
+                        (ru / a, 0.0)
                     } else if c > 0.0 {
                         (0.0, rv / c)
                     } else {
@@ -1058,6 +1258,8 @@ fn samples(
                     };
                     samples.push(Sample {
                         loop_index,
+                        piece: piece_index,
+                        t,
                         u,
                         v,
                         du: du * w * direction,
@@ -1143,6 +1345,8 @@ fn near(value: f64, target: f64, period: f64) -> f64 {
 enum Plan {
     /// `G` runs from this v.
     From(f64),
+    /// A boundary through poles of a freeform surface.
+    Poles(Poled),
     /// A surface closed both ways: the parameters each loop's unrolling
     /// starts near, and the direction the inner integral runs in.
     Unrolled {
@@ -1325,11 +1529,184 @@ fn plan(
     Ok(Plan::From(v_ref))
 }
 
+/// Whether a boundary that is measured from two poles jumps from one
+/// side of its surface's parameter range to the other between two samples
+/// of one piece: the surface closes on itself there and the face lies
+/// across the seam, where the parameter along the poles' borders is not
+/// one number.
+fn crosses_seam(samples: &[Sample], poled: &Poled, surface: &Surface) -> bool {
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    let width = match poled.along {
+        Along::V => u1 - u0,
+        Along::U => v1 - v0,
+    };
+    let Some((_, far)) = poled.far else {
+        return false;
+    };
+    // At a pole itself the parameter along its border is any number.
+    let clear = |s: &Sample| {
+        let r = poled.pick(s).1;
+        let margin = 1e-6 * (far - poled.from).abs();
+        (r - poled.from).abs() > margin && (r - far).abs() > margin
+    };
+    samples.windows(2).any(|pair| match pair {
+        [a, b] => {
+            a.loop_index == b.loop_index
+                && a.piece == b.piece
+                && clear(a)
+                && clear(b)
+                && (poled.pick(a).0 - poled.pick(b).0).abs() > 0.5 * width
+        }
+        _ => false,
+    })
+}
+
+/// `∬ f` over the rectangle between two values of the parameter along a
+/// pair of poles' borders and between the two poles, by the rule both
+/// ways: the panels end at the surface's knot lines and are doubled with
+/// `doublings`, like the inner integral's ([`inner`]). `None` when the
+/// face has taken its budget on the way.
+fn between_poles(
+    surface: &Surface,
+    rule: &Rule,
+    poled: &Poled,
+    (from, to): (f64, f64),
+    doublings: u32,
+    work: &mut Work,
+) -> Option<Total> {
+    let mut sum = Total::default();
+    let Some((_, far)) = poled.far else {
+        return Some(sum);
+    };
+    let (lines_u, lines_v) = knot_lines(surface);
+    let lines = match poled.along {
+        Along::V => lines_u,
+        Along::U => lines_v,
+    };
+    let (low, high, sign) = if from <= to {
+        (from, to, 1.0)
+    } else {
+        (to, from, -1.0)
+    };
+    let count = 1_usize << doublings.min(6);
+    let mut stops = vec![low];
+    stops.extend(lines.into_iter().filter(|&line| line > low && line < high));
+    stops.push(high);
+    for pair in stops.windows(2) {
+        let &[start, end] = pair else { continue };
+        let width = (end - start) / count as f64;
+        for k in 0..count {
+            if work.spent_up() {
+                return None;
+            }
+            let at = start + width * k as f64;
+            for (c, w) in rule.points(at, at + width) {
+                sum.add(
+                    inner(
+                        surface,
+                        rule,
+                        poled.along,
+                        c,
+                        (poled.from, far),
+                        doublings,
+                        work,
+                    ),
+                    w * sign,
+                );
+            }
+        }
+    }
+    Some(sum)
+}
+
+/// Where the boundary of a face through two poles crosses the line the
+/// face is divided along (see the module documentation): the parameter
+/// along the line of every crossing, and whether the boundary goes over
+/// to the far pole's side there (`true`) or comes back from it.
+///
+/// A crossing lies between two samples in a row that are on different
+/// sides: on one piece, or on two with the end of the one and the start
+/// of the other between them. It is narrowed by bisection along the
+/// piece.
+fn divide_crossings(
+    outline: &Outline,
+    surface: &Surface,
+    samples: &[Sample],
+    poled: &Poled,
+) -> Result<Vec<(f64, bool)>, GeomError> {
+    let mut crossings = Vec::new();
+    let mut follow = Follow::new(surface, outline.touch);
+    let mut across = |curve: &Curve3, t: f64| -> Result<(f64, f64), GeomError> {
+        let ((u, v), _) = follow.project(curve.eval(t))?;
+        Ok(match poled.along {
+            Along::V => (u, v),
+            Along::U => (v, u),
+        })
+    };
+    let mut start = 0;
+    while start < samples.len() {
+        let Some(first) = samples.get(start) else {
+            break;
+        };
+        let end = samples
+            .iter()
+            .skip(start)
+            .position(|s| s.loop_index != first.loop_index)
+            .map_or(samples.len(), |offset| start + offset);
+        let Some(block) = samples.get(start..end) else {
+            break;
+        };
+        let pieces = outline.loops.get(first.loop_index);
+        for (k, here) in block.iter().enumerate() {
+            // The sample before this one as the loop runs, around its end.
+            let before = if k == 0 {
+                block.last()
+            } else {
+                block.get(k - 1)
+            };
+            let Some(before) = before else { continue };
+            let (was_near, is_near) = (
+                poled.near(poled.pick(before).1),
+                poled.near(poled.pick(here).1),
+            );
+            if was_near == is_near {
+                continue;
+            }
+            let piece = |index: usize| pieces.and_then(|pieces| pieces.get(index));
+            let (Some(left), Some(right)) = (piece(before.piece), piece(here.piece)) else {
+                continue;
+            };
+            // The stretch of one piece that the crossing is on.
+            let (curve, mut a, mut b) = if k > 0 && before.piece == here.piece {
+                (left.curve, before.t, here.t)
+            } else if poled.near(across(right.curve, right.start)?.1) == was_near {
+                (right.curve, right.start, here.t)
+            } else {
+                (left.curve, before.t, left.end)
+            };
+            for _ in 0..64 {
+                let middle = 0.5 * (a + b);
+                if !((middle > a && middle < b) || (middle < a && middle > b)) {
+                    break;
+                }
+                if poled.near(across(curve, middle)?.1) == was_near {
+                    a = middle;
+                } else {
+                    b = middle;
+                }
+            }
+            crossings.push((across(curve, 0.5 * (a + b))?.0, was_near));
+        }
+        start = end;
+    }
+    Ok(crossings)
+}
+
 /// The boundary integral `-∮ G du` (or `∮ H dv`) of a face by `plan`;
 /// `None` when the face has taken its budget on the way.
 #[allow(clippy::too_many_arguments)]
 fn boundary_integral(
-    face: &Face,
+    (face, outline): (&Face, &Outline),
     surface: &Surface,
     rule: &Rule,
     samples: &mut [Sample],
@@ -1337,13 +1714,60 @@ fn boundary_integral(
     plan: &Plan,
     (unrolled, doublings): (bool, u32),
     work: &mut Work,
-) -> Option<Total> {
+) -> Result<Option<Total>, GeomError> {
     let mut total = Total::default();
     match plan {
+        Plan::Poles(poled) => {
+            // `-∮ G du` across borders of constant v, `∮ H dv` across
+            // those of constant u.
+            let weight = match poled.along {
+                Along::V => -sense,
+                Along::U => sense,
+            };
+            for s in samples.iter() {
+                if work.spent_up() {
+                    return Ok(None);
+                }
+                let (c, r, dc) = poled.pick(s);
+                if dc != 0.0 {
+                    total.add(
+                        inner(
+                            surface,
+                            rule,
+                            poled.along,
+                            c,
+                            (poled.reference(r), r),
+                            doublings,
+                            work,
+                        ),
+                        weight * dc,
+                    );
+                }
+            }
+            if poled.far.is_some() {
+                // Beyond the dividing line the inner integral runs from
+                // the far pole, and so falls short of the one from the
+                // near pole by the whole way between the two: that, along
+                // every stretch of the boundary beyond the line, is the
+                // integral over the rectangle between where the stretch
+                // goes over the line and where it comes back.
+                let crossings = divide_crossings(outline, surface, samples, poled)?;
+                if let Some(&(first, _)) = crossings.first() {
+                    for &(c, leaves) in &crossings {
+                        let Some(rectangle) =
+                            between_poles(surface, rule, poled, (first, c), doublings, work)
+                        else {
+                            return Ok(None);
+                        };
+                        total.add(rectangle, if leaves { -weight } else { weight });
+                    }
+                }
+            }
+        }
         Plan::From(v_ref) => {
             for s in samples.iter() {
                 if work.spent_up() {
-                    return None;
+                    return Ok(None);
                 }
                 if s.du != 0.0 {
                     total.add(
@@ -1367,7 +1791,7 @@ fn boundary_integral(
             let (u_ref, v_ref) = starts.first().copied().unwrap_or((0.0, 0.0));
             for s in samples.iter() {
                 if work.spent_up() {
-                    return None;
+                    return Ok(None);
                 }
                 match along {
                     Along::V if s.du != 0.0 => total.add(
@@ -1383,7 +1807,7 @@ fn boundary_integral(
             }
         }
     }
-    Some(total)
+    Ok(Some(total))
 }
 
 /// What a converged boundary integral says about the face.
@@ -1483,21 +1907,23 @@ fn integrals_in(
         let (plan, unrolled) = match set_up.take() {
             Some(plan) => (plan, false),
             None => {
-                let plan = plan(face, surface, index, &mut samples, sense)?;
-                // A collapsed edge of a patch is, like an apex, a stretch
-                // of the edge of the parameter range that no edge of the
-                // body stands for. Refused until it is added.
-                if outline.collapsed {
-                    return Err(MassError::Unsupported {
-                        face: index,
-                        what: "a boundary that passes through a collapsed edge of its surface",
-                    });
-                }
+                let plan = match outline.poled {
+                    Some(poled) => {
+                        if poled.far.is_some() && crosses_seam(&samples, &poled, surface) {
+                            return Err(MassError::Unsupported {
+                                face: index,
+                                what: "a boundary through two poles of a spline surface that also crosses the seam where the surface closes on itself",
+                            });
+                        }
+                        Plan::Poles(poled)
+                    }
+                    None => plan(face, surface, index, &mut samples, sense)?,
+                };
                 (plan, true)
             }
         };
         let Some(total) = boundary_integral(
-            face,
+            (face, &outline),
             surface,
             rule,
             &mut samples,
@@ -1505,7 +1931,9 @@ fn integrals_in(
             &plan,
             (unrolled, doublings),
             work,
-        ) else {
+        )
+        .map_err(|error| MassError::Geometry { face: index, error })?
+        else {
             break;
         };
         let noise = outline.noise(total.size.area);
@@ -1573,8 +2001,9 @@ fn body_extent(body: &Body) -> (f64, Vec3) {
 /// error, never a panic.
 ///
 /// Refused with [`MassError::Unsupported`], never guessed: a boundary
-/// through a collapsed edge of a Bézier or NURBS surface, a boundary that
-/// winds around an axis more than once, torus loops that wind around the
+/// through two poles of a spline surface that also crosses the seam where
+/// the surface closes on itself, a boundary that winds around an axis more
+/// than once, torus loops that wind around the
 /// axis and the tube at once, a face of a sphere or a torus too thin (or
 /// too nearly the whole surface) to tell which side of its loops it is
 /// on, and a face whose boundary integral does not settle, or has not

@@ -7,7 +7,6 @@ use craft3d_doc::{Document, Geometry, Revolve, RevolveAxis};
 use craft3d_expr::Evaluation;
 use craft3d_kernel::KernelError;
 use craft3d_kernel::extrude::Origins;
-use craft3d_kernel::profile::Shape;
 use craft3d_topo::Body;
 use std::f64::consts::TAU;
 
@@ -110,31 +109,9 @@ pub(crate) fn build(
     } else {
         (-size, 0.0)
     };
-    // A spline that ends on the axis sweeps a face whose surface closes
-    // into a point there. The kernel builds it (a valid body that meshes),
-    // but the exact measure and the booleans decline such a face, so the
-    // document could neither measure nor check the body: refused here,
-    // with what to do instead, until they take it.
-    let length = direction[0].hypot(direction[1]);
-    for segment in profiles
-        .iter()
-        .flat_map(|p| std::iter::once(&p.outer).chain(&p.holes))
-        .flat_map(|l| &l.segments)
-        .filter(|s| matches!(s.shape, Shape::Spline(_)))
-    {
-        let off_axis = |p: [f64; 2]| {
-            ((p[0] - point[0]) * direction[1] - (p[1] - point[1]) * direction[0]) / length
-        };
-        if [segment.start, segment.end].into_iter().any(|end| {
-            let off = off_axis(end).abs();
-            off.is_nan() || off <= tolerance.linear
-        }) {
-            return Err(format!(
-                "sketch `{name}`: e{} cannot be revolved about this axis: the spline ends on the axis, where the surface it sweeps closes into a point, and a face through such a point cannot be measured or cut yet; end the spline off the axis and close the profile with a line",
-                segment.source
-            ));
-        }
-    }
+    // (A spline that ends on the axis sweeps a face whose surface closes
+    // into a point there, a pole: measured and cut like any other since
+    // 2026-10-14.)
     let mut result = revolve(&profiles, &plane, point, direction, from, to, &tolerance)
         .map_err(|e| match e {
             // Curves are called what the sketch calls them.

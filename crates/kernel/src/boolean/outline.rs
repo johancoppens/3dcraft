@@ -301,6 +301,13 @@ pub(super) fn onto(sheet: Sheet, p: Vec3) -> Option<Vec3> {
 pub(super) fn outward_normal(sheet: Sheet, reversed: bool, p: Vec3) -> Option<Vec3> {
     let surface = sheet.surface;
     let (u, v) = sheet.project(p)?;
+    // At a pole of a freeform surface (a border that is one point), where
+    // its formula has no normal: the direction it closes around, which is
+    // its normal there when it closes up smoothly and stands in for the
+    // axis as at an apex when it comes to a point.
+    if let Some(axis) = super::freeform::pole_axis(surface, sheet.tree.map(|t| &**t), u, v) {
+        return axis.map(|axis| if reversed { -axis } else { axis });
+    }
     let normal = match (surface.normal(u, v), surface) {
         (Some(normal), _) => normal,
         (None, Surface::Cone(cone)) => {
