@@ -340,24 +340,6 @@ fn bodies(k: f64) -> Vec<(String, Body)> {
     all
 }
 
-/// A length the body is of the order of: the diagonal of its vertices,
-/// or `k` for a body without any.
-fn size(body: &Body, k: f64) -> f64 {
-    let mut low = [f64::INFINITY; 3];
-    let mut high = [f64::NEG_INFINITY; 3];
-    for v in &body.vertices {
-        for (i, x) in [v.point.x, v.point.y, v.point.z].into_iter().enumerate() {
-            low[i] = low[i].min(x);
-            high[i] = high[i].max(x);
-        }
-    }
-    let d = (0..3)
-        .map(|i| (high[i] - low[i]).powi(2))
-        .sum::<f64>()
-        .sqrt();
-    if d.is_finite() && d > 0.0 { d } else { k }
-}
-
 #[test]
 #[ignore = "prints hashes of meshes; run in release with --ignored --nocapture"]
 fn hashes_of_meshes() {
@@ -392,16 +374,29 @@ fn hashes_of_meshes() {
 }
 
 /// The largest distance from a lattice of points on the triangles of the
-/// freeform faces of `body` to the surfaces of those faces.
+/// freeform faces of `body` to the surfaces of those faces: seven points
+/// per triangle (the thirds of its sides and its centroid).
+///
+/// The parameters of every vertex are found by a search over the surface
+/// (`Surface::project`); the nearest surface point of a lattice point is
+/// then looked for from the parameters of the three corners, by descent
+/// (`Surface::project_from`), and the nearest of the three counts. (A
+/// search per lattice point takes an hour on these meshes.)
 fn deviation(body: &Body, mesh: &Mesh) -> f64 {
-    const N: u32 = 4;
+    const N: u32 = 3;
     let mut worst = 0.0_f64;
+    let mut found: Vec<Option<(f64, f64)>> = vec![None; mesh.positions.len()];
     for (t, triangle) in mesh.triangles.iter().enumerate() {
         let face = &body.faces[mesh.face_ids[t] as usize];
         if !matches!(face.surface, Surface::Bezier(_) | Surface::Nurbs(_)) {
             continue;
         }
-        let [a, b, c] = triangle.map(|v| mesh.positions[v as usize]);
+        let corners = triangle.map(|v| {
+            let p = mesh.positions[v as usize];
+            let uv = *found[v as usize].get_or_insert_with(|| face.surface.project(p).unwrap());
+            (p, uv)
+        });
+        let [(a, _), (b, _), (c, _)] = corners;
         for i in 0..=N {
             for j in 0..=N - i {
                 // (The corners are points of the surface.)
@@ -410,13 +405,20 @@ fn deviation(body: &Body, mesh: &Mesh) -> f64 {
                 }
                 let (s, r) = (f64::from(i) / f64::from(N), f64::from(j) / f64::from(N));
                 let p = a * (1.0 - s - r) + b * s + c * r;
-                let (u, v) = face.surface.project(p).unwrap();
-                worst = worst.max(face.surface.eval(u, v).distance(p));
+                let nearest = corners
+                    .iter()
+                    .filter_map(|&(_, start)| face.surface.project_from(p, start).ok())
+                    .map(|(u, v)| face.surface.eval(u, v).distance(p))
+                    .fold(f64::INFINITY, f64::min);
+                worst = worst.max(nearest);
             }
         }
     }
     worst
 }
+
+/// The most triangles on freeform faces a mesh may have to be measured.
+const MEASURED: usize = 300_000;
 
 #[test]
 #[ignore = "prints deviations and timings; run in release with --ignored --nocapture"]
@@ -431,7 +433,6 @@ fn freeform_meshes_against_their_surfaces() {
             if freeform == 0 {
                 continue;
             }
-            let length = size(&body, k);
             for relative in [1e-2, 1e-3, 1e-4] {
                 let tolerance = relative * k;
                 let mut best = f64::INFINITY;
@@ -453,12 +454,20 @@ fn freeform_meshes_against_their_surfaces() {
                                 )
                             })
                             .count();
-                        let off = deviation(&body, &mesh) / tolerance;
+                        // (Measuring a mesh of millions of triangles
+                        // takes minutes: those are counted and timed.)
+                        let off =
+                            (on_freeform <= MEASURED).then(|| deviation(&body, &mesh) / tolerance);
                         println!(
                             "freeform {name:42} {k:>6.0e} {relative:>6.0e} {:>8} {on_freeform:>8} \
-                             {off:>6.3} {best:>9.2} ms{}",
+                             {} {best:>9.2} ms{}",
                             mesh.triangles.len(),
-                            if off > 1.0 { "  OVER" } else { "" }
+                            off.map_or("     -".to_string(), |off| format!("{off:>6.3}")),
+                            if off.is_some_and(|off| off > 1.0) {
+                                "  OVER"
+                            } else {
+                                ""
+                            }
                         );
                     }
                     Err(error) => {
@@ -466,7 +475,6 @@ fn freeform_meshes_against_their_surfaces() {
                     }
                 }
             }
-            let _ = length;
         }
     }
 }
