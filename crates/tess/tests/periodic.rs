@@ -477,3 +477,124 @@ fn bands_of_a_torus() {
         }
     }
 }
+
+/// The reference solids as a STEP file has them: with the seam of every
+/// closed face as an edge that the face's loop walks there and back. On
+/// the cylinder the seam joins the two circles (the wall is then a patch
+/// one period wide), on the cone it runs to the apex (the loop turns
+/// around the apex), on the torus there are two (the face is a patch one
+/// period by one period). The solids are those of `testkit`, with their
+/// closed forms; the sphere with a seam is in `tests/invalid.rs`.
+#[test]
+fn closed_faces_with_their_seams_as_edges() {
+    use craft3d_math::Tolerance;
+    use craft3d_testkit::solids;
+    let line = |body: &mut Body, from: craft3d_topo::VertexId, to: craft3d_topo::VertexId| {
+        let (a, b) = (
+            body.vertices[from.0 as usize].point,
+            body.vertices[to.0 as usize].point,
+        );
+        let curve = Curve3::Line(Line::through(a, b).unwrap());
+        body.add_edge(curve, (0.0, a.distance(b)), from, to)
+    };
+    for frame in [Frame::WORLD, tilted()] {
+        for k in [1.0, 1e-3, 1e3] {
+            let mut all = Vec::new();
+
+            // (Built here: the wall of `testkit`'s cylinder has two loops,
+            // and a loop cannot be taken out of a body.)
+            let mut cylinder = solids::cylinder(&frame, 1.5 * k, 2.0 * k).unwrap();
+            cylinder.body = {
+                let (radius, height) = (1.5 * k, 2.0 * k);
+                let mut body = Body::new(BodyKind::Solid);
+                let above = frame.at(frame.point(0.0, 0.0, height)).unwrap();
+                let low = body.add_vertex(frame.point(radius, 0.0, 0.0));
+                let high = body.add_vertex(above.point(radius, 0.0, 0.0));
+                let circle = |frame: Frame| Curve3::Circle(Circle::new(frame, radius).unwrap());
+                let bottom = body.add_edge(circle(frame), (0.0, TAU), low, low);
+                let top = body.add_edge(circle(above), (0.0, TAU), high, high);
+                let seam = line(&mut body, low, high);
+                let wall = body.add_loop(vec![
+                    forward(bottom),
+                    forward(seam),
+                    backward(top),
+                    backward(seam),
+                ]);
+                let wall = body.add_face(
+                    Surface::Cylinder(Cylinder::new(frame, radius).unwrap()),
+                    false,
+                    vec![wall],
+                );
+                let under = Frame::new(frame.origin(), -frame.z(), frame.x()).unwrap();
+                let floor = body.add_loop(vec![backward(bottom)]);
+                let floor = body.add_face(
+                    Surface::Plane(craft3d_geom::Plane::new(under)),
+                    false,
+                    vec![floor],
+                );
+                let lid = body.add_loop(vec![forward(top)]);
+                let lid = body.add_face(
+                    Surface::Plane(craft3d_geom::Plane::new(above)),
+                    false,
+                    vec![lid],
+                );
+                body.add_shell(vec![wall, floor, lid]);
+                body
+            };
+            all.push(cylinder);
+
+            let mut cone = solids::cone(&frame, 1.5 * k, 2.0 * k).unwrap();
+            let body = &mut cone.body;
+            let apex = body.add_vertex(frame.point(0.0, 0.0, 2.0 * k));
+            let seam = line(body, body.edges[0].start, apex);
+            let side = body.faces[0].loops[0];
+            body.loops[side.0 as usize].coedges =
+                vec![forward(EdgeId(0)), forward(seam), backward(seam)];
+            all.push(cone);
+
+            let (major, minor) = (3.0 * k, k);
+            let mut torus = solids::torus(&frame, major, minor).unwrap();
+            let body = &mut torus.body;
+            let vertex = body.add_vertex(frame.point(major + minor, 0.0, 0.0));
+            let around_axis = Curve3::Circle(Circle::new(frame, major + minor).unwrap());
+            // From the vertex up: counter-clockwise about the frame's −y.
+            let tube = Frame::new(frame.point(major, 0.0, 0.0), -frame.y(), frame.x()).unwrap();
+            let around_tube = Curve3::Circle(Circle::new(tube, minor).unwrap());
+            let long = body.add_edge(around_axis, (0.0, TAU), vertex, vertex);
+            let short = body.add_edge(around_tube, (0.0, TAU), vertex, vertex);
+            let loop_ = body.add_loop(vec![
+                forward(long),
+                forward(short),
+                backward(long),
+                backward(short),
+            ]);
+            body.faces[0].loops = vec![loop_];
+            all.push(torus);
+
+            for solid in &all {
+                let what = format!("{} with its seam as an edge, size {k}", solid.name);
+                let problems = craft3d_topo::check(&solid.body, &Tolerance::default());
+                assert!(problems.is_empty(), "{what}: {problems:?}");
+                let mut last = f64::INFINITY;
+                for relative in [0.1, 1e-2, 1e-3] {
+                    let tolerance = relative * k;
+                    let mesh = tessellate_body(&solid.body, &params(tolerance))
+                        .unwrap_or_else(|e| panic!("{what} at {relative}: {e}"));
+                    let welded = mesh.weld().unwrap();
+                    assert!(welded.is_closed(), "{what} at {relative}: not closed");
+                    let error = (welded.volume() - solid.volume).abs();
+                    assert!(error <= solid.area * tolerance, "{what} at {relative}");
+                    assert!(error < last, "{what} at {relative}: no convergence");
+                    last = error;
+                    assert!(mesh.area() <= solid.area * (1.0 + 1e-9), "{what}");
+                    for threads in [1, 2, 8] {
+                        let again =
+                            tessellate_body_with_threads(&solid.body, &params(tolerance), threads)
+                                .unwrap();
+                        assert_eq!(again, mesh, "{what} on {threads} threads");
+                    }
+                }
+            }
+        }
+    }
+}

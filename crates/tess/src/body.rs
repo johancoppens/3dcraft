@@ -2,7 +2,11 @@
 //! points once (`edge.rs`), and every face that uses the edge uses those
 //! same points. Faces therefore meet without gaps or T-junctions, and
 //! welding the mesh of a valid solid gives a closed manifold
-//! (docs/architecture.md §6).
+//! (docs/architecture.md §6). That is checked, not assumed: the mesh of
+//! every face is held against the chords of the face's edges before it
+//! is returned (`closes_along_edges`), and a face whose mesh does not
+//! end on them, each as often and in the direction its loops use it, is
+//! an error.
 //!
 //! Each face gets its own vertices, so it can carry its own normals; shared
 //! positions are bit-identical and `Mesh::weld` joins them.
@@ -19,7 +23,14 @@
 //! a sphere but for holes whose loops do not go around its axis (the face
 //! is then everything *outside* its loops, which all run clockwise: a
 //! ball with a hole drilled through it across the sphere's axis);
-//! reversed faces.
+//! reversed faces. A Bézier or NURBS surface that closes on itself (its
+//! control net ends on the row it starts with, on clamped knots) is a
+//! closed surface like those: a face may go around it, cross its seam or
+//! reach a row that is one point, in either parameter or in both. And a
+//! closed surface may be given with its seam as an edge: one that the
+//! loop walks there and back between two loops that go around (the face
+//! is then a patch one period wide), or from pole to pole (the loop
+//! turns around each pole).
 //!
 //! Not handled, each an `Unsupported` error that names the face:
 //! - a loop that winds around its surface more than once, or around both
@@ -36,11 +47,16 @@
 //!   whose loop goes around neither the axis nor the tube), or on any
 //!   surface that is not closed, where it would have no end: the loops
 //!   run clockwise, as they do on an invalid face;
-//! - a face on a freeform surface that closes on itself (a NURBS tube):
-//!   `craft3d-geom` reports no period for it, so its seam cannot be
-//!   followed;
-//! - a whole closed surface given with its seam as an edge that the loop
-//!   walks there and back.
+//! - a face across the seam of a spline surface that closes on itself
+//!   without its control net showing it (knots that are not clamped): no
+//!   period is found for it, its boundary jumps from one end of the
+//!   parameter range to the other, and a boundary that jumps is refused
+//!   on any surface (`face.rs`, `mesh_face`);
+//! - a face whose mesh does not close along its edges (see above): a
+//!   mistake of the tessellator, caught before it leaves.
+//! - two faces whose meshes share a side that is on no edge and cannot
+//!   be parted (`part_shared_rungs`): the body between them is thinner
+//!   than the tolerance resolves.
 //!
 //! Faces are independent once the edges are points, so they are done on
 //! several threads and put together in face order: the mesh does not
@@ -182,6 +198,137 @@ fn can_ask(body: &Body, face: &craft3d_topo::Face) -> bool {
             .any(|edge| !matches!(edge.curve, Curve3::Line(_)))
 }
 
+/// A point as the key it is welded by: its bits, with −0 as 0.
+fn place(p: Vec3) -> [u64; 3] {
+    [p.x + 0.0, p.y + 0.0, p.z + 0.0].map(f64::to_bits)
+}
+
+/// One use of a segment between two points: by a triangle of the face's
+/// mesh, or (with its chord) by an edge of the face as its loops run.
+struct Use {
+    /// The segment's ends, the smaller key first.
+    ends: ([u64; 3], [u64; 3]),
+    /// Whether it runs from the first of `ends` to the second.
+    along: bool,
+    chord: Option<Chord>,
+}
+
+impl Use {
+    /// None for a segment without length.
+    fn new(from: Vec3, to: Vec3, chord: Option<Chord>) -> Option<Self> {
+        let (from, to) = (place(from), place(to));
+        match from.cmp(&to) {
+            std::cmp::Ordering::Less => Some(Self {
+                ends: (from, to),
+                along: true,
+                chord,
+            }),
+            std::cmp::Ordering::Greater => Some(Self {
+                ends: (to, from),
+                along: false,
+                chord,
+            }),
+            std::cmp::Ordering::Equal => None,
+        }
+    }
+}
+
+/// Holds the mesh of a face against the face's edges: the promise that
+/// the mesh of a closed solid is closed, checked where it can break.
+///
+/// `border` has every side of a triangle that lies on the boundary of the
+/// face's region, directed as the triangle runs. The loops of the face
+/// say what must be there: every chord of every edge, once for each time
+/// a loop uses the edge and in that direction (a loop runs
+/// counter-clockwise about the outward normal, as the triangles do). The
+/// two must be the same, point for point and bit for bit, and what the
+/// mesh has beyond the edges (the two sides of a seam the tessellator cut
+/// itself) must be there once each way. Faces that pass and share an
+/// edge use its chords in opposite directions, so the welded mesh of a
+/// body whose every edge is used once each way is closed, without
+/// welding it: the sides of triangles inside a face are shared by two of
+/// them by the making of the triangulation.
+///
+/// The cost is that of sorting the boundary of the face, not its
+/// triangles.
+fn closes_along_edges(
+    body: &Body,
+    points: &[Vec<Vec3>],
+    face: &craft3d_topo::Face,
+    index: usize,
+    border: &[(Vec3, Vec3)],
+) -> Result<(), TessError> {
+    let mut uses: Vec<Use> = border
+        .iter()
+        .filter_map(|&(from, to)| Use::new(from, to, None))
+        .collect();
+    let coedges = face
+        .loops
+        .iter()
+        .filter_map(|id| body.loop_(*id))
+        .flat_map(|loop_| &loop_.coedges);
+    for coedge in coedges {
+        let Some(edge) = points.get(coedge.edge.0 as usize) else {
+            continue;
+        };
+        for (k, (from, to)) in edge.iter().zip(edge.iter().skip(1)).enumerate() {
+            let chord = Some((coedge.edge.0, u32::try_from(k).unwrap_or(u32::MAX)));
+            let (from, to) = if coedge.reversed {
+                (*to, *from)
+            } else {
+                (*from, *to)
+            };
+            uses.extend(Use::new(from, to, chord));
+        }
+    }
+    uses.sort_by_key(|x| x.ends);
+    for group in uses.chunk_by(|x, y| x.ends == y.ends) {
+        // How often the mesh and the edges have the segment, each way.
+        let count = |of_edge: bool, along: bool| {
+            group
+                .iter()
+                .filter(|u| u.chord.is_some() == of_edge && u.along == along)
+                .count()
+        };
+        let mesh = (count(false, true), count(false, false));
+        let edges = (count(true, true), count(true, false));
+        let chord = group.iter().find_map(|u| u.chord);
+        let reason = match chord {
+            Some(_) if mesh == edges => continue,
+            None if mesh == (1, 1) => continue,
+            Some((edge, k)) => {
+                let other = body.faces.iter().enumerate().position(|(n, other)| {
+                    n != index
+                        && other
+                            .loops
+                            .iter()
+                            .filter_map(|id| body.loop_(*id))
+                            .flat_map(|loop_| &loop_.coedges)
+                            .any(|coedge| coedge.edge.0 == edge)
+                });
+                let beyond = match other {
+                    Some(other) => format!("which it shares with face {other}"),
+                    None => "which no other face uses".to_string(),
+                };
+                format!(
+                    "its mesh is not closed along edge {edge}, {beyond}: chord {k} of the edge \
+                     is the side of {} of its triangles where its loops use the edge {} times",
+                    mesh.0 + mesh.1,
+                    edges.0 + edges.1
+                )
+            }
+            None => "its mesh is not closed: it has a border where the face has no edge (a \
+                     seam whose two sides do not meet)"
+                .to_string(),
+        };
+        return Err(TessError::Face {
+            face: index,
+            reason,
+        });
+    }
+    Ok(())
+}
+
 /// The triangles of a face's result: none for a face that failed or that
 /// was not triangulated.
 fn triangles_of(result: Option<&FaceResult>) -> usize {
@@ -315,8 +462,12 @@ fn tessellate(
                 }
             };
             let wanted = boundary.chords_to_refine(body, tolerance);
-            let result = (mesh && (last || wanted.is_empty()))
-                .then(|| mesh_face(&boundary, face, index, params));
+            let result = (mesh && (last || wanted.is_empty())).then(|| {
+                let mut made = mesh_face(&boundary, face, index, params, &[])?;
+                closes_along_edges(body, points, face, index, &made.border)?;
+                made.border = Vec::new();
+                Ok(made)
+            });
             (wanted, result)
         };
         // Whether the face was looked at, what it asks for and its mesh.
@@ -364,6 +515,9 @@ fn tessellate(
                 *slot = result;
             }
         }
+        if !last {
+            wanted.extend(coincident_chords(body, &edges.points));
+        }
         if last || wanted.is_empty() {
             break;
         }
@@ -381,7 +535,157 @@ fn tessellate(
             })
             .collect();
     }
+    if mesh {
+        part_shared_rungs(body, params, &edges.points, &mut results)?;
+    }
     Ok((edges, results))
+}
+
+/// The chords of curved edges that are the chord of another edge as well:
+/// between the same two points, as the one chord of an arc flatter than
+/// the tolerance is the line between its ends, when there is such a line
+/// (the two sides of a body thinner than the tolerance). Four faces then
+/// meet in one segment: every face's mesh is right and the whole is
+/// closed, but no manifold. Cut in two, the curved edge leaves the
+/// other. (A face between the two edges asks for this itself, as a face
+/// that encloses nothing; where the two edges bound no common face, at a
+/// joint between two stretches of a sweep, nobody did.)
+fn coincident_chords(body: &Body, points: &[Vec<Vec3>]) -> Vec<Chord> {
+    type Key = ([u64; 3], [u64; 3]);
+    let mut all: Vec<(Key, u32, u32)> = Vec::new();
+    for (edge, polyline) in points.iter().enumerate() {
+        let Ok(edge) = u32::try_from(edge) else { break };
+        for (k, (from, to)) in polyline.iter().zip(polyline.iter().skip(1)).enumerate() {
+            let (a, b) = (place(*from), place(*to));
+            let k = u32::try_from(k).unwrap_or(u32::MAX);
+            all.push((if a <= b { (a, b) } else { (b, a) }, edge, k));
+        }
+    }
+    all.sort_unstable();
+    let straight = |edge: u32| {
+        body.edges
+            .get(edge as usize)
+            .is_none_or(|e| matches!(e.curve, Curve3::Line(_)))
+    };
+    let mut wanted = Vec::new();
+    for group in all.chunk_by(|x, y| x.0 == y.0) {
+        if group
+            .iter()
+            .any(|x| group.first().is_some_and(|y| x.1 != y.1))
+        {
+            wanted.extend(group.iter().filter(|x| !straight(x.1)).map(|x| (x.1, x.2)));
+        }
+    }
+    wanted
+}
+
+/// How often faces are done again to part them where they share a rung.
+const RUNG_ROUNDS: usize = 3;
+
+/// The rungs two faces share: per pair, the segment and the two faces,
+/// the lower first; in the order of the segments' keys.
+fn shared_rungs(results: &[Option<FaceResult>]) -> Vec<((Vec3, Vec3), usize, usize)> {
+    type Key = ([u64; 3], [u64; 3]);
+    let mut all: Vec<(Key, usize, (Vec3, Vec3))> = Vec::new();
+    for (index, result) in results.iter().enumerate() {
+        let Some(Ok(made)) = result else { continue };
+        for &(from, to) in &made.rungs {
+            let (a, b) = (place(from), place(to));
+            all.push((if a <= b { (a, b) } else { (b, a) }, index, (from, to)));
+        }
+    }
+    all.sort_by_key(|(key, index, _)| (*key, *index));
+    all.iter()
+        .zip(all.iter().skip(1))
+        .filter(|(one, other)| one.0 == other.0 && one.1 != other.1)
+        .map(|(one, other)| (one.2, one.1, other.1))
+        .collect()
+}
+
+/// Parts the meshes of faces that share a rung.
+///
+/// A rung is a side of a triangle that joins two points of the face's
+/// boundary across the face. Two faces can have the same one: where the
+/// body between them is thinner than the tolerance (a neck of a face
+/// between two stretches of one edge, with the neighbour's face across
+/// the same edge just behind it), both take the chord between the same
+/// two edge points for their surface. Each mesh is right, and together
+/// they are closed, but four triangles then meet in that chord: the
+/// welded mesh is no manifold, and a program that reads it calls it open.
+///
+/// One of the two faces gets a point of its own surface in the middle of
+/// the rung (the curved one; of two curved ones the lower in face order),
+/// which takes its mesh off the chord by less than the tolerance, and is
+/// done again. A few rounds, each a function of the body, the parameters
+/// and the round before; a rung still shared after them is an error at
+/// the face. (A triangle budget is not looked at again here: the points
+/// added are a handful.)
+fn part_shared_rungs(
+    body: &Body,
+    params: &TessParams,
+    points: &[Vec<Vec3>],
+    results: &mut [Option<FaceResult>],
+) -> Result<(), TessError> {
+    let curved = |index: usize| {
+        body.faces
+            .get(index)
+            .is_some_and(|face| !matches!(face.surface, Surface::Plane(_)))
+    };
+    // Per face, the rungs it must not have, over all rounds.
+    let mut splits: Vec<Vec<(Vec3, Vec3)>> = vec![Vec::new(); results.len()];
+    for round in 0..=RUNG_ROUNDS {
+        // (Two plane faces with a side in common lie in one plane and
+        // overlap: no mesh parts them, and that is the body's to answer
+        // for, `craft3d_topo::check` and the self-intersection test.)
+        let mut shared = shared_rungs(results);
+        shared.retain(|&(_, first, second)| curved(first) || curved(second));
+        let Some(&(_, first, second)) = shared.first() else {
+            return Ok(());
+        };
+        if round == RUNG_ROUNDS {
+            return Err(TessError::Face {
+                face: first,
+                reason: format!(
+                    "its mesh and that of face {second} share a side that is on no edge: the \
+                     body between them is thinner than the tolerance there; use a finer tolerance"
+                ),
+            });
+        }
+        let mut again: Vec<usize> = Vec::new();
+        for (rung, first, second) in shared {
+            let face = if curved(first) || !curved(second) {
+                first
+            } else {
+                second
+            };
+            if let Some(list) = splits.get_mut(face) {
+                list.push(rung);
+                again.push(face);
+            }
+        }
+        again.sort_unstable();
+        again.dedup();
+        for index in again {
+            let (Some(face), Some(list)) = (body.faces.get(index), splits.get(index)) else {
+                continue;
+            };
+            let mut starved = false;
+            let made = face_boundary(body, points, face, index, params, &mut starved).and_then(
+                |boundary| {
+                    let made = mesh_face(&boundary, face, index, params, list)?;
+                    closes_along_edges(body, points, face, index, &made.border)?;
+                    Ok(made)
+                },
+            );
+            if let Some(slot) = results.get_mut(index) {
+                *slot = Some(made.map(|mut made| {
+                    made.border = Vec::new();
+                    made
+                }));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Tessellates every face of `body`. Triangle `face_ids` are face indices;
@@ -482,4 +786,163 @@ pub fn tessellate_body_and_edges(
         mesh: assemble(patches),
         edges: edges.points,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use craft3d_math::Frame;
+    use craft3d_testkit::solids;
+
+    /// The border the mesh of face `index` must have: the chords of its
+    /// edges as its loops run.
+    fn border_of(body: &Body, points: &[Vec<Vec3>], index: usize) -> Vec<(Vec3, Vec3)> {
+        let mut border = Vec::new();
+        for id in &body.faces[index].loops {
+            for coedge in &body.loop_(*id).unwrap().coedges {
+                let edge = &points[coedge.edge.0 as usize];
+                for pair in edge.windows(2) {
+                    border.push(if coedge.reversed {
+                        (pair[1], pair[0])
+                    } else {
+                        (pair[0], pair[1])
+                    });
+                }
+            }
+        }
+        border
+    }
+
+    fn reason(result: Result<(), TessError>) -> String {
+        match result {
+            Err(TessError::Face { face: 1, reason }) => reason,
+            other => panic!("expected an error at face 1, got {other:?}"),
+        }
+    }
+
+    /// The check that holds a face's mesh against its edges says what is
+    /// wrong with a border that is not the one the loops ask for. (No
+    /// face of the suites has such a mesh: the borders here are made up.)
+    #[test]
+    fn a_mesh_that_does_not_close_along_an_edge_is_named() {
+        let body = solids::cylinder(&Frame::WORLD, 1.0, 2.0).unwrap().body;
+        let params = TessParams {
+            chordal_tolerance: 1e-2,
+            ..TessParams::default()
+        };
+        let points = edge_points(&body, &params).unwrap().points;
+        let face = &body.faces[1];
+        let whole = border_of(&body, &points, 1);
+        assert!(whole.len() > 8);
+        assert_eq!(closes_along_edges(&body, &points, face, 1, &whole), Ok(()));
+        // In any order.
+        let mut shuffled = whole.clone();
+        shuffled.reverse();
+        shuffled.swap(1, 5);
+        assert_eq!(
+            closes_along_edges(&body, &points, face, 1, &shuffled),
+            Ok(())
+        );
+
+        // A chord no triangle ends on: the mesh is open there.
+        let mut open = whole.clone();
+        open.remove(3);
+        let why = reason(closes_along_edges(&body, &points, face, 1, &open));
+        assert!(why.contains("not closed along edge"), "{why}");
+        assert!(why.contains("shares with face 0"), "{why}");
+        assert!(why.contains("the side of 0 of its triangles"), "{why}");
+        // A chord two triangles end on, and one the wrong way round.
+        let mut twice = whole.clone();
+        twice.push(whole[3]);
+        let why = reason(closes_along_edges(&body, &points, face, 1, &twice));
+        assert!(why.contains("the side of 2 of its triangles"), "{why}");
+        let mut backwards = whole.clone();
+        backwards[3] = (whole[3].1, whole[3].0);
+        let why = reason(closes_along_edges(&body, &points, face, 1, &backwards));
+        assert!(why.contains("not closed along edge"), "{why}");
+        // A side that is no chord of any edge, used once: a seam whose
+        // other side is missing, or a chord with a point that is not the
+        // edge's.
+        let (from, to) = whole[3];
+        let mut stray = whole.clone();
+        stray.push((from, Vec3::new(0.0, 0.0, 1.0)));
+        let why = reason(closes_along_edges(&body, &points, face, 1, &stray));
+        assert!(why.contains("where the face has no edge"), "{why}");
+        let mut moved = whole.clone();
+        moved[3] = (from, to + Vec3::new(1e-12, 0.0, 0.0));
+        assert!(closes_along_edges(&body, &points, face, 1, &moved).is_err());
+        // Both sides of a seam cancel; a side without length is nothing.
+        let mut seamed = whole.clone();
+        seamed.push((from, Vec3::new(0.0, 0.0, 1.0)));
+        seamed.push((Vec3::new(0.0, 0.0, 1.0), from));
+        seamed.push((to, to));
+        assert_eq!(closes_along_edges(&body, &points, face, 1, &seamed), Ok(()));
+        // −0 is 0.
+        let negative =
+            |p: Vec3| Vec3::new(p.x + 0.0, p.y + 0.0, if p.z == 0.0 { -0.0 } else { p.z });
+        let signed: Vec<(Vec3, Vec3)> = whole
+            .iter()
+            .map(|&(a, b)| (negative(a), negative(b)))
+            .collect();
+        assert_eq!(closes_along_edges(&body, &points, face, 1, &signed), Ok(()));
+    }
+
+    /// Two faces that both have the side between the same two points are
+    /// found, whichever way round each has it; a face alone with a side,
+    /// or with it twice, is not.
+    #[test]
+    fn rungs_that_two_faces_share_are_found() {
+        let p = |x: f64| Vec3::new(x, 1.0, -0.0);
+        let face = |rungs: Vec<(Vec3, Vec3)>| -> Option<FaceResult> {
+            Some(Ok(FaceMesh {
+                rungs,
+                ..FaceMesh::default()
+            }))
+        };
+        let results = vec![
+            face(vec![(p(0.0), p(1.0)), (p(2.0), p(3.0)), (p(2.0), p(3.0))]),
+            None,
+            face(vec![(p(4.0), p(5.0))]),
+            Some(Err(TessError::TooManyVertices)),
+            face(vec![(p(1.0), Vec3::new(0.0, 1.0, 0.0)), (p(6.0), p(7.0))]),
+            face(vec![(p(7.0), p(6.0)), (p(5.0), p(4.5))]),
+        ];
+        let shared = shared_rungs(&results);
+        let faces: Vec<(usize, usize)> = shared.iter().map(|&(_, a, b)| (a, b)).collect();
+        assert_eq!(faces, vec![(0, 4), (4, 5)]);
+        assert_eq!(shared[0].0, (p(0.0), p(1.0)));
+        assert!(shared_rungs(&[]).is_empty());
+    }
+
+    /// A lens between a line and an arc flatter than the tolerance, as
+    /// two edges that bound no common face: the arc's one chord is the
+    /// line, and is asked to be cut.
+    #[test]
+    fn a_chord_that_is_another_edge_s_chord_is_asked_to_be_cut() {
+        use craft3d_geom::{Circle, Line};
+        use craft3d_topo::BodyKind;
+        let mut body = Body::new(BodyKind::Sheet);
+        let (low, high) = (Vec3::new(1.0, -1.0, 0.0), Vec3::new(1.0, 1.0, 0.0));
+        let (a, b) = (body.add_vertex(low), body.add_vertex(high));
+        let line = Curve3::Line(Line::through(low, high).unwrap());
+        let frame = Frame::WORLD.at(Vec3::new(-9.0, 0.0, 0.0)).unwrap();
+        let radius = 101.0_f64.sqrt();
+        let half = (1.0 / radius).asin();
+        let arc = Curve3::Circle(Circle::new(frame, radius).unwrap());
+        body.add_edge(line, (0.0, 2.0), a, b);
+        body.add_edge(arc, (-half, half), a, b);
+        let coarse = TessParams {
+            chordal_tolerance: 0.25,
+            ..TessParams::default()
+        };
+        let points = edge_points(&body, &coarse).unwrap().points;
+        assert_eq!(coincident_chords(&body, &points), vec![(1, 0)]);
+        // Fine enough for the arc to have a point of its own: nothing.
+        let fine = TessParams {
+            chordal_tolerance: 0.01,
+            ..TessParams::default()
+        };
+        let points = edge_points(&body, &fine).unwrap().points;
+        assert!(coincident_chords(&body, &points).is_empty());
+    }
 }

@@ -75,6 +75,9 @@ fn try_mesh(body: &Body, k: f64) -> Result<(), String> {
     Ok(())
 }
 
+/// (Empty since 2026-10-14: the tessellator meshes all eight that were
+/// listed here, cuts through and around a pole.)
+///
 /// Results of this file that the tessellator does not mesh yet, by what
 /// their names contain, each with how it fails. They are valid bodies
 /// that measure as their oracle says; the mesh is the tessellator's to
@@ -82,32 +85,7 @@ fn try_mesh(body: &Body, k: f64) -> Result<(), String> {
 /// of its patch on the way of an edge, or runs around one), and
 /// `the_tessellator_meshes_cuts_through_a_pole` below reproduces them.
 /// An entry that meshes is to be removed here: the test says so.
-const UNMESHED: &[(&[&str], &str)] = &[
-    (
-        &["octant, through: block edge", "Union"],
-        "segments per side",
-    ),
-    (
-        &["octant, through: block edge", "Subtract"],
-        "segments per side",
-    ),
-    (
-        &["octant, through: spike", "tilted true, Union"],
-        "segments per side",
-    ),
-    (
-        &["octant, through: spike", "tilted true, Subtract"],
-        "segments per side",
-    ),
-    (&["octant, through: ring", "Intersect"], "segments per side"),
-    (&["octant, around: ring", "Intersect"], "not watertight"),
-    (
-        &["dome, through: block edge", "common"],
-        "segments per side",
-    ),
-    // (Tilted, what the dome and the block have in common is meshed.)
-    (&["dome", "through: block edge", "rest"], "not watertight"),
-];
+const UNMESHED: &[(&[&str], &str)] = &[];
 
 /// The mesh of a body is closed and encloses its volume, unless it is
 /// one of the [`UNMESHED`], which must then fail as listed.
@@ -815,9 +793,8 @@ fn a_cusp_is_a_valid_body_and_a_refused_operand() {
 /// The reproducer for `crates/tess`: valid bodies with a freeform face
 /// through a pole that the tessellator declines or meshes with a gap
 /// (see [`UNMESHED`]). Each passes `check` and measures as its oracle
-/// says. Remove `#[ignore]` when the tessellator takes them.
+/// says. (Ignored until the tessellator took them, 2026-10-14.)
 #[test]
-#[ignore = "the tessellator does not mesh every face whose boundary passes through a pole of its patch"]
 fn the_tessellator_meshes_cuts_through_a_pole() {
     let k = 1.0;
     let tol = tolerance(k);
