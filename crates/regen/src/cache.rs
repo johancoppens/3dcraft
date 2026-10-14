@@ -205,7 +205,8 @@ pub(crate) fn features(
     let mut results: Vec<FeatureResult> = Vec::with_capacity(doc.features.len());
     let mut stamps: BTreeMap<FeatureId, u64> = BTreeMap::new();
     let mut rolled_back = false;
-    for stated in &doc.features {
+    let steps = doc.features.len();
+    for (index, stated) in doc.features.iter().enumerate() {
         // Names of an earlier body are followed to the newest one before
         // this feature; it is then built, depends and takes as followed.
         let followed = if rolled_back || stated.suppressed {
@@ -259,6 +260,13 @@ pub(crate) fn features(
             }
             None => {
                 cache.rebuilt += 1;
+                crate::progress::report(&crate::progress::Progress {
+                    phase: "regenerating",
+                    feature: Some(feature.id.to_string()),
+                    name: Some(feature.name.clone()),
+                    step: index.saturating_add(1),
+                    steps,
+                });
                 let result = match &followed {
                     Err(reason) => FeatureResult {
                         id: stated.id,

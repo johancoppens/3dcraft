@@ -14,6 +14,8 @@
 //!   the thread that owns them.
 //! - [`files`]: New, Open, Save and Save As for the person at the window,
 //!   with the system's file dialog.
+//! - [`worker`]: the engine thread, where commands run while the window
+//!   keeps drawing.
 //! - [`app`]: the eframe window.
 //!
 //! Everything but [`app::run`] works without a window, which is how the
@@ -25,6 +27,7 @@ pub mod control;
 pub mod files;
 pub mod host;
 pub mod token;
+pub mod worker;
 
 #[cfg(test)]
 mod tests;

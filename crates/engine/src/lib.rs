@@ -22,6 +22,7 @@ mod drawing_cmds;
 mod face_cmds;
 mod file_cmds;
 mod loft_cmds;
+mod mass;
 mod params;
 mod pick_cmds;
 mod query_cmds;

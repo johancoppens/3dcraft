@@ -32,6 +32,7 @@ mod fillet;
 mod follow;
 mod loft;
 mod offset_face;
+pub mod progress;
 mod query;
 mod revolve;
 mod selfcheck;
