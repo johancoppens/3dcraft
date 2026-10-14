@@ -771,17 +771,20 @@ fn a_rim_chamfer_too_large_for_the_end_of_a_rod_says_what_fits() {
 fn what_is_not_built_is_refused_with_its_kind() {
     let k = 1.0;
     let tol = tolerance(k);
-    // The straight edges of a rod cut in half lengthwise lie between a
-    // plane and a cylinder.
-    let part = rod(&Frame::WORLD, k, 1.0, 3.0);
+    // The straight edges of a cone cut in half through its axis lie
+    // between a plane and the cone and run into its apex, where only those
+    // two faces meet: the chamfer cannot end there. (Those of a rod cut
+    // likewise are built: `blend_cylinders.rs`; those of a frustum, which
+    // end in its flat ends: `blend_freeform.rs`.)
+    let part = primitives::cone(&Frame::WORLD, k, 3.0 * k).unwrap();
     let half = boxed(k, [-2.0, 0.0, -1.0], [2.0, 2.0, 4.0]);
     let halved = boolean(&part, &half, BooleanOp::Intersect, &tol)
         .unwrap()
         .body;
-    let side = equal(&halved, k, [1.0, 0.0, 1.5], 0.2);
+    let side = equal(&halved, k, [0.5, 0.0, 1.5], 0.2);
     match chamfer(&halved, &[side], &tol) {
         Err(KernelError::Chamfer { reason, .. }) => {
-            assert!(reason.contains("not both planes"), "{reason}");
+            assert!(reason.contains("does not end cleanly"), "{reason}");
         }
         other => panic!("expected a refusal, got {other:?}"),
     }

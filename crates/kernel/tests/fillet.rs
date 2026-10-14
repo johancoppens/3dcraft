@@ -1205,10 +1205,29 @@ fn corners_that_are_not_built_are_refused_and_say_why() {
         .unwrap()
         .body;
     // The upright edge of the flat side lies between a plane and a
-    // cylinder: its kind is refused before any corner is looked at.
-    match fillet(&halved, &[round(&halved, k, [1.0, 0.0, 1.5], 0.2)], &tol) {
+    // cylinder (built on its own: `blend_cylinders.rs`); with the rim and
+    // the top edge of the flat side it meets in a corner with a circular
+    // edge.
+    let edges = [
+        round(&halved, k, [1.0, 0.0, 1.5], 0.2),
+        round(&halved, k, [0.0, 1.0, 3.0], 0.2),
+        round(&halved, k, [0.0, 0.0, 3.0], 0.2),
+    ];
+    match fillet(&halved, &edges, &tol) {
         Err(KernelError::Fillet { reason, .. }) => {
-            assert!(reason.contains("not both planes"), "{reason}");
+            assert!(reason.contains("corner that is not built"), "{reason}");
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    // A straight edge next to a cone that runs into its apex, where only
+    // the cone and the cut meet: half a cone, cut through its axis.
+    let part = primitives::cone(&Frame::WORLD, k, 3.0 * k).unwrap();
+    let halved = boolean(&part, &half, BooleanOp::Intersect, &tol)
+        .unwrap()
+        .body;
+    match fillet(&halved, &[round(&halved, k, [0.5, 0.0, 1.5], 0.2)], &tol) {
+        Err(KernelError::Fillet { reason, .. }) => {
+            assert!(reason.contains("does not end cleanly"), "{reason}");
         }
         other => panic!("expected a refusal, got {other:?}"),
     }
@@ -1275,12 +1294,15 @@ fn bad_requests_are_errors() {
         edge: EdgeId(ellipse as u32),
         radius: 0.1,
     };
-    match fillet(&cut, &[request], &tol) {
-        Err(KernelError::Fillet { reason, .. }) => {
-            assert!(reason.contains("elliptic edge"), "{reason}");
-        }
-        other => panic!("expected a refusal, got {other:?}"),
-    }
+    // Built as a ring of spline surface since 2026-10-14 (its oracle is
+    // in `blend_freeform.rs`); a radius the rod cannot hold is refused.
+    let made = fillet(&cut, &[request], &tol).unwrap();
+    assert_eq!(check(&made.body, &tol), []);
+    let too_large = FilletEdge {
+        radius: 1.5,
+        ..request
+    };
+    assert!(fillet(&cut, &[too_large], &tol).is_err());
 }
 
 /// The contact fillets make where one goes on in the next, kept as the

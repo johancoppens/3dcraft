@@ -290,3 +290,43 @@ pub(crate) fn name(
     );
     Ok(Some(named))
 }
+
+/// A blend whose face has no closed form (a spline surface along a
+/// freeform edge, `kernel::blend`'s `rolling`) is held to the face it was
+/// asked for and to the faces next to the edge; whether it runs into a
+/// face further away (a radius that is too large for what lies across the
+/// body) the kernel does not see. Such a body is meshed and looked at for
+/// places where it passes through itself, as a loft is, before it is
+/// handed on.
+pub(crate) fn through_itself(
+    made: &Body,
+    faces: &[Made<'_>],
+    names: Option<&Names>,
+    linear: f64,
+    noun: &str,
+) -> Result<(), String> {
+    use crate::selfcheck::{Crossing, crossing};
+    use craft3d_geom::Surface;
+    let freeform = faces.iter().zip(&made.faces).any(|(made, face)| {
+        matches!(made, Made::Blend(_))
+            && matches!(face.surface, Surface::Nurbs(_) | Surface::Bezier(_))
+    });
+    if !freeform {
+        return Ok(());
+    }
+    let named: Vec<PersistentName> = names.map(|n| n.faces.clone()).unwrap_or_default();
+    match crossing(made, &named, linear) {
+        Crossing::None => Ok(()),
+        Crossing::Unknown(error) => Err(format!(
+            "edges: the {noun} along a freeform edge cannot be meshed to see whether it runs into the body ({error})"
+        )),
+        Crossing::Found(pair) => {
+            let between = pair
+                .map(|[a, b]| format!(": {a} and {b} cross"))
+                .unwrap_or_default();
+            Err(format!(
+                "edges: the {noun} runs into the body{between}; the size is too large for what lies across it"
+            ))
+        }
+    }
+}
