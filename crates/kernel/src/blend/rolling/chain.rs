@@ -1553,9 +1553,9 @@ fn walk(
     until: &Until<'_>,
     most_out: f64,
     tol: f64,
-) -> Option<Walked> {
+) -> Result<Walked, Stop> {
     let Shape::Ball { radius, convex } = solver.shape else {
-        return None;
+        return Err(Stop::Unsolvable);
     };
     let shortest = 1e-4 * first_step;
     let (mut current, mut t, mut h) = (start, along, first_step);
@@ -1576,9 +1576,9 @@ fn walk(
         let plane = plane_of(until);
         plane.normal.dot(centre - plane.point)
     };
-    let mut behind = side(start.centre?) < 0.0;
+    let mut behind = side(start.centre.ok_or(Stop::Unsolvable)?) < 0.0;
     for _ in 0..8192 {
-        let c = current.centre?;
+        let c = current.centre.ok_or(Stop::Unsolvable)?;
         let ahead = Across {
             point: c + t * h,
             normal: t,
@@ -1589,18 +1589,18 @@ fn walk(
         let Some((next, turned)) = found.filter(|(_, n)| n.dot(t) > 0.25_f64.cos()) else {
             h *= 0.5;
             if h < shortest {
-                return None;
+                return Err(Stop::Unsolvable);
             }
             continue;
         };
-        let centre = next.centre?;
+        let centre = next.centre.ok_or(Stop::Unsolvable)?;
         let plane = plane_of(until);
         let crossed = behind && side(centre) >= 0.0 && near(centre, &plane, h);
         behind = side(centre) < 0.0;
         match until {
             Until::Plane(_) => {
                 if crossed {
-                    return Some(Walked { balls });
+                    return Ok(Walked { balls });
                 }
             }
             Until::Out { third, .. } => {
@@ -1610,10 +1610,10 @@ fn walk(
                 if let Some(at) = past {
                     if out_of(*third, &next, tol) {
                         balls.push(next);
-                        return Some(Walked { balls });
+                        return Ok(Walked { balls });
                     }
                     if travelled - at > most_out {
-                        return None;
+                        return Err(Stop::TooFar);
                     }
                 }
             }
@@ -1627,7 +1627,7 @@ fn walk(
             h = (h * 1.5).min(longest);
         }
     }
-    None
+    Err(Stop::Unsolvable)
 }
 
 /// The path of the balls' centres through `balls` (in order): the cubic
@@ -1942,6 +1942,13 @@ fn along_spine(
         ((0.5 * size).min(longest), longest)
     };
     let most_out = 8.0 * size;
+    // Why a walk out past an end stopped: the ball could not be followed
+    // (a face curves more tightly than the radius somewhere), or it did
+    // not get out of the third face.
+    let stopped = |stopped: Stop, face: Option<FaceId>| match stopped {
+        Stop::Unsolvable => unsolvable(),
+        Stop::TooFar => refuse(edge, face, Reason::FreeEnd),
+    };
     // The seed, in the middle of the first edge.
     let solver0 = edge_solvers.first().ok_or_else(lost)?;
     let into = items.get(first.item).ok_or_else(lost)?.into;
@@ -1978,13 +1985,13 @@ fn along_spine(
                 most_out,
                 tol,
             )
-            .ok_or_else(|| refuse(edge, Some(end.third()), Reason::FreeEnd))?;
+            .map_err(|s| stopped(s, Some(end.third())))?;
             list.extend(walked.balls);
             break;
         }
         let stop = *stops.get(i).ok_or_else(lost)?;
         let walked = walk(solver, from.0, from.1, h, longest, &Until::Plane(stop), most_out, tol)
-            .ok_or_else(unsolvable)?;
+            .map_err(|_| unsolvable())?;
         list.extend(walked.balls);
         let (mine, next) = match switched.get(i).ok_or_else(lost)? {
             Some((before, later, _)) => (*before, *later),
@@ -2023,7 +2030,7 @@ fn along_spine(
             normal: -plane.normal,
         };
         let mut walked = walk(solver, seed, -t0, h, longest, &Until::Plane(behind), most_out, tol)
-            .ok_or_else(unsolvable)?
+            .map_err(|_| unsolvable())?
             .balls;
         if let Some(last) = walked.last().and_then(|b| b.centre)
             && behind.normal.dot(behind.point - last) < 0.1 * h
@@ -2053,7 +2060,7 @@ fn along_spine(
             most_out,
             tol,
         )
-        .ok_or_else(|| refuse(edge, Some(end.third()), Reason::FreeEnd))?;
+        .map_err(|s| stopped(s, Some(end.third())))?;
         walked.balls
     };
     {
