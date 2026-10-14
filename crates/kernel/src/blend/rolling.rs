@@ -1084,6 +1084,12 @@ enum Stop {
 /// Whether the whole of `section` lies outside the face `third`, by more
 /// than twice the tolerance.
 fn out_of(third: Side<'_>, section: &Section, tol: f64) -> bool {
+    beyond_by(third, section, tol, 1.0)
+}
+
+/// Whether the whole of `section` lies more than twice the tolerance
+/// beyond the face `third`: outside it (`sign` 1), or inside it (−1).
+fn beyond_by(third: Side<'_>, section: &Section, tol: f64, sign: f64) -> bool {
     (0..=8).all(|k| {
         section.eval(f64::from(k) / 8.0).is_some_and(|p| {
             third
@@ -1091,7 +1097,7 @@ fn out_of(third: Side<'_>, section: &Section, tol: f64) -> bool {
                 .project(p)
                 .ok()
                 .and_then(|uv| third.signed(p, uv))
-                .is_some_and(|(d, _)| d > 2.0 * tol)
+                .is_some_and(|(d, _)| sign * d > 2.0 * tol)
         })
     })
 }

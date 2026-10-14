@@ -1215,3 +1215,96 @@ fn the_tip_of_a_lofted_blade_rounded_all_round() {
         assert!(worst <= 4.0 * tol.linear, "{worst} off the rolling ball");
     }
 }
+
+/// The same corners inside out: the tilted half cone taken out of a block
+/// as a pocket open at the bottom, its ceiling's two edges rounded (all
+/// edges at the two corners concave). What the fillets add is the mirror
+/// of what they took away from the half cone: a point of the pocket stays
+/// empty exactly when a ball inside the pocket below the ceiling and
+/// beside the cone holds it and one below the ceiling and beside the cut
+/// plane holds it.
+#[test]
+fn two_fillets_that_meet_in_a_pocket() {
+    use craft3d_kernel::boolean::contains_points;
+    let r = 0.1;
+    for k in [1e-3, 1.0] {
+        let tol = tolerance(k);
+        let pocket = tilted_half_cone(k);
+        let block = boxed(k, [-1.5, -0.5, 0.9], [1.5, 1.5, 2.0]);
+        let body = boolean(&block, &pocket, BooleanOp::Subtract, &tol)
+            .unwrap()
+            .body;
+        assert_eq!(check(&body, &tol), []);
+        let rim = edge_near(&body, Vec3::new(0.0, 0.6 * k, 1.2 * k));
+        let line = edge_near(&body, Vec3::new(0.0, 0.0, 1.2 * k));
+        let made = match fillet(
+            &body,
+            &[
+                FilletEdge {
+                    edge: rim,
+                    radius: r * k,
+                },
+                FilletEdge {
+                    edge: line,
+                    radius: r * k,
+                },
+            ],
+            &tol,
+        ) {
+            Ok(m) => m,
+            Err(e) => panic!("scale {k}: {e}"),
+        };
+        assert_eq!(check(&made.body, &tol), []);
+        let deep = craft3d_tess::body_self_intersections(
+            &made.body,
+            &craft3d_tess::SelfCheckParams::new(tol.linear),
+        )
+        .unwrap();
+        assert_eq!(deep.certain_crossings, 0, "{deep:?}");
+        let (crease, seams) = creases(&made.body, &made.faces);
+        assert_eq!(seams, 4);
+        assert!(crease <= 10.0 * tol.linear / (r * k), "a crease of {crease}");
+        let (q, n) = tilted_top();
+        let n_grid = 15;
+        let margin = 2e-4;
+        let mut points = Vec::new();
+        let mut expected = Vec::new();
+        for i in 0..n_grid {
+            for j in 0..n_grid {
+                for l in 0..n_grid {
+                    let f = |m: usize, lo: f64, hi: f64| lo + (hi - lo) * (m as f64 + 0.37) / n_grid as f64;
+                    let p = Vec3::new(f(i, -0.75, 0.75), f(j, -0.02, 0.3), f(l, 1.0, 1.4));
+                    let cone = (1.0 - p.z / 3.0 - p.x.hypot(p.y)) * 3.0 / 10f64.sqrt();
+                    let top = -n.dot(p - q);
+                    let in_pocket = p.y > 0.0 && cone > 0.0 && top > 0.0;
+                    let near_pocket = [p.y, cone, top].iter().any(|d| d.abs() < margin);
+                    let (da, db) = (to_top_centres(p, r, true), to_top_centres(p, r, false));
+                    if near_pocket || (da - r).abs() < margin || (db - r).abs() < margin {
+                        continue;
+                    }
+                    points.push(p * k);
+                    // In the block (its bounds are far off): solid unless the
+                    // pocket still holds the point empty.
+                    expected.push(!(in_pocket && da <= r && db <= r));
+                }
+            }
+        }
+        let found = contains_points(&made.body, &points, &tol).unwrap();
+        let mut undecided = 0;
+        let mut added = 0;
+        for ((p, want), got) in points.iter().zip(&expected).zip(&found) {
+            match got {
+                Some(got) => assert_eq!(got, want, "at {p:?}, scale {k}"),
+                None => undecided += 1,
+            }
+            let q = *p * (1.0 / k);
+            let cone = (1.0 - q.z / 3.0 - q.x.hypot(q.y)) * 3.0 / 10f64.sqrt();
+            if q.y > 0.0 && cone > 0.0 && -n.dot(q - tilted_top().0) > 0.0 && *want {
+                added += 1;
+            }
+        }
+        println!("scale {k}: {} points, {added} filled in, {undecided} undecided", points.len());
+        assert!(undecided * 100 < points.len(), "{undecided} undecided");
+        assert!(added > 50, "only {added} points in what the fillets add");
+    }
+}

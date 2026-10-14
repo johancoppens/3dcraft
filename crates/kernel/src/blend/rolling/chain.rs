@@ -43,7 +43,7 @@
 
 use super::super::{BlendError, Reason, Size, Turn, Use, across, lost, refused, vertex_edges};
 use super::{
-    Across, BEND, End, FOLLOW_DEPTH, Item, MAX_SAMPLES, cut_curve, out_of, Section, Shape, Side, Solver, Spine, Steps, Stop,
+    Across, BEND, End, FOLLOW_DEPTH, Item, MAX_SAMPLES, beyond_by, cut_curve, Section, Shape, Side, Solver, Spine, Steps, Stop,
     border, cut_back, edge_length, end_at, end_cut, first_section, insert_cut, march_out,
     outward_from, refine, refuse, scale_of, tangent_or_refused,
 };
@@ -1528,8 +1528,15 @@ fn arc_plane(section: &Section, along: Vec3) -> Option<Across> {
 enum Until<'a> {
     /// Where the centres cross this plane (from behind it).
     Plane(Across),
-    /// Past this plane, where a whole section lies outside `third`.
-    Out { end: Across, third: Side<'a> },
+    /// Past this plane, where a whole section lies beyond `third`:
+    /// outside it (`sign` 1, at a corner of three faces or a convex meet),
+    /// or inside it (−1, a concave meet, whose far face it crosses into
+    /// the material).
+    Out {
+        end: Across,
+        third: Side<'a>,
+        sign: f64,
+    },
 }
 
 /// What a walk found: the balls after the start, before the plane it
@@ -1603,12 +1610,12 @@ fn walk(
                     return Ok(Walked { balls });
                 }
             }
-            Until::Out { third, .. } => {
+            Until::Out { third, sign, .. } => {
                 if past.is_none() && crossed {
                     past = Some(travelled);
                 }
                 if let Some(at) = past {
-                    if out_of(*third, &next, tol) {
+                    if beyond_by(*third, &next, tol, *sign) {
                         balls.push(next);
                         return Ok(Walked { balls });
                     }
@@ -1942,6 +1949,12 @@ fn along_spine(
         ((0.5 * size).min(longest), longest)
     };
     let most_out = 8.0 * size;
+    // Past a meet's vertex a concave fillet leaves what is kept (the
+    // empty side) into the material beyond the far face.
+    let sign_of = |end: &Ending| match end {
+        Ending::Meet { .. } if !convex => -1.0,
+        _ => 1.0,
+    };
     // Why a walk out past an end stopped: the ball could not be followed
     // (a face curves more tightly than the radius somewhere), or it did
     // not get out of the third face.
@@ -1981,6 +1994,7 @@ fn along_spine(
                 &Until::Out {
                     end: plane,
                     third: third_of(end)?,
+                    sign: sign_of(end),
                 },
                 most_out,
                 tol,
@@ -2056,6 +2070,7 @@ fn along_spine(
             &Until::Out {
                 end: plane,
                 third: third_of(end)?,
+                sign: sign_of(end),
             },
             most_out,
             tol,
