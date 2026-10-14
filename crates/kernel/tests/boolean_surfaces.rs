@@ -504,6 +504,128 @@ fn a_rod_that_goes_on_in_a_ring() {
     }
 }
 
+/// The area two discs of radii `a` and `b` with centres `d` apart share.
+fn lens(a: f64, b: f64, d: f64) -> f64 {
+    if a <= 0.0 || b <= 0.0 || d >= a + b {
+        return 0.0;
+    }
+    if d <= (a - b).abs() {
+        return PI * a.min(b).powi(2);
+    }
+    let x = ((d * d + a * a - b * b) / (2.0 * d * a)).clamp(-1.0, 1.0);
+    let y = ((d * d + b * b - a * a) / (2.0 * d * b)).clamp(-1.0, 1.0);
+    let k = ((-d + a + b) * (d + a - b) * (d - a + b) * (d + a + b)).max(0.0);
+    a * a * x.acos() + b * b * y.acos() - 0.5 * k.sqrt()
+}
+
+/// The volume two rings of one tube radius `r` share whose axes are
+/// parallel and whose middle circles (radii `r1`, `r2`, centres `apart`)
+/// lie in one plane: at the height `z` each ring is the annulus between
+/// `Rᵢ − w` and `Rᵢ + w` (`w = √(r² − z²)`), and two annuli share
+/// `|O₁ ∩ O₂| − |O₁ ∩ I₂| − |I₁ ∩ O₂| + |I₁ ∩ I₂|` of their outer and
+/// inner discs. Integrated over `z` by Simpson's rule in `z = r sin α`.
+fn rings_in_common(r1: f64, r2: f64, apart: f64, r: f64) -> f64 {
+    let n = 1 << 16;
+    let slice = |alpha: f64| {
+        let w = r * alpha.cos();
+        if w <= 0.0 {
+            return 0.0;
+        }
+        let area =
+            lens(r1 + w, r2 + w, apart) - lens(r1 + w, r2 - w, apart) - lens(r1 - w, r2 + w, apart)
+                + lens(r1 - w, r2 - w, apart);
+        area * w
+    };
+    let h = PI / f64::from(n);
+    let mut sum = 0.0;
+    for k in 0..=n {
+        let weight = if k == 0 || k == n {
+            1.0
+        } else if k % 2 == 1 {
+            4.0
+        } else {
+            2.0
+        };
+        sum += weight * slice(-PI / 2.0 + h * f64::from(k));
+    }
+    sum * h / 3.0
+}
+
+/// A ring that goes on in a ring: one tube radius, the middle circles in
+/// one plane and touching from outside (an S) or from inside, the axes
+/// the same way or opposite. The surfaces are tangent along the circle
+/// across the tube where the middle circles touch, and cross in a closed
+/// curve through its top and bottom (`geom::intersect`'s closed form of
+/// 2026-10-14; refused before, which is why a fillet along a chain of
+/// arcs joins its tools first). What they share is held to the integral
+/// above, and the other results to the identities of sets.
+#[test]
+fn a_ring_that_goes_on_in_a_ring() {
+    for k in SCALES {
+        let near = |actual: f64, expected: f64, what: &str| {
+            assert!(
+                (actual - expected).abs() <= 1e-6 * expected.abs(),
+                "{what} at scale {k}: {actual} is not {expected}"
+            );
+        };
+        let tilted = Frame::new(
+            Vec3::new(1.0, -2.0, 0.5) * k,
+            Vec3::new(0.3, -0.4, 1.0),
+            Vec3::new(1.0, 0.2, 0.0),
+        )
+        .unwrap();
+        // (frame, R₁, R₂, r, from outside, flipped second axis)
+        for (frame, r1, r2, r, outside, flip) in [
+            (Frame::WORLD, 2.0, 1.25, 0.5, true, false),
+            (tilted, 1.5, 1.5, 0.4, true, true),
+            (Frame::WORLD, 3.0, 1.5, 0.5, false, false),
+            (tilted, 2.5, 0.9, 0.6, false, true),
+        ] {
+            let apart = if outside { r1 + r2 } else { r1 - r2 };
+            let first = primitives::torus(&frame, r1 * k, r * k).unwrap();
+            let centre = frame.point(apart * k * 0.6, apart * k * 0.8, 0.0);
+            let axis = if flip { -frame.z() } else { frame.z() };
+            let second_frame = Frame::new(centre, axis, frame.x()).unwrap();
+            let second = primitives::torus(&second_frame, r2 * k, r * k).unwrap();
+            let (va, vb) = (
+                2.0 * PI * PI * r1 * r * r * k * k * k,
+                2.0 * PI * PI * r2 * r * r * k * k * k,
+            );
+            let shared = rings_in_common(r1, r2, apart, r) * k * k * k;
+            let what = format!("R₁ {r1}, R₂ {r2}, r {r}, outside {outside}");
+            let common = solve(&first, &second, Intersect, k);
+            let vc = mass(&common.body).volume;
+            near(vc, shared, &format!("what the rings share ({what})"));
+            assert_eq!(common.body.shells.len(), 1, "{what}");
+            let less = solve(&first, &second, Subtract, k);
+            let both = solve(&first, &second, Union, k);
+            let other = solve(&second, &first, Subtract, k);
+            near(mass(&less.body).volume + vc, va, "common + difference");
+            near(mass(&both.body).volume + vc, va + vb, "union + common");
+            near(
+                mass(&other.body).volume + vc,
+                vb,
+                "common + other difference",
+            );
+            assert_eq!(both.body.shells.len(), 1, "{what}");
+            let swapped = solve(&second, &first, Intersect, k);
+            near(mass(&swapped.body).volume, vc, "the other way round");
+            near(
+                mass(&swapped.body).area,
+                mass(&common.body).area,
+                "its area",
+            );
+            // The area identity: nothing coincides.
+            let (aa, ab) = (mass(&first).area, mass(&second).area);
+            near(
+                mass(&both.body).area + mass(&common.body).area,
+                aa + ab,
+                "area of the union + area of the common",
+            );
+        }
+    }
+}
+
 #[test]
 fn a_ball_ended_pin_and_the_hole_it_makes() {
     for k in SCALES {

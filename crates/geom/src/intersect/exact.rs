@@ -102,6 +102,10 @@ pub(super) fn closed_form(
             Some(found) => Ok(Some(found)),
             None => continued(c, t, tol),
         },
+        (Surface::Torus(t), Surface::Torus(u)) => match coaxial(a, b, tol)? {
+            Some(found) => Ok(Some(found)),
+            None => continued_tori(t, u, tol),
+        },
         _ => coaxial(a, b, tol),
     }
 }
@@ -156,6 +160,107 @@ fn continued(c: &Cylinder, t: &Torus, tol: &Tolerance) -> Result<Option<Closed>,
         a: a * (2.0 * (major * r).sqrt()),
         b: inward * r,
         c: frame.x() * r,
+        k: 0.0,
+        slack,
+    };
+    if !lobe.eval(0.0).is_finite() {
+        return Err(degenerate());
+    }
+    let piece = |shape: &Shape, range: (f64, f64), tangent: bool| ExactCurve {
+        shape: shape.clone(),
+        range,
+        tangent,
+    };
+    let round = Shape::Circle(circle);
+    Ok(Some(meets(
+        vec![
+            piece(&round, (0.0, 2.0 * half), true),
+            piece(&round, (2.0 * half, 4.0 * half), true),
+            piece(&lobe, (-half, half), false),
+            piece(&lobe, (half, 3.0 * half), false),
+        ],
+        Vec::new(),
+    )))
+}
+
+/// A torus that goes on in a torus: the tubes have one radius, the axes
+/// are parallel and the middle circles lie in one plane and touch, from
+/// outside (an S, as a fillet along two arcs that turn opposite ways) or
+/// from inside (two arcs that turn the same way with different radii).
+/// `None` for any other position, and for circles that touch from inside
+/// with radii less than the tube's radius apart (the second curve does
+/// not reach the plane then).
+///
+/// As in [`continued`], with `O` where the middle circles (radii `R₁`,
+/// `R₂`, centres `Δ` apart) touch, `x` along their common tangent, `y`
+/// from `O` to the first centre and `z` along the axes, a point is on both
+/// where `δ₁² = δ₂²` and `z² = r² − δ₁²`, `δᵢ = ρᵢ − Rᵢ` the signed
+/// distances to the circles within the plane. One sign is the circle of
+/// radius `r` about `O` across the plane `x = 0`, along which the tubes
+/// are tangent. The other is a conic with the centres as foci (a branch
+/// of a hyperbola from outside, an ellipse from inside) on which, with
+/// `u = |δ₁|`, the point at `u` is where the circles about the centres of
+/// radii `ρᵢ = Rᵢ + u` (outside) or `R₁ − u` and `R₂ + u` (inside) meet:
+///
+/// - from outside (`Δ = R₁ + R₂`): `y = (R₂ − R₁) u / Δ`,
+///   `x² = (4 R₁ R₂ / Δ) u (1 + u / Δ)`;
+/// - from inside (`Δ = R₁ − R₂ > 0`): `y = (R₁ + R₂) u / Δ`,
+///   `x² = (4 R₁ R₂ / Δ) u (1 − u / Δ)`.
+///
+/// With `u = r cos² ψ` all of it is regular, through `u = r` where the
+/// curve meets the plane, as long as `1 ± r/Δ > 0`: the
+/// [`Shape::Lobe`] with `k = ±r/Δ` (and, as `R₂` grows without bound,
+/// the cylinder's parabola).
+fn continued_tori(t: &Torus, u: &Torus, tol: &Tolerance) -> Result<Option<Closed>, GeomError> {
+    // The larger middle circle first, so that the inside case has
+    // `R₁ > R₂`; the order given when they are equal.
+    let (t, u) = if u.radii().0 > t.radii().0 {
+        (u, t)
+    } else {
+        (t, u)
+    };
+    let (tf, uf) = (t.frame(), u.frame());
+    let ((r1, minor), (r2, minor2)) = (t.radii(), u.radii());
+    let n = tf.z();
+    if !(r1 > minor + tol.linear && r2 > minor2 + tol.linear)
+        || across(uf.z(), n).length() > tol.angular
+    {
+        return Ok(None);
+    }
+    let r = minor;
+    let between = uf.origin() - tf.origin();
+    let lift = between.dot(n);
+    let planar = across(between, n);
+    let apart = planar.length();
+    let off = (r - minor2).abs() + lift.abs();
+    let outside = (apart - (r1 + r2)).abs();
+    let inside = (apart - (r1 - r2)).abs();
+    let (slack, delta, from_outside) = if outside <= inside {
+        (off + outside, r1 + r2, true)
+    } else {
+        (off + inside, r1 - r2, false)
+    };
+    if !(slack <= 0.5 * tol.linear) || !(apart > 0.0) || !(delta > r + tol.linear) {
+        return Ok(None);
+    }
+    let out = planar * (1.0 / apart);
+    let o = tf.origin() + out * r1;
+    let toward = out * -1.0;
+    let along = n.cross(toward).normalized().ok_or_else(degenerate)?;
+    let frame = Frame::new(o, along, n).ok_or_else(degenerate)?;
+    let circle = Circle::new(frame, r)?;
+    let (rise, k) = if from_outside {
+        ((r2 - r1) / delta, r / delta)
+    } else {
+        ((r1 + r2) / delta, -r / delta)
+    };
+    let half = std::f64::consts::FRAC_PI_2;
+    let lobe = Shape::Lobe {
+        o,
+        a: along * (2.0 * (r1 * r2 * r / delta).sqrt()),
+        b: toward * (rise * r),
+        c: n * r,
+        k,
         slack,
     };
     if !lobe.eval(0.0).is_finite() {
