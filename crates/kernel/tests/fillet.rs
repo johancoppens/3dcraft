@@ -1639,3 +1639,61 @@ fn a_root_chain_round_an_inside_arc_with_a_short_ledge() {
         }
     }
 }
+
+/// Engine-block finding E5b: a corner of the crankcase bay (a hexagon
+/// whose corner at (8.8, 4) turns by 51.3 degrees) with its long edge and
+/// both rims there rounded by one radius: a piece of the ball. At the
+/// finding's tolerance the boolean refused the second rim's tool ("two
+/// points closer together than the tolerance can tell apart"): the end
+/// of an ellipse and of a circle that both run onto the cap there were
+/// found as hits on the cap a little apart, where they share a vertex
+/// that lies on it exactly. Held against the definition of a rolling-ball
+/// fillet near the corner.
+#[test]
+fn a_ball_corner_where_the_outline_turns_by_less_than_a_right_angle() {
+    let points = [
+        [-8.8, -7.1],
+        [8.8, -7.1],
+        [8.8, 4.0],
+        [4.4, 9.5],
+        [-4.4, 9.5],
+        [-8.8, 4.0],
+    ];
+    let (h, r) = (6.6, 0.8);
+    // The prism's planes, outward.
+    let mut planes: Vec<(Vec3, f64)> = (0..6)
+        .map(|i| {
+            let (p, q) = (points[i], points[(i + 1) % 6]);
+            let n = Vec3::new(q[1] - p[1], p[0] - q[0], 0.0).normalized().unwrap();
+            (n, n.dot(Vec3::new(p[0], p[1], 0.0)))
+        })
+        .collect();
+    planes.push((-Vec3::Z, 0.0));
+    planes.push((Vec3::Z, h));
+    let at_corner = [planes[1], planes[2], planes[7]];
+    for k in SCALES {
+        let fine = craft3d_math::Tolerance::new(1e-7 * k, 1e-9).unwrap();
+        let part = prism(&Frame::WORLD, k, &points, h);
+        let edges = [
+            round(&part, k, [8.8, 4.0, h / 2.0], r),
+            round(&part, k, [8.8, -1.55, h], r),
+            round(&part, k, [6.6, 6.75, h], r),
+        ];
+        let made = match fillet(&part, &edges, &fine) {
+            Ok(made) => made,
+            Err(e) => panic!("scale {k}: {e}"),
+        };
+        assert_eq!(check(&made.body, &fine), []);
+        assert_tangent(&part, &edges, &made);
+        assert_eq!(made.body.faces.len(), 8 + 3 + 1);
+        assert_matches_definition(
+            &made.body,
+            k,
+            &planes,
+            &at_corner,
+            r,
+            Vec3::new(8.8, 4.0, h),
+            23,
+        );
+    }
+}
