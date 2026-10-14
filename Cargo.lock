@@ -383,6 +383,7 @@ version = "0.0.1"
 dependencies = [
  "craft3d-automation",
  "craft3d-engine",
+ "craft3d-regen",
  "craft3d-ui-egui",
  "eframe",
  "getrandom 0.4.3",

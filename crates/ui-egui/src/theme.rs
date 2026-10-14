@@ -95,6 +95,13 @@ pub struct Tokens {
     pub bar_gap: f32,
     /// Space between the viewport's edge and what floats over it.
     pub inset: f32,
+    /// Work in progress over the viewport: the spinner and the part of
+    /// the progress bar that is done, the rest of the bar, the spinner's
+    /// width and the bar's height, in points.
+    pub work_accent: Rgb,
+    pub work_track: Rgb,
+    pub work_spinner_width: f32,
+    pub work_bar: f32,
 }
 
 impl Default for Tokens {
@@ -149,6 +156,10 @@ impl Tokens {
             bar_height: 22.0,
             bar_gap: 6.0,
             inset: 10.0,
+            work_accent: [64, 196, 212],
+            work_track: [58, 62, 72],
+            work_spinner_width: 2.5,
+            work_bar: 4.0,
         }
     }
 

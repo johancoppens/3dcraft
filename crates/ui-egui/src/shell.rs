@@ -10,7 +10,7 @@ use crate::frames::{Mode, Scheduler, Ticket};
 use crate::state::VertexRef;
 use crate::state::{
     CameraState, EdgeRef, FaceRef, Picked, PickedEntity, PickedKind, ProjectionKind, SectionState,
-    UiState,
+    UiState, Work,
 };
 use crate::theme::{Tokens, color, color_alpha};
 use crate::view_cube;
@@ -238,6 +238,8 @@ struct FrameKey {
     section: Option<Section>,
     /// The datums are drawn.
     datums: bool,
+    /// The sketches are drawn.
+    sketches: bool,
     tokens: Tokens,
 }
 
@@ -437,6 +439,8 @@ pub struct Shell {
     /// Where the section's controls were drawn: `toggle` and, while the
     /// section is on, `x`, `y`, `z`, `offset` and `flip`.
     section_hits: Vec<(&'static str, egui::Rect)>,
+    /// Where the Sketches and Datums toggles were drawn.
+    show_hits: Vec<(&'static str, egui::Rect)>,
     /// Where the last frame drew each "caused by" link of the tree: the
     /// row's feature id, the id of the feature it names, and the link.
     cause_hits: Vec<(String, String, egui::Rect)>,
@@ -455,6 +459,12 @@ pub struct Shell {
     problem: Option<String>,
     /// Why the image could not be made; cleared by the next image.
     render_problem: Option<String>,
+    /// The scene and the document's status as of the last [`Self::sync`]:
+    /// what is drawn while the session is away doing work.
+    shown_scene: Option<Arc<Scene>>,
+    shown_status: Option<DocumentStatus>,
+    /// The work being done on the host's engine thread, if any.
+    work: Option<Work>,
 }
 
 impl Default for Shell {
@@ -528,6 +538,7 @@ impl Shell {
             turn: None,
             transparency_rect: None,
             section_hits: Vec::new(),
+            show_hits: Vec::new(),
             cause_hits: Vec::new(),
             section_cache: None,
             section_lost: None,
@@ -538,6 +549,9 @@ impl Shell {
             file_action: None,
             problem: None,
             render_problem: None,
+            shown_scene: None,
+            shown_status: None,
+            work: None,
         }
     }
 
@@ -798,6 +812,28 @@ impl Shell {
         self.problem.as_deref().or(self.render_problem.as_deref())
     }
 
+    /// Says what the host's engine thread is doing (`None`: nothing). The
+    /// window shows it over the viewport, `ui.get` under `work`.
+    pub fn set_work(&mut self, work: Option<Work>) {
+        self.work = work;
+    }
+
+    /// The work in progress, as last set.
+    pub fn work(&self) -> Option<&Work> {
+        self.work.as_ref()
+    }
+
+    /// The document's status as of the last [`Self::sync`]: what the
+    /// window shows while the session is away.
+    pub fn shown_status(&self) -> Option<&DocumentStatus> {
+        self.shown_status.as_ref()
+    }
+
+    /// The scene as of the last [`Self::sync`].
+    pub fn shown_scene_arc(&self) -> Option<Arc<Scene>> {
+        self.shown_scene.clone()
+    }
+
     /// True once something asked the application to close.
     pub fn quit_requested(&self) -> bool {
         self.quit
@@ -840,6 +876,7 @@ impl Shell {
             self.state.highlight_vertex.as_ref(),
             self.section_cut(),
             self.state.show.datums,
+            self.state.show.sketches,
         )
     }
 
@@ -891,6 +928,12 @@ impl Shell {
     /// `x`, `y`, `z`, `offset` (the slider) and `flip`.
     pub fn section_hits(&self) -> &[(&'static str, egui::Rect)] {
         &self.section_hits
+    }
+
+    /// Where the toggles of what is drawn are in the window, in points,
+    /// once the viewport was drawn: `sketches` and `datums`.
+    pub fn show_hits(&self) -> &[(&'static str, egui::Rect)] {
+        &self.show_hits
     }
 
     /// Where the last frame drew the "caused by" links of the feature tree:
@@ -1083,6 +1126,13 @@ impl Shell {
     /// active document, the tree rows, the selection, and the camera when
     /// it follows the model. Called every frame and after every request.
     pub fn sync(&mut self, session: &mut Session) -> Option<Arc<Scene>> {
+        let scene = self.sync_scene(session);
+        self.shown_status = session.document_status();
+        self.shown_scene.clone_from(&scene);
+        scene
+    }
+
+    fn sync_scene(&mut self, session: &mut Session) -> Option<Arc<Scene>> {
         self.recovery = session.recovery_overview();
         let scene = match session.scene_with(self.scene_quality()) {
             Ok(scene) => {
@@ -1216,12 +1266,27 @@ impl Shell {
 
     /// Draws the whole shell into `ui` (the window's root) for one frame.
     pub fn ui(&mut self, ui: &mut egui::Ui, session: &mut Session) {
+        self.ui_with(ui, Some(session));
+    }
+
+    /// Draws the shell for one frame while its session is away, doing work
+    /// on the host's engine thread ([`Self::set_work`]): the scene and the
+    /// status of the last [`Self::sync`], the camera still turns, and the
+    /// work in progress is shown over the viewport. What needs the session
+    /// (the recovery bar's buttons) waits.
+    pub fn ui_away(&mut self, ui: &mut egui::Ui) {
+        self.ui_with(ui, None);
+    }
+
+    fn ui_with(&mut self, ui: &mut egui::Ui, mut session: Option<&mut Session>) {
         if !self.themed {
             self.tokens.apply(ui.ctx());
             self.themed = true;
         }
-        let scene = self.sync(session);
-        let status = session.document_status();
+        let (scene, status) = match session.as_deref_mut() {
+            Some(session) => (self.sync(session), session.document_status()),
+            None => (self.shown_scene.clone(), self.shown_status.clone()),
+        };
         self.file_shortcuts(ui, status.is_some());
         egui::Panel::top("craft3d-menu")
             .resizable(false)
@@ -1235,7 +1300,7 @@ impl Shell {
                 .resizable(false)
                 .show(ui, |ui| self.recovery_bar(ui))
                 .inner;
-            if let Some(action) = clicked {
+            if let (Some(action), Some(session)) = (clicked, session) {
                 self.recovery_act(session, action);
                 ui.ctx().request_repaint();
             }
@@ -1582,6 +1647,68 @@ impl Shell {
         }
     }
 
+    /// The work in progress, over the middle of the viewport: a spinner,
+    /// what is being done, and how far along the steps are.
+    fn work_plate(&self, ui: &egui::Ui, painter: &egui::Painter, inner: egui::Rect, work: &Work) {
+        let tokens = self.tokens;
+        let text = work.describe();
+        let galley = painter.layout_no_wrap(
+            text,
+            egui::FontId::proportional(15.0),
+            color(tokens.notice_text),
+        );
+        let text_size = galley.size();
+        let spinner = text_size.y * 1.2;
+        let gap = tokens.inset * 0.6;
+        let bar = tokens.work_bar;
+        let width = (spinner + gap + text_size.x).max(tokens.slider_width);
+        let height = spinner.max(text_size.y) + gap + bar;
+        let plate = egui::Rect::from_center_size(inner.center(), egui::vec2(width, height))
+            .expand(tokens.inset * 0.8);
+        painter.rect_filled(
+            plate,
+            egui::CornerRadius::same(tokens.notice_radius),
+            color_alpha(tokens.notice_fill, tokens.notice_opacity),
+        );
+        let top = plate.shrink(tokens.inset * 0.8);
+        // The spinner: an arc that turns with the clock, so a frozen
+        // window would show as a spinner that stopped.
+        let centre = egui::pos2(top.left() + spinner * 0.5, top.top() + spinner * 0.5);
+        let radius = spinner * 0.38;
+        let time = ui.input(|i| i.time);
+        let start = (time * 4.0).rem_euclid(std::f64::consts::TAU) as f32;
+        let points: Vec<egui::Pos2> = (0..=24)
+            .map(|k| {
+                let angle = start + k as f32 / 24.0 * std::f32::consts::PI * 1.5;
+                centre + radius * egui::vec2(angle.cos(), angle.sin())
+            })
+            .collect();
+        painter.add(egui::Shape::line(
+            points,
+            egui::Stroke::new(tokens.work_spinner_width, color(tokens.work_accent)),
+        ));
+        painter.galley(
+            egui::pos2(top.left() + spinner + gap, centre.y - text_size.y * 0.5),
+            galley,
+            color(tokens.notice_text),
+        );
+        let track = egui::Rect::from_min_size(
+            egui::pos2(top.left(), top.bottom() - bar),
+            egui::vec2(top.width(), bar),
+        );
+        let round = egui::CornerRadius::same(tokens.radius);
+        painter.rect_filled(track, round, color(tokens.work_track));
+        if let Some(fraction) = work.fraction() {
+            let done = egui::Rect::from_min_size(
+                track.min,
+                egui::vec2(track.width() * fraction, track.height()),
+            );
+            painter.rect_filled(done, round, color(tokens.work_accent));
+        }
+        // The spinner turns: have the next frame come.
+        ui.ctx().request_repaint();
+    }
+
     fn viewport(&mut self, ui: &mut egui::Ui, shared: Option<&Arc<Scene>>) {
         let scene = shared.map(Arc::as_ref);
         let tokens = self.tokens;
@@ -1651,6 +1778,7 @@ impl Shell {
             opacity: self.opacity(),
             section: self.section(),
             datums: self.state.show.datums,
+            sketches: self.state.show.sketches,
             tokens,
         };
         // The direct path draws the whole picture, lines included, on the
@@ -1743,6 +1871,10 @@ impl Shell {
             );
         }
 
+        if let Some(work) = &self.work {
+            self.work_plate(ui, &painter, inner, work);
+        }
+
         // The view cube and, under it, the controls the view buttons
         // had that it does not replace: fit, the corner view, the
         // projection. Bottom-right, camera only, so not commands. They are
@@ -1816,6 +1948,13 @@ impl Shell {
         } else {
             self.section_hits.clear();
         }
+        // What is drawn besides the bodies, in the row above.
+        let above = strip.translate(egui::vec2(0.0, -(tokens.bar_height + tokens.bar_gap)));
+        if above.width() > tokens.slider_width && above.top() > inner.top() {
+            self.show_control(ui, above);
+        } else {
+            self.show_hits.clear();
+        }
         if let Some(name) = view {
             self.turn = None;
             // The names come from the table, so this cannot fail.
@@ -1824,6 +1963,42 @@ impl Shell {
         }
         if fit || view.is_some() {
             self.fit_to(scene);
+            ui.ctx().request_repaint();
+        }
+    }
+
+    /// The toggles of what the viewport draws besides the bodies, in
+    /// `strip` from the right: Sketches and Datums ([`UiState::show`],
+    /// which `ui.set` sets too). Widgets over the viewport, like the
+    /// section's: a click on them picks nothing.
+    fn show_control(&mut self, ui: &mut egui::Ui, strip: egui::Rect) {
+        let mut show = self.state.show;
+        let mut hits: Vec<(&'static str, egui::Rect)> = Vec::new();
+        ui.scope_builder(egui::UiBuilder::new().max_rect(strip), |ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let datums = ui
+                    .add(egui::Button::new("Datums").small().selected(show.datums))
+                    .on_hover_text("Show or hide the datum planes, axes and points");
+                hits.push(("datums", datums.rect));
+                if datums.clicked() {
+                    show.datums = !show.datums;
+                }
+                let sketches = ui
+                    .add(
+                        egui::Button::new("Sketches")
+                            .small()
+                            .selected(show.sketches),
+                    )
+                    .on_hover_text("Show or hide the sketches");
+                hits.push(("sketches", sketches.rect));
+                if sketches.clicked() {
+                    show.sketches = !show.sketches;
+                }
+            });
+        });
+        self.show_hits = hits;
+        if show != self.state.show {
+            self.state.show = show;
             ui.ctx().request_repaint();
         }
     }
@@ -2224,6 +2399,7 @@ impl Shell {
             key.highlight_vertex.as_ref(),
             cut,
             key.datums,
+            key.sketches,
         ));
         let outcome = direct.frame(
             scene,
@@ -2308,6 +2484,7 @@ impl Shell {
                 key.highlight_vertex.as_ref(),
                 cut.clone(),
                 key.datums,
+                key.sketches,
             ),
             opacity: key.opacity,
             #[cfg(not(target_arch = "wasm32"))]
@@ -2489,6 +2666,7 @@ fn marks_of(
     vertex: Option<&VertexRef>,
     cut: Option<viewport::SectionCut>,
     datums: bool,
+    sketches: bool,
 ) -> viewport::Marks {
     let edges = edge.map_or_else(viewport::Marks::default, |edge| {
         viewport::edge_marks(scene, edge)
@@ -2498,6 +2676,7 @@ fn marks_of(
     });
     viewport::Marks {
         cut,
+        hide_sketches: !sketches,
         ..edges
             .with(vertices)
             .with(viewport::datum_marks(scene, datums))

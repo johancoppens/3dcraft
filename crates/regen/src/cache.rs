@@ -17,6 +17,7 @@ use crate::{FeatureResult, Status};
 use craft3d_doc::{Document, Feature, FeatureId, Sketch, Tolerance, Units};
 use craft3d_expr::{Dimension, Evaluation};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 /// The value an expression has, or why it has none: exact, so a change in
 /// the last bit is a change.
@@ -58,9 +59,12 @@ struct Input {
 }
 
 /// Everything but the feature's own definition that its result depends on.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 struct Context {
     rolled_back: bool,
+    /// The feature with its names followed to the newest body of their
+    /// chain, or why they could not be (`crate::follow`).
+    followed: Result<Option<Feature>, String>,
     values: Vec<Evaluated>,
     units: Units,
     tolerance: (u64, u64),
@@ -201,7 +205,19 @@ pub(crate) fn features(
     let mut results: Vec<FeatureResult> = Vec::with_capacity(doc.features.len());
     let mut stamps: BTreeMap<FeatureId, u64> = BTreeMap::new();
     let mut rolled_back = false;
-    for feature in &doc.features {
+    let steps = doc.features.len();
+    for (index, stated) in doc.features.iter().enumerate() {
+        // Names of an earlier body are followed to the newest one before
+        // this feature; it is then built, depends and takes as followed.
+        let followed = if rolled_back || stated.suppressed {
+            Ok(None)
+        } else {
+            crate::follow::feature(doc, &results, stated)
+        };
+        let feature = match &followed {
+            Ok(Some(followed)) => followed,
+            Ok(None) | Err(_) => stated,
+        };
         let inputs = dependencies(doc, feature)
             .into_iter()
             .map(|id| Input {
@@ -226,6 +242,7 @@ pub(crate) fn features(
             .collect();
         let context = Context {
             rolled_back,
+            followed: followed.clone(),
             values: evaluated(variables, &feature.kind.exprs()),
             units: doc.units,
             tolerance: bits(doc.tolerance),
@@ -234,7 +251,7 @@ pub(crate) fn features(
         let hit = cache
             .entries
             .get(&feature.id)
-            .filter(|entry| entry.context == context && entry.feature == *feature)
+            .filter(|entry| entry.context == context && entry.feature == *stated)
             .map(|entry| (entry.result.clone(), entry.stamp));
         let (result, stamp) = match hit {
             Some(hit) => {
@@ -243,11 +260,35 @@ pub(crate) fn features(
             }
             None => {
                 cache.rebuilt += 1;
-                let (result, _) = build(feature, rolled_back, &results, cache);
+                crate::progress::report(&crate::progress::Progress {
+                    phase: "regenerating",
+                    feature: Some(feature.id.to_string()),
+                    name: Some(feature.name.clone()),
+                    step: index.saturating_add(1),
+                    steps,
+                });
+                let result = match &followed {
+                    Err(reason) => FeatureResult {
+                        id: stated.id,
+                        status: Status::Failed(reason.clone()),
+                        body: None,
+                        sketch: None,
+                        datum: None,
+                        names: None,
+                        instances: None,
+                        sweep: None,
+                        consumed_by: None,
+                        followed: None,
+                    },
+                    Ok(as_built) => FeatureResult {
+                        followed: as_built.clone().map(Arc::new),
+                        ..build(feature, rolled_back, &results, cache).0
+                    },
+                };
                 // The same definition giving the same result keeps its
                 // stamp: nothing made from it has to be rebuilt.
                 let stamp = match cache.entries.get(&feature.id) {
-                    Some(old) if old.feature == *feature && old.result == result => old.stamp,
+                    Some(old) if old.feature == *stated && old.result == result => old.stamp,
                     _ => {
                         cache.next_stamp = cache.next_stamp.wrapping_add(1);
                         cache.next_stamp
@@ -256,7 +297,7 @@ pub(crate) fn features(
                 cache.entries.insert(
                     feature.id,
                     Entry {
-                        feature: feature.clone(),
+                        feature: stated.clone(),
                         context,
                         result: result.clone(),
                         stamp,
@@ -276,7 +317,7 @@ pub(crate) fn features(
         }
         stamps.insert(feature.id, stamp);
         results.push(result);
-        if doc.rollback == Some(feature.id) {
+        if doc.rollback == Some(stated.id) {
             rolled_back = true;
         }
     }

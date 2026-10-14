@@ -2402,6 +2402,66 @@ fn body_extent(body: &Body) -> (f64, Vec3) {
     )
 }
 
+/// Fewest faces worth a second thread: below this, starting threads costs
+/// more than it saves.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+const PARALLEL_FACES: usize = 8;
+
+/// `work(0..count)`, in that order. Faces are handed out one at a time to
+/// as many threads as the machine has, so one slow face does not hold up
+/// a share of the others; each result goes to its own slot. Where no
+/// thread can be started (wasm, a machine out of threads) the faces are
+/// done one after the other on this thread, with the same results.
+fn each_face<T: Send>(count: usize, work: impl Fn(usize) -> T + Sync) -> Vec<T> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Mutex, PoisonError};
+        let threads = std::thread::available_parallelism()
+            .map_or(1, std::num::NonZeroUsize::get)
+            .min(count / PARALLEL_FACES.max(1) + 1)
+            .min(count);
+        if threads > 1 {
+            let next = AtomicUsize::new(0);
+            let slots: Vec<Mutex<Option<T>>> = (0..count).map(|_| Mutex::new(None)).collect();
+            let run = || {
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(slot) = slots.get(index) else {
+                        break;
+                    };
+                    let result = work(index);
+                    *slot.lock().unwrap_or_else(PoisonError::into_inner) = Some(result);
+                }
+            };
+            std::thread::scope(|scope| {
+                // This thread works too; helpers that cannot be started
+                // leave more for it.
+                let helpers: Vec<_> = (1..threads)
+                    .filter_map(|_| std::thread::Builder::new().spawn_scoped(scope, run).ok())
+                    .collect();
+                run();
+                for helper in helpers {
+                    // A panic on a helper leaves its face's slot empty;
+                    // that face is done again below, where the panic
+                    // surfaces on this thread as it would have.
+                    let _ = helper.join();
+                }
+            });
+            return slots
+                .into_iter()
+                .enumerate()
+                .map(|(index, slot)| {
+                    slot.into_inner()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .unwrap_or_else(|| work(index))
+                })
+                .collect();
+        }
+    }
+    (0..count).map(work).collect()
+}
+
 /// Area, volume and centroid of `body`. The body should pass
 /// [`crate::check`]; on an invalid one the result is meaningless or an
 /// error, never a panic.
@@ -2419,9 +2479,21 @@ fn body_extent(body: &Body) -> (f64, Vec3) {
 pub fn mass_properties(body: &Body) -> Result<MassProperties, MassError> {
     let rule = Rule::new(NODES);
     let (size, middle) = body_extent(body);
+    // Every face's integrals on their own, on several threads where there
+    // are any; summed below in the faces' order, so the result is the same
+    // bits whatever the number of threads (AGENTS.md rule 5), and the
+    // error is the first face's that has one, as one face after another
+    // would give.
+    let per_face = each_face(body.faces.len(), |index| {
+        let face = body.faces.get(index).ok_or(MassError::Unsupported {
+            face: index,
+            what: "a face that is not in the body",
+        })?;
+        face_integrals(body, face, index, &rule, (size, middle))
+    });
     let mut total = Sums::default();
-    for (index, face) in body.faces.iter().enumerate() {
-        let sums = face_integrals(body, face, index, &rule, (size, middle))?;
+    for (face, sums) in body.faces.iter().zip(per_face) {
+        let sums = sums?;
         // Area counts whichever way the face points; volume and moments
         // follow the outward normal.
         let outward = if face.reversed { -1.0 } else { 1.0 };
