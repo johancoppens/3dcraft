@@ -93,7 +93,10 @@ pub(super) fn closed_form(
         (Surface::Sphere(s), Surface::Sphere(t)) => sphere_sphere(s, t, tol).map(Some),
         (Surface::Cone(c), Surface::Cone(d)) => match coaxial(a, b, tol)? {
             Some(found) => Ok(Some(found)),
-            None => cone_translates(c, d, tol),
+            None => match cone_translates(c, d, tol)? {
+                Some(found) => Ok(Some(found)),
+                None => shared_ruling(c, d, tol),
+            },
         },
         (Surface::Cylinder(c), Surface::Torus(t)) => match coaxial(a, b, tol)? {
             Some(found) => Ok(Some(found)),
@@ -634,4 +637,207 @@ fn cone_translates(c: &Cone, d: &Cone, tol: &Tolerance) -> Result<Option<Closed>
         .filter(|curve| (curve.shape.eval(0.0) - apex2).dot(a2) > 0.0)
         .collect();
     Ok(Some(meets(kept, Vec::new())))
+}
+
+/// The parameter of the point `p` on an exact curve, when it is on it
+/// within `tol`.
+fn parameter_at(shape: &Shape, p: Vec3, tol: f64) -> Option<f64> {
+    let t = match shape {
+        Shape::Line(l) => (p - l.origin()).dot(l.direction()),
+        Shape::Circle(c) => {
+            let (x, y, _) = c.frame().local(p);
+            super::wrap(y.atan2(x))
+        }
+        Shape::Ellipse(e) => {
+            let (x, y, _) = e.frame().local(p);
+            let (a, b) = e.semi_axes();
+            super::wrap((y / b).atan2(x / a))
+        }
+        Shape::Parabola { o, d1, .. } => (p - *o).dot(*d1) / d1.length_squared(),
+        Shape::Hyperbola { c, e2, .. } => ((p - *c).dot(*e2) / e2.length_squared()).asinh(),
+        Shape::Lobe { .. } => return None,
+    };
+    (t.is_finite() && shape.eval(t).distance(p) <= tol).then_some(t)
+}
+
+/// Two cones with one apex meet in the rulings whose direction `u` makes
+/// the half-angle with either axis: `u·a₁ = cos α₁`, `u·a₂ = cos α₂`, two
+/// circles on the unit sphere, which cross in two points, touch in one
+/// (the axes are `α₁ + α₂` or `|α₁ − α₂|` apart) or miss each other, and
+/// then the apex is all the cones share.
+fn same_apex(
+    apex: Vec3,
+    (a1, alpha1): (Vec3, f64),
+    (a2, alpha2): (Vec3, f64),
+    tol: &Tolerance,
+) -> Result<Option<Closed>, GeomError> {
+    let cross = a1.cross(a2);
+    let sine = cross.length();
+    if sine <= tol.angular {
+        // One axis, or opposite ones: not this case.
+        return Ok(None);
+    }
+    let between = sine.atan2(a1.dot(a2));
+    let ray = |direction: Vec3, tangent: bool| -> Result<ExactCurve, GeomError> {
+        Ok(ExactCurve {
+            shape: Shape::Line(Line::new(apex, direction)?),
+            range: (0.0, f64::INFINITY),
+            tangent,
+        })
+    };
+    // In the plane of the axes, `e` across the first.
+    let e = across(a2, a1).normalized().ok_or_else(degenerate)?;
+    let (x, y) = (
+        alpha1.cos(),
+        (alpha2.cos() - alpha1.cos() * a1.dot(a2)) / sine,
+    );
+    let touching = (between - (alpha1 + alpha2)).abs() <= tol.angular
+        || (between - (alpha1 - alpha2).abs()).abs() <= tol.angular;
+    if touching {
+        return Ok(Some(meets(vec![ray(a1 * x + e * y, true)?], Vec::new())));
+    }
+    let z2 = 1.0 - x * x - y * y;
+    if !(z2 > 0.0) {
+        return Ok(Some(meets(Vec::new(), vec![apex])));
+    }
+    let side = a1.cross(e) * z2.sqrt();
+    Ok(Some(meets(
+        vec![
+            ray(a1 * x + e * y - side, false)?,
+            ray(a1 * x + e * y + side, false)?,
+        ],
+        Vec::new(),
+    )))
+}
+
+/// Two cones that are tangent along a ruling they share, or that have one
+/// apex. `None` for any other position.
+///
+/// A ruling of both passes through both apexes. With `s` along that line
+/// `L` from the first apex, `ν` off the tangent plane `Π` the cones share
+/// along it and `τ` across the line within the plane, the axes lie in the
+/// plane `τ = 0`, and a cone with its apex at `s₀` and its axis
+/// `(a_s, 0, a_ν)` there (`a_s² = cos² α`, because `L` is a ruling) is
+///
+/// `Q = ν (2 a_s a_ν (s − s₀) + (a_ν² − cos² α) ν) − cos² α τ²`.
+///
+/// So `Q₁ − λ Q₂` with `λ = cos² α₁ / cos² α₂` has no `τ²` left and is
+/// `ν` times a linear form `Σ`: everything the cones share lies in the
+/// plane `Π` (the line, along which they are tangent) or in the plane
+/// `Σ = 0` (a conic, along which they cross). Where `Σ` passes through
+/// `L` the conic crosses the line, and the cones change sides there; the
+/// line and the conic are both cut at that point. Only what is on the own
+/// nappe of both cones is kept: a conic that does not pass through the
+/// second apex is on one nappe of the second cone with all of itself.
+fn shared_ruling(c: &Cone, d: &Cone, tol: &Tolerance) -> Result<Option<Closed>, GeomError> {
+    let ((p1, a1), (p2, a2)) = (cone_apex_axis(c), cone_apex_axis(d));
+    let (alpha1, alpha2) = (c.half_angle().abs(), d.half_angle().abs());
+    let offset = p2 - p1;
+    let len = offset.length();
+    if !(len > tol.linear) {
+        return same_apex(p1, (a1, alpha1), (a2, alpha2), tol);
+    }
+    let along = offset * (1.0 / len);
+    // The line through the apexes is a ruling of both (of either nappe),
+    // and their tangent planes along it are one plane.
+    let mut normals = [Vec3::ZERO; 2];
+    for ((axis, alpha), normal) in [(a1, alpha1), (a2, alpha2)].into_iter().zip(&mut normals) {
+        let off = across(axis, along);
+        let angle = off.length().atan2(axis.dot(along).abs());
+        if (angle - alpha).abs() > tol.angular {
+            return Ok(None);
+        }
+        *normal = off.normalized().ok_or_else(degenerate)?;
+    }
+    let [n, other] = normals;
+    if n.cross(other).length() > tol.angular {
+        return Ok(None);
+    }
+    let (cos1, cos2) = (alpha1.cos(), alpha2.cos());
+    let lambda = (cos1 * cos1) / (cos2 * cos2);
+    // Q = ν (a s + b ν + c) − cos² α τ², per cone.
+    let form = |axis: Vec3, cos: f64, s0: f64| {
+        let (along_axis, off_axis) = (axis.dot(along), axis.dot(n));
+        let a = 2.0 * along_axis * off_axis;
+        (a, off_axis * off_axis - cos * cos, -a * s0)
+    };
+    let ((f1a, f1b, f1c), (f2a, f2b, f2c)) = (form(a1, cos1, 0.0), form(a2, cos2, len));
+    let (gs, gn, h) = (f1a - lambda * f2a, f1b - lambda * f2b, f1c - lambda * f2c);
+    if !(gs.is_finite() && gn.is_finite() && h.is_finite()) {
+        return Err(degenerate());
+    }
+    // The stretch of the line on the own nappe of both cones.
+    let (mut low, mut high) = (f64::NEG_INFINITY, f64::INFINITY);
+    for (axis, s0) in [(a1, 0.0), (a2, len)] {
+        if axis.dot(along) > 0.0 {
+            low = low.max(s0);
+        } else {
+            high = high.min(s0);
+        }
+    }
+    // Where the second plane passes through the line.
+    let crossing = (gs.abs() > tol.angular).then(|| -h / gs);
+    let line = Shape::Line(Line::new(p1, along)?);
+    let mut curves = Vec::new();
+    if high > low {
+        let cut = crossing.filter(|s| *s > low + tol.linear && *s < high - tol.linear);
+        let mut stops = vec![low];
+        stops.extend(cut);
+        stops.push(high);
+        for (from, to) in stops.iter().zip(stops.iter().skip(1)) {
+            curves.push(ExactCurve {
+                shape: line.clone(),
+                range: (*from, *to),
+                tangent: true,
+            });
+        }
+    }
+    let size = gs.hypot(gn);
+    if !(size > tol.angular) {
+        // No second plane: the line is all there is.
+        return Ok(Some(meets(curves, Vec::new())));
+    }
+    let normal = along * gs + n * gn;
+    let origin = p1 - normal * (h / (size * size));
+    let Some(frame) = Frame::from_z(origin, normal) else {
+        return Ok(None);
+    };
+    let section = match plane_cone(&Plane::new(frame), c, tol) {
+        Ok(Closed::Meets { curves, points }) if points.is_empty() => curves,
+        Ok(Closed::None) => Vec::new(),
+        // Through the first apex, or too near a ruling's direction.
+        Ok(_) | Err(GeomError::Unsupported(_)) => return Ok(None),
+        Err(other) => return Err(other),
+    };
+    let through = crossing.map(|s| p1 + along * s);
+    for conic in section {
+        let (from, to) = conic.range;
+        let at = through.and_then(|p| parameter_at(&conic.shape, p, tol.linear));
+        let closed = matches!(conic.shape, Shape::Circle(_) | Shape::Ellipse(_));
+        let pieces = match at {
+            Some(t) if closed => {
+                let half = std::f64::consts::PI;
+                vec![(t, t + half), (t + half, t + 2.0 * half)]
+            }
+            Some(t) if t > from && t < to => vec![(from, t), (t, to)],
+            _ => vec![(from, to)],
+        };
+        for (t0, t1) in pieces {
+            // One point of a piece decides for all of it.
+            let middle = match (t0.is_finite(), t1.is_finite()) {
+                (true, true) => 0.5 * (t0 + t1),
+                (true, false) => t0 + 1.0,
+                (false, true) => t1 - 1.0,
+                (false, false) => 0.0,
+            };
+            if (conic.shape.eval(middle) - p2).dot(a2) > 0.0 {
+                curves.push(ExactCurve {
+                    shape: conic.shape.clone(),
+                    range: (t0, t1),
+                    tangent: false,
+                });
+            }
+        }
+    }
+    Ok(Some(meets(curves, Vec::new())))
 }

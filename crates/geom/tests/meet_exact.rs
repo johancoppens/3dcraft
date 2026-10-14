@@ -688,3 +688,216 @@ fn a_cylinder_that_goes_on_in_a_torus() {
         }
     }
 }
+
+/// The value at `p` of a function that is zero on the own nappe of the
+/// cone with this apex, axis and half-angle, and changes sign through it
+/// (and nowhere else).
+fn cone_side(p: Vec3, apex: Vec3, axis: Vec3, alpha: f64) -> f64 {
+    let q = p - apex;
+    let h = q.dot(axis);
+    (q - axis * h).length() * alpha.cos() - h * alpha.sin()
+}
+
+/// Walks circles of the first cone and asserts that every place where the
+/// second cone's equation changes sign along them, inside the box, is on
+/// a curve of `m`. Returns the number of such places.
+fn scan_cones(
+    setup: &Setup,
+    m: &Meeting,
+    (apex1, axis1, alpha1): (Vec3, Vec3, f64),
+    (apex2, axis2, alpha2): (Vec3, Vec3, f64),
+) -> usize {
+    let s = setup.s;
+    let drawn = Lines::of(m, 4000);
+    let frame = Frame::from_z(apex1, axis1).unwrap();
+    let point = |height: f64, angle: f64| {
+        apex1
+            + (axis1 + (frame.x() * angle.cos() + frame.y() * angle.sin()) * alpha1.tan())
+                * (height * s)
+    };
+    let value = |height: f64, angle: f64| cone_side(point(height, angle), apex2, axis2, alpha2);
+    let mut crossings = 0;
+    for i in 1..=60 {
+        let height = 12.0 * f64::from(i) / 60.0;
+        for k in 0..360 {
+            let (mut lo, mut hi) = (
+                TAU * (f64::from(k) + 0.31) / 360.0,
+                TAU * (f64::from(k) + 1.31) / 360.0,
+            );
+            let (below, above) = (value(height, lo), value(height, hi));
+            if (below < 0.0) == (above < 0.0) {
+                continue;
+            }
+            for _ in 0..60 {
+                let mid = 0.5 * (lo + hi);
+                if (value(height, mid) < 0.0) == (below < 0.0) {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+            let p = point(height, lo);
+            if !setup.within.contains(p, -0.5 * s) {
+                continue;
+            }
+            crossings += 1;
+            assert!(
+                drawn.distance(p) <= 2e-2 * s,
+                "angles {alpha1} {alpha2}: a crossing at {p:?} is {} off every curve of {m:?}",
+                drawn.distance(p)
+            );
+        }
+    }
+    crossings
+}
+
+/// Two cones with one apex: the rulings they share (two where they cross,
+/// one where they touch, from outside or from inside), or the apex alone.
+#[test]
+fn cones_with_one_apex() {
+    let mut crossings = 0;
+    for setup in setups() {
+        let (s, f) = (setup.s, &setup.f);
+        let apex = f.origin();
+        let build = |axis: Vec3, alpha: f64| {
+            let frame = Frame::from_z(apex + axis * s, axis).unwrap();
+            cone(frame, alpha.tan() * s, alpha)
+        };
+        for (alpha1, alpha2) in [(0.5_f64, 0.3_f64), (0.3, 0.9), (0.7, 0.7)] {
+            let axis1 = f.z();
+            let leaning = |by: f64| f.vector(by.sin() * 0.6, by.sin() * 0.8, by.cos());
+            let one = build(axis1, alpha1);
+            // (the angle between the axes, the rulings, a touch)
+            let cases = [
+                (alpha1 + alpha2, 1, true),
+                (0.5 * (alpha1 + alpha2 + (alpha1 - alpha2).abs()), 2, false),
+                (alpha1 + alpha2 + 0.2, 0, false),
+                (alpha1 + alpha2 - 1e-3, 2, false),
+            ];
+            let inside = [
+                ((alpha1 - alpha2).abs(), 1, true),
+                (0.5 * (alpha1 - alpha2).abs(), 0, false),
+            ];
+            let all = cases
+                .iter()
+                .chain(inside.iter().filter(|_| alpha1 != alpha2));
+            for &(between, rulings, touch) in all {
+                let axis2 = leaning(between);
+                let two = build(axis2, alpha2);
+                let m = meeting(setup.meet(&one, &two));
+                assert_eq!(m.curves.len(), rulings, "{between}: {m:?}");
+                if rulings == 0 {
+                    assert_eq!(m.points.len(), 1);
+                    assert!(m.points[0].distance(apex) <= 1e-9 * s);
+                } else {
+                    assert!(m.points.is_empty());
+                }
+                for curve in &m.curves {
+                    assert!(curve.exact && curve.tangent == touch);
+                    assert!(matches!(curve.curve, Curve3::Line(_)));
+                    assert!(start(curve).distance(apex) <= 1e-9 * s, "{curve:?}");
+                }
+                crossings += scan_cones(&setup, &m, (apex, axis1, alpha1), (apex, axis2, alpha2));
+            }
+        }
+    }
+    assert!(crossings > 1000, "{crossings}");
+}
+
+/// Two cones tangent along a ruling they share: the stretch of that
+/// ruling on both nappes, flagged as a touch, and the conic in which they
+/// cross besides, both cut where they cross each other. The cones are
+/// built from the line, the plane tangent to both along it, two apexes on
+/// the line and two half-angles, with the axes to either side of the
+/// plane and along the line either way. Every curve is held to both
+/// surfaces by `check_meeting`; that nothing is missing is checked against
+/// a scan of the first cone for changes of sign of the second cone's own
+/// equation.
+#[test]
+fn cones_tangent_along_a_ruling() {
+    let mut crossings = 0;
+    let mut with_conic = 0;
+    let mut cut_lines = 0;
+    for setup in setups() {
+        let (s, f) = (setup.s, &setup.f);
+        let (along, n) = (f.x(), f.z());
+        let at = |x: f64| f.origin() + along * (x * s);
+        for (alpha1, alpha2, gap) in [(0.5_f64, 0.3_f64, 2.0), (0.7, 0.75, 0.5), (0.25, 1.1, 5.0)] {
+            // The axis of each cone along the line (forwards or back) and
+            // to either side of the plane.
+            for signs in 0..16 {
+                let sign = |bit: u32| if signs >> bit & 1 == 0 { 1.0 } else { -1.0 };
+                let axis1 = along * (sign(0) * alpha1.cos()) + n * (sign(1) * alpha1.sin());
+                let axis2 = along * (sign(2) * alpha2.cos()) + n * (sign(3) * alpha2.sin());
+                let (apex1, apex2) = (at(0.0), at(gap));
+                let build = |apex: Vec3, axis: Vec3, alpha: f64| {
+                    let frame = Frame::from_z(apex + axis * s, axis).unwrap();
+                    cone(frame, alpha.tan() * s, alpha)
+                };
+                let (one, two) = (build(apex1, axis1, alpha1), build(apex2, axis2, alpha2));
+                let found = setup.meet(&one, &two);
+                let m = match found {
+                    SurfaceMeeting::Meets(m) => m,
+                    SurfaceMeeting::None => Meeting {
+                        curves: Vec::new(),
+                        points: Vec::new(),
+                    },
+                    other => panic!("{other:?}"),
+                };
+                assert!(m.points.is_empty());
+                // The ruling: where both nappes have it.
+                let (mut low, mut high) = (f64::NEG_INFINITY, f64::INFINITY);
+                for (bit, apex) in [(0, 0.0), (2, gap)] {
+                    if sign(bit) > 0.0 {
+                        low = low.max(apex);
+                    } else {
+                        high = high.min(apex);
+                    }
+                }
+                let lines: Vec<_> = m.curves.iter().filter(|c| c.tangent).collect();
+                let conics: Vec<_> = m.curves.iter().filter(|c| !c.tangent).collect();
+                assert_eq!(lines.is_empty(), low >= high, "signs {signs}: {m:?}");
+                assert!(lines.len() <= 2);
+                cut_lines += usize::from(lines.len() == 2);
+                with_conic += usize::from(!conics.is_empty());
+                for line in &lines {
+                    assert!(matches!(line.curve, Curve3::Line(_)) && line.exact);
+                    for p in samples(line, 8) {
+                        let x = (p - f.origin()).dot(along) / s;
+                        let off = (p - f.origin() - along * (x * s)).length();
+                        assert!(off <= 1e-9 * s && x >= low - 1e-9 && x <= high + 1e-9);
+                    }
+                }
+                // Curves meet only at their ends.
+                for (i, a) in m.curves.iter().enumerate() {
+                    for b in m.curves.iter().skip(i + 1) {
+                        let other = samples(b, 400);
+                        for p in samples(a, 400).iter().skip(1).take(399) {
+                            let nearest = other
+                                .iter()
+                                .skip(1)
+                                .take(399)
+                                .map(|q| q.distance(*p))
+                                .fold(f64::INFINITY, f64::min);
+                            let ends = [start(a), end(a), start(b), end(b)];
+                            let from_end = ends
+                                .iter()
+                                .map(|q| q.distance(*p))
+                                .fold(f64::INFINITY, f64::min);
+                            assert!(
+                                nearest > 1e-3 * s.min(from_end),
+                                "signs {signs}: curves {a:?} and {b:?} cross at {p:?}"
+                            );
+                        }
+                    }
+                }
+                // Nothing missing.
+                crossings += scan_cones(&setup, &m, (apex1, axis1, alpha1), (apex2, axis2, alpha2));
+            }
+        }
+    }
+    println!(
+        "{crossings} crossings scanned, {with_conic} pairs with a conic, {cut_lines} with the ruling cut"
+    );
+    assert!(crossings > 300 && with_conic > 10 && cut_lines > 10);
+}
