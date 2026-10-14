@@ -151,18 +151,69 @@ pub struct Panels {
     pub recovery: bool,
 }
 
-/// What the viewport draws besides the bodies, the edges and the
-/// sketches.
+/// Work the window is doing on its engine thread while it keeps drawing:
+/// a command, opening a file, meshing the model. Shown over the viewport
+/// and in `ui.get` under `work`; `None` when the window is idle. Not part
+/// of [`UiState`]: it cannot be set, only watched.
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Work {
+    /// What was asked for: the command (`file.open`), `batch of 3`, or
+    /// `meshing` when only the picture is being made.
+    pub label: String,
+    /// What is being done right now: `running` before the first step,
+    /// then `regenerating`, `measuring` or `meshing`.
+    pub phase: String,
+    /// The feature of the step (`F17`) and its name, when the step is one.
+    pub feature: Option<String>,
+    pub name: Option<String>,
+    /// The step, counted from 1, of how many (the document's features); 0
+    /// of 0 when the phase has no steps.
+    pub step: usize,
+    pub steps: usize,
+    /// How long the work has run, in seconds.
+    pub seconds: f64,
+}
+
+impl Work {
+    /// One line for the window: `file.open: regenerating J2 (17 of 20), 3 s`.
+    pub fn describe(&self) -> String {
+        let mut text = format!("{}: {}", self.label, self.phase);
+        if let Some(what) = self.name.as_ref().or(self.feature.as_ref()) {
+            text.push(' ');
+            text.push_str(what);
+        }
+        if self.steps > 0 {
+            text.push_str(&format!(" ({} of {})", self.step, self.steps));
+        }
+        if self.seconds.is_finite() && self.seconds >= 1.0 {
+            text.push_str(&format!(", {:.0} s", self.seconds.floor()));
+        }
+        text
+    }
+
+    /// How far along the steps are, 0 to 1; `None` without steps.
+    pub fn fraction(&self) -> Option<f32> {
+        (self.steps > 0).then(|| (self.step as f32 / self.steps as f32).clamp(0.0, 1.0))
+    }
+}
+
+/// What the viewport draws besides the bodies and their edges.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields, default)]
 pub struct Show {
     /// Datum planes, axes and points (shown by default).
     pub datums: bool,
+    /// The sketches: their lines and points (shown by default).
+    pub sketches: bool,
 }
 
 impl Default for Show {
     fn default() -> Self {
-        Self { datums: true }
+        Self {
+            datums: true,
+            sketches: true,
+        }
     }
 }
 
@@ -404,8 +455,9 @@ pub struct UiState {
     /// The last click in the viewport. Read-only over the control channel:
     /// `ui.pick` with `select` makes one.
     pub picked: Option<Picked>,
-    /// What the viewport draws besides the bodies, their edges and the
-    /// sketches: `ui.set {"show": {"datums": false}}` hides the datums.
+    /// What the viewport draws besides the bodies and their edges:
+    /// `ui.set {"show": {"datums": false}}` hides the datums,
+    /// `{"show": {"sketches": false}}` the sketches.
     pub show: Show,
 }
 
@@ -703,7 +755,10 @@ mod tests {
                 vertex: None,
             }),
             // Added with datums in the viewport (2026-10-14).
-            show: Show { datums: false },
+            show: Show {
+                datums: false,
+                sketches: false,
+            },
         };
         let json = serde_json::to_value(&state).unwrap();
         assert_eq!(
@@ -730,7 +785,7 @@ mod tests {
                                     "index": 1, "faces": ["F3:face(0)", "F3:face(2)"],
                                     "point": [1.0, 2.0, 3.0]},
                            "vertex": null},
-                "show": {"datums": false},
+                "show": {"datums": false, "sketches": false},
             })
         );
         let back: UiState = serde_json::from_value(json).unwrap();

@@ -574,7 +574,10 @@ pub(crate) fn resolve_face(
         // The face has to be one of the body this instance was made from
         // (for a boolean: instance 0 is the target, 1 the tool), and it
         // has to be there still: a boolean can cut a face away.
-        let sources = source.kind.sources();
+        // As it was built: names it was given of an earlier body were
+        // followed to the newest one (`crate::follow`).
+        let built = outcome.followed.as_ref().map_or(source, |f| f.as_ref());
+        let sources = built.kind.sources();
         let index = link.sources.first().and_then(|i| usize::try_from(*i).ok());
         let from = match source.kind {
             FeatureKind::Boolean(_) => index.and_then(|i| sources.get(i)),

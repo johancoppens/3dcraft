@@ -5,6 +5,7 @@
 //! undo, bad parameters). `tests/panic_hunt.rs` fuzzes every entry of
 //! `SPECS` automatically.
 
+use crate::mass::mass_of;
 use crate::params::Params;
 use crate::{CommandError, CommandSpec, OpenDocument, Session, base64};
 use craft3d_doc::{
@@ -18,7 +19,7 @@ use craft3d_math::Vec3;
 use craft3d_regen::{Regen, Status};
 use craft3d_render::{Camera, RenderParams};
 use craft3d_tess::{Mesh, TessParams, tessellate_body};
-use craft3d_topo::{BodyKind, mass_properties};
+use craft3d_topo::BodyKind;
 use serde_json::{Value, json};
 
 pub(crate) type Run = Result<Value, CommandError>;
@@ -464,7 +465,7 @@ fn file_close(session: &mut Session, params: &Value) -> Run {
 fn automatic_tolerance(regen: &Regen) -> f64 {
     let area: f64 = regen
         .bodies()
-        .filter_map(|(_, body)| mass_properties(body).ok())
+        .filter_map(|(_, body)| mass_of(body).ok())
         .map(|m| m.area)
         .sum();
     if area.is_finite() && area > 0.0 {
@@ -1397,6 +1398,7 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
         }
         _ => {}
     }
+    crate::blend_cmds::of_one_body("feature.edit", session, &kind)?;
     if let (FeatureKind::Extrude(extrusion), Some(end)) = (&mut kind, new_end) {
         extrusion.end = end;
     }
@@ -1570,6 +1572,17 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
         ) {
             map.insert("path".into(), crate::sweep_path_cmds::report_json(report));
         }
+        // Faces or edges given by the names of an earlier body, followed
+        // to the newest one: the parameters as the feature was built.
+        if let (Some(map), Some(built)) = (
+            entry.as_object_mut(),
+            outcome.and_then(|o| o.followed.as_ref()),
+        ) {
+            map.insert(
+                "followed".into(),
+                serde_json::to_value(&built.kind).unwrap_or(Value::Null),
+            );
+        }
         // A body that went into a later feature is no longer listed under
         // bodies; this says where it went.
         if let (Some(map), Some(taker)) =
@@ -1588,7 +1601,7 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
                 "edges": body.edges.len(),
                 "vertices": body.vertices.len(),
             });
-            if let (Some(map), Ok(mass)) = (entry.as_object_mut(), mass_properties(body)) {
+            if let (Some(map), Ok(mass)) = (entry.as_object_mut(), mass_of(body)) {
                 map.insert("volume".into(), mass.volume.into());
                 map.insert("area".into(), mass.area.into());
                 map.insert("centroid".into(), mass.centroid.map_or(Value::Null, vec3));
@@ -1674,7 +1687,7 @@ fn document_measure(session: &mut Session, params: &Value) -> Run {
         let name = doc
             .feature(id)
             .map_or_else(|| id.to_string(), |f| f.name.clone());
-        let mass = mass_properties(body)
+        let mass = mass_of(body)
             .map_err(|e| CommandError::new(format!("document.measure: {name}: {e}")))?;
         volume += mass.volume;
         area += mass.area;
@@ -1747,7 +1760,7 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
                 }));
             }
             // An unbounded or otherwise unmeasurable face shows up here.
-            if let Err(error) = mass_properties(body) {
+            if let Err(error) = mass_of(body) {
                 problems.push(json!({
                     "feature": outcome.id.to_string(), "name": name, "problem": format!("cannot be measured: {error}"),
                 }));

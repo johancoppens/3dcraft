@@ -31,7 +31,7 @@
 
 use crate::control::Wake;
 use crate::host::Host;
-use craft3d_engine::{Access, CommandError, Workspace};
+use craft3d_engine::{Access, CommandError, Session, Workspace};
 use craft3d_ui_egui::{CommandReport, FileAction};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -230,8 +230,50 @@ fn grant(path: &Path, write: bool) -> Result<(Workspace, String), String> {
     Ok((workspace, text.to_string()))
 }
 
+/// Runs `command` on the file at `path` with the person's own access to
+/// it (see the module's documentation), on `session` wherever it is: the
+/// window's thread, or its engine thread for a file chosen in the open or
+/// save dialog. The automation workspace is back in place when this
+/// returns, whether the command worked, failed or panicked.
+pub fn run_as_user(
+    session: &mut Session,
+    command: &str,
+    path: &Path,
+    write: bool,
+    extra: Option<(&str, Value)>,
+) -> Result<Value, String> {
+    let (grant, text) = grant(path, write).map_err(|e| format!("{command}: {e}"))?;
+    let automation = session.workspace().clone();
+    session.set_workspace(grant);
+    let mut params = json!({ "path": text });
+    if let (Some((key, value)), Some(map)) = (extra, params.as_object_mut()) {
+        map.insert(key.to_string(), value);
+    }
+    let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        session.execute(command, &params)
+    }));
+    session.set_workspace(automation);
+    match ran {
+        Ok(outcome) => outcome.map_err(|e| e.message().to_string()),
+        Err(_) => {
+            // Not worth a second panic.
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                session.autosave_now();
+            }));
+            Err(
+                "internal error (a bug in 3DCraft, please report it); the document was kept"
+                    .to_string(),
+            )
+        }
+    }
+}
+
+/// What Save As does with the file named in the dialog: the dialog asked
+/// before replacing one ([`Host::save_chosen_as_user`]).
+pub const CONFIRMED: (&str, bool) = ("overwrite", true);
+
 impl Host {
-    fn report(&mut self, label: &str, outcome: &Result<Value, String>) {
+    pub(crate) fn report(&mut self, label: &str, outcome: &Result<Value, String>) {
         let (ok, text) = match outcome {
             Ok(result) => (true, result.to_string()),
             Err(error) => (false, error.clone()),
@@ -269,16 +311,7 @@ impl Host {
         write: bool,
         extra: Option<(&str, Value)>,
     ) -> Result<Value, String> {
-        let (grant, text) = grant(path, write).map_err(|e| format!("{command}: {e}"))?;
-        let automation = self.session.workspace().clone();
-        self.session.set_workspace(grant);
-        let mut params = json!({ "path": text });
-        if let (Some((key, value)), Some(map)) = (extra, params.as_object_mut()) {
-            map.insert(key.to_string(), value);
-        }
-        let outcome = self.run(command, &params);
-        self.session.set_workspace(automation);
-        outcome
+        run_as_user(&mut self.session, command, path, write, extra)
     }
 
     /// Opens the file the person chose and makes it the active document.
@@ -307,7 +340,7 @@ impl Host {
     /// Saves the active document to the file the person just named in the
     /// save dialog, replacing what is there: the dialog asked.
     pub fn save_chosen_as_user(&mut self, path: &Path) -> Result<Value, String> {
-        let confirmed = Some(("overwrite", Value::Bool(true)));
+        let confirmed = Some((CONFIRMED.0, Value::Bool(CONFIRMED.1)));
         let outcome = self.run_as_user("file.save", path, true, confirmed);
         self.report("file.save", &outcome);
         self.shell.sync(&mut self.session);
