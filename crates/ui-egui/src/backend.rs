@@ -321,12 +321,16 @@ mod gpu {
         ForGood(String),
     }
 
+    /// Which mesh of which revision: the revision, and the bits of the
+    /// tolerance and of the angle it was sampled with.
+    type MeshKey = (u64, u64, Option<u64>);
+
     pub(super) struct Gpu {
         offscreen: Offscreen,
-        /// The scene's mesh on the GPU, with the revision it is of and the
-        /// bits of its tolerance: the quick first picture and the display
-        /// scene that replaces it are two meshes of one revision.
-        uploaded: Option<((u64, u64, Option<u64>), GpuMesh)>,
+        /// The scene's mesh on the GPU, with the revision it is of and how
+        /// it was sampled: the quick first picture and the display scene
+        /// that replaces it are two meshes of one revision.
+        uploaded: Option<(MeshKey, GpuMesh)>,
     }
 
     fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {

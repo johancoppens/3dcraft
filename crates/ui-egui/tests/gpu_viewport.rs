@@ -1459,7 +1459,7 @@ fn the_flange_holes_are_round_at_the_display_quality() {
                 })
                 .fold(f64::NAN, f64::max);
             let rim_px = rim_sag_mm * px_per_mm;
-            print!("  rim of the hole: {rim_sag_mm:.5} mm, {rim_px:.3} px\n");
+            println!("  rim of the hole: {rim_sag_mm:.5} mm, {rim_px:.3} px");
             if label == "display" {
                 assert!(!scene.coarsened);
                 assert!(chord_px < 1.0 / 3.0, "{chord_px} px");
