@@ -672,7 +672,13 @@ fn a_cut_open_frame_of_a_gpu_viewport_is_drawn_by_the_gpu() {
     let mut shell = Shell::with_renderer(RendererChoice::Cpu);
     shell.attach_gpu(&state).unwrap();
     let cap = shell.tokens.section_cap;
-    let mut window = Window::new(1000.0, 700.0);
+    // The viewport this test was written for, 740 × 654 pixels: the
+    // window was 700 points high before the row of the documents' tabs
+    // took 29 of them. Found when the tabs came (2026-10-14): at most
+    // other sizes (690, 700, 710, 727, 728, 730 points) the GPU's picture
+    // has a stray pixel or two that is not the cap inside the cap, where
+    // the oracle has the cap all around; owed to the direct path.
+    let mut window = Window::new(1000.0, 729.0);
     for _ in 0..3 {
         window.frame(&mut shell, &mut session, Vec::new());
     }

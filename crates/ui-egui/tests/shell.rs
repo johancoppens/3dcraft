@@ -206,12 +206,14 @@ fn a_few_frames_show_the_tree_and_render_the_viewport_once() {
     assert!(error.contains("missing"), "{error}");
     assert!(shell.tree_rows().iter().all(|r| !r.selected));
 
-    // The viewport is the window minus the menu bar at the top, the tree
-    // on the left and the status bar at the bottom, and the image has its
-    // size in pixels.
+    // The viewport is the window minus the menu bar and the row of the
+    // documents' tabs at the top, the tree on the left and the status bar
+    // at the bottom, and the image has its size in pixels.
     let rect = shell.viewport_rect().unwrap();
     assert!(rect.left() > 150.0 && rect.left() < 450.0, "{rect:?}");
-    assert!(rect.top() > 12.0 && rect.top() < 40.0, "{rect:?}");
+    let tabs = shell.tab_hits()[0].1;
+    assert!(tabs.top() > 12.0 && tabs.bottom() <= rect.top(), "{tabs:?}");
+    assert!(rect.top() > 40.0 && rect.top() < 70.0, "{rect:?}");
     assert_eq!(rect.right(), 1000.0);
     assert!(rect.bottom() < 700.0 && rect.bottom() > 640.0, "{rect:?}");
     let [w, h] = shell.viewport_size();
@@ -588,9 +590,10 @@ fn panels_can_be_closed_and_the_viewport_takes_their_place() {
     window.idle(&mut shell, &mut session, 3);
     let both = shell.viewport_rect().unwrap();
     assert!(both.left() > 0.0 && both.bottom() < 600.0);
-    // The menu bar stays: one row of text high.
+    // The menu bar and the row of tabs stay: a row of text and a row of
+    // tabs high.
     let menu = both.top();
-    assert!(menu > 12.0 && menu < 40.0, "{menu}");
+    assert!(menu > 40.0 && menu < 70.0, "{menu}");
 
     shell.state.panels.tree = false;
     window.idle(&mut shell, &mut session, 3);
