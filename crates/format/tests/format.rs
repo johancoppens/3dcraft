@@ -168,7 +168,7 @@ fn saving_twice_gives_the_same_bytes() {
 fn the_manifest_of_a_small_document_is_exactly_this() {
     let expected = r#"{
   "format": "3dcraft",
-  "format_version": 8,
+  "format_version": 9,
   "document": {
     "units": {
       "length": "mm",
@@ -340,17 +340,17 @@ fn fix_trailing_commas(json: &str) -> String {
 
 #[test]
 fn a_newer_format_version_says_a_newer_3dcraft_is_needed() {
-    let error = load_error(&edited(&version_field(), "\"format_version\": 9"));
+    let error = load_error(&edited(&version_field(), "\"format_version\": 10"));
     assert!(matches!(
         error,
         FormatError::NewerVersion {
-            file: 9,
+            file: 10,
             supported: FORMAT_VERSION
         }
     ));
     let text = error.to_string();
     assert!(
-        text.contains("version 8")
+        text.contains("version 10")
             && text.contains(&format!("version {FORMAT_VERSION}"))
             && text.contains("newer 3DCraft is needed"),
         "{text}"
@@ -1708,7 +1708,7 @@ fn datum_planes_are_written_like_this_and_round_trip() {
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     // Datums raised no version: nothing an earlier file holds changed
-    // meaning. (7 is the chamfer's, 8 the loft's.)
+    // meaning. (7 is the chamfer's, 8 the loft's, 9 the sweep's.)
     assert_eq!(value["format_version"], FORMAT_VERSION);
     let face_json = |n: u64| serde_json::json!({"feature": 1, "role": "face", "sources": [n]});
     let kinds: Vec<&serde_json::Value> = value["document"]["features"]
@@ -2262,7 +2262,7 @@ fn a_loft_is_written_like_this_and_round_trips() {
     .unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 8);
+    assert_eq!(value["format_version"], FORMAT_VERSION);
     let features = value["document"]["features"].as_array().unwrap();
     assert_eq!(
         features[features.len() - 2]["kind"],
@@ -2326,4 +2326,65 @@ fn a_version_7_file_opens_unchanged_and_is_saved_as_the_current_version() {
     assert!(saved.contains(&version_field()), "{saved}");
     assert!(!saved.contains("loft"), "{saved}");
     assert_eq!(from_manifest_json(saved.as_bytes()).unwrap(), doc);
+}
+
+/// Version 9: sweeps, as they are written.
+#[test]
+fn a_sweep_is_written_like_this_and_round_trips() {
+    use craft3d_doc::{FeatureId, Sweep};
+    let mut doc = small();
+    doc.add_feature(
+        Some("Pipe"),
+        FeatureKind::Sweep(Sweep {
+            sketch: FeatureId(7),
+            path: FeatureId(9),
+        }),
+    )
+    .unwrap();
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["format_version"], 9);
+    let features = value["document"]["features"].as_array().unwrap();
+    assert_eq!(
+        features[features.len() - 1]["kind"],
+        serde_json::json!({"type": "sweep", "sketch": 7, "path": 9})
+    );
+    assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+    assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
+    // Both sketches are required, and a field a sweep does not have is
+    // refused.
+    let without = json.replace(r#""path": 9"#, r#""sketch": 7"#);
+    assert_ne!(without, json);
+    assert!(from_manifest_json(without.as_bytes()).is_err());
+    let extra = json.replace(r#""path": 9"#, r#""path": 9, "twist": "30 deg""#);
+    assert_ne!(extra, json);
+    assert!(from_manifest_json(extra.as_bytes()).is_err());
+}
+
+/// A version-8 file, as written before sweeps existed. Never edit this.
+#[test]
+fn a_version_8_file_opens_unchanged_and_is_saved_as_the_current_version() {
+    let v8 = r#"{"format": "3dcraft", "format_version": 8, "document": {
+        "units": {"length": "mm", "angle": "deg"},
+        "tolerance": {"linear": 1e-6, "angular": 1e-9},
+        "variables": [{"name": "c", "expr": "1 mm"}],
+        "features": [
+          {"id": 1, "name": "Block", "suppressed": false, "kind":
+            {"type": "block", "position": ["0", "0", "0"], "size": ["10", "8", "6"]}},
+          {"id": 2, "name": "Hull", "suppressed": false, "kind":
+            {"type": "loft", "sections": [{"sketch": 7}, {"sketch": 9, "start": 3}],
+             "ruled": true}}],
+        "rollback": null, "next_feature_id": 3}}"#;
+    let doc = match from_manifest_json(v8.as_bytes()) {
+        Ok(doc) => doc,
+        Err(error) => panic!("{error}"),
+    };
+    assert_eq!(doc.features[1].kind.type_name(), "loft");
+    let saved = to_manifest_json(&doc).unwrap();
+    assert!(saved.contains(&version_field()), "{saved}");
+    assert!(!saved.contains("sweep"), "{saved}");
+    assert_eq!(from_manifest_json(saved.as_bytes()).unwrap(), doc);
+    // The same file from a version this build does not know is refused.
+    let newer = v8.replace("\"format_version\": 8", "\"format_version\": 10");
+    assert!(from_manifest_json(newer.as_bytes()).is_err());
 }

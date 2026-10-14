@@ -216,6 +216,9 @@ pub enum FeatureKind {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         closed: bool,
     },
+    /// A solid the one closed profile of sketch `sketch` sweeps along the
+    /// curves of sketch `path` (format version 9).
+    Sweep { sketch: u64, path: u64 },
     /// The body of feature `source`, turned by `angle` about the line
     /// through `pivot` along `axis` (three plain numbers), then shifted by
     /// `translate`. With `keep` the source keeps its own body.

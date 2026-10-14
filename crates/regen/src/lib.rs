@@ -28,7 +28,9 @@ mod extrude;
 mod loft;
 mod query;
 mod revolve;
+mod selfcheck;
 mod sketch;
+mod sweep;
 
 pub use cache::RegenCache;
 pub use cause::root_cause;
@@ -322,6 +324,21 @@ impl Names {
     }
 }
 
+/// What a sweep says of itself.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SweepReport {
+    /// The path closes on itself: the body is a ring without ends.
+    pub closed: bool,
+    /// The length of the path, in model units.
+    pub length: f64,
+    /// How far the faces along splines of the path were found to lie
+    /// from the true sweep, at most; 0 along lines and arcs, where the
+    /// faces are exact. Never more than half the linear tolerance.
+    pub deviation: f64,
+    /// The most stations a spline of the path was followed through.
+    pub stations: usize,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct FeatureResult {
     pub id: FeatureId,
@@ -340,6 +357,8 @@ pub struct FeatureResult {
     /// For a feature made from another feature's body: the maps from that
     /// body onto each instance of this one (one map, unless a pattern).
     pub instances: Option<Arc<Vec<Transform>>>,
+    /// For a sweep that was built: how its path was followed.
+    pub sweep: Option<SweepReport>,
     /// The later feature this feature's body went into. The body is then
     /// no longer one of the document's bodies; it stays here because names
     /// are resolved against it.
@@ -539,6 +558,7 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
         FeatureKind::Extrude(_) => return Err("an extrusion needs its sketch".to_string()),
         FeatureKind::Revolve(_) => return Err("a revolution needs its sketch".to_string()),
         FeatureKind::Loft(_) => return Err("a loft needs its sketches".to_string()),
+        FeatureKind::Sweep(_) => return Err("a sweep needs its sketches".to_string()),
         // Placed in `features`; reference geometry is not a body.
         FeatureKind::DatumPlane(_) | FeatureKind::DatumAxis(_) | FeatureKind::DatumPoint(_) => {
             return Err("a datum has no body".to_string());
@@ -672,6 +692,7 @@ fn build_feature(
     let mut instances = None;
     let mut taken = None;
     let mut placed = None;
+    let mut followed = None;
     let (status, body) = if rolled_back {
         (Status::RolledBack, None)
     } else if feature.suppressed {
@@ -745,6 +766,17 @@ fn build_feature(
             }
             Err(reason) => (Status::Failed(reason), None),
         }
+    } else if let FeatureKind::Sweep(swept) = &feature.kind {
+        match sweep::build(doc, feature.id, swept, earlier)
+            .and_then(|(body, names, report)| checked(doc, body).map(|body| (body, names, report)))
+        {
+            Ok((body, made_names, report)) => {
+                names = Some(Arc::new(made_names));
+                followed = Some(report);
+                (Status::Ok, Some(Arc::new(body)))
+            }
+            Err(reason) => (Status::Failed(reason), None),
+        }
     } else if let FeatureKind::Boolean(boolean) = &feature.kind {
         match boolean::build(doc, feature.id, boolean, earlier)
             .and_then(|(body, names)| checked(doc, body).map(|body| (body, names)))
@@ -804,6 +836,7 @@ fn build_feature(
             datum: placed,
             names,
             instances,
+            sweep: followed,
             consumed_by: None,
         },
         taken,

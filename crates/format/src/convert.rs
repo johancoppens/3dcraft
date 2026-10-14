@@ -209,6 +209,13 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 ruled: *ruled,
                 closed: *closed,
             },
+            doc::FeatureKind::Sweep(doc::Sweep {
+                sketch: doc::FeatureId(sketch),
+                path: doc::FeatureId(path),
+            }) => manifest::FeatureKind::Sweep {
+                sketch: *sketch,
+                path: *path,
+            },
             doc::FeatureKind::Revolve(doc::Revolve {
                 sketch: doc::FeatureId(sketch),
                 axis,
@@ -1048,6 +1055,10 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
                     .collect(),
                 ruled,
                 closed,
+            }),
+            manifest::FeatureKind::Sweep { sketch, path } => doc::FeatureKind::Sweep(doc::Sweep {
+                sketch: doc::FeatureId(sketch),
+                path: doc::FeatureId(path),
             }),
             manifest::FeatureKind::Revolve {
                 sketch,
