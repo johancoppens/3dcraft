@@ -584,6 +584,29 @@ fn cases() -> Vec<Case> {
             },
         },
         Case {
+            what: "fillet: edges",
+            role: "edges.0",
+            upstream: "Plate",
+            alternative: "Plate2",
+            make: |s, u| {
+                let (top, side) = (face(s, u, "endCap"), face(s, u, "side"));
+                built(
+                    s,
+                    "feature.fillet",
+                    json!({"edges": [[top, side]], "radius": 1, "name": "D"}),
+                );
+                (Kind::Body, vec![top, side])
+            },
+            repair: |s, u| {
+                let (top, side) = (face(s, u, "endCap"), face(s, u, "side"));
+                built(
+                    s,
+                    "feature.edit",
+                    json!({"feature": "D", "edges": [[top, side]]}),
+                );
+            },
+        },
+        Case {
             what: "datum plane: from (a face)",
             role: "from",
             upstream: "Plate",
@@ -1348,7 +1371,7 @@ fn a_name_that_is_no_longer_there_fails_with_what_is_there_instead() {
         .into_iter()
         .filter(|case| case.upstream == "Plate" && !case.role.starts_with("target"))
         .collect();
-    assert_eq!(on_the_plate.len(), 10);
+    assert_eq!(on_the_plate.len(), 11);
     let wrong = map_parallel(on_the_plate, |case| {
         let (mut s, names) = model(&case, "Plate");
         let intact = state(&mut s);

@@ -27,7 +27,7 @@ type Step = fn(Value) -> Result<Value, String>;
 
 /// `STEPS[n]` brings a manifest from version `n + 1` to version `n + 2`.
 const STEPS: &[Step] = &[
-    v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8,
+    v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9,
 ];
 
 /// Version 2 adds the `cone` and `torus` feature kinds and an optional
@@ -81,6 +81,14 @@ fn v6_to_v7(manifest: Value) -> Result<Value, String> {
 /// contains changes meaning; the version was raised so that an older
 /// build reports the version and not an unknown kind.
 fn v7_to_v8(manifest: Value) -> Result<Value, String> {
+    Ok(manifest)
+}
+
+/// Version 9 adds the `fillet` feature kind and the name roles `fillet`
+/// and `filletCorner` for the faces it makes. Nothing a version-8 file
+/// contains changes meaning; the version was raised so that an older
+/// build reports the version and not an unknown kind.
+fn v8_to_v9(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
 }
 
