@@ -543,3 +543,146 @@ fn a_chain_from_corner_to_corner() {
         );
     }
 }
+
+/// A freeform chain and an edge of the closed forms in one fillet: the
+/// rim of the open outline above and the bottom edge of its back, far
+/// from it. What they take away together is what each takes on its own,
+/// and every fillet face says which edge it is of.
+#[test]
+fn a_chain_and_a_straight_edge_in_one_fillet() {
+    let (l1, rr, h) = (2.0, 1.0, 3.0);
+    let s = Bez([[l1, 2.0 * rr], [1.2, 2.0 * rr], [0.8, h], [0.0, h]]);
+    let (r, height) = (0.1, 1.5);
+    for k in SCALES {
+        let tol = tolerance(k);
+        let frame = Frame::WORLD;
+        let line = |id: u64, a: [f64; 2], b: [f64; 2]| SketchCurve {
+            id,
+            curve: Curve2::Line {
+                start: [a[0] * k, a[1] * k],
+                end: [b[0] * k, b[1] * k],
+            },
+        };
+        let curves = vec![
+            line(1, [0.0, 0.0], [l1, 0.0]),
+            SketchCurve {
+                id: 2,
+                curve: Curve2::Arc {
+                    center: [l1 * k, rr * k],
+                    start: [l1 * k, 0.0],
+                    end: [l1 * k, 2.0 * rr * k],
+                },
+            },
+            bezier(3, &s.scaled(k)),
+            line(4, [0.0, h], [0.0, 0.0]),
+        ];
+        let body = prism(&curves, &frame, height * k, k);
+        let chain = rim(
+            &body,
+            &frame,
+            height * k,
+            &[[0.5 * l1 * k, 0.0], [(l1 + rr) * k, rr * k], [k, 2.5 * k]],
+        );
+        let back = edge_near(&body, Vec3::new(0.0, 0.5 * h * k, 0.0));
+        let all: Vec<FilletEdge> = chain
+            .iter()
+            .chain([&back])
+            .map(|e| FilletEdge {
+                edge: *e,
+                radius: r * k,
+            })
+            .collect();
+        let made = match fillet(&body, &all, &tol) {
+            Ok(m) => m,
+            Err(e) => panic!("scale {k}: {e}"),
+        };
+        assert_eq!(check(&made.body, &tol), []);
+        let alone = |edges: &[FilletEdge]| mass(&fillet(&body, edges, &tol).unwrap().body).volume;
+        let before = mass(&body).volume;
+        let removed = before - mass(&made.body).volume;
+        let apart = (before - alone(&all[..3])) + (before - alone(&all[3..]));
+        println!("scale {k}: removed {removed:e}, apart {apart:e}");
+        assert!((removed - apart).abs() <= 1e-9 * before, "{removed} against {apart}");
+        let mut of: Vec<Vec<usize>> = made
+            .faces
+            .iter()
+            .filter_map(|f| match f {
+                FilletFace::Fillet(of) => Some(of.clone()),
+                _ => None,
+            })
+            .collect();
+        of.sort();
+        assert_eq!(of, [vec![0], vec![1], vec![2], vec![3]]);
+        assert_eq!(made.faces.len(), made.body.faces.len());
+        assert_eq!(made.edges.len(), made.body.edges.len());
+        assert_eq!(made.vertices.len(), made.body.vertices.len());
+    }
+}
+
+/// What a chain does not take is refused with the reason, never built
+/// wrong: radii that differ along it, a chamfer whose wall changes at a
+/// joint, and an edge that meets the chain at an angle.
+#[test]
+fn what_a_chain_refuses() {
+    use craft3d_kernel::chamfer::{ChamferEdge, ChamferSize, chamfer};
+    let (l1, rr, h) = (2.0, 1.0, 3.0);
+    let s = Bez([[l1, 2.0 * rr], [1.2, 2.0 * rr], [0.8, h], [0.0, h]]);
+    let (r, height) = (0.1, 1.5);
+    let tol = tolerance(1.0);
+    let line = |id: u64, a: [f64; 2], b: [f64; 2]| SketchCurve {
+        id,
+        curve: Curve2::Line { start: a, end: b },
+    };
+    let curves = vec![
+        line(1, [0.0, 0.0], [l1, 0.0]),
+        SketchCurve {
+            id: 2,
+            curve: Curve2::Arc {
+                center: [l1, rr],
+                start: [l1, 0.0],
+                end: [l1, 2.0 * rr],
+            },
+        },
+        bezier(3, &s),
+        line(4, [0.0, h], [0.0, 0.0]),
+    ];
+    let body = prism(&curves, &Frame::WORLD, height, 1.0);
+    let chain = rim(
+        &body,
+        &Frame::WORLD,
+        height,
+        &[[0.5 * l1, 0.0], [l1 + rr, rr], [1.0, 2.5]],
+    );
+    let radii = [r, r, 0.5 * r];
+    let edges: Vec<FilletEdge> = chain
+        .iter()
+        .zip(radii)
+        .map(|(e, radius)| FilletEdge { edge: *e, radius })
+        .collect();
+    let error = fillet(&body, &edges, &tol).unwrap_err().to_string();
+    assert!(error.contains("different radii"), "{error}");
+    let edges: Vec<ChamferEdge> = chain
+        .iter()
+        .map(|e| ChamferEdge {
+            edge: *e,
+            first: faces_of(&body, *e)[0],
+            size: ChamferSize::Distances {
+                first: r,
+                second: r,
+            },
+        })
+        .collect();
+    let error = chamfer(&body, &edges, &tol).unwrap_err().to_string();
+    assert!(error.contains("one of the faces changes"), "{error}");
+    let corner = edge_near(&body, Vec3::new(0.0, 0.0, 0.5 * height));
+    let edges: Vec<FilletEdge> = chain
+        .iter()
+        .chain([&corner])
+        .map(|e| FilletEdge {
+            edge: *e,
+            radius: r,
+        })
+        .collect();
+    let error = fillet(&body, &edges, &tol).unwrap_err().to_string();
+    assert!(error.contains("meet in a vertex"), "{error}");
+}
