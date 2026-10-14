@@ -7,7 +7,7 @@
 //!
 //! ```sh
 //! cargo run --release -p craft3d-ui-egui --example window_picture -- \
-//!     [--idle] [--active N] [--edit N] [--ask N] [--set JSON] model.3dcraft [more.3dcraft | untitled ...] out.png
+//!     [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] model.3dcraft [more.3dcraft | untitled ...] out.png
 //! ```
 //!
 //! The documents are opened in order (`untitled` is a new document with a
@@ -17,7 +17,9 @@
 //! `--ask N` closes document `N` from its tab, which shows the question
 //! before closing when it has unsaved changes. `--set JSON` patches the
 //! window's state after the first frame, as `ui.set` does (a camera, a
-//! display quality: `{"quality": {"chordal": 1e-4}}`). Then,
+//! display quality: `{"quality": {"chordal": 1e-4}}`). `--first` shows
+//! the quick first picture, as the window does while the display scene is
+//! refined beside it. Then,
 //! unless `--idle`, the shell is drawn as it is while a command runs
 //! elsewhere (`Shell::ui_away`), with a step of regeneration as the work.
 
@@ -30,10 +32,11 @@ use serde_json::json;
 
 const SIZE: [u32; 2] = [1280, 800];
 
-const USAGE: &str = "usage: window_picture [--idle] [--active N] [--edit N] [--ask N] [--set JSON] FILE.3dcraft [FILE.3dcraft | untitled ...] OUT.png";
+const USAGE: &str = "usage: window_picture [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] FILE.3dcraft [FILE.3dcraft | untitled ...] OUT.png";
 
 fn main() -> Result<(), String> {
     let mut idle = false;
+    let mut first = false;
     let mut active = None;
     let mut edit = None;
     let mut ask = None;
@@ -48,6 +51,7 @@ fn main() -> Result<(), String> {
         };
         match arg.as_str() {
             "--idle" => idle = true,
+            "--first" => first = true,
             "--active" => active = Some(number("--active")?),
             "--edit" => edit = Some(number("--edit")?),
             "--ask" => ask = Some(number("--ask")?),
@@ -88,6 +92,7 @@ fn main() -> Result<(), String> {
             json!({ "document": document }),
         )?;
     }
+    session.set_refine_elsewhere(first);
     let mut shell = Shell::new();
     shell.attach_gpu(&state)?;
     let ctx = egui::Context::default();

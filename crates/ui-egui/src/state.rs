@@ -46,13 +46,14 @@ pub const MAX_TRIANGLES: u64 = 1 << 26;
 #[serde(rename_all = "camelCase", deny_unknown_fields, default)]
 pub struct DisplayQuality {
     /// The chordal tolerance as a fraction of the model's size (the side
-    /// of a square with the bodies' total area): the default,
+    /// of a square with the area of the quick first picture's mesh, which
+    /// is the bodies' total area within that picture's tolerance): the default,
     /// `DISPLAY_RELATIVE_TOLERANCE`, keeps a circle round at any zoom the
     /// developer is likely to use.
     pub chordal: f64,
     /// The most triangles the viewport's scene may have: the mesh is
-    /// coarsened until it fits, but never beyond the automatic tolerance
-    /// `view.render` uses.
+    /// coarsened until it fits, but never beyond the quick first picture's
+    /// tolerance (1e-3 of the diagonal of the model's box).
     pub max_triangles: u64,
 }
 

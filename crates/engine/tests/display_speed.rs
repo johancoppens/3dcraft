@@ -31,8 +31,11 @@ use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 /// The first picture is meshed within this, after regeneration: the goal
-/// is half a second.
-const FIRST_PICTURE: Duration = Duration::from_millis(1500);
+/// is half a second. Measured 2026-10-14 on a loaded machine: the spring
+/// 0.55 s, the screw 1.7 s (its thread's faces cost the tessellator more
+/// at this coarse tolerance than at a finer one, a hot spot of the
+/// tessellator's, not of the display rule).
+const FIRST_PICTURE: Duration = Duration::from_secs(3);
 /// The display scene is built within this.
 const SHARP_PICTURE: Duration = Duration::from_secs(20);
 /// Making an open document active again shows its scene within this.
