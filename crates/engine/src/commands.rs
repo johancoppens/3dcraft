@@ -1463,6 +1463,7 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
         }
         _ => {}
     }
+    crate::blend_cmds::of_one_body("feature.edit", session, &kind)?;
     if let (FeatureKind::Extrude(extrusion), Some(end)) = (&mut kind, new_end) {
         extrusion.end = end;
     }
@@ -1642,6 +1643,17 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
             outcome.and_then(|o| o.thread.as_ref()),
         ) {
             map.insert("thread".into(), crate::helix_cmds::thread_json(report));
+        }
+        // Faces or edges given by the names of an earlier body, followed
+        // to the newest one: the parameters as the feature was built.
+        if let (Some(map), Some(built)) = (
+            entry.as_object_mut(),
+            outcome.and_then(|o| o.followed.as_ref()),
+        ) {
+            map.insert(
+                "followed".into(),
+                serde_json::to_value(&built.kind).unwrap_or(Value::Null),
+            );
         }
         // A body that went into a later feature is no longer listed under
         // bodies; this says where it went.
