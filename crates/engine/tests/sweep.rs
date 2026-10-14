@@ -1154,14 +1154,18 @@ fn a_sweep_along_a_spline_keeps_the_set_identities_with_a_block() {
     assert!(common > 0.0 && common < hose.min(block));
 }
 
-/// Finding F6 of the turbofan: an arc of the path given by its centre,
-/// with its end rounded to four decimals. `sketch.path` warns that the end
-/// is off the circle; the solver then tilts the line before the arc by a
-/// little under 2e-6 radians, which moves the profile (radius 5) by about
-/// 9e-6 when laid square to the path, more than the tolerance of 1e-6, so
-/// the sweep is refused with the angle and the movement.
+/// Finding F6 of the turbofan, as the turbofan's script drew it: an arc
+/// of the path given by its centre, with its end rounded to four
+/// decimals, then a line. `sketch.path` puts the end on the arc's circle
+/// (2.6e-5 in) and says so, so the solver moves nothing and the first
+/// line stays square to the profile; the line after the arc, to the
+/// rounded far end, then leaves 2.9e-6 radians off the arc's direction,
+/// which turns the profile (radius 5) by no more than 5 (1 - cos) = 2e-11
+/// off the faces, so the sweep is built at the default tolerance, valid,
+/// with the closed-form volume: the circle's area times the length of
+/// the path (Pappus, the profile centred on it).
 #[test]
-fn a_path_whose_arc_end_was_rounded_is_reported_and_its_lean_measured() {
+fn a_path_whose_arc_end_was_rounded_is_swept_at_the_default_tolerance() {
     let mut s = new();
     run(
         &mut s,
@@ -1187,20 +1191,24 @@ fn a_path_whose_arc_end_was_rounded_is_reported_and_its_lean_measured() {
             {"line": [62.0088, 40.0868]},
         ]}),
     );
-    let warning = drawn["warnings"][0].as_str().unwrap();
-    assert!(
-        warning.starts_with("segments[1]: the arc's end (53.9787, 28.6187) is 0.0000262")
-            && warning.contains(" inside the circle "),
-        "{warning}"
-    );
+    assert!(drawn.get("warnings").is_none(), "{drawn}");
+    let snap = &drawn["snapped"][0];
+    assert_eq!(snap["segment"], 1, "{drawn}");
+    let moved = snap["moved"].as_f64().unwrap();
+    assert!((moved - 2.6287e-5).abs() < 1e-9, "{drawn}");
+    let end = [
+        snap["end"][0].as_f64().unwrap(),
+        snap["end"][1].as_f64().unwrap(),
+    ];
     sweep(&mut s, "Prof", "Path", "Tube");
-    let why = failure(&mut s, "Tube");
-    assert!(
-        why.contains("at a right angle")
-            && why.contains("would move it by up to 0.00000927")
-            && why.contains("more than the tolerance 0.000001"),
-        "{why}"
-    );
+    assert_eq!(feature(&mut s, "Tube")["status"], "ok");
+    deep(&mut s);
+    // Line, clockwise arc of radius 22 from the angle of 180° down to the
+    // end's, line.
+    let turn = PI - (end[1] - 16.0).atan2(end[0] - 72.0);
+    let last = (62.0088 - end[0]).hypot(40.0868 - end[1]);
+    let length = 6.0 + 22.0 * turn + last;
+    close(volume(&mut s, "Tube"), PI * 25.0 * length, 1e-9);
 }
 
 /// A path that leaves the profile a little off square through the
