@@ -708,7 +708,7 @@ fn bodies_carry_their_edges_as_polylines_on_the_mesh() {
     // The edge points are vertices of the body's own mesh, bit for bit:
     // a line through them lies on the border of the shaded faces.
     let bits = |p: &Vec3| [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()];
-    for body in &coarse.bodies {
+    for body in coarse.bodies.iter() {
         let vertices: std::collections::BTreeSet<_> =
             body.mesh.positions.iter().map(bits).collect();
         for point in body.edges.iter().flatten() {
@@ -724,6 +724,27 @@ fn bodies_carry_their_edges_as_polylines_on_the_mesh() {
     assert_eq!(scene(&mut s, Some(0.0005)).bodies, fine.bodies);
 }
 
+/// The quick first picture the display rule starts from: what a viewer
+/// shows while the display scene is built elsewhere.
+fn first_picture(session: &mut Session) -> Arc<Scene> {
+    let first = session
+        .scene_with(SceneQuality::Preview)
+        .unwrap()
+        .expect("a document");
+    assert!(first.preview);
+    first
+}
+
+/// The area of a mesh, as the sum of its triangles'.
+fn mesh_area(scene: &Scene) -> f64 {
+    (0..scene.mesh.triangles.len())
+        .map(|t| {
+            let [a, b, c] = scene.mesh.corners(t).unwrap();
+            0.5 * (b - a).cross(c - a).length()
+        })
+        .sum()
+}
+
 fn display(session: &mut Session, relative: f64, max_triangles: usize) -> Arc<Scene> {
     session
         .scene_with(SceneQuality::Display {
@@ -734,17 +755,23 @@ fn display(session: &mut Session, relative: f64, max_triangles: usize) -> Arc<Sc
         .expect("a document")
 }
 
-/// The display rule: a fraction of the model's size, the same size the
-/// automatic tolerance is a fraction of.
+/// The display rule: a fraction of the model's size, the side of a
+/// square with the area of the quick first picture's mesh, which is the
+/// size the automatic tolerance is a fraction of (the exact area) within
+/// the first picture's tolerance.
 #[test]
 fn the_display_quality_is_a_finer_fraction_of_the_same_size() {
     let mut s = session();
     part(&mut s);
     let automatic = scene(&mut s, None);
-    let size = automatic.tolerance / AUTOMATIC_RELATIVE_TOLERANCE;
+    let exact = automatic.tolerance / AUTOMATIC_RELATIVE_TOLERANCE;
     assert!(!automatic.coarsened);
     assert!(!scene(&mut s, Some(0.05)).coarsened);
+    let first = first_picture(&mut s);
+    let size = mesh_area(&first).sqrt();
+    assert!((size - exact).abs() < 1e-3 * exact, "{size} vs {exact}");
     let shown = s.scene_with(SceneQuality::display()).unwrap().unwrap();
+    assert!(!shown.preview);
     assert!(
         (shown.tolerance - size * DISPLAY_RELATIVE_TOLERANCE).abs() <= 1e-12 * size,
         "{} for a size of {size}",
@@ -790,15 +817,15 @@ fn the_display_quality_is_a_finer_fraction_of_the_same_size() {
         "feature.edit",
         json!({"feature": "Post", "height": "31 mm"}),
     );
+    let size = mesh_area(&first_picture(&mut s)).sqrt();
     let after = s.scene_with(SceneQuality::display()).unwrap().unwrap();
     assert!(!Arc::ptr_eq(&after, &shown));
     assert_eq!(after.revision, shown.revision + 1);
 
-    // A request coarser than the automatic tolerance is what it asks for:
-    // no budget applies there, and nothing was coarsened.
+    // A request coarser than the first picture is what it asks for: no
+    // budget applies there, and nothing was coarsened.
     let coarse = display(&mut s, 5.0 * AUTOMATIC_RELATIVE_TOLERANCE, 10);
     let automatic = scene(&mut s, None);
-    let size = automatic.tolerance / AUTOMATIC_RELATIVE_TOLERANCE;
     assert!((coarse.tolerance - 5.0 * AUTOMATIC_RELATIVE_TOLERANCE * size).abs() <= 1e-12 * size);
     assert!(!coarse.coarsened);
     assert!(coarse.triangles() > 10);
@@ -806,12 +833,12 @@ fn the_display_quality_is_a_finer_fraction_of_the_same_size() {
 }
 
 /// The triangle budget coarsens the display tolerance until the scene
-/// fits, and the automatic tolerance is the floor.
+/// fits, and the quick first picture's tolerance is the floor.
 #[test]
-fn the_triangle_budget_coarsens_the_display_down_to_the_automatic_tolerance() {
+fn the_triangle_budget_coarsens_the_display_down_to_the_first_pictures_tolerance() {
     let mut s = session();
     part(&mut s);
-    let automatic = scene(&mut s, None);
+    let automatic = first_picture(&mut s);
     let fine = display(&mut s, DISPLAY_RELATIVE_TOLERANCE, usize::MAX);
     assert!(!fine.coarsened);
     assert!(fine.triangles() > automatic.triangles() + 100);
@@ -835,13 +862,15 @@ fn the_triangle_budget_coarsens_the_display_down_to_the_automatic_tolerance() {
     let again = display(&mut s, DISPLAY_RELATIVE_TOLERANCE, fitted.triangles());
     assert!(again.triangles() <= fitted.triangles());
 
-    // A budget no scene can meet: the automatic scene, bit for bit, over
-    // budget and said to be coarsened.
+    // A budget no scene can meet: the first picture, bit for bit, over
+    // budget and said to be coarsened (and no longer a preview).
     let floor = display(&mut s, DISPLAY_RELATIVE_TOLERANCE, 1);
     assert!(floor.coarsened);
     assert_eq!(floor.tolerance, automatic.tolerance);
     assert_eq!(floor.mesh, automatic.mesh);
     assert_eq!(floor.bodies, automatic.bodies);
+    assert!(!floor.preview);
+    assert_eq!(*floor.mesh, *scene(&mut s, Some(floor.tolerance)).mesh);
     assert!(floor.triangles() > 1);
     assert!(floor.problems.is_empty());
 }
@@ -853,8 +882,9 @@ fn the_triangle_budget_coarsens_the_display_down_to_the_automatic_tolerance() {
 fn a_display_tolerance_the_tessellator_cannot_meet_is_coarsened_until_it_can() {
     let mut s = session();
     part(&mut s);
-    let automatic = scene(&mut s, None);
-    let size = automatic.tolerance / AUTOMATIC_RELATIVE_TOLERANCE;
+    let size = scene(&mut s, None).tolerance / AUTOMATIC_RELATIVE_TOLERANCE;
+    // The floor of the display rule.
+    let automatic = first_picture(&mut s);
     // The post's circles of radius 6 would need some twenty thousand
     // segments, more than the tessellator allows on an edge.
     let relative = 1e-9;
@@ -911,12 +941,13 @@ fn a_display_quality_that_is_not_a_request_is_refused() {
 /// at that tolerance without a budget, whole and bit for bit: the budget
 /// (which stops a body inside the tessellator, `TessParams::max_triangles`)
 /// only decides which tolerance it is. It is within the budget unless it
-/// is the automatic scene, and a larger budget never gives a coarser one.
+/// is the quick first picture, and a larger budget never gives a coarser
+/// one.
 #[test]
 fn a_scene_under_a_budget_is_the_scene_at_its_tolerance_without_one() {
     let mut s = session();
     part(&mut s);
-    let automatic = scene(&mut s, None);
+    let automatic = first_picture(&mut s);
     let fine = display(&mut s, DISPLAY_RELATIVE_TOLERANCE, usize::MAX);
     let (least, most) = (automatic.triangles(), fine.triangles());
     let mut last = automatic.tolerance;

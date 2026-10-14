@@ -18,6 +18,8 @@
 //!   `file.activate`, `file.close` and `file.save`.
 //! - [`worker`]: the engine thread, where commands run while the window
 //!   keeps drawing.
+//! - [`refine`]: the display scene built on a thread of its own while the
+//!   window shows the quick first picture.
 //! - [`app`]: the eframe window.
 //!
 //! Everything but [`app::run`] works without a window, which is how the
@@ -28,6 +30,7 @@ pub mod args;
 pub mod control;
 pub mod files;
 pub mod host;
+pub mod refine;
 pub mod tabs;
 pub mod token;
 pub mod worker;

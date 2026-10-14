@@ -14,6 +14,7 @@ use craft3d_math::{Bbox3, Vec3};
 use craft3d_regen::{Regen, SketchResult, Status};
 use craft3d_tess::{Mesh, TessError, TessParams, tessellate_body_and_edges};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Fewest segments a full circle is drawn with, however coarse the
 /// tolerance: a hexagon does not read as a circle.
@@ -23,8 +24,21 @@ pub const MIN_CIRCLE_SEGMENTS: usize = 24;
 /// need more (a chord error below about 3e-7 of the radius) is not met.
 pub const MAX_ARC_SEGMENTS: usize = 4096;
 
-/// Scenes kept for one document: one per quality asked for.
+/// Scenes kept for one state of a document: one per quality asked for.
 const MAX_CACHED: usize = 4;
+
+/// The memory the scenes kept may take by default, in bytes: 1.5 GiB, the
+/// scenes of a dozen documents at the display rule's full budget of a
+/// million triangles (about 110 MB each), or of hundreds of smaller ones.
+pub const DEFAULT_SCENE_BUDGET: usize = 1536 << 20;
+
+/// The quick first picture's chordal tolerance, as a fraction of the
+/// diagonal of the box around the model: what a viewport shows at once
+/// while the display scene is built ([`Session::set_refine_elsewhere`]),
+/// and the coarsest the display rule goes. The box, unlike the model's
+/// area, costs nothing to find (measuring the area of a model with spline
+/// faces takes seconds).
+pub const PREVIEW_RELATIVE_TOLERANCE: f64 = 1e-3;
 
 /// The automatic chordal tolerance, as `view.render`, `file.export` and
 /// previews choose it: this fraction of the model's size (the side of a
@@ -68,6 +82,11 @@ pub enum SceneQuality {
     /// than `view.render`). The scene says whether it was coarsened
     /// ([`Scene::coarsened`]).
     Display { relative: f64, max_triangles: usize },
+    /// The quick first picture the display rule starts from and a viewer
+    /// shows while the display scene is built elsewhere:
+    /// [`PREVIEW_RELATIVE_TOLERANCE`] of the diagonal of the model's box
+    /// ([`Scene::preview`] is set).
+    Preview,
 }
 
 impl SceneQuality {
@@ -83,7 +102,7 @@ impl SceneQuality {
     /// fraction that is not a positive number, a budget of nothing.
     fn validate(self) -> Result<(), CommandError> {
         match self {
-            SceneQuality::Automatic => Ok(()),
+            SceneQuality::Automatic | SceneQuality::Preview => Ok(()),
             SceneQuality::Tolerance(t) if t.is_finite() && t > 0.0 => Ok(()),
             SceneQuality::Tolerance(_) => Err(CommandError::new(
                 "the scene's tolerance must be a positive number",
@@ -106,6 +125,7 @@ impl SceneQuality {
     fn key(self) -> SceneKey {
         match self {
             SceneQuality::Automatic => SceneKey::Automatic,
+            SceneQuality::Preview => SceneKey::Preview,
             SceneQuality::Tolerance(t) => SceneKey::Tolerance(t.to_bits()),
             SceneQuality::Display {
                 relative,
@@ -123,7 +143,13 @@ impl SceneQuality {
 enum SceneKey {
     Automatic,
     Tolerance(u64),
-    Display { relative: u64, max_triangles: usize },
+    Display {
+        relative: u64,
+        max_triangles: usize,
+    },
+    /// The quick first picture: one per document state, whatever display
+    /// quality it stands in for.
+    Preview,
 }
 
 /// One body of the scene.
@@ -290,6 +316,10 @@ pub struct SceneFeature {
 }
 
 /// Everything a viewer draws for one state of the active document.
+///
+/// The bulky parts (the meshes) are shared by `Arc`, so a copy of a scene
+/// under another revision, as a document that becomes active again gets,
+/// costs nothing.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Scene {
     /// See [`Session::scene_revision`].
@@ -301,11 +331,15 @@ pub struct Scene {
     /// coarsen its tolerance to stay within its triangle budget or within
     /// what the tessellator can do. False for the other qualities.
     pub coarsened: bool,
+    /// True for the quick first picture ([`PREVIEW_RELATIVE_TOLERANCE`])
+    /// that stands in for the display scene while that is built elsewhere
+    /// ([`Session::set_refine_elsewhere`]): a viewer says it is refining.
+    pub preview: bool,
     /// In history order.
-    pub bodies: Vec<SceneBody>,
+    pub bodies: Arc<Vec<SceneBody>>,
     /// All bodies as one mesh for a renderer; face ids keep counting across
     /// bodies, as in `view.render`.
-    pub mesh: Mesh,
+    pub mesh: Arc<Mesh>,
     pub sketches: Vec<SceneSketch>,
     /// The datums that are placed, in history order. They are not in
     /// [`Scene::bbox`]: they are sized to it.
@@ -320,6 +354,57 @@ pub struct Scene {
 impl Scene {
     pub fn triangles(&self) -> usize {
         self.mesh.triangles.len()
+    }
+
+    /// About how many bytes the scene holds: its meshes, edges, points and
+    /// names. What the memory budget of the scenes kept counts
+    /// ([`Session::set_scene_budget`]).
+    pub fn bytes(&self) -> usize {
+        fn mesh_bytes(mesh: &Mesh) -> usize {
+            let point = std::mem::size_of::<Vec3>();
+            mesh.positions
+                .len()
+                .saturating_add(mesh.normals.len())
+                .saturating_mul(point)
+                .saturating_add(mesh.triangles.len().saturating_mul(12))
+                .saturating_add(mesh.face_ids.len().saturating_mul(4))
+        }
+        fn points(lines: &[Vec<Vec3>]) -> usize {
+            lines
+                .iter()
+                .fold(0usize, |n, line| n.saturating_add(line.len()))
+                .saturating_mul(std::mem::size_of::<Vec3>())
+        }
+        fn text(names: &[String]) -> usize {
+            names.iter().fold(0usize, |n, name| {
+                n.saturating_add(name.len()).saturating_add(24)
+            })
+        }
+        let mut bytes = std::mem::size_of::<Scene>().saturating_add(mesh_bytes(&self.mesh));
+        for body in self.bodies.iter() {
+            bytes = bytes
+                .saturating_add(mesh_bytes(&body.mesh))
+                .saturating_add(points(&body.edges))
+                .saturating_add(
+                    body.vertices
+                        .len()
+                        .saturating_mul(std::mem::size_of::<Vec3>()),
+                )
+                .saturating_add(text(&body.face_names))
+                .saturating_add(text(&body.edge_names))
+                .saturating_add(text(&body.vertex_names));
+        }
+        for sketch in &self.sketches {
+            for polyline in &sketch.polylines {
+                bytes = bytes.saturating_add(
+                    polyline
+                        .points
+                        .len()
+                        .saturating_mul(std::mem::size_of::<Vec3>()),
+                );
+            }
+        }
+        bytes
     }
 }
 
@@ -344,29 +429,65 @@ pub struct DocumentStatus {
 /// A scene, or why it could not be built.
 type Built = Result<Arc<Scene>, CommandError>;
 
-/// The scenes of one document, by the quality asked for.
-type Scenes = Vec<(SceneKey, Built)>;
+/// The scenes of one state of a document, by the quality asked for, with
+/// the bytes each holds ([`Scene::bytes`]).
+type Scenes = Vec<(SceneKey, Built, usize)>;
 
-/// The scenes of the document last looked at.
-#[derive(Clone, Default)]
-pub(crate) struct SceneCache {
-    /// The document the revision and the scenes belong to. Holding the
-    /// `Arc` keeps its address from being reused by another document.
-    seen: Option<Arc<Document>>,
-    revision: u64,
-    /// Keyed by the quality that was asked for. A scene that could not be
-    /// built is remembered as its error, so a viewer asking every frame
-    /// does not build it every frame.
+/// The scenes of one state of a document.
+#[derive(Clone)]
+struct Kept {
+    /// Holding the `Arc` keeps its address from being reused by another
+    /// document.
+    doc: Arc<Document>,
     scenes: Scenes,
-    /// The scenes of documents looked at before, newest last: making one
-    /// of them active again (`file.activate`) shows its scenes again
-    /// instead of meshing it anew, as long as it has not changed (the same
-    /// `Arc`).
-    parked: Vec<(Arc<Document>, Scenes)>,
+    /// When this state was last the active one ([`SceneCache::tick`]):
+    /// the least recently shown go first when the budget is exceeded.
+    shown: u64,
 }
 
-/// Most other documents whose scenes are kept.
-const MAX_PARKED: usize = 2;
+impl Kept {
+    fn bytes(&self) -> usize {
+        self.scenes
+            .iter()
+            .fold(0usize, |n, (_, _, bytes)| n.saturating_add(*bytes))
+    }
+}
+
+/// The scenes of every open document (and of the earlier states of each
+/// that its undo history still holds), within a memory budget: making a
+/// document active again (`file.activate`, a tab), or undoing an edit,
+/// shows its scenes again instead of meshing it anew.
+#[derive(Clone)]
+pub(crate) struct SceneCache {
+    /// The document the revision belongs to.
+    seen: Option<Arc<Document>>,
+    revision: u64,
+    /// Keyed by the document state (the `Arc`), and within it by the
+    /// quality that was asked for. A scene that could not be built is
+    /// remembered as its error, so a viewer asking every frame does not
+    /// build it every frame.
+    kept: Vec<Kept>,
+    /// Counts the changes of the active document, for [`Kept::shown`].
+    tick: u64,
+    /// Most bytes of scenes kept ([`DEFAULT_SCENE_BUDGET`]). The active
+    /// document's scenes are kept whatever they hold.
+    budget: usize,
+    /// See [`Session::set_refine_elsewhere`].
+    refine_elsewhere: bool,
+}
+
+impl Default for SceneCache {
+    fn default() -> Self {
+        Self {
+            seen: None,
+            revision: 0,
+            kept: Vec::new(),
+            tick: 0,
+            budget: DEFAULT_SCENE_BUDGET,
+            refine_elsewhere: false,
+        }
+    }
+}
 
 impl SceneCache {
     /// Bumps the revision when `current` is not the document seen last.
@@ -377,41 +498,112 @@ impl SceneCache {
             _ => false,
         };
         if !same {
-            let left = std::mem::take(&mut self.scenes);
-            if let Some(seen) = self.seen.take()
-                && !left.is_empty()
-            {
-                if self.parked.len() >= MAX_PARKED {
-                    drop(self.parked.remove(0));
-                }
-                self.parked.push((seen, left));
-            }
             self.seen = current.cloned();
             self.revision = self.revision.saturating_add(1);
-            let revision = self.revision;
-            if let Some(current) = current
-                && let Some(at) = self
-                    .parked
-                    .iter()
-                    .position(|(doc, _)| Arc::ptr_eq(doc, current))
-            {
-                let (_, scenes) = self.parked.remove(at);
-                // The same scenes under the revision they are shown at now.
-                self.scenes = scenes
-                    .into_iter()
-                    .map(|(key, built)| {
-                        let built = built.map(|scene| {
-                            Arc::new(Scene {
-                                revision,
-                                ..(*scene).clone()
-                            })
-                        });
-                        (key, built)
-                    })
-                    .collect();
+            self.tick = self.tick.saturating_add(1);
+            let tick = self.tick;
+            if let Some(kept) = self.active_mut() {
+                kept.shown = tick;
             }
         }
+        // States nobody else holds any more (a closed document, an edit
+        // undone and then overwritten) cannot be shown again. Checked
+        // every time: a few counts per state kept.
+        let seen = &self.seen;
+        self.kept.retain(|kept| {
+            let ours = 1 + usize::from(seen.as_ref().is_some_and(|s| Arc::ptr_eq(s, &kept.doc)));
+            Arc::strong_count(&kept.doc) > ours
+        });
         self.revision
+    }
+
+    fn active_mut(&mut self) -> Option<&mut Kept> {
+        let seen = self.seen.as_ref()?;
+        self.kept
+            .iter_mut()
+            .find(|kept| Arc::ptr_eq(&kept.doc, seen))
+    }
+
+    /// The scene of the active document for `key`, under the current
+    /// revision.
+    fn lookup(&mut self, key: SceneKey) -> Option<Built> {
+        let revision = self.revision;
+        let kept = self.active_mut()?;
+        let (_, built, _) = kept.scenes.iter_mut().find(|(k, ..)| *k == key)?;
+        if let Ok(scene) = built
+            && scene.revision != revision
+        {
+            // The same scene under the revision it is shown at now: the
+            // meshes are shared, not copied.
+            *scene = Arc::new(Scene {
+                revision,
+                ..(**scene).clone()
+            });
+        }
+        Some(built.clone())
+    }
+
+    /// True when the active document has a scene (or an error) for `key`.
+    fn has(&mut self, key: SceneKey) -> bool {
+        self.active_mut()
+            .is_some_and(|kept| kept.scenes.iter().any(|(k, ..)| *k == key))
+    }
+
+    /// Keeps `built` for `doc`, then lets the least recently shown states
+    /// go until the scenes kept are within the budget.
+    fn store(&mut self, doc: &Arc<Document>, key: SceneKey, built: Built) {
+        let bytes = built.as_ref().map_or(0, |scene| scene.bytes());
+        let at = match self.kept.iter().position(|k| Arc::ptr_eq(&k.doc, doc)) {
+            Some(at) => at,
+            None => {
+                self.kept.push(Kept {
+                    doc: Arc::clone(doc),
+                    scenes: Vec::new(),
+                    shown: self.tick,
+                });
+                self.kept.len().saturating_sub(1)
+            }
+        };
+        if let Some(kept) = self.kept.get_mut(at) {
+            kept.scenes.retain(|(k, ..)| *k != key);
+            if kept.scenes.len() >= MAX_CACHED {
+                // The oldest goes; whether it was a scene or a failure.
+                drop(kept.scenes.remove(0));
+            }
+            kept.scenes.push((key, built, bytes));
+        }
+        self.evict();
+    }
+
+    /// Lets whole states of documents go, least recently shown first,
+    /// until the scenes kept are within the budget. The active document's
+    /// are never let go.
+    fn evict(&mut self) {
+        let mut total = self
+            .kept
+            .iter()
+            .fold(0usize, |n, kept| n.saturating_add(kept.bytes()));
+        while total > self.budget {
+            let seen = self.seen.clone();
+            let oldest = self
+                .kept
+                .iter()
+                .enumerate()
+                .filter(|(_, kept)| !seen.as_ref().is_some_and(|s| Arc::ptr_eq(s, &kept.doc)))
+                .min_by_key(|(_, kept)| kept.shown)
+                .map(|(at, _)| at);
+            let Some(at) = oldest else {
+                break;
+            };
+            let gone = self.kept.remove(at);
+            total = total.saturating_sub(gone.bytes());
+        }
+    }
+
+    fn bytes(&self) -> usize {
+        self.kept
+            .iter()
+            .fold(0usize, |n, kept| n.saturating_add(kept.bytes()))
     }
 }
 
@@ -460,6 +652,34 @@ fn model_size(regen: &Regen, doc: &Document) -> f64 {
     } else {
         1.0
     }
+}
+
+/// The size the quick first picture's tolerance is a fraction of: the
+/// diagonal of the box around the bodies (`Body::bbox`, which is found
+/// from the geometry without measuring anything), or without bodies the
+/// size [`model_size`] gives (from the sketches, which costs nothing).
+fn preview_size(regen: &Regen, doc: &Document) -> f64 {
+    let mut extent = Bbox3::EMPTY;
+    for (_, body) in regen.bodies() {
+        if let Ok(Some((low, high))) = body.bbox().map(|b| b.corners()) {
+            extent.add(low);
+            extent.add(high);
+        }
+    }
+    let size = extent.diagonal();
+    if size.is_finite() && size > 0.0 {
+        size
+    } else {
+        model_size(regen, doc)
+    }
+}
+
+/// The area of a mesh: the sum of its triangles' areas, in order.
+fn mesh_area(mesh: &Mesh) -> f64 {
+    (0..mesh.triangles.len())
+        .filter_map(|t| mesh.corners(t))
+        .map(|[a, b, c]| 0.5 * (b - a).cross(c - a).length())
+        .sum()
 }
 
 /// The sketch features that have a solution, in history order.
@@ -684,6 +904,8 @@ enum Stop {
     /// A body needs more segments on a patch than the tessellator allows
     /// at this tolerance.
     TooFine { needed: f64, max: u32 },
+    /// The scene is not wanted any more ([`Refinement::run`]).
+    Cancelled,
 }
 
 /// Builds the scene at `tolerance`. With a `budget`, the build stops at the
@@ -699,12 +921,15 @@ enum Stop {
 /// scene built without one, and where a build stops and what it reports
 /// depend on the document and the tolerance only, not on the number of
 /// threads: the tessellator's promise, kept here by the fixed order.
+///
+/// With `cancel`, the build stops before the next body once it is set.
 fn build(
     doc: &Document,
     regen: &Regen,
     revision: u64,
     tolerance: f64,
     budget: Option<usize>,
+    cancel: Option<&AtomicBool>,
 ) -> (Scene, Option<Stop>) {
     #[cfg(test)]
     tests::building();
@@ -716,8 +941,9 @@ fn build(
         revision,
         tolerance,
         coarsened: false,
-        bodies: Vec::new(),
-        mesh: Mesh::default(),
+        preview: false,
+        bodies: Arc::new(Vec::new()),
+        mesh: Arc::new(Mesh::default()),
         sketches: Vec::new(),
         datums: Vec::new(),
         features: Vec::new(),
@@ -780,6 +1006,9 @@ fn build(
         let Some(body) = outcome.and_then(|o| o.own_body()) else {
             continue;
         };
+        if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+            return (scene, Some(Stop::Cancelled));
+        }
         // The mesh and the edges in one go: the boundaries of the faces
         // are worked out once.
         craft3d_regen::progress::report(&craft3d_regen::progress::Progress {
@@ -846,14 +1075,16 @@ fn build(
             .copied()
             .max()
             .map_or(0, |m| m.saturating_add(1));
-        scene.mesh.positions.extend(&mesh.positions);
-        scene.mesh.normals.extend(&mesh.normals);
-        scene.mesh.triangles.extend(
+        // The scene's own mesh while it is built: `make_mut` copies nothing.
+        let all = Arc::make_mut(&mut scene.mesh);
+        all.positions.extend(&mesh.positions);
+        all.normals.extend(&mesh.normals);
+        all.triangles.extend(
             mesh.triangles
                 .iter()
                 .map(|t| t.map(|k| k.saturating_add(vertex_base))),
         );
-        scene.mesh.face_ids.extend(
+        all.face_ids.extend(
             mesh.face_ids
                 .iter()
                 .map(|f| f.saturating_add(first_face_id)),
@@ -904,7 +1135,7 @@ fn build(
         for list in &mut vertex_faces {
             list.sort_unstable();
         }
-        scene.bodies.push(SceneBody {
+        Arc::make_mut(&mut scene.bodies).push(SceneBody {
             feature: feature.id.to_string(),
             name: feature.name.clone(),
             mesh,
@@ -1016,34 +1247,44 @@ fn scene_datums(doc: &Document, regen: &Regen, bbox: &Bbox3) -> Vec<SceneDatum> 
 }
 
 /// The display rule: the scene at `fine`, or at the coarsest tolerance
-/// between `fine` and `automatic` that keeps the scene within
-/// `max_triangles` triangles and within the tessellator's reach. Each
-/// attempt that stops early says how far over it was, and the next
-/// tolerance is coarser by that ratio (triangles grow as the inverse of
-/// the tolerance at worst, so the estimate errs towards another attempt,
-/// never towards a coarser mesh than needed), at least twice as coarse
-/// and at most 64 times. At or beyond `automatic` no budget applies: the
-/// display is never coarser than `view.render`.
+/// between `fine` and `cap` (the quick first picture's) that keeps the
+/// scene within `max_triangles` triangles and within the tessellator's
+/// reach. Each attempt that stops early says how far over it was, and the
+/// next tolerance is coarser by that ratio (triangles grow as the inverse
+/// of the tolerance at worst, so the estimate errs towards another
+/// attempt, never towards a coarser mesh than needed), at least twice as
+/// coarse and at most 64 times. At or beyond `cap` no budget applies, and
+/// the scene is the first picture itself: the same tolerance gives the
+/// same mesh. `None` when `cancel` was set meanwhile.
 fn build_for_display(
     doc: &Document,
     regen: &Regen,
-    revision: u64,
+    preview: &Scene,
     fine: f64,
-    automatic: f64,
     max_triangles: usize,
-) -> Scene {
+    cancel: &AtomicBool,
+) -> Option<Scene> {
+    let (revision, cap) = (preview.revision, preview.tolerance);
     let mut tolerance = fine;
     let mut attempts = 0;
-    while tolerance < automatic && attempts < MAX_DISPLAY_ATTEMPTS {
+    while tolerance < cap && attempts < MAX_DISPLAY_ATTEMPTS {
         attempts += 1;
-        let (scene, stop) = build(doc, regen, revision, tolerance, Some(max_triangles));
+        let (scene, stop) = build(
+            doc,
+            regen,
+            revision,
+            tolerance,
+            Some(max_triangles),
+            Some(cancel),
+        );
         let Some(stop) = stop else {
-            return Scene {
+            return Some(Scene {
                 coarsened: tolerance > fine,
                 ..scene
-            };
+            });
         };
         let factor = match stop {
+            Stop::Cancelled => return None,
             Stop::OverBudget {
                 triangles,
                 faces_done,
@@ -1065,19 +1306,121 @@ fn build_for_display(
         } else {
             4.0
         };
-        tolerance = (tolerance * factor).min(automatic);
+        tolerance = (tolerance * factor).min(cap);
     }
-    // At the automatic tolerance, out of attempts below it, or asked for
-    // something coarser from the start: no budget.
-    let tolerance = if tolerance.is_finite() && tolerance >= automatic {
+    // At the cap, out of attempts below it, or asked for something
+    // coarser from the start: no budget.
+    let tolerance = if tolerance.is_finite() && tolerance >= cap {
         tolerance
     } else {
-        automatic
+        cap
     };
-    let (scene, _) = build(doc, regen, revision, tolerance, None);
-    Scene {
+    let scene = if tolerance.to_bits() == cap.to_bits() {
+        // The first picture is that scene already.
+        Scene {
+            preview: false,
+            ..preview.clone()
+        }
+    } else {
+        match build(doc, regen, revision, tolerance, None, Some(cancel)) {
+            (_, Some(Stop::Cancelled)) => return None,
+            (scene, _) => scene,
+        }
+    };
+    Some(Scene {
         coarsened: tolerance > fine,
         ..scene
+    })
+}
+
+/// The message of a panic caught while building a scene.
+fn internal_error(payload: &(dyn std::any::Any + Send)) -> CommandError {
+    let detail = payload
+        .downcast_ref::<&str>()
+        .map(|s| (*s).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "no details".to_string());
+    CommandError::new(format!(
+        "the scene could not be built: internal error (a bug in 3DCraft, please report it): {detail}"
+    ))
+}
+
+/// The display scene of one state of a document, to be built away from
+/// the session (on a thread of its own) while a viewer shows the quick
+/// first picture: [`Session::refinement`] gives it, [`Self::run`] builds
+/// it, [`Session::accept_refined`] takes the result back. It holds the
+/// document state and its regeneration, both shared, so the session can
+/// go on running commands meanwhile.
+pub struct Refinement {
+    doc: Arc<Document>,
+    regen: Arc<Regen>,
+    key: SceneKey,
+    relative: f64,
+    max_triangles: usize,
+    preview: Arc<Scene>,
+}
+
+/// What [`Refinement::run`] built.
+pub struct Refined {
+    doc: Arc<Document>,
+    key: SceneKey,
+    /// `None` when it was cancelled.
+    built: Option<Built>,
+}
+
+impl Refined {
+    /// True when the refinement was cancelled before it was done.
+    pub fn cancelled(&self) -> bool {
+        self.built.is_none()
+    }
+}
+
+impl Refinement {
+    /// Builds the display scene: the display rule ([`SceneQuality::Display`])
+    /// with the model's size taken from the area of the first picture's
+    /// mesh (the exact area takes seconds to measure on spline faces; the
+    /// mesh's is within its chordal tolerance of it), and the first
+    /// picture's tolerance as the coarsest it goes. Stops before the next
+    /// body, or the next attempt, once `cancel` is set. Never panics: a
+    /// panic in the kernel becomes the scene's error.
+    pub fn run(&self, cancel: &AtomicBool) -> Refined {
+        let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let area = mesh_area(&self.preview.mesh);
+            let size = if area.is_finite() && area > 0.0 {
+                area.sqrt()
+            } else {
+                model_size(&self.regen, &self.doc)
+            };
+            build_for_display(
+                &self.doc,
+                &self.regen,
+                &self.preview,
+                size * self.relative,
+                self.max_triangles,
+                cancel,
+            )
+        }));
+        let built = match built {
+            Ok(Some(scene)) => Some(Ok(Arc::new(scene))),
+            Ok(None) => None,
+            Err(payload) => Some(Err(internal_error(payload.as_ref()))),
+        };
+        Refined {
+            doc: Arc::clone(&self.doc),
+            key: self.key,
+            built,
+        }
+    }
+
+    /// True while `session` still wants this scene: its document state is
+    /// the active one, and its display scene is not there yet.
+    pub fn wanted(&self, session: &mut Session) -> bool {
+        let active = session
+            .documents
+            .get(session.active)
+            .map(|open| Arc::clone(open.history.current()));
+        session.scene_revision();
+        active.is_some_and(|doc| Arc::ptr_eq(&doc, &self.doc)) && !session.scene.has(self.key)
     }
 }
 
@@ -1112,6 +1455,12 @@ impl Session {
     /// with [`SceneQuality::Display`]. Cached per quality: asking again for
     /// the same quality while the document has not changed returns the
     /// same `Arc`.
+    ///
+    /// For the display rule the quick first picture is built first
+    /// ([`PREVIEW_RELATIVE_TOLERANCE`]); when the display scene is built
+    /// elsewhere ([`Self::set_refine_elsewhere`]) that picture is the
+    /// answer until the display scene is accepted, and it says so
+    /// ([`Scene::preview`]).
     pub fn scene_with(
         &mut self,
         quality: SceneQuality,
@@ -1119,18 +1468,63 @@ impl Session {
         quality.validate()?;
         let revision = self.scene_revision();
         let key = quality.key();
-        if let Some((_, scene)) = self.scene.scenes.iter().find(|(k, _)| *k == key) {
-            return scene.clone().map(Some);
+        if let Some(built) = self.scene.lookup(key) {
+            return built.map(Some);
         }
+        let (relative, max_triangles) = match quality {
+            SceneQuality::Display {
+                relative,
+                max_triangles,
+            } => (relative, max_triangles),
+            SceneQuality::Preview => {
+                return self.build_and_keep(key, |doc, regen| {
+                    let tolerance = preview_size(regen, doc) * PREVIEW_RELATIVE_TOLERANCE;
+                    Scene {
+                        preview: true,
+                        ..build(doc, regen, revision, tolerance, None, None).0
+                    }
+                });
+            }
+            SceneQuality::Automatic | SceneQuality::Tolerance(_) => {
+                return self.build_and_keep(key, |doc, regen| {
+                    let tolerance = match quality {
+                        SceneQuality::Tolerance(t) => t,
+                        _ => model_size(regen, doc) * AUTOMATIC_RELATIVE_TOLERANCE,
+                    };
+                    build(doc, regen, revision, tolerance, None, None).0
+                });
+            }
+        };
+        let Some(preview) = self.scene_with(SceneQuality::Preview)? else {
+            return Ok(None);
+        };
+        if self.scene.refine_elsewhere {
+            return Ok(Some(preview));
+        }
+        let Some(job) = self.refinement_from(key, relative, max_triangles, preview) else {
+            return Ok(None);
+        };
+        let refined = job.run(&AtomicBool::new(false));
+        self.accept_refined(refined);
+        self.scene.lookup(key).transpose()
+    }
+
+    /// Builds a scene of the active document with `make`, guarded, and
+    /// keeps it (or its error) under `key`.
+    fn build_and_keep(
+        &mut self,
+        key: SceneKey,
+        make: impl FnOnce(&Document, &Regen) -> Scene,
+    ) -> Result<Option<Arc<Scene>>, CommandError> {
         let Some(open) = self.documents.get_mut(self.active) else {
             return Ok(None);
         };
+        let doc = Arc::clone(open.history.current());
         // Regeneration and tessellation run here, outside any command: a
         // panic in them must not take the viewer down (AGENTS.md,
         // last-resort guard). The document is not touched either way.
         let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let regen = open.regen();
-            let doc = open.history.current();
             craft3d_regen::progress::report(&craft3d_regen::progress::Progress {
                 phase: "measuring",
                 feature: None,
@@ -1138,53 +1532,111 @@ impl Session {
                 step: 0,
                 steps: 0,
             });
-            let size = model_size(&regen, doc);
-            let automatic = size * AUTOMATIC_RELATIVE_TOLERANCE;
-            match quality {
-                SceneQuality::Automatic => build(doc, &regen, revision, automatic, None).0,
-                SceneQuality::Tolerance(t) => build(doc, &regen, revision, t, None).0,
-                SceneQuality::Display {
-                    relative,
-                    max_triangles,
-                } => build_for_display(
-                    doc,
-                    &regen,
-                    revision,
-                    size * relative,
-                    automatic,
-                    max_triangles,
-                ),
-            }
+            make(&doc, &regen)
         }));
-        let scene = built.map(Arc::new).map_err(|payload| {
-            let detail = payload
-                .downcast_ref::<&str>()
-                .map(|s| (*s).to_string())
-                .or_else(|| payload.downcast_ref::<String>().cloned())
-                .unwrap_or_else(|| "no details".to_string());
-            CommandError::new(format!(
-                "the scene could not be built: internal error (a bug in 3DCraft, please report it): {detail}"
-            ))
-        });
-        if self.scene.scenes.len() >= MAX_CACHED {
-            // The oldest goes; whether it was a scene or a failure.
-            drop(self.scene.scenes.remove(0));
-        }
-        self.scene.scenes.push((key, scene.clone()));
+        let scene = built
+            .map(Arc::new)
+            .map_err(|payload| internal_error(payload.as_ref()));
+        self.scene.store(&doc, key, scene.clone());
         scene.map(Some)
+    }
+
+    fn refinement_from(
+        &mut self,
+        key: SceneKey,
+        relative: f64,
+        max_triangles: usize,
+        preview: Arc<Scene>,
+    ) -> Option<Refinement> {
+        let open = self.documents.get_mut(self.active)?;
+        Some(Refinement {
+            doc: Arc::clone(open.history.current()),
+            regen: open.regen(),
+            key,
+            relative,
+            max_triangles,
+            preview,
+        })
+    }
+
+    /// The display scene of the active document for `quality`, to be
+    /// built elsewhere: `Some` when the quick first picture is there and
+    /// the display scene is not (nor known to fail). A shell that keeps
+    /// its window drawing runs it on a thread of its own and hands the
+    /// result to [`Self::accept_refined`].
+    pub fn refinement(&mut self, quality: SceneQuality) -> Option<Refinement> {
+        let SceneQuality::Display {
+            relative,
+            max_triangles,
+        } = quality
+        else {
+            return None;
+        };
+        quality.validate().ok()?;
+        self.scene_revision();
+        let key = quality.key();
+        if self.scene.has(key) {
+            return None;
+        }
+        let preview = self.scene.lookup(SceneKey::Preview)?.ok()?;
+        self.refinement_from(key, relative, max_triangles, preview)
+    }
+
+    /// Keeps the scene a [`Refinement`] built, for the document state it
+    /// was built for (also when another document, or another state, is
+    /// active by now: it is shown when that state is active again). True
+    /// when it is now the active document's. A cancelled one is dropped.
+    pub fn accept_refined(&mut self, refined: Refined) -> bool {
+        let Refined { doc, key, built } = refined;
+        let Some(built) = built else {
+            return false;
+        };
+        self.scene_revision();
+        self.scene.store(&doc, key, built);
+        self.scene
+            .seen
+            .as_ref()
+            .is_some_and(|seen| Arc::ptr_eq(seen, &doc))
+    }
+
+    /// Says that the display scene is built elsewhere, by a host that runs
+    /// [`Self::refinement`] on a thread of its own (the window), so that
+    /// [`Self::scene_with`] answers the display rule with the quick first
+    /// picture until then. Off by default: the display scene is built
+    /// where it is asked for.
+    pub fn set_refine_elsewhere(&mut self, elsewhere: bool) {
+        self.scene.refine_elsewhere = elsewhere;
+    }
+
+    /// The most bytes of scenes kept for the open documents and their
+    /// earlier states ([`DEFAULT_SCENE_BUDGET`]); the least recently shown
+    /// go first. The active document's scenes are kept whatever they hold.
+    pub fn set_scene_budget(&mut self, bytes: usize) {
+        self.scene.budget = bytes;
+        self.scene.evict();
+    }
+
+    /// The bytes of the scenes kept now ([`Scene::bytes`]).
+    pub fn scene_bytes(&self) -> usize {
+        self.scene.bytes()
     }
 
     /// True when [`Self::scene_with`] for `quality` would answer at once:
     /// the scene is built (or known to fail), no document is open, or the
-    /// quality is refused. A host that keeps a window drawing builds the
-    /// scene elsewhere when this is false.
+    /// quality is refused; for the display rule while the display scene is
+    /// built elsewhere, when the quick first picture is there. A host that
+    /// keeps a window drawing builds the scene elsewhere when this is
+    /// false.
     pub fn scene_ready(&mut self, quality: SceneQuality) -> bool {
         if quality.validate().is_err() || !self.has_document() {
             return true;
         }
         self.scene_revision();
         let key = quality.key();
-        self.scene.scenes.iter().any(|(k, _)| *k == key)
+        self.scene.has(key)
+            || (self.scene.refine_elsewhere
+                && matches!(quality, SceneQuality::Display { .. })
+                && self.scene.has(SceneKey::Preview))
     }
 
     /// The active document as a status bar shows it.
@@ -1306,7 +1758,9 @@ mod tests {
             .scene_with(SceneQuality::display())
             .unwrap()
             .unwrap();
-        assert_eq!(BUILDS.get(), builds + 1, "built once");
+        // Twice: the quick first picture, then the display scene once
+        // (coarse first, then sharp, 2026-10-14); not once per attempt.
+        assert_eq!(BUILDS.get(), builds + 2, "built once per stage");
         assert!(scene.bodies.is_empty() && !scene.coarsened);
         assert!(
             scene.problems.len() == 1 && scene.problems[0].contains("did not converge"),
@@ -1403,6 +1857,212 @@ mod tests {
             serde_json::json!({"radius": 1}),
         );
         assert_eq!(session.scene(None).unwrap().unwrap().bodies.len(), 3);
+    }
+
+    fn run(session: &mut Session, id: &str, params: serde_json::Value) {
+        session.execute(id, &params).unwrap();
+    }
+
+    /// `count` open documents, each a different solid.
+    fn documents(count: usize) -> Session {
+        let mut session = Session::new(Workspace::none());
+        for k in 0..count {
+            run(&mut session, "file.new", serde_json::json!({}));
+            run(
+                &mut session,
+                "feature.cylinder",
+                serde_json::json!({"radius": 1.0 + k as f64, "height": 3}),
+            );
+        }
+        session
+    }
+
+    fn activate(session: &mut Session, document: usize) {
+        run(
+            session,
+            "file.activate",
+            serde_json::json!({ "document": document }),
+        );
+    }
+
+    /// The developer's report: with four tabs, switching sometimes showed
+    /// the model at once and sometimes meshed it again (two other
+    /// documents were kept). Within the budget every open document's
+    /// scenes are kept: switching among six, back and forth, builds
+    /// nothing, and shows the very meshes it showed before.
+    #[test]
+    fn switching_among_six_open_documents_never_meshes_again_within_the_budget() {
+        let mut session = documents(6);
+        let mut shown = Vec::new();
+        for document in 0..6 {
+            activate(&mut session, document);
+            shown.push(
+                session
+                    .scene_with(SceneQuality::display())
+                    .unwrap()
+                    .unwrap(),
+            );
+        }
+        let builds = BUILDS.get();
+        for round in 0..4 {
+            for document in [3, 0, 5, 1, 4, 2] {
+                activate(&mut session, (document + round) % 6);
+                let again = session
+                    .scene_with(SceneQuality::display())
+                    .unwrap()
+                    .unwrap();
+                let before = &shown[(document + round) % 6];
+                assert!(Arc::ptr_eq(&again.mesh, &before.mesh));
+                assert!(Arc::ptr_eq(&again.bodies, &before.bodies));
+                assert!(again.revision > before.revision);
+            }
+        }
+        assert_eq!(BUILDS.get(), builds, "a scene was built again");
+        assert!(session.scene_bytes() > 0);
+    }
+
+    /// Over the budget, the least recently shown documents' scenes go
+    /// first, and the active document's are kept whatever they hold.
+    #[test]
+    fn over_the_budget_the_least_recently_shown_go_first() {
+        let mut session = documents(3);
+        for document in [0, 1, 2] {
+            activate(&mut session, document);
+            session.scene_with(SceneQuality::display()).unwrap();
+        }
+        let all = session.scene_bytes();
+        // Room for about two documents' scenes: the first one shown goes.
+        session.set_scene_budget(all * 3 / 4);
+        assert!(session.scene_bytes() <= all * 3 / 4);
+        let builds = BUILDS.get();
+        activate(&mut session, 1);
+        session.scene_with(SceneQuality::display()).unwrap();
+        assert_eq!(BUILDS.get(), builds, "document 1 was kept");
+        activate(&mut session, 0);
+        session.scene_with(SceneQuality::display()).unwrap();
+        assert!(BUILDS.get() > builds, "document 0 was let go");
+        // A budget of nothing keeps the active document's scenes only.
+        session.set_scene_budget(0);
+        let builds = BUILDS.get();
+        session.scene_with(SceneQuality::display()).unwrap();
+        assert_eq!(BUILDS.get(), builds);
+        activate(&mut session, 2);
+        session.scene_with(SceneQuality::display()).unwrap();
+        assert!(BUILDS.get() > builds);
+    }
+
+    /// A closed document's scenes are let go at once, budget or not.
+    #[test]
+    fn a_closed_documents_scenes_are_let_go() {
+        let mut session = documents(2);
+        session.scene_with(SceneQuality::display()).unwrap();
+        activate(&mut session, 0);
+        session.scene_with(SceneQuality::display()).unwrap();
+        activate(&mut session, 1);
+        let both = session.scene_bytes();
+        run(
+            &mut session,
+            "file.close",
+            serde_json::json!({"discard": true}),
+        );
+        session.scene_with(SceneQuality::display()).unwrap();
+        assert!(session.scene_bytes() < both);
+    }
+
+    /// Coarse first, then sharp: with the display scene built elsewhere,
+    /// the display rule answers with the quick first picture, and the
+    /// refinement, run away from the session, replaces it at the same
+    /// revision. The same as building it in place, bit for bit.
+    #[test]
+    fn the_first_picture_is_refined_elsewhere_into_the_display_scene() {
+        let mut session = documents(1);
+        run(
+            &mut session,
+            "feature.sphere",
+            serde_json::json!({"radius": 2, "position": [5, 0, 0]}),
+        );
+        let mut in_place = session.clone();
+        let sharp_in_place = in_place
+            .scene_with(SceneQuality::display())
+            .unwrap()
+            .unwrap();
+
+        session.set_refine_elsewhere(true);
+        assert!(!session.scene_ready(SceneQuality::display()));
+        let first = session
+            .scene_with(SceneQuality::display())
+            .unwrap()
+            .unwrap();
+        assert!(first.preview);
+        assert!(session.scene_ready(SceneQuality::display()));
+        assert!(first.triangles() < sharp_in_place.triangles());
+        // Asked again: the same first picture, nothing built.
+        let builds = BUILDS.get();
+        let again = session
+            .scene_with(SceneQuality::display())
+            .unwrap()
+            .unwrap();
+        assert!(Arc::ptr_eq(&first, &again));
+        assert_eq!(BUILDS.get(), builds);
+
+        let job = session.refinement(SceneQuality::display()).unwrap();
+        assert!(job.wanted(&mut session));
+        // Built on another thread while the session stays here.
+        let refined = std::thread::spawn(move || job.run(&AtomicBool::new(false)))
+            .join()
+            .unwrap();
+        assert!(!refined.cancelled());
+        assert!(session.accept_refined(refined));
+        let sharp = session
+            .scene_with(SceneQuality::display())
+            .unwrap()
+            .unwrap();
+        assert!(!sharp.preview);
+        assert_eq!(sharp.revision, first.revision);
+        assert_eq!(sharp.tolerance, sharp_in_place.tolerance);
+        assert_eq!(*sharp.mesh, *sharp_in_place.mesh);
+        assert_eq!(*sharp.bodies, *sharp_in_place.bodies);
+        assert!(session.refinement(SceneQuality::display()).is_none());
+    }
+
+    /// A refinement that is cancelled keeps nothing; one that finishes
+    /// after an edit is kept for the state it was built for, and shown
+    /// without building when an undo makes that state active again.
+    #[test]
+    fn a_refinement_is_cancelled_or_kept_for_its_own_state() {
+        let mut session = documents(1);
+        session.set_refine_elsewhere(true);
+        session.scene_with(SceneQuality::display()).unwrap();
+        let job = session.refinement(SceneQuality::display()).unwrap();
+        let cancelled = job.run(&AtomicBool::new(true));
+        assert!(cancelled.cancelled());
+        assert!(!session.accept_refined(cancelled));
+        assert!(session.refinement(SceneQuality::display()).is_some());
+
+        run(
+            &mut session,
+            "feature.block",
+            serde_json::json!({"size": [1, 1, 1], "position": [9, 0, 0]}),
+        );
+        assert!(!job.wanted(&mut session));
+        let late = job.run(&AtomicBool::new(false));
+        assert!(!session.accept_refined(late));
+        // The edited state shows its own first picture.
+        assert!(
+            session
+                .scene_with(SceneQuality::display())
+                .unwrap()
+                .unwrap()
+                .preview
+        );
+        run(&mut session, "edit.undo", serde_json::json!({}));
+        let builds = BUILDS.get();
+        let shown = session
+            .scene_with(SceneQuality::display())
+            .unwrap()
+            .unwrap();
+        assert!(!shown.preview);
+        assert_eq!(BUILDS.get(), builds);
     }
 
     /// The closed form: n chords over a sweep are each `sweep / n` wide, and

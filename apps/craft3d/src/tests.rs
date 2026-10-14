@@ -1530,6 +1530,11 @@ mod engine_thread {
 
     impl Window {
         fn open() -> Self {
+            Self::open_with(Duration::ZERO)
+        }
+
+        /// A window whose refinements each take `refining` longer.
+        fn open_with(refining: Duration) -> Self {
             let (requests, incoming) = mpsc::channel::<Request>();
             let wake: Wake = Arc::new(|| {});
             let server = ControlServer::start(
@@ -1551,7 +1556,9 @@ mod engine_thread {
             let frames = std::thread::spawn(move || {
                 let picker = Picker::new(Arc::new(SystemDialogs), Arc::new(|| {}));
                 let host = Host::new(Session::new(Workspace::none()));
-                let mut desk = Desk::new(host, incoming, picker).with_engine_thread(wake);
+                let mut desk = Desk::new(host, incoming, picker)
+                    .with_engine_thread(wake)
+                    .with_slow_refinement(refining);
                 while !for_stop.load(Ordering::SeqCst) {
                     let start = Instant::now();
                     let turn = desk.turn();
@@ -1731,6 +1738,64 @@ mod engine_thread {
 
     /// A slow command over MCP runs on the engine thread too; listing the
     /// tools does not need to.
+    /// Coarse first, then sharp: after an edit the window shows the quick
+    /// first picture at once and says it is refining; a command that
+    /// comes meanwhile is answered without waiting for the refinement; a
+    /// screenshot waits for it and shows the display scene.
+    #[test]
+    fn the_first_picture_is_refined_while_commands_go_on() {
+        let window = Window::open_with(Duration::from_millis(1500));
+        let mut agent = window.client();
+        agent.execute("file.new", json!({}));
+        agent.execute("feature.sphere", json!({"radius": 20}));
+        let state = agent.ok("ui.get", json!({}));
+        let first = state["scene"].clone();
+        assert_eq!(first["refining"], true, "{state}");
+        // Answered while the refinement runs.
+        let started = Instant::now();
+        let measured = agent.execute("document.measure", json!({}));
+        assert!(
+            started.elapsed() < Duration::from_millis(1000),
+            "{:?}",
+            started.elapsed()
+        );
+        assert!(measured["area"].as_f64().unwrap() > 5000.0, "{measured}");
+        let state = agent.ok("ui.get", json!({}));
+        assert_eq!(state["scene"]["refining"], true, "{state}");
+        // The screenshot waits for the display scene.
+        let shot = agent.ok("ui.screenshot", json!({"width": 64, "height": 48}));
+        assert!(shot["base64"].is_string(), "{shot}");
+        let state = agent.ok("ui.get", json!({}));
+        let sharp = &state["scene"];
+        assert_eq!(shot["triangles"], sharp["triangles"], "{state}");
+        assert_eq!(sharp["refining"], false, "{state}");
+        assert_eq!(sharp["revision"], first["revision"], "{state}");
+        assert!(
+            sharp["tolerance"].as_f64().unwrap() < first["tolerance"].as_f64().unwrap() / 4.0,
+            "{first} then {sharp}"
+        );
+        assert!(sharp["triangles"].as_u64().unwrap() > first["triangles"].as_u64().unwrap());
+    }
+
+    /// Switching back to a document whose scenes were built shows them
+    /// at once: no first picture, nothing to refine.
+    #[test]
+    fn switching_tabs_shows_the_display_scene_at_once() {
+        let window = Window::open();
+        let mut agent = window.client();
+        for radius in [5, 6, 7, 8] {
+            agent.execute("file.new", json!({}));
+            agent.execute("feature.sphere", json!({ "radius": radius }));
+            until(|| agent.ok("ui.get", json!({}))["scene"]["refining"] == false);
+        }
+        for document in [0, 2, 1, 3, 0] {
+            agent.execute("file.activate", json!({ "document": document }));
+            let state = agent.ok("ui.get", json!({}));
+            assert_eq!(state["scene"]["refining"], false, "{state}");
+            assert_eq!(state["work"], Value::Null, "{state}");
+        }
+    }
+
     #[test]
     fn mcp_tool_calls_go_to_the_engine_thread_and_the_rest_stays() {
         use crate::host::{Route, route};

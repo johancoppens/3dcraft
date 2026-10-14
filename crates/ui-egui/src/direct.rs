@@ -170,7 +170,7 @@ pub fn segments_marked(
     };
     // In a picture that is cut open an edge is drawn where it is kept, and
     // the outline of the cut is drawn as edges.
-    for body in scene.into_iter().flat_map(|scene| &scene.bodies) {
+    for body in scene.into_iter().flat_map(|scene| scene.bodies.iter()) {
         for edge in &body.edges {
             for pair in edge.windows(2) {
                 if let [a, b] = *pair
