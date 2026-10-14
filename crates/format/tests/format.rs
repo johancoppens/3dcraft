@@ -168,7 +168,7 @@ fn saving_twice_gives_the_same_bytes() {
 fn the_manifest_of_a_small_document_is_exactly_this() {
     let expected = r#"{
   "format": "3dcraft",
-  "format_version": 11,
+  "format_version": 12,
   "document": {
     "units": {
       "length": "mm",
@@ -340,17 +340,17 @@ fn fix_trailing_commas(json: &str) -> String {
 
 #[test]
 fn a_newer_format_version_says_a_newer_3dcraft_is_needed() {
-    let error = load_error(&edited(&version_field(), "\"format_version\": 12"));
+    let error = load_error(&edited(&version_field(), "\"format_version\": 13"));
     assert!(matches!(
         error,
         FormatError::NewerVersion {
-            file: 12,
+            file: 13,
             supported: FORMAT_VERSION
         }
     ));
     let text = error.to_string();
     assert!(
-        text.contains("version 12")
+        text.contains("version 13")
             && text.contains(&format!("version {FORMAT_VERSION}"))
             && text.contains("newer 3DCraft is needed"),
         "{text}"
@@ -2563,7 +2563,9 @@ fn the_face_operations_are_written_like_this_and_round_trip() {
     assert_eq!(doc.validate(), Ok(()));
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 11);
+    // The face operations came with version 11; the current one is
+    // written.
+    assert_eq!(value["format_version"], FORMAT_VERSION);
     let kinds: Vec<&serde_json::Value> = value["document"]["features"]
         .as_array()
         .unwrap()
@@ -2588,6 +2590,77 @@ fn the_face_operations_are_written_like_this_and_round_trip() {
     assert_ne!(bare, json);
     assert!(from_manifest_json(bare.as_bytes()).is_err());
     let bare = json.replacen("\"thickness\": \"2 mm\",", "", 1);
+    assert_ne!(bare, json);
+    assert!(from_manifest_json(bare.as_bytes()).is_err());
+}
+
+/// A version-11 file, as written before delete face: an offset and a
+/// shell. Never edit this.
+#[test]
+fn a_version_11_file_opens_unchanged_and_is_saved_as_the_current_version() {
+    let v11 = r#"{"format": "3dcraft", "format_version": 11, "document": {
+        "units": {"length": "mm", "angle": "deg"},
+        "tolerance": {"linear": 1e-6, "angular": 1e-9},
+        "variables": [{"name": "t", "expr": "1 mm"}],
+        "features": [
+          {"id": 1, "name": "Base", "suppressed": false, "kind": {"type": "block",
+            "position": ["0", "0", "0"], "size": ["40 mm", "30 mm", "10 mm"]}},
+          {"id": 2, "name": "Taller", "suppressed": false, "kind": {"type": "offsetFace",
+            "faces": [{"feature": 1, "role": "face", "sources": [1]}], "distance": "2 mm"}},
+          {"id": 3, "name": "Hollow", "suppressed": false, "kind": {"type": "shell",
+            "source": 2, "thickness": "t",
+            "open": [{"feature": 2, "role": "copy", "sources": [0],
+                      "of": {"feature": 1, "role": "face", "sources": [1]}}]}}],
+        "rollback": null, "next_feature_id": 4}}"#;
+    let doc = match from_manifest_json(v11.as_bytes()) {
+        Ok(doc) => doc,
+        Err(error) => panic!("{error}"),
+    };
+    assert_eq!(doc.features[1].kind.type_name(), "offsetFace");
+    assert_eq!(doc.features[2].kind.type_name(), "shell");
+    let saved = to_manifest_json(&doc).unwrap();
+    assert!(saved.contains(&version_field()), "{saved}");
+    assert!(!saved.contains("deleteFace"), "{saved}");
+    assert_eq!(from_manifest_json(saved.as_bytes()).unwrap(), doc);
+    // The same file from a version this build does not know is refused.
+    let newer = v11.replace(
+        "\"format_version\": 11",
+        &format!("\"format_version\": {}", FORMAT_VERSION + 1),
+    );
+    assert!(from_manifest_json(newer.as_bytes()).is_err());
+}
+
+/// Version 12: delete face, as it is written.
+#[test]
+fn delete_face_is_written_like_this_and_round_trips() {
+    use craft3d_doc::{DeleteFace, NameRole, PersistentName};
+    let face = |n: u64| PersistentName::new(FeatureId(1), NameRole::Face, vec![n]);
+    let face_json = |n: u64| serde_json::json!({"feature": 1, "role": "face", "sources": [n]});
+    let mut doc = small();
+    doc.add_feature(
+        Some("Plain"),
+        FeatureKind::DeleteFace(DeleteFace {
+            faces: vec![face(2), face(0)],
+        }),
+    )
+    .unwrap();
+    assert_eq!(doc.validate(), Ok(()));
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["format_version"], 12);
+    let features = value["document"]["features"].as_array().unwrap();
+    assert_eq!(
+        features[features.len() - 1]["kind"],
+        serde_json::json!({"type": "deleteFace", "faces": [face_json(2), face_json(0)]})
+    );
+    assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+    assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
+    // Without its faces it is no deletion; an unknown field is refused.
+    let bare = json.replacen(
+        "\"type\": \"deleteFace\",",
+        "\"type\": \"deleteFace\", \"also\": 1,",
+        1,
+    );
     assert_ne!(bare, json);
     assert!(from_manifest_json(bare.as_bytes()).is_err());
 }

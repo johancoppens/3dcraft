@@ -88,6 +88,7 @@ fn document_edges(session: &mut Session, params: &Value) -> Run {
     };
     let mut edges = Vec::new();
     let mut total = 0_usize;
+    let mut shortened: Vec<Option<String>> = vec![None; names.faces.len()];
     // Per vertex, whether a listed edge ends in it and the faces that meet
     // in it (those of every edge that ends there, listed or not).
     let mut ends = vec![false; body.vertices.len()];
@@ -124,9 +125,28 @@ fn document_edges(session: &mut Session, params: &Value) -> Run {
             .filter_map(|face| names.faces.get(face.0 as usize))
             .map(ToString::to_string)
             .collect();
+        // The same faces by the shortest names a blend or a face operation
+        // follows to them (regen `follow`), each worked out once.
+        let mut short: Vec<String> = Vec::new();
+        for face in users.get(index).into_iter().flatten() {
+            let slot = face.0 as usize;
+            if let Some(Some(known)) = shortened.get(slot) {
+                short.push(known.clone());
+                continue;
+            }
+            let Some(long) = names.faces.get(slot) else {
+                continue;
+            };
+            let name = craft3d_regen::short_face_name(doc, &regen.features, long).to_string();
+            if let Some(cell) = shortened.get_mut(slot) {
+                *cell = Some(name.clone());
+            }
+            short.push(name);
+        }
         let point = |vertex| body.vertex(vertex).map_or(Value::Null, |v| vec3(v.point));
         let mut entry = json!({
             "faces": faces,
+            "short": short,
             "curve": edge.curve.kind(),
             "start": point(edge.start),
             "end": point(edge.end),

@@ -848,3 +848,102 @@ fn a_part_with_booleans_saves_reopens_and_regenerates_the_same() {
     assert_eq!(after["features"], before["features"]);
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// The low and high ends of `name`'s box along `axis` (0 x, 1 y, 2 z).
+fn span(session: &mut Session, name: &str, axis: usize) -> (f64, f64) {
+    let found = body(session, name);
+    (
+        found["bbox"][0][axis].as_f64().unwrap(),
+        found["bbox"][1][axis].as_f64().unwrap(),
+    )
+}
+
+/// A pin of radius 1 and length `length` extruded from a sketch on `face`
+/// (named `Pin<n>`).
+fn pin_on(session: &mut Session, face: &str, n: usize, length: f64) -> String {
+    let sketch = format!("Spot{n}");
+    let pin = format!("Pin{n}");
+    let made = run(
+        session,
+        "sketch.create",
+        json!({"name": sketch, "face": face}),
+    );
+    assert_eq!(made["status"], "ok", "{made}");
+    run(
+        session,
+        "sketch.circle",
+        json!({"sketch": sketch, "center": [0, 0], "radius": 1}),
+    );
+    let made = run(
+        session,
+        "feature.extrude",
+        json!({"sketch": sketch, "distance": length, "name": pin}),
+    );
+    assert_eq!(made["status"], "ok", "{made}");
+    pin
+}
+
+#[test]
+fn a_sketch_on_a_face_a_subtraction_left_looks_out_of_the_material() {
+    let mut s = plate();
+    // A pocket 20 x 20 x 4 in the top (floor at z = 4), and a square hole
+    // through the plate.
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Cutter", "position": [10, 10, 4], "size": [20, 20, 10]}),
+    );
+    boolean(&mut s, "subtract", "Plate", "Cutter", "Pocketed");
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "Punch", "position": [40, 10, -1], "size": [10, 10, 10]}),
+    );
+    boolean(&mut s, "subtract", "Pocketed", "Punch", "Part");
+    assert_volume(&mut s, "Part", 60.0 * 40.0 * 8.0 - 1600.0 - 800.0);
+    // A pin on the pocket's floor stands up into the pocket, as one on
+    // the plate's top stands up out of it.
+    let pin = pin_on(&mut s, "F6:copy(0)/F4:copy(1)/F3:face(0)", 1, 2.0);
+    assert_eq!(span(&mut s, &pin, 2), (4.0, 6.0));
+    let pin = pin_on(
+        &mut s,
+        "F6:copy(0)/F4:copy(0)/F2:endCap(e5,e6,e7,e8)",
+        2,
+        2.0,
+    );
+    assert_eq!(span(&mut s, &pin, 2), (8.0, 10.0));
+    // On the pocket's front wall (y = 10, the material in front of it),
+    // into the pocket.
+    let pin = pin_on(&mut s, "F6:copy(0)/F4:copy(1)/F3:face(2)", 3, 3.0);
+    assert_eq!(span(&mut s, &pin, 1), (10.0, 13.0));
+    // On the far wall of the square hole (y = 20, the material behind
+    // it), into the hole.
+    let pin = pin_on(&mut s, "F6:copy(1)/F5:face(3)", 4, 3.0);
+    assert_eq!(span(&mut s, &pin, 1), (17.0, 20.0));
+    // A datum plane on the floor lies above it.
+    let made = run(
+        &mut s,
+        "datum.plane",
+        json!({"from": "F6:copy(0)/F4:copy(1)/F3:face(0)", "distance": 1, "name": "Above"}),
+    );
+    assert_eq!(made["status"], "ok", "{made}");
+    let pin = {
+        run(
+            &mut s,
+            "sketch.create",
+            json!({"name": "OnAbove", "plane": "Above"}),
+        );
+        run(
+            &mut s,
+            "sketch.circle",
+            json!({"sketch": "OnAbove", "center": [0, 0], "radius": 1}),
+        );
+        run(
+            &mut s,
+            "feature.extrude",
+            json!({"sketch": "OnAbove", "distance": 1, "name": "PinAbove"}),
+        );
+        "PinAbove".to_string()
+    };
+    assert_eq!(span(&mut s, &pin, 2), (5.0, 6.0));
+}

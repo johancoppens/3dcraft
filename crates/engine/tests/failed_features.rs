@@ -147,6 +147,26 @@ fn face(session: &mut Session, feature: &str, part: &str) -> String {
         .to_string()
 }
 
+/// The name of the wall of the hole of a frame of [`base`]: the side of
+/// its circle, the last curve of its sketch.
+fn hole_wall(session: &mut Session, feature: &str) -> String {
+    let document = inspect(session);
+    let body = document["bodies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["name"] == feature)
+        .unwrap_or_else(|| panic!("no body {feature}"));
+    body["faceNames"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n.as_str().unwrap())
+        .rfind(|n| n.contains(":side("))
+        .unwrap_or_else(|| panic!("{feature} has no side: {body}"))
+        .to_string()
+}
+
 /// The name of the vertex of `feature`'s body at `at`.
 fn vertex(session: &mut Session, feature: &str, at: [f64; 3]) -> String {
     let offered = run(session, "datum.references", json!({"feature": feature}));
@@ -191,6 +211,8 @@ fn build_base() -> Session {
         ("dx2", "4 mm"),
         ("z0", "0 mm"),
         ("z1", "0 mm"),
+        ("t", "3 mm"),
+        ("t2", "3 mm"),
     ] {
         run(&mut s, "variable.set", json!({"name": name, "expr": expr}));
     }
@@ -278,6 +300,30 @@ fn build_base() -> Session {
         "sketch.circle",
         json!({"sketch": "Under", "center": [5, 15], "radius": 2}),
     );
+    // Square frames with a round hole, out of the way: a face that can be
+    // deleted (the hole's wall).
+    for (sketch, name, x, height) in [
+        ("Window", "Frame", 400, "t"),
+        ("Window2", "Frame2", 500, "t2"),
+    ] {
+        run(&mut s, "sketch.create", json!({"name": sketch}));
+        run(
+            &mut s,
+            "sketch.polyline",
+            json!({"sketch": sketch, "closed": true,
+                   "points": [[x, 0], [x + 20, 0], [x + 20, 20], [x, 20]]}),
+        );
+        run(
+            &mut s,
+            "sketch.circle",
+            json!({"sketch": sketch, "center": [x + 10, 10], "radius": 4}),
+        );
+        built(
+            &mut s,
+            "feature.extrude",
+            json!({"sketch": sketch, "distance": height, "name": name}),
+        );
+    }
     for (name, x) in [("Bystander", 200), ("Spare", 300)] {
         built(
             &mut s,
@@ -308,6 +354,8 @@ fn variable_of(upstream: &str) -> &'static str {
         "Dot2" => "dx2",
         "Disc" => "z0",
         "Disc2" => "z1",
+        "Frame" => "t",
+        "Frame2" => "t2",
         other => panic!("{other} has no variable"),
     }
 }
@@ -623,6 +671,25 @@ fn cases() -> Vec<Case> {
             repair: |s, u| {
                 let side = face(s, u, "side");
                 built(s, "feature.edit", json!({"feature": "D", "faces": [side]}));
+            },
+        },
+        Case {
+            what: "delete face: faces",
+            role: "faces.0",
+            upstream: "Frame",
+            alternative: "Frame2",
+            make: |s, u| {
+                let wall = hole_wall(s, u);
+                built(
+                    s,
+                    "feature.deleteFace",
+                    json!({"faces": [wall], "name": "D"}),
+                );
+                (Kind::Body, vec![wall])
+            },
+            repair: |s, u| {
+                let wall = hole_wall(s, u);
+                built(s, "feature.edit", json!({"feature": "D", "faces": [wall]}));
             },
         },
         Case {
@@ -2780,4 +2847,119 @@ fn deleting_the_feature_at_the_rollback_marker_keeps_the_rest_rolled_back() {
     assert_eq!(now["rollback"], Value::Null);
     assert_eq!(status(&now, "Bystander").0, "ok");
     assert_eq!(status(&now, "Plate").0, "failed");
+}
+
+/// A face given by the name of an earlier body is followed through the
+/// features that took the body (docs/architecture.md §4.1 › *References
+/// that follow a body*). Two ways that can fail are new: a feature on the
+/// way took the face away, or made more than one face of it. Either fails
+/// the feature with the feature that did, the feature made from it waits
+/// for it, nothing else is touched, and the repaired feature is the one
+/// built that way from the start.
+#[test]
+fn a_name_followed_to_a_body_that_lost_it_or_has_it_twice_fails_naming_the_feature_on_the_way() {
+    let block = |s: &mut Session| {
+        run(s, "file.new", json!({"units": "mm"}));
+        built(
+            s,
+            "feature.block",
+            json!({"size": [40, 20, 10], "name": "Base"}),
+        );
+    };
+    type Setup = fn(&mut Session);
+    let ways: Vec<(&str, Setup, &[&str])> = vec![
+        (
+            "taken away",
+            |s| {
+                built(
+                    s,
+                    "feature.fillet",
+                    json!({"edges": [["F1:face(1)", "F1:face(2)"]], "radius": 2, "name": "Round"}),
+                );
+                built(
+                    s,
+                    "feature.deleteFace",
+                    json!({"faces": ["F2:fillet(0)"], "name": "Sharp"}),
+                );
+            },
+            &[
+                "edges.0: the face F2:fillet(0) is gone",
+                "`Sharp`, a deleteFace",
+            ],
+        ),
+        (
+            "made twice",
+            |s| {
+                built(
+                    s,
+                    "feature.pattern",
+                    json!({"source": "Base", "count": 2, "step": [60, 0, 0], "name": "Row"}),
+                );
+            },
+            &[
+                "edges.0: the face F1:face(4) is more than one face after `Row`",
+                "F2:copy(0)/F1:face(4), F2:copy(1)/F1:face(4)",
+            ],
+        ),
+    ];
+    for (way, setup, expected) in ways {
+        let mut s = Session::new(Workspace::default());
+        block(&mut s);
+        setup(&mut s);
+        let blend =
+            json!({"edges": [["F1:face(4)", "F2:fillet(0)"]], "distance": 1, "name": "Next"});
+        let blend = if way == "made twice" {
+            json!({"edges": [["F1:face(4)", "F1:face(1)"]], "distance": 1, "name": "Next"})
+        } else {
+            blend
+        };
+        let result = run(&mut s, "feature.chamfer", blend);
+        assert_eq!(result["status"], "failed", "{way}: {result}");
+        run(
+            &mut s,
+            "feature.shell",
+            json!({"source": "Next", "thickness": 1, "name": "After"}),
+        );
+        let document = state(&mut s);
+        let (now, reason) = status(&document, "Next");
+        assert_eq!(now, "failed", "{way}");
+        for part in expected {
+            assert!(reason.contains(part), "{way}: {reason}");
+        }
+        let (now, reason) = status(&document, "After");
+        assert_eq!(now, "failed", "{way}");
+        assert!(
+            reason.contains("`Next` failed; fix it first"),
+            "{way}: {reason}"
+        );
+        every_failure_has_a_reason(&document, way);
+        independent_features_are_untouched(&s, way);
+        undo_and_redo_restore(&s, way);
+        // Repaired by naming what is there: the edge between the left
+        // face and the top, of the last instance for the pattern.
+        let edge = if way == "made twice" {
+            json!([["F2:copy(1)/F1:face(4)", "F2:copy(1)/F1:face(1)"]])
+        } else {
+            json!([["F1:face(4)", "F1:face(1)"]])
+        };
+        built(
+            &mut s,
+            "feature.edit",
+            json!({"feature": "Next", "edges": edge}),
+        );
+        let mut fresh = Session::new(Workspace::default());
+        block(&mut fresh);
+        setup(&mut fresh);
+        built(
+            &mut fresh,
+            "feature.chamfer",
+            json!({"edges": edge, "distance": 1, "name": "Next"}),
+        );
+        run(
+            &mut fresh,
+            "feature.shell",
+            json!({"source": "Next", "thickness": 1, "name": "After"}),
+        );
+        assert_eq!(state(&mut s), state(&mut fresh), "{way}");
+    }
 }

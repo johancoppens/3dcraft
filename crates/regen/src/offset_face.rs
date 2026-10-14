@@ -76,6 +76,7 @@ pub(crate) fn build(
         &names.faces,
         "distance",
         "body with the faces moved",
+        "too far: ",
         &source.tolerance,
     )?;
     Ok((made.body, Some(names)))
