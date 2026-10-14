@@ -16,7 +16,9 @@ use crate::state::CameraState;
 use crate::theme::Tokens;
 use crate::viewport::{AXIS_LENGTH, LineKind, MAX_SIDE, MIN_SIDE, Marks, depth_slack};
 use craft3d_engine::Scene;
-use craft3d_gpu::{DrawOptions, GpuError, GpuLines, GpuMesh, Onscreen, OverlayParams, Segment};
+use craft3d_gpu::{
+    DrawOptions, Fill, GpuError, GpuLines, GpuMesh, Onscreen, OverlayParams, Segment,
+};
 use craft3d_math::Vec3;
 use craft3d_render::{Highlight, RenderParams};
 use egui_wgpu::wgpu;
@@ -192,6 +194,9 @@ pub fn segments_marked(
             true,
         );
     }
+    for [a, b] in marks.datum_lines() {
+        line(a, b, LineKind::Datum, true, true, false);
+    }
     for sketch in scene.into_iter().flat_map(|scene| &scene.sketches) {
         let chosen = selected == Some(sketch.feature.as_str());
         for polyline in &sketch.polylines {
@@ -230,6 +235,17 @@ pub fn segments_marked(
             });
         }
     }
+    for point in marks.datum_points() {
+        out.push(Segment {
+            from: point,
+            to: point,
+            color: LineKind::Datum.color(tokens),
+            width: LineKind::Datum.dot_radius(tokens) * 2.0 * scale,
+            tested: true,
+            dimmed: true,
+            axis: false,
+        });
+    }
     for point in marks
         .points
         .iter()
@@ -246,6 +262,23 @@ pub fn segments_marked(
         });
     }
     out
+}
+
+/// The squares of the datum planes of `marks` as the GPU fills them under
+/// the lines, in the theme's datum colour and fill opacity: what
+/// `viewport::fill_datum_planes` draws on the CPU.
+pub fn fills(marks: &Marks, tokens: &Tokens) -> Vec<Fill> {
+    marks
+        .datum_planes()
+        .into_iter()
+        .map(|(center, u, v)| Fill {
+            center,
+            u,
+            v,
+            color: tokens.datum,
+            opacity: tokens.datum_fill_opacity,
+        })
+        .collect()
 }
 
 /// A render state without a window, as eframe would make one: the
@@ -477,14 +510,17 @@ impl Direct {
         if !same_lines {
             let lines = self
                 .onscreen
-                .upload_lines(&segments_marked(
-                    scene,
-                    wanted.selected.as_deref(),
-                    &wanted.tokens,
-                    wanted.scale,
-                    &wanted.marks,
-                    see_through,
-                ))
+                .upload_overlay(
+                    &segments_marked(
+                        scene,
+                        wanted.selected.as_deref(),
+                        &wanted.tokens,
+                        wanted.scale,
+                        &wanted.marks,
+                        see_through,
+                    ),
+                    &fills(&wanted.marks, &wanted.tokens),
+                )
                 .map_err(classify)?;
             if same_mesh && let Some(uploaded) = &mut self.uploaded {
                 uploaded.lines = lines;

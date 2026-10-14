@@ -174,6 +174,7 @@ impl Shell {
                     "state": row.state.name(),
                     "status": row.status,
                     "error": row.error,
+                    "causedBy": row.caused_by.as_ref().map(|(id, name)| json!({"id": id, "name": name})),
                     "selected": row.selected,
                 })
             })

@@ -143,7 +143,29 @@ pub struct TreeRow {
     pub status: String,
     /// Why the feature failed.
     pub error: Option<String>,
+    /// When it failed because something it is made from failed: the
+    /// feature at the start of that chain, the one to fix, as its id
+    /// (`F3`) and its name.
+    pub caused_by: Option<(String, String)>,
     pub selected: bool,
+}
+
+/// The marks of the feature tree, by state: built, failed, suppressed,
+/// rolled back. All four are in egui's default fonts (a test checks: the
+/// round dot U+25CF is not, and was drawn as a box).
+pub const TREE_MARKS: [char; 4] = ['✔', '⚠', '⏸', '○'];
+
+/// The mark a row of the feature tree starts with, which says its state
+/// at a glance; its colour says it too.
+pub fn tree_mark(state: FeatureState) -> String {
+    let [ok, failed, suppressed, rolled_back] = TREE_MARKS;
+    match state {
+        FeatureState::Ok => ok,
+        FeatureState::Failed => failed,
+        FeatureState::Suppressed => suppressed,
+        FeatureState::RolledBack => rolled_back,
+    }
+    .to_string()
 }
 
 /// What the status bar says about the last command.
@@ -214,6 +236,8 @@ struct FrameKey {
     opacity: f64,
     /// The plane the picture is cut open with.
     section: Option<Section>,
+    /// The datums are drawn.
+    datums: bool,
     tokens: Tokens,
 }
 
@@ -413,6 +437,9 @@ pub struct Shell {
     /// Where the section's controls were drawn: `toggle` and, while the
     /// section is on, `x`, `y`, `z`, `offset` and `flip`.
     section_hits: Vec<(&'static str, egui::Rect)>,
+    /// Where the last frame drew each "caused by" link of the tree: the
+    /// row's feature id, the id of the feature it names, and the link.
+    cause_hits: Vec<(String, String, egui::Rect)>,
     /// The section as it lies in the scene, while it is on.
     section_cache: Option<SectionCache>,
     /// Why the section was switched off: its plane was lost.
@@ -501,6 +528,7 @@ impl Shell {
             turn: None,
             transparency_rect: None,
             section_hits: Vec::new(),
+            cause_hits: Vec::new(),
             section_cache: None,
             section_lost: None,
             framed: Bbox3::EMPTY,
@@ -811,6 +839,7 @@ impl Shell {
             self.state.highlight_edge.as_ref(),
             self.state.highlight_vertex.as_ref(),
             self.section_cut(),
+            self.state.show.datums,
         )
     }
 
@@ -862,6 +891,13 @@ impl Shell {
     /// `x`, `y`, `z`, `offset` (the slider) and `flip`.
     pub fn section_hits(&self) -> &[(&'static str, egui::Rect)] {
         &self.section_hits
+    }
+
+    /// Where the last frame drew the "caused by" links of the feature tree:
+    /// (the failed feature's id, the id of the feature that caused it, the
+    /// link's rectangle). A click on a link selects that feature.
+    pub fn cause_hits(&self) -> &[(String, String, egui::Rect)] {
+        &self.cause_hits
     }
 
     /// Brings the section up to date with the scene: where its plane lies
@@ -1133,6 +1169,13 @@ impl Shell {
             self.state.picked = None;
         }
         let selected = self.state.selected_feature.as_deref();
+        let name_of = |id: &str| {
+            scene
+                .features
+                .iter()
+                .find(|f| f.id == id)
+                .map_or_else(|| id.to_string(), |f| f.name.clone())
+        };
         self.rows = scene
             .features
             .iter()
@@ -1143,6 +1186,7 @@ impl Shell {
                 state: f.state,
                 status: status_text(f.state, f.is_sketch, f.dof),
                 error: f.error.clone(),
+                caused_by: f.caused_by.as_ref().map(|id| (id.clone(), name_of(id))),
                 selected: selected == Some(f.id.as_str()),
             })
             .collect();
@@ -1204,6 +1248,7 @@ impl Shell {
                 .resizable(false)
                 .show(ui, |ui| self.status_bar(ui, status.as_ref()));
         }
+        self.cause_hits.clear();
         if self.state.panels.tree {
             egui::Panel::left("craft3d-tree")
                 .resizable(true)
@@ -1451,6 +1496,8 @@ impl Shell {
             return;
         }
         let mut clicked = None;
+        let mut followed = None;
+        let mut hits = Vec::new();
         egui::ScrollArea::vertical().show(ui, |ui| {
             for row in &self.rows {
                 let tint = match row.state {
@@ -1458,13 +1505,51 @@ impl Shell {
                     FeatureState::Failed => tokens.failed,
                     FeatureState::Suppressed | FeatureState::RolledBack => tokens.inactive,
                 };
+                let mark = tree_mark(row.state);
+                let mut name = egui::RichText::new(&row.name);
+                match row.state {
+                    FeatureState::Ok => {}
+                    FeatureState::Failed => name = name.color(color(tokens.failed)),
+                    FeatureState::Suppressed => {
+                        name = name.color(color(tokens.inactive)).strikethrough();
+                    }
+                    FeatureState::RolledBack => name = name.color(color(tokens.inactive)).italics(),
+                }
+                let hover = match (&row.error, row.state) {
+                    (Some(error), _) => error.clone(),
+                    (None, FeatureState::Suppressed) => {
+                        "Suppressed: not built, and what is made from it fails.".to_string()
+                    }
+                    (None, FeatureState::RolledBack) => {
+                        "Rolled back: after the rollback marker, not built.".to_string()
+                    }
+                    (None, _) => format!("{} · {}", row.kind, row.status),
+                };
                 ui.horizontal(|ui| {
-                    ui.colored_label(color(tint), "●");
-                    if ui.selectable_label(row.selected, &row.name).clicked() {
+                    ui.colored_label(color(tint), mark).on_hover_text(&hover);
+                    if ui
+                        .selectable_label(row.selected, name)
+                        .on_hover_text(&hover)
+                        .clicked()
+                    {
                         clicked = Some(row.id.clone());
                     }
                     ui.colored_label(dim, format!("{} · {}", row.kind, row.status));
                 });
+                if let Some((cause, cause_name)) = &row.caused_by {
+                    ui.indent(("craft3d-cause", &row.id), |ui| {
+                        ui.horizontal(|ui| {
+                            ui.colored_label(dim, "caused by");
+                            let link = ui
+                                .link(egui::RichText::new(cause_name).color(color(tokens.failed)))
+                                .on_hover_text("Select the feature to fix first");
+                            hits.push((row.id.clone(), cause.clone(), link.rect));
+                            if link.clicked() {
+                                followed = Some(cause.clone());
+                            }
+                        });
+                    });
+                }
                 if let Some(error) = &row.error {
                     ui.indent(("craft3d-error", &row.id), |ui| {
                         ui.add(
@@ -1479,6 +1564,13 @@ impl Shell {
                 }
             }
         });
+        self.cause_hits = hits;
+        // A click on a cause selects that feature (it does not toggle: the
+        // point is to get there).
+        if let Some(id) = followed {
+            self.state.selected_feature = Some(id);
+            return;
+        }
         // Clicking the selected row again clears the selection. Which row
         // is highlighted is view state: nothing in the document changes.
         if let Some(id) = clicked {
@@ -1558,6 +1650,7 @@ impl Shell {
             highlight_vertex: self.state.highlight_vertex.clone(),
             opacity: self.opacity(),
             section: self.section(),
+            datums: self.state.show.datums,
             tokens,
         };
         // The direct path draws the whole picture, lines included, on the
@@ -1582,6 +1675,26 @@ impl Shell {
                 painter.image(texture.id(), rect, uv, egui::Color32::WHITE);
             }
             paint_overlay(&painter, rect, self.overlay_size, &self.overlay, &tokens);
+        }
+        // The names of the datums, on either path: text is egui's.
+        if self.state.show.datums {
+            let shown = viewport::datum_marks(scene, true);
+            let [w, h] = size;
+            for (at, name) in viewport::datum_labels(&shown, &self.state.camera, w, h) {
+                let place = egui::pos2(
+                    rect.left() + (at[0] / f64::from(w.max(1))) as f32 * rect.width(),
+                    rect.top() + (at[1] / f64::from(h.max(1))) as f32 * rect.height(),
+                );
+                if rect.contains(place) {
+                    painter.text(
+                        place + egui::vec2(tokens.datum_point_radius + 2.0, -2.0),
+                        egui::Align2::LEFT_BOTTOM,
+                        name,
+                        egui::FontId::proportional(12.0),
+                        color(tokens.datum),
+                    );
+                }
+            }
         }
 
         let inset = tokens.inset;
@@ -2110,6 +2223,7 @@ impl Shell {
             key.highlight_edge.as_ref(),
             key.highlight_vertex.as_ref(),
             cut,
+            key.datums,
         ));
         let outcome = direct.frame(
             scene,
@@ -2193,6 +2307,7 @@ impl Shell {
                 key.highlight_edge.as_ref(),
                 key.highlight_vertex.as_ref(),
                 cut.clone(),
+                key.datums,
             ),
             opacity: key.opacity,
             #[cfg(not(target_arch = "wasm32"))]
@@ -2366,13 +2481,14 @@ const GPU_TARGET_SIDE: u64 = 8192;
 
 /// Paints the overlay, which is in image pixels, into `rect`, which is the
 /// same image in points.
-/// The marks of a highlighted edge and a highlighted vertex, and the
-/// section the picture is cut open with.
+/// The marks of a highlighted edge and a highlighted vertex, the section
+/// the picture is cut open with, and the datums when they are shown.
 fn marks_of(
     scene: Option<&Scene>,
     edge: Option<&EdgeRef>,
     vertex: Option<&VertexRef>,
     cut: Option<viewport::SectionCut>,
+    datums: bool,
 ) -> viewport::Marks {
     let edges = edge.map_or_else(viewport::Marks::default, |edge| {
         viewport::edge_marks(scene, edge)
@@ -2382,7 +2498,9 @@ fn marks_of(
     });
     viewport::Marks {
         cut,
-        ..edges.with(vertices)
+        ..edges
+            .with(vertices)
+            .with(viewport::datum_marks(scene, datums))
     }
 }
 

@@ -52,10 +52,10 @@ pub use recovery::{
     parse_autosave_interval,
 };
 pub use scene::{
-    AUTOMATIC_RELATIVE_TOLERANCE, DISPLAY_MAX_TRIANGLES, DISPLAY_RELATIVE_TOLERANCE,
-    DocumentStatus, FeatureState, MAX_ARC_SEGMENTS, MIN_CIRCLE_SEGMENTS, Scene, SceneBody,
-    SceneFeature, ScenePolyline, SceneQuality, SceneSketch, SketchCurve, arc_segments,
-    base64 as encode_base64,
+    AUTOMATIC_RELATIVE_TOLERANCE, DATUM_AXIS_EXTENT, DATUM_PLANE_EXTENT, DISPLAY_MAX_TRIANGLES,
+    DISPLAY_RELATIVE_TOLERANCE, DocumentStatus, FeatureState, MAX_ARC_SEGMENTS,
+    MIN_CIRCLE_SEGMENTS, Scene, SceneBody, SceneDatum, SceneDatumShape, SceneFeature,
+    ScenePolyline, SceneQuality, SceneSketch, SketchCurve, arc_segments, base64 as encode_base64,
 };
 pub use section::{MAX_SECTION_EXTENT, SECTION_CAP_COLOR, SectionPlane, SectionSpec};
 pub use workspace::{Access, Workspace};

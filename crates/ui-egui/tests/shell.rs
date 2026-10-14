@@ -1280,3 +1280,194 @@ fn the_viewport_asks_for_the_display_quality_and_ui_set_changes_it() {
     .unwrap();
     assert_eq!(shot["triangles"], fitted.triangles());
 }
+
+/// A plate extruded from a sketch with a rod cut out of it, a suppressed
+/// block with the rollback marker on it and a block after that; then a
+/// side of the plate's outline deleted: the plate fails, and the cut that
+/// is made from it fails naming the plate as the cause.
+fn upstream_failure() -> Session {
+    let mut s = Session::new(Workspace::none());
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(&mut s, "sketch.create", json!({"name": "Base"}));
+    run(
+        &mut s,
+        "sketch.polyline",
+        json!({"sketch": "Base", "closed": true, "points": [[0, 0], [40, 0], [40, 20], [0, 20]]}),
+    );
+    run(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "Base", "distance": 5, "name": "Plate"}),
+    );
+    run(
+        &mut s,
+        "feature.cylinder",
+        json!({"radius": 2, "height": 20, "position": [30, 10, -2], "name": "Rod"}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Plate", "tool": "Rod", "name": "Hole"}),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [1, 1, 1], "position": [100, 0, 0], "name": "Spare"}),
+    );
+    run(
+        &mut s,
+        "feature.block",
+        json!({"size": [1, 1, 1], "position": [120, 0, 0], "name": "After"}),
+    );
+    run(&mut s, "feature.suppress", json!({"feature": "Spare"}));
+    run(&mut s, "history.rollback", json!({"feature": "Spare"}));
+    // A side of the outline deleted: the profile is open, the plate fails.
+    run(
+        &mut s,
+        "sketch.delete",
+        json!({"sketch": "Base", "entity": "e5"}),
+    );
+    s
+}
+
+#[test]
+fn the_tree_shows_failed_suppressed_and_rolled_back_features_and_follows_a_cause() {
+    let mut session = upstream_failure();
+    let inspected = run(&mut session, "document.inspect", json!({}));
+    let mut shell = Shell::new();
+    let mut window = Window::new(1000.0, 700.0);
+    window.idle(&mut shell, &mut session, 3);
+    let rows = shell.tree_rows().to_vec();
+    let states: Vec<(&str, FeatureState)> =
+        rows.iter().map(|r| (r.name.as_str(), r.state)).collect();
+    assert_eq!(
+        states,
+        [
+            ("Base", FeatureState::Ok),
+            ("Plate", FeatureState::Failed),
+            ("Rod", FeatureState::Ok),
+            ("Hole", FeatureState::Failed),
+            ("Spare", FeatureState::Suppressed),
+            ("After", FeatureState::RolledBack),
+        ],
+        "{inspected}"
+    );
+    // The tree says what document.inspect says: the reason, and the cause.
+    for (row, entry) in rows.iter().zip(inspected["features"].as_array().unwrap()) {
+        assert_eq!(
+            row.error.as_deref(),
+            entry["error"].as_str(),
+            "{}",
+            row.name
+        );
+        assert_eq!(
+            row.caused_by.as_ref().map(|(id, _)| id.as_str()),
+            entry["causedBy"].as_str(),
+            "{}",
+            row.name
+        );
+    }
+    let hole = &rows[3];
+    assert_eq!(
+        hole.caused_by,
+        Some(("F2".to_string(), "Plate".to_string())),
+        "the hole failed because the plate did"
+    );
+    assert!(rows[1].caused_by.is_none(), "the plate is the one to fix");
+    assert_eq!(rows[4].status, "suppressed");
+    assert_eq!(rows[5].status, "rolled back");
+
+    // ui.get gives an agent the same.
+    let got = shell
+        .handle_method(&mut session, "ui.get", None)
+        .unwrap()
+        .unwrap();
+    let features = got["features"].as_array().unwrap();
+    let summary: Vec<(String, String, Value)> = features
+        .iter()
+        .map(|f| {
+            (
+                f["name"].as_str().unwrap().to_string(),
+                f["state"].as_str().unwrap().to_string(),
+                f["causedBy"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        summary,
+        [
+            ("Base".into(), "ok".into(), Value::Null),
+            ("Plate".into(), "failed".into(), Value::Null),
+            ("Rod".into(), "ok".into(), Value::Null),
+            (
+                "Hole".into(),
+                "failed".into(),
+                json!({"id": "F2", "name": "Plate"})
+            ),
+            ("Spare".into(), "suppressed".into(), Value::Null),
+            ("After".into(), "rolledBack".into(), Value::Null),
+        ]
+    );
+    assert!(features[3]["error"].as_str().unwrap().contains("Plate"));
+
+    // The one link in the tree is under the hole, and a click on it
+    // selects the plate.
+    let links = shell.cause_hits().to_vec();
+    assert_eq!(links.len(), 1, "{links:?}");
+    let (row, cause, rect) = &links[0];
+    assert_eq!((row.as_str(), cause.as_str()), ("F4", "F2"));
+    assert!(rect.right() < shell.viewport_rect().unwrap().left());
+    let at = rect.center();
+    let _ = window.frame(&mut shell, &mut session, vec![Event::PointerMoved(at)]);
+    window.button(&mut shell, &mut session, at, PointerButton::Primary, true);
+    window.button(&mut shell, &mut session, at, PointerButton::Primary, false);
+    window.idle(&mut shell, &mut session, 1);
+    assert_eq!(shell.state.selected_feature.as_deref(), Some("F2"));
+    let selected: Vec<bool> = shell.tree_rows().iter().map(|r| r.selected).collect();
+    assert_eq!(selected, [false, true, false, false, false, false]);
+    // A second click keeps it selected: a link goes somewhere, it does not
+    // toggle.
+    window.button(&mut shell, &mut session, at, PointerButton::Primary, true);
+    window.button(&mut shell, &mut session, at, PointerButton::Primary, false);
+    window.idle(&mut shell, &mut session, 1);
+    assert_eq!(shell.state.selected_feature.as_deref(), Some("F2"));
+    let got = shell
+        .handle_method(&mut session, "ui.get", None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(got["state"]["selectedFeature"], "F2");
+    assert_eq!(got["features"][1]["selected"], true);
+
+    // Repaired (the sketch closed again), nothing fails and the link goes.
+    run(&mut session, "edit.undo", json!({}));
+    window.idle(&mut shell, &mut session, 2);
+    assert!(shell.cause_hits().is_empty());
+    assert!(shell.tree_rows().iter().all(|r| r.caused_by.is_none()));
+    assert_eq!(shell.tree_rows()[1].state, FeatureState::Ok);
+}
+
+/// The marks of the tree are glyphs the default fonts have: a missing one
+/// would be drawn as the replacement box. (`has_glyph` answers false for
+/// anything in the face that holds the replacement glyph, so the glyph
+/// each mark is drawn with is compared with the one of a character no
+/// font has.)
+#[test]
+fn the_tree_marks_are_in_the_fonts() {
+    let ctx = egui::Context::default();
+    let mut output = ctx.run_ui(egui::RawInput::default(), |_| {});
+    output.textures_delta.clear();
+    let body = egui::FontId::proportional(14.0);
+    let glyph = |c: char| {
+        ctx.fonts_mut(|f| {
+            let galley = f.layout_no_wrap(c.to_string(), body.clone(), egui::Color32::WHITE);
+            galley.rows[0].glyphs[0].uv_rect
+        })
+    };
+    let missing = glyph('\u{10FFFD}');
+    // The check can tell: U+25CF, the round dot the tree drew before,
+    // is not in the default fonts and came out as the box.
+    assert_eq!(glyph('●'), missing);
+    for mark in craft3d_ui_egui::shell::TREE_MARKS {
+        assert_ne!(glyph(mark), missing, "{mark}");
+    }
+}

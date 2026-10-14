@@ -151,6 +151,21 @@ pub struct Panels {
     pub recovery: bool,
 }
 
+/// What the viewport draws besides the bodies, the edges and the
+/// sketches.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields, default)]
+pub struct Show {
+    /// Datum planes, axes and points (shown by default).
+    pub datums: bool,
+}
+
+impl Default for Show {
+    fn default() -> Self {
+        Self { datums: true }
+    }
+}
+
 impl Default for Panels {
     fn default() -> Self {
         Self {
@@ -389,6 +404,9 @@ pub struct UiState {
     /// The last click in the viewport. Read-only over the control channel:
     /// `ui.pick` with `select` makes one.
     pub picked: Option<Picked>,
+    /// What the viewport draws besides the bodies, their edges and the
+    /// sketches: `ui.set {"show": {"datums": false}}` hides the datums.
+    pub show: Show,
 }
 
 fn finite(name: &str, value: f64) -> Result<f64, String> {
@@ -684,6 +702,8 @@ mod tests {
                 }),
                 vertex: None,
             }),
+            // Added with datums in the viewport (2026-10-14).
+            show: Show { datums: false },
         };
         let json = serde_json::to_value(&state).unwrap();
         assert_eq!(
@@ -710,6 +730,7 @@ mod tests {
                                     "index": 1, "faces": ["F3:face(0)", "F3:face(2)"],
                                     "point": [1.0, 2.0, 3.0]},
                            "vertex": null},
+                "show": {"datums": false},
             })
         );
         let back: UiState = serde_json::from_value(json).unwrap();

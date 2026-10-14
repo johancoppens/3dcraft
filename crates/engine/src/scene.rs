@@ -207,6 +207,47 @@ pub struct SceneSketch {
     pub points: Vec<Vec3>,
 }
 
+/// Where a datum is drawn: a plane as a square, an axis as a segment, both
+/// sized to the model, and a point.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SceneDatumShape {
+    /// The square `center ± u ± v` in the datum plane: centred on the foot
+    /// of the model's centre on the plane, `u` and `v` along the plane's
+    /// own axes, each [`DATUM_PLANE_EXTENT`] of the model's diagonal long.
+    Plane {
+        center: Vec3,
+        u: Vec3,
+        v: Vec3,
+    },
+    /// The part of the axis around the foot of the model's centre on it,
+    /// [`DATUM_AXIS_EXTENT`] of the model's diagonal to either side.
+    Axis {
+        from: Vec3,
+        to: Vec3,
+    },
+    Point(Vec3),
+}
+
+/// A datum plane is drawn as a square whose half side is this fraction of
+/// the model's diagonal: a square a little larger than the model's longest
+/// side for a flat part, which marks the plane without hiding the model
+/// behind a tint.
+pub const DATUM_PLANE_EXTENT: f64 = 0.4;
+
+/// A datum axis is drawn as a segment whose half length is this fraction
+/// of the model's diagonal: more than half, so it runs through the model's
+/// extent wherever the model lies along it.
+pub const DATUM_AXIS_EXTENT: f64 = 0.6;
+
+/// A datum that is placed (built, not suppressed, not rolled back), as a
+/// viewer draws it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SceneDatum {
+    pub feature: String,
+    pub name: String,
+    pub shape: SceneDatumShape,
+}
+
 /// How a feature came out of regeneration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FeatureState {
@@ -242,6 +283,10 @@ pub struct SceneFeature {
     /// not be solved.
     pub dof: Option<usize>,
     pub is_sketch: bool,
+    /// When it failed because something it is made from failed: the id of
+    /// the feature at the start of that chain (`F3`), the one to fix, as
+    /// `document.inspect` gives it under `causedBy`.
+    pub caused_by: Option<String>,
 }
 
 /// Everything a viewer draws for one state of the active document.
@@ -262,6 +307,9 @@ pub struct Scene {
     /// bodies, as in `view.render`.
     pub mesh: Mesh,
     pub sketches: Vec<SceneSketch>,
+    /// The datums that are placed, in history order. They are not in
+    /// [`Scene::bbox`]: they are sized to it.
+    pub datums: Vec<SceneDatum>,
     pub features: Vec<SceneFeature>,
     /// Bodies that could not be tessellated, as sentences.
     pub problems: Vec<String>,
@@ -583,6 +631,7 @@ fn build(
         bodies: Vec::new(),
         mesh: Mesh::default(),
         sketches: Vec::new(),
+        datums: Vec::new(),
         features: Vec::new(),
         problems: Vec::new(),
         bbox: Bbox3::EMPTY,
@@ -620,6 +669,8 @@ fn build(
             error,
             dof: solved.and_then(|s| s.dof),
             is_sketch: matches!(feature.kind, FeatureKind::Sketch(_)),
+            caused_by: craft3d_regen::root_cause(doc, &regen.features, feature.id)
+                .map(|root| root.to_string()),
         });
         // A suppressed or rolled-back sketch is not drawn, like its body
         // would not be.
@@ -789,7 +840,71 @@ fn build(
         }
     }
     scene.bbox = bbox;
+    scene.datums = scene_datums(doc, regen, &bbox);
     (scene, None)
+}
+
+/// The placed datums of `doc`, sized to `bbox` (the model without them).
+/// Without a model they are sized to themselves, and to one document
+/// unit when that has no size either.
+fn scene_datums(doc: &Document, regen: &Regen, bbox: &Bbox3) -> Vec<SceneDatum> {
+    let placed: Vec<(&craft3d_doc::Feature, craft3d_regen::Datum)> = doc
+        .features
+        .iter()
+        .filter_map(|feature| {
+            let outcome = regen.feature(feature.id)?;
+            match (&outcome.status, outcome.datum) {
+                (Status::Ok, Some(datum)) => Some((feature, datum)),
+                _ => None,
+            }
+        })
+        .collect();
+    let extent = if bbox.is_empty() {
+        Bbox3::from_points(placed.iter().map(|(_, datum)| match datum {
+            craft3d_regen::Datum::Plane(frame) => frame.origin(),
+            craft3d_regen::Datum::Axis { origin, .. } => *origin,
+            craft3d_regen::Datum::Point(point) => *point,
+        }))
+    } else {
+        *bbox
+    };
+    let diagonal = extent.diagonal();
+    let size = if diagonal.is_finite() && diagonal > 0.0 {
+        diagonal
+    } else {
+        1.0
+    };
+    let (plane_half, axis_half) = (size * DATUM_PLANE_EXTENT, size * DATUM_AXIS_EXTENT);
+    let centre = extent.center();
+    let finite = |points: &[Vec3]| points.iter().all(|p| p.is_finite());
+    placed
+        .into_iter()
+        .filter_map(|(feature, datum)| {
+            let shape = match datum {
+                craft3d_regen::Datum::Plane(frame) => {
+                    let (origin, normal) = (frame.origin(), frame.z());
+                    let c = centre.unwrap_or(origin);
+                    let center = c - normal * (c - origin).dot(normal);
+                    let (u, v) = (frame.x() * plane_half, frame.y() * plane_half);
+                    finite(&[center, u, v]).then_some(SceneDatumShape::Plane { center, u, v })?
+                }
+                craft3d_regen::Datum::Axis { origin, direction } => {
+                    let c = centre.unwrap_or(origin);
+                    let foot = origin + direction * (c - origin).dot(direction);
+                    let (from, to) = (foot - direction * axis_half, foot + direction * axis_half);
+                    finite(&[from, to]).then_some(SceneDatumShape::Axis { from, to })?
+                }
+                craft3d_regen::Datum::Point(point) => {
+                    finite(&[point]).then_some(SceneDatumShape::Point(point))?
+                }
+            };
+            Some(SceneDatum {
+                feature: feature.id.to_string(),
+                name: feature.name.clone(),
+                shape,
+            })
+        })
+        .collect()
 }
 
 /// The display rule: the scene at `fine`, or at the coarsest tolerance

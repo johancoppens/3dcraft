@@ -2743,16 +2743,24 @@ fn deleting_the_feature_at_the_rollback_marker_keeps_the_rest_rolled_back() {
     }
     assert_eq!(now["ok"], true);
     rolled_back_is_the_document_that_ends_there(&s, "the marked feature deleted");
-    // A feature added now is appended to the history, after the marker:
-    // it is rolled back itself. (Inserting at the marker is not built.)
+    // A feature added now goes in right after the marker, which moves
+    // onto it: it is built, and what was rolled back stays rolled back
+    // after it (tests/insert_at_marker.rs holds every command family to
+    // this).
     let added = run(
         &mut s,
         "feature.block",
         json!({"size": [1, 1, 1], "name": "Late"}),
     );
-    assert_eq!(added["status"], "rolledBack", "{added}");
-    assert_eq!(names_in_order(&inspect(&mut s)).last().unwrap(), "Late");
+    assert_eq!(added["status"], "ok", "{added}");
+    let with_late = inspect(&mut s);
+    let order = names_in_order(&with_late);
+    let lid = order.iter().position(|n| n == "Lid").unwrap();
+    assert_eq!(order[lid + 1], "Late", "{order:?}");
+    assert_eq!(with_late["rollback"], feature(&with_late, "Late")["id"]);
+    assert_eq!(status(&with_late, "Twin").0, "rolledBack");
     run(&mut s, "edit.undo", json!({}));
+    assert_eq!(state(&mut s), now);
     // Rolled forward, the mirror of the cover has lost its source.
     run(&mut s, "history.rollback", json!({"feature": null}));
     let (twin, reason) = status(&inspect(&mut s), "Twin");

@@ -87,7 +87,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("feature.delete", "Delete Feature", r#"{"feature": id or name}"#,
         "Deletes a feature.", doc: true, feature_delete),
     spec!("history.rollback", "Roll Back", r#"{"feature": id or name or null}"#,
-        "Regenerates only up to and including this feature; null removes the marker.", doc: true, history_rollback),
+        "Regenerates only up to and including this feature; null removes the marker. While the marker is set, a feature added by any command goes in right after it, and the marker moves onto the new feature.", doc: true, history_rollback),
     spec!("document.inspect", "Inspect", "{}",
         "Returns the whole document state: units, variables with values, features with status (a failed one with the reason under error, which starts with the parameter and names the feature and the name it lost, and, when the reason is that something it is made from failed, under causedBy the feature at the start of that chain: the one to fix; a datum with where it lies, under datum), bodies with counts, mass properties and faceNames (and, per face, faceAliases: the other names a face answers to when a boolean or a pattern merged faces of several operands into it), undo history.", doc: true, document_inspect),
     spec!("document.check", "Check", r#"{"deep": boolean = false}"#,
@@ -212,6 +212,29 @@ fn feature_json(feature: &Feature) -> Value {
     json!({ "id": feature.id.to_string(), "name": feature.name })
 }
 
+/// Adds a feature to the history where a modeller does: at the end, or,
+/// with the history rolled back, right after the rollback marker, which
+/// then moves onto the new feature. What came after the marker stays
+/// rolled back, after the new feature. Every command that adds a feature
+/// goes through here.
+pub(crate) fn insert_feature(
+    doc: &mut Document,
+    name: Option<&str>,
+    kind: FeatureKind,
+) -> Result<FeatureId, DocError> {
+    let id = doc.add_feature(name, kind)?;
+    if let Some(marker) = doc.rollback {
+        let at = doc
+            .features
+            .iter()
+            .position(|f| f.id == marker)
+            .ok_or(DocError::UnknownFeature(marker))?;
+        doc.move_feature(id, at.saturating_add(1))?;
+        doc.set_rollback(Some(id))?;
+    }
+    Ok(id)
+}
+
 pub(crate) fn add_feature(
     session: &mut Session,
     command: &'static str,
@@ -219,7 +242,9 @@ pub(crate) fn add_feature(
     kind: FeatureKind,
 ) -> Run {
     let label = format!("Add {}", kind.type_name());
-    let id = edit(session, command, &label, |doc| doc.add_feature(name, kind))?;
+    let id = edit(session, command, &label, |doc| {
+        insert_feature(doc, name, kind)
+    })?;
     feature_result(session, id)
 }
 
@@ -267,8 +292,9 @@ pub(crate) fn add_sweep(
     };
     let label = format!("Add {} and {}", kind.type_name(), op.name());
     let (sweep, combined) = edit(session, command, &label, |doc| {
-        let sweep = doc.add_feature(None, kind)?;
-        let combined = doc.add_feature(
+        let sweep = insert_feature(doc, None, kind)?;
+        let combined = insert_feature(
+            doc,
             name,
             FeatureKind::Boolean(Boolean {
                 op,

@@ -528,6 +528,121 @@ fn near_lines(overlay: &Overlay, width: u32, height: u32, radius: f64) -> Vec<bo
     near
 }
 
+/// Per pixel of `frame` (the CPU frame the oracle is drawn on): whether a
+/// datum plane of `marks` fills it, as `viewport::fill_datum_planes`
+/// decides, and whether the GPU could decide otherwise. The GPU tests the
+/// plane's point against its depth buffer like a line: hidden when the
+/// furthest of the nine surfaces around the pixel, plus the slack and the
+/// spread of the nine, is nearer; the CPU when all nine plus the slack
+/// are nearer. The GPU's nine pixels are multisampled: their samples lie
+/// within the CPU's 5 × 5 pixels around the pixel. A pixel is marginal
+/// where the plane's point lies between the lowest and the highest
+/// threshold either rule can have there, widened by the error of the GPU's point (its `f32`
+/// roundings, magnified at a grazing angle), by the slack once more
+/// (which holds the GPU depth buffer's own error) and by how far the CPU
+/// frame's screen-interpolated distance lies off the surface on the faces
+/// around the pixel: there the plane passes through a surface and either
+/// answer is right.
+fn fill_decisions(
+    frame: &Frame,
+    mesh: &craft3d_tess::Mesh,
+    camera: &CameraState,
+    marks: &viewport::Marks,
+    slack: f64,
+) -> (Vec<bool>, Vec<bool>) {
+    let (w, h) = (frame.width as usize, frame.height as usize);
+    let mut fill = vec![false; w * h];
+    let mut marginal = vec![false; w * h];
+    let projector =
+        Projector::new(&camera.to_render(), frame.width as f64, frame.height as f64).unwrap();
+    // The CPU frame's distance is interpolated evenly across the screen,
+    // where the true distance's reciprocal is: over a triangle whose
+    // corners lie at distances a to b it is off the surface by at most
+    // (a + b) / 2 - 2ab / (a + b) = (b - a)² / (2 (a + b)). Per face, the
+    // most over its triangles; the GPU tests against the true distance.
+    let mut interpolation: std::collections::BTreeMap<u32, f64> = Default::default();
+    for (triangle, &face) in mesh.triangles.iter().zip(&mesh.face_ids) {
+        let d = triangle.map(|k| projector.depth(mesh.positions[k as usize]));
+        let (a, b) = (d[0].min(d[1]).min(d[2]), d[0].max(d[1]).max(d[2]));
+        let off = if a > 0.0 {
+            (b - a).powi(2) / (2.0 * (a + b))
+        } else {
+            b - a
+        };
+        let entry = interpolation.entry(face).or_insert(0.0);
+        *entry = entry.max(off);
+    }
+    for (center, u, v) in marks.datum_planes() {
+        let normal = u.cross(v);
+        for py in 0..h {
+            for px in 0..w {
+                let (x, y) = (px as f64 + 0.5, py as f64 + 0.5);
+                let (start, direction) = projector.ray(x, y);
+                let along = direction.dot(normal);
+                if along == 0.0 {
+                    continue;
+                }
+                let t = (center - start).dot(normal) / along;
+                if t.is_nan() || t <= projector.near() {
+                    continue;
+                }
+                let r = start + direction * t - center;
+                if (r.dot(u) / u.dot(u)).abs() > 1.0 || (r.dot(v) / v.dot(v)).abs() > 1.0 {
+                    continue;
+                }
+                // The CPU's nine pixels; and the 5 × 5 around the pixel,
+                // which hold the samples of the GPU's nine (a sample lies
+                // within half a pixel of its pixel's centre).
+                let mut furthest = 0.0_f64;
+                for ny in py.saturating_sub(1)..=(py + 1).min(h - 1) {
+                    for nx in px.saturating_sub(1)..=(px + 1).min(w - 1) {
+                        furthest = furthest.max(frame.depth[ny * w + nx]);
+                    }
+                }
+                let (mut far5, mut near5, mut off) = (0.0_f64, f64::INFINITY, 0.0_f64);
+                for ny in py.saturating_sub(2)..=(py + 2).min(h - 1) {
+                    for nx in px.saturating_sub(2)..=(px + 2).min(w - 1) {
+                        let d = frame.depth[ny * w + nx];
+                        far5 = far5.max(d);
+                        near5 = near5.min(d);
+                        off = off.max(
+                            interpolation
+                                .get(&frame.ids[ny * w + nx])
+                                .copied()
+                                .unwrap_or(0.0),
+                        );
+                    }
+                }
+                let cpu_hidden = furthest + slack < t;
+                let i = py * w + px;
+                fill[i] |= !cpu_hidden;
+                // The GPU computes the point in `f32`, relative to the eye:
+                // a few roundings of 2⁻²⁴ on numbers as large as the reach,
+                // magnified where the ray meets the plane at a grazing
+                // angle (1 / cos of it).
+                let grazing = direction.length() * normal.length() / along.abs();
+                let error =
+                    2f64.powi(-18) * (t.abs() + r.length() + u.length() + v.length()) * grazing;
+                // The GPU hides the point beyond its furthest sample plus
+                // the slack and the spread of its samples, which lies
+                // between the nearest of the 5 × 5 plus the slack and the
+                // furthest of the 5 × 5 plus the slack and their spread;
+                // the CPU beyond its furthest plus the slack. Between the
+                // lowest and the highest of these, give or take the
+                // errors, the two may answer differently.
+                let low = near5.min(furthest) + slack - error - slack - off;
+                let high = far5 + slack + (far5 - near5) + error + slack + off;
+                // Next to the background (`far5` infinite) a sample may
+                // show nothing behind the point: the GPU keeps it.
+                if near5.is_finite() && t >= low && t <= high {
+                    marginal[i] = true;
+                }
+            }
+        }
+    }
+    (fill, marginal)
+}
+
 /// Distance from `p` to the segment `line`, in pixels.
 fn distance_to(p: [f64; 2], line: &OverlayLine) -> f64 {
     let (ax, ay) = (line.from[0], line.from[1]);
@@ -555,6 +670,44 @@ fn the_direct_path_draws_the_viewport_on_the_windows_device_and_matches_the_orac
     direct_path_against_the_oracle(0.0);
 }
 
+/// The part with datums: a plane through the post, a plane at an angle
+/// about an axis along the plate's front edge, that axis, and a point
+/// above the ball.
+fn part_with_datums() -> Session {
+    let mut s = part();
+    run(
+        &mut s,
+        "datum.plane",
+        json!({"from": "xy", "distance": 20, "name": "Shelf"}),
+    );
+    run(
+        &mut s,
+        "datum.axis",
+        json!({"through": [[0, 0, 8], [60, 0, 8]], "name": "Hinge"}),
+    );
+    run(
+        &mut s,
+        "datum.plane",
+        json!({"from": "xy", "angle": "35 deg", "about": "Hinge", "name": "Ramp"}),
+    );
+    run(
+        &mut s,
+        "datum.point",
+        json!({"at": [44, 30, 24], "name": "Mark"}),
+    );
+    s
+}
+
+/// Datums drawn by the window's device against the oracle: the fill of
+/// the planes under the lines, their outlines, the axis and the point,
+/// opaque and over see-through bodies (§7.2, *Datums*).
+#[test]
+fn the_direct_path_draws_datums_and_matches_the_oracle() {
+    for transparency in [0.0, 0.5] {
+        direct_path_against_the_oracle_of(part_with_datums(), "viewport-datums", transparency);
+    }
+}
+
 /// The same with the bodies see-through: the device draws the two layers
 /// and blends them, with the hidden parts of the bodies' edges dimmed,
 /// and the picture is still the oracle's within the tolerance (§7.2,
@@ -569,15 +722,22 @@ fn the_direct_path_draws_see_through_bodies_and_matches_the_oracle() {
 /// The viewport drawn directly, with the bodies `transparency` see-through
 /// (0: opaque), against the CPU oracle of the same state.
 fn direct_path_against_the_oracle(transparency: f64) {
+    direct_path_against_the_oracle_of(part(), "viewport-direct", transparency);
+}
+
+/// The viewport of `session` drawn directly, with the bodies
+/// `transparency` see-through (0: opaque), against the CPU oracle of the
+/// same state, with the datums it has shown. The pictures are written as
+/// `{base}-*.png`, with `-seethrough{transparency}` when see-through.
+fn direct_path_against_the_oracle_of(mut session: Session, base: &str, transparency: f64) {
     let see_through = transparency > 0.0;
     let name = if see_through {
-        format!("viewport-direct-seethrough{transparency}")
+        format!("{base}-seethrough{transparency}")
     } else {
-        "viewport-direct".to_string()
+        base.to_string()
     };
     let state = headless_render_state()
         .unwrap_or_else(|e| panic!("the direct path cannot be tested: {e}; {ADAPTER_HINT}"));
-    let mut session = part();
     let mut shell = Shell::with_renderer(RendererChoice::Cpu);
     // Wide lines, so the pixel nearest a line's centre is all ink in both
     // pictures, whatever the renderers drew beneath it.
@@ -585,6 +745,7 @@ fn direct_path_against_the_oracle(transparency: f64) {
     shell.tokens.sketch_width = 3.0;
     shell.tokens.construction_width = 3.0;
     shell.tokens.axis_width = 3.0;
+    shell.tokens.datum_width = 3.0;
     let tokens = shell.tokens;
     shell.attach_gpu(&state).unwrap();
     assert!(shell.draws_directly());
@@ -649,19 +810,36 @@ fn direct_path_against_the_oracle(transparency: f64) {
         vec![cpu_frame.clone()]
     };
     let slack = viewport::depth_slack(Backend::Gpu, Some(&scene), &camera);
+    // The datums, as the shell shows them (none in a part without any).
+    let marks = viewport::datum_marks(Some(&scene), shell.state.show.datums);
     let overlay = viewport::overlay_see_through(
         Some(&scene),
         &camera,
         &cpu_frame,
         None,
         slack,
-        &viewport::Marks::default(),
+        &marks,
         see_through,
     );
+    let mut filled = cpu_frame.rgb.clone();
+    viewport::fill_datum_planes(
+        &mut filled,
+        w,
+        h,
+        &cpu_frame.depth,
+        &camera,
+        &marks,
+        &tokens,
+        slack,
+    );
+    let (fill, fill_marginal) = fill_decisions(&cpu_frame, &scene.mesh, &camera, &marks, slack);
+    // The picture under the lines: the bodies with the datum planes'
+    // fill (the bodies alone without datums).
+    let under = filled.clone();
     let composed = Composed {
         width: w,
         height: h,
-        rgb: cpu_frame.rgb.clone(),
+        rgb: filled,
         overlay: overlay.clone(),
         coverage: cpu_frame.coverage(),
         triangles: scene.triangles(),
@@ -675,7 +853,7 @@ fn direct_path_against_the_oracle(transparency: f64) {
         common::band(&scene.mesh, &render_camera, &cpu_frame)
     };
     let seams = common::seams(&scene.mesh, &render_camera, w, h);
-    let everything = viewport::overlay(Some(&scene), &camera, w, h, None);
+    let everything = viewport::overlay_untested(Some(&scene), &camera, w, h, None, &marks);
     let lines = near_lines(&everything, w, h, 3.5);
     let (wu, hu) = (w as usize, h as usize);
 
@@ -702,8 +880,16 @@ fn direct_path_against_the_oracle(transparency: f64) {
     };
     let (mut plain, mut plain_differ, mut plain_over, mut allowed) = (0, 0, 0, 0.0);
     let (mut seam, mut seam_over) = (0, 0);
+    let (mut filled_pixels, mut marginal_pixels, mut fill_differ, mut fill_over) = (0, 0, 0, 0);
     for i in 0..wu * hu {
         if band[i] || lines[i] {
+            continue;
+        }
+        // Where the CPU's and the GPU's depth tests of a datum plane's
+        // fill can decide differently (the plane passes through a surface
+        // there), the fill is not compared.
+        if fill_marginal[i] {
+            marginal_pixels += 1;
             continue;
         }
         let diff = f64::from(levels(
@@ -712,6 +898,27 @@ fn direct_path_against_the_oracle(transparency: f64) {
         ));
         let gradients = layers.iter().map(|layer| gradient_of(layer, i));
         let g = gradients.clone().fold(0.0, f64::max);
+        // Under a datum plane's fill the GPU's fixed-function blend adds
+        // a rounding of its own: how a blend rounds into an 8-bit target
+        // is the implementation's (measured: lavapipe differs by a level
+        // from the CPU's rounded `f64` at about half of such pixels,
+        // Intel's Vulkan driver at 189 and its OpenGL driver at 59 of
+        // about 149 000, none by more).
+        // Over a colour within the tolerance, blending at the opacity α
+        // scales the difference by 1 - α and rounds once more: one level
+        // more is allowed there, and such pixels are counted apart from
+        // the bodies' rounding bound.
+        if fill[i] {
+            filled_pixels += 1;
+            fill_differ += usize::from(diff > 0.0);
+            let base = if seams[i] {
+                1.0 + g
+            } else {
+                color_tolerance(g)
+            };
+            fill_over += usize::from(diff > base + 1.0);
+            continue;
+        }
         if seams[i] {
             seam += 1;
             seam_over += usize::from(diff > 1.0 + g);
@@ -723,8 +930,18 @@ fn direct_path_against_the_oracle(transparency: f64) {
         }
     }
     println!(
-        "bodies: {plain} plain pixels, {plain_differ} differ by a level (rounding explains {}), {plain_over} over; {seam} seam pixels, {seam_over} over",
+        "bodies: {plain} plain pixels, {plain_differ} differ by a level (rounding explains {}), {plain_over} over; {seam} seam pixels, {seam_over} over; datum fill: {filled_pixels} pixels compared, {fill_differ} differ, {fill_over} over, {marginal_pixels} marginal left out",
         allowed.ceil()
+    );
+    if !marks.datum_planes().is_empty() {
+        assert!(
+            filled_pixels > (wu * hu) / 20,
+            "too little of the fill compared: {filled_pixels}"
+        );
+    }
+    assert_eq!(
+        fill_over, 0,
+        "the fill differs by more than a level of blending"
     );
     assert!(
         plain > (wu * hu) / 3,
@@ -843,7 +1060,7 @@ fn direct_path_against_the_oracle(transparency: f64) {
                     .map(|ch| {
                         let around = (ay - 1..=ay + 1)
                             .flat_map(|y| (ax - 1..=ax + 1).map(move |x| y * wu + x))
-                            .map(|n| channel(&cpu_frame.rgb, n, ch));
+                            .map(|n| f64::from(under[n * 3 + ch]));
                         let lo = around.clone().fold(f64::INFINITY, f64::min);
                         let hi = around.fold(f64::NEG_INFINITY, f64::max);
                         let dim = |under: f64| under + (f64::from(ink[ch]) - under) * alpha;
@@ -912,7 +1129,7 @@ fn direct_path_against_the_oracle(transparency: f64) {
     std::fs::write(
         evidence(&format!("{name}.txt")),
         format!(
-            "adapter: {adapter}, {} samples\nbodies: {plain} plain pixels, {plain_differ} differ by a level, {plain_over} over; {seam} seam pixels, {seam_over} over\nlines: {samples} samples ({inked} inked, {dimmed} dimmed, {bare} hidden edges), {agree} agree\n",
+            "adapter: {adapter}, {} samples\nbodies: {plain} plain pixels, {plain_differ} differ by a level, {plain_over} over; {seam} seam pixels, {seam_over} over\ndatum fill: {filled_pixels} pixels compared, {fill_differ} differ, {fill_over} over, {marginal_pixels} marginal\nlines: {samples} samples ({inked} inked, {dimmed} dimmed, {bare} hidden edges), {agree} agree\n",
             report.msaa
         ),
     )
@@ -969,16 +1186,19 @@ fn direct_path_against_the_oracle(transparency: f64) {
 
     // No face is lost on the way: the direct picture covers what the CPU
     // frame covers (the background colour is where no face is).
+    // (Away from the fill of datum planes, which tints the background.)
     let background = tokens.viewport_background;
-    let covered_cpu = cpu_frame.ids.iter().filter(|&&id| id != NO_FACE).count();
+    let covered_cpu = (0..wu * hu)
+        .filter(|&i| cpu_frame.ids[i] != NO_FACE && !fill[i])
+        .count();
     let covered_gpu = (0..wu * hu)
         .filter(|&i| {
             let p = [(i % wu) as f64, (i / wu) as f64];
-            pixel(&gpu_rgb, w, p) != background && !lines[i]
+            pixel(&gpu_rgb, w, p) != background && !lines[i] && !fill[i]
         })
         .count();
     let uncovered_lines = (0..wu * hu)
-        .filter(|&i| lines[i] && cpu_frame.ids[i] != NO_FACE)
+        .filter(|&i| lines[i] && cpu_frame.ids[i] != NO_FACE && !fill[i])
         .count();
     assert!(
         (covered_gpu + uncovered_lines).abs_diff(covered_cpu) * 100 < covered_cpu * 3,
