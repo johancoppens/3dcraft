@@ -323,7 +323,7 @@ impl Marcher {
 
     fn eval(&mut self, u: f64, v: f64) -> Option<Eval> {
         self.evals += 1;
-        let (p, su, sv) = self.chart.surface.derivatives(u, v);
+        let (p, su, sv) = self.chart.at(u, v);
         let Sample {
             signed,
             dist,
@@ -531,9 +531,6 @@ impl Marcher {
     /// border is the surface's own iso-curve there, exact on the chart and
     /// on the field to the sampled deviation.
     fn border_curves(&mut self) -> Result<Vec<MeetingCurve>, GeomError> {
-        if self.chart.periodic_u || self.chart.periodic_v {
-            return Ok(Vec::new());
-        }
         let spline = match &self.chart.surface {
             Surface::Bezier(b) => NurbsSurface::from_bezier(b)?,
             Surface::Nurbs(s) => s.clone(),
@@ -558,6 +555,17 @@ impl Marcher {
         for side in 0..4 {
             let along_u = side >= 2;
             let at_end = side % 2 == 1;
+            // A surface that closes on itself has no border where it goes
+            // around; a border across that way (the rim of a closed wall)
+            // runs around and closes on itself.
+            if (along_u && self.chart.periodic_v) || (!along_u && self.chart.periodic_u) {
+                continue;
+            }
+            let around = if along_u {
+                self.chart.periodic_u
+            } else {
+                self.chart.periodic_v
+            };
             let fixed = match side {
                 0 => u0,
                 1 => u1,
@@ -618,6 +626,21 @@ impl Marcher {
                         degree_v,
                     )
                 };
+            // A border that runs around a closed surface and is one point
+            // (the pole of a ball) lies on the field when the pole does:
+            // no seed is to start there, and there is no curve.
+            let collapsed = around && {
+                let size = Bbox3::from_points(ctrl.iter().copied()).diagonal();
+                points
+                    .first()
+                    .is_some_and(|&first| points.iter().all(|p| p.distance(first) <= 1e-9 * size))
+            };
+            if collapsed {
+                if let Some(flag) = self.lying.get_mut(side) {
+                    *flag = true;
+                }
+                continue;
+            }
             let Ok(curve) = NurbsCurve::new(degree, knots, points, curve_weights) else {
                 continue;
             };
@@ -627,7 +650,7 @@ impl Marcher {
             curves.push(MeetingCurve {
                 range: curve.domain(),
                 curve: Curve3::Nurbs(curve),
-                closed: false,
+                closed: around,
                 tangent: false,
                 exact: false,
                 deviation: worst.max(4.0 * self.on),
@@ -1534,8 +1557,10 @@ impl Marcher {
             let other = self.field.sample(q).map_or(f64::INFINITY, |x| x.dist);
             let own = match &self.own {
                 Field::Free(projector) => {
-                    let (_, _, foot) =
-                        projector.foot_from(q, a.u + (b.u - a.u) * s, a.v + (b.v - a.v) * s);
+                    let (u, v) = self
+                        .chart
+                        .wrapped(a.u + (b.u - a.u) * s, a.v + (b.v - a.v) * s);
+                    let (_, _, foot) = projector.foot_from(q, u, v);
                     foot.distance(q)
                 }
                 field => field.sample(q).map_or(f64::INFINITY, |x| x.dist),

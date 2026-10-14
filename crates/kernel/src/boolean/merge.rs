@@ -33,6 +33,7 @@ const SAME_CURVE: f64 = 1e-2;
 
 fn closed_surface(surface: &Surface) -> bool {
     matches!(surface, Surface::Sphere(_) | Surface::Torus(_))
+        || super::freeform::borderless(surface)
 }
 
 /// The two uses of each edge: `(face, loop, position)`.

@@ -4,6 +4,7 @@
 //! Reference: Piegl & Tiller, *The NURBS Book*, 2nd ed., ch. 1 (Bernstein
 //! polynomials, Bézier surfaces).
 
+pub mod closure;
 mod curve;
 pub mod intersect;
 mod nurbs;

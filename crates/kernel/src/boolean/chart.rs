@@ -15,6 +15,7 @@
 //! | sphere | stereographic projection from a point chosen clear of the loops | that point, which a face may contain |
 //! | torus | cut open along a circle that the loops do not cross, then one angle and the other as radius | the cut circle, which a face may contain |
 //! | Bézier, NURBS | its own parameters, through the nearest point; where a border of the patch is one point (a pole) the parameter rectangle drawn as a wedge or a lens | nothing: a pole is an ordinary point |
+//! | Bézier, NURBS that close on themselves | the way around as an angle: an annulus, a disc, a ball through an inversion, a torus cut open (see [`Layout`]) | a point of a ball clear of the loops, the cut of a torus |
 //!
 //! A loop that goes around a cylinder's axis, a cone's apex or a torus'
 //! tube simply goes around the origin of its chart.
@@ -91,7 +92,78 @@ pub(super) enum Chart {
     Patch {
         tree: Arc<PatchTree>,
         speed: f64,
+        /// For a surface that closes on itself: whether it closes in u
+        /// (the share `s` around is u's), and how it is drawn.
+        around_u: bool,
+        layout: Layout,
     },
+}
+
+/// How the chart of a freeform surface is drawn, in the shares `s` of the
+/// way around and `t` of the way across of a surface that closes on
+/// itself (`freeform::Closure`). The parameter rectangle is no chart of
+/// such a surface: a loop that goes over the seam is not closed in it, and
+/// a point on the seam is in it twice. So the way around is drawn as an
+/// angle, `θ = 2π s`, which closes where the surface does:
+///
+/// | Surface | Chart | What is missing |
+/// |---|---|---|
+/// | closed around (a tube: a vase, a NURBS cylinder) | `(1 + t) e^{iθ}`, an annulus | nothing: the ends are borders |
+/// | closed around, a pole at one end (a cup) | `t e^{iθ}` or `(1 − t) e^{iθ}`, a disc with the pole at its centre | nothing |
+/// | closed around, a pole at each end (an egg) | `z = t e^{iθ} / (1 − t)` (the plane, one pole at the origin and the other at infinity), then `1 / (z − z₀)`: a point `z₀` clear of the loops goes to infinity, both poles are ordinary points | that point, which a face may contain |
+/// | closed both ways (a torus) | cut open along a line of constant `t` that the loops do not cross (or of constant `s`, the two swapped), `(1 + (t − cut mod 1)) e^{iθ}` | the cut, which a face may contain |
+///
+/// Each map is one to one and continuous on what it charts, so the
+/// winding number of the loops is what it is on the surface; how fast it
+/// moves is bounded through the tree's bound on the Jacobian (see
+/// [`Chart::new`]).
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Layout {
+    /// The surface does not close: the tree's own chart
+    /// ([`PatchTree::chart`]).
+    Open,
+    Annulus,
+    /// The pole at the end of `t` when `high`, else at its start.
+    Disc {
+        high: bool,
+    },
+    /// The point sent to infinity, as `(a₀, b₀)` with `a = t e^{iθ}` and
+    /// `b = 1 − t`: `(re a₀, im a₀, b₀)`.
+    Sphere {
+        drop: Vec3,
+    },
+    /// `s` and `t` are swapped when `swapped` (cut along a line of
+    /// constant `s`).
+    Torus {
+        cut: f64,
+        swapped: bool,
+    },
+}
+
+const NO_SEAM_CUT: Reason = "a face on a freeform surface that closes on itself both ways, whose boundary crosses every line of constant parameter both ways";
+const NO_DROP: Reason = "a face on a freeform surface that closes on itself with a pole at each end, whose boundary comes close to every point tried as the point its chart leaves out";
+
+/// The share `x` taken around once: in `[0, 1)`.
+fn wrap_share(x: f64) -> f64 {
+    let w = x.rem_euclid(1.0);
+    if w >= 1.0 { 0.0 } else { w }
+}
+
+/// `a conj(b)` of complex numbers as pairs.
+fn times_conj(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
+    (a.0 * b.0 + a.1 * b.1, a.1 * b.0 - a.0 * b.1)
+}
+
+/// `a = t e^{iθ}` and `b = 1 − t` of the shares `(s, t)`: the point of
+/// the sphere chart in homogeneous form, `z = a / b`.
+fn homogeneous((s, t): (f64, f64)) -> ((f64, f64), f64) {
+    let (sin, cos) = (TAU * s).sin_cos();
+    ((t * cos, t * sin), 1.0 - t)
+}
+
+/// `a b₀ − a₀ b` for the dropped point `(a₀, b₀)`: zero only at it.
+fn from_drop(a: (f64, f64), b: f64, drop: Vec3) -> (f64, f64) {
+    (a.0 * drop.z - drop.x * b, a.1 * drop.z - drop.y * b)
 }
 
 /// What the loops are wound about.
@@ -157,6 +229,70 @@ fn widest_gap(mut covered: Vec<(f64, f64)>) -> Option<(f64, f64)> {
     }
     consider(reach, first + TAU);
     best
+}
+
+/// Per boundary piece of a face on a freeform surface that closes on
+/// itself both ways, the stretch of the way around (`s`) and of the way
+/// across (`t`) it covers, as angles `(start, length)` for
+/// [`widest_gap`]: followed from sample to sample through the nearest
+/// point, and widened by as much as the piece can stray between two
+/// samples (`k` bounds how fast the shares move per length travelled).
+#[allow(clippy::type_complexity)]
+fn patch_cover(
+    tree: &PatchTree,
+    around_u: bool,
+    loops: &[Vec<Seg>],
+    k: f64,
+) -> Result<(Vec<(f64, f64)>, Vec<(f64, f64)>), Reason> {
+    let shares = |p: Vec3| -> Result<(f64, f64), Reason> {
+        let near = tree.nearest(p).ok_or(NO_SEAM_CUT)?;
+        Ok(tree.shares(around_u, near.u, near.v))
+    };
+    // The step from one share to the next, the short way round.
+    let step_of = |from: f64, to: f64| (to - from + 0.5).rem_euclid(1.0) - 0.5;
+    let (mut around, mut across) = (Vec::new(), Vec::new());
+    for seg in loops.iter().flatten() {
+        let speed = speed_bound(&seg.curve);
+        let width = seg.range.1 - seg.range.0;
+        // How far the shares can move along the piece, and samples enough
+        // for a hundredth of that between two.
+        let reach = k * speed * width;
+        let samples = if reach.is_finite() && reach > 0.0 {
+            (reach / 0.01).ceil().clamp(16.0, 4096.0)
+        } else {
+            16.0
+        };
+        let step = width / samples;
+        let stray = 0.5 * k * speed * step;
+        // A stray of a quarter turn could hide a step the wrong way round.
+        if !(stray.is_finite() && stray < 0.25) {
+            return Err(NO_SEAM_CUT);
+        }
+        let start = shares(seg.curve.eval(seg.range.0))?;
+        let (mut s, mut t) = (0.0_f64, 0.0_f64);
+        let (mut lo, mut hi) = ((0.0_f64, 0.0_f64), (0.0_f64, 0.0_f64));
+        let mut previous = start;
+        for i in 1..=(samples as u32) {
+            let here = shares(seg.curve.eval(seg.range.0 + step * f64::from(i)))?;
+            s += step_of(previous.0, here.0);
+            t += step_of(previous.1, here.1);
+            lo = (lo.0.min(s), lo.1.min(t));
+            hi = (hi.0.max(s), hi.1.max(t));
+            previous = here;
+        }
+        if ![s, t, start.0, start.1].iter().all(|x| x.is_finite()) {
+            return Err(NO_SEAM_CUT);
+        }
+        around.push((
+            wrap(TAU * (start.0 + lo.0 - stray)),
+            TAU * (hi.0 - lo.0 + 2.0 * stray),
+        ));
+        across.push((
+            wrap(TAU * (start.1 + lo.1 - stray)),
+            TAU * (hi.1 - lo.1 + 2.0 * stray),
+        ));
+    }
+    Ok((around, across))
 }
 
 impl Chart {
@@ -283,12 +419,99 @@ impl Chart {
             }
             Surface::Bezier(_) | Surface::Nurbs(_) => {
                 let tree = sheet.tree.ok_or(IRREGULAR)?;
-                let speed = tree.chart_speed()?;
-                Chart::Patch {
-                    tree: Arc::clone(tree),
-                    speed,
+                match tree.closure() {
+                    None => {
+                        let speed = tree.chart_speed()?;
+                        Chart::Patch {
+                            tree: Arc::clone(tree),
+                            speed,
+                            around_u: true,
+                            layout: Layout::Open,
+                        }
+                    }
+                    Some(closure) => Self::closed_patch(tree, &closure?, loops)?,
                 }
             }
+        })
+    }
+
+    /// The chart of a freeform surface that closes on itself (see
+    /// [`Layout`]).
+    ///
+    /// Its speed, from the tree's bound `k` on how fast the shares move
+    /// (`Closure::speed`). Annulus and torus: the image moves by
+    /// `|(dr, r dθ)|` with `r ≤ 2` and `dθ = 2π ds`, at most `4π |(ds, dt)|`.
+    /// Disc: with `ω = t` (or `1 − t`) the wedge's width, by
+    /// `|(dt, 2π ω ds)| ≤ √(1 + 4π²) |(ω ds, dt)|`. Sphere: see
+    /// [`Chart::direction`]; `√(4 + 4π²)` likewise.
+    fn closed_patch(
+        tree: &Arc<PatchTree>,
+        closure: &super::freeform::Closure,
+        loops: &[Vec<Seg>],
+    ) -> Result<Chart, Reason> {
+        let around_u = closure.around_u;
+        let k = closure.speed;
+        let (layout, factor) = if closure.both {
+            let (around, across) = patch_cover(tree, around_u, loops, k)?;
+            const NARROWEST: f64 = 1e-6;
+            match (widest_gap(across), widest_gap(around)) {
+                (Some((cut, width)), _) if width > NARROWEST => (
+                    Layout::Torus {
+                        cut: cut / TAU,
+                        swapped: false,
+                    },
+                    4.0 * PI,
+                ),
+                (_, Some((cut, width))) if width > NARROWEST => (
+                    Layout::Torus {
+                        cut: cut / TAU,
+                        swapped: true,
+                    },
+                    4.0 * PI,
+                ),
+                _ => return Err(NO_SEAM_CUT),
+            }
+        } else {
+            match (closure.low, closure.high) {
+                (false, false) => (Layout::Annulus, 4.0 * PI),
+                (low, high) if low != high => (Layout::Disc { high }, (1.0 + 4.0 * PI * PI).sqrt()),
+                _ => {
+                    // The point furthest from the loops: a pole, or one of
+                    // twelve places between them.
+                    let mut best: Option<(f64, Vec3)> = None;
+                    let mut candidates = vec![(0.0, 0.0), (0.0, 1.0)];
+                    for t in [0.5, 0.25, 0.75] {
+                        for s in [0.0, 0.25, 0.5, 0.75] {
+                            candidates.push((s, t));
+                        }
+                    }
+                    for (s, t) in candidates {
+                        let clear =
+                            super::outline::clearance(loops, tree.at_shares(around_u, s, t));
+                        if best.is_none_or(|(most, _)| clear > most) {
+                            let (a, b) = homogeneous((s, t));
+                            best = Some((clear, Vec3::new(a.0, a.1, b)));
+                        }
+                    }
+                    let Some((clear, drop)) = best else {
+                        return Err(NO_DROP);
+                    };
+                    if clear.is_nan() || clear < 1e-3 * tree.size() {
+                        return Err(NO_DROP);
+                    }
+                    (Layout::Sphere { drop }, (4.0 + 4.0 * PI * PI).sqrt())
+                }
+            }
+        };
+        let speed = factor * k;
+        if !(speed.is_finite() && speed > 0.0) {
+            return Err(IRREGULAR);
+        }
+        Ok(Chart::Patch {
+            tree: Arc::clone(tree),
+            speed,
+            around_u,
+            layout,
         })
     }
 
@@ -296,14 +519,59 @@ impl Chart {
     pub(super) fn is_closed(&self) -> bool {
         matches!(
             self,
-            Chart::Sphere { .. } | Chart::Tube { .. } | Chart::Ring { .. }
+            Chart::Sphere { .. }
+                | Chart::Tube { .. }
+                | Chart::Ring { .. }
+                | Chart::Patch {
+                    layout: Layout::Sphere { .. } | Layout::Torus { .. },
+                    ..
+                }
         )
     }
 
     /// True for the charts whose origin is not a point of the surface but
     /// one end of a cut torus.
     pub(super) fn has_inner_end(&self) -> bool {
-        matches!(self, Chart::Tube { .. } | Chart::Ring { .. })
+        matches!(
+            self,
+            Chart::Tube { .. }
+                | Chart::Ring { .. }
+                | Chart::Patch {
+                    layout: Layout::Torus { .. },
+                    ..
+                }
+        )
+    }
+
+    /// The shares `(s, t)` of the point of a closed freeform surface
+    /// nearest to `p`.
+    fn shares(&self, p: Vec3) -> Option<(f64, f64)> {
+        let Chart::Patch { tree, around_u, .. } = self else {
+            return None;
+        };
+        tree.nearest(p).map(|n| tree.shares(*around_u, n.u, n.v))
+    }
+
+    /// The image of `p` in the chart of a closed freeform surface, for the
+    /// layouts that draw it in the plane itself (not the sphere's).
+    fn closed_image(&self, p: Vec3) -> (f64, f64) {
+        let Chart::Patch { layout, .. } = self else {
+            return (f64::NAN, f64::NAN);
+        };
+        let Some((s, t)) = self.shares(p) else {
+            return (f64::NAN, f64::NAN);
+        };
+        let (s, reach) = match *layout {
+            Layout::Annulus => (s, 1.0 + t),
+            Layout::Disc { high } => (s, if high { 1.0 - t } else { t }),
+            Layout::Torus { cut, swapped } => {
+                let (s, t) = if swapped { (t, s) } else { (s, t) };
+                (s, 1.0 + wrap_share(t - cut))
+            }
+            Layout::Open | Layout::Sphere { .. } => return (f64::NAN, f64::NAN),
+        };
+        let (sin, cos) = (TAU * s).sin_cos();
+        (reach * cos, reach * sin)
     }
 
     /// Chart coordinates, for the charts that have them.
@@ -327,9 +595,14 @@ impl Chart {
                 let reach = 1.0 + wrap(v - cut) / TAU;
                 (reach * u.cos(), reach * u.sin())
             }
-            Chart::Patch { tree, .. } => tree
+            Chart::Patch {
+                layout: Layout::Open,
+                tree,
+                ..
+            } => tree
                 .nearest(p)
                 .map_or((f64::NAN, f64::NAN), |n| tree.chart(n.u, n.v)),
+            Chart::Patch { .. } => self.closed_image(p),
             Chart::Cylinder { .. } | Chart::Sphere { .. } => (0.0, 0.0),
         }
     }
@@ -341,6 +614,11 @@ impl Chart {
                 let lipschitz = match self {
                     Chart::Tube { major, minor, .. } => 1.0 / (TAU * (major - minor)) + 2.0 / minor,
                     Chart::Ring { major, minor, .. } => 1.0 / (TAU * minor) + 2.0 / (major - minor),
+                    Chart::Patch {
+                        layout: Layout::Torus { .. },
+                        speed,
+                        ..
+                    } => *speed,
                     _ => return None,
                 };
                 return Some(Target {
@@ -356,6 +634,18 @@ impl Chart {
                 q,
                 lipschitz: 1.0,
             },
+            Chart::Patch {
+                layout: Layout::Sphere { .. },
+                speed,
+                ..
+            } => {
+                let (a, b) = homogeneous(self.shares(q)?);
+                Target {
+                    at: (f64::NAN, f64::NAN),
+                    q: Vec3::new(a.0, a.1, b),
+                    lipschitz: *speed,
+                }
+            }
             Chart::Patch { speed, .. } => Target {
                 at: self.coordinates(q),
                 q,
@@ -405,6 +695,27 @@ impl Chart {
     /// to a positive factor; zero only when they are the same point.
     fn direction(&self, target: &Target, p: Vec3) -> (f64, f64) {
         match self {
+            Chart::Patch {
+                layout: Layout::Sphere { drop },
+                ..
+            } => {
+                // With `z = a / b` the plane of the poles and `w = 1 / (z −
+                // z₀)` the chart, `w_p − w_q = (z_q − z_p) / ((z_p − z₀)
+                // (z_q − z₀))`, which is, up to a positive factor,
+                // `(a_q b_p − a_p b_q) conj(A_p) conj(A_q)` with `A = a b₀
+                // − a₀ b`: bounded, and continuous through the pole at
+                // infinity of `z`. With `|a| + b = 1` for every point,
+                // `|∂/∂t| ≤ 2` and `|∂/∂s| ≤ 2π t (1 − t)` of the first
+                // two factors, and `|A_q| ≤ 1`: what the speed assumes.
+                let Some(shares) = self.shares(p) else {
+                    return (0.0, 0.0);
+                };
+                let (a, b) = homogeneous(shares);
+                let (aq, bq) = ((target.q.x, target.q.y), target.q.z);
+                let apart = (aq.0 * b - a.0 * bq, aq.1 * b - a.1 * bq);
+                let towards = times_conj(apart, from_drop(a, b, *drop));
+                times_conj(towards, from_drop(aq, bq, *drop))
+            }
             Chart::Plane(_)
             | Chart::Cone(_)
             | Chart::Tube { .. }
@@ -512,6 +823,17 @@ impl Chart {
                 return Ok(0);
             }
         }
+        if let Chart::Patch {
+            layout: Layout::Sphere { drop },
+            ..
+        } = self
+        {
+            // Likewise at the point the chart leaves out.
+            let (x, y) = from_drop((target.q.x, target.q.y), target.q.z, *drop);
+            if x.hypot(y) < 1e-9 {
+                return Ok(0);
+            }
+        }
         let mut total = 0.0;
         for seg in loops.into_iter().flatten() {
             total += seg.sign() * self.turn(seg, &target)?;
@@ -528,6 +850,293 @@ impl Chart {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::boolean::freeform::CLOSED_POLE;
+    use craft3d_geom::NurbsSurface;
+    use std::f64::consts::FRAC_PI_4;
+
+    /// The surface swept a full turn about the z axis by a rational
+    /// profile `(reach, height, weight)` of the given degree and knots, as
+    /// four rational quadratic quarters (so that the net ends on the row
+    /// it starts with); the turn is u, or v when `around_v`.
+    fn turned(
+        profile: &[(f64, f64, f64)],
+        degree: usize,
+        knots: Vec<f64>,
+        around_v: bool,
+    ) -> Surface {
+        let weight = FRAC_PI_4.cos();
+        let ring: Vec<(f64, f64, f64)> = (0..9)
+            .map(|k| {
+                let (sin, cos) = (0.3 + FRAC_PI_4 * f64::from(k)).sin_cos();
+                if k % 2 == 0 {
+                    (cos, sin, 1.0)
+                } else {
+                    (cos / weight, sin / weight, weight)
+                }
+            })
+            .collect();
+        let ring_knots = vec![
+            0.0, 0.0, 0.0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1.0, 1.0, 1.0,
+        ];
+        let point = |r: &(f64, f64, f64), q: &(f64, f64, f64)| {
+            (Vec3::new(q.0 * r.0, q.0 * r.1, q.1), r.2 * q.2)
+        };
+        let (mut ctrl, mut weights) = (Vec::new(), Vec::new());
+        if around_v {
+            for q in profile {
+                for r in &ring {
+                    let (p, w) = point(r, q);
+                    ctrl.push(p);
+                    weights.push(w);
+                }
+            }
+            let n = profile.len();
+            Surface::Nurbs(
+                NurbsSurface::new(degree, 2, knots, ring_knots, n, 9, ctrl, weights).unwrap(),
+            )
+        } else {
+            for r in &ring {
+                for q in profile {
+                    let (p, w) = point(r, q);
+                    ctrl.push(p);
+                    weights.push(w);
+                }
+            }
+            let n = profile.len();
+            Surface::Nurbs(
+                NurbsSurface::new(2, degree, ring_knots, knots, 9, n, ctrl, weights).unwrap(),
+            )
+        }
+    }
+
+    /// The closed surfaces the charts are for: a wall (closed around), a
+    /// cup (and a pole), a ball (two poles) and a torus (closed both ways).
+    fn closed(around_v: bool) -> Vec<(&'static str, Surface)> {
+        let w = FRAC_PI_4.cos();
+        let quarter = vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+        let half = vec![0.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0];
+        let circle = vec![
+            0.0, 0.0, 0.0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1.0, 1.0, 1.0,
+        ];
+        let tube: Vec<(f64, f64, f64)> = (0..9)
+            .map(|k| {
+                let (sin, cos) = (FRAC_PI_4 * f64::from(k)).sin_cos();
+                if k % 2 == 0 {
+                    (2.0 + 0.6 * cos, 0.6 * sin, 1.0)
+                } else {
+                    (2.0 + 0.6 * cos / w, 0.6 * sin / w, w)
+                }
+            })
+            .collect();
+        vec![
+            (
+                "wall",
+                turned(
+                    &[(2.0, 0.0, 1.0), (2.0, 3.0, 1.0)],
+                    1,
+                    vec![0.0, 0.0, 1.0, 1.0],
+                    around_v,
+                ),
+            ),
+            (
+                "cup",
+                turned(
+                    &[(2.0, 0.0, 1.0), (2.0, 2.0, w), (0.0, 2.0, 1.0)],
+                    2,
+                    quarter,
+                    around_v,
+                ),
+            ),
+            (
+                "ball",
+                turned(
+                    &[
+                        (0.0, -2.0, 1.0),
+                        (2.0, -2.0, w),
+                        (2.0, 0.0, 1.0),
+                        (2.0, 2.0, w),
+                        (0.0, 2.0, 1.0),
+                    ],
+                    2,
+                    half,
+                    around_v,
+                ),
+            ),
+            ("torus", turned(&tube, 2, circle, around_v)),
+        ]
+    }
+
+    /// The chart of a closed surface moves no faster than its speed says,
+    /// across the seam too, and its image of a point does not depend on
+    /// the side of the seam the point is found from; for the ball, the
+    /// direction from every target point likewise.
+    #[test]
+    fn the_chart_of_a_closed_surface_moves_no_faster_than_its_speed() {
+        for around_v in [false, true] {
+            for (name, surface) in closed(around_v) {
+                let tree = Arc::new(PatchTree::new(&surface).unwrap());
+                let closure = tree.closure().unwrap().unwrap();
+                let chart = Chart::closed_patch(&tree, &closure, &[]).unwrap();
+                let Chart::Patch { speed, layout, .. } = &chart else {
+                    panic!("{name}");
+                };
+                let speed = *speed;
+                let ((u0, u1), (v0, v1)) = surface.domain();
+                let at = |a: f64, b: f64| {
+                    let (a, b) = (a.rem_euclid(1.0), b.clamp(0.0, 1.0));
+                    let (a, b) = if around_v { (b, a) } else { (a, b) };
+                    surface.eval(u0 + (u1 - u0) * a, v0 + (v1 - v0) * b)
+                };
+                let targets = [at(0.1, 0.5), at(0.6, 0.3), at(0.95, 0.8)];
+                let mut fastest = 0.0_f64;
+                let places: [f64; 8] = [0.0, 1e-6, 0.02, 0.27, 0.5, 0.73, 0.98, 1.0 - 1e-6];
+                for &a in &places {
+                    for &b in &places[..places.len() - 1] {
+                        let b = b.clamp(1e-3, 0.999);
+                        for turn in 0..8 {
+                            let angle = f64::from(turn) * PI / 4.0;
+                            let (p, q) =
+                                (at(a, b), at(a + 1e-4 * angle.cos(), b + 1e-4 * angle.sin()));
+                            let travelled = p.distance(q);
+                            if travelled <= 1e-13 {
+                                continue;
+                            }
+                            // A torus is cut open: the chart jumps there.
+                            if let Layout::Torus { cut, swapped } = layout {
+                                let near_cut = |x: Vec3| {
+                                    let (s, t) = chart.shares(x).unwrap();
+                                    let t = if *swapped { s } else { t };
+                                    let off = wrap_share(t - cut);
+                                    off.min(1.0 - off) < 1e-3
+                                };
+                                if near_cut(p) || near_cut(q) {
+                                    continue;
+                                }
+                            }
+                            for &target in &targets {
+                                let target = chart.target(About::Point(target)).unwrap();
+                                let (x0, y0) = chart.direction(&target, p);
+                                let (x1, y1) = chart.direction(&target, q);
+                                let pace = (x1 - x0).hypot(y1 - y0) / travelled;
+                                assert!(
+                                    pace <= target.lipschitz * (1.0 + 1e-6),
+                                    "{name}, around v {around_v}: at ({a}, {b}) {pace} per length, above {}",
+                                    target.lipschitz
+                                );
+                                fastest = fastest.max(pace);
+                            }
+                        }
+                    }
+                }
+                println!(
+                    "{name} ({layout:?}), around v {around_v}: bound {speed}, fastest seen {fastest}"
+                );
+                assert!(
+                    speed <= 100.0 * fastest,
+                    "{name}: {speed} against {fastest}"
+                );
+                // Either side of the seam is one point of the chart.
+                if !matches!(layout, Layout::Sphere { .. }) {
+                    for b in [0.2, 0.7] {
+                        let (x, y) = chart.coordinates(at(0.0, b));
+                        let (x1, y1) = chart.coordinates(at(1.0 - 1e-12, b));
+                        assert!((x - x1).hypot(y - y1) < 1e-9, "{name}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Around a loop of a closed surface: a ring around the wall goes
+    /// around the chart's origin, a small loop across the seam around the
+    /// points inside it only, on every layout.
+    #[test]
+    fn loops_across_the_seam_wind_about_what_they_hold() {
+        use craft3d_geom::Circle;
+        for around_v in [false, true] {
+            for (name, surface) in closed(around_v) {
+                let tree = Arc::new(PatchTree::new(&surface).unwrap());
+                let closure = tree.closure().unwrap().unwrap();
+                // A small circle on the surface across the seam (the seam
+                // is at the angle 0.3 about the z axis), as a curve near
+                // enough to it for a winding number.
+                let (sin, cos) = 0.3_f64.sin_cos();
+                let side = Vec3::new(cos, sin, 0.0);
+                let mut centre = Vec3::new(0.0, 0.0, 0.5) + side * 2.0;
+                if name == "torus" {
+                    centre = side * 2.6;
+                }
+                let near = tree.nearest(centre).unwrap().point;
+                let normal = (near - Vec3::new(0.0, 0.0, near.z)).normalized().unwrap();
+                let frame = Frame::new(near, normal, Vec3::Z).unwrap();
+                let small = Curve3::Circle(Circle::new(frame, 0.05).unwrap());
+                let seg = Seg {
+                    a: small.eval(0.0),
+                    b: small.eval(TAU),
+                    curve: small,
+                    range: (0.0, TAU),
+                    reversed: false,
+                };
+                let loops = vec![vec![seg]];
+                let chart = Chart::new(
+                    Sheet {
+                        surface: &surface,
+                        tree: Some(&tree),
+                    },
+                    &loops,
+                )
+                .unwrap();
+                let _ = closure;
+                let inside = chart
+                    .winding([loops[0].as_slice()], About::Point(near))
+                    .unwrap();
+                let far = tree
+                    .nearest(-side * 2.0 + Vec3::new(0.0, 0.0, 0.4))
+                    .unwrap()
+                    .point;
+                let outside = chart
+                    .winding([loops[0].as_slice()], About::Point(far))
+                    .unwrap();
+                assert_eq!(
+                    (inside.abs(), outside),
+                    (1, 0),
+                    "{name}, around v {around_v}"
+                );
+            }
+        }
+    }
+
+    /// A surface that closes on itself and into a point along the same
+    /// parameter has no chart that is built: refused by name.
+    #[test]
+    fn a_surface_closed_into_its_own_pole_is_refused() {
+        // Row 0 and row 2 are one point, row 1 a segment: closed in u,
+        // and both u borders poles.
+        let p = Vec3::new(0.0, 0.0, 0.0);
+        let ctrl = vec![
+            p,
+            p,
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(1.0, 1.0, 0.0),
+            p,
+            p,
+        ];
+        let surface = Surface::Nurbs(
+            NurbsSurface::new(
+                2,
+                1,
+                vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                vec![0.0, 0.0, 1.0, 1.0],
+                3,
+                2,
+                ctrl,
+                vec![1.0; 6],
+            )
+            .unwrap(),
+        );
+        let tree = PatchTree::new(&surface).unwrap();
+        assert!(matches!(tree.closure(), Some(Err(reason)) if reason == CLOSED_POLE));
+    }
 
     #[test]
     fn the_widest_gap_between_stretches_of_a_circle() {
