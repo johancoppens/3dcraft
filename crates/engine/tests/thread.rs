@@ -309,3 +309,28 @@ fn what_cannot_be_threaded_fails_with_the_reason() {
         assert!(error.contains(says), "{name}: {error}");
     }
 }
+
+#[test]
+fn a_thread_given_by_the_names_of_an_earlier_body_follows_it() {
+    // After a lead chamfer the shank's faces are the chamfer's copies;
+    // the thread names them as the cylinder had them, and is built as
+    // with the full names.
+    let mut volumes = Vec::new();
+    for (face, start) in [
+        ("F1:face(0)", "F1:face(1)"),
+        ("F2:copy(0)/F1:face(0)", "F2:copy(0)/F1:face(1)"),
+    ] {
+        let mut s = Session::new(Workspace::none());
+        run(&mut s, "file.new", json!({}));
+        shank(&mut s);
+        run(
+            &mut s,
+            "feature.chamfer",
+            json!({"edges": [["F1:face(0)", "F1:face(1)"]], "distance": "1 mm", "name": "Lead"}),
+        );
+        let made = thread(&mut s, json!({"face": face, "start": start}));
+        assert_eq!(made["status"], "ok", "{made}");
+        volumes.push(volume(&mut s, "Thread"));
+    }
+    assert_eq!(volumes[0], volumes[1]);
+}

@@ -1,7 +1,8 @@
 //! References that follow a body to its newest form.
 //!
 //! A feature that takes faces or edges of a body and makes its own body
-//! out of it (a chamfer, a fillet, an offset face, a delete face, a shell)
+//! out of it (a chamfer, a fillet, an offset face, a delete face, a shell,
+//! a thread)
 //! may name them as an earlier body had them: `F2:face(0)` where the body
 //! of `F2` already went into a fillet `F10` and a chamfer `F11`. Such a
 //! name is followed through the features that took the body, each in
@@ -221,6 +222,16 @@ pub(crate) fn feature(
                 None => false,
             };
             faces(doc, earlier, &mut shell.open, "open")? || moved
+        }
+        FeatureKind::Thread(thread) => {
+            let mut changed = false;
+            for (name, param) in [(&mut thread.face, "face"), (&mut thread.start, "start")] {
+                if let Some(followed) = face(doc, earlier, name, param)? {
+                    *name = followed;
+                    changed = true;
+                }
+            }
+            changed
         }
         _ => return Ok(None),
     };
