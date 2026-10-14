@@ -1279,3 +1279,37 @@ fn a_closed_spline_that_cannot_be_a_profile_says_why() {
     .unwrap_err();
     assert_eq!(error, KernelError::CrossesAxis { curves: vec![7] });
 }
+
+/// Work owed by `craft3d_kernel::boolean`, the same face as above: a block
+/// through the dome a spline sweeps when it ends on the axis, cutting the
+/// face whose surface closes into a point there. Remove `#[ignore]` when
+/// booleans take it; `feature.revolve` can then stop refusing a spline
+/// that ends on the axis (`crates/regen/src/revolve.rs`).
+#[test]
+#[ignore = "booleans decline a freeform face with a collapsed border"]
+fn booleans_take_a_revolved_spline_that_ends_on_the_axis() {
+    use craft3d_kernel::boolean::{BooleanOp, boolean};
+    let tol = Tolerance::default();
+    let case = cases(1.0).into_iter().find(|c| c.on_axis).unwrap();
+    let placing = placings(1.0)[0];
+    let profiles = detect_profiles(&placing.curves(&case.loops, false), &tol).unwrap();
+    let dome = revolve(
+        &profiles,
+        &Frame::WORLD,
+        placing.point,
+        placing.direction,
+        0.0,
+        TAU,
+        &tol,
+    )
+    .unwrap()
+    .body;
+    // The dome turns about the world's y axis between y = 0 and y = 6; the
+    // block passes through its side, clear of both poles.
+    let corner = Frame::WORLD.at(Vec3::new(2.0, 1.5, -1.0)).unwrap();
+    let block = craft3d_kernel::primitives::block(&corner, 6.0, 2.0, 2.0).unwrap();
+    for op in [BooleanOp::Subtract, BooleanOp::Intersect, BooleanOp::Union] {
+        let result = boolean(&dome, &block, op, &tol).unwrap_or_else(|e| panic!("{op:?}: {e}"));
+        assert_eq!(check(&result.body, &tol), [], "{op:?}");
+    }
+}
