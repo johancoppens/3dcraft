@@ -327,12 +327,12 @@ The blends first (chamfer and fillet, the first consumers of edge references), t
 - A face that winds along a thread is meshed; every triangulation has a work budget (2026-10-14)
 - A smooth loft through slender twisted sections builds (the rotor blade with its tip right after 18 m, also from a circle): a face whose triangles cannot follow a chord of its boundary has that chord cut finer (2026-10-14)
 - Blends along a straight edge next to a cylinder (the cut edges of a halved rod or tube, the tip of a lens of two arcs), worked out in the plane across the edge; both tip rims of a lens blade, after two surgical changes to the boolean ([`architecture.md`](architecture.md) §5.3 › *Blends next to a cylinder*) (2026-10-14)
-- Blends along freeform edges (a straight edge next to a cone, the edge between two lofted faces, a spline wall's edge): a rolling-ball fillet or a ruled chamfer as a spline surface within the tolerance, built in place, each end a corner of three faces (§5.3 › *Blends along freeform edges*) (2026-10-14)
+- Blends along freeform edges (a straight edge next to a cone, the edge between two lofted faces, a spline wall's edge): a rolling-ball fillet or a ruled chamfer as a spline surface within the tolerance, built in place, each end a corner of three faces or the edge closed (a slanted hole's mouth) (§5.3 › *Blends along freeform edges*) (2026-10-14)
 
 #### Open
 - [ ] Move face, then thicken (a sheet given a thickness), replace face and draft (faces tilted about a neutral plane along a pull direction)
 - [ ] Vertex blends: three fillets of different radii, with a circular edge, with a fourth edge
-- [ ] Freeform blends that meet: two at a vertex whose third edge stays sharp (a blade's whole tip or root, the turbofan's F2/F3), a closed edge without a vertex (a ring), freeform and closed-form edges in one feature, a freeform chamfer by distance and angle
+- [ ] Freeform blends that meet: two at a vertex whose third edge stays sharp (a blade's whole tip or root, the turbofan's F2/F3), freeform and closed-form edges in one feature, a freeform chamfer by distance and angle
 - [ ] A blend that ends in a face of its own in the middle of a chain
 - [ ] Chamfers: one that ends against a slanted wall; a reference to one of several edges between the same two faces
 - [ ] Fillets: an outside and an inside fillet that meet; the rim of a rod with half its radius or more (a spindle torus); variable radius (later)

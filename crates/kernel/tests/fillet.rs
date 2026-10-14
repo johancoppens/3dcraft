@@ -1294,13 +1294,15 @@ fn bad_requests_are_errors() {
         edge: EdgeId(ellipse as u32),
         radius: 0.1,
     };
-    match fillet(&cut, &[request], &tol) {
-        Err(KernelError::Fillet { reason, .. }) => {
-            // A whole ellipse has no vertex to end at.
-            assert!(reason.contains("closed edge"), "{reason}");
-        }
-        other => panic!("expected a refusal, got {other:?}"),
-    }
+    // Built as a ring of spline surface since 2026-10-14 (its oracle is
+    // in `blend_freeform.rs`); a radius the rod cannot hold is refused.
+    let made = fillet(&cut, &[request], &tol).unwrap();
+    assert_eq!(check(&made.body, &tol), []);
+    let too_large = FilletEdge {
+        radius: 1.5,
+        ..request
+    };
+    assert!(fillet(&cut, &[too_large], &tol).is_err());
 }
 
 /// The contact fillets make where one goes on in the next, kept as the

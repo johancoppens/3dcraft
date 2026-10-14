@@ -521,3 +521,112 @@ fn a_straight_edge_between_a_plane_and_a_cone_chamfered() {
         assert!(mass(&made.body).volume < mass(&body).volume);
     }
 }
+
+/// The plane of the slanted cut of the rod below: through `o`, its
+/// outward normal `n`.
+fn slanted() -> (Vec3, Vec3) {
+    (
+        Vec3::new(-3.0, -3.0, 1.5),
+        Vec3::new(0.3, 0.0, 1.0).normalized().unwrap(),
+    )
+}
+
+/// A rod of radius 1 from z = 0 to 3, cut by a slanted plane: the rim of
+/// the cut is a whole ellipse between the plane and the cylinder, a
+/// closed edge with one vertex.
+fn slanted_rod(k: f64) -> Body {
+    let tol = tolerance(k);
+    let rod = primitives::cylinder(&Frame::WORLD, k, 3.0 * k).unwrap();
+    let (o, n) = slanted();
+    let tilted = Frame::new(o * k, n, Vec3::X).unwrap();
+    let cutter = primitives::block(&tilted, 6.0 * k, 6.0 * k, 6.0 * k).unwrap();
+    boolean(&rod, &cutter, BooleanOp::Subtract, &tol)
+        .unwrap()
+        .body
+}
+
+/// The distance from `p` to the centres of the balls of radius `r` behind
+/// the slanted plane and inside the rod: a half-space and a cylinder moved
+/// in by r, Dykstra again.
+fn to_rim_centres(p: Vec3, r: f64) -> f64 {
+    let (o, n) = slanted();
+    let (mut x, mut pp, mut qq) = (p, Vec3::ZERO, Vec3::ZERO);
+    for _ in 0..600 {
+        let y0 = x + pp;
+        let over = n.dot(y0 - o) + r;
+        let y = if over > 0.0 { y0 - n * over } else { y0 };
+        pp = y0 - y;
+        let x0 = y + qq;
+        let rho = x0.x.hypot(x0.y);
+        x = if rho > 1.0 - r {
+            Vec3::new(x0.x * (1.0 - r) / rho, x0.y * (1.0 - r) / rho, x0.z)
+        } else {
+            x0
+        };
+        qq = x0 - x;
+    }
+    p.distance(x)
+}
+
+/// The rim of the slanted cut rounded: a closed freeform edge, its fillet
+/// a ring of spline surface, held point by point against the definition
+/// as the cone's edge is.
+#[test]
+fn the_rim_of_a_slanted_cut_of_a_rod() {
+    let r = 0.2;
+    let (o, n) = slanted();
+    for k in SCALES {
+        let tol = tolerance(k);
+        let body = slanted_rod(k);
+        let rim = (0..body.edges.len())
+            .find(|i| body.edges[*i].curve.kind() == "ellipse")
+            .unwrap();
+        let made = fillet(
+            &body,
+            &[FilletEdge {
+                edge: EdgeId(rim as u32),
+                radius: r * k,
+            }],
+            &tol,
+        )
+        .unwrap();
+        assert_eq!(check(&made.body, &tol), []);
+        assert_eq!(made.body.faces.len(), 4);
+        let worst = crease(&made.body, &made.faces);
+        assert!(worst <= tol.linear / (r * k), "a crease of {worst}");
+        let n_grid = 12;
+        let margin = 1e-4;
+        let mut points = Vec::new();
+        let mut expected = Vec::new();
+        for i in 0..n_grid {
+            for j in 0..n_grid {
+                for l in 0..n_grid {
+                    let f = |m: usize, lo: f64, hi: f64| {
+                        lo + (hi - lo) * (m as f64 + 0.37) / n_grid as f64
+                    };
+                    let p = Vec3::new(f(i, -1.05, 1.05), f(j, -1.05, 1.05), f(l, 0.0, 1.8));
+                    let side = 1.0 - p.x.hypot(p.y);
+                    let below = -n.dot(p - o);
+                    let in_body = side > 0.0 && below > 0.0 && p.z > 0.0;
+                    let near_body = [side, below, p.z].iter().any(|d| d.abs() < margin);
+                    let d = to_rim_centres(p, r);
+                    if near_body || (d - r).abs() < margin {
+                        continue;
+                    }
+                    points.push(p * k);
+                    expected.push(in_body && d <= r);
+                }
+            }
+        }
+        let found = contains_points(&made.body, &points, &tol).unwrap();
+        let mut undecided = 0;
+        for ((p, want), got) in points.iter().zip(&expected).zip(&found) {
+            match got {
+                Some(got) => assert_eq!(got, want, "at {p:?}, scale {k}"),
+                None => undecided += 1,
+            }
+        }
+        assert!(undecided * 100 < points.len(), "{undecided} undecided");
+        assert!(mass(&made.body).volume < mass(&body).volume);
+    }
+}

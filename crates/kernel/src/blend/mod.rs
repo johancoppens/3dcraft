@@ -242,7 +242,7 @@ impl Reason {
                 "the chamfer of a freeform edge does not end cleanly: each end of the edge has to be a corner of exactly three faces whose third face the chamfer runs into across the edge"
             }
             Reason::FreeClosed => {
-                "a chamfer along a closed edge without a vertex (a ring) on a freeform face is not built yet"
+                "a chamfer along a closed freeform edge whose vertex other edges pass through (a seam) is not built yet"
             }
             Reason::FreeAngle => {
                 "a chamfer of a freeform edge by a distance and an angle is not built yet: give two distances"
@@ -325,7 +325,7 @@ impl Reason {
                 "the fillet of a freeform edge does not end cleanly: each end of the edge has to be a corner of exactly three faces whose third face the fillet runs into across the edge"
             }
             Reason::FreeClosed => {
-                "a fillet along a closed edge without a vertex (a ring) on a freeform face is not built yet"
+                "a fillet along a closed freeform edge whose vertex other edges pass through (a seam) is not built yet"
             }
             Reason::FreeAngle => "a fillet has no angle",
             Reason::FreeSurface => {

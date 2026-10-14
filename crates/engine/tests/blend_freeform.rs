@@ -273,3 +273,94 @@ fn the_cut_edges_of_a_conical_casing() {
     assert!(chamfered < before, "{before} -> {chamfered}");
     deep_ok(&mut s);
 }
+
+/// A rod cut by a slanted plane and a plate with a slanted hole: the rim
+/// and the mouth are whole ellipses, closed edges whose blends are rings
+/// of spline surface, outside and inside.
+#[test]
+fn the_rim_of_a_slanted_cut_and_the_mouth_of_a_slanted_hole() {
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    built(
+        &mut s,
+        "feature.cylinder",
+        json!({"radius": 5.0, "height": 20.0, "name": "Rod"}),
+    );
+    built(
+        &mut s,
+        "feature.block",
+        json!({"size": [40.0, 40.0, 20.0], "position": [-20.0, -20.0, 12.0], "name": "Cutter"}),
+    );
+    built(
+        &mut s,
+        "feature.transform",
+        json!({"source": "Cutter", "angle": "15 deg", "axis": [0, 1, 0], "pivot": [0, 0, 12], "name": "Tilted"}),
+    );
+    built(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Rod", "tool": "Tilted", "name": "Cut"}),
+    );
+    let before = body(&mut s, "Cut")["volume"].as_f64().unwrap();
+    let edges = run(&mut s, "document.edges", json!({"feature": "Cut"}));
+    let rim = edges["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["curve"] == "ellipse")
+        .unwrap_or_else(|| panic!("no ellipse in {edges}"))
+        .clone();
+    built(
+        &mut s,
+        "feature.fillet",
+        json!({"edges": [rim["faces"]], "radius": 1.0, "name": "Round"}),
+    );
+    let after = body(&mut s, "Round")["volume"].as_f64().unwrap();
+    assert!(after < before, "{before} -> {after}");
+    deep_ok(&mut s);
+    run(&mut s, "feature.delete", json!({"feature": "Round"}));
+    built(
+        &mut s,
+        "feature.chamfer",
+        json!({"edges": [rim["faces"]], "distance": 0.8, "name": "Bevel"}),
+    );
+    deep_ok(&mut s);
+
+    // The mouth of a slanted hole in a plate gains nothing and loses the
+    // rounded rim.
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    built(
+        &mut s,
+        "feature.block",
+        json!({"size": [30.0, 30.0, 6.0], "name": "Plate"}),
+    );
+    built(
+        &mut s,
+        "feature.cylinder",
+        json!({"name": "Drill", "position": [15.0, 15.0, -3.0], "axis": [0.3, 0.0, 1.0], "radius": 4.0, "height": 15.0}),
+    );
+    built(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Plate", "tool": "Drill", "name": "Drilled"}),
+    );
+    let before = body(&mut s, "Drilled")["volume"].as_f64().unwrap();
+    let edges = run(&mut s, "document.edges", json!({"feature": "Drilled"}));
+    let mouths: Vec<Value> = edges["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["curve"] == "ellipse")
+        .map(|e| e["faces"].clone())
+        .collect();
+    assert_eq!(mouths.len(), 2, "{edges}");
+    built(
+        &mut s,
+        "feature.fillet",
+        json!({"edges": mouths, "radius": 1.0, "name": "Round"}),
+    );
+    let after = body(&mut s, "Round")["volume"].as_f64().unwrap();
+    assert!(after < before, "{before} -> {after}");
+    deep_ok(&mut s);
+}

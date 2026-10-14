@@ -926,14 +926,15 @@ fn bad_parameters_are_errors_and_what_is_not_built_says_its_kind() {
         .iter()
         .find(|e| e["curve"] == "ellipse")
         .unwrap_or_else(|| panic!("no elliptic edge in {listed}"));
-    let reason = failed(
+    // Built since 2026-10-14: a ring of spline surface
+    // (`blend_freeform.rs` has its oracles).
+    built(
         &mut s,
         "feature.fillet",
         json!({"edges": [ellipse["faces"]], "radius": 0.1, "name": "Round"}),
     );
-    assert!(reason.starts_with("edges.0 (between "), "{reason}");
-    // A whole ellipse: a freeform blend needs vertices to end at.
-    assert!(reason.contains("closed edge"), "{reason}");
+    let check = run(&mut s, "document.check", json!({"deep": true}));
+    assert_eq!(check["ok"], true, "{check}");
     // A fillet face is no place for a sketch: refused, with the reason.
     run(&mut s, "feature.delete", json!({"feature": "Round"}));
     run(&mut s, "feature.delete", json!({"feature": "Cut"}));

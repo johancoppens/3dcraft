@@ -41,9 +41,14 @@
 //! borders of the blend reach them, the third face gets the cut curve in
 //! place of the corner, and the edge becomes the blend face.
 //!
+//! **A closed edge** (one vertex no other edge passes through) has no
+//! ends: the sections go round it, the surface is the closed cubic through
+//! them, and the blend face is the ring between its two borders.
+//!
 //! **What is refused** (with the reason): an edge that ends in a vertex of
 //! more than three faces, or where another blended edge ends; a closed
-//! edge without vertices; a chamfer given by an angle; a blend whose
+//! edge whose vertex other edges pass through; a chamfer given by an
+//! angle; a blend whose
 //! borders leave the edges at its ends (too large); a surface that cannot
 //! be followed (a ball that does not settle, an arc of half a turn or
 //! more); an approximation that does not come within the tolerance in the
@@ -153,6 +158,8 @@ struct Across {
 struct Spine<'a> {
     curve: &'a Curve3,
     range: (f64, f64),
+    /// A closed edge: `s` goes round, a whole turn per unit.
+    closed: bool,
 }
 
 impl Spine<'_> {
@@ -160,6 +167,7 @@ impl Spine<'_> {
         let (t0, t1) = self.range;
         // Past the ends the curve goes on as it is (a spline's end spans
         // as the polynomials they are), so the planes turn smoothly.
+        let s = if self.closed { s.rem_euclid(1.0) } else { s };
         let t = t0 + s * (t1 - t0);
         let (point, d) = self.curve.derivatives(t);
         let normal = (d * (t1 - t0)).normalized()?;
@@ -685,7 +693,15 @@ fn blend_one(
     let edge = request.edge;
     let tol = tolerance.linear;
     let data = body.edge(edge).ok_or_else(lost)?.clone();
-    if data.start == data.end {
+    let closed = data.start == data.end;
+    if closed
+        && body
+            .edges
+            .iter()
+            .enumerate()
+            .any(|(i, e)| i != edge.0 as usize && (e.start == data.start || e.end == data.start))
+    {
+        // A ring whose vertex other edges share (a seam through it).
         return Err(refuse(edge, None, Reason::FreeClosed));
     }
     let shape = match request.size {
@@ -697,10 +713,6 @@ fn blend_one(
             return Err(refuse(edge, None, Reason::FreeAngle));
         }
     };
-    let ends = [
-        end_at(body, edge, [first, second], data.start)?,
-        end_at(body, edge, [first, second], data.end)?,
-    ];
     let face = |f: FaceId| body.face(f).ok_or_else(lost);
     let (fa, fb) = (face(first)?, face(second)?);
     let sides = [
@@ -724,6 +736,7 @@ fn blend_one(
         spine: Spine {
             curve: &data.curve,
             range: data.range,
+            closed,
         },
         sides,
         shape,
@@ -782,6 +795,27 @@ fn blend_one(
         centre,
     };
     let seed = solver.section(0.5, &seed).ok_or_else(unsolvable)?;
+    if closed {
+        let (surface, params, sections) = ring(&solver, seed, &data, tolerance)
+            .ok_or_else(|| refuse(edge, None, Reason::FreeApproximation))?;
+        let outward =
+            outward_from(&solver, &surface, &params, &sections, convex).ok_or_else(unsolvable)?;
+        let (blend_face, second_border) =
+            splice_ring(body, edge, [first, second], surface, outward)?;
+        return tangent_or_refused(
+            body,
+            edge,
+            [first, second],
+            blend_face,
+            second_border,
+            shape,
+            tolerance,
+        );
+    }
+    let ends = [
+        end_at(body, edge, [first, second], data.start)?,
+        end_at(body, edge, [first, second], data.end)?,
+    ];
     // Sections from the middle outwards, each from its neighbour: along
     // the edge in steps of a few radii, past its ends in steps of a
     // quarter of the radius until the section is wholly out of the third
@@ -883,28 +917,8 @@ fn blend_one(
         surface,
         cuts: [cut0, cut1],
     };
-    let centre_of = |s: f64| -> Option<Vec3> {
-        let near = params
-            .iter()
-            .zip(&sections)
-            .min_by(|a, b| (a.0 - s).abs().total_cmp(&(b.0 - s).abs()))?
-            .1;
-        solver.section(s, near)?.centre
-    };
-    let outward_hint = match shape {
-        Shape::Ball { convex, .. } => {
-            let c = centre_of(0.5).ok_or_else(unsolvable)?;
-            let p = made.surface.eval(0.5, 0.5);
-            if convex { p - c } else { c - p }
-        }
-        Shape::Cut { .. } => {
-            // Towards the edge at a convex one (what is cut away lies
-            // there), away from it at a concave one.
-            let p = made.surface.eval(0.5, 0.5);
-            let e = solver.spine.at(0.5).ok_or_else(unsolvable)?.point;
-            if convex { e - p } else { p - e }
-        }
-    };
+    let outward_hint =
+        outward_from(&solver, &made.surface, &params, &sections, convex).ok_or_else(unsolvable)?;
     let (blend_face, second_border) = splice(
         body,
         edge,
@@ -914,6 +928,67 @@ fn blend_one(
         outward_hint,
         tolerance,
     )?;
+    tangent_or_refused(
+        body,
+        edge,
+        [first, second],
+        blend_face,
+        second_border,
+        shape,
+        tolerance,
+    )
+}
+
+/// Which way is out of the blend face, at the sample nearest the middle
+/// of its domain: away from the ball's centre at a convex edge (towards
+/// it at a concave one); for a chamfer towards the edge at a convex one,
+/// what is cut away lying there.
+fn outward_from(
+    solver: &Solver<'_>,
+    surface: &NurbsSurface,
+    params: &[f64],
+    sections: &[Section],
+    convex: bool,
+) -> Option<Vec3> {
+    let ((u0, u1), _) = surface.domain();
+    let middle = 0.5 * (u0 + u1);
+    let (s, section) = params
+        .iter()
+        .zip(sections)
+        .min_by(|a, b| (a.0 - middle).abs().total_cmp(&(b.0 - middle).abs()))?;
+    // The sample's own parameter on the surface (a ring's are taken from
+    // its first sample round).
+    let u = if *s < u0 { *s + 1.0 } else { *s };
+    let p = surface.eval(u, 0.5);
+    Some(match (solver.shape, section.centre) {
+        (Shape::Ball { .. }, Some(c)) => {
+            if convex {
+                p - c
+            } else {
+                c - p
+            }
+        }
+        (Shape::Ball { .. }, None) => return None,
+        (Shape::Cut { .. }, _) => {
+            let e = solver.spine.at(*s)?.point;
+            if convex { e - p } else { p - e }
+        }
+    })
+}
+
+/// A fillet face is tangent to both faces along its borders, measured
+/// again on the body (to ten times what the approximation was refined
+/// to); a chamfer passes.
+fn tangent_or_refused(
+    body: &Body,
+    edge: EdgeId,
+    [first, second]: [FaceId; 2],
+    blend_face: FaceId,
+    second_border: EdgeId,
+    shape: Shape,
+    tolerance: &Tolerance,
+) -> Result<FaceId, BlendError> {
+    let tol = tolerance.linear;
     if let Shape::Ball { radius, .. } = shape {
         // Tangent to both faces along its borders, measured.
         let limit = 10.0 * tolerance.angular.max(BEND).max(tol / radius);
@@ -941,6 +1016,239 @@ fn blend_one(
         }
     }
     Ok(blend_face)
+}
+
+/// The blend face along a closed edge: sections evenly round it, joined
+/// by the closed cubic through them (with continuous curvature where
+/// they meet), refined as [`refine`] does an open one. With the samples
+/// it went through.
+type Ring = (NurbsSurface, Vec<f64>, Vec<Section>);
+
+fn ring(solver: &Solver<'_>, seed: Section, data: &Edge, tolerance: &Tolerance) -> Option<Ring> {
+    let size = solver.shape.size();
+    let mut length = 0.0;
+    let mut last = data.curve.eval(data.range.0);
+    for k in 1..=128 {
+        let t = data.range.0 + (data.range.1 - data.range.0) * f64::from(k) / 128.0;
+        let p = data.curve.eval(t);
+        length += p.distance(last);
+        last = p;
+    }
+    if !(length > 0.0 && size > 0.0) {
+        return None;
+    }
+    let count = (length / size).ceil().clamp(12.0, 200.0);
+    let step = 1.0 / count;
+    // Round from the seed at s = 1/2, each section from the one before.
+    let mut solved = Vec::new();
+    let mut near = seed;
+    let mut s = 0.5;
+    while s < 1.5 - 0.5 * step {
+        near = solver.section(s, &near)?;
+        solved.push((s.rem_euclid(1.0), near));
+        s += step;
+    }
+    solved.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut params: Vec<f64> = solved.iter().map(|x| x.0).collect();
+    let mut sections: Vec<Section> = solved.iter().map(|x| x.1).collect();
+    let limit = 0.25 * tolerance.linear;
+    let bend = tolerance.angular.max(BEND).max(tolerance.linear / size);
+    for _ in 0..16 {
+        let surface = ring_surface(&params, &sections)?;
+        let first = *params.first()?;
+        let mut added: Vec<(f64, Section)> = Vec::new();
+        for (i, near) in sections.iter().enumerate() {
+            let a = *params.get(i)?;
+            let b = params.get(i + 1).copied().unwrap_or(first + 1.0);
+            let s = 0.5 * (a + b);
+            let exact = solver.section(s, near)?;
+            let mut worst = 0.0_f64;
+            for k in 0..=8 {
+                let v = f64::from(k) / 8.0;
+                worst = worst.max(surface.eval(s, v).distance(exact.eval(v)?));
+            }
+            let mut kink = 0.0_f64;
+            if matches!(solver.shape, Shape::Ball { .. }) {
+                for (k, v) in [(0_usize, 0.0), (1, 1.0)] {
+                    let (point, du, dv) = surface.derivatives(s, v);
+                    let side = solver.sides.get(k)?;
+                    let (uv, _) = side.foot(point, *exact.params.get(k)?)?;
+                    let n = side.normal(uv)?;
+                    kink = kink.max(du.cross(dv).normalized()?.cross(n).length());
+                }
+            }
+            if !(worst <= limit) || !(kink <= bend) {
+                added.push((s.rem_euclid(1.0), exact));
+            }
+        }
+        if added.is_empty() {
+            return Some((surface, params, sections));
+        }
+        if params.len() + added.len() > MAX_SAMPLES {
+            return None;
+        }
+        for (s, section) in added {
+            let at = params.partition_point(|p| *p < s);
+            params.insert(at, s);
+            sections.insert(at, section);
+        }
+    }
+    None
+}
+
+/// The closed surface through the sections at `params` (increasing, in
+/// [0, 1)): per row of control points the closed cubic with continuous
+/// curvature through their homogeneous points, one Bézier piece per pair
+/// of sections; its parameter runs from the first section round to it
+/// again.
+fn ring_surface(params: &[f64], sections: &[Section]) -> Option<NurbsSurface> {
+    use craft3d_geom::refine::periodic_tangents;
+    let nets: Vec<Vec<(Vec3, f64)>> = sections
+        .iter()
+        .map(Section::net)
+        .collect::<Option<Vec<_>>>()?;
+    let across = nets.first()?.len();
+    let n = params.len();
+    if n < 3 || nets.iter().any(|x| x.len() != across) {
+        return None;
+    }
+    let first = *params.first()?;
+    let steps: Vec<f64> = (0..n)
+        .map(|i| {
+            let a = params.get(i).copied().unwrap_or(0.0);
+            let b = params.get(i + 1).copied().unwrap_or(first + 1.0);
+            b - a
+        })
+        .collect();
+    let tangents = periodic_tangents(&steps).ok()?;
+    let count_u = 3 * n + 1;
+    let mut ctrl = vec![Vec3::ZERO; count_u * across];
+    let mut weights = vec![0.0; count_u * across];
+    for j in 0..across {
+        let h = |i: usize| -> Option<(Vec3, f64)> {
+            let (p, w) = *nets.get(i % n)?.get(j)?;
+            Some((p * w, w))
+        };
+        let t = |i: usize| -> Option<(Vec3, f64)> {
+            let row = tangents.get(i % n)?;
+            let mut sum = (Vec3::ZERO, 0.0);
+            for (k, m) in row.iter().enumerate() {
+                let (p, w) = h(k)?;
+                sum.0 += p * *m;
+                sum.1 += w * m;
+            }
+            Some(sum)
+        };
+        let mut column = Vec::with_capacity(count_u);
+        for i in 0..n {
+            let third = *steps.get(i)? / 3.0;
+            let (a, ta) = (h(i)?, t(i)?);
+            let (b, tb) = (h(i + 1)?, t(i + 1)?);
+            column.push(a);
+            column.push((a.0 + ta.0 * third, a.1 + ta.1 * third));
+            column.push((b.0 - tb.0 * third, b.1 - tb.1 * third));
+        }
+        column.push(h(0)?);
+        for (i, (p, w)) in column.into_iter().enumerate() {
+            if !(w > 0.0) {
+                return None;
+            }
+            let index = i * across + j;
+            *ctrl.get_mut(index)? = p * (1.0 / w);
+            *weights.get_mut(index)? = w;
+        }
+    }
+    let mut knots_u = vec![first; 4];
+    for &p in params.iter().skip(1) {
+        knots_u.extend([p, p, p]);
+    }
+    knots_u.extend([first + 1.0; 4]);
+    let mut knots_v = vec![0.0; across];
+    knots_v.extend(std::iter::repeat_n(1.0, across));
+    NurbsSurface::new(
+        3,
+        across - 1,
+        knots_u,
+        knots_v,
+        count_u,
+        across,
+        ctrl,
+        weights,
+    )
+    .ok()
+}
+
+/// Puts the blend face of a closed edge into the body: the edge becomes
+/// the first border (its vertex moved onto it), the second border is new
+/// with a vertex of its own, and the face between them has the two as
+/// its loops.
+fn splice_ring(
+    body: &mut Body,
+    edge: EdgeId,
+    [first, second]: [FaceId; 2],
+    surface: NurbsSurface,
+    outward: Vec3,
+) -> Result<(FaceId, EdgeId), BlendError> {
+    let ((u0, u1), _) = surface.domain();
+    let b1 = border(&surface, false).ok_or_else(lost)?;
+    let b2 = border(&surface, true).ok_or_else(lost)?;
+    let vertex = body.edge(edge).ok_or_else(lost)?.start;
+    if let Some(v) = body.vertices.get_mut(vertex.0 as usize) {
+        v.point = b1.eval(u0);
+    }
+    let added = VertexId(u32::try_from(body.vertices.len()).map_err(|_| lost())?);
+    body.vertices.push(Vertex { point: b2.eval(u0) });
+    *body.edges.get_mut(edge.0 as usize).ok_or_else(lost)? = Edge {
+        curve: Curve3::Nurbs(b1),
+        range: (u0, u1),
+        start: vertex,
+        end: vertex,
+    };
+    let second_border = EdgeId(u32::try_from(body.edges.len()).map_err(|_| lost())?);
+    body.edges.push(Edge {
+        curve: Curve3::Nurbs(b2),
+        range: (u0, u1),
+        start: added,
+        end: added,
+    });
+    let mut first_reversed = None;
+    for (face, replacement) in [(first, edge), (second, second_border)] {
+        let loops = body.face(face).ok_or_else(lost)?.loops.clone();
+        for l in loops {
+            let ring = body.loops.get_mut(l.0 as usize).ok_or_else(lost)?;
+            for coedge in &mut ring.coedges {
+                if coedge.edge == edge {
+                    coedge.edge = replacement;
+                    if face == first {
+                        first_reversed = Some(coedge.reversed);
+                    }
+                }
+            }
+        }
+    }
+    let first_reversed = first_reversed.ok_or_else(lost)?;
+    let mut ids = Vec::with_capacity(2);
+    for (edge, reversed) in [(edge, !first_reversed), (second_border, first_reversed)] {
+        ids.push(LoopId(u32::try_from(body.loops.len()).map_err(|_| lost())?));
+        body.loops.push(Loop {
+            coedges: vec![Coedge { edge, reversed }],
+        });
+    }
+    let (_, du, dv) = surface.derivatives(0.5 * (u0 + u1), 0.5);
+    let reversed = du.cross(dv).dot(outward) < 0.0;
+    let id = FaceId(u32::try_from(body.faces.len()).map_err(|_| lost())?);
+    body.faces.push(craft3d_topo::Face {
+        surface: Surface::Nurbs(surface),
+        reversed,
+        loops: ids,
+    });
+    body.shells
+        .iter_mut()
+        .find(|s| s.faces.contains(&first))
+        .ok_or_else(lost)?
+        .faces
+        .push(id);
+    Ok((id, second_border))
 }
 
 /// Puts the blend face into the body in place of the edge (see the
@@ -1227,10 +1535,11 @@ pub(super) fn blend(
         let data = body
             .edge(request.edge)
             .ok_or(refused(request.edge, Reason::NotAnEdge))?;
-        if data.start == data.end {
-            return Err(refused(request.edge, Reason::FreeClosed));
+        let mut own = vec![data.start];
+        if data.end != data.start {
+            own.push(data.end);
         }
-        for v in [data.start, data.end] {
+        for v in own {
             if !seen.insert(v) {
                 return Err(refused(request.edge, Reason::FreeMeet));
             }
