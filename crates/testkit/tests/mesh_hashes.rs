@@ -249,10 +249,7 @@ fn bodies(k: f64) -> Vec<(String, Body)> {
     )
     .unwrap();
     booleans.push(("ball on a plate", run(&plate, &ball, BooleanOp::Union)));
-    booleans.push((
-        "plate less a ball",
-        run(&plate, &ball, BooleanOp::Subtract),
-    ));
+    booleans.push(("plate less a ball", run(&plate, &ball, BooleanOp::Subtract)));
     for nurbs in [false, true] {
         let dome = trimmed::domed_block(&Frame::WORLD, 3.0 * k, 2.0 * k, 1.5 * k, nurbs)
             .unwrap()
@@ -323,7 +320,10 @@ fn bodies(k: f64) -> Vec<(String, Body)> {
         }
     }
     for degree in [2, 3, 5] {
-        for (from, to, turn) in [(0.0, TAU, "full"), (-0.7, -0.7 + 1.5 * PI, "three quarters")] {
+        for (from, to, turn) in [
+            (0.0, TAU, "full"),
+            (-0.7, -0.7 + 1.5 * PI, "three quarters"),
+        ] {
             let name = format!("vase of degree {degree}, {turn} turn");
             let made = detect_profiles(&vase(k, degree), &tol)
                 .map_err(|e| e.to_string())
@@ -438,11 +438,7 @@ fn freeform_meshes_against_their_surfaces() {
                 let mut meshed = None;
                 for _ in 0..3 {
                     let start = Instant::now();
-                    meshed = Some(tessellate_body_with_threads(
-                        &body,
-                        &params(tolerance),
-                        1,
-                    ));
+                    meshed = Some(tessellate_body_with_threads(&body, &params(tolerance), 1));
                     best = best.min(start.elapsed().as_secs_f64() * 1e3);
                 }
                 match meshed.unwrap() {
