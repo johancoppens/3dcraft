@@ -876,9 +876,9 @@ fn faces_on_one_surface_kind_are_what_the_table_says() {
 
 /// The mesh of the sliver of `faces_on_one_surface_kind_are_what_the_table_says`
 /// at a chord of a quarter of a unit, five times the thickness of the
-/// sliver, is not closed. Finer meshes of it are (the test above).
+/// sliver, is closed: it was left open before a chord of a curved edge that
+/// equals another edge's chord was cut in two (the tessellator, 2026-10-14).
 #[test]
-#[ignore = "the tessellator leaves the mesh of a thin sweep open at a chord wider than the body is thick"]
 fn the_mesh_of_a_sliver_is_closed_at_a_coarse_chord() {
     let lens = profile(&[
         line(1, [1.0, 1.0], [1.0, -1.0]),

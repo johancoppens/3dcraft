@@ -21,9 +21,13 @@ fn timings_per_fixture() {
     let mut all = solids::all(&Frame::WORLD, 1.0).unwrap();
     all.extend(trimmed::all(&Frame::WORLD, 1.0).unwrap());
     all.push(trimmed::pipe_elbow(&Frame::WORLD, 3.0, 1.0, 1.9).unwrap());
+    // The last column is what it would cost to check that the mesh is
+    // closed by welding it (`Mesh::weld` and `Welded::is_closed`), for
+    // comparison with what the tessellator's own check costs, which is in
+    // the columns before it (`body.rs`, `closes_along_edges`).
     println!(
-        "{:30} {:>9} {:>10} {:>10} {:>10}",
-        "solid", "tolerance", "triangles", "ms (1 thr)", "ms (auto)"
+        "{:30} {:>9} {:>10} {:>10} {:>10} {:>10}",
+        "solid", "tolerance", "triangles", "ms (1 thr)", "ms (auto)", "ms (weld)"
     );
     for solid in &all {
         for tolerance in [1e-3, 1e-4] {
@@ -45,8 +49,15 @@ fn timings_per_fixture() {
             };
             let (triangles, single) = time(1);
             let (_, auto) = time(0);
+            let mesh = tessellate_body_with_threads(&solid.body, &params, 0).unwrap();
+            let mut weld = f64::INFINITY;
+            for _ in 0..3 {
+                let start = Instant::now();
+                assert!(mesh.weld().unwrap().is_closed());
+                weld = weld.min(start.elapsed().as_secs_f64() * 1e3);
+            }
             println!(
-                "{:30} {tolerance:>9.0e} {triangles:>10} {single:>10.2} {auto:>10.2}",
+                "{:30} {tolerance:>9.0e} {triangles:>10} {single:>10.2} {auto:>10.2} {weld:>10.2}",
                 solid.name
             );
         }
