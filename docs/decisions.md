@@ -6,6 +6,16 @@ Decisions that shape the project, newest first, each with its reason. An agent t
 
 ## Taken
 
+### 2026-10-14: What belongs in 3DCraft and what is a separate project (decided by the developer)
+
+3DCraft is the platform: kernel, modelling features, the window, formats, commands, MCP. It must become complete. Applications built on it stay separate projects in their own repositories, using 3DCraft only through its public surface (commands, MCP, the engine as a crate or as WebAssembly). When in doubt, the question is:
+
+> **Does it work on any shape, for anyone who designs with 3DCraft, or does it make one kind of product?**
+
+If it works on any shape (a building block someone with a quite different design would also use or miss), it belongs in 3DCraft. If it makes one kind of product (gears, toothed-belt pulleys, boxes) or is one way of working on top of the commands, it is a separate project. When an application lacks something, 3DCraft gains it in its **general** form (curves from formulas, never a gear feature).
+
+Applied on the day: a thread (on any cylinder of any design) belongs in 3DCraft, as in other modellers; a gear generator is separate (in Fusion 360 it is an add-in too); curves from formulas belong in 3DCraft; fitting a mesh into a B-rep is an import, so in 3DCraft; an agent that rebuilds a history from such a B-rep is an application, so separate; design verification (V1) works for every design, so in 3DCraft.
+
 ### 2026-10-14: The boolean remembers what it asked (branch `bool-speed`, decided by an agent, for the developer to overturn)
 
 Taken while making the booleans faster without changing a bit of their results ([`architecture.md`](architecture.md) §5.3 › *Speed (2026-10-14)*).
