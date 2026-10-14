@@ -2664,9 +2664,9 @@ mod tests {
             [0, 1, 2, 3].map(|x| a * low[x] + (1.0 - a) * high[x])
         };
         let mut rows = [[[0.0; 4]; 3]; 4];
-        for i in 0..4 {
-            for j in 0..3 {
-                rows[i][j] = raise(&|k| two[k][j], i);
+        for (i, row) in rows.iter_mut().enumerate() {
+            for (j, slot) in row.iter_mut().enumerate() {
+                *slot = raise(&|k| two[k][j], i);
             }
         }
         let (mut ctrl, mut weights) = (Vec::new(), Vec::new());

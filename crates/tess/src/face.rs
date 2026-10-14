@@ -516,12 +516,12 @@ impl CornerPole {
     /// the pole may come back a little off the L).
     fn holds(&self, uv: Uv, pos: Vec3) -> bool {
         let [x, y] = self.shares(uv);
-        !(x.abs() > 1e-9)
-            || !(y.abs() > 1e-9)
+        !exceeds(x.abs(), 1e-9)
+            || !exceeds(y.abs(), 1e-9)
             || self
                 .poles
                 .iter()
-                .any(|p| !(p.point.distance(pos) > self.near))
+                .any(|p| !exceeds(p.point.distance(pos), self.near))
     }
 
     /// Where the meridian through `uv` leaves the L, and the parameter
