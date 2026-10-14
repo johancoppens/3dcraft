@@ -36,9 +36,15 @@
 //!   there. That is right when the face the blend runs into lies in that
 //!   plane (an edge of a step that ends against a wall), and when the
 //!   edge continues smoothly in another blended edge (a chain: the two
-//!   tools end against each other). In every other case the end of the
-//!   tool would be left in the result as a face nobody asked for, which
-//!   the check at the end finds and refuses.
+//!   tools end against each other).
+//! - When the one other face at the vertex is a plane at a slant to the
+//!   edge (a root that ends on a chamfer, a ledge that runs into a
+//!   slanted wall), the tool is made long enough to reach that plane and
+//!   cut there ([`end_plane`], [`trim`]): its end lies in the plane of the
+//!   face, which the boolean merges it into.
+//! - In every other case the end of the tool would be left in the result
+//!   as a face nobody asked for, which the check at the end finds and
+//!   refuses.
 //!
 //! **Corners of chamfers.** Where three chamfered edges of one kind (all
 //! convex or all concave) meet in a vertex with nothing else, the corner
@@ -1002,16 +1008,16 @@ fn fits(body: &Body, plans: &[Plan], tol: f64) -> Result<(), BlendError> {
                             }
                             // The far vertex of the run: the end of its
                             // last edge that lies furthest into the face.
-                            let tip = body
-                                .edge(run.last().copied().unwrap_or(other))
-                                .and_then(|e| {
-                                    [e.start, e.end]
-                                        .into_iter()
-                                        .filter(|v| !ends.contains(v))
-                                        .filter_map(|v| body.vertex(v))
-                                        .map(|v| place(v.point).0)
-                                        .reduce(f64::max)
-                                });
+                            let tip =
+                                body.edge(run.last().copied().unwrap_or(other))
+                                    .and_then(|e| {
+                                        [e.start, e.end]
+                                            .into_iter()
+                                            .filter(|v| !ends.contains(v))
+                                            .filter_map(|v| body.vertex(v))
+                                            .map(|v| place(v.point).0)
+                                            .reduce(f64::max)
+                                    });
                             corner = tip.is_some_and(|tip| tip >= far - tol);
                             far
                         } else {
@@ -1414,7 +1420,13 @@ fn end_plane(
 
 /// The tool cut by the plane through `point` square to `far`: what lies
 /// beyond it (along `far`) is taken off. `size` bounds the tool.
-fn trim(tool: Tool, point: Vec3, far: Vec3, size: f64, tolerance: &Tolerance) -> Result<Tool, BlendError> {
+fn trim(
+    tool: Tool,
+    point: Vec3,
+    far: Vec3,
+    size: f64,
+    tolerance: &Tolerance,
+) -> Result<Tool, BlendError> {
     let frame = Frame::from_z(point, far).ok_or_else(lost)?;
     let corner = frame.point(-size, -size, 0.0);
     let frame = frame.at(corner).ok_or_else(lost)?;
@@ -1685,11 +1697,7 @@ fn joints(
             (None, None) => same_chamfer(),
             _ => false,
         };
-        if i != j
-            && kinds
-            && a.convex == b.convex
-            && one.dot(*two) < -1.0 + 1e-9
-        {
+        if i != j && kinds && a.convex == b.convex && one.dot(*two) < -1.0 + 1e-9 {
             found.push(Joint {
                 vertex,
                 plans: [*i, *j],

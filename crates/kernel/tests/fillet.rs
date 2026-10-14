@@ -1555,8 +1555,16 @@ fn a_root_that_ends_on_a_leaning_face() {
     let inset = r * (10.0 - 3.0 * PI) / (12.0 - 3.0 * PI);
     // The trapezoid in (x, z), its area, and the centroid line's length.
     let leans: [([[f64; 2]; 4], f64, f64); 2] = [
-        ([[2.0, 0.0], [8.0, 0.0], [6.0, 5.0], [2.0, 5.0]], 25.0, 6.0 - 0.4 * inset),
-        ([[2.0, 0.0], [7.0, 0.0], [8.0, 5.0], [2.0, 5.0]], 27.5, 5.0 + 0.2 * inset),
+        (
+            [[2.0, 0.0], [8.0, 0.0], [6.0, 5.0], [2.0, 5.0]],
+            25.0,
+            6.0 - 0.4 * inset,
+        ),
+        (
+            [[2.0, 0.0], [7.0, 0.0], [8.0, 5.0], [2.0, 5.0]],
+            27.5,
+            5.0 + 0.2 * inset,
+        ),
     ];
     for (outline, area, length) in leans {
         for k in SCALES {
@@ -1564,8 +1572,8 @@ fn a_root_that_ends_on_a_leaning_face() {
                 let tol = tolerance(k);
                 let plate_frame = frame.at(frame.point(0.0, 0.0, -k)).unwrap();
                 let plate = primitives::block(&plate_frame, 10.0 * k, 10.0 * k, k).unwrap();
-                let up_frame = Frame::new(frame.point(0.0, 4.0 * k, 0.0), -frame.y(), frame.x())
-                    .unwrap();
+                let up_frame =
+                    Frame::new(frame.point(0.0, 4.0 * k, 0.0), -frame.y(), frame.x()).unwrap();
                 let curves = scale_curves(&polygon(1, 1, &outline), k);
                 let profiles = detect_profiles(&curves, &tol).unwrap();
                 let upright = extrude(&profiles, &up_frame, 0.0, 4.0 * k, &tol)
@@ -1664,7 +1672,9 @@ fn a_ball_corner_where_the_outline_turns_by_less_than_a_right_angle() {
     let mut planes: Vec<(Vec3, f64)> = (0..6)
         .map(|i| {
             let (p, q) = (points[i], points[(i + 1) % 6]);
-            let n = Vec3::new(q[1] - p[1], p[0] - q[0], 0.0).normalized().unwrap();
+            let n = Vec3::new(q[1] - p[1], p[0] - q[0], 0.0)
+                .normalized()
+                .unwrap();
             (n, n.dot(Vec3::new(p[0], p[1], 0.0)))
         })
         .collect();
@@ -1713,7 +1723,9 @@ fn a_rib_that_touches_the_round_below_it() {
         for frame in frames(k) {
             let tol = tolerance(k);
             let block = |lo: [f64; 3], size: [f64; 3]| {
-                let at = frame.at(frame.point(lo[0] * k, lo[1] * k, lo[2] * k)).unwrap();
+                let at = frame
+                    .at(frame.point(lo[0] * k, lo[1] * k, lo[2] * k))
+                    .unwrap();
                 primitives::block(&at, size[0] * k, size[1] * k, size[2] * k).unwrap()
             };
             let wall = block([-10.0, -9.8, -6.0], [20.0, 4.0, 12.0]);
@@ -1735,17 +1747,21 @@ fn a_rib_that_touches_the_round_below_it() {
                     ],
                     k,
                 );
-                let rib_frame = Frame::new(frame.point(0.0, -9.6 * k, 0.0), -frame.y(), frame.z())
-                    .unwrap();
+                let rib_frame =
+                    Frame::new(frame.point(0.0, -9.6 * k, 0.0), -frame.y(), frame.z()).unwrap();
                 let profiles = detect_profiles(&curves, &tol).unwrap();
-                let rib = extrude(&profiles, &rib_frame, 0.0, 0.9 * k, &tol).unwrap().body;
+                let rib = extrude(&profiles, &rib_frame, 0.0, 0.9 * k, &tol)
+                    .unwrap()
+                    .body;
                 let part = boolean(&railed, &rib, BooleanOp::Union, &tol).unwrap().body;
                 let seed = edge_in(&part, &frame, k, [0.5, -9.8, 1.0]);
                 let wall_face = faces_of(&part, seed)
                     .into_iter()
-                    .find(|f| part.face(*f).unwrap().surface.kind() == "plane" && {
-                        let n = normal_at(&part, *f, frame.point(0.5 * k, -9.8 * k, k));
-                        n.dot(-frame.y()) > 0.99
+                    .find(|f| {
+                        part.face(*f).unwrap().surface.kind() == "plane" && {
+                            let n = normal_at(&part, *f, frame.point(0.5 * k, -9.8 * k, k));
+                            n.dot(-frame.y()) > 0.99
+                        }
                     })
                     .unwrap();
                 let chain = tangent_chain(&part, seed, wall_face).unwrap().unwrap();

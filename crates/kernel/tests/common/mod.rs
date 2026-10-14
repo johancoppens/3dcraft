@@ -515,7 +515,10 @@ pub fn catalogue(k: f64) -> Vec<Case> {
 /// tangent arc of radius `radii[i]` (0: left sharp): the sketch, its area,
 /// the length of its straight pieces, and the turn of each corner (left
 /// positive).
-pub fn rounded_polygon(points: &[[f64; 2]], radii: &[f64]) -> (Vec<SketchCurve>, f64, f64, Vec<f64>) {
+pub fn rounded_polygon(
+    points: &[[f64; 2]],
+    radii: &[f64],
+) -> (Vec<SketchCurve>, f64, f64, Vec<f64>) {
     let n = points.len();
     let mut corners = Vec::new();
     let mut polygon_area = 0.0;
@@ -583,13 +586,7 @@ pub const PLATE_E1: [[f64; 2]; 8] = [
 
 /// The outline of the plate of finding E1 at a tenth, with its closed
 /// forms, and which corners are sharp.
-pub fn plate_e1() -> (
-    Vec<SketchCurve>,
-    f64,
-    f64,
-    Vec<f64>,
-    [usize; 2],
-) {
+pub fn plate_e1() -> (Vec<SketchCurve>, f64, f64, Vec<f64>, [usize; 2]) {
     let radii = [0.0, 0.0, 1.4, 1.4, 1.4, 1.4, 1.4, 1.4];
     let (curves, area, lines, turns) = rounded_polygon(&PLATE_E1, &radii);
     (curves, area, lines, turns, [0, 1])

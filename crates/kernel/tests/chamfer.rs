@@ -1152,8 +1152,7 @@ fn a_rim_chain_that_ends_in_two_sharp_corners() {
             let part = if by_fillet {
                 // The sharp 8-gon, its six upper side edges rounded first.
                 let sharp_plate = common::polygon(1, 1, &common::PLATE_E1);
-                let profiles =
-                    detect_profiles(&scale_curves(&sharp_plate, k), &fine).unwrap();
+                let profiles = detect_profiles(&scale_curves(&sharp_plate, k), &fine).unwrap();
                 let plate = extrude(&profiles, &frame, 0.0, height * k, &fine)
                     .unwrap()
                     .body;
@@ -1266,8 +1265,16 @@ fn a_root_that_ends_on_a_leaning_face() {
     let d = 0.6;
     let inset = d / 3.0;
     let leans: [([[f64; 2]; 4], f64, f64); 2] = [
-        ([[2.0, 0.0], [8.0, 0.0], [6.0, 5.0], [2.0, 5.0]], 25.0, 6.0 - 0.4 * inset),
-        ([[2.0, 0.0], [7.0, 0.0], [8.0, 5.0], [2.0, 5.0]], 27.5, 5.0 + 0.2 * inset),
+        (
+            [[2.0, 0.0], [8.0, 0.0], [6.0, 5.0], [2.0, 5.0]],
+            25.0,
+            6.0 - 0.4 * inset,
+        ),
+        (
+            [[2.0, 0.0], [7.0, 0.0], [8.0, 5.0], [2.0, 5.0]],
+            27.5,
+            5.0 + 0.2 * inset,
+        ),
     ];
     for (outline, area, length) in leans {
         for k in SCALES {
@@ -1275,8 +1282,8 @@ fn a_root_that_ends_on_a_leaning_face() {
                 let tol = tolerance(k);
                 let plate_frame = frame.at(frame.point(0.0, 0.0, -k)).unwrap();
                 let plate = primitives::block(&plate_frame, 10.0 * k, 10.0 * k, k).unwrap();
-                let up_frame = Frame::new(frame.point(0.0, 4.0 * k, 0.0), -frame.y(), frame.x())
-                    .unwrap();
+                let up_frame =
+                    Frame::new(frame.point(0.0, 4.0 * k, 0.0), -frame.y(), frame.x()).unwrap();
                 let curves = scale_curves(&polygon(1, 1, &outline), k);
                 let profiles = detect_profiles(&curves, &tol).unwrap();
                 let upright = extrude(&profiles, &up_frame, 0.0, 4.0 * k, &tol)

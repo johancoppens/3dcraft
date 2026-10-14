@@ -328,14 +328,16 @@ The blends first (chamfer and fillet, the first consumers of edge references), t
 - Blends along a straight edge next to a cylinder (the cut edges of a halved rod or tube, the tip of a lens of two arcs), worked out in the plane across the edge; both tip rims of a lens blade, after two surgical changes to the boolean ([`architecture.md`](architecture.md) §5.3 › *Blends next to a cylinder*) (2026-10-14)
 - Blends along freeform edges (a straight edge next to a cone, the edge between two lofted faces, a spline wall's edge): a rolling-ball fillet or a ruled chamfer as a spline surface within the tolerance, built in place, each end a corner of three faces or the edge closed (a slanted hole's mouth) (§5.3 › *Blends along freeform edges*) (2026-10-14)
 - The turbofan's tube (F6) builds at the default tolerance: `sketch.path` puts a `center` arc's end given within 1 % of the radius onto its circle (`snapped`), and a sweep takes a kink of the path as tangent when turning the profile through it stays within the tolerance (2026-10-15)
+- The engine block's blend findings (E1–E8): the estimate of what fits follows a face's boundary round tangent arcs and across a cylinder's seam, takes a cut line that runs exactly into a corner, and refuses a face that pinches to nothing; a blend ends in the plane of a face it runs into at a slant; equal-distance chamfer chains are one tool; a boolean hit next to an edge's end on the surface is that end (§5.3 › *Blend findings of the engine block*) (2026-10-15)
 
 #### Open
 - [ ] Move face, then thicken (a sheet given a thickness), replace face and draft (faces tilted about a neutral plane along a pull direction)
 - [ ] Vertex blends: three fillets of different radii, with a circular edge, with a fourth edge
 - [ ] Freeform blends along a chain of tangent edges (a casing's cut edge that runs on through a flange-root fillet), and freeform blends that meet: two at a vertex whose third edge stays sharp (a blade's whole tip or root, the turbofan's F2/F3), freeform and closed-form edges in one feature, a freeform chamfer by distance and angle
 - [ ] A blend that ends in a face of its own in the middle of a chain
-- [ ] Chamfers: one that ends against a slanted wall; a reference to one of several edges between the same two faces
-- [ ] Fillets: an outside and an inside fillet that meet; the rim of a rod with half its radius or more (a spindle torus); variable radius (later)
+- [ ] Chamfers: a reference to one of several edges between the same two faces
+- [ ] Fillets: an outside and an inside fillet that meet; the rim of a rod with half its radius or more (a spindle torus); a rim fillet along an earlier round of the same radius or more (the torus would reach its axis: all edges of a prism in two steps); variable radius (later)
+- [ ] Blends whose touch line runs over a tangent edge onto the next face (a rib's root that reaches the round of a rail below it), and a blend ending on a face that is not a plane
 - [ ] Offset face: a neighbour tangent to the moved face, a vertex of four or more faces that would become an edge, an elliptic or freeform edge next to a moved face
 - [ ] Shell: a thickness at a rounded edge's radius or more
 - [ ] Delete face, refused with the faces today: the corner where blends meet, a blend whose end runs into another blend or into a vertex of more than three faces (chains, mitres), several blend faces at once, neighbours that do not meet in a line or a circle
@@ -451,6 +453,7 @@ Applications built on 3DCraft, not part of it (the rule in `docs/decisions.md`, 
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-14 | minor | Restructured: current focus on top, one line per milestone, a section per milestone (Goal, Done, Open, Acceptance), the boolean checklist on its own, ideas apart; how things were built left to `architecture.md` |
+| 2026-10-15 | minor | M9: the engine block's blend findings E1–E8 (estimate of what fits, blends ending on a slanted face, chamfer chains joined, a boolean hit snapped to an edge's end) |
 | 2026-10-15 | minor | M9: a sweep's right-angle test uses the document's tolerance; `sketch.path` warns of an arc end off its circle |
 | 2026-10-15 | minor | M9: `sketch.path` snaps a `center` arc's end onto its circle; a sweep's tangency test at a kink uses the tolerance (F6 builds) |
 | 2026-10-14 | minor | M9: a thread is cosmetic unless `modeled`, as in other modellers |
