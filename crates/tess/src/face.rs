@@ -2560,6 +2560,8 @@ struct Work<'a> {
     /// `TessParams::max_angle`, and the shortest side held to it.
     angle: Option<f64>,
     angle_floor: f64,
+    /// Per vertex, the surface's normal there, with the angle criterion.
+    normals: Vec<Option<Vec3>>,
 }
 
 impl Work<'_> {
@@ -2577,10 +2579,20 @@ impl Work<'_> {
         if v.checked_sub(FIRST_VERTEX).map(|i| i as usize) != Some(self.uv.len()) {
             return Err(CdtError::Internal);
         }
+        if self.angle.is_some() {
+            self.normals.push(self.param.normal(uv));
+        }
         self.uv.push(uv);
         self.pos.push(pos);
         self.free.push(free);
         Ok(())
+    }
+
+    /// The surface's normal at vertex `v`, kept from when it was made
+    /// (with the angle criterion only).
+    fn normal_of(&self, v: u32) -> Option<Vec3> {
+        let i = v.checked_sub(FIRST_VERTEX)? as usize;
+        *self.normals.get(i)?
     }
 
     /// The mean parameters of some vertices, leaving out for each
@@ -2734,7 +2746,7 @@ impl Work<'_> {
             // edge, which the edge holds to the angle by its tangent and
             // which no point of the face can change; a corner without a
             // normal (an apex) tells nothing.
-            let normals = corners.map(|c| self.param.normal(c.0));
+            let normals = view.v.map(|v| self.normal_of(v));
             let mut worst: Option<(f64, usize)> = None;
             for (i, constrained) in [c0, c1, c2].into_iter().enumerate() {
                 if constrained {
@@ -3507,6 +3519,7 @@ pub(crate) fn mesh_face(
         tolerance,
         angle: params.max_angle.filter(|_| !param.is_plane()),
         angle_floor: crate::ANGLE_FLOOR * tolerance,
+        normals: Vec::new(),
     };
     // With a triangle budget, the face stops as soon as it is certain to
     // have more triangles than that on its own. The count it gives is

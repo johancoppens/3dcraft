@@ -12,7 +12,9 @@ use crate::{CommandError, Session, Workspace};
 use craft3d_doc::{AngleUnit, Document, Entity, FeatureKind, Geometry, Sketch};
 use craft3d_math::{Bbox3, Vec3};
 use craft3d_regen::{Regen, SketchResult, Status};
-use craft3d_tess::{Mesh, TessError, TessParams, tessellate_body_and_edges};
+use craft3d_tess::{
+    Mesh, TessError, TessParams, tessellate_body_and_edges, tessellate_within_budget,
+};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -46,11 +48,23 @@ pub const PREVIEW_RELATIVE_TOLERANCE: f64 = 1e-3;
 pub const AUTOMATIC_RELATIVE_TOLERANCE: f64 = 1e-3;
 
 /// The display rule's default chordal tolerance, as a fraction of the
-/// model's size: 3e-5, a chord error of a thirtieth of a pixel on a model
-/// that fills a 1020-pixel viewport, so a circle stays round when the
-/// developer zooms in on a detail (docs/architecture.md §6, *What a viewer
-/// draws*).
-pub const DISPLAY_RELATIVE_TOLERANCE: f64 = 3e-5;
+/// model's size: 2e-4, a chord error of a fifth of a pixel on a model that
+/// fills a 1020-pixel viewport. Small circles, which a distance alone
+/// makes coarse, are kept round by the angle criterion
+/// ([`DISPLAY_MAX_ANGLE`]) instead of by a finer distance everywhere
+/// (docs/architecture.md §6, *What a viewer draws*; until 2026-10-14 it
+/// was 3e-5 without an angle, three to ten times the triangles).
+pub const DISPLAY_RELATIVE_TOLERANCE: f64 = 2e-4;
+
+/// The display rule's default angle criterion, in radians: no chord of an
+/// edge turns its tangent, and no side of a triangle turns the surface's
+/// normal, by more than 12 degrees (30 chords to a circle), unless it is
+/// shorter than the chordal tolerance (`craft3d_tess::ANGLE_FLOOR`). It
+/// keeps a small hole round at a chordal tolerance that alone would make
+/// it a polygon of a few sides (docs/architecture.md §6, *What a viewer
+/// draws*). The quick first picture has the chordal tolerance alone: it
+/// is there to be quick.
+pub const DISPLAY_MAX_ANGLE: f64 = 12.0 * std::f64::consts::PI / 180.0;
 
 /// The display rule's default triangle budget: the mesh is coarsened
 /// until the scene has at most this many triangles, but never beyond the
@@ -80,8 +94,14 @@ pub enum SceneQuality {
     /// triangles and every body is within what the tessellator can do, but
     /// never beyond the automatic tolerance (the display is never coarser
     /// than `view.render`). The scene says whether it was coarsened
-    /// ([`Scene::coarsened`]).
-    Display { relative: f64, max_triangles: usize },
+    /// ([`Scene::coarsened`]). With `max_angle` (radians), the angle
+    /// criterion of the tessellator beside the chordal tolerance
+    /// (`TessParams::max_angle`): [`DISPLAY_MAX_ANGLE`] by default.
+    Display {
+        relative: f64,
+        max_triangles: usize,
+        max_angle: Option<f64>,
+    },
     /// The quick first picture the display rule starts from and a viewer
     /// shows while the display scene is built elsewhere:
     /// [`PREVIEW_RELATIVE_TOLERANCE`] of the diagonal of the model's box
@@ -95,6 +115,7 @@ impl SceneQuality {
         SceneQuality::Display {
             relative: DISPLAY_RELATIVE_TOLERANCE,
             max_triangles: DISPLAY_MAX_TRIANGLES,
+            max_angle: Some(DISPLAY_MAX_ANGLE),
         }
     }
 
@@ -117,6 +138,12 @@ impl SceneQuality {
             } => Err(CommandError::new(
                 "the display quality's triangle budget must be at least 1",
             )),
+            SceneQuality::Display {
+                max_angle: Some(angle),
+                ..
+            } if !(angle.is_finite() && angle > 0.0 && angle <= std::f64::consts::TAU) => Err(
+                CommandError::new("the display quality's angle must be above 0 and at most a turn"),
+            ),
             SceneQuality::Display { .. } => Ok(()),
         }
     }
@@ -130,9 +157,11 @@ impl SceneQuality {
             SceneQuality::Display {
                 relative,
                 max_triangles,
+                max_angle,
             } => SceneKey::Display {
                 relative: relative.to_bits(),
                 max_triangles,
+                max_angle: max_angle.map(f64::to_bits),
             },
         }
     }
@@ -146,6 +175,7 @@ enum SceneKey {
     Display {
         relative: u64,
         max_triangles: usize,
+        max_angle: Option<u64>,
     },
     /// The quick first picture: one per document state, whatever display
     /// quality it stands in for.
@@ -327,9 +357,14 @@ pub struct Scene {
     /// The chordal tolerance the bodies and the sketch curves were sampled
     /// with, in document units.
     pub tolerance: f64,
+    /// The angle criterion the bodies were meshed with besides the
+    /// tolerance (radians), if any: the display rule's.
+    pub max_angle: Option<f64>,
     /// True when the display rule ([`SceneQuality::Display`]) had to
     /// coarsen its tolerance to stay within its triangle budget or within
-    /// what the tessellator can do. False for the other qualities.
+    /// what the tessellator can do, or when a body of the quick first
+    /// picture was coarsened to stay within [`DISPLAY_MAX_TRIANGLES`] on
+    /// its own. False for the other qualities.
     pub coarsened: bool,
     /// True for the quick first picture ([`PREVIEW_RELATIVE_TOLERANCE`])
     /// that stands in for the display scene while that is built elsewhere
@@ -908,6 +943,28 @@ enum Stop {
     Cancelled,
 }
 
+/// How a scene is sampled: see [`build`].
+#[derive(Clone, Copy, Debug)]
+struct Sampling {
+    tolerance: f64,
+    angle: Option<f64>,
+    budget: Option<usize>,
+    per_body: Option<usize>,
+}
+
+impl Sampling {
+    /// At `tolerance` with the chordal tolerance alone and no budget:
+    /// `view.render`, export and the scenes of a given tolerance.
+    fn plain(tolerance: f64) -> Self {
+        Self {
+            tolerance,
+            angle: None,
+            budget: None,
+            per_body: None,
+        }
+    }
+}
+
 /// Builds the scene at `tolerance`. With a `budget`, the build stops at the
 /// first body with which the scene has more triangles than that, or that
 /// is too fine for the tessellator, and says so; without one it never
@@ -922,24 +979,39 @@ enum Stop {
 /// depend on the document and the tolerance only, not on the number of
 /// threads: the tessellator's promise, kept here by the fixed order.
 ///
+/// With `per_body` instead (and no `budget`), every body on its own is
+/// kept within that many triangles by coarsening its tolerance
+/// (`craft3d_tess::tessellate_within_budget`): what the quick first
+/// picture does, so that one large body cannot make it slow. A body within
+/// it is the body meshed without one.
+///
+/// `angle` is the tessellator's angle criterion, if any.
+///
 /// With `cancel`, the build stops before the next body once it is set.
 fn build(
     doc: &Document,
     regen: &Regen,
     revision: u64,
-    tolerance: f64,
-    budget: Option<usize>,
+    sampling: Sampling,
     cancel: Option<&AtomicBool>,
 ) -> (Scene, Option<Stop>) {
     #[cfg(test)]
     tests::building();
+    let Sampling {
+        tolerance,
+        angle,
+        budget,
+        per_body,
+    } = sampling;
     let tess = TessParams {
         chordal_tolerance: tolerance,
+        max_angle: angle,
         ..TessParams::default()
     };
     let mut scene = Scene {
         revision,
         tolerance,
+        max_angle: angle,
         coarsened: false,
         preview: false,
         bodies: Arc::new(Vec::new()),
@@ -1019,12 +1091,29 @@ fn build(
             steps,
         });
         let left = budget.map(|max| max.saturating_sub(scene.mesh.triangles.len()));
-        let tess = TessParams {
-            max_triangles: left,
-            ..tess
+        let meshed = match per_body.filter(|_| budget.is_none()) {
+            Some(most) => tessellate_within_budget(
+                body,
+                &TessParams {
+                    max_triangles: Some(most),
+                    ..tess
+                },
+            )
+            .map(|within| {
+                if within.tolerance > tolerance {
+                    scene.coarsened = true;
+                }
+                (within.mesh, within.edges)
+            }),
+            None => tessellate_body_and_edges(
+                body,
+                &TessParams {
+                    max_triangles: left,
+                    ..tess
+                },
+            )
+            .and_then(|both| both.mesh.map(|mesh| (mesh, both.edges))),
         };
-        let meshed = tessellate_body_and_edges(body, &tess)
-            .and_then(|both| both.mesh.map(|mesh| (mesh, both.edges)));
         #[cfg(test)]
         let meshed = tests::tessellated(meshed);
         let (mesh, edges) = match meshed {
@@ -1262,6 +1351,7 @@ fn build_for_display(
     preview: &Scene,
     fine: f64,
     max_triangles: usize,
+    angle: Option<f64>,
     cancel: &AtomicBool,
 ) -> Option<Scene> {
     let (revision, cap) = (preview.revision, preview.tolerance);
@@ -1269,14 +1359,13 @@ fn build_for_display(
     let mut attempts = 0;
     while tolerance < cap && attempts < MAX_DISPLAY_ATTEMPTS {
         attempts += 1;
-        let (scene, stop) = build(
-            doc,
-            regen,
-            revision,
+        let sampling = Sampling {
             tolerance,
-            Some(max_triangles),
-            Some(cancel),
-        );
+            angle,
+            budget: Some(max_triangles),
+            per_body: None,
+        };
+        let (scene, stop) = build(doc, regen, revision, sampling, Some(cancel));
         let Some(stop) = stop else {
             return Some(Scene {
                 coarsened: tolerance > fine,
@@ -1315,20 +1404,28 @@ fn build_for_display(
     } else {
         cap
     };
-    let scene = if tolerance.to_bits() == cap.to_bits() {
+    let same_angle = angle.map(f64::to_bits) == preview.max_angle.map(f64::to_bits);
+    let scene = if tolerance.to_bits() == cap.to_bits() && same_angle {
         // The first picture is that scene already.
         Scene {
             preview: false,
             ..preview.clone()
         }
     } else {
-        match build(doc, regen, revision, tolerance, None, Some(cancel)) {
+        // Each body within the budget on its own, as in the first picture.
+        let sampling = Sampling {
+            tolerance,
+            angle,
+            budget: None,
+            per_body: Some(max_triangles),
+        };
+        match build(doc, regen, revision, sampling, Some(cancel)) {
             (_, Some(Stop::Cancelled)) => return None,
             (scene, _) => scene,
         }
     };
     Some(Scene {
-        coarsened: tolerance > fine,
+        coarsened: tolerance > fine || scene.coarsened,
         ..scene
     })
 }
@@ -1357,6 +1454,7 @@ pub struct Refinement {
     key: SceneKey,
     relative: f64,
     max_triangles: usize,
+    max_angle: Option<f64>,
     preview: Arc<Scene>,
 }
 
@@ -1397,6 +1495,7 @@ impl Refinement {
                 &self.preview,
                 size * self.relative,
                 self.max_triangles,
+                self.max_angle,
                 cancel,
             )
         }));
@@ -1471,17 +1570,23 @@ impl Session {
         if let Some(built) = self.scene.lookup(key) {
             return built.map(Some);
         }
-        let (relative, max_triangles) = match quality {
+        let (relative, max_triangles, max_angle) = match quality {
             SceneQuality::Display {
                 relative,
                 max_triangles,
-            } => (relative, max_triangles),
+                max_angle,
+            } => (relative, max_triangles, max_angle),
             SceneQuality::Preview => {
                 return self.build_and_keep(key, |doc, regen| {
-                    let tolerance = preview_size(regen, doc) * PREVIEW_RELATIVE_TOLERANCE;
+                    let sampling = Sampling {
+                        tolerance: preview_size(regen, doc) * PREVIEW_RELATIVE_TOLERANCE,
+                        angle: None,
+                        budget: None,
+                        per_body: Some(DISPLAY_MAX_TRIANGLES),
+                    };
                     Scene {
                         preview: true,
-                        ..build(doc, regen, revision, tolerance, None, None).0
+                        ..build(doc, regen, revision, sampling, None).0
                     }
                 });
             }
@@ -1491,7 +1596,7 @@ impl Session {
                         SceneQuality::Tolerance(t) => t,
                         _ => model_size(regen, doc) * AUTOMATIC_RELATIVE_TOLERANCE,
                     };
-                    build(doc, regen, revision, tolerance, None, None).0
+                    build(doc, regen, revision, Sampling::plain(tolerance), None).0
                 });
             }
         };
@@ -1501,7 +1606,8 @@ impl Session {
         if self.scene.refine_elsewhere {
             return Ok(Some(preview));
         }
-        let Some(job) = self.refinement_from(key, relative, max_triangles, preview) else {
+        let Some(job) = self.refinement_from(key, relative, max_triangles, max_angle, preview)
+        else {
             return Ok(None);
         };
         let refined = job.run(&AtomicBool::new(false));
@@ -1546,6 +1652,7 @@ impl Session {
         key: SceneKey,
         relative: f64,
         max_triangles: usize,
+        max_angle: Option<f64>,
         preview: Arc<Scene>,
     ) -> Option<Refinement> {
         let open = self.documents.get_mut(self.active)?;
@@ -1555,6 +1662,7 @@ impl Session {
             key,
             relative,
             max_triangles,
+            max_angle,
             preview,
         })
     }
@@ -1568,6 +1676,7 @@ impl Session {
         let SceneQuality::Display {
             relative,
             max_triangles,
+            max_angle,
         } = quality
         else {
             return None;
@@ -1579,7 +1688,7 @@ impl Session {
             return None;
         }
         let preview = self.scene.lookup(SceneKey::Preview)?.ok()?;
-        self.refinement_from(key, relative, max_triangles, preview)
+        self.refinement_from(key, relative, max_triangles, max_angle, preview)
     }
 
     /// Keeps the scene a [`Refinement`] built, for the document state it

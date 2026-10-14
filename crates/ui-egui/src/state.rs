@@ -3,7 +3,9 @@
 //! it (`ui.get`) and drives it (`ui.set`) exactly as the mouse does
 //! (AGENTS.md rule 9). Nothing here belongs to a document.
 
-use craft3d_engine::{DISPLAY_MAX_TRIANGLES, DISPLAY_RELATIVE_TOLERANCE, SceneQuality};
+use craft3d_engine::{
+    DISPLAY_MAX_ANGLE, DISPLAY_MAX_TRIANGLES, DISPLAY_RELATIVE_TOLERANCE, SceneQuality,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -37,6 +39,10 @@ pub const MAX_TRANSPARENCY: f64 = 0.9;
 /// The display quality's triangle budget is clamped to this range.
 pub const MIN_TRIANGLES: u64 = 1_000;
 pub const MAX_TRIANGLES: u64 = 1 << 26;
+/// The display quality's angle criterion, in degrees, is clamped to this:
+/// above it a chord may turn a circle by more than a quarter, which is no
+/// criterion a picture needs. Zero (or less) is no angle criterion.
+pub const MAX_ANGLE_DEGREES: f64 = 90.0;
 
 /// How finely the viewport's mesh follows the model: the display rule of
 /// `craft3d_engine::SceneQuality::Display`, as the shell asks for it. The
@@ -55,6 +61,12 @@ pub struct DisplayQuality {
     /// coarsened until it fits, but never beyond the quick first picture's
     /// tolerance (1e-3 of the diagonal of the model's box).
     pub max_triangles: u64,
+    /// The angle criterion beside the chordal tolerance, in degrees: no
+    /// chord of an edge turns its tangent, and no side of a triangle the
+    /// surface's normal, by more than this (unless it is shorter than the
+    /// tolerance), so a small hole stays round. 0 for none. The default is
+    /// `DISPLAY_MAX_ANGLE`.
+    pub angle: f64,
 }
 
 impl Default for DisplayQuality {
@@ -62,6 +74,7 @@ impl Default for DisplayQuality {
         Self {
             chordal: DISPLAY_RELATIVE_TOLERANCE,
             max_triangles: u64::try_from(DISPLAY_MAX_TRIANGLES).unwrap_or(u64::MAX),
+            angle: DISPLAY_MAX_ANGLE.to_degrees(),
         }
     }
 }
@@ -72,6 +85,7 @@ impl DisplayQuality {
     pub fn validated(mut self) -> Result<Self, String> {
         self.chordal = finite("quality.chordal", self.chordal)?.clamp(MIN_CHORDAL, MAX_CHORDAL);
         self.max_triangles = self.max_triangles.clamp(MIN_TRIANGLES, MAX_TRIANGLES);
+        self.angle = finite("quality.angle", self.angle)?.clamp(0.0, MAX_ANGLE_DEGREES);
         Ok(self)
     }
 
@@ -80,6 +94,7 @@ impl DisplayQuality {
         SceneQuality::Display {
             relative: self.chordal,
             max_triangles: usize::try_from(self.max_triangles).unwrap_or(usize::MAX),
+            max_angle: (self.angle > 0.0).then(|| self.angle.to_radians()),
         }
     }
 }
@@ -742,9 +757,12 @@ mod tests {
             },
             selected_feature: Some("F3".to_string()),
             notice: "Step 2: the post".to_string(),
+            // The angle was added with the tessellator's angle criterion
+            // (2026-10-14).
             quality: DisplayQuality {
                 chordal: 1e-4,
                 max_triangles: 500_000,
+                angle: 20.0,
             },
             highlight: Some(FaceRef {
                 feature: Some("F3".to_string()),
@@ -1037,15 +1055,10 @@ mod tests {
             DisplayQuality {
                 chordal: DISPLAY_RELATIVE_TOLERANCE,
                 max_triangles: DISPLAY_MAX_TRIANGLES as u64,
+                angle: DISPLAY_MAX_ANGLE.to_degrees(),
             }
         );
-        assert_eq!(
-            state.quality.scene_quality(),
-            SceneQuality::Display {
-                relative: DISPLAY_RELATIVE_TOLERANCE,
-                max_triangles: DISPLAY_MAX_TRIANGLES,
-            }
-        );
+        assert_eq!(state.quality.scene_quality(), SceneQuality::display());
         state
             .apply_patch(&json!({"quality": {"chordal": 1e-4}}))
             .unwrap();
@@ -1061,8 +1074,32 @@ mod tests {
             SceneQuality::Display {
                 relative: 1e-4,
                 max_triangles: 250_000,
+                max_angle: Some(DISPLAY_MAX_ANGLE.to_degrees().to_radians()),
             }
         );
+        // The angle in degrees; none at 0, clamped above.
+        state
+            .apply_patch(&json!({"quality": {"angle": 0}}))
+            .unwrap();
+        assert!(matches!(
+            state.quality.scene_quality(),
+            SceneQuality::Display {
+                max_angle: None,
+                ..
+            }
+        ));
+        state
+            .apply_patch(&json!({"quality": {"angle": 500}}))
+            .unwrap();
+        assert_eq!(state.quality.angle, MAX_ANGLE_DEGREES);
+        state
+            .apply_patch(&json!({"quality": {"angle": -3}}))
+            .unwrap();
+        assert_eq!(state.quality.angle, 0.0);
+        state
+            .apply_patch(&json!({"quality": {"angle": 10}}))
+            .unwrap();
+        assert_eq!(state.quality.angle, 10.0);
         // Out of range is clamped, not refused.
         state
             .apply_patch(&json!({"quality": {"chordal": 1e-30, "maxTriangles": 1}}))

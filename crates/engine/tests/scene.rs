@@ -750,6 +750,7 @@ fn display(session: &mut Session, relative: f64, max_triangles: usize) -> Arc<Sc
         .scene_with(SceneQuality::Display {
             relative,
             max_triangles,
+            max_angle: None,
         })
         .unwrap()
         .expect("a document")
@@ -918,6 +919,7 @@ fn a_display_quality_that_is_not_a_request_is_refused() {
             .scene_with(SceneQuality::Display {
                 relative,
                 max_triangles: 1000,
+                max_angle: None,
             })
             .unwrap_err();
         assert!(error.message().contains("chordal"), "{relative}: {error}");
@@ -926,9 +928,20 @@ fn a_display_quality_that_is_not_a_request_is_refused() {
         .scene_with(SceneQuality::Display {
             relative: 1e-4,
             max_triangles: 0,
+            max_angle: None,
         })
         .unwrap_err();
     assert!(error.message().contains("budget"), "{error}");
+    for angle in [0.0, -0.1, 7.0, f64::NAN, f64::INFINITY] {
+        let error = s
+            .scene_with(SceneQuality::Display {
+                relative: 1e-4,
+                max_triangles: 1000,
+                max_angle: Some(angle),
+            })
+            .unwrap_err();
+        assert!(error.message().contains("angle"), "{angle}: {error}");
+    }
     // Refusals are not cached as scenes: the good request still answers.
     assert!(s.scene_with(SceneQuality::display()).unwrap().is_some());
     // Without a document there is no scene, whatever the quality.
