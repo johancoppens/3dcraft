@@ -227,6 +227,12 @@ Made by the agent, overnight; the developer can overturn any of them.
 - **`regen` depends on `tess`** (a lower layer), for the self-intersection check of every loft: the kernel cannot use the tessellator (same layer), and a loft that passes through itself must never be handed on. The check is the one of `document.check {"deep": true}`, with its parameters; it costs a mesh per rebuilt loft (the showcase hull with its hollowing: 0.6 s for the whole script).
 - **Smooth means interpolation in homogeneous coordinates** for sections with arcs. Where the weights of the surface between the sections would not stay positive the loft fails and says so (make it ruled, or draw the sections with splines); none of the tested shapes does.
 
+### 2026-10-14: Decisions made while building datums in the viewport, failed features in the tree and inserting at the marker
+
+Made by the agent, overnight; the developer can overturn any of them.
+
+- **A feature added while the history is rolled back goes in right after the marker, and the marker moves onto it.** The alternatives were to leave the marker where it is (the new feature would then be rolled back at once, which is what happened before and what no modeller does) or to clear the marker (rolling everything forward behind the user's back). It is done in the engine, in one function every feature-adding command calls (`commands::insert_feature`), not in `Document::add_feature`: the document's own method stays a plain append, which the format and regeneration tests build documents with, marker or not. A command added later that calls `doc.add_feature` directly would append; use `insert_feature`.
+
 ## Open decisions
 
 | # | Question | Options | Needed by | Default if nobody decides |

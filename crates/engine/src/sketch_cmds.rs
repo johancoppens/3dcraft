@@ -6,7 +6,9 @@
 //! values are expressions. Entities are referred to as `"e3"` (or `3`),
 //! constraints as `"c3"`.
 
-use crate::commands::{Run, doc_error, edit, fail, feature_ref, feature_result, spec};
+use crate::commands::{
+    Run, doc_error, edit, fail, feature_ref, feature_result, insert_feature, spec,
+};
 use crate::params::Params;
 use crate::{CommandError, CommandSpec, Session};
 use craft3d_doc::{
@@ -275,7 +277,7 @@ fn sketch_create(session: &mut Session, params: &Value) -> Run {
     };
     let name = p.str("name")?;
     let id = edit(session, COMMAND, "Add sketch", |doc| {
-        doc.add_feature(name, FeatureKind::Sketch(Sketch::new(plane)))
+        insert_feature(doc, name, FeatureKind::Sketch(Sketch::new(plane)))
     })?;
     sketch_result(session, id, Value::Null)
 }

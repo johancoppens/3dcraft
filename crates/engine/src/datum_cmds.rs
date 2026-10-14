@@ -8,7 +8,7 @@
 //! the references resolve is found out by regeneration, like every other
 //! parameter: the datum is stored and reports `failed` with the reason.
 
-use crate::commands::{Run, edit, exprs, fail, feature_ref, feature_result, spec};
+use crate::commands::{Run, edit, exprs, fail, feature_ref, feature_result, insert_feature, spec};
 use crate::params::Params;
 use crate::{CommandError, CommandSpec, Session};
 use craft3d_doc::{
@@ -298,7 +298,7 @@ fn store(session: &mut Session, command: &'static str, p: &Params, kind: Feature
         })?
     } else {
         edit(session, command, "Add datum", |doc| {
-            doc.add_feature(name, kind)
+            insert_feature(doc, name, kind)
         })?
     };
     datum_result(session, id)
