@@ -688,6 +688,105 @@ fn with_a_line(s: &mut Session) {
     );
 }
 
+/// The number after `before` in `text`, up to the next space, comma or
+/// closing bracket.
+fn number_after(text: &str, before: &str) -> f64 {
+    let at = text
+        .find(before)
+        .unwrap_or_else(|| panic!("no `{before}` in {text}"))
+        + before.len();
+    let rest = &text[at..];
+    let end = rest.find([' ', ',', ')']).unwrap_or(rest.len());
+    rest[..end]
+        .parse()
+        .unwrap_or_else(|e| panic!("`{}` in {text}: {e}", &rest[..end]))
+}
+
+/// An arc given by its centre whose end is not on the circle through its
+/// start (an end rounded to a few decimals, as in the turbofan's tube):
+/// drawn as given, with a warning that names the segment, says how far
+/// off the end is and what the solver does, and gives the end that keeps
+/// the start in place. Drawn there, the path has no warning and the
+/// corner the arc shares with the line before it stays where it was put.
+/// An end within the tolerance has no warning. At three scales, with the
+/// tolerance scaled along.
+#[test]
+fn an_arc_end_off_its_circle_is_reported_with_the_distance() {
+    for k in [1e-3, 1.0, 1e6] {
+        let tolerance = 1e-6 * k;
+        let (center, radius) = ((72.0 * k, 16.0 * k), 22.0 * k);
+        // The point of the circle in the direction (-18, 12.6) from the
+        // centre, `off` farther out.
+        let toward = (-18.0_f64, 12.6_f64);
+        let length = toward.0.hypot(toward.1);
+        let end = |off: f64| {
+            let reach = radius + off;
+            json!([
+                center.0 + toward.0 / length * reach,
+                center.1 + toward.1 / length * reach
+            ])
+        };
+        let draw = |s: &mut Session, end: Value| {
+            run(s, "file.new", json!({"tolerance": tolerance}));
+            run(s, "sketch.create", json!({"name": "P"}));
+            run(
+                s,
+                "sketch.path",
+                json!({"sketch": "P", "start": [50.0 * k, 10.0 * k], "segments": [
+                    {"line": [50.0 * k, 16.0 * k]},
+                    {"arc": end, "center": [center.0, center.1], "clockwise": true},
+                    {"line": [62.0 * k, 40.0 * k]},
+                ]}),
+            )
+        };
+        let mut s = session();
+
+        for off in [1e-4 * k, -3e-5 * k] {
+            let drawn = draw(&mut s, end(off));
+            assert_eq!(drawn["status"], "ok", "{drawn}");
+            let warnings = drawn["warnings"].as_array().unwrap();
+            assert_eq!(warnings.len(), 1, "{drawn}");
+            let warning = text(&warnings[0]);
+            assert!(
+                warning.starts_with("segments[1]: the arc's end ("),
+                "{warning}"
+            );
+            assert!(
+                warning.contains(if off > 0.0 { " outside " } else { " inside " })
+                    && warning.contains("the solver moves the start, the end and the centre"),
+                "{warning}"
+            );
+            let distance = number_after(warning, ") is ");
+            assert!(
+                (distance - off.abs()).abs() <= 1e-6 * off.abs(),
+                "{k}: {distance} for {off}"
+            );
+            let at = &warning[warning.find("end the arc at (").unwrap()..];
+            let on = (number_after(at, "at ("), number_after(at, ", "));
+            let expected = end(0.0);
+            assert_at(
+                on,
+                (expected[0].as_f64().unwrap(), expected[1].as_f64().unwrap()),
+                k,
+                "the end on the circle",
+            );
+
+            // Drawn at that end: nothing to report, and the start of the
+            // arc stays where the line put it.
+            let drawn = draw(&mut s, json!([on.0, on.1]));
+            assert_eq!(drawn["status"], "ok", "{drawn}");
+            assert!(drawn.get("warnings").is_none(), "{drawn}");
+            let inspected = run(&mut s, "sketch.inspect", json!({"sketch": "P"}));
+            assert_at(xy(&inspected, "e2"), (50.0 * k, 16.0 * k), k, "the corner");
+        }
+
+        // Within the tolerance: no warning.
+        let drawn = draw(&mut s, end(0.5 * tolerance));
+        assert_eq!(drawn["status"], "ok", "{drawn}");
+        assert!(drawn.get("warnings").is_none(), "{drawn}");
+    }
+}
+
 #[test]
 fn bad_paths_are_refused_with_a_reason_and_change_nothing() {
     let mut s = session();

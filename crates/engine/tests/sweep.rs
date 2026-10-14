@@ -1153,3 +1153,90 @@ fn a_sweep_along_a_spline_keeps_the_set_identities_with_a_block() {
     close(difference, hose - common, 1e-7);
     assert!(common > 0.0 && common < hose.min(block));
 }
+
+/// Finding F6 of the turbofan: an arc of the path given by its centre,
+/// with its end rounded to four decimals. `sketch.path` warns that the end
+/// is off the circle; the solver then tilts the line before the arc by a
+/// little under 2e-6 radians, which moves the profile (radius 5) by about
+/// 9e-6 when laid square to the path, more than the tolerance of 1e-6, so
+/// the sweep is refused with the angle and the movement.
+#[test]
+fn a_path_whose_arc_end_was_rounded_is_reported_and_its_lean_measured() {
+    let mut s = new();
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"plane": "zx", "offset": "10 mm", "name": "Prof"}),
+    );
+    run(
+        &mut s,
+        "sketch.circle",
+        json!({"sketch": "Prof", "center": [0, 50], "radius": 5}),
+    );
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"plane": "xy", "name": "Path"}),
+    );
+    let drawn = run(
+        &mut s,
+        "sketch.path",
+        json!({"sketch": "Path", "start": [50, 10], "segments": [
+            {"line": [50, 16]},
+            {"arc": [53.9787, 28.6187], "center": [72, 16], "clockwise": true},
+            {"line": [62.0088, 40.0868]},
+        ]}),
+    );
+    let warning = drawn["warnings"][0].as_str().unwrap();
+    assert!(
+        warning.starts_with("segments[1]: the arc's end (53.9787, 28.6187) is 0.0000262")
+            && warning.contains(" inside the circle "),
+        "{warning}"
+    );
+    sweep(&mut s, "Prof", "Path", "Tube");
+    let why = failure(&mut s, "Tube");
+    assert!(
+        why.contains("at a right angle")
+            && why.contains("would move it by up to 0.00000927")
+            && why.contains("more than the tolerance 0.000001"),
+        "{why}"
+    );
+}
+
+/// A path that leaves the profile a little off square through the
+/// commands: within the tolerance the sweep is built, as long as the
+/// slanted line, with the profile's area; twice as far off it is refused.
+/// The tolerance is coarse (1e-5 of the profile's radius) so that the
+/// lean is larger than the angle within which two directions count as
+/// one.
+#[test]
+fn a_lean_within_the_tolerance_is_swept_at_every_scale() {
+    for k in SCALES {
+        let tolerance = 1e-5 * k;
+        for (slope, built) in [(0.5e-5, true), (2e-5, false)] {
+            let mut s = Session::new(Workspace::none());
+            run(&mut s, "file.new", json!({"tolerance": tolerance}));
+            round(&mut s, "Section", [0.0, 0.0], k);
+            run(
+                &mut s,
+                "sketch.create",
+                json!({"plane": "xy", "name": "Route"}),
+            );
+            run(
+                &mut s,
+                "sketch.polyline",
+                json!({"sketch": "Route", "points": [[0, 0], [slope * 10.0 * k, 10.0 * k]]}),
+            );
+            sweep(&mut s, "Section", "Route", "Rod");
+            if built {
+                assert_eq!(feature(&mut s, "Rod")["status"], "ok", "{k}");
+                let length = 10.0 * k * slope.hypot(1.0);
+                close(volume(&mut s, "Rod"), PI * k * k * length, 1e-12);
+                deep(&mut s);
+            } else {
+                let why = failure(&mut s, "Rod");
+                assert!(why.contains("more than the tolerance"), "{k}: {why}");
+            }
+        }
+    }
+}

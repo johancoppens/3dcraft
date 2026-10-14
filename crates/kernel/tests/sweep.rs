@@ -689,6 +689,92 @@ fn the_path_may_be_drawn_in_any_order_and_direction() {
     assert_eq!(straight.faces, again.faces);
 }
 
+/// A path that leaves the profile's plane a little off square (as a
+/// sketch solver leaves it when it moves a point by a rounding error): the
+/// profile is laid into the square plane when that moves it by no more
+/// than the tolerance, and the sweep is then the exact one of the laid-in
+/// profile; a lean that would move it farther is refused, with the angle
+/// and the movement. On the plane through the origin, seen from either
+/// side, and on one whose origin is a hundred profiles away (the profile
+/// drawn there, so it still sits on the path).
+#[test]
+fn a_path_a_tolerance_off_square_is_swept_and_one_farther_off_is_refused() {
+    for k in SCALES {
+        // A coarse tolerance, so that the leans tried are larger than the
+        // angle within which two directions count as one (`SMOOTH`, 1e-6):
+        // it is the tolerance that decides.
+        let tol = Tolerance {
+            linear: 1e-5 * k,
+            angular: 1e-9,
+        };
+        let r = k;
+        let far = 100.0 * k;
+        let planes = [
+            (front(), [0.0, 0.0]),
+            (back(), [0.0, 0.0]),
+            (
+                Frame::new(Vec3::new(-far, 0.0, 0.0), -Vec3::Y, Vec3::X).unwrap(),
+                [far, 0.0],
+            ),
+        ];
+        for (n, (plane, center)) in planes.into_iter().enumerate() {
+            let round = profile(&[circle(1, center, r)]);
+            // A point of the profile at x moves by about x times the
+            // slope: the circle reaches r, so half the tolerance over r is
+            // accepted and twice it is not.
+            let leaning = |slope: f64| [line(101, [0.0, 0.0], [slope * 10.0 * k, 10.0 * k])];
+            let slope = 0.5 * tol.linear / r;
+            let pipe = sweep(&round, &plane, &leaning(slope), &Frame::WORLD, &tol)
+                .unwrap_or_else(|e| panic!("{k} plane {n}: {e}"));
+            let length = 10.0 * k * slope.hypot(1.0);
+            close(pipe.length, length, 1e-14);
+            let (volume, _, _) = sound_with(&pipe, k, &tol);
+            close(volume, PI * r * r * length, 1e-12);
+            // The start cap is within the tolerance of the plane the
+            // profile was drawn on, and its one vertex of where it was
+            // drawn: the circle's point at angle 0.
+            let drawn = plane.point(center[0] + r, center[1], 0.0);
+            let starts: Vec<Vec3> = pipe
+                .body
+                .vertices
+                .iter()
+                .map(|v| v.point)
+                .filter(|p| p.y < 5.0 * k)
+                .collect();
+            assert_eq!(starts.len(), 1, "{k} plane {n}");
+            assert!(
+                starts[0].distance(drawn) <= tol.linear,
+                "{k} plane {n}: {:?} is {} from {drawn:?}",
+                starts[0],
+                starts[0].distance(drawn)
+            );
+
+            let why = refusal(sweep(
+                &round,
+                &plane,
+                &leaning(4.0 * slope),
+                &Frame::WORLD,
+                &tol,
+            ));
+            assert!(
+                why.contains("at a right angle") && why.contains("more than the tolerance"),
+                "{k} plane {n}: {why}"
+            );
+            // And a lean within `SMOOTH` that moves the profile farther
+            // than a fine tolerance is refused too.
+            let fine = Tolerance {
+                linear: 1e-8 * k,
+                angular: 1e-9,
+            };
+            let why = refusal(sweep(&round, &plane, &leaning(5e-7), &Frame::WORLD, &fine));
+            assert!(
+                why.contains("more than the tolerance"),
+                "{k} plane {n}: {why}"
+            );
+        }
+    }
+}
+
 #[test]
 fn what_cannot_be_swept_is_refused_with_the_place() {
     let square = profile(&rectangle(1, 1, (-1.0, 1.0), (-1.0, 1.0)));
