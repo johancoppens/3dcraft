@@ -84,8 +84,11 @@ use std::path::PathBuf;
 /// 5613 outcomes with a domed block agree (the rest are refused, none
 /// wrong), and the 6064 of the primitives are unchanged.
 /// Raised to 11552 on 2026-10-14 (cones tangent along a ruling have a
-/// closed form: tangent/cone-cone/002).
-const AGREEING_FLOOR: usize = 11552;
+/// closed form: tangent/cone-cone/002), and to 11564 the same day (an arm
+/// of a crossing the surfaces are a tenth of a tolerance apart at is no
+/// longer drawn twice: four `near` cases of a block or a dome against a
+/// roof).
+const AGREEING_FLOOR: usize = 11564;
 
 /// Mismatches the kernel is known to have: `(case id, operation, why)`.
 /// They are bugs, listed so that the test is green while they are open and

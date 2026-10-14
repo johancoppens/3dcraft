@@ -1306,7 +1306,18 @@ impl Marcher {
                 let d = s.p - cur.p;
                 let dist = d.length();
                 let along = d.dot(cur.t);
-                if !(dist > self.on && dist <= h && along > 0.0) {
+                // A crossing point is looked for two steps ahead, and from
+                // the radius at which its arms are seeded: where the
+                // surfaces are a little apart at it the branch turns away
+                // just before the point, and a step that lands there would
+                // pass it by and go on along the next arm; where they are
+                // not, a step that lands on the point itself would.
+                let reach = if s.kind == SingularKind::Cross {
+                    (2.0 * h).max(s.arm)
+                } else {
+                    h
+                };
+                if !(dist > self.on && dist <= reach && along > 0.0) {
                     continue;
                 }
                 if (d - cur.t * along).length() > 0.1 * dist {
