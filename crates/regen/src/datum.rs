@@ -137,7 +137,7 @@ pub(crate) fn datum_axis(
     }
 }
 
-fn plane_ref(
+pub(crate) fn plane_ref(
     doc: &Document,
     earlier: &[FeatureResult],
     plane: &PlaneRef,

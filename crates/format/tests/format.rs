@@ -2993,3 +2993,50 @@ fn thicken_is_written_like_this_and_round_trips() {
     assert_ne!(bad, json);
     assert!(from_manifest_json(bad.as_bytes()).is_err());
 }
+
+/// Draft, as it is written: a new kind, no version came with it.
+#[test]
+fn draft_is_written_like_this_and_round_trips() {
+    use craft3d_doc::{Draft, NameRole, PersistentName, PlaneRef, WorldPlane};
+    let face = |n: u64| PersistentName::new(FeatureId(1), NameRole::Face, vec![n]);
+    let face_json = |n: u64| serde_json::json!({"feature": 1, "role": "face", "sources": [n]});
+    let mut doc = small();
+    doc.add_feature(
+        Some("Tapered"),
+        FeatureKind::Draft(Draft {
+            faces: vec![face(2), face(3)],
+            neutral: PlaneRef::Face { face: face(0) },
+            angle: Expr::new("3 deg"),
+            reversed: false,
+        }),
+    )
+    .unwrap();
+    doc.add_feature(
+        Some("Back"),
+        FeatureKind::Draft(Draft {
+            faces: vec![face(4)],
+            neutral: PlaneRef::World {
+                plane: WorldPlane::Xy,
+            },
+            angle: Expr::new("-2 deg"),
+            reversed: true,
+        }),
+    )
+    .unwrap();
+    assert_eq!(doc.validate(), Ok(()));
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["format_version"], FORMAT_VERSION);
+    assert_eq!(
+        value["document"]["features"][1]["kind"],
+        serde_json::json!({"type": "draft", "faces": [face_json(2), face_json(3)],
+            "neutral": {"type": "face", "face": face_json(0)}, "angle": "3 deg"})
+    );
+    assert_eq!(value["document"]["features"][2]["kind"]["reversed"], true);
+    assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+    assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
+    // A draft without a neutral plane is not one.
+    let bare = json.replacen("\"neutral\"", "\"far\"", 1);
+    assert_ne!(bare, json);
+    assert!(from_manifest_json(bare.as_bytes()).is_err());
+}

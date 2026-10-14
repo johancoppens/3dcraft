@@ -314,6 +314,17 @@ pub enum FeatureKind {
     /// A solid of its own: faces of the body of an earlier feature given
     /// `thickness`, to `side` of them (`outside`, `inside` or `both`;
     /// written always). A new kind: no format version changed with it.
+    /// Faces of the body of an earlier feature tilted by `angle` about
+    /// the plane `neutral`, the pull along its normal (into the body for
+    /// a face), the other way when `reversed` (written only when set). A
+    /// new kind: no format version changed with it.
+    Draft {
+        faces: Vec<Name>,
+        neutral: PlaneRef,
+        angle: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        reversed: bool,
+    },
     Thicken {
         faces: Vec<Name>,
         thickness: String,

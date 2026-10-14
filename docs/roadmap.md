@@ -322,6 +322,7 @@ The blends first (chamfer and fillet, the first consumers of edge references), t
 - Delete face (`feature.deleteFace`): holes, bosses, pockets and cavities filled, a single chamfer or fillet collapsed into its sharp edge; format version 12 (2026-10-14)
 - Move face (`feature.moveFace`): faces moved by one rigid motion (shift and turn), the neighbours following, what lies between moved faces carried exactly; a sketch on a turned face turns with it (§5.3 › *Face operations as built*) (2026-10-15)
 - Thicken (`feature.thicken`): faces of a solid given a thickness outside, inside or on both sides, as a body of its own bounded at its rim by the faces round them (two offsets and the boolean); there are no sheet bodies yet (2026-10-15)
+- Draft (`feature.draft`): flat faces and cylinders along the pull direction tilted about a neutral plane (a face, a world or a datum plane) into planes and cones, the neighbours following; a drafted box is a frustum, a rounded box a rounded frustum (2026-10-15)
 - References that follow a body: a face of an earlier body (`F1:face(0)`) resolves to its newest form, so no `copy(0)` prefixes; `document.edges` lists `short` names (2026-10-14)
 - Helix and thread: `datum.helix`, `feature.sweep` with a helix as its `path`, `feature.thread` (external ISO metric, by designation such as `"M10"` and pitch); format version 13 ([`architecture.md`](architecture.md) §4.1 › *Helix, and the sweep along it*, *Thread*) (2026-10-14)
 - A thread is cosmetic unless `modeled: true`, as in other modellers (2026-10-14)
@@ -329,7 +330,8 @@ The blends first (chamfer and fillet, the first consumers of edge references), t
 - A face that winds along a thread is meshed; every triangulation has a work budget (2026-10-14)
 
 #### Open
-- [ ] Replace face and draft (faces tilted about a neutral plane along a pull direction)
+- [ ] Replace face
+- [ ] Draft: cones, spheres and freeform faces, faces not along the pull direction, a parting line instead of a neutral plane, a face whose neighbour is tangent to it and not drafted
 - [ ] Thicken: a sheet body (none is made yet), walls along the faces' normals at a rim that is not square to its neighbours
 - [ ] Move face: a cylinder or cone tilted against a flat neighbour (the edge would be an ellipse), a moved face whose neighbours would have to gain or lose an edge
 - [ ] Vertex blends: three fillets of different radii, with a circular edge, with a fourth edge

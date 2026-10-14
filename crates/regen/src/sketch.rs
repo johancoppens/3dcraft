@@ -610,6 +610,7 @@ pub(crate) fn resolve_face(
         let moved = match source.kind {
             FeatureKind::OffsetFace(_)
             | FeatureKind::MoveFace(_)
+            | FeatureKind::Draft(_)
             | FeatureKind::Thicken(_)
             | FeatureKind::Shell(_) => {
                 let index = names.and_then(|names| {
@@ -633,7 +634,10 @@ pub(crate) fn resolve_face(
                             matches!(source.kind, FeatureKind::Shell(_) | FeatureKind::Thicken(_))
                                 && link.sources.first() == Some(&1);
                         // A moved face may also have turned.
-                        let turns = matches!(source.kind, FeatureKind::MoveFace(_));
+                        let turns = matches!(
+                            source.kind,
+                            FeatureKind::MoveFace(_) | FeatureKind::Draft(_)
+                        );
                         Some((plane.frame().origin(), outward, hollow, turns))
                     }
                     Some((surface, _)) => {

@@ -13,6 +13,7 @@ mod blend;
 pub mod boolean;
 pub mod chamfer;
 pub mod delete_face;
+pub mod draft;
 pub mod extrude;
 pub mod extrude_to;
 pub mod fillet;

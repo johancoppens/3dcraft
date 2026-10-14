@@ -568,8 +568,8 @@ impl Fillet {
     }
 }
 
-/// Most faces one face operation (offset face, move face, thicken, delete
-/// face, the open faces of a shell) holds.
+/// Most faces one face operation (offset face, move face, thicken, draft,
+/// delete face, the open faces of a shell) holds.
 pub const MAX_FACE_OP_FACES: usize = 1024;
 
 /// Faces of the body of an earlier feature moved along their normals by
@@ -617,6 +617,33 @@ pub struct MoveFace {
 }
 
 impl MoveFace {
+    /// The feature whose body the faces are of: the one that made the
+    /// first face referred to. `None` without faces.
+    pub fn source(&self) -> Option<FeatureId> {
+        self.faces.first().map(|first| first.feature)
+    }
+}
+
+/// Faces of the body of an earlier feature tilted by `angle` about the
+/// neutral plane, so that the part comes out of a mould along the pull
+/// direction: the normal of `neutral` (for a face, into the body it
+/// bounds), the other way when `reversed`. A drafted face keeps where it
+/// meets the neutral plane and leans in by the angle as it goes along the
+/// pull: a block drafted from its bottom face narrows toward its top.
+/// The faces next to them follow. The body goes into this feature.
+///
+/// A face is referred to by its name. All faces are faces of one body:
+/// the feature the first name starts with.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Draft {
+    pub faces: Vec<PersistentName>,
+    pub neutral: PlaneRef,
+    pub angle: Expr,
+    #[serde(default)]
+    pub reversed: bool,
+}
+
+impl Draft {
     /// The feature whose body the faces are of: the one that made the
     /// first face referred to. `None` without faces.
     pub fn source(&self) -> Option<FeatureId> {
@@ -770,6 +797,7 @@ pub enum FeatureKind {
     OffsetFace(OffsetFace),
     MoveFace(MoveFace),
     Thicken(Thicken),
+    Draft(Draft),
     Shell(Shell),
     DeleteFace(DeleteFace),
     Thread(Thread),
@@ -802,6 +830,7 @@ impl FeatureKind {
             FeatureKind::OffsetFace(_) => "offsetFace",
             FeatureKind::MoveFace(_) => "moveFace",
             FeatureKind::Thicken(_) => "thicken",
+            FeatureKind::Draft(_) => "draft",
             FeatureKind::Shell(_) => "shell",
             FeatureKind::DeleteFace(_) => "deleteFace",
             FeatureKind::Thread(_) => "thread",
@@ -864,6 +893,7 @@ impl FeatureKind {
             FeatureKind::MoveFace(m) => m.source().map(|id| (id, false)),
             // The body stays: the layer is a body of its own.
             FeatureKind::Thicken(t) => t.source().map(|id| (id, true)),
+            FeatureKind::Draft(d) => d.source().map(|id| (id, false)),
             FeatureKind::Shell(s) => Some((s.source, false)),
             FeatureKind::DeleteFace(d) => d.source().map(|id| (id, false)),
             FeatureKind::Thread(t) => Some((t.source(), false)),
@@ -917,6 +947,7 @@ impl FeatureKind {
                 std::iter::once(p.source).chain(about).collect()
             }
             FeatureKind::Mirror(m) => std::iter::once(m.source).chain(m.plane).collect(),
+            FeatureKind::Draft(d) => d.source().into_iter().chain(d.neutral.inputs()).collect(),
             other => other.sources().into_iter().map(|(id, _)| id).collect(),
         }
     }
@@ -1001,6 +1032,7 @@ impl FeatureKind {
             FeatureKind::Fillet(f) => out = vec![named("radius", &f.radius)],
             FeatureKind::OffsetFace(o) => out = vec![named("distance", &o.distance)],
             FeatureKind::Thicken(t) => out = vec![named("thickness", &t.thickness)],
+            FeatureKind::Draft(d) => out = vec![named("angle", &d.angle)],
             FeatureKind::MoveFace(m) => {
                 out = triple("translate", &m.translate);
                 out.extend(triple("pivot", &m.pivot));
@@ -1101,6 +1133,7 @@ impl FeatureKind {
             FeatureKind::Fillet(f) => vec![&mut f.radius],
             FeatureKind::OffsetFace(o) => vec![&mut o.distance],
             FeatureKind::Thicken(t) => vec![&mut t.thickness],
+            FeatureKind::Draft(d) => vec![&mut d.angle],
             FeatureKind::MoveFace(m) => m
                 .translate
                 .iter_mut()
@@ -1352,6 +1385,15 @@ impl Document {
                     faces.iter().collect()
                 }
                 FeatureKind::Thread(thread) => vec![&thread.face, &thread.start],
+                FeatureKind::Draft(draft) => {
+                    if draft.faces.len() > MAX_FACE_OP_FACES {
+                        return Err(DocError::Invalid(format!(
+                            "`{}` has more than {MAX_FACE_OP_FACES} faces",
+                            feature.name
+                        )));
+                    }
+                    draft.faces.iter().chain(draft.neutral.names()).collect()
+                }
                 _ => Vec::new(),
             };
             for name in referred {

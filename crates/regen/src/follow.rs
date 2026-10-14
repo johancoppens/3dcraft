@@ -212,6 +212,16 @@ pub(crate) fn feature(
         FeatureKind::OffsetFace(offset) => faces(doc, earlier, &mut offset.faces, "faces")?,
         FeatureKind::MoveFace(moving) => faces(doc, earlier, &mut moving.faces, "faces")?,
         FeatureKind::Thicken(layer) => faces(doc, earlier, &mut layer.faces, "faces")?,
+        FeatureKind::Draft(tilted) => {
+            let mut changed = faces(doc, earlier, &mut tilted.faces, "faces")?;
+            if let craft3d_doc::PlaneRef::Face { face: name } = &mut tilted.neutral
+                && let Some(followed) = face(doc, earlier, name, "neutral")?
+            {
+                *name = followed;
+                changed = true;
+            }
+            changed
+        }
         FeatureKind::DeleteFace(deletion) => faces(doc, earlier, &mut deletion.faces, "faces")?,
         FeatureKind::Shell(shell) => {
             // The body to hollow is followed as its faces are: the shell

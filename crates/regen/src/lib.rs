@@ -25,6 +25,7 @@ mod chamfer;
 mod datum;
 mod delete_face;
 mod derive;
+mod draft;
 mod entity;
 mod extrude;
 mod face_ops;
@@ -621,6 +622,7 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
         | FeatureKind::OffsetFace(_)
         | FeatureKind::MoveFace(_)
         | FeatureKind::Thicken(_)
+        | FeatureKind::Draft(_)
         | FeatureKind::Shell(_)
         | FeatureKind::DeleteFace(_)
         | FeatureKind::Thread(_) => {
@@ -902,6 +904,19 @@ fn build_feature(
                 // Instance 0 lies on or along the faces of the source,
                 // 1 under them; neither moves as a whole.
                 instances = Some(Arc::new(vec![Transform::IDENTITY; 2]));
+                (Status::Ok, Some(Arc::new(body)))
+            }
+            Err(reason) => (Status::Failed(reason), None),
+        }
+    } else if let FeatureKind::Draft(tilted) = &feature.kind {
+        match draft::build(doc, variables, feature.id, tilted, earlier)
+            .and_then(|(body, names)| checked(doc, body).map(|body| (body, names)))
+        {
+            Ok((body, made_names)) => {
+                names = made_names.map(Arc::new);
+                // The body as a whole does not move; a face that turned
+                // is found where it lies now (`sketch::resolve_face`).
+                instances = Some(Arc::new(vec![Transform::IDENTITY]));
                 (Status::Ok, Some(Arc::new(body)))
             }
             Err(reason) => (Status::Failed(reason), None),

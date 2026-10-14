@@ -315,6 +315,17 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 axis: exprs_to_manifest(axis),
                 angle: expr_to_manifest(angle),
             },
+            doc::FeatureKind::Draft(doc::Draft {
+                faces,
+                neutral,
+                angle,
+                reversed,
+            }) => manifest::FeatureKind::Draft {
+                faces: faces.iter().map(name_to_manifest).collect(),
+                neutral: plane_ref_to_manifest(neutral),
+                angle: expr_to_manifest(angle),
+                reversed: *reversed,
+            },
             doc::FeatureKind::Thicken(doc::Thicken {
                 faces,
                 thickness,
@@ -1275,6 +1286,17 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
                 pivot: exprs_to_doc(pivot),
                 axis: exprs_to_doc(axis),
                 angle: doc::Expr(angle),
+            }),
+            manifest::FeatureKind::Draft {
+                faces,
+                neutral,
+                angle,
+                reversed,
+            } => doc::FeatureKind::Draft(doc::Draft {
+                faces: faces.into_iter().map(name_to_doc).collect(),
+                neutral: plane_ref_to_doc(neutral),
+                angle: doc::Expr(angle),
+                reversed,
             }),
             manifest::FeatureKind::Thicken {
                 faces,
