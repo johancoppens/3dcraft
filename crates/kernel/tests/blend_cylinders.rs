@@ -482,3 +482,78 @@ fn a_radius_the_rod_cannot_hold_is_refused() {
         other => panic!("{other:?}"),
     }
 }
+
+/// A cambered blade of two arcs (through `(5, 1.5)` and `(5, 0.5)` over
+/// the chord from `(0, 0)` to `(10, 0)`), both rims of its tip rounded:
+/// the two tori run out into each other at the sharp leading and trailing
+/// edges, which stay sharp (finding F1 of the turbofan showcase; the
+/// boolean refused it until 2026-10-14).
+#[test]
+fn both_tip_edges_of_a_cambered_blade() {
+    let upper = (25.0 + 2.25) / 3.0;
+    let lower = 25.0 + 0.25;
+    let curves = vec![
+        arc(1, [5.0, 1.5 - upper], [10.0, 0.0], [0.0, 0.0]),
+        arc(2, [5.0, 0.5 - lower], [10.0, 0.0], [0.0, 0.0]),
+    ];
+    let height = 10.0;
+    for k in SCALES {
+        for frame in frames(k) {
+            let tol = tolerance(k);
+            let body = prism(&frame, k, &curves, height);
+            let rim = |p: P| {
+                // The edge of the top through `p`: the nearest by samples.
+                let target = frame.point(p[0] * k, p[1] * k, height * k);
+                let (index, _) = body
+                    .edges
+                    .iter()
+                    .enumerate()
+                    .map(|(i, e)| {
+                        let d = (0..=32)
+                            .map(|j| {
+                                let t = e.range.0 + (e.range.1 - e.range.0) * f64::from(j) / 32.0;
+                                e.curve.eval(t).distance(target)
+                            })
+                            .fold(f64::INFINITY, f64::min);
+                        (i, d)
+                    })
+                    .min_by(|a, b| a.1.total_cmp(&b.1))
+                    .unwrap();
+                EdgeId(index as u32)
+            };
+            let (top, bottom) = (rim([5.0, 1.5]), rim([5.0, 0.5]));
+            for r in [0.05, 0.2, 0.3] {
+                let edge = |e: EdgeId| FilletEdge {
+                    edge: e,
+                    radius: r * k,
+                };
+                let volume = |edges: &[FilletEdge]| {
+                    let made = match fillet(&body, edges, &tol) {
+                        Ok(made) => made,
+                        Err(e) => panic!("scale {k}, r {r}: {e}"),
+                    };
+                    assert_eq!(check(&made.body, &tol), []);
+                    assert_smooth(&body, edges, &made);
+                    assert_eq!(made.body.faces.len(), 4 + edges.len());
+                    mass(&made.body).volume
+                };
+                let whole = mass(&body).volume;
+                let one = volume(&[edge(top)]);
+                let other = volume(&[edge(bottom)]);
+                let both = volume(&[edge(top), edge(bottom)]);
+                let turned = volume(&[edge(bottom), edge(top)]);
+                // What the two take away overlaps near the tips only.
+                assert!(both < one.min(other));
+                assert!(both > one + other - whole);
+                if std::env::var_os("BLEND_NUMBERS").is_some() {
+                    println!("k {k} r {r}: {whole} {one} {other} {both}");
+                }
+                // The order of the edges does not change the solid, to
+                // within what the tolerance allows (the boolean's curves
+                // where the tori meet are approximations).
+                let slack = tol.linear * mass(&body).area;
+                assert!((both - turned).abs() <= slack);
+            }
+        }
+    }
+}
