@@ -318,6 +318,10 @@ fn integrand(surface: &Surface, u: f64, v: f64, about: Vec3) -> Total {
 /// they cancel (see [`integrand`]).
 const POINT_ROUNDING: f64 = 1e-3;
 const NODES: usize = 16;
+/// Whole turns an unrolled inner integral may span on a spline surface
+/// that closes on itself, at most: an unrolled parameter stays within a
+/// few turns.
+const MAX_TURNS: f64 = 8.0;
 /// Panels for an inner integral, at least.
 const INNER_PANELS: usize = 2;
 /// And at most: an unrolled parameter stays within a few turns.
@@ -387,6 +391,10 @@ struct Work {
     /// The point positions are measured from in the volume and the
     /// moments ([`integrand`]).
     about: Vec3,
+    /// In u and in v: the domain of a spline surface that closes on
+    /// itself, when its boundary is unrolled ([`Plan::Unrolled`]) and an
+    /// inner integral may run beyond the domain, by whole turns.
+    wrap: [Option<(f64, f64)>; 2],
 }
 
 impl Work {
@@ -401,6 +409,7 @@ impl Work {
             spent: 0,
             each: if freeform { FREEFORM } else { 1 },
             about,
+            wrap: [None, None],
         }
     }
 
@@ -540,6 +549,7 @@ fn inner(
     doublings: u32,
     work: &mut Work,
 ) -> Total {
+    let work_wrap = work.wrap;
     let mut sum = Total::default();
     let mut panel = |start: f64, end: f64, sign: f64| {
         work.add(NODES as u64);
@@ -570,14 +580,49 @@ fn inner(
                 panel(at, at + width, sign);
             }
         };
-        let mut start = low;
-        for &knot in knots {
-            if knot > start && knot < high {
-                stretch(start, knot);
-                start = knot;
+        let mut between = |low: f64, high: f64| {
+            let mut start = low;
+            for &knot in knots {
+                if knot > start && knot < high {
+                    stretch(start, knot);
+                    start = knot;
+                }
             }
+            stretch(start, high);
+        };
+        let wrap = match along {
+            Along::U => work_wrap[0],
+            Along::V => work_wrap[1],
+        };
+        match wrap {
+            // An unrolled parameter beyond the domain of a surface that
+            // closes on itself: each turn is summed in the domain.
+            Some((d0, d1)) if low < d0 || high > d1 => {
+                let period = d1 - d0;
+                let first = ((low - d0) / period).floor();
+                let last = ((high - d0) / period).ceil();
+                if !(first.is_finite() && last.is_finite() && last - first <= MAX_TURNS) {
+                    // Nothing summed is a sum that never settles.
+                    return Total {
+                        sum: Sums {
+                            area: f64::NAN,
+                            ..Sums::default()
+                        },
+                        size: Sums::default(),
+                    };
+                }
+                let mut turn = first;
+                while turn < last {
+                    let shift = period * turn;
+                    let (a, b) = (low.max(d0 + shift), high.min(d1 + shift));
+                    if b > a {
+                        between((a - shift).max(d0), (b - shift).min(d1));
+                    }
+                    turn += 1.0;
+                }
+            }
+            _ => between(low, high),
         }
-        stretch(start, high);
         return sum;
     }
     let periodic = match along {
@@ -706,7 +751,7 @@ fn knot_crossings(
     surface: &Surface,
     (low, high): (f64, f64),
     touch: f64,
-    split: Option<(Along, f64)>,
+    (split, seams): (Option<(Along, f64)>, bool),
 ) -> Result<Vec<f64>, GeomError> {
     let (mut lines_u, mut lines_v) = knot_lines(surface);
     // The line a face through two poles is divided along is one more
@@ -717,7 +762,10 @@ fn knot_crossings(
         None => {}
     }
     let mut crossings = Vec::new();
-    if (lines_u.is_empty() && lines_v.is_empty()) || high <= low || (high - low).is_nan() {
+    // `seams`: the surface closes on itself, and the boundary's panels
+    // end where it goes over the seam as well.
+    if (lines_u.is_empty() && lines_v.is_empty() && !seams) || high <= low || (high - low).is_nan()
+    {
         return Ok(crossings);
     }
     let ((u0, u1), (v0, v1)) = surface.domain();
@@ -843,6 +891,175 @@ fn own_sphere(body: &Body, face: &Face, sphere: &Sphere) -> Option<Surface> {
     }
     let frame = Frame::from_z(centre, best?.1)?;
     Some(Surface::Sphere(Sphere::new(frame, radius).ok()?))
+}
+
+/// How near, as a share of the size of the control net, two rows of
+/// control points must be to count as the same row.
+const SAME_ROW: f64 = 1e-9;
+
+/// Where a Bézier or NURBS surface closes on itself, in u and in v: the
+/// parameter range across which it does, its domain in that direction.
+/// It closes in a direction when its control net ends there on the row
+/// it starts with (the same points to [`SAME_ROW`] of the net's size, and
+/// weights in one proportion, so that the two rows are the same curve)
+/// on clamped knots, and the rows in between are not all that one row
+/// (which is a pole, not a seam). `[None, None]` for the analytic kinds,
+/// which say how they close themselves (`Surface::period_u`).
+fn spline_closure(surface: &Surface) -> [Option<(f64, f64)>; 2] {
+    let (points, weights, (count_u, count_v), clamped): (&[Vec3], Option<&[f64]>, _, [bool; 2]) =
+        match surface {
+            Surface::Bezier(patch) => (
+                patch.control_points(),
+                None,
+                (patch.degree_u() + 1, patch.degree_v() + 1),
+                [true, true],
+            ),
+            Surface::Nurbs(s) => {
+                let (degree_u, degree_v) = s.degrees();
+                (
+                    s.control_points(),
+                    Some(s.weights()),
+                    s.counts(),
+                    [clamped(s.knots_u(), degree_u), clamped(s.knots_v(), degree_v)],
+                )
+            }
+            _ => return [None, None],
+        };
+    if count_u < 2 || count_v < 2 || count_u.checked_mul(count_v) != Some(points.len()) {
+        return [None, None];
+    }
+    let near = SAME_ROW * Bbox3::from_points(points.iter().copied()).diagonal();
+    if !(near.is_finite() && near > 0.0) {
+        return [None, None];
+    }
+    let at = |i: usize, j: usize| {
+        let index = i.checked_mul(count_v)?.checked_add(j)?;
+        let weight = match weights {
+            Some(weights) => *weights.get(index)?,
+            None => 1.0,
+        };
+        Some((*points.get(index)?, weight))
+    };
+    // Along `rows` rows of `across` points each, the k-th of row r being
+    // `get(r, k)`.
+    let closes = |rows: usize, across: usize, get: &dyn Fn(usize, usize) -> Option<(Vec3, f64)>| {
+        let (Some((_, first)), Some((_, last))) = (get(0, 0), get(rows - 1, 0)) else {
+            return false;
+        };
+        let mut moves = false;
+        for k in 0..across {
+            let (Some((p, w)), Some((q, x))) = (get(0, k), get(rows - 1, k)) else {
+                return false;
+            };
+            // `w / first == x / last`, without dividing. Not `>`: a NaN
+            // closes nothing.
+            if !(p.distance(q) <= near && (w * last - x * first).abs() <= SAME_ROW * (w * last).abs())
+            {
+                return false;
+            }
+            for row in 1..rows - 1 {
+                moves |= get(row, k).is_some_and(|(r, _)| r.distance(p) > near);
+            }
+        }
+        moves
+    };
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    let range = |closes: bool, low: f64, high: f64| {
+        (closes && low.is_finite() && high.is_finite() && high > low).then_some((low, high))
+    };
+    let [clamped_u, clamped_v] = clamped;
+    [
+        range(clamped_u && closes(count_u, count_v, &at), u0, u1),
+        range(
+            clamped_v && closes(count_v, count_u, &|j, i| at(i, j)),
+            v0,
+            v1,
+        ),
+    ]
+}
+
+/// Whether a knot vector is clamped: its first and its last `degree + 1`
+/// knots are one value each, so that the spline starts on its first row
+/// of control points and ends on its last.
+fn clamped(knots: &[f64], degree: usize) -> bool {
+    let (Some(first), Some(last)) = (knots.first(), knots.last()) else {
+        return false;
+    };
+    knots.len() > 2 * degree + 1
+        && knots.iter().take(degree + 1).all(|k| k == first)
+        && knots.iter().rev().take(degree + 1).all(|k| k == last)
+}
+
+/// Whether the boundary samples jump, between two in a row of one loop
+/// (around its end too), by more than half of `width` in the parameter
+/// `pick` gives: the boundary goes over the seam of a surface that closes
+/// on itself in that parameter, or around it.
+fn jumps(samples: &[Sample], pick: impl Fn(&Sample) -> f64, width: f64) -> bool {
+    let mut start = 0;
+    while let Some(first) = samples.get(start) {
+        let end = samples
+            .iter()
+            .skip(start)
+            .position(|s| s.loop_index != first.loop_index)
+            .map_or(samples.len(), |offset| start + offset);
+        let Some(block) = samples.get(start..end) else {
+            break;
+        };
+        let around = block.last().zip(block.first());
+        if block
+            .windows(2)
+            .filter_map(|pair| match pair {
+                [a, b] => Some((a, b)),
+                _ => None,
+            })
+            .chain(around)
+            // Not `>`: a NaN is no jump.
+            .any(|(a, b)| (pick(a) - pick(b)).abs() > 0.5 * width)
+        {
+            return true;
+        }
+        start = end;
+    }
+    false
+}
+
+/// Whether a face whose every edge its loops use twice, once each way (a
+/// seam walked there and back: nothing else bounds it), is its whole
+/// surface: the surface closes on itself or ends in a pole on every side.
+/// A sphere and a torus do; a Bézier or NURBS surface when each of its
+/// directions closes ([`spline_closure`]) or ends in a pole at both
+/// borders of the other.
+fn seams_only(body: &Body, face: &Face) -> bool {
+    let mut uses: Vec<(u32, bool)> = Vec::new();
+    for loop_id in &face.loops {
+        let Some(loop_) = body.loop_(*loop_id) else {
+            return false;
+        };
+        uses.extend(loop_.coedges.iter().map(|c| (c.edge.0, c.reversed)));
+    }
+    if uses.is_empty() {
+        return false;
+    }
+    uses.sort_unstable();
+    // Sorted, each edge is then once forwards and once backwards, in a row.
+    let paired = uses
+        .chunks(2)
+        .all(|pair| matches!(pair, [(a, false), (b, true)] if a == b));
+    if !paired {
+        return false;
+    }
+    match &face.surface {
+        Surface::Sphere(_) | Surface::Torus(_) => true,
+        Surface::Bezier(_) | Surface::Nurbs(_) => {
+            let [closes_u, closes_v] = spline_closure(&face.surface);
+            let poles = craft3d_geom::pole::poles(&face.surface);
+            // Both borders of constant v (`across_v`) are poles, or both
+            // of constant u.
+            let both_ends = |across_v: bool| poles.iter().filter(|p| p.across_v() == across_v).count() >= 2;
+            (closes_u.is_some() || both_ends(false)) && (closes_v.is_some() || both_ends(true))
+        }
+        _ => false,
+    }
 }
 
 /// A border of a freeform surface's parameter range that is one point in
@@ -1088,6 +1305,7 @@ fn outline<'a>(
         }
     }
     let poled = Poled::choose(&poles, &touched);
+    let seams = spline_closure(surface).iter().any(Option::is_some);
     let split = poled.and_then(|p| p.far.map(|(split, _)| (p.along, split)));
 
     let mut pieces = Vec::with_capacity(loops.len());
@@ -1108,7 +1326,7 @@ fn outline<'a>(
             cuts.dedup();
             let curve = &edge.curve;
             let crossings =
-                knot_crossings(curve, surface, (t0, t1), touch, split).map_err(geometry)?;
+                knot_crossings(curve, surface, (t0, t1), touch, (split, seams)).map_err(geometry)?;
             let mut stops = Vec::with_capacity(cuts.len() + 2);
             stops.push(t0);
             stops.extend(cuts);
@@ -1343,16 +1561,30 @@ fn near(value: f64, target: f64, period: f64) -> f64 {
 /// How the boundary integral of a face is set up. Decided once, from the
 /// coarsest samples, so that the finer sums are sums of the same thing.
 enum Plan {
-    /// `G` runs from this v.
-    From(f64),
+    /// The inner integral runs along `along` from `at`: `G` along v from
+    /// a value of v (`-∮ G du`), or, on a spline surface whose boundary
+    /// goes over the seam where it closes in v, `H` along u from a value
+    /// of u (`∮ H dv`).
+    From { along: Along, at: f64 },
     /// A boundary through poles of a freeform surface.
     Poles(Poled),
     /// A surface closed both ways: the parameters each loop's unrolling
-    /// starts near, and the direction the inner integral runs in.
+    /// starts near, the direction the inner integral runs in, and the
+    /// periods in u and v.
     Unrolled {
         starts: Vec<(f64, f64)>,
         along: Along,
+        periods: (f64, f64),
     },
+}
+
+impl Plan {
+    /// Whether the boundary integral by this plan is right only up to a
+    /// whole number of times the entire surface (see the module
+    /// documentation).
+    fn up_to_whole_surfaces(&self) -> bool {
+        matches!(self, Plan::Unrolled { .. })
+    }
 }
 
 /// Unrolls u and v along each loop of a surface closed both ways, each
@@ -1418,30 +1650,30 @@ fn plan(
     sense: f64,
 ) -> Result<Plan, MassError> {
     if let (Some(period_u), Some(period_v)) = (surface.period_u(), surface.period_v()) {
-        let (starts, around_axis, around_tube) =
-            unroll(samples, face.loops.len(), None, (period_u, period_v));
-        if around_axis.iter().sum::<f64>() != 0.0 || around_tube.iter().sum::<f64>() != 0.0 {
-            // Loops that go around without others going back do not enclose
-            // a region.
-            return Err(MassError::UnboundedFace { face: index });
-        }
-        let along = if around_tube.iter().all(|&turns| turns == 0.0) {
-            Along::V
-        } else if around_axis.iter().all(|&turns| turns == 0.0) {
-            Along::U
-        } else {
-            return Err(MassError::Unsupported {
-                face: index,
-                what: "loops that wind around the axis and around the tube of a torus at once",
-            });
-        };
-        return Ok(Plan::Unrolled { starts, along });
+        return unrolled(face, index, samples, (period_u, period_v));
     }
     if surface.period_v().is_some() {
         return Err(MassError::Unsupported {
             face: index,
             what: "a surface closed in v only",
         });
+    }
+    // A spline surface may close on itself without saying so. A boundary
+    // that goes over the seam where it closes in u needs nothing (`G` is
+    // integrated against `du`, which is zero along the seam); one that
+    // goes over the seam where it closes in v is integrated the other way
+    // round, against `dv`; one that goes over both is unrolled as on a
+    // torus.
+    let [closes_u, closes_v] = spline_closure(surface);
+    let over = |closes: Option<(f64, f64)>, pick: fn(&Sample) -> f64| {
+        closes.filter(|&(low, high)| jumps(samples, pick, high - low))
+    };
+    match (over(closes_u, |s| s.u), over(closes_v, |s| s.v)) {
+        (Some((u0, u1)), Some((v0, v1))) => {
+            return unrolled(face, index, samples, (u1 - u0, v1 - v0));
+        }
+        (None, Some(_)) => return across_v_seam(surface, index, samples, sense),
+        _ => {}
     }
     let ((u_min, u_max), (v_min, v_max)) = surface.domain();
     let first_v = samples.first().map_or(0.0, |s| s.v);
@@ -1526,7 +1758,94 @@ fn plan(
     if !v_ref.is_finite() {
         return Err(MassError::UnboundedFace { face: index });
     }
-    Ok(Plan::From(v_ref))
+    Ok(Plan::From {
+        along: Along::V,
+        at: v_ref,
+    })
+}
+
+/// The plan for a face of a surface closed both ways, with these periods:
+/// its loops unrolled.
+fn unrolled(
+    face: &Face,
+    index: usize,
+    samples: &mut [Sample],
+    (period_u, period_v): (f64, f64),
+) -> Result<Plan, MassError> {
+    let (starts, around_axis, around_tube) =
+        unroll(samples, face.loops.len(), None, (period_u, period_v));
+    if around_axis.iter().sum::<f64>() != 0.0 || around_tube.iter().sum::<f64>() != 0.0 {
+        // Loops that go around without others going back do not enclose
+        // a region.
+        return Err(MassError::UnboundedFace { face: index });
+    }
+    let along = if around_tube.iter().all(|&turns| turns == 0.0) {
+        Along::V
+    } else if around_axis.iter().all(|&turns| turns == 0.0) {
+        Along::U
+    } else {
+        return Err(MassError::Unsupported {
+            face: index,
+            what: "loops that wind around the axis and around the tube of a torus at once",
+        });
+    };
+    Ok(Plan::Unrolled {
+        starts,
+        along,
+        periods: (period_u, period_v),
+    })
+}
+
+/// The plan for a face of a spline surface that closes on itself in v,
+/// whose boundary goes over the seam there (and not over one in u): the
+/// inner integral runs along u, from a value of u, and the boundary
+/// integral is `∮ H dv`, to which the seam (a line of constant v)
+/// contributes nothing. It mirrors the case of a surface closed in u: a
+/// boundary that goes around in v once in total is the rim of a face that
+/// reaches to an end of u, a face only if the surface is one point there.
+fn across_v_seam(
+    surface: &Surface,
+    index: usize,
+    samples: &[Sample],
+    sense: f64,
+) -> Result<Plan, MassError> {
+    let ((u_min, u_max), (v_min, v_max)) = surface.domain();
+    let swept = samples.iter().map(|s| s.dv).sum::<f64>();
+    let turns = (sense * swept / (v_max - v_min)).round();
+    let risen = samples.iter().map(|s| s.du).sum::<f64>();
+    if (risen / (u_max - u_min)).round() != 0.0 {
+        return Err(MassError::Unsupported {
+            face: index,
+            what: "a boundary that goes around a spline surface in u",
+        });
+    }
+    let u_ref = if turns == 0.0 {
+        samples.first().map_or(0.0, |s| s.u)
+    } else if turns.abs() == 1.0 {
+        // The face is on the −u side of a loop running in +v.
+        let end = if turns > 0.0 { u_min } else { u_max };
+        let pole = (0..=8).all(|k| {
+            let v = v_min + (v_max - v_min) * f64::from(k) / 8.0;
+            let (_, su, sv) = surface.derivatives(end, v);
+            sv.length() <= 1e-9 * (su.length() + sv.length())
+        });
+        if !pole {
+            return Err(MassError::UnboundedFace { face: index });
+        }
+        end
+    } else {
+        return Err(MassError::Unsupported {
+            face: index,
+            what: "a boundary that winds around a spline surface more than once",
+        });
+    };
+    if !u_ref.is_finite() {
+        return Err(MassError::UnboundedFace { face: index });
+    }
+    Ok(Plan::From {
+        along: Along::U,
+        at: u_ref,
+    })
 }
 
 /// Whether a boundary that is measured from two poles jumps from one
@@ -1764,7 +2083,10 @@ fn boundary_integral(
                 }
             }
         }
-        Plan::From(v_ref) => {
+        Plan::From {
+            along: Along::V,
+            at: v_ref,
+        } => {
             for s in samples.iter() {
                 if work.spent_up() {
                     return Ok(None);
@@ -1777,16 +2099,29 @@ fn boundary_integral(
                 }
             }
         }
-        Plan::Unrolled { starts, along } => {
-            if !unrolled
-                && let (Some(period_u), Some(period_v)) = (surface.period_u(), surface.period_v())
-            {
-                unroll(
-                    samples,
-                    face.loops.len(),
-                    Some(starts),
-                    (period_u, period_v),
-                );
+        Plan::From {
+            along: Along::U,
+            at: u_ref,
+        } => {
+            for s in samples.iter() {
+                if work.spent_up() {
+                    return Ok(None);
+                }
+                if s.dv != 0.0 {
+                    total.add(
+                        inner(surface, rule, Along::U, s.v, (*u_ref, s.u), doublings, work),
+                        sense * s.dv,
+                    );
+                }
+            }
+        }
+        Plan::Unrolled {
+            starts,
+            along,
+            periods,
+        } => {
+            if !unrolled {
+                unroll(samples, face.loops.len(), Some(starts), *periods);
             }
             let (u_ref, v_ref) = starts.first().copied().unwrap_or((0.0, 0.0));
             for s in samples.iter() {
@@ -1815,12 +2150,11 @@ fn settle(
     surface: &Surface,
     index: usize,
     rule: &Rule,
-    total: Total,
+    (total, up_to_whole_surfaces): (Total, bool),
     work: &mut Work,
 ) -> Result<Sums, MassError> {
     let mut sum = total.sum;
-    let closed_both_ways = surface.period_u().is_some() && surface.period_v().is_some();
-    if closed_both_ways {
+    if up_to_whole_surfaces {
         // Right up to a whole number of times the entire surface; the area
         // says which.
         let whole = whole_surface(surface, index, rule, work)?;
@@ -1866,7 +2200,7 @@ fn face_integrals(
     rule: &Rule,
     (size, middle): (f64, Vec3),
 ) -> Result<Sums, MassError> {
-    if face.loops.is_empty() {
+    if face.loops.is_empty() || seams_only(body, face) {
         let mut work = Work::about(&face.surface, middle);
         return whole_surface(&face.surface, index, rule, &mut work);
     }
@@ -1922,6 +2256,11 @@ fn integrals_in(
                 (plan, true)
             }
         };
+        if unrolled && plan.up_to_whole_surfaces() {
+            // Inner integrals may then run beyond the domain of a spline
+            // surface, by whole turns.
+            work.wrap = spline_closure(surface);
+        }
         let Some(total) = boundary_integral(
             (face, &outline),
             surface,
@@ -1938,7 +2277,13 @@ fn integrals_in(
         };
         let noise = outline.noise(total.size.area);
         if exact || coarser.is_some_and(|coarser| coarser.agrees_with(&total, noise)) {
-            return settle(surface, index, rule, total, work);
+            return settle(
+                surface,
+                index,
+                rule,
+                (total, plan.up_to_whole_surfaces()),
+                work,
+            );
         }
         coarser = Some(total);
         set_up = Some(plan);
