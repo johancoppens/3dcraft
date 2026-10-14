@@ -2538,6 +2538,11 @@ enum Action {
     Keep,
     SplitEdge(usize),
     SplitTriangle,
+    /// Within the tolerance, but the normals at the ends of this free
+    /// side, not shorter than the floor, are further apart than the angle
+    /// criterion allows: the side to cut. Where no point fits there, the
+    /// triangle is kept as it is.
+    Turn(usize),
 }
 
 /// The triangulation of one face while it is refined.
@@ -2552,6 +2557,11 @@ struct Work<'a> {
     centre: Uv,
     scale: Uv,
     tolerance: f64,
+    /// `TessParams::max_angle`, and the shortest side held to it.
+    angle: Option<f64>,
+    angle_floor: f64,
+    /// Per vertex, the surface's normal there, with the angle criterion.
+    normals: Vec<Option<Vec3>>,
 }
 
 impl Work<'_> {
@@ -2569,10 +2579,20 @@ impl Work<'_> {
         if v.checked_sub(FIRST_VERTEX).map(|i| i as usize) != Some(self.uv.len()) {
             return Err(CdtError::Internal);
         }
+        if self.angle.is_some() {
+            self.normals.push(self.param.normal(uv));
+        }
         self.uv.push(uv);
         self.pos.push(pos);
         self.free.push(free);
         Ok(())
+    }
+
+    /// The surface's normal at vertex `v`, kept from when it was made
+    /// (with the angle criterion only).
+    fn normal_of(&self, v: u32) -> Option<Vec3> {
+        let i = v.checked_sub(FIRST_VERTEX)? as usize;
+        *self.normals.get(i)?
     }
 
     /// The mean parameters of some vertices, leaving out for each
@@ -2717,6 +2737,42 @@ impl Work<'_> {
                     Some((_, i)) => Action::SplitEdge(i),
                     None => Action::SplitTriangle,
                 };
+            }
+        }
+        if let Some(angle) = self.angle {
+            // The free side over which the surface's normal turns most,
+            // of those that turn it further than the angle and are not
+            // below the floor. A side on the boundary is a chord of an
+            // edge, which the edge holds to the angle by its tangent and
+            // which no point of the face can change; a corner without a
+            // normal (an apex) tells nothing.
+            let normals = view.v.map(|v| self.normal_of(v));
+            let mut worst: Option<(f64, usize)> = None;
+            for (i, constrained) in [c0, c1, c2].into_iter().enumerate() {
+                if constrained {
+                    continue;
+                }
+                let (j, k) = match i {
+                    0 => (1, 2),
+                    1 => (2, 0),
+                    _ => (0, 1),
+                };
+                let (Some(Some(x)), Some(Some(y))) = (normals.get(j), normals.get(k)) else {
+                    continue;
+                };
+                let [p, q] = pair(i);
+                let Some(turn) = crate::angle_between(*x, *y) else {
+                    continue;
+                };
+                if crate::turns_beyond(turn, angle)
+                    && p.1.distance(q.1) >= self.angle_floor
+                    && worst.is_none_or(|(w, _)| turn > w)
+                {
+                    worst = Some((turn, i));
+                }
+            }
+            if let Some((_, i)) = worst {
+                return Action::Turn(i);
             }
         }
         Action::Keep
@@ -3003,7 +3059,8 @@ impl Boundary<'_> {
     /// Empty for a boundary that is fine, and for what finer chords cannot
     /// cure: straight edges on a surface whose straight lines are
     /// straight in its parameters, seams, poles.
-    pub(crate) fn chords_to_refine(&self, body: &Body, tolerance: f64) -> Vec<Chord> {
+    pub(crate) fn chords_to_refine(&self, body: &Body, params: &TessParams) -> Vec<Chord> {
+        let tolerance = params.chordal_tolerance;
         let region = &self.region;
         let analytic = !self.param.is_freeform();
         // A straight edge on a plane, a cylinder or a cone is its own
@@ -3051,6 +3108,19 @@ impl Boundary<'_> {
                 let off = distance_to_chord(image, p.pos, q.pos);
                 if exceeds(off, 2.0 * tolerance) {
                     wanted.push(chord);
+                } else if let Some(angle) = params.angle_for(p.pos.distance(q.pos)) {
+                    // The angle criterion along the face: the edge holds
+                    // its own tangent to it, but the surface's normal may
+                    // turn further along the chord than the tangent does
+                    // (an ellipse cut obliquely from a cylinder).
+                    let turn = self
+                        .param
+                        .normal(p.uv)
+                        .zip(self.param.normal(q.uv))
+                        .and_then(|(x, y)| crate::angle_between(x, y));
+                    if turn.is_some_and(|turn| crate::turns_beyond(turn, angle)) {
+                        wanted.push(chord);
+                    }
                 }
                 // How far the surface there lies beside the chord, along
                 // the surface: a chord of a rim is off a cylinder by its
@@ -3479,6 +3549,29 @@ pub(crate) fn mesh_face(
         centre,
         scale,
         tolerance,
+        angle: params.max_angle.filter(|_| !param.is_plane()),
+        angle_floor: crate::ANGLE_FLOOR * tolerance,
+        normals: Vec::new(),
+    };
+    // With a triangle budget, the face stops as soon as it is certain to
+    // have more triangles than that on its own. The count it gives is
+    // then a floor of what it would have had: the region in parameter
+    // space is a polygon with holes, and a triangulation of it with `i`
+    // points inside has `2 i + b + 2 h - 2` triangles (`b` points on the
+    // boundary, `h` holes), of which at most `b` lose their area at a
+    // pole (each has a side of the boundary between two points that are
+    // one point in space, and each such side has one triangle). So the
+    // mesh has at least `2 i - 2` triangles, and every point added
+    // (seeding or refinement) is inside. A function of the face and the
+    // parameters, as the order of the points is.
+    let over_budget = |interior: usize| -> Option<TessError> {
+        let max_triangles = params.max_triangles?;
+        let floor = interior.saturating_mul(2).saturating_sub(2);
+        (floor > max_triangles).then_some(TessError::OverBudget {
+            triangles: floor,
+            faces: 1,
+            max_triangles,
+        })
     };
 
     // Boundary points, in an order that jumps around the boundary (a
@@ -3623,6 +3716,9 @@ pub(crate) fn mesh_face(
             if let Interior::Added(v) = added {
                 let pos = work.param.eval(uv);
                 work.record(v, uv, pos, None).map_err(explain)?;
+                if let Some(over) = over_budget(work.uv.len() - boundary_vertices) {
+                    return Err(over);
+                }
             }
         }
 
@@ -3686,6 +3782,9 @@ pub(crate) fn mesh_face(
                 done = true;
                 break;
             }
+            if let Some(over) = over_budget(work.uv.len() - boundary_vertices) {
+                return Err(over);
+            }
             for (t, generation, action) in failing {
                 // Changed by an earlier split in this round: next round.
                 if work.cdt.triangle(t).map(|view| view.generation) != Some(generation) {
@@ -3694,6 +3793,17 @@ pub(crate) fn mesh_face(
                 let split = match action {
                     Action::SplitEdge(i) => match work.split_edge(t, i) {
                         Err(CdtError::Degenerate) => work.split_triangle(t),
+                        other => other,
+                    },
+                    Action::Turn(i) => match work.split_edge(t, i) {
+                        // No room for a point: the angle is a wish, the
+                        // triangle stays as it is.
+                        Err(CdtError::Degenerate) => {
+                            if let Some(slot) = measured.get_mut(t) {
+                                *slot = generation;
+                            }
+                            Ok(())
+                        }
                         other => other,
                     },
                     _ => work.split_triangle(t),

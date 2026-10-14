@@ -679,6 +679,19 @@ fn a_cut_open_frame_of_a_gpu_viewport_is_drawn_by_the_gpu() {
     // has a stray pixel or two that is not the cap inside the cap, where
     // the oracle has the cap all around; owed to the direct path.
     let mut window = Window::new(1000.0, 729.0);
+    // And the mesh it was written for: the display quality of then (3e-5
+    // of the size, no angle criterion). With the display quality of
+    // 2026-10-14 (2e-4 and 12 degrees) the same stray pixel shows inside
+    // the cap of the z section at this size: the same debt of the direct
+    // path, at another mesh.
+    shell
+        .handle_method(
+            &mut session,
+            "ui.set",
+            Some(&json!({"quality": {"chordal": 3e-5, "angle": 0}})),
+        )
+        .unwrap()
+        .unwrap();
     for _ in 0..3 {
         window.frame(&mut shell, &mut session, Vec::new());
     }
