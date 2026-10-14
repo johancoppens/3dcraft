@@ -168,7 +168,7 @@ fn saving_twice_gives_the_same_bytes() {
 fn the_manifest_of_a_small_document_is_exactly_this() {
     let expected = r#"{
   "format": "3dcraft",
-  "format_version": 14,
+  "format_version": 15,
   "document": {
     "units": {
       "length": "mm",
@@ -340,17 +340,17 @@ fn fix_trailing_commas(json: &str) -> String {
 
 #[test]
 fn a_newer_format_version_says_a_newer_3dcraft_is_needed() {
-    let error = load_error(&edited(&version_field(), "\"format_version\": 15"));
+    let error = load_error(&edited(&version_field(), "\"format_version\": 16"));
     assert!(matches!(
         error,
         FormatError::NewerVersion {
-            file: 15,
+            file: 16,
             supported: FORMAT_VERSION
         }
     ));
     let text = error.to_string();
     assert!(
-        text.contains("version 15")
+        text.contains("version 16")
             && text.contains(&format!("version {FORMAT_VERSION}"))
             && text.contains("newer 3DCraft is needed"),
         "{text}"
@@ -1462,9 +1462,26 @@ fn moved_mirrored_and_repeated_bodies_are_written_like_this_and_round_trip() {
     assert!(with(9, "/kind/plane/face/role", serde_json::json!("side")).is_err());
     let mut deep = serde_json::json!({"feature": 6, "role": "endCap", "sources": [1]});
     for _ in 0..40 {
-        deep = serde_json::json!({"feature": 10, "role": "copy", "sources": [0], "of": deep});
+        deep = serde_json::json!({"feature": 6, "role": "piece", "sources": [1], "of": deep});
     }
     assert!(with(9, "/kind/plane/face", deep).is_err());
+    // A copy of a copy in the long form, as a version-14 file has it, is
+    // read as the one link it is now, however long the row of copies.
+    let mut long = serde_json::json!({"feature": 6, "role": "endCap", "sources": [1]});
+    for feature in 0..40 {
+        let instance = u64::from(feature == 0);
+        long = serde_json::json!({"feature": 50 - feature, "role": "copy",
+            "sources": [instance], "of": long});
+    }
+    let read = with(9, "/kind/plane/face", long).unwrap();
+    let FeatureKind::Sketch(sketch) = &read.features[9].kind else {
+        panic!()
+    };
+    let SketchPlane::Face { face, .. } = &sketch.plane else {
+        panic!()
+    };
+    let short = format!("F11:copy({}1)/F6:endCap(e1)", "0,".repeat(39));
+    assert_eq!(face.to_string(), short);
 }
 
 /// A version-4 file, as written before bodies could be moved. Never edit

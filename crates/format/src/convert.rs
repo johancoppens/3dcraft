@@ -712,7 +712,10 @@ fn name_to_manifest_with(name: &doc::PersistentName, lists: bool) -> manifest::N
 }
 
 fn name_to_doc(name: manifest::Name) -> doc::PersistentName {
-    name_to_doc_with(name, true)
+    // A file written before format version 15 has a copy of a copy as two
+    // links (`F9:copy(0)/F7:copy(1)/…`); it means the same entity as the
+    // one link regeneration names it by now (`F9:copy(0,1)/…`).
+    name_to_doc_with(name, true).canonical()
 }
 
 fn name_to_doc_with(name: manifest::Name, lists: bool) -> doc::PersistentName {

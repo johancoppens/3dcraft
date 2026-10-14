@@ -80,14 +80,78 @@ fn has_face(names: &Names, name: &PersistentName) -> bool {
 }
 
 /// The copies the taker `taker` made of the face `name`: the instances
-/// `k` for which a face of `names` answers to `taker:copy(k)/name`.
+/// `k` for which a face of `names` answers to `taker:copy(k)/name` (in
+/// the short form, where a copy of a copy is one link).
 fn copies(names: &Names, taker: FeatureId, name: &PersistentName) -> BTreeSet<u64> {
     names
         .all_face_names()
         .filter(|face| face.feature == taker && face.role == NameRole::Copy)
-        .filter(|face| face.of.as_deref().is_some_and(|of| same_plane(of, name)))
-        .filter_map(|face| face.sources.first().copied())
+        .filter_map(|face| {
+            let k = *face.sources.first()?;
+            same_plane(face, &PersistentName::copy(taker, k, name.clone())).then_some(k)
+        })
         .collect()
+}
+
+/// The feature whose body instance `instance` of `feature` was made from:
+/// for a boolean the target (0) or the tool (1), for every other feature
+/// made from a body that body, whatever the instance. As the feature was
+/// built: names it was given of an earlier body were followed to the
+/// newest one. `None` for a feature not made from a body.
+pub(crate) fn source_of(
+    doc: &Document,
+    earlier: &[FeatureResult],
+    feature: FeatureId,
+    instance: u64,
+) -> Option<FeatureId> {
+    let built = earlier
+        .iter()
+        .find(|r| r.id == feature)
+        .and_then(|r| r.followed.as_deref());
+    let kind = match built {
+        Some(built) => &built.kind,
+        None => &doc.feature(feature)?.kind,
+    };
+    let sources = kind.sources();
+    let from = match kind {
+        FeatureKind::Boolean(_) => sources.get(usize::try_from(instance).ok()?),
+        _ => sources.first(),
+    };
+    from.map(|(id, _)| *id)
+}
+
+/// The way of a copy through the history: for `F9:copy(0,1)/F2:side(e7)`
+/// each feature it passes, with the instance the face is in there, from
+/// the outside in (`[(F9, 0), (F7, 1)]` when F9's target is F7 and F7's
+/// tool is F2), and the name it ends at (`F2:side(e7)`). After the numbers
+/// the way goes on through instance 0 until it reaches the feature of that
+/// name (docs/architecture.md §4.1). `None` for a name that is not a copy,
+/// and for a way that does not lead there in the history as it is.
+pub(crate) fn steps<'a>(
+    doc: &Document,
+    earlier: &[FeatureResult],
+    name: &'a PersistentName,
+) -> Option<(Vec<(FeatureId, u64)>, &'a PersistentName)> {
+    if name.role != NameRole::Copy {
+        return None;
+    }
+    let end = name.of.as_deref()?;
+    let mut steps = Vec::new();
+    let mut at = name.feature;
+    for &instance in &name.sources {
+        steps.push((at, instance));
+        at = source_of(doc, earlier, at, instance)?;
+    }
+    // Each body is made from an earlier one, so the way is no longer than
+    // the history; bounded all the same, for a bad file.
+    for _ in 0..=earlier.len() {
+        if at == end.feature {
+            return Some((steps, end));
+        }
+        steps.push((at, 0));
+        at = source_of(doc, earlier, at, 0)?;
+    }
+    None
 }
 
 /// The name, in the newest body of its chain, of the face `name` of an
@@ -250,24 +314,21 @@ pub fn short_face_name(
     results: &[FeatureResult],
     name: &PersistentName,
 ) -> PersistentName {
-    // The names inside, from the innermost (the face as it was made) out.
-    let mut inner: Vec<&PersistentName> = Vec::new();
-    let mut link = name;
-    while link.role == NameRole::Copy {
-        let Some(of) = link.of.as_deref() else {
-            break;
-        };
-        if inner.len() >= craft3d_doc::MAX_NAME_DEPTH {
-            return name.clone();
-        }
-        inner.push(of);
-        link = of;
+    // The names inside, from the innermost (the face as it was made) out:
+    // what the face was called in each body on the way of the copy.
+    let Some((steps, end)) = steps(doc, results, name) else {
+        return name.clone();
+    };
+    let mut inner: Vec<PersistentName> = vec![end.clone()];
+    for &(feature, instance) in steps.iter().skip(1).rev() {
+        let next = PersistentName::copy(feature, instance, inner.last().unwrap_or(end).clone());
+        inner.push(next);
     }
-    for candidate in inner.into_iter().rev() {
-        if let Ok(Some(followed)) = face(doc, results, candidate, "")
+    for candidate in inner {
+        if let Ok(Some(followed)) = face(doc, results, &candidate, "")
             && followed == *name
         {
-            return candidate.clone();
+            return candidate;
         }
     }
     name.clone()

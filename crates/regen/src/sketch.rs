@@ -557,103 +557,41 @@ pub(crate) fn resolve_face(
         ));
     }
     // A copy of a face lies where the face it is a copy of lies, moved by
-    // the feature that copied it. So the chain of copies is walked down to
-    // the face as it was first made, and its frame is carried back up.
+    // the feature that copied it. So the way of the copy is walked down to
+    // the face as it was first made, feature by feature, and its frame is
+    // carried back up.
     let mut maps = Vec::new();
-    let mut link = name;
-    while link.role == NameRole::Copy {
-        if maps.len() >= craft3d_doc::MAX_NAME_DEPTH {
+    let mut whole = name.clone();
+    let mut rounds = 0usize;
+    while whole.role == NameRole::Copy {
+        // A name in the short form is one copy; one built by hand may be
+        // a copy of a copy.
+        rounds = rounds.saturating_add(1);
+        if rounds > craft3d_doc::MAX_NAME_DEPTH {
             return Err(format!("plane: {name} is made of too many names"));
         }
-        let (source, outcome, _) = maker(doc, earlier, link.feature, name)?;
-        let made_by = &source.name;
+        let (source, outcome, _) = maker(doc, earlier, whole.feature, name)?;
         let listed = outcome.names.as_ref().map_or(&[][..], |n| &n.faces[..]);
-        let (Some(of), Some(instances)) = (&link.of, &outcome.instances) else {
-            return Err(no_such_face(made_by, link, listed));
+        // The face has to be one of the body each instance on the way was
+        // made from (for a boolean: instance 0 is the target, 1 the tool).
+        let Some((steps, end)) = crate::follow::steps(doc, earlier, &whole) else {
+            return Err(no_such_face(&source.name, &whole, listed));
         };
-        // The face has to be one of the body this instance was made from
-        // (for a boolean: instance 0 is the target, 1 the tool), and it
-        // has to be there still: a boolean can cut a face away.
-        // As it was built: names it was given of an earlier body were
-        // followed to the newest one (`crate::follow`).
-        let built = outcome.followed.as_ref().map_or(source, |f| f.as_ref());
-        let sources = built.kind.sources();
-        let index = link.sources.first().and_then(|i| usize::try_from(*i).ok());
-        let from = match source.kind {
-            FeatureKind::Boolean(_) => index.and_then(|i| sources.get(i)),
-            _ => sources.first(),
-        };
-        if from.map(|(id, _)| *id) != Some(of.feature) {
-            return Err(no_such_face(made_by, link, listed));
+        // What the face is called in the body of each feature on the way,
+        // from the innermost out: each a copy of the next.
+        let mut called = Vec::with_capacity(steps.len());
+        let mut inner = end.clone();
+        for &(feature, instance) in steps.iter().rev() {
+            inner = PersistentName::copy(feature, instance, inner);
+            called.push(inner.clone());
         }
-        let instance = link
-            .sources
-            .first()
-            .and_then(|i| usize::try_from(*i).ok())
-            .and_then(|i| instances.get(i));
-        let Some(map) = instance else {
-            return Err(format!(
-                "plane: `{made_by}` has {} instance(s), numbered from 0; there is no {link}",
-                instances.len()
-            ));
-        };
-        // By its own name or an alias: a face a boolean merged from faces
-        // of both operands answers to the name of each.
-        let names = outcome.names.as_ref();
-        let found =
-            names.is_some_and(|names| names.all_face_names().any(|face| same_plane(face, link)));
-        if !found {
-            return Err(no_such_face(made_by, link, listed));
+        called.reverse();
+        for (&(feature, instance), link) in steps.iter().zip(&called) {
+            walk_copy(doc, earlier, name, feature, instance, link, &mut maps)?;
         }
-        // A face operation moves faces one by one, which no map of the
-        // whole body says: the face is found where it lies now.
-        let moved = match source.kind {
-            FeatureKind::OffsetFace(_) | FeatureKind::Shell(_) => {
-                let index = names.and_then(|names| {
-                    (0..names.faces.len())
-                        .find(|&face| names.names_of(face).any(|own| same_plane(own, link)))
-                });
-                let face = index.and_then(|index| outcome.body.as_ref()?.faces.get(index));
-                match face.map(|face| (&face.surface, face.reversed)) {
-                    Some((craft3d_geom::Surface::Plane(plane), reversed)) => {
-                        let outward = if reversed {
-                            -plane.frame().z()
-                        } else {
-                            plane.frame().z()
-                        };
-                        // The faces of a shell's hollow (instance 1)
-                        // look the other way than the faces they lie
-                        // behind.
-                        let hollow = matches!(source.kind, FeatureKind::Shell(_))
-                            && link.sources.first() == Some(&1);
-                        Some((plane.frame().origin(), outward, hollow))
-                    }
-                    Some((surface, _)) => {
-                        return Err(format!(
-                            "plane: the face {name} is a {} face; a sketch needs a flat one",
-                            surface.kind()
-                        ));
-                    }
-                    None => return Err(no_such_face(made_by, link, listed)),
-                }
-            }
-            _ => None,
-        };
-        // A subtraction keeps the faces of its tool turned inside out:
-        // the floor of a pocket looks up out of the material, where the
-        // bottom of the cutter it was looked down. A sketch on it looks
-        // out of the material, as on every other face.
-        let turned = matches!(
-            source.kind,
-            FeatureKind::Boolean(craft3d_doc::Boolean {
-                op: craft3d_doc::BooleanOp::Subtract,
-                ..
-            })
-        ) && link.sources.first() == Some(&1);
-        maps.push((*map, moved, turned));
-        link = of;
+        whole = end.clone();
     }
-    let mut frame = made_face(doc, earlier, link, name)?;
+    let mut frame = made_face(doc, earlier, &whole, name)?;
     for (map, moved, turned) in maps.iter().rev() {
         // Seen from outside the moved body: z is the image of the normal
         // and x the image of x. After a mirror that leaves y pointing the
@@ -688,6 +626,90 @@ pub(crate) fn resolve_face(
         }
     }
     Ok(frame)
+}
+
+/// One step of the way of a copy (see [`resolve_face`]): `link` is what
+/// the face is called in the body of `feature`, where it is in instance
+/// `instance`. Pushes the map of that instance, and how the feature moved
+/// or turned the face, onto `maps`.
+fn walk_copy(
+    doc: &Document,
+    earlier: &[FeatureResult],
+    name: &PersistentName,
+    feature: craft3d_doc::FeatureId,
+    instance: u64,
+    link: &PersistentName,
+    maps: &mut Vec<(craft3d_math::Transform, Option<(Vec3, Vec3, bool)>, bool)>,
+) -> Result<(), String> {
+    let (source, outcome, _) = maker(doc, earlier, feature, name)?;
+    let made_by = &source.name;
+    let listed = outcome.names.as_ref().map_or(&[][..], |n| &n.faces[..]);
+    let Some(instances) = &outcome.instances else {
+        return Err(no_such_face(made_by, link, listed));
+    };
+    let instance_map = usize::try_from(instance)
+        .ok()
+        .and_then(|i| instances.get(i));
+    let Some(map) = instance_map else {
+        return Err(format!(
+            "plane: `{made_by}` has {} instance(s), numbered from 0; there is no {link}",
+            instances.len()
+        ));
+    };
+    // By its own name or an alias: a face a boolean merged from faces
+    // of both operands answers to the name of each.
+    let names = outcome.names.as_ref();
+    let found =
+        names.is_some_and(|names| names.all_face_names().any(|face| same_plane(face, link)));
+    if !found {
+        return Err(no_such_face(made_by, link, listed));
+    }
+    // A face operation moves faces one by one, which no map of the
+    // whole body says: the face is found where it lies now.
+    let moved = match source.kind {
+        FeatureKind::OffsetFace(_) | FeatureKind::Shell(_) => {
+            let index = names.and_then(|names| {
+                (0..names.faces.len())
+                    .find(|&face| names.names_of(face).any(|own| same_plane(own, link)))
+            });
+            let face = index.and_then(|index| outcome.body.as_ref()?.faces.get(index));
+            match face.map(|face| (&face.surface, face.reversed)) {
+                Some((craft3d_geom::Surface::Plane(plane), reversed)) => {
+                    let outward = if reversed {
+                        -plane.frame().z()
+                    } else {
+                        plane.frame().z()
+                    };
+                    // The faces of a shell's hollow (instance 1)
+                    // look the other way than the faces they lie
+                    // behind.
+                    let hollow = matches!(source.kind, FeatureKind::Shell(_)) && instance == 1;
+                    Some((plane.frame().origin(), outward, hollow))
+                }
+                Some((surface, _)) => {
+                    return Err(format!(
+                        "plane: the face {name} is a {} face; a sketch needs a flat one",
+                        surface.kind()
+                    ));
+                }
+                None => return Err(no_such_face(made_by, link, listed)),
+            }
+        }
+        _ => None,
+    };
+    // A subtraction keeps the faces of its tool turned inside out:
+    // the floor of a pocket looks up out of the material, where the
+    // bottom of the cutter it was looked down. A sketch on it looks
+    // out of the material, as on every other face.
+    let turned = matches!(
+        source.kind,
+        FeatureKind::Boolean(craft3d_doc::Boolean {
+            op: craft3d_doc::BooleanOp::Subtract,
+            ..
+        })
+    ) && instance == 1;
+    maps.push((*map, moved, turned));
+    Ok(())
 }
 
 /// The frame of a face of the feature that first made it: `link` is the
