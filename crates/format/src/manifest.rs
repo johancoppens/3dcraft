@@ -306,6 +306,18 @@ pub enum FeatureKind {
     /// following. The body is that of the feature the first name starts
     /// with.
     OffsetFace { faces: Vec<Name>, distance: String },
+    /// Faces of the body of an earlier feature moved together by one
+    /// rigid motion: turned by `angle` about the line through `pivot`
+    /// along `axis`, then shifted by `translate`; the faces next to them
+    /// follow. The body is that of the feature the first name starts
+    /// with. A new kind: no format version changed with it.
+    MoveFace {
+        faces: Vec<Name>,
+        translate: [String; 3],
+        pivot: [String; 3],
+        axis: [String; 3],
+        angle: String,
+    },
     /// Faces of the body of an earlier feature taken out, the body closed
     /// again by the faces round them. The body is that of the feature
     /// the first name starts with.

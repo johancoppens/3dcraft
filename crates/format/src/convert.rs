@@ -302,6 +302,19 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                     distance: expr_to_manifest(distance),
                 }
             }
+            doc::FeatureKind::MoveFace(doc::MoveFace {
+                faces,
+                translate,
+                pivot,
+                axis,
+                angle,
+            }) => manifest::FeatureKind::MoveFace {
+                faces: faces.iter().map(name_to_manifest).collect(),
+                translate: exprs_to_manifest(translate),
+                pivot: exprs_to_manifest(pivot),
+                axis: exprs_to_manifest(axis),
+                angle: expr_to_manifest(angle),
+            },
             doc::FeatureKind::DeleteFace(doc::DeleteFace { faces }) => {
                 manifest::FeatureKind::DeleteFace {
                     faces: faces.iter().map(name_to_manifest).collect(),
@@ -1237,6 +1250,19 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
                     distance: doc::Expr(distance),
                 })
             }
+            manifest::FeatureKind::MoveFace {
+                faces,
+                translate,
+                pivot,
+                axis,
+                angle,
+            } => doc::FeatureKind::MoveFace(doc::MoveFace {
+                faces: faces.into_iter().map(name_to_doc).collect(),
+                translate: exprs_to_doc(translate),
+                pivot: exprs_to_doc(pivot),
+                axis: exprs_to_doc(axis),
+                angle: doc::Expr(angle),
+            }),
             manifest::FeatureKind::DeleteFace { faces } => {
                 doc::FeatureKind::DeleteFace(doc::DeleteFace {
                     faces: faces.into_iter().map(name_to_doc).collect(),

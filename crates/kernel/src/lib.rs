@@ -18,6 +18,7 @@ pub mod extrude_to;
 pub mod fillet;
 pub mod helix;
 pub mod loft;
+pub mod move_face;
 pub mod offset_face;
 pub mod primitives;
 pub mod profile;

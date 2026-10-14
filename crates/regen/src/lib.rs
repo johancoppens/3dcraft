@@ -31,6 +31,7 @@ mod face_ops;
 mod fillet;
 mod follow;
 mod loft;
+mod move_face;
 mod offset_face;
 pub mod progress;
 mod query;
@@ -617,6 +618,7 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
         | FeatureKind::Chamfer(_)
         | FeatureKind::Fillet(_)
         | FeatureKind::OffsetFace(_)
+        | FeatureKind::MoveFace(_)
         | FeatureKind::Shell(_)
         | FeatureKind::DeleteFace(_)
         | FeatureKind::Thread(_) => {
@@ -878,6 +880,19 @@ fn build_feature(
         }
     } else if let FeatureKind::OffsetFace(offset) = &feature.kind {
         match offset_face::build(doc, variables, feature.id, offset, earlier)
+            .and_then(|(body, names)| checked(doc, body).map(|body| (body, names)))
+        {
+            Ok((body, made_names)) => {
+                names = made_names.map(Arc::new);
+                // The body as a whole does not move; a face that did is
+                // found where it lies now (`sketch::resolve_face`).
+                instances = Some(Arc::new(vec![Transform::IDENTITY]));
+                (Status::Ok, Some(Arc::new(body)))
+            }
+            Err(reason) => (Status::Failed(reason), None),
+        }
+    } else if let FeatureKind::MoveFace(moving) = &feature.kind {
+        match move_face::build(doc, variables, feature.id, moving, earlier)
             .and_then(|(body, names)| checked(doc, body).map(|body| (body, names)))
         {
             Ok((body, made_names)) => {

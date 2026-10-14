@@ -320,6 +320,7 @@ The blends first (chamfer and fillet, the first consumers of edge references), t
 - Sweep along a path in a plane (`feature.sweep`): a closed profile, holes and all, along lines, arcs and splines, mitred corners, open or closed; format version 10 (2026-10-14)
 - Offset face (`feature.offsetFace`) and shell (`feature.shell`), by a local operation that keeps every entity (`kernel::tweak`), the hollow's faces named `F9:copy(1)/…` after the faces they lie behind; FreeCAD's `makeThickness` agrees; format version 11 (§5.3 › *Face operations as built*) (2026-10-14)
 - Delete face (`feature.deleteFace`): holes, bosses, pockets and cavities filled, a single chamfer or fillet collapsed into its sharp edge; format version 12 (2026-10-14)
+- Move face (`feature.moveFace`): faces moved by one rigid motion (shift and turn), the neighbours following, what lies between moved faces carried exactly; a sketch on a turned face turns with it (§5.3 › *Face operations as built*) (2026-10-15)
 - References that follow a body: a face of an earlier body (`F1:face(0)`) resolves to its newest form, so no `copy(0)` prefixes; `document.edges` lists `short` names (2026-10-14)
 - Helix and thread: `datum.helix`, `feature.sweep` with a helix as its `path`, `feature.thread` (external ISO metric, by designation such as `"M10"` and pitch); format version 13 ([`architecture.md`](architecture.md) §4.1 › *Helix, and the sweep along it*, *Thread*) (2026-10-14)
 - A thread is cosmetic unless `modeled: true`, as in other modellers (2026-10-14)
@@ -327,7 +328,8 @@ The blends first (chamfer and fillet, the first consumers of edge references), t
 - A face that winds along a thread is meshed; every triangulation has a work budget (2026-10-14)
 
 #### Open
-- [ ] Move face, then thicken (a sheet given a thickness), replace face and draft (faces tilted about a neutral plane along a pull direction)
+- [ ] Thicken (a sheet given a thickness), replace face and draft (faces tilted about a neutral plane along a pull direction)
+- [ ] Move face: a cylinder or cone tilted against a flat neighbour (the edge would be an ellipse), a moved face whose neighbours would have to gain or lose an edge
 - [ ] Vertex blends: three fillets of different radii, with a circular edge, with a fourth edge
 - [ ] Blends on elliptic and freeform edges (a chamfer's ruled face; a fillet's canal surface, by a NURBS approximation)
 - [ ] A blend that ends in a face of its own in the middle of a chain

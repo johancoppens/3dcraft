@@ -568,8 +568,8 @@ impl Fillet {
     }
 }
 
-/// Most faces one face operation (offset face, delete face, the open faces of a
-/// shell) holds.
+/// Most faces one face operation (offset face, move face, delete face,
+/// the open faces of a shell) holds.
 pub const MAX_FACE_OP_FACES: usize = 1024;
 
 /// Faces of the body of an earlier feature moved along their normals by
@@ -587,6 +587,36 @@ pub struct OffsetFace {
 }
 
 impl OffsetFace {
+    /// The feature whose body the faces are of: the one that made the
+    /// first face referred to. `None` without faces.
+    pub fn source(&self) -> Option<FeatureId> {
+        self.faces.first().map(|first| first.feature)
+    }
+}
+
+/// Faces of the body of an earlier feature moved together by one rigid
+/// motion: turned by `angle` about the line through `pivot` along `axis`
+/// (counter-clockwise seen from its tip), then shifted by `translate`, as
+/// [`Transform`] moves a body. The faces next to them follow, so the body
+/// stays closed. The body goes into this feature.
+///
+/// A face is referred to by its name. All faces are faces of one body:
+/// the feature the first name starts with.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MoveFace {
+    pub faces: Vec<PersistentName>,
+    #[serde(default = "zero3")]
+    pub translate: [Expr; 3],
+    #[serde(default = "zero3")]
+    pub pivot: [Expr; 3],
+    /// Direction of the rotation axis: three plain numbers, any length.
+    #[serde(default = "z_axis")]
+    pub axis: [Expr; 3],
+    #[serde(default = "no_angle")]
+    pub angle: Expr,
+}
+
+impl MoveFace {
     /// The feature whose body the faces are of: the one that made the
     /// first face referred to. `None` without faces.
     pub fn source(&self) -> Option<FeatureId> {
@@ -702,6 +732,7 @@ pub enum FeatureKind {
     Chamfer(Chamfer),
     Fillet(Fillet),
     OffsetFace(OffsetFace),
+    MoveFace(MoveFace),
     Shell(Shell),
     DeleteFace(DeleteFace),
     Thread(Thread),
@@ -732,6 +763,7 @@ impl FeatureKind {
             FeatureKind::Chamfer(_) => "chamfer",
             FeatureKind::Fillet(_) => "fillet",
             FeatureKind::OffsetFace(_) => "offsetFace",
+            FeatureKind::MoveFace(_) => "moveFace",
             FeatureKind::Shell(_) => "shell",
             FeatureKind::DeleteFace(_) => "deleteFace",
             FeatureKind::Thread(_) => "thread",
@@ -791,6 +823,7 @@ impl FeatureKind {
             FeatureKind::Chamfer(c) => c.source().map(|id| (id, false)),
             FeatureKind::Fillet(f) => f.source().map(|id| (id, false)),
             FeatureKind::OffsetFace(o) => o.source().map(|id| (id, false)),
+            FeatureKind::MoveFace(m) => m.source().map(|id| (id, false)),
             FeatureKind::Shell(s) => Some((s.source, false)),
             FeatureKind::DeleteFace(d) => d.source().map(|id| (id, false)),
             FeatureKind::Thread(t) => Some((t.source(), false)),
@@ -927,6 +960,12 @@ impl FeatureKind {
             FeatureKind::DatumHelix(d) => out = d.exprs(),
             FeatureKind::Fillet(f) => out = vec![named("radius", &f.radius)],
             FeatureKind::OffsetFace(o) => out = vec![named("distance", &o.distance)],
+            FeatureKind::MoveFace(m) => {
+                out = triple("translate", &m.translate);
+                out.extend(triple("pivot", &m.pivot));
+                out.extend(triple("axis", &m.axis));
+                out.push(named("angle", &m.angle));
+            }
             FeatureKind::Shell(s) => out = vec![named("thickness", &s.thickness)],
             FeatureKind::Thread(t) => {
                 out = Vec::new();
@@ -1020,6 +1059,13 @@ impl FeatureKind {
             FeatureKind::DatumHelix(d) => d.exprs_mut(),
             FeatureKind::Fillet(f) => vec![&mut f.radius],
             FeatureKind::OffsetFace(o) => vec![&mut o.distance],
+            FeatureKind::MoveFace(m) => m
+                .translate
+                .iter_mut()
+                .chain(m.pivot.iter_mut())
+                .chain(m.axis.iter_mut())
+                .chain([&mut m.angle])
+                .collect(),
             FeatureKind::Shell(s) => vec![&mut s.thickness],
             FeatureKind::Thread(t) => {
                 let mut out = Vec::new();
@@ -1251,6 +1297,7 @@ impl Document {
                     fillet.edges.iter().flatten().collect()
                 }
                 FeatureKind::OffsetFace(OffsetFace { faces, .. })
+                | FeatureKind::MoveFace(MoveFace { faces, .. })
                 | FeatureKind::DeleteFace(DeleteFace { faces })
                 | FeatureKind::Shell(Shell { open: faces, .. }) => {
                     if faces.len() > MAX_FACE_OP_FACES {

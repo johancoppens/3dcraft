@@ -1,25 +1,27 @@
 //! The face operations: features that make a body from the body of an
 //! earlier feature by moving faces of it (`feature.offsetFace`), taking
-//! faces out of it (`feature.deleteFace`) or hollowing it
-//! (`feature.shell`).
+//! faces out of it (`feature.deleteFace`), moving faces by a rigid motion
+//! (`feature.moveFace`) or hollowing it (`feature.shell`).
 //!
 //! A face is given by its persistent name from `document.inspect`.
 //! Whether the faces exist and leave room for the distance is found out
 //! by regeneration, like every other parameter: the feature is stored
 //! and reports `failed` with the reason.
 
-use crate::commands::{Run, add_feature, fail, feature_ref, spec};
+use crate::commands::{Run, add_feature, exprs, fail, feature_ref, origin, spec};
 use crate::datum_cmds::face_value;
 use crate::params::Params;
 use crate::{CommandError, CommandSpec, Session};
 use craft3d_doc::{
-    DeleteFace, Expr, FeatureKind, MAX_FACE_OP_FACES, OffsetFace, PersistentName, Shell,
+    DeleteFace, Expr, FeatureKind, MAX_FACE_OP_FACES, MoveFace, OffsetFace, PersistentName, Shell,
 };
 use serde_json::Value;
 
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("feature.offsetFace", "Offset Face", r#"{"faces": [face name, ...], "distance": expr, "name": string = automatic}"#,
         "Adds a feature that moves faces of a body along their normals by distance and lets the faces next to them follow, so the body stays closed: positive is outward, away from the material (a block gets taller, a boss thicker, a hole narrower), negative is into the material (a pocket gets deeper when its floor moves, a hole wider when its wall does: a hole of radius 10 with distance -1 has radius 11). A flat face moves to the parallel plane; a cylinder, a sphere and a cone grow or shrink about the same axis. The neighbours are continued or cut back to where they meet the moved face: straight and slanted flat neighbours, and round ones about an axis the moved face is square to (a hole through a face that moves gets longer). The faces are given by their names (faceNames in document.inspect, or view.pick); all are faces of one body, which goes into this feature (a name of an earlier body of the same chain, such as \"F1:face(0)\" after that body went into later features, is followed to the newest body before this feature). Nothing is added or taken away: the body has the faces, edges and vertices it had, under their names with a prefix, \"F9:copy(0)/...\", and a sketch on a face that moved lies where the face lies now. A distance at which an edge shrinks to nothing, a hole leaves its face or the body would pass through itself fails with the edge or the face and the largest distance that fits. Not built, and refused with the faces: a neighbour that is tangent to the moved face (a fillet next to it), a vertex where four or more faces meet, an elliptic or freeform edge next to a moved face, a freeform face. Change it with feature.edit: faces, distance.", doc: true, feature_offset_face),
+    spec!("feature.moveFace", "Move Face", r#"{"faces": [face name, ...], "translate": [expr, expr, expr] = [0, 0, 0], "angle": expr = "0 deg", "axis": [number, number, number] = [0, 0, 1], "pivot": [expr, expr, expr] = [0, 0, 0], "name": string = automatic}"#,
+        "Adds a feature that moves faces of a body together by one rigid motion, as feature.transform moves a body: turned by angle about the line through pivot along axis (counter-clockwise seen from the tip of axis), then shifted by translate. The faces next to them follow, so the body stays closed: they are continued or cut back to where they meet the moved faces. The top of a block shifted up makes it taller, tilted about a line across it makes a wedge; the wall of a hole, or the wall and top of a boss, shifted sideways put the hole or the boss somewhere else on its face. What lies between two moved faces moves with them as it is, whatever its kind. The faces are given by their names (faceNames in document.inspect, or view.pick); all are faces of one body, which goes into this feature (a name of an earlier body of the same chain is followed to the newest body before this feature). Nothing is added or taken away: the body has the faces, edges and vertices it had, under their names with a prefix, \"F9:copy(0)/...\", and a sketch on a face that moved lies where the face lies now, turned with it. A motion at which an edge shrinks to nothing, a hole leaves its face or the body would pass through itself fails with the edge or the face and the part of the motion that fits. Refused, with the faces, where the faces round a moved one would have to change: an edge between a moved face and one that stays that would no longer be a line or a circle (a cylinder tilted against a flat face meets it in an ellipse), a neighbour tangent to a moved face, a vertex where four or more faces meet that would have to become an edge, a freeform face next to a moved one. Change it with feature.edit: faces, translate, pivot, axis, angle.", doc: true, feature_move_face),
     spec!("feature.deleteFace", "Delete Face", r#"{"faces": [face name, ...], "name": string = automatic}"#,
         "Adds a feature that takes faces out of a body and closes it again with the faces round them, as if those faces had never been made. Faces that together are bounded only by whole holes of the faces round them are filled from those faces: the wall of a hole through a plate (the plate is whole again), the wall and the floor of a blind hole, the wall and the top of a boss, the walls and the floor of a pocket, the faces of a closed cavity; give all of them. A single chamfer or fillet face along one edge (between two faces, ending against a face at each end, or running all the way round a rim) is collapsed into the sharp edge between the two faces beside it, which are continued until they meet. The faces are given by their names (faceNames in document.inspect, or view.pick); all are faces of one body, which goes into this feature (a name of an earlier body of the same chain, such as \"F1:face(0)\" after that body went into later features, is followed to the newest body before this feature). The faces that stay keep their names with a prefix, \"F9:copy(0)/...\"; edges and vertices are named by their faces. Refused, with the faces and the reason: a face whose loops are not holes of its neighbours and that is no strip (the top of a block, a boss's wall alone), the corner where three blends meet, a blend that ends against another blend (a chain, a mitre) or where more than three faces meet, faces beside a strip that do not meet in a line or a circle when continued, and a deletion after which the body would pass through itself or enclose nothing. Change it with feature.edit: faces.", doc: true, feature_delete_face),
     spec!("feature.shell", "Shell", r#"{"source": id or name, "thickness": expr, "open": [face name, ...] = [], "name": string = automatic}"#,
@@ -89,6 +91,46 @@ fn feature_offset_face(session: &mut Session, params: &Value) -> Run {
     let kind = FeatureKind::OffsetFace(OffsetFace {
         faces,
         distance: Expr::new(distance),
+    });
+    crate::blend_cmds::of_one_body(ID, session, &kind)?;
+    add_feature(session, ID, p.str("name")?, kind)
+}
+
+/// `feature.edit` for a move: `faces` (the motion's expressions are set
+/// where the others are).
+pub(crate) fn edit_move(p: &Params, moving: &mut MoveFace) -> Result<(), CommandError> {
+    if let Some(value) = p.get("faces") {
+        moving.faces = faces_value("feature.edit", "faces", value, "move", false)?;
+    }
+    Ok(())
+}
+
+fn feature_move_face(session: &mut Session, params: &Value) -> Run {
+    const ID: &str = "feature.moveFace";
+    let p = Params::new(
+        ID,
+        params,
+        &["faces", "translate", "angle", "axis", "pivot", "name"],
+    )?;
+    // The document has to be there before anything is said of the
+    // parameters.
+    session.document()?;
+    let Some(value) = p.get("faces") else {
+        return Err(p.missing("faces"));
+    };
+    let faces = faces_value(ID, "faces", value, "move", false)?;
+    if !p.has("translate") && !p.has("angle") {
+        return fail(format!(
+            "{ID}: give `translate`, `angle` (with `axis` and `pivot`) or both: there is nothing to move the faces by"
+        ));
+    }
+    let z_axis = || ["0".to_string(), "0".to_string(), "1".to_string()];
+    let kind = FeatureKind::MoveFace(MoveFace {
+        faces,
+        translate: exprs(p.expr3("translate")?.unwrap_or_else(origin)),
+        pivot: exprs(p.expr3("pivot")?.unwrap_or_else(origin)),
+        axis: exprs(p.expr3("axis")?.unwrap_or_else(z_axis)),
+        angle: Expr::new(p.expr("angle")?.unwrap_or_else(|| "0 deg".to_string())),
     });
     crate::blend_cmds::of_one_body(ID, session, &kind)?;
     add_feature(session, ID, p.str("name")?, kind)

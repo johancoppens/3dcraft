@@ -2919,3 +2919,41 @@ fn a_version_13_thread_loses_its_default_pitch_and_stays_cut() {
     );
     assert!(from_manifest_json(newer.as_bytes()).is_err());
 }
+
+/// Move face, as it is written: a new kind beside the others, which
+/// changed nothing an earlier file holds, so no version came with it.
+#[test]
+fn move_face_is_written_like_this_and_round_trips() {
+    use craft3d_doc::{MoveFace, NameRole, PersistentName};
+    let face = |n: u64| PersistentName::new(FeatureId(1), NameRole::Face, vec![n]);
+    let face_json = |n: u64| serde_json::json!({"feature": 1, "role": "face", "sources": [n]});
+    let mut doc = small();
+    doc.add_feature(
+        Some("Tilted"),
+        FeatureKind::MoveFace(MoveFace {
+            faces: vec![face(1)],
+            translate: [Expr::new("0"), Expr::new("0"), Expr::new("width / 10")],
+            pivot: [Expr::new("5 mm"), Expr::new("0"), Expr::new("10 mm")],
+            axis: [Expr::new("0"), Expr::new("1"), Expr::new("0")],
+            angle: Expr::new("10 deg"),
+        }),
+    )
+    .unwrap();
+    assert_eq!(doc.validate(), Ok(()));
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["format_version"], FORMAT_VERSION);
+    let kind = &value["document"]["features"][1]["kind"];
+    assert_eq!(
+        kind,
+        &serde_json::json!({"type": "moveFace", "faces": [face_json(1)],
+            "translate": ["0", "0", "width / 10"], "pivot": ["5 mm", "0", "10 mm"],
+            "axis": ["0", "1", "0"], "angle": "10 deg"})
+    );
+    assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+    assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
+    // A move without its angle is not one.
+    let bare = json.replacen("\"angle\": \"10 deg\"", "\"far\": 1", 1);
+    assert_ne!(bare, json);
+    assert!(from_manifest_json(bare.as_bytes()).is_err());
+}
