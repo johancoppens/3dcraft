@@ -471,13 +471,15 @@ fn numeric(
             {
                 ends.push(leave(middle, clear_hi));
             }
+            // (Touches: the curve does not pass through the surface there,
+            // and a ray that runs along a face is no ray to count by.)
             for t in ends {
                 let point = curve.eval(t);
                 if point.is_finite() && f(t).abs() <= tol {
                     hits.push(CurveHit {
                         t,
                         point,
-                        tangent: false,
+                        tangent: true,
                     });
                 }
             }
@@ -1021,16 +1023,29 @@ mod tests {
         let line = Curve3::Line(Line::new(Vec3::new(-1.0, 0.5, 0.0), Vec3::X).unwrap());
         let tol = Tolerance::new(1e-6, 1e-9).unwrap();
         // On the surface for a third of its range and clear of it on both
-        // sides of that: a touch. Taken a tolerance at a time the stretch
-        // on the surface would be a million pieces, and used to be refused
-        // as running along the surface.
+        // sides of that: touches where it comes onto the patch and where it
+        // leaves it, at the patch's borders (x = 0 and 1, t = 1 and 2).
+        // Taken a tolerance at a time the stretch on the surface would be a
+        // million pieces, and used to be refused as running along the
+        // surface. (Until 2026-10-15 one touch somewhere along the stretch,
+        // found by narrowing in on a distance that is zero all along: as a
+        // cut of an edge it was a vertex where nothing is.)
         let result = curve_hits(&line, (0.0, 3.0), sheet, &tol).unwrap();
         let CurveIntersection::Hits(hits) = result else {
-            panic!("expected one touch, got {result:?}");
+            panic!("expected two touches, got {result:?}");
         };
-        assert_eq!(hits.len(), 1, "{hits:?}");
-        assert!(hits[0].tangent);
-        assert!((0.99..=2.01).contains(&hits[0].t), "{}", hits[0].t);
+        assert_eq!(hits.len(), 2, "{hits:?}");
+        assert!(hits.iter().all(|h| h.tangent));
+        assert!(
+            (hits[0].t - 1.0).abs() <= 0.25 * tol.linear,
+            "{}",
+            hits[0].t
+        );
+        assert!(
+            (hits[1].t - 2.0).abs() <= 0.25 * tol.linear,
+            "{}",
+            hits[1].t
+        );
     }
 
     #[test]
