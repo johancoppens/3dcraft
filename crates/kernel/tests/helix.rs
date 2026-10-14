@@ -647,3 +647,24 @@ fn iso_sizes_and_pitches_are_read_from_their_designation() {
     assert!(IsoThread::new(10.0, 12.0).is_err());
     assert!(IsoThread::new(f64::NAN, 1.0).is_err());
 }
+
+#[test]
+fn a_nominal_diameter_has_a_designation_and_the_table_is_in_order() {
+    use craft3d_kernel::thread::{coarse_pitch, designation, iso_sizes, nominal_diameter};
+    assert_eq!(designation(10.0).as_deref(), Some("M10"));
+    assert_eq!(designation(2.5).as_deref(), Some("M2.5"));
+    assert_eq!(designation(9.999_999_9).as_deref(), Some("M10"));
+    for bad in [0.0, -1.0, f64::NAN, f64::INFINITY, 1e-9, 2e9] {
+        assert_eq!(designation(bad), None, "{bad}");
+    }
+    let sizes = iso_sizes();
+    assert_eq!(sizes.len(), 26);
+    for pair in sizes.windows(2) {
+        assert!(pair[0].0 < pair[1].0, "{pair:?}");
+    }
+    for (d, p) in sizes {
+        assert_eq!(coarse_pitch(*d), Some(*p));
+        // Every designation reads back as its diameter.
+        assert_eq!(nominal_diameter(&designation(*d).unwrap()), Some(*d));
+    }
+}

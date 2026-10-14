@@ -37,8 +37,7 @@ use craft3d_expr::Evaluation;
 use craft3d_geom::Surface;
 use craft3d_kernel::extrude::Role;
 use craft3d_kernel::thread::{
-    IsoThread, RUN_OUT, ThreadPlace, designation, groove, iso_sizes,
-    nominal_diameter,
+    IsoThread, RUN_OUT, ThreadPlace, designation, groove, iso_sizes, nominal_diameter,
 };
 use craft3d_math::Vec3;
 use craft3d_topo::{Body, FaceId};
@@ -195,7 +194,8 @@ fn resolve(
 
 /// The size of ISO 261 whose nominal diameter a face of `radius` has:
 /// the one (of the table) that would take the face if it were given, the
-/// nearest when two would. `given` is the pitch, when it is given.
+/// nearest when two would. `given` is the pitch, when it is given; the
+/// margins are the ones of a thread of that pitch.
 fn from_face(
     thread: &Thread,
     radius: f64,
@@ -207,8 +207,14 @@ fn from_face(
     let mut best: Option<(f64, f64)> = None;
     for (d, coarse) in iso_sizes() {
         let nominal = d * mm;
-        let pitch = given.unwrap_or(coarse * mm);
-        let Ok(iso) = IsoThread::new(nominal, pitch) else {
+        // A pitch given that no thread of this size can have is said by
+        // the caller, for the size the face has: the size is found with
+        // the coarse pitch then.
+        let coarse = IsoThread::new(nominal, coarse * mm);
+        let Ok(iso) = given
+            .and_then(|pitch| IsoThread::new(nominal, pitch).ok())
+            .map_or(coarse, Ok)
+        else {
             continue;
         };
         if fits(&iso, radius)

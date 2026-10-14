@@ -2830,11 +2830,7 @@ fn a_thread_is_written_like_this_and_round_trips() {
     assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
     assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
     // A diameter with anything else beside it is not read.
-    let bare = json.replacen(
-        "\"diameter\": \"d\"",
-        "\"diameter\": \"d\", \"also\": 1",
-        1,
-    );
+    let bare = json.replacen("\"diameter\": \"d\"", "\"diameter\": \"d\", \"also\": 1", 1);
     assert_ne!(bare, json);
     assert!(from_manifest_json(bare.as_bytes()).is_err());
 }

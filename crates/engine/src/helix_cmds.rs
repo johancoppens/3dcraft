@@ -33,8 +33,8 @@ pub(crate) fn size_value(command: &str, size: &Value) -> Result<ThreadSize, Comm
     }
     let trimmed = text.trim();
     let mut chars = trimmed.chars();
-    let designation_like = matches!(chars.next(), Some('M' | 'm'))
-        && chars.next().is_some_and(|c| c.is_ascii_digit());
+    let designation_like =
+        matches!(chars.next(), Some('M' | 'm')) && chars.next().is_some_and(|c| c.is_ascii_digit());
     if designation_like || trimmed.is_empty() {
         return fail(format!(
             "{command}: `size`: `{}` is not an ISO metric size; give M and the nominal diameter in millimetres, such as M10, or a length such as d",
