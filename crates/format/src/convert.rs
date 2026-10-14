@@ -262,6 +262,18 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                     at: point_ref_to_manifest(at),
                 }
             }
+            doc::FeatureKind::Fillet(doc::Fillet {
+                edges,
+                radius,
+                chain,
+            }) => manifest::FeatureKind::Fillet {
+                edges: edges
+                    .iter()
+                    .map(|[first, second]| [name_to_manifest(first), name_to_manifest(second)])
+                    .collect(),
+                radius: expr_to_manifest(radius),
+                chain: *chain,
+            },
             doc::FeatureKind::Chamfer(doc::Chamfer { edges, size, chain }) => {
                 manifest::FeatureKind::Chamfer {
                     edges: edges
@@ -524,6 +536,8 @@ fn role_to_manifest(role: doc::NameRole) -> manifest::NameRole {
         D::Corner => M::Corner,
         D::Chamfer => M::Chamfer,
         D::ChamferCorner => M::ChamferCorner,
+        D::Fillet => M::Fillet,
+        D::FilletCorner => M::FilletCorner,
     }
 }
 
@@ -548,6 +562,8 @@ fn role_to_doc(role: manifest::NameRole) -> doc::NameRole {
         M::Corner => D::Corner,
         M::Chamfer => D::Chamfer,
         M::ChamferCorner => D::ChamferCorner,
+        M::Fillet => D::Fillet,
+        M::FilletCorner => D::FilletCorner,
     }
 }
 
@@ -1102,6 +1118,18 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
                     at: point_ref_to_doc(at),
                 })
             }
+            manifest::FeatureKind::Fillet {
+                edges,
+                radius,
+                chain,
+            } => doc::FeatureKind::Fillet(doc::Fillet {
+                edges: edges
+                    .into_iter()
+                    .map(|pair| pair.map(name_to_doc))
+                    .collect(),
+                radius: doc::Expr(radius),
+                chain,
+            }),
             manifest::FeatureKind::Chamfer { edges, size, chain } => {
                 doc::FeatureKind::Chamfer(doc::Chamfer {
                     edges: edges
