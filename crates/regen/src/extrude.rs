@@ -47,7 +47,7 @@ fn sweep_name(feature: FeatureId, origin: &Origin) -> PersistentName {
 
 /// Why a sketch has no usable profile, with its curves called what the
 /// sketch calls them (`e7`).
-fn profile_error(error: &KernelError) -> String {
+pub(crate) fn profile_error(error: &KernelError) -> String {
     let list = |curves: &[u64]| {
         curves
             .iter()
@@ -91,6 +91,18 @@ pub(crate) struct Swept<'a> {
     pub tolerance: Tolerance,
 }
 
+/// What a sketch gives a feature that is made from its curves: the
+/// curves that are not construction, and where it lies.
+pub(crate) struct Drawn<'a> {
+    /// The sketch's name, for messages.
+    pub name: &'a str,
+    pub sketch: &'a craft3d_doc::Sketch,
+    pub solved: &'a crate::SketchResult,
+    pub curves: Vec<SketchCurve>,
+    pub plane: Frame,
+    pub tolerance: Tolerance,
+}
+
 /// The profiles of sketch `id`, for a feature that sweeps them: the
 /// sketch has to exist, come earlier, have solved, and hold at least one
 /// closed profile. `verb` is what the feature does with them ("extrude").
@@ -100,6 +112,39 @@ pub(crate) fn swept<'a>(
     id: FeatureId,
     verb: &str,
 ) -> Result<Swept<'a>, String> {
+    let Drawn {
+        name,
+        sketch,
+        solved,
+        curves,
+        plane,
+        tolerance,
+    } = drawn(doc, earlier, id)?;
+    if curves.is_empty() {
+        return Err(format!(
+            "sketch `{name}` has nothing to {verb}: draw a closed profile of lines, arcs, splines or circles"
+        ));
+    }
+    let profiles = detect_profiles(&curves, &tolerance)
+        .map_err(|e| format!("sketch `{name}`: {}", profile_error(&e)))?;
+    Ok(Swept {
+        name,
+        sketch,
+        solved,
+        profiles,
+        plane,
+        tolerance,
+    })
+}
+
+/// The curves of sketch `id` that are not construction, as the kernel
+/// takes them, for a feature that is made from them: the sketch has to
+/// exist, come earlier and have solved.
+pub(crate) fn drawn<'a>(
+    doc: &'a Document,
+    earlier: &'a [FeatureResult],
+    id: FeatureId,
+) -> Result<Drawn<'a>, String> {
     let Some(source) = doc.feature(id) else {
         return Err(format!(
             "sketch: there is no feature {id} (was the sketch deleted?)"
@@ -176,22 +221,15 @@ pub(crate) fn swept<'a>(
             curve,
         });
     }
-    if curves.is_empty() {
-        return Err(format!(
-            "sketch `{name}` has nothing to {verb}: draw a closed profile of lines, arcs, splines or circles"
-        ));
-    }
     let tolerance = Tolerance::new(doc.tolerance.linear, doc.tolerance.angular)
         .ok_or("the document's tolerance is not positive and finite".to_string())?;
     let plane = Frame::new(solved.origin, solved.normal, solved.x_axis)
         .ok_or_else(|| format!("sketch `{name}`: its plane is not finite"))?;
-    let profiles = detect_profiles(&curves, &tolerance)
-        .map_err(|e| format!("sketch `{name}`: {}", profile_error(&e)))?;
-    Ok(Swept {
+    Ok(Drawn {
         name,
         sketch,
         solved,
-        profiles,
+        curves,
         plane,
         tolerance,
     })

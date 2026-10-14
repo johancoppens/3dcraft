@@ -43,8 +43,8 @@ claude mcp add craft3d -- "$PWD/target/release/craft3d-cli" mcp \
 
 ## Showcase
 
-Twelve models built with the commands that exist today; the first eight were driven step by step into the
-window while the developer watched, the last three were built headless. The pictures are the CPU renderer's
+Sixteen models built with the commands that exist today; the first eight were driven step by step into the
+window while the developer watched, the others were built headless. The pictures are the CPU renderer's
 (`craft3d-cli render`). The `.3dcraft` files and the step scripts are in
 [`docs/showcase/`](docs/showcase/); any of them is rebuilt headless with
 
@@ -60,6 +60,8 @@ target/release/craft3d-cli run --new '{"units":"mm"}' --script docs/showcase/gea
 | ![Impeller](docs/showcase/impeller.png) **Impeller**: a blade between two splines, extruded into B-spline walls, nine of them by a circular pattern, joined with a disc and a hub and bored: one body of 33 faces. | ![Pillar under a roller](docs/showcase/pillar.png) **Pillar**: a leaf of a spline and a line extruded up to the wall of a roller lying across it (`upTo`), so that its top follows the roller; seen from behind. |
 | ![Bearing housing](docs/showcase/housing.png) **Bearing housing**: half a base with a spline for its ends, mirrored in a datum plane and joined; a pedestal between two splines extruded up to the sleeve's wall; bored; two oil holes drilled from a datum plane turned 30° about the sleeve's axis (a datum axis); three bolt holes by a pattern, mirrored in the same datum plane. FreeCAD reads its STEP export as one closed solid of 20 faces. | ![Lofted hull](docs/showcase/lofthull.png) **Lofted hull**: four stations along the keel, each a spline under a deck line, joined by `feature.loft` into one smooth skin; hollowed by a second loft through the same stations a wall's thickness smaller (`cut`). Seven faces. |
 | ![Twisted blade](docs/showcase/blade.png) **Twisted blade**: an aerofoil of two splines at four heights, shorter and turned further towards the tip (48° in all), lofted and joined to a round foot. | ![Vase](docs/showcase/vase.png) **Vase**: one sketch, one feature. Its section is two splines (the outside and the inside of the wall) closed by a foot, a rim and the axis, turned a full turn: the walls are rational B-spline surfaces of revolution, exact, in two halves each. |
+| ![Bent pipe with a flange](docs/showcase/pipe.png) **Bent pipe with a flange**: a ring (the wall and the bore) carried along a line, a quarter bend and a line by `feature.sweep`: two cylinders and a piece of a torus inside and out, exact and without a seam; a flange extruded and joined. | ![Handle on a plate](docs/showcase/handle.png) **Handle on a plate**: a circle swept along a path of three lines and two bends drawn in a sketch that stands on the plate, joined to the plate at once (`join`). |
+| ![Gasket](docs/showcase/gasket.png) **Gasket**: an obround section (two lines, two half circles) carried round a closed path, a rounded rectangle: a ring without ends, its flat faces one face each all the way round. | ![Hose](docs/showcase/hose.png) **Hose**: a ring swept along a spline. Along a spline the faces are B-spline surfaces within half the document's tolerance of the true sweep; the feature says how far off they were found to be (1.4e-7 mm here, through 85 stations). |
 
 ## First field test: an agent that only knew the command list
 

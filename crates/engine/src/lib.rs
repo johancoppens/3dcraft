@@ -36,6 +36,7 @@ mod sketch_spline_cmds;
 #[cfg(not(target_arch = "wasm32"))]
 mod step_cmds;
 mod sweep_cmds;
+mod sweep_path_cmds;
 mod workspace;
 
 pub use pick_cmds::{
@@ -222,6 +223,7 @@ impl Session {
                 sketch_spline_cmds::SPECS,
                 sweep_cmds::SPECS,
                 loft_cmds::SPECS,
+                sweep_path_cmds::SPECS,
                 body_cmds::SPECS,
                 blend_cmds::SPECS,
                 datum_cmds::SPECS,

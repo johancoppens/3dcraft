@@ -19,7 +19,9 @@
 //! printed and left in `target/tmp/step-engine-files/report.md`.
 //!
 //! A third test, in `step_freecad/lofts.rs`, has the lofts
-//! (`target/tmp/step-loft-files/report.md`).
+//! (`target/tmp/step-loft-files/report.md`), and a fourth, in
+//! `step_freecad/sweeps.rs`, the sweeps along a path
+//! (`target/tmp/step-sweep-files/report.md`).
 //!
 //! A second test, in `step_freecad/features.rs`, has the documents of
 //! extrusion ends, datums, spline profiles and slivers, compared body by
@@ -43,6 +45,8 @@ mod fillets;
 mod harness;
 #[path = "step_freecad/lofts.rs"]
 mod lofts;
+#[path = "step_freecad/sweeps.rs"]
+mod sweeps;
 
 use craft3d_engine::{Access, Session, Workspace};
 use harness::{APPROXIMATED, Case, Extent, RELATIVE};

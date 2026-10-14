@@ -353,7 +353,11 @@ impl Piece {
 
 /// `curve` with its first and last control point replaced by `start` and
 /// `end`, which they are up to rounding.
-fn pinned(curve: &NurbsCurve, start: Vec3, end: Vec3) -> Result<NurbsCurve, KernelError> {
+pub(crate) fn pinned(
+    curve: &NurbsCurve,
+    start: Vec3,
+    end: Vec3,
+) -> Result<NurbsCurve, KernelError> {
     let mut control = curve.control_points().to_vec();
     let mut weights = curve.weights().to_vec();
     if let (Some(first), Some(w)) = (control.first_mut(), weights.first_mut()) {
@@ -731,18 +735,18 @@ fn matched(sections: Vec<Vec<Piece>>, tol: f64) -> Result<Vec<Vec<Piece>>, Kerne
 
 /// A stretch of the loft between two sections with edges, and how the
 /// rows of the sections' control points become the rows of its surfaces.
-struct Band {
-    from: usize,
-    to: usize,
-    degree: usize,
-    knots: Vec<f64>,
+pub(crate) struct Band {
+    pub(crate) from: usize,
+    pub(crate) to: usize,
+    pub(crate) degree: usize,
+    pub(crate) knots: Vec<f64>,
     /// Row `r` of the band is the sum over the sections `k` of
     /// `mix[r][k]` times row `k`.
-    mix: Vec<Vec<f64>>,
+    pub(crate) mix: Vec<Vec<f64>>,
 }
 
 impl Band {
-    fn straight(from: usize, to: usize, sections: usize) -> Band {
+    pub(crate) fn straight(from: usize, to: usize, sections: usize) -> Band {
         let unit = |k: usize| (0..sections).map(|i| f64::from(u8::from(i == k))).collect();
         Band {
             from,
@@ -754,7 +758,7 @@ impl Band {
     }
 
     /// The rows of the band from one point per section.
-    fn points(&self, per_section: &[Vec3]) -> Vec<Vec3> {
+    pub(crate) fn points(&self, per_section: &[Vec3]) -> Vec<Vec3> {
         self.mix
             .iter()
             .map(|row| {
@@ -885,7 +889,7 @@ fn round(a: &Arc, b: &Arc, forward: Vec3, tolerance: &Tolerance) -> Option<(Surf
 }
 
 /// The straight line through `points`, when they lie on one in order.
-fn straight(points: &[Vec3], slack: f64) -> Option<(Curve3, (f64, f64))> {
+pub(crate) fn straight(points: &[Vec3], slack: f64) -> Option<(Curve3, (f64, f64))> {
     let (first, last) = (*points.first()?, *points.last()?);
     let length = first.distance(last);
     let along = (last - first).normalized()?;
@@ -1436,7 +1440,7 @@ fn tube(outlines: &[Outline], options: &Options, tolerance: &Tolerance) -> bool 
 
 /// The B-spline surface through the curves of one column over one band:
 /// u along the curves, v along the loft.
-fn skin(column: &[NurbsCurve], band: &Band) -> Result<NurbsSurface, KernelError> {
+pub(crate) fn skin(column: &[NurbsCurve], band: &Band) -> Result<NurbsSurface, KernelError> {
     let first = column.first().ok_or_else(internal)?;
     let count_u = first.control_points().len();
     let count_v = band.mix.len();
