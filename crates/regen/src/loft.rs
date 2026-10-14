@@ -4,11 +4,11 @@
 //! is handed on.
 
 use crate::extrude::swept;
+use crate::selfcheck::{Crossing, crossing};
 use crate::{FeatureResult, Names, entity};
 use craft3d_doc::{Document, FeatureId, Loft, MAX_LOFT_SECTIONS, NameRole, PersistentName};
 use craft3d_kernel::extrude::{Origin, Role};
 use craft3d_kernel::loft::{Options, Section, loft};
-use craft3d_tess::{SelfCheckParams, body_self_intersections};
 use craft3d_topo::Body;
 
 /// The persistent name of a face a loft made: `F9:side(e3,e7)` after the
@@ -100,30 +100,21 @@ pub(crate) fn build(
     // bends back into itself, is a valid body in how it hangs together
     // and passes through itself all the same. It is never handed on.
     let advice = "give a section another `start` (the curve its loop starts with), or move the sections apart";
-    let found = body_self_intersections(&made.body, &SelfCheckParams::new(tolerance.linear))
-        .map_err(|error| {
-            format!(
+    match crossing(&made.body, &faces, tolerance.linear) {
+        Crossing::None => {}
+        Crossing::Unknown(error) => {
+            return Err(format!(
                 "sections: the loft cannot be meshed to see whether it passes through itself ({error}); its sections are probably matched with a twist: {advice}"
-            )
-        })?;
-    if !found.is_clean() {
-        let between = found
-            .crossings
-            .iter()
-            .find(|c| c.certain)
-            .map(|c| {
-                let name = |face: u32| {
-                    faces
-                        .get(face as usize)
-                        .map_or_else(|| format!("face {face}"), ToString::to_string)
-                };
-                let [a, b] = c.faces;
-                format!(": {} and {} cross", name(a), name(b))
-            })
-            .unwrap_or_default();
-        return Err(format!(
-            "sections: the loft passes through itself{between}; {advice}"
-        ));
+            ));
+        }
+        Crossing::Found(pair) => {
+            let between = pair
+                .map(|[a, b]| format!(": {a} and {b} cross"))
+                .unwrap_or_default();
+            return Err(format!(
+                "sections: the loft passes through itself{between}; {advice}"
+            ));
+        }
     }
 
     let by_faces = entity::by_faces(id, &made.body, &faces, tolerance.linear);

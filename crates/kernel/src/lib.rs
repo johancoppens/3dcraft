@@ -4,9 +4,10 @@
 //!
 //! So far: primitive solids, closed profiles from sketch curves
 //! ([`profile`]), their extrusion ([`extrude`]), their revolution
-//! ([`revolve`]), the solid through a row of them ([`loft`]), booleans
-//! ([`boolean`]), chamfers ([`chamfer`]), fillets ([`fillet`]) and the
-//! face operations ([`offset_face`], [`shell`]).
+//! ([`revolve`]), the solid through a row of them ([`loft`]), the solid one
+//! of them sweeps along a path ([`sweep`]), booleans ([`boolean`]),
+//! chamfers ([`chamfer`]), fillets ([`fillet`]) and the face operations
+//! ([`offset_face`], [`shell`]).
 
 mod blend;
 pub mod boolean;
@@ -21,6 +22,7 @@ pub mod profile;
 pub mod revolve;
 pub mod shell;
 mod spline2;
+pub mod sweep;
 mod tweak;
 
 use craft3d_geom::GeomError;
@@ -206,6 +208,13 @@ pub enum KernelError {
     /// from 1, as the user does.
     Loft {
         sections: Vec<usize>,
+        reason: String,
+    },
+    /// A profile cannot be swept along this path. `curves` are the curves
+    /// of the path it is about (empty when it is not about particular
+    /// ones); `reason` names them as the sketch does (`e7`).
+    Sweep {
+        curves: Vec<u64>,
         reason: String,
     },
 }
@@ -413,7 +422,9 @@ impl fmt::Display for KernelError {
             KernelError::FaceOpBoolean { operation, error } => {
                 write!(f, "{operation}: {error}")
             }
-            KernelError::Loft { reason, .. } => write!(f, "{reason}"),
+            KernelError::Loft { reason, .. } | KernelError::Sweep { reason, .. } => {
+                write!(f, "{reason}")
+            }
         }
     }
 }

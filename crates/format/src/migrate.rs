@@ -28,6 +28,7 @@ type Step = fn(Value) -> Result<Value, String>;
 /// `STEPS[n]` brings a manifest from version `n + 1` to version `n + 2`.
 const STEPS: &[Step] = &[
     v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9, v9_to_v10,
+    v10_to_v11,
 ];
 
 /// Version 2 adds the `cone` and `torus` feature kinds and an optional
@@ -92,12 +93,19 @@ fn v8_to_v9(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
 }
 
-/// Version 10 adds the feature kinds of the face operations:
-/// `offsetFace` and `shell`. They make no new name roles:
-/// their faces are copies of the faces they are made from. Nothing a
-/// version-9 file contains changes meaning; the version was raised so
-/// that an older build reports the version and not an unknown kind.
+/// Version 10 adds the `sweep` feature kind. Nothing a version-9 file
+/// contains changes meaning; the version was raised so that an older
+/// build reports the version and not an unknown kind.
 fn v9_to_v10(manifest: Value) -> Result<Value, String> {
+    Ok(manifest)
+}
+
+/// Version 11 adds the feature kinds of the face operations:
+/// `offsetFace` and `shell`. They make no new name roles: their faces are
+/// copies of the faces they are made from. Nothing a version-10 file
+/// contains changes meaning; the version was raised so that an older
+/// build reports the version and not an unknown kind.
+fn v10_to_v11(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
 }
 

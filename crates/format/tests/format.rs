@@ -168,7 +168,7 @@ fn saving_twice_gives_the_same_bytes() {
 fn the_manifest_of_a_small_document_is_exactly_this() {
     let expected = r#"{
   "format": "3dcraft",
-  "format_version": 10,
+  "format_version": 11,
   "document": {
     "units": {
       "length": "mm",
@@ -340,17 +340,17 @@ fn fix_trailing_commas(json: &str) -> String {
 
 #[test]
 fn a_newer_format_version_says_a_newer_3dcraft_is_needed() {
-    let error = load_error(&edited(&version_field(), "\"format_version\": 11"));
+    let error = load_error(&edited(&version_field(), "\"format_version\": 12"));
     assert!(matches!(
         error,
         FormatError::NewerVersion {
-            file: 11,
+            file: 12,
             supported: FORMAT_VERSION
         }
     ));
     let text = error.to_string();
     assert!(
-        text.contains("version 11")
+        text.contains("version 12")
             && text.contains(&format!("version {FORMAT_VERSION}"))
             && text.contains("newer 3DCraft is needed"),
         "{text}"
@@ -1708,7 +1708,8 @@ fn datum_planes_are_written_like_this_and_round_trip() {
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     // Datums raised no version: nothing an earlier file holds changed
-    // meaning. (7 is the chamfer's, 8 the loft's, 9 the fillet's.)
+    // meaning. (7 is the chamfer's, 8 the loft's, 9 the fillet's, 10 the
+    // sweep's.)
     assert_eq!(value["format_version"], FORMAT_VERSION);
     let face_json = |n: u64| serde_json::json!({"feature": 1, "role": "face", "sources": [n]});
     let kinds: Vec<&serde_json::Value> = value["document"]["features"]
@@ -2429,11 +2430,79 @@ fn a_fillet_is_written_like_this_and_round_trips() {
     assert!(from_manifest_json(bare.as_bytes()).is_err());
 }
 
-/// A version-9 file, as written before the face operations: a fillet and
-/// a datum on its face. Never edit this.
+/// Version 10: sweeps, as they are written.
+#[test]
+fn a_sweep_is_written_like_this_and_round_trips() {
+    use craft3d_doc::{FeatureId, Sweep};
+    let mut doc = small();
+    doc.add_feature(
+        Some("Pipe"),
+        FeatureKind::Sweep(Sweep {
+            sketch: FeatureId(7),
+            path: FeatureId(9),
+        }),
+    )
+    .unwrap();
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    // Sweeps came with version 10; the current one is written.
+    assert_eq!(value["format_version"], FORMAT_VERSION);
+    let features = value["document"]["features"].as_array().unwrap();
+    assert_eq!(
+        features[features.len() - 1]["kind"],
+        serde_json::json!({"type": "sweep", "sketch": 7, "path": 9})
+    );
+    assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+    assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
+    // Both sketches are required, and a field a sweep does not have is
+    // refused.
+    let without = json.replace(r#""path": 9"#, r#""sketch": 7"#);
+    assert_ne!(without, json);
+    assert!(from_manifest_json(without.as_bytes()).is_err());
+    let extra = json.replace(r#""path": 9"#, r#""path": 9, "twist": "30 deg""#);
+    assert_ne!(extra, json);
+    assert!(from_manifest_json(extra.as_bytes()).is_err());
+}
+
+/// A version-9 file, as written before sweeps existed: a fillet and a
+/// loft. Never edit this.
 #[test]
 fn a_version_9_file_opens_unchanged_and_is_saved_as_the_current_version() {
     let v9 = r#"{"format": "3dcraft", "format_version": 9, "document": {
+        "units": {"length": "mm", "angle": "deg"},
+        "tolerance": {"linear": 1e-6, "angular": 1e-9},
+        "variables": [{"name": "r", "expr": "2 mm"}],
+        "features": [
+          {"id": 1, "name": "Block", "suppressed": false, "kind":
+            {"type": "block", "position": ["0", "0", "0"], "size": ["10", "8", "6"]}},
+          {"id": 2, "name": "Round", "suppressed": false, "kind": {"type": "fillet",
+            "edges": [[{"feature": 1, "role": "face", "sources": [1]},
+                       {"feature": 1, "role": "face", "sources": [2]}]],
+            "radius": "r", "chain": false}},
+          {"id": 3, "name": "Hull", "suppressed": false, "kind":
+            {"type": "loft", "sections": [{"sketch": 7}, {"sketch": 9, "start": 3}],
+             "ruled": true}}],
+        "rollback": null, "next_feature_id": 4}}"#;
+    let doc = match from_manifest_json(v9.as_bytes()) {
+        Ok(doc) => doc,
+        Err(error) => panic!("{error}"),
+    };
+    assert_eq!(doc.features[1].kind.type_name(), "fillet");
+    assert_eq!(doc.features[2].kind.type_name(), "loft");
+    let saved = to_manifest_json(&doc).unwrap();
+    assert!(saved.contains(&version_field()), "{saved}");
+    assert!(!saved.contains("sweep"), "{saved}");
+    assert_eq!(from_manifest_json(saved.as_bytes()).unwrap(), doc);
+    // The same file from a version this build does not know is refused.
+    let newer = v9.replace("\"format_version\": 9", "\"format_version\": 11");
+    assert!(from_manifest_json(newer.as_bytes()).is_err());
+}
+
+/// A version-10 file, as written before the face operations: a fillet, a
+/// datum on its face and a sweep. Never edit this.
+#[test]
+fn a_version_10_file_opens_unchanged_and_is_saved_as_the_current_version() {
+    let v10 = r#"{"format": "3dcraft", "format_version": 10, "document": {
         "units": {"length": "mm", "angle": "deg"},
         "tolerance": {"linear": 1e-6, "angular": 1e-9},
         "variables": [{"name": "r", "expr": "3 mm"}],
@@ -2445,13 +2514,16 @@ fn a_version_9_file_opens_unchanged_and_is_saved_as_the_current_version() {
                        {"feature": 1, "role": "face", "sources": [2]}]],
             "radius": "r", "chain": false}},
           {"id": 3, "name": "On the round", "suppressed": false, "kind": {"type": "datumAxis",
-            "by": {"type": "face", "face": {"feature": 2, "role": "fillet", "sources": [0]}}}}],
-        "rollback": null, "next_feature_id": 4}}"#;
-    let doc = match from_manifest_json(v9.as_bytes()) {
+            "by": {"type": "face", "face": {"feature": 2, "role": "fillet", "sources": [0]}}}},
+          {"id": 4, "name": "Pipe", "suppressed": false, "kind": {"type": "sweep",
+            "sketch": 7, "path": 9}}],
+        "rollback": null, "next_feature_id": 5}}"#;
+    let doc = match from_manifest_json(v10.as_bytes()) {
         Ok(doc) => doc,
         Err(error) => panic!("{error}"),
     };
     assert_eq!(doc.features[1].kind.type_name(), "fillet");
+    assert_eq!(doc.features[3].kind.type_name(), "sweep");
     let saved = to_manifest_json(&doc).unwrap();
     assert!(saved.contains(&version_field()), "{saved}");
     assert!(
@@ -2461,7 +2533,7 @@ fn a_version_9_file_opens_unchanged_and_is_saved_as_the_current_version() {
     assert_eq!(from_manifest_json(saved.as_bytes()).unwrap(), doc);
 }
 
-/// Version 10: the face operations, as they are written.
+/// Version 11: the face operations, as they are written.
 #[test]
 fn the_face_operations_are_written_like_this_and_round_trip() {
     use craft3d_doc::{NameRole, OffsetFace, PersistentName, Shell};
@@ -2488,7 +2560,7 @@ fn the_face_operations_are_written_like_this_and_round_trip() {
     assert_eq!(doc.validate(), Ok(()));
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 10);
+    assert_eq!(value["format_version"], 11);
     let kinds: Vec<&serde_json::Value> = value["document"]["features"]
         .as_array()
         .unwrap()
