@@ -15,6 +15,7 @@ use boolean_common::*;
 use craft3d_kernel::KernelError;
 use craft3d_kernel::boolean::{
     BooleanOp, BooleanOptions, EdgeSource, FaceSource, Operand, VertexSource, boolean_with,
+    contains_points,
 };
 use craft3d_kernel::primitives;
 use craft3d_math::{Frame, Vec3};
@@ -427,4 +428,185 @@ fn a_ball_that_dips_into_a_block_by_about_the_tolerance() {
             assert_eq!(solve(&block, &ball, Union, k).body.shells.len(), 1);
         }
     }
+}
+
+/// A cone given by its apex, the unit axis from the apex into it, its
+/// half-angle and its height, as a body and as a membership test with the
+/// distance to the nearest of its two faces' surfaces.
+struct Pointed {
+    apex: Vec3,
+    axis: Vec3,
+    alpha: f64,
+    height: f64,
+}
+
+impl Pointed {
+    fn body(&self) -> Body {
+        let base = self.apex + self.axis * self.height;
+        let frame = Frame::from_z(base, -self.axis).unwrap();
+        primitives::cone(&frame, self.height * self.alpha.tan(), self.height).unwrap()
+    }
+
+    fn volume(&self) -> f64 {
+        PI * (self.height * self.alpha.tan()).powi(2) * self.height / 3.0
+    }
+
+    /// Inside or not, and how far from the surfaces of its faces.
+    fn holds(&self, p: Vec3) -> (bool, f64) {
+        let q = p - self.apex;
+        let h = q.dot(self.axis);
+        let side = (q - self.axis * h).length() * self.alpha.cos() - h * self.alpha.sin();
+        (
+            h < self.height && h > 0.0 && side < 0.0,
+            side.abs().min((h - self.height).abs()),
+        )
+    }
+}
+
+/// Cones that share a ruling and the tangent plane along it, or an apex
+/// (`geom::intersect`'s closed forms of 2026-10-14: the ruling, and the
+/// conic in which such cones cross besides; the corpus case
+/// tangent/cone-cone/002 was refused before, because the touch runs into
+/// an apex). The first cone stands on the plane z = 0 of a frame; the
+/// second has its apex on the ruling in the frame's xz plane, at
+/// `along` of the first's slant height from the first apex (negative:
+/// beyond it), and leans away from the first by its own half-angle
+/// (`outside`) or towards it.
+///
+/// From outside they only touch, whatever the apexes: the three rules for
+/// bodies with nothing in common. From inside the narrower one leaves the
+/// wider through the conic: what is in the result is held, point by
+/// point, to membership of the two cones by their own equations, and the
+/// volumes to the identities of sets.
+#[test]
+fn cones_that_share_a_ruling() {
+    let tilted = Frame::new(
+        Vec3::new(1.0, -2.0, 0.5),
+        Vec3::new(0.3, -0.4, 1.0),
+        Vec3::new(1.0, 0.2, 0.0),
+    )
+    .unwrap();
+    let mut crossed = 0;
+    for k in SCALES {
+        for frame in [Frame::WORLD, tilted] {
+            let frame = frame.at(frame.origin() * k).unwrap();
+            for (alpha, beta, along, tall) in [
+                (0.6_f64, 0.5_f64, 0.0, 1.5),
+                (0.6, 0.5, 0.25, 1.5),
+                (0.6, 0.5, -0.05, 1.5),
+                (0.4, 0.9, 0.5, 0.8),
+                // The angles of tangent/cone-cone/002 of the corpus.
+                (
+                    (1.0_f64 / 1.125).atan(),
+                    std::f64::consts::FRAC_PI_4,
+                    -0.02,
+                    1.125,
+                ),
+            ] {
+                let height = 2.0 * k;
+                let first = Pointed {
+                    apex: frame.point(0.0, 0.0, height),
+                    axis: -frame.z(),
+                    alpha,
+                    height,
+                };
+                let ruling = frame.vector(alpha.sin(), 0.0, -alpha.cos());
+                let slant = height / alpha.cos();
+                for outside in [true, false] {
+                    let lean = if outside { alpha + beta } else { alpha - beta };
+                    let second = Pointed {
+                        apex: first.apex + ruling * (along * slant),
+                        axis: frame.vector(lean.sin(), 0.0, -lean.cos()),
+                        alpha: beta,
+                        height: tall * k,
+                    };
+                    let (a, b) = (first.body(), second.body());
+                    assert_close(mass(&a).volume, first.volume(), "the first cone");
+                    assert_close(mass(&b).volume, second.volume(), "the second cone");
+                    if outside {
+                        assert_only_touching(&a, &b, k);
+                        continue;
+                    }
+                    // Seeded points in a box around both, away from the
+                    // surfaces.
+                    let mut rng = Rng(0x00C0_FFEE ^ (along.to_bits() >> 7));
+                    let reach = 3.0 * k;
+                    let mut points = Vec::new();
+                    while points.len() < 3000 {
+                        let p = first.apex - frame.z() * (0.5 * height)
+                            + Vec3::new(
+                                (2.0 * rng.unit() - 1.0) * reach,
+                                (2.0 * rng.unit() - 1.0) * reach,
+                                (2.0 * rng.unit() - 1.0) * reach,
+                            );
+                        let ((in_a, off_a), (in_b, off_b)) = (first.holds(p), second.holds(p));
+                        if off_a.min(off_b) > 1e-3 * k {
+                            points.push((p, in_a, in_b));
+                        }
+                    }
+                    let places: Vec<Vec3> = points.iter().map(|p| p.0).collect();
+                    let mut volumes = Vec::new();
+                    type Rule = fn(bool, bool) -> bool;
+                    let rules: [(&Body, &Body, BooleanOp, Rule); 4] = [
+                        (&a, &b, Intersect, |x, y| x && y),
+                        (&a, &b, Union, |x, y| x || y),
+                        (&a, &b, Subtract, |x, y| x && !y),
+                        (&b, &a, Subtract, |x, y| !x && y),
+                    ];
+                    for (x, y, op, rule) in rules {
+                        let want: Vec<bool> = points.iter().map(|p| rule(p.1, p.2)).collect();
+                        // Nothing where no point is expected may still be
+                        // a little: the boolean says.
+                        if !want.contains(&true)
+                            && matches!(
+                                boolean_with(x, y, op, &tolerance(k), &BooleanOptions::default()),
+                                Err(KernelError::EmptyResult { .. })
+                            )
+                        {
+                            volumes.push(0.0);
+                            continue;
+                        }
+                        let result = solve(x, y, op, k);
+                        volumes.push(mass(&result.body).volume);
+                        let found = contains_points(&result.body, &places, &tolerance(k)).unwrap();
+                        let mut decided = 0;
+                        for ((p, want), got) in places.iter().zip(want).zip(found) {
+                            if let Some(got) = got {
+                                assert_eq!(got, want, "{op:?} at {p:?}, scale {k}");
+                                decided += 1;
+                            }
+                        }
+                        assert!(decided > 2900, "{decided} points decided");
+                    }
+                    let [common, union, a_less, b_less] = volumes[..] else {
+                        panic!("four results");
+                    };
+                    let near = |actual: f64, expected: f64, what: &str| {
+                        assert!(
+                            (actual - expected).abs() <= 1e-7 * expected.abs(),
+                            "{what} at scale {k}: {actual} is not {expected}"
+                        );
+                    };
+                    near(
+                        common + a_less,
+                        first.volume(),
+                        "common + first less second",
+                    );
+                    near(
+                        common + b_less,
+                        second.volume(),
+                        "common + second less first",
+                    );
+                    near(
+                        union + common,
+                        first.volume() + second.volume(),
+                        "union + common",
+                    );
+                    crossed += usize::from(b_less > 1e-6 * second.volume() && common > 0.0);
+                }
+            }
+        }
+    }
+    // The narrower cone did come out of the wider one in some of them.
+    assert!(crossed >= 6, "{crossed}");
 }

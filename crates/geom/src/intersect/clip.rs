@@ -27,7 +27,25 @@ pub(super) enum Shape {
         e1: Vec3,
         e2: Vec3,
     },
+    /// `o + a cos ψ + b cos² ψ + c sin ψ √(1 + cos² ψ)`: the closed curve
+    /// in which two tubes of one radius cross whose spines, a line and a
+    /// circle, are tangent (see `exact::continued`). It has no exact
+    /// NURBS: a piece of it is fitted, and `slack` is how far the surfaces
+    /// are from the position the formula is for.
+    Lobe {
+        o: Vec3,
+        a: Vec3,
+        b: Vec3,
+        c: Vec3,
+        slack: f64,
+    },
 }
+
+/// The samples per turn in which a [`Shape::Lobe`] is searched for the
+/// places where it passes a side of the box.
+const LOBE_SAMPLES: u32 = 720;
+/// The most spans a fitted piece of a [`Shape::Lobe`] may need.
+const LOBE_SPANS: usize = 1 << 14;
 
 /// An exact curve and the part of it that is meant; the full turn
 /// `(0, 2π)` for a whole circle or ellipse, infinite ends for a whole line,
@@ -93,7 +111,22 @@ impl Shape {
             }
             Shape::Parabola { o, d1, d2 } => *o + *d1 * t + *d2 * (t * t),
             Shape::Hyperbola { c, e1, e2 } => *c + *e1 * t.cosh() + *e2 * t.sinh(),
+            Shape::Lobe { o, a, b, c, .. } => {
+                let (s, co) = t.sin_cos();
+                *o + *a * co + *b * (co * co) + *c * (s * (1.0 + co * co).sqrt())
+            }
         }
+    }
+
+    /// The derivative of a [`Shape::Lobe`] by its parameter; it is never
+    /// zero where `a` and `c` are not.
+    fn lobe_derivative(&self, t: f64) -> Option<Vec3> {
+        let Shape::Lobe { a, b, c, .. } = self else {
+            return None;
+        };
+        let (s, co) = t.sin_cos();
+        let w = (1.0 + co * co).sqrt();
+        Some(*a * (-s) + *b * (-2.0 * co * s) + *c * (co * w - s * s * co / w))
     }
 
     /// The parameters at which `pick` of the curve's point equals `bound`.
@@ -144,6 +177,127 @@ impl Shape {
                     &mut ys,
                 );
                 out.extend(ys.into_iter().filter(|y| *y > 0.0).map(f64::ln));
+            }
+            Shape::Lobe { .. } => {
+                // No closed form: a change of sign between samples, then
+                // bisection. (A curve that only touches a side of the box
+                // from inside is not cut there, which loses nothing.) Two
+                // turns, for a range that starts anywhere in the first.
+                let g = |t: f64| pick(self.eval(t)) - bound;
+                let step = TAU / f64::from(LOBE_SAMPLES);
+                let start = -TAU;
+                let mut before = g(start);
+                for k in 1..=3 * LOBE_SAMPLES {
+                    let (t0, t1) = (start + step * f64::from(k - 1), start + step * f64::from(k));
+                    let after = g(t1);
+                    if before == 0.0 {
+                        out.push(t0);
+                    } else if (before < 0.0) != (after < 0.0) && after != 0.0 {
+                        let (mut lo, mut hi) = (t0, t1);
+                        for _ in 0..60 {
+                            let mid = 0.5 * (lo + hi);
+                            if (g(mid) < 0.0) == (before < 0.0) {
+                                lo = mid;
+                            } else {
+                                hi = mid;
+                            }
+                        }
+                        out.push(0.5 * (lo + hi));
+                    }
+                    before = after;
+                }
+            }
+        }
+    }
+
+    /// The C¹ cubic within a quarter of the tolerance of the piece
+    /// `[t0, t1]` of a [`Shape::Lobe`], the length of its parameter range
+    /// and how far it is from the curve where that was measured: the spans
+    /// are halved until every one is that near at seven places, each held
+    /// against the nearest point of the curve itself.
+    fn lobe_arc(
+        &self,
+        t0: f64,
+        t1: f64,
+        tol: &Tolerance,
+    ) -> Result<(NurbsCurve, f64, f64), GeomError> {
+        let degenerate = || GeomError::InvalidParameter("an intersection has no finite position");
+        let target = 0.25 * tol.linear;
+        let mut spans = 4_usize;
+        loop {
+            let mut nodes = Vec::with_capacity(spans + 1);
+            for k in 0..=spans {
+                let t = if k == spans {
+                    t1
+                } else {
+                    t0 + (t1 - t0) * (k as f64 / spans as f64)
+                };
+                let tangent = self
+                    .lobe_derivative(t)
+                    .and_then(Vec3::normalized)
+                    .ok_or_else(degenerate)?;
+                nodes.push((t, self.eval(t), tangent));
+            }
+            let mut knots = vec![0.0; 4];
+            let mut ctrl = Vec::with_capacity(3 * spans + 1);
+            let (mut total, mut worst) = (0.0, 0.0_f64);
+            for ((ta, pa, da), (tb, pb, db)) in nodes.iter().zip(nodes.iter().skip(1)) {
+                let chord = pa.distance(*pb);
+                if !(chord > 0.0) {
+                    return Err(degenerate());
+                }
+                // The handle that makes a circular arc of the same turn
+                // exact to sixth order, as the marcher's spans have it.
+                let theta = da.dot(*db).clamp(-1.0, 1.0).acos().min(2.0);
+                let handle = if theta < 1e-4 {
+                    1.0 / 3.0
+                } else {
+                    (2.0 / 3.0) * (0.25 * theta).tan() / (0.5 * theta).sin()
+                };
+                let l = chord * handle;
+                let (c1, c2) = (*pa + *da * l, *pb - *db * l);
+                if ctrl.is_empty() {
+                    ctrl.push(*pa);
+                } else {
+                    knots.push(total);
+                    knots.push(total);
+                }
+                total += 3.0 * l;
+                ctrl.extend([c1, c2]);
+                for k in 1..8 {
+                    let s = f64::from(k) / 8.0;
+                    let r = 1.0 - s;
+                    let q = *pa * (r * r * r)
+                        + c1 * (3.0 * r * r * s)
+                        + c2 * (3.0 * r * s * s)
+                        + *pb * (s * s * s);
+                    // The nearest point of the curve, from the parameter
+                    // the same share of the way along the span.
+                    let mut t = ta + (tb - ta) * s;
+                    for _ in 0..4 {
+                        let Some(d) = self.lobe_derivative(t) else {
+                            break;
+                        };
+                        let step = (q - self.eval(t)).dot(d) / d.length_squared();
+                        if !step.is_finite() {
+                            break;
+                        }
+                        t += step;
+                    }
+                    worst = worst.max(q.distance(self.eval(t)));
+                }
+            }
+            if worst <= target {
+                let last = nodes.last().ok_or_else(degenerate)?;
+                ctrl.push(last.1);
+                knots.extend([total; 4]);
+                return Ok((NurbsCurve::polynomial(3, knots, ctrl)?, total, worst));
+            }
+            spans *= 2;
+            if spans > LOBE_SPANS {
+                return Err(GeomError::NoConvergence(
+                    "an intersection curve could not be fitted within the tolerance",
+                ));
             }
         }
     }
@@ -292,6 +446,18 @@ pub(super) fn clip(
             }
             Shape::Hyperbola { c, e1, e2 } => {
                 (Curve3::Nurbs(hyperbola_arc(*c, *e1, *e2, a, b)?), (a, b))
+            }
+            Shape::Lobe { slack, .. } => {
+                let (fitted, length, deviation) = shape.lobe_arc(a, b, tol)?;
+                out.push(MeetingCurve {
+                    curve: Curve3::Nurbs(fitted),
+                    range: (0.0, length),
+                    closed: false,
+                    tangent: curve.tangent,
+                    exact: false,
+                    deviation: deviation + slack,
+                });
+                continue;
             }
         };
         out.push(MeetingCurve {

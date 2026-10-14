@@ -577,6 +577,75 @@ fn a_crossing_a_tenth_of_a_tolerance_apart_is_drawn_to_the_point() {
     }
 }
 
+/// The same, wherever the crossing lies on the patches and whichever way
+/// they are a little apart (a tenth or three tenths of a tolerance): four
+/// arms, each with one end on the point, and nothing drawn twice. (A branch marched in from the border ends on
+/// the point when it comes within the radius at which the arms are
+/// seeded. Until 2026-10-14 it had to come within one step of it, and a
+/// step that landed nearer than the place where `f = 0` turns away went
+/// past the point and on along the next arm to the border: that arm was
+/// then there twice, and a boolean refused it as "two curves leave a
+/// point in the same direction"; near/block-spline/012 and three more
+/// cases of the boolean corpus. Here it was round 14 at scale 1: three
+/// curves, one of them through the place without an end on it.)
+#[test]
+fn a_crossing_a_little_apart_is_four_arms_wherever_it_lies() {
+    const ROUNDS: usize = 24;
+    let mut rng = Rng(20_261_014);
+    let mut wrong = Vec::new();
+    for k in SCALES {
+        for round in 0..ROUNDS {
+            let nurbs = round % 2 == 1;
+            let frame = tilted(k);
+            let at = (rng.range(0.25, 0.75), rng.range(0.25, 0.75));
+            let apart = [1e-7, -1e-7, 3e-7, -3e-7][round % 4];
+            let upper = quadric_patch(&frame, k, at, (0.8, -0.12, 0.0), apart, nurbs);
+            let lower = quadric_patch(&frame, k, at, (0.3, 0.2, 0.0), 0.0, nurbs);
+            let t = tol(k);
+            let touch = frame.point(k * at.0, k * at.1, 0.0);
+            let within = cube(touch, 2.0 * k);
+            let m = meeting(meet_surfaces(&upper, &lower, &within, &t).unwrap());
+            let what = format!("scale {k}, round {round}, at {at:?}, {apart} apart");
+            if m.curves.len() != 4 {
+                wrong.push(format!("{what}: {} curves", m.curves.len()));
+            }
+            for (i, curve) in m.curves.iter().enumerate() {
+                let ends = [start(curve), end(curve)];
+                let inner = ends
+                    .iter()
+                    .filter(|p| p.distance(touch) <= t.linear)
+                    .count();
+                if inner != 1 {
+                    wrong.push(format!("{what}: curve {i} has {inner} ends on the point"));
+                }
+                // Away from the point no other curve is anywhere near.
+                for (j, other) in m.curves.iter().enumerate().skip(i + 1) {
+                    let drawn = Lines::of(
+                        &Meeting {
+                            curves: vec![other.clone()],
+                            points: Vec::new(),
+                        },
+                        200,
+                    );
+                    let together = samples(curve, 24)
+                        .iter()
+                        .any(|p| p.distance(touch) > 0.02 * k && drawn.distance(*p) < 1e-3 * k);
+                    if together {
+                        wrong.push(format!("{what}: curves {i} and {j} run together"));
+                    }
+                }
+            }
+            // (Held to the surfaces in one round per scale: that takes
+            // longer than everything else here. Round 14 is the one that
+            // went wrong at scale 1.)
+            if round == 14 {
+                check_meeting(&m, &upper, &lower, &within, &t);
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
 /// A cylinder that fits the hole of a torus touches it along the inner
 /// equator, and one that fits around it along the outer one: the surfaces
 /// are tangent all along a circle and keep to one side of each other, so

@@ -398,6 +398,112 @@ fn a_ring_cut_through_and_across_its_axis() {
     }
 }
 
+/// The volume a rod of radius `r` shares with a ring of the same tube
+/// radius whose middle circle (radius `major`) its axis is tangent to,
+/// the rod long enough to pass right through: at the height `z` the rod is
+/// a strip `2w` wide (`w = √(r² − z²)`) and the ring the annulus between
+/// `major − w` and `major + w`, whose inner circle only touches the strip,
+/// so what they share there is the segment the strip's far side cuts from
+/// the outer circle, `(R + w)² acos((R − w) / (R + w)) − 2 (R − w) √(R w)`.
+/// Integrated over `z` by Simpson's rule in `z = r sin α`.
+fn rod_in_ring(major: f64, r: f64) -> f64 {
+    let n = 1 << 16;
+    let slice = |alpha: f64| {
+        let w = r * alpha.cos();
+        if w <= 0.0 {
+            return 0.0;
+        }
+        let (outer, inner) = (major + w, major - w);
+        let area = outer * outer * (inner / outer).acos() - inner * 2.0 * (major * w).sqrt();
+        area * w
+    };
+    let h = PI / f64::from(n);
+    let mut sum = 0.0;
+    for k in 0..=n {
+        let weight = if k == 0 || k == n {
+            1.0
+        } else if k % 2 == 1 {
+            4.0
+        } else {
+            2.0
+        };
+        sum += weight * slice(-PI / 2.0 + h * f64::from(k));
+    }
+    sum * h / 3.0
+}
+
+/// A rod that goes on in a ring: the surfaces are tangent along the circle
+/// across the rod where its axis touches the ring's middle circle, and
+/// cross in a closed curve through the top and bottom of that circle
+/// (`geom::intersect`'s closed form of 2026-10-14; the pair was refused
+/// before). What they share has the volume of the integral above; the
+/// other results follow from it, and a rod too short to pass right
+/// through (its ends cut the second curve) is held to the identities.
+#[test]
+fn a_rod_that_goes_on_in_a_ring() {
+    for k in SCALES {
+        let near = |actual: f64, expected: f64, what: &str| {
+            // Edges off by the tolerance over a size of a few units.
+            assert!(
+                (actual - expected).abs() <= 1e-6 * expected.abs(),
+                "{what} at scale {k}: {actual} is not {expected}"
+            );
+        };
+        for (frame, major, r) in [
+            (Frame::WORLD, 2.0, 0.5),
+            (
+                Frame::new(
+                    Vec3::new(1.0, -2.0, 0.5) * k,
+                    Vec3::new(0.3, -0.4, 1.0),
+                    Vec3::new(1.0, 0.2, 0.0),
+                )
+                .unwrap(),
+                1.5,
+                0.75,
+            ),
+        ] {
+            let ring = primitives::torus(&frame, major * k, r * k).unwrap();
+            let vb = 2.0 * PI * PI * major * r * r * k * k * k;
+            let shared = rod_in_ring(major, r) * k * k * k;
+            // The second curve reaches 2 √(R r) along the rod.
+            let reach = 2.0 * (major * r).sqrt();
+            for (half, through) in [(1.5 * reach, true), (0.6 * reach, false)] {
+                let base = frame.point(-half * k, -major * k, 0.0);
+                let lying = Frame::new(base, frame.x(), frame.y()).unwrap();
+                let rod = primitives::cylinder(&lying, r * k, 2.0 * half * k).unwrap();
+                let va = PI * r * r * 2.0 * half * k * k * k;
+                let common = solve(&rod, &ring, Intersect, k);
+                let less = solve(&rod, &ring, Subtract, k);
+                let both = solve(&rod, &ring, Union, k);
+                let holed = solve(&ring, &rod, Subtract, k);
+                let vc = mass(&common.body).volume;
+                if through {
+                    near(vc, shared, "what a rod shares with the ring it goes on in");
+                    assert_eq!(common.body.shells.len(), 1);
+                    assert_eq!(common.body.faces.len(), 2);
+                    // The rod falls into the pieces before and after.
+                    assert_eq!(less.body.shells.len(), 2);
+                }
+                assert!(vc < shared * (1.0 + 1e-6));
+                near(mass(&less.body).volume + vc, va, "common + difference");
+                near(mass(&both.body).volume + vc, va + vb, "union + common");
+                near(
+                    mass(&holed.body).volume + vc,
+                    vb,
+                    "common + the ring less the rod",
+                );
+                let swapped = solve(&ring, &rod, Intersect, k);
+                near(mass(&swapped.body).volume, vc, "the other way round");
+                near(
+                    mass(&swapped.body).area,
+                    mass(&common.body).area,
+                    "its area",
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn a_ball_ended_pin_and_the_hole_it_makes() {
     for k in SCALES {
