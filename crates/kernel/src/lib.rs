@@ -3,13 +3,15 @@
 //! why it cannot (docs/architecture.md §5.3).
 //!
 //! So far: primitive solids, closed profiles from sketch curves
-//! ([`profile`]), their extrusion ([`extrude`]) and their revolution
-//! ([`revolve`]). Booleans and blends arrive with their milestones.
+//! ([`profile`]), their extrusion ([`extrude`]), their revolution
+//! ([`revolve`]), the solid through a row of them ([`loft`]), booleans
+//! ([`boolean`]) and chamfers ([`chamfer`]).
 
 pub mod boolean;
 pub mod chamfer;
 pub mod extrude;
 pub mod extrude_to;
+pub mod loft;
 pub mod primitives;
 pub mod profile;
 pub mod revolve;
@@ -147,6 +149,13 @@ pub enum KernelError {
         edge: craft3d_topo::EdgeId,
         error: Box<KernelError>,
     },
+    /// A loft cannot be made through these sections (counted from 0;
+    /// empty when it is not about particular ones). `reason` counts them
+    /// from 1, as the user does.
+    Loft {
+        sections: Vec<usize>,
+        reason: String,
+    },
 }
 
 fn id_list(ids: &[u64]) -> String {
@@ -281,6 +290,7 @@ impl fmt::Display for KernelError {
             KernelError::ChamferBoolean { edge, error } => {
                 write!(f, "chamfer of edge {}: {error}", edge.0)
             }
+            KernelError::Loft { reason, .. } => write!(f, "{reason}"),
         }
     }
 }
