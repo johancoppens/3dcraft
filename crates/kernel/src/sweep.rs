@@ -41,21 +41,28 @@
 //! gives one face per piece of the path. A profile that is one whole
 //! circle has no seam along the path when the path is lines and arcs: its
 //! faces are bounded by the circles (ellipses at a mitre) between the
-//! pieces alone. A circle that is the whole path is two half turns.
+//! pieces alone. A circle that is the whole path is two half turns, and a
+//! spline that closes on itself two pieces (cut where a profile cuts it:
+//! at its inner knot nearest the middle), so that no face goes all the
+//! way round and meets itself.
 //!
 //! **Along a spline** the swept surface is not a B-spline surface, and it
 //! is approximated: the profile is placed in the frames of the spline at
-//! a row of stations (its ends, the knots between its polynomial spans
-//! and equally many places within each span), and the side is the cubic
-//! B-spline surface through them, one polynomial band per span of the
-//! path (the true surface is only once differentiable where spans meet).
-//! The number of stations per span is doubled until the surfaces lie
-//! within half the linear tolerance of the true sweep, measured halfway
-//! between stations: a point of a surface there is compared with the
-//! point of the profile at the same parameter, placed in the exact frame
-//! of the path where that frame's plane contains it. What was reached is
-//! [`Swept::deviation`]. The ends of the piece are exact, so caps and
-//! neighbouring pieces are.
+//! a row of stations, and the side is the B-spline surface through them.
+//! Each polynomial span of the path (the true surface is only once
+//! differentiable where spans meet) is followed in one or more parts, and
+//! along each part the surface is one polynomial, of degree 5, 7 or 9,
+//! through the profile at the ends of the part and at the Chebyshev
+//! points between them. Degrees and parts are raised ([`PLANS`]) until
+//! every surface lies within half the linear tolerance of the true
+//! sweep, measured at three places between each two stations in a row: a
+//! point of a surface there is compared with the point of the profile at
+//! the same parameter, placed in the exact frame of the path where that
+//! frame's plane contains it. What was reached is [`Swept::deviation`].
+//! The ends of the piece are exact, so caps and neighbouring pieces are.
+//! (A cubic through equally spaced stations, which is what a loft is,
+//! needs some sixty stations per span for a tolerance of a millionth of
+//! the size, and as many knot lines in every face; these need ten.)
 //!
 //! **What is refused, before anything is built:** a path that branches,
 //! is in several parts or has a corner at an arc or a spline; a mitre so
@@ -98,8 +105,20 @@ pub const MAX_SWEEP_FACES: usize = 100_000;
 /// whose plane is within it of square to the path is square to it.
 pub const SMOOTH: f64 = 1e-6;
 
-/// Stations per polynomial span of a spline path, tried in this order.
-const STATIONS: [usize; 6] = [4, 8, 16, 32, 64, 128];
+/// How a polynomial span of a spline path is followed, tried in this
+/// order: in how many parts, and of what degree the surface is along
+/// each (it passes through one station more than its degree per part).
+const PLANS: [(usize, usize); 9] = [
+    (1, 5),
+    (1, 7),
+    (1, 9),
+    (2, 7),
+    (2, 9),
+    (4, 7),
+    (4, 9),
+    (8, 9),
+    (16, 9),
+];
 
 /// How near the reach of the profile may come to the radius of curvature
 /// of a spline path, as a part of that radius.
@@ -202,8 +221,8 @@ pub struct Swept {
     /// How far the surfaces along splines of the path were found to lie
     /// from the true sweep, at most; 0 for a path of lines and arcs.
     pub deviation: f64,
-    /// The most stations any spline of the path was given per polynomial
-    /// span; 0 for a path of lines and arcs.
+    /// The most stations any spline of the path was followed through; 0
+    /// for a path of lines and arcs.
     pub stations: usize,
 }
 
@@ -357,7 +376,14 @@ fn chain(curves: &[SketchCurve], tol: f64) -> Result<Chain, KernelError> {
                 ));
             }
             Curve2::Spline(spline) => {
-                for part in spline.profile_pieces(false) {
+                // A spline that closes on itself is cut in two, as a
+                // profile cuts it: a face that went all the way round
+                // would meet itself in a seam nothing can follow.
+                let closes = matches!(
+                    (spline.control.first(), spline.control.last()),
+                    (Some(first), Some(last)) if distance(*first, *last) <= tol
+                );
+                for part in spline.profile_pieces(closes) {
                     let (Some(&start), Some(&end)) = (part.control.first(), part.control.last())
                     else {
                         return Err(internal());
@@ -1212,40 +1238,52 @@ fn flat_or(
     Ok(Surface::Nurbs(surface))
 }
 
-/// The band that joins the stations of a spline of `spans` polynomial
-/// spans with `per_span` steps each: a cubic through the stations of each
-/// span, the spans joined where they meet.
-fn span_band(spans: usize, per_span: usize) -> Result<Band, KernelError> {
-    let count = spans
-        .checked_mul(per_span)
+/// Where the stations of one part of the path are, as parts of it from 0
+/// to 1: the ends and the Chebyshev points between them, through which a
+/// polynomial of degree `degree` follows a smooth curve about as well as
+/// one of that degree can.
+fn stations_of(degree: usize) -> Vec<f64> {
+    (0..=degree)
+        .map(|j| {
+            if j == 0 {
+                0.0
+            } else if j == degree {
+                1.0
+            } else {
+                0.5 * (1.0 - (PI * j as f64 / degree as f64).cos())
+            }
+        })
+        .collect()
+}
+
+/// The band that joins the stations of `parts` parts of a path, each
+/// followed by one polynomial of degree `degree` through its stations at
+/// `at` (see [`stations_of`]); the parts are joined where they meet.
+fn part_band(parts: usize, degree: usize, at: &[f64]) -> Result<Band, KernelError> {
+    let count = parts
+        .checked_mul(degree)
         .and_then(|n| n.checked_add(1))
         .filter(|n| *n <= MAX_SWEEP_FACES)
         .ok_or_else(internal)?;
-    let params: Vec<f64> = (0..=per_span).map(|j| j as f64 / per_span as f64).collect();
-    let (own, matrix) = interpolation(&params, 3)?;
+    let (_, matrix) = interpolation(at, degree)?;
     let unit = |k: usize| -> Vec<f64> { (0..count).map(|i| f64::from(u8::from(i == k))).collect() };
-    let mut knots = vec![0.0; 4];
+    let mut knots = vec![0.0; degree + 1];
     let mut mix = Vec::with_capacity(count);
-    for span in 0..spans {
-        let base = span * per_span;
-        knots.extend(
-            own.iter()
-                .filter(|k| **k > 0.0 && **k < 1.0)
-                .map(|k| k + span as f64),
-        );
+    for part in 0..parts {
+        let base = part * degree;
         knots.extend(std::iter::repeat_n(
-            (span + 1) as f64,
-            if span + 1 < spans { 3 } else { 4 },
+            (part + 1) as f64,
+            if part + 1 < parts { degree } else { degree + 1 },
         ));
         for (r, row) in matrix.iter().enumerate() {
-            if r == 0 && span > 0 {
+            if r == 0 && part > 0 {
                 continue;
             }
-            // The band passes through the ends of each span exactly.
+            // The band passes through the ends of each part exactly.
             mix.push(if r == 0 {
                 unit(base)
-            } else if r == per_span {
-                unit(base + per_span)
+            } else if r == degree {
+                unit(base + degree)
             } else {
                 let mut wide = vec![0.0; count];
                 for (slot, value) in wide.iter_mut().skip(base).zip(row) {
@@ -1258,7 +1296,7 @@ fn span_band(spans: usize, per_span: usize) -> Result<Band, KernelError> {
     Ok(Band {
         from: 0,
         to: count - 1,
-        degree: 3,
+        degree,
         knots,
         mix,
     })
@@ -1311,7 +1349,8 @@ struct Followed {
     stations: Vec<Station>,
     band: Band,
     deviation: f64,
-    per_span: usize,
+    /// How many stations there are.
+    count: usize,
     length: f64,
 }
 
@@ -1390,28 +1429,39 @@ fn follow(
     }
 
     let mut reached = f64::INFINITY;
-    for per_span in STATIONS {
-        let mut parameters = Vec::with_capacity(spans * per_span + 1);
-        let mut stations = Vec::with_capacity(spans * per_span + 1);
-        for (span, (&low, &high)) in knots.iter().zip(knots.iter().skip(1)).enumerate() {
-            for step in 0..=per_span {
-                if step == 0 && span > 0 {
-                    continue;
-                }
-                let t = if step == per_span {
+    let mut most = 0;
+    for (parts, degree) in PLANS {
+        let within = stations_of(degree);
+        let mut parameters = Vec::with_capacity(spans * parts * degree + 1);
+        let mut stations = Vec::with_capacity(spans * parts * degree + 1);
+        for (&low, &high) in knots.iter().zip(knots.iter().skip(1)) {
+            for part in 0..parts {
+                let from = low + (high - low) * part as f64 / parts as f64;
+                let to = if part + 1 == parts {
                     high
                 } else {
-                    low + (high - low) * step as f64 / per_span as f64
+                    low + (high - low) * (part + 1) as f64 / parts as f64
                 };
-                parameters.push(t);
-                stations.push(if stations.is_empty() {
-                    *first
-                } else {
-                    spine.station(t)?
-                });
+                for (step, share) in within.iter().enumerate() {
+                    if step == 0 && !stations.is_empty() {
+                        continue;
+                    }
+                    let t = if step == degree {
+                        to
+                    } else {
+                        from + (to - from) * share
+                    };
+                    parameters.push(t);
+                    stations.push(if stations.is_empty() {
+                        *first
+                    } else {
+                        spine.station(t)?
+                    });
+                }
             }
         }
-        let band = span_band(spans, per_span)?;
+        most = stations.len();
+        let band = part_band(spans * parts, degree, &within)?;
         let mut worst: f64 = 0.0;
         for element in loops.iter().flatten() {
             let column = stations
@@ -1420,17 +1470,24 @@ fn follow(
                 .collect::<Result<Vec<_>, _>>()?;
             let surface = skin(&column, &band)?;
             let own = column.first().ok_or_else(internal)?;
-            let ((u0, u1), (v0, v1)) = surface.domain();
+            let ((u0, u1), _) = surface.domain();
             const ACROSS: u32 = 8;
+            // Between each two stations in a row, at three places.
             for (gap, (&t0, &t1)) in parameters.iter().zip(parameters.iter().skip(1)).enumerate() {
-                let v = v0 + (v1 - v0) * (gap as f64 + 0.5) / (parameters.len() - 1) as f64;
-                for i in 0..=ACROSS {
-                    let u = u0 + (u1 - u0) * f64::from(i) / f64::from(ACROSS);
-                    let made = surface.eval(u, v);
-                    let t = spine.foot(made, (t0 + t1) / 2.0);
-                    let found = spine.station(t)?.local(made);
-                    let meant = first.local(own.eval(u));
-                    worst = worst.max(distance(found, meant));
+                let (part, step) = (gap / degree, gap % degree);
+                let (Some(&s0), Some(&s1)) = (within.get(step), within.get(step + 1)) else {
+                    return Err(internal());
+                };
+                for share in [0.25, 0.5, 0.75] {
+                    let v = part as f64 + s0 + (s1 - s0) * share;
+                    for i in 0..=ACROSS {
+                        let u = u0 + (u1 - u0) * f64::from(i) / f64::from(ACROSS);
+                        let made = surface.eval(u, v);
+                        let t = spine.foot(made, t0 + (t1 - t0) * share);
+                        let found = spine.station(t)?.local(made);
+                        let meant = first.local(own.eval(u));
+                        worst = worst.max(distance(found, meant));
+                    }
                 }
             }
         }
@@ -1443,7 +1500,7 @@ fn follow(
                 stations,
                 band,
                 deviation: worst,
-                per_span,
+                count: most,
                 length,
             });
         }
@@ -1451,8 +1508,7 @@ fn follow(
     Err(refuse(
         &[source],
         format!(
-            "the sweep along the spline e{source} cannot be brought within the tolerance: with {} stations per span of the spline its surfaces are still {reached} from the true sweep, and half the tolerance ({}) is allowed; give the document a coarser tolerance, or draw the path with lines and arcs",
-            STATIONS.last().copied().unwrap_or(0),
+            "the sweep along the spline e{source} cannot be brought within the tolerance: with {most} stations along the spline its surfaces are still {reached} from the true sweep, and half the tolerance ({}) is allowed; give the document a coarser tolerance, or draw the path with lines and arcs",
             tol / 2.0
         ),
     ))
@@ -2072,7 +2128,7 @@ pub fn sweep(
                 let next = *followed.stations.last().ok_or_else(internal)?;
                 path_length += followed.length;
                 deviation = deviation.max(followed.deviation);
-                most_stations = most_stations.max(followed.per_span);
+                most_stations = most_stations.max(followed.count);
                 (
                     Motion::Follow {
                         stations: followed.stations,

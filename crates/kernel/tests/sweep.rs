@@ -911,3 +911,299 @@ fn a_round_pipe_is_the_union_of_its_pieces() {
     );
     close(ours.volume, theirs.volume, 1e-9);
 }
+
+/// A B-spline of the test's own: de Boor.
+fn de_boor(degree: usize, knots: &[f64], control: &[P], t: f64) -> P {
+    let n = control.len();
+    let mut span = degree;
+    while span + 1 < n && t >= knots[span + 1] {
+        span += 1;
+    }
+    let mut d: Vec<P> = (0..=degree).map(|j| control[span - degree + j]).collect();
+    for r in 1..=degree {
+        for j in (r..=degree).rev() {
+            let i = span - degree + j;
+            let alpha = (t - knots[i]) / (knots[i + degree - r + 1] - knots[i]);
+            d[j] = [
+                (1.0 - alpha) * d[j - 1][0] + alpha * d[j][0],
+                (1.0 - alpha) * d[j - 1][1] + alpha * d[j][1],
+            ];
+        }
+    }
+    d[degree]
+}
+
+/// An S through six control points that leaves the origin along +y: a
+/// cubic spline of three spans. Id 101.
+const WAVE: [P; 6] = [
+    [0.0, 0.0],
+    [0.0, 4.0],
+    [-3.0, 7.0],
+    [-3.0, 11.0],
+    [1.0, 14.0],
+    [1.0, 18.0],
+];
+
+fn wave(k: f64) -> Vec<SketchCurve> {
+    scale_curves(&[spline(101, 3, &WAVE)], k)
+}
+
+/// `WAVE` as a polygon of many chords, in the world's xy plane.
+fn wave_polygon(k: f64, chords: usize) -> Vec<Vec3> {
+    let kn = knots(3, WAVE.len());
+    (0..=chords)
+        .map(|i| {
+            let p = de_boor(3, &kn, &WAVE, i as f64 / chords as f64);
+            Vec3::new(p[0] * k, p[1] * k, 0.0)
+        })
+        .collect()
+}
+
+fn polygon_length(points: &[Vec3]) -> f64 {
+    points.windows(2).map(|w| w[0].distance(w[1])).sum()
+}
+
+/// The distance from `p` to the polygon.
+fn polygon_distance(points: &[Vec3], p: Vec3) -> f64 {
+    points
+        .windows(2)
+        .map(|w| {
+            let d = w[1] - w[0];
+            let t = ((p - w[0]).dot(d) / d.length_squared()).clamp(0.0, 1.0);
+            p.distance(w[0] + d * t)
+        })
+        .fold(f64::INFINITY, f64::min)
+}
+
+/// A tolerance that suits a body of size `k`: the default up to a unit,
+/// and as fine in proportion above it. Along a spline the sweep is an
+/// approximation within the tolerance, and one part in 10¹² is not to be
+/// had.
+fn tolerance_at(k: f64) -> Tolerance {
+    Tolerance::new(1e-6 * k.max(1.0), 1e-9).unwrap()
+}
+
+#[test]
+fn a_pipe_along_a_spline_lies_within_the_tolerance_of_the_true_sweep() {
+    for k in SCALES {
+        let tolerance = tolerance_at(k);
+        let r = 0.5 * k;
+        let pipe = sweep(
+            &profile(&[circle(1, [0.0, 0.0], r)]),
+            &front(),
+            &wave(k),
+            &Frame::WORLD,
+            &tolerance,
+        )
+        .unwrap();
+        // What it says of itself.
+        assert!(
+            pipe.deviation > 0.0 && pipe.deviation <= tolerance.linear / 2.0,
+            "{}",
+            pipe.deviation
+        );
+        assert!(pipe.stations >= 6);
+        let centre_line = wave_polygon(k, 20_000);
+        let length = polygon_length(&wave_polygon(k, 100_000));
+        close(pipe.length, length, 1e-8);
+        // The circle in four quarters, each one face along the spline.
+        let sides = kinds(&pipe, Role::Side);
+        assert_eq!(sides, ["nurbs surface"; 4]);
+
+        // Measured here: every point of a side is at the pipe's radius
+        // from the centre line.
+        let mut worst: f64 = 0.0;
+        for face in pipe.body.faces.iter().take(4) {
+            let ((u0, u1), (v0, v1)) = face.surface.domain();
+            for i in 0..=6 {
+                for j in 0..=24 {
+                    let (u, v) = (
+                        u0 + (u1 - u0) * i as f64 / 6.0,
+                        v0 + (v1 - v0) * j as f64 / 24.0,
+                    );
+                    let p = face.surface.eval(u, v);
+                    worst = worst.max((polygon_distance(&centre_line, p) - r).abs());
+                }
+            }
+        }
+        // (The polygon itself is within 1e-7 of a unit of the spline.)
+        assert!(
+            worst <= tolerance.linear / 2.0 + 1e-7 * k,
+            "{worst} at scale {k}; the sweep says {}",
+            pipe.deviation
+        );
+
+        // A profile centred on a path in a plane sweeps its area times
+        // the length of the path, whatever the path. The surfaces are
+        // within `deviation` of the true ones, so the volume is within
+        // the area of the sides times that: 2 π r · length · deviation.
+        let (volume, area, _) = sound_with(&pipe, k, &tolerance);
+        let exact = PI * r * r * length;
+        let bound = TAU * r * length * pipe.deviation + 1e-8 * exact;
+        assert!(
+            (volume - exact).abs() <= bound,
+            "volume {volume}, exact {exact}, allowed {bound}"
+        );
+        // The area changes with the surface's distance from the true one
+        // by its curvature, which is at most that of the profile: 1/r.
+        close(
+            area,
+            TAU * r * length + 2.0 * PI * r * r,
+            2.0 * pipe.deviation / r + 1e-7,
+        );
+    }
+}
+
+#[test]
+fn a_square_bar_along_a_spline_keeps_its_flat_sides_flat() {
+    let bar = profile(&rectangle(1, 1, (-0.6, 0.6), (-0.4, 0.4)));
+    let swept = sweep(&bar, &front(), &wave(1.0), &Frame::WORLD, &tol()).unwrap();
+    let sides = kinds(&swept, Role::Side);
+    // Top and bottom are planes, exactly; the two walls follow the path.
+    assert_eq!(count(&sides, "plane"), 2, "{sides:?}");
+    assert_eq!(count(&sides, "nurbs surface"), 2, "{sides:?}");
+    let (volume, area, _) = sound(&swept, 1.0);
+    let length = polygon_length(&wave_polygon(1.0, 100_000));
+    let exact = 1.2 * 0.8 * length;
+    assert!(
+        (volume - exact).abs() <= 4.0 * length * swept.deviation + 1e-8 * exact,
+        "volume {volume}, exact {exact}"
+    );
+    // The walls are offsets of the path, as long as it together (what one
+    // gains in a bend the other loses); top and bottom are 1.2 wide.
+    close(
+        area,
+        2.0 * 1.2 * length + 2.0 * 0.8 * length + 2.0 * 0.96,
+        1e-6,
+    );
+}
+
+#[test]
+fn lines_and_a_spline_in_one_path_share_the_profile_where_they_meet() {
+    // 4 along +y, the wave moved up by 4, and 3 on along +y.
+    let moved: Vec<P> = WAVE.iter().map(|p| [p[0], p[1] + 4.0]).collect();
+    let path = [
+        line(101, [0.0, 0.0], [0.0, 4.0]),
+        spline(102, 3, &moved),
+        line(103, [1.0, 22.0], [1.0, 25.0]),
+    ];
+    let swept = sweep(
+        &profile(&bulge(0.5)),
+        &front(),
+        &path,
+        &Frame::WORLD,
+        &tol(),
+    )
+    .unwrap();
+    assert!(swept.deviation > 0.0 && swept.deviation <= 5e-7);
+    // The base is one plane along all three; the sides and the spline
+    // are one face per piece of the path.
+    assert_eq!(swept.body.faces.len(), 1 + 3 * 3 + 2);
+    let (volume, _, _) = sound(&swept, 0.5);
+    // Not centred on the path: a profile whose centre is `a` to the left
+    // sweeps its area times (length − a × the angle the path turns
+    // through in all), and this path ends in the direction it starts in.
+    let (area, _, boundary, _) = polygon_measures(&bulge_outline(0.5));
+    let length = 7.0 + polygon_length(&wave_polygon(1.0, 100_000));
+    let exact = area * length;
+    assert!(
+        (volume - exact).abs() <= boundary * length * swept.deviation + 1e-8 * exact,
+        "volume {volume}, exact {exact}"
+    );
+}
+
+#[test]
+fn a_spline_that_bends_tighter_than_the_profile_reaches_is_refused_with_the_place() {
+    // A hairpin: the radius of curvature at its top is well under 1.
+    let hairpin = [spline(
+        101,
+        3,
+        &[[0.0, 0.0], [0.0, 6.0], [-2.0, 6.0], [-2.0, 0.0]],
+    )];
+    let wide = profile(&rectangle(1, 1, (-1.0, 1.0), (-0.2, 0.2)));
+    let why = refusal(sweep(&wide, &front(), &hairpin, &Frame::WORLD, &tol()));
+    assert!(
+        why.contains("bends too tightly") && why.contains("e101") && why.contains("radius"),
+        "{why}"
+    );
+    // A wire thin enough goes round it.
+    let wire = profile(&[circle(1, [0.0, 0.0], 0.1)]);
+    let swept = sweep(&wire, &front(), &hairpin, &Frame::WORLD, &tol()).unwrap();
+    sound(&swept, 0.1);
+    // A corner between a line and a spline is refused like one at an arc.
+    let kinked = [
+        line(101, [0.0, 0.0], [0.0, 4.0]),
+        spline(102, 3, &[[0.0, 4.0], [2.0, 6.0], [2.0, 9.0], [0.0, 11.0]]),
+    ];
+    let why = refusal(sweep(&wire, &front(), &kinked, &Frame::WORLD, &tol()));
+    assert!(why.contains("corner") && why.contains("e102"), "{why}");
+    // A tolerance no row of stations reaches.
+    let fine = Tolerance::new(1e-15, 1e-9).unwrap();
+    let why = refusal(sweep(&wire, &front(), &wave(1.0), &Frame::WORLD, &fine));
+    assert!(
+        why.contains("cannot be brought within the tolerance"),
+        "{why}"
+    );
+}
+
+#[test]
+fn a_closed_spline_is_a_path_and_a_polyline_a_row_of_mitres() {
+    // A rounded square as one closed spline of degree 2 (its control
+    // polygon a square, doubled at the middles so that it is smooth): it
+    // passes through the origin along +y.
+    let ring = [spline(
+        101,
+        2,
+        &[
+            [0.0, 0.0],
+            [0.0, 5.0],
+            [-5.0, 5.0],
+            [-10.0, 5.0],
+            [-10.0, 0.0],
+            [-10.0, -5.0],
+            [-5.0, -5.0],
+            [0.0, -5.0],
+            [0.0, 0.0],
+        ],
+    )];
+    let swept = sweep(
+        &profile(&[circle(1, [0.0, 0.0], 0.5)]),
+        &front(),
+        &ring,
+        &Frame::WORLD,
+        &tol(),
+    )
+    .unwrap();
+    assert!(swept.closed);
+    assert_eq!(genus(&swept.body), Some(1));
+    let (volume, _, _) = sound(&swept, 0.5);
+    close(volume, PI * 0.25 * swept.length, 1e-5);
+
+    // A polyline (a spline of degree 1) is its lines, mitred.
+    let zigzag = [spline(
+        101,
+        1,
+        &[[0.0, 0.0], [0.0, 6.0], [-4.0, 9.0], [-4.0, 15.0]],
+    )];
+    let swept = sweep(
+        &profile(&rectangle(1, 1, (-0.5, 0.5), (-0.5, 0.5))),
+        &front(),
+        &zigzag,
+        &Frame::WORLD,
+        &tol(),
+    )
+    .unwrap();
+    assert_eq!(swept.deviation, 0.0);
+    assert_eq!(kinds(&swept, Role::Side), ["plane"; 8]);
+    let (volume, _, _) = sound(&swept, 1.0);
+    close(volume, 6.0 + 5.0 + 6.0, 1e-12);
+    // The three faces one side of the profile makes along the one curve
+    // of the path are told apart by their number.
+    let pieces: Vec<_> = swept
+        .faces
+        .iter()
+        .filter(|o| o.sources == [2, 101])
+        .map(|o| o.piece)
+        .collect();
+    assert_eq!(pieces, [0, 1, 2]);
+}
