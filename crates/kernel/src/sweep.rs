@@ -1660,8 +1660,17 @@ impl Builder {
                 (Curve3::Line(Line::through(p, q)?), (0.0, length), length)
             }
             Motion::Turn { frame, angle } => {
-                let (rho, _, z) = frame.local(p);
-                let level = frame.at(frame.point(0.0, 0.0, z)).ok_or_else(internal)?;
+                // The circle starts at the vertex, which is off the
+                // frame's x axis when the profile arrives turned.
+                let (x, y, z) = frame.local(p);
+                let rho = x.hypot(y);
+                let level = if y == 0.0 {
+                    frame.at(frame.point(0.0, 0.0, z))
+                } else {
+                    let centre = frame.point(0.0, 0.0, z);
+                    Frame::new(centre, frame.z(), p - centre)
+                }
+                .ok_or_else(internal)?;
                 (
                     Curve3::Circle(Circle::new(level, rho)?),
                     (0.0, *angle),
@@ -1730,8 +1739,8 @@ impl Builder {
             },
             Motion::Turn { frame, angle } => {
                 let place = |p: P2| {
-                    let (rho, _, z) = frame.local(station.at(p));
-                    (rho, z)
+                    let (x, y, z) = frame.local(station.at(p));
+                    (x.hypot(y), z)
                 };
                 let level = |z: f64| frame.at(frame.point(0.0, 0.0, z)).ok_or_else(internal);
                 let analytic = match &element.form {
@@ -1780,6 +1789,68 @@ impl Builder {
             }
         }
     }
+}
+
+/// How far the sweep can be from the exact one at a kink of the path:
+/// where two pieces meet with directions `turn` (the sine) and `same`
+/// (the cosine) apart, and the profile reaches `reach` to either side of
+/// the path. Infinite when the path turns back (`same` not positive).
+///
+/// The exact sweep through a corner turns the profile about the path's
+/// binormal there, from square to the piece before to square to the piece
+/// after. The sweep instead keeps the profile square to the piece before
+/// until a line lays it square again (see the module documentation).
+/// Turning the profile about the binormal through a small angle `a` moves
+/// a point of it along the path, which is along the faces either piece
+/// sweeps, to first order; off them it moves by `reach (1 - cos a)` at
+/// most. That second-order movement is what is measured: below half the
+/// tolerance the kink is invisible to the body, while the first-order
+/// `reach sin a` (a kink of 3e-6 radians across a profile 5 wide, as an
+/// end rounded to four decimals gives, is 1.5e-5) is not a distance any
+/// point of the body is off.
+fn kink_movement(turn: f64, same: f64, reach: f64) -> f64 {
+    if !(same > 0.0) {
+        return f64::INFINITY;
+    }
+    // 1 - cos a, without the cancellation.
+    let versine = turn * turn / (1.0 + same);
+    let moved = reach * versine;
+    if moved.is_nan() { f64::INFINITY } else { moved }
+}
+
+/// How far the sweep along an arc of `radius` is from the exact one when
+/// the profile arrives turned from square to the arc by an angle whose
+/// versine (1 - cos) is `versine`, turning to the left when `side` is
+/// positive; `reach` is how far the profile reaches to the right and to
+/// the left of the path (`low` and `high`).
+///
+/// The profile is carried round the arc's own axis as it arrives. A point
+/// of it `q` towards the axis, square, is `radius - q` from the axis;
+/// turned, `sqrt((radius - q cos)^2 + (q sin)^2)`, which differs by
+/// `radius q (1 - cos) / (radius - q)`, to within the square of that. The
+/// faces of a curve of the profile that is turned like this are surfaces
+/// of revolution of the turned curve, so they are that far from the exact
+/// sweep's: exactly so for those that are B-spline surfaces of
+/// revolution; tori, cylinders and cones are put through the turned
+/// curve's centre or ends, and are off it by no more.
+fn tilted_turn(radius: f64, versine: f64, side: f64, reach: (f64, f64)) -> f64 {
+    if versine == 0.0 {
+        return 0.0;
+    }
+    let (inside, outside) = if side > 0.0 {
+        (reach.1, reach.0)
+    } else {
+        (-reach.0, -reach.1)
+    };
+    let mut most: f64 = 0.0;
+    for q in [inside, outside] {
+        let off = radius * q.abs() * versine / (radius - q);
+        if !off.is_finite() {
+            return f64::INFINITY;
+        }
+        most = most.max(off);
+    }
+    most
 }
 
 /// How far `map` moves the profile of `plane` when it lays it into the
@@ -1981,6 +2052,9 @@ pub fn sweep(
             reason: "a point of the profile is not finite",
         });
     }
+    // How far the profile reaches to either side of the path, in its
+    // plane.
+    let reach = low.abs().max(high.abs());
 
     // How the pieces meet.
     let mut joints = Vec::with_capacity(count);
@@ -2003,9 +2077,15 @@ pub fn sweep(
             });
         };
         let (turn, same) = (cross(arriving, leaving), dot(arriving, leaving));
-        joints.push(if same > 0.0 && turn.abs() <= SMOOTH {
+        let lines = leg.is_line() && next.is_line();
+        // A kink the profile can be turned through within the tolerance
+        // is taken as tangent (see `kink_movement`); between two lines
+        // only one within `SMOOTH`, as a mitre is exact.
+        let movement = kink_movement(turn, same, reach);
+        let smooth = movement <= tol / 2.0 && (!lines || turn.abs() <= SMOOTH);
+        joints.push(if smooth {
             Joint::Smooth
-        } else if leg.is_line() && next.is_line() {
+        } else if lines {
             // The cosine of half the angle the path turns through.
             let half = ((1.0 + same) / 2.0).max(0.0).sqrt();
             let normal = unit(add(arriving, leaving)).filter(|_| half > 1e-3);
@@ -2066,6 +2146,20 @@ pub fn sweep(
                 onto(&before, direction(arriving), square.origin, normal, false)
                     .ok_or_else(internal)?
             }
+            // A curve that closes the path at a kink into a line arrives
+            // square to itself, and the line slides from there.
+            (true, Joint::Smooth) if first_leg.is_line() => {
+                let last = legs.last().ok_or_else(internal)?;
+                if last.is_line() {
+                    square
+                } else {
+                    let arriving = last.tangent(true).ok_or_else(internal)?;
+                    Station {
+                        u: direction(left(arriving)),
+                        ..square
+                    }
+                }
+            }
             _ => square,
         }
     };
@@ -2094,11 +2188,45 @@ pub fn sweep(
                 let along = direction(leaving);
                 let run = distance(leg.start, leg.end);
                 let end = station.origin + along * run;
+                // At a kink the line ends square to the piece after it,
+                // which then starts square.
                 let (normal, square) = match joint(k)? {
                     Joint::Mitre(normal) => (normal, false),
-                    Joint::End | Joint::Smooth => (along, true),
+                    Joint::End => (along, true),
+                    Joint::Smooth => {
+                        let after = legs.get(k + 1).or(legs.first().filter(|_| closed && last));
+                        let leaving = after.and_then(|l| l.tangent(false)).ok_or_else(internal)?;
+                        (direction(leaving), true)
+                    }
                 };
-                let next = onto(&station, along, end, normal, square).ok_or_else(internal)?;
+                let next = onto(&station, along, end, normal, false).ok_or_else(internal)?;
+                // Laid square, a profile that arrives turned (through a
+                // kink before the line, or to leave square through one
+                // after it) is drawn in towards the path by the cosine of
+                // the angle: by `reach (1 - cos)`, which the kinks keep
+                // within half the tolerance.
+                let next = if square {
+                    let stretch = next.u.length();
+                    let drawn_in = reach * (stretch - 1.0).abs();
+                    if !(drawn_in <= tol / 2.0) {
+                        return Err(refuse(
+                            &[leg.source],
+                            format!(
+                                "the path has corners about e{} that together turn the profile too far from square: laying it square at the end of e{} moves it by up to {drawn_in}, more than half the tolerance ({}); make the curves tangent there",
+                                leg.source,
+                                leg.source,
+                                tol / 2.0
+                            ),
+                        ));
+                    }
+                    Station {
+                        u: next.u.normalized().ok_or_else(internal)?,
+                        square: true,
+                        ..next
+                    }
+                } else {
+                    next
+                };
                 // How far each side of the profile travels along the line.
                 let shift = (next.u - station.u).dot(along);
                 let (short, at) = if shift < 0.0 {
@@ -2154,9 +2282,51 @@ pub fn sweep(
                         ),
                     ));
                 }
-                let axis = station.origin + station.u * (side * radius);
+                // The profile arrives square to the piece before; after
+                // a kink it is turned from square to this arc by `tilt`,
+                // and is carried round the arc's own axis like that (see
+                // `tilted_turn`).
+                let square_here = direction(left(leaving));
+                let (sin, cos) = (station.u.cross(square_here).length(), station.u.dot(square_here));
+                let versine = sin * sin / (1.0 + cos);
+                let off = tilted_turn(radius, versine, side, (low, high));
+                if !(cos > 0.0 && off <= tol / 2.0) {
+                    let before = if k > 0 {
+                        legs.get(k - 1)
+                    } else {
+                        legs.last().filter(|_| closed)
+                    };
+                    let pair = [before.map_or(leg.source, |l| l.source), leg.source];
+                    return Err(refuse(
+                        &pair,
+                        format!(
+                            "the path has a corner of {}° where e{} meets e{}: carried round e{} with the profile square to the curve before it, the sweep would be up to {off} off, more than half the tolerance ({}); make the curves tangent there",
+                            sin.atan2(cos).to_degrees(),
+                            pair[0],
+                            pair[1],
+                            leg.source,
+                            tol / 2.0
+                        ),
+                    ));
+                }
+                // The end of the path is square to it, within the tolerance.
+                if !closed && last {
+                    let skew = reach * sin;
+                    if !(skew <= tol / 2.0) {
+                        return Err(refuse(
+                            &[leg.source],
+                            format!(
+                                "the path ends on e{} turned {}° from square to it, by the corners before it: its end would be up to {skew} off square, more than half the tolerance ({}); make the curves tangent there",
+                                leg.source,
+                                sin.atan2(cos).to_degrees(),
+                                tol / 2.0
+                            ),
+                        ));
+                    }
+                }
+                let axis = station.origin + square_here * (side * radius);
                 let frame =
-                    Frame::new(axis, b_axis * side, -station.u * side).ok_or_else(internal)?;
+                    Frame::new(axis, b_axis * side, -square_here * side).ok_or_else(internal)?;
                 let angle = sweep.abs();
                 let next = Station {
                     origin: axis + turned(&frame, station.origin - axis, angle),
