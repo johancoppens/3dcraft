@@ -341,6 +341,9 @@ pub struct DocumentStatus {
 /// A scene, or why it could not be built.
 type Built = Result<Arc<Scene>, CommandError>;
 
+/// The scenes of one document, by the quality asked for.
+type Scenes = Vec<(SceneKey, Built)>;
+
 /// The scenes of the document last looked at.
 #[derive(Clone, Default)]
 pub(crate) struct SceneCache {
@@ -351,12 +354,12 @@ pub(crate) struct SceneCache {
     /// Keyed by the quality that was asked for. A scene that could not be
     /// built is remembered as its error, so a viewer asking every frame
     /// does not build it every frame.
-    scenes: Vec<(SceneKey, Built)>,
+    scenes: Scenes,
     /// The scenes of documents looked at before, newest last: making one
     /// of them active again (`file.activate`) shows its scenes again
     /// instead of meshing it anew, as long as it has not changed (the same
     /// `Arc`).
-    parked: Vec<(Arc<Document>, Vec<(SceneKey, Built)>)>,
+    parked: Vec<(Arc<Document>, Scenes)>,
 }
 
 /// Most other documents whose scenes are kept.

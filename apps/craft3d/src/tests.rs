@@ -1681,10 +1681,13 @@ mod engine_thread {
         };
         let first = spawn("slow", 0, "debug.slow", json!({"ms": 900, "steps": 3}));
         let second = spawn(
-            "file.new",
+            "batch",
             200,
-            "engine.execute",
-            json!({"command": "file.new", "params": {}}),
+            "batch",
+            json!({"steps": [
+                {"command": "file.new"},
+                {"command": "feature.block", "params": {"size": [1, 2, 3]}},
+            ]}),
         );
         let third = spawn("ui.fit", 300, "ui.fit", json!({}));
         let look = spawn("ui.get", 400, "ui.get", json!({}));
@@ -1694,17 +1697,14 @@ mod engine_thread {
         assert_eq!(looked["result"]["document"], Value::Null, "{looked}");
         assert_eq!(first.join().unwrap()["ok"], true);
         assert_eq!(second.join().unwrap()["ok"], true);
-        // Framing waited for the document file.new made: there was none
-        // when it was sent, and the fit says there is nothing to frame.
+        // Framing waited for the block the batch sent before it made:
+        // there was nothing to frame when it was sent.
         let fit = third.join().unwrap();
-        assert!(
-            fit["error"].as_str().unwrap().contains("nothing to frame"),
-            "{fit}"
-        );
-        assert_eq!(
-            *order.lock().unwrap(),
-            ["ui.get", "slow", "file.new", "ui.fit"]
-        );
+        assert_eq!(fit["ok"], true, "{fit}");
+        // The batch and the fit are answered in the same turn once the
+        // slow command is done, so only these two are in a fixed order.
+        let order = order.lock().unwrap();
+        assert_eq!(order[..2], ["ui.get", "slow"], "{order:?}");
     }
 
     /// `ui.quit` while work runs: answered at once, the loop stops, and

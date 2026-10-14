@@ -222,6 +222,9 @@ impl Desk {
             if self.waiting.is_some() {
                 let finished = self.worker.as_ref().and_then(Worker::try_finished);
                 let Some(finished) = finished else {
+                    // What came in with the request that started the
+                    // work and may be answered meanwhile, is.
+                    self.answer_anytime();
                     // Progress to show.
                     changed = true;
                     break;
@@ -294,6 +297,24 @@ impl Desk {
         any
     }
 
+    /// Answers the queued `ui.get` and `ui.quit` while the session is
+    /// away; the rest keeps its place.
+    fn answer_anytime(&mut self) {
+        if !self.queue.iter().any(|r| route(&r.line) == Route::Anytime) {
+            return;
+        }
+        self.show_work();
+        let queued = std::mem::take(&mut self.queue);
+        for request in queued {
+            if route(&request.line) == Route::Anytime {
+                let reply = self.answer_away(&request.line);
+                let _ = request.reply.send(reply);
+            } else {
+                self.queue.push_back(request);
+            }
+        }
+    }
+
     /// `ui.get` or `ui.quit` while the session is away. Never panics.
     fn answer_away(&mut self, line: &str) -> Option<String> {
         let shell = &mut self.host.shell;
@@ -345,7 +366,8 @@ impl Desk {
                 }
             }
             // The engine thread is gone: here, then.
-            Err((session, task)) => {
+            Err(back) => {
+                let (session, task) = *back;
                 self.host.session = session;
                 self.worker = None;
                 let outcome = Worker::run_here(&mut self.host.session, task);

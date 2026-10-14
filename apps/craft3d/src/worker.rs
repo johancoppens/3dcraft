@@ -25,7 +25,7 @@ use crate::control::Wake;
 use craft3d_engine::{SceneQuality, Session};
 use craft3d_regen::progress::{self, Progress};
 use craft3d_ui_egui::Work;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -149,29 +149,23 @@ impl Worker {
 
     /// Hands the session over with a task. When the thread is gone, both
     /// come back, to be run where the caller is.
-    pub fn submit(&self, session: Session, task: Task) -> Result<(), (Session, Task)> {
+    pub fn submit(&self, session: Session, task: Task) -> Result<(), Box<(Session, Task)>> {
         let Some(tasks) = &self.tasks else {
-            return Err((session, task));
+            return Err(Box::new((session, task)));
         };
         tasks
             .send((session, task))
-            .map_err(|mpsc::SendError(back)| back)
+            .map_err(|mpsc::SendError(back)| Box::new(back))
     }
 
     /// The task that finished, if one did.
     pub fn try_finished(&self) -> Option<Finished> {
-        match self.finished.try_recv() {
-            Ok(finished) => Some(finished),
-            Err(TryRecvError::Empty | TryRecvError::Disconnected) => None,
-        }
+        self.finished.try_recv().ok()
     }
 
     /// Waits at most `timeout` for the task to finish.
     pub fn wait_finished(&self, timeout: Duration) -> Option<Finished> {
-        match self.finished.recv_timeout(timeout) {
-            Ok(finished) => Some(finished),
-            Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => None,
-        }
+        self.finished.recv_timeout(timeout).ok()
     }
 
     /// What the thread is doing now, for the window; `None` when idle.
@@ -305,6 +299,12 @@ mod tests {
         assert_eq!(work.describe(), "file.open: regenerating J1 (2 of 5)");
         go.send(()).unwrap();
         assert!(worker.wait_finished(Duration::from_secs(30)).is_some());
-        assert!(woken.load(std::sync::atomic::Ordering::SeqCst) >= 3);
+        // Woken at the start, at the step and when done (that last one
+        // just after the answer was sent).
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while woken.load(std::sync::atomic::Ordering::SeqCst) < 3 {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(2));
+        }
     }
 }
