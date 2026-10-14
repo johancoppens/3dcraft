@@ -14,6 +14,7 @@
 //! | cone | dropped along its axis onto the plane across it | nothing: the apex is an ordinary point |
 //! | sphere | stereographic projection from a point chosen clear of the loops | that point, which a face may contain |
 //! | torus | cut open along a circle that the loops do not cross, then one angle and the other as radius | the cut circle, which a face may contain |
+//! | Bézier, NURBS | its own parameters, through the nearest point; where a border of the patch is one point (a pole) the parameter rectangle drawn as a wedge or a lens | nothing: a pole is an ordinary point |
 //!
 //! A loop that goes around a cylinder's axis, a cone's apex or a torus'
 //! tube simply goes around the origin of its chart.
@@ -83,8 +84,10 @@ pub(super) enum Chart {
         cut: f64,
     },
     /// A freeform surface: its own parameters are the chart, found by the
-    /// nearest point through its index. `speed` bounds how fast they
-    /// change per length travelled on the surface.
+    /// nearest point through its index (drawn as a wedge or a lens where
+    /// a border of the surface is one point, so that a pole is an
+    /// ordinary point of the chart: `PatchTree::chart`). `speed` bounds
+    /// how fast the chart moves per length travelled on the surface.
     Patch {
         tree: Arc<PatchTree>,
         speed: f64,
@@ -280,7 +283,7 @@ impl Chart {
             }
             Surface::Bezier(_) | Surface::Nurbs(_) => {
                 let tree = sheet.tree.ok_or(IRREGULAR)?;
-                let speed = tree.parameter_speed().ok_or(IRREGULAR)?;
+                let speed = tree.chart_speed()?;
                 Chart::Patch {
                     tree: Arc::clone(tree),
                     speed,
@@ -324,9 +327,9 @@ impl Chart {
                 let reach = 1.0 + wrap(v - cut) / TAU;
                 (reach * u.cos(), reach * u.sin())
             }
-            Chart::Patch { tree, .. } => {
-                tree.nearest(p).map_or((f64::NAN, f64::NAN), |n| (n.u, n.v))
-            }
+            Chart::Patch { tree, .. } => tree
+                .nearest(p)
+                .map_or((f64::NAN, f64::NAN), |n| tree.chart(n.u, n.v)),
             Chart::Cylinder { .. } | Chart::Sphere { .. } => (0.0, 0.0),
         }
     }

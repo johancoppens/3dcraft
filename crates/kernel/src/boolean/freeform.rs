@@ -23,6 +23,18 @@
 //!   `|∂u × ∂v| / sqrt(|∂u|² + |∂v|²)`, and each of those is bounded by
 //!   the hull of its net.
 //!
+//! A border of a patch may be one point (a pole: the top of a dome swept
+//! about an axis, the apex of a ruled patch). The parameters stall there
+//! and are no chart of the surface, so a surface with poles has a chart
+//! of its own, the parameter rectangle drawn as a wedge or a lens
+//! ([`PatchTree::chart`]), with a speed bounded from nets divided by the
+//! parameter across the pole (`wedge_sigma`); the side of the surface a
+//! point is on, where its nearest point is the pole, comes from the
+//! meridian nearest to it (`craft3d_geom::pole`); and the directions
+//! around the pole are told apart seen along the direction the surface
+//! closes around (`pole_axes`). `docs/architecture.md` §5.3 › *Freeform
+//! faces with a pole* has the arguments.
+//!
 //! A rational surface (weights that are not all one) lies in the hull of
 //! its control points as a polynomial one does, so the boxes and all that
 //! is built on them are the same. Its derivatives are no polynomials, but
@@ -39,6 +51,7 @@
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
 use super::Reason;
+use craft3d_geom::pole::{Border, Pole, poles};
 use craft3d_geom::{BezierPatch, NurbsSurface, RationalBezierPatch, Surface};
 use craft3d_math::{Bbox3, Vec3};
 use std::cmp::Ordering;
@@ -46,6 +59,8 @@ use std::collections::BinaryHeap;
 
 pub(super) const WEIGHTS: Reason = "a rational freeform face whose weights differ by more than a factor of a thousand within one span: its derivatives cannot be bounded usefully";
 pub(super) const IRREGULAR: Reason = "a freeform face whose parametrisation stalls or folds somewhere (a collapsed or self-overlapping patch); its chart cannot be followed";
+pub(super) const POLES_BOTH_WAYS: Reason = "a freeform face whose patch closes into a point on two adjacent sides (collapsed borders both along u and along v); its chart cannot be followed";
+pub(super) const POLE_SHAPE: Reason = "a freeform face that closes into a point too sharply or too unevenly for the directions around that point to be told apart (a cusp, or a point the surface folds back over)";
 const TOO_MANY: Reason = "a freeform face with more pieces than booleans can index";
 
 /// How many times a Bézier span is quartered at most, and how many leaves
@@ -89,6 +104,12 @@ pub(super) struct PatchTree {
     /// the surface over its whole domain, in its own parameters; `None`
     /// where the nets give none.
     second: Option<f64>,
+    /// The borders of the surface that are one point, the direction the
+    /// surface closes around at each, and the layout of the chart they
+    /// call for.
+    poles: Vec<Pole>,
+    axes: Vec<Option<Vec3>>,
+    wedge: Option<Result<Wedge, Reason>>,
 }
 
 /// The nearest point of the surface to a point.
@@ -260,6 +281,31 @@ fn clearance_of(vectors: &[Vec3]) -> f64 {
 /// length of a normal is taken for nothing.
 const ROUNDING: f64 = 1e-9;
 
+/// The largest squared lengths of the two partial derivatives of a patch
+/// and the length of its shortest normal, over the piece's own `[0, 1]²`,
+/// as far as its nets bound them.
+fn piece_bounds(patch: &RationalBezierPatch) -> Option<(f64, f64, f64)> {
+    if let (Some((du, dv)), Some(normal)) = (patch.derivative_nets(), patch.normal_net()) {
+        let longest = |net: &[Vec3]| net.iter().map(|v| v.length_squared()).fold(0.0, f64::max);
+        Some((longest(&du), longest(&dv), clearance_of(&normal)))
+    } else {
+        // Rational: the derivatives are bounded through the nets of the
+        // weighted points and of the weights, and the normal is the
+        // polynomial `w³ (∂u × ∂v)` over the cube of the weight, which is
+        // at most the heaviest.
+        (|| {
+            let bounds = patch.derivative_bounds()?;
+            let normal = patch.weighted_normal_net()?;
+            let (_, heaviest) = patch.weight_range()?;
+            Some((
+                bounds.first_u * bounds.first_u,
+                bounds.first_v * bounds.first_v,
+                clearance_of(&normal) / (heaviest * heaviest * heaviest),
+            ))
+        })()
+    }
+}
+
 /// A lower bound on the smallest singular value of the Jacobian of a
 /// patch over all of it, in the parameters of the surface it is a piece
 /// of (the piece covers `width.0` by `width.1` of them), or zero when the
@@ -267,27 +313,7 @@ const ROUNDING: f64 = 1e-9;
 fn sigma_bound(patch: &RationalBezierPatch, width: (f64, f64)) -> f64 {
     // The largest squared lengths of the two partial derivatives and the
     // shortest normal, over the piece's own `[0, 1]²`.
-    let bounds =
-        if let (Some((du, dv)), Some(normal)) = (patch.derivative_nets(), patch.normal_net()) {
-            let longest = |net: &[Vec3]| net.iter().map(|v| v.length_squared()).fold(0.0, f64::max);
-            Some((longest(&du), longest(&dv), clearance_of(&normal)))
-        } else {
-            // Rational: the derivatives are bounded through the nets of the
-            // weighted points and of the weights, and the normal is the
-            // polynomial `w³ (∂u × ∂v)` over the cube of the weight, which is
-            // at most the heaviest.
-            (|| {
-                let bounds = patch.derivative_bounds()?;
-                let normal = patch.weighted_normal_net()?;
-                let (_, heaviest) = patch.weight_range()?;
-                Some((
-                    bounds.first_u * bounds.first_u,
-                    bounds.first_v * bounds.first_v,
-                    clearance_of(&normal) / (heaviest * heaviest * heaviest),
-                ))
-            })()
-        };
-    let Some((longest_u, longest_v, normal)) = bounds else {
+    let Some((longest_u, longest_v, normal)) = piece_bounds(patch) else {
         return 0.0;
     };
     // A normal that short against the derivatives is rounding, not a
@@ -311,6 +337,12 @@ fn sigma_bound(patch: &RationalBezierPatch, width: (f64, f64)) -> f64 {
     // widths of the piece.
     let sum = longest_u / (wu * wu) + longest_v / (wv * wv);
     let product = (normal / (wu * wv)).powi(2);
+    least_singular(sum, product)
+}
+
+/// The smallest singular value of a Jacobian `[a b]` whose `|a|² + |b|²`
+/// is at most `sum` and whose `|a × b|²` is at least `product`, at least.
+fn least_singular(sum: f64, product: f64) -> f64 {
     if !(sum > 0.0 && sum.is_finite() && product.is_finite()) {
         return 0.0;
     }
@@ -318,6 +350,362 @@ fn sigma_bound(patch: &RationalBezierPatch, width: (f64, f64)) -> f64 {
     // far below the sum squared does not cancel.
     let least = 2.0 * product / (sum + (sum * sum - 4.0 * product).max(0.0).sqrt());
     least.max(0.0).sqrt()
+}
+
+/// How the chart of a surface with poles is laid out (see
+/// [`PatchTree::chart`]).
+#[derive(Clone, Copy, Debug)]
+struct Wedge {
+    /// Whether the poles are on borders of constant v (else of constant
+    /// u).
+    across_v: bool,
+    /// A pole at the start of the parameter across the borders, and at
+    /// its end.
+    low: bool,
+    high: bool,
+    /// The domain of the surface.
+    u: (f64, f64),
+    v: (f64, f64),
+}
+
+/// The norm of the shear `[1 k; 0 1]` with `|k| ≤ ½`, at most: what the
+/// wedge chart stretches a step by beyond the Jacobian it is bounded
+/// with (`√(1 + k²/2 + |k| √(1 + k²/4))` is 1.2808 at ½).
+const SHEAR: f64 = 1.29;
+/// A row of a net this share of its longest vector long is zero: the
+/// field vanishes along that border.
+const ZERO_ROW: f64 = 1e-9;
+/// The limit normals around a pole all make an angle with their mean whose
+/// cosine is more than this, or the directions around the pole are not
+/// told apart (see [`pole_axes`]).
+const AXIS_MARGIN: f64 = 0.05;
+
+impl Wedge {
+    /// The layout for the poles of a surface: `None` without poles, an
+    /// error for poles both ways across.
+    fn of(surface: &Surface, poles: &[Pole]) -> Option<Result<Wedge, Reason>> {
+        let first = poles.first()?;
+        let across_v = first.across_v();
+        if poles.iter().any(|pole| pole.across_v() != across_v) {
+            return Some(Err(POLES_BOTH_WAYS));
+        }
+        let (u, v) = surface.domain();
+        let has = |a: Border, b: Border| poles.iter().any(|p| p.border == a || p.border == b);
+        Some(Ok(Wedge {
+            across_v,
+            low: has(Border::UStart, Border::VStart),
+            high: has(Border::UEnd, Border::VEnd),
+            u,
+            v,
+        }))
+    }
+
+    /// How wide the surface is across a pole's borders at the share `t`
+    /// of the way between them, as the chart draws it: zero at a pole.
+    fn width(&self, t: f64) -> f64 {
+        let low = if self.low { t } else { 1.0 };
+        let high = if self.high { 1.0 - t } else { 1.0 };
+        low * high
+    }
+
+    /// The parameters as shares of the domain: along the poles' borders,
+    /// and across them.
+    fn shares(&self, u: f64, v: f64) -> (f64, f64) {
+        let share = |x: f64, (lo, hi): (f64, f64)| (x - lo) / (hi - lo);
+        if self.across_v {
+            (share(u, self.u), share(v, self.v))
+        } else {
+            (share(v, self.v), share(u, self.u))
+        }
+    }
+
+    /// The chart coordinates of the point at `(u, v)`.
+    fn chart(&self, u: f64, v: f64) -> (f64, f64) {
+        let (s, t) = self.shares(u, v);
+        let across = self.width(t) * (s - 0.5);
+        // Turning the same way as the parameters do.
+        if self.across_v {
+            (across, t)
+        } else {
+            (t, across)
+        }
+    }
+}
+
+/// A net of degree `degree` in its second index (`degree + 1` vectors a
+/// row) divided by that parameter (`low`) or by one less it (`!low`):
+/// the net, one degree lower, of the field over the parameter, which is a
+/// polynomial when the field vanishes on that border, that is when the
+/// net's row there is zero. `None` when it is not (to [`ZERO_ROW`] of the
+/// net's longest vector).
+///
+/// `B_j^n(t) / t = (n / j) B_{j−1}^{n−1}(t)` and `B_j^n(t) / (1 − t) =
+/// (n / (n − j)) B_j^{n−1}(t)`.
+fn divided(net: &[Vec3], degree: usize, low: bool) -> Option<Vec<Vec3>> {
+    if degree == 0 || !net.len().is_multiple_of(degree + 1) {
+        return None;
+    }
+    let longest = net.iter().map(|v| v.length()).fold(0.0, f64::max);
+    let dropped = if low { 0 } else { degree };
+    let mut out = Vec::with_capacity(net.len() / (degree + 1) * degree);
+    for row in net.chunks(degree + 1) {
+        // Not `>`: a NaN is no zero.
+        if !(row.get(dropped)?.length() <= ZERO_ROW * longest) {
+            return None;
+        }
+        for (j, &vector) in row.iter().enumerate() {
+            if j == dropped {
+                continue;
+            }
+            let over = if low { j } else { degree - j };
+            out.push(vector * (degree as f64 / over as f64));
+        }
+    }
+    Some(out)
+}
+
+/// What the wedge chart needs of a piece next to a pole: the piece with
+/// the parameter across the poles' borders second, the nets of `w² ∂σ`
+/// and of `w³ (∂σ × ∂τ)` divided by `τ` (a pole at the piece's start),
+/// by `1 − τ` (at its end) or by both, with the degree of each in `τ`,
+/// and the longest `w² ∂τ`.
+struct BesidePole {
+    along: Vec<Vec3>,
+    normal: Vec<Vec3>,
+    /// The degree of `normal` across the borders.
+    normal_degree: usize,
+    longest_across: f64,
+    lightest: f64,
+    heaviest: f64,
+}
+
+fn beside_pole(
+    patch: &RationalBezierPatch,
+    across_v: bool,
+    at_start: bool,
+    at_end: bool,
+) -> Option<BesidePole> {
+    let turned;
+    let patch = if across_v {
+        patch
+    } else {
+        turned = patch.transposed();
+        &turned
+    };
+    let (_, n) = patch.degrees();
+    let (lightest, heaviest) = patch.weight_range()?;
+    let (mut along, across) = patch.weighted_derivative_nets()?;
+    let mut normal = patch.weighted_normal_net()?;
+    let (mut along_degree, mut normal_degree) = (2 * n, (3 * n).checked_sub(1)?);
+    for (here, low) in [(at_start, true), (at_end, false)] {
+        if here {
+            along = divided(&along, along_degree, low)?;
+            normal = divided(&normal, normal_degree, low)?;
+            along_degree = along_degree.checked_sub(1)?;
+            normal_degree = normal_degree.checked_sub(1)?;
+        }
+    }
+    if !across_v {
+        // The transposed piece's normal points the other way.
+        for vector in &mut normal {
+            *vector = -*vector;
+        }
+    }
+    Some(BesidePole {
+        along,
+        normal,
+        normal_degree,
+        longest_across: across.iter().map(|v| v.length()).fold(0.0, f64::max),
+        lightest,
+        heaviest,
+    })
+}
+
+/// A lower bound on the smallest singular value of the Jacobian of the
+/// wedge chart's inverse over a piece of a surface with poles: how far a
+/// point of the surface moves, at least, per unit that its image in the
+/// chart moves, up to the shear ([`SHEAR`]). Zero when the nets give
+/// none.
+///
+/// With `s` and `t` the shares of the domain along and across the poles'
+/// borders and `ω(t)` the chart's width there, a step `(ds, dt)` moves
+/// the chart's point by the shear of `(ω ds, dt)` and the surface's by
+/// `E ω ds + F dt` with `E = S_s / ω` and `F = S_t`. `S_s` vanishes at a
+/// pole as `ω` does, so `E` is bounded: away from a pole by the nets of
+/// the piece over the least `ω`, next to one by the net of `w² S_s`
+/// divided by the piece's own parameter ([`divided`]), and likewise the
+/// normal `E × F` below.
+fn wedge_sigma(patch: &RationalBezierPatch, u: (f64, f64), v: (f64, f64), wedge: &Wedge) -> f64 {
+    let (across, whole) = if wedge.across_v {
+        (v, wedge.v)
+    } else {
+        (u, wedge.u)
+    };
+    let at_start = wedge.low && across.0 == whole.0;
+    let at_end = wedge.high && across.1 == whole.1;
+    // The piece's shares of the domain: where it starts and ends along
+    // the borders (`s`) and across them (`t`), and how wide it is.
+    let ((s0, t0), (s1, t1)) = (wedge.shares(u.0, v.0), wedge.shares(u.1, v.1));
+    let (ws, wt) = (s1 - s0, t1 - t0);
+    if !(ws > 0.0 && wt > 0.0) {
+        return 0.0;
+    }
+    let (longest_e, longest_f, normal) = if !at_start && !at_end {
+        let Some((longest_u, longest_v, normal)) = piece_bounds(patch) else {
+            return 0.0;
+        };
+        let (longest_s, longest_t) = if wedge.across_v {
+            (longest_u, longest_v)
+        } else {
+            (longest_v, longest_u)
+        };
+        // The chart's width is concave: least at an end of the piece,
+        // greatest at an end or half way between two poles.
+        let narrowest = wedge.width(t0).min(wedge.width(t1));
+        let mut widest = wedge.width(t0).max(wedge.width(t1));
+        if wedge.low && wedge.high && t0 < 0.5 && t1 > 0.5 {
+            widest = widest.max(wedge.width(0.5));
+        }
+        (
+            longest_s.sqrt() / (ws * narrowest),
+            longest_t.sqrt() / wt,
+            normal / (ws * wt * widest),
+        )
+    } else {
+        let Some(nets) = beside_pole(patch, wedge.across_v, at_start, at_end) else {
+            return 0.0;
+        };
+        let longest = nets.along.iter().map(|v| v.length()).fold(0.0, f64::max);
+        let light = nets.lightest * nets.lightest;
+        let heavy = nets.heaviest * nets.heaviest * nets.heaviest;
+        // Next to one pole the width is the piece's own parameter (or one
+        // less it) times the piece's share `wt`, times the factor of the
+        // other pole, which is least at the piece's far end and at most
+        // one; next to both it is the product of the two, the piece being
+        // the whole way across.
+        let (scale, least_factor) = match (at_start, at_end) {
+            (true, true) => (1.0, 1.0),
+            (true, false) => (wt, if wedge.high { 1.0 - t1 } else { 1.0 }),
+            (false, true) => (wt, if wedge.low { t0 } else { 1.0 }),
+            (false, false) => return 0.0,
+        };
+        (
+            longest / (light * ws * scale * least_factor),
+            nets.longest_across / (light * wt),
+            clearance_of(&nets.normal) / (heavy * ws * wt * scale),
+        )
+    };
+    // A normal that short against the derivatives is rounding (see
+    // `sigma_bound`).
+    if !(normal * normal > ROUNDING * ROUNDING * longest_e * longest_e * longest_f * longest_f) {
+        return 0.0;
+    }
+    least_singular(
+        longest_e * longest_e + longest_f * longest_f,
+        normal * normal,
+    )
+}
+
+/// The Bézier spans of a freeform surface.
+fn spans_of(surface: &Surface) -> Option<Vec<Span>> {
+    match surface {
+        Surface::Bezier(patch) => Some(vec![(
+            (0.0, 1.0),
+            (0.0, 1.0),
+            RationalBezierPatch::from_bezier(patch),
+        )]),
+        Surface::Nurbs(s) => Some(
+            NurbsSurface::bezier_spans(s)
+                .ok()?
+                .into_iter()
+                .map(|span| (span.u, span.v, span.patch))
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
+/// Per pole of a surface, the direction the surface closes around there:
+/// the mean of the unit normals it reaches the pole with along its
+/// meridians, pointing the way `∂u × ∂v` does. Where the surface closes
+/// up smoothly that is its normal at the pole; at a cone-like point it
+/// is the axis of the cone, near enough, on the side the normals lean
+/// to. `None` for a pole whose limit normals are not all within a
+/// quarter turn (less [`AXIS_MARGIN`]) of that mean.
+///
+/// What it is for: seen along this direction, the meridians leave the
+/// pole in the order they have on the surface. A meridian's direction,
+/// dropped onto the plane across the axis, turns at a rate that has the
+/// sign of the axis times the limit normal there (the normal is the
+/// meridian's direction crossed with its rate of change), so with every
+/// limit normal on the axis's side the turning never reverses. The limit
+/// normals along a pole's border are, up to a positive factor, the field
+/// `w³ (∂u × ∂v)` divided by the parameter across the border, whose
+/// border row of its net holds them all in its hull: the test is on the
+/// vectors of those rows, of every span at the pole.
+fn pole_axes(surface: &Surface, poles: &[Pole]) -> Vec<Option<Vec3>> {
+    if poles.is_empty() {
+        return Vec::new();
+    }
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    let spans = spans_of(surface).unwrap_or_default();
+    poles
+        .iter()
+        .map(|pole| {
+            let across_v = pole.across_v();
+            let at_start = matches!(pole.border, Border::UStart | Border::VStart);
+            let mut rows: Vec<Vec3> = Vec::new();
+            for (u, v, patch) in &spans {
+                let touches = match pole.border {
+                    Border::UStart => u.0 == u0,
+                    Border::UEnd => u.1 == u1,
+                    Border::VStart => v.0 == v0,
+                    Border::VEnd => v.1 == v1,
+                };
+                if !touches {
+                    continue;
+                }
+                let nets = beside_pole(patch, across_v, at_start, !at_start)?;
+                let width = nets.normal_degree + 1;
+                let pick = if at_start { 0 } else { nets.normal_degree };
+                rows.extend(
+                    nets.normal
+                        .chunks(width)
+                        .filter_map(|row| row.get(pick).copied()),
+                );
+            }
+            let mut mean = Vec3::ZERO;
+            for row in &rows {
+                mean += row.normalized()?;
+            }
+            let axis = mean.normalized()?;
+            rows.iter()
+                .all(|row| row.dot(axis) > AXIS_MARGIN * row.length())
+                .then_some(axis)
+        })
+        .collect()
+}
+
+/// For a point of a freeform surface that is a pole of it: the direction
+/// the surface closes around there ([`pole_axes`]), or `None` inside when
+/// it has none. `None` outside for any other point.
+pub(super) fn pole_axis(
+    surface: &Surface,
+    tree: Option<&PatchTree>,
+    u: f64,
+    v: f64,
+) -> Option<Option<Vec3>> {
+    if !is_freeform(surface) {
+        return None;
+    }
+    if let Some(tree) = tree {
+        let index = tree.poles.iter().position(|p| p.holds(surface, u, v))?;
+        return Some(tree.axes.get(index).copied().flatten());
+    }
+    let pole = craft3d_geom::pole::pole_at(surface, u, v)?;
+    let all = poles(surface);
+    let index = all.iter().position(|p| p.border == pole.border)?;
+    Some(pole_axes(surface, &all).get(index).copied().flatten())
 }
 
 /// An upper bound on the second partial derivatives of polynomial spans
@@ -470,11 +858,15 @@ impl PatchTree {
         if spans.len() > MAX_LEAVES {
             return Err(TOO_MANY);
         }
+        let found = poles(surface);
         let mut tree = PatchTree {
             surface: surface.clone(),
             nodes: Vec::new(),
             roots: Vec::new(),
             second,
+            axes: pole_axes(surface, &found),
+            wedge: Wedge::of(surface, &found),
+            poles: found,
         };
         let whole = spans
             .iter()
@@ -499,7 +891,11 @@ impl PatchTree {
         small: f64,
     ) -> usize {
         let bbox = patch.control_bbox();
-        let sigma = sigma_bound(patch, (u.1 - u.0, v.1 - v.0));
+        let sigma = match &self.wedge {
+            None => sigma_bound(patch, (u.1 - u.0, v.1 - v.0)),
+            Some(Ok(wedge)) => wedge_sigma(patch, u, v, wedge),
+            Some(Err(_)) => 0.0,
+        };
         let children = if depth > 0 && bbox.diagonal() > small {
             let um = 0.5 * (u.0 + u.1);
             let vm = 0.5 * (v.0 + v.1);
@@ -561,17 +957,89 @@ impl PatchTree {
         bound.is_finite().then_some(bound)
     }
 
-    /// How far the surface's parameters can change per unit of length
-    /// travelled on it, at most; `None` when the surface may stall or fold
-    /// (then its chart cannot be trusted).
-    pub fn parameter_speed(&self) -> Option<f64> {
+    /// The least of the bounds of the pieces: how far a point of the
+    /// surface moves, at least, per unit that its chart moves; `None`
+    /// when a piece has no bound.
+    fn least_sigma(&self) -> Option<f64> {
         let sigma = self
             .roots
             .iter()
             .filter_map(|&r| self.nodes.get(r))
             .map(|n| n.sigma)
             .fold(f64::INFINITY, f64::min);
-        (sigma.is_finite() && sigma > 0.0).then(|| 1.0 / sigma)
+        (sigma.is_finite() && sigma > 0.0).then_some(sigma)
+    }
+
+    /// How far the surface's parameters can change per unit of length
+    /// travelled on it, at most; `None` when the surface may stall or fold
+    /// (then its parameters are no chart of it: a surface with a pole
+    /// stalls there, and has the chart of [`Self::chart`] instead).
+    pub fn parameter_speed(&self) -> Option<f64> {
+        if self.wedge.is_some() {
+            return None;
+        }
+        self.least_sigma().map(|sigma| 1.0 / sigma)
+    }
+
+    /// How fast the chart of the surface can move per unit of length
+    /// travelled on it, at most, or why the surface has no chart that can
+    /// be followed.
+    ///
+    /// Without poles the chart is the parameters themselves
+    /// ([`Self::parameter_speed`]). With them see [`Self::chart`]: the
+    /// speed is the shear over the least singular value of the chart's
+    /// inverse, bounded piece by piece, and the directions around every
+    /// pole must be told apart (`pole_axes`).
+    pub fn chart_speed(&self) -> Result<f64, Reason> {
+        match &self.wedge {
+            None => self.parameter_speed().ok_or(IRREGULAR),
+            Some(Err(reason)) => Err(reason),
+            Some(Ok(_)) => {
+                if self.axes.iter().any(Option::is_none) {
+                    return Err(POLE_SHAPE);
+                }
+                self.least_sigma()
+                    .map(|sigma| SHEAR / sigma)
+                    .ok_or(IRREGULAR)
+            }
+        }
+    }
+
+    /// The chart coordinates of the point of the surface at `(u, v)`.
+    ///
+    /// A surface without poles is its own chart: its parameters. At a
+    /// pole a whole side of the parameter rectangle is one point, and the
+    /// rectangle is no chart of the surface there: a loop through the
+    /// pole is not closed in it, and nothing bounds how fast the
+    /// parameter along the border changes near it. So the rectangle is
+    /// drawn as the surface is: with `s` and `t` the shares of the domain
+    /// along and across the poles' borders, the point is put at
+    /// `(ω(t) (s − ½), t)`, where the width `ω` is `t` for a pole at the
+    /// start, `1 − t` for one at the end and `t (1 − t)` for both: a
+    /// wedge, or a lens between two points. Every pole is one point of
+    /// it, the map from the surface is one to one and continuous, and
+    /// its speed is bounded wherever the surface leaves the pole in a
+    /// fan (`wedge_sigma`).
+    pub fn chart(&self, u: f64, v: f64) -> (f64, f64) {
+        match &self.wedge {
+            Some(Ok(wedge)) => wedge.chart(u, v),
+            _ => (u, v),
+        }
+    }
+
+    /// The unit normal `∂u × ∂v` of the surface at the nearest point
+    /// `near` of `p`; at a pole, the one of the meridian that leaves it
+    /// nearest to the direction of `p`, which is the one that tells the
+    /// side `p` is on (`craft3d_geom::pole::Pole::normal_towards`).
+    fn normal_for(&self, near: &Nearest, p: Vec3) -> Option<Vec3> {
+        match self
+            .poles
+            .iter()
+            .find(|pole| pole.holds(&self.surface, near.u, near.v))
+        {
+            Some(pole) => pole.normal_towards(&self.surface, p),
+            None => self.surface.normal(near.u, near.v),
+        }
     }
 
     /// A distance no larger than the distance from `p` to the surface, and
@@ -849,7 +1317,7 @@ impl PatchTree {
     /// the nearest point.
     pub fn signed_distance(&self, p: Vec3) -> Option<f64> {
         let near = self.nearest(p)?;
-        let normal = self.surface.normal(near.u, near.v)?;
+        let normal = self.normal_for(&near, p)?;
         let side = (p - near.point).dot(normal);
         Some(if side < 0.0 {
             -near.distance
@@ -1467,5 +1935,305 @@ mod tests {
         }
         let chord = tree.segment_lower_bound(p, p + a * 0.2, 10.0, f64::INFINITY);
         assert!((chord - 0.3).abs() <= 1e-9, "{chord}");
+    }
+
+    /// The quarter of a surface of revolution about the frame's z axis
+    /// that a rational quadratic profile (ρ, z, weight) sweeps: u around
+    /// the axis, v along the profile; `flip` exchanges the two.
+    fn swept(profile: &[(f64, f64, f64)], knots: Vec<f64>, flip: bool) -> Surface {
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let ring = [(1.0, 0.0, 1.0), (1.0, 1.0, s), (0.0, 1.0, 1.0)];
+        let frame = Frame::new(
+            Vec3::new(1.0, -2.0, 0.5),
+            Vec3::new(0.3, -0.4, 1.0),
+            Vec3::new(1.0, 0.2, 0.0),
+        )
+        .unwrap();
+        let point = |i: usize, j: usize| {
+            let ((x, y, wu), (rho, z, wv)) = (ring[i], profile[j]);
+            (frame.point(x * rho, y * rho, z), wu * wv)
+        };
+        let around = vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+        let (mut ctrl, mut weights) = (Vec::new(), Vec::new());
+        let n = profile.len();
+        let surface = if flip {
+            for j in 0..n {
+                for i in 0..3 {
+                    let (p, w) = point(i, j);
+                    ctrl.push(p);
+                    weights.push(w);
+                }
+            }
+            NurbsSurface::new(2, 2, knots, around, n, 3, ctrl, weights)
+        } else {
+            for i in 0..3 {
+                for j in 0..n {
+                    let (p, w) = point(i, j);
+                    ctrl.push(p);
+                    weights.push(w);
+                }
+            }
+            NurbsSurface::new(2, 2, around, knots, 3, n, ctrl, weights)
+        };
+        Surface::Nurbs(surface.unwrap())
+    }
+
+    /// Surfaces with poles: an octant of a ball (one pole), a quarter of
+    /// a ball from pole to pole (two), a quarter of a cone up to its apex
+    /// (a point that is no smooth one) and a drop whose profile bends.
+    fn with_poles(flip: bool) -> Vec<(&'static str, Surface)> {
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let one = vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+        let two = vec![0.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0];
+        vec![
+            (
+                "octant",
+                swept(
+                    &[(2.0, 0.0, 1.0), (2.0, 2.0, s), (0.0, 2.0, 1.0)],
+                    one.clone(),
+                    flip,
+                ),
+            ),
+            (
+                "lune",
+                swept(
+                    &[
+                        (0.0, -2.0, 1.0),
+                        (2.0, -2.0, s),
+                        (2.0, 0.0, 1.0),
+                        (2.0, 2.0, s),
+                        (0.0, 2.0, 1.0),
+                    ],
+                    two,
+                    flip,
+                ),
+            ),
+            (
+                "cone",
+                swept(
+                    &[(0.0, 0.0, 1.0), (0.75, 1.0, 1.0), (1.5, 2.0, 1.0)],
+                    one.clone(),
+                    flip,
+                ),
+            ),
+            (
+                "drop",
+                swept(
+                    &[(0.0, 0.0, 1.0), (2.0, 0.5, 1.0), (1.0, 3.0, 1.0)],
+                    one,
+                    flip,
+                ),
+            ),
+        ]
+    }
+
+    /// The speed of the chart is a bound: no step on the surface, however
+    /// near a pole and in whatever direction, moves the chart faster. And
+    /// not a uselessly loose one.
+    #[test]
+    fn the_chart_of_a_surface_with_poles_moves_no_faster_than_its_speed() {
+        for flip in [false, true] {
+            for (name, surface) in with_poles(flip) {
+                let tree = PatchTree::new(&surface).unwrap();
+                assert_eq!(tree.parameter_speed(), None, "{name}");
+                let speed = tree
+                    .chart_speed()
+                    .unwrap_or_else(|e| panic!("{name}, flipped {flip}: {e}"));
+                let ((u0, u1), (v0, v1)) = surface.domain();
+                let mut fastest = 0.0_f64;
+                let places = [0.0, 1e-9, 1e-6, 1e-3, 0.02, 0.1, 0.27, 0.5, 0.73, 0.9, 0.98];
+                let mut all = places.to_vec();
+                all.extend(places.iter().map(|x| 1.0 - x));
+                for &a in &all {
+                    for &b in &all {
+                        let (u, v) = (u0 + (u1 - u0) * a, v0 + (v1 - v0) * b);
+                        for turn in 0..16 {
+                            let angle = f64::from(turn) * std::f64::consts::PI / 8.0;
+                            for reach in [1e-4, 1e-7] {
+                                let (nu, nv) = tree.clamp(
+                                    u + reach * (u1 - u0) * angle.cos(),
+                                    v + reach * (v1 - v0) * angle.sin(),
+                                );
+                                let travelled = surface.eval(u, v).distance(surface.eval(nu, nv));
+                                if !(travelled > 1e-13) {
+                                    continue;
+                                }
+                                let (x0, y0) = tree.chart(u, v);
+                                let (x1, y1) = tree.chart(nu, nv);
+                                let pace = (x1 - x0).hypot(y1 - y0) / travelled;
+                                assert!(
+                                    pace <= speed * (1.0 + 1e-6),
+                                    "{name}, flipped {flip}: at ({a}, {b}) the chart moves {pace} per length, above {speed}"
+                                );
+                                fastest = fastest.max(pace);
+                            }
+                        }
+                    }
+                }
+                println!("{name}, flipped {flip}: bound {speed}, fastest seen {fastest}");
+                assert!(speed <= 30.0 * fastest, "{name}: {speed} against {fastest}");
+            }
+        }
+    }
+
+    /// A pole is one point of the chart, whatever parameter it is found
+    /// with, and the chart turns the way the parameters do.
+    #[test]
+    fn a_pole_is_one_point_of_the_chart() {
+        for flip in [false, true] {
+            for (name, surface) in with_poles(flip) {
+                let tree = PatchTree::new(&surface).unwrap();
+                let ((u0, u1), (v0, v1)) = surface.domain();
+                for pole in &tree.poles {
+                    let at = |along: f64| match pole.border {
+                        Border::UStart => tree.chart(u0, v0 + (v1 - v0) * along),
+                        Border::UEnd => tree.chart(u1, v0 + (v1 - v0) * along),
+                        Border::VStart => tree.chart(u0 + (u1 - u0) * along, v0),
+                        Border::VEnd => tree.chart(u0 + (u1 - u0) * along, v1),
+                    };
+                    for along in [0.3, 1.0] {
+                        assert_eq!(at(0.0), at(along), "{name}");
+                    }
+                }
+                // Counter-clockwise in the parameters is counter-clockwise
+                // in the chart.
+                let (u, v) = (u0 + 0.4 * (u1 - u0), v0 + 0.3 * (v1 - v0));
+                let h = 1e-4;
+                let (o, a, b) = (
+                    tree.chart(u, v),
+                    tree.chart(u + h * (u1 - u0), v),
+                    tree.chart(u, v + h * (v1 - v0)),
+                );
+                let turn = (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0);
+                assert!(turn > 0.0, "{name}, flipped {flip}");
+            }
+        }
+    }
+
+    /// The signed distance next to a pole: to a ball it is the distance
+    /// from the centre less the radius also straight above and below the
+    /// pole, where the nearest point is the pole itself; behind the apex
+    /// of a cone it is positive on the side the cone's normal points to.
+    #[test]
+    fn the_signed_distance_at_a_pole_has_the_sign_of_the_side() {
+        let frame = Frame::new(
+            Vec3::new(1.0, -2.0, 0.5),
+            Vec3::new(0.3, -0.4, 1.0),
+            Vec3::new(1.0, 0.2, 0.0),
+        )
+        .unwrap();
+        for flip in [false, true] {
+            let surfaces = with_poles(flip);
+            let side = if flip { -1.0 } else { 1.0 };
+            // The octant: u × v points away from the centre (towards it
+            // when the parameters are exchanged).
+            let tree = PatchTree::new(&surfaces[0].1).unwrap();
+            for (x, y, z) in [
+                (0.0, 0.0, 2.5),
+                (0.0, 0.0, 1.5),
+                (1e-9, 0.0, 2.3),
+                (0.01, 0.02, 2.2),
+                (0.01, 0.02, 1.8),
+                (-0.2, -0.1, 2.4),
+                (0.3, 0.2, 2.1),
+                (0.3, 0.2, 1.7),
+            ] {
+                let p = frame.point(x, y, z);
+                let d = tree.signed_distance(p).unwrap();
+                // Past the borders of the octant the nearest point is on
+                // a border: the sign is still the ball's there.
+                let ball = p.distance(frame.origin()) - 2.0;
+                if x >= 0.0 && y >= 0.0 {
+                    assert!(
+                        (d - side * ball).abs() < 1e-9,
+                        "({x}, {y}, {z}): {d} vs {ball}"
+                    );
+                } else {
+                    assert_eq!(d > 0.0, side * ball > 0.0, "({x}, {y}, {z})");
+                }
+            }
+            // The cone (apex at the frame's origin, opening along z at
+            // 0.75 per unit): u × v points away from the axis and back.
+            let tree = PatchTree::new(&surfaces[2].1).unwrap();
+            for (x, y, z, outside) in [
+                (0.1, 0.1, -0.5, true),
+                (0.3, 0.05, -0.1, true),
+                (0.02, 0.3, -0.2, true),
+                (0.05, 0.05, 0.5, false),
+                (0.2, 0.1, 0.6, false),
+                (0.5, 0.4, 0.1, true),
+            ] {
+                let p = frame.point(x, y, z);
+                let d = tree.signed_distance(p).unwrap();
+                assert_eq!(d * side > 0.0, outside, "cone ({x}, {y}, {z}): {d}");
+            }
+        }
+    }
+
+    /// What has no chart is refused with its reason: a patch that closes
+    /// into a point on two adjacent sides, and a point the surface comes
+    /// to as a cusp (its profile touches the axis where it ends).
+    #[test]
+    fn poles_without_a_chart_are_refused_with_the_reason() {
+        // A triangle-like patch: the borders u = 0 and v = 0 are both the
+        // origin.
+        let corner = Surface::Bezier(
+            BezierPatch::new(
+                1,
+                2,
+                vec![
+                    Vec3::ZERO,
+                    Vec3::ZERO,
+                    Vec3::ZERO,
+                    Vec3::ZERO,
+                    Vec3::new(1.0, 0.5, 0.2),
+                    Vec3::new(1.0, 2.0, 0.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let tree = PatchTree::new(&corner).unwrap();
+        assert_eq!(tree.chart_speed(), Err(POLES_BOTH_WAYS));
+        // A cusp: the profile leaves the axis along it.
+        let cusp = swept(
+            &[(0.0, 0.0, 1.0), (0.0, 1.0, 1.0), (1.5, 2.0, 1.0)],
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            false,
+        );
+        let tree = PatchTree::new(&cusp).unwrap();
+        assert!(matches!(
+            tree.chart_speed(),
+            Err(reason) if reason == IRREGULAR || reason == POLE_SHAPE
+        ));
+    }
+
+    /// A net divided by its parameter is the net of the quotient.
+    #[test]
+    fn a_net_with_a_zero_row_is_divided_by_its_parameter() {
+        // t² (1 − t) + 2 t (1 − t)² in the Bernstein form of degree 3:
+        // 0, 2/3, 1/3, 0.
+        let net: Vec<Vec3> = [0.0, 2.0 / 3.0, 1.0 / 3.0, 0.0]
+            .iter()
+            .map(|&c| Vec3::new(c, 0.0, 0.0))
+            .collect();
+        let bernstein = |net: &[Vec3], t: f64| {
+            let n = net.len() - 1;
+            let mut value = 0.0;
+            let mut choose = 1.0;
+            for (j, c) in net.iter().enumerate() {
+                value += choose * t.powi(j as i32) * (1.0 - t).powi((n - j) as i32) * c.x;
+                choose = choose * (n - j) as f64 / (j + 1) as f64;
+            }
+            value
+        };
+        let low = divided(&net, 3, true).unwrap();
+        let both = divided(&low, 2, false).unwrap();
+        for t in [0.1, 0.5, 0.8] {
+            let f = t * t * (1.0 - t) + 2.0 * t * (1.0 - t) * (1.0 - t);
+            assert!((bernstein(&low, t) - f / t).abs() < 1e-14);
+            assert!((bernstein(&both, t) - f / (t * (1.0 - t))).abs() < 1e-14);
+        }
+        // A row that is not zero cannot be divided out.
+        assert!(divided(&low, 2, true).is_none());
     }
 }
