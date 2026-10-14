@@ -29,6 +29,7 @@ mod entity;
 mod extrude;
 mod face_ops;
 mod fillet;
+mod follow;
 mod loft;
 mod offset_face;
 mod query;
@@ -44,6 +45,7 @@ pub use craft3d_kernel::extrude::{Origin, Origins, Role};
 pub use datum::{Datum, EdgeReference, References, references};
 pub use derive::{MAX_PATTERN_FACES, MAX_PATTERN_INSTANCES};
 pub use extrude::name_of;
+pub use follow::{newest_body, short_face_name};
 pub use query::{edges_between, faces_named, faces_of_edges};
 pub use sketch::{
     ConstraintResult, ConstraintState, SketchResult, settle_sketches, settle_sketches_cached,
@@ -369,6 +371,11 @@ pub struct FeatureResult {
     /// no longer one of the document's bodies; it stays here because names
     /// are resolved against it.
     pub consumed_by: Option<FeatureId>,
+    /// For a feature whose faces or edges were given by the names of an
+    /// earlier body that had gone into later features: the feature as it
+    /// was built, its names followed to the newest body (`follow`). `None`
+    /// when the feature was built as it stands in the document.
+    pub followed: Option<Arc<Feature>>,
 }
 
 impl FeatureResult {
@@ -901,6 +908,7 @@ fn build_feature(
             instances,
             sweep: followed,
             consumed_by: None,
+            followed: None,
         },
         taken,
     )
