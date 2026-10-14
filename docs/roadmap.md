@@ -332,7 +332,7 @@ The blends first (chamfer and fillet, the first consumers of edge references), t
 #### Open
 - [ ] Move face, then thicken (a sheet given a thickness), replace face and draft (faces tilted about a neutral plane along a pull direction)
 - [ ] Vertex blends: three fillets of different radii, with a circular edge, with a fourth edge
-- [ ] Freeform blends that meet: two at a vertex whose third edge stays sharp (a blade's whole tip or root, the turbofan's F2/F3), freeform and closed-form edges in one feature, a freeform chamfer by distance and angle
+- [ ] Freeform blends along a chain of tangent edges (a casing's cut edge that runs on through a flange-root fillet), and freeform blends that meet: two at a vertex whose third edge stays sharp (a blade's whole tip or root, the turbofan's F2/F3), freeform and closed-form edges in one feature, a freeform chamfer by distance and angle
 - [ ] A blend that ends in a face of its own in the middle of a chain
 - [ ] Chamfers: one that ends against a slanted wall; a reference to one of several edges between the same two faces
 - [ ] Fillets: an outside and an inside fillet that meet; the rim of a rod with half its radius or more (a spindle torus); variable radius (later)

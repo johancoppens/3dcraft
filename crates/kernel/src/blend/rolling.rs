@@ -610,7 +610,29 @@ fn crossing(
     outer: f64,
     scale: f64,
 ) -> Option<f64> {
-    let start = third.surface.project(surface.eval(inner, v)).ok()?;
+    // `inner` is a few radii before the end: the nearest place behind
+    // the third face's surface from there inwards, halfway at most (from
+    // further in, a curved third face may be nearer on its other side).
+    let middle = 0.5;
+    let mut from = inner;
+    let found = loop {
+        let start = third.surface.project(surface.eval(from, v)).ok()?;
+        let g = |s: f64| third.signed(surface.eval(s, v), start).map(|x| x.0);
+        if g(from)? < 0.0 {
+            break (start, from);
+        }
+        if (from - middle).abs() <= 1e-12 {
+            return None;
+        }
+        // Halfway to the middle each time.
+        let next = from + (middle - from) * 0.5;
+        from = if (middle - next).abs() < 1e-3 {
+            middle
+        } else {
+            next
+        };
+    };
+    let (start, inner) = found;
     let g = |s: f64| third.signed(surface.eval(s, v), start).map(|x| x.0);
     let (mut lo, mut hi) = (inner, outer);
     let (mut glo, ghi) = (g(lo)?, g(hi)?);
@@ -903,10 +925,14 @@ fn blend_one(
             surface: &third.surface,
             reversed: third.reversed,
         };
+        // From a few radii before the end, where the face is still behind
+        // the third face's surface near the corner (from further in, a
+        // curved third face may be nearer on its other side).
+        let back = (4.0 * size / length).min(0.5);
         let (inner, outer) = if index == 0 {
-            (0.5, -reach[0])
+            (back, -reach[0])
         } else {
-            (0.5, 1.0 + reach[1])
+            (1.0 - back, 1.0 + reach[1])
         };
         let cut = cut_curve(&surface, side, inner, outer, limit, scale)
             .ok_or_else(|| refuse(edge, Some(end.third), Reason::FreeEnd))?;
