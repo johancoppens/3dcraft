@@ -1195,3 +1195,51 @@ fn a_rim_chain_that_ends_in_two_sharp_corners() {
         }
     }
 }
+
+/// Engine-block finding E7: the two top edges along a block chamfered,
+/// then, in a second chamfer of the same distance, the top edge across
+/// its end. That edge's cut line on the end runs exactly into the corner
+/// where the end's rim leaves the earlier chamfer for the side: it fits,
+/// and the solid is the one the three chamfers make in one go (mitred).
+#[test]
+fn a_chamfer_that_meets_an_earlier_one_of_the_same_distance() {
+    for k in SCALES {
+        let block = boxed(k, [0.0, 0.0, 0.0], [4.0, 3.0, 2.0]);
+        let d = 0.5;
+        let first = solve(
+            &block,
+            &[
+                equal(&block, k, [2.0, 0.0, 2.0], d),
+                equal(&block, k, [2.0, 3.0, 2.0], d),
+            ],
+            k,
+        );
+        let end = equal(&first.body, k, [0.0, 1.5, 2.0], d);
+        let made = solve(&first.body, &[end], k);
+        let mut planes = box_planes([4.0, 3.0, 2.0]);
+        planes.push(([0.0, -1.0, 1.0], 2.0 - d));
+        planes.push(([0.0, 1.0, 1.0], 5.0 - d));
+        planes.push(([-1.0, 0.0, 1.0], 2.0 - d));
+        let m = mass(&made.body);
+        assert_close(m.volume, convex_volume(&planes) * k * k * k, "volume");
+        let at_once = solve(
+            &block,
+            &[
+                equal(&block, k, [2.0, 0.0, 2.0], d),
+                equal(&block, k, [2.0, 3.0, 2.0], d),
+                equal(&block, k, [0.0, 1.5, 2.0], d),
+            ],
+            k,
+        );
+        let once = mass(&at_once.body);
+        assert_close(m.volume, once.volume, "volume against one chamfer");
+        assert_close(m.area, once.area, "area against one chamfer");
+        assert_eq!(counts(&made), counts(&at_once));
+        // A larger distance runs past that corner into the side: refused.
+        let past = equal(&first.body, k, [0.0, 1.5, 2.0], 1.1 * d);
+        assert!(matches!(
+            chamfer(&first.body, &[past], &tolerance(k)),
+            Err(KernelError::ChamferTooLarge { .. })
+        ));
+    }
+}

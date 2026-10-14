@@ -937,6 +937,11 @@ fn fits(body: &Body, plans: &[Plan], tol: f64) -> Result<(), BlendError> {
                 continue;
             };
             let mut largest = f64::INFINITY;
+            // Whether `largest` is where the boundary that leaves an end
+            // of the edge turns at a corner of the face: a cut line that
+            // runs exactly into that corner still fits (a chamfer next to
+            // an earlier one of the same distance).
+            let mut into_corner = false;
             for other in face_edges(body, face) {
                 if other == plan.edge {
                     continue;
@@ -951,6 +956,7 @@ fn fits(body: &Body, plans: &[Plan], tol: f64) -> Result<(), BlendError> {
                     _ => 0.0,
                 };
                 let points = samples(body, other, matches!(plan.path, Path::Circle { .. }));
+                let mut corner = false;
                 let reach = match plan.path {
                     Path::Line {
                         start,
@@ -973,11 +979,25 @@ fn fits(body: &Body, plans: &[Plan], tol: f64) -> Result<(), BlendError> {
                                 .map(|p| place(*p).0)
                                 .fold(0.0_f64, f64::max)
                                 .max(0.0);
-                            for next in smooth_run(body, face, plan.edge, other, &ends) {
-                                for p in samples(body, next, true) {
+                            let run = smooth_run(body, face, plan.edge, other, &ends);
+                            for next in &run {
+                                for p in samples(body, *next, true) {
                                     far = far.max(place(p).0);
                                 }
                             }
+                            // The far vertex of the run: the end of its
+                            // last edge that lies furthest into the face.
+                            let tip = body
+                                .edge(run.last().copied().unwrap_or(other))
+                                .and_then(|e| {
+                                    [e.start, e.end]
+                                        .into_iter()
+                                        .filter(|v| !ends.contains(v))
+                                        .filter_map(|v| body.vertex(v))
+                                        .map(|v| place(v.point).0)
+                                        .reduce(f64::max)
+                                });
+                            corner = tip.is_some_and(|tip| tip >= far - tol);
                             far
                         } else {
                             let mut nearest = f64::INFINITY;
@@ -1047,8 +1067,9 @@ fn fits(body: &Body, plans: &[Plan], tol: f64) -> Result<(), BlendError> {
                         }
                     }
                 };
-                if reach.is_finite() && (reach > tol || !touches) {
-                    largest = largest.min(reach - taken);
+                if reach.is_finite() && (reach > tol || !touches) && reach - taken < largest {
+                    largest = reach - taken;
+                    into_corner = touches && corner && taken == 0.0;
                 }
             }
             // A cut line that runs into the axis leaves nothing of a face
@@ -1065,7 +1086,8 @@ fn fits(body: &Body, plans: &[Plan], tol: f64) -> Result<(), BlendError> {
                     largest = largest.min(radius / inward);
                 }
             }
-            if distance >= largest - 2.0 * tol {
+            let exactly_into_corner = into_corner && (distance - largest).abs() <= 2.0 * tol;
+            if distance >= largest - 2.0 * tol && !exactly_into_corner {
                 // A fillet is said by its radius.
                 let per = match plan.scale.get(side) {
                     Some(per) if plan.round.is_some() && per.is_finite() => *per,
