@@ -1291,7 +1291,6 @@ fn a_closed_spline_that_cannot_be_a_profile_says_why() {
 /// booleans take it; `feature.revolve` can then stop refusing a spline
 /// that ends on the axis (`crates/regen/src/revolve.rs`).
 #[test]
-#[ignore = "booleans decline a freeform face with a collapsed border"]
 fn booleans_take_a_revolved_spline_that_ends_on_the_axis() {
     use craft3d_kernel::boolean::{BooleanOp, boolean};
     let tol = Tolerance::default();
