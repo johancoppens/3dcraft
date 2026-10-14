@@ -4,10 +4,25 @@
 //! **The path** is the curves of one sketch: lines, arcs and splines that
 //! join end to end into one chain, open or closed, without branches; or
 //! one circle. A spline with corners (a polyline) is the pieces between
-//! them. Where two curves of the chain meet they are either tangent
-//! (their directions agree within [`SMOOTH`]) or, two straight lines
-//! only, at a corner, which is mitred: both sides end on the plane that
-//! bisects the corner.
+//! them. Where two curves of the chain meet they are either tangent or,
+//! two straight lines only, at a corner, which is mitred: both sides end
+//! on the plane that bisects the corner.
+//!
+//! **Kinks.** Two curves that meet a little off tangent count as tangent
+//! when the profile can be turned through the kink within half the
+//! tolerance, by the second-order measure of [`kink_movement`]; two lines
+//! only within [`SMOOTH`], as their mitre is exact. The profile then stays
+//! square to the piece before the kink until a line lays it square again:
+//! a line before the kink ends square to the piece after it, a line after
+//! it slides the profile as it arrives (an exact prism), an arc after it
+//! carries the profile round its own axis as it arrives (see
+//! [`tilted_turn`]), and a spline after it starts from it and holds
+//! itself to half the tolerance of the true sweep. Kinks before arcs add
+//! up until a line squares the profile, and the sum is checked at each
+//! arc and at each line's end; a path that ends on an arc still turned is
+//! refused unless its end cap is within half the tolerance of square
+//! (`reach sin a`). A closed path whose last piece is a curve and whose
+//! first is a line starts with the profile square to the last piece.
 //!
 //! **Where the profile sits.** The profile lies in a plane that the path
 //! crosses at a right angle (within the tolerance, below): for an open path at one
@@ -75,9 +90,9 @@
 //! tolerance of a millionth of its size.)
 //!
 //! **What is refused, before anything is built:** a path that branches,
-//! is in several parts or has a corner at an arc or a spline; a mitre so
-//! sharp, on a line so short, that the mitres at its two ends would cross
-//! within the profile; an arc whose axis the profile reaches (the bend is
+//! is in several parts or has a corner at an arc or a spline (a kink
+//! more than the tolerance allows); a mitre so sharp, on a line so short,
+//! that the mitres at its two ends would cross within the profile; an arc whose axis the profile reaches (the bend is
 //! tighter than the profile is wide on the inside); a spline whose radius
 //! of curvature comes within 2 % of how far the profile reaches towards
 //! the centre of curvature (sampled at 64 places per span); a path that
@@ -110,10 +125,10 @@ pub const MAX_PATH_CURVES: usize = 1024;
 /// path).
 pub const MAX_SWEEP_FACES: usize = 100_000;
 
-/// The angle (in radians, as a sine) within which two directions count as
-/// one: curves of the path that meet within it are tangent. (Whether a
-/// profile is square to the path is a matter of the linear tolerance:
-/// see the module documentation.)
+/// The angle (in radians, as a sine) within which two lines of the path
+/// count as one direction; beyond it they meet at a mitre. (Where an arc
+/// or a spline meets, and whether a profile is square to the path, is a
+/// matter of the linear tolerance: see the module documentation.)
 pub const SMOOTH: f64 = 1e-6;
 
 /// How a polynomial span of a spline path is followed, tried in this
@@ -2287,7 +2302,10 @@ pub fn sweep(
                 // and is carried round the arc's own axis like that (see
                 // `tilted_turn`).
                 let square_here = direction(left(leaving));
-                let (sin, cos) = (station.u.cross(square_here).length(), station.u.dot(square_here));
+                let (sin, cos) = (
+                    station.u.cross(square_here).length(),
+                    station.u.dot(square_here),
+                );
                 let versine = sin * sin / (1.0 + cos);
                 let off = tilted_turn(radius, versine, side, (low, high));
                 if !(cos > 0.0 && off <= tol / 2.0) {

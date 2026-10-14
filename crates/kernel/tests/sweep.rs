@@ -1293,3 +1293,242 @@ fn a_closed_spline_is_a_path_and_a_polyline_a_row_of_mitres() {
         .collect();
     assert_eq!(pieces, [0, 1, 2]);
 }
+
+/// A piece of a path drawn by [`turtle`]: a line of a length, or an arc
+/// of a radius through an angle (counter-clockwise when positive).
+#[derive(Clone, Copy)]
+enum Go {
+    Line(f64),
+    Arc(f64, f64),
+}
+
+fn turned(v: P, angle: f64) -> P {
+    let (s, c) = angle.sin_cos();
+    [v[0] * c - v[1] * s, v[0] * s + v[1] * c]
+}
+
+/// The path from the origin along +y, piece by piece, each piece leaving
+/// turned by its kink (counter-clockwise when positive) from the
+/// direction the one before it arrives in; ids 101, 102, … Every length
+/// is times `k`. Returns the curves and the length of the path.
+fn turtle(pieces: &[(f64, Go)], k: f64) -> (Vec<SketchCurve>, f64) {
+    let (mut at, mut heading) = ([0.0, 0.0], [0.0, 1.0]);
+    let (mut curves, mut length) = (Vec::new(), 0.0);
+    for (i, &(kink, go)) in pieces.iter().enumerate() {
+        let id = 101 + i as u64;
+        heading = turned(heading, kink);
+        match go {
+            Go::Line(run) => {
+                let end = [at[0] + heading[0] * run * k, at[1] + heading[1] * run * k];
+                curves.push(line(id, at, end));
+                length += run * k;
+                at = end;
+            }
+            Go::Arc(radius, angle) => {
+                let r = radius * k;
+                let side = angle.signum();
+                let centre = [at[0] - heading[1] * r * side, at[1] + heading[0] * r * side];
+                let out = turned([at[0] - centre[0], at[1] - centre[1]], angle);
+                let end = [centre[0] + out[0], centre[1] + out[1]];
+                curves.push(if angle > 0.0 {
+                    arc(id, centre, at, end)
+                } else {
+                    arc(id, centre, end, at)
+                });
+                length += r * angle.abs();
+                heading = turned(heading, angle);
+                at = end;
+            }
+        }
+    }
+    (curves, length)
+}
+
+/// The kink that turns a profile reaching `reach` to the side of the path
+/// off the faces by `moved`: `reach (1 - cos a) = moved`.
+fn kink_for(moved: f64, reach: f64) -> f64 {
+    2.0 * (0.5 * moved / reach).sqrt().asin()
+}
+
+/// Where two pieces of the path meet a little off tangent (a path drawn
+/// from rounded coordinates), the sweep turns the profile through the kink
+/// when that moves it off the faces of either piece by no more than half
+/// the tolerance: `reach (1 - cos a)`, the second-order movement, since to
+/// first order a turn about the binormal moves the profile along the
+/// faces. The kinks tried move it by a fifth of the tolerance, which is a
+/// kink of 6e-4 radians across a pipe of radius 1, sixty times what the
+/// first-order `reach sin a` would allow. A line before the kink ends
+/// square to the piece after it, a line after it slides the profile as it
+/// arrives, and an arc after it carries the profile round its own axis as
+/// it arrives (up to `radius q (1 - cos) / (radius - q)` off). Every such
+/// body is valid, watertight, not through itself, and has the volume of
+/// the circle times the length of the path to within the square of the
+/// kink. At three scales, the tolerance scaled along.
+#[test]
+fn a_kink_the_profile_turns_through_within_the_tolerance_is_swept() {
+    for k in SCALES {
+        let tol = Tolerance::new(1e-6 * k, 1e-9).unwrap();
+        let r = k;
+        let round = profile(&[circle(1, [0.0, 0.0], r)]);
+        let a = kink_for(0.2 * tol.linear, r);
+        assert!(a > 5e-4 && r * a > 100.0 * tol.linear, "{a}");
+        let quarter = FRAC_PI_2;
+        let cases: [(&str, Vec<(f64, Go)>); 3] = [
+            (
+                "line, kink, arc, kink, line",
+                vec![
+                    (0.0, Go::Line(10.0)),
+                    (a, Go::Arc(5.0, quarter)),
+                    (a, Go::Line(12.0)),
+                ],
+            ),
+            (
+                "line, kink, arc, kink, arc the other way, line",
+                vec![
+                    (0.0, Go::Line(10.0)),
+                    (-a, Go::Arc(5.0, quarter)),
+                    (a, Go::Arc(5.0, -quarter)),
+                    (0.0, Go::Line(12.0)),
+                ],
+            ),
+            (
+                "a spline after a kink",
+                vec![(0.0, Go::Line(10.0)), (a, Go::Arc(5.0, quarter))],
+            ),
+        ];
+        for (what, pieces) in cases {
+            let (mut path, length) = turtle(&pieces, k);
+            let mut length = length;
+            if what == "a spline after a kink" {
+                // A straight spline, leaving the arc's end turned by `a`.
+                let Curve2::Arc { center, end, .. } = path[1].curve else {
+                    unreachable!()
+                };
+                let out = [end[0] - center[0], end[1] - center[1]];
+                let heading = turned([-out[1] / (5.0 * k), out[0] / (5.0 * k)], a);
+                let points: Vec<P> = (0..4)
+                    .map(|i| {
+                        let t = 3.0 * k * f64::from(i);
+                        [end[0] + heading[0] * t, end[1] + heading[1] * t]
+                    })
+                    .collect();
+                path.push(spline(103, 3, &points));
+                length += 9.0 * k;
+            }
+            let pipe = sweep(&round, &front(), &path, &Frame::WORLD, &tol)
+                .unwrap_or_else(|e| panic!("{k} {what}: {e}"));
+            close(pipe.length, length, 1e-9);
+            let (volume, _, _) = sound_with(&pipe, k, &tol);
+            close(volume, PI * r * r * length, 1e-6);
+        }
+    }
+}
+
+/// Beyond what the profile can be turned through within the tolerance,
+/// a kink is what it always was: a corner, refused where an arc or a
+/// spline meets it and mitred between two lines. An arc after a kink that
+/// is within the tolerance on its own but bends so tight that carrying the
+/// profile round it as it arrives is not, and a path that ends on an arc
+/// still turned by a kink before it (its end cap would be off square by
+/// the first-order `reach sin a`), are refused with the place. A path
+/// that ends on an arc turned so little that its end is within half the
+/// tolerance of square is swept.
+#[test]
+fn a_kink_beyond_the_tolerance_is_a_corner_as_before() {
+    for k in SCALES {
+        let tol = Tolerance::new(1e-6 * k, 1e-9).unwrap();
+        let r = k;
+        let round = profile(&[circle(1, [0.0, 0.0], r)]);
+        let go = |pieces: &[(f64, Go)]| {
+            let (path, _) = turtle(pieces, k);
+            sweep(&round, &front(), &path, &Frame::WORLD, &tol)
+        };
+        let quarter = FRAC_PI_2;
+
+        let wide = kink_for(2.0 * tol.linear, r);
+        let why = refusal(go(&[
+            (0.0, Go::Line(10.0)),
+            (wide, Go::Arc(5.0, quarter)),
+            (0.0, Go::Line(12.0)),
+        ]));
+        assert!(
+            why.contains("has a corner of") && why.contains("where e101 meets e102"),
+            "{k}: {why}"
+        );
+        let why = refusal(go(&[
+            (0.0, Go::Line(10.0)),
+            (0.0, Go::Arc(5.0, quarter)),
+            (wide, Go::Line(12.0)),
+        ]));
+        assert!(why.contains("where e102 meets e103"), "{k}: {why}");
+        // Two lines: mitred, as long as the path along the centre.
+        let mitred = go(&[(0.0, Go::Line(10.0)), (wide, Go::Line(12.0))]).unwrap();
+        assert_eq!(kinds(&mitred, Role::Side), ["cylinder", "cylinder"]);
+        let (volume, _, _) = sound_with(&mitred, k, &tol);
+        close(volume, PI * r * r * 22.0 * k, 1e-9);
+
+        // Within the tolerance at the kink, but the arc after it bends
+        // round 1.25 with the profile reaching 1 towards its axis: carried
+        // round it, the profile is five times as far off.
+        let a = kink_for(0.2 * tol.linear, r);
+        let why = refusal(go(&[
+            (0.0, Go::Line(10.0)),
+            (0.0, Go::Arc(5.0, quarter)),
+            (a, Go::Arc(1.25, quarter)),
+            (0.0, Go::Line(12.0)),
+        ]));
+        assert!(
+            why.contains("where e102 meets e103") && why.contains("carried round e103"),
+            "{k}: {why}"
+        );
+        // Ending on an arc after a kink.
+        let why = refusal(go(&[
+            (0.0, Go::Line(10.0)),
+            (0.0, Go::Arc(5.0, quarter)),
+            (a, Go::Arc(5.0, -quarter)),
+        ]));
+        assert!(why.contains("the path ends on e103 turned"), "{k}: {why}");
+        let small = (0.25 * tol.linear / r).asin();
+        let ending = go(&[
+            (0.0, Go::Line(10.0)),
+            (0.0, Go::Arc(5.0, quarter)),
+            (small, Go::Arc(5.0, -quarter)),
+        ])
+        .unwrap();
+        let (volume, _, _) = sound_with(&ending, k, &tol);
+        close(volume, PI * r * r * (10.0 + 5.0 * PI) * k, 1e-9);
+    }
+}
+
+/// A ring round a closed path with kinks: a stadium whose first half
+/// circle goes a little too far round, so the line after it leaves it
+/// turned (and meets the second half circle turned the other way). The
+/// path crosses the profile in the middle of a line. A ring with the
+/// volume of the circle times the length of the path.
+#[test]
+fn a_closed_path_with_kinks_is_a_ring() {
+    for k in SCALES {
+        let tol = Tolerance::new(1e-6 * k, 1e-9).unwrap();
+        let r = k;
+        let round = profile(&[circle(1, [0.0, 0.0], r)]);
+        let (a, big) = (8.0 * k, 3.0 * k);
+        let over = kink_for(0.2 * tol.linear, r);
+        let first_end = [-big - big * over.cos(), a - big * over.sin()];
+        let path = [
+            line(101, [0.0, -a], [0.0, a]),
+            arc(102, [-big, a], [0.0, a], first_end),
+            line(103, first_end, [-2.0 * big, -a]),
+            arc(104, [-big, -a], [-2.0 * big, -a], [0.0, -a]),
+        ];
+        let length = 2.0 * a
+            + big * (PI + over)
+            + (first_end[0] + 2.0 * big).hypot(first_end[1] + a)
+            + big * PI;
+        let ring = sweep(&round, &front(), &path, &Frame::WORLD, &tol)
+            .unwrap_or_else(|e| panic!("{k}: {e}"));
+        assert!(ring.closed);
+        close(ring.length, length, 1e-9);
+        let (volume, _, _) = sound_with(&ring, k, &tol);
+        close(volume, PI * r * r * length, 1e-6);
+    }
+}

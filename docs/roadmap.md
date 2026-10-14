@@ -324,6 +324,7 @@ The blends first (chamfer and fillet, the first consumers of edge references), t
 - A face that winds along a thread is meshed; every triangulation has a work budget (2026-10-14)
 - A smooth loft through slender twisted sections builds (the rotor blade with its tip right after 18 m, also from a circle): a face whose triangles cannot follow a chord of its boundary has that chord cut finer (2026-10-14)
 - A sweep whose path is off square to the profile's plane by a lean that moves the profile no more than the tolerance is built, the profile laid square; `sketch.path` warns of an arc end off its circle (the turbofan's F6, still refused at the default tolerance: see Open) (2026-10-15)
+- The turbofan's tube (F6) builds at the default tolerance: `sketch.path` puts a `center` arc's end given within 1 % of the radius onto its circle (`snapped`), and a sweep takes a kink of the path as tangent when turning the profile through it stays within the tolerance (2026-10-15)
 
 #### Open
 - [ ] Move face, then thicken (a sheet given a thickness), replace face and draft (faces tilted about a neutral plane along a pull direction)
@@ -338,7 +339,6 @@ The blends first (chamfer and fillet, the first consumers of edge references), t
 - [ ] Threads as the other modellers treat them (agreed with the developer on 2026-10-14): a cosmetic thread shown in the viewport (a texture or fine rings, both renderers), its data (designation, pitch, class, length) listed by `document.inspect`, carried to drawings and hole tables and checkable by V1's assertions
 - [ ] Internal threads through a hole feature (a tapped hole: drill, thread, depth; cosmetic by default)
 - [ ] Other thread standards, multi-start threads, a thread ending against a shoulder, a cosmetic thread drawn or written to STEP (AP242 thread PMI later, when we write AP242)
-- [ ] Sweep: the turbofan's tube (F6) still fails at the default tolerance: the solver tilts the axial line by 2e-6 rad (9e-6 at the profile) and a near-tangent arc-to-line corner (3e-6 rad) is refused; open whether `sketch.path` should put a `center` arc's end on its circle and whether that corner test should use the tolerance too
 - [ ] Sweep: a path not in one plane (a 3D polyline or spline, rotation-minimising frames), twist and scale along the path, guide curves
 - [ ] Loft: guide curves, tangency at the ends, a tip in a point, profiles with holes
 - [ ] Splines: the other constraints on the curve itself (parallel, equal, midpoint), rational and non-uniform splines
@@ -449,6 +449,7 @@ Applications built on 3DCraft, not part of it (the rule in `docs/decisions.md`, 
 |---|---|---|
 | 2026-10-14 | minor | Restructured: current focus on top, one line per milestone, a section per milestone (Goal, Done, Open, Acceptance), the boolean checklist on its own, ideas apart; how things were built left to `architecture.md` |
 | 2026-10-15 | minor | M9: a sweep's right-angle test uses the document's tolerance; `sketch.path` warns of an arc end off its circle |
+| 2026-10-15 | minor | M9: `sketch.path` snaps a `center` arc's end onto its circle; a sweep's tangency test at a kink uses the tolerance (F6 builds) |
 | 2026-10-14 | minor | M9: a thread is cosmetic unless `modeled`, as in other modellers |
 | 2026-10-14 | minor | M9: a thread's size and pitch follow the model (the size of the face, a designation or a length; the coarse pitch of the size unless given); format version 14 |
 | 2026-10-14 | minor | M9: helix and thread done (`datum.helix`, the sweep along a helix, `feature.thread`); format version 13; the showcase has a coil spring and a socket head cap screw with its thread |
