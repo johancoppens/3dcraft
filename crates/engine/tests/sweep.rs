@@ -1107,3 +1107,49 @@ fn names_survive_edits_and_a_lost_sketch_fails_the_sweep_alone() {
     );
     assert!(why.contains("path"), "{why}");
 }
+
+#[test]
+fn a_sweep_along_a_spline_keeps_the_set_identities_with_a_block() {
+    // The faces along a spline are B-spline surfaces of degree 5 to 9
+    // along the path: the boolean cuts them, and the pieces add up.
+    let build = |op: &str| -> (f64, f64) {
+        let mut s = new();
+        round(&mut s, "Section", [0.0, 0.0], 3.0);
+        run(
+            &mut s,
+            "sketch.create",
+            json!({"plane": "xy", "name": "Route"}),
+        );
+        run(
+            &mut s,
+            "sketch.spline",
+            json!({"sketch": "Route", "control":
+                [[0, 0], [0, 20], [-25, 30], [-25, 55], [10, 65], [10, 90]]}),
+        );
+        let made = sweep(&mut s, "Section", "Route", "Hose");
+        assert_eq!(made["status"], "ok", "{made}");
+        let hose = volume(&mut s, "Hose");
+        run(
+            &mut s,
+            "feature.block",
+            json!({"position": [-30, 35, -1], "size": [40, 12, 8], "name": "Tool"}),
+        );
+        let made = run(
+            &mut s,
+            "feature.boolean",
+            json!({"op": op, "target": "Hose", "tool": "Tool", "name": "Result"}),
+        );
+        assert_eq!(made["status"], "ok", "{op}: {made}");
+        deep(&mut s);
+        (hose, volume(&mut s, "Result"))
+    };
+    let (hose, union) = build("union");
+    let (_, common) = build("intersect");
+    let (_, difference) = build("subtract");
+    let block = 40.0 * 12.0 * 8.0;
+    // To 1e-7, as for the lofts: the curves in which the block cuts the
+    // freeform faces are fitted within the tolerance (measured: 2.3e-9).
+    close(union + common, hose + block, 1e-7);
+    close(difference, hose - common, 1e-7);
+    assert!(common > 0.0 && common < hose.min(block));
+}
