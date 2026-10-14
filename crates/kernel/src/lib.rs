@@ -16,6 +16,7 @@ pub mod delete_face;
 pub mod extrude;
 pub mod extrude_to;
 pub mod fillet;
+pub mod helix;
 pub mod loft;
 pub mod offset_face;
 pub mod primitives;
