@@ -2,7 +2,7 @@
 //! "Headless CLI").
 //!
 //! Every subcommand is a thin wrapper around the engine's command registry:
-//! `run`, `info`, `render` and `convert` execute commands for a trusted
+//! `run`, `info`, `render`, `convert` and `replay` execute commands for a trusted
 //! local user; `serve` and `mcp` hand stdin and stdout to the servers in
 //! `craft3d-automation`, with file access only beneath the roots given on
 //! the command line.
@@ -12,6 +12,7 @@
 
 mod args;
 mod local;
+mod replay;
 mod server;
 
 use args::{Arg, Args};
@@ -59,6 +60,7 @@ Subcommands:
   info       Print a document's state as JSON
   render     Render a document to a PNG with the CPU renderer
   convert    Convert a .3dcraft file to STEP, STL, 3MF, OBJ, DXF, SVG or .3dcraft
+  replay     Make a video (MP4, GIF) or frames of how a document is built
   serve      JSON-lines server on stdin/stdout, for scripts
   mcp        Model Context Protocol server on stdin/stdout, for agents
 
@@ -135,6 +137,43 @@ Options:
                   from `info` (faceNames), e.g. 'F2:endCap(e1,e2,e3,e4)'
   --feature B     With --face: the body that has the face, when several do";
 
+const HELP_REPLAY: &str = "\
+Usage: craft3d-cli replay FILE --out OUT [--size WxH] [--view V] [--orbit DEG]
+                          [--fps N] [--frames-per-step N] [--hold N] [--every]
+                          [--from F] [--to F] [--params JSON] [--keep-frames]
+
+Renders how the .3dcraft file FILE is built (the command view.replay): the
+history is rolled forward one feature at a time from nothing, and every step
+that changes a body becomes a frame, seen from one camera framed on the
+finished model. Prints the result as one line of JSON.
+
+The extension of OUT picks what is made: .mp4 or .gif is a video made by
+ffmpeg (found on PATH, or named by CRAFT3D_FFMPEG; without it the command
+fails and keeps the frames in OUT.frames); anything else is a directory that
+gets the frames, frame-00000.png and on, and captions.srt. An MP4 carries the
+captions (each step's feature) as a subtitle track.
+
+Options:
+  --out OUT              The video or the directory to write (required)
+  --size WxH             Frame size in pixels, each 16 to 4096. Default 800x600
+  --view V               iso, front, back, left, right, top or bottom. Default iso
+  --orbit DEG            Turn the camera this many degrees about the vertical
+                         over the whole replay. Default 0
+  --fps N                Frames per second of the video. Default 30
+  --frames-per-step N    Frames each step is shown. Default 1
+  --hold N               Extra frames of the finished model at the end. Default 0
+  --every                Also give frames to steps that change no body
+                         (sketches, datums)
+  --from F, --to F       The range of the history, by feature id or name.
+                         Default: all of it, up to the rollback marker
+  --params JSON          More view.replay params, such as
+                         '{\"projection\": \"orthographic\", \"zoom\": 1.2}'
+  --keep-frames          Keep OUT.frames after the video is made
+
+Example:
+  craft3d-cli replay part.3dcraft --out part.mp4 --size 1280x720 \\
+      --frames-per-step 6 --hold 60 --orbit 90";
+
 const HELP_SERVE: &str = "\
 Usage: craft3d-cli serve [--automation-read-root DIR]
                          [--automation-write-root DIR]
@@ -196,6 +235,7 @@ const SUBCOMMANDS: &[(&str, &str)] = &[
     ("info", HELP_INFO),
     ("render", HELP_RENDER),
     ("convert", HELP_CONVERT),
+    ("replay", HELP_REPLAY),
     ("serve", HELP_SERVE),
     ("mcp", HELP_MCP),
 ];
@@ -264,6 +304,7 @@ fn run(mut args: Args) -> Result<(), CliError> {
         "info" => local::info(args),
         "render" => local::render(args),
         "convert" => local::convert(args),
+        "replay" => replay::replay(args),
         "serve" => server::serve(args, server::Protocol::JsonLines),
         "mcp" => server::serve(args, server::Protocol::Mcp),
         _ => return Err(unknown_subcommand(&name)),

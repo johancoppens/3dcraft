@@ -13,8 +13,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-const SUBCOMMANDS: [&str; 7] = [
-    "commands", "run", "info", "render", "convert", "serve", "mcp",
+const SUBCOMMANDS: [&str; 8] = [
+    "commands", "run", "info", "render", "convert", "replay", "serve", "mcp",
 ];
 
 /// What one run of the binary produced.
@@ -1160,4 +1160,91 @@ fn mcp_bridge_checks_its_flags_and_reports_a_window_that_is_not_there() {
     let help = cli(&["mcp", "--help"]).ok();
     assert!(help.stdout.contains("--bridge PORT"), "{}", help.stdout);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ------------------------------------------------------------------ replay
+
+/// The binary with `PATH` and `CRAFT3D_FFMPEG` as given.
+fn cli_with_ffmpeg(args: &[&str], path: &str, ffmpeg: Option<&str>) -> Ran {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_craft3d-cli"));
+    command
+        .args(args)
+        .current_dir(env!("CARGO_TARGET_TMPDIR"))
+        .env("PATH", path)
+        .env_remove("CRAFT3D_FFMPEG");
+    if let Some(ffmpeg) = ffmpeg {
+        command.env("CRAFT3D_FFMPEG", ffmpeg);
+    }
+    let output = command.output().expect("the binary runs");
+    Ran {
+        code: output.status.code().expect("an exit code, not a signal"),
+        stdout: String::from_utf8(output.stdout).expect("stdout is UTF-8"),
+        stderr: String::from_utf8(output.stderr).expect("stderr is UTF-8"),
+    }
+}
+
+#[test]
+fn replay_writes_frames_or_a_video_and_says_when_ffmpeg_is_missing() {
+    let dir = workdir("replay");
+    let part = build_part(&dir);
+    // A directory of frames: the start, the plate, the pin, and a hold.
+    let frames = path(&dir, "frames");
+    let ran = cli(&[
+        "replay", &part, "--out", &frames, "--size", "64x48", "--hold", "2",
+    ])
+    .ok();
+    let result = &ran.json_lines()[0];
+    assert_eq!(result["frames"], 5);
+    assert!(dir.join("frames/frame-00004.png").is_file());
+    assert!(dir.join("frames/captions.srt").is_file());
+
+    // A video without ffmpeg: exit 1, and the frames are kept.
+    let empty = dir.join("no-path");
+    std::fs::create_dir_all(&empty).unwrap();
+    let video = path(&dir, "part.mp4");
+    let ran = cli_with_ffmpeg(
+        &["replay", &part, "--out", &video, "--size", "64x48"],
+        empty.to_str().unwrap(),
+        None,
+    )
+    .failed(1);
+    assert!(
+        ran.stderr.contains("ffmpeg was not found"),
+        "{}",
+        ran.stderr
+    );
+    assert!(dir.join("part.mp4.frames/frame-00002.png").is_file());
+    assert!(!dir.join("part.mp4").exists());
+
+    // Usage errors.
+    cli(&["replay", &part]).failed(2);
+    cli(&["replay", "--out", &frames]).failed(2);
+    cli(&["replay", &part, "--out", &frames, "--fps", "many"]).failed(2);
+    cli(&["replay", &part, "--out", &frames, "--params", "[1]"]).failed(2);
+    // A bad view.replay param fails the command.
+    cli(&["replay", &part, "--out", &frames, "--fps", "0"]).failed(1);
+
+    // With ffmpeg, when this machine has it: a GIF, and the frames are
+    // cleared away.
+    let ffmpeg = std::env::var_os("PATH").and_then(|p| {
+        std::env::split_paths(&p)
+            .map(|d| d.join("ffmpeg"))
+            .find(|f| f.is_file())
+    });
+    let Some(ffmpeg) = ffmpeg else {
+        return;
+    };
+    let gif = path(&dir, "part.gif");
+    let ran = cli_with_ffmpeg(
+        &[
+            "replay", &part, "--out", &gif, "--size", "64x48", "--hold", "3",
+        ],
+        empty.to_str().unwrap(),
+        ffmpeg.to_str(),
+    )
+    .ok();
+    assert_eq!(ran.json_lines()[0]["video"], gif.as_str());
+    let bytes = std::fs::read(&gif).unwrap();
+    assert!(bytes.starts_with(b"GIF89a"));
+    assert!(!dir.join("part.gif.frames").exists());
 }
