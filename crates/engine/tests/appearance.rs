@@ -547,7 +547,7 @@ fn view_render_shows_the_colours() {
 }
 
 #[test]
-fn a_3mf_export_carries_the_colours() {
+fn a_3mf_and_a_step_export_carry_the_colours() {
     let dir = std::env::temp_dir().join(format!("craft3d-appearance-3mf-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let mut s = session_in(Some(&dir));
@@ -608,5 +608,11 @@ fn a_3mf_export_carries_the_colours() {
     assert_eq!(objects[2].0, "Boolean1");
     assert_eq!(objects[2].1.as_deref(), Some("1"));
     assert!(objects[2].2 >= 8, "the wall of the hole: {objects:?}");
+    // STEP: the pin's solid, the cut plate's solid and the wall of its
+    // hole (its own colour) are styled; the plain block is not.
+    run(&mut s, "file.export", json!({"path": "coloured.step"}));
+    let step = std::fs::read_to_string(dir.join("coloured.step")).unwrap();
+    assert_eq!(step.matches("STYLED_ITEM(").count(), 3, "{step}");
+    assert_eq!(step.matches("=COLOUR_RGB(").count(), 3);
     std::fs::remove_dir_all(&dir).unwrap();
 }
