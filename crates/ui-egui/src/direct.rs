@@ -545,7 +545,12 @@ impl Direct {
                 self.uploaded = None;
                 let empty = craft3d_tess::Mesh::default();
                 let mesh = scene.map_or(&empty, |s| &s.mesh);
-                let uploaded = self.onscreen.upload(mesh).map_err(classify)?;
+                let no_colors = craft3d_render::FaceColors::new();
+                let colors = scene.map_or(&no_colors, |s| &s.face_colors);
+                let uploaded = self
+                    .onscreen
+                    .upload_colored(mesh, colors)
+                    .map_err(classify)?;
                 self.uploaded = Some(Uploaded {
                     revision: wanted.revision,
                     tolerance: wanted.tolerance,

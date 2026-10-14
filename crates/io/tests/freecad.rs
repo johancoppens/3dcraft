@@ -160,6 +160,41 @@ fn freecad_reads_a_box_as_a_solid_of_the_right_volume() {
     }
 }
 
+/// A box with colours (3MF base materials, an object's and a face's own):
+/// FreeCAD reads it as the same closed solid. Its command-line reader does
+/// not hand the colours on (a mesh object has no colour without the GUI),
+/// so they are checked by our own read-back (`craft3d-meshio`).
+#[test]
+#[ignore = "needs FreeCAD: set CRAFT3D_FREECAD and run with --ignored"]
+fn freecad_reads_a_coloured_3mf_box_as_the_same_solid() {
+    let mesh = cuboid();
+    let mut object =
+        craft3d_io::to_object_with_materials(&mesh, "box", |face| (face == 1).then_some(1))
+            .unwrap();
+    object.material = Some(0);
+    let model = craft3d_meshio::Model {
+        unit: Unit::Millimeter,
+        objects: vec![object],
+        materials: vec![
+            craft3d_meshio::Material {
+                name: "Cast iron".into(),
+                color: [80, 82, 86],
+            },
+            craft3d_meshio::Material {
+                name: "Brass".into(),
+                color: [181, 140, 60],
+            },
+        ],
+    };
+    let bytes = craft3d_io::encode(&model, MeshFormat::ThreeMf).unwrap();
+    assert!(String::from_utf8_lossy(&bytes).contains("displaycolor=\"#B58C3C\""));
+    let report = freecad_reads("coloured-box.3mf", &bytes);
+    println!("coloured-box.3mf: {report:?}");
+    assert_eq!((report.facets, report.points), (12, 8));
+    assert!(report.solid);
+    assert!(close(report.volume, 24.0), "volume {}", report.volume);
+}
+
 #[test]
 #[ignore = "needs FreeCAD: set CRAFT3D_FREECAD and run with --ignored"]
 fn freecad_reads_the_teapot_as_we_wrote_it() {

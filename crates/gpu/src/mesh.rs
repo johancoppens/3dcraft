@@ -3,16 +3,18 @@
 
 use crate::GpuError;
 use craft3d_math::{Bbox3, Vec3};
-use craft3d_render::RenderError;
+use craft3d_render::{FaceColors, RenderError};
 use craft3d_tess::Mesh;
 use std::sync::Arc;
 
 /// Largest accepted number of triangles (2 GB of vertex data).
 pub const MAX_TRIANGLES: usize = 1 << 24;
 
-/// Position, normal, the triangle's own normal (3 × `f32` each) and the face
-/// id (`u32`).
-pub(crate) const VERTEX_BYTES: usize = 40;
+/// Position, normal, the triangle's own normal (3 × `f32` each), the face
+/// id (`u32`) and the face's own colour (`u32`: red, green and blue in the
+/// low three bytes, and 1 in the high byte when the face has a colour of
+/// its own, 0 when it is shaded from the base colour).
+pub(crate) const VERTEX_BYTES: usize = 44;
 const TRIANGLE_BYTES: usize = 3 * VERTEX_BYTES;
 /// Triangles per vertex buffer: 31 MB, well under every device's limit.
 const CHUNK_TRIANGLES: usize = 1 << 18;
@@ -46,7 +48,11 @@ fn push(bytes: &mut Vec<u8>, v: [f32; 3]) {
 /// Checks `mesh` the way the CPU renderer does and lays its triangles out
 /// for the vertex shader. Triangles with a corner that is not finite, or
 /// not representable in `f32` relative to the mesh centre, are left out.
-pub(crate) fn pack(mesh: &Mesh, chunk_triangles: usize) -> Result<Packed, GpuError> {
+pub(crate) fn pack(
+    mesh: &Mesh,
+    colors: &FaceColors,
+    chunk_triangles: usize,
+) -> Result<Packed, GpuError> {
     if mesh.normals.len() != mesh.positions.len() || mesh.face_ids.len() != mesh.triangles.len() {
         return Err(RenderError::InvalidMesh { triangle: 0 }.into());
     }
@@ -108,12 +114,14 @@ pub(crate) fn pack(mesh: &Mesh, chunk_triangles: usize) -> Result<Packed, GpuErr
             let left = mesh.triangles.len().saturating_sub(t).min(chunk_triangles);
             current.reserve(left.saturating_mul(TRIANGLE_BYTES));
         }
+        let color = color_word(colors.get(face));
         for (position, (world, normal)) in [a, b, c].into_iter().zip(corners) {
             push(&mut current, position);
             // A normal that cannot be narrowed counts as "no normal".
             push(&mut current, narrow(normal).unwrap_or([0.0; 3]));
             push(&mut current, flat);
             current.extend_from_slice(&face.to_le_bytes());
+            current.extend_from_slice(&color.to_le_bytes());
             packed.bounds.add(world);
         }
         packed.triangles += 1;
@@ -122,6 +130,15 @@ pub(crate) fn pack(mesh: &Mesh, chunk_triangles: usize) -> Result<Packed, GpuErr
         packed.chunks.push(current);
     }
     Ok(packed)
+}
+
+/// A face's own colour as the vertex shader takes it (see
+/// [`VERTEX_BYTES`]).
+pub(crate) fn color_word(color: Option<[u8; 3]>) -> u32 {
+    match color {
+        Some([r, g, b]) => u32::from_le_bytes([r, g, b, 1]),
+        None => 0,
+    }
 }
 
 pub(crate) struct Chunk {
@@ -162,6 +179,7 @@ impl GpuMesh {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         mesh: &Mesh,
+        colors: &FaceColors,
         owner: &Arc<()>,
     ) -> Result<GpuMesh, GpuError> {
         let by_limit = device.limits().max_buffer_size / TRIANGLE_BYTES as u64;
@@ -171,7 +189,7 @@ impl GpuMesh {
                 "the device's buffers are too small for one triangle".to_string(),
             ));
         }
-        let packed = pack(mesh, per_chunk)?;
+        let packed = pack(mesh, colors, per_chunk)?;
         let mut chunks = Vec::with_capacity(packed.chunks.len());
         for bytes in &packed.chunks {
             let vertices =
@@ -228,7 +246,9 @@ mod tests {
             ],
             0xDEAD_BEEF,
         );
-        let packed = pack(&mesh, 1000).unwrap();
+        let mut colors = FaceColors::new();
+        assert!(colors.set(7, Some([1, 2, 3])));
+        let packed = pack(&mesh, &colors, 1000).unwrap();
         assert_eq!(packed.triangles, 1);
         assert_eq!(packed.origin, far + Vec3::new(1.0, 2.0, 0.0));
         assert_eq!(packed.chunks.len(), 1);
@@ -239,8 +259,21 @@ mod tests {
         assert_eq!(first[3..6], [0.0, 0.0, 1.0]); // normal
         assert_eq!(first[6..9], [0.0, 0.0, 1.0]); // the triangle's own normal
         assert_eq!(bytes[36..40], 0xDEAD_BEEF_u32.to_le_bytes());
-        let second = floats(&bytes[40..52]);
+        // That face has no colour of its own.
+        assert_eq!(bytes[40..44], [0, 0, 0, 0]);
+        let second = floats(&bytes[44..56]);
         assert_eq!(second, [1.0, -2.0, 0.0]);
+        let (lo, hi) = packed.bounds.corners().unwrap();
+        assert_eq!((lo, hi), (far, far + Vec3::new(2.0, 4.0, 0.0)));
+        // A face with a colour of its own carries it, flagged, at every
+        // corner.
+        let mut seven = Mesh::default();
+        triangle(&mut seven, [Vec3::ZERO, Vec3::X, Vec3::Y], 7);
+        let bytes = &pack(&seven, &colors, 1000).unwrap().chunks[0];
+        for corner in 0..3 {
+            let at = corner * VERTEX_BYTES + 40;
+            assert_eq!(bytes[at..at + 4], [1, 2, 3, 1]);
+        }
         let (lo, hi) = packed.bounds.corners().unwrap();
         assert_eq!((lo, hi), (far, far + Vec3::new(2.0, 4.0, 0.0)));
     }
@@ -260,7 +293,7 @@ mod tests {
                 i,
             );
         }
-        let packed = pack(&mesh, 3).unwrap();
+        let packed = pack(&mesh, &FaceColors::new(), 3).unwrap();
         let sizes: Vec<usize> = packed
             .chunks
             .iter()
@@ -275,7 +308,10 @@ mod tests {
             .collect();
         assert_eq!(faces, [0, 1, 2, 3, 4, 5, 6]);
         // The same bytes whatever the chunk size.
-        assert_eq!(packed.chunks.concat(), pack(&mesh, 1000).unwrap().chunks[0]);
+        assert_eq!(
+            packed.chunks.concat(),
+            pack(&mesh, &FaceColors::new(), 1000).unwrap().chunks[0]
+        );
     }
 
     #[test]
@@ -286,23 +322,33 @@ mod tests {
         let mut broken = mesh.clone();
         broken.triangles[1] = [0, 1, 99];
         assert_eq!(
-            pack(&broken, 10),
+            pack(&broken, &FaceColors::new(), 10),
             Err(GpuError::Render(RenderError::InvalidMesh { triangle: 1 }))
         );
         let mut short = mesh.clone();
         short.normals.pop();
         assert_eq!(
-            pack(&short, 10),
+            pack(&short, &FaceColors::new(), 10),
             Err(GpuError::Render(RenderError::InvalidMesh { triangle: 0 }))
         );
         let mut unlabelled = mesh.clone();
         unlabelled.face_ids.pop();
         assert!(matches!(
-            pack(&unlabelled, 10),
+            pack(&unlabelled, &FaceColors::new(), 10),
             Err(GpuError::Render(RenderError::InvalidMesh { .. }))
         ));
-        assert_eq!(pack(&Mesh::default(), 10).unwrap().triangles, 0);
-        assert!(pack(&Mesh::default(), 0).unwrap().chunks.is_empty());
+        assert_eq!(
+            pack(&Mesh::default(), &FaceColors::new(), 10)
+                .unwrap()
+                .triangles,
+            0
+        );
+        assert!(
+            pack(&Mesh::default(), &FaceColors::new(), 0)
+                .unwrap()
+                .chunks
+                .is_empty()
+        );
     }
 
     #[test]
@@ -323,7 +369,7 @@ mod tests {
         triangle(&mut mesh, [Vec3::new(1e300, 0.0, 0.0), Vec3::X, Vec3::Y], 3);
         // A normal that overflows counts as no normal.
         mesh.normals[0] = Vec3::new(1e300, 0.0, 0.0);
-        let packed = pack(&mesh, 10).unwrap();
+        let packed = pack(&mesh, &FaceColors::new(), 10).unwrap();
         // Only the hostile triangles are left out, and the huge corner does
         // not move the centre: every drawn number is finite.
         for bytes in &packed.chunks {

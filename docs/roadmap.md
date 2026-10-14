@@ -31,7 +31,7 @@ Status legend: ✅ done · 🟡 in progress · ⬜ not started. Put the date nex
 | M8 | STEP export | ✅ 2026-10-13 | STEP files that an independent reader opens with our volume. | [M8](#m8-step-export) |
 | M8.5 | A history that survives edits, datums, pointing | 🟡 2026-10-14 | Failed features that can be repaired, reference geometry, extrude ends and pointing in the viewport. | [M8.5](#m85-a-history-that-survives-edits-datums-pointing) |
 | M9 | Local operations and sweeps | 🟡 2026-10-14 | Blends, face operations, sweeps and threads, the features of everyday mechanical parts. | [M9](#m9-local-operations-and-sweeps) |
-| R1 | First release | ⬜ | The first version for people outside the project, after M9. | [R1](#r1-first-release) |
+| R1 | First release | 🟡 2026-10-15 | The first version for people outside the project, after M9. | [R1](#r1-first-release) |
 | V1 | Design verification | ⬜ | An agent checks a design by queries and assertions kept in the document. | [V1](#v1-design-verification) |
 | M10 | STEP import, corpus, web | ⬜ | STEP files read into the document, a public STEP corpus and the browser build. | [M10](#m10-step-import-corpus-web) |
 | M11+ | Interactive UI | ⬜ | Sketching and editing with the mouse, once phase 1 is done. | [M11+](#m11-interactive-ui) |
@@ -124,10 +124,10 @@ Nothing.
 #### Done
 - The four crates, held to closed forms (2026-10-12)
 - A seeded random robustness test, standing in for a cargo-fuzz target (2026-10-12)
+- The inertia tensor from the exact B-rep (`craft3d_topo::inertia`), for R1's material per body (2026-10-15)
 
 #### Open
 - [ ] Robust predicates (moved to M7, where they are first needed)
-- [ ] The inertia tensor (now part of R1's material per body)
 - [ ] Parameter-space curves
 
 #### Acceptance
@@ -367,12 +367,14 @@ The first version for people outside the project; it follows M9 and does not wai
 #### Done
 - Autosave and crash recovery in the app and in `craft3d-cli serve`/`mcp` (`recovery.list`, `recovery.open`, `recovery.discard`; `crates/engine/src/recovery.rs`) (2026-10-13)
 - DXF and SVG export of a sketch or a flat face, for laser cutting (`file.export` to `.dxf` and `.svg`, `crates/drawing`, [`file-formats.md`](file-formats.md) › *Flat outlines*) (2026-10-13)
+- A colour and a material per body (`body.appearance`, `body.material`; format 16), following a body through booleans and moves with tool faces keeping their own colour, drawn by both renderers and in 3MF and STEP exports ([`architecture.md`](architecture.md) §4.2) (2026-10-15)
+- Mass and the inertia tensor about the centroid from the exact B-rep for a body with a density, in `document.inspect` and `document.measure` (2026-10-15)
 
 #### Open
 - [ ] A pinned set of about twenty modelling tasks (each with a drawing or description and a known volume), grown out of the field tests
 - [ ] Installers for Linux, macOS and Windows
 - [ ] A promise that a `.3dcraft` file of this version stays readable, with a migration test per format version
-- [ ] A material per body (density, so mass, and the inertia tensor left out of M1) and a colour per body (viewport and 3MF)
+- [ ] Colours in OBJ (`.mtl`), metallic and roughness in the viewport's shading, and an independent reader that checks the colours of 3MF and STEP files (FreeCAD's command-line import keeps none)
 - [ ] A user guide and example models
 - [ ] A clean quit also drops the autosave of a document that was not saved, because the window does not ask before closing yet
 - [ ] What the first field test did not touch: history commands, conflicting sketches, the other constraint kinds, negative distances, other units

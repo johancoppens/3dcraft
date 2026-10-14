@@ -92,13 +92,15 @@ mod native {
 
     /// The bodies of one state of the history, in the order of the
     /// regeneration (the order `view.render` draws them in).
-    type Bodies = Vec<(FeatureId, Arc<Body>)>;
+    /// The bodies of one state, each with the colour of each of its faces
+    /// (`appearance`), which a body keeps from one state to the next.
+    type Bodies = Vec<(FeatureId, Arc<Body>, Arc<Vec<Option<[u8; 3]>>>)>;
 
     fn same(a: &Bodies, b: &Bodies) -> bool {
         a.len() == b.len()
             && a.iter()
                 .zip(b)
-                .all(|((ia, ba), (ib, bb))| ia == ib && Arc::ptr_eq(ba, bb))
+                .all(|((ia, ba, _), (ib, bb, _))| ia == ib && Arc::ptr_eq(ba, bb))
     }
 
     /// One feature of the range.
@@ -129,7 +131,7 @@ mod native {
             names: &dyn Fn(FeatureId) -> String,
             tess: &TessParams,
         ) -> Result<(), CommandError> {
-            for (id, body) in bodies {
+            for (id, body, _) in bodies {
                 if self.get(body).is_none() {
                     let mesh = tessellate_body(body, tess).map_err(|e| {
                         CommandError::new(format!("view.replay: {}: {e}", names(*id)))
@@ -149,15 +151,24 @@ mod native {
 
         /// One mesh of all `bodies` (filled before), face ids counting on
         /// across bodies, exactly as `view.render` joins them.
-        fn joined(&self, bodies: &Bodies) -> Result<Mesh, CommandError> {
+        fn joined(
+            &self,
+            bodies: &Bodies,
+        ) -> Result<(Mesh, craft3d_render::FaceColors), CommandError> {
             let mut all = Mesh::default();
-            for (_, body) in bodies {
+            let mut colors = craft3d_render::FaceColors::new();
+            for (_, body, faces) in bodies {
                 let mesh = self
                     .get(body)
                     .ok_or_else(|| CommandError::new("view.replay: a body was not meshed"))?;
                 let vertex_base = u32::try_from(all.positions.len())
                     .map_err(|_| CommandError::new("view.replay: mesh too large"))?;
                 let face_base = all.face_ids.iter().copied().max().map_or(0, |m| m + 1);
+                for (face, color) in faces.iter().enumerate() {
+                    if let (Some(color), Ok(face)) = (color, u32::try_from(face)) {
+                        colors.set(face_base.saturating_add(face), Some(*color));
+                    }
+                }
                 all.positions.extend(&mesh.positions);
                 all.normals.extend(&mesh.normals);
                 all.triangles
@@ -165,7 +176,7 @@ mod native {
                 all.face_ids
                     .extend(mesh.face_ids.iter().map(|f| f + face_base));
             }
-            Ok(all)
+            Ok((all, colors))
         }
     }
 
@@ -387,12 +398,24 @@ mod native {
             let mut cache = pristine.clone();
             Ok(craft3d_regen::regenerate_cached(doc, &mut cache))
         };
-        let bodies_of = |regen: &craft3d_regen::Regen| -> Bodies {
-            regen.bodies().map(|(id, b)| (id, Arc::clone(b))).collect()
+        let bodies_of = |doc: &craft3d_doc::Document, regen: &craft3d_regen::Regen| -> Bodies {
+            regen
+                .bodies()
+                .map(|(id, b)| {
+                    let colors = crate::appearance::face_appearances(doc, regen, id, b.faces.len())
+                        .into_iter()
+                        .map(|a| a.map(|a| a.color))
+                        .collect();
+                    (id, Arc::clone(b), Arc::new(colors))
+                })
+                .collect()
         };
         let start: Bodies = match from.checked_sub(1) {
             None => Vec::new(),
-            Some(before) => bodies_of(&at(&mut doc, before)?),
+            Some(before) => {
+                let regen = at(&mut doc, before)?;
+                bodies_of(&doc, &regen)
+            }
         };
         let mut steps: Vec<Step> = Vec::new();
         let mut last = start.clone();
@@ -409,7 +432,7 @@ mod native {
                 Some(Status::Failed(_)) => "failed",
                 None => "unknown",
             };
-            let bodies = bodies_of(&regen);
+            let bodies = bodies_of(&doc, &regen);
             let shown = every || !same(&bodies, &last);
             last.clone_from(&bodies);
             steps.push(Step {
@@ -453,7 +476,7 @@ mod native {
         };
         let mut meshes = Meshes::default();
         meshes.fill(&last, &names, &tess)?;
-        let end = meshes.joined(&last)?;
+        let (end, _) = meshes.joined(&last)?;
         let model = end.bbox();
         if model.is_empty() {
             return fail(
@@ -541,11 +564,16 @@ mod native {
             let Some(&(bodies, first, n)) = jobs.get(job) else {
                 return Ok(());
             };
-            let mesh = meshes.joined(bodies)?;
+            let (mesh, colors) = meshes.joined(bodies)?;
             let angle = orbit * first as f64 / frames.saturating_sub(1).max(1) as f64;
-            let png = craft3d_render::render(&mesh, &turned(camera, angle), render_params)
-                .and_then(|f| f.to_png())
-                .map_err(|e| CommandError::new(format!("view.replay: {e}")))?;
+            let png = craft3d_render::render_colored(
+                &mesh,
+                &colors,
+                &turned(camera, angle),
+                render_params,
+            )
+            .and_then(|f| f.to_png())
+            .map_err(|e| CommandError::new(format!("view.replay: {e}")))?;
             for f in first..first.saturating_add(n) {
                 crate::workspace::write_atomic(&dir.join(frame_name(f)), &png)?;
             }

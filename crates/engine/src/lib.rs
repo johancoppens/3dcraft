@@ -12,6 +12,8 @@
 //! autosave thread of a session that was given a recovery directory
 //! (`recovery.rs`).
 
+mod appearance;
+mod appearance_cmds;
 mod base64;
 mod blend_cmds;
 mod body_cmds;
@@ -238,6 +240,7 @@ impl Session {
                 loft_cmds::SPECS,
                 sweep_path_cmds::SPECS,
                 body_cmds::SPECS,
+                appearance_cmds::SPECS,
                 blend_cmds::SPECS,
                 face_cmds::SPECS,
                 datum_cmds::SPECS,

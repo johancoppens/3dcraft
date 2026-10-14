@@ -55,12 +55,41 @@ pub struct Object {
     pub positions: Vec<[f64; 3]>,
     /// Counter-clockwise seen from outside.
     pub triangles: Vec<[u32; 3]>,
+    /// The object's material, an index into [`Model::materials`]: what a
+    /// triangle without one of its own is made of. `None`: none (written
+    /// without a colour), unless a triangle has one (see
+    /// [`Object::triangle_materials`]).
+    pub material: Option<u32>,
+    /// Empty, or one entry per triangle: the triangle's own material, an
+    /// index into [`Model::materials`], or `None` for the object's. In
+    /// 3MF an object whose triangles have materials needs one itself: the
+    /// first triangle's stands in when it has none.
+    pub triangle_materials: Vec<Option<u32>>,
+}
+
+/// A material by its name and colour (sRGB): a `<base>` of the 3MF base
+/// material group, which slicers and viewers show as the colour of what
+/// is made of it. STL and OBJ files have no colours and leave it out.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct Material {
+    pub name: String,
+    pub color: [u8; 3],
+}
+
+impl Material {
+    /// The colour as 3MF writes it: `#RRGGBB`.
+    pub fn display_color(&self) -> String {
+        let [r, g, b] = self.color;
+        format!("#{r:02X}{g:02X}{b:02X}")
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct Model {
     pub unit: Unit,
     pub objects: Vec<Object>,
+    /// What the objects and triangles are made of, by index.
+    pub materials: Vec<Material>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -81,6 +110,11 @@ pub enum MeshError {
     },
     /// More triangles, vertices or bytes than the format can count.
     TooLarge(&'static str),
+    /// A material index past [`Model::materials`], or a list of triangle
+    /// materials that is not one per triangle.
+    BadMaterial {
+        object: usize,
+    },
 }
 
 impl fmt::Display for MeshError {
@@ -101,6 +135,10 @@ impl fmt::Display for MeshError {
                 "object {object}: vertex {vertex} does not fit a 32-bit float, which binary STL requires"
             ),
             MeshError::TooLarge(what) => write!(f, "too large for this format: {what}"),
+            MeshError::BadMaterial { object } => write!(
+                f,
+                "object {object}: a material that does not exist, or triangle materials that are not one per triangle"
+            ),
         }
     }
 }
@@ -126,6 +164,14 @@ impl Model {
                 .position(|t| t.iter().any(|&k| k as usize >= count))
             {
                 return Err(MeshError::IndexOutOfRange { object, triangle });
+            }
+            let known = |m: &Option<u32>| m.is_none_or(|m| (m as usize) < self.materials.len());
+            if !known(&o.material)
+                || !o.triangle_materials.iter().all(known)
+                || !(o.triangle_materials.is_empty()
+                    || o.triangle_materials.len() == o.triangles.len())
+            {
+                return Err(MeshError::BadMaterial { object });
             }
         }
         Ok(())
@@ -295,14 +341,37 @@ pub fn model_xml_3mf(model: &Model) -> Result<String, MeshError> {
         model.unit.as_3mf()
     );
     let _ = writeln!(out, " <resources>");
+    // The base material group, when there are materials: its id follows
+    // the objects' (ids are unique among the resources).
+    let group = model.objects.len().saturating_add(1);
+    if !model.materials.is_empty() {
+        let _ = writeln!(out, "  <basematerials id=\"{group}\">");
+        for material in &model.materials {
+            let _ = writeln!(
+                out,
+                "   <base name=\"{}\" displaycolor=\"{}\"/>",
+                xml_escape(&material.name),
+                material.display_color()
+            );
+        }
+        let _ = writeln!(out, "  </basematerials>");
+    }
     for (index, o) in model.objects.iter().enumerate() {
         let kind = match o.kind {
             ObjectKind::Solid => "model",
             ObjectKind::Surface => "surface",
         };
+        // The object's own material, or the first triangle's for an
+        // object whose triangles have them (3MF wants one on the object).
+        let default = o
+            .material
+            .or_else(|| o.triangle_materials.iter().find_map(|m| *m));
+        let property = default
+            .map(|m| format!(" pid=\"{group}\" pindex=\"{m}\""))
+            .unwrap_or_default();
         let _ = writeln!(
             out,
-            "  <object id=\"{}\" type=\"{kind}\" name=\"{}\">",
+            "  <object id=\"{}\" type=\"{kind}\" name=\"{}\"{property}>",
             index + 1,
             xml_escape(&o.name)
         );
@@ -317,8 +386,18 @@ pub fn model_xml_3mf(model: &Model) -> Result<String, MeshError> {
         }
         let _ = writeln!(out, "    </vertices>");
         let _ = writeln!(out, "    <triangles>");
-        for [a, b, c] in &o.triangles {
-            let _ = writeln!(out, "     <triangle v1=\"{a}\" v2=\"{b}\" v3=\"{c}\"/>");
+        for (t, [a, b, c]) in o.triangles.iter().enumerate() {
+            match o.triangle_materials.get(t).copied().flatten() {
+                Some(m) if Some(m) != default => {
+                    let _ = writeln!(
+                        out,
+                        "     <triangle v1=\"{a}\" v2=\"{b}\" v3=\"{c}\" pid=\"{group}\" p1=\"{m}\"/>"
+                    );
+                }
+                _ => {
+                    let _ = writeln!(out, "     <triangle v1=\"{a}\" v2=\"{b}\" v3=\"{c}\"/>");
+                }
+            }
         }
         let _ = writeln!(out, "    </triangles>");
         let _ = writeln!(out, "   </mesh>");
@@ -363,6 +442,7 @@ mod tests {
                 [0.0, 0.0, 1.0],
             ],
             triangles: vec![[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]],
+            ..Object::default()
         }
     }
 
@@ -370,6 +450,7 @@ mod tests {
         Model {
             unit: Unit::Millimeter,
             objects,
+            materials: Vec::new(),
         }
     }
 
@@ -379,6 +460,7 @@ mod tests {
             kind: ObjectKind::Surface,
             positions: vec![[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 0.5, 0.0]],
             triangles: vec![[0, 1, 2]],
+            ..Object::default()
         }
     }
 
@@ -532,6 +614,7 @@ f 4 5 6
                 [0.0, 1.0, 0.0],
             ],
             triangles: vec![[0, 1, 2]],
+            ..Object::default()
         };
         let text = write_obj(&model(vec![o])).unwrap();
         let parsed: Vec<f64> = text
@@ -608,5 +691,123 @@ f 4 5 6
         let m = model(vec![o]);
         assert_eq!(write_stl_ascii(&m).unwrap().lines().count(), 9);
         assert_eq!(write_obj(&m).unwrap().lines().count(), 6);
+    }
+
+    /// The value of attribute `name` in an XML start tag `tag`.
+    fn attribute(tag: &str, name: &str) -> Option<String> {
+        let start = tag.find(&format!(" {name}=\""))? + name.len() + 3;
+        let end = tag[start..].find('"')? + start;
+        Some(tag[start..end].to_string())
+    }
+
+    #[test]
+    fn materials_are_written_as_3mf_base_materials_and_read_back() {
+        let mut red = tetrahedron();
+        red.name = "red".into();
+        red.material = Some(1);
+        let mut mixed = tetrahedron();
+        mixed.name = "mixed".into();
+        // Triangle 2 of its own; the rest the object's.
+        mixed.material = Some(0);
+        mixed.triangle_materials = vec![None, None, Some(1), Some(0)];
+        let mut tool_only = tetrahedron();
+        tool_only.name = "only some".into();
+        tool_only.triangle_materials = vec![None, Some(1), None, None];
+        let plain = tetrahedron();
+        let m = Model {
+            unit: Unit::Millimeter,
+            objects: vec![red, mixed, tool_only, plain],
+            materials: vec![
+                Material {
+                    name: "Steel & co".into(),
+                    color: [128, 130, 135],
+                },
+                Material {
+                    name: "Red".into(),
+                    color: [200, 30, 4],
+                },
+            ],
+        };
+        let xml = model_xml_3mf(&m).unwrap();
+        // Read back: the base materials, then each object's and
+        // triangle's colour.
+        let bases: Vec<(String, String)> = xml
+            .lines()
+            .filter(|l| l.trim_start().starts_with("<base "))
+            .map(|l| {
+                (
+                    attribute(l, "name").unwrap(),
+                    attribute(l, "displaycolor").unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            bases,
+            [
+                ("Steel &amp; co".to_string(), "#808287".to_string()),
+                ("Red".to_string(), "#C81E04".to_string())
+            ]
+        );
+        assert!(xml.contains("<basematerials id=\"5\">"), "{xml}");
+        let mut objects = Vec::new();
+        let mut current: Option<(String, Option<String>, Vec<Option<String>>)> = None;
+        for line in xml.lines().map(str::trim_start) {
+            if line.starts_with("<object ") {
+                if let Some(pid) = attribute(line, "pid") {
+                    assert_eq!(pid, "5");
+                }
+                current = Some((
+                    attribute(line, "name").unwrap(),
+                    attribute(line, "pindex"),
+                    Vec::new(),
+                ));
+            } else if line.starts_with("<triangle ") {
+                let p1 = attribute(line, "p1");
+                if p1.is_some() {
+                    assert_eq!(attribute(line, "pid").as_deref(), Some("5"));
+                }
+                current.as_mut().unwrap().2.push(p1);
+            } else if line.starts_with("</object>") {
+                objects.push(current.take().unwrap());
+            }
+        }
+        let s = |x: &str| Some(x.to_string());
+        assert_eq!(
+            objects,
+            [
+                ("red".into(), s("1"), vec![None; 4]),
+                ("mixed".into(), s("0"), vec![None, None, s("1"), None]),
+                ("only some".into(), s("1"), vec![None; 4]),
+                ("tetra".into(), None, vec![None; 4]),
+            ]
+        );
+        // The other formats are written as before.
+        assert_eq!(
+            write_obj(&m).unwrap(),
+            write_obj(&Model {
+                materials: Vec::new(),
+                objects: m
+                    .objects
+                    .iter()
+                    .map(|o| Object {
+                        material: None,
+                        triangle_materials: Vec::new(),
+                        ..o.clone()
+                    })
+                    .collect(),
+                ..m.clone()
+            })
+            .unwrap()
+        );
+        // A material that does not exist is an error.
+        let mut bad = m.clone();
+        bad.objects[0].material = Some(2);
+        assert_eq!(
+            model_xml_3mf(&bad),
+            Err(MeshError::BadMaterial { object: 0 })
+        );
+        let mut short = m;
+        short.objects[1].triangle_materials.pop();
+        assert_eq!(write_3mf(&short), Err(MeshError::BadMaterial { object: 1 }));
     }
 }

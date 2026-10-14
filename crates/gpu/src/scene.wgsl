@@ -50,6 +50,9 @@ struct VertexIn {
     @location(1) normal: vec3<f32>,
     @location(2) flat_normal: vec3<f32>,
     @location(3) face: u32,
+    // rgb in the low three bytes; the high byte is 1 when the face has a
+    // colour of its own (`craft3d_render::FaceColors`).
+    @location(4) color: u32,
 }
 
 struct VertexOut {
@@ -68,6 +71,7 @@ struct VertexOut {
     // the CPU's value. (`@interpolate(linear)` would say the same, but
     // lavapipe interpolates such a varying wrongly on a clipped triangle.)
     @location(4) dist_w: f32,
+    @location(5) @interpolate(flat) color: u32,
 }
 
 fn vertex(in: VertexIn) -> VertexOut {
@@ -103,6 +107,7 @@ fn vertex(in: VertexIn) -> VertexOut {
     out.normal = in.normal;
     out.flat_normal = in.flat_normal;
     out.face = in.face;
+    out.color = in.color;
     return out;
 }
 
@@ -158,7 +163,15 @@ fn highlighted(face: u32) -> bool {
 // The shaded colour of a fragment, as the bytes of the picture over 255.
 fn shade_of(in: VertexOut) -> vec4<f32> {
     // render(): a highlighted face is shaded from its own base colour.
+    // render_colored(): a face with a colour of its own is shaded from it.
     var base = scene.base.rgb;
+    if (in.color >> 24u) != 0u {
+        base = vec3<f32>(
+            f32(in.color & 255u),
+            f32((in.color >> 8u) & 255u),
+            f32((in.color >> 16u) & 255u),
+        );
+    }
     var weights = scene.shade.xy;
     if highlighted(in.face) {
         base = scene.highlight.rgb;

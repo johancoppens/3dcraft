@@ -22,7 +22,7 @@ mod mass;
 mod transform;
 
 pub use check::{Defect, check, genus};
-pub use mass::{MassError, MassProperties, mass_properties};
+pub use mass::{Inertia, MassError, MassProperties, inertia, mass_properties};
 pub use transform::{Offsets, TransformError, merge};
 
 use craft3d_geom::{Curve3, Surface};

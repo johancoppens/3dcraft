@@ -47,7 +47,7 @@ fn tilted(scale: f64) -> Frame {
 }
 
 fn case(file: &str, body: &Body, lumps: usize, options: &StepOptions, to_mm: f64) -> Case {
-    let (bytes, _) = export_step(&[StepBody { name: file, body }], options)
+    let (bytes, _) = export_step(&[StepBody::new(file, body)], options)
         .unwrap_or_else(|e| panic!("{file}: {e}"));
     let mass = mass_properties(body).unwrap_or_else(|e| panic!("{file}: {e}"));
     let bbox = body
