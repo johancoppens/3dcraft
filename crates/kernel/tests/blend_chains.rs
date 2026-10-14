@@ -686,3 +686,210 @@ fn what_a_chain_refuses() {
     let error = fillet(&body, &edges, &tol).unwrap_err().to_string();
     assert!(error.contains("meet in a vertex"), "{error}");
 }
+
+/// The engine block's finding E6: a vertical boss on a horizontal one
+/// whose root into a sloped flare is filleted; the foot of the vertical
+/// boss runs over the flare, the root fillet, the horizontal boss, the
+/// root fillet again and back: a closed chain of five edges whose base
+/// face changes at four joints, all concave.
+fn distributor_boss(k: f64) -> Body {
+    use craft3d_kernel::extrude::extrude;
+    let tol = tolerance(k);
+    let points: [[f64; 2]; 12] = [
+        [-63.0, 220.0],
+        [-63.0, 110.0],
+        [-98.0, 45.0],
+        [-98.0, -55.0],
+        [-110.0, -55.0],
+        [-110.0, -70.0],
+        [110.0, -70.0],
+        [110.0, -55.0],
+        [98.0, -55.0],
+        [98.0, 45.0],
+        [63.0, 110.0],
+        [63.0, 220.0],
+    ];
+    let curves: Vec<SketchCurve> = (0..12)
+        .map(|i| SketchCurve {
+            id: i as u64 + 1,
+            curve: Curve2::Line {
+                start: [points[i][0] * k, points[i][1] * k],
+                end: [points[(i + 1) % 12][0] * k, points[(i + 1) % 12][1] * k],
+            },
+        })
+        .collect();
+    let yz = Frame::new(Vec3::new(-200.0 * k, 0.0, 0.0), Vec3::X, Vec3::Y).unwrap();
+    let profiles = detect_profiles(&curves, &tol).unwrap();
+    let block = extrude(&profiles, &yz, 0.0, 400.0 * k, &tol).unwrap().body;
+    let along_x = Frame::new(Vec3::new(-40.0 * k, 78.0 * k, 82.0 * k), Vec3::X, Vec3::Y).unwrap();
+    let boss = craft3d_kernel::primitives::cylinder(&along_x, 22.0 * k, 240.0 * k).unwrap();
+    let body = boolean(&block, &boss, BooleanOp::Union, &tol).unwrap().body;
+    // The flare from (98, 45) to (63, 110) meets the boss in two lines.
+    let (a, b): ([f64; 2], [f64; 2]) = ([98.0, 45.0], [63.0, 110.0]);
+    let (dy, dz) = (b[0] - a[0], b[1] - a[1]);
+    let roots: Vec<[f64; 2]> = {
+        // a + t (b − a) on the circle about (78, 82) of radius 22.
+        let (py, pz) = (a[0] - 78.0, a[1] - 82.0);
+        let qa = dy * dy + dz * dz;
+        let qb = 2.0 * (py * dy + pz * dz);
+        let qc = py * py + pz * pz - 22.0 * 22.0;
+        let d = (qb * qb - 4.0 * qa * qc).sqrt();
+        [(-qb - d) / (2.0 * qa), (-qb + d) / (2.0 * qa)]
+            .iter()
+            .map(|t| [a[0] + t * dy, a[1] + t * dz])
+            .collect()
+    };
+    let roots: Vec<EdgeId> = roots
+        .iter()
+        .map(|p| edge_near(&body, Vec3::new(100.0 * k, p[0] * k, p[1] * k)))
+        .collect();
+    let root: Vec<FilletEdge> = roots
+        .iter()
+        .map(|e| FilletEdge {
+            edge: *e,
+            radius: 4.0 * k,
+        })
+        .collect();
+    let body = fillet(&body, &root, &tol).unwrap().body;
+    let up = Frame::WORLD
+        .at(Vec3::new(-20.0 * k, 82.0 * k, 82.0 * k))
+        .unwrap();
+    let distributor = craft3d_kernel::primitives::cylinder(&up, 17.0 * k, 50.0 * k).unwrap();
+    boolean(&body, &distributor, BooleanOp::Union, &tol)
+        .unwrap()
+        .body
+}
+
+/// The edges of `body` where the vertical boss of [`distributor_boss`]
+/// stands on the rest: on its wall and below its top.
+fn foot(body: &Body, k: f64) -> Vec<EdgeId> {
+    (0..body.edges.len())
+        .filter(|i| {
+            let e = &body.edges[*i];
+            (0..=8).all(|j| {
+                let t = e.range.0 + (e.range.1 - e.range.0) * f64::from(j) / 8.0;
+                let p = e.curve.eval(t) * (1.0 / k);
+                ((p.x + 20.0).hypot(p.y - 82.0) - 17.0).abs() < 1e-6 && p.z < 131.0
+            })
+        })
+        .map(|i| EdgeId(i as u32))
+        .collect()
+}
+
+/// The distance from the point (y, z) of the block's cross-section to
+/// the base the vertical boss stands on near its foot (all of it runs
+/// along x): the flare above the upper root fillet, that fillet, and the
+/// horizontal boss beyond it, each where it is a face.
+fn to_base(y: f64, z: f64) -> f64 {
+    let (a, b) = ([98.0_f64, 45.0_f64], [63.0_f64, 110.0_f64]);
+    let along = {
+        let (dy, dz) = (b[0] - a[0], b[1] - a[1]);
+        let l = dy.hypot(dz);
+        [dy / l, dz / l]
+    };
+    // Out of the material: away from the block's inside.
+    let n = [along[1], -along[0]];
+    let h = [78.0_f64, 82.0_f64];
+    // The root fillet's centre: 4 out from the flare, 26 from the boss's
+    // axis; the upper of the two.
+    let (px, pz) = (a[0] + 4.0 * n[0] - h[0], a[1] + 4.0 * n[1] - h[1]);
+    let qb = 2.0 * (px * along[0] + pz * along[1]);
+    let qc = px * px + pz * pz - 26.0 * 26.0;
+    let t = (-qb + (qb * qb - 4.0 * qc).sqrt()) / 2.0;
+    let o = [h[0] + px + t * along[0], h[1] + pz + t * along[1]];
+    let on_line = [o[0] - 4.0 * n[0], o[1] - 4.0 * n[1]];
+    let on_boss = [
+        h[0] + 22.0 * (o[0] - h[0]) / 26.0,
+        h[1] + 22.0 * (o[1] - h[1]) / 26.0,
+    ];
+    let cross = |u: [f64; 2], v: [f64; 2]| u[0] * v[1] - u[1] * v[0];
+    let mut best = f64::INFINITY;
+    // The flare, beyond the fillet's tangent line along it.
+    let along_from = (y - on_line[0]) * along[0] + (z - on_line[1]) * along[1];
+    if along_from >= -1e-9 {
+        best = best.min(((y - a[0]) * n[0] + (z - a[1]) * n[1]).abs());
+    }
+    // The fillet, between its two tangent points as seen from its centre.
+    let to = [y - o[0], z - o[1]];
+    let (from_line, from_boss) = (
+        [on_line[0] - o[0], on_line[1] - o[1]],
+        [on_boss[0] - o[0], on_boss[1] - o[1]],
+    );
+    if cross(from_line, to) * cross(from_line, from_boss) >= -1e-9
+        && cross(to, from_boss) * cross(from_line, from_boss) >= -1e-9
+    {
+        best = best.min((4.0 - to[0].hypot(to[1])).abs());
+    }
+    // The boss, on the far side of the fillet's tangent point.
+    let to_h = [y - h[0], z - h[1]];
+    let tangent_h = [on_boss[0] - h[0], on_boss[1] - h[1]];
+    if cross(tangent_h, to_h) * cross(tangent_h, [on_line[0] - h[0], on_line[1] - h[1]]) <= 1e-9 {
+        best = best.min((to_h[0].hypot(to_h[1]) - 22.0).abs());
+    }
+    best
+}
+
+/// The foot of the distributor boss (finding E6 of the engine block, in
+/// its first form, without the block's waist round above the flare): a
+/// closed chain of five edges, the base face changing at four joints (flare
+/// to root fillet to horizontal boss and back) and the boss's wall the
+/// other side throughout, all concave. Every fillet face is made of balls
+/// that touch the wall and the base (the centre the radius from both, in
+/// the cross-section of the base, which runs along x), tangent across all
+/// fifteen seams. A radius whose border would leave the narrow strip of
+/// flare above the root fillet is refused with the reason.
+#[test]
+fn the_foot_of_a_boss_over_a_root_fillet() {
+    use craft3d_tess::{TessParams, tessellate_body};
+    let k = 1.0;
+    let tol = tolerance(k);
+    let body = distributor_boss(k);
+    assert_eq!(check(&body, &tol), []);
+    let at = |r: f64| -> Vec<FilletEdge> {
+        foot(&body, k)
+            .into_iter()
+            .map(|edge| FilletEdge { edge, radius: r * k })
+            .collect()
+    };
+    assert_eq!(at(1.0).len(), 5, "the foot's edges");
+    let error = fillet(&body, &at(3.0), &tol).unwrap_err().to_string();
+    assert!(error.contains("runs off a face beside the edge"), "{error}");
+    let r = 1.0;
+    let made = match fillet(&body, &at(r), &tol) {
+        Ok(m) => m,
+        Err(e) => panic!("{e}"),
+    };
+    assert_eq!(check(&made.body, &tol), []);
+    assert!(tessellate_body(&made.body, &TessParams::default()).is_ok());
+    let (crease, seams) = creases(&made.body, &made.faces);
+    assert_eq!(seams, 15);
+    assert!(crease <= 10.0 * tol.linear / r, "a crease of {crease}");
+    let mut worst = 0.0_f64;
+    let mut faces = 0;
+    for (index, source) in made.faces.iter().enumerate() {
+        let FilletFace::Fillet(_) = source else { continue };
+        faces += 1;
+        let face = &made.body.faces[index];
+        let craft3d_geom::Surface::Nurbs(surface) = &face.surface else {
+            panic!("a fillet face that is not a spline surface");
+        };
+        let ((u0, u1), (v0, v1)) = surface.domain();
+        for i in 0..=24 {
+            for j in 0..=8 {
+                let u = u0 + (u1 - u0) * f64::from(i) / 24.0;
+                let v = v0 + (v1 - v0) * f64::from(j) / 8.0;
+                let (q, du, dv) = surface.derivatives(u, v);
+                let n = du.cross(dv).normalized().unwrap();
+                let n = if face.reversed { -n } else { n };
+                // Concave: the ball is outside, along the outward normal.
+                let c = q + n * r;
+                let to_wall = ((c.x + 20.0).hypot(c.y - 82.0) - 17.0 - r).abs();
+                let to_base = (to_base(c.y, c.z) - r).abs();
+                worst = worst.max(to_wall).max(to_base);
+            }
+        }
+    }
+    assert_eq!(faces, 5);
+    println!("off the definition by {:e} of the tolerance, crease {crease:e}", worst / tol.linear);
+    assert!(worst <= 2.0 * tol.linear, "{worst} off the rolling ball");
+}

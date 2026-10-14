@@ -71,6 +71,10 @@ use craft3d_topo::{Body, BodyKind, Coedge, Edge, EdgeId, FaceId, Loop, LoopId, V
 
 mod chain;
 
+/// How many times a step between two sections may be halved to follow
+/// the ball from one to the other.
+const FOLLOW_DEPTH: u32 = 8;
+
 /// Most samples along one blend face, and across one cut at its end.
 const MAX_SAMPLES: usize = 256;
 /// Steps of the search for one ball, and of the search for a nearest point.
@@ -300,6 +304,22 @@ impl Solver<'_> {
         }
     }
 
+    /// The section at `to`, followed from `near` (the section at `from`):
+    /// directly, or where that does not settle (the ball moves a long way
+    /// for the step, under a face that curves tightly) through sections
+    /// in between, halving the step up to `depth` times.
+    fn follow(&self, from: f64, near: &Section, to: f64, depth: u32) -> Option<Section> {
+        if let Some(found) = self.section(to, near) {
+            return Some(found);
+        }
+        if depth == 0 {
+            return None;
+        }
+        let middle = 0.5 * (from + to);
+        let half = self.follow(from, near, middle, depth - 1)?;
+        self.follow(middle, &half, to, depth - 1)
+    }
+
     fn ball(&self, across: Across, near: &Section, radius: f64, convex: bool) -> Option<Section> {
         let inward = if convex { -radius } else { radius };
         let mut centre = near.centre?;
@@ -327,6 +347,16 @@ impl Solver<'_> {
                 across.normal.dot(across.point),
             ];
             let next = solve3(rows, rhs)?;
+            // A Newton step on the two distances; never more than half
+            // the radius at once, so a poor start (two faces that curve
+            // tightly under the ball) does not throw it away.
+            let step = next - centre;
+            let length = step.length();
+            let next = if length > 0.5 * radius {
+                centre + step * (0.5 * radius / length)
+            } else {
+                next
+            };
             let moved = next.distance(centre);
             centre = next;
             if moved <= 1e-14 * self.scale {
@@ -718,7 +748,12 @@ fn crossing(
         } else {
             hi = mid;
         }
-        if (hi - lo).abs() <= 1e-15 * (1.0 + mid.abs()) || glo.abs() <= 1e-15 * scale {
+        if glo.abs() <= 1e-15 * scale {
+            // On the surface already: that is the crossing, not the
+            // middle of what is left of the bracket.
+            return Some(lo);
+        }
+        if (hi - lo).abs() <= 1e-15 * (1.0 + mid.abs()) {
             break;
         }
     }
@@ -1046,6 +1081,21 @@ enum Stop {
     TooFar,
 }
 
+/// Whether the whole of `section` lies outside the face `third`, by more
+/// than twice the tolerance.
+fn out_of(third: Side<'_>, section: &Section, tol: f64) -> bool {
+    (0..=8).all(|k| {
+        section.eval(f64::from(k) / 8.0).is_some_and(|p| {
+            third
+                .surface
+                .project(p)
+                .ok()
+                .and_then(|uv| third.signed(p, uv))
+                .is_some_and(|(d, _)| d > 2.0 * tol)
+        })
+    })
+}
+
 /// Sections from `from` along the edge to its end at `end` (0 or 1) and
 /// past it, until a whole section lies outside the third face there;
 /// with how far past the end that was.
@@ -1057,18 +1107,7 @@ fn march_out(
     steps: Steps,
     tol: f64,
 ) -> Result<(Vec<(f64, Section)>, f64), Stop> {
-    let out_of = |section: &Section| -> bool {
-        (0..=8).all(|k| {
-            section.eval(f64::from(k) / 8.0).is_some_and(|p| {
-                third
-                    .surface
-                    .project(p)
-                    .ok()
-                    .and_then(|uv| third.signed(p, uv))
-                    .is_some_and(|(d, _)| d > 2.0 * tol)
-            })
-        })
-    };
+    let out_of = |section: &Section| out_of(third, section, tol);
     let direction = if end < 0.5 { -1.0 } else { 1.0 };
     let (mut s, mut last) = from;
     let mut solved = Vec::new();
@@ -1153,6 +1192,78 @@ fn outward_from(
     })
 }
 
+/// The border `border` of a blend face lies on `face` and stays on it:
+/// it meets no other edge of that face but the ones at its own ends.
+/// Sampled as polylines, which come within the tolerance of each other
+/// where two curves on one surface cross.
+fn stays_on(
+    body: &Body,
+    edge: EdgeId,
+    border: EdgeId,
+    face: FaceId,
+    tolerance: &Tolerance,
+) -> Result<(), BlendError> {
+    let tol = tolerance.linear;
+    let data = body.edge(border).ok_or_else(lost)?;
+    let polyline = |e: &Edge| -> Vec<Vec3> {
+        (0..=64)
+            .map(|j| {
+                let t = e.range.0 + (e.range.1 - e.range.0) * f64::from(j) / 64.0;
+                e.curve.eval(t)
+            })
+            .collect()
+    };
+    let mine = polyline(data);
+    let ends = [data.start, data.end];
+    let loops = &body.face(face).ok_or_else(lost)?.loops;
+    for l in loops {
+        for coedge in &body.loop_(*l).ok_or_else(lost)?.coedges {
+            if coedge.edge == border {
+                continue;
+            }
+            let other = body.edge(coedge.edge).ok_or_else(lost)?;
+            if ends.contains(&other.start) || ends.contains(&other.end) {
+                continue;
+            }
+            let theirs = polyline(other);
+            for a in mine.windows(2) {
+                for b in theirs.windows(2) {
+                    let ([a0, a1], [b0, b1]) = (a, b) else {
+                        continue;
+                    };
+                    if segment_distance(*a0, *a1, *b0, *b1) <= 10.0 * tol {
+                        return Err(refuse(edge, Some(face), Reason::FreeRunsOver));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The distance between the segments from `a0` to `a1` and from `b0` to
+/// `b1`.
+fn segment_distance(a0: Vec3, a1: Vec3, b0: Vec3, b1: Vec3) -> f64 {
+    let (d1, d2, r) = (a1 - a0, b1 - b0, a0 - b0);
+    let (a, e, f) = (d1.dot(d1), d2.dot(d2), d2.dot(r));
+    let (c, b) = (d1.dot(r), d1.dot(d2));
+    let denominator = a * e - b * b;
+    let mut s = if denominator > 1e-300 {
+        ((b * f - c * e) / denominator).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let mut t = if e > 1e-300 { (b * s + f) / e } else { 0.0 };
+    if t < 0.0 {
+        t = 0.0;
+        s = if a > 1e-300 { (-c / a).clamp(0.0, 1.0) } else { 0.0 };
+    } else if t > 1.0 {
+        t = 1.0;
+        s = if a > 1e-300 { ((b - c) / a).clamp(0.0, 1.0) } else { 0.0 };
+    }
+    (a0 + d1 * s).distance(b0 + d2 * t)
+}
+
 /// A fillet face is tangent to both faces along its borders, measured
 /// again on the body (to ten times what the approximation was refined
 /// to); a chamfer passes.
@@ -1166,6 +1277,9 @@ fn tangent_or_refused(
     tolerance: &Tolerance,
 ) -> Result<FaceId, BlendError> {
     let tol = tolerance.linear;
+    for (border, face) in [(edge, first), (second_border, second)] {
+        stays_on(body, edge, border, face, tolerance)?;
+    }
     if let Shape::Ball { radius, .. } = shape {
         // Tangent to both faces along its borders, measured.
         let limit = 10.0 * tolerance.angular.max(BEND).max(tol / radius);

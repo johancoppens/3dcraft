@@ -43,7 +43,7 @@
 
 use super::super::{BlendError, Reason, Size, Turn, Use, across, lost, refused, vertex_edges};
 use super::{
-    Across, BEND, End, Item, MAX_SAMPLES, Section, Shape, Side, Solver, Spine, Steps, Stop,
+    Across, BEND, End, FOLLOW_DEPTH, Item, MAX_SAMPLES, curve_through, cut_curve, out_of, Section, Shape, Side, Solver, Spine, Steps, Stop,
     border, cut_back, edge_length, end_at, end_cut, first_section, insert_cut, march_out,
     outward_from, refine, refuse, scale_of, tangent_or_refused,
 };
@@ -209,6 +209,45 @@ impl Around<'_> {
             .filter(|e| *e != p.edge && *e != edge)
             .collect();
         let [qa, qb] = item.faces;
+        // A seam of one of the faces through the vertex (where a cylinder
+        // closes) is crossed as a smooth edge between the face and itself:
+        // the blend's border on that face has to meet it.
+        let seam = |e: EdgeId| -> Option<usize> {
+            let list = self.uses.get(e.0 as usize)?;
+            let [a, b] = <[Use; 2]>::try_from(list.as_slice()).ok()?;
+            if a.face != b.face {
+                return None;
+            }
+            p.faces.iter().position(|f| *f == a.face)
+        };
+        if let [one] = others.as_slice()
+            && let Some(side) = seam(*one)
+        {
+            let data = body.edge(*one).ok_or_else(lost)?;
+            if !(p.faces.contains(&qa) && p.faces.contains(&qb)) || data.start == data.end {
+                return Err(joint_refused());
+            }
+            let shape = shape_of(item.request.size, item.convex, p.faces[0] != qa, edge)?;
+            if !same_shape(shape, p.shape) {
+                return Err(refused(edge, Reason::FreeChainSize));
+            }
+            if matches!(shape, Shape::Cut { .. }) {
+                return Err(joint_refused());
+            }
+            return Ok((
+                Joint {
+                    vertex,
+                    switch: Some(Switch { side, smooth: *one }),
+                },
+                Piece {
+                    item: next,
+                    edge,
+                    faces: p.faces,
+                    forward,
+                    shape,
+                },
+            ));
+        }
         let (faces, switch) = match others.as_slice() {
             [] => {
                 if !(p.faces.contains(&qa) && p.faces.contains(&qb)) {
@@ -544,14 +583,15 @@ fn march(
         count += 1;
     }
     let mut solved = Vec::with_capacity(count);
-    let mut last = from.1;
+    let (mut at, mut last) = from;
     for k in 1..=count {
         let s = if k == count {
             to
         } else {
             from.0 + span * (k as f64 / count as f64)
         };
-        last = solver.section(s, &last)?;
+        last = solver.follow(at, &last, s, FOLLOW_DEPTH)?;
+        at = s;
         solved.push((s, last));
     }
     Some(solved)
@@ -613,7 +653,9 @@ fn agree(a: &Section, b: &Section, limit: f64) -> bool {
     feet && centres
 }
 
-/// Works out the blend faces of `chain` on `body` (unchanged).
+/// Works out the blend faces of `chain` on `body` (unchanged), with the
+/// sections in planes across the edges (a chamfer's, whose lines depend
+/// on those planes).
 #[allow(clippy::too_many_lines)]
 fn compute(
     body: &Body,
@@ -920,7 +962,10 @@ pub(super) fn build(
     items: &[Item],
     tolerance: &Tolerance,
 ) -> Result<Vec<(FaceId, usize)>, BlendError> {
-    let computed = compute(body, chain, items, tolerance)?;
+    let computed = match chain.pieces.first().ok_or_else(lost)?.shape {
+        Shape::Ball { .. } => along_spine(body, chain, items, tolerance)?,
+        Shape::Cut { .. } => compute(body, chain, items, tolerance)?,
+    };
     let made = splice_chain(body, chain, computed, tolerance)?;
     let shape = chain.pieces.first().ok_or_else(lost)?.shape;
     let mut faces = Vec::with_capacity(made.len());
@@ -1235,4 +1280,593 @@ fn splice_chain(
         faces.push((id, second_border));
     }
     Ok(faces)
+}
+
+/// The direction the balls' centres move in at `section`: along both
+/// offset surfaces, square to both normals at the feet (`along` says which
+/// way).
+fn spine_tangent(sides: [Side<'_>; 2], section: &Section, along: Vec3) -> Option<Vec3> {
+    let [a, b] = sides;
+    let [pa, pb] = section.params;
+    let t = a.normal(pa)?.cross(b.normal(pb)?).normalized()?;
+    Some(if t.dot(along) < 0.0 { -t } else { t })
+}
+
+/// The plane a ball's arc lies in (square to the centres' path there),
+/// its normal along `along`.
+fn arc_plane(section: &Section, along: Vec3) -> Option<Across> {
+    let c = section.centre?;
+    let [f0, f1] = section.feet;
+    let n = (f0 - c).cross(f1 - c).normalized()?;
+    Some(Across {
+        point: c,
+        normal: if n.dot(along) < 0.0 { -n } else { n },
+    })
+}
+
+/// Where a walk along the spine stops.
+enum Until<'a> {
+    /// Where the centres cross this plane (from behind it).
+    Plane(Across),
+    /// Past this plane, where a whole section lies outside `third`.
+    Out { end: Across, third: Side<'a> },
+}
+
+/// What a walk found: the balls after the start, before the plane it
+/// stops at (`Plane`), or up to and with the first one outside the third
+/// face (`Out`).
+struct Walked {
+    balls: Vec<Section>,
+}
+
+/// Walks along the spine from `start` (moving along `along`): each ball in
+/// the plane square to the path a step ahead, the step shrinking where the
+/// ball cannot be found or the path turns by more than a quarter radian
+/// and growing up to `longest` where it runs straight.
+#[allow(clippy::too_many_arguments)]
+fn walk(
+    solver: &Solver<'_>,
+    start: Section,
+    along: Vec3,
+    first_step: f64,
+    longest: f64,
+    until: &Until<'_>,
+    most_out: f64,
+    tol: f64,
+) -> Option<Walked> {
+    let Shape::Ball { radius, convex } = solver.shape else {
+        return None;
+    };
+    let shortest = 1e-4 * first_step;
+    let (mut current, mut t, mut h) = (start, along, first_step);
+    let mut balls = Vec::new();
+    let mut past: Option<f64> = None;
+    let mut travelled = 0.0;
+    // A plane is crossed where the centres go from behind it to in front
+    // of it near the point it is given by (the path may pass the plane far
+    // away, round a closed outline).
+    let plane_of = |until: &Until<'_>| match until {
+        Until::Plane(plane) => *plane,
+        Until::Out { end, .. } => *end,
+    };
+    let near = |centre: Vec3, plane: &Across, h: f64| {
+        centre.distance(plane.point) <= 4.0 * radius + 2.0 * h
+    };
+    let side = |centre: Vec3| {
+        let plane = plane_of(until);
+        plane.normal.dot(centre - plane.point)
+    };
+    let mut behind = side(start.centre?) < 0.0;
+    for _ in 0..8192 {
+        let c = current.centre?;
+        let ahead = Across {
+            point: c + t * h,
+            normal: t,
+        };
+        let found = solver
+            .ball(ahead, &current, radius, convex)
+            .and_then(|next| Some((next, spine_tangent(solver.sides, &next, t)?)));
+        let Some((next, turned)) = found.filter(|(_, n)| n.dot(t) > 0.25_f64.cos()) else {
+            h *= 0.5;
+            if h < shortest {
+                return None;
+            }
+            continue;
+        };
+        let centre = next.centre?;
+        let plane = plane_of(until);
+        let crossed = behind && side(centre) >= 0.0 && near(centre, &plane, h);
+        behind = side(centre) < 0.0;
+        match until {
+            Until::Plane(_) => {
+                if crossed {
+                    return Some(Walked { balls });
+                }
+            }
+            Until::Out { third, .. } => {
+                if past.is_none() && crossed {
+                    past = Some(travelled);
+                }
+                if let Some(at) = past {
+                    if out_of(*third, &next, tol) {
+                        balls.push(next);
+                        return Some(Walked { balls });
+                    }
+                    if travelled - at > most_out {
+                        return None;
+                    }
+                }
+            }
+        }
+        travelled += centre.distance(c);
+        balls.push(next);
+        let straight = turned.dot(t) > 0.05_f64.cos();
+        current = next;
+        t = turned;
+        if straight {
+            h = (h * 1.5).min(longest);
+        }
+    }
+    None
+}
+
+/// The path of the balls' centres through `balls` (in order): a cubic
+/// through them, its parameter their distance along it, from 0 to 1; with
+/// each ball's parameter.
+fn path_through(balls: &[Section]) -> Option<(Curve3, Vec<f64>)> {
+    let centres: Vec<Vec3> = balls.iter().map(|b| b.centre).collect::<Option<_>>()?;
+    let mut params = Vec::with_capacity(centres.len());
+    let mut sum = 0.0;
+    let mut last = *centres.first()?;
+    for c in &centres {
+        sum += c.distance(last);
+        last = *c;
+        params.push(sum);
+    }
+    if !(sum > 0.0) {
+        return None;
+    }
+    for p in &mut params {
+        *p /= sum;
+    }
+    let curve = curve_through(&params, &centres)?;
+    Some((Curve3::Nurbs(curve), params))
+}
+
+/// Keeps at most `most` of `balls`, evenly picked, the first and the last
+/// always.
+fn thin(balls: Vec<Section>, most: usize) -> Vec<Section> {
+    let n = balls.len();
+    if n <= most || most < 2 {
+        return balls;
+    }
+    let keep: std::collections::BTreeSet<usize> = (0..most)
+        .map(|k| (k * (n - 1) + (most - 1) / 2) / (most - 1))
+        .chain([0, n - 1])
+        .collect();
+    balls
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| keep.contains(i))
+        .map(|(_, b)| b)
+        .collect()
+}
+
+/// Works out the fillet faces of `chain` on `body` (unchanged), following
+/// the balls along their path: from the middle of the first edge round
+/// the chain, each edge's balls from the joint before it to the joint
+/// after it (a ball where a face changes is found on the smooth edge; one
+/// where none does, in the plane across the edges at the vertex). The
+/// sections of each face are then the balls in the planes square to a
+/// cubic through the centres found, turned at the joints into the planes
+/// of the joints' balls, so the faces on both sides of a joint end in the
+/// same ball.
+#[allow(clippy::too_many_lines)]
+fn along_spine(
+    body: &Body,
+    chain: &Chain,
+    items: &[Item],
+    tolerance: &Tolerance,
+) -> Result<Computed, BlendError> {
+    let tol = tolerance.linear;
+    let pieces = &chain.pieces;
+    let n = pieces.len();
+    let first = *pieces.first().ok_or_else(lost)?;
+    let edge = first.edge;
+    let unsolvable = || refuse(edge, None, Reason::FreeSurface);
+    let shape = first.shape;
+    let size = shape.size();
+    let convex = items.get(first.item).ok_or_else(lost)?.convex;
+    let datas: Vec<&Edge> = pieces
+        .iter()
+        .map(|p| body.edge(p.edge).ok_or_else(lost))
+        .collect::<Result<_, _>>()?;
+    let sides: Vec<[Side<'_>; 2]> = pieces
+        .iter()
+        .map(|p| sides_of(body, p.faces))
+        .collect::<Result<_, _>>()?;
+    let scale = datas
+        .iter()
+        .map(|d| scale_of(d, size, tol))
+        .fold(tol, f64::max);
+    let after = |j: usize| (j + 1) % n;
+    let lengths: Vec<f64> = datas.iter().map(|d| edge_length(d)).collect();
+    if lengths.iter().any(|l| !(*l > 0.0)) {
+        return Err(unsolvable());
+    }
+    // The edges' own planes: for the seed and the joints and ends.
+    let edge_solvers: Vec<Solver<'_>> = pieces
+        .iter()
+        .enumerate()
+        .map(|(i, p)| -> Result<Solver<'_>, BlendError> {
+            let data = *datas.get(i).ok_or_else(lost)?;
+            Ok(Solver {
+                spine: Spine {
+                    curve: &data.curve,
+                    range: if p.forward {
+                        data.range
+                    } else {
+                        (data.range.1, data.range.0)
+                    },
+                    closed: false,
+                    joints: [None, None],
+                    turn: 0.0,
+                },
+                sides: *sides.get(i).ok_or_else(lost)?,
+                shape,
+                scale,
+            })
+        })
+        .collect::<Result<_, _>>()?;
+    // The balls where a face changes, known before the walk.
+    let mut switched: Vec<Option<(Section, Section, f64)>> = Vec::with_capacity(chain.joints.len());
+    let mut stops: Vec<Across> = Vec::with_capacity(chain.joints.len());
+    for (j, joint) in chain.joints.iter().enumerate() {
+        let (p, q) = (
+            pieces.get(j).ok_or_else(lost)?,
+            pieces.get(after(j)).ok_or_else(lost)?,
+        );
+        let (pd, qd) = (
+            *datas.get(j).ok_or_else(lost)?,
+            *datas.get(after(j)).ok_or_else(lost)?,
+        );
+        let (Some(out), Some(on)) = (direction(pd, p.forward, true), direction(qd, q.forward, false))
+        else {
+            return Err(unsolvable());
+        };
+        let along = (out + on).normalized().ok_or_else(unsolvable)?;
+        match joint.switch {
+            None => {
+                let point = body.vertex(joint.vertex).ok_or_else(lost)?.point;
+                stops.push(Across {
+                    point,
+                    normal: along,
+                });
+                switched.push(None);
+            }
+            Some(switch) => {
+                let smooth = body.edge(switch.smooth).ok_or_else(lost)?;
+                let (before, later, plane, t) = switch_ball(
+                    *sides.get(j).ok_or_else(lost)?,
+                    *sides.get(after(j)).ok_or_else(lost)?,
+                    switch.side,
+                    smooth,
+                    joint.vertex,
+                    shape,
+                    along,
+                    scale,
+                )
+                .ok_or_else(|| refused(q.edge, Reason::FreeJoint))?;
+                stops.push(plane);
+                switched.push(Some((before, later, t)));
+            }
+        }
+    }
+    // The ends of an open chain.
+    let ends = if chain.closed {
+        None
+    } else {
+        let last = *pieces.last().ok_or_else(lost)?;
+        let (fd, ld) = (
+            *datas.first().ok_or_else(lost)?,
+            *datas.last().ok_or_else(lost)?,
+        );
+        Some([
+            end_at(body, first.edge, first.faces, vertex_of(fd, first.forward, false))?,
+            end_at(body, last.edge, last.faces, vertex_of(ld, last.forward, true))?,
+        ])
+    };
+    let third_of = |end: &End| -> Result<Side<'_>, BlendError> {
+        let face = body.face(end.third).ok_or_else(lost)?;
+        Ok(Side {
+            surface: &face.surface,
+            reversed: face.reversed,
+        })
+    };
+    let step_of = |i: usize| -> (f64, f64) {
+        let length = lengths.get(i).copied().unwrap_or(size);
+        let longest = (length / 6.0).min(2.0 * size).max(1e-3 * size);
+        ((0.5 * size).min(longest), longest)
+    };
+    let most_out = 8.0 * size;
+    // The seed, in the middle of the first edge.
+    let solver0 = edge_solvers.first().ok_or_else(lost)?;
+    let into = items.get(first.item).ok_or_else(lost)?.into;
+    let seed = first_section(solver0, 0.5, into, edge)?;
+    let forward0 = solver0.spine.at(0.5).ok_or_else(unsolvable)?.normal;
+    let t0 = spine_tangent(solver0.sides, &seed, forward0).ok_or_else(unsolvable)?;
+    // Per piece, its balls in order along the chain; per joint, its ball
+    // and plane.
+    let mut balls: Vec<Vec<Section>> = vec![Vec::new(); n];
+    let mut joint_balls: Vec<(Section, Section)> = Vec::with_capacity(chain.joints.len());
+    let mut joint_planes: Vec<Across> = Vec::with_capacity(chain.joints.len());
+    // Per open end, the plane across the edge at its end, looking out.
+    let mut end_planes: [Option<Across>; 2] = [None, None];
+    let mut from = (seed, t0);
+    for i in 0..n {
+        let solver = edge_solvers.get(i).ok_or_else(lost)?;
+        let (h, longest) = step_of(i);
+        let list = balls.get_mut(i).ok_or_else(lost)?;
+        list.push(from.0);
+        if i + 1 == n && !chain.closed {
+            let end = ends.as_ref().ok_or_else(lost)?.get(1).ok_or_else(lost)?;
+            let plane = solver.spine.at(1.0).ok_or_else(unsolvable)?;
+            end_planes[1] = Some(plane);
+            let walked = walk(
+                solver,
+                from.0,
+                from.1,
+                h,
+                longest,
+                &Until::Out {
+                    end: plane,
+                    third: third_of(end)?,
+                },
+                most_out,
+                tol,
+            )
+            .ok_or_else(|| refuse(edge, Some(end.third), Reason::FreeEnd))?;
+            list.extend(walked.balls);
+            break;
+        }
+        let stop = *stops.get(i).ok_or_else(lost)?;
+        let walked = walk(solver, from.0, from.1, h, longest, &Until::Plane(stop), most_out, tol)
+            .ok_or_else(unsolvable)?;
+        list.extend(walked.balls);
+        let (mine, next) = match switched.get(i).ok_or_else(lost)? {
+            Some((before, later, _)) => (*before, *later),
+            None => {
+                let last = *list.last().ok_or_else(lost)?;
+                let Shape::Ball { radius, convex } = shape else {
+                    return Err(lost());
+                };
+                let ball = solver
+                    .ball(stop, &last, radius, convex)
+                    .ok_or_else(unsolvable)?;
+                (ball, ball)
+            }
+        };
+        let plane = arc_plane(&mine, stop.normal).ok_or_else(unsolvable)?;
+        // A ball found just before the joint would be a sliver of a step.
+        if let Some(last) = list.last().and_then(|b| b.centre)
+            && list.len() > 1
+            && plane.normal.dot(plane.point - last) < 0.1 * h
+        {
+            list.pop();
+        }
+        list.push(mine);
+        joint_balls.push((mine, next));
+        joint_planes.push(plane);
+        from = (next, plane.normal);
+    }
+    // The first piece back from the seed.
+    let solver = edge_solvers.first().ok_or_else(lost)?;
+    let (h, longest) = step_of(0);
+    let back = if chain.closed {
+        let closing = n.checked_sub(1).ok_or_else(lost)?;
+        let plane = *joint_planes.get(closing).ok_or_else(lost)?;
+        let behind = Across {
+            point: plane.point,
+            normal: -plane.normal,
+        };
+        let mut walked = walk(solver, seed, -t0, h, longest, &Until::Plane(behind), most_out, tol)
+            .ok_or_else(unsolvable)?
+            .balls;
+        if let Some(last) = walked.last().and_then(|b| b.centre)
+            && behind.normal.dot(behind.point - last) < 0.1 * h
+        {
+            walked.pop();
+        }
+        walked.push(joint_balls.get(closing).ok_or_else(lost)?.1);
+        walked
+    } else {
+        let end = ends.as_ref().ok_or_else(lost)?.first().ok_or_else(lost)?;
+        let start = solver.spine.at(0.0).ok_or_else(unsolvable)?;
+        let plane = Across {
+            point: start.point,
+            normal: -start.normal,
+        };
+        end_planes[0] = Some(plane);
+        let walked = walk(
+            solver,
+            seed,
+            -t0,
+            h,
+            longest,
+            &Until::Out {
+                end: plane,
+                third: third_of(end)?,
+            },
+            most_out,
+            tol,
+        )
+        .ok_or_else(|| refuse(edge, Some(end.third), Reason::FreeEnd))?;
+        walked.balls
+    };
+    {
+        let list = balls.first_mut().ok_or_else(lost)?;
+        let mut whole: Vec<Section> = back.into_iter().rev().collect();
+        whole.extend(list.drain(..));
+        *list = whole;
+    }
+    // The paths, and each piece's planes: square to its path, turned into
+    // the joints' planes at its ends.
+    let mut paths = Vec::with_capacity(n);
+    let mut kept = Vec::with_capacity(n);
+    for list in &balls {
+        let list = thin(list.clone(), 200);
+        let (curve, params) = path_through(&list).ok_or_else(unsolvable)?;
+        paths.push(curve);
+        kept.push((list, params));
+    }
+    let mut made = Vec::with_capacity(n);
+    let limit = 0.25 * tol;
+    let bend = tolerance.angular.max(BEND).max(tol / size);
+    let mut cut_ranges: [(f64, f64); 2] = [(0.0, 0.0); 2];
+    for (i, ((list, params), path)) in kept.iter().zip(&paths).enumerate() {
+        let before = if i > 0 {
+            joint_planes.get(i - 1).copied()
+        } else if chain.closed {
+            joint_planes.last().copied()
+        } else {
+            None
+        };
+        let behind = if i + 1 < n || chain.closed {
+            joint_planes.get(i).copied()
+        } else {
+            None
+        };
+        let solver = Solver {
+            spine: Spine {
+                curve: path,
+                range: (0.0, 1.0),
+                closed: false,
+                joints: [before, behind],
+                turn: 0.5,
+            },
+            sides: *sides.get(i).ok_or_else(lost)?,
+            shape,
+            scale,
+        };
+        let count = list.len();
+        let mut sections = Vec::with_capacity(count);
+        for (k, (ball, s)) in list.iter().zip(params).enumerate() {
+            let fixed = (k == 0 && before.is_some()) || (k + 1 == count && behind.is_some());
+            if fixed {
+                sections.push(*ball);
+            } else {
+                sections.push(solver.follow(*s, ball, *s, 0).ok_or_else(unsolvable)?);
+            }
+        }
+        // Where the cuts at the open ends are looked for: from a few
+        // radii before the end of the edge to the last ball.
+        if !chain.closed {
+            let back = 4.0 * size / path_length(list);
+            let [start_plane, end_plane] = end_planes;
+            if let (0, Some(plane)) = (i, start_plane) {
+                let at = crossing_param(list, params, &plane, false);
+                cut_ranges[0] = ((at + back).min(0.5 * (at + 1.0)), 0.0);
+            }
+            if let (true, Some(plane)) = (i + 1 == n, end_plane) {
+                let at = crossing_param(list, params, &plane, true);
+                cut_ranges[1] = ((at - back).max(0.5 * at), 1.0);
+            }
+        }
+        let mut params = params.clone();
+        let piece_edge = pieces.get(i).ok_or_else(lost)?.edge;
+        let surface = refine(&solver, &mut params, &mut sections, limit, bend)
+            .ok_or_else(|| refuse(piece_edge, None, Reason::FreeApproximation))?;
+        let outward = outward_from(&solver, &surface, &params, &sections, convex)
+            .ok_or_else(unsolvable)?;
+        made.push(PieceMade {
+            surface,
+            spans: [(0.0, 1.0); 2],
+            outward,
+        });
+    }
+    let ends = match ends {
+        None => None,
+        Some([start, finish]) => {
+            let mut done = Vec::with_capacity(2);
+            for (index, end) in [start, finish].into_iter().enumerate() {
+                let piece = if index == 0 { 0 } else { n - 1 };
+                let surface = &made.get(piece).ok_or_else(lost)?.surface;
+                let (inner, outer) = *cut_ranges.get(index).ok_or_else(lost)?;
+                let (cut, at) = cut_curve(surface, third_of(&end)?, inner, outer, limit, scale)
+                    .ok_or_else(|| {
+                        refuse(
+                            pieces.get(piece).map_or(edge, |p| p.edge),
+                            Some(end.third),
+                            Reason::FreeEnd,
+                        )
+                    })?;
+                let spans = &mut made.get_mut(piece).ok_or_else(lost)?.spans;
+                for (k, s) in at.iter().enumerate() {
+                    let span = spans.get_mut(k).ok_or_else(lost)?;
+                    if index == 0 {
+                        span.0 = *s;
+                    } else {
+                        span.1 = *s;
+                    }
+                }
+                done.push(EndMade { end, cut, at });
+            }
+            let [a, b] = <[EndMade; 2]>::try_from(done).map_err(|_| lost())?;
+            Some([a, b])
+        }
+    };
+    for (piece, m) in pieces.iter().zip(&made) {
+        for (k, (a, b)) in m.spans.iter().enumerate() {
+            if !(b > a) {
+                let face = *piece.faces.get(k).ok_or_else(lost)?;
+                return Err(refuse(piece.edge, Some(face), Reason::FreeTooLarge));
+            }
+        }
+    }
+    let joints = joint_balls
+        .into_iter()
+        .zip(&switched)
+        .map(|((section, _), switch)| JointMade {
+            section,
+            touched: switch.as_ref().map(|s| s.2),
+        })
+        .collect();
+    Ok(Computed {
+        pieces: made,
+        joints,
+        ends,
+    })
+}
+
+/// The length of the path through the balls' centres.
+fn path_length(balls: &[Section]) -> f64 {
+    balls
+        .windows(2)
+        .filter_map(|w| match w {
+            [a, b] => Some(a.centre?.distance(b.centre?)),
+            _ => None,
+        })
+        .sum::<f64>()
+        .max(f64::MIN_POSITIVE)
+}
+
+/// The parameter of the ball where the path crosses `plane` (whose
+/// normal looks out of the edge's end): the first one past it from the
+/// start (`last`: the end at 1), or the last one past it from the start
+/// (the end at 0).
+fn crossing_param(balls: &[Section], params: &[f64], plane: &Across, last: bool) -> f64 {
+    let past = |b: &Section| {
+        b.centre
+            .is_some_and(|c| plane.normal.dot(c - plane.point) >= 0.0)
+    };
+    // From the open end inwards, the balls past the end come first.
+    let found = if last {
+        let from_end = balls.iter().rev().position(|b| !past(b));
+        from_end.map(|k| balls.len().saturating_sub(k))
+    } else {
+        balls.iter().position(|b| !past(b)).map(|k| k.saturating_sub(1))
+    };
+    found
+        .and_then(|k| params.get(k).copied())
+        .unwrap_or(if last { 1.0 } else { 0.0 })
 }
