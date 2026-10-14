@@ -798,11 +798,12 @@ impl Onscreen {
             mask: !0,
             alpha_to_coverage_enabled: false,
         };
-        // `Less`: on a tie the triangle drawn first stays, as on the CPU.
+        // `Greater` (reversed depth, `scene.wgsl`): on a tie the triangle
+        // drawn first stays, as on the CPU.
         let depth = Some(wgpu::DepthStencilState {
             format: DEPTH_FORMAT,
             depth_write_enabled: Some(true),
-            depth_compare: Some(wgpu::CompareFunction::Less),
+            depth_compare: Some(wgpu::CompareFunction::Greater),
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
         });
@@ -1589,7 +1590,7 @@ impl Onscreen {
             Some(wgpu::RenderPassDepthStencilAttachment {
                 view,
                 depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(1.0),
+                    load: wgpu::LoadOp::Clear(0.0),
                     store,
                 }),
                 stencil_ops: None,
@@ -1811,7 +1812,7 @@ impl Onscreen {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &capture.depth,
                     depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
+                        load: wgpu::LoadOp::Clear(0.0),
                         store: wgpu::StoreOp::Discard,
                     }),
                     stencil_ops: None,

@@ -29,9 +29,12 @@
 //!   sample per pixel into targets `ssaa` times larger per axis, and a
 //!   resolve pass takes the rounded integer mean of the colour samples and
 //!   the first sample's face id and distance.
-//! - **Depth test.** `Depth32Float`, `Less`, triangles in mesh order: on a
-//!   tie the triangle drawn first wins, as on the CPU. Near and far are fitted
-//!   to the mesh per frame, so the buffer's precision is spent on the model.
+//! - **Depth test.** `Depth32Float`, reversed (1 at the near plane, towards
+//!   0 far away; `scene.wgsl`), `Greater`, triangles in mesh order: on a
+//!   tie the triangle drawn first wins, as on the CPU. Near and far are
+//!   fitted to the mesh per frame; with the depth reversed the precision is
+//!   relative to the distance, also when the eye is inside the model and
+//!   the near plane sits right in front of it.
 //! - **Shading** is per sample in the fragment shader, two-sided, from the
 //!   interpolated normal or the triangle's own where a vertex has none.
 //! - **See-through bodies** ([`RenderParams::opacity`] below 1) are the CPU

@@ -17,7 +17,7 @@ struct Scene {
     forward: vec4<f32>,
     eye: vec4<f32>,
     light: vec4<f32>,
-    // x: near distance. y: depth scale, as in scene.wgsl.
+    // x, y: the depth numbers of scene.wgsl.
     depth: vec4<f32>,
     base: vec4<f32>,
     shade: vec4<f32>,
@@ -159,22 +159,21 @@ fn vs_main(in: VertexIn) -> VertexOut {
 // nearer; infinite where nothing was drawn.
 fn surface_at(p: vec2<i32>) -> f32 {
     let samples = i32(lines.size.w);
-    var z = 0.0;
+    // Reversed depth (scene.wgsl): the furthest sample has the least.
+    var z = 1.0;
     for (var s = 0; s < samples; s = s + 1) {
-        z = max(z, {{LOAD}});
+        z = min(z, {{LOAD}});
     }
-    if z >= 1.0 {
+    // Negated, so that a depth that is not a number counts as nothing.
+    if !(z > 0.0) {
         return 1e38;
     }
     if scene.forward.w > 0.5 {
-        // z = scale * (1 - near / dist), as the scene pass writes it.
-        let d = 1.0 - z / scene.depth.y;
-        if d <= 0.0 {
-            return 1e38;
-        }
-        return scene.depth.x / d;
+        // z = near / dist, as the scene pass writes it.
+        return scene.depth.x / z;
     }
-    return z / scene.depth.y + scene.depth.x;
+    // z = (far - dist) * scale.
+    return scene.depth.x - z / scene.depth.y;
 }
 
 @fragment

@@ -14,7 +14,8 @@ struct Scene {
     eye: vec4<f32>,
     // xyz: unit vector towards the light. w: 1 when there is one.
     light: vec4<f32>,
-    // x: near distance. y: depth scale (see vs_main).
+    // x: the near distance in perspective, the far one in orthographic.
+    // y: the depth scale of an orthographic view (see vs_main).
     depth: vec4<f32>,
     // rgb: the base colour in 0..255.
     base: vec4<f32>,
@@ -79,15 +80,23 @@ fn vertex(in: VertexIn) -> VertexOut {
     let x = cx * scene.right.w;
     let y = cy * scene.up.w;
     // The depth key must be affine in screen space and ordered like the CPU
-    // key (-1 / dist in perspective, dist in orthographic).
+    // key (-1 / dist in perspective, dist in orthographic), here reversed:
+    // 1 at the near plane, falling towards 0 far away, and the depth test
+    // keeps the greater. A float holds near / dist to the same relative
+    // precision at every distance, so a near plane right in front of the
+    // eye (the eye inside a large model) costs nothing further on; with
+    // depth rising to 1 far away, all the precision of the float near 0
+    // would sit at the near plane and far faces a few centimetres apart
+    // would fight.
     if scene.forward.w > 0.5 {
-        // z / w = far * (dist - near) / ((far - near) * dist): 0 at near,
-        // 1 at far, and affine in 1 / dist. depth.y = far / (far - near).
-        out.clip = vec4<f32>(x, y, (dist - scene.depth.x) * scene.depth.y, dist);
+        // z / w = near / dist: 1 at near, towards 0 at infinity (no far
+        // plane), affine in 1 / dist. depth.x = near.
+        out.clip = vec4<f32>(x, y, scene.depth.x, dist);
         out.dist_w = dist * dist;
     } else {
+        // (far - dist) / (far - near): 1 at near, 0 at far. depth.x = far,
         // depth.y = 1 / (far - near).
-        out.clip = vec4<f32>(x, y, (dist - scene.depth.x) * scene.depth.y, 1.0);
+        out.clip = vec4<f32>(x, y, (scene.depth.x - dist) * scene.depth.y, 1.0);
         out.dist_w = dist;
     }
     out.rel = rel;

@@ -57,8 +57,9 @@ fn fs_front_color(in: VertexOut) -> @location(0) vec4<f32> {
 @fragment
 fn fs_behind(in: VertexOut) -> @location(0) vec4<f32> {
     let front = textureLoad(front_depth, vec2<i32>(in.clip.xy), 0).r;
-    // Negated, so that a depth that is not a number is dropped.
-    if !(in.clip.z > front) {
+    // Behind is less with reversed depth (scene.wgsl). Negated, so that a
+    // depth that is not a number is dropped.
+    if !(in.clip.z < front) {
         discard;
     }
     return shade_of(in);
