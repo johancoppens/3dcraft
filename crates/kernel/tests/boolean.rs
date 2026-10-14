@@ -795,10 +795,29 @@ fn what_is_not_supported_says_so() {
         7.0 * PI / 2.0 + 3.0 * PI / 4.0,
         k,
     );
-    // What stays refused of a rational face: weights more than a factor
-    // of a thousand apart, for which no bound on the derivatives is of
-    // any use.
-    let rational = weighted(2000.0);
+    // Weights more than a factor of a thousand apart were refused until
+    // 2026-10-15; such a span is now split until each piece's weights are
+    // within sixteen of each other, and the results are the same solids
+    // (the expectation changed from a refusal to the closed forms above).
+    for heavy in [2000.0, 1e6] {
+        let united = solve(&weighted(heavy), &ball, Union, k);
+        assert_mass(
+            &united,
+            24.0 + 4.0 * PI / 3.0 - eighth,
+            52.0 - 3.0 * PI / 4.0 + 7.0 * PI / 2.0,
+            k,
+        );
+        let rest = solve(&ball, &weighted(heavy), Subtract, k);
+        assert_mass(
+            &rest,
+            4.0 * PI / 3.0 - eighth,
+            7.0 * PI / 2.0 + 3.0 * PI / 4.0,
+            k,
+        );
+    }
+    // What stays refused: weights so far apart that two dozen halvings do
+    // not even them out.
+    let rational = weighted(1e15);
     let (why, faces) = reason(&rational, &ball, Union);
     assert!(why.contains("rational") && why.contains("weights"), "{why}");
     assert_eq!(faces, [(Operand::A, FaceId(1))]);

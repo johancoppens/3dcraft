@@ -140,8 +140,11 @@ impl Projector {
                 // divided by a distance of rounding it would be taken for
                 // one of ten million per unit length, which no cell near
                 // the pole would ever be simple enough for.
+                // (Two poles on borders across different parameters share
+                // a corner, and are one point: a pole at a corner.)
                 if let (Some(Some(a)), Some(Some(b))) = (at_pole.get(k), at_pole.get(k + step))
-                    && a == b
+                    && (a == b
+                        || poles.get(*a).map(Pole::across_v) != poles.get(*b).map(Pole::across_v))
                 {
                     continue;
                 }

@@ -449,6 +449,100 @@ fn loop_points(
     Ok(loops)
 }
 
+/// A pole of a spline surface at a corner of its parameters: a border
+/// across `a` and a border across `b` that are both the one point. The
+/// meridians leave it from both borders, along the L that the two make in
+/// the parameters; a boundary that comes into the pole goes along the L
+/// from the meridian of the point before to that of the point after
+/// ([`CornerPole::foot`]), round the corner if they are on different
+/// borders.
+#[derive(Clone, Copy, Debug)]
+struct CornerPole {
+    /// The corner, in the face's order of parameters.
+    corner: Uv,
+    /// The range of each parameter, signed so that it runs from the corner
+    /// into the domain.
+    span: [f64; 2],
+    /// The two poles.
+    poles: [craft3d_geom::pole::Pole; 2],
+    /// Points this near the pole are the pole: a billionth of the size of
+    /// the surface.
+    near: f64,
+}
+
+impl CornerPole {
+    fn of(param: &Param) -> Option<CornerPole> {
+        let found = craft3d_geom::pole::poles(param.surface);
+        let [x, y] = found.as_slice() else {
+            return None;
+        };
+        if x.across_v() == y.across_v() {
+            return None;
+        }
+        let ((u0, u1), (v0, v1)) = param.surface.domain();
+        let (mut cu, mut cv, mut su, mut sv) = (u0, v0, u1 - u0, v1 - v0);
+        for pole in [x, y] {
+            match pole.border {
+                craft3d_geom::pole::Border::UEnd => (cu, su) = (u1, u0 - u1),
+                craft3d_geom::pole::Border::VEnd => (cv, sv) = (v1, v0 - v1),
+                _ => {}
+            }
+        }
+        if ![cu, cv, su, sv].iter().all(|x| x.is_finite()) || su == 0.0 || sv == 0.0 {
+            return None;
+        }
+        let size = [(u0, v0), (u0, v1), (u1, v0), (u1, v1)]
+            .iter()
+            .map(|&(u, v)| param.surface.eval(u, v).distance(x.point))
+            .fold(0.0, f64::max);
+        Some(CornerPole {
+            corner: param.order(cu, cv),
+            span: param.order(su, sv),
+            poles: [*x, *y],
+            near: 1e-9 * size,
+        })
+    }
+
+    /// The shares of the range from the corner.
+    fn shares(&self, uv: Uv) -> [f64; 2] {
+        let [a, b] = uv;
+        let [ca, cb] = self.corner;
+        let [sa, sb] = self.span;
+        [(a - ca) / sa, (b - cb) / sb]
+    }
+
+    /// Whether the point at `pos`, projected to `uv`, is the pole: `uv`
+    /// on the L, or `pos` the pole's point (to rounding: the projection of
+    /// the pole may come back a little off the L).
+    fn holds(&self, uv: Uv, pos: Vec3) -> bool {
+        let [x, y] = self.shares(uv);
+        !(x.abs() > 1e-9)
+            || !(y.abs() > 1e-9)
+            || self
+                .poles
+                .iter()
+                .any(|p| !(p.point.distance(pos) > self.near))
+    }
+
+    /// Where the meridian through `uv` leaves the L, and the parameter
+    /// that is free there. Next to a border of the pole the surface is `P
+    /// + s t R(s, t)` with `s` and `t` the shares from the corner, and near
+    /// `t = 0` the line of constant `s` leaves the pole in the direction
+    /// `R(s, 0)`: it is the meridian of the place `(s, 0)` of the L. So
+    /// the foot is `uv` with its smaller share dropped, as at a pole on one
+    /// border the free parameter is kept (`build_ring`).
+    fn foot(&self, uv: Uv) -> (Uv, usize) {
+        let [x, y] = self.shares(uv);
+        let [a, b] = uv;
+        let [ca, cb] = self.corner;
+        if x.abs() <= y.abs() {
+            ([ca, b], 1)
+        } else {
+            ([a, cb], 0)
+        }
+    }
+}
+
 /// Follows one loop through parameter space.
 ///
 /// `sense` is +1 when the loops of this face run counter-clockwise in
@@ -543,7 +637,16 @@ fn build_ring(
             }
         }
     }
-    let Some(start) = (0..n).find(|&i| free_at(i).is_none()) else {
+    let corner = if param.is_freeform() {
+        CornerPole::of(param)
+    } else {
+        None
+    };
+    let at_corner = |i: usize| match (corner, raw.get(i), points.get(i)) {
+        (Some(corner), Some(&uv), Some(&(pos, _))) => corner.holds(uv, pos),
+        _ => false,
+    };
+    let Some(start) = (0..n).find(|&i| free_at(i).is_none() && !at_corner(i)) else {
         return fail(
             face,
             format!("every point of its loop {number} is a singular point of the surface"),
@@ -564,6 +667,46 @@ fn build_ring(
     for step in 1..n {
         let i = (start + step) % n;
         let Some((cur, pos)) = at(i) else { continue };
+        if let Some(corner) = corner.filter(|c| c.holds(cur, pos) || free_at(i).is_some()) {
+            // At a pole at a corner of the parameters: arrive on the L
+            // along the meridian of the point before, and leave it along
+            // that of the point after, round the corner if they are on
+            // different borders of it. Points of the loop next to each
+            // other at the pole make one stretch of the L.
+            let (arrive, free) = corner.foot(prev);
+            if !verts.last().is_some_and(|v| v.pos == pos && v.uv == arrive) {
+                verts.push(Bv {
+                    uv: arrive,
+                    pos,
+                    free: Some(free),
+                    chord: chord_at(i),
+                });
+            }
+            prev = arrive;
+            let j = (i + 1) % n;
+            let next = at(j).filter(|&(uv, p)| !corner.holds(uv, p) && free_at(j).is_none());
+            if let Some((next, _)) = next {
+                let (leave, free_out) = corner.foot(next);
+                if free_out != free {
+                    verts.push(Bv {
+                        uv: corner.corner,
+                        pos,
+                        free: Some(free),
+                        chord: chord_at(i),
+                    });
+                }
+                if leave != arrive {
+                    verts.push(Bv {
+                        uv: leave,
+                        pos,
+                        free: Some(free_out),
+                        chord: chord_at(i),
+                    });
+                }
+                prev = leave;
+            }
+            continue;
+        }
         match free_at(i) {
             None => {
                 let uv = [
@@ -2836,6 +2979,12 @@ fn finish_boundary(
             (Some(k), Some(l)) if k == l && p.pos == q.pos => {
                 let length = (get2(q.uv, k) - get2(p.uv, k)).abs();
                 ((length / get2(step, k) - 1e-9).ceil(), true)
+            }
+            // Into or out of the corner of a pole at a corner of the
+            // parameters (`CornerPole`): along whichever parameter moves.
+            (Some(_), Some(_)) if p.pos == q.pos => {
+                let length = |k: usize| (get2(q.uv, k) - get2(p.uv, k)).abs() / get2(step, k);
+                ((length(0).max(length(1)) - 1e-9).ceil(), true)
             }
             _ => (1.0, false),
         };
