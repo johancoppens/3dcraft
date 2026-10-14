@@ -135,12 +135,15 @@ fn faces_whose_loops_bound_no_region_are_errors_that_say_why() {
     face_error(&stray, 5, "outside the loop");
 }
 
-/// Faces the method does not cover are refused; none of them comes out
-/// as a mesh of something else.
+/// Faces that were refused as beyond the method, one after the other
+/// until 2026-10-14, and are meshed now: each is held to its closed form.
+/// (What is still refused, and never comes out as a mesh of something
+/// else: `tests/closed_freeform.rs` for a surface that closes without the
+/// tessellator seeing it, `tests/bodies.rs` for a loop that winds twice.)
 #[test]
-fn faces_beyond_the_method_are_refused() {
+fn faces_once_beyond_the_method_are_meshed() {
     use craft3d_geom::{Circle, NurbsSurface, Sphere};
-    use std::f64::consts::{FRAC_PI_2, TAU};
+    use std::f64::consts::{FRAC_PI_2, PI, TAU};
     let sphere = || Surface::Sphere(Sphere::new(Frame::WORLD, 2.0).unwrap());
     let meridian = |u: f64| {
         let x = Vec3::new(u.cos(), u.sin(), 0.0);
@@ -176,20 +179,6 @@ fn faces_beyond_the_method_are_refused() {
         body.add_shell(vec![face]);
         body
     };
-    let refused = |body: &Body, what: &str| {
-        for tolerance in [0.3, 1e-2] {
-            let result = tessellate_body(body, &params(tolerance));
-            assert!(
-                matches!(
-                    result,
-                    Err(TessError::Face { face: 0, .. } | TessError::Unsupported { face: 0, .. })
-                ),
-                "{what} at {tolerance}: {:?}",
-                result.map(|m| m.triangles.len())
-            );
-        }
-    };
-
     // A cap on the side of the sphere, cut by the plane x = 1: its rim
     // does not go around the sphere's axis. Counter-clockwise it bounds
     // the cap (area 2π r h) ...
@@ -234,16 +223,32 @@ fn faces_beyond_the_method_are_refused() {
     assert!((mesh.area() - expected).abs() < 1e-3 * expected);
 
     // A whole sphere given with a seam edge: one meridian, walked up and
-    // down. In parameter space nothing says that the face goes around.
-    let seamed = one_face(
-        sphere(),
-        vec![(meridian(0.0), quarter)],
-        &[(0, false), (0, true)],
-    );
-    refused(&seamed, "a sphere with a seam edge");
+    // down (what a STEP file has). Refused until 2026-10-14; a loop that
+    // comes back from a pole the way it went there now turns all the way
+    // around it, so the face is the whole sphere.
+    for at in [0.0, 2.5] {
+        let seamed = one_face(
+            sphere(),
+            vec![(meridian(at), quarter)],
+            &[(0, false), (0, true)],
+        );
+        for tolerance in [0.3, 1e-2, 1e-3] {
+            let mesh = tessellate_body(&seamed, &params(tolerance)).unwrap();
+            let welded = mesh.weld().unwrap();
+            assert!(
+                welded.is_closed(),
+                "a sphere with a seam edge at {tolerance}"
+            );
+            let (area, volume) = (4.0 * PI * 4.0, 4.0 / 3.0 * PI * 8.0);
+            assert!((welded.volume() - volume).abs() <= area * tolerance);
+            assert!(mesh.area() <= area && mesh.area() > area * (1.0 - 2.0 * tolerance));
+        }
+    }
 
     // A tube as a NURBS surface that closes on itself, with its seam as
-    // an edge: `geom` reports no period for it.
+    // an edge. This was refused until 2026-10-14 (`geom` reports no period
+    // for it); the tessellator now finds that the control net closes and
+    // follows the face across the seam (`tests/closed_freeform.rs`).
     let circle = craft3d_geom::NurbsCurve::circle(&Frame::WORLD, 1.5).unwrap();
     let mut ctrl = Vec::new();
     let mut weights = Vec::new();
@@ -283,7 +288,14 @@ fn faces_beyond_the_method_are_refused() {
         craft3d_topo::check(&closed_tube, &craft3d_math::Tolerance::default()),
         vec![]
     );
-    refused(&closed_tube, "a closed NURBS tube");
+    for tolerance in [0.3, 1e-2, 1e-4] {
+        let mesh = tessellate_body(&closed_tube, &params(tolerance)).unwrap();
+        let expected = TAU * 1.5 * 2.0;
+        // (Not from below: at a coarse tolerance the triangles of a
+        // tube stand askew between its rims, as on Schwarz's lantern.)
+        let area = mesh.area();
+        assert!((area - expected).abs() < tolerance * expected, "{area}");
+    }
 }
 
 #[test]

@@ -60,6 +60,12 @@ pub(crate) struct FaceMesh {
     pub positions: Vec<Vec3>,
     pub normals: Vec<Vec3>,
     pub triangles: Vec<[u32; 3]>,
+    /// Where the triangles end: every side of a triangle that lies on the
+    /// boundary of the face's region (an edge's chord, a piece of a seam),
+    /// from its first point to its second as the triangle, facing
+    /// outward, runs. `body.rs` holds this against the edges of the face
+    /// (`closes_along_edges`).
+    pub border: Vec<(Vec3, Vec3)>,
 }
 
 fn fail<T>(face: usize, reason: impl Into<String>) -> Result<T, TessError> {
@@ -83,12 +89,163 @@ fn unsupported<T>(face: usize, what: impl Into<String>) -> Result<T, TessError> 
 struct Param<'a> {
     surface: &'a Surface,
     swapped: bool,
+    closure: Closure,
+}
+
+/// How a surface closes on itself, in its own `(u, v)`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Closure {
+    /// The period of each parameter that has one.
+    periods: [Option<f64>; 2],
+    /// For a parameter with a period that the surface is defined on over
+    /// one period only (a spline surface): that range. Parameters beyond
+    /// it are brought back into it before the surface is evaluated; the
+    /// analytic kinds are evaluated wherever they are asked.
+    wrap: [Option<(f64, f64)>; 2],
+}
+
+/// The part of a spline surface's parameter range below which the extent
+/// of a face's boundary is rounding of the projection (see
+/// [`face_boundary`]).
+const NO_REGION: f64 = 1e-9;
+
+/// How near, as a part of the size of the control net, two rows of control
+/// points must be to count as the same row.
+const SAME_ROW: f64 = 1e-9;
+
+/// Whether a net of `count_u` rows of `count_v` control points (row-major)
+/// ends, along u and along v, on the row it starts with: the same points,
+/// to [`SAME_ROW`] of the net's size, and weights in one proportion, so
+/// that the two rows are the same curve. A net all of whose rows are that
+/// one row closes nothing: the surface is a curve there.
+fn net_closes(count_u: usize, count_v: usize, ctrl: &[Vec3], weights: Option<&[f64]>) -> [bool; 2] {
+    if count_u < 2 || count_v < 2 || count_u.checked_mul(count_v) != Some(ctrl.len()) {
+        return [false, false];
+    }
+    let far = Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
+    let (mut low, mut high) = (far, -far);
+    for p in ctrl {
+        (low, high) = (low.min(*p), high.max(*p));
+    }
+    let near = SAME_ROW * low.distance(high);
+    if !(near.is_finite() && near > 0.0) {
+        return [false, false];
+    }
+    let at = |i: usize, j: usize| ctrl.get(i * count_v + j).copied();
+    let weight = |i: usize, j: usize| match weights {
+        Some(weights) => weights.get(i * count_v + j).copied(),
+        None => Some(1.0),
+    };
+    // Along `rows` rows of `across` points each, with `get(row, k)`.
+    let closes = |rows: usize, across: usize, get: &dyn Fn(usize, usize) -> Option<(Vec3, f64)>| {
+        let Some(((_, first), (_, last))) = get(0, 0).zip(get(rows - 1, 0)) else {
+            return false;
+        };
+        let mut moves = false;
+        for k in 0..across {
+            let (Some((p, w)), Some((q, x))) = (get(0, k), get(rows - 1, k)) else {
+                return false;
+            };
+            // `w / first == x / last`, without dividing.
+            if exceeds(p.distance(q), near)
+                || exceeds((w * last - x * first).abs(), SAME_ROW * (w * last).abs())
+            {
+                return false;
+            }
+            for row in 1..rows - 1 {
+                moves |= get(row, k).is_some_and(|(r, _)| r.distance(p) > near);
+            }
+        }
+        moves
+    };
+    [
+        closes(count_u, count_v, &|i, j| at(i, j).zip(weight(i, j))),
+        closes(count_v, count_u, &|j, i| at(i, j).zip(weight(i, j))),
+    ]
+}
+
+/// Whether a knot vector is clamped: its first and its last `degree + 1`
+/// knots are one value each, so that the spline starts on its first
+/// control point and ends on its last.
+fn clamped(knots: &[f64], degree: usize) -> bool {
+    let (Some(first), Some(last)) = (knots.first(), knots.last()) else {
+        return false;
+    };
+    knots.len() > 2 * degree + 1
+        && knots.iter().take(degree + 1).all(|k| k == first)
+        && knots.iter().rev().take(degree + 1).all(|k| k == last)
+}
+
+impl Closure {
+    /// The analytic kinds say how they close (`Surface::period_u`). A
+    /// spline surface does not: `craft3d-geom` knows no period for it. It
+    /// closes in a direction when its control net ends there on the row
+    /// it starts with ([`net_closes`]) and its knots are clamped; its
+    /// period is then the width of its domain. (A surface that closes
+    /// without that, on knots that are not clamped, is not recognised: a
+    /// face across its seam is refused, see `mesh_face`.)
+    fn of(surface: &Surface) -> Self {
+        let ((u0, u1), (v0, v1)) = surface.domain();
+        let closes = match surface {
+            Surface::Bezier(patch) => net_closes(
+                patch.degree_u() + 1,
+                patch.degree_v() + 1,
+                patch.control_points(),
+                None,
+            ),
+            Surface::Nurbs(s) => {
+                let (count_u, count_v) = s.counts();
+                let (degree_u, degree_v) = s.degrees();
+                let [u, v] = net_closes(count_u, count_v, s.control_points(), Some(s.weights()));
+                [
+                    u && clamped(s.knots_u(), degree_u),
+                    v && clamped(s.knots_v(), degree_v),
+                ]
+            }
+            _ => {
+                return Self {
+                    periods: [surface.period_u(), surface.period_v()],
+                    wrap: [None, None],
+                };
+            }
+        };
+        let [closes_u, closes_v] = closes;
+        let range = |closes: bool, low: f64, high: f64| {
+            (closes && low.is_finite() && high.is_finite() && high > low).then_some((low, high))
+        };
+        let wrap = [range(closes_u, u0, u1), range(closes_v, v0, v1)];
+        Self {
+            periods: wrap.map(|range| range.map(|(low, high)| high - low)),
+            wrap,
+        }
+    }
+}
+
+/// `x` brought into `range` by whole periods; as it is when it lies in the
+/// range already, either end included.
+fn wrapped(x: f64, range: Option<(f64, f64)>) -> f64 {
+    match range {
+        Some((low, high)) if !(x >= low && x <= high) => {
+            let back = low + (x - low).rem_euclid(high - low);
+            if back.is_finite() { back } else { x }
+        }
+        _ => x,
+    }
 }
 
 impl Param<'_> {
+    /// `p` in the surface's own order.
     fn raw(&self, p: Uv) -> (f64, f64) {
         let [a, b] = p;
         if self.swapped { (b, a) } else { (a, b) }
+    }
+
+    /// Where the surface is evaluated for `p`: [`Param::raw`], brought
+    /// back into the domain of a spline surface that closes on itself.
+    fn at(&self, p: Uv) -> (f64, f64) {
+        let (u, v) = self.raw(p);
+        let [wrap_u, wrap_v] = self.closure.wrap;
+        (wrapped(u, wrap_u), wrapped(v, wrap_v))
     }
 
     fn order<T>(&self, u: T, v: T) -> [T; 2] {
@@ -96,13 +253,13 @@ impl Param<'_> {
     }
 
     fn eval(&self, p: Uv) -> Vec3 {
-        let (u, v) = self.raw(p);
+        let (u, v) = self.at(p);
         self.surface.eval(u, v)
     }
 
     /// `(point, ∂/∂a, ∂/∂b)`.
     fn derivatives(&self, p: Uv) -> (Vec3, [Vec3; 2]) {
-        let (u, v) = self.raw(p);
+        let (u, v) = self.at(p);
         let (point, du, dv) = self.surface.derivatives(u, v);
         (point, self.order(du, dv))
     }
@@ -115,7 +272,8 @@ impl Param<'_> {
     }
 
     fn periods(&self) -> [Option<f64>; 2] {
-        self.order(self.surface.period_u(), self.surface.period_v())
+        let [u, v] = self.closure.periods;
+        self.order(u, v)
     }
 
     fn domain(&self) -> [(f64, f64); 2] {
@@ -125,7 +283,7 @@ impl Param<'_> {
 
     /// The surface's own unit normal `∂u × ∂v`, whatever the order.
     fn normal(&self, p: Uv) -> Option<Vec3> {
-        let (u, v) = self.raw(p);
+        let (u, v) = self.at(p);
         self.surface.normal(u, v)
     }
 
@@ -384,6 +542,16 @@ fn build_ring(
                 if let (None, Some((next, _))) = (free_at(j), at(j)) {
                     let target = get2(next, k);
                     let here = get2(uv, k);
+                    // A loop that leaves the way it came (the seam of a
+                    // whole closed surface, given as an edge that the loop
+                    // walks to the pole and back) turns all the way
+                    // around the pole: the face is everything about it.
+                    let back = (i + n - 1) % n;
+                    let returns = back != j
+                        && points
+                            .get(j)
+                            .zip(points.get(back))
+                            .is_some_and(|(next, last)| next.0 == last.0);
                     let leave = match get2(periods, k) {
                         None => target,
                         Some(p) => {
@@ -393,7 +561,9 @@ fn build_ring(
                                 && (!low.is_finite() || (other - high).abs() < (other - low).abs());
                             let direction = if (k == 0) == at_high { -sense } else { sense };
                             let delta = (direction * (target - here)).rem_euclid(p);
-                            if delta < 1e-9 * p || delta > p * (1.0 - 1e-9) {
+                            if returns {
+                                here + direction * p
+                            } else if delta < 1e-9 * p || delta > p * (1.0 - 1e-9) {
                                 here
                             } else {
                                 here + direction * delta
@@ -1799,6 +1969,7 @@ fn arc_cells(
 /// guess: every triangle is measured afterwards.
 fn seed_cells(
     surface: &Surface,
+    closure: &Closure,
     low: (f64, f64),
     high: (f64, f64),
     params: &TessParams,
@@ -1873,7 +2044,10 @@ fn seed_cells(
                 for j in 0..SAMPLES {
                     let u = low.0 + hu * f64::from(2 * i + 1);
                     let v = low.1 + hv * f64::from(2 * j + 1);
-                    let s = |du: f64, dv: f64| surface.eval(u + du * hu, v + dv * hv);
+                    let [wrap_u, wrap_v] = closure.wrap;
+                    let s = |du: f64, dv: f64| {
+                        surface.eval(wrapped(u + du * hu, wrap_u), wrapped(v + dv * hv, wrap_v))
+                    };
                     let centre = s(0.0, 0.0);
                     muu = muu.max((s(1.0, 0.0) + s(-1.0, 0.0) - centre * 2.0).length() / (hu * hu));
                     mvv = mvv.max((s(0.0, 1.0) + s(0.0, -1.0) - centre * 2.0).length() / (hv * hv));
@@ -1892,7 +2066,20 @@ fn distance_to_surface(param: &Param, uv: Uv, target: Vec3) -> f64 {
     let at_uv = param.eval(uv).distance(target);
     let found = if param.is_freeform() {
         // A few Gauss–Newton steps on |S(u, v) − target|² from the guess.
+        // Held within the domain, but for a parameter the surface closes
+        // in: there the search goes on across the seam.
         let [(a0, a1), (b0, b1)] = param.domain();
+        let [period_a, period_b] = param.periods();
+        let (a0, a1) = if period_a.is_some() {
+            (f64::NEG_INFINITY, f64::INFINITY)
+        } else {
+            (a0, a1)
+        };
+        let (b0, b1) = if period_b.is_some() {
+            (f64::NEG_INFINITY, f64::INFINITY)
+        } else {
+            (b0, b1)
+        };
         let [mut a, mut b] = uv;
         let mut best = at_uv;
         for _ in 0..8 {
@@ -2533,10 +2720,12 @@ pub(crate) fn face_boundary<'a>(
     // The loops in parameter space, with the parameters swapped when they
     // wind around the second one.
     let mut found: Option<(Param, Vec<Ring>, f64)> = None;
+    let closure = Closure::of(&face.surface);
     for swapped in [false, true] {
         let param = Param {
             surface: &face.surface,
             swapped,
+            closure,
         };
         // Loops run counter-clockwise around the outward normal, which is
         // the surface's `∂u × ∂v` unless the face is reversed.
@@ -2608,7 +2797,20 @@ pub(crate) fn face_boundary<'a>(
         }
     }
     let span = [get2(high, 0) - get2(low, 0), get2(high, 1) - get2(low, 1)];
-    if !span.iter().all(|s| s.is_finite() && *s > 0.0) {
+    // On a spline surface the parameters of a point are found by a search,
+    // to rounding: a boundary that runs there and back along one line (the
+    // seam of a whole closed surface, given as an edge) encloses a sliver
+    // of that rounding, not nothing. Narrower than this part of the
+    // surface's own range, a region is no region.
+    let least = |k: usize| -> f64 {
+        let (from, to) = get2(param.domain(), k);
+        if param.is_freeform() && from.is_finite() && to.is_finite() {
+            NO_REGION * (to - from)
+        } else {
+            0.0
+        }
+    };
+    if !(0..2).all(|k| get2(span, k).is_finite() && get2(span, k) > least(k)) {
         *starved = true;
         return fail(
             index,
@@ -2619,7 +2821,7 @@ pub(crate) fn face_boundary<'a>(
         [1, 1]
     } else {
         let (low, high) = (param.raw(low), param.raw(high));
-        let (nu, nv) = seed_cells(&face.surface, low, high, params, index)?;
+        let (nu, nv) = seed_cells(&face.surface, &param.closure, low, high, params, index)?;
         param.order(nu, nv)
     };
     let step = [
@@ -2708,6 +2910,41 @@ pub(crate) fn mesh_face(
     let (low, high, cells, step) = (boundary.low, boundary.high, boundary.cells, boundary.step);
     let (scale, centre, limit) = (boundary.scale, boundary.centre, boundary.limit);
     let tolerance = params.chordal_tolerance;
+
+    // The boundary must be closed in parameter space as it is in space. A
+    // chord is taken for the straight segment between its ends in
+    // parameter space, so the surface along that segment must be near the
+    // chord. Where it is further from it than the chord is long (and than
+    // the tolerance allows), the two ends are neighbours in space and far
+    // apart in parameters: the boundary jumps across the surface, as it
+    // does over the seam of a surface that closes on itself without a
+    // period known here. What is triangulated then is not the face.
+    // (Chords the parameters merely distort were cut finer before this,
+    // `Boundary::chords_to_refine`; they end up shorter than they stray.)
+    if !param.is_plane() {
+        for (n, &(i, j)) in region.segs.iter().enumerate() {
+            let Some((edge, _)) = region.chords.get(n).copied().flatten() else {
+                continue;
+            };
+            let (Some(p), Some(q)) = (region.verts.get(i), region.verts.get(j)) else {
+                continue;
+            };
+            let ([pa, pb], [qa, qb]) = (p.uv, q.uv);
+            let image = param.eval([0.5 * (pa + qa), 0.5 * (pb + qb)]);
+            let off = distance_to_chord(image, p.pos, q.pos);
+            if exceeds(off, 2.0 * tolerance) && exceeds(off, p.pos.distance(q.pos)) {
+                return fail(
+                    index,
+                    format!(
+                        "its boundary is not closed in parameter space: between two \
+                         neighbouring points of edge {edge} it jumps across the surface (the \
+                         surface closes on itself in a way that is not recognised, or the edge \
+                         does not lie on it)"
+                    ),
+                );
+            }
+        }
+    }
 
     let explain = |error: CdtError| -> TessError {
         let reason = match error {
@@ -2904,6 +3141,17 @@ pub(crate) fn mesh_face(
         let [Some(a), Some(b), Some(c)] = view.v.map(|v| work.vertex(v)) else {
             return Err(explain(CdtError::Internal));
         };
+        // The sides on the boundary of the region, also those of a
+        // triangle that is dropped below: in space its two other sides
+        // are one segment, and what lies beyond the one that is no
+        // constraint ends on it.
+        let [c0, c1, c2] = view.constrained;
+        for (constrained, (from, to)) in [(c0, (b, c)), (c1, (c, a)), (c2, (a, b))] {
+            if constrained && from.1 != to.1 {
+                mesh.border
+                    .push(if flip { (to.1, from.1) } else { (from.1, to.1) });
+            }
+        }
         if a.1 == b.1 || b.1 == c.1 || c.1 == a.1 {
             // One point in space on two corners (a pole): no area, and
             // the neighbours on either side already meet there.

@@ -182,6 +182,137 @@ fn can_ask(body: &Body, face: &craft3d_topo::Face) -> bool {
             .any(|edge| !matches!(edge.curve, Curve3::Line(_)))
 }
 
+/// A point as the key it is welded by: its bits, with −0 as 0.
+fn place(p: Vec3) -> [u64; 3] {
+    [p.x + 0.0, p.y + 0.0, p.z + 0.0].map(f64::to_bits)
+}
+
+/// One use of a segment between two points: by a triangle of the face's
+/// mesh, or (with its chord) by an edge of the face as its loops run.
+struct Use {
+    /// The segment's ends, the smaller key first.
+    ends: ([u64; 3], [u64; 3]),
+    /// Whether it runs from the first of `ends` to the second.
+    along: bool,
+    chord: Option<Chord>,
+}
+
+impl Use {
+    /// None for a segment without length.
+    fn new(from: Vec3, to: Vec3, chord: Option<Chord>) -> Option<Self> {
+        let (from, to) = (place(from), place(to));
+        match from.cmp(&to) {
+            std::cmp::Ordering::Less => Some(Self {
+                ends: (from, to),
+                along: true,
+                chord,
+            }),
+            std::cmp::Ordering::Greater => Some(Self {
+                ends: (to, from),
+                along: false,
+                chord,
+            }),
+            std::cmp::Ordering::Equal => None,
+        }
+    }
+}
+
+/// Holds the mesh of a face against the face's edges: the promise that
+/// the mesh of a closed solid is closed, checked where it can break.
+///
+/// `border` has every side of a triangle that lies on the boundary of the
+/// face's region, directed as the triangle runs. The loops of the face
+/// say what must be there: every chord of every edge, once for each time
+/// a loop uses the edge and in that direction (a loop runs
+/// counter-clockwise about the outward normal, as the triangles do). The
+/// two must be the same, point for point and bit for bit, and what the
+/// mesh has beyond the edges (the two sides of a seam the tessellator cut
+/// itself) must be there once each way. Faces that pass and share an
+/// edge use its chords in opposite directions, so the welded mesh of a
+/// body whose every edge is used once each way is closed, without
+/// welding it: the sides of triangles inside a face are shared by two of
+/// them by the making of the triangulation.
+///
+/// The cost is that of sorting the boundary of the face, not its
+/// triangles.
+fn closes_along_edges(
+    body: &Body,
+    points: &[Vec<Vec3>],
+    face: &craft3d_topo::Face,
+    index: usize,
+    border: &[(Vec3, Vec3)],
+) -> Result<(), TessError> {
+    let mut uses: Vec<Use> = border
+        .iter()
+        .filter_map(|&(from, to)| Use::new(from, to, None))
+        .collect();
+    let coedges = face
+        .loops
+        .iter()
+        .filter_map(|id| body.loop_(*id))
+        .flat_map(|loop_| &loop_.coedges);
+    for coedge in coedges {
+        let Some(edge) = points.get(coedge.edge.0 as usize) else {
+            continue;
+        };
+        for (k, (from, to)) in edge.iter().zip(edge.iter().skip(1)).enumerate() {
+            let chord = Some((coedge.edge.0, u32::try_from(k).unwrap_or(u32::MAX)));
+            let (from, to) = if coedge.reversed {
+                (*to, *from)
+            } else {
+                (*from, *to)
+            };
+            uses.extend(Use::new(from, to, chord));
+        }
+    }
+    uses.sort_by_key(|x| x.ends);
+    for group in uses.chunk_by(|x, y| x.ends == y.ends) {
+        // How often the mesh and the edges have the segment, each way.
+        let count = |of_edge: bool, along: bool| {
+            group
+                .iter()
+                .filter(|u| u.chord.is_some() == of_edge && u.along == along)
+                .count()
+        };
+        let mesh = (count(false, true), count(false, false));
+        let edges = (count(true, true), count(true, false));
+        let chord = group.iter().find_map(|u| u.chord);
+        let reason = match chord {
+            Some(_) if mesh == edges => continue,
+            None if mesh == (1, 1) => continue,
+            Some((edge, k)) => {
+                let other = body.faces.iter().enumerate().position(|(n, other)| {
+                    n != index
+                        && other
+                            .loops
+                            .iter()
+                            .filter_map(|id| body.loop_(*id))
+                            .flat_map(|loop_| &loop_.coedges)
+                            .any(|coedge| coedge.edge.0 == edge)
+                });
+                let beyond = match other {
+                    Some(other) => format!("which it shares with face {other}"),
+                    None => "which no other face uses".to_string(),
+                };
+                format!(
+                    "its mesh is not closed along edge {edge}, {beyond}: chord {k} of the edge \
+                     is the side of {} of its triangles where its loops use the edge {} times",
+                    mesh.0 + mesh.1,
+                    edges.0 + edges.1
+                )
+            }
+            None => "its mesh is not closed: it has a border where the face has no edge (a \
+                     seam whose two sides do not meet)"
+                .to_string(),
+        };
+        return Err(TessError::Face {
+            face: index,
+            reason,
+        });
+    }
+    Ok(())
+}
+
 /// The triangles of a face's result: none for a face that failed or that
 /// was not triangulated.
 fn triangles_of(result: Option<&FaceResult>) -> usize {
@@ -315,8 +446,12 @@ fn tessellate(
                 }
             };
             let wanted = boundary.chords_to_refine(body, tolerance);
-            let result = (mesh && (last || wanted.is_empty()))
-                .then(|| mesh_face(&boundary, face, index, params));
+            let result = (mesh && (last || wanted.is_empty())).then(|| {
+                let mut made = mesh_face(&boundary, face, index, params)?;
+                closes_along_edges(body, points, face, index, &made.border)?;
+                made.border = Vec::new();
+                Ok(made)
+            });
             (wanted, result)
         };
         // Whether the face was looked at, what it asks for and its mesh.
