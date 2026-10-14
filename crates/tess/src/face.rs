@@ -2931,6 +2931,27 @@ fn to_plane(uv: Uv, centre: Uv, scale: Uv) -> P2 {
     ((a - ca) * sa, (b - cb) * sb)
 }
 
+/// The part of its longest side within which a triangle that cannot be
+/// refined lies flat against a chord of the boundary (`mesh_face`).
+const FLAT_AGAINST: f64 = 1e-6;
+
+/// How many of the triangles still failing after the last round of
+/// refinement are looked at for the chords they stand on (`mesh_face`).
+const STUCK_LOOKED_AT: usize = 64;
+
+/// The distance from `p` to the segment from `a` to `b`, in the plane.
+fn plane_distance_to_segment(p: P2, a: P2, b: P2) -> f64 {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let length2 = dx * dx + dy * dy;
+    let t = if length2 > 0.0 {
+        (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / length2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let t = if t.is_nan() { 0.0 } else { t };
+    (p.0 - a.0 - t * dx).hypot(p.1 - a.1 - t * dy)
+}
+
 /// The distance from `p` to the segment from `a` to `b`.
 fn distance_to_chord(p: Vec3, a: Vec3, b: Vec3) -> f64 {
     p.distance(nearest_on_chord(p, a, b))
@@ -3344,12 +3365,23 @@ pub(crate) fn face_boundary<'a>(
 /// of the boundary that the mesh of another face has as well
 /// (`body.rs`, `shared_rungs`). On a curved face each gets a point of the
 /// surface in its middle; a plane face is left as it is.
+///
+/// `ask` gets the chords of edges that the face cannot be meshed along as
+/// they are, when that is why it fails (the error is then a
+/// [`TessError::Face`]): a triangle that stands on a chord and cannot be
+/// made to face the way the surface does however close to the chord its
+/// third corner comes. That is a chord that lies beside the face more
+/// than beside the surface, as one along a rim curved far more tightly
+/// across the edge than the tolerance (the nose of a slender aerofoil
+/// along a loft): within the tolerance of its curve, and still over the
+/// next face. Cut in two, it lies four times nearer to the surface.
 pub(crate) fn mesh_face(
     boundary: &Boundary,
     face: &Face,
     index: usize,
     params: &TessParams,
     splits: &[(Vec3, Vec3)],
+    ask: &mut Vec<Chord>,
 ) -> Result<FaceMesh, TessError> {
     let (param, region) = (boundary.param, &boundary.region);
     if let Some(doubt) = &region.doubt {
@@ -3497,6 +3529,74 @@ pub(crate) fn mesh_face(
         };
         work.cdt.constrain(a, b).map_err(explain)?;
     }
+    // When the refinement cannot go on at the triangles `stuck`: the
+    // chords of edges they stand on, or lie flat against, go to `ask`,
+    // and the error says so; without such chords, `None`. (Cut after cut
+    // towards a chord that the surface turns away from, the third corner
+    // ends within rounding of it, and the triangle may by then be one
+    // row away from the chord: flat against it, not on it.)
+    let along_chords = |work: &Work, stuck: &[usize], ask: &mut Vec<Chord>| -> Option<TessError> {
+        let before = ask.len();
+        for &t in stuck {
+            let Some(view) = work.cdt.triangle(t) else {
+                continue;
+            };
+            let [x, y, z] = view.v;
+            for (constrained, (p, q)) in view.constrained.into_iter().zip([(y, z), (z, x), (x, y)])
+            {
+                if !constrained {
+                    continue;
+                }
+                let found = region
+                    .segs
+                    .iter()
+                    .zip(&region.chords)
+                    .find_map(|(&(i, j), chord)| {
+                        let (a, b) = (vertex_of.get(i).copied()?, vertex_of.get(j).copied()?);
+                        ((a, b) == (p, q) || (a, b) == (q, p)).then_some(*chord)?
+                    });
+                if let Some(chord) = found {
+                    ask.push(chord);
+                }
+            }
+            let [Some(a), Some(b), Some(c)] = view.v.map(|v| work.vertex(v)) else {
+                continue;
+            };
+            let corners = [a.0, b.0, c.0].map(|uv| work.plane(uv));
+            let longest = corners
+                .iter()
+                .zip(corners.iter().cycle().skip(1))
+                .map(|(p, q)| (p.0 - q.0).hypot(p.1 - q.1))
+                .fold(0.0_f64, f64::max);
+            let mut flat_against: Option<(f64, Chord)> = None;
+            for (&(i, j), chord) in region.segs.iter().zip(&region.chords) {
+                let (Some(chord), Some(p), Some(q)) =
+                    (chord, region.verts.get(i), region.verts.get(j))
+                else {
+                    continue;
+                };
+                let (p, q) = (work.plane(p.uv), work.plane(q.uv));
+                let off = corners
+                    .iter()
+                    .map(|&corner| plane_distance_to_segment(corner, p, q))
+                    .fold(0.0_f64, f64::max);
+                if off <= FLAT_AGAINST * longest && flat_against.is_none_or(|(o, _)| off < o) {
+                    flat_against = Some((off, *chord));
+                }
+            }
+            if let Some((_, chord)) = flat_against {
+                ask.push(chord);
+            }
+        }
+        let (edge, _) = *ask.get(before)?;
+        Some(TessError::Face {
+            face: index,
+            reason: format!(
+                "the surface turns away from the chords of edge {edge} faster than triangles \
+                 on them can follow at this tolerance; use a finer tolerance"
+            ),
+        })
+    };
     if work.cdt.classify().map_err(explain)? == 0 {
         return fail(
             index,
@@ -3601,14 +3701,27 @@ pub(crate) fn mesh_face(
                 match split {
                     Ok(()) => {}
                     // No room left for a point between its corners: the
-                    // tolerance is beyond what the numbers can resolve.
-                    Err(CdtError::Degenerate) => return Err(explain(CdtError::TooMany)),
+                    // tolerance is beyond what the numbers can resolve,
+                    // or the triangle was squeezed against a chord that
+                    // the surface turns away from (`ask`).
+                    Err(CdtError::Degenerate) => {
+                        return Err(along_chords(&work, &[t], ask)
+                            .unwrap_or_else(|| explain(CdtError::TooMany)));
+                    }
                     Err(e) => return Err(explain(e)),
                 }
             }
         }
         if !done {
-            return Err(explain(CdtError::TooMany));
+            // (A few are enough to name the chords; each is held against
+            // every segment of the boundary.)
+            let stuck: Vec<usize> = (0..work.cdt.triangle_count())
+                .filter(|&t| !matches!(work.assess(t), Action::Keep))
+                .take(STUCK_LOOKED_AT)
+                .collect();
+            return Err(
+                along_chords(&work, &stuck, ask).unwrap_or_else(|| explain(CdtError::TooMany))
+            );
         }
     }
 

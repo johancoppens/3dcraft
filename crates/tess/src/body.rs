@@ -397,8 +397,9 @@ impl Budget {
 /// over them.
 ///
 /// The edges are first turned into points on their own. Then every face
-/// says which chords it cannot do with (`Boundary::chords_to_refine`):
-/// those are cut in two, and the faces that use the edges that changed
+/// says which chords it cannot do with (`Boundary::chords_to_refine`, and
+/// when its triangles cannot follow a chord, `mesh_face`): those are cut
+/// in two, and the faces that use the edges that changed
 /// are looked at again, until no face asks for more. A face is
 /// triangulated once it asks for nothing, and again when a neighbour had
 /// one of its edges changed after that: both always use the same points.
@@ -462,12 +463,19 @@ fn tessellate(
                 }
             };
             let wanted = boundary.chords_to_refine(body, tolerance);
+            let mut ask = Vec::new();
             let result = (mesh && (last || wanted.is_empty())).then(|| {
-                let mut made = mesh_face(&boundary, face, index, params, &[])?;
+                let mut made = mesh_face(&boundary, face, index, params, &[], &mut ask)?;
                 closes_along_edges(body, points, face, index, &made.border)?;
                 made.border = Vec::new();
                 Ok(made)
             });
+            // Chords the triangles cannot follow: cut them and try again,
+            // as for the chords the boundary asks for; the error stands in
+            // the last round.
+            if !last && !ask.is_empty() && matches!(result, Some(Err(_))) {
+                return (ask, None);
+            }
             (wanted, result)
         };
         // Whether the face was looked at, what it asks for and its mesh.
@@ -672,7 +680,7 @@ fn part_shared_rungs(
             let mut starved = false;
             let made = face_boundary(body, points, face, index, params, &mut starved).and_then(
                 |boundary| {
-                    let made = mesh_face(&boundary, face, index, params, list)?;
+                    let made = mesh_face(&boundary, face, index, params, list, &mut Vec::new())?;
                     closes_along_edges(body, points, face, index, &made.border)?;
                     Ok(made)
                 },
@@ -749,8 +757,11 @@ fn assemble(patches: Vec<Option<FaceResult>>) -> Result<Mesh, TessError> {
 /// every face that uses it, so the lines lie exactly on the borders of the
 /// mesh's faces. That takes the boundaries of the faces (not their
 /// triangles): where a face needs an edge finer than its curve does, the
-/// edge is finer here too. A face that cannot be tessellated is no error
-/// here. The result depends on the body and the parameters only.
+/// edge is finer here too. Not seen without the triangles: a face whose
+/// triangles cannot follow a chord, which `tessellate_body` cuts finer
+/// (`mesh_face` in `face.rs`; [`tessellate_body_and_edges`] has those
+/// edges as the mesh has them). A face that cannot be tessellated is no
+/// error here. The result depends on the body and the parameters only.
 pub fn tessellate_edges(body: &Body, params: &TessParams) -> Result<Vec<Vec<Vec3>>, TessError> {
     let tol = params.chordal_tolerance;
     if !(tol.is_finite() && tol > 0.0) {
