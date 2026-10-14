@@ -11,8 +11,9 @@
 //! copies (`F10:copy(0)/F2:face(0)`, a boolean's tool `F3:copy(1)/…`), so
 //! one step is finding the copy of the name in the taker's names. The
 //! feature is then built as if it had been given the names in full
-//! (`F11:copy(0)/F10:copy(0)/F2:face(0)`), and those are what it means:
-//! a short name is an abbreviation of exactly one long one.
+//! (`F11:copy(0)/F2:face(0)`: a run of copies that are each instance 0 is
+//! one link, see [`steps`]), and those are what it means: a short name is
+//! an abbreviation of exactly one full one.
 //!
 //! The names stay in the document as they were given and are followed at
 //! every regeneration (docs/decisions.md): a feature inserted between

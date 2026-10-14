@@ -382,3 +382,45 @@ fn time_of_a_thousand_holes_cut_one_after_another() {
         );
     }
 }
+
+/// Where the time of adding one more hole goes, on a plate that has many.
+#[test]
+#[ignore = "a timing, not a check"]
+fn time_of_one_more_hole_by_command() {
+    for holes in [100, 200, 400] {
+        let (mut s, mut last) = plate_with_holes(holes);
+        let mut spent = [0.0f64; 3];
+        let extra = 10;
+        for hole in holes..holes + extra {
+            let sketch = format!("S{hole}");
+            let t = Instant::now();
+            run(&mut s, "sketch.create", json!({"name": sketch}));
+            spent[0] += t.elapsed().as_secs_f64();
+            let (x, y) = (5.0 + 10.0 * (hole % 4) as f64, 15.0);
+            let t = Instant::now();
+            run(
+                &mut s,
+                "sketch.circle",
+                json!({"sketch": sketch, "center": [x, y], "radius": 0.5}),
+            );
+            spent[1] += t.elapsed().as_secs_f64();
+            let name = format!("H{hole}");
+            let t = Instant::now();
+            built(
+                &mut s,
+                "feature.extrude",
+                json!({"sketch": sketch, "distance": 3.0 * THICK, "symmetric": true,
+                       "cut": last, "name": name}),
+            );
+            spent[2] += t.elapsed().as_secs_f64();
+            last = name;
+        }
+        let ms = |t: f64| t * 1e3 / extra as f64;
+        println!(
+            "{holes} holes, per hole more: sketch.create {:.1} ms, sketch.circle {:.1} ms, feature.extrude with cut {:.1} ms",
+            ms(spent[0]),
+            ms(spent[1]),
+            ms(spent[2])
+        );
+    }
+}
