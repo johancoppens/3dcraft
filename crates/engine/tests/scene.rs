@@ -727,12 +727,10 @@ fn bodies_carry_their_edges_as_polylines_on_the_mesh() {
 /// The quick first picture the display rule starts from: what a viewer
 /// shows while the display scene is built elsewhere.
 fn first_picture(session: &mut Session) -> Arc<Scene> {
-    session.set_refine_elsewhere(true);
     let first = session
-        .scene_with(SceneQuality::display())
+        .scene_with(SceneQuality::Preview)
         .unwrap()
         .expect("a document");
-    session.set_refine_elsewhere(false);
     assert!(first.preview);
     first
 }

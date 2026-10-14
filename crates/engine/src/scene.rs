@@ -82,6 +82,11 @@ pub enum SceneQuality {
     /// than `view.render`). The scene says whether it was coarsened
     /// ([`Scene::coarsened`]).
     Display { relative: f64, max_triangles: usize },
+    /// The quick first picture the display rule starts from and a viewer
+    /// shows while the display scene is built elsewhere:
+    /// [`PREVIEW_RELATIVE_TOLERANCE`] of the diagonal of the model's box
+    /// ([`Scene::preview`] is set).
+    Preview,
 }
 
 impl SceneQuality {
@@ -97,7 +102,7 @@ impl SceneQuality {
     /// fraction that is not a positive number, a budget of nothing.
     fn validate(self) -> Result<(), CommandError> {
         match self {
-            SceneQuality::Automatic => Ok(()),
+            SceneQuality::Automatic | SceneQuality::Preview => Ok(()),
             SceneQuality::Tolerance(t) if t.is_finite() && t > 0.0 => Ok(()),
             SceneQuality::Tolerance(_) => Err(CommandError::new(
                 "the scene's tolerance must be a positive number",
@@ -120,6 +125,7 @@ impl SceneQuality {
     fn key(self) -> SceneKey {
         match self {
             SceneQuality::Automatic => SceneKey::Automatic,
+            SceneQuality::Preview => SceneKey::Preview,
             SceneQuality::Tolerance(t) => SceneKey::Tolerance(t.to_bits()),
             SceneQuality::Display {
                 relative,
@@ -1463,34 +1469,32 @@ impl Session {
         if let Some(built) = self.scene.lookup(key) {
             return built.map(Some);
         }
-        let SceneQuality::Display {
-            relative,
-            max_triangles,
-        } = quality
-        else {
-            return self.build_and_keep(key, |doc, regen| {
-                let tolerance = match quality {
-                    SceneQuality::Tolerance(t) => t,
-                    _ => model_size(regen, doc) * AUTOMATIC_RELATIVE_TOLERANCE,
-                };
-                build(doc, regen, revision, tolerance, None, None).0
-            });
-        };
-        let preview = match self.scene.lookup(SceneKey::Preview) {
-            Some(built) => built?,
-            None => {
-                let built = self.build_and_keep(SceneKey::Preview, |doc, regen| {
+        let (relative, max_triangles) = match quality {
+            SceneQuality::Display {
+                relative,
+                max_triangles,
+            } => (relative, max_triangles),
+            SceneQuality::Preview => {
+                return self.build_and_keep(key, |doc, regen| {
                     let tolerance = preview_size(regen, doc) * PREVIEW_RELATIVE_TOLERANCE;
                     Scene {
                         preview: true,
                         ..build(doc, regen, revision, tolerance, None, None).0
                     }
-                })?;
-                let Some(preview) = built else {
-                    return Ok(None);
-                };
-                preview
+                });
             }
+            SceneQuality::Automatic | SceneQuality::Tolerance(_) => {
+                return self.build_and_keep(key, |doc, regen| {
+                    let tolerance = match quality {
+                        SceneQuality::Tolerance(t) => t,
+                        _ => model_size(regen, doc) * AUTOMATIC_RELATIVE_TOLERANCE,
+                    };
+                    build(doc, regen, revision, tolerance, None, None).0
+                });
+            }
+        };
+        let Some(preview) = self.scene_with(SceneQuality::Preview)? else {
+            return Ok(None);
         };
         if self.scene.refine_elsewhere {
             return Ok(Some(preview));
