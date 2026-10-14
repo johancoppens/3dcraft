@@ -5,13 +5,15 @@
 //! So far: primitive solids, closed profiles from sketch curves
 //! ([`profile`]), their extrusion ([`extrude`]), their revolution
 //! ([`revolve`]), the solid through a row of them ([`loft`]), the solid one
-//! of them sweeps along a path ([`sweep`]), booleans ([`boolean`]) and
-//! chamfers ([`chamfer`]).
+//! of them sweeps along a path ([`sweep`]), booleans ([`boolean`]),
+//! chamfers ([`chamfer`]) and fillets ([`fillet`]).
 
+mod blend;
 pub mod boolean;
 pub mod chamfer;
 pub mod extrude;
 pub mod extrude_to;
+pub mod fillet;
 pub mod loft;
 pub mod primitives;
 pub mod profile;
@@ -148,6 +150,28 @@ pub enum KernelError {
     },
     /// The boolean refused the tool of a chamfered edge.
     ChamferBoolean {
+        edge: craft3d_topo::EdgeId,
+        error: Box<KernelError>,
+    },
+    /// A fillet radius for which the line along which the ball touches
+    /// `face`, one of the two faces of `edge`, would leave that face:
+    /// `largest` is the radius at which it does.
+    FilletTooLarge {
+        edge: craft3d_topo::EdgeId,
+        face: craft3d_topo::FaceId,
+        radius: f64,
+        largest: f64,
+    },
+    /// An edge that cannot be filleted, or is not built yet, or a fillet
+    /// that did not come out as one: the edge and the face it is about,
+    /// when there is one.
+    Fillet {
+        edge: Option<craft3d_topo::EdgeId>,
+        face: Option<craft3d_topo::FaceId>,
+        reason: &'static str,
+    },
+    /// The boolean refused the tool of a filleted edge.
+    FilletBoolean {
         edge: craft3d_topo::EdgeId,
         error: Box<KernelError>,
     },
@@ -298,6 +322,31 @@ impl fmt::Display for KernelError {
             }
             KernelError::ChamferBoolean { edge, error } => {
                 write!(f, "chamfer of edge {}: {error}", edge.0)
+            }
+            KernelError::FilletTooLarge {
+                edge,
+                face,
+                radius,
+                largest,
+            } => write!(
+                f,
+                "the fillet of edge {} is too large for face {}: with a radius of {radius} the \
+                 line where it touches the face leaves the face; the radius has to stay below \
+                 {largest}",
+                edge.0, face.0
+            ),
+            KernelError::Fillet { edge, face, reason } => {
+                write!(f, "fillet")?;
+                if let Some(edge) = edge {
+                    write!(f, " of edge {}", edge.0)?;
+                }
+                if let Some(face) = face {
+                    write!(f, " (face {})", face.0)?;
+                }
+                write!(f, ": {reason}")
+            }
+            KernelError::FilletBoolean { edge, error } => {
+                write!(f, "fillet of edge {}: {error}", edge.0)
             }
             KernelError::Loft { reason, .. } | KernelError::Sweep { reason, .. } => {
                 write!(f, "{reason}")

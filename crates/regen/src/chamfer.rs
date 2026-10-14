@@ -1,172 +1,23 @@
 //! Chamfers in regeneration: edges of the body of an earlier feature are
-//! replaced by faces.
-//!
-//! **What a chamfer holds of an edge** is the names of the two faces it
-//! lies between, in the order that says which face the first distance is
-//! measured along. The names are found again at every regeneration; such
-//! a pair means every edge between the two faces, so the pieces a later
-//! cut divides an edge into stay chamfered, and a pair whose faces no
-//! longer meet fails the feature with the pair. With `chain` an edge
-//! stands for the edges that continue it smoothly as well.
-//!
-//! **Names.** A face of the body that is still there is named as a copy,
-//! instance 0, of the face it was (`F9:copy(0)/F2:side(e7)`), as in every
-//! feature that makes its body from another. The face in the place of the
-//! edge of reference `k` is `F9:chamfer(k)`; when that reference gave
-//! several edges their faces are `F9:chamfer(k,0)`, `F9:chamfer(k,1)`, in
-//! the order of where the edges lie in space (as numbered edge names are,
-//! with the same limit: docs/architecture.md §4.1). The flat face where
-//! three chamfers meet is `F9:chamferCorner(i,j,k)`, by the references of
-//! the three edges. Edges and vertices are named by the faces they lie
-//! on, and one the body already had answers to a copy of the name it had
-//! there too, as after a boolean.
+//! replaced by flat or conical faces. How an edge is referred to and how
+//! the result is named is in [`crate::blend`], which fillets share.
 
-use crate::datum::{listed, named_body_of};
+use crate::blend::{self, Picked, Roles};
+use crate::datum::named_body_of;
 use crate::derive::source_body;
-use crate::query::{edges_between, faces_named, faces_of_edges};
-use crate::{Contributors, FeatureResult, Kept, Names, angle, entity, length};
-use craft3d_doc::{Chamfer, ChamferSize, Document, FeatureId, NameRole, PersistentName};
+use crate::{FeatureResult, Names, angle, length};
+use craft3d_doc::{Chamfer, ChamferSize, Document, FeatureId, NameRole};
 use craft3d_expr::Evaluation;
 use craft3d_kernel::KernelError;
 use craft3d_kernel::chamfer::{self as kernel, ChamferEdge, ChamferFace};
-use craft3d_math::{Tolerance, Vec3};
+use craft3d_math::Tolerance;
 use craft3d_topo::{Body, EdgeId, FaceId};
-use std::collections::BTreeMap;
 
-/// One edge of the body to chamfer and the reference it came from.
-struct Picked {
-    edge: EdgeId,
-    first: FaceId,
-    /// The place of its reference in the chamfer's list.
-    reference: usize,
-}
-
-/// The edges the references of `chamfer` mean in `body`.
-fn pick(
-    chamfer: &Chamfer,
-    source: FeatureId,
-    body: &Body,
-    names: &Names,
-    made_by: &str,
-) -> Result<Vec<Picked>, String> {
-    let users = faces_of_edges(body);
-    let mut picked: Vec<Picked> = Vec::new();
-    for (reference, [a, b]) in chamfer.edges.iter().enumerate() {
-        let role = format!("edges.{reference}");
-        for face in [a, b] {
-            if !face.is_face() {
-                return Err(format!(
-                    "{role}: {face} is not a face; an edge is referred to by the two faces it lies between"
-                ));
-            }
-            if face.feature != source {
-                return Err(format!(
-                    "{role}: {face} is a face of {}, and the first edge is of `{made_by}`; one chamfer takes edges of one body",
-                    face.feature
-                ));
-            }
-        }
-        let (first, second) = (faces_named(names, a), faces_named(names, b));
-        // A reference of two names says every one of them that is gone.
-        let gone: Vec<String> = [(a, &first), (b, &second)]
-            .into_iter()
-            .filter(|(_, found)| found.is_empty())
-            .map(|(face, _)| format!("a face {face}"))
-            .collect();
-        if !gone.is_empty() {
-            return Err(format!(
-                "{role}: `{made_by}` no longer has {}; its faces are: {}",
-                gone.join(", nor "),
-                listed(&names.faces)
-            ));
-        }
-        if first == second {
-            return Err(format!(
-                "{role}: {a} and {b} are one face; an edge to chamfer lies between two"
-            ));
-        }
-        let edges = edges_between(body, names, a, b);
-        if edges.is_empty() {
-            return Err(format!(
-                "{role}: the faces {a} and {b} of `{made_by}` do not meet in an edge (any more)"
-            ));
-        }
-        for edge in edges {
-            // The face of the edge that answers to the first name.
-            let Some(first_face) = users
-                .get(edge.0 as usize)
-                .into_iter()
-                .flatten()
-                .copied()
-                .find(|face| first.contains(face))
-            else {
-                continue;
-            };
-            let members = if chamfer.chain {
-                kernel::tangent_chain(body, edge, first_face)
-                    .map_err(|e| format!("{role}: {e}"))?
-                    .unwrap_or_else(|| vec![(edge, first_face)])
-            } else {
-                vec![(edge, first_face)]
-            };
-            for (member, member_first) in members {
-                match picked.iter().find(|p| p.edge == member) {
-                    // Reached again along its own chain, or between
-                    // pieces of the same two faces.
-                    Some(earlier) if earlier.reference == reference => {}
-                    Some(earlier) if chamfer.chain => {
-                        // Two references on one chain: the first has it.
-                        let _ = earlier;
-                    }
-                    Some(earlier) => {
-                        return Err(format!(
-                            "{role}: the edge between {a} and {b} is the edge of edges.{} too",
-                            earlier.reference
-                        ));
-                    }
-                    None => picked.push(Picked {
-                        edge: member,
-                        first: member_first,
-                        reference,
-                    }),
-                }
-            }
-        }
-    }
-    Ok(picked)
-}
-
-/// Per picked edge, the numbers of its chamfer face's name: its
-/// reference, and which of that reference's edges it is when there are
-/// several, in the order of where they lie in space.
-fn numbers(body: &Body, picked: &[Picked], tolerance: f64) -> Vec<Vec<u64>> {
-    let mut by_reference: BTreeMap<usize, Vec<(usize, Vec3)>> = BTreeMap::new();
-    for (index, pick) in picked.iter().enumerate() {
-        let middle = body
-            .edge(pick.edge)
-            .map(|e| e.curve.eval(0.5 * (e.range.0 + e.range.1)))
-            .unwrap_or(Vec3::ZERO);
-        by_reference
-            .entry(pick.reference)
-            .or_default()
-            .push((index, middle));
-    }
-    let mut out = vec![Vec::new(); picked.len()];
-    for (reference, mut edges) in by_reference {
-        let several = edges.len() > 1;
-        entity::sort_in_space(&mut edges, tolerance, 0);
-        for (place, (index, _)) in edges.into_iter().enumerate() {
-            if let Some(slot) = out.get_mut(index) {
-                *slot = if several {
-                    vec![reference as u64, place as u64]
-                } else {
-                    vec![reference as u64]
-                };
-            }
-        }
-    }
-    out
-}
+const ROLES: Roles = Roles {
+    face: NameRole::Chamfer,
+    corner: NameRole::ChamferCorner,
+    noun: "chamfer",
+};
 
 /// A kernel error in the words of the document: the reference, the names
 /// of the faces, the parameter.
@@ -288,7 +139,15 @@ pub(crate) fn build(
             return Err(format!("{name}: has to be more than zero, got {value}"));
         }
     }
-    let picked = pick(chamfer, source_id, body, names, &made_by)?;
+    let picked = blend::pick(
+        &chamfer.edges,
+        chamfer.chain,
+        ROLES.noun,
+        source_id,
+        body,
+        names,
+        &made_by,
+    )?;
     let requests: Vec<ChamferEdge> = picked
         .iter()
         .map(|pick| ChamferEdge {
@@ -305,85 +164,26 @@ pub(crate) fn build(
         other => explain(other, chamfer, &picked, names, unit),
     })?;
 
-    // The faces that are still the body's, named as copies of what they
-    // were; then the new faces among them.
-    let kept: Contributors = made
+    let faces: Vec<blend::Made<'_>> = made
         .faces
         .iter()
-        .filter_map(|face| match face {
-            ChamferFace::Kept(faces) => Some(faces.iter().map(|f| (0_u64, f.0 as usize)).collect()),
-            ChamferFace::Chamfer(_) | ChamferFace::Corner(_) => None,
+        .map(|face| match face {
+            ChamferFace::Kept(faces) => blend::Made::Kept(faces),
+            ChamferFace::Chamfer(edges) => blend::Made::Blend(edges),
+            ChamferFace::Corner(vertex) => blend::Made::Corner(*vertex),
         })
         .collect();
-    let Some(copies) = Names::copied_faces(feature, &kept, |_| Some(names.as_ref()))? else {
-        return Ok((made.body, None));
-    };
-    let numbered = numbers(body, &picked, tolerance.linear);
-    let chamfer_name = |index: usize| {
-        numbered
-            .get(index)
-            .map(|sources| PersistentName::new(feature, NameRole::Chamfer, sources.clone()))
-    };
-    let mut named = Names::default();
-    let mut next_copy = 0_usize;
-    for (index, face) in made.faces.iter().enumerate() {
-        match face {
-            ChamferFace::Kept(_) => {
-                let Some(name) = copies.faces.get(next_copy) else {
-                    return Err("the chamfer lost the name of a face; this is a bug".to_string());
-                };
-                named.faces.push(name.clone());
-                let aliases = copies.aliases_of(next_copy);
-                if !aliases.is_empty() {
-                    named.aliases.insert(index, aliases.to_vec());
-                }
-                next_copy += 1;
-            }
-            ChamferFace::Chamfer(edges) => {
-                let mut all = edges.iter().filter_map(|i| chamfer_name(*i));
-                let Some(own) = all.next() else {
-                    return Err("the chamfer lost the edge of a face; this is a bug".to_string());
-                };
-                named.faces.push(own);
-                let aliases: Vec<PersistentName> = all.collect();
-                if !aliases.is_empty() {
-                    named.aliases.insert(index, aliases);
-                }
-            }
-            ChamferFace::Corner(vertex) => {
-                // By the references of the chamfered edges that end there.
-                let mut references: Vec<u64> = picked
-                    .iter()
-                    .filter(|pick| {
-                        body.edge(pick.edge)
-                            .is_some_and(|e| e.start == *vertex || e.end == *vertex)
-                    })
-                    .map(|pick| pick.reference as u64)
-                    .collect();
-                references.sort_unstable();
-                references.dedup();
-                named.faces.push(PersistentName::new(
-                    feature,
-                    NameRole::ChamferCorner,
-                    references,
-                ));
-            }
-        }
-    }
-    let kept_of = |list: &[Option<u32>]| -> Kept {
-        list.iter()
-            .map(|id| id.map(|id| (0_u64, id as usize)))
-            .collect()
-    };
-    let edges: Vec<Option<u32>> = made.edges.iter().map(|e| e.map(|e| e.0)).collect();
-    let vertices: Vec<Option<u32>> = made.vertices.iter().map(|v| v.map(|v| v.0)).collect();
-    named.name_entities(
+    let named = blend::name(
         feature,
+        ROLES,
+        body,
+        names,
+        &picked,
         &made.body,
+        &faces,
+        &made.edges,
+        &made.vertices,
         tolerance.linear,
-        &kept_of(&edges),
-        &kept_of(&vertices),
-        |_| Some(names.as_ref()),
-    );
-    Ok((made.body, Some(named)))
+    )?;
+    Ok((made.body, named))
 }

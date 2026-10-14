@@ -217,7 +217,7 @@ pub enum FeatureKind {
         closed: bool,
     },
     /// A solid the one closed profile of sketch `sketch` sweeps along the
-    /// curves of sketch `path` (format version 9).
+    /// curves of sketch `path` (format version 10).
     Sweep { sketch: u64, path: u64 },
     /// The body of feature `source`, turned by `angle` about the line
     /// through `pivot` along `axis` (three plain numbers), then shifted by
@@ -275,6 +275,17 @@ pub enum FeatureKind {
     Chamfer {
         edges: Vec<[Name; 2]>,
         size: ChamferSize,
+        #[serde(default)]
+        chain: bool,
+    },
+    /// Edges of the body of an earlier feature replaced by faces tangent
+    /// to both their neighbours, with one radius. Each edge is the two
+    /// faces it lies between; the body is that of the feature the first
+    /// name starts with. With `chain` each edge stands for the edges that
+    /// continue it smoothly as well.
+    Fillet {
+        edges: Vec<[Name; 2]>,
+        radius: String,
         #[serde(default)]
         chain: bool,
     },
@@ -514,6 +525,12 @@ pub enum NameRole {
     /// The flat face where three chamfers meet; `sources` are the places
     /// of the three edges in the chamfer's list.
     ChamferCorner,
+    /// The face a fillet puts in the place of an edge; `sources` as for
+    /// `chamfer`.
+    Fillet,
+    /// The piece of a ball where three fillets meet; `sources` as for
+    /// `chamferCorner`.
+    FilletCorner,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

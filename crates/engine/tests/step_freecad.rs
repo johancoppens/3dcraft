@@ -39,6 +39,8 @@
 mod chamfers;
 #[path = "step_freecad/features.rs"]
 mod features;
+#[path = "step_freecad/fillets.rs"]
+mod fillets;
 #[path = "../../io/tests/common/step_harness.rs"]
 mod harness;
 #[path = "step_freecad/lofts.rs"]

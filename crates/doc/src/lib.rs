@@ -538,6 +538,35 @@ impl Chamfer {
     }
 }
 
+/// Most edge references one fillet holds.
+pub const MAX_FILLET_EDGES: usize = 1024;
+
+/// Edges of the body of an earlier feature replaced by faces that are
+/// tangent to both faces next to the edge: what a ball of `radius`
+/// touches as it rolls along the edge in contact with both. The body
+/// goes into this feature.
+///
+/// An edge is referred to as a chamfer refers to it (see [`Chamfer`]):
+/// by the names of the two faces it lies between. Their order says
+/// nothing here, since a fillet treats both faces alike.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Fillet {
+    pub edges: Vec<[PersistentName; 2]>,
+    pub radius: Expr,
+    /// With each edge, the edges that continue it smoothly (the whole rim
+    /// of a slot from one of its edges).
+    #[serde(default)]
+    pub chain: bool,
+}
+
+impl Fillet {
+    /// The feature whose body is filleted: the one that made the first
+    /// face referred to. `None` for a fillet without edges.
+    pub fn source(&self) -> Option<FeatureId> {
+        self.edges.first().map(|[first, _]| first.feature)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum FeatureKind {
@@ -559,6 +588,7 @@ pub enum FeatureKind {
     DatumAxis(DatumAxis),
     DatumPoint(DatumPoint),
     Chamfer(Chamfer),
+    Fillet(Fillet),
 }
 
 impl FeatureKind {
@@ -583,6 +613,7 @@ impl FeatureKind {
             FeatureKind::DatumAxis(_) => "datumAxis",
             FeatureKind::DatumPoint(_) => "datumPoint",
             FeatureKind::Chamfer(_) => "chamfer",
+            FeatureKind::Fillet(_) => "fillet",
         }
     }
 
@@ -624,7 +655,7 @@ impl FeatureKind {
     }
 
     /// The one feature whose body this feature is made from (a transform,
-    /// a mirror, a pattern, a chamfer), and whether that feature keeps
+    /// a mirror, a pattern, a chamfer, a fillet), and whether that feature keeps
     /// its own body.
     /// `None` for every other kind; see [`FeatureKind::sources`].
     pub fn source(&self) -> Option<(FeatureId, bool)> {
@@ -633,6 +664,7 @@ impl FeatureKind {
             FeatureKind::Mirror(m) => Some((m.source, m.keep)),
             FeatureKind::Pattern(p) => Some((p.source, false)),
             FeatureKind::Chamfer(c) => c.source().map(|id| (id, false)),
+            FeatureKind::Fillet(f) => f.source().map(|id| (id, false)),
             FeatureKind::Block(_)
             | FeatureKind::Cylinder(_)
             | FeatureKind::Sphere(_)
@@ -758,6 +790,7 @@ impl FeatureKind {
             FeatureKind::DatumPlane(d) => out = d.exprs(),
             FeatureKind::DatumAxis(d) => out = d.exprs(),
             FeatureKind::DatumPoint(d) => out = d.exprs(),
+            FeatureKind::Fillet(f) => out = vec![named("radius", &f.radius)],
             FeatureKind::Chamfer(c) => {
                 out = match &c.size {
                     ChamferSize::Equal { distance } => vec![named("size.distance", distance)],
@@ -834,6 +867,7 @@ impl FeatureKind {
             FeatureKind::DatumPlane(d) => d.exprs_mut(),
             FeatureKind::DatumAxis(d) => d.exprs_mut(),
             FeatureKind::DatumPoint(d) => d.exprs_mut(),
+            FeatureKind::Fillet(f) => vec![&mut f.radius],
             FeatureKind::Chamfer(c) => match &mut c.size {
                 ChamferSize::Equal { distance } => vec![distance],
                 ChamferSize::TwoDistances { distance, second } => vec![distance, second],
@@ -1041,6 +1075,15 @@ impl Document {
                         )));
                     }
                     chamfer.edges.iter().flatten().collect()
+                }
+                FeatureKind::Fillet(fillet) => {
+                    if fillet.edges.len() > MAX_FILLET_EDGES {
+                        return Err(DocError::Invalid(format!(
+                            "`{}` has more than {MAX_FILLET_EDGES} edges",
+                            feature.name
+                        )));
+                    }
+                    fillet.edges.iter().flatten().collect()
                 }
                 _ => Vec::new(),
             };
