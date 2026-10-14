@@ -607,6 +607,42 @@ fn cases() -> Vec<Case> {
             },
         },
         Case {
+            what: "offset face: faces",
+            role: "faces.0",
+            upstream: "Plate",
+            alternative: "Plate2",
+            make: |s, u| {
+                let side = face(s, u, "side");
+                built(
+                    s,
+                    "feature.offsetFace",
+                    json!({"faces": [side], "distance": 1, "name": "D"}),
+                );
+                (Kind::Body, vec![side])
+            },
+            repair: |s, u| {
+                let side = face(s, u, "side");
+                built(s, "feature.edit", json!({"feature": "D", "faces": [side]}));
+            },
+        },
+        Case {
+            what: "shell: source",
+            role: "source",
+            upstream: "Rod",
+            alternative: "Rod2",
+            make: |s, u| {
+                built(
+                    s,
+                    "feature.shell",
+                    json!({"source": u, "thickness": 1, "name": "D"}),
+                );
+                (Kind::Body, vec![])
+            },
+            repair: |s, u| {
+                built(s, "feature.edit", json!({"feature": "D", "source": u}));
+            },
+        },
+        Case {
             what: "datum plane: from (a face)",
             role: "from",
             upstream: "Plate",
@@ -1371,7 +1407,7 @@ fn a_name_that_is_no_longer_there_fails_with_what_is_there_instead() {
         .into_iter()
         .filter(|case| case.upstream == "Plate" && !case.role.starts_with("target"))
         .collect();
-    assert_eq!(on_the_plate.len(), 11);
+    assert_eq!(on_the_plate.len(), 12);
     let wrong = map_parallel(on_the_plate, |case| {
         let (mut s, names) = model(&case, "Plate");
         let intact = state(&mut s);

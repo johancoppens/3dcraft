@@ -19,6 +19,7 @@ mod commands;
 mod datum_cmds;
 #[cfg(not(target_arch = "wasm32"))]
 mod drawing_cmds;
+mod face_cmds;
 mod file_cmds;
 mod loft_cmds;
 mod params;
@@ -224,6 +225,7 @@ impl Session {
                 loft_cmds::SPECS,
                 body_cmds::SPECS,
                 blend_cmds::SPECS,
+                face_cmds::SPECS,
                 datum_cmds::SPECS,
                 query_cmds::SPECS,
                 pick_cmds::SPECS,

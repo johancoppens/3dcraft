@@ -76,8 +76,8 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Adds a ring torus about axis, centred at position: major is the radius of the ring, minor of the tube.", doc: true, feature_torus),
     spec!("feature.extrude", "Extrude", r#"{"sketch": id or name, "distance": expr, "throughAll": boolean = false, "upTo": face name, "symmetric": boolean = false, "reversed": boolean = false, "cut": id or name, "join": id or name, "intersect": id or name, "name": string = automatic}"#,
         "Adds a solid by sweeping the closed profiles of a sketch along its normal: loops of lines and arcs, and circles; a loop inside another is a hole. Give one end: distance (a negative one goes the other way; symmetric puts half on each side of the sketch plane), throughAll (past every body the features before this one have built that lies in the way; symmetric goes through on both sides) or upTo (a face name from document.inspect: the solid ends on that face's surface, flat or curved, and follows it when the face moves). reversed goes against the sketch's normal. With cut, join or intersect (a feature with a body) the solid is combined with that body at once: two features are added in one undo step, the extrusion and a boolean, and the result is the boolean's (the one to build on; name applies to it) with the extrusion under sweep. A hole through a plate: sketch a circle on its top, extrude with throughAll, reversed and cut.", doc: true, feature_extrude),
-    spec!("feature.edit", "Edit Feature", r#"{"feature": id or name, "sketch": id or name, "sections": [sketch, or {sketch, start}; ...], "ruled": boolean, "closed": boolean, "source": id or name, "target": id or name, "tool": id or name, "op": "union|subtract|intersect", "size": [expr; 3], "position": [expr; 3], "axis": [number; 3] or datum axis or "x|y" or line id, "angle": expr, "radius": expr, "height": expr, "major": expr, "minor": expr, "distance": expr, "throughAll": boolean, "upTo": face name, "symmetric": boolean, "reversed": boolean, "translate": [expr; 3], "pivot": [expr; 3], "point": [expr; 3], "normal": [number; 3], "plane": datum plane id or name, "step": [expr; 3], "count": expr, "keep": boolean, "keepTool": boolean, "edges": [[face name, face name], ...], "second": expr, "chain": boolean}"#,
-        "Changes parameters of a feature; give only the ones to change. Which ones a feature has depends on its kind (document.inspect shows them under params). The end of an extrusion is changed by giving the new one: distance, throughAll or upTo. A mirror is pointed at a datum plane with plane, and back at a plane of its own with normal or point; a circular pattern at a datum axis with axis (its name or id), and back at a line of its own with axis as a direction or point. What a feature is made from is changed the same way, which is how a feature that lost it is repaired: sketch for an extrusion or a revolution, axis for a revolution (x, y, a line of the sketch or a datum axis), source for a moved, mirrored or patterned body, target, tool and op for a boolean, edges for a chamfer or a fillet (which is also how its body is chosen: the body of the feature the faces are of); the feature keeps its id and its place in the history, and the names of its faces are those of a feature built that way from the start. A chamfer's size: distance alone changes the first distance and keeps the form; with second it becomes two distances, with angle a distance and an angle (give second the same as distance for equal ones). A fillet's radius is changed with radius. A datum plane's distance or angle and the position of a datum point at coordinates are changed here; what a datum is placed by, with datum.plane, datum.axis or datum.point and replace.", doc: true, feature_edit),
+    spec!("feature.edit", "Edit Feature", r#"{"feature": id or name, "sketch": id or name, "sections": [sketch, or {sketch, start}; ...], "ruled": boolean, "closed": boolean, "source": id or name, "target": id or name, "tool": id or name, "op": "union|subtract|intersect", "size": [expr; 3], "position": [expr; 3], "axis": [number; 3] or datum axis or "x|y" or line id, "angle": expr, "radius": expr, "height": expr, "major": expr, "minor": expr, "distance": expr, "throughAll": boolean, "upTo": face name, "symmetric": boolean, "reversed": boolean, "translate": [expr; 3], "pivot": [expr; 3], "point": [expr; 3], "normal": [number; 3], "plane": datum plane id or name, "step": [expr; 3], "count": expr, "keep": boolean, "keepTool": boolean, "edges": [[face name, face name], ...], "second": expr, "chain": boolean, "faces": [face name, ...], "thickness": expr, "open": [face name, ...]}"#,
+        "Changes parameters of a feature; give only the ones to change. Which ones a feature has depends on its kind (document.inspect shows them under params). The end of an extrusion is changed by giving the new one: distance, throughAll or upTo. A mirror is pointed at a datum plane with plane, and back at a plane of its own with normal or point; a circular pattern at a datum axis with axis (its name or id), and back at a line of its own with axis as a direction or point. What a feature is made from is changed the same way, which is how a feature that lost it is repaired: sketch for an extrusion or a revolution, axis for a revolution (x, y, a line of the sketch or a datum axis), source for a moved, mirrored or patterned body, target, tool and op for a boolean, edges for a chamfer or a fillet (which is also how its body is chosen: the body of the feature the faces are of); the feature keeps its id and its place in the history, and the names of its faces are those of a feature built that way from the start. A chamfer's size: distance alone changes the first distance and keeps the form; with second it becomes two distances, with angle a distance and an angle (give second the same as distance for equal ones). A fillet's radius is changed with radius. An offset's faces and distance are changed with faces and distance (the faces also choose its body, as the edges of a chamfer do); a shell's with source, thickness and open. A datum plane's distance or angle and the position of a datum point at coordinates are changed here; what a datum is placed by, with datum.plane, datum.axis or datum.point and replace.", doc: true, feature_edit),
     spec!("feature.rename", "Rename Feature", r#"{"feature": id or name, "name": string}"#,
         "Renames a feature.", doc: true, feature_rename),
     spec!("feature.suppress", "Suppress Feature", r#"{"feature": id or name, "suppressed": boolean = true}"#,
@@ -832,7 +832,7 @@ fn symmetric_fits(end: &ExtrudeEnd, symmetric: bool, command: &str) -> Result<()
 }
 
 /// The parameters `feature.edit` can change, by name.
-const EDITABLE: [&str; 33] = [
+const EDITABLE: [&str; 36] = [
     "sketch",
     "sections",
     "ruled",
@@ -866,6 +866,9 @@ const EDITABLE: [&str; 33] = [
     "edges",
     "second",
     "chain",
+    "faces",
+    "thickness",
+    "open",
 ];
 
 fn feature_edit(session: &mut Session, params: &Value) -> Run {
@@ -987,7 +990,15 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
         p.expr3(key)?;
     }
     for key in [
-        "radius", "height", "major", "minor", "angle", "distance", "count", "second",
+        "radius",
+        "height",
+        "major",
+        "minor",
+        "angle",
+        "distance",
+        "count",
+        "second",
+        "thickness",
     ] {
         p.expr(key)?;
     }
@@ -1143,6 +1154,23 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
                 ("edges", Slot::Elsewhere),
                 ("radius", Slot::One(&mut f.radius)),
                 ("chain", Slot::Flag(&mut f.chain)),
+            ],
+        ),
+        FeatureKind::OffsetFace(o) => (
+            "offset face",
+            vec![
+                // Applied below.
+                ("faces", Slot::Elsewhere),
+                ("distance", Slot::One(&mut o.distance)),
+            ],
+        ),
+        FeatureKind::Shell(s) => (
+            "shell",
+            vec![
+                ("source", Slot::Elsewhere),
+                ("thickness", Slot::One(&mut s.thickness)),
+                // Applied below.
+                ("open", Slot::Elsewhere),
             ],
         ),
         FeatureKind::Mirror(m) => (
@@ -1309,6 +1337,11 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
         }
         FeatureKind::Chamfer(chamfer) => crate::blend_cmds::edit(&p, chamfer)?,
         FeatureKind::Fillet(fillet) => crate::blend_cmds::edit_fillet(&p, fillet)?,
+        FeatureKind::OffsetFace(offset) => crate::face_cmds::edit_offset(&p, offset)?,
+        FeatureKind::Shell(shell) => {
+            shell.source = new_source.unwrap_or(shell.source);
+            crate::face_cmds::edit_shell(&p, shell)?;
+        }
         _ => {}
     }
     if let (FeatureKind::Extrude(extrusion), Some(end)) = (&mut kind, new_end) {

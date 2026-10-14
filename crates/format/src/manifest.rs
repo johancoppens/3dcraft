@@ -286,6 +286,19 @@ pub enum FeatureKind {
         #[serde(default)]
         chain: bool,
     },
+    /// Faces of the body of an earlier feature moved along their normals
+    /// by `distance` (outward positive), the faces next to them
+    /// following. The body is that of the feature the first name starts
+    /// with.
+    OffsetFace { faces: Vec<Name>, distance: String },
+    /// The body of `source` made hollow, with walls of `thickness` behind
+    /// every face except those of `open`, which are taken away.
+    Shell {
+        source: u64,
+        thickness: String,
+        #[serde(default)]
+        open: Vec<Name>,
+    },
 }
 
 /// How far a chamfer cuts the two faces of an edge back: expressions.

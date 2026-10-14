@@ -556,6 +556,45 @@ impl Fillet {
     }
 }
 
+/// Most faces one face operation (offset face, the open faces of a
+/// shell) holds.
+pub const MAX_FACE_OP_FACES: usize = 1024;
+
+/// Faces of the body of an earlier feature moved along their normals by
+/// `distance`: a flat face to the parallel plane, a cylinder, a cone or a
+/// sphere grown or shrunk. Positive is outward, away from the material;
+/// negative is into it. The faces next to them follow, so the body stays
+/// closed. The body goes into this feature.
+///
+/// A face is referred to by its name. All faces are faces of one body:
+/// the feature the first name starts with.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OffsetFace {
+    pub faces: Vec<PersistentName>,
+    pub distance: Expr,
+}
+
+impl OffsetFace {
+    /// The feature whose body the faces are of: the one that made the
+    /// first face referred to. `None` without faces.
+    pub fn source(&self) -> Option<FeatureId> {
+        self.faces.first().map(|first| first.feature)
+    }
+}
+
+/// The body of an earlier feature made hollow: walls of `thickness` are
+/// left behind every face except those of `open`, which are taken away,
+/// so the hollow is open there. Without open faces the hollow is a
+/// cavity closed on all sides. The body goes into this feature.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Shell {
+    pub source: FeatureId,
+    pub thickness: Expr,
+    /// The faces left open, by name: faces of `source`.
+    #[serde(default)]
+    pub open: Vec<PersistentName>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum FeatureKind {
@@ -577,6 +616,8 @@ pub enum FeatureKind {
     DatumPoint(DatumPoint),
     Chamfer(Chamfer),
     Fillet(Fillet),
+    OffsetFace(OffsetFace),
+    Shell(Shell),
 }
 
 impl FeatureKind {
@@ -601,6 +642,8 @@ impl FeatureKind {
             FeatureKind::DatumPoint(_) => "datumPoint",
             FeatureKind::Chamfer(_) => "chamfer",
             FeatureKind::Fillet(_) => "fillet",
+            FeatureKind::OffsetFace(_) => "offsetFace",
+            FeatureKind::Shell(_) => "shell",
         }
     }
 
@@ -652,6 +695,8 @@ impl FeatureKind {
             FeatureKind::Pattern(p) => Some((p.source, false)),
             FeatureKind::Chamfer(c) => c.source().map(|id| (id, false)),
             FeatureKind::Fillet(f) => f.source().map(|id| (id, false)),
+            FeatureKind::OffsetFace(o) => o.source().map(|id| (id, false)),
+            FeatureKind::Shell(s) => Some((s.source, false)),
             FeatureKind::Block(_)
             | FeatureKind::Cylinder(_)
             | FeatureKind::Sphere(_)
@@ -774,6 +819,8 @@ impl FeatureKind {
             FeatureKind::DatumAxis(d) => out = d.exprs(),
             FeatureKind::DatumPoint(d) => out = d.exprs(),
             FeatureKind::Fillet(f) => out = vec![named("radius", &f.radius)],
+            FeatureKind::OffsetFace(o) => out = vec![named("distance", &o.distance)],
+            FeatureKind::Shell(s) => out = vec![named("thickness", &s.thickness)],
             FeatureKind::Chamfer(c) => {
                 out = match &c.size {
                     ChamferSize::Equal { distance } => vec![named("size.distance", distance)],
@@ -851,6 +898,8 @@ impl FeatureKind {
             FeatureKind::DatumAxis(d) => d.exprs_mut(),
             FeatureKind::DatumPoint(d) => d.exprs_mut(),
             FeatureKind::Fillet(f) => vec![&mut f.radius],
+            FeatureKind::OffsetFace(o) => vec![&mut o.distance],
+            FeatureKind::Shell(s) => vec![&mut s.thickness],
             FeatureKind::Chamfer(c) => match &mut c.size {
                 ChamferSize::Equal { distance } => vec![distance],
                 ChamferSize::TwoDistances { distance, second } => vec![distance, second],
@@ -1067,6 +1116,16 @@ impl Document {
                         )));
                     }
                     fillet.edges.iter().flatten().collect()
+                }
+                FeatureKind::OffsetFace(OffsetFace { faces, .. })
+                | FeatureKind::Shell(Shell { open: faces, .. }) => {
+                    if faces.len() > MAX_FACE_OP_FACES {
+                        return Err(DocError::Invalid(format!(
+                            "`{}` has more than {MAX_FACE_OP_FACES} faces",
+                            feature.name
+                        )));
+                    }
+                    faces.iter().collect()
                 }
                 _ => Vec::new(),
             };

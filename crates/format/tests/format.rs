@@ -168,7 +168,7 @@ fn saving_twice_gives_the_same_bytes() {
 fn the_manifest_of_a_small_document_is_exactly_this() {
     let expected = r#"{
   "format": "3dcraft",
-  "format_version": 9,
+  "format_version": 10,
   "document": {
     "units": {
       "length": "mm",
@@ -340,17 +340,17 @@ fn fix_trailing_commas(json: &str) -> String {
 
 #[test]
 fn a_newer_format_version_says_a_newer_3dcraft_is_needed() {
-    let error = load_error(&edited(&version_field(), "\"format_version\": 10"));
+    let error = load_error(&edited(&version_field(), "\"format_version\": 11"));
     assert!(matches!(
         error,
         FormatError::NewerVersion {
-            file: 10,
+            file: 11,
             supported: FORMAT_VERSION
         }
     ));
     let text = error.to_string();
     assert!(
-        text.contains("version 10")
+        text.contains("version 11")
             && text.contains(&format!("version {FORMAT_VERSION}"))
             && text.contains("newer 3DCraft is needed"),
         "{text}"
@@ -2404,7 +2404,8 @@ fn a_fillet_is_written_like_this_and_round_trips() {
     assert_eq!(doc.validate(), Ok(()));
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 9);
+    // Fillets came with version 9; the current one is written.
+    assert_eq!(value["format_version"], FORMAT_VERSION);
     assert_eq!(
         value["document"]["features"][1]["kind"],
         serde_json::json!({
@@ -2424,6 +2425,94 @@ fn a_fillet_is_written_like_this_and_round_trips() {
     assert!(from_manifest_json(unknown.as_bytes()).is_err());
     // A fillet without a radius is not a fillet.
     let bare = json.replacen("\"radius\": \"width / 20\",", "", 1);
+    assert_ne!(bare, json);
+    assert!(from_manifest_json(bare.as_bytes()).is_err());
+}
+
+/// A version-9 file, as written before the face operations: a fillet and
+/// a datum on its face. Never edit this.
+#[test]
+fn a_version_9_file_opens_unchanged_and_is_saved_as_the_current_version() {
+    let v9 = r#"{"format": "3dcraft", "format_version": 9, "document": {
+        "units": {"length": "mm", "angle": "deg"},
+        "tolerance": {"linear": 1e-6, "angular": 1e-9},
+        "variables": [{"name": "r", "expr": "3 mm"}],
+        "features": [
+          {"id": 1, "name": "Base", "suppressed": false, "kind": {"type": "block",
+            "position": ["0", "0", "0"], "size": ["40 mm", "30 mm", "10 mm"]}},
+          {"id": 2, "name": "Round", "suppressed": false, "kind": {"type": "fillet",
+            "edges": [[{"feature": 1, "role": "face", "sources": [1]},
+                       {"feature": 1, "role": "face", "sources": [2]}]],
+            "radius": "r", "chain": false}},
+          {"id": 3, "name": "On the round", "suppressed": false, "kind": {"type": "datumAxis",
+            "by": {"type": "face", "face": {"feature": 2, "role": "fillet", "sources": [0]}}}}],
+        "rollback": null, "next_feature_id": 4}}"#;
+    let doc = match from_manifest_json(v9.as_bytes()) {
+        Ok(doc) => doc,
+        Err(error) => panic!("{error}"),
+    };
+    assert_eq!(doc.features[1].kind.type_name(), "fillet");
+    let saved = to_manifest_json(&doc).unwrap();
+    assert!(saved.contains(&version_field()), "{saved}");
+    assert!(
+        !saved.contains("offsetFace") && !saved.contains("shell"),
+        "{saved}"
+    );
+    assert_eq!(from_manifest_json(saved.as_bytes()).unwrap(), doc);
+}
+
+/// Version 10: the face operations, as they are written.
+#[test]
+fn the_face_operations_are_written_like_this_and_round_trip() {
+    use craft3d_doc::{NameRole, OffsetFace, PersistentName, Shell};
+    let face = |n: u64| PersistentName::new(FeatureId(1), NameRole::Face, vec![n]);
+    let face_json = |n: u64| serde_json::json!({"feature": 1, "role": "face", "sources": [n]});
+    let mut doc = small();
+    doc.add_feature(
+        Some("Taller"),
+        FeatureKind::OffsetFace(OffsetFace {
+            faces: vec![face(1), face(3)],
+            distance: Expr::new("-width / 20"),
+        }),
+    )
+    .unwrap();
+    doc.add_feature(
+        Some("Hollow"),
+        FeatureKind::Shell(Shell {
+            source: FeatureId(1),
+            thickness: Expr::new("2 mm"),
+            open: vec![face(1)],
+        }),
+    )
+    .unwrap();
+    assert_eq!(doc.validate(), Ok(()));
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["format_version"], 10);
+    let kinds: Vec<&serde_json::Value> = value["document"]["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .skip(1)
+        .map(|f| &f["kind"])
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            &serde_json::json!({"type": "offsetFace",
+                "faces": [face_json(1), face_json(3)], "distance": "-width / 20"}),
+            &serde_json::json!({"type": "shell", "source": 1, "thickness": "2 mm",
+                "open": [face_json(1)]}),
+        ]
+    );
+    assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+    assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
+    // An offset without a distance and a shell without a thickness are
+    // neither; an unknown field is refused.
+    let bare = json.replacen("\"distance\": \"-width / 20\"", "\"far\": 1", 1);
+    assert_ne!(bare, json);
+    assert!(from_manifest_json(bare.as_bytes()).is_err());
+    let bare = json.replacen("\"thickness\": \"2 mm\",", "", 1);
     assert_ne!(bare, json);
     assert!(from_manifest_json(bare.as_bytes()).is_err());
 }
