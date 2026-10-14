@@ -1,18 +1,23 @@
-//! A picture of the whole window while work runs on its engine thread:
-//! the shell's panels, the viewport drawn on the GPU (the direct path, as
-//! in the window) and the work in progress over it, painted by egui's own
-//! wgpu renderer into a texture that is read back. What a screenshot of
-//! the window shows, for a machine where screenshots of other programs
-//! are not allowed (GNOME on Wayland).
+//! A picture of the whole window: the shell's panels, the row of tabs
+//! of the open documents, the viewport drawn on the GPU (the direct path,
+//! as in the window) and, unless `--idle`, the work in progress over it,
+//! painted by egui's own wgpu renderer into a texture that is read back.
+//! What a screenshot of the window shows, for a machine where screenshots
+//! of other programs are not allowed (GNOME on Wayland).
 //!
 //! ```sh
 //! cargo run --release -p craft3d-ui-egui --example window_picture -- \
-//!     model.3dcraft out.png
+//!     [--idle] [--active N] [--edit N] [--ask N] model.3dcraft [more.3dcraft | untitled ...] out.png
 //! ```
 //!
-//! The document is opened and shown as the window shows it; then the
-//! shell is drawn as it is while a command runs elsewhere
-//! (`Shell::ui_away`), with a step of regeneration as the work.
+//! The documents are opened in order (`untitled` is a new document with a
+//! block in it, never saved) and the last one, or document `N` of
+//! `--active`, is shown as the window shows it; `--edit N` changes
+//! document `N` after it was opened, so its tab is marked unsaved, and
+//! `--ask N` closes document `N` from its tab, which shows the question
+//! before closing when it has unsaved changes. Then,
+//! unless `--idle`, the shell is drawn as it is while a command runs
+//! elsewhere (`Shell::ui_away`), with a step of regeneration as the work.
 
 use craft3d_engine::{Session, Workspace};
 use craft3d_ui_egui::direct::headless_render_state;
@@ -23,19 +28,59 @@ use serde_json::json;
 
 const SIZE: [u32; 2] = [1280, 800];
 
+const USAGE: &str = "usage: window_picture [--idle] [--active N] [--edit N] [--ask N] FILE.3dcraft [FILE.3dcraft | untitled ...] OUT.png";
+
 fn main() -> Result<(), String> {
+    let mut idle = false;
+    let mut active = None;
+    let mut edit = None;
+    let mut ask = None;
+    let mut paths = Vec::new();
     let mut args = std::env::args().skip(1);
-    let file = args
-        .next()
-        .ok_or("usage: window_picture FILE.3dcraft OUT.png")?;
-    let out = args
-        .next()
-        .ok_or("usage: window_picture FILE.3dcraft OUT.png")?;
+    while let Some(arg) = args.next() {
+        let mut number = |flag: &str| -> Result<usize, String> {
+            args.next()
+                .and_then(|n| n.parse().ok())
+                .ok_or(format!("{flag} takes a number; {USAGE}"))
+        };
+        match arg.as_str() {
+            "--idle" => idle = true,
+            "--active" => active = Some(number("--active")?),
+            "--edit" => edit = Some(number("--edit")?),
+            "--ask" => ask = Some(number("--ask")?),
+            _ => paths.push(arg),
+        }
+    }
+    let out = paths.pop().ok_or(USAGE)?;
+    if paths.is_empty() {
+        return Err(USAGE.to_string());
+    }
     let state = headless_render_state()?;
     let mut session = Session::new(Workspace::unrestricted());
-    session
-        .execute("file.open", &json!({ "path": file }))
-        .map_err(|e| e.to_string())?;
+    let execute = |session: &mut Session, command: &str, params: serde_json::Value| {
+        session
+            .execute(command, &params)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    };
+    for (index, path) in paths.iter().enumerate() {
+        if path == "untitled" {
+            execute(&mut session, "file.new", json!({}))?;
+            execute(&mut session, "feature.block", json!({"size": [40, 30, 20]}))?;
+        } else {
+            execute(&mut session, "file.open", json!({ "path": path }))?;
+        }
+        if edit == Some(index) {
+            execute(&mut session, "feature.sphere", json!({"radius": 5}))?;
+        }
+    }
+    if let Some(document) = active {
+        execute(
+            &mut session,
+            "file.activate",
+            json!({ "document": document }),
+        )?;
+    }
     let mut shell = Shell::new();
     shell.attach_gpu(&state)?;
     let ctx = egui::Context::default();
@@ -64,7 +109,12 @@ fn main() -> Result<(), String> {
     // The window as it shows the document, then as it is while work runs.
     let mut jobs = Vec::new();
     for (frame, time) in [0.0, 0.1, 0.2, 0.3].into_iter().enumerate() {
-        if frame == 2 {
+        if frame == 1
+            && let Some(document) = ask
+        {
+            shell.request_close(document);
+        }
+        if frame == 2 && !idle {
             shell.set_work(Some(Work {
                 label: "file.open".to_string(),
                 phase: "regenerating".to_string(),
@@ -76,7 +126,7 @@ fn main() -> Result<(), String> {
             }));
         }
         let output = ctx.run_ui(input(time), |ui| {
-            if frame < 2 {
+            if frame < 2 || idle {
                 shell.ui(ui, &mut session);
             } else {
                 shell.ui_away(ui);

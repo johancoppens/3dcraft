@@ -6,11 +6,12 @@ use crate::args::Options;
 use crate::control::{ControlConfig, ControlServer, Wake};
 use crate::files::{self, Choice, Picker, SystemDialogs};
 use crate::host::{Host, Request, Route, answer_on_engine, report, route};
+use crate::tabs;
 use crate::token;
 use crate::worker::{Finished, Outcome, Run, Task, Worker};
 use craft3d_automation::rpc;
 use craft3d_engine::{Access, RecoveryOptions, Session, Workspace};
-use craft3d_ui_egui::{Shell, window_title};
+use craft3d_ui_egui::{DocAction, Shell, window_title};
 use eframe::UserEvent;
 use eframe::egui;
 use serde_json::{Value, json};
@@ -442,20 +443,22 @@ impl Desk {
                         Outcome::Ran(files::run_as_user(session, "file.open", &path, false, None))
                     }),
                 ),
-                Ok(Choice::Save(path)) => self.start(
-                    Waiting::File("file.save"),
-                    "file.save".to_string(),
-                    Box::new(move |session| {
-                        let confirmed = Some((files::CONFIRMED.0, Value::Bool(files::CONFIRMED.1)));
-                        Outcome::Ran(files::run_as_user(
-                            session,
-                            "file.save",
-                            &path,
-                            true,
-                            confirmed,
-                        ))
-                    }),
-                ),
+                Ok(Choice::Save(path)) => {
+                    // Save in the question before closing: closed once
+                    // it is saved.
+                    let close_after = std::mem::take(&mut self.host.close_after_save);
+                    self.start(
+                        Waiting::File("file.save"),
+                        "file.save".to_string(),
+                        Box::new(move |session| {
+                            let confirmed =
+                                Some((files::CONFIRMED.0, Value::Bool(files::CONFIRMED.1)));
+                            let saved =
+                                files::run_as_user(session, "file.save", &path, true, confirmed);
+                            Outcome::Ran(tabs::close_when_saved(session, saved, close_after))
+                        }),
+                    );
+                }
                 other => self.host.file_choice(other),
             }
             return true;
@@ -464,7 +467,38 @@ impl Desk {
             self.host.file_action(action, &mut self.picker);
             return true;
         }
+        if let Some(action) = self.host.shell.take_doc_action() {
+            self.doc_action(action);
+            return true;
+        }
         false
+    }
+
+    /// What a tab asked for, on the engine thread like every command, so
+    /// the window keeps drawing while the scene of a heavy document is
+    /// built. Save and close for a document without a file activates it
+    /// there and opens the save dialog; it is closed once it is saved.
+    fn doc_action(&mut self, action: DocAction) {
+        let label = tabs::label(&action);
+        if tabs::needs_a_name(&self.host.session, &action) {
+            let DocAction::SaveAndClose(document) = action else {
+                return;
+            };
+            self.host.ask_name_then_close(&mut self.picker);
+            self.start(
+                Waiting::File("file.activate"),
+                "file.activate".to_string(),
+                Box::new(move |session| {
+                    Outcome::Ran(tabs::perform(session, &DocAction::Activate(document)))
+                }),
+            );
+            return;
+        }
+        self.start(
+            Waiting::File(label),
+            label.to_string(),
+            Box::new(move |session| Outcome::Ran(tabs::perform(session, &action))),
+        );
     }
 
     /// Tells the shell what the engine thread is doing.
@@ -565,7 +599,7 @@ impl eframe::App for Viewer {
         if desk.away() {
             desk.host.shell.ui_away(ui);
         } else {
-            let Host { session, shell } = &mut desk.host;
+            let Host { session, shell, .. } = &mut desk.host;
             shell.ui(ui, session);
         }
     }
