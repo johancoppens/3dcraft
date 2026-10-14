@@ -93,6 +93,9 @@ use craft3d_topo::{Body, BodyKind, EdgeId, FaceId, VertexId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::{PI, TAU};
 
+mod section;
+use section::{Section, Trace};
+
 /// Most edges one blend takes.
 pub(crate) const MAX_EDGES: usize = 4096;
 
@@ -193,10 +196,10 @@ impl Reason {
                 "the angle has to be more than zero and less than what is left of half a turn by the angle between the faces"
             }
             Reason::Kind | Reason::Spindle => {
-                "this kind of edge is not built yet: a chamfer takes a straight edge between two planes and a circular edge between a plane, a cylinder or a cone about its axis"
+                "this kind of edge is not built yet: a chamfer takes a straight edge between planes and cylinders along it and a circular edge between a plane, a cylinder or a cone about its axis"
             }
             Reason::KindLine => {
-                "a straight edge between faces that are not both planes is not built yet"
+                "a straight edge next to a face that is neither a plane nor a cylinder along the edge (a cone, a freeform face) is not built yet (the chamfer face would not be flat)"
             }
             Reason::KindCircle => {
                 "a circular edge between faces that are not a plane, a cylinder or a cone about the circle's axis is not built yet"
@@ -242,10 +245,10 @@ impl Reason {
                 "the two faces are tangent along this edge: there is no corner to round"
             }
             Reason::Kind => {
-                "this kind of edge is not built yet: a fillet takes a straight edge between two planes and a circular edge between a plane, a cylinder or a cone about its axis"
+                "this kind of edge is not built yet: a fillet takes a straight edge between planes and cylinders along it and a circular edge between a plane, a cylinder or a cone about its axis"
             }
             Reason::KindLine => {
-                "a straight edge between faces that are not both planes is not built yet (the fillet face would not be a cylinder)"
+                "a straight edge next to a face that is neither a plane nor a cylinder along the edge (a cone, a freeform face) is not built yet (the fillet face would not be a cylinder)"
             }
             Reason::KindCircle => {
                 "a circular edge between faces that are not a plane, a cylinder or a cone about the circle's axis is not built yet (the fillet face would not be a torus)"
@@ -506,9 +509,6 @@ struct Plan {
     faces: [FaceId; 2],
     /// The radius of a fillet; `None` for a chamfer.
     round: Option<f64>,
-    /// The tangent of half the angle between the directions into the two
-    /// faces: a fillet's radius over its distance.
-    half_tan: f64,
     /// The directions into the first and the second face from the edge,
     /// at the point the section is drawn at.
     into: [Vec3; 2],
@@ -520,6 +520,13 @@ struct Plan {
     /// How far the tool goes on past the start and past the end: a
     /// length along a line, an angle along an arc.
     longer: [f64; 2],
+    /// Along a straight edge next to a cylinder: the blend in the plane
+    /// across the edge ([`section`]). `None` between two planes and along
+    /// a circle.
+    section: Option<Section>,
+    /// What a distance along each face is in the size asked for: one for
+    /// a chamfer, the radius over the distance for a fillet.
+    scale: [f64; 2],
 }
 
 impl Plan {
@@ -537,6 +544,32 @@ impl Plan {
 
     fn largest(&self) -> f64 {
         self.distances[0].max(self.distances[1])
+    }
+
+    /// Where the blend leaves the first and the second face: offsets from
+    /// the edge in the plane across it.
+    fn feet(&self) -> [Vec3; 2] {
+        match &self.section {
+            Some(section) => section.feet,
+            None => [
+                self.into[0] * self.distances[0],
+                self.into[1] * self.distances[1],
+            ],
+        }
+    }
+
+    /// How far into the face on `side` the point `offset` from the edge
+    /// is, measured along the face across the edge.
+    fn coordinate(&self, side: usize, offset: Vec3) -> f64 {
+        match self.section.as_ref().and_then(|s| s.traces.get(side)) {
+            Some(trace) => trace.coordinate(offset),
+            None => self.into.get(side).map_or(0.0, |into| offset.dot(*into)),
+        }
+    }
+
+    /// Between two planes, or along a circle.
+    fn flat(&self) -> bool {
+        self.section.is_none()
     }
 }
 
@@ -649,9 +682,6 @@ fn plan(body: &Body, uses: &[Vec<Use>], request: &Request, tol: f64) -> Result<P
     ];
     let (path, ends) = match &data.curve {
         Curve3::Line(line) => {
-            if !surfaces.iter().all(|s| matches!(s, Surface::Plane(_))) {
-                return Err(refused(edge, Reason::KindLine));
-            }
             let along = line.direction();
             let length = data.range.1 - data.range.0;
             if !(length.is_finite() && length > tol) {
@@ -714,11 +744,54 @@ fn plan(body: &Body, uses: &[Vec<Use>], request: &Request, tol: f64) -> Result<P
     // The tangent of half that angle, from the cosine: exactly 1 for a
     // square corner, which the tangent of a rounded quarter turn is not.
     let half_tan = (1.0 - cosine * cosine).max(0.0).sqrt() / (1.0 + cosine);
-    let distances = distances(edge, request.size, between, half_tan, tol)?;
+    let mut distances = distances(edge, request.size, between, half_tan, tol)?;
     let round = match request.size {
         Size::Radius(radius) => Some(radius),
         Size::Chamfer(_) => None,
     };
+    let mut scale = match round {
+        Some(_) => [half_tan, half_tan],
+        None => [1.0, 1.0],
+    };
+    let mut section = None;
+    if let Path::Line { start, along, .. } = path
+        && !surfaces.iter().all(|s| matches!(s, Surface::Plane(_)))
+    {
+        // A cylinder beside a straight edge: the blend is the same in
+        // every plane across the edge (see `section`).
+        let traced = [
+            section::trace(surfaces[0], start, along, into_first, tol),
+            section::trace(surfaces[1], start, along, into_second, tol),
+        ];
+        let [Some(t1), Some(t2)] = traced else {
+            return Err(refused(edge, Reason::KindLine));
+        };
+        let normals = [
+            outward(body, faces[0], start)?,
+            outward(body, faces[1], start)?,
+        ];
+        let spread = 1.0 + cosine;
+        if spread.is_nan() || spread <= 1e-12 {
+            return Err(refused(edge, Reason::Smooth));
+        }
+        let estimate = (into_first + into_second) * (distances[0] / spread);
+        let made = section::section(
+            edge,
+            faces,
+            [t1, t2],
+            normals,
+            along,
+            convex,
+            request.size,
+            estimate,
+            tol,
+        )?;
+        distances = made.distances;
+        if let Some(radius) = round {
+            scale = [radius / distances[0], radius / distances[1]];
+        }
+        section = Some(made);
+    }
     if let (
         Some(radius),
         Path::Circle {
@@ -742,13 +815,14 @@ fn plan(body: &Body, uses: &[Vec<Use>], request: &Request, tol: f64) -> Result<P
         edge,
         faces,
         round,
-        half_tan,
         into,
         distances,
         convex,
         path,
         ends,
         longer: [0.0, 0.0],
+        section,
+        scale,
     })
 }
 
@@ -830,7 +904,8 @@ fn fits(body: &Body, plans: &[Plan], tol: f64) -> Result<(), BlendError> {
                     } => {
                         // How far into the face a point is, and where
                         // along the edge.
-                        let place = |p: Vec3| ((p - start).dot(into), (p - start).dot(along));
+                        let place =
+                            |p: Vec3| (plan.coordinate(side, p - start), (p - start).dot(along));
                         if touches {
                             // An edge that leaves from an end of this one
                             // bounds the strip up to its own far end.
@@ -927,10 +1002,9 @@ fn fits(body: &Body, plans: &[Plan], tol: f64) -> Result<(), BlendError> {
             }
             if distance >= largest - 2.0 * tol {
                 // A fillet is said by its radius.
-                let per = if plan.round.is_some() && plan.half_tan.is_finite() {
-                    plan.half_tan
-                } else {
-                    1.0
+                let per = match plan.scale.get(side) {
+                    Some(per) if plan.round.is_some() && per.is_finite() => *per,
+                    _ => 1.0,
                 };
                 return Err(BlendError::TooLarge {
                     edge: plan.edge,
@@ -997,8 +1071,7 @@ fn lengthen(
         } else {
             Turn::Concave
         };
-        let [d1, d2] = plan.distances;
-        let [b1, b2] = plan.into;
+        let [f1, f2] = plan.feet();
         let beyond = [
             -tangent(&data.curve, data.range.0)?,
             tangent(&data.curve, data.range.1)?,
@@ -1018,11 +1091,11 @@ fn lengthen(
                     // The chamfer plane holds the edge's direction and
                     // the line between the two cut lines. How far past
                     // the vertex does it cut the other edges there?
-                    let Some(normal) = along.cross(b1 * d1 - b2 * d2).normalized() else {
+                    let Some(normal) = along.cross(f1 - f2).normalized() else {
                         return Err(lost());
                     };
                     let corner = body.vertex(vertex).ok_or_else(lost)?.point;
-                    let height = normal.dot(corner - (start + b1 * d1));
+                    let height = normal.dot(corner - (start + f1));
                     let mut reach = 0.0_f64;
                     for other in &others {
                         let slope = normal.dot(other.direction);
@@ -1089,6 +1162,33 @@ fn slope_of(result: crate::extrude::OpResult) -> Result<Tool, BlendError> {
     })
 }
 
+/// A side of a tool's section that lies in a face: a line in a plane, the
+/// short arc of the circle in a cylinder.
+fn along_trace(
+    id: u64,
+    trace: &Trace,
+    from: [f64; 2],
+    to: [f64; 2],
+    flat: impl Fn(Vec3) -> [f64; 2],
+) -> SketchCurve {
+    match trace.circle() {
+        None => line(id, from, to),
+        Some((centre, _)) => SketchCurve {
+            id,
+            curve: short_arc(flat(centre), from, to),
+        },
+    }
+}
+
+/// The arc about `center` between two points the short way round,
+/// counter-clockwise as a sketch arc runs.
+fn short_arc(center: [f64; 2], p1: [f64; 2], p2: [f64; 2]) -> Curve2 {
+    let turn =
+        (p1[0] - center[0]) * (p2[1] - center[1]) - (p1[1] - center[1]) * (p2[0] - center[0]);
+    let (start, end) = if turn > 0.0 { (p1, p2) } else { (p2, p1) };
+    Curve2::Arc { center, start, end }
+}
+
 /// The curve `1` of a tool's section, from the cut line on the first
 /// face to the one on the second: straight for a chamfer, and for a
 /// fillet the arc of the ball that touches both faces there. `flat`
@@ -1106,21 +1206,23 @@ fn across_curve(
     }
     let [b1, b2] = plan.into;
     let [d1, _] = plan.distances;
-    // The ball's centre lies on the bisector, where the perpendiculars
-    // of the two tangent points meet.
-    let spread = 1.0 + b1.dot(b2);
-    if spread <= 1e-12 {
-        return Err(lost());
-    }
-    let [cx, cy] = flat((b1 + b2) * (d1 / spread));
+    let ball = match plan.section.as_ref().and_then(|s| s.centre) {
+        Some(centre) => centre,
+        None => {
+            // The ball's centre lies on the bisector, where the
+            // perpendiculars of the two tangent points meet.
+            let spread = 1.0 + b1.dot(b2);
+            if spread <= 1e-12 {
+                return Err(lost());
+            }
+            (b1 + b2) * (d1 / spread)
+        }
+    };
+    let [cx, cy] = flat(ball);
     let center = [rim[0] + cx, rim[1] + cy];
-    // The short way round, counter-clockwise.
-    let turn =
-        (p1[0] - center[0]) * (p2[1] - center[1]) - (p1[1] - center[1]) * (p2[0] - center[0]);
-    let (start, end) = if turn > 0.0 { (p1, p2) } else { (p2, p1) };
     Ok(SketchCurve {
         id: 1,
-        curve: Curve2::Arc { center, start, end },
+        curve: short_arc(center, p1, p2),
     })
 }
 
@@ -1135,14 +1237,28 @@ fn tool(plan: &Plan, tolerance: &Tolerance) -> Result<Tool, BlendError> {
         } => {
             let origin = start - along * plan.longer[0];
             let frame = Frame::new(origin, along, b1).ok_or_else(lost)?;
-            let p1 = [d1, 0.0];
-            let p2 = [d2 * b2.dot(frame.x()), d2 * b2.dot(frame.y())];
             let flat = |v: Vec3| [v.dot(frame.x()), v.dot(frame.y())];
-            let curves = [
-                line(0, [0.0, 0.0], p1),
-                across_curve(plan, [0.0, 0.0], p1, p2, flat)?,
-                line(2, p2, [0.0, 0.0]),
-            ];
+            let curves = match &plan.section {
+                None => {
+                    let p1 = [d1, 0.0];
+                    let p2 = [d2 * b2.dot(frame.x()), d2 * b2.dot(frame.y())];
+                    [
+                        line(0, [0.0, 0.0], p1),
+                        across_curve(plan, [0.0, 0.0], p1, p2, flat)?,
+                        line(2, p2, [0.0, 0.0]),
+                    ]
+                }
+                Some(section) => {
+                    let [f1, f2] = section.feet;
+                    let (p1, p2) = (flat(f1), flat(f2));
+                    let [t1, t2] = section.traces;
+                    [
+                        along_trace(0, &t1, [0.0, 0.0], p1, flat),
+                        across_curve(plan, [0.0, 0.0], p1, p2, flat)?,
+                        along_trace(2, &t2, p2, [0.0, 0.0], flat),
+                    ]
+                }
+            };
             let profiles = detect_profiles(&curves, tolerance)?;
             let total = length + plan.longer[0] + plan.longer[1];
             slope_of(extrude(&profiles, &frame, 0.0, total, tolerance)?)
@@ -1638,7 +1754,7 @@ fn corners(
         let (Some(pa), Some(pb), Some(pc)) = (plans.get(ia), plans.get(ib), plans.get(ic)) else {
             continue;
         };
-        let straight = |p: &Plan| matches!(p.path, Path::Line { .. });
+        let straight = |p: &Plan| matches!(p.path, Path::Line { .. }) && p.flat();
         if !(straight(pa) && straight(pb) && straight(pc))
             || pa.convex != pb.convex
             || pa.convex != pc.convex
@@ -1790,7 +1906,7 @@ fn ball_corners(
         let (Some(pa), Some(pb), Some(pc)) = (plans.get(ia), plans.get(ib), plans.get(ic)) else {
             return Err(lost());
         };
-        let straight = |p: &Plan| matches!(p.path, Path::Line { .. });
+        let straight = |p: &Plan| matches!(p.path, Path::Line { .. }) && p.flat();
         if !(straight(pa) && straight(pb) && straight(pc))
             || pa.convex != pb.convex
             || pa.convex != pc.convex
@@ -2162,14 +2278,14 @@ fn reframe(body: &mut Body, of_plan: &[Vec<usize>], index: usize, plan: &Plan) {
     let normal = plane.frame().z();
     let outward = if face.reversed { -normal } else { normal };
     let [b1, b2] = plan.into;
-    let [d1, _] = plan.distances;
     let forward = b1.cross(b2).dot(along) >= 0.0;
     let (x, from) = if forward {
         (along, start)
     } else {
         (-along, start + along * length)
     };
-    if let Some(frame) = Frame::new(from + b1 * d1, outward, x) {
+    let [f1, _] = plan.feet();
+    if let Some(frame) = Frame::new(from + f1, outward, x) {
         face.surface = Surface::Plane(craft3d_geom::Plane::new(frame));
         face.reversed = false;
     }
