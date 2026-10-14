@@ -193,6 +193,12 @@ fn v13_default_pitch(size: &str) -> Option<String> {
 /// too; it is the same pitch until the size changes, and then the coarse
 /// pitch of the new size is what that pitch meant (docs/decisions.md, 14
 /// October 2026). Any other pitch stays.
+///
+/// Version 14 also makes a thread cosmetic by default, as other modellers
+/// do: the flag is `modeled`, written only when set. Version 13 wrote
+/// `cosmetic` only when set, and a thread without it was cut; so
+/// `cosmetic: true` is taken out, and a thread without it gets
+/// `modeled: true`. Every version-13 thread keeps what it was.
 fn v13_to_v14(mut manifest: Value) -> Result<Value, String> {
     let Some(features) = manifest
         .get_mut("document")
@@ -214,6 +220,17 @@ fn v13_to_v14(mut manifest: Value) -> Result<Value, String> {
             .and_then(v13_default_pitch);
         if default.is_some() && kind.get("pitch").and_then(Value::as_str) == default.as_deref() {
             kind.remove("pitch");
+        }
+        // Anything but a boolean is left for the reader to refuse.
+        match kind.get("cosmetic") {
+            Some(Value::Bool(true)) => {
+                kind.remove("cosmetic");
+            }
+            None | Some(Value::Bool(false)) => {
+                kind.remove("cosmetic");
+                kind.insert("modeled".to_string(), Value::Bool(true));
+            }
+            Some(_) => {}
         }
     }
     Ok(manifest)

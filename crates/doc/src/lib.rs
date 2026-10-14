@@ -631,8 +631,9 @@ pub struct Shell {
 /// An ISO metric screw thread on a cylindrical face of the body of an
 /// earlier feature: external, from the flat face `start` at one end of
 /// the cylinder along it for `length`, with a run-out of a quarter turn.
-/// The body goes into this feature. A cosmetic thread changes no
-/// geometry: the face is only marked with what the thread is.
+/// The body goes into this feature. A thread is cosmetic unless
+/// `modeled`: it changes no geometry, the face is only marked with what
+/// the thread is; a modelled thread is cut into the body.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Thread {
     /// The cylindrical face, by name.
@@ -652,8 +653,9 @@ pub struct Thread {
     pub length: Expr,
     #[serde(default)]
     pub left_handed: bool,
+    /// The groove is cut into the body; otherwise the thread is cosmetic.
     #[serde(default)]
-    pub cosmetic: bool,
+    pub modeled: bool,
 }
 
 impl Thread {

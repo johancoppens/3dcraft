@@ -104,7 +104,8 @@ const SIZES: [(f64, f64); 4] = [(6.0, 1.0), (8.0, 1.25), (10.0, 1.5), (12.0, 1.7
 /// The parametric socket head cap screw (`d` the nominal diameter, `L`
 /// the length under the head), its thread given without a size: the
 /// size of the shank. Every command and parameter as the morning's
-/// screw had them, but the thread's size and `cosmetic`.
+/// screw had them, but the thread's size; the thread is cosmetic, the
+/// default.
 fn screw(s: &mut Session) {
     let steps = json!([
         ["variable.set", {"name": "d", "expr": "10 mm"}],
@@ -133,7 +134,7 @@ fn screw(s: &mut Session) {
         ["feature.chamfer", {"edges": [["F2:face(0)", "F2:face(1)"]], "distance": "0.1 * d",
             "name": "Lead"}],
         ["feature.thread", {"face": "F2:face(0)", "start": "F2:face(1)", "length": "0.6 * L",
-            "cosmetic": true, "name": "Thread"}],
+            "name": "Thread"}],
     ]);
     for step in steps.as_array().unwrap() {
         run(s, step[0].as_str().unwrap(), step[1].clone());
@@ -427,7 +428,8 @@ fn a_cut_thread_follows_its_shank_s_diameter() {
     run(
         &mut s,
         "feature.thread",
-        json!({"face": "F1:face(0)", "start": "F1:face(1)", "length": "12 mm", "name": "Thread"}),
+        json!({"face": "F1:face(0)", "start": "F1:face(1)", "length": "12 mm",
+            "modeled": true, "name": "Thread"}),
     );
     for (d, p) in [(8.0, 1.25), (6.0, 1.0)] {
         if d != 8.0 {
@@ -447,5 +449,80 @@ fn a_cut_thread_follows_its_shank_s_diameter() {
             "M{d}: {found} against {closed}, {} off",
             found - closed
         );
+    }
+}
+
+#[test]
+fn a_thread_is_cosmetic_unless_modeled() {
+    let mut s = Session::new(Workspace::none());
+    run(&mut s, "file.new", json!({}));
+    set_d(&mut s, 10.0);
+    run(
+        &mut s,
+        "feature.cylinder",
+        json!({"radius": "d / 2", "height": "20 mm", "name": "Shank"}),
+    );
+    let blank = PI * 25.0 * 20.0;
+    let base = json!({"face": "F1:face(0)", "start": "F1:face(1)", "length": "12 mm"});
+    let with = |extra: Value| {
+        let mut all = base.clone();
+        for (key, value) in extra.as_object().unwrap() {
+            all[key] = value.clone();
+        }
+        all
+    };
+    // Neither flag disagreeing with the other.
+    for both in [
+        json!({"modeled": true, "cosmetic": true}),
+        json!({"modeled": false, "cosmetic": false}),
+    ] {
+        let error = refused(&mut s, "feature.thread", with(both.clone()));
+        assert!(error.contains("opposite"), "{both}: {error}");
+    }
+    // By default: cosmetic, the body unchanged.
+    let made = run(&mut s, "feature.thread", with(json!({"name": "Thread"})));
+    assert_eq!(made["thread"]["cosmetic"], true, "{made}");
+    assert_eq!(made["thread"]["modeled"], false, "{made}");
+    assert_eq!(feature(&mut s, "Thread")["params"]["modeled"], false);
+    assert!((volume(&mut s, "Thread") - blank).abs() < 1e-9 * blank);
+    // Agreeing flags are taken; `cosmetic: false` is `modeled: true`.
+    // (Each on a thread too long for the shank, which fails before it is
+    // cut: only what is stored is looked at here.)
+    for (flags, modeled) in [
+        (json!({"modeled": true, "cosmetic": false}), true),
+        (json!({"cosmetic": false}), true),
+        (json!({"cosmetic": true}), false),
+        (json!({"modeled": false}), false),
+    ] {
+        run(&mut s, "file.new", json!({}));
+        set_d(&mut s, 10.0);
+        run(
+            &mut s,
+            "feature.cylinder",
+            json!({"radius": "d / 2", "height": "20 mm", "name": "Shank"}),
+        );
+        let mut all = with(flags.clone());
+        all["length"] = json!("19.5 mm");
+        all["name"] = json!("Long");
+        run(&mut s, "feature.thread", all);
+        assert_eq!(
+            feature(&mut s, "Long")["params"]["modeled"],
+            modeled,
+            "{flags}"
+        );
+        assert!(failure(&mut s, "Long").contains("shorter"));
+        // feature.edit takes either name too.
+        run(
+            &mut s,
+            "feature.edit",
+            json!({"feature": "Long", "cosmetic": modeled}),
+        );
+        assert_eq!(feature(&mut s, "Long")["params"]["modeled"], !modeled);
+        let error = refused(
+            &mut s,
+            "feature.edit",
+            json!({"feature": "Long", "modeled": true, "cosmetic": true}),
+        );
+        assert!(error.contains("opposite"), "{error}");
     }
 }

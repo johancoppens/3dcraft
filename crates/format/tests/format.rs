@@ -2801,7 +2801,7 @@ fn a_thread_is_written_like_this_and_round_trips() {
                 pitch,
                 length: Expr::new("12 mm"),
                 left_handed: false,
-                cosmetic: true,
+                modeled: false,
             }),
         )
         .unwrap();
@@ -2815,17 +2815,17 @@ fn a_thread_is_written_like_this_and_round_trips() {
     assert_eq!(
         features[n - 3]["kind"],
         serde_json::json!({"type": "thread", "face": face(0), "start": face(1),
-            "length": "12 mm", "cosmetic": true})
+            "length": "12 mm"})
     );
     assert_eq!(
         features[n - 2]["kind"],
         serde_json::json!({"type": "thread", "face": face(0), "start": face(1),
-            "size": "M10", "length": "12 mm", "cosmetic": true})
+            "size": "M10", "length": "12 mm"})
     );
     assert_eq!(
         features[n - 1]["kind"],
         serde_json::json!({"type": "thread", "face": face(0), "start": face(1),
-            "size": {"diameter": "d"}, "pitch": "1.25 mm", "length": "12 mm", "cosmetic": true})
+            "size": {"diameter": "d"}, "pitch": "1.25 mm", "length": "12 mm"})
     );
     assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
     assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
@@ -2838,9 +2838,11 @@ fn a_thread_is_written_like_this_and_round_trips() {
 /// A version-13 file, as written before a thread's pitch could follow its
 /// size: the pitch the command wrote when it was given none (the coarse
 /// pitch of the designation, as text) is taken out, so it follows the
-/// size; every other pitch stays. Never edit this.
+/// size; every other pitch stays. And a thread that did not say
+/// `cosmetic: true` was cut, so it is `modeled` now that a thread is
+/// cosmetic by default. Never edit this.
 #[test]
-fn a_version_13_thread_loses_the_pitch_it_was_given_by_default() {
+fn a_version_13_thread_loses_its_default_pitch_and_stays_cut() {
     let v13 = r#"{"format": "3dcraft", "format_version": 13, "document": {
         "units": {"length": "mm", "angle": "deg"},
         "tolerance": {"linear": 1e-6, "angular": 1e-9},
@@ -2863,7 +2865,7 @@ fn a_version_13_thread_loses_the_pitch_it_was_given_by_default() {
           {"id": 5, "name": "Number", "suppressed": false, "kind": {"type": "thread",
             "face": {"feature": 1, "role": "face", "sources": [0]},
             "start": {"feature": 1, "role": "face", "sources": [1]},
-            "size": "M10", "pitch": "1.5", "length": "12 mm"}},
+            "size": "M10", "pitch": "1.5", "length": "12 mm", "cosmetic": false}},
           {"id": 6, "name": "Formula", "suppressed": false, "kind": {"type": "thread",
             "face": {"feature": 1, "role": "face", "sources": [0]},
             "start": {"feature": 1, "role": "face", "sources": [1]},
@@ -2880,6 +2882,7 @@ fn a_version_13_thread_loses_the_pitch_it_was_given_by_default() {
             FeatureKind::Thread(t) => Some((
                 t.size.clone(),
                 t.pitch.as_ref().map(|p| p.source().to_string()),
+                t.modeled,
             )),
             _ => None,
         })
@@ -2888,15 +2891,27 @@ fn a_version_13_thread_loses_the_pitch_it_was_given_by_default() {
     assert_eq!(
         threads,
         [
-            (Some(Designation("M10".into())), None),
-            (Some(Designation("M10".into())), Some("1.25 mm".into())),
-            (Some(Designation("M6".into())), None),
-            (Some(Designation("M10".into())), Some("1.5".into())),
-            (Some(Designation("M2.5".into())), Some("0.45 mm * 1".into())),
+            // `cosmetic: true` stays cosmetic; every other thread of
+            // version 13 was cut, and is modelled.
+            (Some(Designation("M10".into())), None, false),
+            (
+                Some(Designation("M10".into())),
+                Some("1.25 mm".into()),
+                true
+            ),
+            (Some(Designation("M6".into())), None, true),
+            (Some(Designation("M10".into())), Some("1.5".into()), true),
+            (
+                Some(Designation("M2.5".into())),
+                Some("0.45 mm * 1".into()),
+                true
+            ),
         ]
     );
     let saved = to_manifest_json(&doc).unwrap();
     assert!(saved.contains(&version_field()), "{saved}");
+    assert_eq!(saved.matches("\"modeled\": true").count(), 4, "{saved}");
+    assert!(!saved.contains("cosmetic"), "{saved}");
     assert_eq!(from_manifest_json(saved.as_bytes()).unwrap(), doc);
     let newer = v13.replace(
         "\"format_version\": 13",

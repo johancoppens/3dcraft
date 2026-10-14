@@ -139,7 +139,7 @@ fn shank(s: &mut Session) {
 }
 
 fn thread(s: &mut Session, params: Value) -> Value {
-    let mut all = json!({"face": "F1:face(0)", "start": "F1:face(1)", "size": "M10", "length": "12 mm", "name": "Thread"});
+    let mut all = json!({"face": "F1:face(0)", "start": "F1:face(1)", "size": "M10", "length": "12 mm", "modeled": true, "name": "Thread"});
     for (key, value) in params.as_object().unwrap() {
         all[key] = value.clone();
     }
@@ -246,6 +246,7 @@ fn an_m10_thread_removes_its_groove_and_follows_its_parameters() {
         json!({"feature": "Thread", "cosmetic": true}),
     );
     assert_eq!(cosmetic["thread"]["cosmetic"], true, "{cosmetic}");
+    assert_eq!(cosmetic["thread"]["modeled"], false, "{cosmetic}");
     assert!((volume(&mut s, "Thread") - blank).abs() < 1e-9 * blank);
     deep(&mut s);
 }

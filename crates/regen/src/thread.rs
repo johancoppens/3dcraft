@@ -13,7 +13,8 @@
 //!
 //! **What.** The groove of the basic profile ([`craft3d_kernel::thread`])
 //! is swept along a helix at the minor diameter and subtracted from the
-//! body by the boolean. A cosmetic thread changes nothing of the body:
+//! body by the boolean when the thread is `modeled`. A cosmetic thread,
+//! the default, changes nothing of the body:
 //! the feature carries what the thread is ([`ThreadReport`]), so that
 //! `document.inspect` shows it with the face.
 //!
@@ -384,11 +385,11 @@ pub(crate) fn build(
         pitch_given: thread.pitch.is_some(),
         length: run,
         left_handed: thread.left_handed,
-        cosmetic: thread.cosmetic,
+        cosmetic: !thread.modeled,
         deviation: 0.0,
     };
 
-    if thread.cosmetic {
+    if !thread.modeled {
         // Nothing of the body changes: every face, edge and vertex is
         // the copy of what it was.
         let count = |n: usize| -> Kept { (0..n).map(|i| Some((0, i))).collect() };

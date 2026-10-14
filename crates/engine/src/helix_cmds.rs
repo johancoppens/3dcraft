@@ -13,8 +13,8 @@ use serde_json::{Value, json};
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("datum.helix", "Helix", r#"{"axis": "x|y|z" or [face name, face name] or datum axis, "radius": expr, "start": point, "pitch": expr, "turns": expr, "height": expr, "leftHanded": boolean = false, "replace": id or name, "name": string = automatic}"#,
         "Adds a helix: a curve that winds about an axis at a constant radius and advances one pitch along it per turn, for a sweep to follow (feature.sweep, path): a coil spring, the groove of a thread. It makes no body; it is drawn as a curve. axis is a world axis (through the origin), the straight edge between two faces of one body ([face name, face name]) or a datum axis (id or name); the helix advances the way it points. Where it starts, one of two: radius, a length, starts it level with the axis's own point (the origin for a world axis), towards the first of the world's x, y and z axes that is least along the axis (x for z, y for x, x for y); start, a point ([x, y, z], a vertex name, {\"center\": [face name, face name]} or a datum point), starts it there, at that point's distance from the axis. pitch is how far it advances per turn; how far it goes is turns (a number, need not be whole) or height (a length along the axis). It turns counter-clockwise seen from the tip of the axis, or clockwise with leftHanded. Lengths and turns are expressions and follow variables; feature.edit changes radius, pitch, turns, height and leftHanded. replace gives an existing helix this definition instead of adding one. The result has the helix under datum: origin (on the axis, level with the start), axis, start and end points, radius, pitch, turns, height, length (turns · √((2πr)² + p²)) and leftHanded. A helix is not a rational curve: where a curve is needed it is a polynomial B-spline within a quarter of the document's tolerance.", doc: true, datum_helix),
-    spec!("feature.thread", "Thread", r#"{"face": face name, "start": face name, "size": "M10" or expr = the size of the face, "pitch": expr = the coarse pitch of size, "length": expr, "leftHanded": boolean = false, "cosmetic": boolean = false, "name": string = automatic}"#,
-        "Cuts an external ISO metric thread into a cylindrical face of a body: a bolt's shank, a stud. face is the cylinder by its name (document.inspect, faceNames); start is the flat face square to its axis at the end of the cylinder where the thread starts (the end of the shank: nothing of the body lies beyond it), by its name, a face of the same body; both may be named as an earlier body had them (F2:face(0) after a chamfer took the body), and are followed to its newest form. size is the designation of ISO 261, M and the nominal diameter in millimetres (M10, M2.5), or the nominal diameter as an expression of a length (d, \"10 mm\"), or left out: then the thread takes the ISO 261 size whose nominal diameter the face has, found again at every regeneration, so a thread on a shank made from a variable follows it (a face of a diameter no size of the table has fails, naming the diameter and the nearest sizes). A text that reads as a designation (M and a number) is one; any other text is an expression. The face has to be the size's diameter (a shank turned a little under size is threaded all the same, to the basic profile of the nominal size). pitch is the coarse pitch of ISO 261 for the size unless given (M10: 1.5 mm; a fine pitch such as 1.25 mm is given as pitch), looked up again at every regeneration, so it follows the size; a pitch given stays. length is how far the thread goes at full depth from start; after it the groove lifts out of the material over a quarter turn (the run-out), and the cylinder has to be long enough for both. The profile is the basic one of ISO 68-1: 60° flanks, the crest flat P/8 wide at the major diameter, the root flat P/4 wide at the minor diameter, D − 1.0825 P; its groove is swept along a helix (right-handed unless leftHanded) and subtracted from the body, which goes into this feature. The groove's faces are B-spline surfaces within half the document's tolerance of the true thread, one per half turn, and the root is a cylinder: F9:thread(0) the root, F9:thread(1) the flank that faces the start, F9:thread(2) the flank that faces away, the second and later of each numbered as pieces (F9:piece(3)/F9:thread(1)); the other faces are copies of the body's (F9:copy(0)/F2:side(e7)). cosmetic leaves the body as it is and only marks the thread. The result, and the feature in document.inspect, has the thread under thread: size (the designation, also when it was found from a diameter), major and minor diameter, pitch, pitchGiven (false when it is the coarse pitch of the size), length, leftHanded, cosmetic, and how far the groove's faces were found from the true thread (deviation). feature.edit changes size, pitch, length, leftHanded and cosmetic; size null goes back to the size of the face, pitch null to the coarse pitch of the size. Refused, with the reason: a face that is not a cylinder or not of the size's diameter, a start face that is not square to the axis at an end of the cylinder, a thread longer than the cylinder.", doc: true, feature_thread),
+    spec!("feature.thread", "Thread", r#"{"face": face name, "start": face name, "size": "M10" or expr = the size of the face, "pitch": expr = the coarse pitch of size, "length": expr, "leftHanded": boolean = false, "modeled": boolean = false, "cosmetic": boolean = true, "name": string = automatic}"#,
+        "Puts an external ISO metric thread on a cylindrical face of a body: a bolt's shank, a stud. The thread is cosmetic unless modeled is true, as in other modellers: the body is left as it is and the face is marked with the thread (size, diameters, pitch, length), which is fast and what most fasteners want; with modeled the groove is cut into the body (slow: seconds to regenerate). cosmetic is the opposite of modeled, accepted as well (cosmetic: false is modeled: true); giving both, disagreeing, is refused. face is the cylinder by its name (document.inspect, faceNames); start is the flat face square to its axis at the end of the cylinder where the thread starts (the end of the shank: nothing of the body lies beyond it), by its name, a face of the same body; both may be named as an earlier body had them (F2:face(0) after a chamfer took the body), and are followed to its newest form. size is the designation of ISO 261, M and the nominal diameter in millimetres (M10, M2.5), or the nominal diameter as an expression of a length (d, \"10 mm\"), or left out: then the thread takes the ISO 261 size whose nominal diameter the face has, found again at every regeneration, so a thread on a shank made from a variable follows it (a face of a diameter no size of the table has fails, naming the diameter and the nearest sizes). A text that reads as a designation (M and a number) is one; any other text is an expression. The face has to be the size's diameter (a shank turned a little under size is threaded all the same, to the basic profile of the nominal size). pitch is the coarse pitch of ISO 261 for the size unless given (M10: 1.5 mm; a fine pitch such as 1.25 mm is given as pitch), looked up again at every regeneration, so it follows the size; a pitch given stays. length is how far the thread goes at full depth from start; after it the groove lifts out of the material over a quarter turn (the run-out), and the cylinder has to be long enough for both. The profile is the basic one of ISO 68-1: 60° flanks, the crest flat P/8 wide at the major diameter, the root flat P/4 wide at the minor diameter, D − 1.0825 P; when modeled, its groove is swept along a helix (right-handed unless leftHanded) and subtracted from the body; the body goes into this feature either way. The groove's faces are B-spline surfaces within half the document's tolerance of the true thread, one per half turn, and the root is a cylinder: F9:thread(0) the root, F9:thread(1) the flank that faces the start, F9:thread(2) the flank that faces away, the second and later of each numbered as pieces (F9:piece(3)/F9:thread(1)); the other faces are copies of the body's (F9:copy(0)/F2:side(e7)). A cosmetic thread leaves every face a copy of the body's. The result, and the feature in document.inspect, has the thread under thread: size (the designation, also when it was found from a diameter), major and minor diameter, pitch, pitchGiven (false when it is the coarse pitch of the size), length, leftHanded, modeled, cosmetic, and how far the groove's faces were found from the true thread (deviation). feature.edit changes size, pitch, length, leftHanded and modeled (or cosmetic); size null goes back to the size of the face, pitch null to the coarse pitch of the size. Refused, with the reason: a face that is not a cylinder or not of the size's diameter, a start face that is not square to the axis at an end of the cylinder, a thread longer than the cylinder.", doc: true, feature_thread),
 ];
 
 /// A thread's size as the commands take it: a text that reads as a
@@ -46,6 +46,20 @@ pub(crate) fn size_value(command: &str, size: &Value) -> Result<ThreadSize, Comm
     })
 }
 
+/// Whether a thread is modelled, from `modeled` or its opposite
+/// `cosmetic` (the name of version 13, still accepted); `None` when
+/// neither is given. Both given and disagreeing is refused.
+pub(crate) fn modeled_value(command: &str, p: &Params) -> Result<Option<bool>, CommandError> {
+    match (p.bool("modeled")?, p.bool("cosmetic")?) {
+        (Some(modeled), Some(cosmetic)) if modeled == cosmetic => fail(format!(
+            "{command}: `modeled` and `cosmetic` say the opposite of each other; give one: a thread is cosmetic unless modeled"
+        )),
+        (Some(modeled), _) => Ok(Some(modeled)),
+        (None, Some(cosmetic)) => Ok(Some(!cosmetic)),
+        (None, None) => Ok(None),
+    }
+}
+
 /// What a thread says of itself, for a command's result.
 pub(crate) fn thread_json(report: &ThreadReport) -> Value {
     json!({
@@ -56,6 +70,7 @@ pub(crate) fn thread_json(report: &ThreadReport) -> Value {
         "pitchGiven": report.pitch_given,
         "length": report.length,
         "leftHanded": report.left_handed,
+        "modeled": !report.cosmetic,
         "cosmetic": report.cosmetic,
         "deviation": report.deviation,
     })
@@ -73,10 +88,12 @@ fn feature_thread(session: &mut Session, params: &Value) -> Run {
             "pitch",
             "length",
             "leftHanded",
+            "modeled",
             "cosmetic",
             "name",
         ],
     )?;
+    let modeled = modeled_value(ID, &p)?.unwrap_or(false);
     let face = face_value(ID, "face", p.get("face").ok_or_else(|| p.missing("face"))?)?;
     let start = face_value(
         ID,
@@ -108,7 +125,7 @@ fn feature_thread(session: &mut Session, params: &Value) -> Run {
         pitch,
         length: Expr::new(length),
         left_handed: p.bool("leftHanded")?.unwrap_or(false),
-        cosmetic: p.bool("cosmetic")?.unwrap_or(false),
+        modeled,
     });
     add_feature(session, ID, p.str("name")?, kind)
 }

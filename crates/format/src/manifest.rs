@@ -316,8 +316,9 @@ pub enum FeatureKind {
     /// diameter as an expression of a length, or absent: the size whose
     /// nominal diameter the face has (version 14). `pitch` is absent for
     /// the coarse pitch of the size (version 14; version 13 always wrote
-    /// it). Written without `left_handed` and `cosmetic` when they are
-    /// not set.
+    /// it). Written without `left_handed` and `modeled` when they are
+    /// not set. A thread is cosmetic unless `modeled` (version 14;
+    /// version 13 wrote `cosmetic` and cut a thread that did not say it).
     Thread {
         face: Name,
         start: Name,
@@ -329,7 +330,7 @@ pub enum FeatureKind {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         left_handed: bool,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        cosmetic: bool,
+        modeled: bool,
     },
     /// The body of `source` made hollow, with walls of `thickness` behind
     /// every face except those of `open`, which are taken away.

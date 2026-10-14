@@ -314,7 +314,7 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 pitch,
                 length,
                 left_handed,
-                cosmetic,
+                modeled,
             }) => manifest::FeatureKind::Thread {
                 face: name_to_manifest(face),
                 start: name_to_manifest(start),
@@ -331,7 +331,7 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 pitch: pitch.as_ref().map(expr_to_manifest),
                 length: expr_to_manifest(length),
                 left_handed: *left_handed,
-                cosmetic: *cosmetic,
+                modeled: *modeled,
             },
             doc::FeatureKind::Shell(doc::Shell {
                 source: doc::FeatureId(source),
@@ -1249,7 +1249,7 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
                 pitch,
                 length,
                 left_handed,
-                cosmetic,
+                modeled,
             } => doc::FeatureKind::Thread(doc::Thread {
                 face: name_to_doc(face),
                 start: name_to_doc(start),
@@ -1264,7 +1264,7 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
                 pitch: pitch.map(doc::Expr),
                 length: doc::Expr(length),
                 left_handed,
-                cosmetic,
+                modeled,
             }),
             manifest::FeatureKind::Shell {
                 source,
