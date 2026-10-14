@@ -180,6 +180,8 @@ pub(crate) enum Reason {
     FreeTooLarge,
     FreeMeet,
     FreeMixed,
+    FreeJoint,
+    FreeChainSize,
 }
 
 impl Reason {
@@ -262,6 +264,12 @@ impl Reason {
             Reason::FreeMixed => {
                 "a freeform edge cannot be chamfered together with edges between planes, cylinders and cones yet: chamfer them in two features"
             }
+            Reason::FreeJoint => {
+                "the chamfer cannot be carried on where this edge goes on smoothly into the next: a chain of freeform chamfers is built where both faces go on across the vertex, both edges convex or both concave, and not yet where one of the faces changes"
+            }
+            Reason::FreeChainSize => {
+                "edges that go on smoothly into each other are chamfered by different distances: a chamfer along such a chain has one size; give them the same, or chamfer them in separate features"
+            }
             Reason::Lost => "the chamfer lost track of an entity; this is a bug",
         }
     }
@@ -342,6 +350,12 @@ impl Reason {
             }
             Reason::FreeMixed => {
                 "a freeform edge cannot be filleted together with edges between planes, cylinders and cones yet: fillet them in two features"
+            }
+            Reason::FreeJoint => {
+                "the fillet cannot be carried on where this edge goes on smoothly into the next: both edges have to be convex or both concave, and across the vertex either both faces go on or one of them goes on in a face tangent to it across a smooth edge, with no other edge there; otherwise the ball that touches both there could not be found"
+            }
+            Reason::FreeChainSize => {
+                "edges that go on smoothly into each other are filleted with different radii: a fillet along such a chain has one radius; give them the same, or fillet them in separate features"
             }
             Reason::Lost => "the fillet lost track of an entity; this is a bug",
         }
@@ -2354,6 +2368,112 @@ pub(crate) fn blend(
     edges: &[Request],
     tolerance: &Tolerance,
 ) -> Result<Blended, BlendError> {
+    blend_inner(body, edges, tolerance, false)
+}
+
+/// Blends the edges no closed form covers (`free`, with every edge that
+/// shares a vertex with one of them, so a chain that runs on from a
+/// freeform edge into a line or an arc is one chain) in place first, and
+/// then the others (`closed`, whose edges and faces keep their numbers
+/// through that) by the tools; the sources of the second result are
+/// carried back to `body`.
+fn mixed(
+    body: &Body,
+    edges: &[Request],
+    mut free: Vec<usize>,
+    tolerance: &Tolerance,
+) -> Result<Blended, BlendError> {
+    let mut closed: Vec<usize> = (0..edges.len()).filter(|i| !free.contains(i)).collect();
+    // Edges that touch a freeform one go with it.
+    for _ in 0..=edges.len() {
+        let touched: BTreeSet<VertexId> = free
+            .iter()
+            .filter_map(|i| body.edge(edges.get(*i)?.edge))
+            .flat_map(|e| [e.start, e.end])
+            .collect();
+        let (joins, stays): (Vec<usize>, Vec<usize>) = closed.iter().partition(|i| {
+            edges
+                .get(**i)
+                .and_then(|r| body.edge(r.edge))
+                .is_some_and(|e| touched.contains(&e.start) || touched.contains(&e.end))
+        });
+        if joins.is_empty() {
+            break;
+        }
+        free.extend(joins);
+        free.sort_unstable();
+        closed = stays;
+    }
+    let pick = |list: &[usize]| -> Vec<Request> {
+        list.iter().filter_map(|i| edges.get(*i).copied()).collect()
+    };
+    let rolled = rolling::blend(body, &pick(&free), tolerance)?;
+    if closed.is_empty() {
+        // `free` is every request, in order.
+        return Ok(rolled);
+    }
+    let second = blend_inner(&rolled.body, &pick(&closed), tolerance, true)?;
+    let from_free = |i: &usize| free.get(*i).copied().unwrap_or(usize::MAX);
+    let from_closed = |i: &usize| closed.get(*i).copied().unwrap_or(usize::MAX);
+    let faces = second
+        .faces
+        .into_iter()
+        .map(|face| match face {
+            Face::Kept(list) => {
+                let mut kept = BTreeSet::new();
+                let mut blends = BTreeSet::new();
+                for f in list {
+                    match rolled.faces.get(f.0 as usize) {
+                        Some(Face::Kept(origin)) => kept.extend(origin.iter().copied()),
+                        Some(Face::Blend(of)) => blends.extend(of.iter().map(from_free)),
+                        Some(Face::Corner(_)) | None => {}
+                    }
+                }
+                if blends.is_empty() {
+                    Face::Kept(kept.into_iter().collect())
+                } else {
+                    Face::Blend(blends.into_iter().collect())
+                }
+            }
+            Face::Blend(of) => {
+                let mut list: Vec<usize> = of.iter().map(from_closed).collect();
+                list.sort_unstable();
+                Face::Blend(list)
+            }
+            Face::Corner(vertex) => Face::Corner(
+                rolled
+                    .vertices
+                    .get(vertex.0 as usize)
+                    .copied()
+                    .flatten()
+                    .unwrap_or(vertex),
+            ),
+        })
+        .collect();
+    let edges_of = second
+        .edges
+        .into_iter()
+        .map(|e| e.and_then(|e| rolled.edges.get(e.0 as usize).copied().flatten()))
+        .collect();
+    let vertices = second
+        .vertices
+        .into_iter()
+        .map(|v| v.and_then(|v| rolled.vertices.get(v.0 as usize).copied().flatten()))
+        .collect();
+    Ok(Blended {
+        body: second.body,
+        faces,
+        edges: edges_of,
+        vertices,
+    })
+}
+
+fn blend_inner(
+    body: &Body,
+    edges: &[Request],
+    tolerance: &Tolerance,
+    nested: bool,
+) -> Result<Blended, BlendError> {
     let tol = tolerance.linear;
     if !(tol.is_finite() && tol > 0.0) {
         return Err(KernelError::InvalidSize {
@@ -2380,26 +2500,27 @@ pub(crate) fn blend(
     let at = vertex_edges(body);
     let mut seen = BTreeSet::new();
     let mut plans = Vec::with_capacity(edges.len());
-    // Edges none of the closed forms covers go to `rolling`, all of them
-    // together.
+    // Edges none of the closed forms covers go to `rolling` (see
+    // `mixed`).
     let mut free = Vec::new();
-    for request in edges {
+    for (index, request) in edges.iter().enumerate() {
         if !seen.insert(request.edge) {
             return Err(refused(request.edge, Reason::Twice));
         }
         match plan(body, &uses, request, tol) {
             Ok(made) => plans.push(made),
             Err(BlendError::Refused { reason, .. }) if rolling::takes(reason) => {
-                free.push(*request);
+                free.push(index);
             }
             Err(error) => return Err(error),
         }
     }
     if let Some(first) = free.first() {
-        if !plans.is_empty() {
-            return Err(refused(first.edge, Reason::FreeMixed));
+        if nested {
+            let edge = edges.get(*first).map_or(EdgeId(u32::MAX), |r| r.edge);
+            return Err(refused(edge, Reason::FreeMixed));
         }
-        return rolling::blend(body, &free, tolerance);
+        return mixed(body, edges, free, tolerance);
     }
     fits(body, &plans, tol)?;
     lengthen(body, &uses, &at, &mut plans)?;
