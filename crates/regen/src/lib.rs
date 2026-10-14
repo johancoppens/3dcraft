@@ -45,7 +45,7 @@ pub use cache::RegenCache;
 pub use cause::root_cause;
 pub use craft3d_kernel::extrude::{Origin, Origins, Role};
 pub use craft3d_kernel::helix::Helix;
-pub use craft3d_kernel::thread::{coarse_pitch, nominal_diameter};
+pub use craft3d_kernel::thread::{coarse_pitch, no_coarse_pitch, nominal_diameter};
 pub use datum::{Datum, EdgeReference, References, references};
 pub use derive::{MAX_PATTERN_FACES, MAX_PATTERN_INSTANCES};
 pub use extrude::name_of;
@@ -369,6 +369,9 @@ pub struct ThreadReport {
     /// How far the faces of the groove were found to lie from the true
     /// sweep, at most; 0 for a cosmetic thread.
     pub deviation: f64,
+    /// An internal thread: the face is a hole (its material is outside
+    /// it), tapped; otherwise an external one, on a shank.
+    pub internal: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]

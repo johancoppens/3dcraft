@@ -328,6 +328,10 @@ The blends first (chamfer and fillet, the first consumers of edge references), t
 - Blends along a straight edge next to a cylinder (the cut edges of a halved rod or tube, the tip of a lens of two arcs), worked out in the plane across the edge; both tip rims of a lens blade, after two surgical changes to the boolean ([`architecture.md`](architecture.md) §5.3 › *Blends next to a cylinder*) (2026-10-14)
 - Blends along freeform edges (a straight edge next to a cone, the edge between two lofted faces, a spline wall's edge): a rolling-ball fillet or a ruled chamfer as a spline surface within the tolerance, built in place, each end a corner of three faces or the edge closed (a slanted hole's mouth) (§5.3 › *Blends along freeform edges*) (2026-10-14)
 - The turbofan's tube (F6) builds at the default tolerance: `sketch.path` puts a `center` arc's end given within 1 % of the radius onto its circle (`snapped`), and a sweep takes a kink of the path as tangent when turning the profile through it stays within the tolerance (2026-10-15)
+- The sweep's kink rule measured against the exact sweep both ways (line→arc, arc→line, arc→arc, arc→spline; round and rectangular profiles; three scales): half the tolerance at the largest kink admitted ([`architecture.md`](architecture.md) §5.3 › *Kinks*) (2026-10-15)
+- Internal threads: `feature.thread` on a hole is a tapped hole, its size from the tap drill, cosmetic or modeled (the nut's groove cut into the wall) (2026-10-15)
+- The ISO 261 table complete from M1 to M68: every coarse pitch (M11: 1.5 mm), and the fine pitches named when a size has none (2026-10-15)
+- A file opened by a path relative to the working directory keeps it absolute, so the window saves it back to itself under a write root (2026-10-15)
 
 #### Open
 - [ ] Move face, then thicken (a sheet given a thickness), replace face and draft (faces tilted about a neutral plane along a pull direction)
@@ -340,7 +344,7 @@ The blends first (chamfer and fillet, the first consumers of edge references), t
 - [ ] Shell: a thickness at a rounded edge's radius or more
 - [ ] Delete face, refused with the faces today: the corner where blends meet, a blend whose end runs into another blend or into a vertex of more than three faces (chains, mitres), several blend faces at once, neighbours that do not meet in a line or a circle
 - [ ] Threads as the other modellers treat them (agreed with the developer on 2026-10-14): a cosmetic thread shown in the viewport (a texture or fine rings, both renderers), its data (designation, pitch, class, length) listed by `document.inspect`, carried to drawings and hole tables and checkable by V1's assertions
-- [ ] Internal threads through a hole feature (a tapped hole: drill, thread, depth; cosmetic by default)
+- [ ] A hole feature (drill, thread, depth in one; the internal thread itself is there)
 - [ ] Other thread standards, multi-start threads, a thread ending against a shoulder, a cosmetic thread drawn or written to STEP (AP242 thread PMI later, when we write AP242)
 - [ ] Sweep: a path not in one plane (a 3D polyline or spline, rotation-minimising frames), twist and scale along the path, guide curves
 - [ ] Loft: guide curves, tangency at the ends, a tip in a point, profiles with holes
