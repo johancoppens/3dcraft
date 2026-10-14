@@ -598,7 +598,9 @@ fn ruling(
     let miss = (o + d * at).distance(apex);
     let angle = (ray.dot(into).clamp(-1.0, 1.0).acos() - alpha.abs()).abs();
     let reach = (t0 - at).abs().max((t1 - at).abs());
-    if !(miss + angle * reach <= 0.25 * tol) {
+    // (False for NaN as well.)
+    let close = miss + angle * reach <= 0.25 * tol;
+    if !close {
         return None;
     }
     // The parameters on the cone's side of the apex.
