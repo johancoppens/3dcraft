@@ -128,9 +128,19 @@ fn a_thin_fillet_beside_a_plane_meshes_with_the_angle_criterion() {
             let eight = tessellate_body_with_threads(body, &params, 8).unwrap();
             assert_eq!(one, mesh, "fillet {radius} at {tolerance}: one thread");
             assert_eq!(eight, mesh, "fillet {radius} at {tolerance}: eight threads");
+            let plain = tessellate_body_with_threads(
+                body,
+                &TessParams {
+                    max_angle: None,
+                    ..params
+                },
+                0,
+            )
+            .unwrap();
             println!(
-                "fillet {radius} at {tolerance}: {} triangles in {took:?}",
-                mesh.triangles.len()
+                "fillet {radius} at {tolerance}: {} triangles in {took:?}, {} without the angle",
+                mesh.triangles.len(),
+                plain.triangles.len()
             );
         }
     }
