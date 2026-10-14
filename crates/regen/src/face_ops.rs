@@ -216,12 +216,14 @@ pub(crate) fn explain(
 /// their result against what a body is next to the faces that moved, and
 /// two faces far apart that ran into each other are found here, on the
 /// mesh. `param` is the parameter to blame, `faces` what the faces of
-/// `body` are called.
+/// `body` are called, `why` what is said first ("too far: " for an
+/// operation that went too far, "" otherwise).
 pub(crate) fn not_through_itself(
     body: &Body,
     faces: &[PersistentName],
     param: &str,
     noun: &str,
+    why: &str,
     tolerance: &Tolerance,
 ) -> Result<(), String> {
     let found = body_self_intersections(body, &SelfCheckParams::new(tolerance.linear)).map_err(
@@ -247,6 +249,6 @@ pub(crate) fn not_through_itself(
         })
         .unwrap_or_default();
     Err(format!(
-        "{param}: too far: the {noun} passes through itself{between}"
+        "{param}: {why}the {noun} passes through itself{between}"
     ))
 }

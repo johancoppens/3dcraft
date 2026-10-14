@@ -147,6 +147,26 @@ fn face(session: &mut Session, feature: &str, part: &str) -> String {
         .to_string()
 }
 
+/// The name of the wall of the hole of a frame of [`base`]: the side of
+/// its circle, the last curve of its sketch.
+fn hole_wall(session: &mut Session, feature: &str) -> String {
+    let document = inspect(session);
+    let body = document["bodies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["name"] == feature)
+        .unwrap_or_else(|| panic!("no body {feature}"));
+    body["faceNames"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n.as_str().unwrap())
+        .rfind(|n| n.contains(":side("))
+        .unwrap_or_else(|| panic!("{feature} has no side: {body}"))
+        .to_string()
+}
+
 /// The name of the vertex of `feature`'s body at `at`.
 fn vertex(session: &mut Session, feature: &str, at: [f64; 3]) -> String {
     let offered = run(session, "datum.references", json!({"feature": feature}));
@@ -191,6 +211,8 @@ fn build_base() -> Session {
         ("dx2", "4 mm"),
         ("z0", "0 mm"),
         ("z1", "0 mm"),
+        ("t", "3 mm"),
+        ("t2", "3 mm"),
     ] {
         run(&mut s, "variable.set", json!({"name": name, "expr": expr}));
     }
@@ -278,6 +300,30 @@ fn build_base() -> Session {
         "sketch.circle",
         json!({"sketch": "Under", "center": [5, 15], "radius": 2}),
     );
+    // Square frames with a round hole, out of the way: a face that can be
+    // deleted (the hole's wall).
+    for (sketch, name, x, height) in [
+        ("Window", "Frame", 400, "t"),
+        ("Window2", "Frame2", 500, "t2"),
+    ] {
+        run(&mut s, "sketch.create", json!({"name": sketch}));
+        run(
+            &mut s,
+            "sketch.polyline",
+            json!({"sketch": sketch, "closed": true,
+                   "points": [[x, 0], [x + 20, 0], [x + 20, 20], [x, 20]]}),
+        );
+        run(
+            &mut s,
+            "sketch.circle",
+            json!({"sketch": sketch, "center": [x + 10, 10], "radius": 4}),
+        );
+        built(
+            &mut s,
+            "feature.extrude",
+            json!({"sketch": sketch, "distance": height, "name": name}),
+        );
+    }
     for (name, x) in [("Bystander", 200), ("Spare", 300)] {
         built(
             &mut s,
@@ -308,6 +354,8 @@ fn variable_of(upstream: &str) -> &'static str {
         "Dot2" => "dx2",
         "Disc" => "z0",
         "Disc2" => "z1",
+        "Frame" => "t",
+        "Frame2" => "t2",
         other => panic!("{other} has no variable"),
     }
 }
@@ -623,6 +671,25 @@ fn cases() -> Vec<Case> {
             repair: |s, u| {
                 let side = face(s, u, "side");
                 built(s, "feature.edit", json!({"feature": "D", "faces": [side]}));
+            },
+        },
+        Case {
+            what: "delete face: faces",
+            role: "faces.0",
+            upstream: "Frame",
+            alternative: "Frame2",
+            make: |s, u| {
+                let wall = hole_wall(s, u);
+                built(
+                    s,
+                    "feature.deleteFace",
+                    json!({"faces": [wall], "name": "D"}),
+                );
+                (Kind::Body, vec![wall])
+            },
+            repair: |s, u| {
+                let wall = hole_wall(s, u);
+                built(s, "feature.edit", json!({"feature": "D", "faces": [wall]}));
             },
         },
         Case {

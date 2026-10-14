@@ -3,7 +3,9 @@
 //! floor, a hole's wall, a boss's wall, a hexagonal frustum's top) and
 //! shells (an open box, a closed hollow block, a cup, a tube, an L open
 //! at one end, a rounded tray with a bored boss on the floor of its
-//! hollow); at the scales 1e-3, 1 and 1e6.
+//! hollow); and faces deleted (a fillet and a chamfer on a block's edge,
+//! the round of a rod's rim, a hole through a block, the round at the
+//! foot of a boss); at the scales 1e-3, 1 and 1e6.
 //!
 //! Per body: ours against a closed form written out here, and FreeCAD's
 //! reading of the STEP file against ours (valid, the solids, our volume,
@@ -290,6 +292,83 @@ fn tray(s: &mut Session, k: f64) -> Forms {
     )])
 }
 
+fn blend_deleted(s: &mut Session, k: f64, blend: &str, size: Value, face: &str) -> Forms {
+    base(s, k)?;
+    let mut params = size;
+    params["edges"] = json!([["F1:face(1)", "F1:face(2)"]]);
+    params["name"] = json!("Blend");
+    step(s, blend, params)?;
+    step(
+        s,
+        "feature.deleteFace",
+        json!({"faces": [face], "name": "Plain"}),
+    )?;
+    Ok(vec![("Plain", 500.0)])
+}
+
+fn fillet_deleted(s: &mut Session, k: f64) -> Forms {
+    blend_deleted(s, k, "feature.fillet", json!({"radius": k}), "F2:fillet(0)")
+}
+
+fn chamfer_deleted(s: &mut Session, k: f64) -> Forms {
+    blend_deleted(
+        s,
+        k,
+        "feature.chamfer",
+        json!({"distance": 1.5 * k}),
+        "F2:chamfer(0)",
+    )
+}
+
+fn rim_deleted(s: &mut Session, k: f64) -> Forms {
+    step(
+        s,
+        "feature.cylinder",
+        json!({"name": "Rod", "radius": 3.0 * k, "height": 5.0 * k}),
+    )?;
+    step(
+        s,
+        "feature.fillet",
+        json!({"edges": [["F1:face(0)", "F1:face(2)"]], "radius": k, "name": "Round"}),
+    )?;
+    step(
+        s,
+        "feature.deleteFace",
+        json!({"faces": ["F2:fillet(0)"], "name": "Plain"}),
+    )?;
+    Ok(vec![("Plain", PI * 9.0 * 5.0)])
+}
+
+fn hole_deleted(s: &mut Session, k: f64) -> Forms {
+    let drill = json!({"kind": "cylinder", "params": {"name": "Tool",
+        "position": [5.0 * k, 5.0 * k, -k], "radius": 2.0 * k, "height": 7.0 * k}});
+    with(s, k, drill, "subtract")?;
+    step(
+        s,
+        "feature.deleteFace",
+        json!({"faces": ["F3:copy(1)/F2:face(0)"], "name": "Plain"}),
+    )?;
+    Ok(vec![("Plain", 500.0)])
+}
+
+fn foot_deleted(s: &mut Session, k: f64) -> Forms {
+    let stud = json!({"kind": "cylinder", "params": {"name": "Tool",
+        "position": [5.0 * k, 5.0 * k, 5.0 * k], "radius": 2.0 * k, "height": 3.0 * k}});
+    with(s, k, stud, "union")?;
+    step(
+        s,
+        "feature.fillet",
+        json!({"edges": [["F3:copy(0)/F1:face(1)", "F3:copy(1)/F2:face(0)"]],
+               "radius": 0.5 * k, "name": "Round"}),
+    )?;
+    step(
+        s,
+        "feature.deleteFace",
+        json!({"faces": ["F4:fillet(0)"], "name": "Plain"}),
+    )?;
+    Ok(vec![("Plain", 500.0 + PI * 4.0 * 3.0)])
+}
+
 #[test]
 #[ignore = "needs FreeCAD: set CRAFT3D_FREECAD"]
 fn freecad_reads_bodies_of_the_face_operations() {
@@ -305,7 +384,7 @@ fn freecad_reads_bodies_of_the_face_operations() {
         meshes: None,
     };
     type Build = fn(&mut Session, f64) -> Forms;
-    let cases: [(&str, Expect, Build); 11] = [
+    let cases: [(&str, Expect, Build); 16] = [
         ("offset-top", EXACT, top),
         ("offset-pocket", EXACT, pocket),
         ("offset-hole", RING, hole),
@@ -317,6 +396,11 @@ fn freecad_reads_bodies_of_the_face_operations() {
         ("shell-tube", RING, tube),
         ("shell-ell", EXACT, ell),
         ("shell-tray", RING, tray),
+        ("delete-fillet", EXACT, fillet_deleted),
+        ("delete-chamfer", EXACT, chamfer_deleted),
+        ("delete-rim", RING, rim_deleted),
+        ("delete-hole", EXACT, hole_deleted),
+        ("delete-foot", RING, foot_deleted),
     ];
     let mut bad = Vec::new();
     for (k, tag) in [(1e-3, "milli"), (1.0, "one"), (1e6, "mega")] {
@@ -346,7 +430,7 @@ fn freecad_reads_bodies_of_the_face_operations() {
     }
     assert!(set.refused.is_empty(), "refused: {:#?}", set.refused);
     assert!(set.unmeasured.is_empty(), "{:#?}", set.unmeasured);
-    assert_eq!(set.cases.len(), 33);
+    assert_eq!(set.cases.len(), 48);
     let rows = harness::check(
         "step-face-ops-files",
         "STEP: bodies of the face operations, read by FreeCAD",

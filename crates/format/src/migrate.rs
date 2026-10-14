@@ -28,7 +28,7 @@ type Step = fn(Value) -> Result<Value, String>;
 /// `STEPS[n]` brings a manifest from version `n + 1` to version `n + 2`.
 const STEPS: &[Step] = &[
     v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9, v9_to_v10,
-    v10_to_v11,
+    v10_to_v11, v11_to_v12,
 ];
 
 /// Version 2 adds the `cone` and `torus` feature kinds and an optional
@@ -106,6 +106,20 @@ fn v9_to_v10(manifest: Value) -> Result<Value, String> {
 /// contains changes meaning; the version was raised so that an older
 /// build reports the version and not an unknown kind.
 fn v10_to_v11(manifest: Value) -> Result<Value, String> {
+    Ok(manifest)
+}
+
+/// Version 12 adds the feature kind `deleteFace`. It makes no new name
+/// roles: its faces are copies of the faces of the body it is made from,
+/// and its edges and vertices are named by their faces. Nothing a
+/// version-11 file contains changes meaning in the file; the version was
+/// raised so that an older build reports the version and not an unknown
+/// kind. (The same build fixed which way a sketch on a face of a
+/// subtraction's tool faces, a pocket's floor or a hole's wall: out of
+/// the material, as on every other face. That is a correction of how
+/// regeneration reads the face, not of what the file says, and is not
+/// migrated: docs/decisions.md, 14 October 2026.)
+fn v11_to_v12(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
 }
 

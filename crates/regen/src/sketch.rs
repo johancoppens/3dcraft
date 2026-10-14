@@ -636,11 +636,22 @@ pub(crate) fn resolve_face(
             }
             _ => None,
         };
-        maps.push((*map, moved));
+        // A subtraction keeps the faces of its tool turned inside out:
+        // the floor of a pocket looks up out of the material, where the
+        // bottom of the cutter it was looked down. A sketch on it looks
+        // out of the material, as on every other face.
+        let turned = matches!(
+            source.kind,
+            FeatureKind::Boolean(craft3d_doc::Boolean {
+                op: craft3d_doc::BooleanOp::Subtract,
+                ..
+            })
+        ) && link.sources.first() == Some(&1);
+        maps.push((*map, moved, turned));
         link = of;
     }
     let mut frame = made_face(doc, earlier, link, name)?;
-    for (map, moved) in maps.iter().rev() {
+    for (map, moved, turned) in maps.iter().rev() {
         // Seen from outside the moved body: z is the image of the normal
         // and x the image of x. After a mirror that leaves y pointing the
         // other way than the image of y, as a right-handed frame must.
@@ -650,6 +661,13 @@ pub(crate) fn resolve_face(
             map.vector(frame.x()),
         )
         .ok_or_else(|| format!("plane: the face {name} has a degenerate plane"))?;
+        if *turned {
+            // Seen from the other side: x stays, y and z turn round, as
+            // for a face whose outward normal is against its surface's.
+            frame = frame
+                .reversed_at(frame.origin())
+                .ok_or_else(|| format!("plane: the face {name} has a degenerate plane"))?;
+        }
         if let Some((on, outward, hollow)) = moved {
             // The origin dropped straight onto the plane the face lies in
             // now; the axes stay what they were. The face of a hollow
