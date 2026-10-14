@@ -397,10 +397,11 @@ fn file_open(session: &mut Session, params: &Value) -> Run {
     let document = craft3d_format::load(&resolved)
         .map_err(|e| CommandError::new(format!("file.open: cannot open `{path}`: {e}")))?;
     let features = document.features.len();
-    let mut open = OpenDocument::new(document, Some(path.to_string()));
+    let kept = crate::workspace::kept_path(&session.workspace.read, path, &resolved);
+    let mut open = OpenDocument::new(document, Some(kept.clone()));
     open.disk = crate::recovery::FileStamp::of(&resolved);
     let index = session.add_document(open)?;
-    Ok(json!({ "document": index, "path": path, "features": features }))
+    Ok(json!({ "document": index, "path": kept, "features": features }))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -413,13 +414,15 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
         (None, None) => return fail("file.save: this document has no file yet; give a `path`"),
     };
     let resolved = session.workspace.resolve_write(&path)?;
+    let access = session.workspace.write.clone();
     let open = session.document_mut()?;
     // A recovered document is older than its original file when that
     // file was written after the recovery was taken (by another 3DCraft,
     // or by a save the crashed one made after its last autosave).
     if let Some(recovered) = open.recovered
         && !overwrite
-        && open.path.as_deref() == Some(path.as_str())
+        && (open.path.as_deref() == Some(path.as_str())
+            || open.path == Some(crate::workspace::kept_path(&access, &path, &resolved)))
         && let Some(now) = crate::recovery::FileStamp::of(&resolved)
         && recovered.original != Some(now)
     {
@@ -430,10 +433,11 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
     craft3d_format::save(&resolved, open.history.current())
         .map_err(|e| CommandError::new(format!("file.save: cannot save `{path}`: {e}")))?;
     open.saved_revision = Some(open.history.revision());
-    open.path = Some(path.clone());
+    let kept = crate::workspace::kept_path(&access, &path, &resolved);
+    open.path = Some(kept.clone());
     open.disk = crate::recovery::FileStamp::of(&resolved);
     open.recovered = None;
-    Ok(json!({ "path": path }))
+    Ok(json!({ "path": kept }))
 }
 
 #[cfg(target_arch = "wasm32")]

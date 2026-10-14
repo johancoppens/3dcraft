@@ -1058,6 +1058,50 @@ fn the_file_argument_is_opened_and_automation_gets_only_its_roots() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The file named on the command line by a path relative to the working
+/// directory, inside the write root: a request to save it without a path
+/// writes that file (2026-10-15: `craft3d target/work/x.3dcraft
+/// --automation-write-root target/work` saved to
+/// `target/work/target/work/x.3dcraft`, which did not exist), and the
+/// listing (where the tabs take their paths from) shows where it is.
+#[test]
+fn a_file_named_by_a_relative_path_is_saved_back_to_itself() {
+    let dir = workdir("relative");
+    std::fs::create_dir_all(dir.join("work")).unwrap();
+    // Tests run in the package's directory, as `workdir` assumes too.
+    let relative = "../../target/tmp/craft3d-control-relative/work/part.3dcraft";
+    let mut author = Session::new(Workspace::unrestricted());
+    author.execute("file.new", &json!({})).unwrap();
+    author
+        .execute("feature.sphere", &json!({"name": "Ball", "radius": 5}))
+        .unwrap();
+    author
+        .execute("file.save", &json!({"path": relative}))
+        .unwrap();
+    let file = dir.join("work/part.3dcraft").canonicalize().unwrap();
+
+    let options = Options {
+        file: Some(relative.to_string()),
+        read_root: Some(dir.to_str().unwrap().to_string()),
+        write_root: Some(dir.to_str().unwrap().to_string()),
+        ..Options::default()
+    };
+    let mut session = app::session(&options).unwrap();
+    let listed = session.execute("file.list", &json!({})).unwrap();
+    assert_eq!(listed["documents"][0]["path"], file.to_str().unwrap());
+    session
+        .execute("feature.sphere", &json!({"name": "Ball 2", "radius": 2}))
+        .unwrap();
+    let saved = session.execute("file.save", &json!({})).unwrap();
+    assert_eq!(saved["path"], file.to_str().unwrap());
+    let mut check = Session::new(Workspace::unrestricted());
+    let reopened = check
+        .execute("file.open", &json!({"path": file.to_str().unwrap()}))
+        .unwrap();
+    assert_eq!(reopened["features"], 2);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn the_control_option_starts_a_listener_with_a_fresh_token_file() {
     let dir = workdir("option");
