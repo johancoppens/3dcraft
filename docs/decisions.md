@@ -6,6 +6,16 @@ Decisions that shape the project, newest first, each with its reason. An agent t
 
 ## Taken
 
+### 2026-10-14: A thread's wall and the tessellator's work budget (branch `tess-thread`, decided by an agent, for the developer to overturn)
+
+Taken while repairing a screw that sat in "meshing" for over thirteen minutes in the app ([`architecture.md`](architecture.md) §6 › *A face that winds around its axis along a thread*).
+
+- **The end of a straight seam on the upper loop is that loop's own vertex, moved by whole periods,** not the same point computed another way. This changed meshes, as it had to: wherever a seam was refused by that rounding, the seam now starts at the first vertex tried whose seam is clear, and a face that had found none and asked for all its chords to be cut is no longer refined. At the automatic tolerance `handle`, `impeller`, `pipe` (same triangle counts, the seam elsewhere) and `screw` (23,646 triangles before, 11,670 now; 88,844 and 21,516 at 0.02 mm), and `turbine` at 0.02 and 0.005 mm (same counts); every other showcase mesh is the same bit for bit. All are closed at the same tolerance.
+- **A seam from the far side of the loop is tried last,** after the sixteen vertices spread along it and the search in pieces, so that no face that found a seam before finds another one now.
+- **A point location that runs out of steps starts again near its point** from a grid of vertices, and gives the answer the scan of all triangles gave, so a triangulation is the same whichever way a point was found. The grid is made only when a walk first runs out; ordinary faces never make one.
+- **Every triangulation has a work budget,** 65,536 steps plus, per point so far, 4,096 plus 64 times the square root of the number of points: about ten times the most measured, and growing as n^1.5, so that what grows as n² runs out of it. Beyond it a face fails with an error naming it (`TessError::Face`, not a new variant: other crates match `TessError`), and the display rule does not try coarser tolerances for it. *Overturn by:* constants in `crates/tess/src/cdt.rs`, or a variant the display rule retries.
+- **Not done:** the walk itself still starts from the last point (about √n steps a point in the order boundary points are inserted); starting it from the grid would be faster but would choose another triangle for a point on an edge, and change meshes. The starved face's escalation (all its chords cut, round after round, up to sixteen times) is unchanged; with the seam found it no longer happens on a thread.
+
 ### 2026-10-14: The boolean remembers what it asked (branch `bool-speed`, decided by an agent, for the developer to overturn)
 
 Taken while making the booleans faster without changing a bit of their results ([`architecture.md`](architecture.md) §5.3 › *Speed (2026-10-14)*).
