@@ -521,8 +521,9 @@ fn patch_sheet(patch: &craft3d_geom::BezierPatch) -> Body {
     body
 }
 
-/// The area of every patch of the Utah teapot that `mass_properties`
-/// measures, against the integral of |Sᵤ × Sᵥ| over the unit square by
+/// The area of every patch of the Utah teapot (all thirty-two: the ones
+/// with a collapsed edge are faces whose boundary passes through a pole
+/// of their surface), against the integral of |Sᵤ × Sᵥ| over the unit square by
 /// the rule in 48 × 48 panels: another route, with nothing of Green's
 /// theorem in it. The integral across a patch has no closed form and no
 /// panel count that is known to do, so it is doubled along with the
@@ -539,11 +540,10 @@ fn the_patches_of_the_teapot_have_the_area_of_their_double_integral() {
         .iter()
         .enumerate()
     {
-        // Patches with a collapsed edge (the lid's and the bottom's
-        // centres) are refused, as before.
-        let Ok(mass) = mass_properties(&patch_sheet(patch)) else {
-            continue;
-        };
+        // Every patch, those with a collapsed edge too (the lid's and the
+        // bottom's centres: a boundary through a pole).
+        let mass =
+            mass_properties(&patch_sheet(patch)).unwrap_or_else(|e| panic!("patch {i}: {e}"));
         let expected = rule.integrate(0.0, 1.0, 48, |u| {
             rule.integrate(0.0, 1.0, 48, |v| {
                 let (_, su, sv) = patch.derivatives(u, v);
@@ -560,7 +560,7 @@ fn the_patches_of_the_teapot_have_the_area_of_their_double_integral() {
         measured += 1;
     }
     println!("{measured} patches; worst relative error {worst:e}");
-    assert!(measured >= 24, "only {measured} patches measured");
+    assert_eq!(measured, 32);
 }
 
 /// A can cut off by a plane that leans: its wall ends in an ellipse,

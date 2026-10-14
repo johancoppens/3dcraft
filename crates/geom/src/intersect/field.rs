@@ -11,6 +11,7 @@
 // for NaN.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
+use crate::pole::{Pole, poles};
 use crate::{BezierPatch, BezierSpan, DerivativeBounds, GeomError, NurbsSurface, Sphere, Surface};
 use craft3d_math::{Bbox3, Frame, Tolerance, Vec3};
 use std::f64::consts::{FRAC_PI_2, TAU};
@@ -40,6 +41,8 @@ pub(super) struct Projector {
     turning: Vec<f64>,
     /// The longest step between neighbouring grid nodes.
     spacing: f64,
+    /// The borders of the surface that are one point.
+    poles: Vec<Pole>,
 }
 
 const PROJECTOR_GRID: u32 = 24;
@@ -53,6 +56,13 @@ impl Projector {
             ));
         }
         let n = PROJECTOR_GRID;
+        let poles = poles(surface);
+        // At a pole the surface has the normal it is reached with along
+        // the grid line through it; its own formula has none there.
+        let normal_at = |a: f64, b: f64| match poles.iter().find(|pole| pole.holds(surface, a, b)) {
+            Some(pole) => pole.normal_along(surface, if pole.across_v() { a } else { b }),
+            None => surface.normal(a, b),
+        };
         let mut grid = Vec::with_capacity(((n + 1) * (n + 1)) as usize);
         let mut normals = Vec::with_capacity(grid.capacity());
         for i in 0..=n {
@@ -66,7 +76,7 @@ impl Projector {
                     ));
                 }
                 grid.push((a, b, p));
-                normals.push(surface.normal(a, b));
+                normals.push(normal_at(a, b));
             }
         }
         // Curvature from how fast the normal turns between neighbours.
@@ -107,6 +117,7 @@ impl Projector {
             curvature: 2.0 * curvature,
             turning,
             spacing,
+            poles,
         })
     }
 
@@ -179,7 +190,18 @@ impl Projector {
         let (u, v, q) = self.foot(p);
         let d = p - q;
         let dist = d.length();
-        match self.surface.normal(u, v) {
+        // A foot at a pole: the normal of the meridian that leaves it
+        // nearest to the direction of `p` (`Pole::normal_towards` says
+        // why that one tells the side).
+        let normal = match self
+            .poles
+            .iter()
+            .find(|pole| pole.holds(&self.surface, u, v))
+        {
+            Some(pole) => pole.normal_towards(&self.surface, p),
+            None => self.surface.normal(u, v),
+        };
+        match normal {
             Some(normal) => Some(Sample {
                 signed: d.dot(normal),
                 dist,
@@ -656,6 +678,7 @@ impl Chart {
                 }
             }
         };
+        let chart = short_of_poles(chart, tol);
         let finite = [chart.u.0, chart.u.1, chart.v.0, chart.v.1]
             .iter()
             .all(|x| x.is_finite());
@@ -671,6 +694,35 @@ impl Chart {
         }
         Ok((chart.u.0 < chart.u.1 && chart.v.0 < chart.v.1).then_some(chart))
     }
+}
+
+/// The chart of a freeform surface stopped just short of its poles, as a
+/// cone's is of its apex: at a border that is one point the chart
+/// collapses (every parameter along the border is the same point, and a
+/// surface through that point is zero all along it). The border is moved
+/// in by a quarter of the linear tolerance over the bound on the speed
+/// across it, so that everything left out is within a quarter of the
+/// tolerance of the pole (a point moves no further than its speed allows),
+/// and a curve that runs into the pole ends within that of it.
+fn short_of_poles(mut chart: Chart, tol: &Tolerance) -> Chart {
+    for pole in poles(&chart.surface) {
+        let (range, speed) = if pole.across_v() {
+            (&mut chart.v, chart.bounds.lv)
+        } else {
+            (&mut chart.u, chart.bounds.lu)
+        };
+        let short = 0.25 * tol.linear / speed;
+        // A surface no larger than the tolerance keeps its chart: nothing
+        // of it would be left.
+        if !(short > 0.0 && short < 0.25 * (range.1 - range.0)) {
+            continue;
+        }
+        match pole.border {
+            crate::pole::Border::UStart | crate::pole::Border::VStart => range.0 += short,
+            crate::pole::Border::UEnd | crate::pole::Border::VEnd => range.1 -= short,
+        }
+    }
+    chart
 }
 
 /// Derivative bounds of a surface, estimated from samples (four per control
