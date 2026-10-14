@@ -52,7 +52,11 @@ fn deep_ok(session: &mut Session) {
 /// its flange filleted, a quarter cut away by a block.
 fn casing(s: &mut Session) {
     run(s, "file.new", json!({"units": "mm"}));
-    run(s, "sketch.create", json!({"plane": "xy", "name": "CoreCaseSk"}));
+    run(
+        s,
+        "sketch.create",
+        json!({"plane": "xy", "name": "CoreCaseSk"}),
+    );
     run(
         s,
         "sketch.polyline",
@@ -104,7 +108,10 @@ fn the_cut_edges_of_the_core_casing() {
         .iter()
         .map(|n| n.as_str().unwrap().to_string())
         .collect();
-    let fillets: Vec<&String> = names.iter().filter(|n| n.starts_with("F6:fillet(")).collect();
+    let fillets: Vec<&String> = names
+        .iter()
+        .filter(|n| n.starts_with("F6:fillet("))
+        .collect();
     // Three faces per chain: the cone's, the root fillet's, the flange's.
     assert_eq!(fillets.len(), 6, "{names:?}");
     let after = rounded["volume"].as_f64().unwrap();
@@ -191,7 +198,10 @@ fn the_tip_of_a_lofted_blade() {
         blade["volume"].as_f64().unwrap(),
         rounded["volume"].as_f64().unwrap(),
     );
-    assert!(after < before && after > 0.99 * before, "{before} -> {after}");
+    assert!(
+        after < before && after > 0.99 * before,
+        "{before} -> {after}"
+    );
     deep_ok(&mut s);
 }
 
@@ -206,7 +216,11 @@ fn the_tip_of_a_lofted_blade() {
 fn the_foot_of_a_boss_over_a_root_fillet() {
     let mut s = session();
     run(&mut s, "file.new", json!({"units": "mm"}));
-    run(&mut s, "sketch.create", json!({"plane": "yz", "name": "BlockSk"}));
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"plane": "yz", "name": "BlockSk"}),
+    );
     run(
         &mut s,
         "sketch.polyline",
@@ -273,6 +287,9 @@ fn the_foot_of_a_boss_over_a_root_fillet() {
     assert_eq!(fillets, 5, "{rounded}");
     let after = rounded["volume"].as_f64().unwrap();
     // A concave fillet adds material.
-    assert!(after > before && after < 1.001 * before, "{before} -> {after}");
+    assert!(
+        after > before && after < 1.001 * before,
+        "{before} -> {after}"
+    );
     deep_ok(&mut s);
 }

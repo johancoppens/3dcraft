@@ -231,7 +231,9 @@ fn by_definition(made: &craft3d_kernel::fillet::FilletResult, m: &Meridian, r: f
     let mut worst = 0.0_f64;
     let mut seen = 0;
     for (index, source) in made.faces.iter().enumerate() {
-        let FilletFace::Fillet(of) = source else { continue };
+        let FilletFace::Fillet(of) = source else {
+            continue;
+        };
         let wall = of[0];
         let face = &made.body.faces[index];
         let craft3d_geom::Surface::Nurbs(surface) = &face.surface else {
@@ -458,7 +460,10 @@ fn the_rim_of_a_smooth_outline_all_round() {
         );
         // Three faces with two borders each, and three joints.
         assert_eq!(seams, 9);
-        assert!(crease <= 10.0 * tol.linear / (r * k), "a crease of {crease}");
+        assert!(
+            crease <= 10.0 * tol.linear / (r * k),
+            "a crease of {crease}"
+        );
         // The fillet faces are within a quarter of the tolerance of the
         // true surface, whose area is the quarter cylinder's along the
         // rim, about.
@@ -532,7 +537,10 @@ fn a_chain_from_corner_to_corner() {
             (removed - expected) / (tol.linear * length * k * r * k * std::f64::consts::FRAC_PI_2)
         );
         assert_eq!(seams, 8);
-        assert!(crease <= 10.0 * tol.linear / (r * k), "a crease of {crease}");
+        assert!(
+            crease <= 10.0 * tol.linear / (r * k),
+            "a crease of {crease}"
+        );
         // The fillet faces are within a quarter of the tolerance of the
         // true surface, whose area is the quarter cylinder's along the
         // rim, about.
@@ -602,7 +610,10 @@ fn a_chain_and_a_straight_edge_in_one_fillet() {
         let removed = before - mass(&made.body).volume;
         let apart = (before - alone(&all[..3])) + (before - alone(&all[3..]));
         println!("scale {k}: removed {removed:e}, apart {apart:e}");
-        assert!((removed - apart).abs() <= 1e-9 * before, "{removed} against {apart}");
+        assert!(
+            (removed - apart).abs() <= 1e-9 * before,
+            "{removed} against {apart}"
+        );
         let mut of: Vec<Vec<usize>> = made
             .faces
             .iter()
@@ -682,7 +693,10 @@ fn what_a_chain_refuses() {
     let with = |radius: f64| -> Vec<FilletEdge> {
         chain
             .iter()
-            .map(|e| FilletEdge { edge: *e, radius: r })
+            .map(|e| FilletEdge {
+                edge: *e,
+                radius: r,
+            })
             .chain([FilletEdge {
                 edge: corner,
                 radius,
@@ -856,7 +870,10 @@ fn the_foot_of_a_boss_over_a_root_fillet() {
     let at = |r: f64| -> Vec<FilletEdge> {
         foot(&body, k)
             .into_iter()
-            .map(|edge| FilletEdge { edge, radius: r * k })
+            .map(|edge| FilletEdge {
+                edge,
+                radius: r * k,
+            })
             .collect()
     };
     assert_eq!(at(1.0).len(), 5, "the foot's edges");
@@ -875,7 +892,9 @@ fn the_foot_of_a_boss_over_a_root_fillet() {
     let mut worst = 0.0_f64;
     let mut faces = 0;
     for (index, source) in made.faces.iter().enumerate() {
-        let FilletFace::Fillet(_) = source else { continue };
+        let FilletFace::Fillet(_) = source else {
+            continue;
+        };
         faces += 1;
         let face = &made.body.faces[index];
         let craft3d_geom::Surface::Nurbs(surface) = &face.surface else {
@@ -898,7 +917,10 @@ fn the_foot_of_a_boss_over_a_root_fillet() {
         }
     }
     assert_eq!(faces, 5);
-    println!("off the definition by {:e} of the tolerance, crease {crease:e}", worst / tol.linear);
+    println!(
+        "off the definition by {:e} of the tolerance, crease {crease:e}",
+        worst / tol.linear
+    );
     assert!(worst <= 2.0 * tol.linear, "{worst} off the rolling ball");
 }
 
@@ -938,7 +960,9 @@ fn tilted_half_cone(k: f64) -> Body {
     let tol = tolerance(k);
     let cone = craft3d_kernel::primitives::cone(&Frame::WORLD, k, 3.0 * k).unwrap();
     let half = boxed(k, [-2.0, 0.0, -1.0], [2.0, 2.0, 4.0]);
-    let body = boolean(&cone, &half, BooleanOp::Intersect, &tol).unwrap().body;
+    let body = boolean(&cone, &half, BooleanOp::Intersect, &tol)
+        .unwrap()
+        .body;
     let (p, n) = tilted_top();
     let x = Vec3::new(1.0, 0.0, 0.2).normalized().unwrap();
     let y = n.cross(x);
@@ -1023,7 +1047,10 @@ fn two_fillets_that_meet_where_a_third_edge_stays_sharp() {
         // out into each other and into the cut plane, there are creases.
         let (crease, seams) = creases(&made.body, &made.faces);
         assert_eq!(seams, 4);
-        assert!(crease <= 10.0 * tol.linear / (r * k), "a crease of {crease}");
+        assert!(
+            crease <= 10.0 * tol.linear / (r * k),
+            "a crease of {crease}"
+        );
         let (q, n) = tilted_top();
         let n_grid = 15;
         let margin = 2e-4;
@@ -1032,7 +1059,9 @@ fn two_fillets_that_meet_where_a_third_edge_stays_sharp() {
         for i in 0..n_grid {
             for j in 0..n_grid {
                 for l in 0..n_grid {
-                    let f = |m: usize, lo: f64, hi: f64| lo + (hi - lo) * (m as f64 + 0.37) / n_grid as f64;
+                    let f = |m: usize, lo: f64, hi: f64| {
+                        lo + (hi - lo) * (m as f64 + 0.37) / n_grid as f64
+                    };
                     let p = Vec3::new(f(i, -0.75, 0.75), f(j, -0.02, 0.3), f(l, 1.0, 1.4));
                     let cone = (1.0 - p.z / 3.0 - p.x.hypot(p.y)) * 3.0 / 10f64.sqrt();
                     let top = -n.dot(p - q);
@@ -1061,9 +1090,15 @@ fn two_fillets_that_meet_where_a_third_edge_stays_sharp() {
                 removed += 1;
             }
         }
-        println!("scale {k}: {} points, {removed} taken away, {undecided} undecided", points.len());
+        println!(
+            "scale {k}: {} points, {removed} taken away, {undecided} undecided",
+            points.len()
+        );
         assert!(undecided * 100 < points.len(), "{undecided} undecided");
-        assert!(removed > 50, "only {removed} points in what the fillets take away");
+        assert!(
+            removed > 50,
+            "only {removed} points in what the fillets take away"
+        );
     }
 }
 
@@ -1122,7 +1157,10 @@ fn at_tip(control: [[f64; 2]; 4], t: f64) -> [f64; 2] {
     let s = 1.0 - t;
     let b = [s * s * s, 3.0 * s * s * t, 3.0 * s * t * t, t * t * t];
     let (x, y) = (0..4).fold((0.0, 0.0), |(x, y), i| {
-        (x + b[i] * control[i][0] * 0.8, y + b[i] * control[i][1] * 0.8)
+        (
+            x + b[i] * control[i][0] * 0.8,
+            y + b[i] * control[i][1] * 0.8,
+        )
     });
     let (sin, cos) = 0.3_f64.sin_cos();
     [x * cos - y * sin, x * sin + y * cos]
@@ -1165,7 +1203,10 @@ fn the_tip_of_a_lofted_blade_rounded_all_round() {
         assert_eq!(deep.certain_crossings, 0, "{deep:?}");
         let (crease, seams) = creases(&made.body, &made.faces);
         assert_eq!(seams, 4);
-        assert!(crease <= 10.0 * tol.linear / (r * k), "a crease of {crease}");
+        assert!(
+            crease <= 10.0 * tol.linear / (r * k),
+            "a crease of {crease}"
+        );
         // Each fillet's own side of the blade: the face its edge had
         // besides the tip.
         let own: Vec<&craft3d_geom::Surface> = rims
@@ -1173,7 +1214,12 @@ fn the_tip_of_a_lofted_blade_rounded_all_round() {
             .map(|e| {
                 let side = faces_of(&body, *e)
                     .into_iter()
-                    .find(|f| matches!(body.faces[f.0 as usize].surface, craft3d_geom::Surface::Nurbs(_)))
+                    .find(|f| {
+                        matches!(
+                            body.faces[f.0 as usize].surface,
+                            craft3d_geom::Surface::Nurbs(_)
+                        )
+                    })
                     .unwrap();
                 &made.body.faces[side.0 as usize].surface
             })
@@ -1190,7 +1236,9 @@ fn the_tip_of_a_lofted_blade_rounded_all_round() {
             if !matches!(made.faces[face], FilletFace::Fillet(_)) {
                 continue;
             }
-            let FilletFace::Fillet(of) = &made.faces[face] else { continue };
+            let FilletFace::Fillet(of) = &made.faces[face] else {
+                continue;
+            };
             let side = own[of[0]];
             let f = &made.body.faces[face];
             for q in mesh.corners(t).unwrap() {
@@ -1263,7 +1311,10 @@ fn two_fillets_that_meet_in_a_pocket() {
         assert_eq!(deep.certain_crossings, 0, "{deep:?}");
         let (crease, seams) = creases(&made.body, &made.faces);
         assert_eq!(seams, 4);
-        assert!(crease <= 10.0 * tol.linear / (r * k), "a crease of {crease}");
+        assert!(
+            crease <= 10.0 * tol.linear / (r * k),
+            "a crease of {crease}"
+        );
         let (q, n) = tilted_top();
         let n_grid = 15;
         let margin = 2e-4;
@@ -1272,7 +1323,9 @@ fn two_fillets_that_meet_in_a_pocket() {
         for i in 0..n_grid {
             for j in 0..n_grid {
                 for l in 0..n_grid {
-                    let f = |m: usize, lo: f64, hi: f64| lo + (hi - lo) * (m as f64 + 0.37) / n_grid as f64;
+                    let f = |m: usize, lo: f64, hi: f64| {
+                        lo + (hi - lo) * (m as f64 + 0.37) / n_grid as f64
+                    };
                     let p = Vec3::new(f(i, -0.75, 0.75), f(j, -0.02, 0.3), f(l, 1.0, 1.4));
                     let cone = (1.0 - p.z / 3.0 - p.x.hypot(p.y)) * 3.0 / 10f64.sqrt();
                     let top = -n.dot(p - q);
@@ -1303,7 +1356,10 @@ fn two_fillets_that_meet_in_a_pocket() {
                 added += 1;
             }
         }
-        println!("scale {k}: {} points, {added} filled in, {undecided} undecided", points.len());
+        println!(
+            "scale {k}: {} points, {added} filled in, {undecided} undecided",
+            points.len()
+        );
         assert!(undecided * 100 < points.len(), "{undecided} undecided");
         assert!(added > 50, "only {added} points in what the fillets add");
     }

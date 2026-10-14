@@ -121,13 +121,7 @@ fn beyond(side: Side<'_>, p: Vec3, sign: f64) -> Option<f64> {
 /// is within its borders, and beyond the face past a border otherwise;
 /// `None` past the border on its own face, where the corner is that
 /// face's and the far face of the other arm holds instead.
-fn beyond_fillet(
-    body: &Body,
-    arm: &Arm<'_>,
-    p: Vec3,
-    sign: f64,
-    tol: f64,
-) -> Option<Option<f64>> {
+fn beyond_fillet(body: &Body, arm: &Arm<'_>, p: Vec3, sign: f64, tol: f64) -> Option<Option<f64>> {
     let (u, v) = foot_on(arm, p)?;
     let past = |side: usize| -> Option<Option<f64>> {
         if side == arm.shared {
@@ -314,7 +308,6 @@ fn work_out(
     body: &Body,
     arms: &[Arm<'_>; 2],
     third: EdgeId,
-    vertex: VertexId,
     sign: f64,
     edge: EdgeId,
     tolerance: &Tolerance,
@@ -326,9 +319,7 @@ fn work_out(
     let [a, b] = arms;
     // What arm `x` keeps: inside its far face and outside the other's
     // corner; and the two parts of that.
-    let far = |x: &Arm<'_>, p: Vec3| -> Option<f64> {
-        beyond(side_of(body, x.far).ok()?, p, sign)
-    };
+    let far = |x: &Arm<'_>, p: Vec3| -> Option<f64> { beyond(side_of(body, x.far).ok()?, p, sign) };
     let other = |x: usize| if x == 0 { b } else { a };
     let corner = |x: usize, p: Vec3| -> Option<f64> {
         Some(beyond_fillet(body, other(x), p, sign, tol)?.unwrap_or(f64::NEG_INFINITY))
@@ -341,8 +332,8 @@ fn work_out(
     let mut gaps = [0.0_f64; 2];
     for (x, arm) in arms.iter().enumerate() {
         let g = |p: Vec3| both(x, p);
-        let s = crossing_by(arm.surface, arm.v_own(), arm.range, &g, scale)
-            .ok_or_else(not_built)?;
+        let s =
+            crossing_by(arm.surface, arm.v_own(), arm.range, &g, scale).ok_or_else(not_built)?;
         let p = arm.surface.eval(s, arm.v_own());
         let (f, o) = (
             far(arm, p).ok_or_else(not_built)?,
@@ -377,10 +368,10 @@ fn work_out(
     // which crosses the long arm, rather than along the long arm's trim,
     // whose two pieces touch there).
     let by_long = |p: Vec3| both(o, p);
-    let oq = crossing_by(oa.surface, oa.v_shared(), oa.range, &by_long, scale)
-        .ok_or_else(not_built)?;
-    let ot = crossing_by(oa.surface, oa.v_own(), oa.range, &by_long, scale)
-        .ok_or_else(not_built)?;
+    let oq =
+        crossing_by(oa.surface, oa.v_shared(), oa.range, &by_long, scale).ok_or_else(not_built)?;
+    let ot =
+        crossing_by(oa.surface, oa.v_own(), oa.range, &by_long, scale).ok_or_else(not_built)?;
     let t_short = oa.surface.eval(ot, oa.v_own());
     let vt = match long {
         None => vr,
@@ -398,8 +389,8 @@ fn work_out(
     let (cut, sr) = match long {
         None => (None, st),
         Some(_) => {
-            let (cut, [_, sr]) =
-                trim(la.surface, (vt, vr), la.range, &by_both, limit, scale).ok_or_else(not_built)?;
+            let (cut, [_, sr]) = trim(la.surface, (vt, vr), la.range, &by_both, limit, scale)
+                .ok_or_else(not_built)?;
             (Some(cut), sr)
         }
     };
@@ -407,9 +398,7 @@ fn work_out(
     let t = la.surface.eval(st, vt);
     let r = la.surface.eval(sr, vr);
     let close = 10.0 * tol;
-    if !(oa.surface.eval(oq, oa.v_shared()).distance(q) <= close
-        && t_short.distance(t) <= close)
-    {
+    if !(oa.surface.eval(oq, oa.v_shared()).distance(q) <= close && t_short.distance(t) <= close) {
         return Err(not_built());
     }
     // The third edge, from the vertex back to `r`.
@@ -425,11 +414,8 @@ fn work_out(
         }
     }
     let (lo, hi) = data.range;
-    let inside = if data.start == vertex {
-        third_at > lo && third_at < hi
-    } else {
-        third_at < hi && third_at > lo
-    };
+    // Strictly inside the third edge's range: it keeps a piece.
+    let inside = third_at > lo && third_at < hi;
     if !(inside && data.curve.eval(third_at).distance(r) <= close) {
         return Err(refuse(edge, la.own(), Reason::FreeTooLarge));
     }
@@ -511,8 +497,9 @@ pub(super) fn build_with(
                         .iter()
                         .position(|f| *f == meet.shared)
                         .ok_or_else(lost)?;
-                    let far_faces = super::faces_of(&super::super::super::edge_uses(body), meet.third)
-                        .ok_or_else(lost)?;
+                    let far_faces =
+                        super::faces_of(&super::super::super::edge_uses(body), meet.third)
+                            .ok_or_else(lost)?;
                     let far = far_faces
                         .into_iter()
                         .find(|f| !p.faces.contains(f))
@@ -547,8 +534,11 @@ pub(super) fn build_with(
             .map_or(tol, |v| v.point.length().max(tol))
             .max(size);
         let edge = items.get(meet.items[1]).ok_or_else(lost)?.request.edge;
-        let ends = [(a.chain, a.end, a.piece, a.shared), (b.chain, b.end, b.piece, b.shared)];
-        let made = work_out(body, &[a, b], meet.third, meet.vertex, sign, edge, tolerance, scale)?;
+        let ends = [
+            (a.chain, a.end, a.piece, a.shared),
+            (b.chain, b.end, b.piece, b.shared),
+        ];
+        let made = work_out(body, &[a, b], meet.third, sign, edge, tolerance, scale)?;
         mades.push((made, ends));
     }
     drop(wrapped);
@@ -650,10 +640,7 @@ pub(super) fn build_with(
     }
     // The third edges, and the long arm's cut in its far face.
     for (((made, ends), meet), (r, t, cut)) in mades.iter().zip(meets).zip(&finishing) {
-        let slot = body
-            .edges
-            .get_mut(meet.third.0 as usize)
-            .ok_or_else(lost)?;
+        let slot = body.edges.get_mut(meet.third.0 as usize).ok_or_else(lost)?;
         if slot.start == meet.vertex {
             slot.range.0 = made.third_at;
             slot.start = *r;
@@ -725,7 +712,13 @@ fn insert_between(
             };
             if let Some(reversed) = insert {
                 let mut coedges = ring.coedges.clone();
-                coedges.insert(i + 1, Coedge { edge: cut, reversed });
+                coedges.insert(
+                    i + 1,
+                    Coedge {
+                        edge: cut,
+                        reversed,
+                    },
+                );
                 if let Some(slot) = body.loops.get_mut(l.0 as usize) {
                     slot.coedges = coedges;
                 }

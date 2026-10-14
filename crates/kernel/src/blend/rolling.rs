@@ -911,12 +911,11 @@ fn blend_one(
     let mut reach = [0.0_f64; 2];
     for (index, end) in [(0_usize, 0.0_f64), (1, 1.0)] {
         let third = *thirds.get(index).ok_or_else(lost)?;
-        let (more, past) = march_out(&solver, (0.5, seed), end, third, steps, tol).map_err(
-            |stop| match stop {
+        let (more, past) =
+            march_out(&solver, (0.5, seed), end, third, steps, tol).map_err(|stop| match stop {
                 Stop::Unsolvable => unsolvable(),
                 Stop::TooFar => refuse(edge, ends.get(index).map(|e| e.third), Reason::FreeEnd),
-            },
-        )?;
+            })?;
         solved.extend(more);
         if let Some(slot) = reach.get_mut(index) {
             *slot = past;
@@ -934,8 +933,16 @@ fn blend_one(
     for (index, end) in ends.iter().enumerate() {
         let third = *thirds.get(index).ok_or_else(lost)?;
         let past = *reach.get(index).ok_or_else(lost)?;
-        let cut = end_cut(&surface, third, index == 1, past, size / length, limit, scale)
-            .ok_or_else(|| refuse(edge, Some(end.third), Reason::FreeEnd))?;
+        let cut = end_cut(
+            &surface,
+            third,
+            index == 1,
+            past,
+            size / length,
+            limit,
+            scale,
+        )
+        .ok_or_else(|| refuse(edge, Some(end.third), Reason::FreeEnd))?;
         cuts.push(cut);
     }
     let [cut0, cut1] = <[(NurbsCurve, [f64; 2]); 2]>::try_from(cuts).map_err(|_| lost())?;
@@ -1262,10 +1269,18 @@ fn segment_distance(a0: Vec3, a1: Vec3, b0: Vec3, b1: Vec3) -> f64 {
     let mut t = if e > 1e-300 { (b * s + f) / e } else { 0.0 };
     if t < 0.0 {
         t = 0.0;
-        s = if a > 1e-300 { (-c / a).clamp(0.0, 1.0) } else { 0.0 };
+        s = if a > 1e-300 {
+            (-c / a).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
     } else if t > 1.0 {
         t = 1.0;
-        s = if a > 1e-300 { ((b - c) / a).clamp(0.0, 1.0) } else { 0.0 };
+        s = if a > 1e-300 {
+            ((b - c) / a).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
     }
     (a0 + d1 * s).distance(b0 + d2 * t)
 }
