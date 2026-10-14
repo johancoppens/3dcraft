@@ -1473,9 +1473,22 @@ fn joints(
         let (Some(a), Some(b)) = (plans.get(*i), plans.get(*j)) else {
             continue;
         };
+        // Two chamfers whose sections are the same triangle at the
+        // vertex: one distance on both sides of both edges.
+        let same_chamfer = || {
+            let d = a.distances[0];
+            [a.distances, b.distances]
+                .iter()
+                .flatten()
+                .all(|x| (x - d).abs() <= 1e-12 * d.abs())
+        };
+        let kinds = match (a.round, b.round) {
+            (Some(_), Some(_)) => true,
+            (None, None) => same_chamfer(),
+            _ => false,
+        };
         if i != j
-            && a.round.is_some()
-            && b.round.is_some()
+            && kinds
             && a.convex == b.convex
             && one.dot(*two) < -1.0 + 1e-9
         {
@@ -1722,7 +1735,7 @@ fn join(
     if !defects.is_empty() {
         defects.truncate(crate::MAX_REPORTED);
         return Err(BlendError::Kernel(KernelError::InvalidBody {
-            operation: "joining the tools of a chain of fillets",
+            operation: "joining the tools of a chain of blends",
             defects,
         }));
     }
@@ -2499,12 +2512,8 @@ pub(crate) fn blend(
             .map(|i| Some(VertexId(index_u32(i))))
             .collect(),
     };
-    // Fillets that continue each other are one tool (see `joints`).
-    let joined = if plans.iter().any(|p| p.round.is_some()) {
-        joints(body, &uses, &at, &plans)?
-    } else {
-        Vec::new()
-    };
+    // Blends that continue each other are one tool (see `joints`).
+    let joined = joints(body, &uses, &at, &plans)?;
     // Per plan, the least plan it is joined to, through any number of
     // joints.
     let mut group: Vec<usize> = (0..plans.len()).collect();

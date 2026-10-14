@@ -1044,3 +1044,154 @@ fn seeded_random_sets_of_edges_of_random_blocks() {
     }
     assert!(corners_made > 50, "{corners_made} corners");
 }
+
+/// The rim of a cap whose outline turns round tangent arcs (engine-block
+/// findings E1, E5): one equal-distance chamfer along the whole chain.
+/// The tools of a line and of the arc it goes on in are joined into one
+/// before the boolean (their faces, a plane and a cone, touch along the
+/// ruling they share), as a fillet's are.
+#[test]
+fn a_rim_chain_round_shallow_tangent_arcs() {
+    let points = [
+        [-8.8, -7.1],
+        [8.8, -7.1],
+        [8.8, 4.0],
+        [4.4, 9.5],
+        [-4.4, 9.5],
+        [-8.8, 4.0],
+    ];
+    let (big, d, height) = (1.2, 0.5, 2.0);
+    let (curves, area, lines, turns) = common::rounded_polygon(&points, &[big; 6]);
+    // The triangle's centroid lies a third of the distance in from both
+    // faces (Pappus round each arc).
+    let triangle = 0.5 * d * d;
+    let removed = triangle * (lines + turns.iter().map(|t| t * (big - d / 3.0)).sum::<f64>());
+    for k in SCALES {
+        for frame in frames(k) {
+            let profiles = detect_profiles(&scale_curves(&curves, k), &tolerance(k)).unwrap();
+            let part = extrude(&profiles, &frame, 0.0, height * k, &tolerance(k))
+                .unwrap()
+                .body;
+            let seed = edge_in(&part, &frame, k, [0.0, -7.1, height]);
+            let top = faces_of(&part, seed)
+                .into_iter()
+                .find(|f| {
+                    part.face(*f).unwrap().surface.kind() == "plane"
+                        && faces_of(&part, edge_in(&part, &frame, k, [0.0, 9.5, height]))
+                            .contains(f)
+                })
+                .unwrap();
+            let chain = tangent_chain(&part, seed, top).unwrap().unwrap();
+            assert_eq!(chain.len(), 12);
+            let edges: Vec<ChamferEdge> = chain
+                .iter()
+                .map(|(edge, first)| ChamferEdge {
+                    edge: *edge,
+                    first: *first,
+                    size: ChamferSize::Distances {
+                        first: d * k,
+                        second: d * k,
+                    },
+                })
+                .collect();
+            let made = solve(&part, &edges, k);
+            assert_close(
+                mass(&made.body).volume,
+                (area * height - removed) * k * k * k,
+                "volume",
+            );
+            let faces = made
+                .faces
+                .iter()
+                .filter(|f| matches!(f, ChamferFace::Chamfer(_)))
+                .count();
+            assert_eq!(faces, 12);
+        }
+    }
+}
+
+/// The plate of engine-block finding E1 at a tenth: an 8-gon whose six
+/// upper corners are rounded (by 1.4) and whose two lower ones are sharp,
+/// its cap rim chamfered as one chain from the right side round to the
+/// left, ending in the two sharp corners; the outline drawn with its arcs
+/// and made by filleting the sharp plate. The chain's tools are joined
+/// into one: chamfered one by one, the plane of a line's chamfer and the
+/// cone of the arc's touch along their shared ruling and the boolean
+/// refused at the finding's tolerance ("two points closer together than the tolerance can tell
+/// apart").
+#[test]
+fn a_rim_chain_that_ends_in_two_sharp_corners() {
+    let (curves, area, lines, turns, sharp) = common::plate_e1();
+    let (d, height) = (0.15, 1.4);
+    let inset = d / 3.0;
+    let path = lines - 24.0
+        + (0..8)
+            .filter(|i| !sharp.contains(i))
+            .map(|i| turns[i] * (1.4 - inset))
+            .sum::<f64>()
+        + sharp.iter().map(|i| inset / turns[*i].tan()).sum::<f64>();
+    let removed = 0.5 * d * d * path;
+    for (k, by_fillet) in SCALES.into_iter().flat_map(|k| [(k, false), (k, true)]) {
+        // The finding's: a document in millimetres (1e-6) at ten times
+        // this size, finer than `tolerance(k)` by ten.
+        let fine = craft3d_math::Tolerance::new(1e-7 * k, 1e-9).unwrap();
+        for frame in frames(k) {
+            let part = if by_fillet {
+                // The sharp 8-gon, its six upper side edges rounded first.
+                let sharp_plate = common::polygon(1, 1, &common::PLATE_E1);
+                let profiles =
+                    detect_profiles(&scale_curves(&sharp_plate, k), &fine).unwrap();
+                let plate = extrude(&profiles, &frame, 0.0, height * k, &fine)
+                    .unwrap()
+                    .body;
+                let rounds: Vec<craft3d_kernel::fillet::FilletEdge> = common::PLATE_E1[2..]
+                    .iter()
+                    .map(|p| craft3d_kernel::fillet::FilletEdge {
+                        edge: edge_in(&plate, &frame, k, [p[0], p[1], 0.5 * height]),
+                        radius: 1.4 * k,
+                    })
+                    .collect();
+                craft3d_kernel::fillet::fillet(&plate, &rounds, &fine)
+                    .unwrap()
+                    .body
+            } else {
+                let profiles = detect_profiles(&scale_curves(&curves, k), &fine).unwrap();
+                extrude(&profiles, &frame, 0.0, height * k, &fine)
+                    .unwrap()
+                    .body
+            };
+            let seed = edge_in(&part, &frame, k, [15.0, 4.5, height]);
+            let top = faces_of(&part, seed)
+                .into_iter()
+                .find(|f| {
+                    part.face(*f).unwrap().surface.kind() == "plane"
+                        && faces_of(&part, edge_in(&part, &frame, k, [0.0, 17.5, height]))
+                            .contains(f)
+                })
+                .unwrap();
+            let chain = tangent_chain(&part, seed, top).unwrap().unwrap();
+            assert_eq!(chain.len(), 13);
+            let edges: Vec<ChamferEdge> = chain
+                .iter()
+                .map(|(edge, first)| ChamferEdge {
+                    edge: *edge,
+                    first: *first,
+                    size: ChamferSize::Distances {
+                        first: d * k,
+                        second: d * k,
+                    },
+                })
+                .collect();
+            let made = match chamfer(&part, &edges, &fine) {
+                Ok(made) => made,
+                Err(e) => panic!("scale {k}, by fillet {by_fillet}: {e}"),
+            };
+            assert_eq!(check(&made.body, &fine), []);
+            assert_close(
+                mass(&made.body).volume,
+                (area * height - removed) * k * k * k,
+                "volume",
+            );
+        }
+    }
+}

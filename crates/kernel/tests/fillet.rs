@@ -15,7 +15,7 @@ mod boolean_common;
 mod common;
 
 use boolean_common::{Rng, SCALES, assert_close, boxed, mass, tolerance};
-use common::{arc, frames, line, polygon, scale_curves};
+use common::{arc, frames, line, polygon, rounded_polygon, scale_curves};
 use craft3d_geom::Surface;
 use craft3d_kernel::KernelError;
 use craft3d_kernel::boolean::{BooleanOp, boolean, contains_points};
@@ -1401,51 +1401,6 @@ fn a_cylinder_that_goes_on_in_a_torus_touches_it_along_their_border() {
     }
 }
 
-/// A convex polygon (counter-clockwise) with every corner rounded by a
-/// tangent arc of radius `big`: the sketch, its area, the length of its
-/// straight pieces, and the turn of each corner.
-fn rounded_polygon(points: &[[f64; 2]], big: f64) -> (Vec<craft3d_kernel::profile::SketchCurve>, f64, f64, Vec<f64>) {
-    let n = points.len();
-    let mut corners = Vec::new();
-    let mut polygon_area = 0.0;
-    for i in 0..n {
-        let (p, q) = (points[i], points[(i + 1) % n]);
-        polygon_area += 0.5 * (p[0] * q[1] - p[1] * q[0]);
-    }
-    let unit = |a: [f64; 2], b: [f64; 2]| {
-        let l = (b[0] - a[0]).hypot(b[1] - a[1]);
-        [(b[0] - a[0]) / l, (b[1] - a[1]) / l]
-    };
-    // Per corner: the tangent points on the incoming and outgoing side,
-    // the centre, the turn.
-    for i in 0..n {
-        let (prev, here, next) = (points[(i + n - 1) % n], points[i], points[(i + 1) % n]);
-        let (a, b) = (unit(prev, here), unit(here, next));
-        let turn = (a[0] * b[1] - a[1] * b[0]).atan2(a[0] * b[0] + a[1] * b[1]);
-        let back = big * (turn / 2.0).tan();
-        let t_in = [here[0] - a[0] * back, here[1] - a[1] * back];
-        let t_out = [here[0] + b[0] * back, here[1] + b[1] * back];
-        let centre = [t_in[0] - a[1] * big, t_in[1] + a[0] * big];
-        corners.push((t_in, t_out, centre, turn));
-    }
-    let mut curves = Vec::new();
-    let mut id = 1;
-    let mut lines = 0.0;
-    let mut cut = 0.0;
-    for i in 0..n {
-        let (t_in, t_out, centre, turn) = corners[i];
-        curves.push(arc(id, centre, t_in, t_out));
-        id += 1;
-        let next_in = corners[(i + 1) % n].0;
-        curves.push(line(id, t_out, next_in));
-        id += 1;
-        lines += (next_in[0] - t_out[0]).hypot(next_in[1] - t_out[1]);
-        cut += big * big * ((turn / 2.0).tan() - turn / 2.0);
-    }
-    let turns = corners.iter().map(|c| c.3).collect();
-    (curves, polygon_area - cut, lines, turns)
-}
-
 /// The rim of a cap whose outline turns round tangent arcs by less than
 /// a right angle (engine-block finding E5): the line where the fillet
 /// touches the cap runs on round each arc, so the arc next to an edge
@@ -1463,7 +1418,7 @@ fn a_rim_chain_round_shallow_tangent_arcs() {
         [-8.8, 4.0],
     ];
     let (big, r, height) = (1.2, 0.5, 2.0);
-    let (curves, area, lines, turns) = rounded_polygon(&points, big);
+    let (curves, area, lines, turns) = rounded_polygon(&points, &[big; 6]);
     // Before 2026-10-15 the fit estimate took the far end of the shallow
     // arc as the end of the cap: below 0.27.
     assert!(turns.iter().any(|t| big * (1.0 - t.cos()) < r));
@@ -1498,6 +1453,80 @@ fn a_rim_chain_round_shallow_tangent_arcs() {
             let made = solve(&part, &edges, k);
             let got = mass(&made.body).volume;
             assert_close(got, (area * height - removed) * k * k * k, "volume");
+        }
+    }
+}
+
+/// The plate of engine-block finding E1 at a tenth (six of its eight side
+/// edges rounded by 1.4, the outline drawn with its arcs or made by
+/// filleting the sharp plate), its cap rim rounded as one chain that ends
+/// in the two sharp corners, at the finding's tolerance. Before
+/// 2026-10-15 the estimate took the far end of the arc next to the edge
+/// as the end of the cap ("below 1.13" at the finding's size).
+#[test]
+fn a_rim_chain_that_ends_in_two_sharp_corners() {
+    let (curves, area, lines, turns, sharp) = common::plate_e1();
+    let (r, height) = (0.15, 1.4);
+    let inset = r * (10.0 - 3.0 * PI) / (12.0 - 3.0 * PI);
+    // The spandrel's centroid runs along the outline moved in by `inset`,
+    // round the arcs, and past each sharp corner to the plane of the
+    // side that is not rounded (`inset / tan(turn)` further).
+    let path = lines - 24.0
+        + (0..8)
+            .filter(|i| !sharp.contains(i))
+            .map(|i| turns[i] * (1.4 - inset))
+            .sum::<f64>()
+        + sharp.iter().map(|i| inset / turns[*i].tan()).sum::<f64>();
+    let removed = SPANDREL * r * r * path;
+    for (k, by_fillet) in SCALES.into_iter().flat_map(|k| [(k, false), (k, true)]) {
+        let fine = craft3d_math::Tolerance::new(1e-7 * k, 1e-9).unwrap();
+        for frame in frames(k) {
+            let part = if by_fillet {
+                let sharp_plate = polygon(1, 1, &common::PLATE_E1);
+                let profiles = detect_profiles(&scale_curves(&sharp_plate, k), &fine).unwrap();
+                let plate = extrude(&profiles, &frame, 0.0, height * k, &fine)
+                    .unwrap()
+                    .body;
+                let rounds: Vec<FilletEdge> = common::PLATE_E1[2..]
+                    .iter()
+                    .map(|p| round_in(&plate, &frame, k, [p[0], p[1], 0.5 * height], 1.4))
+                    .collect();
+                fillet(&plate, &rounds, &fine).unwrap().body
+            } else {
+                let profiles = detect_profiles(&scale_curves(&curves, k), &fine).unwrap();
+                extrude(&profiles, &frame, 0.0, height * k, &fine)
+                    .unwrap()
+                    .body
+            };
+            let seed = edge_in(&part, &frame, k, [15.0, 4.5, height]);
+            let top = faces_of(&part, seed)
+                .into_iter()
+                .find(|f| {
+                    part.face(*f).unwrap().surface.kind() == "plane"
+                        && faces_of(&part, edge_in(&part, &frame, k, [0.0, 17.5, height]))
+                            .contains(f)
+                })
+                .unwrap();
+            let chain = tangent_chain(&part, seed, top).unwrap().unwrap();
+            assert_eq!(chain.len(), 13);
+            let edges: Vec<FilletEdge> = chain
+                .iter()
+                .map(|(edge, _)| FilletEdge {
+                    edge: *edge,
+                    radius: r * k,
+                })
+                .collect();
+            let made = match fillet(&part, &edges, &fine) {
+                Ok(made) => made,
+                Err(e) => panic!("scale {k}, by fillet {by_fillet}: {e}"),
+            };
+            assert_eq!(check(&made.body, &fine), []);
+            assert_tangent(&part, &edges, &made);
+            assert_close(
+                mass(&made.body).volume,
+                (area * height - removed) * k * k * k,
+                "volume",
+            );
         }
     }
 }
