@@ -42,7 +42,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     // params: `panic_hunt` reads every quoted word before a colon in the
     // params as a parameter of the command itself.
     spec!("sketch.path", "Sketch Path", r#"{"sketch": id or name, "start": point id or [x, y], "segments": [segment, ...], "closed": boolean = false, "construction": boolean = false}"#,
-        "Adds a chain of lines and arcs in one undo step. Each segment runs from where the one before it ended (the first from start) to its own end, and consecutive segments share that corner point. A segment is {\"line\": end}, {\"arc\": end, \"center\": point id or [x, y], \"clockwise\": boolean = false}, {\"arc\": end, \"through\": [x, y]}, {\"arc\": end, \"radius\": number, \"large\": boolean = false, \"clockwise\": boolean = false} or {\"arc\": end, \"tangent\": true}. An end is a point id, coordinates [x, y], or the word \"start\" for the path's own start point, which closes the loop with that segment; closed adds a straight line back to the start instead. An arc is given by its center (walked counter-clockwise unless clockwise), by a point it passes through, by its radius (the shorter way round unless large; counter-clockwise unless clockwise), or by tangent alone: it then leaves in the direction the segment before it arrives. \"tangent\": true on any segment, a line too, also adds a tangent constraint between it and the segment before it; on the first segment that is the last one, in a path that ends at its start. Returns points (the corners in order, the start first), entities (one per segment, entities[i] from points[i] to points[i+1], then the closing line), centers (the centre point of each entity, null for a line) and constraints (the tangent constraints added). An arc given by its center whose end is farther than the document's tolerance from the circle about that center through its start is drawn as given, and the result then has warnings: one line per such segment (segments[i]: ...) with the distance, what the solver does (it moves the start, the end and the centre as little as it can until both ends are on one circle, and with them the segments that share those points, which can tilt a line before the arc) and where the end would have to be for the start to stay.", doc: true, sketch_path),
+        "Adds a chain of lines and arcs in one undo step. Each segment runs from where the one before it ended (the first from start) to its own end, and consecutive segments share that corner point. A segment is {\"line\": end}, {\"arc\": end, \"center\": point id or [x, y], \"clockwise\": boolean = false}, {\"arc\": end, \"through\": [x, y]}, {\"arc\": end, \"radius\": number, \"large\": boolean = false, \"clockwise\": boolean = false} or {\"arc\": end, \"tangent\": true}. An end is a point id, coordinates [x, y], or the word \"start\" for the path's own start point, which closes the loop with that segment; closed adds a straight line back to the start instead. An arc is given by its center (walked counter-clockwise unless clockwise), by a point it passes through, by its radius (the shorter way round unless large; counter-clockwise unless clockwise), or by tangent alone: it then leaves in the direction the segment before it arrives. \"tangent\": true on any segment, a line too, also adds a tangent constraint between it and the segment before it; on the first segment that is the last one, in a path that ends at its start. Returns points (the corners in order, the start first), entities (one per segment, entities[i] from points[i] to points[i+1], then the closing line), centers (the centre point of each entity, null for a line) and constraints (the tangent constraints added). An arc given by its center whose end is farther than the document's tolerance from the circle about that center through its start (an end rounded to a few decimals): when the end is given as coordinates and is off by at most 1 % of the radius, it is put on that circle, in its direction from the centre, so the start and the segments before it stay where they are; the result then has snapped, one entry per such segment: {\"segment\": i, \"given\": [x, y], \"end\": [x, y], \"moved\": distance}. Otherwise (an end that is a point id or \"start\", or one farther off) it is drawn as given, and the result has warnings: one line per such segment (segments[i]: ...) with the distance, what the solver does (it moves the start, the end and the centre as little as it can until both ends are on one circle, and with them the segments that share those points, which can tilt a line before the arc) and where the end would have to be for the start to stay.", doc: true, sketch_path),
 ];
 
 type Xy = (f64, f64);
@@ -98,6 +98,8 @@ struct Built {
     constraints: Vec<ConstraintId>,
     /// What the solver will have to put right, one line per segment.
     warnings: Vec<String>,
+    /// The arc ends put on their circles: the segment and the snap.
+    snapped: Vec<(usize, Snap)>,
 }
 
 // ---------------------------------------------------------------- parsing
@@ -371,6 +373,50 @@ struct Step {
     /// An arc given by its centre whose end is not on the circle through
     /// its start: what is wrong and what the solver will do.
     warning: Option<String>,
+    /// An arc given by its centre whose end was put on the circle through
+    /// its start.
+    snapped: Option<Snap>,
+}
+
+/// How far an end given off its arc's circle may be put onto it, as a
+/// share of the radius. Coordinates rounded to a few decimals miss the
+/// circle by far less; an end farther off is more likely a mistake than
+/// rounding, and moving it would hide that, so it is drawn as given and
+/// warned about (the solver then puts it right, see [`off_circle`]).
+const SNAP_SHARE: f64 = 0.01;
+
+/// An arc's end put onto its circle.
+#[derive(Clone, Copy)]
+struct Snap {
+    /// The end as given.
+    given: Xy,
+    /// Where it was put.
+    end: Xy,
+    /// How far it was moved.
+    moved: f64,
+}
+
+/// The end `to` of an arc about `center` from `from`, put on the circle
+/// about `center` through `from` (in the direction of `to` from the
+/// centre, so the arc keeps its angles and its start stays where it is):
+/// `None` when `to` is already within `tolerance` of that circle, or when
+/// it is more than [`SNAP_SHARE`] of the radius off it.
+fn snap(center: Xy, from: Xy, to: Xy, tolerance: f64) -> Option<Snap> {
+    let radius = sub(from, center);
+    let radius = radius.0.hypot(radius.1);
+    let reach = sub(to, center);
+    let off = (reach.0.hypot(reach.1) - radius).abs();
+    if !(off.is_finite() && off > tolerance && off <= SNAP_SHARE * radius) {
+        return None;
+    }
+    let (ux, uy) = unit(reach)?;
+    let end = finite((center.0 + ux * radius, center.1 + uy * radius))?;
+    let moved = sub(end, to);
+    Some(Snap {
+        given: to,
+        end,
+        moved: moved.0.hypot(moved.1),
+    })
 }
 
 /// The warning for an arc about `center` from `from` that is given the
@@ -414,9 +460,21 @@ fn draw_segment(
 ) -> Result<Step, SketchError> {
     let (from, from_at) = from;
     let tolerance = path.tolerance;
-    let end = match segment.end {
-        End::Start => start,
-        End::Point(point) => point.place(s)?,
+    let (end, snapped) = match (segment.end, segment.shape) {
+        (End::Start, _) => (start, None),
+        // An end given by coordinates is a new point of this arc alone, so
+        // it can be put on the circle without moving anything else.
+        (End::Point(PointArg::New(x, y)), Shape::Center { center, .. }) => {
+            let center_at = match center {
+                PointArg::New(cx, cy) => Some((cx, cy)),
+                PointArg::Existing(id) => s.point(id).ok(),
+            };
+            match center_at.and_then(|c| snap(c, from_at, (x, y), tolerance)) {
+                Some(snap) => (s.add_point(snap.end.0, snap.end.1)?, Some(snap)),
+                None => (s.add_point(x, y)?, None),
+            }
+        }
+        (End::Point(point), _) => (point.place(s)?, None),
     };
     let end_at = s.point(end)?;
     let chord = sub(end_at, from_at);
@@ -440,6 +498,7 @@ fn draw_segment(
                 center: None,
                 drawn: Drawn { entity, arrives },
                 warning: None,
+                snapped: None,
             });
         }
         Shape::Center { center, clockwise } => (center.place(s)?, !clockwise),
@@ -466,8 +525,8 @@ fn draw_segment(
         }
     };
     let center_at = s.point(center)?;
-    let warning = match segment.shape {
-        Shape::Center { .. } => off_circle(center_at, from_at, end_at, tolerance),
+    let warning = match (segment.shape, snapped) {
+        (Shape::Center { .. }, None) => off_circle(center_at, from_at, end_at, tolerance),
         _ => None,
     };
     for (name, corner) in [("start", from_at), ("end", end_at)] {
@@ -494,6 +553,7 @@ fn draw_segment(
         center: Some(center),
         drawn: Drawn { entity, arrives },
         warning,
+        snapped,
     })
 }
 
@@ -509,6 +569,7 @@ fn build(s: &mut Sketch, path: &Path) -> Result<Built, SketchError> {
         centers: Vec::with_capacity(path.segments.len().saturating_add(1)),
         constraints: Vec::new(),
         warnings: Vec::new(),
+        snapped: Vec::new(),
     };
     let mut first: Option<EntityId> = None;
     let mut before: Option<Drawn> = None;
@@ -528,6 +589,9 @@ fn build(s: &mut Sketch, path: &Path) -> Result<Built, SketchError> {
         first.get_or_insert(step.drawn.entity);
         if let Some(warning) = step.warning {
             built.warnings.push(format!("segments[{index}]: {warning}"));
+        }
+        if let Some(snap) = step.snapped {
+            built.snapped.push((index, snap));
         }
         built.points.push(step.end);
         built.entities.push(step.drawn.entity);
@@ -646,6 +710,21 @@ fn sketch_path(session: &mut Session, params: &Value) -> Run {
     // as it always did.
     if let (false, Some(map)) = (built.warnings.is_empty(), own.as_object_mut()) {
         map.insert("warnings".into(), built.warnings.into());
+    }
+    if let (false, Some(map)) = (built.snapped.is_empty(), own.as_object_mut()) {
+        let snapped: Vec<Value> = built
+            .snapped
+            .iter()
+            .map(|(segment, snap)| {
+                json!({
+                    "segment": segment,
+                    "given": [snap.given.0, snap.given.1],
+                    "end": [snap.end.0, snap.end.1],
+                    "moved": snap.moved,
+                })
+            })
+            .collect();
+        map.insert("snapped".into(), snapped.into());
     }
     sketch_result(session, id, own)
 }

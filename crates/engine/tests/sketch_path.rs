@@ -703,15 +703,20 @@ fn number_after(text: &str, before: &str) -> f64 {
 }
 
 /// An arc given by its centre whose end is not on the circle through its
-/// start (an end rounded to a few decimals, as in the turbofan's tube):
-/// drawn as given, with a warning that names the segment, says how far
+/// start (an end rounded to a few decimals, as in the turbofan's tube).
+/// Given as coordinates and off by up to a percent of the radius, the end
+/// is put on the circle, in its direction from the centre: the result
+/// says so under `snapped` (the segment, the end as given, where it went
+/// and how far), has no warning, and the corner the arc shares with the
+/// line before it stays where it was put, as does the arc's end. An end
+/// that is a point id (another segment may share it) or one farther off
+/// is drawn as given, with a warning that names the segment, says how far
 /// off the end is and what the solver does, and gives the end that keeps
-/// the start in place. Drawn there, the path has no warning and the
-/// corner the arc shares with the line before it stays where it was put.
-/// An end within the tolerance has no warning. At three scales, with the
-/// tolerance scaled along.
+/// the start in place; drawn there, the path has neither. An end within
+/// the tolerance has neither. At three scales, with the tolerance scaled
+/// along.
 #[test]
-fn an_arc_end_off_its_circle_is_reported_with_the_distance() {
+fn an_arc_end_off_its_circle_is_snapped_or_reported_with_the_distance() {
     for k in [1e-3, 1.0, 1e6] {
         let tolerance = 1e-6 * k;
         let (center, radius) = ((72.0 * k, 16.0 * k), 22.0 * k);
@@ -726,9 +731,21 @@ fn an_arc_end_off_its_circle_is_reported_with_the_distance() {
                 center.1 + toward.1 / length * reach
             ])
         };
-        let draw = |s: &mut Session, end: Value| {
+        let on_circle = {
+            let on = end(0.0);
+            (on[0].as_f64().unwrap(), on[1].as_f64().unwrap())
+        };
+        // The arc's end given as `end`; a point id is drawn first, as e1.
+        let draw = |s: &mut Session, end: Value, as_point: bool| {
             run(s, "file.new", json!({"tolerance": tolerance}));
             run(s, "sketch.create", json!({"name": "P"}));
+            let end = if as_point {
+                let made = run(s, "sketch.point", json!({"sketch": "P", "at": end}));
+                assert_eq!(made["status"], "ok", "{made}");
+                json!("e1")
+            } else {
+                end
+            };
             run(
                 s,
                 "sketch.path",
@@ -741,9 +758,38 @@ fn an_arc_end_off_its_circle_is_reported_with_the_distance() {
         };
         let mut s = session();
 
-        for off in [1e-4 * k, -3e-5 * k] {
-            let drawn = draw(&mut s, end(off));
+        // Rounding: put on the circle.
+        for off in [1e-4 * k, -3e-5 * k, 0.009 * radius] {
+            let drawn = draw(&mut s, end(off), false);
             assert_eq!(drawn["status"], "ok", "{drawn}");
+            assert!(drawn.get("warnings").is_none(), "{drawn}");
+            let snapped = drawn["snapped"].as_array().unwrap();
+            assert_eq!(snapped.len(), 1, "{drawn}");
+            let snap = &snapped[0];
+            assert_eq!(snap["segment"], 1, "{drawn}");
+            assert_eq!(snap["given"], end(off), "{drawn}");
+            let moved = snap["moved"].as_f64().unwrap();
+            assert!(
+                (moved - off.abs()).abs() <= 1e-6 * off.abs(),
+                "{k}: moved {moved} for {off}"
+            );
+            let put = (
+                snap["end"][0].as_f64().unwrap(),
+                snap["end"][1].as_f64().unwrap(),
+            );
+            assert_at(put, on_circle, k, "the snapped end");
+            let inspected = run(&mut s, "sketch.inspect", json!({"sketch": "P"}));
+            assert_at(xy(&inspected, "e2"), (50.0 * k, 16.0 * k), k, "the corner");
+            let arc_end = drawn["points"][2].as_str().unwrap().to_string();
+            assert_at(xy(&inspected, &arc_end), on_circle, k, "the arc's end");
+        }
+
+        // A point id, or an end too far off: drawn as given, and warned
+        // about.
+        for (off, as_point) in [(1e-4 * k, true), (-3e-5 * k, true), (0.02 * radius, false)] {
+            let drawn = draw(&mut s, end(off), as_point);
+            assert_eq!(drawn["status"], "ok", "{drawn}");
+            assert!(drawn.get("snapped").is_none(), "{drawn}");
             let warnings = drawn["warnings"].as_array().unwrap();
             assert_eq!(warnings.len(), 1, "{drawn}");
             let warning = text(&warnings[0]);
@@ -763,27 +809,29 @@ fn an_arc_end_off_its_circle_is_reported_with_the_distance() {
             );
             let at = &warning[warning.find("end the arc at (").unwrap()..];
             let on = (number_after(at, "at ("), number_after(at, ", "));
-            let expected = end(0.0);
-            assert_at(
-                on,
-                (expected[0].as_f64().unwrap(), expected[1].as_f64().unwrap()),
-                k,
-                "the end on the circle",
-            );
+            assert_at(on, on_circle, k, "the end on the circle");
 
             // Drawn at that end: nothing to report, and the start of the
             // arc stays where the line put it.
-            let drawn = draw(&mut s, json!([on.0, on.1]));
+            let drawn = draw(&mut s, json!([on.0, on.1]), as_point);
             assert_eq!(drawn["status"], "ok", "{drawn}");
             assert!(drawn.get("warnings").is_none(), "{drawn}");
+            assert!(drawn.get("snapped").is_none(), "{drawn}");
             let inspected = run(&mut s, "sketch.inspect", json!({"sketch": "P"}));
-            assert_at(xy(&inspected, "e2"), (50.0 * k, 16.0 * k), k, "the corner");
+            let corner = if as_point { "e3" } else { "e2" };
+            assert_at(
+                xy(&inspected, corner),
+                (50.0 * k, 16.0 * k),
+                k,
+                "the corner",
+            );
         }
 
-        // Within the tolerance: no warning.
-        let drawn = draw(&mut s, end(0.5 * tolerance));
+        // Within the tolerance: nothing to report.
+        let drawn = draw(&mut s, end(0.5 * tolerance), false);
         assert_eq!(drawn["status"], "ok", "{drawn}");
         assert!(drawn.get("warnings").is_none(), "{drawn}");
+        assert!(drawn.get("snapped").is_none(), "{drawn}");
     }
 }
 
