@@ -453,21 +453,10 @@ fn a_revolved_spline_profile_is_a_checked_solid_of_the_size_pappus_gives() {
                         let volume = angle * exact.rho;
                         let caps = if full { 0.0 } else { 2.0 * exact.area };
                         let area = angle * exact.rho_length + caps;
-                        let mass = match mass_properties(body) {
-                            Ok(mass) => mass,
-                            // What a spline that ends on the axis sweeps
-                            // has a border that is one point, through
-                            // which its boundary passes: the exact measure
-                            // declines that (see the ignored test below).
-                            // The mesh still has to be the solid.
-                            Err(e) if case.on_axis && e.to_string().contains("collapsed") => {
-                                if k == 1.0 || p == 1 {
-                                    watertight(body, 2e-3 * k, volume, area, &name);
-                                }
-                                continue;
-                            }
-                            Err(e) => panic!("{name}: {e}"),
-                        };
+                        // A spline that ends on the axis sweeps a face
+                        // whose boundary passes through a pole of its
+                        // surface: measured like any other.
+                        let mass = mass_properties(body).unwrap_or_else(|e| panic!("{name}: {e}"));
                         close(mass.volume, volume, 1e-9, &format!("{name} volume"));
                         close(mass.area, area, 1e-9, &format!("{name} area"));
                         let (start, end) = if full { (0.0, TAU) } else { (from, to) };
@@ -804,34 +793,50 @@ fn a_spline_that_reaches_the_axis_between_its_ends_is_refused_by_name() {
     );
 }
 
-/// Work owed by `craft3d_topo::mass_properties`: the face a spline sweeps
-/// when it ends on the axis is bounded by edges that meet in the point its
-/// surface's border collapses into, and the measure declines a boundary
-/// through such a point. The solid is valid, meshes watertight and has the
-/// volume Pappus gives (the test above); only the exact measure is
-/// missing. Remove `#[ignore]` when it is there.
+/// The face a spline sweeps when it ends on the axis is bounded by edges
+/// that meet in the point its surface's border collapses into: a pole.
+/// `craft3d_topo::mass_properties` measures a boundary through such a
+/// point (the dome's two faces of a full turn run from pole to pole with
+/// no other edge at all), to what Pappus gives.
 #[test]
-#[ignore = "mass_properties declines a boundary through a collapsed border of a spline surface"]
 fn the_measure_takes_a_revolved_spline_that_ends_on_the_axis() {
     let tol = Tolerance::default();
-    let case = cases(1.0).into_iter().find(|c| c.on_axis).unwrap();
     let placing = placings(1.0)[0];
-    let profiles = detect_profiles(&placing.curves(&case.loops, false), &tol).unwrap();
-    let exact = sums(&case.loops);
-    for (from, to) in [(0.0, PI / 2.0), (0.0, TAU)] {
-        let result = revolve(
-            &profiles,
-            &Frame::WORLD,
-            placing.point,
-            placing.direction,
-            from,
-            to,
-            &tol,
-        )
-        .unwrap();
-        assert_eq!(check(&result.body, &tol), []);
-        let mass = mass_properties(&result.body).unwrap();
-        close(mass.volume, (to - from) * exact.rho, 1e-9, "volume");
+    for case in cases(1.0).into_iter().filter(|c| c.on_axis) {
+        let profiles = detect_profiles(&placing.curves(&case.loops, false), &tol).unwrap();
+        let exact = sums(&case.loops);
+        for (from, to) in [(0.0, PI / 2.0), (0.0, TAU)] {
+            let result = revolve(
+                &profiles,
+                &Frame::WORLD,
+                placing.point,
+                placing.direction,
+                from,
+                to,
+                &tol,
+            )
+            .unwrap();
+            assert_eq!(check(&result.body, &tol), []);
+            let mass = mass_properties(&result.body).unwrap();
+            let name = format!("{} from {from} to {to}", case.name);
+            close(
+                mass.volume,
+                (to - from) * exact.rho,
+                1e-9,
+                &format!("{name}: volume"),
+            );
+            let caps = if to - from == TAU {
+                0.0
+            } else {
+                2.0 * exact.area
+            };
+            close(
+                mass.area,
+                (to - from) * exact.rho_length + caps,
+                1e-9,
+                &format!("{name}: area"),
+            );
+        }
     }
 }
 
