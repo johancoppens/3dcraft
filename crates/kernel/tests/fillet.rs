@@ -1697,3 +1697,87 @@ fn a_ball_corner_where_the_outline_turns_by_less_than_a_right_angle() {
         );
     }
 }
+
+/// Engine-block finding E8: a slot-shaped rib on a wall whose lower end
+/// touches exactly the line where the wall goes over into the round of a
+/// rail below it. The root of the rib, rounded as one chain, would have
+/// to run onto that round; and the wall pinches to nothing between the
+/// rib's foot and the round where they touch. The boolean refused it
+/// ("an imprinted curve that does not fit"); it is refused before
+/// anything is built, as too large, with nothing that fits there. Moved
+/// clear by more than the radius, the same chain is built.
+#[test]
+fn a_rib_that_touches_the_round_below_it() {
+    let r = 0.3;
+    for k in SCALES {
+        for frame in frames(k) {
+            let tol = tolerance(k);
+            let block = |lo: [f64; 3], size: [f64; 3]| {
+                let at = frame.at(frame.point(lo[0] * k, lo[1] * k, lo[2] * k)).unwrap();
+                primitives::block(&at, size[0] * k, size[1] * k, size[2] * k).unwrap()
+            };
+            let wall = block([-10.0, -9.8, -6.0], [20.0, 4.0, 12.0]);
+            let ledge = block([-10.0, -11.0, -6.0], [20.0, 1.2, 2.0]);
+            let joined = boolean(&wall, &ledge, BooleanOp::Union, &tol).unwrap().body;
+            // The rail's round: the wall goes over into it at z = -3.2.
+            let rail = round_in(&joined, &frame, k, [0.0, -9.8, -4.0], 0.8);
+            let railed = fillet(&joined, &[rail], &tol).unwrap().body;
+            for (lift, builds) in [(0.0, false), (0.5, true)] {
+                // The slot from u = -3.2 + lift to 4.5, u along z, standing
+                // 0.7 out of the wall.
+                let (low, high) = (-2.7 + lift, 4.0);
+                let curves = scale_curves(
+                    &[
+                        line(1, [low, -0.5], [high, -0.5]),
+                        arc(2, [high, 0.0], [high, -0.5], [high, 0.5]),
+                        line(3, [high, 0.5], [low, 0.5]),
+                        arc(4, [low, 0.0], [low, 0.5], [low, -0.5]),
+                    ],
+                    k,
+                );
+                let rib_frame = Frame::new(frame.point(0.0, -9.6 * k, 0.0), -frame.y(), frame.z())
+                    .unwrap();
+                let profiles = detect_profiles(&curves, &tol).unwrap();
+                let rib = extrude(&profiles, &rib_frame, 0.0, 0.9 * k, &tol).unwrap().body;
+                let part = boolean(&railed, &rib, BooleanOp::Union, &tol).unwrap().body;
+                let seed = edge_in(&part, &frame, k, [0.5, -9.8, 1.0]);
+                let wall_face = faces_of(&part, seed)
+                    .into_iter()
+                    .find(|f| part.face(*f).unwrap().surface.kind() == "plane" && {
+                        let n = normal_at(&part, *f, frame.point(0.5 * k, -9.8 * k, k));
+                        n.dot(-frame.y()) > 0.99
+                    })
+                    .unwrap();
+                let chain = tangent_chain(&part, seed, wall_face).unwrap().unwrap();
+                let edges: Vec<FilletEdge> = chain
+                    .iter()
+                    .map(|(edge, _)| FilletEdge {
+                        edge: *edge,
+                        radius: r * k,
+                    })
+                    .collect();
+                match fillet(&part, &edges, &tol) {
+                    Ok(made) if builds => {
+                        assert_eq!(check(&made.body, &tol), []);
+                        assert_tangent(&part, &edges, &made);
+                        // Wall, ledge, the rail's bead, the rib's 0.7 out
+                        // of the wall, and the root's bead round the slot
+                        // (its centroid `inset` out from the rib).
+                        let inset = r * (10.0 - 3.0 * PI) / (12.0 - 3.0 * PI);
+                        let long = high - low;
+                        let volume = 20.0 * 4.0 * 12.0
+                            + 20.0 * 1.2 * 2.0
+                            + SPANDREL * 0.8 * 0.8 * 20.0
+                            + (long + PI * 0.25) * 0.7
+                            + SPANDREL * r * r * (2.0 * long + 2.0 * PI * (0.5 + inset));
+                        assert_close(mass(&made.body).volume, volume * k * k * k, "volume");
+                    }
+                    Err(KernelError::FilletTooLarge { largest, .. }) if !builds => {
+                        assert!(largest <= 0.0, "{largest}");
+                    }
+                    other => panic!("lift {lift} at scale {k}: {other:?}"),
+                }
+            }
+        }
+    }
+}

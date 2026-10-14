@@ -963,6 +963,15 @@ fn fits(body: &Body, plans: &[Plan], tol: f64) -> Result<(), BlendError> {
                 };
                 let points = samples(body, other, matches!(plan.path, Path::Circle { .. }));
                 let mut corner = false;
+                if touches && alongside(body, plan.edge, other) {
+                    // It leaves an end of the edge the way the edge does
+                    // (a rib's foot whose arc touches the boundary of the
+                    // wall it stands on): the face pinches to nothing
+                    // between them there, and no blend fits.
+                    largest = largest.min(0.0);
+                    into_corner = false;
+                    continue;
+                }
                 let reach = match plan.path {
                     Path::Line {
                         start,
@@ -1186,6 +1195,18 @@ fn smooth_run(
 /// True when `other` goes on from an end of `edge` straight on (the two
 /// leave their common vertex in opposite directions).
 fn continues(body: &Body, edge: EdgeId, other: EdgeId) -> bool {
+    leave_together(body, edge, other, -1.0)
+}
+
+/// True when `other` leaves a common vertex with `edge` in the direction
+/// `edge` leaves it in (they touch there).
+fn alongside(body: &Body, edge: EdgeId, other: EdgeId) -> bool {
+    leave_together(body, edge, other, 1.0)
+}
+
+/// True when at a vertex they share the directions in which `edge` and
+/// `other` leave it, the second times `sign`, agree.
+fn leave_together(body: &Body, edge: EdgeId, other: EdgeId, sign: f64) -> bool {
     let away = |id: EdgeId, vertex: VertexId| -> Option<Vec3> {
         let data = body.edge(id)?;
         if data.start == vertex {
@@ -1201,7 +1222,7 @@ fn continues(body: &Body, edge: EdgeId, other: EdgeId) -> bool {
     };
     [data.start, data.end].into_iter().any(|vertex| {
         match (away(edge, vertex), away(other, vertex)) {
-            (Some(a), Some(b)) => a.dot(b) < -1.0 + 1e-9,
+            (Some(a), Some(b)) => a.dot(b * sign) > 1.0 - 1e-9,
             _ => false,
         }
     })
