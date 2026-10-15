@@ -2041,7 +2041,14 @@ impl Marcher {
         }
         let mut curves = lying;
         for branch in &branches {
-            for (pts, closed) in self.clip(branch, within) {
+            let whole = branch.pts.iter().all(|p| within.contains(p.p, 0.0));
+            for (mut pts, closed) in self.clip(branch, within) {
+                // Where the box cut the branch, the span to the new end is
+                // a new cubic (the end and its tangent are new), held to
+                // nothing yet: it is refined as the branch was.
+                if !whole {
+                    self.refine(&mut pts)?;
+                }
                 let (Some(first), Some(last)) = (pts.first(), pts.last()) else {
                     continue;
                 };
