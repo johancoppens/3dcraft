@@ -2240,12 +2240,14 @@ fn along_spine(
                 // face changes across an edge along which the two are
                 // tangent only to within the tolerance, the ball of this
                 // piece's own faces in the joint's plane is a little off
-                // the shared one, and the face has to end in its own (the
-                // shared arc is the edge, within half the tolerance of it).
+                // the shared one, and the face has to end in its own. The
+                // shared arc is the edge: it has to be within the tolerance
+                // of the face, which is within a quarter of it of its own
+                // arc, so the two arcs may be three quarters of it apart.
                 // Further off, the faces are creased at the joint by more
                 // than the tolerance allows at this size: refused.
                 let own = solver.follow(*s, ball, *s, 0).ok_or_else(unsolvable)?;
-                if !apart(&own, ball).is_some_and(|d| d <= 0.5 * tol) {
+                if !apart(&own, ball).is_some_and(|d| d <= 0.75 * tol) {
                     let edge = pieces.get(i).ok_or_else(lost)?.edge;
                     return Err(refused(edge, Reason::FreeJoint));
                 }
