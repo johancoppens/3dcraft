@@ -70,7 +70,11 @@
 //! lines, and so are `f` and `G`. The inner integral is summed stretch by
 //! stretch between the surface's knots in its direction, and the boundary
 //! panels end where an edge crosses a knot line (found by a change of side
-//! along the edge and bisection) as well as at the edge's own knots. `f`
+//! along the edge and bisection) as well as at the edge's own knots, and
+//! where an edge within the tolerance of a Bézier or NURBS surface, not
+//! on it, runs off the surface's domain: past the border its points are
+//! projected onto the border, and the parameters along it have a kink
+//! there ([`run_off`]). `f`
 //! is a square root of a polynomial or rational function there, for which
 //! no panel count is known to do: the inner panels are doubled along with
 //! the boundary's, so the sums below only agree once both have settled. A
@@ -923,9 +927,11 @@ fn knot_crossings(
     }
     let mut crossings = Vec::new();
     // `seams`: the surface closes on itself, and the boundary's panels
-    // end where it goes over the seam as well.
-    if (lines_u.is_empty() && lines_v.is_empty() && !seams) || high <= low || (high - low).is_nan()
-    {
+    // end where it goes over the seam as well. On a freeform surface they
+    // end where the edge leaves the domain too (see below).
+    let freeform = matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_));
+    let lined = !(lines_u.is_empty() && lines_v.is_empty() && !seams);
+    if !(lined || freeform) || high <= low || (high - low).is_nan() {
         return Ok(crossings);
     }
     let ((u0, u1), (v0, v1)) = surface.domain();
@@ -933,6 +939,19 @@ fn knot_crossings(
     // or the middle of a stretch that is being narrowed.
     let mut follow = Follow::new(surface, touch);
     let mut at = |t: f64| follow.project(curve.eval(t)).map(|(uv, _)| uv);
+    // Looks of its own for where the edge runs off the domain, so that
+    // the places above are projected as they are without it.
+    let mut aside = Follow::new(surface, touch);
+    // A border that is one point (a pole) has no outside to run off to:
+    // the parameter along it says nothing there.
+    let poles: Vec<(bool, f64)> = if freeform {
+        craft3d_geom::pole::poles(surface)
+            .iter()
+            .map(|pole| (pole.across_v(), pole.at(surface)))
+            .collect()
+    } else {
+        Vec::new()
+    };
     // The places to look at: evenly between the edge's own knots.
     let mut places = vec![low];
     let mut ends = vec![low];
@@ -951,11 +970,26 @@ fn knot_crossings(
     for t in places {
         let here = at(t)?;
         if let Some((s, there)) = before {
-            for (lines, from, to, width, pick_u) in [
-                (&lines_u, there.0, here.0, u1 - u0, true),
-                (&lines_v, there.1, here.1, v1 - v0, false),
+            for (lines, from, to, (start, end), pick_u) in [
+                (&lines_u, there.0, here.0, (u0, u1), true),
+                (&lines_v, there.1, here.1, (v0, v1), false),
             ] {
+                let width = end - start;
                 let pick = |uv: (f64, f64)| if pick_u { uv.0 } else { uv.1 };
+                if freeform {
+                    for border in [start, end] {
+                        if poles.contains(&(!pick_u, border)) {
+                            continue;
+                        }
+                        let run: (_, _, &dyn Fn((f64, f64)) -> f64) = (curve, &mut aside, &pick);
+                        if let Some(kink) = run_off(run, (s, t), (from, to), (border, width))? {
+                            crossings.push(kink);
+                        }
+                    }
+                }
+                if !lined {
+                    continue;
+                }
                 // The side of `x` the stretch started on, for bisection.
                 let mut narrow = |starts: &dyn Fn(f64) -> bool| -> Result<(), GeomError> {
                     let (mut a, mut b) = (s, t);
@@ -991,6 +1025,68 @@ fn knot_crossings(
         before = Some((t, here));
     }
     Ok(crossings)
+}
+
+/// Where an edge that lies within the tolerance of a freeform surface,
+/// not on it, runs off the surface's domain between the places `s` and
+/// `t` along it (its parameter `from` and `to` there, in the direction
+/// `pick` takes). Past the border its points are projected onto the
+/// border, so the parameter stops there with a kink, as it has where the
+/// edge crosses a knot line: a fitted edge that ends on the border,
+/// tangent to it, does that over its last thousandths, and the sums of
+/// its panels then settle only by chance. Between a place clear of the
+/// border (by more than `1e-9` of the domain's `width`) and one at it,
+/// the kink is narrowed down by bisection. (`1e-9` is the clearance the
+/// knot lines are held to: a chosen bound, not a derived one. Where the
+/// parameter comes to the border quadratically the bisection ends up to
+/// about `√1e-9` of its approach early, inside the stretch that is still
+/// smooth; the panel end is then not at the kink, and a sum that does
+/// not settle for it is refused as any other.) It is one only where the
+/// point beyond it is held at the border: its parameter is the border's
+/// to rounding and it is off the surface. An edge that only reaches the
+/// border (at its end, or tangent to it), or comes to it where the
+/// parameters say little (next to a pole), has none and is left as it
+/// was. Nothing is projected unless one place is at the border and the
+/// other clear of it.
+#[allow(clippy::type_complexity)]
+fn run_off(
+    (curve, follow, pick): (&Curve3, &mut Follow<'_>, &dyn Fn((f64, f64)) -> f64),
+    (s, t): (f64, f64),
+    (from, to): (f64, f64),
+    (border, width): (f64, f64),
+) -> Result<Option<f64>, GeomError> {
+    let clear = 1e-9 * width;
+    let near = |x: f64| (x - border).abs() <= clear;
+    if near(from) == near(to) {
+        return Ok(None);
+    }
+    let mut at = |t: f64| follow.project(curve.eval(t)).map(|(uv, _)| pick(uv));
+    // `a` clear of the border, `b` at it.
+    let (mut a, mut b) = if near(to) { (s, t) } else { (t, s) };
+    for _ in 0..48 {
+        let middle = 0.5 * (a + b);
+        if middle == a || middle == b {
+            break;
+        }
+        if near(at(middle)?) {
+            b = middle;
+        } else {
+            a = middle;
+        }
+    }
+    let kink = 0.5 * (a + b);
+    // Halfway on from it to the place at the border, the point is held
+    // there: its parameter is the border's to rounding (a projection
+    // stops on it exactly), and it is off the surface, beyond the border.
+    // (A point of the surface at its border, such as one next to a pole
+    // whose parameters say little, is not held.)
+    let beyond = 0.5 * (kink + if near(to) { t } else { s });
+    let p = curve.eval(beyond);
+    let (uv, (foot, _, _)) = follow.project(p)?;
+    let rounding = 4.0 * f64::EPSILON * border.abs().max(width);
+    let held = (pick(uv) - border).abs() <= rounding
+        && (p - foot).length() > SQUARE * (p.length() + foot.length());
+    Ok(held.then_some(kink))
 }
 
 /// The frame a sphere face is measured in (see the module documentation):
