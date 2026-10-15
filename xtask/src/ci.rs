@@ -8,6 +8,11 @@
 //! minutes with one busy core. The doctests still go through cargo. The
 //! durations of the last run are kept in `target/ci-durations.txt` to
 //! order the next one; a binary without a record goes first.
+//!
+//! The performance benchmark (`crates/engine/tests/benchmark.rs`, work
+//! counted against a baseline, docs/testing.md › Performance tests) is one
+//! of those binaries; it finds `CARGO_TARGET_TMPDIR` set to `target/tmp`
+//! and leaves its counts there for `cargo xtask health`.
 
 use serde_json::Value;
 use std::collections::{BTreeMap, VecDeque};

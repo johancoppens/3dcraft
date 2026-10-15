@@ -30,6 +30,7 @@ pub mod sweep;
 pub mod thicken;
 pub mod thread;
 mod tweak;
+pub mod work;
 
 use craft3d_geom::GeomError;
 use craft3d_topo::Defect;

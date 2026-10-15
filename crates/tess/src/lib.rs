@@ -18,7 +18,7 @@ mod selfcheck;
 mod weld;
 
 pub use body::{
-    MeshAndEdges, WithinBudget, tessellate_body, tessellate_body_and_edges,
+    MeshAndEdges, WithinBudget, tess_work, tessellate_body, tessellate_body_and_edges,
     tessellate_body_with_threads, tessellate_edges, tessellate_within_budget,
 };
 pub use intersections::{

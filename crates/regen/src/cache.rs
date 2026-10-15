@@ -624,6 +624,7 @@ pub(crate) fn features(
     }
     cache.trail = trail;
     cache.work = lookup.work;
+    crate::work::regeneration(cache.rebuilt, cache.reused, cache.work);
     results
 }
 

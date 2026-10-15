@@ -247,6 +247,7 @@ pub(super) fn section(
     estimate: Vec3,
     tol: f64,
 ) -> Result<Section, BlendError> {
+    crate::work::blend_section();
     let [t1, t2] = traces;
     let too_large = |side: usize, size: f64, largest: f64| BlendError::TooLarge {
         edge,

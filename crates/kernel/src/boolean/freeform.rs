@@ -1492,6 +1492,7 @@ impl PatchTree {
         // meanwhile, which is only work done twice.
         let tree = Arc::new(PatchTree::new(surface)?);
         BUILT.with(|built| built.set(built.get().saturating_add(1)));
+        crate::work::patch_tree();
         let bytes = tree.bytes();
         if bytes <= SHELF_BYTES {
             let mut shelf = SHELF.lock().unwrap_or_else(PoisonError::into_inner);

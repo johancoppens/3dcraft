@@ -67,6 +67,7 @@ The boolean corpus ([`testing.md`](testing.md) oracle 8) is the other use of Fre
 cargo test --workspace                                     # everything
 cargo xtask ci                                             # fmt + clippy + tests + layers + wasm
 cargo xtask stats                                          # tests and lines per crate
+cargo xtask health                                         # the morning health report (below)
 cargo run --release -p craft3d -- path/to/model.3dcraft    # desktop viewer (M4)
 cargo run --release -p craft3d -- --control 7878 --control-token-file .private/control.token \
   --automation-read-root work --automation-write-root work
@@ -270,6 +271,10 @@ The desktop app writes `log` records to standard error and to `logs/craft3d.log`
 ## Web build *(later milestone)*
 
 `apps/craft3d-web` will run the same app in the browser through eframe's web runner (WebGPU, WebGL2 fallback), built with trunk; the only JavaScript is the glue wasm-bindgen generates. Until then `cargo xtask wasm` keeps L0–L7 compiling for `wasm32-unknown-unknown`.
+
+## Morning health report
+
+`cargo xtask health` prints a short page of Markdown on how the project stands, for the developer in the morning: the date; the last commit of `main` and of `work`; the last gate (`gate-<n>.log` with the highest number in `.claude/worktrees/gate/target/`, or `$CRAFT3D_GATE_DIR/target`): passed or failed, on which commit, when it finished, how long it took, the failed binaries; the boolean corpus of that gate (agree, refused, unscored, mismatch, invalid, digest, from `target/evidence/booleans/corpus-score.txt`); the benchmark's work counts of that gate against the baseline ([`testing.md`](testing.md) › Performance tests); the number of commands, of tests and of lines of Rust (per crate in a folded table, as `cargo xtask stats`); the refusal sites (`::Unsupported`, `Stop::of(`, `unsupported(` in non-test code); the open findings of each showcase (`== … -> FAILED` lines in `target/work/*/findings/results.txt`); and the expectation changes logged in `log/devlog.md` since the previous report (lines that say "expectation change"; the ten most recent are quoted). It only reads, and says `unknown` for whatever is missing. The page is also kept in `target/health/<date>.md`, and the dev log line it read up to in `target/health/last.txt`.
 
 ## Dev log
 
