@@ -692,7 +692,10 @@ fn the_mouth_of_a_hole_loses_material_and_inside_rims_gain_it() {
         for index in 0..3 {
             assert!(names.contains(&format!("F8:fillet({index})")), "{names:?}");
         }
-        // A ball that does not fit in the blind hole.
+        // A ball that does not fit in the blind hole. What fits is below
+        // half the hole's radius: from there on the torus would reach its
+        // own axis (until 2026-10-15 the estimate said the hole's radius,
+        // while every radius from half of it up was refused that way).
         let reason = failed(
             &mut s,
             "feature.edit",
@@ -705,7 +708,7 @@ fn the_mouth_of_a_hole_loses_material_and_inside_rims_gain_it() {
         assert!(
             reason.contains(&format!(
                 "the largest radius that fits there is below {} mm",
-                0.5 * k
+                0.25 * k
             )),
             "{reason}"
         );
