@@ -755,7 +755,10 @@ fn refine(
 /// at the middle of every pair of samples against the exact section there
 /// (to `limit`, and a fillet's normal along its borders and across it to
 /// `bend`) and adds the middles where it does not hold, and next to them
-/// those that adding them would push over (see [`to_split`]). At most
+/// those that adding them would push over (see [`to_split`]). Once the
+/// middles hold, each border is proven within `limit` of its face between
+/// every two samples (`geom::certify`, at most [`STEP_PROOF_PIECES`]
+/// pieces a step), and a step where it is not is halved. At most
 /// [`PASSES`] passes and [`MAX_SAMPLES`] samples.
 fn refine_samples(
     solver: &Solver<'_>,
@@ -765,6 +768,10 @@ fn refine_samples(
     bend: f64,
     closed: bool,
 ) -> Option<NurbsSurface> {
+    let faces = [
+        SurfaceBound::new(solver.sides[0].surface)?,
+        SurfaceBound::new(solver.sides[1].surface)?,
+    ];
     for _ in 0..PASSES {
         let surface = if closed {
             ring_surface(params, sections)?
@@ -831,7 +838,29 @@ fn refine_samples(
             ));
         }
         if middles.iter().all(|m| m.0 <= 1.0) {
-            return Some(surface);
+            // Held at the middles: between the samples each border is
+            // proven on its face (`geom::certify`), and a step where it is
+            // not is halved.
+            let mut unproven = false;
+            for (k, face) in faces.iter().enumerate() {
+                let curve = border(&surface, k == 1)?;
+                let curve = CurveBound::nurbs(&curve);
+                for (index, m) in middles.iter_mut().enumerate() {
+                    let a = *params.get(index)?;
+                    let b = params.get(index + 1).copied().unwrap_or(first + 1.0);
+                    let start = *sections.get(index)?.params.get(k)?;
+                    if face
+                        .curve_within(&curve, (a, b), start, &[], limit, STEP_PROOF_PIECES)
+                        .is_err()
+                    {
+                        m.0 = f64::INFINITY;
+                        unproven = true;
+                    }
+                }
+            }
+            if !unproven {
+                return Some(surface);
+            }
         }
         let over: Vec<f64> = middles.iter().map(|m| m.0).collect();
         for (m, split) in middles.iter_mut().zip(to_split(&over, closed)) {
@@ -1060,6 +1089,10 @@ fn cut_curve(
 /// (`geom::certify`): bounded work; a proof that needs more is not had,
 /// and the curve is refined or refused.
 const PROOF_PIECES: usize = 1 << 16;
+/// Most pieces the proof that a blend face's border stays on its face may
+/// take over one step between two samples: a step that needs more is
+/// halved instead.
+const STEP_PROOF_PIECES: usize = 1024;
 
 /// Whether every point of `curve` over `range` is proven within `limit`
 /// of `surface` (`start`: the surface's parameters near the curve's
@@ -2790,32 +2823,40 @@ mod tests {
         }
     }
 
-    /// The new edge from a vertex to a corner is fitted through points
-    /// where two faces meet and held to them at the middles; where the
-    /// faces meet in a curve that waves between those middles (a flat face
-    /// and a wall waving with nodes at every eighth) it is now refined
-    /// until it is proven on both.
+    /// A fillet face is held against the exact sections at the middles
+    /// between its samples; along a wall with bumps between those middles
+    /// (flat at every sixteenth, where the samples and middles are), its
+    /// border would leave the wall between them (seen: 1.2 times the
+    /// limit). It is now proven on the wall, refined until it is.
     #[test]
-    fn a_new_edge_that_would_leave_its_faces_between_its_middles_is_refined() {
-        for k in [1e-3, 1.0, 1e3] {
-            let tol = 1e-6 * k;
-            let params: Vec<f64> = (0..=128).map(|i| f64::from(i) / 128.0).collect();
-            let values: Vec<Vec<f64>> = params
-                .iter()
-                .map(|a| {
-                    let x = 0.5 * k + 1e-4 * k * (8.0 * std::f64::consts::PI * a).sin();
-                    vec![x, a * k]
-                })
-                .collect();
-            let (knots, rows) = interpolate(&params, 3, &values).unwrap();
-            let mut ctrl = Vec::new();
-            for r in &rows {
-                for z in [-0.5 * k, 0.5 * k] {
-                    ctrl.push(Vec3::new(r[0], r[1], z));
-                }
+    fn a_fillet_border_that_would_leave_its_face_between_the_middles_is_refined() {
+        let top = Surface::Plane(Plane::new(Frame::WORLD));
+        // Cubic pieces a thirty-second wide, flat at both ends: from 0 up
+        // to 1e-4 and back down, so the wall is at y = 0, square to y, at
+        // every sixteenth.
+        let pieces = 32;
+        let mut knots = vec![0.0; 4];
+        let mut ys = vec![0.0];
+        for k in 0..pieces {
+            let (from, to) = if k % 2 == 0 { (0.0, 1e-4) } else { (1e-4, 0.0) };
+            ys.extend([from, to, to]);
+            let end = f64::from(k + 1) / f64::from(pieces);
+            knots.extend(if k + 1 == pieces {
+                vec![end; 4]
+            } else {
+                vec![end; 3]
+            });
+        }
+        let count = ys.len();
+        let mut ctrl = Vec::new();
+        for (i, y) in ys.iter().enumerate() {
+            let x = i as f64 / (count - 1) as f64;
+            for z in [-1.0, 0.5] {
+                ctrl.push(Vec3::new(x, *y, z));
             }
-            let count = rows.len();
-            let wall = NurbsSurface::new(
+        }
+        let wall = Surface::Nurbs(
+            NurbsSurface::new(
                 3,
                 1,
                 knots,
@@ -2825,31 +2866,61 @@ mod tests {
                 ctrl,
                 vec![1.0; 2 * count],
             )
-            .unwrap();
-            let mut body = Body::new(BodyKind::Sheet);
-            for surface in [
-                Surface::Plane(Plane::new(Frame::WORLD)),
-                Surface::Nurbs(wall),
-            ] {
-                body.faces.push(craft3d_topo::Face {
-                    surface,
+            .unwrap(),
+        );
+        let line = Curve3::Line(Line::new(Vec3::ZERO, Vec3::X).unwrap());
+        let solver = Solver {
+            spine: Spine {
+                curve: &line,
+                range: (0.0, 1.0),
+                closed: false,
+                joints: [None, None],
+                turn: 0.0,
+            },
+            sides: [
+                Side {
+                    surface: &top,
                     reversed: false,
-                    loops: Vec::new(),
-                });
-            }
-            let (from, to) = (Vec3::new(0.5 * k, 0.0, 0.0), Vec3::new(0.5 * k, k, 0.0));
-            let (curve, range) =
-                going_on(&body, from, to, [FaceId(0), FaceId(1)], tol).expect("an edge");
-            let wall = &body.faces[1].surface;
-            let mut hint = (0.0, 0.5);
-            for i in 0..=2000 {
-                let t = range.0 + (range.1 - range.0) * f64::from(i) / 2000.0;
-                let p = curve.eval(t);
-                hint = wall.project_from(p, hint).unwrap();
-                let d = wall.eval(hint.0, hint.1).distance(p);
-                assert!(d <= 0.25 * tol, "{k}: {d:e} off the wall at {t}");
-                assert!(p.z.abs() <= 0.25 * tol);
-            }
+                },
+                Side {
+                    surface: &wall,
+                    reversed: false,
+                },
+            ],
+            shape: Shape::Ball {
+                radius: 0.1,
+                convex: true,
+            },
+            scale: 1.0,
+        };
+        let seed = Section {
+            feet: [Vec3::new(0.5, 0.1, 0.0), Vec3::new(0.5, 0.0, -0.1)],
+            params: [
+                top.project(Vec3::new(0.5, 0.1, 0.0)).unwrap(),
+                wall.project(Vec3::new(0.5, 0.0, -0.1)).unwrap(),
+            ],
+            centre: Some(Vec3::new(0.5, 0.1, -0.1)),
+        };
+        let seed = solver.section(0.5, &seed).expect("the seed ball");
+        let mut samples: Vec<f64> = (0..=8).map(|i| f64::from(i) / 8.0).collect();
+        let mut sections: Vec<Section> = samples
+            .iter()
+            .map(|s| solver.follow(0.5, &seed, *s, FOLLOW_DEPTH).expect("a ball"))
+            .collect();
+        let limit = 0.25e-6;
+        let surface =
+            refine(&solver, &mut samples, &mut sections, limit, 1e-3).expect("a fillet face");
+        let on_wall = border(&surface, true).unwrap();
+        // The wall as the blend sees it: continued past its domain.
+        let side = solver.sides[1];
+        let mut hint = wall.project(on_wall.eval(0.0)).unwrap();
+        for i in 0..=4000 {
+            let s = f64::from(i) / 4000.0;
+            let p = on_wall.eval(s);
+            let (uv, foot) = side.foot(p, hint).unwrap();
+            hint = uv;
+            let d = foot.distance(p);
+            assert!(d <= limit, "{d:e} off the wall at {s}");
         }
     }
 }
