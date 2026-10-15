@@ -419,7 +419,13 @@ fn commands_that_fail_change_nothing_and_say_why() {
         (
             "file.new",
             json!({"tolerance": 0}),
-            "`tolerance` must be positive",
+            "`tolerance` must be between 1e-12 and 1e3 mm",
+        ),
+        ("file.new", json!({"tolerance": 1e-300}), "got 1e-300"),
+        (
+            "file.new",
+            json!({"units": "in", "tolerance": 1e4}),
+            "`tolerance` must be between 1e-12 and 1e3 in",
         ),
         (
             "file.export",
@@ -832,4 +838,43 @@ fn check_lists_every_problem_or_says_ok() {
         error(&mut session, "document.check", json!({"thorough": true}))
             .contains("unknown parameter `thorough`")
     );
+}
+
+/// A file saved before 2026-10-15 may hold a tolerance outside the range
+/// a document may have: `file.open` reads it as the nearer end and says
+/// so under `warnings`; a file within the range opens without any.
+#[test]
+fn file_open_says_when_it_brought_the_tolerance_into_range() {
+    let dir = workdir("tolerance-range");
+    let mut s = session_in(&dir);
+    run(&mut s, "file.new", json!({"units": "in"}));
+    run(&mut s, "feature.block", json!({"size": [1, 2, 3]}));
+    run(&mut s, "file.save", json!({"path": "inside.3dcraft"}));
+    let opened = run(&mut s, "file.open", json!({"path": "inside.3dcraft"}));
+    assert!(opened.get("warnings").is_none(), "{opened}");
+    // The same document with the tolerance an old build let through.
+    let bytes = std::fs::read(dir.join("inside.3dcraft")).unwrap();
+    let entries = craft3d_zipstore::read_stored(&bytes).unwrap();
+    let manifest = entries.iter().find(|e| e.name == "manifest.json").unwrap();
+    let mut value: Value = serde_json::from_slice(manifest.data).unwrap();
+    for (written, read) in [(1e-13, "1e-12"), (5e4, "1e3")] {
+        value["document"]["tolerance"]["linear"] = written.into();
+        let text = serde_json::to_vec(&value).unwrap();
+        let zipped = craft3d_zipstore::write_stored(&[("manifest.json", text.as_slice())]).unwrap();
+        std::fs::write(dir.join("outside.3dcraft"), zipped).unwrap();
+        let opened = run(&mut s, "file.open", json!({"path": "outside.3dcraft"}));
+        let warnings = opened["warnings"].as_array().unwrap();
+        assert_eq!(warnings.len(), 1, "{opened}");
+        let warning = warnings[0].as_str().unwrap();
+        assert!(
+            warning.contains(&format!("{written:e} in read as {read} in"))
+                && warning.contains("outside 1e-12..1e3"),
+            "{warning}"
+        );
+        let inspected = run(&mut s, "document.inspect", json!({}));
+        assert_eq!(
+            inspected["tolerance"]["linear"].as_f64().unwrap(),
+            read.parse::<f64>().unwrap()
+        );
+    }
 }

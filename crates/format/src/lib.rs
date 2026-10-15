@@ -260,6 +260,12 @@ pub fn to_bytes(document: &Document) -> Result<Vec<u8>, FormatError> {
 /// Reads the bytes of a `.3dcraft` file. Entries other than
 /// `manifest.json` are ignored.
 pub fn from_bytes(bytes: &[u8]) -> Result<Document, FormatError> {
+    from_bytes_noted(bytes).map(|(document, _)| document)
+}
+
+/// As [`from_bytes`], with what was changed on reading
+/// ([`from_manifest_json_noted`]).
+pub fn from_bytes_noted(bytes: &[u8]) -> Result<(Document, Vec<String>), FormatError> {
     if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_FILE_BYTES {
         return Err(too_large("the file", bytes.len(), MAX_FILE_BYTES));
     }
@@ -268,7 +274,7 @@ pub fn from_bytes(bytes: &[u8]) -> Result<Document, FormatError> {
         .iter()
         .find(|entry| entry.name == MANIFEST_NAME)
         .ok_or(FormatError::MissingManifest)?;
-    from_manifest_json(manifest.data)
+    from_manifest_json_noted(manifest.data)
 }
 
 /// A short description of a JSON value for an error message: hostile files
@@ -289,6 +295,15 @@ fn describe(value: &Value) -> String {
 /// manifest, migrates it from an older format version, reads it into a
 /// document and validates the document.
 pub fn from_manifest_json(json: &[u8]) -> Result<Document, FormatError> {
+    from_manifest_json_noted(json).map(|(document, _)| document)
+}
+
+/// As [`from_manifest_json`], with a warning for each thing that was
+/// changed on reading. The one such thing: a positive, finite linear
+/// tolerance outside the range a document may have (which a build before
+/// 2026-10-15 could save) is read as the nearer end of the range
+/// (`doc::Tolerance::in_range`).
+pub fn from_manifest_json_noted(json: &[u8]) -> Result<(Document, Vec<String>), FormatError> {
     if json.len() > MAX_MANIFEST_BYTES {
         return Err(too_large(
             "`manifest.json`",
@@ -341,9 +356,22 @@ pub fn from_manifest_json(json: &[u8]) -> Result<Document, FormatError> {
         format_version: _,
         document,
     } = manifest;
-    let document = convert::to_doc(document);
+    let mut document = convert::to_doc(document);
+    let mut warnings = Vec::new();
+    let read = document.tolerance.in_range();
+    if read.linear != document.tolerance.linear {
+        let unit = document.units.length.symbol();
+        warnings.push(format!(
+            "tolerance {:e} {unit} read as {:e} {unit} (outside {:e}..{:e})",
+            document.tolerance.linear,
+            read.linear,
+            craft3d_doc::Tolerance::LEAST_LINEAR,
+            craft3d_doc::Tolerance::GREATEST_LINEAR
+        ));
+        document.tolerance = read;
+    }
     document.validate().map_err(FormatError::InvalidDocument)?;
-    Ok(document)
+    Ok((document, warnings))
 }
 
 /// Turns "the manifest does not fit its types" into an error that says
@@ -390,4 +418,4 @@ fn shape_error(manifest: &Value, whole: &serde_json::Error) -> FormatError {
 #[cfg(not(target_arch = "wasm32"))]
 mod disk;
 #[cfg(not(target_arch = "wasm32"))]
-pub use disk::{load, save};
+pub use disk::{load, load_noted, save};

@@ -443,6 +443,7 @@ dependencies = [
  "craft3d-tess",
  "craft3d-testkit",
  "craft3d-topo",
+ "craft3d-zipstore",
  "png 0.17.16",
  "serde_json",
 ]

@@ -86,6 +86,7 @@ mod native {
             .adopt(id, number)
             .map_err(|e| CommandError::new(format!("recovery.open: {e}")))?;
         let features = adopted.document.features.len();
+        let read = adopted.read.clone();
         let mut open = OpenDocument::new(adopted.document, adopted.path.clone());
         open.id = number;
         // Nothing of it is on disk under its own name as it is now.
@@ -98,7 +99,7 @@ mod native {
         if let Some(store) = &session.recovery.store {
             store.scan();
         }
-        Ok(json!({
+        let mut result = json!({
             "document": index,
             "id": id,
             "name": adopted.name,
@@ -106,7 +107,12 @@ mod native {
             "features": features,
             "recovered": true,
             "warning": adopted.warning,
-        }))
+        });
+        // What reading the file changed, as `file.open` says it.
+        if let (false, Some(map)) = (read.is_empty(), result.as_object_mut()) {
+            map.insert("warnings".into(), read.into());
+        }
+        Ok(result)
     }
 
     pub(super) fn discard(session: &mut Session, params: &Value) -> Run {

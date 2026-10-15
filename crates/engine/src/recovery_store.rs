@@ -164,6 +164,9 @@ pub(crate) struct Adopted {
     /// Why the recovery file could not be made this launch's own; the
     /// document is open all the same.
     pub warning: Option<String>,
+    /// What was changed on reading the document
+    /// (`craft3d_format::load_noted`).
+    pub read: Vec<String>,
 }
 
 /// The files of one launch, as a directory listing shows them.
@@ -769,8 +772,8 @@ impl Store {
         if !from.is_file() {
             return Err(missing());
         }
-        let document =
-            craft3d_format::load(&from).map_err(|e| format!("`{id}` cannot be opened: {e}"))?;
+        let (document, read) = craft3d_format::load_noted(&from)
+            .map_err(|e| format!("`{id}` cannot be opened: {e}"))?;
         let their_record = shared.record_path(key, theirs);
         let record = read_record(&their_record).unwrap_or_default();
         let job = Job {
@@ -812,6 +815,7 @@ impl Store {
             warning: adopted.err().map(|why| {
                 format!("its recovery file could not be taken over ({why}) and stays where it is")
             }),
+            read,
         })
     }
 

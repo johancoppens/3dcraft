@@ -740,3 +740,107 @@ fn a_close_up_of_a_large_model_stays_within_the_budget() {
     let floor = DISPLAY_RELATIVE_TOLERANCE * (89.0_f64 * 89.0 * 2.0 + 2.0 * 2.0).sqrt();
     assert!(drawn["tolerance"].as_f64().unwrap() > floor, "{drawn}");
 }
+
+/// The default framing is the box of what the faces hold, not of the
+/// whole spheres and tori they lie on: the bike's chain stay, a tube of 7
+/// swept along an arc of a circle of 1332 (finding B4, 2026-10-15: framed
+/// as 2671 for a stay of 455), and part turns of profiles with an arc
+/// (torus patches bounded both ways round) and of a half disc (a lune of
+/// a sphere). Each is compared with the box of the body's mesh, whose
+/// vertices lie on the faces: the frame holds it, and is no larger than
+/// it by more than the mesh's tolerance.
+#[test]
+fn the_default_frame_is_the_box_of_what_the_faces_hold() {
+    let stay = |s: &mut Session| {
+        run(s, "sketch.create", json!({"plane": "zx", "name": "Path"}));
+        run(
+            s,
+            "sketch.path",
+            json!({"sketch": "Path", "start": [0, 0], "segments": [
+                {"arc": [455.57083091, 80.329429113], "center": [0, 1332.0]}
+            ]}),
+        );
+        run(s, "sketch.create", json!({"plane": "xy", "name": "Prof"}));
+        run(
+            s,
+            "sketch.circle",
+            json!({"sketch": "Prof", "center": [0, 0], "radius": 7}),
+        );
+        run(
+            s,
+            "feature.sweep",
+            json!({"sketch": "Prof", "path": "Path", "name": "Body"}),
+        );
+    };
+    let ring_part = |s: &mut Session| {
+        run(s, "sketch.create", json!({"name": "Profile"}));
+        run(
+            s,
+            "sketch.path",
+            json!({"sketch": "Profile", "start": [10, 0], "segments": [
+                {"line": [20, 0]},
+                {"arc": [20, 5], "center": [16, 2.5]},
+                {"line": [10, 5]},
+                {"line": "start"}
+            ]}),
+        );
+        run(
+            s,
+            "feature.revolve",
+            json!({"sketch": "Profile", "axis": "y", "angle": "70 deg", "name": "Body"}),
+        );
+    };
+    let lune = |s: &mut Session| {
+        run(s, "sketch.create", json!({"name": "Profile"}));
+        run(
+            s,
+            "sketch.path",
+            json!({"sketch": "Profile", "start": [0, -3], "segments": [
+                {"arc": [0, 7], "center": [0, 2]},
+                {"line": "start"}
+            ]}),
+        );
+        run(
+            s,
+            "feature.revolve",
+            json!({"sketch": "Profile", "axis": "y", "angle": "50 deg", "name": "Body"}),
+        );
+    };
+    type Build = fn(&mut Session);
+    let models: [(&str, Build); 3] = [("stay", stay), ("ring part", ring_part), ("lune", lune)];
+    for (name, build) in models {
+        let mut s = Session::new(Workspace::none());
+        run(&mut s, "file.new", json!({}));
+        build(&mut s);
+        let drawn = run(&mut s, "view.render", json!({"width": 64, "height": 48}));
+        let framed = &drawn["box"];
+        let inspected = run(&mut s, "document.inspect", json!({}));
+        let body = inspected["bodies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["name"] == "Body")
+            .unwrap_or_else(|| panic!("{name}: {}", inspected["features"]));
+        let meshed = &body["bbox"];
+        let slack = body["bboxTolerance"].as_f64().unwrap();
+        for axis in 0..3 {
+            let (lo, hi) = (
+                framed[0][axis].as_f64().unwrap(),
+                framed[1][axis].as_f64().unwrap(),
+            );
+            let (mlo, mhi) = (
+                meshed[0][axis].as_f64().unwrap(),
+                meshed[1][axis].as_f64().unwrap(),
+            );
+            let rounding = 1e-9 * (1.0 + mlo.abs().max(mhi.abs()));
+            assert!(
+                lo <= mlo + rounding && hi >= mhi - rounding,
+                "{name}: the frame {framed} misses the mesh's box {meshed}"
+            );
+            assert!(
+                lo >= mlo - slack - rounding && hi <= mhi + slack + rounding,
+                "{name}: the frame {framed} is looser than the mesh's box {meshed} by more than {slack}"
+            );
+        }
+    }
+}

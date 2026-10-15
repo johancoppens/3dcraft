@@ -15,13 +15,41 @@ mod revolve_support;
 
 use common::{P, Rng, arc, line};
 use craft3d_kernel::KernelError;
-use craft3d_kernel::profile::{SketchCurve, detect_profiles};
+use craft3d_kernel::profile::{Curve2, SketchCurve, detect_profiles};
 use craft3d_kernel::revolve::revolve;
 use craft3d_math::{Frame, Vec3};
 use craft3d_tess::{TessParams, tessellate_body};
 use craft3d_topo::{check, mass_properties};
 use revolve_support::{Axis, clear_axis, half_disc, lathe, measure, tolerance};
 use std::f64::consts::{FRAC_PI_2, TAU};
+
+/// Whether the curves, sampled at 256 points each, have points more than
+/// `margin` to either side of the axis.
+fn straddles(curves: &[SketchCurve], axis: Axis, margin: f64) -> bool {
+    let (mut low, mut high) = (f64::INFINITY, f64::NEG_INFINITY);
+    for c in curves {
+        for i in 0..=256 {
+            let t = f64::from(i) / 256.0;
+            let p = match c.curve {
+                Curve2::Line { start, end } => [
+                    start[0] + t * (end[0] - start[0]),
+                    start[1] + t * (end[1] - start[1]),
+                ],
+                Curve2::Arc { center, start, end } => {
+                    let radius = (start[0] - center[0]).hypot(start[1] - center[1]);
+                    let begin = (start[1] - center[1]).atan2(start[0] - center[0]);
+                    let finish = (end[1] - center[1]).atan2(end[0] - center[0]);
+                    let a = begin + t * (finish - begin).rem_euclid(TAU);
+                    [center[0] + radius * a.cos(), center[1] + radius * a.sin()]
+                }
+                _ => panic!("blobs are lines and arcs"),
+            };
+            let left = axis.left(p);
+            (low, high) = (low.min(left), high.max(left));
+        }
+    }
+    low < -margin && high > margin
+}
 
 fn between(rng: &mut Rng, low: f64, high: f64) -> f64 {
     low + (high - low) * rng.unit()
@@ -172,7 +200,7 @@ struct Tally {
     meshed: usize,
     no_profile: usize,
     crosses: usize,
-    spindle: usize,
+    pinched: usize,
     invalid_angles: usize,
     geometry: usize,
 }
@@ -208,13 +236,17 @@ fn random_profiles_axes_and_sweeps() {
                 (curves, axis, Some(true))
             }
             4 => {
-                // Through the middle.
+                // Through the middle, which is outside a polygon whose
+                // corners leave more than half a turn between two of them:
+                // it must cross the axis when its curves, sampled, are
+                // clearly on both sides.
                 let (curves, _) = blob(&mut rng, centre, 2.0 * k);
                 let axis = Axis {
                     point: centre,
                     direction,
                 };
-                (curves, axis, Some(false))
+                let crosses = straddles(&curves, axis, 1e-3 * k);
+                (curves, axis, crosses.then_some(false))
             }
             5 => {
                 // Along a side of the polygon: on the axis when the side
@@ -248,7 +280,8 @@ fn random_profiles_axes_and_sweeps() {
                 (turned(&mut rng, axis, side, k, 0.0), axis, Some(true))
             }
             _ => {
-                // The same, moved off the axis: a torus, or a spindle.
+                // The same, moved off the axis: a torus, or (an arc whose circle reaches the
+                // axis) a rational surface.
                 let axis = Axis {
                     point: centre,
                     direction,
@@ -348,7 +381,7 @@ fn random_profiles_axes_and_sweeps() {
                         assert!(!curves.is_empty(), "{what}");
                         tally.crosses += 1;
                     }
-                    KernelError::UnsupportedCurve { .. } => tally.spindle += 1,
+                    KernelError::UnsupportedCurve { .. } => tally.pinched += 1,
                     KernelError::InvalidAngles { .. } => tally.invalid_angles += 1,
                     KernelError::Geometry(_) => tally.geometry += 1,
                     // In particular never `InvalidBody`: that is a bug.
@@ -359,8 +392,17 @@ fn random_profiles_axes_and_sweeps() {
     }
     println!("{runs} runs: {tally:?}; faces by surface: {surfaces:?}");
     assert!(tally.valid > runs / 3, "{tally:?}");
-    assert!(tally.crosses > 0 && tally.spindle > 0, "{tally:?}");
-    for kind in ["plane", "cylinder", "cone", "sphere", "torus"] {
+    // Arcs on a spindle or horn torus are rational surfaces (since
+    // 2026-10-15; before, they were refused).
+    assert!(tally.crosses > 0, "{tally:?}");
+    for kind in [
+        "plane",
+        "cylinder",
+        "cone",
+        "sphere",
+        "torus",
+        "nurbs surface",
+    ] {
         assert!(surfaces.contains_key(kind), "no {kind} in the run");
     }
 }
