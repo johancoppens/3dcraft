@@ -8,8 +8,8 @@
 //! bodies made from that body by the rule of `appearance`.
 
 use crate::appearance::{body_appearance, body_material};
-use crate::commands::{Run, edit, fail, feature_ref, length_unit, spec};
-use crate::mass::{inertia_of, mass_of};
+use crate::commands::{Run, edit, fail, feature_ref, spec};
+use crate::mass::mass_and_inertia_of;
 use crate::params::Params;
 use crate::{CommandError, CommandSpec, Session};
 use craft3d_doc::{Appearance, Document, FeatureId, FeatureKind, LengthUnit, Material};
@@ -22,7 +22,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("body.appearance", "Body Colour", r##"{"body": id or name, "color": "#rrggbb" or [r, g, b], "metallic": number, "roughness": number, "clear": boolean = false}"##,
         "Gives the body of a feature a colour (sRGB: \"#c8102e\" or [200, 16, 46], each 0 to 255), and optionally metallic and roughness (0 to 1, kept for exporters; the viewport shades from the colour). The body keeps it through every regeneration and edit; bodies made from it keep it too: a boolean's result has its target's colour, and the faces a coloured tool cut keep the tool's, so a cut stays readable; set a colour on the later feature to colour its whole body. view.render, view.replay, the viewport and 3MF exports show it. clear takes the colour away (the theme's again).", doc: true, body_appearance_cmd),
     spec!("body.material", "Body Material", r#"{"body": id or name, "name": string, "density": number (kg/m³) or "7.85 g/cm3", "clear": boolean = false}"#,
-        "Gives the body of a feature a material: a name and a density, a number in kg/m³ or a string with a unit (kg/m3, g/cm3, g/mm3, lb/in3, lb/ft3). document.inspect and document.measure then give the body's mass (kg) and its inertia tensor about the centroid (kg times the document's length unit squared), computed exactly from the B-rep. Bodies made from it keep it, as with body.appearance (a boolean's result has its target's). clear takes it away.", doc: true, body_material_cmd),
+        "Gives the body of a feature a material: a name and a density, a number in kg/m³ or a string with a unit (kg/m3, g/cm3, g/mm3, lb/in3, lb/ft3). document.inspect and document.measure then give the body's mass (kg) and its inertia tensor about the centroid (kg times the document's length unit squared), computed exactly from the B-rep; body.material itself measures nothing and says which bodies have the material. Bodies made from it keep it, as with body.appearance (a boolean's result has its target's). clear takes it away.", doc: true, body_material_cmd),
 ];
 
 /// The feature of `key`, which must be one that can make a body.
@@ -206,18 +206,17 @@ fn body_material_cmd(session: &mut Session, params: &Value) -> Run {
     edit(session, ID, &label, |doc| {
         doc.set_material(id, material.clone())
     })?;
+    // Which bodies have it, and from where; not their mass, which is
+    // measured when document.inspect or document.measure asks for it
+    // (exactly, from the B-rep: seconds on a body of spline faces).
     let open = session.document_mut()?;
     let regen = open.regen();
     let doc = open.history.current();
-    let unit = length_unit(doc);
     let bodies: Vec<Value> = regen
         .bodies()
-        .filter_map(|(at, body)| {
-            body_material(doc, &regen, at)?;
-            let mut entry = Map::new();
-            entry.insert("feature".into(), at.to_string().into());
-            physical_fields(&mut entry, doc, &regen, at, body, unit);
-            Some(Value::Object(entry))
+        .filter_map(|(at, _)| {
+            let described = material_json(doc, &regen, at)?;
+            Some(json!({ "feature": at.to_string(), "material": described }))
         })
         .collect();
     Ok(json!({
@@ -254,6 +253,27 @@ fn metres_per_unit(unit: LengthUnit) -> f64 {
     }
 }
 
+/// The material of the body of `at`: its name and density, and the
+/// feature it has them from when that is another.
+fn material_json(doc: &Document, regen: &Regen, at: FeatureId) -> Option<Value> {
+    let (from, material) = body_material(doc, regen, at)?;
+    let mut described = json!({ "name": material.name, "density": material.density });
+    if let (Some(map), true) = (described.as_object_mut(), from != at) {
+        map.insert("from".into(), from.to_string().into());
+    }
+    Some(described)
+}
+
+/// Measures the body of `at` for [`physical_fields`] ahead of its mass
+/// properties: with a material its mass and inertia are measured at once,
+/// in about the time of the inertia alone, which a measure of its mass
+/// properties first would not leave room for.
+pub(crate) fn measure_ahead(doc: &Document, regen: &Regen, at: FeatureId, body: &Arc<Body>) {
+    if body_material(doc, regen, at).is_some() {
+        let _measured = mass_and_inertia_of(body);
+    }
+}
+
 /// Adds to a body's entry of `document.inspect` or `document.measure`
 /// its appearance and material (and from which feature it has them,
 /// when that is another), and with a material its mass (kg) and inertia
@@ -269,17 +289,16 @@ pub(crate) fn physical_fields(
     if let Some(appearance) = body_appearance(doc, regen, at) {
         entry.insert("appearance".into(), appearance_json(&appearance));
     }
-    let Some((from, material)) = body_material(doc, regen, at) else {
+    let (Some((_, material)), Some(described)) =
+        (body_material(doc, regen, at), material_json(doc, regen, at))
+    else {
         return;
     };
-    let mut described = json!({ "name": material.name, "density": material.density });
-    if let (Some(map), true) = (described.as_object_mut(), from != at) {
-        map.insert("from".into(), from.to_string().into());
-    }
     entry.insert("material".into(), described);
     let m = metres_per_unit(doc.units.length);
     let per_volume = material.density * m * m * m;
-    match mass_of(body) {
+    let (mass, inertia) = mass_and_inertia_of(body);
+    match mass {
         Ok(mass) => {
             entry.insert("mass".into(), (mass.volume * per_volume).into());
             entry.insert("massUnit".into(), "kg".into());
@@ -289,7 +308,7 @@ pub(crate) fn physical_fields(
             return;
         }
     }
-    match inertia_of(body) {
+    match inertia {
         Ok(inertia) => {
             let tensor: Vec<Vec<f64>> = inertia
                 .tensor
