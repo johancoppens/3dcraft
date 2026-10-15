@@ -444,8 +444,30 @@ pub(crate) fn features(
     for (index, stated) in doc.features.iter().enumerate() {
         // Names of an earlier body are followed to the newest one before
         // this feature; it is then built, depends and takes as followed.
+        let made_before = |f: &Feature| {
+            f.kind
+                .inputs()
+                .iter()
+                .all(|input| before.get(input).copied().unwrap_or(false))
+                && (all_before || !f.kind.uses_all_earlier())
+        };
+        let stated_before = made_before(stated);
         let followed = if rolled_back || stated.suppressed {
             Ok(None)
+        } else if let Some(entry) = cache.entries.get(&stated.id).filter(|entry| {
+            // Following names reads the results before this feature and
+            // the names and kinds of the features it names and of those
+            // that took their bodies, all of them earlier. When every
+            // feature before it found what it found the last time (no
+            // mark yet) and it stands where it stood, made only from
+            // earlier features, the names follow as they did then.
+            index < same_places
+                && changed.marked.is_empty()
+                && stated_before
+                && !entry.context.rolled_back
+                && entry.feature == *stated
+        }) {
+            entry.context.followed.clone()
         } else {
             crate::follow::feature(doc, &results, stated)
         };
@@ -454,13 +476,6 @@ pub(crate) fn features(
             Ok(None) | Err(_) => stated,
         };
         let values = evaluated(variables, &feature.kind.exprs());
-        let made_before = |f: &Feature| {
-            f.kind
-                .inputs()
-                .iter()
-                .all(|input| before.get(input).copied().unwrap_or(false))
-                && (all_before || !f.kind.uses_all_earlier())
-        };
         let unchanged = !changed.is_marked(stated.id)
             && feature
                 .kind
@@ -468,7 +483,6 @@ pub(crate) fn features(
                 .iter()
                 .all(|input| !changed.is_marked(*input));
         let known_inputs = index < same_places && unchanged && made_before(feature);
-        let stated_before = made_before(stated);
         before.insert(stated.id, stated_before);
         all_before &= stated_before;
         let reused = cache
