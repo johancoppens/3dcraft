@@ -69,7 +69,7 @@ The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item i
 - [ ] Sheet bodies, several lumps and cavities (item 5).
 - [ ] The check of offset face, shell and delete face near what they changed (they check the whole body), and a tessellation of long straight edges that does not fan across a plate (the first cut of 400 holes at once is checked in 140 ms).
 - [ ] Speed: what is left is the booleans with a freeform face (the chart's projections and the marcher) and the measurement of their results.
-- [ ] Each pair of faces intersected in the box of the two faces, not of the two bodies (the impeller's pattern of blades with rounded leading edges, and such a blade on a hub of revolution), after `mass_properties` settles near a pole with the curves that gives ([`architecture.md`](architecture.md) §5.3 › *Showcase findings (2026-10-16)*).
+- [ ] Each pair of faces intersected in the box of the two faces, not of the two bodies (the impeller's pattern of blades with rounded leading edges, and such a blade on a hub of revolution), after the curves that gives near a pole are measured, meshed and sorted around the pole (branch `boolfind-facebox-wip`: the measure and the mesh done, the octant cut through its pole at scale 1e-3 still refused by `regions::untie`) ([`architecture.md`](architecture.md) §5.3 › *Showcase findings (2026-10-16)*).
 - [ ] Tolerant modelling (item 4), before STEP import.
 
 ## Milestones in detail
