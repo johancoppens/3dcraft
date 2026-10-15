@@ -234,18 +234,23 @@ fn a_boolean_keeps_the_targets_colour_and_the_tools_faces_keep_the_tools() {
         inspect_body(&mut s, "Holed")["appearance"]["color"],
         "#c8102e"
     );
-    // The wall of the hole came from the pin, the rest from the plate.
+    // The wall of the hole came from the pin, but a face a tool cuts takes
+    // the colour of the body it bounds, the plate's (the developer's
+    // decision of 2026-10-15, as SolidWorks, Fusion and Onshape colour a
+    // cut; until then it kept the tool's). The wall is still named after
+    // the pin: the name, not the colour, says where it came from.
     let faces = scene_faces(&mut s, "F3");
     assert_eq!(faces.len(), 7);
+    assert_eq!(
+        faces
+            .iter()
+            .filter(|(name, _)| name.starts_with("F3:copy(1)"))
+            .count(),
+        1
+    );
     for (name, color) in &faces {
-        let want = if name.starts_with("F3:copy(1)") {
-            BLUE
-        } else {
-            RED
-        };
-        assert_eq!(*color, Some(want), "{name}");
+        assert_eq!(*color, Some(RED), "{name}");
     }
-    assert_eq!(faces.iter().filter(|(_, c)| *c == Some(BLUE)).count(), 1);
     // A tool without a colour of its own: its faces take the body's.
     run(
         &mut s,
@@ -302,10 +307,56 @@ fn a_boolean_keeps_the_targets_colour_and_the_tools_faces_keep_the_tools() {
     );
     let faces = scene_faces(&mut s, "F6");
     let count = |c: [u8; 3]| faces.iter().filter(|(_, x)| *x == Some(c)).count();
-    assert_eq!(count(BLUE), 1, "{faces:?}");
+    // The hole's wall is the plate's red (above), the lug's faces gold.
+    assert_eq!(count(BLUE), 0, "{faces:?}");
     assert!(count([255, 215, 0]) >= 3, "{faces:?}");
-    assert!(count(RED) >= 5, "{faces:?}");
+    assert!(count(RED) >= 6, "{faces:?}");
     assert_eq!(faces.iter().filter(|(_, c)| c.is_none()).count(), 0);
+}
+
+/// A union keeps the tool's faces in the tool's colour: they bound the
+/// tool's own material in the result. An intersection likewise. A cut
+/// gives them the target's (above).
+#[test]
+fn a_union_keeps_the_tools_faces_in_the_tools_colour() {
+    for op in ["union", "intersect"] {
+        let mut s = session_in(None);
+        plate_and_pin(&mut s);
+        run(
+            &mut s,
+            "body.appearance",
+            json!({"body": "Plate", "color": RED}),
+        );
+        run(
+            &mut s,
+            "body.appearance",
+            json!({"body": "Pin", "color": BLUE}),
+        );
+        let joined = run(
+            &mut s,
+            "feature.boolean",
+            json!({"op": op, "target": "Plate", "tool": "Pin"}),
+        );
+        assert_eq!(joined["status"], "ok", "{op}");
+        let faces = scene_faces(&mut s, "F3");
+        for (name, color) in &faces {
+            let want = if name.starts_with("F3:copy(1)") {
+                BLUE
+            } else {
+                RED
+            };
+            assert_eq!(*color, Some(want), "{op}: {name}");
+        }
+        // Union: the pin's wall above and below the plate and its two
+        // caps. Intersection: the pin's wall within the plate.
+        let blue = faces.iter().filter(|(_, c)| *c == Some(BLUE)).count();
+        let red = faces.iter().filter(|(_, c)| *c == Some(RED)).count();
+        if op == "union" {
+            assert_eq!((blue, red), (4, 6), "{faces:?}");
+        } else {
+            assert_eq!((blue, red), (1, 2), "{faces:?}");
+        }
+    }
 }
 
 #[test]
@@ -617,7 +668,7 @@ fn a_3mf_and_a_step_export_carry_the_colours() {
     run(
         &mut s,
         "feature.boolean",
-        json!({"op": "subtract", "target": "Plate", "tool": "Pin", "keepTool": true}),
+        json!({"op": "union", "target": "Plate", "tool": "Pin", "keepTool": true}),
     );
     run(&mut s, "file.export", json!({"path": "coloured.3mf"}));
     let bytes = std::fs::read(dir.join("coloured.3mf")).unwrap();
@@ -635,8 +686,11 @@ fn a_3mf_and_a_step_export_carry_the_colours() {
         .map(|l| attribute(l, "displaycolor").unwrap())
         .collect();
     assert_eq!(bases, ["#1E5ADC", "#C8102E"]);
-    // Objects in history order: the pin (kept), the plain block, the cut
-    // plate; each with its material, and the cut plate's hole wall blue.
+    // Objects in history order: the pin (kept), the plain block, the
+    // plate with the pin united into it; each with its material, and the
+    // pin's faces in the union blue. (A union, not a cut, since
+    // 2026-10-15: the faces a tool cuts take the target's colour, so a
+    // cut body has one colour; a union keeps the tool's faces its own.)
     let mut objects: Vec<(String, Option<String>, usize)> = Vec::new();
     for line in xml.lines().map(str::trim_start) {
         if line.starts_with("<object ") {
@@ -654,12 +708,13 @@ fn a_3mf_and_a_step_export_carry_the_colours() {
     assert_eq!(objects[1], ("Plain".to_string(), None, 0));
     assert_eq!(objects[2].0, "Boolean1");
     assert_eq!(objects[2].1.as_deref(), Some("1"));
-    assert!(objects[2].2 >= 8, "the wall of the hole: {objects:?}");
-    // STEP: the pin's solid, the cut plate's solid and the wall of its
-    // hole (its own colour) are styled; the plain block is not.
+    assert!(objects[2].2 >= 8, "the pin's faces: {objects:?}");
+    // STEP: the pin's solid, the united body's solid and the pin's four
+    // faces in it (its wall above and below the plate, its two caps; their
+    // own colour) are styled; the plain block is not.
     run(&mut s, "file.export", json!({"path": "coloured.step"}));
     let step = std::fs::read_to_string(dir.join("coloured.step")).unwrap();
-    assert_eq!(step.matches("STYLED_ITEM(").count(), 3, "{step}");
+    assert_eq!(step.matches("STYLED_ITEM(").count(), 6, "{step}");
     assert_eq!(step.matches("=COLOUR_RGB(").count(), 3);
     std::fs::remove_dir_all(&dir).unwrap();
 }

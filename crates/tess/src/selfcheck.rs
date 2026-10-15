@@ -178,36 +178,13 @@ pub struct SelfCheck {
     /// ([`body_self_intersections_near`]).
     pub faces: usize,
     /// Places where the body touches itself: two of its vertices, or a
-    /// vertex and an edge it is not an end of, at one place. Always
+    /// vertex and an edge it is not an end of, at one place, of one shell
+    /// or of two shells of a solid ([`Touch::between_shells`]). Always
     /// certain. At most `limit`.
     pub touching: Vec<Touch>,
 }
 
-/// What a vertex touches.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Touched {
-    /// Another vertex.
-    Vertex(u32),
-    /// An edge it is not an end of.
-    Edge(u32),
-}
-
-/// A place where a shell touches itself: a vertex of it lies, within
-/// twice the modelling tolerance, on another vertex of the same shell or
-/// on an edge of the same shell it is not an end of. Two walls of one
-/// shell that touch along a line, or a shell that touches itself in a
-/// point, are no manifold: no closed mesh can be made of the shell, and
-/// the faces there do not say which side is inside. Two shells that
-/// touch each other (two blocks that share an edge) are each closed and
-/// are not this; nor are faces that only touch (a cylinder resting on a
-/// plane), which have no vertex there.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Touch {
-    pub vertex: u32,
-    pub touches: Touched,
-    pub at: Vec3,
-    pub distance: f64,
-}
+pub use craft3d_topo::{Touch, Touched};
 
 impl SelfCheck {
     /// No finding that is certain. Findings within the margin may remain.
@@ -226,128 +203,19 @@ impl SelfCheck {
     }
 }
 
-/// Where `body` touches itself (see [`Touch`]): vertices closer than
-/// `near` to another vertex or to an edge they are not an end of, at most
-/// `limit`, in vertex order. On the B-rep, not the mesh: vertices sorted
-/// along x and edges by their boxes, so it costs little more than sorting
-/// them.
+/// Where the shells of `body` touch (see [`Touch`]): vertices closer
+/// than `near` to another vertex or to an edge they are not an end of, of
+/// the same shell (a shell that touches itself, which no closed mesh can
+/// be made of) or, in a solid, of another shell of it (two parts of one
+/// body that share an edge or a corner: zero thickness, refused since
+/// 2026-10-15). At most `limit`, in vertex order. On the B-rep, not the
+/// mesh (`craft3d_topo::touches`).
 pub fn body_touches_itself(body: &Body, near: f64, limit: usize) -> Result<Vec<Touch>, TessError> {
-    let mut found = Vec::new();
-    if !(near.is_finite() && near >= 0.0) {
-        return Err(TessError::InvalidTolerance(near));
-    }
-    let mut points: Vec<(f64, u32, Vec3)> = Vec::with_capacity(body.vertices.len());
-    for (v, vertex) in body.vertices.iter().enumerate() {
-        let id = u32::try_from(v).map_err(|_| TessError::TooManyVertices)?;
-        if !vertex.point.is_finite() {
-            return Err(TessError::InvalidBody(format!("vertex {v} is not finite")));
-        }
-        points.push((vertex.point.x, id, vertex.point));
-    }
-    points.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
-    // The shell of every vertex and edge.
-    let mut vertex_shell: Vec<Option<usize>> = vec![None; body.vertices.len()];
-    let mut edge_shell: Vec<Option<usize>> = vec![None; body.edges.len()];
-    for (s, shell) in body.shells.iter().enumerate() {
-        for face in shell.faces.iter().filter_map(|f| body.face(*f)) {
-            for coedge in face
-                .loops
-                .iter()
-                .filter_map(|l| body.loop_(*l))
-                .flat_map(|l| &l.coedges)
-            {
-                if let Some(slot) = edge_shell.get_mut(coedge.edge.0 as usize) {
-                    *slot = Some(s);
-                }
-                if let Some(edge) = body.edge(coedge.edge) {
-                    for v in [edge.start, edge.end] {
-                        if let Some(slot) = vertex_shell.get_mut(v.0 as usize) {
-                            *slot = Some(s);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    let shell_of_vertex = |v: u32| vertex_shell.get(v as usize).copied().flatten();
-    // Vertices on vertices.
-    let mut pairs: Vec<Touch> = Vec::new();
-    for (i, &(x, a, p)) in points.iter().enumerate() {
-        for &(y, b, q) in points.iter().skip(i + 1) {
-            if y - x > near {
-                break;
-            }
-            if shell_of_vertex(a).is_none() || shell_of_vertex(a) != shell_of_vertex(b) {
-                continue;
-            }
-            let distance = p.distance(q);
-            if distance <= near {
-                let (first, second) = (a.min(b), a.max(b));
-                pairs.push(Touch {
-                    vertex: first,
-                    touches: Touched::Vertex(second),
-                    at: p,
-                    distance,
-                });
-            }
-        }
-    }
-    // Vertices on edges they are not an end of.
-    for (e, edge) in body.edges.iter().enumerate() {
-        let id = u32::try_from(e).map_err(|_| TessError::TooManyVertices)?;
-        let bbox = body
-            .edge_bbox(craft3d_topo::EdgeId(id))
-            .map_err(|err| TessError::InvalidBody(format!("edge {e} has no box: {err}")))?;
-        let Some((lo, hi)) = bbox.corners() else {
-            continue;
-        };
-        let first = points.partition_point(|&(x, _, _)| x < lo.x - near);
-        for &(x, v, p) in points.iter().skip(first) {
-            if x > hi.x + near {
-                break;
-            }
-            if v == edge.start.0 || v == edge.end.0 || !bbox.contains(p, near) {
-                continue;
-            }
-            let shell = edge_shell.get(e).copied().flatten();
-            if shell.is_none() || shell_of_vertex(v) != shell {
-                continue;
-            }
-            let Ok(t) = edge.curve.project(p) else {
-                continue;
-            };
-            let (t0, t1) = edge.range;
-            // Into the edge's range where the curve is periodic.
-            let t = match edge.curve.period() {
-                Some(period) if period > 0.0 => {
-                    let turns = ((t - t0) / period).floor();
-                    t - turns * period
-                }
-                _ => t,
-            };
-            if !(t > t0 && t < t1) {
-                continue;
-            }
-            let distance = edge.curve.eval(t).distance(p);
-            if distance <= near {
-                pairs.push(Touch {
-                    vertex: v,
-                    touches: Touched::Edge(id),
-                    at: p,
-                    distance,
-                });
-            }
-        }
-    }
-    pairs.sort_by(|a, b| {
-        let key = |t: &Touch| match t.touches {
-            Touched::Vertex(o) => (t.vertex, 0, o),
-            Touched::Edge(o) => (t.vertex, 1, o),
-        };
-        key(a).cmp(&key(b))
-    });
-    found.extend(pairs.into_iter().take(limit));
-    Ok(found)
+    craft3d_topo::touches(body, near, limit, craft3d_topo::TouchScope::All).map_err(|e| match e {
+        craft3d_topo::TouchError::InvalidDistance(d) => TessError::InvalidTolerance(d),
+        craft3d_topo::TouchError::TooMany => TessError::TooManyVertices,
+        craft3d_topo::TouchError::InvalidBody(reason) => TessError::InvalidBody(reason),
+    })
 }
 
 impl fmt::Display for SelfCheck {
@@ -391,8 +259,8 @@ impl fmt::Display for SelfCheck {
         for t in &self.touching {
             writeln!(
                 f,
-                "  touching: vertex {} and {:?} at ({:e}, {:e}, {:e}), {:e} apart",
-                t.vertex, t.touches, t.at.x, t.at.y, t.at.z, t.distance
+                "  touching: vertex {} and {:?} at ({:e}, {:e}, {:e}), {:e} apart, shells {} and {}",
+                t.vertex, t.touches, t.at.x, t.at.y, t.at.z, t.distance, t.shells[0], t.shells[1]
             )?;
         }
         Ok(())

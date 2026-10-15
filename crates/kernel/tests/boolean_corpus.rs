@@ -18,6 +18,9 @@
 //! - `match~`: agrees with a reference graded `approximate`, within the
 //!   wider bound that reference deserves (see [`Bounds`]);
 //! - `empty`: we say the result is empty and the reference has no volume;
+//! - `zero-thick`: we refuse a result whose parts touch (zero thickness,
+//!   refused by design since 2026-10-15), and the body made without that
+//!   refusal has parts and agrees with the reference; counted as agreeing;
 //! - `unsupported`: the kernel refuses, with its reason;
 //! - `unscored`: FreeCAD's own answer is `unreliable` (it failed, called
 //!   its result invalid, or contradicts itself, a count of sampled points,
@@ -30,7 +33,7 @@
 //!   properties differ from FreeCAD's. The test fails.
 //!
 //! The test also holds a floor: the number of agreeing outcomes (`match`,
-//! `match~`, `empty`) may not go down ([`AGREEING_FLOOR`]).
+//! `match~`, `empty`, `zero-thick`) may not go down ([`AGREEING_FLOOR`]).
 //!
 //! Run one case or one category, with every number printed:
 //!
@@ -50,8 +53,10 @@
     clippy::indexing_slicing
 )]
 
+mod boolean_common;
+
 use craft3d_kernel::KernelError;
-use craft3d_kernel::boolean::{BooleanOp, boolean, contains_points};
+use craft3d_kernel::boolean::{BooleanOp, BooleanOptions, boolean, boolean_with, contains_points};
 use craft3d_kernel::primitives;
 use craft3d_math::{Bbox3, Frame, Tolerance, Vec3};
 use craft3d_testkit::parallel::map_parallel;
@@ -245,13 +250,18 @@ enum Outcome {
     ReferenceVolume(String),
     Mismatch(String),
     Invalid(String),
+    /// Refused as zero thickness (parts of the result that touch, refused
+    /// since 2026-10-15 by the developer's decision), and the body made
+    /// without that refusal has two parts or more and agrees with the
+    /// reference: right by design. Counted as agreeing.
+    ZeroThickness,
 }
 
 impl Outcome {
     fn agrees(&self) -> bool {
         matches!(
             self,
-            Outcome::Match | Outcome::MatchApproximate | Outcome::Empty
+            Outcome::Match | Outcome::MatchApproximate | Outcome::Empty | Outcome::ZeroThickness
         )
     }
 
@@ -266,6 +276,7 @@ impl Outcome {
             Outcome::ReferenceArea(_) | Outcome::ReferenceVolume(_) => "unscored",
             Outcome::Mismatch(_) => "MISMATCH",
             Outcome::Invalid(_) => "INVALID",
+            Outcome::ZeroThickness => "zero-thick",
         }
     }
 }
@@ -1033,7 +1044,27 @@ fn run_case(case: &Value, snap: Option<&Value>, verbose: bool) -> Vec<Outcome> {
     for (op, name, field) in OPS {
         let started = std::time::Instant::now();
         let mut booleans_ms = 0.0;
-        let result = catch_unwind(AssertUnwindSafe(|| boolean(&a, &b, op, &tolerance)));
+        // A refusal as zero thickness is scored by the body made without
+        // it (and must have parts to be one).
+        let mut zero = None;
+        let result = catch_unwind(AssertUnwindSafe(|| match boolean(&a, &b, op, &tolerance) {
+            Err(KernelError::ZeroThickness { at, .. }) => {
+                let unrefused = BooleanOptions {
+                    refuse_zero_thickness: false,
+                    ..BooleanOptions::default()
+                };
+                let made = boolean_with(&a, &b, op, &tolerance, &unrefused);
+                // The refusal is real when the point it names lies on two
+                // parts of the body made without it, by the rays of
+                // `contains_points` on each part alone.
+                zero = Some(
+                    made.as_ref()
+                        .map_or(0, |r| boolean_common::on_parts(&r.body, at, &tolerance)),
+                );
+                made
+            }
+            other => other,
+        }));
         let mut ours = None;
         let outcome = match result {
             Err(_) => Outcome::Invalid("panic".to_string()),
@@ -1081,6 +1112,13 @@ fn run_case(case: &Value, snap: Option<&Value>, verbose: bool) -> Vec<Outcome> {
         let outcome = match outcome {
             Outcome::Mismatch(_) if set_aside => Outcome::Unscored,
             other => other,
+        };
+        let outcome = match zero {
+            Some(parts) if parts < 2 => Outcome::Invalid(format!(
+                "refused as zero thickness at a point on {parts} parts of the body made without the refusal"
+            )),
+            Some(_) if outcome.agrees() => Outcome::ZeroThickness,
+            _ => outcome,
         };
         if verbose {
             // One print per outcome, so that cases run side by side do
@@ -1267,10 +1305,11 @@ impl Row {
     }
 }
 
-const COLUMNS: [&str; 8] = [
+const COLUMNS: [&str; 9] = [
     "match",
     "match~",
     "empty",
+    "zero-thick",
     "unsupported",
     "unscored",
     "measure",
@@ -1441,8 +1480,9 @@ fn the_kernel_agrees_with_the_reference_kernel() {
     }
     let agreeing: usize = rows
         .values()
-        .map(|r| r.count("match") + r.count("match~") + r.count("empty"))
+        .map(|r| r.count("match") + r.count("match~") + r.count("empty") + r.count("zero-thick"))
         .sum();
+    let zero_thick: usize = rows.values().map(|r| r.count("zero-thick")).sum();
 
     let mut report = format!(
         "Boolean corpus score: our kernel against {}\n\
@@ -1457,7 +1497,10 @@ fn the_kernel_agrees_with_the_reference_kernel() {
     report.push_str(&table(&rows, &categories));
     let _ = writeln!(
         report,
-        "\nagreeing (match + match~ + empty): {agreeing}; floor {AGREEING_FLOOR}"
+        "\nagreeing: {} (match + match~ + empty) + {zero_thick} refused by design (zero \
+         thickness, the body made without the refusal agreeing) = {agreeing}; floor \
+         {AGREEING_FLOOR} on that sum",
+        agreeing - zero_thick
     );
     // In the score too, where `cargo xtask health` reads it.
     let _ = writeln!(

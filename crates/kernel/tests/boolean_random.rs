@@ -379,9 +379,43 @@ fn volume_of(
     k: f64,
     what: &str,
     digests: &mut u64,
+    zero_thickness: &mut usize,
 ) -> Result<(f64, f64, Option<Body>), &'static str> {
     let tol = tolerance(k);
-    match boolean(a, b, op, &tol) {
+    // A result whose parts touch along an edge or in a point is refused
+    // since 2026-10-15 (zero thickness, the developer's decision). The
+    // refusal is checked (the body made without it has parts that touch,
+    // found by a search of its own) and counted, and the identities are
+    // held to that body, so that every pair is looked at as before.
+    let mut refused = false;
+    let result = match boolean(a, b, op, &tol) {
+        Err(KernelError::ZeroThickness { at, .. }) => {
+            let unrefused = BooleanOptions {
+                refuse_zero_thickness: false,
+                ..BooleanOptions::default()
+            };
+            let made = boolean_with(a, b, op, &tol, &unrefused)
+                .unwrap_or_else(|e| panic!("{what}: {op:?}: refused, and without it: {e}"));
+            assert!(
+                on_parts(&made.body, at, &tol) >= 2,
+                "{what}: {op:?}: refused as zero thickness at {at:?}, which is not on two parts"
+            );
+            *zero_thickness += 1;
+            refused = true;
+            Ok(made)
+        }
+        other => other,
+    };
+    if let Ok(made) = &result
+        && !refused
+        && made.body.shells.len() >= 2
+    {
+        assert!(
+            shells_touch_at(&made.body, 2.0 * tol.linear).is_none(),
+            "{what}: {op:?}: parts that touch, not refused"
+        );
+    }
+    match result {
         Ok(result) => {
             *digests = digests.wrapping_add(digest(&result));
             assert_eq!(check(&result.body, &tol), [], "{what}: {op:?}");
@@ -398,6 +432,8 @@ fn volume_of(
             // never fewer faces, edges or vertices.
             let plain = BooleanOptions {
                 merge: false,
+                // Refused merged, refused unmerged: the parts touch either way.
+                refuse_zero_thickness: !refused,
                 ..BooleanOptions::default()
             };
             match boolean_with(a, b, op, &tol, &plain) {
@@ -468,6 +504,8 @@ struct Tally {
     recombine_unsupported: BTreeMap<&'static str, usize>,
     /// The wrapping sum of the hashes of every result ([`digest`]).
     digest: u64,
+    /// Results refused as zero thickness (counted in `volume_of`).
+    zero_thickness: usize,
 }
 
 impl Tally {
@@ -481,6 +519,7 @@ impl Tally {
         }
         self.recombined += other.recombined;
         self.digest = self.digest.wrapping_add(other.digest);
+        self.zero_thickness += other.zero_thickness;
         for (reason, count) in other.recombine_unsupported {
             *self.recombine_unsupported.entry(reason).or_default() += count;
         }
@@ -512,7 +551,15 @@ fn run_pair(seed: u64, placement: Placement, k: f64, shapes: Shapes, tally: &mut
         (&b, &a, Intersect),
         (&b, &a, Subtract),
     ] {
-        match volume_of(&x.body, &y.body, op, k, &what, &mut tally.digest) {
+        match volume_of(
+            &x.body,
+            &y.body,
+            op,
+            k,
+            &what,
+            &mut tally.digest,
+            &mut tally.zero_thickness,
+        ) {
             Ok(result) => results.push(result),
             Err(reason) => {
                 if std::env::var_os("BOOLEAN_VERBOSE").is_some() {
@@ -585,7 +632,15 @@ fn run_pair(seed: u64, placement: Placement, k: f64, shapes: Shapes, tally: &mut
 
     // (A − B) ∪ (A ∩ B) is A again: its pieces meet in coincident faces.
     if let (Some(less), Some(common)) = (&a_less_b.2, &common.2) {
-        match volume_of(less, common, Union, k, &what, &mut tally.digest) {
+        match volume_of(
+            less,
+            common,
+            Union,
+            k,
+            &what,
+            &mut tally.digest,
+            &mut tally.zero_thickness,
+        ) {
             Ok(whole) => {
                 close(whole.0, va, "vol((A−B) ∪ (A∩B)) = vol A");
                 tally.recombined += 1;
@@ -629,12 +684,13 @@ fn hunt(pairs_per_cell: u64, first_seed: u64, shapes: Shapes) {
     for (&(k, placement), tally) in cells.iter().zip(&tallies) {
         let refused: usize = tally.unsupported.values().sum();
         println!(
-            "{shapes:?} scale {k:e} {placement:?}: {} pairs, {} solved ({} overlapping), {} unsupported; \
-                 recombined {} of them, {} refused",
+            "{shapes:?} scale {k:e} {placement:?}: {} pairs, {} solved ({} overlapping), {} unsupported, \
+                 {} results of zero thickness refused; recombined {} of them, {} refused",
             tally.pairs,
             tally.solved,
             tally.overlapping,
             refused,
+            tally.zero_thickness,
             tally.recombined,
             tally.recombine_unsupported.values().sum::<usize>(),
         );
@@ -664,6 +720,8 @@ fn hunt(pairs_per_cell: u64, first_seed: u64, shapes: Shapes) {
         .iter()
         .fold(0_u64, |sum, tally| sum.wrapping_add(tally.digest));
     println!("digest of all results: {digest:016x}");
+    let zero: usize = tallies.iter().map(|t| t.zero_thickness).sum();
+    println!("results of zero thickness refused: {zero}");
 }
 
 #[test]

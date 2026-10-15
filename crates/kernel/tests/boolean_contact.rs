@@ -4,7 +4,11 @@
 //! The rules under test, per operation, for bodies with no volume in
 //! common: the union is both bodies as shells that share nothing, the
 //! intersection is empty, the difference is the first body with the
-//! counts it had.
+//! counts it had. Since 2026-10-15 (the developer's decision) a result
+//! whose parts touch, along an edge, a line or in a point, is refused as
+//! zero thickness (`KernelError::ZeroThickness`); such a union is held to
+//! the same rules made without the refusal, and the refusal to a point
+//! that lies on two of its parts (`solve_parts`).
 
 // Test code: a failure in a helper is a failed test.
 #![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
@@ -33,13 +37,18 @@ fn body_counts(body: &Body) -> (usize, usize, usize, usize) {
     )
 }
 
-/// Two bodies that only touch: the three rules, either way round.
+/// Two bodies that only touch: the three rules, either way round. Their
+/// union is refused as zero thickness (since 2026-10-15: one body whose
+/// two parts touch along a line or in a point), at a point that lies on
+/// both parts (`solve_parts`), and is held to the rules as made without
+/// the refusal.
 #[track_caller]
 fn assert_only_touching(a: &Body, b: &Body, k: f64) {
     let (ma, mb) = (mass(a), mass(b));
     let (ca, cb) = (body_counts(a), body_counts(b));
     for (x, y, mx, my, cx, cy) in [(a, b, ma, mb, ca, cb), (b, a, mb, ma, cb, ca)] {
-        let both = solve(x, y, Union, k);
+        let (both, refused) = solve_parts(x, y, Union, k);
+        assert!(refused.is_some(), "the union at scale {k} is not refused");
         let m = mass(&both.body);
         assert_close(m.volume, mx.volume + my.volume, "volume of the union");
         assert_close(m.area, mx.area + my.area, "area of the union");
@@ -127,7 +136,11 @@ fn a_result_whose_parts_hang_together_by_an_edge() {
         let second = boxed(k, [-1.0, 1.0, -1.0], [1.0, 3.0, 2.0]);
         let ell = solve(&plate, &first, Subtract, k);
         assert_eq!(counts(&ell), (12, 18, 8, 1));
-        let two = solve(&ell.body, &second, Subtract, k);
+        // Zero thickness along that edge: refused there (since
+        // 2026-10-15), and as before when made without the refusal.
+        let (two, refused) = solve_parts(&ell.body, &second, Subtract, k);
+        let at = refused.unwrap();
+        assert!(at.distance(Vec3::new(k, k, at.z)) < 1e-9 * k && at.z > -1e-9 * k);
         assert_mass(&two, 2.0, 12.0, k);
         assert_eq!(counts(&two), (16, 24, 12, 2));
         assert_eq!(genus(&two.body), Some(0));
@@ -142,9 +155,11 @@ fn a_result_whose_parts_hang_together_by_an_edge() {
         assert_eq!(at_corner, 4);
         // In one cut, by a cutter that is itself two blocks joined along
         // that edge.
-        let cutter = solve(&first, &second, Union, k);
+        let (cutter, refused) = solve_parts(&first, &second, Union, k);
+        assert!(refused.is_some());
         assert_eq!(cutter.body.shells.len(), 2);
-        let again = solve(&plate, &cutter.body, Subtract, k);
+        let (again, refused) = solve_parts(&plate, &cutter.body, Subtract, k);
+        assert!(refused.is_some());
         assert_mass(&again, 2.0, 12.0, k);
         assert_eq!(counts(&again), (16, 24, 12, 2));
         // Put back where it came from: the cutter and the two blocks fill
@@ -177,10 +192,13 @@ fn a_hole_that_touches_the_side_and_a_cylinder_that_fills_its_block() {
             k,
         );
         // A cylinder that touches all four sides of its block: taking it
-        // out leaves the four corners, each a body of its own.
+        // out leaves the four corners, which touch each other along the
+        // four lines where it touches the sides: zero thickness, refused
+        // (since 2026-10-15), and as before when made without the refusal.
         let block = boxed(k, [0.0, 0.0, 0.0], [2.0, 2.0, 1.0]);
         let core = rod(k, [1.0, 1.0, -1.0], 1.0, 3.0);
-        let corners = solve(&block, &core, Subtract, k);
+        let (corners, refused) = solve_parts(&block, &core, Subtract, k);
+        assert!(refused.is_some());
         assert_mass(&corners, 4.0 - PI, 2.0 * (4.0 - PI) + 8.0 + 2.0 * PI, k);
         assert_eq!(corners.body.shells.len(), 4);
         assert_eq!(counts(&corners), (24, 36, 20, 4));
@@ -390,7 +408,15 @@ fn a_ball_that_dips_into_a_block_by_about_the_tolerance() {
             let ball = dipped(tolerances);
             assert_empty(&block, &ball, Intersect, k);
             assert_empty(&ball, &block, Intersect, k);
-            let both = solve(&block, &ball, Union, k);
+            // They touch in a point: the union is refused as zero
+            // thickness there (since 2026-10-15), and is the two as before
+            // when made without the refusal.
+            let (both, refused) = solve_parts(&block, &ball, Union, k);
+            let at = refused.unwrap();
+            assert!(
+                at.distance(Vec3::new(0.5, -0.25, 0.0) * k) <= 2e-6 * k,
+                "{at:?}"
+            );
             assert_eq!(both.body.shells.len(), 2, "{tolerances} at {k}");
             assert_eq!(both.body.edges.len(), 12);
             let less = solve(&block, &ball, Subtract, k);
@@ -566,7 +592,15 @@ fn cones_that_share_a_ruling() {
                             volumes.push(0.0);
                             continue;
                         }
-                        let result = solve(x, y, op, k);
+                        // A difference that falls into parts meeting at
+                        // the shared apex is refused as zero thickness
+                        // (since 2026-10-15); it is held to the points as
+                        // made without the refusal.
+                        let (result, refused) = solve_parts(x, y, op, k);
+                        // Only the first cone less the second, where the two share
+                        // their apex, falls into parts that meet there.
+                        let parts = along == 0.0 && op == Subtract && std::ptr::eq(x, &a);
+                        assert_eq!(refused.is_some(), parts, "{along} {op:?} at {k}");
                         volumes.push(mass(&result.body).volume);
                         let found = contains_points(&result.body, &places, &tolerance(k)).unwrap();
                         let mut decided = 0;
@@ -708,7 +742,11 @@ fn a_block_against_a_cone_along_a_ruling_past_its_apex() {
                 )
                 .unwrap();
                 let (mb, mc) = (mass(&block), mass(&cone));
-                let both = solve(&block, &cone, Union, k);
+                // Along the ruling the two touch: the union is refused as
+                // zero thickness (since 2026-10-15) and is both bodies
+                // when made without the refusal.
+                let (both, refused) = solve_parts(&block, &cone, Union, k);
+                assert!(refused.is_some(), "{from} {side} at {k}");
                 let m = mass(&both.body);
                 assert_close(m.volume, mb.volume + mc.volume, "volume of the union");
                 assert_close(m.area, mb.area + mc.area, "area of the union");
@@ -851,7 +889,17 @@ fn a_cylinder_touching_the_top_of_a_torus_tube_from_inside() {
                         (Union, va + vb - common),
                         (Subtract, va - common),
                     ] {
-                        let result = solve(a, b, op, k);
+                        // The cylinder less the torus is two pieces that
+                        // meet in the point of contact: zero thickness,
+                        // refused there (since 2026-10-15), held to the
+                        // volume when made without the refusal. (The
+                        // common part is one piece through that point.)
+                        let (result, refused) = solve_parts(a, b, op, k);
+                        let parts = op == Subtract && va == vc;
+                        assert_eq!(refused.is_some(), parts, "{what}, {op:?}");
+                        if let Some(at) = refused {
+                            assert!(at.distance(touch) <= 64.0 * tol.linear, "{what}, {op:?}");
+                        }
                         let m = mass(&result.body);
                         let slack = tol.linear * m.area;
                         assert!(
@@ -877,5 +925,46 @@ fn a_cylinder_touching_the_top_of_a_torus_tube_from_inside() {
                 }
             }
         }
+    }
+}
+
+/// Bodies apart by a few tolerances are not touching: their union is two
+/// parts, not refused (a gap of three and of ten tolerances, along a face,
+/// an edge and a corner). A ball inside a block, taken out, leaves a
+/// cavity: two shells, one inside the other, apart everywhere, not
+/// refused. At three scales.
+#[test]
+fn parts_a_few_tolerances_apart_and_a_cavity_are_not_refused() {
+    for k in SCALES {
+        let tol = tolerance(k).linear;
+        let plate = boxed(k, [0.0, 0.0, 0.0], [4.0, 3.0, 2.0]);
+        for gap in [3.0, 10.0] {
+            let d = gap * tol / k;
+            for (lo, hi) in [
+                // Face to face, edge to edge, corner to corner.
+                ([4.0 + d, 0.0, 0.0], [5.0, 3.0, 2.0]),
+                ([4.0 + d, 3.0 + d, 0.0], [5.0, 4.0, 2.0]),
+                ([4.0 + d, 3.0 + d, 2.0 + d], [5.0, 4.0, 3.0]),
+            ] {
+                let other = boxed(k, lo, hi);
+                let (both, refused) = solve_parts(&plate, &other, Union, k);
+                assert_eq!(refused, None, "gap {gap} at {k}: {lo:?}");
+                assert_eq!(both.body.shells.len(), 2);
+                assert_close(
+                    mass(&both.body).volume,
+                    mass(&plate).volume + mass(&other).volume,
+                    "the two",
+                );
+            }
+        }
+        let inside = ball(k, [2.0, 1.5, 1.0], 0.75);
+        let (hollow, refused) = solve_parts(&plate, &inside, Subtract, k);
+        assert_eq!(refused, None, "the cavity at {k}");
+        assert_eq!(hollow.body.shells.len(), 2);
+        assert_close(
+            mass(&hollow.body).volume,
+            mass(&plate).volume - mass(&inside).volume,
+            "the block less the ball",
+        );
     }
 }

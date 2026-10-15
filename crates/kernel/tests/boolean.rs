@@ -198,7 +198,12 @@ fn a_rod_standing_on_an_edge_through_the_middle_of_its_base() {
         )
         .unwrap();
         let wedge = primitives::block(&frame, k, k, k).unwrap();
-        let both = solve(&pillar, &wedge, Union, k);
+        // Their union touches along that stretch: zero thickness,
+        // refused there (since 2026-10-15), and the two as before when
+        // made without the refusal.
+        let (both, refused) = solve_parts(&pillar, &wedge, Union, k);
+        let at = refused.unwrap();
+        assert!(at.z.abs() <= 2e-6 * k && at.y.abs() <= 2e-6 * k, "{at:?}");
         assert_mass(&both, 2.0 * PI + 1.0, 6.0 * PI + 6.0, k);
         assert_eq!(both.body.shells.len(), 2);
         let less = solve(&pillar, &wedge, Subtract, k);
