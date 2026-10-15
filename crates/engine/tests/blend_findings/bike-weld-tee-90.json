@@ -1,0 +1,6 @@
+[
+["feature.cylinder", {"radius": "17.5 mm", "height": "200 mm", "position": ["0 mm", "0 mm", "-100 mm"], "name": "Post"}],
+["feature.cylinder", {"radius": "6.0 mm", "height": "150 mm", "position": ["0 mm", "0 mm", "0 mm"], "axis": [1.0, 0, -0.0], "name": "Stay"}],
+["feature.boolean", {"op": "union", "target": "Post", "tool": "Stay", "name": "U"}],
+["feature.fillet", {"edges": [["F1:face(0)", "F2:face(0)"]], "radius": "2 mm", "name": "Weld"}]
+]

@@ -1,0 +1,16 @@
+[
+["variable.set", {"name": "weldR", "expr": "4 mm"}],
+["variable.set", {"name": "weldS", "expr": "2.5 mm"}],
+["variable.set", {"name": "weldD", "expr": "1.2 mm"}],
+["variable.set", {"name": "rimR", "expr": "1.5 mm"}],
+["variable.set", {"name": "chamferS", "expr": "0.8 mm"}],
+["variable.set", {"name": "bbR", "expr": "23.0 mm"}],
+["variable.set", {"name": "bbW", "expr": "68.0 mm"}],
+["variable.set", {"name": "stR", "expr": "17.5 mm"}],
+["variable.set", {"name": "postR", "expr": "15.8 mm"}],
+["variable.set", {"name": "axleR", "expr": "6.0 mm"}],
+["feature.cylinder", {"radius": "stR", "height": "600.0 mm", "position": ["0 mm", "0 mm", "0 mm"], "axis": [-0.325568154, 0, 0.945518576], "angle": "0.0 deg", "name": "SeatTube"}],
+["feature.cylinder", {"radius": "6.0 mm", "height": "200 mm", "position": ["-164.411918001 mm", "11.0 mm", "477.486880678 mm"], "axis": [-0.64817603, 0.145022988, -0.747553455], "name": "Stay"}],
+["feature.boolean", {"op": "union", "target": "SeatTube", "tool": "Stay", "name": "U"}],
+["feature.fillet", {"edges": [["F1:face(0)", "F2:face(0)"]], "radius": "2 mm", "chain": true, "name": "Weld"}]
+]

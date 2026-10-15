@@ -156,3 +156,24 @@ fn the_rims_of_lamp_shade_cells() {
         deep_ok(&mut s);
     }
 }
+
+/// The bike's B7: a tube welded into a tube (one closed edge where two
+/// cylinders meet, a fitted spline with continuous tangents only), square
+/// and at 35°, a stay into the seat tube, the seat tube into the bottom
+/// bracket shell. The planes across such an edge turn unevenly at every
+/// knot of its curve; the ring's balls are taken in the planes square to
+/// the closed path of their centres.
+#[test]
+fn welds_of_a_tube_into_a_tube() {
+    for steps in [
+        include_str!("blend_findings/bike-weld-tee-90.json"),
+        include_str!("blend_findings/bike-weld-tee-35.json"),
+        include_str!("blend_findings/bike-weld-stay-seat-tube.json"),
+        include_str!("blend_findings/bike-weld-seat-tube-bb.json"),
+    ] {
+        let (mut s, _) = replay(steps);
+        let weld = feature(&mut s, "Weld");
+        assert_eq!(weld["status"], "ok", "{weld}");
+        deep_ok(&mut s);
+    }
+}

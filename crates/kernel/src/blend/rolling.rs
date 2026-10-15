@@ -42,8 +42,11 @@
 //! place of the corner, and the edge becomes the blend face.
 //!
 //! **A closed edge** (one vertex no other edge passes through) has no
-//! ends: the sections go round it, the surface is the closed cubic through
-//! them, and the blend face is the ring between its two borders.
+//! ends: the sections go round it (a fillet's in the planes square to the
+//! closed path of the balls' centres, which turn smoothly where the edge
+//! is a fitted curve whose planes would not), the surface is the closed
+//! cubic through them, and the blend face is the ring between its two
+//! borders.
 //!
 //! **Chains and meets.** Edges that go on smoothly into each other are
 //! blended as one chain, and two fillets that end in one vertex at an
@@ -81,6 +84,9 @@ const FOLLOW_DEPTH: u32 = 8;
 
 /// Most samples along one blend face, and across one cut at its end.
 const MAX_SAMPLES: usize = 4096;
+/// Passes of the refinement: each halves the steps where the surface
+/// does not hold.
+const PASSES: usize = 16;
 /// Steps of the search for one ball, and of the search for a nearest point.
 const BALL_STEPS: usize = 100;
 const FOOT_STEPS: usize = 60;
@@ -711,12 +717,48 @@ fn refine(
     limit: f64,
     bend: f64,
 ) -> Option<NurbsSurface> {
-    for _ in 0..16 {
-        let surface = surface_through(params, sections)?;
-        let mut added: Vec<(f64, Section)> = Vec::new();
-        let pairs = params.len().saturating_sub(1);
-        for (index, (pair, near)) in params.windows(2).zip(sections.iter()).enumerate() {
-            let [a, b] = pair else { continue };
+    refine_samples(solver, params, sections, limit, bend, false)
+}
+
+/// [`refine`] for an open surface (through the samples, `surface_through`)
+/// or a closed one (`closed`: round them, [`ring_surface`], the last
+/// sample followed by the first one turn on). Each pass holds the surface
+/// at the middle of every pair of samples against the exact section there
+/// (to `limit`, and a fillet's normal along its borders and across it to
+/// `bend`) and adds the middles where it does not hold, and next to them
+/// those that adding them would push over (see [`to_split`]). At most
+/// [`PASSES`] passes and [`MAX_SAMPLES`] samples.
+fn refine_samples(
+    solver: &Solver<'_>,
+    params: &mut Vec<f64>,
+    sections: &mut Vec<Section>,
+    limit: f64,
+    bend: f64,
+    closed: bool,
+) -> Option<NurbsSurface> {
+    for _ in 0..PASSES {
+        let surface = if closed {
+            ring_surface(params, sections)?
+        } else {
+            surface_through(params, sections)?
+        };
+        let first = *params.first()?;
+        let pairs = if closed {
+            params.len()
+        } else {
+            params.len().saturating_sub(1)
+        };
+        // Per pair of samples: how far the surface is over its bounds at
+        // the middle, the middle and its section, and whether to add it.
+        let mut middles: Vec<(f64, f64, Section, bool)> = Vec::with_capacity(pairs);
+        for index in 0..pairs {
+            let a = *params.get(index)?;
+            let b = match params.get(index + 1) {
+                Some(b) => *b,
+                None if closed => first + 1.0,
+                None => return None,
+            };
+            let near = sections.get(index)?;
             let s = 0.5 * (a + b);
             let exact = solver.section(s, near)?;
             let mut worst = 0.0_f64;
@@ -738,24 +780,39 @@ fn refine(
                     kink = kink.max(own.cross(n).length());
                 }
                 // Across the face, along the ball's radius: here, and at
-                // the first and the last sample (where the next face of
-                // a chain goes on from it, and has to be tangent).
+                // the first and the last sample of an open face (where
+                // the next face of a chain goes on from it, and has to be
+                // tangent).
                 kink = kink.max(radial_kink(&surface, s, &exact)?);
-                if index == 0 {
-                    kink = kink.max(radial_kink(&surface, *a, near)?);
+                if !closed && index == 0 {
+                    kink = kink.max(radial_kink(&surface, a, near)?);
                 }
-                if index + 1 == pairs {
+                if !closed && index + 1 == pairs {
                     let last = sections.get(index + 1)?;
-                    kink = kink.max(radial_kink(&surface, *b, last)?);
+                    kink = kink.max(radial_kink(&surface, b, last)?);
                 }
             }
-            if !(worst <= limit) || !(kink <= bend) {
-                added.push((s, exact));
-            }
+            // How far over its bound the worse of the two is (NaN: over).
+            let over = (worst / limit).max(kink / bend);
+            middles.push((
+                if over.is_nan() { f64::INFINITY } else { over },
+                s,
+                exact,
+                false,
+            ));
         }
-        if added.is_empty() {
+        if middles.iter().all(|m| m.0 <= 1.0) {
             return Some(surface);
         }
+        let over: Vec<f64> = middles.iter().map(|m| m.0).collect();
+        for (m, split) in middles.iter_mut().zip(to_split(&over, closed)) {
+            m.3 = split;
+        }
+        let added: Vec<(f64, Section)> = middles
+            .into_iter()
+            .filter(|m| m.3)
+            .map(|(_, s, exact, _)| (if closed { s.rem_euclid(1.0) } else { s }, exact))
+            .collect();
         if params.len() + added.len() > MAX_SAMPLES {
             return None;
         }
@@ -766,6 +823,60 @@ fn refine(
         }
     }
     None
+}
+
+/// Which steps of an interpolating cubic to halve, from how far over its
+/// bound the cubic is at the middle of each (`over`, 1 at the bound;
+/// round, when `closed`): every step over it, and every step that the
+/// halving of one over it can push over it. Halving a step makes the
+/// cubic pass through the exact middle, which moves it there by what it
+/// was off; through the spline's equations with continuous curvature a
+/// change at one sample dies away by the factor 2 − √3 per sample (the
+/// root of t[i-1] + 4 t[i] + t[i+1] = 0, the recurrence of evenly spaced
+/// samples), so a step k samples away moves by about (2 − √3)^k times as
+/// much and is halved now when that would take it over its bound. Halving
+/// only what is over the bound makes the cubic creep: each pass pushes
+/// the steps next to the halved ones over it, one more at a time, until
+/// the passes run out (seen on the rings of welds between tubes).
+fn to_split(over: &[f64], closed: bool) -> Vec<bool> {
+    let decay = 2.0 - 3.0_f64.sqrt();
+    let n = over.len();
+    let mut split: Vec<bool> = over.iter().map(|o| !(*o <= 1.0)).collect();
+    let largest_within = over
+        .iter()
+        .copied()
+        .filter(|o| *o <= 1.0)
+        .fold(0.0_f64, f64::max);
+    for (i, &o) in over.iter().enumerate() {
+        if o <= 1.0 {
+            continue;
+        }
+        // Not a number (nothing to measure there): halved itself only.
+        if !o.is_finite() {
+            continue;
+        }
+        let mut push = o;
+        for k in 1..n {
+            push *= decay;
+            if push + largest_within <= 1.0 {
+                break;
+            }
+            let near = [
+                i.checked_sub(k).or_else(|| closed.then(|| (i + n - k) % n)),
+                (i + k < n)
+                    .then_some(i + k)
+                    .or_else(|| closed.then(|| (i + k) % n)),
+            ];
+            for j in near.into_iter().flatten() {
+                if over.get(j).is_some_and(|x| x + push > 1.0)
+                    && let Some(slot) = split.get_mut(j)
+                {
+                    *slot = true;
+                }
+            }
+        }
+    }
+    split
 }
 
 /// How far the normal of a fillet's surface at `s` turns away from the
@@ -1421,10 +1532,11 @@ fn tangent_or_refused(
     Ok(blend_face)
 }
 
-/// The blend face along a closed edge: sections evenly round it, joined
-/// by the closed cubic through them (with continuous curvature where
-/// they meet), refined as [`refine`] does an open one. With the samples
-/// it went through.
+/// The blend face along a closed edge: sections evenly round it (a
+/// fillet's then in the planes square to the closed path of their
+/// centres), joined by the closed cubic through them (with continuous
+/// curvature where they meet), refined as [`refine`] does an open one.
+/// With the samples it went through.
 type Ring = (NurbsSurface, Vec<f64>, Vec<Section>);
 
 fn ring(solver: &Solver<'_>, seed: Section, data: &Edge, tolerance: &Tolerance) -> Option<Ring> {
@@ -1452,51 +1564,105 @@ fn ring(solver: &Solver<'_>, seed: Section, data: &Edge, tolerance: &Tolerance) 
         s += step;
     }
     solved.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let mut params: Vec<f64> = solved.iter().map(|x| x.0).collect();
-    let mut sections: Vec<Section> = solved.iter().map(|x| x.1).collect();
     let limit = 0.25 * tolerance.linear;
+    // A fillet's sections are then taken in the planes square to the
+    // closed path of the balls' centres (a cubic with continuous
+    // curvature through the centres found): the planes across the
+    // edge turn only as smoothly as the edge's curve, and an edge that is
+    // a fitted curve (where two cylinders meet: a cubic with continuous
+    // tangents only) gives planes whose turning jumps at every knot,
+    // which the refinement of the face cannot follow. Which planes pick
+    // the balls does not change the surface. A chamfer's lines are
+    // measured from the edge's point in its plane, so it keeps the
+    // edge's planes.
+    let path = match solver.shape {
+        Shape::Ball { .. } => {
+            let balls: Vec<Section> = solved.iter().map(|x| x.1).collect();
+            let (curve, at) = closed_path(&balls)?;
+            Some((curve, at, balls))
+        }
+        Shape::Cut { .. } => None,
+    };
+    let along_path;
+    let (solver, mut params, mut sections) = match &path {
+        Some((curve, at, balls)) => {
+            along_path = Solver {
+                spine: Spine {
+                    curve,
+                    range: (0.0, 1.0),
+                    closed: true,
+                    joints: [None, None],
+                    turn: 0.0,
+                },
+                sides: solver.sides,
+                shape: solver.shape,
+                scale: solver.scale,
+            };
+            let mut params = Vec::with_capacity(at.len());
+            let mut sections = Vec::with_capacity(at.len());
+            for (s, near) in at.iter().zip(balls) {
+                sections.push(along_path.section(*s, near)?);
+                params.push(*s);
+            }
+            (&along_path, params, sections)
+        }
+        None => (
+            solver,
+            solved.iter().map(|x| x.0).collect(),
+            solved.iter().map(|x| x.1).collect(),
+        ),
+    };
     let bend = tolerance.angular.max(BEND).max(tolerance.linear / size);
-    for _ in 0..16 {
-        let surface = ring_surface(&params, &sections)?;
-        let first = *params.first()?;
-        let mut added: Vec<(f64, Section)> = Vec::new();
-        for (i, near) in sections.iter().enumerate() {
-            let a = *params.get(i)?;
-            let b = params.get(i + 1).copied().unwrap_or(first + 1.0);
-            let s = 0.5 * (a + b);
-            let exact = solver.section(s, near)?;
-            let mut worst = 0.0_f64;
-            for k in 0..=8 {
-                let v = f64::from(k) / 8.0;
-                worst = worst.max(surface.eval(s, v).distance(exact.eval(v)?));
-            }
-            let mut kink = 0.0_f64;
-            if matches!(solver.shape, Shape::Ball { .. }) {
-                for (k, v) in [(0_usize, 0.0), (1, 1.0)] {
-                    let (point, du, dv) = surface.derivatives(s, v);
-                    let side = solver.sides.get(k)?;
-                    let (uv, _) = side.foot(point, *exact.params.get(k)?)?;
-                    let n = side.normal(uv)?;
-                    kink = kink.max(du.cross(dv).normalized()?.cross(n).length());
-                }
-            }
-            if !(worst <= limit) || !(kink <= bend) {
-                added.push((s.rem_euclid(1.0), exact));
-            }
-        }
-        if added.is_empty() {
-            return Some((surface, params, sections));
-        }
-        if params.len() + added.len() > MAX_SAMPLES {
-            return None;
-        }
-        for (s, section) in added {
-            let at = params.partition_point(|p| *p < s);
-            params.insert(at, s);
-            sections.insert(at, section);
-        }
+    let surface = refine_samples(solver, &mut params, &mut sections, limit, bend, true)?;
+    Some((surface, params, sections))
+}
+
+/// The closed path of the centres of `balls` (in order round the edge):
+/// the cubic with continuous curvature through them, one Bézier piece
+/// per pair, its parameter their distance along the chords from 0 round
+/// to 1; with each ball's parameter.
+fn closed_path(balls: &[Section]) -> Option<(Curve3, Vec<f64>)> {
+    use craft3d_geom::refine::periodic_derivatives;
+    let centres: Vec<Vec3> = balls.iter().map(|b| b.centre).collect::<Option<_>>()?;
+    let n = centres.len();
+    let chords: Vec<f64> = (0..n)
+        .map(|i| Some(centres.get(i)?.distance(*centres.get((i + 1) % n)?)))
+        .collect::<Option<_>>()?;
+    let total: f64 = chords.iter().sum();
+    if n < 3 || !(total > 0.0) || chords.iter().any(|c| !(*c > 0.0)) {
+        return None;
     }
-    None
+    let steps: Vec<f64> = chords.iter().map(|c| c / total).collect();
+    let mut params = Vec::with_capacity(n);
+    let mut sum = 0.0;
+    for step in &steps {
+        params.push(sum);
+        sum += step;
+    }
+    let values: Vec<Vec<f64>> = centres.iter().map(|c| vec![c.x, c.y, c.z]).collect();
+    let derivatives = periodic_derivatives(&steps, &values).ok()?;
+    let tangent = |i: usize| -> Option<Vec3> {
+        match derivatives.get(i % n)?.as_slice() {
+            [x, y, z] => Some(Vec3::new(*x, *y, *z)),
+            _ => None,
+        }
+    };
+    let mut ctrl = Vec::with_capacity(3 * n + 1);
+    for i in 0..n {
+        let (p, q) = (*centres.get(i)?, *centres.get((i + 1) % n)?);
+        let third = *steps.get(i)? / 3.0;
+        ctrl.push(p);
+        ctrl.push(p + tangent(i)? * third);
+        ctrl.push(q - tangent(i + 1)? * third);
+    }
+    ctrl.push(*centres.first()?);
+    let mut knots = vec![0.0; 4];
+    for p in params.iter().skip(1) {
+        knots.extend([*p; 3]);
+    }
+    knots.extend([1.0; 4]);
+    let curve = NurbsCurve::polynomial(3, knots, ctrl).ok()?;
+    Some((Curve3::Nurbs(curve), params))
 }
 
 /// The closed surface through the sections at `params` (increasing, in
@@ -1505,7 +1671,7 @@ fn ring(solver: &Solver<'_>, seed: Section, data: &Edge, tolerance: &Tolerance) 
 /// of sections; its parameter runs from the first section round to it
 /// again.
 fn ring_surface(params: &[f64], sections: &[Section]) -> Option<NurbsSurface> {
-    use craft3d_geom::refine::periodic_tangents;
+    use craft3d_geom::refine::periodic_derivatives;
     let nets: Vec<Vec<(Vec3, f64)>> = sections
         .iter()
         .map(Section::net)
@@ -1523,7 +1689,16 @@ fn ring_surface(params: &[f64], sections: &[Section]) -> Option<NurbsSurface> {
             b - a
         })
         .collect();
-    let tangents = periodic_tangents(&steps).ok()?;
+    // Per section, its homogeneous control points one after the other.
+    let values: Vec<Vec<f64>> = nets
+        .iter()
+        .map(|net| {
+            net.iter()
+                .flat_map(|(p, w)| [p.x * w, p.y * w, p.z * w, *w])
+                .collect()
+        })
+        .collect();
+    let tangents = periodic_derivatives(&steps, &values).ok()?;
     let count_u = 3 * n + 1;
     let mut ctrl = vec![Vec3::ZERO; count_u * across];
     let mut weights = vec![0.0; count_u * across];
@@ -1533,14 +1708,10 @@ fn ring_surface(params: &[f64], sections: &[Section]) -> Option<NurbsSurface> {
             Some((p * w, w))
         };
         let t = |i: usize| -> Option<(Vec3, f64)> {
-            let row = tangents.get(i % n)?;
-            let mut sum = (Vec3::ZERO, 0.0);
-            for (k, m) in row.iter().enumerate() {
-                let (p, w) = h(k)?;
-                sum.0 += p * *m;
-                sum.1 += w * m;
+            match tangents.get(i % n)?.get(4 * j..4 * j + 4)? {
+                [x, y, z, w] => Some((Vec3::new(*x, *y, *z), *w)),
+                _ => None,
             }
-            Some(sum)
         };
         let mut column = Vec::with_capacity(count_u);
         for i in 0..n {

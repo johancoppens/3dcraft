@@ -775,10 +775,203 @@ pub fn periodic_tangents(steps: &[f64]) -> Result<Vec<Vec<f64>>, GeomError> {
     Ok(out)
 }
 
+/// The tangents of the closed cubic spline with continuous curvature
+/// through `values` (each a vector of the same length: a point's
+/// coordinates, weighted ones) at parameter distances `steps` (as
+/// [`periodic_tangents`]): the same system, cyclic and tridiagonal,
+/// solved in time and room linear in the points (the Thomas algorithm,
+/// with the two corners taken out by the Sherman-Morrison formula; the
+/// system is strictly diagonally dominant, so no pivoting is needed).
+/// Takes up to [`MAX_INTERPOLATED_BANDED`] points.
+pub fn periodic_derivatives(
+    steps: &[f64],
+    values: &[Vec<f64>],
+) -> Result<Vec<Vec<f64>>, GeomError> {
+    let n = steps.len();
+    if !(3..=MAX_INTERPOLATED_BANDED).contains(&n) || values.len() != n {
+        return Err(GeomError::InvalidParameter(
+            "a closed spline needs at least three points, a value for each (and no more than the supported maximum)",
+        ));
+    }
+    if steps.iter().any(|h| !(h.is_finite() && *h > 0.0)) {
+        return Err(GeomError::InvalidParameter(
+            "the parameter steps of a closed spline must be positive and finite",
+        ));
+    }
+    let width = values.first().map_or(0, Vec::len);
+    if values.iter().any(|v| v.len() != width) {
+        return Err(GeomError::InvalidParameter(
+            "the interpolated values must all have the same length",
+        ));
+    }
+    let step = |k: usize| steps.get(k % n).copied().ok_or_else(internal);
+    let value = |k: usize, d: usize| {
+        values
+            .get(k % n)
+            .and_then(|v| v.get(d))
+            .copied()
+            .ok_or_else(internal)
+    };
+    // Row k: lower T_{k-1} + diagonal T_k + upper T_{k+1} = rhs, indices
+    // taken round; the corners are row 0's lower (column n-1) and row
+    // n-1's upper (column 0).
+    let mut lower = vec![0.0; n];
+    let mut diagonal = vec![0.0; n];
+    let mut upper = vec![0.0; n];
+    let mut rhs = vec![vec![0.0; width]; n];
+    for k in 0..n {
+        let (h_before, h_here) = (step(k + n - 1)?, step(k)?);
+        let (a, b) = (3.0 * h_here / h_before, 3.0 * h_before / h_here);
+        let (Some(l), Some(m), Some(u), Some(r)) = (
+            lower.get_mut(k),
+            diagonal.get_mut(k),
+            upper.get_mut(k),
+            rhs.get_mut(k),
+        ) else {
+            return Err(internal());
+        };
+        *l = h_here;
+        *m = 2.0 * (h_before + h_here);
+        *u = h_before;
+        for (d, slot) in r.iter_mut().enumerate() {
+            *slot = -a * value(k + n - 1, d)? + (a - b) * value(k, d)? + b * value(k + 1, d)?;
+        }
+    }
+    let corner_top = *lower.first().ok_or_else(internal)?;
+    let corner_bottom = *upper.last().ok_or_else(internal)?;
+    let gamma = -*diagonal.first().ok_or_else(internal)?;
+    if let Some(d) = diagonal.first_mut() {
+        *d -= gamma;
+    }
+    if let Some(d) = diagonal.last_mut() {
+        *d -= corner_bottom * corner_top / gamma;
+    }
+    // The tridiagonal solve (the Thomas algorithm), for the right-hand
+    // side and for the correction vector (gamma, 0, …, 0, corner_bottom).
+    let solve = |mut r: Vec<Vec<f64>>| -> Result<Vec<Vec<f64>>, GeomError> {
+        let mut d = diagonal.clone();
+        for k in 1..n {
+            let pivot = *d.get(k - 1).ok_or_else(internal)?;
+            if !(pivot.is_finite() && pivot.abs() > 0.0) {
+                return Err(singular());
+            }
+            let w = *lower.get(k).ok_or_else(internal)? / pivot;
+            let u = *upper.get(k - 1).ok_or_else(internal)?;
+            *d.get_mut(k).ok_or_else(internal)? -= w * u;
+            let previous = r.get(k - 1).ok_or_else(internal)?.clone();
+            for (slot, p) in r.get_mut(k).ok_or_else(internal)?.iter_mut().zip(previous) {
+                *slot -= w * p;
+            }
+        }
+        for k in (0..n).rev() {
+            let pivot = *d.get(k).ok_or_else(internal)?;
+            if !(pivot.is_finite() && pivot.abs() > 0.0) {
+                return Err(singular());
+            }
+            let u = *upper.get(k).ok_or_else(internal)?;
+            let next = if k + 1 < n {
+                r.get(k + 1).ok_or_else(internal)?.clone()
+            } else {
+                Vec::new()
+            };
+            let row = r.get_mut(k).ok_or_else(internal)?;
+            for (j, slot) in row.iter_mut().enumerate() {
+                let behind = next.get(j).copied().unwrap_or(0.0);
+                *slot = (*slot - u * behind) / pivot;
+            }
+        }
+        Ok(r)
+    };
+    let mut correction = vec![vec![0.0]; n];
+    if let Some(c) = correction.first_mut() {
+        *c = vec![gamma];
+    }
+    if let Some(c) = correction.last_mut() {
+        *c = vec![corner_bottom];
+    }
+    let mut x = solve(rhs)?;
+    let z = solve(correction)?;
+    let z0 = z
+        .first()
+        .and_then(|v| v.first())
+        .copied()
+        .ok_or_else(internal)?;
+    let zl = z
+        .last()
+        .and_then(|v| v.first())
+        .copied()
+        .ok_or_else(internal)?;
+    let denominator = 1.0 + z0 + corner_top * zl / gamma;
+    if !(denominator.is_finite() && denominator.abs() > 0.0) {
+        return Err(singular());
+    }
+    let (x0, xl) = (
+        x.first().cloned().ok_or_else(internal)?,
+        x.last().cloned().ok_or_else(internal)?,
+    );
+    for d in 0..width {
+        let (a, b) = (
+            x0.get(d).copied().ok_or_else(internal)?,
+            xl.get(d).copied().ok_or_else(internal)?,
+        );
+        let factor = (a + corner_top * b / gamma) / denominator;
+        for (row, zk) in x.iter_mut().zip(&z) {
+            let zk = zk.first().copied().ok_or_else(internal)?;
+            if let Some(slot) = row.get_mut(d) {
+                *slot -= factor * zk;
+            }
+        }
+    }
+    if x.iter().flatten().any(|v| !v.is_finite()) {
+        return Err(singular());
+    }
+    Ok(x)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use craft3d_math::Frame;
+
+    #[test]
+    fn the_linear_periodic_solve_is_the_dense_one() {
+        for n in [3_usize, 4, 7, 40] {
+            let steps: Vec<f64> = (0..n).map(|i| 0.3 + (i as f64 * 1.7).sin().abs()).collect();
+            let values: Vec<Vec<f64>> = (0..n)
+                .map(|i| {
+                    let t = i as f64;
+                    vec![(0.9 * t).cos(), t * t * 0.01, 2.0 - (0.4 * t).sin()]
+                })
+                .collect();
+            let matrix = periodic_tangents(&steps).unwrap();
+            let got = periodic_derivatives(&steps, &values).unwrap();
+            for (row, g) in matrix.iter().zip(&got) {
+                for d in 0..3 {
+                    let want: f64 = row.iter().zip(&values).map(|(m, v)| m * v[d]).sum();
+                    assert!((want - g[d]).abs() < 1e-12, "n {n}: {want} {}", g[d]);
+                }
+            }
+        }
+        // Far more points than the dense one takes: a circle, whose
+        // spline's tangents are the circle's to the interpolation error.
+        let many = 3000;
+        let steps = vec![1.0 / many as f64; many];
+        let values: Vec<Vec<f64>> = (0..many)
+            .map(|i| {
+                let a = std::f64::consts::TAU * i as f64 / many as f64;
+                vec![a.cos(), a.sin()]
+            })
+            .collect();
+        let got = periodic_derivatives(&steps, &values).unwrap();
+        for (i, g) in got.iter().enumerate() {
+            let a = std::f64::consts::TAU * i as f64 / many as f64;
+            let want = [
+                -a.sin() * std::f64::consts::TAU,
+                a.cos() * std::f64::consts::TAU,
+            ];
+            assert!((g[0] - want[0]).abs() < 1e-9 && (g[1] - want[1]).abs() < 1e-9);
+        }
+    }
 
     #[test]
     fn the_banded_interpolation_is_the_dense_one() {
