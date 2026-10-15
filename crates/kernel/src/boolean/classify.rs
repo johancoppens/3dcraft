@@ -52,10 +52,11 @@ pub(super) fn inside(solid: &Solid, p: Vec3, tolerance: &Tolerance) -> Result<bo
     let tol = tolerance.linear;
     // A point within reach of a face of the solid is neither inside nor
     // outside it by any margin that means something.
-    for (face, (outline, box_)) in solid.outlines.iter().zip(&solid.boxes).enumerate() {
+    for (face, box_) in solid.boxes.iter().enumerate() {
         if !box_.contains(p, 2.0 * tol) {
             continue;
         }
+        let outline = solid.outline(face)?;
         // A bound below the distance to a freeform face (a few boxes)
         // settles most points before a nearest-point search.
         let sheet = outline.sheet();
@@ -81,7 +82,7 @@ pub(super) fn inside(solid: &Solid, p: Vec3, tolerance: &Tolerance) -> Result<bo
         };
         let ray = Curve3::Line(line);
         let mut crossings = 0_usize;
-        for (face, (outline, box_)) in solid.outlines.iter().zip(&solid.boxes).enumerate() {
+        for (face, box_) in solid.boxes.iter().enumerate() {
             let Some((enter, leave)) =
                 line_in_box(line.origin(), line.direction(), box_, 2.0 * tol)
             else {
@@ -96,6 +97,7 @@ pub(super) fn inside(solid: &Solid, p: Vec3, tolerance: &Tolerance) -> Result<bo
                 continue;
             }
             let leave = leave + 16.0 * tol + 0.01 * (leave - enter.max(from));
+            let outline = solid.outline(face)?;
             let named = [solid.name(face)];
             let side = |q: Vec3| outline.side(q, tol).map_err(|r| Stop::of(r).at(&named));
             let hits = match curve_hits(&ray, (from, leave), outline.sheet(), tolerance)
@@ -150,7 +152,7 @@ fn classify(
         tried += fresh.len();
         for p in fresh {
             for &(face, same_normal) in coincident {
-                let outline = other.outlines.get(face).ok_or(Stop::of(LOST))?;
+                let outline = other.outline(face)?;
                 // Coincident surfaces may overlap only in part: a point of
                 // this one that is not on the other's (a rational patch
                 // on the cylinder it is a quarter of, with a point of the
@@ -243,8 +245,9 @@ pub(super) fn select(
     let tol = tolerance.linear;
     let none = BTreeSet::new();
     let other_box = other.bbox();
-    for (face, outline) in own.outlines.iter().enumerate() {
+    for face in 0..own.faces() {
         let named = [own.name(face)];
+        let f = own.body.faces.get(face).ok_or(Stop::of(LOST))?;
         let loops = boundary(own, face, pieces)?;
         let across = interior.get(&face).unwrap_or(&none);
         let whole = across.is_empty()
@@ -253,9 +256,25 @@ pub(super) fn select(
                     .get(edge.0 as usize)
                     .is_some_and(|halves| halves.len() == 1)
             });
+        let coincident = coincident.get(&face).map_or(&[][..], Vec::as_slice);
+        // A whole face that is nowhere near the other solid's box is
+        // outside that solid, without looking for a point of it (and
+        // without its outline).
+        let apart = whole
+            && coincident.is_empty()
+            && own
+                .boxes
+                .get(face)
+                .is_some_and(|own_box| !boxes_meet(own_box, &other_box, 4.0 * tol));
+        let outline = if apart {
+            None
+        } else {
+            Some(own.outline(face)?)
+        };
         let regions = if whole {
             vec![loops]
         } else {
+            let outline = outline.ok_or(Stop::of(LOST))?;
             let (regions, dropped) = regions::build(
                 outline.sheet(),
                 outline.reversed,
@@ -284,6 +303,7 @@ pub(super) fn select(
             let region = if whole {
                 outline
             } else {
+                let outline = outline.ok_or(Stop::of(LOST))?;
                 let mut segs = Vec::with_capacity(loops.len());
                 for loop_ in &loops {
                     segs.push(
@@ -294,21 +314,14 @@ pub(super) fn select(
                 made = outline
                     .piece(segs, 4.0 * tol)
                     .map_err(|r| Stop::of(r).at(&named))?;
-                &made
+                Some(&made)
             };
-            let coincident = coincident.get(&face).map_or(&[][..], Vec::as_slice);
-            // A whole face that is nowhere near the other solid's box is
-            // outside that solid, without looking for a point of it.
-            let apart = whole
-                && coincident.is_empty()
-                && own
-                    .boxes
-                    .get(face)
-                    .is_some_and(|own_box| !boxes_meet(own_box, &other_box, 4.0 * tol));
-            let class = if apart {
-                Class::Out
-            } else {
-                classify(region, other, coincident, tolerance).map_err(|s| s.at(&named))?
+            let class = match (apart, region) {
+                (true, _) => Class::Out,
+                (false, Some(region)) => {
+                    classify(region, other, coincident, tolerance).map_err(|s| s.at(&named))?
+                }
+                (false, None) => return Err(Stop::of(LOST).at(&named)),
             };
             // Of two coincident regions with the same normal A's is the
             // one kept; with opposite normals the solids lie on either
@@ -338,8 +351,8 @@ pub(super) fn select(
                     operand: own.operand,
                     face: face_id(face),
                 },
-                surface: outline.surface.clone(),
-                reversed: outline.reversed != flip,
+                surface: f.surface.clone(),
+                reversed: f.reversed != flip,
                 loops,
             });
         }

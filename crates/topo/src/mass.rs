@@ -183,13 +183,27 @@
 //! doubled with every sum, so that the two sums that agree differ in
 //! everything that is refined.
 //!
+//! **Part by part.** The boundary integral is a sum of one term per
+//! sample, each from the same reference, so it is the sum of one integral
+//! per piece of the boundary, and (unless the boundary passes through two
+//! poles, where a term belongs to the whole boundary) each piece is
+//! refined on its own: a piece whose two sums in a row agree is not summed
+//! again, and the face is settled when every piece is, to the sum of what
+//! each was held to. On a surface closed both ways a loop is unrolled as a
+//! whole, and the parts are the loops. A face with tens of holes (a lamp
+//! shade) has pieces that settle at the second sum and some that take
+//! longer; doubling all of them with those spent the face's work on what
+//! was already settled.
+//!
 //! **The work is bounded.** Every doubling is four times the work of the
 //! one before on a spline surface (twice the boundary panels, each node
 //! with twice the inner panels), and all seven on a boundary of spline
-//! edges take minutes. So a face is also given up, with the same error,
-//! once it has taken [`BUDGET`] evaluations of the integrand, those on a
-//! spline surface counted for [`FREEFORM`] and the projection of a
-//! boundary point for [`PROJECTION`]. That is eight times what the
+//! edges take minutes. So an integral is also given up, with the same
+//! error, once it has taken [`BUDGET`] evaluations of the integrand, those
+//! on a spline surface counted for [`FREEFORM`] and the projection of a
+//! boundary point for [`PROJECTION`]: the integral of each part of a
+//! face's boundary, or of the whole boundary where it goes together, and
+//! of the whole surface where that is added. That is eight times what the
 //! slowest face that settles takes in the test suites of this crate, the
 //! test kit and the kernel (4.6 million on an analytic surface; 1.0
 //! million, counted for eight each, on a spline surface), and a hundred
@@ -223,6 +237,7 @@ use crate::{Body, BodyKind, Coedge, Face};
 use craft3d_geom::{Curve3, GeomError, Sphere, Surface};
 use craft3d_math::quadrature::Rule;
 use craft3d_math::{Bbox3, Frame, Vec3};
+use std::collections::BTreeMap;
 use std::f64::consts::{FRAC_PI_2, PI};
 use std::fmt;
 
@@ -1531,19 +1546,24 @@ struct Sample {
 }
 
 /// The boundary as quadrature samples, in the order the loops run, with
-/// half the panels every edge needs doubled `doublings` times. `rules`
-/// is the full rule and the coarse one of half its nodes.
+/// half the panels every edge needs doubled as many times as `level`
+/// says for the piece (by its loop and its place in the loop; a piece it
+/// says `None` of is left out). `rules` is the full rule and the coarse
+/// one of half its nodes.
 fn samples(
     outline: &Outline,
     surface: &Surface,
     index: usize,
     rules: (&Rule, &Rule),
-    doublings: u32,
+    level: &dyn Fn(usize, usize) -> Option<u32>,
     work: &mut Work,
 ) -> Result<Vec<Sample>, MassError> {
     let mut samples = Vec::new();
     for (loop_index, pieces) in outline.loops.iter().enumerate() {
         for (piece_index, piece) in pieces.iter().enumerate() {
+            let Some(doublings) = level(loop_index, piece_index) else {
+                continue;
+            };
             let (low, high) = (piece.start.min(piece.end), piece.start.max(piece.end));
             let direction = if piece.end < piece.start { -1.0 } else { 1.0 };
             let first = samples.len();
@@ -2351,10 +2371,30 @@ fn integrals_in(
     let exact = outline.conic && matches!(surface, Surface::Plane(_));
 
     let coarse = Rule::new(NODES / 2);
+    // Through two poles the integral has a term of the whole boundary
+    // (where it crosses the dividing line): the boundary goes together.
+    let separable = outline.poled.is_none_or(|poled| poled.far.is_none());
+    if !exact && separable {
+        return part_by_part(
+            face,
+            (surface, &outline),
+            index,
+            (rule, &coarse),
+            sense,
+            work,
+        );
+    }
     let mut set_up: Option<Plan> = None;
     let mut coarser: Option<Total> = None;
     for doublings in u32::from(exact)..=MAX_DOUBLINGS {
-        let mut samples = samples(&outline, surface, index, (rule, &coarse), doublings, work)?;
+        let mut samples = samples(
+            &outline,
+            surface,
+            index,
+            (rule, &coarse),
+            &|_, _| Some(doublings),
+            work,
+        )?;
         let (plan, unrolled) = match set_up.take() {
             Some(plan) => (plan, false),
             None => {
@@ -2406,6 +2446,163 @@ fn integrals_in(
         set_up = Some(plan);
     }
     Err(unsettled(index))
+}
+
+/// What is known of one part of a boundary integral refined on its own
+/// ([`part_by_part`]).
+#[derive(Default)]
+struct Part {
+    /// How often its panels are doubled next; `None` once it has settled.
+    level: Option<u32>,
+    spent: u64,
+    coarser: Option<Total>,
+    settled: Option<Total>,
+}
+
+/// [`integrals_in`] for a face whose boundary integral is a sum of one
+/// term per sample (not through two poles), refined part by part: each
+/// piece of the boundary on its own, or each loop where the loops are
+/// unrolled on a surface closed both ways (a loop is unrolled as a
+/// whole). A part is refined until two of its sums in a row agree, with
+/// work of its own up to [`BUDGET`], and is not summed again once it has;
+/// the face is settled when every part is, to the sum of what each was
+/// held to. Doubling the whole boundary until its most intricate stretch
+/// settles, within one budget for the face, gave up on a face with tens
+/// of holes whose loops each settle at the second sum.
+fn part_by_part(
+    face: &Face,
+    (surface, outline): (&Surface, &Outline),
+    index: usize,
+    (rule, coarse): (&Rule, &Rule),
+    sense: f64,
+    work: &mut Work,
+) -> Result<Sums, MassError> {
+    // Every part's work counts from what the face had taken before, and
+    // what all of them take is what the face has taken.
+    let start = work.spent;
+    let mut first = samples(
+        outline,
+        surface,
+        index,
+        (rule, coarse),
+        &|_, _| Some(0),
+        work,
+    )?;
+    let mut taken = work.spent.saturating_sub(start);
+    let plan = match outline.poled {
+        Some(poled) => Plan::Poles(poled),
+        None => plan(face, surface, index, &mut first, sense)?,
+    };
+    let by_loop = plan.up_to_whole_surfaces();
+    if by_loop {
+        // Inner integrals may then run beyond the domain of a spline
+        // surface, by whole turns.
+        work.wrap = spline_closure(surface);
+    }
+    let key = |loop_index: usize, piece: usize| (loop_index, if by_loop { 0 } else { piece });
+    // The samples of each part; a part without any adds nothing.
+    let mut round: BTreeMap<(usize, usize), Vec<Sample>> = BTreeMap::new();
+    for sample in first {
+        round
+            .entry(key(sample.loop_index, sample.piece))
+            .or_default()
+            .push(sample);
+    }
+    let mut parts: BTreeMap<(usize, usize), Part> = round
+        .keys()
+        .map(|&k| {
+            (
+                k,
+                Part {
+                    level: Some(0),
+                    spent: start,
+                    ..Part::default()
+                },
+            )
+        })
+        .collect();
+    // The first samples were unrolled by the plan; later ones are not.
+    let mut unrolled = true;
+    loop {
+        for (at, mut own) in std::mem::take(&mut round) {
+            let Some(part) = parts.get_mut(&at) else {
+                continue;
+            };
+            let Some(doublings) = part.level else {
+                continue;
+            };
+            work.spent = part.spent;
+            let before = part.spent;
+            let Some(total) = boundary_integral(
+                (face, outline),
+                surface,
+                rule,
+                &mut own,
+                sense,
+                &plan,
+                (unrolled, doublings),
+                work,
+            )
+            .map_err(|error| MassError::Geometry { face: index, error })?
+            else {
+                return Err(unsettled(index));
+            };
+            part.spent = work.spent;
+            taken = taken.saturating_add(part.spent.saturating_sub(before));
+            let noise = outline.noise(total.size.area);
+            if part
+                .coarser
+                .is_some_and(|before| before.agrees_with(&total, noise))
+            {
+                part.settled = Some(total);
+                part.level = None;
+            } else if doublings >= MAX_DOUBLINGS {
+                return Err(unsettled(index));
+            } else {
+                part.coarser = Some(total);
+                part.level = Some(doublings + 1);
+            }
+        }
+        if parts.values().all(|part| part.level.is_none()) {
+            break;
+        }
+        for (&at, part) in parts.iter_mut() {
+            let Some(level) = part.level else {
+                continue;
+            };
+            work.spent = part.spent;
+            let own = samples(
+                outline,
+                surface,
+                index,
+                (rule, coarse),
+                &|loop_index, piece| (key(loop_index, piece) == at).then_some(level),
+                work,
+            )?;
+            taken = taken.saturating_add(work.spent.saturating_sub(part.spent));
+            part.spent = work.spent;
+            round.insert(at, own);
+        }
+        unrolled = false;
+    }
+    let mut total = Total::default();
+    for part in parts.into_values() {
+        if let Some(settled) = part.settled {
+            total.add(settled, 1.0);
+        }
+    }
+    // What `settle` may add (the whole surface) is an integral of its
+    // own, with work of its own from where the face began.
+    work.spent = start;
+    let settled = settle(
+        surface,
+        index,
+        rule,
+        (total, plan.up_to_whole_surfaces()),
+        work,
+    );
+    work.spent = work.spent.saturating_add(taken);
+    settled
 }
 
 /// How big the body is: the extent of its vertices and of the ends and

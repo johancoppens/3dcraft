@@ -177,3 +177,71 @@ fn the_lamp_shell_less_a_lofted_cell() {
         );
     }
 }
+
+/// The lamp's shade with six cells cut through it (the lamp's finding M1):
+/// a face of the shell has eight loops, and its boundary integral, all
+/// loops refined together, ran out of the face's work at the second sum
+/// though each loop had settled. Measured now, and the identity of the
+/// cut: what is left and what was taken make the shell.
+#[test]
+fn the_lamp_shade_with_many_holes_is_measured() {
+    let mut s = steps("lamp_shade.steps.json");
+    assert_ok(&mut s, "Shade6");
+    let (bodies, tol) = bodies(&mut s, "shade.3dcraft");
+    let (shell, cells) = (body(&bodies, "Shell"), body(&bodies, "B6U3_0"));
+    let common = boolean(shell, cells, BooleanOp::Intersect, &tol)
+        .unwrap()
+        .body;
+    let (left, taken, whole) = (
+        volume(body(&bodies, "Shade6")),
+        volume(&common),
+        volume(shell),
+    );
+    assert!(taken > 0.0, "the cells cut the shell");
+    assert!(
+        (left + taken - whole).abs() <= 1e-8 * whole,
+        "{left} + {taken} != {whole}"
+    );
+}
+
+/// Two blades with a rounded trailing edge on a hub of revolution (the
+/// impeller's finding F8, cut down to two blades): the edge of a blade's
+/// fillet runs onto the hub's cylinder at a shallow angle right at the
+/// hub's rim, and the place where it meets the rim's circle was found
+/// twice, 6.6e-5 mm apart at a tolerance of 1e-4 mm ("two points closer
+/// together than the tolerance can tell apart"). Each place lies within
+/// the tolerance of both edges: it is one vertex. The union, and the
+/// identities of the three booleans, in place and turned, to the
+/// tolerance over the area (the fillet is a face approximated within it).
+#[test]
+fn blades_with_a_rounded_trailing_edge_on_a_hub() {
+    let mut s = steps("impeller_te_hub.steps.json");
+    assert_ok(&mut s, "WheelA");
+    let (bodies, tol) = bodies(&mut s, "te_hub.3dcraft");
+    let (hub, blades) = (body(&bodies, "HubRaw"), body(&bodies, "Blades"));
+    let slack =
+        tol.linear * (mass_properties(hub).unwrap().area + mass_properties(blades).unwrap().area);
+    let turn =
+        Transform::rotation_about(Vec3::new(2.0, -1.0, 3.0), Vec3::new(-0.2, 0.6, 0.77), 1.1)
+            .unwrap();
+    for t in [None, Some(turn)] {
+        let place = |b: &Body| t.map_or_else(|| b.clone(), |t| b.transformed(&t).unwrap());
+        let (a, b) = (place(hub), place(blades));
+        let (va, vb) = (volume(&a), volume(&b));
+        let of = |op| volume(&boolean(&a, &b, op, &tol).unwrap().body);
+        let (all, common, rest) = (
+            of(BooleanOp::Union),
+            of(BooleanOp::Intersect),
+            of(BooleanOp::Subtract),
+        );
+        assert!(common > 0.0, "the blades stand in the hub");
+        assert!(
+            (all + common - va - vb).abs() <= slack,
+            "{all} + {common} != {va} + {vb}"
+        );
+        assert!(
+            (rest + common - va).abs() <= slack,
+            "{rest} + {common} != {va}"
+        );
+    }
+}
