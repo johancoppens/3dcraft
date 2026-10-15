@@ -1,8 +1,9 @@
-//! Freeform blends that two showcases found refused or wrong, run from
-//! their reproducers (a compressor wheel's blades, a lamp shade's cells;
-//! docs/design/blends.md › *Blend findings of the impeller and the
-//! lamp*): each builds now and passes the deep check, or is refused with
-//! the reason that holds.
+//! Freeform blends that showcases found refused or wrong, run from their
+//! reproducers (a compressor wheel's blades, a lamp shade's cells, a
+//! bicycle frame's welds, the turbofan's casing and spinner;
+//! docs/design/blends.md › *Blend findings of the impeller and the lamp*,
+//! *of the bike and the turbofan*): each builds now and passes the deep
+//! check, or is refused with the reason that holds.
 
 #![allow(
     clippy::unwrap_used,
