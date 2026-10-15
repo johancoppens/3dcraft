@@ -13,6 +13,7 @@ mod edge;
 mod exact;
 mod face;
 mod intersections;
+mod long;
 mod selfcheck;
 mod weld;
 
