@@ -111,5 +111,12 @@ fn main() -> Result<(), String> {
     for (with, without, name) in faces.iter().take(10) {
         println!("  {name}: {without} -> {with}");
     }
+    // And the three that cost most of each kind.
+    for kind in by_kind.keys() {
+        let kind = format!("({kind})");
+        for (with, without, name) in faces.iter().filter(|f| f.2.ends_with(&kind)).take(3) {
+            println!("  {name}: {without} -> {with}");
+        }
+    }
     Ok(())
 }
