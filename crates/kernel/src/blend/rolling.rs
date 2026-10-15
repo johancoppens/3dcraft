@@ -1862,9 +1862,10 @@ fn cut_back(
         // ending where the faces beside it meet the third face at convex
         // edges, as a blade's root fillet at the blade's end): the other
         // edge is lengthened to the corner, along both its faces. A line
-        // between two planes goes on as it is (it lies on both exactly);
-        // any other edge is made again through points where its faces
-        // cross, held to them between those points. The corner on the
+        // between two planes goes on as it is (it lies on both exactly), as
+        // does a curve that goes on within its own domain along both faces
+        // (held at every span of it); any other edge is made again through
+        // points where its faces cross, held to them between those points. The corner on the
         // edge as it is but not within its range, or off it (a spline is
         // projected within its domain), is looked for past the vertex.
         let on_curve = data.curve.eval(t).distance(point) <= tol;
@@ -1876,7 +1877,10 @@ fn cut_back(
                 body.face(*f)
                     .is_some_and(|f| matches!(f.surface, Surface::Plane(_)))
             });
-            let as_it_is = beyond && planes && matches!(data.curve, Curve3::Line(_));
+            let (a, b) = if at_start { (t, lo) } else { (hi, t) };
+            let as_it_is = beyond
+                && ((planes && matches!(data.curve, Curve3::Line(_)))
+                    || stays_on_both(body, &data.curve, (a, b), [face, end.third], tol));
             if !as_it_is {
                 let (curve, at) = lengthened(body, &data, at_start, point, [face, end.third], tol)
                     .ok_or_else(|| too_large(face))?;
@@ -1923,6 +1927,45 @@ fn cut_back(
     Ok(added)
 }
 
+/// Whether `curve` from `a` to `b` (past an edge's range, within the
+/// curve's own domain) lies on the surfaces of both `faces`, to half the
+/// tolerance as a lengthened edge is held: at eight points of every span
+/// of a spline there (its pieces are polynomials of the degree, and its
+/// fit was refined span by span), at sixteen of an analytic curve.
+fn stays_on_both(
+    body: &Body,
+    curve: &Curve3,
+    (a, b): (f64, f64),
+    faces: [FaceId; 2],
+    tol: f64,
+) -> bool {
+    let (d0, d1) = curve.domain();
+    if !(a >= d0 && b <= d1 && b > a) {
+        return false;
+    }
+    let mut breaks = vec![a];
+    let per = match curve {
+        Curve3::Nurbs(n) => {
+            breaks.extend(n.knots().iter().copied().filter(|k| *k > a && *k < b));
+            8
+        }
+        _ => 16,
+    };
+    breaks.push(b);
+    breaks.dedup();
+    breaks.windows(2).all(|w| {
+        let [x, y] = w else { return false };
+        (0..=per).all(|j| {
+            let p = curve.eval(x + (y - x) * f64::from(j) / f64::from(per));
+            faces.iter().all(|f| {
+                body.face(*f).is_some_and(|face| {
+                    foot_past(&face.surface, p).is_some_and(|q| q.distance(p) <= 0.5 * tol)
+                })
+            })
+        })
+    })
+}
+
 /// Grows the spline surface of `face` past its domain (continued as the
 /// function it is, so nothing of the face moves) until it takes in the
 /// edge `edge` lies along it: where a blend lengthens an edge beyond the
@@ -1956,6 +1999,21 @@ fn widen_to(body: &mut Body, face: FaceId, edge: &Edge, tol: f64) -> Option<()> 
         lo_v = lo_v.min(v);
         hi_v = hi_v.max(v);
     }
+    if (lo_u, hi_u, lo_v, hi_v) == (u0, u1, v0, v1) {
+        return Some(());
+    }
+    // Along a direction in which the surface closes on itself, a foot past
+    // one end is a point near the other: nothing to grow there.
+    let (lo_u, hi_u) = if nurbs.closes(true, tol) {
+        (u0, u1)
+    } else {
+        (lo_u, hi_u)
+    };
+    let (lo_v, hi_v) = if nurbs.closes(false, tol) {
+        (v0, v1)
+    } else {
+        (lo_v, hi_v)
+    };
     if (lo_u, hi_u, lo_v, hi_v) == (u0, u1, v0, v1) {
         return Some(());
     }

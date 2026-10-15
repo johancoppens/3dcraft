@@ -171,6 +171,24 @@ fn extend(
 }
 
 impl NurbsSurface {
+    /// Whether the surface closes on itself along u (`along_u`) or v: its
+    /// two ends in that direction meet within `tol` (checked at nine
+    /// places across).
+    pub fn closes(&self, along_u: bool, tol: f64) -> bool {
+        let ((u0, u1), (v0, v1)) = self.domain();
+        (0..=8).all(|k| {
+            let f = f64::from(k) / 8.0;
+            let (a, b) = if along_u {
+                let v = v0 + (v1 - v0) * f;
+                (self.eval(u0, v), self.eval(u1, v))
+            } else {
+                let u = u0 + (u1 - u0) * f;
+                (self.eval(u, v0), self.eval(u, v1))
+            };
+            a.distance(b) <= tol
+        })
+    }
+
     /// The same surface over a domain grown to take in `u` and `v` (the
     /// ends of the old domain inside them stay): every end span continued
     /// as the function it is. Refused where a weight would not stay
@@ -190,20 +208,7 @@ impl NurbsSurface {
         let ((u0, u1), (v0, v1)) = self.domain();
         let grows_u = u.0 < u0 || u.1 > u1;
         let grows_v = v.0 < v0 || v.1 > v1;
-        let closes = |along_u: bool| {
-            (0..=8).all(|k| {
-                let f = f64::from(k) / 8.0;
-                let (a, b) = if along_u {
-                    let v = v0 + (v1 - v0) * f;
-                    (self.eval(u0, v), self.eval(u1, v))
-                } else {
-                    let u = u0 + (u1 - u0) * f;
-                    (self.eval(u, v0), self.eval(u, v1))
-                };
-                a.distance(b) <= tol
-            })
-        };
-        if (grows_u && closes(true)) || (grows_v && closes(false)) {
+        if (grows_u && self.closes(true, tol)) || (grows_v && self.closes(false, tol)) {
             return Err(GeomError::InvalidParameter(
                 "a surface that closes on itself cannot be continued past its seam",
             ));
