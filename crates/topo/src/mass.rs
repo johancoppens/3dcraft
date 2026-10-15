@@ -186,24 +186,23 @@
 //! **Part by part.** The boundary integral is a sum of one term per
 //! sample, each from the same reference, so it is the sum of one integral
 //! per piece of the boundary, and (unless the boundary passes through two
-//! poles, where a term belongs to the whole boundary) each piece is
+//! poles, where a term belongs to the whole boundary, or the face is a
+//! plane bounded by lines and circles, exact at once) each piece is
 //! refined on its own: a piece whose two sums in a row agree is not summed
-//! again, and the face is settled when every piece is, to the sum of what
-//! each was held to. On a surface closed both ways a loop is unrolled as a
-//! whole, and the parts are the loops. A face with tens of holes (a lamp
-//! shade) has pieces that settle at the second sum and some that take
-//! longer; doubling all of them with those spent the face's work on what
-//! was already settled.
+//! again, and the face is settled when every piece is. On a surface closed
+//! both ways a loop is unrolled as a whole, and the parts are the loops. A
+//! part's sums are held to their own allowance ([`CONVERGED`] of their
+//! size, and the rounding: [`Outline::noise`] of what was summed for the
+//! part), and the face to the sum of those: the face's sum is the sum of
+//! the parts' and carries the rounding of each.
 //!
 //! **The work is bounded.** Every doubling is four times the work of the
 //! one before on a spline surface (twice the boundary panels, each node
 //! with twice the inner panels), and all seven on a boundary of spline
-//! edges take minutes. So an integral is also given up, with the same
-//! error, once it has taken [`BUDGET`] evaluations of the integrand, those
-//! on a spline surface counted for [`FREEFORM`] and the projection of a
-//! boundary point for [`PROJECTION`]: the integral of each part of a
-//! face's boundary, or of the whole boundary where it goes together, and
-//! of the whole surface where that is added. That is eight times what the
+//! edges take minutes. So a face is also given up, with the same error,
+//! once it has taken [`BUDGET`] evaluations of the integrand, those on a
+//! spline surface counted for [`FREEFORM`] and the projection of a
+//! boundary point for [`PROJECTION`]. That is eight times what the
 //! slowest face that settles takes in the test suites of this crate, the
 //! test kit and the kernel (4.6 million on an analytic surface; 1.0
 //! million, counted for eight each, on a spline surface), and a hundred
@@ -211,6 +210,18 @@
 //! analytic surface. It is a count and not a clock, so that the same
 //! body is measured or refused alike on every machine; on a spline
 //! surface it comes to some twenty seconds unoptimised.
+//!
+//! A fixed budget does not fit a face of any size: the first sums of a
+//! lampshade with 48 holes take 2.3 budgets alone, and the whole face
+//! 10.7, each part settling at its second sum. So a face refined part by
+//! part takes its first sums whatever they cost (the work of the boundary
+//! at its coarsest: a fixed number of nodes per knot span of each edge,
+//! each with a fixed number of inner panels per knot span of the
+//! surface, so in proportion to the size of the face), and is then given
+//! up once it has taken [`PARTS_WORK`] times what those took, or
+//! [`BUDGET`] where that is more. The bound grows with the face, never
+//! with what its sums do: a part that never settles stops the face at
+//! that cap.
 //!
 //! **Following the boundary.** Every node of a boundary panel is a point
 //! of an edge curve, projected onto the surface for its parameters. On a
@@ -474,6 +485,14 @@ const SQUARE: f64 = 64.0 * f64::EPSILON;
 /// not settle (see the module documentation), in evaluations of the
 /// integrand on an analytic surface.
 const BUDGET: u64 = 1 << 26;
+/// How many times the work of its first sums a face whose boundary is
+/// refined part by part may take, where that is more than [`BUDGET`]
+/// ([`part_by_part`]). A part that settles at the second sum costs five
+/// times its first (each sum four times the one before), at the third
+/// twenty-one: this lets every part go to its third sum, and some deeper.
+/// Measured: the lampshade's faces of 48 and 53 holes take 4.2 to 4.6
+/// times their first sums.
+const PARTS_WORK: u64 = 64;
 /// What the projection of a boundary point counts for in a face's work,
 /// in evaluations of the integrand.
 const PROJECTION: u64 = 8;
@@ -499,6 +518,9 @@ struct Work {
     /// itself, when its boundary is unrolled ([`Plan::Unrolled`]) and an
     /// inner integral may run beyond the domain, by whole turns.
     wrap: [Option<(f64, f64)>; 2],
+    /// Past this much work the face is given up: [`BUDGET`], unless
+    /// [`part_by_part`] sets it otherwise.
+    limit: u64,
 }
 
 impl Work {
@@ -515,6 +537,7 @@ impl Work {
             about,
             second,
             wrap: [None, None],
+            limit: BUDGET,
         }
     }
 
@@ -524,9 +547,9 @@ impl Work {
             .saturating_add(evaluations.saturating_mul(self.each));
     }
 
-    /// Whether the face has taken more than it may ([`BUDGET`]).
+    /// Whether the face has taken more than it may ([`Work::limit`]).
     fn spent_up(&self) -> bool {
-        self.spent > BUDGET
+        self.spent > self.limit
     }
 }
 
@@ -1539,6 +1562,18 @@ impl Outline<'_> {
     /// to anyway ([`CONVERGED`]) it is what counts; below that it is lost
     /// in the criterion, and `noise` stands as the smaller allowance of
     /// the two.
+    ///
+    /// Of a part of the boundary refined on its own ([`part_by_part`]) it
+    /// is given what was summed for that part's area: the part's sum is
+    /// taken and rounded on its own, and is made of inner integrals that
+    /// run from the reference across the face to the part, so it carries
+    /// the rounding of the face's reach, not of the part's (held to how far
+    /// the part itself reaches, a fillet's face of six parts did not
+    /// settle). The face's sum is the sum of its parts' and carries the
+    /// rounding of every one of them: the parts' allowances add up as
+    /// their roundings do. (One allowance for the whole face, shared out
+    /// by size, is tighter than the parts' sums can be: a torus at scale
+    /// 1e-3 and a solid pinched at a point did not settle.)
     fn noise(&self, area: f64) -> f64 {
         let by_width = self.rounding * self.across / area;
         // Not `<=`: a NaN (nothing summed, nothing across) changes nothing.
@@ -2427,7 +2462,7 @@ fn integrals_in(
     rule: &Rule,
     size: f64,
     work: &mut Work,
-    mut first: Option<&mut Option<Result<Sums, MassError>>>,
+    first: Option<&mut Option<Result<Sums, MassError>>>,
 ) -> Result<Sums, MassError> {
     let outline = outline(body, face, surface, index, size)?;
     // Loops run counter-clockwise around the face seen from outside, which
@@ -2448,16 +2483,41 @@ fn integrals_in(
             (rule, &coarse),
             sense,
             work,
+            first,
         );
     }
+    together(
+        face,
+        (surface, &outline),
+        index,
+        (rule, &coarse),
+        (sense, exact),
+        work,
+        first,
+    )
+}
+
+/// [`integrals_in`] with the whole boundary refined together, every piece
+/// doubled with every sum until two sums of the whole agree: for a plane
+/// face bounded by lines and circles (exact at once) and a boundary
+/// through two poles, where a term belongs to the whole boundary.
+fn together(
+    face: &Face,
+    (surface, outline): (&Surface, &Outline),
+    index: usize,
+    (rule, coarse): (&Rule, &Rule),
+    (sense, exact): (f64, bool),
+    work: &mut Work,
+    mut first: Option<&mut Option<Result<Sums, MassError>>>,
+) -> Result<Sums, MassError> {
     let mut set_up: Option<Plan> = None;
     let mut coarser: Option<Total> = None;
     for doublings in u32::from(exact)..=MAX_DOUBLINGS {
         let mut samples = samples(
-            &outline,
+            outline,
             surface,
             index,
-            (rule, &coarse),
+            (rule, coarse),
             &|_, _| Some(doublings),
             work,
         )?;
@@ -2485,7 +2545,7 @@ fn integrals_in(
             work.wrap = spline_closure(surface);
         }
         let Some(total) = boundary_integral(
-            (face, &outline),
+            (face, outline),
             surface,
             rule,
             &mut samples,
@@ -2534,21 +2594,28 @@ fn integrals_in(
 struct Part {
     /// How often its panels are doubled next; `None` once it has settled.
     level: Option<u32>,
-    spent: u64,
     coarser: Option<Total>,
     settled: Option<Total>,
+    /// With the second moments summed: the sums once its area, volume
+    /// and moments agreed, which are those without the second moments.
+    first: Option<Total>,
 }
 
 /// [`integrals_in`] for a face whose boundary integral is a sum of one
 /// term per sample (not through two poles), refined part by part: each
 /// piece of the boundary on its own, or each loop where the loops are
 /// unrolled on a surface closed both ways (a loop is unrolled as a
-/// whole). A part is refined until two of its sums in a row agree, with
-/// work of its own up to [`BUDGET`], and is not summed again once it has;
-/// the face is settled when every part is, to the sum of what each was
-/// held to. Doubling the whole boundary until its most intricate stretch
-/// settles, within one budget for the face, gave up on a face with tens
-/// of holes whose loops each settle at the second sum.
+/// whole). A part is refined until two of its sums in a row agree, and is
+/// not summed again once it has; the face is settled when every part is.
+/// Each part is held to the allowance of its own sums (rounding included,
+/// [`Outline::noise`]), and together to the sum of those.
+///
+/// The work is bounded for the face as a whole. Its first sums (every
+/// part at its coarsest) are as much work as its boundary is long, and
+/// are taken whatever they cost; in all the face may take [`PARTS_WORK`]
+/// times what they took, or its budget where that is more. A face with
+/// tens of holes takes more than one budget only to sum each of them
+/// twice.
 fn part_by_part(
     face: &Face,
     (surface, outline): (&Surface, &Outline),
@@ -2556,10 +2623,13 @@ fn part_by_part(
     (rule, coarse): (&Rule, &Rule),
     sense: f64,
     work: &mut Work,
+    mut first_sums: Option<&mut Option<Result<Sums, MassError>>>,
 ) -> Result<Sums, MassError> {
-    // Every part's work counts from what the face had taken before, and
-    // what all of them take is what the face has taken.
     let start = work.spent;
+    let budget = work.limit;
+    // The first sums are not capped: their work is that of the boundary
+    // at its coarsest (see above).
+    work.limit = u64::MAX;
     let mut first = samples(
         outline,
         surface,
@@ -2568,7 +2638,6 @@ fn part_by_part(
         &|_, _| Some(0),
         work,
     )?;
-    let mut taken = work.spent.saturating_sub(start);
     let plan = match outline.poled {
         Some(poled) => Plan::Poles(poled),
         None => plan(face, surface, index, &mut first, sense)?,
@@ -2595,7 +2664,6 @@ fn part_by_part(
                 k,
                 Part {
                     level: Some(0),
-                    spent: start,
                     ..Part::default()
                 },
             )
@@ -2603,16 +2671,14 @@ fn part_by_part(
         .collect();
     // The first samples were unrolled by the plan; later ones are not.
     let mut unrolled = true;
+    // The budget, from the face's first sums: set after them.
+    let mut capped = false;
     loop {
+        let mut sums = Vec::with_capacity(round.len());
         for (at, mut own) in std::mem::take(&mut round) {
-            let Some(part) = parts.get_mut(&at) else {
+            let Some(doublings) = parts.get(&at).and_then(|part| part.level) else {
                 continue;
             };
-            let Some(doublings) = part.level else {
-                continue;
-            };
-            work.spent = part.spent;
-            let before = part.spent;
             let Some(total) = boundary_integral(
                 (face, outline),
                 surface,
@@ -2627,9 +2693,24 @@ fn part_by_part(
             else {
                 return Err(unsettled(index));
             };
-            part.spent = work.spent;
-            taken = taken.saturating_add(part.spent.saturating_sub(before));
-            let noise = outline.noise(total.size.area);
+            sums.push((at, doublings, total, outline.noise(total.size.area)));
+        }
+        if !capped {
+            capped = true;
+            let first = work.spent.saturating_sub(start);
+            work.limit = budget.max(PARTS_WORK.saturating_mul(first));
+        }
+        for (at, doublings, total, noise) in sums {
+            let Some(part) = parts.get_mut(&at) else {
+                continue;
+            };
+            if part.first.is_none()
+                && part
+                    .coarser
+                    .is_some_and(|before| before.first_agrees_with(&total, noise))
+            {
+                part.first = Some(total);
+            }
             if part
                 .coarser
                 .is_some_and(|before| before.agrees_with(&total, noise))
@@ -2643,14 +2724,39 @@ fn part_by_part(
                 part.level = Some(doublings + 1);
             }
         }
+        // Once every part's sums without the second moments agree, those
+        // are the face's as they would be without them (see
+        // [`integrals_in`]), with the work as it stands.
+        if let Some(slot) = first_sums.as_deref_mut()
+            && slot.is_none()
+            && parts.values().all(|part| part.first.is_some())
+        {
+            let mut alone = work.clone();
+            alone.second = false;
+            let mut total = Total::default();
+            for part in parts.values() {
+                if let Some(first) = part.first {
+                    total.add(first, 1.0);
+                }
+            }
+            *slot = Some(settle(
+                surface,
+                index,
+                rule,
+                (total, plan.up_to_whole_surfaces()),
+                &mut alone,
+            ));
+        }
         if parts.values().all(|part| part.level.is_none()) {
             break;
         }
-        for (&at, part) in parts.iter_mut() {
+        if work.spent_up() {
+            return Err(unsettled(index));
+        }
+        for (&at, part) in &parts {
             let Some(level) = part.level else {
                 continue;
             };
-            work.spent = part.spent;
             let own = samples(
                 outline,
                 surface,
@@ -2659,8 +2765,6 @@ fn part_by_part(
                 &|loop_index, piece| (key(loop_index, piece) == at).then_some(level),
                 work,
             )?;
-            taken = taken.saturating_add(work.spent.saturating_sub(part.spent));
-            part.spent = work.spent;
             round.insert(at, own);
         }
         unrolled = false;
@@ -2671,18 +2775,13 @@ fn part_by_part(
             total.add(settled, 1.0);
         }
     }
-    // What `settle` may add (the whole surface) is an integral of its
-    // own, with work of its own from where the face began.
-    work.spent = start;
-    let settled = settle(
+    settle(
         surface,
         index,
         rule,
         (total, plan.up_to_whole_surfaces()),
         work,
-    );
-    work.spent = work.spent.saturating_add(taken);
-    settled
+    )
 }
 
 /// How big the body is: the extent of its vertices and of the ends and
@@ -3218,6 +3317,7 @@ mod tests {
                 about: Vec3::ZERO,
                 second: false,
                 wrap: [None, None],
+                limit: BUDGET,
             };
             let sums = integrals_in(
                 (&body, face, &surface, 0),
@@ -3248,10 +3348,146 @@ mod tests {
             about: Vec3::ZERO,
             second: false,
             wrap: [None, None],
+            limit: BUDGET,
         };
         assert!(matches!(
             whole_surface(&surface, 0, &rule, &mut work),
             Err(MassError::Unsupported { .. })
         ));
+    }
+
+    /// The cap's rim in `pieces` arcs.
+    fn cap_in_pieces(level: f64, pieces: u32) -> Body {
+        let mut body = Body::new(BodyKind::Sheet);
+        let rim = (RADIUS * RADIUS - level * level).sqrt();
+        let frame = Frame::WORLD
+            .at(CENTRE + Vec3::new(0.0, 0.0, level))
+            .unwrap();
+        let circle = Circle::new(frame, rim).unwrap();
+        let at = |k: u32| TAU * f64::from(k) / f64::from(pieces);
+        let vertices: Vec<_> = (0..pieces)
+            .map(|k| body.add_vertex(frame.point(rim * at(k).cos(), rim * at(k).sin(), 0.0)))
+            .collect();
+        let mut coedges = Vec::new();
+        for k in 0..pieces {
+            let (from, to) = (vertices[k as usize], vertices[((k + 1) % pieces) as usize]);
+            let edge = body.add_edge(Curve3::Circle(circle), (at(k), at(k + 1)), from, to);
+            coedges.push(Coedge {
+                edge,
+                reversed: false,
+            });
+        }
+        let loop_ = body.add_loop(coedges);
+        let sphere = Sphere::new(Frame::WORLD.at(CENTRE).unwrap(), RADIUS).unwrap();
+        let face = body.add_face(Surface::Sphere(sphere), false, vec![loop_]);
+        body.add_shell(vec![face]);
+        body
+    }
+
+    /// The work of a face refined part by part is bounded for the face:
+    /// the rim of the cap in three pieces, with the sphere's other pole
+    /// on it, where `G` is not smooth and the part through it never
+    /// settles. The others settle; the face stops when it has taken
+    /// [`PARTS_WORK`] times its first sums (or its budget, where that is
+    /// more), with no more than one further round on top.
+    #[test]
+    fn a_face_refined_part_by_part_stops_at_its_cap() {
+        let level = 0.8_f64;
+        let body = cap_in_pieces(level, 3);
+        let rim = (level / RADIUS).acos();
+        let surface = turned(PI - rim);
+        let face = body.faces.first().unwrap();
+        let rule = Rule::new(NODES);
+        let run = |limit: u64| {
+            let mut work = Work::new(&surface);
+            work.limit = limit;
+            let result = integrals_in(
+                (&body, face, &surface, 0),
+                &rule,
+                body_size(&body),
+                &mut work,
+                None,
+            );
+            match result {
+                Err(MassError::Unsupported { what, .. }) => {
+                    assert!(what.contains("does not settle"), "{what}")
+                }
+                other => panic!("{other:?}"),
+            }
+            work
+        };
+        // A sphere is cheap: with the whole budget the part through the
+        // pole runs out of doublings first.
+        let whole = run(BUDGET);
+        assert!(whole.spent < BUDGET / 100, "{}", whole.spent);
+        // With a budget of one evaluation the face has PARTS_WORK times
+        // its first sums, and stops there, with at most one further round
+        // on top.
+        let capped = run(1);
+        let (spent, limit) = (capped.spent, capped.limit);
+        assert!(limit > 1 && limit < whole.spent, "{limit}");
+        assert!(spent > limit && spent <= 2 * limit, "{spent} of {limit}");
+        // (Without the cap the same face goes on: the cap stopped it.)
+        assert!(whole.spent > spent, "{spent} against {}", whole.spent);
+    }
+
+    /// A face whose whole boundary, refined together, needs more work than
+    /// its budget is measured part by part (the lamp's finding M1, where a
+    /// shade with eight holes needed 1.04 budgets): the face's budget
+    /// grows with its first sums, which are as much work as its boundary
+    /// is long. Here the rim of a cap in 24 pieces, with half of what the
+    /// whole boundary takes together as the budget.
+    #[test]
+    fn a_face_past_a_budget_for_its_whole_boundary_is_measured_part_by_part() {
+        let level = 0.8_f64;
+        let body = cap_in_pieces(level, 24);
+        let surface = turned(0.3);
+        let face = body.faces.first().unwrap();
+        let rule = Rule::new(NODES);
+        let coarse = Rule::new(NODES / 2);
+        let expected = TAU * RADIUS * (RADIUS - level);
+        let whole = |limit: u64| {
+            let outline = outline(&body, face, &surface, 0, body_size(&body)).unwrap();
+            let mut work = Work::new(&surface);
+            work.limit = limit;
+            let sums = together(
+                face,
+                (&surface, &outline),
+                0,
+                (&rule, &coarse),
+                (1.0, false),
+                &mut work,
+                None,
+            );
+            (sums.map(|sums| sums.area), work.spent)
+        };
+        let by_parts = |limit: u64| {
+            let mut work = Work::new(&surface);
+            work.limit = limit;
+            let sums = integrals_in(
+                (&body, face, &surface, 0),
+                &rule,
+                body_size(&body),
+                &mut work,
+                None,
+            );
+            (sums.map(|sums| sums.area), work.spent)
+        };
+        let (area, needed) = whole(BUDGET);
+        assert!((area.unwrap() - expected).abs() <= 1e-11 * expected);
+        // With half of that, the whole boundary is given up ...
+        let (refused, _) = whole(needed / 2);
+        match refused {
+            Err(MassError::Unsupported { what, .. }) => {
+                assert!(what.contains("does not settle"), "{what}")
+            }
+            other => panic!("{other:?}"),
+        }
+        // ... and part by part it is measured, as it is with the budget.
+        let (area, spent) = by_parts(needed / 2);
+        let area = area.unwrap();
+        assert!((area - expected).abs() <= 1e-11 * expected);
+        assert!(spent > needed / 2, "{spent} of {needed}");
+        assert_eq!(by_parts(BUDGET).0, Ok(area));
     }
 }

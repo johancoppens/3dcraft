@@ -122,7 +122,7 @@ fn the_lamp_shell_less_a_lofted_cell() {
     let (bodies, tol) = bodies(&mut s, "lamp.3dcraft");
     let (shell, cell) = (body(&bodies, "Shell"), body(&bodies, "Cell66"));
 
-    // The intersection of the shell's outer wall and a side of the cell
+    // The intersection of the shell's outer wall and the end cap of the cell
     // in the box the ten cells of the lamp gave it: the box cuts a branch
     // of their curve, and every curve is within the tolerance of both
     // surfaces (it was "could not be fitted").
@@ -130,10 +130,10 @@ fn the_lamp_shell_less_a_lofted_cell() {
         Vec3::new(-168.04316601773542, -168.04316601773542, 104.38877107830017),
         Vec3::new(167.06945264388725, 168.0431660177354, 198.75929163002164),
     ]);
-    let (wall, side) = (&shell.faces[1].surface, &cell.faces[2].surface);
-    let met = meet_surfaces(wall, side, &within, &tol).unwrap();
+    let (wall, cap) = (&shell.faces[1].surface, &cell.faces[2].surface);
+    let met = meet_surfaces(wall, cap, &within, &tol).unwrap();
     let SurfaceMeeting::Meets(meeting) = met else {
-        panic!("the wall and the side meet: {met:?}");
+        panic!("the wall and the cap meet: {met:?}");
     };
     assert!(!meeting.curves.is_empty());
     for curve in &meeting.curves {
@@ -141,7 +141,7 @@ fn the_lamp_shell_less_a_lofted_cell() {
         let (t0, t1) = curve.range;
         for k in 0..=400 {
             let p = curve.curve.eval(t0 + (t1 - t0) * f64::from(k) / 400.0);
-            for surface in [wall, side] {
+            for surface in [wall, cap] {
                 let (u, v) = surface.project(p).unwrap();
                 let off = surface.eval(u, v).distance(p);
                 assert!(off <= tol.linear, "{off} off a surface at {p:?}");
