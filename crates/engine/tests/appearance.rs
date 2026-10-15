@@ -440,6 +440,53 @@ fn a_density_gives_the_mass_and_the_inertia_tensor_in_closed_form() {
     }
 }
 
+/// A colour or a material changes no geometry: setting, changing and
+/// clearing them rebuilds no feature (so no operation and no check of
+/// one runs again), and undoing and redoing them neither.
+#[test]
+fn colours_and_materials_rebuild_nothing() {
+    let mut s = session_in(None);
+    plate_and_pin(&mut s);
+    run(
+        &mut s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Plate", "tool": "Pin", "keepTool": true}),
+    );
+    let features = s.last_regeneration().unwrap();
+    assert!(features.0 + features.1 >= 3, "{features:?}");
+    for (id, params) in [
+        ("body.appearance", json!({"body": "Plate", "color": RED})),
+        (
+            "body.appearance",
+            json!({"body": "Boolean1", "color": BLUE}),
+        ),
+        (
+            "body.material",
+            json!({"body": "Plate", "name": "Steel", "density": 7850}),
+        ),
+        (
+            "body.material",
+            json!({"body": "Pin", "name": "Brass", "density": "8.5 g/cm3"}),
+        ),
+        ("body.appearance", json!({"body": "Plate", "clear": true})),
+        ("body.material", json!({"body": "Pin", "clear": true})),
+        ("edit.undo", json!({})),
+        ("edit.redo", json!({})),
+    ] {
+        let said = run(&mut s, id, params.clone());
+        if id == "body.material" {
+            // It says which bodies have the material, not their mass.
+            for body in said["bodies"].as_array().unwrap() {
+                assert!(body.get("mass").is_none(), "{params}: {said}");
+            }
+        }
+        // Commands that do not regenerate leave the last count in place;
+        // one that regenerated rebuilt nothing.
+        let (rebuilt, _) = s.last_regeneration().unwrap();
+        assert_eq!(rebuilt, 0, "{id} {params}");
+    }
+}
+
 #[test]
 fn a_material_follows_the_body_through_a_boolean_and_the_total_needs_every_body() {
     let mut s = session_in(None);

@@ -301,6 +301,23 @@ impl Param<'_> {
         self.surface.normal(u, v)
     }
 
+    /// The normal a vertex of the mesh at `p` is shaded with: the
+    /// surface's own, except at a pole of a spline surface (`poles`, found
+    /// once per face), where `∂u × ∂v` has no length and its direction is
+    /// rounding. There it is the limit normal along the meridian that
+    /// leaves the pole at `p`'s parameter along the border: the axis
+    /// where the surface closes up smoothly (a revolved profile that meets
+    /// the axis at right angles), the normal of that ruling at a cone-like
+    /// point.
+    fn vertex_normal(&self, p: Uv, poles: &[craft3d_geom::pole::Pole]) -> Option<Vec3> {
+        let (u, v) = self.at(p);
+        if let Some(pole) = poles.iter().find(|pole| pole.holds(self.surface, u, v)) {
+            let along = if pole.across_v() { u } else { v };
+            return pole.normal_along(self.surface, along);
+        }
+        self.surface.normal(u, v)
+    }
+
     /// `∂a × ∂b` points along the surface normal times this.
     fn handedness(&self) -> f64 {
         if self.swapped { -1.0 } else { 1.0 }
@@ -4559,6 +4576,8 @@ fn mesh_face_in(
     let outward = if face.reversed { -1.0 } else { 1.0 };
     let mut mesh = FaceMesh::default();
     let mut index_of: Vec<u32> = vec![u32::MAX; work.uv.len()];
+    // Empty for every surface but a spline surface with a pole.
+    let poles = craft3d_geom::pole::poles(work.param.surface);
     for t in 0..work.cdt.triangle_count() {
         let Some(view) = work.cdt.triangle(t).filter(|view| view.inside) else {
             continue;
@@ -4617,7 +4636,7 @@ fn mesh_face_in(
                 *known =
                     u32::try_from(mesh.positions.len()).map_err(|_| TessError::TooManyVertices)?;
                 mesh.positions.push(vertex.1);
-                let normal = work.param.normal(vertex.0);
+                let normal = work.param.vertex_normal(vertex.0, &poles);
                 mesh.normals
                     .push(normal.map_or(Vec3::ZERO, |n| n * outward));
             }

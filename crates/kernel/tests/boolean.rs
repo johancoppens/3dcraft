@@ -11,7 +11,7 @@ use boolean_common::*;
 use craft3d_geom::{Curve3, Surface};
 use craft3d_kernel::KernelError;
 use craft3d_kernel::boolean::{
-    BooleanOp, EdgeSource, Entity, FaceSource, Operand, VertexSource, boolean,
+    BooleanOp, EdgeSource, Entity, FaceSource, Operand, VertexSource, boolean, contains_points,
 };
 use craft3d_kernel::primitives;
 use craft3d_math::{Frame, Tolerance, Vec3};
@@ -795,24 +795,62 @@ fn what_is_not_supported_says_so() {
         7.0 * PI / 2.0 + 3.0 * PI / 4.0,
         k,
     );
-    // Weights a hundred apart (2026-10-15, the reproducer for what is
-    // owed of "rational weights a thousand apart", `docs/roadmap.md`): the
-    // patch moves a hundred times faster with its parameters near its
-    // light corners than near its heavy ones, and the winding numbers,
-    // which halve the loops by one bound on the chart's speed over the
-    // whole face, give up. (Tried: that bound taken near each piece of a
-    // loop builds this union, but its measure does not settle; and spans
-    // with weights more than a thousand apart split into even pieces are
-    // refused the same way.)
-    match boolean(&weighted(100.0), &ball, Union, &tol) {
-        Err(KernelError::Unsupported { reason, .. }) => {
-            assert!(reason.contains("too close"), "{reason}");
+    // Weights a hundred apart (2026-10-15, what was owed of "rational
+    // weights far apart", `docs/roadmap.md`): the patch moves a hundred
+    // times faster with its parameters near its light corners than near
+    // its heavy ones. The winding numbers halved the loops by one bound on
+    // the chart's speed over the whole face and gave up ("too close");
+    // with the bound taken near each stretch they are built, a ball at a
+    // corner of the bottom and one at a corner of the top, which cuts the
+    // weighted face. `topo::mass_properties` does not settle on such a
+    // face yet (nor on the plate itself), so the results are held to the
+    // same booleans of the plain block, their twin, by point membership:
+    // 400 seeded points classified by ray casting
+    // (`boolean::contains_points`) against the block's results, and
+    // against the exact membership of block and ball. A thousand apart
+    // stays refused in the winding numbers.
+    let mut rng = Rng(20_261_015);
+    for centre in [Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 2.0)] {
+        let ball = primitives::sphere(&Frame::WORLD.at(centre * k).unwrap(), 1.0 * k).unwrap();
+        let points: Vec<Vec3> = (0..400)
+            .map(|_| {
+                Vec3::new(
+                    rng.between(-1.2, 4.2),
+                    rng.between(-1.2, 3.2),
+                    rng.between(-1.2, 3.2),
+                ) * k
+            })
+            .collect();
+        let in_block = |p: Vec3| {
+            p.x > 0.0 && p.x < 4.0 * k && p.y > 0.0 && p.y < 3.0 * k && p.z > 0.0 && p.z < 2.0 * k
+        };
+        let in_ball = |p: Vec3| p.distance(centre * k) < 1.0 * k;
+        for (op, keeps) in [
+            (Union, (|a: bool, b: bool| a || b) as fn(bool, bool) -> bool),
+            (Subtract, |a: bool, b: bool| a && !b),
+            (Intersect, |a: bool, b: bool| a && b),
+        ] {
+            let ours = solve(&weighted(100.0), &ball, op, k);
+            let twin = solve(&plate, &ball, op, k);
+            let classified = contains_points(&ours.body, &points, &tol).unwrap();
+            let expected = contains_points(&twin.body, &points, &tol).unwrap();
+            let mut decided = 0;
+            for ((p, got), want) in points.iter().zip(&classified).zip(&expected) {
+                // Within the tolerance of a face either answer is right.
+                let (Some(got), Some(want)) = (got, want) else {
+                    continue;
+                };
+                decided += 1;
+                assert_eq!(got, want, "{op:?} at {p:?}, ball at {centre:?}");
+                assert_eq!(*got, keeps(in_block(*p), in_ball(*p)), "{op:?} at {p:?}");
+            }
+            assert!(decided > 390, "{op:?}: {decided} points decided");
+            assert_eq!(ours.body.faces.len(), twin.body.faces.len(), "{op:?}");
         }
-        other => panic!(
-            "weights a hundred apart: {:?}; say so in the docs and hold it to the closed forms",
-            other.map(|r| counts(&r))
-        ),
     }
+    let thousand = weighted(1000.0);
+    let (why, _) = reason(&thousand, &ball, Union);
+    assert!(why.contains("too close"), "{why}");
     // What stays refused of a rational face: weights more than a factor
     // of a thousand apart, for which no bound on the derivatives is of
     // any use.

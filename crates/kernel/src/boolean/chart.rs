@@ -123,9 +123,12 @@ pub(super) enum Layout {
     /// ([`PatchTree::chart`]).
     Open,
     Annulus,
-    /// The pole at the end of `t` when `high`, else at its start.
+    /// The pole at the end of `t` when `high`, else at its start; drawn
+    /// with the radius `ω = t^order` (or `(1 − t)^order`), the width of
+    /// the wedge at a pole of that order (`freeform::pole_order`).
     Disc {
         high: bool,
+        order: i32,
     },
     /// The point sent to infinity, as `(a₀, b₀)` with `a = t e^{iθ}` and
     /// `b = 1 − t`: `(re a₀, im a₀, b₀)`.
@@ -441,8 +444,8 @@ impl Chart {
     /// Its speed, from the tree's bound `k` on how fast the shares move
     /// (`Closure::speed`). Annulus and torus: the image moves by
     /// `|(dr, r dθ)|` with `r ≤ 2` and `dθ = 2π ds`, at most `4π |(ds, dt)|`.
-    /// Disc: with `ω = t` (or `1 − t`) the wedge's width, by
-    /// `|(dt, 2π ω ds)| ≤ √(1 + 4π²) |(ω ds, dt)|`. Sphere: see
+    /// Disc: with `ω = tᵐ` (or `(1 − t)ᵐ`) the wedge's width at a pole of
+    /// order `m`, by `|(m tᵐ⁻¹ dt, 2π ω ds)| ≤ √(m² + 4π²) |(ω ds, dt)|`. Sphere: see
     /// [`Chart::direction`]; `√(4 + 4π²)` likewise.
     fn closed_patch(
         tree: &Arc<PatchTree>,
@@ -474,7 +477,11 @@ impl Chart {
         } else {
             match (closure.low, closure.high) {
                 (false, false) => (Layout::Annulus, 4.0 * PI),
-                (low, high) if low != high => (Layout::Disc { high }, (1.0 + 4.0 * PI * PI).sqrt()),
+                (low, high) if low != high => {
+                    let order = closure.order.max(1);
+                    let m = f64::from(order);
+                    (Layout::Disc { high, order }, (m * m + 4.0 * PI * PI).sqrt())
+                }
                 _ => {
                     // The point furthest from the loops: a pole, or one of
                     // twelve places between them.
@@ -563,7 +570,7 @@ impl Chart {
         };
         let (s, reach) = match *layout {
             Layout::Annulus => (s, 1.0 + t),
-            Layout::Disc { high } => (s, if high { 1.0 - t } else { t }),
+            Layout::Disc { high, order } => (s, (if high { 1.0 - t } else { t }).powi(order)),
             Layout::Torus { cut, swapped } => {
                 let (s, t) = if swapped { (t, s) } else { (s, t) };
                 (s, 1.0 + wrap_share(t - cut))
@@ -781,10 +788,43 @@ impl Chart {
         // A stretch that stays within a disc that does not contain the
         // target turns by less than half a turn, which is what `angle`
         // assumes. Halve the stretches until they do.
-        let pace = speed_bound(&seg.curve) * target.lipschitz;
+        let curve_speed = speed_bound(&seg.curve);
+        let pace = curve_speed * target.lipschitz;
         if !(pace.is_finite() && pace > 0.0) {
             return Err(TOO_CLOSE);
         }
+        // On a freeform surface drawn in its own parameters the chart's
+        // speed is bounded near the stretch, not over the whole surface:
+        // where the parametrisation is far from uniform (rational weights
+        // far apart) the one bound for the whole surface is many times
+        // what a stretch elsewhere needs.
+        let local = match self {
+            Chart::Patch {
+                tree,
+                layout: Layout::Open,
+                ..
+            } if tree.parameter_speed().is_some() => Some(tree),
+            _ => None,
+        };
+        let pace_over = |t0: f64, t1: f64| -> f64 {
+            let Some(tree) = local else {
+                return pace * (t1 - t0);
+            };
+            // The feet of the stretch's points are within twice its
+            // length and the distance of its start from the surface of
+            // that start: `|f(q) − p| ≤ |f(q) − q| + |q − p|` and
+            // `|f(q) − q| ≤ |q − p| + d(p)`.
+            let length = curve_speed * (t1 - t0);
+            let start = seg.curve.eval(t0);
+            let Some(off) = tree.nearest(start).map(|n| n.distance) else {
+                return pace * (t1 - t0);
+            };
+            tree.sigma_near(start, 2.0 * length + off)
+                .map_or(pace, |sigma| {
+                    curve_speed * (1.0 / sigma).min(target.lipschitz)
+                })
+                * (t1 - t0)
+        };
         let mut total = 0.0;
         let mut stack = vec![(seg.range.0, from, seg.range.1, to)];
         let mut steps = 0_usize;
@@ -793,7 +833,8 @@ impl Chart {
             if steps > MAX_TURN_STEPS {
                 return Err(TOO_CLOSE);
             }
-            if p0.0.hypot(p0.1) > pace * (t1 - t0) {
+            let far = p0.0.hypot(p0.1);
+            if far > pace * (t1 - t0) || (local.is_some() && far > pace_over(t0, t1)) {
                 total += angle(p0, p1);
             } else {
                 let mid = 0.5 * (t0 + t1);
@@ -963,6 +1004,17 @@ mod tests {
                 ),
             ),
             ("torus", turned(&tube, 2, circle, around_v)),
+            // A needle: the profile leaves the axis along it (a cusp, a
+            // disc whose radius is the square of the share across).
+            (
+                "needle",
+                turned(
+                    &[(0.0, 0.0, 1.0), (0.0, 1.0, 1.0), (1.5, 2.0, 1.0)],
+                    2,
+                    vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                    around_v,
+                ),
+            ),
         ]
     }
 

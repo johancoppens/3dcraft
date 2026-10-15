@@ -653,10 +653,24 @@ fn picture_of(s: &mut Session, view: &Value) -> Picture {
     let first = run(s, "view.pick", pick_params(view, 0.5, 0.5));
     let camera = camera_of(&first);
     let tolerance = view.get("tolerance").and_then(Value::as_f64);
-    let scene = s.scene(tolerance).unwrap().unwrap();
+    let scene = picked_scene(s, &first, tolerance);
     Picture::new(&camera, width, height, scene)
 }
 
+/// The scene `view.pick` looked at for the answer `picked`: the scene of
+/// the tolerance given, or without one the picture's scene at the
+/// tolerance it reports.
+fn picked_scene(
+    s: &mut Session,
+    picked: &Value,
+    tolerance: Option<f64>,
+) -> std::sync::Arc<craft3d_engine::Scene> {
+    let quality = match tolerance {
+        Some(t) => craft3d_engine::SceneQuality::Tolerance(t),
+        None => craft3d_engine::SceneQuality::Picture(picked["tolerance"].as_f64().unwrap()),
+    };
+    s.scene_with(quality).unwrap().unwrap()
+}
 #[test]
 fn a_pick_on_an_edge_in_sight_is_the_edge_document_edges_lists() {
     let mut s = workshop();

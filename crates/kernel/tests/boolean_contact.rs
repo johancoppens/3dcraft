@@ -754,39 +754,126 @@ fn a_rim_a_few_tolerances_inside_a_coaxial_cone() {
     }
 }
 
-/// Fourth-order contact (the reproducer for what is owed, `docs/roadmap.md`
-/// › the boolean checklist, and the random runs' seed 2001169): a
-/// cylinder inside the tube of a torus, its axis square to the torus's,
-/// touching the top of the tube. Along its top line the cylinder rises
-/// above the tube by `y⁴ / (8 R² r)`, so the two surfaces meet in two
-/// curves `θ = ±c y²` tangent to each other at the point of contact, which
-/// the marcher passes through without seeing it: two branches run along
-/// one arm ("two curves leave a point in the same direction and stay
-/// together") or the march stalls. Refused, never a body.
+/// The volume a cylinder of radius `rho` and length `length` has in
+/// common with the torus of radii `major` and `minor` (centre at the
+/// origin, axis z), when the cylinder's axis runs along y through
+/// `(major, ·, height)` with its middle at y = 0 and the cylinder lies in
+/// the tube's disc `(x − R)² + z² ≤ r²`: at height z the cylinder spans
+/// `x ∈ [R − q, R + q]`, `q = sqrt(ρ² − (z − h)²)`, and the torus holds
+/// the line along y through `(x, z)` for `|y| ≤ sqrt((R + w)² − x²)`,
+/// `w = sqrt(r² − z²)` (the inner bound vanishes since `x ≥ R − w`). The
+/// integral across in closed form, `∫ min(L/2, sqrt(a² − x²)) dx`; the
+/// one up by Gauss–Legendre in the angle `z = h + ρ sin θ`, on 4000
+/// panels (the integrand has kinks where the ends cut in).
+fn cylinder_in_torus(major: f64, minor: f64, rho: f64, height: f64, length: f64) -> f64 {
+    const NODES: [(f64, f64); 5] = [
+        (0.0, 0.568_888_888_888_888_9),
+        (-0.538_469_310_105_683_1, 0.478_628_670_499_366_5),
+        (0.538_469_310_105_683_1, 0.478_628_670_499_366_5),
+        (-0.906_179_845_938_664, 0.236_926_885_056_189_1),
+        (0.906_179_845_938_664, 0.236_926_885_056_189_1),
+    ];
+    let half = 0.5 * length;
+    let across = |z: f64| {
+        let q = (rho * rho - (z - height) * (z - height)).max(0.0).sqrt();
+        let w = (minor * minor - z * z).max(0.0).sqrt();
+        let a = major + w;
+        let (x1, x2) = (major - q, (major + q).min(a));
+        let f = |x: f64| 0.5 * (x * (a * a - x * x).max(0.0).sqrt() + a * a * (x / a).asin());
+        let xc = (a * a - half * half).max(0.0).sqrt().clamp(x1, x2);
+        2.0 * (half * (xc - x1) + f(x2) - f(xc))
+    };
+    let panels = 4000;
+    let width = PI / f64::from(panels);
+    let mut total = 0.0;
+    for i in 0..panels {
+        let mid = -0.5 * PI + (f64::from(i) + 0.5) * width;
+        for (x, weight) in NODES {
+            let theta = mid + 0.5 * width * x;
+            total += weight * 0.5 * width * across(height + rho * theta.sin()) * rho * theta.cos();
+        }
+    }
+    total
+}
+
+/// Fourth-order contact (`docs/roadmap.md` › the boolean checklist, the
+/// random runs' seed 2001169): a cylinder inside the tube of a torus, its
+/// axis square to the torus', touching the top of the tube. Along its top
+/// line the cylinder rises above the tube by `y⁴ / (8 R² r)`, so the two
+/// surfaces meet in two loops that leave the point of contact and come
+/// back to it, all four of their ends tangent to each other there (a
+/// tacnode). The marcher passed through it until 2026-10-15 and the
+/// boolean was refused ("stalled", or "two curves leave a point in the
+/// same direction and stay together"); now the point is a vertex with
+/// four edges, made as graphs near it (`geom`: `intersect/march/tacnode.rs`).
+/// Held to the common volume integrated from the closed form above, at
+/// three scales, tilted, both ways round, for the two cylinders of the
+/// reproducer, a thinner one, and the cylinder lifted out of the tube or
+/// sunk into it by three tenths of the tolerance. The slack is the
+/// tolerance times the result's area: what moving every face by the
+/// tolerance changes.
 #[test]
-fn a_cylinder_touching_the_top_of_a_torus_tube_from_inside_is_refused() {
+fn a_cylinder_touching_the_top_of_a_torus_tube_from_inside() {
+    let tilt = Frame::new(
+        Vec3::new(0.2, -0.1, 0.3),
+        Vec3::new(0.3, -0.4, 1.0),
+        Vec3::new(1.0, 0.2, 0.0),
+    )
+    .unwrap();
+    let (major, minor) = (3.0, 1.0);
     for k in SCALES {
-        let torus = ring(k, [0.0, 0.0, 0.0], 3.0, 1.0);
-        for (length, radius) in [(2.0, 0.5), (3.0, 0.3)] {
-            let frame = Frame::new(
-                Vec3::new(3.0, -0.5 * length, 1.0 - radius) * k,
-                Vec3::Y,
-                Vec3::X,
-            )
-            .unwrap();
-            let cylinder = primitives::cylinder(&frame, radius * k, length * k).unwrap();
-            for op in [Union, Intersect, Subtract] {
-                match craft3d_kernel::boolean::boolean(&torus, &cylinder, op, &tolerance(k)) {
-                    Err(KernelError::Unsupported { reason, .. }) => {
+        let tol = tolerance(k);
+        for frame in [Frame::WORLD, tilt] {
+            let frame = frame.at(frame.origin() * k).unwrap();
+            let torus = primitives::torus(&frame, major * k, minor * k).unwrap();
+            for (length, radius, lift) in [
+                (2.0, 0.5, 0.0),
+                (3.0, 0.3, 0.0),
+                (8.0, 0.1, 0.0),
+                (2.0, 0.5, 0.3),
+                (2.0, 0.5, -0.3),
+            ] {
+                let what = format!("scale {k}, {length} by {radius}, lifted {lift}");
+                let height = minor - radius + lift * 1e-6;
+                let base = Frame::new(
+                    frame.point(major * k, -0.5 * length * k, height * k),
+                    frame.y(),
+                    frame.x(),
+                )
+                .unwrap();
+                let cylinder = primitives::cylinder(&base, radius * k, length * k).unwrap();
+                let common = cylinder_in_torus(major, minor, radius, height, length) * k * k * k;
+                let (vt, vc) = (mass(&torus).volume, mass(&cylinder).volume);
+                let touch = frame.point(major * k, 0.0, minor * k);
+                for (a, b, va, vb) in [(&torus, &cylinder, vt, vc), (&cylinder, &torus, vc, vt)] {
+                    for (op, expected) in [
+                        (Intersect, common),
+                        (Union, va + vb - common),
+                        (Subtract, va - common),
+                    ] {
+                        let result = solve(a, b, op, k);
+                        let m = mass(&result.body);
+                        let slack = tol.linear * m.area;
                         assert!(
-                            reason.contains("stay together") || reason.contains("stalled"),
-                            "{op:?} at {k}, {length} by {radius}: {reason}"
+                            (m.volume - expected).abs() <= slack,
+                            "{what}, {op:?}: volume {} for {expected} (off by {:e}, slack {slack:e})",
+                            m.volume,
+                            (m.volume - expected).abs()
+                        );
+                        // The point of contact is a vertex of the result
+                        // (where along the arms it lies is ill-conditioned:
+                        // the surfaces are within `y⁴` of each other).
+                        let nearest = result
+                            .body
+                            .vertices
+                            .iter()
+                            .map(|v| v.point.distance(touch))
+                            .fold(f64::INFINITY, f64::min);
+                        assert!(
+                            nearest <= 64.0 * tol.linear,
+                            "{what}, {op:?}: the nearest vertex is {nearest:e} from the point of contact"
                         );
                     }
-                    other => panic!(
-                        "{op:?} at {k}, {length} by {radius}: {:?}: built now; hold it to an oracle and say so in the docs",
-                        other.map(|r| counts(&r))
-                    ),
                 }
             }
         }

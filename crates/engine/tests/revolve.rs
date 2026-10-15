@@ -451,3 +451,59 @@ fn a_sketch_lies_on_the_cap_of_a_part_turn() {
     let z = |key: &str| inspected["frame"][key][2].as_f64().unwrap();
     assert!(z("x").abs() < 1e-12 && z("y").abs() < 1e-12, "{inspected}");
 }
+
+/// A spline profile that meets the axis at right angles turns into a dome
+/// whose pole is as smooth as a sphere's: the mesh's normals there are
+/// the axis, at any size (lamp T1, 2026-10-16: the vertices at the pole
+/// had no normal, and the dome was shaded with a starburst there).
+#[test]
+fn a_revolved_spline_dome_is_shaded_with_the_axis_at_its_pole() {
+    for k in [1e-3, 1.0, 1e3] {
+        let mut s = Session::new(Workspace::none());
+        run(&mut s, "file.new", json!({}));
+        run(
+            &mut s,
+            "sketch.create",
+            json!({"plane": "zx", "name": "Profile"}),
+        );
+        let control =
+            [[50.0, 0.0], [50.0, 30.0], [20.0, 40.0], [0.0, 40.0]].map(|[a, b]| [a * k, b * k]);
+        run(
+            &mut s,
+            "sketch.spline",
+            json!({"sketch": "Profile", "control": control}),
+        );
+        run(
+            &mut s,
+            "sketch.line",
+            json!({"sketch": "Profile", "from": "e4", "to": [0, 0]}),
+        );
+        run(
+            &mut s,
+            "sketch.line",
+            json!({"sketch": "Profile", "from": "e6", "to": "e1"}),
+        );
+        revolve(&mut s, json!({"axis": "x"}));
+        for tolerance in [None, Some(1e-2 * k)] {
+            let scene = s.scene(tolerance).unwrap().unwrap();
+            let mesh = &scene.mesh;
+            let middle = mesh.bbox().center().unwrap();
+            let mut at_pole = 0;
+            for (p, n) in mesh.positions.iter().zip(&mesh.normals) {
+                // The pole: on the axis (the sketch's x axis, which on
+                // the zx plane is the world's z), away from the flat end.
+                if p.x.abs() > 1e-9 * k || p.y.abs() > 1e-9 * k || p.z.abs() < k {
+                    continue;
+                }
+                at_pole += 1;
+                let outward = (p.z - middle.z).signum();
+                let angle = n.x.hypot(n.y).atan2(n.z * outward);
+                assert!(
+                    (n.length() - 1.0).abs() < 1e-9 && angle < 1e-4,
+                    "size {k}, tolerance {tolerance:?}: normal {n:?} at the pole {p:?}"
+                );
+            }
+            assert!(at_pole > 0, "size {k}: no vertex at the pole");
+        }
+    }
+}
