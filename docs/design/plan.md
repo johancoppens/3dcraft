@@ -2,6 +2,8 @@
 
 The design plan v1 of 2026-10-12 as it was written, with the parts of the old single `architecture.md` that belonged to no one part: goals and principles, the CAD holes to avoid, the workspace layout and layering as first planned, the test layers, the workspace sketch, the open questions, and that file's revision history.
 
+> **The original target design of 2026-10-12, kept as written.** Where it differs from the code, the map ([`../architecture.md`](../architecture.md)) and the Method sections of the detail documents win.
+
 ## Method
 
 This document is history. The structure that holds now is the map, [`../architecture.md`](../architecture.md): where the two differ, the map and the detail documents win. Most of the plan was built as written; where it was not (the plan's `Session` with jobs, events and lock-free snapshots; persistent bodies that share unchanged parts; a stored evaluation order of variables; per-entity tolerances; `Skipped` statuses; rayon; content-addressed blobs; a `fuzz/` directory), the detail documents describe what was built instead, and the map's structural-debt table lists what is still owed.
