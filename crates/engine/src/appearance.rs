@@ -2,7 +2,7 @@
 //! entries of the document (`Document::bodies`, by the feature that makes
 //! a body) carried through the features that make bodies out of bodies.
 //!
-//! The rule (docs/architecture.md §4.2):
+//! The rule (docs/design/document.md):
 //!
 //! - **A body** has the appearance and the material of the feature that
 //!   makes it, when that feature has one; otherwise those of the body it

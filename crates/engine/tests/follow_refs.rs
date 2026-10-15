@@ -3,7 +3,7 @@
 //! earlier body that went into later features resolve them in the newest
 //! body before them, as if the names had been given in full. The oracle
 //! of every test is the same document built with the full names, the
-//! way it had to be built before (docs/architecture.md §4.1 › *References
+//! way it had to be built before (docs/design/names.md › *References
 //! that follow a body*).
 
 #![allow(

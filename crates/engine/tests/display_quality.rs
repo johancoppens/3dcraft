@@ -2,7 +2,7 @@
 //! chordal tolerance of `DISPLAY_RELATIVE_TOLERANCE` and the angle
 //! criterion of `DISPLAY_MAX_ANGLE`) and at every coarser tolerance the
 //! display rule's ladder may try, closed and the same on any number of
-//! threads (docs/architecture.md §6, *What a viewer draws*).
+//! threads (docs/design/tessellator.md, *What a viewer draws*).
 //!
 //! The regression (2026-10-14): a fillet of a few tenths of a millimetre
 //! between a cone and a plane of a revolved band (the turbofan's stripes,

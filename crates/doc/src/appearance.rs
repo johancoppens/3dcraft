@@ -8,7 +8,7 @@
 //! weighed. How an entry reaches the bodies and faces made from that
 //! feature's body by later features (a boolean, a fillet, a pattern) is
 //! decided where the bodies are known (`craft3d-engine`, `appearance`),
-//! by the rule in docs/architecture.md §4.2.
+//! by the rule in docs/design/document.md.
 
 use crate::{DocError, Document, FeatureId, MAX_NAME_LEN};
 use serde::{Deserialize, Serialize};

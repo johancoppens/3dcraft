@@ -1,5 +1,5 @@
 //! The scene: what a viewer draws for the active document, read-only
-//! (docs/architecture.md §8.5, the engine/UI seam).
+//! (docs/design/engine.md, the engine/UI seam).
 //!
 //! A [`Scene`] is derived data: the tessellated mesh of every body with the
 //! feature that made it, every solved sketch as polylines in space, and the
@@ -53,7 +53,7 @@ pub const AUTOMATIC_RELATIVE_TOLERANCE: f64 = 1e-3;
 /// fills a 1020-pixel viewport. Small circles, which a distance alone
 /// makes coarse, are kept round by the angle criterion
 /// ([`DISPLAY_MAX_ANGLE`]) instead of by a finer distance everywhere
-/// (docs/architecture.md §6, *What a viewer draws*; until 2026-10-14 it
+/// (docs/design/tessellator.md, *What a viewer draws*; until 2026-10-14 it
 /// was 3e-5 without an angle, three to ten times the triangles).
 pub const DISPLAY_RELATIVE_TOLERANCE: f64 = 2e-4;
 
@@ -62,7 +62,7 @@ pub const DISPLAY_RELATIVE_TOLERANCE: f64 = 2e-4;
 /// normal, by more than 12 degrees (30 chords to a circle), unless it is
 /// shorter than the chordal tolerance (`craft3d_tess::ANGLE_FLOOR`). It
 /// keeps a small hole round at a chordal tolerance that alone would make
-/// it a polygon of a few sides (docs/architecture.md §6, *What a viewer
+/// it a polygon of a few sides (docs/design/tessellator.md, *What a viewer
 /// draws*). The quick first picture has the chordal tolerance alone: it
 /// is there to be quick.
 pub const DISPLAY_MAX_ANGLE: f64 = DISPLAY_MAX_ANGLE_DEGREES * (std::f64::consts::PI / 180.0);

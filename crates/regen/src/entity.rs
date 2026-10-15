@@ -18,8 +18,8 @@
 //! that even that does not tell apart (two concentric circles in which a
 //! torus cuts a plane) are numbered in the order of where they lie in
 //! space (`F7:between[a,b|c](1)`); such a number is the one part of a
-//! name an edit can move to another entity, which docs/architecture.md
-//! §4.1 says.
+//! name an edit can move to another entity, which docs/design/names.md
+//! says.
 //!
 //! An entity an operand already had also keeps the name the primitive or
 //! the sweep that first made it gave it, as a copy and as an alias

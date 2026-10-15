@@ -11,7 +11,7 @@
 //! error away from that loop's own vertex, and the loop's segments
 //! there then crossed it), the face took its chords for too coarse and
 //! had them cut round after round, and each round's triangulations cost
-//! the square of their points (`crates/tess`, docs/architecture.md, the
+//! the square of their points (`crates/tess`, docs/design/tessellator.md, the
 //! tessellator's seams and its work budget).
 
 #![allow(

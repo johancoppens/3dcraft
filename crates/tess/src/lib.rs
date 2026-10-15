@@ -5,7 +5,7 @@
 //! vertices on a seam between two patches that share a whole edge coincide
 //! exactly, but are separate entries in the mesh. [`tessellate_body`]
 //! handles B-rep bodies, edges first, so that the mesh of a valid solid is
-//! watertight (docs/architecture.md §6); see `body.rs` for what it covers.
+//! watertight (docs/design/tessellator.md); see `body.rs` for what it covers.
 
 mod body;
 mod cdt;

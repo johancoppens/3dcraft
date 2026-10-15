@@ -9,7 +9,7 @@
 //! frame is read back to the CPU for that: a viewer needs the depth
 //! buffer anyway, and the picture goes on screen as a texture, as the CPU
 //! renderer's does. The GPU renderer matches the CPU one within the
-//! tolerance derived in docs/architecture.md §7.2.
+//! tolerance derived in docs/design/rendering.md.
 //!
 //! A [`BodyRenderer`] belongs to one thread: the window has one on the
 //! thread that draws (quick previews) and one on the render thread (sharp

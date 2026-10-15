@@ -106,13 +106,13 @@ pub enum Status {
 /// joined its instances, are named by the faces they lie on
 /// (`F7:between[a,b]`, `F7:corner[a,b,c]`); one that an operand already
 /// had also answers to the name it had there, as an *alias*
-/// (docs/architecture.md §4.1).
+/// (docs/design/names.md).
 ///
 /// A face that a boolean merged from faces of both operands (two flush
 /// blocks united: their tops become one face) is named after the first
 /// contributor in the kernel's order and carries the names of the others
 /// as *aliases*: a reference by any of them resolves to it
-/// (docs/architecture.md §4.1).
+/// (docs/design/names.md).
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Names {
     pub faces: Vec<PersistentName>,
@@ -636,7 +636,7 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
     checked(doc, body)
 }
 
-/// Never hand on an invalid body (docs/architecture.md §5.3).
+/// Never hand on an invalid body (docs/design/kernel.md).
 fn checked(doc: &Document, body: Body) -> Result<Body, String> {
     let tolerance = Tolerance::new(doc.tolerance.linear, doc.tolerance.angular)
         .ok_or("the document's tolerance is not positive and finite".to_string())?;
