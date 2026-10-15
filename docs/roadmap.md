@@ -1,6 +1,6 @@
 # Roadmap
 
-> **Last updated:** 2026-10-14 · **Stage:** M7 (booleans) and M8.5 in progress, M9 started, M4 nearly done; M0–M3, M5, M6 and M8 done · **Change:** minor (restructured: one line per milestone, a section per milestone, the boolean checklist on its own)
+> **Last updated:** 2026-10-15 · **Stage:** M7 (booleans) and M8.5 in progress, M9 started, M4 nearly done; M0–M3, M5, M6 and M8 done · **Change:** minor (M9: move face, thicken and draft)
 
 Forward-looking plan: the **Current focus** agents pick from, one line per milestone, and per milestone what it is for, what is done, what is open and what "done" means. There is no parity percentage: 3DCraft is AI-first with a minimal UI and has no target app ([`decisions.md`](decisions.md)). Progress is measured by milestones whose acceptance tests pass. How something was built (algorithms, thresholds, measurements, file paths of internals) is in [`architecture.md`](architecture.md), and how it is tested in [`testing.md`](testing.md).
 
@@ -13,7 +13,7 @@ Status legend: ✅ done · 🟡 in progress · ⬜ not started. Put the date nex
 1. **The boolean kernel (M7), the developer's first priority** (2026-10-13): a refusal is work owed. Next: a planar tool against a spline surface with a pole ("tangent or nearly coincident over too large an area"), "imprint lost", and the rest of the [boolean checklist](#the-boolean-checklist) in its order.
 2. **Long chains of features:** more than 32 features in a row that each make their body from the one before fail (`MAX_NAME_DEPTH` in `crates/doc/src/name.rs`; 70 holes cut one after another hit it). Needs a naming scheme that does not grow a prefix per feature, or compresses copy chains ([M8.5](#m85-a-history-that-survives-edits-datums-pointing)).
 3. **The tessellator for display:** a triangle budget per face or body (`max_triangles` in the tessellator's parameters, so one large body cannot overshoot the scene's budget) and an angle criterion for coarser display meshes ([M4](#m4-renderers-and-viewer)).
-4. **M9, the rest:** move face, thicken and draft, and what the blends leave open, beside M7 since none of it touches the boolean kernel ([M9](#m9-local-operations-and-sweeps)).
+4. **M9, the rest:** replace face, and what the blends and the face operations leave open, beside M7 since none of it touches the boolean kernel ([M9](#m9-local-operations-and-sweeps)).
 5. **R1, the first release:** the pinned set of modelling tasks, installers, the format promise, material and colour per body, a user guide ([R1](#r1-first-release)).
 
 ## Milestones
@@ -452,6 +452,7 @@ Applications built on 3DCraft, not part of it (the rule in `docs/decisions.md`, 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-15 | minor | M9: move face, thicken and draft done (`feature.moveFace`, `feature.thicken`, `feature.draft`); new feature kinds without a new format version |
 | 2026-10-14 | minor | Restructured: current focus on top, one line per milestone, a section per milestone (Goal, Done, Open, Acceptance), the boolean checklist on its own, ideas apart; how things were built left to `architecture.md` |
 | 2026-10-14 | minor | M9: a thread is cosmetic unless `modeled`, as in other modellers |
 | 2026-10-14 | minor | M9: a thread's size and pitch follow the model (the size of the face, a designation or a length; the coarse pitch of the size unless given); format version 14 |

@@ -1,6 +1,6 @@
 # File formats
 
-> **Last updated:** 2026-10-14 · **Status:** `.3dcraft` (version 14), mesh export (STL, 3MF, OBJ), STEP export and DXF/SVG export of flat outlines work and are tested; STEP import is the plan.
+> **Last updated:** 2026-10-15 · **Status:** `.3dcraft` (version 14), mesh export (STL, 3MF, OBJ), STEP export and DXF/SVG export of flat outlines work and are tested; STEP import is the plan.
 
 | Format | Read | Write | Carries | Crates | Milestone |
 |---|---|---|---|---|---|

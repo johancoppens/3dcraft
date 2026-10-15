@@ -38,7 +38,7 @@ target/release/craft3d-cli run --new '{}' \
     --cmd document.measure --out part.3dcraft
 target/release/craft3d-cli render part.3dcraft --out part.png
 target/release/craft3d-cli convert part.3dcraft part.step
-target/release/craft3d-cli commands          # all 63 commands, with their parameters
+target/release/craft3d-cli commands          # all 66 commands, with their parameters
 ```
 
 The window, and an agent driving it over MCP:
