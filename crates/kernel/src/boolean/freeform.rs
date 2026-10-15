@@ -122,7 +122,16 @@ pub(super) struct PatchTree {
     /// taken about a point of it). A pure function of the point, so the
     /// answer from here is the answer the search would give.
     memo: Mutex<BTreeMap<[u64; 3], Option<Nearest>>>,
+    /// Whether the bounds on the parameter speed of the smallest pieces
+    /// are far apart (a rational surface whose weights are: its
+    /// parametrisation is far from uniform), so that a bound taken near a
+    /// place ([`Self::sigma_near`]) is worth what it costs.
+    uneven: bool,
 }
+
+/// How far apart the smallest pieces' bounds on the parameter speed must
+/// be for the surface to count as [`PatchTree::uneven`].
+const UNEVEN: f64 = 16.0;
 
 /// The nearest point of the surface to a point.
 #[derive(Clone, Copy, Debug)]
@@ -1393,6 +1402,7 @@ impl PatchTree {
             closes: closure(surface),
             poles: found,
             memo: Mutex::new(BTreeMap::new()),
+            uneven: false,
         };
         let whole = spans
             .iter()
@@ -1404,6 +1414,14 @@ impl PatchTree {
         }
         if !polynomial {
             tree.second = tree.second_of_leaves();
+            let (least, most) = tree
+                .nodes
+                .iter()
+                .filter(|n| n.children.is_none())
+                .fold((f64::INFINITY, 0.0_f64), |(lo, hi), n| {
+                    (lo.min(n.sigma), hi.max(n.sigma))
+                });
+            tree.uneven = least > 0.0 && most > UNEVEN * least;
         }
         Ok(tree)
     }
@@ -1495,6 +1513,53 @@ impl PatchTree {
             .map(|n| n.sigma)
             .fold(f64::INFINITY, f64::min);
         (sigma.is_finite() && sigma > 0.0).then_some(sigma)
+    }
+
+    /// Whether the surface's parametrisation is far from uniform: see the
+    /// field.
+    pub(super) fn uneven(&self) -> bool {
+        self.uneven
+    }
+
+    /// A lower bound on the smallest singular value of the Jacobian over
+    /// the pieces of the surface that come within `reach` of `p`: the
+    /// least of the bounds of the smallest pieces there. Where the
+    /// parametrisation is far from uniform (rational weights far apart)
+    /// this is what a curve near `p` needs, not the least over the whole
+    /// surface. `None` on a surface that is not [`Self::uneven`], where no
+    /// piece is that near, or where a piece has no bound.
+    pub(super) fn sigma_near(&self, p: Vec3, reach: f64) -> Option<f64> {
+        if !self.uneven {
+            return None;
+        }
+        let mut least = f64::INFINITY;
+        let mut stack: Vec<usize> = self.roots.clone();
+        let mut visited = 0_usize;
+        while let Some(index) = stack.pop() {
+            visited += 1;
+            if visited > 1 << 16 {
+                return self.least_sigma();
+            }
+            let node = self.nodes.get(index)?;
+            if !(box_distance(&node.bbox, p) <= reach) {
+                continue;
+            }
+            // A piece wholly within reach takes its own bound (a bound
+            // for all of it); one partly within reach is looked at closer.
+            let inside = node.bbox.corners().is_some_and(|(lo, hi)| {
+                let far = Vec3::new(
+                    (p.x - lo.x).abs().max((hi.x - p.x).abs()),
+                    (p.y - lo.y).abs().max((hi.y - p.y).abs()),
+                    (p.z - lo.z).abs().max((hi.z - p.z).abs()),
+                );
+                far.length() <= reach
+            });
+            match node.children {
+                Some(kids) if !inside => stack.extend(kids),
+                _ => least = least.min(node.sigma),
+            }
+        }
+        (least.is_finite() && least > 0.0).then_some(least)
     }
 
     /// How far the surface's parameters can change per unit of length

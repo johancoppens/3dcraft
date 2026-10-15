@@ -781,10 +781,43 @@ impl Chart {
         // A stretch that stays within a disc that does not contain the
         // target turns by less than half a turn, which is what `angle`
         // assumes. Halve the stretches until they do.
-        let pace = speed_bound(&seg.curve) * target.lipschitz;
+        let curve_speed = speed_bound(&seg.curve);
+        let pace = curve_speed * target.lipschitz;
         if !(pace.is_finite() && pace > 0.0) {
             return Err(TOO_CLOSE);
         }
+        // On a freeform surface drawn in its own parameters the chart's
+        // speed is bounded near the stretch, not over the whole surface:
+        // where the parametrisation is far from uniform (rational weights
+        // far apart) the one bound for the whole surface is many times
+        // what a stretch elsewhere needs.
+        let local = match self {
+            Chart::Patch {
+                tree,
+                layout: Layout::Open,
+                ..
+            } if tree.uneven() && tree.parameter_speed().is_some() => Some(tree),
+            _ => None,
+        };
+        let pace_over = |t0: f64, t1: f64| -> f64 {
+            let Some(tree) = local else {
+                return pace * (t1 - t0);
+            };
+            // The feet of the stretch's points are within twice its
+            // length and the distance of its start from the surface of
+            // that start: `|f(q) − p| ≤ |f(q) − q| + |q − p|` and
+            // `|f(q) − q| ≤ |q − p| + d(p)`.
+            let length = curve_speed * (t1 - t0);
+            let start = seg.curve.eval(t0);
+            let Some(off) = tree.nearest(start).map(|n| n.distance) else {
+                return pace * (t1 - t0);
+            };
+            tree.sigma_near(start, 2.0 * length + off)
+                .map_or(pace, |sigma| {
+                    curve_speed * (1.0 / sigma).min(target.lipschitz)
+                })
+                * (t1 - t0)
+        };
         let mut total = 0.0;
         let mut stack = vec![(seg.range.0, from, seg.range.1, to)];
         let mut steps = 0_usize;
@@ -793,7 +826,8 @@ impl Chart {
             if steps > MAX_TURN_STEPS {
                 return Err(TOO_CLOSE);
             }
-            if p0.0.hypot(p0.1) > pace * (t1 - t0) {
+            let far = p0.0.hypot(p0.1);
+            if far > pace * (t1 - t0) || (local.is_some() && far > pace_over(t0, t1)) {
                 total += angle(p0, p1);
             } else {
                 let mid = 0.5 * (t0 + t1);
