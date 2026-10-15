@@ -878,6 +878,11 @@ fn random_pairs_with_every_shape_long_run() {
 ///   tolerance apart, came out by the curve's approximation, and the
 ///   face "could not be divided into regions; this is a bug". It is read
 ///   now where the two are more than four tolerances apart.
+/// - Seed 2001169 on the grid with every shape: a cylinder (the round end
+///   of a slot) inside the tube of a torus, its axis square to the
+///   torus', touching the top of the tube: contact of the fourth order,
+///   a tacnode of the intersection. The march passed through it and
+///   stalled: refused until 2026-10-15.
 #[test]
 fn pairs_that_once_went_wrong() {
     for k in SCALES {
@@ -891,6 +896,7 @@ fn pairs_that_once_went_wrong() {
             (87, Shapes::All),
             (2_000_516, Shapes::All),
             (2_000_613, Shapes::All),
+            (2_001_169, Shapes::All),
         ] {
             let mut tally = Tally::default();
             run_pair(seed, Placement::Grid, k, shapes, &mut tally);

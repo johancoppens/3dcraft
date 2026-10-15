@@ -21,7 +21,7 @@ use boolean_common::*;
 use craft3d_geom::Surface;
 use craft3d_kernel::KernelError;
 use craft3d_kernel::boolean::BooleanOp::{Intersect, Subtract, Union};
-use craft3d_kernel::boolean::boolean;
+use craft3d_kernel::boolean::{boolean, contains_points};
 use craft3d_kernel::primitives;
 use craft3d_kernel::profile::{Curve2, SketchCurve, Spline2, detect_profiles};
 use craft3d_kernel::revolve::revolve;
@@ -747,39 +747,120 @@ fn a_drop_cut_by_a_plane_is_what_its_profile_says() {
     }
 }
 
-/// What has no chart is refused by name: a spline that leaves the axis
-/// along it sweeps a cusp, a point the surface does not leave in a fan.
-/// The solid is valid and measured; a boolean with it says why not,
-/// wherever the cut is.
+/// A cusp: a spline that leaves the axis along it sweeps a point the
+/// surface comes to as a needle, its width growing as the square of the
+/// distance from the point (no fan of meridians). Refused by name until
+/// 2026-10-15 ("a cusp"); now its chart is a wedge (or a disc) whose width
+/// vanishes to the same order, and the pieces that leave the point, all
+/// along the axis, are put in order a little further along
+/// (`architecture.md` §5.3 › *Freeform faces with a pole*). Held to the
+/// closed forms from the profile where the tool cuts across the axis
+/// (`π ∫ ρ² dz` and `2π ∫ ρ ds` up to the cut), to the identities of
+/// sets for every tool (around the point, a leaning block around it, a
+/// ball, and away from it), to the exact membership of 400 seeded points
+/// (the solid is the points within `ρ(y)` of the axis), and every result
+/// is meshed. Refused still: a face that holds the axis through the
+/// point (a plane through it along the axis), which the needle touches
+/// there: on the needle's chart the distance to that face vanishes to the
+/// second order all along the border the point is, and the marcher takes
+/// that for a contact along a curve.
 #[test]
-fn a_cusp_is_a_valid_body_and_a_refused_operand() {
+fn a_cusp_is_an_operand() {
     const CUSP: [P; 4] = [[0.0, 0.0], [0.0, 2.0], [3.0, 4.0], [3.0, 6.0]];
+    let mut rng = Rng(20_261_016);
     for k in SCALES {
         let cusp = swept_solid(&CUSP, k);
         let meridian = Meridian::new(&CUSP, k);
         let (volume, curved) = meridian.swept(0.0, 1.0);
+        let lid = PI * (3.0 * k).powi(2);
         let m = mass(&cusp);
         near(m.volume, volume, 1e-9, "the cusp's volume");
-        near(
-            m.area,
-            curved + PI * (3.0 * k).powi(2),
-            1e-9,
-            "the cusp's area",
-        );
-        for tool in [
-            boxed(k, [-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]),
-            boxed(k, [1.0, 3.0, -1.0], [7.0, 4.0, 1.0]),
-        ] {
-            for op in [Union, Intersect, Subtract] {
-                match boolean(&cusp, &tool, op, &tolerance(k)) {
-                    Err(KernelError::Unsupported { reason, .. }) => {
-                        assert!(reason.contains("a cusp"), "{reason}");
-                    }
-                    other => panic!(
-                        "{op:?} at {k}: expected a refusal, got {:?}",
-                        other.map(|r| counts(&r))
-                    ),
+        near(m.area, curved + lid, 1e-9, "the cusp's area");
+        let radius = |y: f64| meridian.at(meridian.at_height(y))[0];
+        let inside = |p: Vec3| p.y > 0.0 && p.y < 6.0 * k && p.x.hypot(p.z) < radius(p.y);
+        let lean = Vec3::new(0.5, -0.7, 0.3).normalized().unwrap();
+        let tools = [
+            (
+                "around: block",
+                boxed(k, [-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]),
+            ),
+            ("away: slab", boxed(k, [1.0, 3.0, -1.0], [7.0, 4.0, 1.0])),
+            ("around: ball", ball(k, [0.2, 0.3, -0.1], 0.9)),
+            (
+                "across",
+                half_space(k, Vec3::new(0.0, 2.0, 0.0), -Vec3::Y, Vec3::X),
+            ),
+            (
+                "around: leaning block",
+                block_on(
+                    k,
+                    -Vec3::X * 0.7 - Vec3::Z * 0.6,
+                    lean,
+                    Vec3::X,
+                    [2.0, 2.0, 1.5],
+                ),
+            ),
+        ];
+        for (name, tool) in &tools {
+            let what = format!("cusp, {name}, at {k}");
+            let [both, common, rest] = identities(&cusp, tool, k, &what);
+            match *name {
+                "around: block" | "across" => {
+                    let top = if *name == "across" { 2.0 } else { 1.0 };
+                    let (v, a) = meridian.swept(0.0, meridian.at_height(top * k));
+                    let cap = PI * radius(top * k).powi(2);
+                    let c = mass(&common);
+                    near(c.volume, v, 1e-7, &format!("{what}: common volume"));
+                    near(c.area, a + cap, 1e-7, &format!("{what}: common area"));
+                    let r = mass(&rest);
+                    near(r.volume, volume - v, 1e-7, &format!("{what}: rest volume"));
+                    near(
+                        r.area,
+                        curved + lid - a + cap,
+                        1e-7,
+                        &format!("{what}: rest area"),
+                    );
                 }
+                _ => {}
+            }
+            // Membership, by ray casting, against the solids' own
+            // definitions.
+            let points: Vec<Vec3> = (0..400)
+                .map(|_| {
+                    Vec3::new(
+                        rng.between(-3.5, 3.5),
+                        rng.between(-1.0, 7.0),
+                        rng.between(-3.5, 3.5),
+                    ) * k
+                })
+                .collect();
+            let tool_has = contains_points(tool, &points, &tolerance(k)).unwrap();
+            for (body, op) in [(&both, "union"), (&common, "common"), (&rest, "rest")] {
+                let got = contains_points(body, &points, &tolerance(k)).unwrap();
+                for ((p, got), in_tool) in points.iter().zip(&got).zip(&tool_has) {
+                    let (Some(got), Some(in_tool)) = (got, in_tool) else {
+                        continue;
+                    };
+                    let a = inside(*p);
+                    let want = match op {
+                        "union" => a || *in_tool,
+                        "common" => a && *in_tool,
+                        _ => a && !*in_tool,
+                    };
+                    assert_eq!(*got, want, "{what}, {op}, at {p:?}");
+                }
+            }
+        }
+        let along = half_space(k, Vec3::ZERO, -Vec3::X, Vec3::Y);
+        for op in [Union, Intersect, Subtract] {
+            match boolean(&cusp, &along, op, &tolerance(k)) {
+                Err(KernelError::Unsupported { reason, .. }) => {
+                    assert!(reason.contains("touch along a curve"), "{reason}");
+                }
+                other => panic!(
+                    "a plane along the axis through the cusp, {op:?} at {k}: {:?}; hold it to the half solid",
+                    other.map(|r| counts(&r))
+                ),
             }
         }
     }

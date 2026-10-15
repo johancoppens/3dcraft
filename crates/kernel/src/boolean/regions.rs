@@ -134,6 +134,13 @@ fn untie(
         .get(*run.first().ok_or(LOST)?)
         .map(|ray| (ray.direction.dot(frame.x()), ray.direction.dot(frame.y())))
         .ok_or(LOST)?;
+    // (Along the normal, at a cusp, the first ray has no direction across
+    // it: any fixed one serves to read the others from.)
+    let base = if base.0.hypot(base.1) < 1e-9 {
+        (1.0, 0.0)
+    } else {
+        base
+    };
     for part in [0.125, 0.25, 0.5, 1.0] {
         let distance = part * nearest;
         if !(distance.is_finite() && distance > 16.0 * tol) {
@@ -250,7 +257,19 @@ fn trace(
         let angle = |index: usize| rays.get(index).map_or(0.0, |ray| ray.angle);
         fan.sort_by(|&a, &b| angle(a).total_cmp(&angle(b)).then(a.cmp(&b)));
         let count = fan.len();
-        if count > 1 {
+        // At a cusp of the surface every piece leaves the point along the
+        // line it closes around, square to the tangent plane the angles
+        // are read in: they say nothing, and the pieces are put in order
+        // a little further along, all of them.
+        let axial = fan.iter().all(|&index| {
+            rays.get(index).is_some_and(|ray| {
+                let (x, y) = (ray.direction.dot(frame.x()), ray.direction.dot(frame.y()));
+                x.hypot(y) < TIE
+            })
+        });
+        if count > 1 && axial {
+            untie(fan, &rays, arcs, point, &frame, tol)?;
+        } else if count > 1 {
             // Whether each ray leaves in the direction of the next one.
             let tied: Vec<bool> = (0..count)
                 .map(|i| {
