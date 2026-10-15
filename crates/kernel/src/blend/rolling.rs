@@ -1438,10 +1438,12 @@ fn outward_from(
 /// The border `border` of a blend face lies on `face` and stays on it:
 /// it meets no other edge of that face but the ones at its own ends.
 /// Both curves are sampled as polylines; where two chords come within
-/// half their lengths of each other (every point of a piece of curve
-/// lies within half its length of one of its ends, so two pieces that
-/// meet have chords that near) the curves' own nearest points are found
-/// from there ([`nearest_points`]), and a border that comes within ten
+/// half their lengths of each other (every point of a piece of curve lies
+/// within half its arc length of one of its ends, so two pieces that meet
+/// have chords that near; a chord is shorter than its arc only by a
+/// fraction of the square of the piece's turn, and the window is the
+/// chords' lengths, sampled as the other checks of fitted curves are) the
+/// curves' own nearest points are found from there ([`nearest_points`]), and a border that comes within ten
 /// tolerances of the other curve meets it. Chords alone miss crossings
 /// on a curved face: each chord cuts inside the surface by its sagitta,
 /// two that cross on it pass each other in space by the difference.
@@ -1501,7 +1503,9 @@ fn stays_on(
 /// The least distance between the curves of edges `a` and `b` (within
 /// their ranges), from the parameters `start` on them: Gauss-Newton on
 /// the distance, each step at most a twentieth of the ranges. `None`
-/// where the two run along each other there (the step is not defined).
+/// where the two run along each other there (the step is not defined):
+/// that case is the chords' own, which [`stays_on`] holds to ten
+/// tolerances before it asks here.
 fn nearest_points(a: &Edge, b: &Edge, [mut s, mut t]: [f64; 2]) -> Option<f64> {
     let clamp = |x: f64, (lo, hi): (f64, f64)| x.clamp(lo.min(hi), lo.max(hi));
     let (wa, wb) = ((a.range.1 - a.range.0).abs(), (b.range.1 - b.range.0).abs());

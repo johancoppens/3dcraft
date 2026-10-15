@@ -945,6 +945,24 @@ fn oval(k: f64, d: f64, e: f64, big: f64) -> Vec<SketchCurve> {
     ]
 }
 
+/// Points along arcs, from their centres, radii and angles (17 each).
+fn on_arcs(curves: &[SketchCurve], plane: &Frame) -> Vec<Vec3> {
+    let mut out = Vec::new();
+    for c in curves {
+        if let Curve2::Arc { center, start, end } = c.curve {
+            let r = (start[0] - center[0]).hypot(start[1] - center[1]);
+            let a0 = (start[1] - center[1]).atan2(start[0] - center[0]);
+            let a1 = (end[1] - center[1]).atan2(end[0] - center[0]);
+            let sweep = (a1 - a0).rem_euclid(TAU);
+            for i in 0..=16 {
+                let a = a0 + sweep * f64::from(i) / 16.0;
+                out.push(plane.point(center[0] + r * a.cos(), center[1] + r * a.sin(), 0.0));
+            }
+        }
+    }
+    out
+}
+
 /// The largest sine of the angle between the normals of two side faces
 /// across every edge they share (33 points along each), and across every
 /// knot inside a side face (both sides of it, 9 points across).
@@ -1015,14 +1033,28 @@ fn faces_meet_tangentially_where_the_sections_are_smooth() {
         )
         .unwrap();
         let at = |z: f64| Frame::new(tilt.point(0.0, 0.0, z * k), tilt.z(), tilt.x()).unwrap();
-        let first = section(&oval(k, 6.0, 13.0, 28.0), at(0.0));
-        let middle = section(&oval(k, 2.0, 10.0, 24.0), at(60.0));
+        let (ovals, circle_points) = (
+            [oval(k, 6.0, 13.0, 28.0), oval(k, 2.0, 10.0, 24.0)],
+            on_circle([0.0, 0.0], 21.0 * k, &at(160.0)),
+        );
+        let first = section(&ovals[0], at(0.0));
+        let middle = section(&ovals[1], at(60.0));
         let last = section(&[circle(1, [0.0, 0.0], 21.0 * k)], at(160.0));
+        // Points of the sections from their arcs' own definitions: the
+        // loft has to pass through them, whatever its parameters.
+        let on = [on_arcs(&ovals[0], &at(0.0)), on_arcs(&ovals[1], &at(60.0))];
         for sections in [vec![first.clone(), last.clone()], vec![first, middle, last]] {
             let made = loft(&sections, &SMOOTH, &tol())
                 .unwrap_or_else(|e| panic!("{} sections at scale {k}: {e}", sections.len()));
             let (volume, _) = sound(&made);
             assert!(close(volume, sliced_volume(&made), 1e-7));
+            let mut points = on[0].clone();
+            points.extend(&circle_points);
+            if sections.len() == 3 {
+                points.extend(&on[1]);
+            }
+            let off = off_the_sides(&made, &points);
+            assert!(off < 1e-9 * k.max(1.0), "a section is {off} off the sides");
             let worst = creases(&made);
             assert!(worst <= tol().angular, "a crease of {worst} at scale {k}");
         }

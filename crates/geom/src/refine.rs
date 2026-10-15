@@ -428,10 +428,47 @@ pub fn reparametrized(curve: &NurbsCurve, start: f64, end: f64) -> Result<NurbsC
             "a change of parameter has to keep the curve's direction all along",
         ));
     }
-    let phi = [0.0, start / 3.0, 1.0 - end / 3.0, 1.0];
+    composed(curve, &[0.0, start / 3.0, 1.0 - end / 3.0, 1.0])
+}
+
+/// [`reparametrized`] at one end only, by a quadratic φ: twice the degree
+/// rather than three times. The derivative at that end (the start, or the
+/// end when `at_end`) is `factor` times what it was, at the other end
+/// `2 − factor` times (φ′ is linear); refused unless 0 < `factor` < 2.
+pub fn reparametrized_at(
+    curve: &NurbsCurve,
+    factor: f64,
+    at_end: bool,
+) -> Result<NurbsCurve, GeomError> {
+    if !(factor.is_finite() && factor > 0.0 && factor < 2.0) {
+        return Err(GeomError::InvalidParameter(
+            "a change of parameter has to keep the curve's direction all along",
+        ));
+    }
+    let middle = if at_end {
+        1.0 - factor / 2.0
+    } else {
+        factor / 2.0
+    };
+    composed(curve, &[0.0, middle, 1.0])
+}
+
+/// The curve with its parameter (scaled to [0, 1]) run through the
+/// increasing polynomial φ given by its Bernstein coefficients (from 0 to
+/// 1): `φ.len() − 1` times the degree, cut into Bézier pieces.
+fn composed(curve: &NurbsCurve, phi: &[f64]) -> Result<NurbsCurve, GeomError> {
     let at = |u: f64| {
-        let v = 1.0 - u;
-        phi[1] * 3.0 * u * v * v + phi[2] * 3.0 * u * u * v + u * u * u
+        let mut row = phi.to_vec();
+        while row.len() > 1 {
+            row = row
+                .windows(2)
+                .map(|w| match w {
+                    [x, y] => x * (1.0 - u) + y * u,
+                    _ => 0.0,
+                })
+                .collect();
+        }
+        row.first().copied().unwrap_or(0.0)
     };
     let (bounds, pieces) = bezier_pieces(curve)?;
     let p = curve.degree();
@@ -469,7 +506,7 @@ pub fn reparametrized(curve: &NurbsCurve, start: f64, end: f64) -> Result<NurbsC
             }
         })
         .collect();
-    let degree = 3 * p;
+    let degree = phi.len().saturating_sub(1) * p;
     let mut made = Vec::with_capacity(pieces.len());
     for (i, piece) in pieces.iter().enumerate() {
         let (Some(&t0), Some(&t1), Some(&s0), Some(&s1)) = (
@@ -485,7 +522,7 @@ pub fn reparametrized(curve: &NurbsCurve, start: f64, end: f64) -> Result<NurbsC
         }
         // The piece's own parameter along the new span: φ there, moved
         // to run from 0 to 1 (its ends exactly).
-        let mut local: Vec<f64> = restricted(&phi, s0, s1)
+        let mut local: Vec<f64> = restricted(phi, s0, s1)
             .iter()
             .map(|d| (d - t0) / (t1 - t0))
             .collect();
@@ -1261,6 +1298,28 @@ mod tests {
                 assert!((e0 - d0 * start).length() < 1e-10 * d0.length());
                 assert!((e1 - d1 * end).length() < 1e-10 * d1.length());
             }
+            // At one end only, by a quadratic.
+            for (factor, at_end) in [(0.4, false), (1.7, true)] {
+                let made = reparametrized_at(&curve, factor, at_end).unwrap();
+                assert_eq!(made.degree(), 2 * curve.degree());
+                let (s, e) = if at_end {
+                    (2.0 - factor, factor)
+                } else {
+                    (factor, 2.0 - factor)
+                };
+                // φ in Bernstein form (0, s/2, 1): s u (1 − u) + u².
+                let phi = |u: f64| s * u * (1.0 - u) + u * u;
+                for k in 0..=40 {
+                    let u = a + (b - a) * f64::from(k) / 40.0;
+                    let t = a + (b - a) * phi((u - a) / (b - a));
+                    assert!(curve.eval(t).distance(made.eval(u)) < 1e-12);
+                }
+                let ((_, d0), (_, e0)) = (curve.derivatives(a), made.derivatives(a));
+                let ((_, d1), (_, e1)) = (curve.derivatives(b), made.derivatives(b));
+                assert!((e0 - d0 * s).length() < 1e-10 * d0.length());
+                assert!((e1 - d1 * e).length() < 1e-10 * d1.length());
+            }
+            assert!(reparametrized_at(&curve, 2.0, false).is_err());
             // Not increasing all along.
             assert!(reparametrized(&curve, 4.0, 4.0).is_err());
             assert!(reparametrized(&curve, 0.0, 1.0).is_err());
