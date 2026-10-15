@@ -203,7 +203,7 @@ fn block(frame: &Frame, lo: [f64; 3], hi: [f64; 3], k: f64) -> Body {
 
 /// The checks every result gets: valid, not through itself, and the
 /// points of `grid` (in the frame's units over `k`) inside exactly where
-/// `want` says; every mesh point of the fillet within four tolerances of
+/// `want` says; every mesh point of the fillet within the tolerance of
 /// where `on_fillet` is zero. Returns how many points changed sides.
 #[allow(clippy::too_many_arguments)]
 fn held(
@@ -273,7 +273,7 @@ fn held(
         worst * k / tol.linear
     );
     assert!(seen > 50, "{what}: {seen} mesh points");
-    assert!(worst * k <= 4.0 * tol.linear, "{what}: {} off", worst * k);
+    assert!(worst * k <= tol.linear, "{what}: {} off", worst * k);
 }
 
 fn grid(lo: [f64; 3], hi: [f64; 3], n: usize) -> Vec<[f64; 3]> {
@@ -287,6 +287,65 @@ fn grid(lo: [f64; 3], hi: [f64; 3], n: usize) -> Vec<[f64; 3]> {
         }
     }
     out
+}
+
+/// The top rim of an arch wall whose end face goes on from the arch
+/// at a shallow angle (20° and 30° off straight): the edge runs past its end
+/// at a slant to the end face, so the fillet has to be followed past the end
+/// for longer (by the sine at which the edge meets the face) before it is
+/// wholly out of it. A point is solid exactly when it is in the wall and
+/// a ball of the radius behind the cap and the arch holds it.
+#[test]
+fn a_fillet_whose_edge_runs_out_at_a_slant_to_its_end_face() {
+    let (r, h) = (0.15, 1.0);
+    for k in SCALES {
+        let tol = tolerance(k);
+        let f = frame(k);
+        for degrees in [160.0_f64, 150.0] {
+            let outline = Outline::new(degrees.to_radians(), 0.0);
+            let body = outline.prism(&f, h, k);
+            assert_eq!(check(&body, &tol), []);
+            let rim = edge_near(&body, f.point(0.0, 0.375 * k, h * k));
+            let made = fillet(
+                &body,
+                &[FilletEdge {
+                    edge: rim,
+                    radius: r * k,
+                }],
+                &tol,
+            )
+            .unwrap_or_else(|e| panic!("{degrees}°, scale {k}: {e}"));
+            let margin = 2e-4;
+            let to_centres = |p: [f64; 3]| {
+                let s = outline.arch.signed([p[0], p[1]]);
+                (p[2] - (h - r)).max(0.0).hypot((r - s).max(0.0))
+            };
+            let want = |p: [f64; 3]| {
+                let (a, s) = (
+                    outline.arch.signed([p[0], p[1]]),
+                    outline.side.signed([p[0], p[1]]),
+                );
+                let in_wall = a > 0.0 && s > 0.0 && p[2] > 0.0 && p[2] < h;
+                let d = to_centres(p);
+                let near = [a, s, p[2] - h, d - r].iter().any(|x| x.abs() < margin);
+                (!near).then_some(in_wall && d <= r)
+            };
+            let on_fillet = |p: [f64; 3]| {
+                (p[0] > 0.3 && outline.side.signed([p[0], p[1]]) > 0.0).then(|| to_centres(p) - r)
+            };
+            held(
+                &made,
+                &body,
+                k,
+                &tol,
+                40,
+                &grid([0.3, -0.05, h - 0.3], [1.1, 0.45, h + 0.02], 14),
+                &want,
+                &on_fillet,
+                &format!("{degrees}°, scale {k}"),
+            );
+        }
+    }
 }
 
 /// The top rim of an arch wall whose right end is buried in a block

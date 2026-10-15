@@ -358,6 +358,15 @@ fn cross_borders(
     let ((la0, la1), _) = la.surface.domain();
     let ((oa0, oa1), _) = oa.surface.domain();
     let (sl, so) = ((la1 - la0).abs(), (oa1 - oa0).abs());
+    // How long the two borders are near the meet: the crossing of two
+    // curves that lie on the face to the tolerance and meet at the angle
+    // θ is known along them only to tol / sin θ, which has to be less
+    // than that.
+    let reach = |arm: &Arm<'_>, v: f64| {
+        let (r0, r1) = arm.range;
+        arm.surface.eval(r0, v).distance(arm.surface.eval(r1, v))
+    };
+    let length = reach(la, vl).min(reach(oa, vo));
     for _ in 0..60 {
         let (p, pu, _) = la.surface.derivatives(a, vl);
         let (q, qu, _) = oa.surface.derivatives(b, vo);
@@ -366,9 +375,9 @@ fn cross_borders(
         let (m11, m12, m22) = (pu.dot(pu), -pu.dot(qu), qu.dot(qu));
         let (g1, g2) = (pu.dot(r), -qu.dot(r));
         let det = m11 * m22 - m12 * m12;
-        // Within a thousandth of a radian of each other: the two run
-        // along each other.
-        if !(det > 1e-6 * m11 * m22) {
+        // sin² θ = det / (m11 m22): the two run so nearly along each other
+        // that where they cross is not known within their length.
+        if !(det > 0.0 && det.sqrt() * length > tol * (m11 * m22).sqrt()) {
             return None;
         }
         let mut da = -(m22 * g1 - m12 * g2) / det;
@@ -423,11 +432,14 @@ fn work_out(
         Some(far(arm, p)?.max(corner(x, p)?))
     };
     let third_data = body.edge(third).ok_or_else(lost)?;
-    let close = 10.0 * tol;
-    // Which constraint holds each arm at its own face's border, and where
-    // it leaves what is kept there.
+    // Which constraint holds each arm at its own face's border, where it
+    // leaves what is kept there, and how well that is known: the surfaces
+    // are within a quarter of the tolerance of the true ones, so a
+    // crossing of the border with the third edge, which it meets at the
+    // angle θ, is known along it to half the tolerance over sin θ.
     let mut gaps = [0.0_f64; 2];
     let mut ends = [Vec3::ZERO; 2];
+    let mut known = [0.0_f64; 2];
     for (x, arm) in arms.iter().enumerate() {
         let g = |p: Vec3| both(x, p);
         let s =
@@ -445,7 +457,24 @@ fn work_out(
         if let Some(slot) = ends.get_mut(x) {
             *slot = p;
         }
+        let (_, along, _) = arm.surface.derivatives(s, arm.v_own());
+        let at = third_data.curve.project(p).map_err(|_| not_built())?;
+        let (_, edge_along) = third_data.curve.derivatives(at);
+        let sine = match (along.normalized(), edge_along.normalized()) {
+            (Some(x), Some(y)) => x.cross(y).length(),
+            _ => 0.0,
+        };
+        if let Some(slot) = known.get_mut(x) {
+            *slot = if sine > 0.0 {
+                0.5 * tol / sine
+            } else {
+                f64::INFINITY
+            };
+        }
     }
+    // Two places closer than both are known are one; and never closer
+    // than the tolerance tells apart.
+    let close = (known[0] + known[1]).max(tol);
     // Both run to the third edge in one point when their own borders leave
     // what is kept in one point. The gaps alone cannot tell: near the other
     // fillet's border on its own face that fillet is tangent to the face,
@@ -782,9 +811,7 @@ pub(super) fn build_with(
         // rounded where they meet a third face) take its two ends; what
         // they take may not overlap.
         if !(slot.range.1 - slot.range.0 > 0.0) {
-            let edge = items
-                .get(meet.items[1])
-                .map_or(EdgeId(u32::MAX), |i| i.request.edge);
+            let edge = items.get(meet.items[1]).ok_or_else(lost)?.request.edge;
             let face = items
                 .get(meet.items[0])
                 .and_then(|i| i.faces.iter().copied().find(|f| *f != meet.shared));

@@ -572,11 +572,13 @@ pub fn interpolate(
     // Row i holds columns i - degree ..= i + degree.
     let band = 2 * degree + 1;
     let mut rows = vec![vec![0.0; band]; count];
+    // The span of each parameter: the last knot at or below it, found
+    // going on from the previous one (the parameters increase).
+    let mut span = degree;
     for (i, &t) in params.iter().enumerate() {
-        let span = (degree..count)
-            .rev()
-            .find(|k| knots.get(*k).is_some_and(|x| *x <= t))
-            .unwrap_or(degree);
+        while span + 1 < count && knots.get(span + 1).is_some_and(|x| *x <= t) {
+            span += 1;
+        }
         let local = basis_local(&knots, degree, span, t)?;
         for (offset, value) in local.into_iter().enumerate() {
             let column = span - degree + offset;

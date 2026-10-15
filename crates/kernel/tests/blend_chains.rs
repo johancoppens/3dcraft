@@ -1664,7 +1664,7 @@ fn two_fillets_that_meet_at_the_corner_of_a_spline_wall() {
             );
             assert!(seen > 100);
             assert!(
-                worst * k <= 4.0 * tol.linear,
+                worst * k <= tol.linear,
                 "{} off the rolling balls",
                 worst * k
             );

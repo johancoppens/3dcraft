@@ -984,12 +984,14 @@ fn compute(
                 first.edge,
                 first.faces,
                 vertex_of(fd, first.forward, false),
+                tolerance.angular.max(BEND).max(tolerance.linear / size),
             )?,
             end_at(
                 body,
                 last.edge,
                 last.faces,
                 vertex_of(ld, last.forward, true),
+                tolerance.angular.max(BEND).max(tolerance.linear / size),
             )?,
         ])
     };
@@ -1016,7 +1018,7 @@ fn compute(
         }
         if i + 1 == n && !chain.closed {
             let end = ends.as_ref().ok_or_else(lost)?.get(1).ok_or_else(lost)?;
-            let (more, past) = march_out(solver, from, 1.0, third_of(end)?, *step, tol)
+            let (more, past) = march_out(solver, from, 1.0, third_of(end)?, end.steps(*step), tol)
                 .map_err(|s| stop(s, Some(end.third)))?;
             list.extend(more);
             reach[1] = past;
@@ -1071,8 +1073,15 @@ fn compute(
         more
     } else {
         let end = ends.as_ref().ok_or_else(lost)?.first().ok_or_else(lost)?;
-        let (more, past) = march_out(solver, (0.5, seed), 0.0, third_of(end)?, step, tol)
-            .map_err(|s| stop(s, Some(end.third)))?;
+        let (more, past) = march_out(
+            solver,
+            (0.5, seed),
+            0.0,
+            third_of(end)?,
+            end.steps(step),
+            tol,
+        )
+        .map_err(|s| stop(s, Some(end.third)))?;
         reach[0] = past;
         more
     };
@@ -1990,6 +1999,7 @@ fn along_spine(
                 piece.edge,
                 piece.faces,
                 vertex_of(data, piece.forward, at_end),
+                tolerance.angular.max(BEND).max(tolerance.linear / size),
             )
             .map(Ending::Third),
         };
@@ -2069,7 +2079,7 @@ fn along_spine(
                     third: third_of(end)?,
                     sign: sign_of(end),
                 },
-                most_out,
+                end.most_out(most_out),
                 tol,
             )
             .map_err(|s| stopped(s, Some(end.third())))?;
@@ -2163,7 +2173,7 @@ fn along_spine(
                 third: third_of(end)?,
                 sign: sign_of(end),
             },
-            most_out,
+            end.most_out(most_out),
             tol,
         )
         .map_err(|s| stopped(s, Some(end.third())))?;
@@ -2232,10 +2242,14 @@ fn along_spine(
                 // piece's own faces in the joint's plane is a little off
                 // the shared one, and the face has to end in its own (the
                 // shared arc is the edge, within half the tolerance of it).
-                let own = solver
-                    .follow(*s, ball, *s, 0)
-                    .filter(|own| apart(own, ball).is_some_and(|d| d <= 0.5 * tol));
-                sections.push(own.unwrap_or(*ball));
+                // Further off, the faces are creased at the joint by more
+                // than the tolerance allows at this size: refused.
+                let own = solver.follow(*s, ball, *s, 0).ok_or_else(unsolvable)?;
+                if !apart(&own, ball).is_some_and(|d| d <= 0.5 * tol) {
+                    let edge = pieces.get(i).ok_or_else(lost)?.edge;
+                    return Err(refused(edge, Reason::FreeJoint));
+                }
+                sections.push(own);
             } else {
                 sections.push(solver.follow(*s, ball, *s, 0).ok_or_else(unsolvable)?);
             }
@@ -2344,6 +2358,15 @@ impl Ending {
         match self {
             Ending::Third(end) => end.third,
             Ending::Meet { far, .. } => *far,
+        }
+    }
+
+    /// How far past this end the walk may go before giving up: longer the
+    /// more nearly the edge runs along the third face (`End::steps`).
+    fn most_out(&self, most_out: f64) -> f64 {
+        match self {
+            Ending::Third(end) => most_out / end.slant,
+            Ending::Meet { .. } => most_out,
         }
     }
 }

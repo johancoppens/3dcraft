@@ -78,7 +78,10 @@ fn extend_high(degree: usize, knots: &mut Vec<f64>, rows: &mut [Vec<W>], to: f64
     if !(to > end) {
         return Some(());
     }
-    // The end knot of full multiplicity: degree + 1 copies from index n.
+    // The end knot of full multiplicity (clamped there), and what lay past
+    // it dropped: an unclamped tail's knots and control points shape
+    // nothing of the domain, and the end span has to be taken from the
+    // domain's own last piece.
     let multiplicity = |knots: &[f64], x: f64| knots.iter().filter(|k| **k == x).count();
     let mut guard = 0;
     while multiplicity(knots, end) < degree + 1 {
@@ -87,6 +90,14 @@ fn extend_high(degree: usize, knots: &mut Vec<f64>, rows: &mut [Vec<W>], to: f64
         if guard > degree + 1 {
             return None;
         }
+    }
+    let count = knots.iter().position(|k| *k == end)?;
+    if count < degree + 1 {
+        return None;
+    }
+    knots.truncate(count + degree + 1);
+    for row in rows.iter_mut() {
+        row.truncate(count);
     }
     let n = rows.first()?.len();
     // The last inner knot, of multiplicity `degree`.
@@ -163,12 +174,40 @@ impl NurbsSurface {
     /// The same surface over a domain grown to take in `u` and `v` (the
     /// ends of the old domain inside them stay): every end span continued
     /// as the function it is. Refused where a weight would not stay
-    /// positive (a rational span continued far).
-    pub fn extended(&self, u: (f64, f64), v: (f64, f64)) -> Result<NurbsSurface, GeomError> {
+    /// positive (a rational span continued far), and in a direction in
+    /// which the surface closes on itself (its two ends meet within `tol`:
+    /// a revolved face's seam), where going on past an end means coming
+    /// round over the surface again.
+    pub fn extended(
+        &self,
+        u: (f64, f64),
+        v: (f64, f64),
+        tol: f64,
+    ) -> Result<NurbsSurface, GeomError> {
         let refused = || GeomError::InvalidParameter("the surface cannot be continued that far");
         let (du, dv) = self.degrees();
         let (count_u, count_v) = self.counts();
         let ((u0, u1), (v0, v1)) = self.domain();
+        let grows_u = u.0 < u0 || u.1 > u1;
+        let grows_v = v.0 < v0 || v.1 > v1;
+        let closes = |along_u: bool| {
+            (0..=8).all(|k| {
+                let f = f64::from(k) / 8.0;
+                let (a, b) = if along_u {
+                    let v = v0 + (v1 - v0) * f;
+                    (self.eval(u0, v), self.eval(u1, v))
+                } else {
+                    let u = u0 + (u1 - u0) * f;
+                    (self.eval(u, v0), self.eval(u, v1))
+                };
+                a.distance(b) <= tol
+            })
+        };
+        if (grows_u && closes(true)) || (grows_v && closes(false)) {
+            return Err(GeomError::InvalidParameter(
+                "a surface that closes on itself cannot be continued past its seam",
+            ));
+        }
         let weighted: Vec<W> = self
             .control_points()
             .iter()
@@ -251,7 +290,7 @@ mod tests {
     #[test]
     fn a_continued_surface_is_the_same_function_inside_and_past_the_domain() {
         let s = patch();
-        let e = s.extended((-0.3, 1.25), (-0.2, 1.4)).unwrap();
+        let e = s.extended((-0.3, 1.25), (-0.2, 1.4), 1e-9).unwrap();
         assert_eq!(e.domain(), ((-0.3, 1.25), (-0.2, 1.4)));
         let mut worst = 0.0_f64;
         for i in 0..=30 {
@@ -264,11 +303,81 @@ mod tests {
         }
         assert!(worst < 1e-12, "{worst}");
         // Only one end, and nothing at all.
-        let one = s.extended((0.0, 1.5), (0.0, 1.0)).unwrap();
+        let one = s.extended((0.0, 1.5), (0.0, 1.0), 1e-9).unwrap();
         assert_eq!(one.domain(), ((0.0, 1.5), (0.0, 1.0)));
         assert!(s.eval(1.4, 0.5).distance(one.eval(1.4, 0.5)) < 1e-12);
-        let same = s.extended((0.2, 0.8), (0.1, 0.9)).unwrap();
+        let same = s.extended((0.2, 0.8), (0.1, 0.9), 1e-9).unwrap();
         assert_eq!(same.domain(), s.domain());
         assert!(s.eval(0.37, 0.61).distance(same.eval(0.37, 0.61)) < 1e-12);
+    }
+
+    /// Unclamped knots (uniform, the domain the middle spans) and rational
+    /// weights: the continued surface is the end spans' own functions,
+    /// evaluated directly past the domain; the tail knots and points
+    /// past the domain shape nothing of it.
+    #[test]
+    fn an_unclamped_rational_surface_is_continued_from_its_last_spans() {
+        // Cubic in u over knots 0..=9 (domain [3, 6]), quadratic in v
+        // over 0..=7 (domain [2, 5]).
+        let (nu, nv) = (6, 5);
+        let mut ctrl = Vec::new();
+        let mut weights = Vec::new();
+        for i in 0..nu {
+            for j in 0..nv {
+                let (x, y) = (i as f64, j as f64);
+                ctrl.push(Vec3::new(x, y, (0.9 * x).cos() + 0.4 * (0.7 * y).sin()));
+                weights.push(1.0 + 0.1 * x + 0.05 * y + 0.02 * x * y);
+            }
+        }
+        let s = NurbsSurface::new(
+            3,
+            2,
+            (0..=9).map(f64::from).collect(),
+            (0..=7).map(f64::from).collect(),
+            nu,
+            nv,
+            ctrl,
+            weights,
+        )
+        .unwrap();
+        assert_eq!(s.domain(), ((3.0, 6.0), (2.0, 5.0)));
+        let e = s.extended((2.5, 6.4), (1.6, 5.5), 1e-9).unwrap();
+        assert_eq!(e.domain(), ((2.5, 6.4), (1.6, 5.5)));
+        let mut worst = 0.0_f64;
+        for i in 0..=26 {
+            for j in 0..=26 {
+                let u = 2.5 + 3.9 * f64::from(i) / 26.0;
+                let v = 1.6 + 3.9 * f64::from(j) / 26.0;
+                worst = worst.max(s.eval(u, v).distance(e.eval(u, v)));
+            }
+        }
+        assert!(worst < 1e-11, "{worst}");
+    }
+
+    /// A surface whose u ends meet (a revolved face's seam) is not grown
+    /// along u; along v it is.
+    #[test]
+    fn a_surface_that_closes_on_itself_is_not_continued_past_its_seam() {
+        let mut ctrl = Vec::new();
+        for i in 0..4 {
+            for j in 0..3 {
+                // The first and the last row coincide.
+                let a = if i == 3 { 0.0 } else { f64::from(i) };
+                ctrl.push(Vec3::new(a.cos(), a.sin(), f64::from(j)));
+            }
+        }
+        let s = NurbsSurface::new(
+            3,
+            2,
+            vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            4,
+            3,
+            ctrl,
+            vec![1.0; 12],
+        )
+        .unwrap();
+        assert!(s.extended((0.0, 1.2), (0.0, 1.0), 1e-9).is_err());
+        assert!(s.extended((0.0, 1.0), (0.0, 1.3), 1e-9).is_ok());
     }
 }
