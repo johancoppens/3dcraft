@@ -358,15 +358,16 @@ fn spline_slack(body: &Body, k: f64) -> (f64, f64) {
     (4.0 * tol * area, 4.0 * tol * length)
 }
 
-/// The sum of a hash of every result so far: see the corpus test. (Run
-/// one test at a time to compare two builds by it.)
-static DIGEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-fn digest(result: &craft3d_kernel::boolean::BooleanResult) {
+/// A hash of a result, for the digest of a run: see the corpus test. The
+/// digest is the wrapping sum of the hashes of a run's results, kept in
+/// that run's [`Tally`] (not in a static, which every test of the binary
+/// would add to in whatever order the test threads run: 2026-10-16), so
+/// it is the same whatever runs beside it and on any number of threads.
+fn digest(result: &craft3d_kernel::boolean::BooleanResult) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     format!("{result:?}").hash(&mut hasher);
-    DIGEST.fetch_add(hasher.finish(), std::sync::atomic::Ordering::Relaxed);
+    hasher.finish()
 }
 
 /// The volume of a boolean; 0 when it is empty; `Err` with the reason when
@@ -377,11 +378,12 @@ fn volume_of(
     op: BooleanOp,
     k: f64,
     what: &str,
+    digests: &mut u64,
 ) -> Result<(f64, f64, Option<Body>), &'static str> {
     let tol = tolerance(k);
     match boolean(a, b, op, &tol) {
         Ok(result) => {
-            digest(&result);
+            *digests = digests.wrapping_add(digest(&result));
             assert_eq!(check(&result.body, &tol), [], "{what}: {op:?}");
             assert_eq!(result.faces.len(), result.body.faces.len(), "{what}");
             assert_eq!(result.edges.len(), result.body.edges.len(), "{what}");
@@ -464,6 +466,8 @@ struct Tally {
     unsupported: BTreeMap<&'static str, usize>,
     recombined: usize,
     recombine_unsupported: BTreeMap<&'static str, usize>,
+    /// The wrapping sum of the hashes of every result ([`digest`]).
+    digest: u64,
 }
 
 impl Tally {
@@ -476,6 +480,7 @@ impl Tally {
             *self.unsupported.entry(reason).or_default() += count;
         }
         self.recombined += other.recombined;
+        self.digest = self.digest.wrapping_add(other.digest);
         for (reason, count) in other.recombine_unsupported {
             *self.recombine_unsupported.entry(reason).or_default() += count;
         }
@@ -507,7 +512,7 @@ fn run_pair(seed: u64, placement: Placement, k: f64, shapes: Shapes, tally: &mut
         (&b, &a, Intersect),
         (&b, &a, Subtract),
     ] {
-        match volume_of(&x.body, &y.body, op, k, &what) {
+        match volume_of(&x.body, &y.body, op, k, &what, &mut tally.digest) {
             Ok(result) => results.push(result),
             Err(reason) => {
                 if std::env::var_os("BOOLEAN_VERBOSE").is_some() {
@@ -580,7 +585,7 @@ fn run_pair(seed: u64, placement: Placement, k: f64, shapes: Shapes, tally: &mut
 
     // (A − B) ∪ (A ∩ B) is A again: its pieces meet in coincident faces.
     if let (Some(less), Some(common)) = (&a_less_b.2, &common.2) {
-        match volume_of(less, common, Union, k, &what) {
+        match volume_of(less, common, Union, k, &what, &mut tally.digest) {
             Ok(whole) => {
                 close(whole.0, va, "vol((A−B) ∪ (A∩B)) = vol A");
                 tally.recombined += 1;
@@ -655,10 +660,10 @@ fn hunt(pairs_per_cell: u64, first_seed: u64, shapes: Shapes) {
             "{placement:?} at {k}"
         );
     }
-    println!(
-        "digest of all results: {:016x}",
-        DIGEST.load(std::sync::atomic::Ordering::Relaxed)
-    );
+    let digest = tallies
+        .iter()
+        .fold(0_u64, |sum, tally| sum.wrapping_add(tally.digest));
+    println!("digest of all results: {digest:016x}");
 }
 
 #[test]

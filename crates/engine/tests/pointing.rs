@@ -203,7 +203,7 @@ fn check_view(s: &mut Session, label: &str, view: &Value) -> (usize, usize) {
     let first = run(s, "view.pick", pick_params(view, 0.5, 0.5));
     let camera = camera_of(&first);
     let tolerance = view.get("tolerance").and_then(Value::as_f64);
-    let scene = s.scene(tolerance).unwrap().unwrap();
+    let scene = picked_scene(s, &first, tolerance);
     let frame = craft3d_render::render(
         &scene.mesh,
         &camera,
@@ -316,6 +316,20 @@ fn check_view(s: &mut Session, label: &str, view: &Value) -> (usize, usize) {
     (faces.len(), picks)
 }
 
+/// The scene `view.pick` looked at for the answer `picked`: the scene of
+/// the tolerance given, or without one the picture's scene at the
+/// tolerance it reports.
+fn picked_scene(
+    s: &mut Session,
+    picked: &Value,
+    tolerance: Option<f64>,
+) -> std::sync::Arc<craft3d_engine::Scene> {
+    let quality = match tolerance {
+        Some(t) => craft3d_engine::SceneQuality::Tolerance(t),
+        None => craft3d_engine::SceneQuality::Picture(picked["tolerance"].as_f64().unwrap()),
+    };
+    s.scene_with(quality).unwrap().unwrap()
+}
 #[test]
 fn a_pick_inside_a_rendered_face_is_the_name_document_inspect_gives_it() {
     let mut s = workshop();
@@ -592,7 +606,7 @@ fn a_pick_that_finds_nothing_or_makes_no_sense_is_an_answer_or_an_error() {
     // On the silhouette: every pixel of the picture, the edge ones too,
     // gives the face of the id buffer or nothing, and never a panic.
     let camera = camera_of(&corner);
-    let scene = s.scene(None).unwrap().unwrap();
+    let scene = picked_scene(&mut s, &corner, None);
     let frame = craft3d_render::render(
         &scene.mesh,
         &camera,

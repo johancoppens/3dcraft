@@ -78,10 +78,12 @@ Options:
 const HELP_RUN: &str = "\
 Usage: craft3d-cli run [FILE] [--new JSON] [--script FILE]
                        [--cmd ID [--params JSON]]... [--out FILE]
+                       [--keep-going]
 
 Opens FILE (a .3dcraft file), or creates a document when no FILE is given,
 then runs commands in order and prints one line of JSON per result. Stops at
-the first command that fails, with exit code 1 and nothing saved.
+the first command that fails, with exit code 1 and nothing saved, unless
+--keep-going is given.
 
 Options:
   --new JSON      Params of file.new for the new document, e.g.
@@ -91,6 +93,10 @@ Options:
   --cmd ID        A command to run; may be repeated
   --params JSON   The params of the --cmd before it, as a JSON object
   --out FILE      Save the document as a .3dcraft file afterwards
+  --keep-going    Go on after a command that fails: its line is
+                  {\"failed\": id, \"step\": n, \"error\": text}, the next
+                  command runs, --out still saves what was built (a failed
+                  command changes nothing), and the exit code is 1
 
 Example:
   craft3d-cli run --new '{\"units\": \"mm\"}' \\
@@ -108,7 +114,12 @@ const HELP_RENDER: &str = "\
 Usage: craft3d-cli render FILE --out PNG [--size WxH] [--view V] [--mode M]
 
 Renders the bodies of a .3dcraft file to a PNG with the CPU renderer (no
-window, no GPU) and prints what it drew as one line of JSON.
+window, no GPU) and prints what it drew as one line of JSON. The bodies are
+meshed for the picture (the command view.render without a tolerance):
+between a quarter and half a pixel where it shows the model, never finer
+than the floor of 2e-4 of the diagonal of the bodies' box, within a total
+budget of a million triangles; the JSON says the tolerance used and
+whether it was coarsened.
 
 Options:
   --out PNG     The image file to write (required)

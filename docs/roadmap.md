@@ -141,6 +141,7 @@ Closed-form tests for every kind; the checker detects each seeded defect; hand-b
 - The six parts above, with the start of M3: primitives as features, regeneration, B-rep tessellation for the five primitives (2026-10-12)
 - Deviations: a synchronous engine without jobs or events; undo as snapshots ([`decisions.md`](decisions.md)) (2026-10-12)
 - `file.list` and `file.activate`, from the first field test (2026-10-13)
+- `craft3d-cli run --keep-going`: a failing command is reported on its line, the rest run and `--out` saves what was built (2026-10-16)
 
 #### Open
 - [ ] `thumb.png` in `.3dcraft`
@@ -184,6 +185,7 @@ Oracles 1 and 4 for all primitives at three scales; exported meshes closed and o
 - Every solid of the showcase, the turbofan and the engine block meshes closed at the display quality and at export tolerances (`display_quality.rs` strict): the hull's bow got a wall, a seam no longer runs along a straight edge at the wrap of a cylinder (2026-10-15)
 - Long straight edges of flat faces are cut where holes run along them, so a plate with a row of holes is no longer fans of slivers across its length: the self-intersection check of a 4 m plate with 400 holes 13 times faster, export meshes unchanged but for 27 of 440 reference meshes (two triangles more each) ([`architecture.md`](architecture.md) §6, *Long straight chords of flat faces*) (2026-10-15)
 - The angle criterion on spline faces in a plane and on a grid graded to where the surface turns: the turbofan's spline faces 30,720 triangles instead of 35,302, a twisted blade within 1.4 times a grid that meets both criteria unrefined (was 1.9) ([`architecture.md`](architecture.md) §6, *The angle on a spline face*) (2026-10-16)
+- A spline surface's pole is shaded with its limit normal, and `view.render`, `view.pick` and `view.replay` mesh at a quarter to half a pixel of the picture within a total triangle budget, never finer than the display's floor, coarsening a body too fine for the tessellator instead of refusing ([`architecture.md`](architecture.md) §6) (2026-10-16)
 - `view.replay` and `craft3d-cli replay`: a showcase video (frames, MP4, GIF) of how a document is built, one fixed camera, an optional orbit, captions as subtitles; the document is not touched (2026-10-14)
 
 #### Open

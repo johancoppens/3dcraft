@@ -32,6 +32,17 @@ fn scene(session: &mut Session, tolerance: Option<f64>) -> Arc<Scene> {
     session.scene(tolerance).unwrap().expect("a document")
 }
 
+/// The scene `view.render` drew for the picture it answered with
+/// `rendered`: the scene of the tolerance given, or without one (since
+/// 2026-10-16) the picture's scene at the tolerance it reports.
+fn picture(session: &mut Session, rendered: &Value, tolerance: Option<f64>) -> Arc<Scene> {
+    let quality = match tolerance {
+        Some(t) => SceneQuality::Tolerance(t),
+        None => SceneQuality::Picture(rendered["tolerance"].as_f64().unwrap()),
+    };
+    session.scene_with(quality).unwrap().expect("a document")
+}
+
 /// A line, a circle, an arc and a construction line, the same on every
 /// plane:
 ///
@@ -118,7 +129,9 @@ fn the_meshes_are_the_ones_view_render_uses() {
             params["tolerance"] = t.into();
         }
         let rendered = run(&mut s, "view.render", params);
-        let scene = scene(&mut s, tolerance);
+        let scene = picture(&mut s, &rendered, tolerance);
+        assert_eq!(rendered["tolerance"], scene.tolerance);
+        assert_eq!(rendered["coarsened"], scene.coarsened);
         assert_eq!(
             scene.triangles() as u64,
             rendered["triangles"].as_u64().unwrap(),
@@ -883,8 +896,10 @@ fn the_triangle_budget_coarsens_the_display_down_to_the_first_pictures_tolerance
 }
 
 /// A tolerance the tessellator cannot meet on a body (more segments on a
-/// patch than it allows) is coarsened until it can, where asking for that
-/// tolerance outright leaves the body out.
+/// patch than it allows) is coarsened until it can: by the display rule
+/// for the whole scene, and for that body alone in a scene of that
+/// tolerance (which until 2026-10-16 left the body out, and a picture at
+/// it failed: lamp T2).
 #[test]
 fn a_display_tolerance_the_tessellator_cannot_meet_is_coarsened_until_it_can() {
     let mut s = session();
@@ -896,12 +911,29 @@ fn a_display_tolerance_the_tessellator_cannot_meet_is_coarsened_until_it_can() {
     // segments, more than the tessellator allows on an edge.
     let relative = 1e-9;
     let asked = scene(&mut s, Some(size * relative));
+    assert!(asked.problems.is_empty(), "{:?}", asked.problems);
+    assert_eq!(asked.bodies.len(), 2);
+    assert!(asked.coarsened);
+    assert_eq!(asked.tolerance, size * relative);
+    // The post is all there, closed, and as large as its closed form
+    // says, to the chord error of the circles of a mesh the tessellator
+    // can make (`MAX_SEGMENTS` of them, 1024, on the circle: a relative
+    // error in the area of the disc of about (2π / 1024)² / 6).
+    let post = &asked.bodies[1].mesh;
+    let welded = post.weld().unwrap();
+    assert!(welded.is_closed());
+    let exact = PI * 6.0 * 6.0 * 30.0;
     assert!(
-        asked.problems.iter().any(|p| p.contains("Post")),
-        "{:?}",
-        asked.problems
+        (welded.volume() - exact).abs() < 1e-4 * exact,
+        "{} against {exact}",
+        welded.volume()
     );
-    assert_eq!(asked.bodies.len(), 1);
+    // The plate, which the tolerance does not trouble, is not coarsened:
+    // it is the plate of any other scene.
+    assert_eq!(
+        asked.bodies[0].mesh,
+        scene(&mut s, Some(size * 1e-4)).bodies[0].mesh
+    );
     let shown = display(&mut s, relative, usize::MAX);
     assert!(shown.problems.is_empty(), "{:?}", shown.problems);
     assert!(shown.coarsened);

@@ -1194,3 +1194,59 @@ fn what_the_tessellator_declines_on_closed_freeform() {
     );
     measures_as(&body, whole, 1.0, "torus around a window across both seams");
 }
+
+/// At a pole where the profile meets the axis at right angles the surface
+/// is as smooth as anywhere and its normal is the axis: every vertex of
+/// the mesh there carries that normal, not the rounding of `∂u × ∂v` of
+/// a parametrisation that stalls (the starburst a revolved spline dome
+/// was shaded with at its pole, lamp T1, 2026-10-16). The vertices around
+/// them keep the surface's own normal, so the shading is smooth.
+#[test]
+fn the_normal_at_a_smooth_pole_is_the_axis() {
+    // Within this angle of the exact normal (radians). The limit is taken
+    // a millionth of the range off the pole: far closer than this.
+    let within = 1e-4_f64;
+    for k in [1.0, 1e-3, 1e3] {
+        let profile = egg(k);
+        let top = profile[3].1;
+        for (from, seam) in [(0.0, false), (1.1, false), (0.0, true), (1.1, true)] {
+            let mut body = Body::new(BodyKind::Solid);
+            let surface = Surface::Nurbs(revolved(&profile, from, false));
+            let loops = if seam {
+                let (low, high) = (
+                    body.add_vertex(Vec3::ZERO),
+                    body.add_vertex(Vec3::new(0.0, 0.0, top)),
+                );
+                let edge = body.add_edge(profile_curve(&profile, from), (0.0, 1.0), low, high);
+                let use_of = |reversed: bool| Coedge { edge, reversed };
+                vec![body.add_loop(vec![use_of(false), use_of(true)])]
+            } else {
+                Vec::new()
+            };
+            let face = body.add_face(surface, false, loops);
+            body.add_shell(vec![face]);
+            let what = format!("egg of size {k} from {from}, seam as an edge: {seam}");
+            for relative in [0.1, 1e-2, 1e-3] {
+                let mesh = tessellate_body(&body, &params(relative * k))
+                    .unwrap_or_else(|e| panic!("{what} at {relative}: {e}"));
+                let mut at_poles = [0, 0];
+                for (p, n) in mesh.positions.iter().zip(&mesh.normals) {
+                    let (pole, exact) = if p.length() <= 1e-9 * k {
+                        (0, -Vec3::Z)
+                    } else if p.distance(Vec3::new(0.0, 0.0, top)) <= 1e-9 * k {
+                        (1, Vec3::Z)
+                    } else {
+                        continue;
+                    };
+                    at_poles[pole] += 1;
+                    let angle = n.cross(exact).length().atan2(n.dot(exact));
+                    assert!(
+                        (n.length() - 1.0).abs() < 1e-9 && angle <= within,
+                        "{what} at {relative}: normal {n:?} at the pole {p:?}, {angle} rad off"
+                    );
+                }
+                assert!(at_poles.iter().all(|&n| n > 0), "{what}: {at_poles:?}");
+            }
+        }
+    }
+}
