@@ -795,6 +795,24 @@ fn what_is_not_supported_says_so() {
         7.0 * PI / 2.0 + 3.0 * PI / 4.0,
         k,
     );
+    // Weights a hundred apart (2026-10-15, the reproducer for what is
+    // owed of "rational weights a thousand apart", `docs/roadmap.md`): the
+    // patch moves a hundred times faster with its parameters near its
+    // light corners than near its heavy ones, and the winding numbers,
+    // which halve the loops by one bound on the chart's speed over the
+    // whole face, give up. (Tried: that bound taken near each piece of a
+    // loop builds this union, but its measure does not settle; and spans
+    // with weights more than a thousand apart split into even pieces are
+    // refused the same way.)
+    match boolean(&weighted(100.0), &ball, Union, &tol) {
+        Err(KernelError::Unsupported { reason, .. }) => {
+            assert!(reason.contains("too close"), "{reason}");
+        }
+        other => panic!(
+            "weights a hundred apart: {:?}; say so in the docs and hold it to the closed forms",
+            other.map(|r| counts(&r))
+        ),
+    }
     // What stays refused of a rational face: weights more than a factor
     // of a thousand apart, for which no bound on the derivatives is of
     // any use.

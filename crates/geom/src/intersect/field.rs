@@ -140,8 +140,11 @@ impl Projector {
                 // divided by a distance of rounding it would be taken for
                 // one of ten million per unit length, which no cell near
                 // the pole would ever be simple enough for.
+                // (Two poles on borders across different parameters share
+                // a corner, and are one point: a pole at a corner.)
                 if let (Some(Some(a)), Some(Some(b))) = (at_pole.get(k), at_pole.get(k + step))
-                    && a == b
+                    && (a == b
+                        || poles.get(*a).map(Pole::across_v) != poles.get(*b).map(Pole::across_v))
                 {
                     continue;
                 }
@@ -277,30 +280,32 @@ impl Projector {
     pub(super) fn foot_from(&self, p: Vec3, u: f64, v: f64) -> (f64, f64, Vec3) {
         let first = self.newton(p, u, v, None);
         let row = 1.0 / f64::from(PROJECTOR_GRID);
-        let Some(pole) = self
+        // Every pole the end is next to: two at a corner of the
+        // parameters, where the meridians leave from both borders.
+        let mut best = first;
+        for pole in self
             .poles
             .iter()
-            .find(|pole| !(pole.share_off(&self.surface, first.0, first.1) > row))
-        else {
-            return first;
-        };
-        let along = pole.meridian_towards(&self.surface, p);
-        let (a, b) = pole.off_pole(&self.surface, along, row);
-        // Along the meridian first: next to the pole the derivative along
-        // the border is small, and a step in both parameters may throw the
-        // point onto another meridian, and back onto the pole.
-        let down = self.newton(p, a, b, Some(!pole.across_v()));
-        let polished = self.newton(p, down.0, down.1, None);
-        let again = if (polished.2 - p).length_squared() < (down.2 - p).length_squared() {
-            polished
-        } else {
-            down
-        };
-        if (again.2 - p).length_squared() < (first.2 - p).length_squared() {
-            again
-        } else {
-            first
+            .filter(|pole| !(pole.share_off(&self.surface, first.0, first.1) > row))
+        {
+            let along = pole.meridian_towards(&self.surface, p);
+            let (a, b) = pole.off_pole(&self.surface, along, row);
+            // Along the meridian first: next to the pole the derivative
+            // along the border is small, and a step in both parameters may
+            // throw the point onto another meridian, and back onto the
+            // pole.
+            let down = self.newton(p, a, b, Some(!pole.across_v()));
+            let polished = self.newton(p, down.0, down.1, None);
+            let again = if (polished.2 - p).length_squared() < (down.2 - p).length_squared() {
+                polished
+            } else {
+                down
+            };
+            if (again.2 - p).length_squared() < (best.2 - p).length_squared() {
+                best = again;
+            }
         }
+        best
     }
 
     /// Gauss–Newton from `(u, v)` towards the point closest to `p`.
@@ -340,6 +345,18 @@ impl Projector {
             }
         }
         (u, v, self.surface.eval(u, v))
+    }
+
+    /// Whether the nearest point of the surface to `p` is on a border of
+    /// its parameters (to a billionth of the range): `p` is then past the
+    /// surface, or beside a seam or a pole.
+    pub(super) fn on_border(&self, p: Vec3) -> bool {
+        let (u, v, _) = self.foot(p);
+        let at = |x: f64, (lo, hi): (f64, f64)| {
+            let near = 1e-9 * (hi - lo);
+            !((x - lo).abs() > near) || !((hi - x).abs() > near)
+        };
+        at(u, self.u) || at(v, self.v)
     }
 
     /// The closest point of the surface to `p`: `(u, v, point)`.
