@@ -803,19 +803,38 @@ fn a_cylinder_touching_the_top_of_a_torus_tube_from_inside_meets_it_in_a_tacnode
             );
             check_meeting(&m, &ring, &tube, &within, &t);
             assert!(m.points.is_empty(), "{what}: {:?}", m.points);
+            // Every curve begins and ends on one point of contact. Where
+            // it lies along the arms is ill-conditioned (the surfaces are
+            // within `y⁴` of each other along it): it is on both surfaces
+            // within the tolerance and near the true point.
+            let vertex = start(&m.curves[0]);
+            assert!(
+                distance(&ring, vertex) <= t.linear && distance(&tube, vertex) <= t.linear,
+                "{what}: a vertex off the surfaces"
+            );
+            assert!(
+                vertex.distance(touch) <= 64.0 * t.linear,
+                "{what}: the vertex is {} from the point of contact",
+                vertex.distance(touch)
+            );
             let ends: usize = m
                 .curves
                 .iter()
                 .map(|c| {
-                    usize::from(start(c).distance(touch) <= t.linear)
-                        + usize::from(end(c).distance(touch) <= t.linear)
+                    usize::from(start(c).distance(vertex) <= t.linear)
+                        + usize::from(end(c).distance(vertex) <= t.linear)
                 })
                 .sum();
-            assert_eq!(ends, 2 * m.curves.len(), "{what}: {} curves", m.curves.len());
+            assert_eq!(
+                ends,
+                2 * m.curves.len(),
+                "{what}: {} curves",
+                m.curves.len()
+            );
             assert_eq!(ends, 4, "{what}");
             // Along the exact meeting and only there.
             if lift == 0.0 {
-                let drawn = Lines::of(&m, 2000);
+                let drawn = Lines::of(&m, 20_000);
                 for p in tacnode_reference(k, radius, &frame) {
                     let off = drawn.distance(p);
                     assert!(

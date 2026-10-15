@@ -907,7 +907,7 @@ impl Marcher {
                 grid.u0 + grid.du * i as f64 + hu,
                 grid.v0 + grid.dv * j as f64 + hv,
             );
-            if discs.iter().any(|d| d.covers(u, v, hu, hv)) {
+            if discs.iter().any(|d| self.disc_covers(d, u, v, hu, hv)) {
                 continue;
             }
             let reach = b.lu * hu + b.lv * hv;
@@ -943,20 +943,10 @@ impl Marcher {
                 // A touch the Hessian does not classify (along a curve, or
                 // of higher order) that keeps to one side all around.
                 let found = if at_apex { None } else { self.stationary(u, v) };
-                if std::env::var_os("MARCH_DEBUG").is_some() {
-                    eprintln!(
-                        "cell size {size} at {:?}: {:?}",
-                        self.chart.surface.eval(u, v),
-                        found.map(|s| (s.e.p, s.e.f, s.g, s.h, s.flat))
-                    );
-                }
-                // A tacnode found again (anywhere near: where it lies
-                // along its arms is ill-conditioned) has its disc already.
-                let found = found.filter(|s| {
-                    !singular.iter().any(|x| {
-                        x.kind == SingularKind::Tacnode && x.p.distance(s.e.p) <= merge.max(x.arm)
-                    })
-                });
+                // A tacnode found again (anywhere along its valley: where
+                // it lies along its arms is ill-conditioned) has its disc
+                // already.
+                let found = found.filter(|s| !self.tac_claims(s.u, s.v));
                 // A contact of higher order along one direction with arms
                 // (a tacnode or a cusp); failing that, one that keeps to
                 // one side (a touch).
@@ -964,9 +954,6 @@ impl Marcher {
                     Some(s) if s.flat && self.touches(&s, finest) => self.tacnode(&s, finest),
                     _ => None,
                 };
-                if std::env::var_os("MARCH_DEBUG").is_some() {
-                    eprintln!("  touches {:?} tacnode {:?}", found.map(|s| (s.flat, self.touches(&s, finest), s.e.dist, finest)), arms);
-                }
                 let grazing = match found {
                     Some(s) if arms.is_none() && s.flat && self.touches(&s, finest) => {
                         self.one_sided(&s, finest)
@@ -989,7 +976,7 @@ impl Marcher {
                         lv: found.lv,
                         radius: tac.radius,
                     };
-                    settled = disc.covers(u, v, hu, hv);
+                    settled = self.disc_covers(&disc, u, v, hu, hv);
                     discs.push(disc);
                     patience = FIRST_LOOK;
                     self.tacnodes.push(tac);
@@ -1011,7 +998,7 @@ impl Marcher {
                             turn: 0.0,
                         });
                     }
-                    settled = disc.covers(u, v, hu, hv);
+                    settled = self.disc_covers(&disc, u, v, hu, hv);
                     discs.push(disc);
                     patience = FIRST_LOOK;
                 } else if let Some(found) = found {
@@ -1023,7 +1010,7 @@ impl Marcher {
                     if !looked.iter().any(|p| p.distance(found.e.p) <= merge) {
                         looked.push(found.e.p);
                         if let Some(disc) = self.disc(&found, finest) {
-                            settled = disc.covers(u, v, hu, hv);
+                            settled = self.disc_covers(&disc, u, v, hu, hv);
                             discs.push(disc);
                             patience = FIRST_LOOK;
                         }
@@ -1189,6 +1176,15 @@ impl Marcher {
             }
         }
         None
+    }
+
+    /// True when a disc covers the cell around `(u, v)`, the cell taken
+    /// round a periodic chart to the disc's side.
+    fn disc_covers(&self, d: &Disc, u: f64, v: f64, hu: f64, hv: f64) -> bool {
+        let c = &self.chart;
+        let u = Self::unwrap(u, d.u, c.periodic_u, c.u.1 - c.u.0);
+        let v = Self::unwrap(v, d.v, c.periodic_v, c.v.1 - c.v.0);
+        d.covers(u, v, hu, hv)
     }
 
     /// The gradient and Hessian of `f` at `(u, v)`, as a stationary point.
@@ -1560,19 +1556,32 @@ impl Marcher {
                 // just before the point, and a step that lands there would
                 // pass it by and go on along the next arm; where they are
                 // not, a step that lands on the point itself would.
-                let reach = if matches!(s.kind, SingularKind::Cross | SingularKind::Tacnode) {
-                    (2.0 * h).max(s.arm)
-                } else {
-                    h
+                let reach = match s.kind {
+                    SingularKind::Cross => (2.0 * h).max(s.arm),
+                    SingularKind::Tacnode => s.arm,
+                    _ => h,
                 };
                 if !(dist > self.on && dist <= reach && along > 0.0) {
                     continue;
+                }
+                let (su, sv) = self.near((s.u, s.v), &cur);
+                // Inside a tacnode's radius its arms are made, not marched
+                // (`tacnode.rs`): every branch heading in ends on it.
+                if s.kind == SingularKind::Tacnode {
+                    snapped = Some(Pt {
+                        u: su,
+                        v: sv,
+                        p: s.p,
+                        t: d * (1.0 / dist),
+                        du: 0.0,
+                        dv: 0.0,
+                    });
+                    break;
                 }
                 if (d - cur.t * along).length() > 0.1 * dist {
                     continue;
                 }
                 // The curve really goes there: its middle is near the chord.
-                let (su, sv) = self.near((s.u, s.v), &cur);
                 let Some((m, _, _)) = self.correct(0.5 * (cur.u + su), 0.5 * (cur.v + sv)) else {
                     continue;
                 };
@@ -2121,6 +2130,7 @@ impl Marcher {
             };
             if branches.iter().any(|b| self.on_branch(e.p, &b.pts, slack))
                 || singular.iter().any(covered)
+                || self.tac_inside(u, v)
             {
                 continue;
             }

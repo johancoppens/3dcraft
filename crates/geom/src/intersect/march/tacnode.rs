@@ -61,6 +61,10 @@ pub(super) struct Tacnode {
     lift: f64,
     /// The radius of the disc inside which the arms are made.
     pub(super) radius: f64,
+    /// How far along the valley the gradient of `f` stays below what
+    /// counts as tangent: a search for a stationary point that ends there
+    /// has found this point again.
+    claim: f64,
     /// Seeds on the arms at the rim of the disc.
     pub(super) seeds: Vec<(f64, f64)>,
 }
@@ -242,9 +246,10 @@ impl Marcher {
             lambda,
             lift: 0.0,
             radius: 0.0,
+            claim: 0.0,
             seeds: Vec::new(),
         };
-        let mut slope_along = |m: &mut Self, t: f64| -> Option<(f64, f64, Eval)> {
+        let slope_along = |m: &mut Self, t: f64| -> Option<(f64, f64, Eval)> {
             let (sv, e) = m.tac_valley(&k, t)?;
             Some((e.gu / k.lu * k.along.0 + e.gv / k.lv * k.along.1, sv, e))
         };
@@ -298,6 +303,7 @@ impl Marcher {
             lambda,
             lift: s.e.f,
             radius: 0.0,
+            claim: 0.0,
             seeds: Vec::new(),
         };
         let sign = lambda.signum();
@@ -316,7 +322,7 @@ impl Marcher {
             for (slot, dir) in sides.iter_mut().zip([1.0, -1.0]) {
                 let (_, e) = self.tac_valley(&k, dir * z)?;
                 let depth = e.f * sign;
-                *slot = if depth < -clear && -depth >= 16.0 * k.lift.abs() {
+                *slot = if depth < -clear && -depth >= 4.0 * k.lift.abs() {
                     match (
                         self.tac_root(&k, dir * z, 1.0),
                         self.tac_root(&k, dir * z, -1.0),
@@ -325,7 +331,7 @@ impl Marcher {
                         (Some(_), Some(_)) => Side::Unclear,
                         _ => return None,
                     }
-                } else if depth > clear && depth >= 16.0 * k.lift.abs() {
+                } else if depth > clear && depth >= 4.0 * k.lift.abs() {
                     Side::Bare
                 } else {
                     Side::Unclear
@@ -356,9 +362,9 @@ impl Marcher {
                             for across in [1.0, -1.0] {
                                 let (at, ..) = self.tac_root(&k, t, across)?;
                                 // Arms that keep close to the direction
-                                // along (a march coming in ends on the
-                                // point from where they are seeded).
-                                if !(at.abs() <= 0.05 * t.abs()) {
+                                // along where a march coming in ends on
+                                // the point.
+                                if t.abs() <= 1.25 * z && !(at.abs() <= 0.15 * t.abs()) {
                                     return None;
                                 }
                             }
@@ -380,6 +386,25 @@ impl Marcher {
                 }
             }
         }
+        // Where along the valley the gradient becomes more than tangent.
+        let (ha, hb, hc) = s.h;
+        let size = ha.abs().max(hb.abs()).max(hc.abs());
+        let tangent = 1e-6_f64.max(4.0 * size * self.tol.linear);
+        let mut claim = 2.0 * z;
+        while claim < widest {
+            let mut steep = true;
+            for dir in [1.0, -1.0] {
+                if let Some((_, e)) = self.tac_valley(&k, dir * claim) {
+                    let along = e.gu / k.lu * k.along.0 + e.gv / k.lv * k.along.1;
+                    steep &= along.abs() > tangent;
+                }
+            }
+            if steep {
+                break;
+            }
+            claim *= 2.0;
+        }
+        k.claim = claim;
         for (side, dir) in sides.iter().zip([1.0, -1.0]) {
             if *side == Side::Arms {
                 for across in [1.0, -1.0] {
@@ -391,6 +416,25 @@ impl Marcher {
         Some(k)
     }
 
+    /// True when a stationary point at `(u, v)` is a tacnode's own: on its
+    /// valley, where the gradient is no more than tangent.
+    pub(super) fn tac_claims(&self, u: f64, v: f64) -> bool {
+        self.tacnodes.iter().any(|k| {
+            let (t, s) = self.tac_coords(k, u, v);
+            t.abs() <= k.claim && s.abs() <= k.radius
+        })
+    }
+
+    /// True when `(u, v)` lies nearer to a tacnode along its arms than
+    /// their seeds: there the arms are made, and a seed that cells found
+    /// is not marched.
+    pub(super) fn tac_inside(&self, u: f64, v: f64) -> bool {
+        self.tacnodes.iter().any(|k| {
+            let (t, s) = self.tac_coords(k, u, v);
+            t.abs() < 0.999 * k.radius && s.abs() <= k.radius
+        })
+    }
+
     /// The point halfway between `a` and `b` along an arm of a tacnode,
     /// when both lie where its arms are made: `Some(None)` when that fails.
     pub(super) fn tac_between(&mut self, a: &Pt, b: &Pt) -> Option<Option<Pt>> {
@@ -399,13 +443,20 @@ impl Marcher {
             let (ta, sa) = self.tac_coords(k, a.u, a.v);
             let (tb, sb) = self.tac_coords(k, b.u, b.v);
             let reach = 2.0 * k.radius * (1.0 + 1e-9);
-            if !(ta.abs() <= reach && tb.abs() <= reach && sa.abs() <= k.radius && sb.abs() <= k.radius)
-                || ta * tb < 0.0
+            if !(ta.abs() <= reach
+                && tb.abs() <= reach
+                && sa.abs() <= k.radius
+                && sb.abs() <= k.radius)
+                || (ta * tb < 0.0 && ta.abs().min(tb.abs()) > 1e-9 * k.radius)
             {
                 continue;
             }
             // The side across is the one of the end farther out.
-            let (t, s) = if ta.abs() >= tb.abs() { (ta, sa) } else { (tb, sb) };
+            let (t, s) = if ta.abs() >= tb.abs() {
+                (ta, sa)
+            } else {
+                (tb, sb)
+            };
             if t == 0.0 {
                 continue;
             }
