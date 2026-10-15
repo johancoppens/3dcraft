@@ -1,0 +1,12 @@
+[
+["feature.cylinder", {"radius": "29 mm", "height": "180 mm", "position": ["0 mm", "0 mm", "-90 mm"], "name": "Post"}],
+["datum.plane", {"through": [["0.0 mm", "0.0 mm", "0.0 mm"], ["0.0 mm", "10.0 mm", "0.0 mm"], ["5.0 mm", "0.0 mm", "8.660254038 mm"]], "name": "TubeP0"}],
+["sketch.create", {"plane": "TubeP0", "name": "TubeS0"}],
+["sketch.path", {"sketch": "TubeS0", "start": [5.963881034, 25.62709921], "segments": [{"arc": [-5.963881034, 25.62709921], "center": [0, 13.36]}, {"arc": [-5.963881034, -25.62709921], "center": [6.495215311, 0]}, {"arc": [5.963881034, -25.62709921], "center": [0, -13.36]}, {"arc": "start", "center": [-6.495215311, 0]}]}],
+["datum.plane", {"through": [["346.410161514 mm", "0.0 mm", "-200.0 mm"], ["346.410161514 mm", "10.0 mm", "-200.0 mm"], ["351.410161514 mm", "0.0 mm", "-191.339745962 mm"]], "name": "TubeP1"}],
+["sketch.create", {"plane": "TubeP1", "name": "TubeS1"}],
+["sketch.path", {"sketch": "TubeS1", "start": [14.849242405, 14.849242405], "segments": [{"arc": [-14.849242405, 14.849242405], "center": [0, 0]}, {"arc": [-14.849242405, -14.849242405], "center": [0, 0]}, {"arc": [14.849242405, -14.849242405], "center": [0, 0]}, {"arc": "start", "center": [0, 0]}]}],
+["feature.loft", {"sections": ["TubeS0", "TubeS1"], "ruled": false, "name": "Tube"}],
+["feature.boolean", {"op": "union", "target": "Post", "tool": "Tube", "name": "U"}],
+["feature.fillet", {"edges": [["F1:face(0)", "F6:side(e4,e4)"]], "radius": "3 mm", "chain": true, "name": "Weld"}]
+]

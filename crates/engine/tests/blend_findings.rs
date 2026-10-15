@@ -178,6 +178,27 @@ fn welds_of_a_tube_into_a_tube() {
     }
 }
 
+/// The bike's B1: welds all round tubes lofted from an oval of tangent
+/// arcs into a circle (two sections, and three: the down tube, the top
+/// tube, the down tube into the head tube's cone). The lofted faces met at
+/// creases between the sections (up to 1.6°), so the weld's chain stopped
+/// at the first one ("does not end cleanly"); the loft is tangent there
+/// now and the whole weld is built.
+#[test]
+fn welds_round_tubes_lofted_from_an_oval() {
+    for steps in [
+        include_str!("blend_findings/bike-weld-tapered-oval.json"),
+        include_str!("blend_findings/bike-weld-down-tube.json"),
+        include_str!("blend_findings/bike-weld-top-tube.json"),
+        include_str!("blend_findings/bike-weld-down-tube-head-tube.json"),
+    ] {
+        let (mut s, _) = replay(steps);
+        let weld = feature(&mut s, "Weld");
+        assert_eq!(weld["status"], "ok", "{weld}");
+        deep_ok(&mut s);
+    }
+}
+
 /// The bike's B5: a stay welded to a dropout plate near the weld's size
 /// limit. The refinement of the weld's face crept (each pass pushed the
 /// steps next to the ones it halved over the bound) and gave up as "could
