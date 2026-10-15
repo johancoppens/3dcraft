@@ -925,6 +925,169 @@ impl<'a> SurfaceBound<'a> {
     }
 }
 
+/// How two curves lie, as far as [`curves_apart`] could tell.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Apart {
+    /// Proven: no point of one is within the threshold of the other.
+    Yes,
+    /// Seen: the points at these parameters are within the threshold.
+    No { at: [f64; 2], distance: f64 },
+    /// Neither, in the pairs of pieces allowed.
+    Unknown,
+}
+
+/// The distance between the segments from `a0` to `a1` and from `b0` to
+/// `b1`, with the parameters (0 to 1) of the nearest points.
+fn segments(a0: Vec3, a1: Vec3, b0: Vec3, b1: Vec3) -> (f64, f64, f64) {
+    let (d1, d2, r) = (a1 - a0, b1 - b0, a0 - b0);
+    let (a, e, f) = (d1.dot(d1), d2.dot(d2), d2.dot(r));
+    let (c, b) = (d1.dot(r), d1.dot(d2));
+    let denominator = a * e - b * b;
+    let mut s = if denominator > 0.0 {
+        ((b * f - c * e) / denominator).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let mut t = if e > 0.0 { (b * s + f) / e } else { 0.0 };
+    if t < 0.0 {
+        t = 0.0;
+        s = if a > 0.0 {
+            (-c / a).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+    } else if t > 1.0 {
+        t = 1.0;
+        s = if a > 0.0 {
+            ((b - c) / a).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+    }
+    ((a0 + d1 * s).distance(b0 + d2 * t), s, t)
+}
+
+/// A piece of a curve for [`curves_apart`]: its range, its ends, and how
+/// far it can be from the chord between them.
+#[derive(Clone, Copy)]
+struct Span {
+    range: (f64, f64),
+    ends: [Vec3; 2],
+    reach: f64,
+}
+
+impl CurveBound<'_> {
+    /// The piece over `[a, b]` (inside one Bézier piece): every point lies
+    /// within `reach` of its chord, by the error of linear interpolation
+    /// (`max |C''| / 8`), or `max |C'|` where that is less.
+    fn span(&self, a: f64, b: f64) -> Option<Span> {
+        let ends = [self.eval(a), self.eval(b)];
+        let jet = self.jets(a, b, ends[0])?;
+        let reach = (get(&jet, 2) / 8.0).min(get(&jet, 1));
+        let rounding = 32.0 * f64::EPSILON * (ends[0].length() + ends[1].length());
+        let reach = reach + rounding;
+        reach.is_finite().then_some(Span {
+            range: (a, b),
+            ends,
+            reach,
+        })
+    }
+
+    /// The pieces of `range` between its knots, each cut into `cuts`.
+    fn spans(&self, (lo, hi): (f64, f64), cuts: usize) -> Option<Vec<Span>> {
+        let mut points = vec![lo];
+        points.extend(self.breaks(lo, hi));
+        points.push(hi);
+        let mut out = Vec::new();
+        for pair in points.windows(2) {
+            let [a, b] = pair else { continue };
+            for k in 0..cuts {
+                let x = a + (b - a) * k as f64 / cuts as f64;
+                let y = a + (b - a) * (k + 1) as f64 / cuts as f64;
+                out.push(self.span(x, y)?);
+            }
+        }
+        Some(out)
+    }
+}
+
+/// Whether the curve `a` over `range_a` and `b` over `range_b` keep more
+/// than `threshold` apart everywhere, proven: each is cut into pieces held
+/// within a capsule round their chords (a radius from the bound on their
+/// second derivatives), and two pieces whose capsules are more than the
+/// threshold apart are apart. Two that are not are halved (the one with
+/// the wider capsule or the longer chord), unless the points of the curves
+/// nearest where the chords meet are themselves within the threshold:
+/// then the curves come that close ([`Apart::No`]). At most `most` pairs
+/// of pieces are looked at; past that the answer is [`Apart::Unknown`].
+pub fn curves_apart(
+    a: &CurveBound<'_>,
+    range_a: (f64, f64),
+    b: &CurveBound<'_>,
+    range_b: (f64, f64),
+    threshold: f64,
+    most: usize,
+) -> Apart {
+    let valid = |(lo, hi): (f64, f64)| lo.is_finite() && hi.is_finite() && hi > lo;
+    if !(valid(range_a) && valid(range_b) && threshold.is_finite()) {
+        return Apart::Unknown;
+    }
+    let (Some(pa), Some(pb)) = (a.spans(range_a, 8), b.spans(range_b, 8)) else {
+        return Apart::Unknown;
+    };
+    let mut stack: Vec<(Span, Span)> = Vec::with_capacity(pa.len() * pb.len());
+    for x in pa.iter().rev() {
+        for y in pb.iter().rev() {
+            stack.push((*x, *y));
+        }
+    }
+    let mut looked = 0_usize;
+    while let Some((x, y)) = stack.pop() {
+        looked += 1;
+        if looked > most {
+            return Apart::Unknown;
+        }
+        let [x0, x1] = x.ends;
+        let [y0, y1] = y.ends;
+        let (chords, s, t) = segments(x0, x1, y0, y1);
+        if chords - x.reach - y.reach > threshold {
+            continue;
+        }
+        let at = [
+            x.range.0 + s * (x.range.1 - x.range.0),
+            y.range.0 + t * (y.range.1 - y.range.0),
+        ];
+        let distance = a.eval(at[0]).distance(b.eval(at[1]));
+        if distance <= threshold {
+            return Apart::No { at, distance };
+        }
+        // Halve the one that is coarser.
+        let size = |p: &Span| p.reach.max(p.ends[0].distance(p.ends[1]));
+        let halve = |curve: &CurveBound<'_>, p: &Span| -> Option<[Span; 2]> {
+            let (lo, hi) = p.range;
+            let middle = 0.5 * (lo + hi);
+            if !(middle > lo && middle < hi) {
+                return None;
+            }
+            Some([curve.span(lo, middle)?, curve.span(middle, hi)?])
+        };
+        if size(&x) >= size(&y) {
+            let Some([l, r]) = halve(a, &x) else {
+                return Apart::Unknown;
+            };
+            stack.push((r, y));
+            stack.push((l, y));
+        } else {
+            let Some([l, r]) = halve(b, &y) else {
+                return Apart::Unknown;
+            };
+            stack.push((x, r));
+            stack.push((x, l));
+        }
+    }
+    Apart::Yes
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1195,5 +1358,66 @@ mod tests {
             assert!(d2.abs() <= jet[2] * 1.01, "{d2} {}", jet[2]);
             assert!(d4.abs() <= jet[4] * 1.05, "{d4} {}", jet[4]);
         }
+    }
+
+    /// A cubic that bows down towards a line, its lowest point `gap`
+    /// above it, between the 64 chords a sampled check would take.
+    fn bow(gap: f64, k: f64) -> NurbsCurve {
+        let params: Vec<f64> = (0..=40).map(|i| f64::from(i) / 40.0).collect();
+        let values: Vec<Vec<f64>> = params
+            .iter()
+            .map(|t| vec![t * k, (gap + 4e-2 * (t - 0.507).powi(2)) * k, 0.0])
+            .collect();
+        let (knots, rows) = crate::refine::interpolate(&params, 3, &values).unwrap();
+        let ctrl = rows.iter().map(|r| Vec3::new(r[0], r[1], r[2])).collect();
+        NurbsCurve::polynomial(3, knots, ctrl).unwrap()
+    }
+
+    #[test]
+    fn two_curves_are_proven_apart_or_seen_close_and_never_called_apart_when_close() {
+        for k in [1e-3, 1.0, 1e6] {
+            let line = Curve3::Line(crate::Line::new(Vec3::ZERO, Vec3::X).unwrap());
+            let lb = CurveBound::new(&line);
+            let threshold = 1e-5 * k;
+            for (gap, expect_apart) in [(5e-6, false), (9e-6, false), (2e-5, true), (1e-3, true)] {
+                let curve = bow(gap, k);
+                let cb = CurveBound::nurbs(&curve);
+                let found = curves_apart(&cb, (0.0, 1.0), &lb, (0.0, k), threshold, 1 << 16);
+                // The least distance, densely.
+                let least = (0..=100_000)
+                    .map(|i| cb.eval(f64::from(i) / 100_000.0).y.abs())
+                    .fold(f64::INFINITY, f64::min);
+                match found {
+                    Apart::Yes => {
+                        assert!(expect_apart, "{k} {gap}");
+                        assert!(least > threshold);
+                    }
+                    Apart::No { distance, .. } => {
+                        assert!(!expect_apart, "{k} {gap}");
+                        assert!(distance <= threshold);
+                    }
+                    Apart::Unknown => panic!("{k} {gap}: unknown"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn curves_apart_takes_bad_ranges_without_panicking() {
+        let line = Curve3::Line(crate::Line::new(Vec3::ZERO, Vec3::X).unwrap());
+        let lb = CurveBound::new(&line);
+        for r in [(1.0, 0.0), (0.0, f64::NAN), (f64::NEG_INFINITY, 0.0)] {
+            assert_eq!(
+                curves_apart(&lb, r, &lb, (0.0, 1.0), 1.0, 64),
+                Apart::Unknown
+            );
+        }
+        // One pair allowed of the many to look at: unknown.
+        let curve = bow(1e-3, 1.0);
+        let cb = CurveBound::nurbs(&curve);
+        assert_eq!(
+            curves_apart(&cb, (0.0, 1.0), &lb, (0.0, 1.0), 1e-5, 1),
+            Apart::Unknown
+        );
     }
 }
