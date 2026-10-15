@@ -8,17 +8,21 @@
 //! pieces, or a tool the boolean or the sweep refuses), the largest size
 //! that fits is found by building again, smaller, until one builds.
 //!
-//! **Where to look.** The size at which a blend stops fitting is where
-//! its border on a face first reaches something of that face: a vertex,
-//! the nearest point of an edge, what another blend takes of the face
-//! from the other side, the axis a circular edge turns about, the size at
-//! which a fillet's torus reaches its own axis. Those sizes (*events*)
-//! are worked out exactly from the faces, without deciding which of them
-//! matter: which one does is decided by the builds, by a binary search
-//! over them (just past an event the build fails, just before it, it
-//! builds). An event that explains the failure is reported exactly; when
-//! none does, the size is bisected on the builds alone and the smallest
-//! size seen to fail is reported. Every build is bounded ([`MOST_BUILDS`]).
+//! **Where to look.** The size of every edge of the same size changes
+//! together (a feature has one size). First a quarter of the size at a
+//! time until one builds. Then the sizes at which a border can first
+//! reach something of its face (*events*: a vertex, the nearest point of
+//! an edge, what another blend takes of the face from the other side, the
+//! axis a circular edge turns about, the size at which a fillet's torus
+//! reaches its own axis) are worked out from the faces, without deciding
+//! which of them matter: a binary search over them with builds just past
+//! each decides, and the event found is reported when a build just before
+//! it succeeds: to within those builds, a few tolerances either side.
+//! When none explains the failure the size is bisected on the builds
+//! alone. Too large with nothing that fits only where every failure is
+//! evidence of no room from the result ([`no_room`]); a refusal that is
+//! the same at every smaller size is reported as it is. Every search is
+//! bounded ([`MOST_BUILDS`]), and a spent budget proves nothing.
 
 use super::{BlendError, Failure, Path, Plan, Reason, Request, Size, Use, build, face_edges, plan};
 use crate::KernelError;
