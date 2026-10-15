@@ -73,6 +73,50 @@ pub fn solve(a: &Body, b: &Body, op: BooleanOp, k: f64) -> BooleanResult {
     result
 }
 
+/// The boolean, which must succeed or be refused as zero thickness
+/// (parts of the result that touch along an edge or in a point, refused
+/// since 2026-10-15): the result, made without that refusal when it was
+/// refused and checked as [`solve`] checks, and where the refusal says the
+/// parts touch. A refusal is held to a search of its own
+/// ([`shells_touch_at`] on the result before merging); a result that is
+/// not refused has no parts that touch by that search.
+pub fn solve_parts(a: &Body, b: &Body, op: BooleanOp, k: f64) -> (BooleanResult, Option<Vec3>) {
+    use craft3d_kernel::boolean::{BooleanOptions, boolean_with};
+    let tol = tolerance(k);
+    let unrefused = BooleanOptions {
+        refuse_zero_thickness: false,
+        ..BooleanOptions::default()
+    };
+    let imprinted = BooleanOptions {
+        merge: false,
+        ..unrefused
+    };
+    let touch = |op: BooleanOp| {
+        boolean_with(a, b, op, &tol, &imprinted)
+            .ok()
+            .and_then(|r| shells_touch_at(&r.body, 2.0 * tol.linear))
+    };
+    match boolean(a, b, op, &tol) {
+        Ok(_) => {
+            assert_eq!(touch(op), None, "{op:?} at scale {k}: parts touch");
+            (solve(a, b, op, k), None)
+        }
+        Err(KernelError::ZeroThickness { at, .. }) => {
+            let result = match boolean_with(a, b, op, &tol, &unrefused) {
+                Ok(result) => result,
+                Err(e) => panic!("{op:?} at scale {k}, not refused: {e}"),
+            };
+            assert_eq!(check(&result.body, &tol), [], "{op:?} at scale {k}");
+            assert!(
+                on_parts(&result.body, at, &tol) >= 2,
+                "{op:?} at scale {k}: refused at {at:?}, which is not on two parts"
+            );
+            (result, Some(at))
+        }
+        Err(e) => panic!("{op:?} at scale {k}: {e}"),
+    }
+}
+
 pub fn assert_empty(a: &Body, b: &Body, op: BooleanOp, k: f64) {
     match boolean(a, b, op, &tolerance(k)) {
         Err(KernelError::EmptyResult { .. }) => {}
@@ -168,4 +212,157 @@ pub fn kinds(body: &Body) -> std::collections::BTreeMap<&'static str, usize> {
         *found.entry(face.surface.kind()).or_default() += 1;
     }
     found
+}
+
+/// On how many shells of `body` the point lies: within twice the
+/// tolerance of the boundary of that shell alone, by the rays of
+/// `contains_points` (a second opinion on where the boolean says parts
+/// touch, independent of its search).
+pub fn on_parts(body: &Body, at: Vec3, tol: &Tolerance) -> usize {
+    (0..body.shells.len())
+        .filter(|&s| {
+            craft3d_kernel::boolean::contains_points(&shell_alone(body, s), &[at], tol)
+                .is_ok_and(|found| found == [None])
+        })
+        .count()
+}
+
+/// Shell `shell` of `body` as a body of its own.
+pub fn shell_alone(body: &Body, shell: usize) -> Body {
+    use craft3d_topo::{Coedge, VertexId};
+    use std::collections::BTreeMap;
+    let mut out = Body::new(body.kind);
+    let mut vertices: BTreeMap<u32, VertexId> = BTreeMap::new();
+    let mut edges = BTreeMap::new();
+    let mut faces = Vec::new();
+    for &f in &body.shells[shell].faces {
+        let face = &body.faces[f.0 as usize];
+        let mut loops = Vec::new();
+        for &l in &face.loops {
+            let mut coedges = Vec::new();
+            for c in &body.loops[l.0 as usize].coedges {
+                let edge = *edges.entry(c.edge.0).or_insert_with(|| {
+                    let e = &body.edges[c.edge.0 as usize];
+                    let mut vertex = |v: VertexId| {
+                        *vertices
+                            .entry(v.0)
+                            .or_insert_with(|| out.add_vertex(body.vertices[v.0 as usize].point))
+                    };
+                    let (start, end) = (vertex(e.start), vertex(e.end));
+                    out.add_edge(e.curve.clone(), e.range, start, end)
+                });
+                coedges.push(Coedge {
+                    edge,
+                    reversed: c.reversed,
+                });
+            }
+            loops.push(out.add_loop(coedges));
+        }
+        faces.push(out.add_face(face.surface.clone(), face.reversed, loops));
+    }
+    out.add_shell(faces);
+    out
+}
+
+/// Where two shells of `body` touch: a vertex of one within `near` of a
+/// vertex of another, or of a point of an edge of another (sampled at 257
+/// points, then narrowed by ternary search on the distance), or on the
+/// boundary of another (`contains_points` of that shell alone, by rays,
+/// says it is within twice the tolerance of it). Written apart from
+/// `craft3d_topo::touches` and the boolean's own search, by brute force
+/// over every pair, as a second opinion on the boolean's zero-thickness
+/// refusals.
+pub fn shells_touch_at(body: &Body, near: f64) -> Option<Vec3> {
+    if let Some(at) = shells_touch_at_entities(body, near) {
+        return Some(at);
+    }
+    if body.shells.len() < 2 {
+        return None;
+    }
+    let tol = Tolerance::new(0.5 * near, 1e-9).unwrap();
+    for (s, _) in body.shells.iter().enumerate() {
+        let alone = shell_alone(body, s);
+        let own: std::collections::BTreeSet<[u64; 3]> = alone
+            .vertices
+            .iter()
+            .map(|v| {
+                [
+                    v.point.x.to_bits(),
+                    v.point.y.to_bits(),
+                    v.point.z.to_bits(),
+                ]
+            })
+            .collect();
+        let others: Vec<Vec3> = body
+            .vertices
+            .iter()
+            .map(|v| v.point)
+            .filter(|p| !own.contains(&[p.x.to_bits(), p.y.to_bits(), p.z.to_bits()]))
+            .collect();
+        if let Ok(found) = craft3d_kernel::boolean::contains_points(&alone, &others, &tol)
+            && let Some(at) = others
+                .iter()
+                .zip(found)
+                .find(|(_, inside)| inside.is_none())
+                .map(|(p, _)| *p)
+        {
+            return Some(at);
+        }
+    }
+    None
+}
+
+fn shells_touch_at_entities(body: &Body, near: f64) -> Option<Vec3> {
+    let mut vertex_shell = vec![usize::MAX; body.vertices.len()];
+    let mut edge_shell = vec![usize::MAX; body.edges.len()];
+    for (s, shell) in body.shells.iter().enumerate() {
+        for &f in &shell.faces {
+            for &l in &body.faces[f.0 as usize].loops {
+                for c in &body.loops[l.0 as usize].coedges {
+                    let e = &body.edges[c.edge.0 as usize];
+                    edge_shell[c.edge.0 as usize] = s;
+                    vertex_shell[e.start.0 as usize] = s;
+                    vertex_shell[e.end.0 as usize] = s;
+                }
+            }
+        }
+    }
+    for (v, vertex) in body.vertices.iter().enumerate() {
+        let s = vertex_shell[v];
+        if s == usize::MAX {
+            continue;
+        }
+        for (w, other) in body.vertices.iter().enumerate() {
+            let t = vertex_shell[w];
+            if t != usize::MAX && t != s && vertex.point.distance(other.point) <= near {
+                return Some(vertex.point);
+            }
+        }
+        for (e, edge) in body.edges.iter().enumerate() {
+            let t = edge_shell[e];
+            if t == usize::MAX || t == s {
+                continue;
+            }
+            let (t0, t1) = edge.range;
+            let step = (t1 - t0) / 256.0;
+            let distance = |u: f64| edge.curve.eval(u).distance(vertex.point);
+            let best = (0..=256)
+                .map(|i| t0 + step * i as f64)
+                .min_by(|a, b| distance(*a).total_cmp(&distance(*b)))
+                .unwrap();
+            let (mut lo, mut hi) = ((best - step).max(t0), (best + step).min(t1));
+            for _ in 0..100 {
+                let (a, b) = (lo + (hi - lo) / 3.0, hi - (hi - lo) / 3.0);
+                if distance(a) < distance(b) {
+                    hi = b;
+                } else {
+                    lo = a;
+                }
+            }
+            if distance(0.5 * (lo + hi)) <= near {
+                return Some(vertex.point);
+            }
+        }
+    }
+    None
 }

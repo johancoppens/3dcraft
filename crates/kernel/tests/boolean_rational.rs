@@ -358,15 +358,36 @@ enum Outcome {
         area: f64,
         centroid: Vec3,
         shells: usize,
+        /// Refused as zero thickness (parts that touch, since
+        /// 2026-10-15); the rest is the body made without the refusal.
+        zero_thickness: bool,
     },
     Empty,
     Refused(String),
 }
 
 fn outcome(a: &Body, b: &Body, op: BooleanOp, k: f64, what: &str) -> Outcome {
-    match boolean(a, b, op, &tolerance(k)) {
+    let unrefused = craft3d_kernel::boolean::BooleanOptions {
+        refuse_zero_thickness: false,
+        ..Default::default()
+    };
+    let (made, at) = match boolean(a, b, op, &tolerance(k)) {
+        Err(KernelError::ZeroThickness { at, .. }) => (
+            craft3d_kernel::boolean::boolean_with(a, b, op, &tolerance(k), &unrefused),
+            Some(at),
+        ),
+        other => (other, None),
+    };
+    let zero_thickness = at.is_some();
+    match made {
         Ok(result) => {
             assert_eq!(check(&result.body, &tolerance(k)), [], "{what}");
+            if let Some(at) = at {
+                assert!(
+                    on_parts(&result.body, at, &tolerance(k)) >= 2,
+                    "{what}: {at:?}"
+                );
+            }
             meshes(&result.body, k, what);
             let m = mass(&result.body);
             Outcome::Body {
@@ -374,6 +395,7 @@ fn outcome(a: &Body, b: &Body, op: BooleanOp, k: f64, what: &str) -> Outcome {
                 area: m.area,
                 centroid: m.centroid.unwrap(),
                 shells: result.body.shells.len(),
+                zero_thickness,
             }
         }
         Err(KernelError::EmptyResult { .. }) => Outcome::Empty,
@@ -394,14 +416,17 @@ fn same(rational: &Outcome, analytic: &Outcome, k: f64, what: &str) {
                 area,
                 centroid,
                 shells,
+                zero_thickness,
             },
             Outcome::Body {
                 volume: v,
                 area: a,
                 centroid: c,
                 shells: s,
+                zero_thickness: z,
             },
         ) => {
+            assert_eq!(zero_thickness, z, "{what}: zero thickness");
             near(*volume, *v, 1e-6, &format!("{what}: volume"));
             near(*area, *a, 1e-6, &format!("{what}: area"));
             assert!(centroid.distance(*c) <= 1e-5 * k, "{what}: centroid");

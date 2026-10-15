@@ -472,10 +472,19 @@ fn a_rod_that_goes_on_in_a_ring() {
                 let lying = Frame::new(base, frame.x(), frame.y()).unwrap();
                 let rod = primitives::cylinder(&lying, r * k, 2.0 * half * k).unwrap();
                 let va = PI * r * r * 2.0 * half * k * k * k;
-                let common = solve(&rod, &ring, Intersect, k);
-                let less = solve(&rod, &ring, Subtract, k);
-                let both = solve(&rod, &ring, Union, k);
-                let holed = solve(&ring, &rod, Subtract, k);
+                // The rod less the ring is pieces that meet along the
+                // circle where the two are tangent: zero thickness, refused
+                // there (since 2026-10-15), and held to the identities as
+                // made without the refusal. The rest is not refused.
+                let (common, z1) = solve_parts(&rod, &ring, Intersect, k);
+                let (less, z2) = solve_parts(&rod, &ring, Subtract, k);
+                let (both, z3) = solve_parts(&rod, &ring, Union, k);
+                let (holed, z4) = solve_parts(&ring, &rod, Subtract, k);
+                assert_eq!(
+                    [z1.is_some(), z2.is_some(), z3.is_some(), z4.is_some()],
+                    [false, true, false, false],
+                    "at scale {k}"
+                );
                 let vc = mass(&common.body).volume;
                 if through {
                     near(vc, shared, "what a rod shares with the ring it goes on in");

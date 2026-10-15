@@ -137,6 +137,9 @@ pub(super) struct Sections {
     /// surfaces' normals agree. And the other way round.
     pub coincident_a: BTreeMap<usize, Vec<(usize, bool)>>,
     pub coincident_b: BTreeMap<usize, Vec<(usize, bool)>>,
+    /// Points where two faces' surfaces only touch (a ball on a plane):
+    /// they divide nothing, but are where the bodies meet.
+    pub touches: Vec<Vec3>,
     /// Per edge: the vertices to split it at.
     pub splits_a: BTreeMap<EdgeId, BTreeSet<usize>>,
     pub splits_b: BTreeMap<EdgeId, BTreeSet<usize>>,
@@ -991,6 +994,7 @@ pub(super) fn section(
                     // lies inside the other body), the faces neither
                     // touch nor safely cross.
                     for &p in &meeting.points {
+                        sections.touches.push(p);
                         let (Some(qa), Some(qb)) = (onto(oa.sheet(), p), onto(ob.sheet(), p))
                         else {
                             continue;

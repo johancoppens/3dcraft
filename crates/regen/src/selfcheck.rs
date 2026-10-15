@@ -33,8 +33,10 @@ pub(crate) enum Crossing {
     /// is certain of a pair.
     Found(Option<[String; 2]>),
     /// It touches itself (a vertex on another vertex or on an edge of
-    /// its shell): the names of a face at each of the two, and where.
-    Touching([String; 2], Vec3),
+    /// its shell, or of another of its shells): the names of a face at
+    /// each of the two, where, and whether two shells touch (zero
+    /// thickness) rather than one shell itself.
+    Touching([String; 2], Vec3, bool),
     /// The body could not be meshed to look; the tessellator's reason.
     Unknown(String),
 }
@@ -57,7 +59,11 @@ impl Crossing {
                     "{param}: the {noun} passes through itself{between}; {advice}"
                 ))
             }
-            Crossing::Touching([a, b], at) => Err(format!(
+            Crossing::Touching([a, b], at, true) => Err(format!(
+                "{param}: the {noun} would have zero thickness at ({}, {}, {}): two of its parts touch there along an edge or in a point, at {a} and {b}, and no solid can be that thin; move them apart by more than the tolerance, or into each other",
+                at.x, at.y, at.z
+            )),
+            Crossing::Touching([a, b], at, false) => Err(format!(
                 "{param}: the {noun} touches itself at ({}, {}, {}), where {a} and {b} meet in a point or along a line that is no edge of both: no solid has a surface like that; move what meets there apart by more than the tolerance, or into each other",
                 at.x, at.y, at.z
             )),
@@ -123,7 +129,7 @@ fn verdict(
             .map(|(f, g)| [named(Some(f)), named(Some(g))])
             .find(|[a, b]| a != b)
             .unwrap_or_else(|| [named(here.first().copied()), named(there.first().copied())]);
-        return Crossing::Touching(pair, touch.at);
+        return Crossing::Touching(pair, touch.at, touch.between_shells());
     }
     Crossing::Found(
         found

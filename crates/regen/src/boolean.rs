@@ -29,12 +29,16 @@ pub(crate) struct Combined {
     pub(crate) vertices: Kept,
 }
 
+/// `names` are the names of the target's and the tool's faces, when they
+/// have them: a refusal that is about faces of theirs names them so.
 pub(crate) fn combine(
     target: &Body,
     tool: &Body,
     op: BooleanOp,
     tolerance: &Tolerance,
+    names: [Option<&Names>; 2],
 ) -> Result<Combined, String> {
+    use craft3d_kernel::KernelError;
     use craft3d_kernel::boolean::{
         BooleanOp as Op, EdgeSource, FaceSource, Operand, VertexSource, boolean,
     };
@@ -43,11 +47,32 @@ pub(crate) fn combine(
         BooleanOp::Subtract => Op::Subtract,
         BooleanOp::Intersect => Op::Intersect,
     };
-    let result = boolean(target, tool, op, tolerance).map_err(|e| e.to_string())?;
     let number = |operand: Operand| match operand {
         Operand::A => 0,
         Operand::B => 1,
     };
+    let result = boolean(target, tool, op, tolerance).map_err(|e| match e {
+        KernelError::ZeroThickness { at, faces, .. } => {
+            let [a, b] = faces.map(|(operand, face)| {
+                let [first, second] = names;
+                let names = if number(operand) == 0 { first } else { second };
+                names
+                    .and_then(|names| names.faces.get(face.0 as usize))
+                    .map_or_else(
+                        || {
+                            let body = if number(operand) == 0 { "target" } else { "tool" };
+                            format!("face {} of the {body}", face.0)
+                        },
+                        ToString::to_string,
+                    )
+            });
+            format!(
+                "the result would have zero thickness at ({}, {}, {}): two of its parts touch there along an edge or in a point, at {a} and {b}, and no solid can be that thin; move them apart by more than the tolerance, or into each other",
+                at.x, at.y, at.z
+            )
+        }
+        other => other.to_string(),
+    })?;
     let pair = |source: &FaceSource| (number(source.operand), source.face.0 as usize);
     let mut contributors = Contributors::with_capacity(result.faces.len());
     for (index, source) in result.faces.iter().enumerate() {
@@ -104,7 +129,13 @@ pub(crate) fn build(
     };
     let tolerance = Tolerance::new(doc.tolerance.linear, doc.tolerance.angular)
         .ok_or("the document's tolerance is not positive and finite".to_string())?;
-    let made = combine(a, b, boolean.op, &tolerance)?;
+    let made = combine(
+        a,
+        b,
+        boolean.op,
+        &tolerance,
+        [target.names.as_deref(), tool.names.as_deref()],
+    )?;
     let operand = |operand: u64| {
         let names = if operand == 0 {
             &target.names

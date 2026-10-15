@@ -20,10 +20,12 @@
 mod bits;
 mod check;
 mod mass;
+mod touch;
 mod transform;
 
 pub use check::{Defect, check, genus};
 pub use mass::{Inertia, MassError, MassProperties, inertia, mass_and_inertia, mass_properties};
+pub use touch::{Touch, TouchError, TouchScope, Touched, touches};
 pub use transform::{Offsets, TransformError, merge};
 
 use craft3d_geom::{Curve3, Surface};

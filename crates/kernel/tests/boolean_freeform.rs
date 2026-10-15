@@ -342,16 +342,22 @@ fn a_block_on_the_tangent_plane_of_a_saddle_of_the_roof() {
             let (dome, volume) = dome(k, nurbs);
             let block = primitives::block(&frame_at(k), side * k, side * k, tall * k).unwrap();
             let k3 = k * k * k;
-            let common = solve(&dome, &block, Intersect, k);
+            // What they share is two pieces that meet in the touch: zero
+            // thickness, refused there (since 2026-10-15), and held to
+            // the integral as made without the refusal.
+            let (common, refused) = solve_parts(&dome, &block, Intersect, k);
+            assert!(refused.is_some(), "scale {k}");
             let common = mass(&common.body).volume / k3;
             near(common, expected, 1e-3, "block and dome");
-            let rest = solve(&dome, &block, Subtract, k);
+            let (rest, refused) = solve_parts(&dome, &block, Subtract, k);
+            assert_eq!(refused, None, "scale {k}");
             assert_close(
                 mass(&rest.body).volume / k3,
                 volume - common,
                 "dome less block",
             );
-            let united = solve(&dome, &block, Union, k);
+            let (united, refused) = solve_parts(&dome, &block, Union, k);
+            assert_eq!(refused, None, "scale {k}");
             assert_close(
                 mass(&united.body).volume / k3,
                 volume + side * side * tall - common,
@@ -409,7 +415,11 @@ fn a_corner_of_a_roof_resting_on_another_roof() {
             )
             .unwrap();
             let k3 = k * k * k;
-            let both = solve(&lower.body, &upper.body, Union, k);
+            // They touch in that point: the union is refused as zero
+            // thickness there (since 2026-10-15), and is the two as before
+            // when made without the refusal.
+            let (both, refused) = solve_parts(&lower.body, &upper.body, Union, k);
+            assert!(refused.is_some(), "scale {k}");
             assert_eq!(both.body.shells.len(), 2, "scale {k} nurbs {nurbs}");
             near(
                 mass(&both.body).volume / k3,
@@ -577,11 +587,20 @@ fn a_block_on_the_tangent_plane_where_the_roof_curves_little() {
         .unwrap();
         let k3 = k * k * k;
         let (vd, vb) = (dome.volume / k3, block_size.x * block_size.y * block_size.z);
-        let common = mass(&solve(&dome.body, &block, Intersect, k).body).volume / k3;
+        // What they share is pieces that meet where the face touches the
+        // roof: zero thickness, refused (since 2026-10-15), and held to
+        // the integral as made without the refusal.
+        let (common, refused) = solve_parts(&dome.body, &block, Intersect, k);
+        assert!(refused.is_some(), "scale {k}");
+        let common = mass(&common.body).volume / k3;
         near(common, expected, 1e-5, "block and roof");
-        let rest = mass(&solve(&dome.body, &block, Subtract, k).body).volume / k3;
+        let (rest, refused) = solve_parts(&dome.body, &block, Subtract, k);
+        assert_eq!(refused, None, "scale {k}");
+        let rest = mass(&rest.body).volume / k3;
         near(rest, vd - common, 1e-8, "dome less block");
-        let united = mass(&solve(&dome.body, &block, Union, k).body).volume / k3;
+        let (united, refused) = solve_parts(&dome.body, &block, Union, k);
+        assert_eq!(refused, None, "scale {k}");
+        let united = mass(&united.body).volume / k3;
         near(united, vd + vb - common, 1e-8, "dome and block");
     }
 }

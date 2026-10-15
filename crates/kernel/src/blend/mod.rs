@@ -1487,6 +1487,8 @@ fn trim(
     let options = BooleanOptions {
         merge: true,
         trust_operands: true,
+        // A tool, not a result: what it touches is the next step's.
+        refuse_zero_thickness: false,
     };
     let result = boolean_with(&tool.body, &block, BooleanOp::Subtract, tolerance, &options)?;
     let mut slope = None;
@@ -2098,6 +2100,7 @@ fn combine(
         merge: true,
         // What the kernel itself made has passed the check.
         trust_operands: !first,
+        refuse_zero_thickness: true,
     };
     let result =
         boolean_with(&state.body, tool, op, tolerance, &options).map_err(|error| match error {

@@ -130,6 +130,17 @@ pub enum KernelError {
         reason: &'static str,
         faces: Vec<(boolean::Operand, craft3d_topo::FaceId)>,
     },
+    /// The result would have parts of one body that touch along an edge
+    /// or in a point (zero thickness, refused as other modellers refuse
+    /// it; the developer's decision of 2026-10-15): `at` is where, and
+    /// `faces` a face of the result at each of the two, as the face of
+    /// an operand it has a piece of. Separate bodies may touch; one body's
+    /// parts may not.
+    ZeroThickness {
+        operation: &'static str,
+        at: craft3d_math::Vec3,
+        faces: [(boolean::Operand, craft3d_topo::FaceId); 2],
+    },
     /// An extrusion up to a face has no end there; `reason` says why (the
     /// face is parallel to the direction, behind the sketch plane, or the
     /// profile misses it).
@@ -346,6 +357,24 @@ impl fmt::Display for KernelError {
                     write!(f, ")")?;
                 }
                 Ok(())
+            }
+            KernelError::ZeroThickness {
+                operation,
+                at,
+                faces,
+            } => {
+                let [a, b] = faces.map(|(operand, face)| {
+                    let body = match operand {
+                        boolean::Operand::A => "first",
+                        boolean::Operand::B => "second",
+                    };
+                    format!("face {} of the {body} body", face.0)
+                });
+                write!(
+                    f,
+                    "{operation}: the result would have zero thickness at ({}, {}, {}): two of its parts touch there along an edge or in a point ({a} and {b}), and no solid can be that thin; move them apart by more than the tolerance, or into each other",
+                    at.x, at.y, at.z
+                )
             }
             KernelError::NoEnd { reason } => write!(f, "the extrusion has no end: {reason}"),
             KernelError::EmptyResult { operation } => {
