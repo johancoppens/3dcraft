@@ -238,23 +238,18 @@ fn time_of_the_scene_at_the_display_quality_and_the_automatic_tolerance() {
                 SceneQuality::Display {
                     relative,
                     max_triangles: usize::MAX,
+                    max_angle: None,
                 },
             );
         }
-        time(
-            "display default",
-            s,
-            SceneQuality::Display {
-                relative: craft3d_engine::DISPLAY_RELATIVE_TOLERANCE,
-                max_triangles: craft3d_engine::DISPLAY_MAX_TRIANGLES,
-            },
-        );
+        time("display default", s, SceneQuality::display());
         time(
             "display, budget 200k",
             s,
             SceneQuality::Display {
                 relative: craft3d_engine::DISPLAY_RELATIVE_TOLERANCE,
                 max_triangles: 200_000,
+                max_angle: Some(craft3d_engine::DISPLAY_MAX_ANGLE),
             },
         );
     }
@@ -281,6 +276,7 @@ fn time_of_the_display_ladder_under_a_triangle_budget() {
             SceneQuality::Display {
                 relative,
                 max_triangles: usize::MAX,
+                max_angle: None,
             },
         );
         for max_triangles in [400_000, 100_000, 30_000, 10_000] {
@@ -290,6 +286,7 @@ fn time_of_the_display_ladder_under_a_triangle_budget() {
                 SceneQuality::Display {
                     relative,
                     max_triangles,
+                    max_angle: None,
                 },
             );
         }

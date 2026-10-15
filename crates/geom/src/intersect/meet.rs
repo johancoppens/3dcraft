@@ -213,7 +213,16 @@ fn numeric(
     let Some(chart) = Chart::new(walked, within, tol, &field)? else {
         return Ok(SurfaceMeeting::None);
     };
-    let meeting = Marcher::new(chart, field, within, tol)?.solve(within)?;
+    let mut marcher = Marcher::new(chart, field, within, tol)?;
+    // A freeform surface the other is measured against has borders that
+    // are edges: where they cross the walked surface a piece of the curve
+    // may end. (Without a chart of it, nothing is added.)
+    if matches!(other, Surface::Bezier(_) | Surface::Nurbs(_))
+        && let Ok(Some(edges)) = Chart::new(other, within, tol, &back)
+    {
+        marcher = marcher.with_field_chart(edges);
+    }
+    let meeting = marcher.solve(within)?;
     Ok(if meeting.curves.is_empty() && meeting.points.is_empty() {
         SurfaceMeeting::None
     } else {

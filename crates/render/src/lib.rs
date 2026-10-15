@@ -459,6 +459,64 @@ impl Highlight {
     }
 }
 
+/// Most face ids a [`FaceColors`] holds a colour for: what a face id
+/// compared as `f32` on the GPU keeps exactly.
+pub const MAX_FACE_COLORS: usize = 1 << 24;
+
+/// The base colour of each face that has one of its own (a body's
+/// appearance), by face id; the others are shaded from
+/// [`RenderParams::color`]. Both renderers take it from here, so a face
+/// has the same colour in both. A highlighted face ([`Highlight`]) is
+/// drawn in the highlight's colour whatever its own.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FaceColors {
+    colors: Vec<Option<[u8; 3]>>,
+}
+
+impl FaceColors {
+    /// No face has a colour of its own.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Gives `face` its own colour, or takes it away (`None`). False, and
+    /// nothing changes, for a face id at or beyond [`MAX_FACE_COLORS`].
+    pub fn set(&mut self, face: u32, color: Option<[u8; 3]>) -> bool {
+        let index = face as usize;
+        if index >= MAX_FACE_COLORS {
+            return false;
+        }
+        if index >= self.colors.len() {
+            if color.is_none() {
+                return true;
+            }
+            self.colors.resize(index + 1, None);
+        }
+        if let Some(slot) = self.colors.get_mut(index) {
+            *slot = color;
+        }
+        true
+    }
+
+    /// The face's own colour, if it has one.
+    pub fn get(&self, face: u32) -> Option<[u8; 3]> {
+        self.colors.get(face as usize).copied().flatten()
+    }
+
+    /// True when no face has a colour of its own.
+    pub fn is_empty(&self) -> bool {
+        self.colors.iter().all(Option::is_none)
+    }
+
+    /// The faces with a colour of their own, by ascending id.
+    pub fn iter(&self) -> impl Iterator<Item = (u32, [u8; 3])> + '_ {
+        self.colors
+            .iter()
+            .enumerate()
+            .filter_map(|(face, color)| Some((u32::try_from(face).ok()?, (*color)?)))
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RenderParams {
     pub width: u32,
@@ -886,6 +944,19 @@ fn shade(
 /// The id and depth buffers are of what is drawn: a pick on a cut-open
 /// model gives what is seen.
 pub fn render(mesh: &Mesh, camera: &Camera, params: &RenderParams) -> Result<Frame, RenderError> {
+    render_colored(mesh, &FaceColors::new(), camera, params)
+}
+
+/// [`render`] with faces in colours of their own: a face with a colour in
+/// `colors` is shaded from it instead of [`RenderParams::color`], in the
+/// same way (the same light, ambient term and highlight). With no colours
+/// it is [`render`], bit for bit.
+pub fn render_colored(
+    mesh: &Mesh,
+    colors: &FaceColors,
+    camera: &Camera,
+    params: &RenderParams,
+) -> Result<Frame, RenderError> {
     let (width, height, ssaa) = (params.width, params.height, params.ssaa);
     if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
         return Err(RenderError::InvalidSize { width, height });
@@ -1045,7 +1116,10 @@ pub fn render(mesh: &Mesh, camera: &Camera, params: &RenderParams) -> Result<Fra
                         (SHADE_HIGHLIGHT_AMBIENT, SHADE_HIGHLIGHT_DIFFUSE),
                     )
                 } else {
-                    (params.color, (SHADE_AMBIENT, SHADE_DIFFUSE))
+                    (
+                        colors.get(face).unwrap_or(params.color),
+                        (SHADE_AMBIENT, SHADE_DIFFUSE),
+                    )
                 };
                 let rgb = normal.map_or(base, |n| shade(base, light, n, to_viewer, &view));
                 if !front {
@@ -2807,5 +2881,66 @@ mod tests {
         )
         .unwrap();
         assert_eq!(same, plain);
+    }
+
+    #[test]
+    fn a_face_with_a_colour_of_its_own_is_shaded_from_it_and_nothing_else_changes() {
+        let (width, height) = (160, 120);
+        let (mesh, camera) = teapot_mesh_and_camera(width, height, true);
+        let base = params(width, height, 1);
+        let plain = render(&mesh, &camera, &base).unwrap();
+        // No colours, or the base colour itself: bit for bit the plain picture.
+        assert_eq!(
+            render_colored(&mesh, &FaceColors::new(), &camera, &base).unwrap(),
+            plain
+        );
+        let face = plain.ids[(60 * width + 80) as usize];
+        assert_ne!(face, NO_FACE);
+        let mut same = FaceColors::new();
+        assert!(same.set(face, Some(base.color)));
+        assert_eq!(render_colored(&mesh, &same, &camera, &base).unwrap(), plain);
+        // A colour of its own: where the face is, the picture all in that
+        // colour; elsewhere the plain one.
+        let red = [200, 40, 30];
+        let mut colors = FaceColors::new();
+        assert!(colors.set(face, Some(red)));
+        let colored = render_colored(&mesh, &colors, &camera, &base).unwrap();
+        let all_red = render(&mesh, &camera, &RenderParams { color: red, ..base }).unwrap();
+        assert_eq!(colored.ids, plain.ids);
+        let mut seen = 0;
+        for (i, &id) in plain.ids.iter().enumerate() {
+            let at = |frame: &Frame| frame.rgb[3 * i..3 * i + 3].to_vec();
+            if id == face {
+                assert_eq!(at(&colored), at(&all_red), "pixel {i}");
+                seen += 1;
+            } else {
+                assert_eq!(at(&colored), at(&plain), "pixel {i}");
+            }
+        }
+        assert!(seen > 50, "{seen}");
+        // A highlight wins over the face's own colour.
+        let (highlight, _) = Highlight::new([255, 140, 0], [face]);
+        let lit = RenderParams { highlight, ..base };
+        assert_eq!(
+            render_colored(&mesh, &colors, &camera, &lit).unwrap(),
+            render(&mesh, &camera, &lit).unwrap()
+        );
+    }
+
+    #[test]
+    fn face_colours_hold_what_they_are_given_within_their_cap() {
+        let mut colors = FaceColors::new();
+        assert!(colors.is_empty());
+        assert!(colors.set(3, None));
+        assert!(colors.is_empty());
+        assert!(colors.set(5, Some([1, 2, 3])));
+        assert_eq!(colors.get(5), Some([1, 2, 3]));
+        assert_eq!(colors.get(4), None);
+        assert_eq!(colors.get(u32::MAX), None);
+        assert!(!colors.set(u32::MAX, Some([0; 3])));
+        assert!(!colors.set(MAX_FACE_COLORS as u32, Some([0; 3])));
+        assert_eq!(colors.iter().collect::<Vec<_>>(), vec![(5, [1, 2, 3])]);
+        assert!(colors.set(5, None));
+        assert!(colors.is_empty());
     }
 }

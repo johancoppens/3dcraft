@@ -904,3 +904,130 @@ fn what_cannot_be_lofted_is_refused_or_fails_with_the_reason() {
     let check = run(&mut s, "document.check", json!({}));
     assert_eq!(check["bodiesChecked"], 1, "{check}");
 }
+
+/// A section of a wind-turbine blade at height `z`: a cambered aerofoil
+/// of two splines (`target/work/rotor.steps.json`, the developer's rotor).
+fn aerofoil(s: &mut Session, name: &str, z: f64, upper: [P; 4], lower: [P; 2]) {
+    run(
+        s,
+        "sketch.create",
+        json!({"plane": "xy", "offset": z, "name": name}),
+    );
+    run(
+        s,
+        "sketch.spline",
+        json!({"sketch": name, "control": upper}),
+    );
+    run(
+        s,
+        "sketch.spline",
+        json!({"sketch": name, "control": ["e4", lower[0], lower[1], "e1"]}),
+    );
+}
+
+/// The sections of the twisted rotor blade at 18 m and at the tip, 21.5
+/// m: chords of 1.1 m and 0.55 m.
+fn outer_blade(s: &mut Session) {
+    aerofoil(
+        s,
+        "S18",
+        18.0,
+        [
+            [-0.329887, -0.008638],
+            [-0.332104, 0.076033],
+            [-0.004031, 0.153947],
+            [0.769736, 0.020156],
+        ],
+        [[0.167161, -0.080352], [-0.328073, -0.077915]],
+    );
+    aerofoil(
+        s,
+        "Tip",
+        21.5,
+        [[-0.165, 0.0], [-0.165, 0.0363], [0.0, 0.066], [0.385, 0.0]],
+        [[0.0825, -0.0363], [-0.165, -0.0297]],
+    );
+}
+
+/// The outer sections of the twisted rotor blade, where the tip follows
+/// the section at 18 m directly: lofted smoothly, the surface turns so
+/// tightly around the nose near the tip that the chords of the edge along
+/// the nose, within the tolerance of that edge, lay beside the face and
+/// over the next one. The self-intersection check's mesh could not be
+/// made ("patch 1 needs about 2050 segments per side", before
+/// 2026-10-14); now those chords are cut finer. From an aerofoil and from
+/// a circle at the root; the ruled loft through the same sections always
+/// built, and the two hold each other's volume.
+#[test]
+fn slender_twisted_blade_sections_loft_smoothly() {
+    for root in ["aerofoil", "circle"] {
+        let mut s = Session::new(Workspace::none());
+        run(&mut s, "file.new", json!({"units": "m", "tolerance": 1e-4}));
+        let mut sections = Vec::new();
+        if root == "circle" {
+            circle(&mut s, "Root", 1.0, [0.0, 0.0], 0.6);
+            sections.push("Root");
+        }
+        aerofoil(
+            &mut s,
+            "S8",
+            8.0,
+            [
+                [-0.765669, -0.148831],
+                [-0.825698, 0.159989],
+                [-0.109143, 0.561491],
+                [1.786561, 0.347272],
+            ],
+            [[0.442863, -0.234404], [-0.716555, -0.401502]],
+        );
+        outer_blade(&mut s);
+        sections.extend(["S8", "S18", "Tip"]);
+        let made = run(
+            &mut s,
+            "feature.loft",
+            json!({"sections": sections, "name": "Blade"}),
+        );
+        assert_eq!(made["status"], "ok", "{root}: {made}");
+        let ruled = run(
+            &mut s,
+            "feature.loft",
+            json!({"sections": sections, "ruled": true, "name": "Ruled"}),
+        );
+        assert_eq!(ruled["status"], "ok", "{root}: {ruled}");
+        deep(&mut s);
+        let (smooth, ruled) = (volume(&mut s, "Blade"), volume(&mut s, "Ruled"));
+        assert!(
+            close(smooth, ruled, 0.1),
+            "{root}: {smooth} against {ruled}"
+        );
+    }
+}
+
+/// From a circle of 1 m at 13 m to the same outer sections, smoothly: the
+/// surface through the 12 % thin tip overshoots and its upper and lower
+/// sides cross. That is still found and refused, by the faces that cross;
+/// ruled, the same sections build.
+#[test]
+fn a_smooth_blade_whose_sides_cross_is_refused() {
+    let mut s = Session::new(Workspace::none());
+    run(&mut s, "file.new", json!({"units": "m", "tolerance": 1e-4}));
+    circle(&mut s, "Root", 13.0, [0.0, 0.0], 1.0);
+    outer_blade(&mut s);
+    let sections = ["Root", "S18", "Tip"];
+    let made = run(
+        &mut s,
+        "feature.loft",
+        json!({"sections": sections, "name": "Blade"}),
+    );
+    assert_eq!(made["status"], "failed", "{made}");
+    let reason = made["error"].as_str().unwrap();
+    assert!(reason.contains("passes through itself"), "{reason}");
+    assert!(reason.contains("cross"), "{reason}");
+    assert!(!reason.contains("cannot be meshed"), "{reason}");
+    let ruled = run(
+        &mut s,
+        "feature.loft",
+        json!({"sections": sections, "ruled": true, "name": "Ruled"}),
+    );
+    assert_eq!(ruled["status"], "ok", "{ruled}");
+}

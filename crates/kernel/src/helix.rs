@@ -47,9 +47,10 @@
 //! screw motion puts there; it is [`Swept::deviation`].
 //!
 //! **Run-out.** A [`RunOut`] carries the profile on past the end of the
-//! helix while it moves away from the axis, by a rise that grows with the
-//! square of the angle, so that it leaves the helix tangentially: the
-//! groove of a thread lifting out of the material.
+//! helix while it moves away from the axis (or towards it), by a rise
+//! that grows with the square of the angle, so that it leaves the helix
+//! tangentially: the groove of a thread lifting out of the material, out
+//! of a shank's surface or into a tapped hole.
 //!
 //! **What is refused, before anything is built:** a profile that reaches
 //! the axis or round it, a profile whose plane the motion runs along
@@ -122,12 +123,14 @@ pub struct HelixCurve {
 }
 
 /// Carrying the profile on past the end of the helix while it moves away
-/// from the axis.
+/// from the axis (or towards it, by a negative rise: the groove of an
+/// internal thread running out into the hole).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RunOut {
     /// How far round the run-out goes, in radians.
     pub angle: f64,
-    /// How far the profile has moved away from the axis at its end.
+    /// How far the profile has moved away from the axis at its end;
+    /// negative towards it.
     pub rise: f64,
 }
 
@@ -502,11 +505,7 @@ pub fn sweep_helix(
         return Err(KernelError::NoProfile);
     }
     if let Some(run) = run_out
-        && !(run.angle.is_finite()
-            && run.angle > 0.0
-            && run.angle <= TAU
-            && run.rise.is_finite()
-            && run.rise >= 0.0)
+        && !(run.angle.is_finite() && run.angle > 0.0 && run.angle <= TAU && run.rise.is_finite())
     {
         return Err(invalid("run-out", run.angle));
     }
@@ -593,6 +592,7 @@ pub fn sweep_helix(
     // of it, its plane is crossed by the motion everywhere, and it is
     // shorter along the axis, as the motion sees it, than the pitch.
     let (mut reach, mut low, mut high) = (0.0_f64, f64::INFINITY, f64::NEG_INFINITY);
+    let mut near = f64::INFINITY;
     let forward = home.forward()?;
     for element in loops.first().into_iter().flatten() {
         for p in samples(element, &home)? {
@@ -631,6 +631,7 @@ pub fn sweep_helix(
             }
             let level = height - helix.advance() * angle;
             reach = reach.max(rho);
+            near = near.min(rho);
             (low, high) = (low.min(level), high.max(level));
         }
     }
@@ -646,7 +647,17 @@ pub fn sweep_helix(
         ));
     }
     if let Some(run) = run_out {
-        reach += run.rise;
+        reach += run.rise.max(0.0);
+        // A run-out towards the axis stays clear of it.
+        if near + run.rise.min(0.0) <= tol {
+            return Err(refuse(
+                &[],
+                format!(
+                    "the run-out moves the profile {} towards the axis of the helix, and the profile comes within {near} of it; a profile swept along a helix has to stay clear of its axis",
+                    -run.rise
+                ),
+            ));
+        }
     }
 
     let radial = center - helix.origin;

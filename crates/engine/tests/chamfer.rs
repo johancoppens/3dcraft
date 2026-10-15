@@ -884,16 +884,63 @@ fn bad_parameters_are_errors_and_what_is_not_built_says_its_kind() {
     let names = names_of(&hump);
     let wall = names.iter().find(|n| n.contains("side(e5)")).unwrap();
     let top = names.iter().find(|n| n.contains("endCap")).unwrap();
-    let reason = failed(
+    // The edge along the spline wall is freeform: its chamfer is a ruled
+    // spline surface (kernel::blend's `rolling`). Across the edge the wall
+    // is upright and the top flat, so the chamfer cuts away the right
+    // triangle with legs d: the point s in from the spline along its
+    // normal loses the height d − s. Over the strip along the spline
+    // (whose area element is |c'| (1 − κ s) ds dt, κ its curvature) and
+    // where the strip is still above the base line y = 0, by Simpson's
+    // rule along the spline and in closed form across it.
+    let d = 0.2;
+    built(
         &mut s,
         "feature.chamfer",
-        json!({"edges": [[top, wall]], "distance": 0.2, "name": "Bevel"}),
+        json!({"edges": [[top, wall]], "distance": d, "name": "Bevel"}),
     );
-    assert!(reason.starts_with("edges.0 (between "), "{reason}");
-    assert!(
-        reason.contains("a freeform edge is not built yet"),
-        "{reason}"
-    );
+    {
+        // c(t) and its derivatives.
+        let c = |t: f64| {
+            let x = 3.0 * t * (1.0 - t).powi(2) + 9.0 * t * t * (1.0 - t) + 4.0 * t.powi(3);
+            let y = 6.0 * t * (1.0 - t);
+            let dx = 3.0 + 6.0 * t - 6.0 * t * t;
+            let dy = 6.0 - 12.0 * t;
+            let ddx = 6.0 - 12.0 * t;
+            let ddy = -12.0;
+            (x, y, dx, dy, ddx, ddy)
+        };
+        let column = |t: f64| {
+            let (_, y, dx, dy, ddx, ddy) = c(t);
+            let speed = dx.hypot(dy);
+            // The normal into the hump (below the arch) and the curvature
+            // that shrinks the strip on that side.
+            let ny = -dx / speed;
+            let kappa = (dy * ddx - dx * ddy) / speed.powi(3);
+            let reach = if ny < 0.0 { (y / -ny).min(d) } else { d };
+            // ∫ (1 − κ s)(d − s) ds from 0 to reach.
+            let m = reach;
+            let inner = d * m - m * m / 2.0 - kappa * (d * m * m / 2.0 - m.powi(3) / 3.0);
+            speed * inner
+        };
+        let n = 20_000;
+        let h = 1.0 / f64::from(n);
+        let cut = ((1..n)
+            .map(|i| f64::from(if i % 2 == 1 { 4 } else { 2 }) * column(f64::from(i) * h))
+            .sum::<f64>()
+            + column(0.0)
+            + column(1.0))
+            * h
+            / 3.0;
+        let before = hump["volume"].as_f64().unwrap();
+        let after = body(&mut s, "Bevel")["volume"].as_f64().unwrap();
+        assert!(
+            ((before - after) - cut).abs() <= 1e-7 * cut,
+            "the chamfer took {} instead of {cut}",
+            before - after
+        );
+        let check = run(&mut s, "document.check", json!({"deep": true}));
+        assert_eq!(check["ok"], true, "{check}");
+    }
     // The flat edge of the same body is an edge like any other: the
     // freeform wall is only what its ends run into. The spline is one
     // cubic Bezier piece, x(t) = 3t(1-t)^2 + 9t^2(1-t) + 4t^3 and
@@ -901,7 +948,6 @@ fn bad_parameters_are_errors_and_what_is_not_built_says_its_kind() {
     // and the chamfer takes (d - y) of it there: both integrals by
     // Simpson's rule, written out here.
     let flat = names.iter().find(|n| n.contains("side(e6)")).unwrap();
-    let d = 0.2;
     built(
         &mut s,
         "feature.edit",
@@ -1193,7 +1239,7 @@ fn a_sketch_on_the_chamfer_face_and_a_chamfer_on_an_edge_of_a_chamfer() {
             "{names:?}"
         );
         assert!(
-            names.contains(&"F3:copy(0)/F2:copy(0)/F1:face(1)".to_string()),
+            names.contains(&"F3:copy(0)/F1:face(1)".to_string()),
             "{names:?}"
         );
         // The first chamfer grows: the second follows its edge.

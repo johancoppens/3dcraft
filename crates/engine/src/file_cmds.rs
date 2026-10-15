@@ -73,11 +73,17 @@ fn file_activate(session: &mut Session, params: &Value) -> Run {
             index
         }
         (false, Some(path)) => {
+            // As given, or as a document opened by that path keeps it.
+            let kept = session.workspace.resolve_read(path).ok().map(|resolved| {
+                crate::workspace::kept_path(&session.workspace.read, path, &resolved)
+            });
             let mut matches = session
                 .documents
                 .iter()
                 .enumerate()
-                .filter(|(_, open)| open.path.as_deref() == Some(path))
+                .filter(|(_, open)| {
+                    open.path.as_deref() == Some(path) || (kept.is_some() && open.path == kept)
+                })
                 .map(|(index, _)| index);
             match (matches.next(), matches.next()) {
                 (Some(index), None) => index,

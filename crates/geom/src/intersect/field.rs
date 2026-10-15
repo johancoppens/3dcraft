@@ -103,6 +103,8 @@ impl Projector {
         };
         let mut grid = Vec::with_capacity(((n + 1) * (n + 1)) as usize);
         let mut normals = Vec::with_capacity(grid.capacity());
+        // The pole each node is on, if any.
+        let mut at_pole: Vec<Option<usize>> = Vec::with_capacity(grid.capacity());
         for i in 0..=n {
             for j in 0..=n {
                 let a = u.0 + (u.1 - u.0) * f64::from(i) / f64::from(n);
@@ -115,6 +117,7 @@ impl Projector {
                 }
                 grid.push((a, b, p));
                 normals.push(normal_at(a, b));
+                at_pole.push(poles.iter().position(|pole| pole.holds(surface, a, b)));
             }
         }
         // Curvature from how fast the normal turns between neighbours.
@@ -131,6 +134,17 @@ impl Projector {
                 else {
                     continue;
                 };
+                // Two nodes on one pole are one point (apart by rounding
+                // only), each with the limit normal of its own meridian:
+                // how far apart those normals are is no curvature, and
+                // divided by a distance of rounding it would be taken for
+                // one of ten million per unit length, which no cell near
+                // the pole would ever be simple enough for.
+                if let (Some(Some(a)), Some(Some(b))) = (at_pole.get(k), at_pole.get(k + step))
+                    && a == b
+                {
+                    continue;
+                }
                 let apart = p.distance(q);
                 spacing = spacing.max(apart);
                 let (Some(n0), Some(n1)) = (n0, n1) else {
@@ -250,7 +264,48 @@ impl Projector {
     }
 
     /// Gauss–Newton from `(u, v)` towards the point closest to `p`.
+    ///
+    /// At a pole the derivative along its border is zero, so Newton
+    /// cannot turn from the meridian it is on to another: from a pole, or
+    /// to one, it keeps to the meridian it started on, and for a point on
+    /// the far side of the pole from that meridian it stops at the pole,
+    /// which is then taken for the nearest point when the surface comes
+    /// nearer elsewhere (a point a millimetre from the pole of a dome was
+    /// a millimetre from the dome). An end on a pole is tried again from
+    /// the meridian that leaves the pole towards `p`, and the nearer of
+    /// the two kept.
     pub(super) fn foot_from(&self, p: Vec3, u: f64, v: f64) -> (f64, f64, Vec3) {
+        let first = self.newton(p, u, v, None);
+        let row = 1.0 / f64::from(PROJECTOR_GRID);
+        let Some(pole) = self
+            .poles
+            .iter()
+            .find(|pole| !(pole.share_off(&self.surface, first.0, first.1) > row))
+        else {
+            return first;
+        };
+        let along = pole.meridian_towards(&self.surface, p);
+        let (a, b) = pole.off_pole(&self.surface, along, row);
+        // Along the meridian first: next to the pole the derivative along
+        // the border is small, and a step in both parameters may throw the
+        // point onto another meridian, and back onto the pole.
+        let down = self.newton(p, a, b, Some(!pole.across_v()));
+        let polished = self.newton(p, down.0, down.1, None);
+        let again = if (polished.2 - p).length_squared() < (down.2 - p).length_squared() {
+            polished
+        } else {
+            down
+        };
+        if (again.2 - p).length_squared() < (first.2 - p).length_squared() {
+            again
+        } else {
+            first
+        }
+    }
+
+    /// Gauss–Newton from `(u, v)` towards the point closest to `p`.
+    /// With `only`, along one parameter: `Some(true)` u, `Some(false)` v.
+    fn newton(&self, p: Vec3, u: f64, v: f64, only: Option<bool>) -> (f64, f64, Vec3) {
         let (mut u, mut v) = (u.clamp(self.u.0, self.u.1), v.clamp(self.v.0, self.v.1));
         let (span_u, span_v) = (self.u.1 - self.u.0, self.v.1 - self.v.0);
         for _ in 0..40 {
@@ -259,7 +314,13 @@ impl Projector {
             let (a, b, c) = (su.dot(su), su.dot(sv), sv.dot(sv));
             let det = a * c - b * b;
             let (ru, rv) = (r.dot(su), r.dot(sv));
-            let (du, dv) = if det.is_finite() && det > 1e-14 * a * c {
+            let (du, dv) = if let Some(along_u) = only {
+                match (along_u, a > 0.0, c > 0.0) {
+                    (true, true, _) => (ru / a, 0.0),
+                    (false, _, true) => (0.0, rv / c),
+                    _ => break,
+                }
+            } else if det.is_finite() && det > 1e-14 * a * c {
                 ((c * ru - b * rv) / det, (a * rv - b * ru) / det)
             } else if a > 0.0 && a >= c {
                 (ru / a, 0.0) // A collapsed edge: move along the direction left.
@@ -1126,6 +1187,82 @@ mod tests {
                             projector.curvature_near(p, radius).to_bits(),
                             curvature_near_by_scan(&projector, p, radius).to_bits(),
                             "{p:?} within {radius}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The wavy patch with its pole's control points a rounding apart
+    /// (one point by `poles`, as the control points of a rational surface
+    /// turned about an axis are).
+    fn rounded_pole(k: f64) -> Surface {
+        let Surface::Bezier(b) = patch(true, k) else {
+            panic!("the patch is a Bézier patch")
+        };
+        let mut ctrl = b.control_points().to_vec();
+        for (j, p) in ctrl.iter_mut().take(4).enumerate() {
+            *p += Vec3::new(1e-13, -2e-13, 1e-13) * (k * j as f64);
+        }
+        Surface::Bezier(BezierPatch::new(3, 3, ctrl).unwrap())
+    }
+
+    /// Nodes on one pole are one point with a normal per meridian: no
+    /// curvature is read from them. (The limit normals of this patch's
+    /// meridians differ by a good part of a radian; read over a rounding
+    /// they made a curvature of 1e11 per unit length, and every cell of an
+    /// intersection near the pole too bent to be simple.)
+    #[test]
+    fn the_curvature_is_not_read_between_nodes_on_one_pole() {
+        for k in [1e-3, 1.0, 1e6] {
+            let surface = rounded_pole(k);
+            assert_eq!(poles(&surface).len(), 1);
+            let plain = Projector::new(&patch(true, k)).unwrap().curvature;
+            let rounded = Projector::new(&surface).unwrap().curvature;
+            assert!(rounded * k < 100.0, "{rounded} at {k}");
+            assert!(
+                (rounded - plain).abs() <= 1e-6 * plain,
+                "{rounded} and {plain}"
+            );
+        }
+    }
+
+    /// Half a dome, a bicubic patch: its border u = 0 is the pole on top,
+    /// its meridians (v constant) leave it in every direction of a half
+    /// turn, from +x to −x.
+    fn half_dome(k: f64) -> Surface {
+        let (radii, heights) = ([0.0, 0.6, 1.0, 1.0], [1.0, 1.0, 0.6, 0.0]);
+        let around = [(1.0, 0.0), (1.0, 4.0 / 3.0), (-1.0, 4.0 / 3.0), (-1.0, 0.0)];
+        let mut ctrl = Vec::new();
+        for (r, z) in radii.iter().zip(heights) {
+            for (x, y) in around {
+                ctrl.push(Vec3::new(r * x, r * y, z) * k);
+            }
+        }
+        Surface::Bezier(BezierPatch::new(3, 3, ctrl).unwrap())
+    }
+
+    /// Points near a pole on every side of it have their nearest point
+    /// near the pole on their own meridian, not on the meridian Newton
+    /// started from, which it cannot leave at the pole.
+    #[test]
+    fn the_nearest_point_near_a_pole_is_on_the_meridian_towards_the_point() {
+        for k in [1e-3, 1.0, 1e6] {
+            for surface in [half_dome(k), patch(true, k), rounded_pole(k)] {
+                let projector = Projector::new(&surface).unwrap();
+                for step in 0..=20 {
+                    let along = f64::from(step) / 20.0;
+                    for off in [1e-4, 1e-3, 1e-2] {
+                        let on = surface.eval(off, along);
+                        let normal = surface.normal(off, along).unwrap();
+                        let p = on + normal * (1e-3 * off * k);
+                        let (_, _, foot) = projector.foot(p);
+                        // The foot is at most the distance to `on` away.
+                        assert!(
+                            foot.distance(p) <= 1e-3 * off * k * (1.0 + 1e-6),
+                            "at {along}, {off} off the pole, scale {k}: {} from the surface",
+                            foot.distance(p) / k
                         );
                     }
                 }

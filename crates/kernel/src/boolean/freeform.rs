@@ -828,9 +828,17 @@ fn refine(
         {
             best = best.min(d);
             // Below a finite threshold already: the asker learns nothing
-            // more from a tighter bound.
+            // more from a tighter bound. What is returned must still be
+            // below the distance: the nearest piece found so far is not,
+            // when another piece not looked at yet is nearer (between the
+            // threshold and what is asked of it, the bound would prove a
+            // stretch clear that runs through the surface): the pieces
+            // left are counted by their boxes.
             if threshold.is_finite() && best < threshold {
-                return best;
+                return pending
+                    .iter()
+                    .map(|(_, slab, _)| distance(slab))
+                    .fold(best, f64::min);
             }
             continue;
         }
@@ -1313,6 +1321,11 @@ impl PatchTree {
                 },
             }
             if threshold.is_finite() && best < threshold {
+                // (As in `refine`: what is left is counted by the nearest
+                // box of it, so that the bound stays below the distance.)
+                if let Some(Pending(next, _)) = heap.peek() {
+                    best = best.min(*next);
+                }
                 break;
             }
         }

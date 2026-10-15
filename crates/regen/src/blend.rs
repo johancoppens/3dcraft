@@ -299,7 +299,11 @@ pub(crate) fn name(
 /// unless it was merged from several or lies next to a new face (it may
 /// have taken a tool's face that lies in its plane: a wall the end of a
 /// chamfer runs into). The new faces, those, and what is near them are
-/// looked at (`selfcheck::crossing_near`).
+/// looked at (`selfcheck::crossing_near`). That includes a blend whose
+/// face has no closed form (a spline surface along a freeform edge,
+/// `kernel::blend`'s `rolling`), which the kernel holds to the faces next
+/// to the edge only: whether it runs into a face further away (a radius
+/// too large for what lies across the body) is found here.
 pub(crate) fn not_through_itself(
     made: &Body,
     faces: &[Made<'_>],

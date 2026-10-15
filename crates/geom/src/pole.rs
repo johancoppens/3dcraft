@@ -129,6 +129,14 @@ impl Pole {
         }
     }
 
+    /// How far `(u, v)` is from the pole's border, as a share of the
+    /// parameter range across.
+    pub fn share_off(&self, surface: &Surface, u: f64, v: f64) -> f64 {
+        let (_, at, across) = self.ranges(surface);
+        let here = if self.across_v() { v } else { u };
+        ((here - at) / across).abs()
+    }
+
     /// Whether the point of the surface at `(u, v)` is this pole: on its
     /// border, to rounding.
     pub fn holds(&self, surface: &Surface, u: f64, v: f64) -> bool {
@@ -172,11 +180,18 @@ impl Pole {
     /// the surface closes up smoothly every meridian gives the same
     /// normal.
     pub fn normal_towards(&self, surface: &Surface, p: Vec3) -> Option<Vec3> {
+        self.normal_along(surface, self.meridian_towards(surface, p))
+    }
+
+    /// The parameter along the border of the meridian that leaves the
+    /// pole nearest to the direction of `p` (the middle of the border for
+    /// `p` at the pole).
+    pub fn meridian_towards(&self, surface: &Surface, p: Vec3) -> f64 {
         let ((low, high), _, _) = self.ranges(surface);
         let from = p - self.point;
         let middle = 0.5 * (low + high);
         if !(from.length() > 0.0 && from.is_finite()) {
-            return self.normal_along(surface, middle);
+            return middle;
         }
         // How well the meridian at `along` points towards `p`.
         let towards = |along: f64| {
@@ -208,12 +223,17 @@ impl Pole {
             }
         }
         let narrowed = 0.5 * (a + b);
-        let along = if towards(narrowed) >= best.0 {
+        if towards(narrowed) >= best.0 {
             narrowed
         } else {
             best.1
-        };
-        self.normal_along(surface, along)
+        }
+    }
+
+    /// The parameters `(u, v)` of the place on the meridian at `along`
+    /// that is `off` of the parameter range across from the pole.
+    pub fn off_pole(&self, surface: &Surface, along: f64, off: f64) -> (f64, f64) {
+        self.place(surface, along, off)
     }
 }
 

@@ -12,6 +12,8 @@
 //! autosave thread of a session that was given a recovery directory
 //! (`recovery.rs`).
 
+mod appearance;
+mod appearance_cmds;
 mod base64;
 mod blend_cmds;
 mod body_cmds;
@@ -31,6 +33,7 @@ mod recovery;
 mod recovery_cmds;
 #[cfg(not(target_arch = "wasm32"))]
 mod recovery_store;
+mod replay_cmds;
 mod scene;
 mod section;
 mod sketch_cmds;
@@ -55,9 +58,10 @@ pub use recovery::{
 };
 pub use scene::{
     AUTOMATIC_RELATIVE_TOLERANCE, DATUM_AXIS_EXTENT, DATUM_PLANE_EXTENT, DEFAULT_SCENE_BUDGET,
-    DISPLAY_MAX_TRIANGLES, DISPLAY_RELATIVE_TOLERANCE, DocumentStatus, FeatureState,
-    MAX_ARC_SEGMENTS, MIN_CIRCLE_SEGMENTS, PREVIEW_RELATIVE_TOLERANCE, Refined, Refinement, Scene,
-    SceneBody, SceneDatum, SceneDatumShape, SceneFeature, ScenePolyline, SceneQuality, SceneSketch,
+    DISPLAY_MAX_ANGLE, DISPLAY_MAX_ANGLE_DEGREES, DISPLAY_MAX_TRIANGLES,
+    DISPLAY_RELATIVE_TOLERANCE, DocumentStatus, FeatureState, MAX_ARC_SEGMENTS,
+    MIN_CIRCLE_SEGMENTS, PREVIEW_RELATIVE_TOLERANCE, Refined, Refinement, Scene, SceneBody,
+    SceneDatum, SceneDatumShape, SceneFeature, ScenePolyline, SceneQuality, SceneSketch,
     SketchCurve, arc_segments, base64 as encode_base64,
 };
 pub use section::{MAX_SECTION_EXTENT, SECTION_CAP_COLOR, SectionPlane, SectionSpec};
@@ -236,6 +240,7 @@ impl Session {
                 loft_cmds::SPECS,
                 sweep_path_cmds::SPECS,
                 body_cmds::SPECS,
+                appearance_cmds::SPECS,
                 blend_cmds::SPECS,
                 face_cmds::SPECS,
                 datum_cmds::SPECS,
@@ -243,6 +248,7 @@ impl Session {
                 query_cmds::SPECS,
                 pick_cmds::SPECS,
                 recovery_cmds::SPECS,
+                replay_cmds::SPECS,
             ]
             .concat()
         })

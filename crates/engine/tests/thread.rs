@@ -273,7 +273,7 @@ fn what_cannot_be_threaded_fails_with_the_reason() {
         (json!({"size": "M10x1.25"}), "ISO metric"),
         (json!({"size": "  "}), "ISO metric"),
         (json!({"size": 10}), "size"),
-        (json!({"size": "M11"}), "coarse pitch"),
+        (json!({"size": "M15"}), "fine pitches: 1.5, 1 mm"),
         (json!({"face": "F1:edge(0)"}), "not a face"),
         (json!({"length": null}), "length"),
     ] {
@@ -338,4 +338,129 @@ fn a_thread_given_by_the_names_of_an_earlier_body_follows_it() {
         volumes.push(volume(&mut s, "Thread"));
     }
     assert_eq!(volumes[0], volumes[1]);
+}
+
+/// What the groove of an internal ISO thread of diameter `d` and pitch
+/// `p` removes from the wall round a hole of radius `hole` over `length`
+/// of thread and its run-out into the hole: the groove is the nut's,
+/// `P/8 + 2 s tan 30°` wide at `s` in from the major radius (the
+/// derivation is the kernel's test, `crates/kernel/tests/helix.rs`).
+fn removed_internal(d: f64, p: f64, hole: f64, length: f64) -> f64 {
+    let h = 3.0_f64.sqrt() / 2.0 * p;
+    let depth = 5.0 * h / 8.0;
+    let big = d / 2.0;
+    let slope = 2.0 / 3.0_f64.sqrt();
+    let deepest = depth + h / 16.0;
+    let moment = |rho: f64| -> f64 {
+        let to = (big - rho - hole).clamp(0.0, deepest);
+        let a = big - rho;
+        a * p / 8.0 * to + (a * slope - p / 8.0) * to * to / 2.0 - slope * to * to * to / 3.0
+    };
+    let main = moment(0.0) * TAU * length / p;
+    let rise = depth + h / 8.0;
+    let n = 2000;
+    let step = FRAC_PI_2 / f64::from(n);
+    let mut run = 0.0;
+    for i in 0..=n {
+        let rho = rise * (f64::from(i) / f64::from(n)).powi(2);
+        let w = if i == 0 || i == n {
+            1.0
+        } else if i % 2 == 1 {
+            4.0
+        } else {
+            2.0
+        };
+        run += w * moment(rho);
+    }
+    main + run * step / 3.0
+}
+
+/// A tube from z = 0 to 20, radius 9, with a through hole of `hole`
+/// diameter (mm): `Tube`, whose hole's wall is `F3:copy(1)/F2:face(0)`
+/// and bottom `F3:copy(0)/F1:face(1)`.
+fn tube(s: &mut Session, hole: f64) {
+    run(
+        s,
+        "feature.cylinder",
+        json!({"radius": "9 mm", "height": "20 mm", "name": "Outer"}),
+    );
+    run(
+        s,
+        "feature.cylinder",
+        json!({"radius": format!("{} mm", hole / 2.0), "height": "30 mm", "position": ["0 mm", "0 mm", "-5 mm"], "name": "Bore"}),
+    );
+    run(
+        s,
+        "feature.boolean",
+        json!({"op": "subtract", "target": "Outer", "tool": "Bore", "name": "Tube"}),
+    );
+}
+
+/// Tapped holes: a thread on the wall of a hole is internal, found from
+/// the face. Left without a size, a hole of M10's tap drill (8.5) is M10
+/// and one of M6's minor diameter (4.917) M6, coarse; the thread reports
+/// internal and the tap drill. Cosmetic, the body is as it was; modeled,
+/// the nut's groove is cut into the wall, and the volume it removes is
+/// the closed form; the body passes the deep check. A hole of no size's
+/// tap drill and a size given that does not fit the hole fail with the
+/// reason.
+#[test]
+fn a_thread_in_a_hole_is_internal_cosmetic_or_modeled() {
+    let minor6 = 6.0 - 1.082_531_754_730_548;
+    for (hole, size, pitch) in [(8.5, "M10", 1.5), (minor6, "M6", 1.0)] {
+        let mut s = Session::new(Workspace::none());
+        run(&mut s, "file.new", json!({}));
+        tube(&mut s, hole);
+        let before = volume(&mut s, "Tube");
+        let made = run(
+            &mut s,
+            "feature.thread",
+            json!({"face": "F3:copy(1)/F2:face(0)", "start": "F3:copy(0)/F1:face(1)", "length": "12 mm", "name": "Tapped"}),
+        );
+        assert_eq!(made["status"], "ok", "{made}");
+        let thread = feature(&mut s, "Tapped")["thread"].clone();
+        assert_eq!(thread["size"], size, "{thread}");
+        assert_eq!(thread["pitch"].as_f64().unwrap(), pitch, "{thread}");
+        assert_eq!(thread["internal"], true, "{thread}");
+        assert_eq!(thread["cosmetic"], true, "{thread}");
+        let major: f64 = size[1..].parse().unwrap();
+        assert!((thread["tapDrill"].as_f64().unwrap() - (major - pitch)).abs() < 1e-12);
+        assert!((volume(&mut s, "Tapped") - before).abs() < 1e-9 * before);
+
+        run(
+            &mut s,
+            "feature.edit",
+            json!({"feature": "Tapped", "modeled": true}),
+        );
+        let thread = feature(&mut s, "Tapped")["thread"].clone();
+        assert_eq!(thread["modeled"], true, "{thread}");
+        let removed = before - volume(&mut s, "Tapped");
+        let expected = removed_internal(major, pitch, hole / 2.0, 12.0);
+        let slack = 0.5e-6 * 10.0 * (12.0 / pitch + 2.0);
+        eprintln!("{size} internal: removed {removed} against {expected}");
+        assert!(
+            (removed - expected).abs() < slack,
+            "{size}: removed {removed} against {expected}"
+        );
+        deep(&mut s);
+    }
+
+    // A hole of 9: between M10's tap drill and M11's minor diameter.
+    let mut s = Session::new(Workspace::none());
+    run(&mut s, "file.new", json!({}));
+    tube(&mut s, 9.0);
+    run(
+        &mut s,
+        "feature.thread",
+        json!({"face": "F3:copy(1)/F2:face(0)", "start": "F3:copy(0)/F1:face(1)", "length": "12 mm", "name": "Tapped"}),
+    );
+    let error = failure(&mut s, "Tapped");
+    assert!(error.contains("tapped for no ISO metric size"), "{error}");
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Tapped", "size": "M12"}),
+    );
+    let error = failure(&mut s, "Tapped");
+    assert!(error.contains("tap drill's diameter, 10.25"), "{error}");
 }
