@@ -1074,6 +1074,10 @@ struct Tally {
     /// Bodies with findings within the margin only.
     marginal: usize,
     refused: usize,
+    /// Refused as zero thickness (parts of the result that touch, since
+    /// 2026-10-15): no body to look at; `crates/kernel/tests` hold each
+    /// such refusal to a point on two parts.
+    zero_thickness: usize,
     empty: usize,
     /// What was found for certain: the bugs.
     caught: Vec<String>,
@@ -1129,6 +1133,10 @@ impl Tally {
                 self.refused += 1;
                 None
             }
+            Err(KernelError::ZeroThickness { .. }) => {
+                self.zero_thickness += 1;
+                None
+            }
             Err(other) => panic!("{what}: {op:?} at scale {k}: {other}"),
         }
     }
@@ -1144,13 +1152,14 @@ impl Tally {
     fn report(&self, title: &str) {
         println!(
             "{title}: {} bodies, {} spotless, {} with findings within the margin, {} with \
-             certain findings; {} empty results, {} refused",
+             certain findings; {} empty results, {} refused, {} refused as zero thickness",
             self.bodies,
             self.spotless,
             self.marginal,
             self.caught.len(),
             self.empty,
-            self.refused
+            self.refused,
+            self.zero_thickness
         );
         for line in &self.caught {
             println!("{line}");
@@ -1500,6 +1509,7 @@ fn random_run(pairs_per_cell: u64, first_seed: u64) -> Tally {
             total.spotless += tally.spotless;
             total.marginal += tally.marginal;
             total.refused += tally.refused;
+            total.zero_thickness += tally.zero_thickness;
             total.empty += tally.empty;
             total.caught.extend(tally.caught);
             total.unmeshed.extend(tally.unmeshed);
