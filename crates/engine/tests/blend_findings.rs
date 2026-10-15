@@ -256,3 +256,35 @@ fn the_rim_of_the_spinner() {
         deep_ok(&mut s);
     }
 }
+
+/// The turbofan's F11: the cut edges of a casing whose bore has a groove
+/// (cone, cylinder, cone), all rounded in one feature. Where the
+/// cylinder's cut edge meets a cone's, the bore's edge between them is
+/// concave and the two fillets convex: the ball rolls over that edge from
+/// one fillet into the other, a patch not built yet. Refused saying so (it
+/// was "fillets of freeform edges that meet in a vertex are not built yet:
+/// fillet them one by one", which does not build either); without the
+/// cylinder's cut edges the rest is built.
+#[test]
+fn the_cut_edges_of_a_grooved_casing() {
+    let steps = include_str!("blend_findings/turbofan-cut-edges-of-a-grooved-casing.json");
+    let (mut s, _) = replay(steps);
+    let cut = feature(&mut s, "CutEdges");
+    assert_eq!(cut["status"], "failed", "{cut}");
+    let error = cut["error"].as_str().unwrap_or_default().to_owned();
+    assert!(error.contains("roll over that edge"), "{error}");
+    let mut fewer: Vec<(String, Value)> = serde_json::from_str(steps).unwrap();
+    let last = fewer.last_mut().unwrap();
+    let kept: Vec<Value> = last.1["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|pair| !pair[0].as_str().unwrap().ends_with("side(e11)"))
+        .cloned()
+        .collect();
+    last.1["edges"] = Value::Array(kept);
+    let (mut s, _) = replay(&serde_json::to_string(&fewer).unwrap());
+    let cut = feature(&mut s, "CutEdges");
+    assert_eq!(cut["status"], "ok", "{cut}");
+    deep_ok(&mut s);
+}

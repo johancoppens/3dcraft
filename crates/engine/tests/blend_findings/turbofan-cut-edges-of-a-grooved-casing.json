@@ -1,0 +1,132 @@
+[
+[
+"sketch.create",
+{
+"plane": "xy",
+"name": "Wall"
+}
+],
+[
+"sketch.polyline",
+{
+"sketch": "Wall",
+"closed": true,
+"points": [
+[
+50,
+0
+],
+[
+60,
+0
+],
+[
+60,
+40
+],
+[
+50,
+40
+],
+[
+54,
+30
+],
+[
+54,
+10
+]
+]
+}
+],
+[
+"feature.revolve",
+{
+"sketch": "Wall",
+"axis": "y",
+"name": "Tube"
+}
+],
+[
+"feature.block",
+{
+"size": [
+"100 mm",
+"100 mm",
+"100 mm"
+],
+"position": [
+"0 mm",
+"-30 mm",
+"0 mm"
+],
+"name": "CutBox"
+}
+],
+[
+"feature.boolean",
+{
+"op": "subtract",
+"target": "Tube",
+"tool": "CutBox",
+"name": "Cut"
+}
+],
+[
+"feature.fillet",
+{
+"edges": [
+[
+"F4:copy(0)/F2:side(e7)",
+"F4:copy(1)/F3:face(4)"
+],
+[
+"F4:copy(0)/F2:side(e7)",
+"F4:copy(1)/F3:face(0)"
+],
+[
+"F4:copy(0)/F2:side(e8)",
+"F4:copy(1)/F3:face(4)"
+],
+[
+"F4:copy(0)/F2:side(e8)",
+"F4:copy(1)/F3:face(0)"
+],
+[
+"F4:copy(0)/F2:side(e9)",
+"F4:copy(1)/F3:face(4)"
+],
+[
+"F4:copy(0)/F2:side(e9)",
+"F4:copy(1)/F3:face(0)"
+],
+[
+"F4:copy(0)/F2:side(e10)",
+"F4:copy(1)/F3:face(4)"
+],
+[
+"F4:copy(0)/F2:side(e10)",
+"F4:copy(1)/F3:face(0)"
+],
+[
+"F4:copy(0)/F2:side(e11)",
+"F4:copy(1)/F3:face(4)"
+],
+[
+"F4:copy(0)/F2:side(e11)",
+"F4:copy(1)/F3:face(0)"
+],
+[
+"F4:copy(0)/F2:side(e12)",
+"F4:copy(1)/F3:face(4)"
+],
+[
+"F4:copy(0)/F2:side(e12)",
+"F4:copy(1)/F3:face(0)"
+]
+],
+"radius": "0.5 mm",
+"name": "CutEdges"
+}
+]
+]
