@@ -2291,9 +2291,18 @@ fn going_on(
             *p /= total;
         }
         let curve = curve_through(&params, &points)?;
+        // At the middles, and proven between them on both surfaces.
+        let proven = || {
+            surfaces.iter().all(|s| {
+                s.project(from).is_ok_and(|start| {
+                    proven_on(&curve, (0.0, 1.0), s, start, &params, limit).is_ok()
+                })
+            })
+        };
         if params
             .windows(2)
             .all(|w| matches!(w, [a, b] if near(curve.eval(0.5 * (a + b)))))
+            && proven()
         {
             return Some((Curve3::Nurbs(curve), (0.0, 1.0)));
         }
@@ -2778,6 +2787,69 @@ mod tests {
                     .curve_within(&curve, (0.0, 1.0), start, &[], limit, 1 << 16)
                     .is_ok()
             );
+        }
+    }
+
+    /// The new edge from a vertex to a corner is fitted through points
+    /// where two faces meet and held to them at the middles; where the
+    /// faces meet in a curve that waves between those middles (a flat face
+    /// and a wall waving with nodes at every eighth) it is now refined
+    /// until it is proven on both.
+    #[test]
+    fn a_new_edge_that_would_leave_its_faces_between_its_middles_is_refined() {
+        for k in [1e-3, 1.0, 1e3] {
+            let tol = 1e-6 * k;
+            let params: Vec<f64> = (0..=128).map(|i| f64::from(i) / 128.0).collect();
+            let values: Vec<Vec<f64>> = params
+                .iter()
+                .map(|a| {
+                    let x = 0.5 * k + 1e-4 * k * (8.0 * std::f64::consts::PI * a).sin();
+                    vec![x, a * k]
+                })
+                .collect();
+            let (knots, rows) = interpolate(&params, 3, &values).unwrap();
+            let mut ctrl = Vec::new();
+            for r in &rows {
+                for z in [-0.5 * k, 0.5 * k] {
+                    ctrl.push(Vec3::new(r[0], r[1], z));
+                }
+            }
+            let count = rows.len();
+            let wall = NurbsSurface::new(
+                3,
+                1,
+                knots,
+                vec![0.0, 0.0, 1.0, 1.0],
+                count,
+                2,
+                ctrl,
+                vec![1.0; 2 * count],
+            )
+            .unwrap();
+            let mut body = Body::new(BodyKind::Sheet);
+            for surface in [
+                Surface::Plane(Plane::new(Frame::WORLD)),
+                Surface::Nurbs(wall),
+            ] {
+                body.faces.push(craft3d_topo::Face {
+                    surface,
+                    reversed: false,
+                    loops: Vec::new(),
+                });
+            }
+            let (from, to) = (Vec3::new(0.5 * k, 0.0, 0.0), Vec3::new(0.5 * k, k, 0.0));
+            let (curve, range) =
+                going_on(&body, from, to, [FaceId(0), FaceId(1)], tol).expect("an edge");
+            let wall = &body.faces[1].surface;
+            let mut hint = (0.0, 0.5);
+            for i in 0..=2000 {
+                let t = range.0 + (range.1 - range.0) * f64::from(i) / 2000.0;
+                let p = curve.eval(t);
+                hint = wall.project_from(p, hint).unwrap();
+                let d = wall.eval(hint.0, hint.1).distance(p);
+                assert!(d <= 0.25 * tol, "{k}: {d:e} off the wall at {t}");
+                assert!(p.z.abs() <= 0.25 * tol);
+            }
         }
     }
 }
