@@ -334,6 +334,95 @@ fn arcs_whose_circle_reaches_the_axis_match_pappus() {
     println!("{count} revolutions of arcs on a spindle or horn torus");
 }
 
+/// Area and centroid (rho, h) of the region left of a closed chain of
+/// arcs, each counter-clockwise about its centre `(c, r, from, to)` in the
+/// axis's own terms, by Green's theorem with Simpson's rule:
+/// `A = ∮ ρ dh`, `∫∫ ρ dA = ∮ ρ²/2 dh`, `∫∫ h dA = −∮ h²/2 dρ`.
+fn arc_region(arcs: &[((f64, f64), f64, f64, f64)]) -> (f64, (f64, f64)) {
+    let (mut area, mut mr, mut mh) = (0.0, 0.0, 0.0);
+    for &((cr, ch), r, from, to) in arcs {
+        let steps = 4000;
+        let step = (to - from) / f64::from(steps);
+        for i in 0..=steps {
+            let t = from + step * f64::from(i);
+            let (rho, h) = (cr + r * t.cos(), ch + r * t.sin());
+            let (drho, dh) = (-r * t.sin(), r * t.cos());
+            let w = if i == 0 || i == steps {
+                1.0
+            } else if i % 2 == 1 {
+                4.0
+            } else {
+                2.0
+            } * step
+                / 3.0;
+            area += w * rho * dh;
+            mr += w * rho * rho / 2.0 * dh;
+            mh -= w * h * h / 2.0 * drho;
+        }
+    }
+    (area, (mr / area, mh / area))
+}
+
+/// Two arcs that meet at a point of the axis, both swept as rational
+/// surfaces and so both made in halves in a full turn: a lens between an
+/// arc of a horn torus (its circle about (2, 0) touches the axis where the
+/// arc ends) and one of a spindle torus (about (0.5, 1.5)), from the axis
+/// at (0, 0) to (2, 2). In a full turn the boundary meets itself at that
+/// point, and each side has a vertex of its own there (it was one vertex
+/// for both, which Euler–Poincaré refused); Pappus with the region worked
+/// out by Green's theorem along the arcs.
+#[test]
+fn two_halved_arcs_that_meet_on_the_axis_each_have_a_vertex_there() {
+    let r2 = (0.5_f64 * 0.5 + 1.5 * 1.5).sqrt();
+    let (area, (rho, h)) = arc_region(&[
+        ((0.5, 1.5), r2, (-1.5_f64).atan2(-0.5), 0.5_f64.atan2(1.5)),
+        ((2.0, 0.0), 2.0, FRAC_PI_2, PI),
+    ]);
+    let mut count = 0;
+    for k in [1e-3, 1.0, 1e6] {
+        let tol = tolerance(k);
+        for plane in frames(k) {
+            let axis = Axis {
+                point: [-2.0 * k, 0.5 * k],
+                direction: [-1.0, 0.4],
+            };
+            for side in [1.0, -1.0] {
+                let q = |rho: f64, h: f64| (rho * k, h * k);
+                let curves = vec![
+                    lathe_arc(1, axis, side, q(2.0, 0.0), q(2.0, 2.0), q(0.0, 0.0)),
+                    lathe_arc(2, axis, side, q(0.5, 1.5), q(0.0, 0.0), q(2.0, 2.0)),
+                ];
+                let region = (area * k * k, lathe(axis, side, rho * k, h * k));
+                for (from, to) in SWEEPS {
+                    let what = format!("scale {k}, side {side}, {from}..{to}");
+                    let result = build(&curves, &plane, axis, (from, to), &tol)
+                        .unwrap_or_else(|e| panic!("{what}: {e}"));
+                    assert_pappus(&result, &curves, &[region], axis, to - from, k, &what);
+                    assert_eq!(result.body.shells.len(), 1, "{what}");
+                    assert_eq!(genus(&result.body), Some(0), "{what}");
+                    if to - from == TAU {
+                        // Two vertices at the point of the axis, one per
+                        // side, and two more where the arcs meet off it
+                        // (at the start and half a turn on).
+                        let apex = lathe(axis, side, 0.0, 0.0);
+                        let apex = plane.point(apex[0], apex[1], 0.0);
+                        let at_apex = result
+                            .body
+                            .vertices
+                            .iter()
+                            .filter(|v| v.point.distance(apex) <= 1e-9 * k)
+                            .count();
+                        assert_eq!(at_apex, 2, "{what}");
+                        assert_eq!(result.body.vertices.len(), 4, "{what}");
+                    }
+                    count += 1;
+                }
+            }
+        }
+    }
+    println!("{count} revolutions of two arcs meeting on the axis");
+}
+
 fn origin(role: Role, sources: &[u64]) -> Origin {
     Origin::new(role, sources)
 }

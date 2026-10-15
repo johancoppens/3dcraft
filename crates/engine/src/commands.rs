@@ -399,14 +399,20 @@ fn file_open(session: &mut Session, params: &Value) -> Run {
     let p = Params::new("file.open", params, &["path"])?;
     let path = p.required_str("path")?;
     let resolved = session.workspace.resolve_read(path)?;
-    let document = craft3d_format::load(&resolved)
+    let (document, read) = craft3d_format::load_noted(&resolved)
         .map_err(|e| CommandError::new(format!("file.open: cannot open `{path}`: {e}")))?;
     let features = document.features.len();
     let kept = crate::workspace::kept_path(&session.workspace.read, path, &resolved);
     let mut open = OpenDocument::new(document, Some(kept.clone()));
     open.disk = crate::recovery::FileStamp::of(&resolved);
     let index = session.add_document(open)?;
-    Ok(json!({ "document": index, "path": kept, "features": features }))
+    let mut result = json!({ "document": index, "path": kept, "features": features });
+    // What reading the file changed (a tolerance outside the range a
+    // document may have, from a file saved before 2026-10-15).
+    if let (false, Some(map)) = (read.is_empty(), result.as_object_mut()) {
+        map.insert("warnings".into(), read.into());
+    }
+    Ok(result)
 }
 
 #[cfg(not(target_arch = "wasm32"))]

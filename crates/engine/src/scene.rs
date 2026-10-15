@@ -747,7 +747,7 @@ fn model_size(regen: &Regen, doc: &Document) -> f64 {
 }
 
 /// The size the quick first picture's tolerance is a fraction of: the
-/// diagonal of the box around the bodies (`Body::bbox`, which is found
+/// diagonal of the box around the bodies ([`bodies_box`], which is found
 /// from the geometry without measuring anything), or without bodies the
 /// size [`model_size`] gives (from the sketches, which costs nothing).
 fn preview_size(regen: &Regen, doc: &Document) -> f64 {
@@ -771,12 +771,50 @@ pub const PICTURE_PIXEL_SHARE: f64 = 0.5;
 pub(crate) fn bodies_box(regen: &Regen) -> Bbox3 {
     let mut extent = Bbox3::EMPTY;
     for (_, body) in regen.bodies() {
-        if let Ok(Some((low, high))) = body.held_bbox().map(|b| b.corners()) {
+        if let Some((low, high)) = held_box(body).and_then(|b| b.corners()) {
             extent.add(low);
             extent.add(high);
         }
     }
     extent
+}
+
+/// The most bodies whose boxes [`held_box`] keeps.
+const HELD_BOXES: usize = 4096;
+
+/// `Body::held_bbox` of a body, worked out once per body: a picture asks
+/// for the box of the bodies three or four times (its size, its tolerance,
+/// its scene), and regeneration hands on the same `Arc` for every body an
+/// edit did not touch, so a body is known by its `Arc` for as long as it
+/// lives (a `Weak` that still upgrades to it). `None` for a body whose box
+/// cannot be found.
+fn held_box(body: &Arc<craft3d_topo::Body>) -> Option<Bbox3> {
+    type Known = Vec<(std::sync::Weak<craft3d_topo::Body>, Option<Bbox3>)>;
+    static KNOWN: std::sync::Mutex<Known> = std::sync::Mutex::new(Vec::new());
+    {
+        let known = KNOWN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((_, found)) = known
+            .iter()
+            // A `Weak` keeps its allocation, so no other body can be
+            // where a known one was.
+            .find(|(weak, _)| std::ptr::eq(weak.as_ptr(), Arc::as_ptr(body)))
+        {
+            return *found;
+        }
+    }
+    // Outside the lock: this is the work the memo saves.
+    let found = body.held_bbox().ok();
+    let mut known = KNOWN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    known.retain(|(weak, _)| weak.strong_count() > 0);
+    if known.len() >= HELD_BOXES {
+        known.clear();
+    }
+    known.push((Arc::downgrade(body), found));
+    found
 }
 
 /// The chordal tolerance of a picture of `doc` as `regen` has it. The

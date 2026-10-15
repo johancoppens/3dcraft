@@ -716,6 +716,20 @@ fn a_tolerance_outside_the_range_is_read_as_its_nearer_end() {
         let loaded = from_manifest_json(&bytes).unwrap();
         assert_eq!(loaded.tolerance.linear, read, "{written}");
         assert_eq!(loaded.tolerance.angular, doc.tolerance.angular);
+        // Said so where it changed, and only there.
+        let (noted, warnings) = craft3d_format::from_manifest_json_noted(&bytes).unwrap();
+        assert_eq!(noted, loaded);
+        if written == read {
+            assert_eq!(warnings, Vec::<String>::new(), "{written}");
+        } else {
+            assert_eq!(
+                warnings,
+                [format!(
+                    "tolerance {written:e} mm read as {read:e} mm (outside 1e-12..1e3)"
+                )],
+                "{written}"
+            );
+        }
     }
     for bad in [0.0, -1.0] {
         value["document"]["tolerance"]["linear"] = bad.into();

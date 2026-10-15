@@ -1,7 +1,7 @@
 //! Reading and writing `.3dcraft` files on disk. Not compiled for wasm,
 //! where the platform hands the app bytes instead of paths.
 
-use crate::{FormatError, MAX_FILE_BYTES, from_bytes, to_bytes};
+use crate::{FormatError, MAX_FILE_BYTES, to_bytes};
 use craft3d_doc::Document;
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
@@ -37,6 +37,12 @@ pub fn save(path: &Path, document: &Document) -> Result<(), FormatError> {
 /// Loads the document at `path`. Files larger than [`MAX_FILE_BYTES`] are
 /// refused before they are read.
 pub fn load(path: &Path) -> Result<Document, FormatError> {
+    load_noted(path).map(|(document, _)| document)
+}
+
+/// As [`load`], with what was changed on reading
+/// ([`crate::from_manifest_json_noted`]).
+pub fn load_noted(path: &Path) -> Result<(Document, Vec<String>), FormatError> {
     let io = |action: &'static str| {
         move |error: io::Error| FormatError::Io {
             action,
@@ -64,7 +70,7 @@ pub fn load(path: &Path) -> Result<Document, FormatError> {
     if read > MAX_FILE_BYTES {
         return Err(too_large(read));
     }
-    from_bytes(&bytes)
+    crate::from_bytes_noted(&bytes)
 }
 
 fn write_atomically(path: &Path, bytes: &[u8]) -> io::Result<()> {
