@@ -503,7 +503,7 @@ fn boxes_are_tight_where_promised_and_bounded_elsewhere() {
     }
 }
 
-/// A face on a sphere or a torus is boxed by what it holds, not by the
+/// A face on a sphere or a torus is boxed by what it holds (`Body::held_bbox`), not by the
 /// whole surface (the bike's 455 mm stay, a tube swept along an arc of a
 /// 1332 mm circle, was framed as 2671 mm): the box holds every point of
 /// the face and is within the sag of the samples of the box of those
@@ -564,7 +564,10 @@ fn faces_on_spheres_and_tori_are_boxed_by_what_they_hold() {
                 for (name, t) in isometries(scale) {
                     let what = format!("{} at scale {scale} under {name}", solid.name);
                     let body = solid.body.transformed(&t).unwrap();
-                    let bbox = body.bbox().unwrap();
+                    let bbox = body.held_bbox().unwrap();
+                    // Within rounding of the box of the whole surfaces.
+                    let whole = body.bbox().unwrap();
+                    assert!(within(&bbox, &whole, 1e-12 * whole.diagonal()), "{what}");
                     let want = box_of(held.iter().map(|&p| t.point(p)));
                     let size = want.diagonal();
                     assert!(

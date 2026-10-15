@@ -765,12 +765,13 @@ fn preview_size(regen: &Regen, doc: &Document) -> f64 {
 /// a pixel cannot be seen.
 pub const PICTURE_PIXEL_SHARE: f64 = 0.5;
 
-/// The box around the bodies of `regen`, from their B-rep: empty without
+/// The box around the bodies of `regen`, from their B-rep (a face on a
+/// sphere or torus by what it holds, `Body::held_bbox`): empty without
 /// bodies.
 pub(crate) fn bodies_box(regen: &Regen) -> Bbox3 {
     let mut extent = Bbox3::EMPTY;
     for (_, body) in regen.bodies() {
-        if let Ok(Some((low, high))) = body.bbox().map(|b| b.corners()) {
+        if let Ok(Some((low, high))) = body.held_bbox().map(|b| b.corners()) {
             extent.add(low);
             extent.add(high);
         }

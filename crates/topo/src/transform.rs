@@ -236,41 +236,59 @@ impl Body {
     /// - A face on a plane or a cylinder lies within the convex hull of its
     ///   edges and adds nothing; so does a face on a cone, except for the
     ///   apex when the face surrounds it.
-    /// - A face on a sphere or a torus reaches past its boundary along an
-    ///   axis only at a point where the axis is normal to the surface (two
-    ///   on a sphere, four on a torus, or a circle along the top or the
-    ///   bottom of its tube): each such point that the boundary does not
-    ///   already reach adds its coordinate along that axis unless it is
-    ///   certainly not in the face (since 2026-10-15; before, the face
-    ///   contributed the box of the whole sphere or torus). A face without
-    ///   loops is the whole surface.
-    /// - A face on a Bézier or NURBS surface contributes the box of the
-    ///   whole control net, however little of the surface the face uses.
+    /// - A face on a sphere or a torus contributes the box of the *whole*
+    ///   sphere or torus ([`Body::held_bbox`] does better), a face on a
+    ///   Bézier or NURBS surface the box of the whole control net, however
+    ///   little of the surface the face uses.
     ///
     /// So the box is the tight one (up to the padding below) for a body
-    /// whose faces are planes, cylinders, cones, spheres and tori and whose
-    /// edges are lines, circles and ellipses, wherever the test that a
-    /// point is not in a face gives an answer; for other bodies it is
-    /// never larger than the box of the body's edges together with its
-    /// whole spheres, tori and control nets. It is padded by a few rounding
-    /// errors of the largest coordinate (a relative 1.5e-14), so that
-    /// points computed on the geometry are inside whatever the last bit
-    /// does.
+    /// whose faces are planes, cylinders and cones and whose edges are
+    /// lines, circles and ellipses, and for whole spheres and tori; for
+    /// other bodies it is never larger than the box of the body's edges
+    /// together with its whole spheres, tori and control nets. It is
+    /// padded by a few rounding errors of the largest coordinate (a
+    /// relative 1.5e-14), so that points computed on the geometry are
+    /// inside whatever the last bit does.
     ///
-    /// Two steps are not proofs. Whether a cone face surrounds its apex is
+    /// One step is not a proof: whether a cone face surrounds its apex is
     /// decided by following its boundary around the axis at sampled
-    /// points; where that is doubtful the apex is included. Whether a point
-    /// of a sphere or a torus is in a face is decided by walking from it
-    /// along circles of the surface to the first place where the face's
-    /// boundary crosses them (found on sampled edges and then by regula
-    /// falsi), whose side tells; where no walk tells for certain the point
-    /// is included.
+    /// points. Where that is doubtful the apex is included.
     ///
     /// An empty box for a body without vertices, edges and faces. An error
     /// for a face that is not bounded (a plane, cylinder or cone without
     /// loops), for geometry that is not finite, and for a cone face whose
     /// loops refer to something missing.
     pub fn bbox(&self) -> Result<Bbox3, TransformError> {
+        self.boxed(Round::Whole)
+    }
+
+    /// A box that certainly contains the body, as [`Body::bbox`] but with
+    /// a face on a sphere or a torus boxed by what it holds: such a face
+    /// reaches past its boundary along an axis only at a point where the
+    /// axis is normal to the surface (two on a sphere, four on a torus, or
+    /// a circle along the top or the bottom of its tube), and each such
+    /// point that the boundary does not already reach adds its coordinate
+    /// along that axis unless it is certainly not in the face. A face
+    /// without loops is the whole surface. So the box is the tight one for
+    /// a body whose faces are planes, cylinders, cones, spheres and tori
+    /// and whose edges are lines, circles and ellipses, wherever the test
+    /// that a point is not in a face gives an answer.
+    ///
+    /// That test is not a proof either: whether a point of a sphere or a
+    /// torus is in a face is decided by walking from it along circles of
+    /// the surface to the first place where the face's boundary crosses
+    /// them (found on sampled edges and then by regula falsi), whose side
+    /// tells; where no walk tells for certain the point is included. It
+    /// costs about a tenth of a millisecond per such face whose boundary
+    /// does not already reach as far, which is why [`Body::bbox`], which
+    /// the booleans call on every operand, does not do it (and why its
+    /// looser box, which the booleans' margins are measured against, stays
+    /// what it was). Errors as [`Body::bbox`].
+    pub fn held_bbox(&self) -> Result<Bbox3, TransformError> {
+        self.boxed(Round::Held)
+    }
+
+    fn boxed(&self, round: Round) -> Result<Bbox3, TransformError> {
         let mut extent = Extent::EMPTY;
         for (i, vertex) in self.vertices.iter().enumerate() {
             if !vertex.point.is_finite() {
@@ -292,7 +310,7 @@ impl Body {
         }
         for (i, face) in self.faces.iter().enumerate() {
             let face_id = FaceId(id(i));
-            face_extent(self, face, face_id, &mut extent)?;
+            face_extent(self, face, face_id, round, &mut extent)?;
             if !extent.finite {
                 return Err(TransformError::Face {
                     face: face_id,
@@ -387,7 +405,7 @@ impl Body {
                 edge_extent(&edge.curve, edge.range, coedge.edge, &mut extent)?;
             }
         }
-        face_extent(self, shape, face, &mut extent)?;
+        face_extent(self, shape, face, Round::Whole, &mut extent)?;
         if !extent.finite {
             return Err(TransformError::Face {
                 face,
@@ -843,10 +861,19 @@ fn certainly_outside(
 /// to ([`boundary_marks`]).
 const MARKS: usize = 3;
 
+/// How a face on a sphere or a torus is boxed: by the whole surface, or by
+/// what the face holds ([`Body::held_bbox`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Round {
+    Whole,
+    Held,
+}
+
 fn face_extent(
     body: &Body,
     face: &Face,
     id: FaceId,
+    round: Round,
     out: &mut Extent,
 ) -> Result<(), TransformError> {
     let bounded = || {
@@ -871,7 +898,7 @@ fn face_extent(
         Surface::Sphere(sphere) => {
             let r = sphere.radius();
             let centre = sphere.frame().origin();
-            if face.loops.is_empty() {
+            if face.loops.is_empty() || round == Round::Whole {
                 out.add_reach(centre, Vec3::new(r, r, r));
                 return Ok(());
             }
@@ -921,7 +948,7 @@ fn face_extent(
             // unit direction e it reaches R·|e − (e·z) z| + r.
             let (major, minor) = torus.radii();
             let frame = torus.frame();
-            if face.loops.is_empty() {
+            if face.loops.is_empty() || round == Round::Whole {
                 let [x, y, z] =
                     components(frame.z()).map(|c| major * (1.0 - c * c).max(0.0).sqrt() + minor);
                 out.add_reach(frame.origin(), Vec3::new(x, y, z));
