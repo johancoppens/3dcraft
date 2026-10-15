@@ -30,14 +30,15 @@
 //! until every such distance is below a quarter of the tolerance: that
 //! bounds the distance to the true surface from above. The two borders of
 //! the surface (where it touches the faces) are its own iso-curves, so the
-//! face and the faces beside it share their edges exactly.
+//! face and the faces beside it share their edges exactly; each is proven
+//! within a quarter of the tolerance of its face between the samples.
 //!
 //! **Where it ends.** An edge that ends in a vertex of exactly three
 //! faces (the two of the edge and a third one across it): the blend face
 //! is continued past the vertex until it is wholly out of the third face,
 //! and cut where it crosses that face's surface, along a curve fitted to
-//! points found exactly (to a quarter of the tolerance between them as
-//! well). The two other edges at the vertex are shortened to where the
+//! points found exactly (and proven within a quarter of the tolerance of
+//! both surfaces between them, `geom::certify`). The two other edges at the vertex are shortened to where the
 //! borders of the blend reach them, the third face gets the cut curve in
 //! place of the corner, and the edge becomes the blend face.
 //!
