@@ -596,6 +596,16 @@ fn meet(
         (Size::Radius(p), Size::Radius(q)) => (p - q).abs() <= 1e-12 * p.abs().max(q.abs()),
         _ => false,
     };
+    // Two edges of one kind meeting at a third edge of the other: the
+    // balls that touch the two faces of the third edge's sides are inside
+    // the body there and roll over it, a patch between the two fillets.
+    let over = matches!(
+        (ia.convex, ib.convex, turn),
+        (true, true, Some(Turn::Concave)) | (false, false, Some(Turn::Convex))
+    );
+    if third_faces.contains(&fa) && third_faces.contains(&fb) && over {
+        return Err(refused(ib.request.edge, Reason::FreeRollOver));
+    }
     if !(third_faces.contains(&fa) && third_faces.contains(&fb) && same && radii) {
         return Err(refuse_meet());
     }

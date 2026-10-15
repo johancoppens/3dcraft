@@ -1,0 +1,18 @@
+[
+["variable.set", {"name": "weldR", "expr": "4 mm"}],
+["variable.set", {"name": "weldS", "expr": "2.5 mm"}],
+["variable.set", {"name": "weldD", "expr": "1.2 mm"}],
+["variable.set", {"name": "rimR", "expr": "1.5 mm"}],
+["variable.set", {"name": "chamferS", "expr": "0.8 mm"}],
+["variable.set", {"name": "bbR", "expr": "23.0 mm"}],
+["variable.set", {"name": "bbW", "expr": "68.0 mm"}],
+["variable.set", {"name": "stR", "expr": "17.5 mm"}],
+["variable.set", {"name": "postR", "expr": "15.8 mm"}],
+["variable.set", {"name": "axleR", "expr": "6.0 mm"}],
+["sketch.create", {"plane": "zx", "name": "DropLSk", "offset": "71.0 mm"}],
+["sketch.polyline", {"sketch": "DropLSk", "closed": true, "points": [[43.0, -466.67830012], [43.0, -437.67830012], [46.0, -415.67830012], [74.0, -415.67830012], [103.574302491, -431.088412788], [116.589887332, -451.252602611], [69.0, -467.67830012]]}],
+["feature.extrude", {"sketch": "DropLSk", "distance": "17.0 mm", "name": "DropL"}],
+["feature.cylinder", {"radius": "6.0 mm", "height": "45 mm", "position": ["-447.67830012 mm", "80.5 mm", "100.0 mm"], "axis": [0.536533045, -0.145647864, 0.83121537], "name": "Stay"}],
+["feature.boolean", {"op": "union", "target": "DropL", "tool": "Stay", "name": "U"}],
+["feature.fillet", {"edges": [["F2:side(e12)", "F3:face(0)"]], "radius": "1.5 mm", "name": "Weld"}]
+]

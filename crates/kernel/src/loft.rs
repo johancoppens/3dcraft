@@ -50,7 +50,10 @@
 use crate::extrude::{Origin, Role};
 use crate::profile::{Loop2, Profile, Segment, Shape};
 use crate::{KernelError, MAX_REPORTED};
-use craft3d_geom::refine::{compatible, interpolation, periodic_tangents, piece, reversed};
+use craft3d_geom::refine::{
+    compatible, interpolation, level_weights, periodic_tangents, piece, reparametrized,
+    reparametrized_at, reversed,
+};
 use craft3d_geom::{
     Circle, Cone, Curve3, Cylinder, Line, NurbsCurve, NurbsSurface, Plane, Surface,
 };
@@ -1145,11 +1148,16 @@ pub fn loft(
         matched(pieces, tol)?
     };
     let width = pieces.first().map_or(0, Vec::len);
-    let sections_walked: Vec<Walk> = pieces
+    let mut sections_walked: Vec<Walk> = pieces
         .into_iter()
         .zip(walks)
         .map(|(pieces, forward)| Walk { pieces, forward })
         .collect();
+    // Faces that meet tangentially where every section is tangent.
+    // Bands of two sections each, straight across.
+    let two_by_two = options.ruled || (count == 2 && !options.closed);
+    tangent_columns(&mut sections_walked, two_by_two, tolerance)?;
+    let sections_walked = sections_walked;
     let walk = |k: usize| sections_walked.get(k).ok_or_else(internal);
 
     // No section may reach the plane of the one next to it.
@@ -1412,6 +1420,293 @@ pub fn loft(
         body: b.body,
         faces: b.faces,
     })
+}
+
+/// Makes the side faces meet tangentially across a rail wherever the
+/// curves of every section meet tangentially at its vertices and the faces
+/// would not (an oval of arcs lofted into a circle: the faces met at a
+/// crease of up to 1.6° between the sections, though both sections are
+/// smooth there).
+///
+/// Every band's surface is Σₛ cₛ(v) Hₛ(u) in homogeneous coordinates (the
+/// sections' curves Hₛ, the same functions cₛ of v for every column, as
+/// [`skin`] lays it), and the ends of the curves have weight 1. Across the
+/// rail at a joint, the face before has the tangent Σ cₛ (Dₛ + W′ₛ (Pₛ −
+/// S)) along u and the face after Σ cₛ (Eₛ + V′ₛ (Pₛ − S)), with D and E
+/// the curves' derivatives before and after the vertex Pₛ, W′ and V′ their
+/// weights' and S the point of the rail. With E = λₛ D in every section
+/// (tangent curves), the two faces are tangent all along the rail exactly
+/// when λₛ is the same for every section and V′ₛ − λ W′ₛ is too (then the
+/// second sum, Σ cₛ (Pₛ − S) times it, vanishes; between two sections Pₛ −
+/// S lies along the rail, so the weights do not matter there). The same
+/// holds inside a face at a knot of a piece where its weight turns (an
+/// arc of more than a quarter turn is two rational pieces, its weight
+/// falling into the knot and rising out of it): there E = D and W′ jumps.
+///
+/// What is changed, keeping every curve as it is, and only where it is
+/// needed:
+/// - A joint whose λ differ by so much that two of the sections would
+///   make the faces meet at more than the angular tolerance (the angle
+///   between (1 − t) Dₛ + t Dᵣ and (1 − t) Eₛ + t Eᵣ, the faces' tangents
+///   between them, at the 31 values k / 32 of t inside (0, 1)): each section's λ there is made the
+///   sections' geometric mean by running a piece's parameter through a
+///   polynomial (`craft3d_geom::refine`). Where the piece's other end is a
+///   corner (a vertex at which some section is not tangent, whose ratio
+///   nothing asks for), the whole factor goes to it by a quadratic,
+///   `reparametrized_at`, twice its degree; otherwise half the factor to
+///   each side by a cubic that keeps the other end as it is,
+///   `reparametrized`, three times. A loft whose joints are all within
+///   the tolerance is left exactly as it was.
+/// - Through three or more sections, a column one of whose curves is
+///   rational and whose weights' slopes at its tangent joints or jumps at
+///   its inner knots are not the same in all sections (to rounding,
+///   1e-12 of the weight): every curve of the column gets level weights
+///   at every knot (`level_weights`, three degrees more; V′ = W′ = 0).
+///
+/// A piece whose change would not keep its parameter increasing or its
+/// weights positive is left as it is (its faces meet at the crease they
+/// had). A column that becomes a cylinder or a cone (arcs about one axis in
+/// a straight band, [`round`]) is never changed, nor its joints: those
+/// faces are made from the arcs, not from the curves.
+fn tangent_columns(
+    walks: &mut [Walk],
+    straight: bool,
+    tolerance: &Tolerance,
+) -> Result<(), KernelError> {
+    let width = walks.first().map_or(0, |w| w.pieces.len());
+    if width == 0 || walks.len() < 2 || walks.iter().any(|w| w.pieces.len() != width) {
+        return Ok(());
+    }
+    // Columns that become a cylinder or a cone: only in straight bands.
+    let analytic: Vec<bool> = (0..width)
+        .map(|j| {
+            straight
+                && walks.windows(2).any(|pair| match pair {
+                    [a, b] => match (
+                        a.pieces.get(j).and_then(|p| p.arc.as_ref()),
+                        b.pieces.get(j).and_then(|p| p.arc.as_ref()),
+                    ) {
+                        (Some(x), Some(y)) => round(x, y, a.forward, tolerance).is_some(),
+                        _ => false,
+                    },
+                    _ => false,
+                })
+        })
+        .collect();
+    let next = |j: usize| (j + 1) % width;
+    // The curve's derivatives at its ends, and its weight's, per unit of
+    // the parameter scaled to [0, 1] (as [`compatible`] lays it).
+    let ends = |c: &NurbsCurve| -> Option<[(Vec3, f64); 2]> {
+        let (a, b) = c.domain();
+        let span = b - a;
+        let n = c.degree() as f64;
+        let (k, w) = (c.knots(), c.weights());
+        let first_span = k.get(c.degree() + 1)? - k.get(c.degree())?;
+        let last_span = k.get(k.len().checked_sub(c.degree() + 1)?)?
+            - k.get(k.len().checked_sub(c.degree() + 2)?)?;
+        let slope0 = n * (w.get(1)? - w.first()?) / first_span * span;
+        let slope1 = n * (w.last()? - w.get(w.len().checked_sub(2)?)?) / last_span * span;
+        Some([
+            (c.derivatives(a).1 * span, slope0),
+            (c.derivatives(b).1 * span, slope1),
+        ])
+    };
+    // Per joint, per section: the derivatives before and after it, where
+    // every section is tangent there (`None`: a corner).
+    let tangents = |walks: &[Walk], j: usize| -> Option<Vec<(Vec3, Vec3)>> {
+        walks
+            .iter()
+            .map(|w| {
+                let (a, b) = (w.pieces.get(j)?, w.pieces.get(next(j))?);
+                let [_, (d, _)] = ends(&a.curve)?;
+                let [(e, _), _] = ends(&b.curve)?;
+                let (ud, ue) = (d.normalized()?, e.normalized()?);
+                (ud.dot(ue) > 1.0 - 1e-9).then_some((d, e))
+            })
+            .collect()
+    };
+    let joints: Vec<Option<Vec<(Vec3, Vec3)>>> = (0..width).map(|j| tangents(walks, j)).collect();
+    // The angle two sections make the faces meet at across a joint.
+    let crease = |pairs: &[(Vec3, Vec3)]| -> f64 {
+        let mut worst = 0.0_f64;
+        for (i, (ds, es)) in pairs.iter().enumerate() {
+            for (dr, er) in pairs.iter().skip(i + 1) {
+                for k in 1..32 {
+                    let t = f64::from(k) / 32.0;
+                    let (before, after) = (*ds * (1.0 - t) + *dr * t, *es * (1.0 - t) + *er * t);
+                    if let (Some(x), Some(y)) = (before.normalized(), after.normalized()) {
+                        worst = worst.max(x.cross(y).length());
+                    }
+                }
+            }
+        }
+        worst
+    };
+    // λ: per section and piece, the factors asked for at its start and at
+    // its end (`None`: a corner, free).
+    let corner = |j: usize| joints.get(j).is_none_or(Option::is_none);
+    let mut asked: Vec<Vec<[Option<f64>; 2]>> = walks
+        .iter()
+        .map(|_| {
+            (0..width)
+                .map(|i| {
+                    let before = (i + width - 1) % width;
+                    [
+                        (!corner(before)).then_some(1.0),
+                        (!corner(i)).then_some(1.0),
+                    ]
+                })
+                .collect()
+        })
+        .collect();
+    let mut changed = false;
+    for j in 0..width {
+        if analytic.get(j).copied().unwrap_or(true)
+            || analytic.get(next(j)).copied().unwrap_or(true)
+        {
+            continue;
+        }
+        let Some(Some(pairs)) = joints.get(j) else {
+            continue;
+        };
+        if crease(pairs) <= tolerance.angular {
+            continue;
+        }
+        let ls: Vec<f64> = pairs.iter().map(|(d, e)| e.length() / d.length()).collect();
+        if ls.iter().any(|l| !(l.is_finite() && *l > 0.0)) {
+            continue;
+        }
+        let mean = (ls.iter().map(|l| l.ln()).sum::<f64>() / ls.len() as f64).exp();
+        let (a_free, b_free) = (corner((j + width - 1) % width), corner(next(j)));
+        for (row, l) in asked.iter_mut().zip(&ls) {
+            let q = mean / l;
+            let (after, before) = if b_free {
+                (q, 1.0)
+            } else if a_free {
+                (1.0, 1.0 / q)
+            } else {
+                (q.sqrt(), 1.0 / q.sqrt())
+            };
+            if let Some(f) = row.get_mut(next(j)) {
+                f[0] = Some(after);
+            }
+            if let Some(f) = row.get_mut(j) {
+                f[1] = Some(before);
+            }
+        }
+        changed = true;
+    }
+    if changed {
+        for (w, row) in walks.iter_mut().zip(&asked) {
+            for (piece, ends) in w.pieces.iter_mut().zip(row) {
+                let one = |x: f64| (x - 1.0).abs() <= 1e-12;
+                let made = match *ends {
+                    [Some(s), Some(e)] if one(s) && one(e) => continue,
+                    [Some(s), None] if one(s) => continue,
+                    [None, Some(e)] if one(e) => continue,
+                    [None, None] => continue,
+                    // The quadratic takes a factor below 2; beyond it the
+                    // cubic, which keeps the corner's end as it was.
+                    [Some(s), None] => reparametrized_at(&piece.curve, s, false)
+                        .or_else(|_| reparametrized(&piece.curve, s, 1.0)),
+                    [None, Some(e)] => reparametrized_at(&piece.curve, e, true)
+                        .or_else(|_| reparametrized(&piece.curve, 1.0, e)),
+                    [Some(s), Some(e)] => reparametrized(&piece.curve, s, e),
+                };
+                if let Ok(made) = made {
+                    piece.curve = made;
+                }
+            }
+        }
+    }
+    if straight {
+        return Ok(());
+    }
+    // Weights: per column, level them where they would crease the faces.
+    let joints: Vec<Option<Vec<(Vec3, Vec3)>>> = (0..width).map(|j| tangents(walks, j)).collect();
+    for j in 0..width {
+        if analytic.get(j).copied().unwrap_or(true) {
+            continue;
+        }
+        let column: Vec<&NurbsCurve> = walks
+            .iter()
+            .filter_map(|w| w.pieces.get(j).map(|p| &p.curve))
+            .collect();
+        let rational = |c: &NurbsCurve| {
+            let w = c.weights();
+            w.iter().any(|x| Some(x) != w.first())
+        };
+        if !column.iter().any(|c| rational(c)) {
+            continue;
+        }
+        // What the weights do where a crease could come from them: their
+        // slopes at the joints the column is tangent at, and their turns
+        // at its inner knots, in every section.
+        let signature = |c: &NurbsCurve| -> Option<Vec<f64>> {
+            let [(_, s0), (_, s1)] = ends(c)?;
+            let before = (j + width - 1) % width;
+            let mut out = Vec::new();
+            if joints.get(before).is_some_and(Option::is_some) {
+                out.push(s0);
+            }
+            if joints.get(j).is_some_and(Option::is_some) {
+                out.push(s1);
+            }
+            out.extend(weight_turns(c)?);
+            Some(out)
+        };
+        let signatures: Vec<Option<Vec<f64>>> = column.iter().map(|c| signature(c)).collect();
+        let first = signatures.first().cloned().flatten();
+        let same = signatures.iter().all(|s| match (s, &first) {
+            (Some(s), Some(f)) => {
+                s.len() == f.len() && s.iter().zip(f).all(|(x, y)| (x - y).abs() <= 1e-12)
+            }
+            _ => false,
+        });
+        if same {
+            continue;
+        }
+        for w in walks.iter_mut() {
+            if let Some(piece) = w.pieces.get_mut(j)
+                && let Ok(made) = level_weights(&piece.curve)
+            {
+                piece.curve = made;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The jumps of a curve's weight's slope at its inner knots of full
+/// multiplicity (per unit of its parameter scaled to [0, 1]), in order;
+/// zeros for a polynomial curve.
+fn weight_turns(c: &NurbsCurve) -> Option<Vec<f64>> {
+    let (k, w, p) = (c.knots(), c.weights(), c.degree());
+    let (a, b) = c.domain();
+    let mut out = Vec::new();
+    // At a knot of full multiplicity p (a curve cut into Bézier pieces, as
+    // arcs are) the control weights on either side of it give the slopes.
+    let mut i = p + 1;
+    while i + p < k.len() {
+        let knot = *k.get(i)?;
+        if knot >= b {
+            break;
+        }
+        let mult = k.iter().skip(i).take_while(|x| **x == knot).count();
+        if knot > a && mult >= p {
+            let at = i.checked_sub(1)?;
+            let (left_span, right_span) = (knot - k.get(at)?, k.get(i + mult)? - knot);
+            let joint = i.checked_sub(1)?;
+            let (w0, w1, w2) = (
+                *w.get(joint.checked_sub(1)?)?,
+                *w.get(joint)?,
+                *w.get(joint + 1)?,
+            );
+            out.push(p as f64 * ((w2 - w1) / right_span - (w1 - w0) / left_span) * (b - a));
+        }
+        i += mult.max(1);
+    }
+    Some(out)
 }
 
 /// True when the loft is a row of cylinders and cones: whole circles

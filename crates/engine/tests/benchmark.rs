@@ -43,6 +43,9 @@
 //!   hub with its chamfers and fillets, one lofted blade cut by the
 //!   shroud, patterned six times and filleted; the whole wheel takes a
 //!   minute in release, too long for the gate);
+//! - `rotor.steps.json`: the showcase's wind turbine rotor (`docs/showcase`),
+//!   blades lofted smoothly through several spline sections, the gate's
+//!   loft through many sections (a loft made slower shows here);
 //! - holes: a plate with [`HOLES`] holes cut one after another, command by
 //!   command, generated here (as `examples/regen_rows.rs holes` does).
 //!
@@ -209,6 +212,11 @@ fn models() -> Vec<Model> {
                 "variable.set",
                 json!({"name": "filletSeat", "expr": "0.2 mm"}),
             )],
+        },
+        Model {
+            name: "rotor",
+            steps: steps_file("rotor.steps.json"),
+            edits: Vec::new(),
         },
         holes(HOLES),
     ]

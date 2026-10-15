@@ -1,8 +1,9 @@
-//! Freeform blends that two showcases found refused or wrong, run from
-//! their reproducers (a compressor wheel's blades, a lamp shade's cells;
-//! docs/design/blends.md › *Blend findings of the impeller and the
-//! lamp*): each builds now and passes the deep check, or is refused with
-//! the reason that holds.
+//! Freeform blends that showcases found refused or wrong, run from their
+//! reproducers (a compressor wheel's blades, a lamp shade's cells, a
+//! bicycle frame's welds, the turbofan's casing and spinner;
+//! docs/design/blends.md › *Blend findings of the impeller and the lamp*,
+//! *of the bike and the turbofan*): each builds now and passes the deep
+//! check, or is refused with the reason that holds.
 
 #![allow(
     clippy::unwrap_used,
@@ -155,4 +156,136 @@ fn the_rims_of_lamp_shade_cells() {
         assert_eq!(round["status"], "ok", "{round}");
         deep_ok(&mut s);
     }
+}
+
+/// The bike's B7: a tube welded into a tube (one closed edge where two
+/// cylinders meet, a fitted spline with continuous tangents only), square
+/// and at 35°, a stay into the seat tube, the seat tube into the bottom
+/// bracket shell. The planes across such an edge turn unevenly at every
+/// knot of its curve; the ring's balls are taken in the planes square to
+/// the closed path of their centres.
+#[test]
+fn welds_of_a_tube_into_a_tube() {
+    for steps in [
+        include_str!("blend_findings/bike-weld-tee-90.json"),
+        include_str!("blend_findings/bike-weld-tee-35.json"),
+        include_str!("blend_findings/bike-weld-stay-seat-tube.json"),
+        include_str!("blend_findings/bike-weld-seat-tube-bb.json"),
+    ] {
+        let (mut s, _) = replay(steps);
+        let weld = feature(&mut s, "Weld");
+        assert_eq!(weld["status"], "ok", "{weld}");
+        deep_ok(&mut s);
+    }
+}
+
+/// The bike's B1: welds all round tubes lofted from an oval of tangent
+/// arcs into a circle (two sections, and three: the down tube, the top
+/// tube, the down tube into the head tube's cone). The lofted faces met at
+/// creases between the sections (up to 1.6°), so the weld's chain stopped
+/// at the first one ("does not end cleanly"); the loft is tangent there
+/// now and the whole weld is built.
+#[test]
+fn welds_round_tubes_lofted_from_an_oval() {
+    for steps in [
+        include_str!("blend_findings/bike-weld-tapered-oval.json"),
+        include_str!("blend_findings/bike-weld-down-tube.json"),
+        include_str!("blend_findings/bike-weld-top-tube.json"),
+        include_str!("blend_findings/bike-weld-down-tube-head-tube.json"),
+    ] {
+        let (mut s, _) = replay(steps);
+        let weld = feature(&mut s, "Weld");
+        assert_eq!(weld["status"], "ok", "{weld}");
+        deep_ok(&mut s);
+    }
+}
+
+/// The bike's B5: a stay welded to a dropout plate near the weld's size
+/// limit. The refinement of the weld's face crept (each pass pushed the
+/// steps next to the ones it halved over the bound) and gave up as "could
+/// not be approximated"; it builds now, and the same weld on a plain
+/// cylinder stay is refused with what stops it, its border running off
+/// the stay's wall.
+#[test]
+fn welds_of_a_stay_to_a_dropout() {
+    let (mut s, _) = replay(include_str!("blend_findings/bike-weld-stay-dropout.json"));
+    let rear = feature(&mut s, "RearL");
+    assert_eq!(rear["status"], "ok", "{rear}");
+    deep_ok(&mut s);
+    let (mut s, _) = replay(include_str!("blend_findings/bike-weld-cyl-dropout.json"));
+    let weld = feature(&mut s, "Weld");
+    assert_eq!(weld["status"], "failed", "{weld}");
+    let error = weld["error"].as_str().unwrap_or_default().to_owned();
+    assert!(error.contains("runs off a face"), "{error}");
+}
+
+/// The bike's B2: an oval tube welded to a conical head tube so near the
+/// head tube's end that the weld's ball runs past it. Refused as running
+/// off the face (the border crosses the end's rim on the cone, which
+/// chords of the two curves did not see), no longer an invalid body that
+/// could not be meshed.
+#[test]
+fn a_weld_that_runs_past_the_end_of_the_head_tube() {
+    let (mut s, _) = replay(include_str!("blend_findings/bike-weld-oval-head-tube.json"));
+    let weld = feature(&mut s, "Weld");
+    assert_eq!(weld["status"], "failed", "{weld}");
+    let error = weld["error"].as_str().unwrap_or_default().to_owned();
+    assert!(error.contains("runs off a face"), "{error}");
+}
+
+/// The turbofan's F8: the rim of a spinner whose revolved spline side is
+/// two faces (each half of the rim an edge). One half alone goes on
+/// smoothly into the other at both ends, so it cannot stop there: refused
+/// with that reason (it was "the rolling ball could not be followed"), and
+/// with chain the whole rim is built, from 0.5 mm to 2 mm.
+#[test]
+fn the_rim_of_the_spinner() {
+    let steps = include_str!("blend_findings/turbofan-spinner-rim.json");
+    let (mut s, _) = replay(steps);
+    let spinner = feature(&mut s, "Spinner");
+    assert_eq!(spinner["status"], "failed", "{spinner}");
+    let error = spinner["error"].as_str().unwrap_or_default().to_owned();
+    assert!(error.contains("goes on smoothly"), "{error}");
+    for radius in ["0.5 mm", "1 mm", "2 mm"] {
+        let mut chained: Vec<(String, Value)> = serde_json::from_str(steps).unwrap();
+        let last = chained.last_mut().unwrap();
+        last.1["chain"] = json!(true);
+        last.1["radius"] = json!(radius);
+        let (mut s, _) = replay(&serde_json::to_string(&chained).unwrap());
+        let spinner = feature(&mut s, "Spinner");
+        assert_eq!(spinner["status"], "ok", "{radius}: {spinner}");
+        deep_ok(&mut s);
+    }
+}
+
+/// The turbofan's F11: the cut edges of a casing whose bore has a groove
+/// (cone, cylinder, cone), all rounded in one feature. Where the
+/// cylinder's cut edge meets a cone's, the bore's edge between them is
+/// concave and the two fillets convex: the ball rolls over that edge from
+/// one fillet into the other, a patch not built yet. Refused saying so (it
+/// was "fillets of freeform edges that meet in a vertex are not built yet:
+/// fillet them one by one", which does not build either); without the
+/// cylinder's cut edges the rest is built.
+#[test]
+fn the_cut_edges_of_a_grooved_casing() {
+    let steps = include_str!("blend_findings/turbofan-cut-edges-of-a-grooved-casing.json");
+    let (mut s, _) = replay(steps);
+    let cut = feature(&mut s, "CutEdges");
+    assert_eq!(cut["status"], "failed", "{cut}");
+    let error = cut["error"].as_str().unwrap_or_default().to_owned();
+    assert!(error.contains("roll over that edge"), "{error}");
+    let mut fewer: Vec<(String, Value)> = serde_json::from_str(steps).unwrap();
+    let last = fewer.last_mut().unwrap();
+    let kept: Vec<Value> = last.1["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|pair| !pair[0].as_str().unwrap().ends_with("side(e11)"))
+        .cloned()
+        .collect();
+    last.1["edges"] = Value::Array(kept);
+    let (mut s, _) = replay(&serde_json::to_string(&fewer).unwrap());
+    let cut = feature(&mut s, "CutEdges");
+    assert_eq!(cut["status"], "ok", "{cut}");
+    deep_ok(&mut s);
 }

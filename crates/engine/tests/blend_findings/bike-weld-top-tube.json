@@ -1,0 +1,15 @@
+[
+["feature.cylinder", {"radius": "29 mm", "height": "180 mm", "position": ["0 mm", "0 mm", "-90 mm"], "name": "Post"}],
+["datum.plane", {"through": [["0.0 mm", "0.0 mm", "0.0 mm"], ["0.0 mm", "10.0 mm", "0.0 mm"], ["-1.736481777 mm", "0.0 mm", "9.84807753 mm"]], "name": "TubeP0"}],
+["sketch.create", {"plane": "TubeP0", "name": "TubeS0"}],
+["sketch.path", {"sketch": "TubeS0", "start": [3.330106906, 18.960099399], "segments": [{"arc": [-3.330106906, 18.960099399], "center": [0, 8.96]}, {"arc": [-3.330106906, -18.960099399], "center": [2.98374613, 0]}, {"arc": [3.330106906, -18.960099399], "center": [0, -8.96]}, {"arc": "start", "center": [-2.98374613, 0]}]}],
+["datum.plane", {"through": [["88.632697771 mm", "0.0 mm", "15.62833599 mm"], ["88.632697771 mm", "10.0 mm", "15.62833599 mm"], ["86.896215994 mm", "0.0 mm", "25.47641352 mm"]], "name": "TubeP1"}],
+["sketch.create", {"plane": "TubeP1", "name": "TubeS1"}],
+["sketch.path", {"sketch": "TubeS1", "start": [1.502880678, 17.389004381], "segments": [{"arc": [-1.502880678, 17.389004381], "center": [0, 7.27]}, {"arc": [-1.502880678, -17.389004381], "center": [1.079744817, 0]}, {"arc": [1.502880678, -17.389004381], "center": [0, -7.27]}, {"arc": "start", "center": [-1.079744817, 0]}]}],
+["datum.plane", {"through": [["393.923101205 mm", "0.0 mm", "69.459271067 mm"], ["393.923101205 mm", "10.0 mm", "69.459271067 mm"], ["392.186619428 mm", "0.0 mm", "79.307348597 mm"]], "name": "TubeP2"}],
+["sketch.create", {"plane": "TubeP2", "name": "TubeS2"}],
+["sketch.path", {"sketch": "TubeS2", "start": [10.960155108, 10.960155108], "segments": [{"arc": [-10.960155108, 10.960155108], "center": [0, 0]}, {"arc": [-10.960155108, -10.960155108], "center": [0, 0]}, {"arc": [10.960155108, -10.960155108], "center": [0, 0]}, {"arc": "start", "center": [0, 0]}]}],
+["feature.loft", {"sections": ["TubeS0", "TubeS1", "TubeS2"], "ruled": false, "name": "Tube"}],
+["feature.boolean", {"op": "union", "target": "Post", "tool": "Tube", "name": "U"}],
+["feature.fillet", {"edges": [["F1:face(0)", "F8:side(e4,e4,e4)"]], "radius": "4 mm", "chain": true, "name": "Weld"}]
+]
