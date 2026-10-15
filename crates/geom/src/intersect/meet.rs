@@ -180,9 +180,21 @@ fn finish(closed: Closed, within: &Bbox3, tol: &Tolerance) -> Result<SurfaceMeet
 /// Which of two surfaces is walked in its parameters: freeform surfaces
 /// first (the other is then a distance in closed form), then the kinds
 /// whose parametrisation has no pole or apex.
+///
+/// Last of all a freeform surface with a pole at a corner of its
+/// parameters (two adjacent borders one point): there both its
+/// parameters stall, and the distance to a surface through the pole
+/// vanishes to second order at the corner (as `s t`), a saddle of the
+/// walked function just outside the chart, around which no cell is
+/// simple down to the floor. Measured against instead, it is a surface
+/// like any other there.
 fn chart_rank(s: &Surface) -> u8 {
     match s {
-        Surface::Bezier(_) | Surface::Nurbs(_) => 0,
+        Surface::Bezier(_) | Surface::Nurbs(_) => {
+            let poles = crate::pole::poles(s);
+            let corner = poles.iter().any(|a| a.across_v()) && poles.iter().any(|a| !a.across_v());
+            if corner { 6 } else { 0 }
+        }
         Surface::Plane(_) => 1,
         Surface::Cylinder(_) => 2,
         Surface::Torus(_) => 3,
@@ -213,7 +225,16 @@ fn numeric(
     let Some(chart) = Chart::new(walked, within, tol, &field)? else {
         return Ok(SurfaceMeeting::None);
     };
-    let meeting = Marcher::new(chart, field, within, tol)?.solve(within)?;
+    let mut marcher = Marcher::new(chart, field, within, tol)?;
+    // A freeform surface the other is measured against has borders that
+    // are edges: where they cross the walked surface a piece of the curve
+    // may end. (Without a chart of it, nothing is added.)
+    if matches!(other, Surface::Bezier(_) | Surface::Nurbs(_))
+        && let Ok(Some(edges)) = Chart::new(other, within, tol, &back)
+    {
+        marcher = marcher.with_field_chart(edges);
+    }
+    let meeting = marcher.solve(within)?;
     Ok(if meeting.curves.is_empty() && meeting.points.is_empty() {
         SurfaceMeeting::None
     } else {

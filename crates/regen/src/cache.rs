@@ -46,12 +46,12 @@ struct Input {
     /// Its name and kind, which the messages of a failure quote: also
     /// when it comes later in the history, where it has no stamp that a
     /// rename would change. `None` when there is no such feature.
-    named: Option<(String, &'static str)>,
+    named: Option<(Arc<str>, &'static str)>,
     /// The stamp of its result; `None` when it did not come earlier in the
     /// history (or does not exist).
     stamp: Option<u64>,
     /// The later feature its body had gone into by then.
-    taken_by: Option<(FeatureId, String)>,
+    taken_by: Option<(FeatureId, Arc<str>)>,
     /// For one that does not come earlier: whether it is itself made from
     /// this feature, which the reason of the failure says
     /// ([`crate::comes_after`]).
@@ -156,32 +156,110 @@ impl RegenCache {
 /// ascending order of id. Bounded by the number of features, so a cycle in
 /// a damaged document ends.
 pub(crate) fn dependencies(doc: &Document, feature: &Feature) -> Vec<FeatureId> {
-    // What a feature is made from: what it names, and for a feature that
-    // looks at every body built so far (an extrusion through all), every
-    // feature before it in the history.
-    let inputs = |feature: &Feature| {
+    Lookup::new(doc).dependencies(feature)
+}
+
+/// What one regeneration looks up again and again, by feature id: the
+/// features, and what each is made from (filled in as it is asked for).
+/// A row of a thousand features each made from the one before asks for
+/// every one of them for each of them; looked up in the history one by one
+/// that was the cube of the number of features.
+struct Lookup<'a> {
+    doc: &'a Document,
+    by_id: BTreeMap<FeatureId, (usize, &'a Feature)>,
+    names: BTreeMap<FeatureId, Arc<str>>,
+    made_from: BTreeMap<FeatureId, Arc<[FeatureId]>>,
+}
+
+impl<'a> Lookup<'a> {
+    fn new(doc: &'a Document) -> Self {
+        let mut by_id = BTreeMap::new();
+        let mut names = BTreeMap::new();
+        for (index, feature) in doc.features.iter().enumerate() {
+            // The first of a repeated id, as `Document::feature` finds.
+            by_id.entry(feature.id).or_insert((index, feature));
+            names
+                .entry(feature.id)
+                .or_insert_with(|| Arc::from(feature.name.as_str()));
+        }
+        Self {
+            doc,
+            by_id,
+            names,
+            made_from: BTreeMap::new(),
+        }
+    }
+
+    fn feature(&self, id: FeatureId) -> Option<&'a Feature> {
+        self.by_id.get(&id).map(|(_, f)| *f)
+    }
+
+    /// What a feature names, and for a feature that looks at every body
+    /// built so far (an extrusion through all) every feature before it in
+    /// the history.
+    fn inputs(&self, feature: &Feature) -> Vec<FeatureId> {
         let mut inputs = feature.kind.inputs();
         if feature.kind.uses_all_earlier() {
             inputs.extend(
-                doc.features
+                self.doc
+                    .features
                     .iter()
                     .take_while(|f| f.id != feature.id)
                     .map(|f| f.id),
             );
         }
         inputs
-    };
-    let mut seen = BTreeSet::new();
-    let mut open = inputs(feature);
-    while let Some(id) = open.pop() {
-        if id == feature.id || !seen.insert(id) {
-            continue;
-        }
-        if let Some(input) = doc.feature(id) {
-            open.extend(inputs(input));
-        }
     }
-    seen.into_iter().collect()
+
+    /// [`dependencies`] by a walk of the graph, as it always was.
+    fn walked(&self, feature: &Feature) -> Vec<FeatureId> {
+        let mut seen = BTreeSet::new();
+        let mut open = self.inputs(feature);
+        while let Some(id) = open.pop() {
+            if id == feature.id || !seen.insert(id) {
+                continue;
+            }
+            if let Some(input) = self.feature(id) {
+                open.extend(self.inputs(input));
+            }
+        }
+        seen.into_iter().collect()
+    }
+
+    /// What the feature of the history with id `id` is made from,
+    /// remembered.
+    fn made_from(&mut self, id: FeatureId) -> Arc<[FeatureId]> {
+        if let Some(known) = self.made_from.get(&id) {
+            return known.clone();
+        }
+        let found: Arc<[FeatureId]> = match self.feature(id) {
+            Some(feature) => self.walked(feature).into(),
+            None => Arc::from(Vec::new()),
+        };
+        self.made_from.insert(id, found.clone());
+        found
+    }
+
+    /// [`dependencies`]: what everything `feature` names is made from,
+    /// with those themselves and without `feature`. The same set as the
+    /// walk (what can be reached from an input is that input and what can
+    /// be reached from it, cycles or not), from what is known of the
+    /// inputs: in a history in order they all came before.
+    fn dependencies(&mut self, feature: &Feature) -> Vec<FeatureId> {
+        // Each list is in ascending order, so sorting them together is a
+        // merge of runs.
+        let mut all = Vec::new();
+        for input in self.inputs(feature) {
+            all.push(input);
+            if self.feature(input).is_some() {
+                all.extend(self.made_from(input).iter().copied());
+            }
+        }
+        all.sort();
+        all.dedup();
+        all.retain(|id| *id != feature.id);
+        all
+    }
 }
 
 /// Runs `build` for every feature of the document that cannot reuse what
@@ -203,6 +281,9 @@ pub(crate) fn features(
     cache.rebuilt = 0;
     cache.reused = 0;
     let mut results: Vec<FeatureResult> = Vec::with_capacity(doc.features.len());
+    // Where each feature's result is in `results`.
+    let mut at: BTreeMap<FeatureId, usize> = BTreeMap::new();
+    let mut lookup = Lookup::new(doc);
     let mut stamps: BTreeMap<FeatureId, u64> = BTreeMap::new();
     let mut rolled_back = false;
     let steps = doc.features.len();
@@ -218,28 +299,37 @@ pub(crate) fn features(
             Ok(Some(followed)) => followed,
             Ok(None) | Err(_) => stated,
         };
-        let inputs = dependencies(doc, feature)
-            .into_iter()
-            .map(|id| Input {
+        let made_from = lookup.dependencies(feature);
+        // Remembered for the features made from this one, when it is the
+        // feature of the history with this id, as stated.
+        if !matches!(followed, Ok(Some(_)))
+            && lookup.by_id.get(&stated.id).map(|(i, _)| *i) == Some(index)
+        {
+            lookup
+                .made_from
+                .entry(stated.id)
+                .or_insert_with(|| made_from.clone().into());
+        }
+        let mut inputs = Vec::with_capacity(made_from.len());
+        for id in made_from {
+            let circle = !stamps.contains_key(&id)
+                && lookup.feature(id).is_some()
+                && lookup.made_from(id).contains(&feature.id);
+            let name = |id: FeatureId| lookup.names.get(&id).cloned();
+            inputs.push(Input {
                 id,
-                named: doc
+                named: lookup
                     .feature(id)
-                    .map(|f| (f.name.clone(), f.kind.type_name())),
+                    .and_then(|f| Some((name(id)?, f.kind.type_name()))),
                 stamp: stamps.get(&id).copied(),
-                taken_by: results
-                    .iter()
-                    .find(|r| r.id == id)
+                taken_by: at
+                    .get(&id)
+                    .and_then(|i| results.get(*i))
                     .and_then(|r| r.consumed_by)
-                    .map(|taker| {
-                        let name = doc.feature(taker).map(|f| f.name.clone());
-                        (taker, name.unwrap_or_default())
-                    }),
-                circle: !stamps.contains_key(&id)
-                    && doc
-                        .feature(id)
-                        .is_some_and(|later| dependencies(doc, later).contains(&feature.id)),
-            })
-            .collect();
+                    .map(|taker| (taker, name(taker).unwrap_or_else(|| Arc::from("")))),
+                circle,
+            });
+        }
         let context = Context {
             rolled_back,
             followed: followed.clone(),
@@ -311,12 +401,13 @@ pub(crate) fn features(
         // reused result as on a rebuilt one.
         if matches!(result.status, Status::Ok) {
             for (source, keep) in feature.kind.sources() {
-                if !keep && let Some(taken) = results.iter_mut().find(|r| r.id == source) {
+                if !keep && let Some(taken) = at.get(&source).and_then(|i| results.get_mut(*i)) {
                     taken.consumed_by = Some(feature.id);
                 }
             }
         }
         stamps.insert(feature.id, stamp);
+        at.entry(result.id).or_insert(results.len());
         results.push(result);
         if doc.rollback == Some(stated.id) {
             rolled_back = true;

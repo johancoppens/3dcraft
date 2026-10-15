@@ -26,13 +26,25 @@ pub(crate) fn export(session: &mut Session, path: &str, resolved: &Path) -> Run 
     let open = session.document_mut()?;
     let regen = open.regen();
     let doc = open.history.current();
-    let named: Vec<(String, &craft3d_topo::Body)> = regen
+    // Each body with its name and colours (`appearance`).
+    #[allow(clippy::type_complexity)]
+    let named: Vec<(
+        String,
+        &craft3d_topo::Body,
+        Option<[u8; 3]>,
+        Vec<Option<[u8; 3]>>,
+    )> = regen
         .bodies()
         .map(|(id, body)| {
             let name = doc
                 .feature(id)
                 .map_or_else(|| id.to_string(), |f| f.name.clone());
-            (name, &**body)
+            let color = crate::appearance::body_appearance(doc, &regen, id).map(|a| a.color);
+            let faces = crate::appearance::face_appearances(doc, &regen, id, body.faces.len())
+                .into_iter()
+                .map(|a| a.map(|a| a.color))
+                .collect();
+            (name, &**body, color, faces)
         })
         .collect();
     if named.is_empty() {
@@ -42,7 +54,11 @@ pub(crate) fn export(session: &mut Session, path: &str, resolved: &Path) -> Run 
     }
     let bodies: Vec<StepBody<'_>> = named
         .iter()
-        .map(|(name, body)| StepBody { name, body })
+        .map(|(name, body, color, faces)| StepBody {
+            color: *color,
+            face_colors: faces,
+            ..StepBody::new(name, body)
+        })
         .collect();
     let tolerance = craft3d_math::Tolerance::new(doc.tolerance.linear, doc.tolerance.angular)
         .ok_or_else(|| {

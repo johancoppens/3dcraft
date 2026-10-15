@@ -448,73 +448,101 @@ fn a_rational_face_in_tangent_contact_and_with_an_edge_on_it() {
 /// A rational face that lies on the surface of a face of the other body:
 /// a rational quarter cylinder against the analytic cylinder it is a
 /// piece of, against its analytic twin lifted along the axis, and against
-/// itself lifted; and a rational quarter of a zone of a ball against the
-/// ball. The first and the last are built since 2026-10-14 and held to the
-/// analytic twin: geometry finds that the patch lies on the cylinder, a
-/// point of the cylinder beyond the patch is off the face rather than
-/// placed in the patch's chart, and a face on a patch is not merged with
-/// the other body's face on the same surface (it would run off the
-/// patch). The other two are still refused, with a reason (the twin lifted:
-/// a stretch along the shared straight edge that is not cut where a
-/// curve the marcher drew along the patch's border ends on it; the two
-/// patches: a freeform surface lying on a freeform surface is not
-/// recognised). What is held for them is that it is never a wrong body: a
-/// refusal, or the solid the analytic twin gives.
+/// itself lifted (two freeform faces on one surface); and a rational
+/// quarter of a zone of a ball against the ball. Each is held to the
+/// analytic twin. The first and the last are built since 2026-10-14:
+/// geometry finds that the patch lies on the cylinder, a point of the
+/// cylinder beyond the patch is off the face rather than placed in the
+/// patch's chart, and a face on a patch is not merged with the other
+/// body's face on the same surface (it would run off the patch). The
+/// other two since 2026-10-15: an edge that lies on a patch for a while
+/// and leaves it where the patch ends is cut there (it was cut at a place
+/// found by bisecting a distance that is zero all along, "an imprinted
+/// curve that does not fit"), and a patch lies on a patch where their
+/// samples over each other are within the tolerance, those past the end
+/// of the other left out ("touch along a curve without a closed form").
+/// With patches that end where the faces do and patches a fifth larger,
+/// also each against the other (two patches of one surface with other
+/// parameters), upright and tilted.
 #[test]
-fn a_rational_face_on_the_surface_it_equals_is_refused_or_right() {
+fn a_rational_face_on_the_surface_it_equals_is_right() {
     for k in SCALES {
         let solid = quarter_rod(k);
         let (twin, _) = rationalized(&solid.body, 0.0, false);
+        let (wide, _) = rationalized(&solid.body, 0.2, false);
         let lift = Transform::translation(Vec3::new(0.0, 0.0, k));
-        let cases = [
+        let lifted = |body: &Body| body.transformed(&lift).unwrap();
+        let zone = ball_zone(k);
+        let (zone_twin, _) = rationalized(&zone.body, 0.0, false);
+        let cases: Vec<(&str, &Body, &Body, Body, Body)> = vec![
             (
                 "the rod it lies on, higher",
+                &twin,
+                &solid.body,
                 rod(k, [0.0, 0.0, 1.0], 2.0, 4.0),
                 rod(k, [0.0, 0.0, 1.0], 2.0, 4.0),
-                true,
             ),
             (
                 "its analytic twin, lifted",
-                solid.body.transformed(&lift).unwrap(),
-                solid.body.transformed(&lift).unwrap(),
-                false,
+                &twin,
+                &solid.body,
+                lifted(&solid.body),
+                lifted(&solid.body),
             ),
             (
                 "itself, lifted",
-                twin.transformed(&lift).unwrap(),
-                solid.body.transformed(&lift).unwrap(),
-                false,
+                &twin,
+                &solid.body,
+                lifted(&twin),
+                lifted(&solid.body),
             ),
-        ];
-        let zone = ball_zone(k);
-        let (zone_twin, _) = rationalized(&zone.body, 0.0, false);
-        let pairs = cases
-            .into_iter()
-            .map(|(name, tool, plain, built)| (name, &twin, &solid.body, tool, plain, built))
-            .chain([(
+            (
+                "a wider patch of itself, lifted",
+                &twin,
+                &solid.body,
+                lifted(&wide),
+                lifted(&solid.body),
+            ),
+            (
+                "wider patches, lifted",
+                &wide,
+                &solid.body,
+                lifted(&wide),
+                lifted(&solid.body),
+            ),
+            (
                 "a rational ball zone and the ball it lies on",
                 &zone_twin,
                 &zone.body,
                 ball(k, [0.0, 0.0, 0.0], 2.0),
                 ball(k, [0.0, 0.0, 0.0], 2.0),
-                true,
-            )]);
-        for (name, twin, plain, tool, plain_tool, built) in pairs {
-            for op in [Union, Intersect, Subtract] {
-                let what = format!("{name}, {op:?} at {k}");
-                match outcome(twin, &tool, op, k, &what) {
-                    Outcome::Refused(reason) => {
-                        assert!(!built, "{what}: refused: {reason}");
-                        assert!(!reason.is_empty(), "{what}");
+            ),
+        ];
+        for (name, twin, plain, tool, plain_tool) in cases {
+            // (Tilted, the analytic union of the rod with the rod above
+            // it does not mesh: a seam of the tessellator's.)
+            let tilts: &[bool] = if name.contains("lifted") {
+                &[false, true]
+            } else {
+                &[false]
+            };
+            for &tilted in tilts {
+                let turn = |body: &Body| {
+                    if tilted {
+                        body.transformed(&tilt(k)).unwrap()
+                    } else {
+                        body.clone()
                     }
-                    found => {
-                        let analytic = outcome(plain, &plain_tool, op, k, &what);
-                        same(&found, &analytic, k, &what);
-                        assert!(
-                            built,
-                            "{what}: no longer refused, and right: say so in the docs and hold it to the analytic twin here"
-                        );
+                };
+                let (twin, plain, tool, plain_tool) =
+                    (turn(twin), turn(plain), turn(&tool), turn(&plain_tool));
+                for op in [Union, Intersect, Subtract] {
+                    let what = format!("{name}, {op:?} at {k}, tilted {tilted}");
+                    let analytic = outcome(&plain, &plain_tool, op, k, &what);
+                    if let Outcome::Refused(reason) = &analytic {
+                        panic!("{what}: the analytic twin is refused: {reason}");
                     }
+                    same(&outcome(&twin, &tool, op, k, &what), &analytic, k, &what);
                 }
             }
         }

@@ -117,7 +117,38 @@ pub fn to_object(mesh: &Mesh, name: &str) -> Result<Object, IoError> {
         kind,
         positions: welded.positions,
         triangles: welded.triangles,
+        ..Object::default()
     })
+}
+
+/// [`to_object`] with a material per triangle: `face_material` says what
+/// the face of each triangle (`Mesh::face_ids`) is made of, an index into
+/// the model's materials, or `None` for the object's own
+/// (`Object::material`, which the caller sets).
+pub fn to_object_with_materials(
+    mesh: &Mesh,
+    name: &str,
+    face_material: impl Fn(u32) -> Option<u32>,
+) -> Result<Object, IoError> {
+    let mut object = to_object(mesh, name)?;
+    // Welding drops the triangles with two corners at one place: the same
+    // ones are left out here, so the lists stay in step.
+    let place = |k: u32| {
+        mesh.positions
+            .get(k as usize)
+            .map(|p| [p.x + 0.0, p.y + 0.0, p.z + 0.0].map(f64::to_bits))
+    };
+    let mut materials = Vec::with_capacity(object.triangles.len());
+    for (tri, &face) in mesh.triangles.iter().zip(&mesh.face_ids) {
+        let [a, b, c] = tri.map(place);
+        if a != b && b != c && c != a {
+            materials.push(face_material(face));
+        }
+    }
+    if materials.len() == object.triangles.len() && materials.iter().any(Option::is_some) {
+        object.triangle_materials = materials;
+    }
+    Ok(object)
 }
 
 /// Encodes a model as a file of the given format.
@@ -141,6 +172,7 @@ pub fn export_mesh(
     let model = Model {
         unit,
         objects: vec![to_object(mesh, name)?],
+        materials: Vec::new(),
     };
     encode(&model, format)
 }
@@ -312,5 +344,34 @@ mod tests {
             export_mesh(&nan, "nan", Unit::Millimeter, MeshFormat::Obj),
             Err(IoError::Format(MeshError::NonFinitePosition { .. }))
         ));
+    }
+
+    #[test]
+    fn triangle_materials_follow_the_faces_and_skip_what_welding_drops() {
+        let mut mesh = cube(2.0);
+        // A degenerate triangle of a face of its own, before the last face's
+        // triangles: welding drops it, and its material with it.
+        let k = u32::try_from(mesh.positions.len()).unwrap();
+        mesh.positions.extend([Vec3::ZERO, Vec3::ZERO, Vec3::X]);
+        mesh.normals.extend([Vec3::Z; 3]);
+        mesh.triangles.insert(0, [k, k + 1, k + 2]);
+        mesh.face_ids.insert(0, 99);
+        let top = mesh.face_ids[1 + 2];
+        let object = to_object_with_materials(&mesh, "cube", |face| match face {
+            99 => Some(5),
+            f if f == top => Some(1),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(object.triangles.len(), 12);
+        assert_eq!(object.triangle_materials.len(), 12);
+        let kept: Vec<u32> = mesh.face_ids[1..].to_vec();
+        for (material, face) in object.triangle_materials.iter().zip(kept) {
+            assert_eq!(*material, (face == top).then_some(1));
+        }
+        // No material anywhere: no list.
+        let plain = to_object_with_materials(&mesh, "cube", |_| None).unwrap();
+        assert!(plain.triangle_materials.is_empty());
+        assert_eq!(plain, to_object(&mesh, "cube").unwrap());
     }
 }

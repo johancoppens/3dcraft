@@ -753,3 +753,42 @@ fn a_rim_a_few_tolerances_inside_a_coaxial_cone() {
         }
     }
 }
+
+/// Fourth-order contact (the reproducer for what is owed, `docs/roadmap.md`
+/// › the boolean checklist, and the random runs' seed 2001169): a
+/// cylinder inside the tube of a torus, its axis square to the torus's,
+/// touching the top of the tube. Along its top line the cylinder rises
+/// above the tube by `y⁴ / (8 R² r)`, so the two surfaces meet in two
+/// curves `θ = ±c y²` tangent to each other at the point of contact, which
+/// the marcher passes through without seeing it: two branches run along
+/// one arm ("two curves leave a point in the same direction and stay
+/// together") or the march stalls. Refused, never a body.
+#[test]
+fn a_cylinder_touching_the_top_of_a_torus_tube_from_inside_is_refused() {
+    for k in SCALES {
+        let torus = ring(k, [0.0, 0.0, 0.0], 3.0, 1.0);
+        for (length, radius) in [(2.0, 0.5), (3.0, 0.3)] {
+            let frame = Frame::new(
+                Vec3::new(3.0, -0.5 * length, 1.0 - radius) * k,
+                Vec3::Y,
+                Vec3::X,
+            )
+            .unwrap();
+            let cylinder = primitives::cylinder(&frame, radius * k, length * k).unwrap();
+            for op in [Union, Intersect, Subtract] {
+                match craft3d_kernel::boolean::boolean(&torus, &cylinder, op, &tolerance(k)) {
+                    Err(KernelError::Unsupported { reason, .. }) => {
+                        assert!(
+                            reason.contains("stay together") || reason.contains("stalled"),
+                            "{op:?} at {k}, {length} by {radius}: {reason}"
+                        );
+                    }
+                    other => panic!(
+                        "{op:?} at {k}, {length} by {radius}: {:?}: built now; hold it to an oracle and say so in the docs",
+                        other.map(|r| counts(&r))
+                    ),
+                }
+            }
+        }
+    }
+}

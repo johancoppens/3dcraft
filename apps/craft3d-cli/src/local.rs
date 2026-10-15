@@ -349,7 +349,7 @@ pub(crate) fn info(args: Args) -> Result<Parsed<()>, CliError> {
 // ----------------------------------------------------------------- render
 
 /// `WxH`, each a whole number. The engine checks the range.
-fn parse_size(text: &str) -> Result<(u64, u64), CliError> {
+pub(crate) fn parse_size(text: &str) -> Result<(u64, u64), CliError> {
     text.split_once(['x', 'X'])
         .and_then(|(width, height)| Some((width.parse().ok()?, height.parse().ok()?)))
         .ok_or_else(|| {

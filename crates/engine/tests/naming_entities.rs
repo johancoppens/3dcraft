@@ -868,7 +868,7 @@ struct PartFaces {
     slot_floor: String,
     boss_wall: String,
     boss_top: String,
-    /// The prefix of a name the base block gave: `F9:copy(0)/.../F1:`.
+    /// The prefix of a name the base block gave: `F9:copy(0)/F1:`.
     base: String,
 }
 
@@ -880,8 +880,11 @@ fn part_faces(s: &mut Session) -> PartFaces {
     let [base, hole, holed, slot, slit, boss, part] = ids.as_slice() else {
         panic!()
     };
-    let of_base = format!("{part}:copy(0)/{slit}:copy(0)/{holed}:copy(0)/{base}:");
-    let of_hole = format!("{part}:copy(0)/{slit}:copy(0)/{holed}:copy(1)/{hole}:");
+    // In the short form: a row of copies that are each instance 0 is one
+    // link (Part's target is Slit, whose target is Holed, whose target is
+    // Base).
+    let of_base = format!("{part}:copy(0)/{base}:");
+    let of_hole = format!("{part}:copy(0)/{holed}:copy(1)/{hole}:");
     let of_slot = format!("{part}:copy(0)/{slit}:copy(1)/{slot}:");
     let of_boss = format!("{part}:copy(1)/{boss}:");
     PartFaces {

@@ -13,9 +13,9 @@ use super::{
     face_id, geometry,
 };
 use crate::{KernelError, MAX_REPORTED};
-use craft3d_geom::Surface;
 use craft3d_geom::intersect::CurveIntersection;
 use craft3d_geom::intersect::{MeetingCurve, SurfaceMeeting, meet_surfaces};
+use craft3d_geom::{Curve3, Surface};
 use craft3d_math::{Bbox3, Tolerance, Vec3};
 use craft3d_topo::{Body, BodyKind, EdgeId, FaceId, VertexId};
 use std::collections::{BTreeMap, BTreeSet};
@@ -350,12 +350,50 @@ fn edge_cuts(
             }
             CurveIntersection::Hits(hits) => {
                 for hit in hits {
-                    if locate(&edge.curve, edge.range, hit.point, tol).is_none() {
+                    let Some(at) = locate(&edge.curve, edge.range, hit.point, tol) else {
+                        continue;
+                    };
+                    // An edge that leaves the surface tangentially at one
+                    // of its ends (where a fillet's face meets a face it
+                    // is tangent to) stays within the tolerance of it for
+                    // a while, and an approximated edge may cross it
+                    // again on the way: the edge meets the surface at its
+                    // end, not there.
+                    let hugs = |end: f64| {
+                        (end - at).abs() > 0.0
+                            && [0.25, 0.5, 0.75].into_iter().all(|k| {
+                                surface_distance(surface, edge.curve.eval(end + (at - end) * k))
+                                    <= tol
+                            })
+                    };
+                    // (Only an approximated edge does: an exact one that
+                    // lies on the surface up to the hit, as a ruling of a
+                    // cone up to its apex, meets it there.)
+                    let approximated = matches!(edge.curve, Curve3::Nurbs(_));
+                    if approximated && surface_distance(surface, a.point) <= tol && hugs(t0) {
+                        cut(a.point, true);
                         continue;
                     }
+                    if approximated && surface_distance(surface, b.point) <= tol && hugs(t1) {
+                        cut(b.point, true);
+                        continue;
+                    }
+                    // A hit next to an end of the edge that lies on the
+                    // surface is that end: where the edge meets the
+                    // surface at a shallow angle (an ellipse or a circle
+                    // that runs onto a face it is nearly tangent to) the
+                    // hit is found only to a fraction of the tolerance,
+                    // and the end, which the other edges there share, is
+                    // exact. Two such hits of edges that meet there would
+                    // otherwise be two places closer together than the
+                    // tolerance can tell apart.
+                    let end = [a.point, b.point].into_iter().find(|end| {
+                        hit.point.distance(*end) <= 2.0 * tol
+                            && surface_distance(surface, *end) <= tol
+                    });
                     // A touch is a cut like any other: the stretches on
                     // either side of it are judged on their own.
-                    cut(hit.point, true);
+                    cut(end.unwrap_or(hit.point), true);
                 }
             }
         }
@@ -446,18 +484,41 @@ fn clip(
     // An end of the curve next to a place where an edge meets a surface
     // is that place.
     // (Not the seam of a closed spline: no stretch may run across that.)
+    // A curve that begins and ends in one such place (a loop through it)
+    // has that place at each end, but a place is found on the curve once,
+    // at whichever end is nearer: the other end is the place too, and is
+    // kept as it (a figure eight of a torus and the plane it touches,
+    // through the pole of a patch, lost the lobe back into the face).
     if !closed {
-        let places: Vec<Vec3> = along
-            .iter()
-            .filter(|cut| !cut.end)
-            .map(|cut| cut.point)
-            .collect();
-        along.retain(|cut| {
-            !cut.end
-                || !places
-                    .iter()
-                    .any(|p| p.distance(cut.point) < vertices.guard)
-        });
+        let places: Vec<Cut> = along.iter().filter(|cut| !cut.end).copied().collect();
+        let mut kept = Vec::with_capacity(along.len());
+        for cut in along {
+            if !cut.end {
+                kept.push(cut);
+                continue;
+            }
+            let near: Vec<&Cut> = places
+                .iter()
+                .filter(|p| p.point.distance(cut.point) < vertices.guard)
+                .collect();
+            let Some(&&place) = near.first() else {
+                kept.push(cut);
+                continue;
+            };
+            // Found at this end: the curve stays at the place between the
+            // two.
+            let here = near
+                .iter()
+                .any(|p| curve.eval(0.5 * (p.t + cut.t)).distance(cut.point) < vertices.guard);
+            if !here {
+                kept.push(Cut {
+                    t: cut.t,
+                    end: false,
+                    ..place
+                });
+            }
+        }
+        along = kept;
     }
     let mut cuts: Vec<Cut> = Vec::new();
     for cut in along {
@@ -535,11 +596,27 @@ fn clip(
         if !(box_a.contains(middle, 2.0 * tol) && box_b.contains(middle, 2.0 * tol)) {
             continue;
         }
+        // Out of either face at the middle is no part of the imprint,
+        // whatever the stretch does along the boundary of the other: a
+        // curve that leaves a face's edge tangentially (where a fillet's
+        // face meets the other side of a sharp edge) stays within the
+        // tolerance of that edge for a while beyond the other face too.
+        let mut heres = [Side::On; 2];
+        for (outline, here) in [oa, ob].into_iter().zip(heres.iter_mut()) {
+            *here = outline
+                .side(middle, tol)
+                .map_err(|r| Stop::of(r).at(&named))?;
+            if *here == Side::Out {
+                break;
+            }
+        }
+        if heres.contains(&Side::Out) {
+            continue;
+        }
         let mut inside = [false, false];
         let mut keep = true;
-        for (outline, inside) in [oa, ob].into_iter().zip(inside.iter_mut()) {
+        for ((outline, inside), here) in [oa, ob].into_iter().zip(inside.iter_mut()).zip(heres) {
             let side = |p: Vec3| outline.side(p, tol).map_err(|r| Stop::of(r).at(&named));
-            let here = side(middle)?;
             match here {
                 Side::Out => {
                     keep = false;

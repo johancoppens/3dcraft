@@ -22,7 +22,17 @@ use std::f64::consts::{FRAC_PI_2, TAU};
 pub(crate) fn arc_segments(radius: f64, sweep: f64, params: &TessParams) -> Result<u32, TessError> {
     let sag = (params.chordal_tolerance / radius).min(1.0);
     let half_angle = (1.0 - sag).acos();
-    let needed = (sweep.abs() / (2.0 * half_angle)).ceil();
+    // With an angle criterion, no chord turns the tangent further than
+    // that, unless the chord would be shorter than the floor (an angle of
+    // `floor / radius` is the chord's length at that radius).
+    let largest = match params.max_angle {
+        Some(angle) => {
+            let floor = crate::ANGLE_FLOOR * params.chordal_tolerance / radius;
+            (2.0 * half_angle).min(angle.max(floor))
+        }
+        None => 2.0 * half_angle,
+    };
+    let needed = (sweep.abs() / largest).ceil();
     let minimum = (sweep.abs() / (TAU / 3.0) - 1e-9).ceil().max(1.0);
     let needed = needed.max(minimum);
     let limit = f64::from(params.max_segments) * 8.0;
@@ -101,7 +111,9 @@ fn adaptive(
         let fits = [0.25, 0.5, 0.75].iter().all(|&s| {
             let on_curve = curve.eval(ta + (tb - ta) * s);
             on_curve.distance(pa.lerp(pb, s)) <= tolerance
-        });
+        }) && params
+            .angle_for(pa.distance(pb))
+            .is_none_or(|angle| turns_within(curve, ta, tb, angle));
         if fits {
             points.push(pb);
             at.push(tb);
@@ -121,6 +133,26 @@ fn adaptive(
         stack.push((ta, pa, tm, pm, depth + 1));
     }
     Ok((points, at))
+}
+
+/// Whether the tangent of `curve` turns by at most `angle` from `ta` to
+/// `tb`: between the two ends and between each end and the middle (a
+/// piece that turns one way and back again has ends that agree). Where
+/// the curve has no tangent (a derivative of zero) nothing is known, and
+/// nothing is asked for. The ends are taken a millionth of the piece
+/// inside it, so that at a knot where the curve has a kink the tangent is
+/// the piece's own and not the next one's.
+fn turns_within(curve: &Curve3, ta: f64, tb: f64, angle: f64) -> bool {
+    let tangent = |t: f64| curve.derivatives(t).1;
+    let inside = 1e-6 * (tb - ta);
+    let (a, m, b) = (
+        tangent(ta + inside),
+        tangent(0.5 * (ta + tb)),
+        tangent(tb - inside),
+    );
+    [(a, b), (a, m), (m, b)].into_iter().all(|(x, y)| {
+        crate::angle_between(x, y).is_none_or(|turn| !crate::turns_beyond(turn, angle))
+    })
 }
 
 /// The points of every edge of a body, from its start to its end vertex,
@@ -216,13 +248,30 @@ impl EdgeSamples {
 
 /// The points of every edge, each within the chordal tolerance of its
 /// curve.
+#[cfg(test)]
 pub(crate) fn edge_points(body: &Body, params: &TessParams) -> Result<EdgeSamples, TessError> {
+    edge_points_of(body, params, None)
+}
+
+/// [`edge_points`] for the edges `wanted` marks (all when `None`); the
+/// others get no points at all, and nothing about them is checked.
+pub(crate) fn edge_points_of(
+    body: &Body,
+    params: &TessParams,
+    wanted: Option<&[bool]>,
+) -> Result<EdgeSamples, TessError> {
     let mut all = EdgeSamples {
         points: Vec::with_capacity(body.edges.len()),
         at: Vec::with_capacity(body.edges.len()),
         first: Vec::with_capacity(body.edges.len()),
     };
     for (index, edge) in body.edges.iter().enumerate() {
+        if wanted.is_some_and(|wanted| !wanted.get(index).copied().unwrap_or(false)) {
+            all.first.push(0);
+            all.points.push(Vec::new());
+            all.at.push(Vec::new());
+            continue;
+        }
         let (Some(start), Some(end)) = (body.vertex(edge.start), body.vertex(edge.end)) else {
             return Err(TessError::InvalidBody(format!(
                 "edge {index} refers to a vertex that does not exist"

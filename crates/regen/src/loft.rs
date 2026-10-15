@@ -107,6 +107,9 @@ pub(crate) fn build(
                 "sections: the loft cannot be meshed to see whether it passes through itself ({error}); its sections are probably matched with a twist: {advice}"
             ));
         }
+        touching @ Crossing::Touching(..) => {
+            touching.refused("sections", "loft", advice)?;
+        }
         Crossing::Found(pair) => {
             let between = pair
                 .map(|[a, b]| format!(": {a} and {b} cross"))

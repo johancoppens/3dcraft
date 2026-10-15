@@ -242,7 +242,7 @@ fn a_mirrored_body_is_a_valid_solid_on_the_other_side() {
         names
             .as_array()
             .unwrap()
-            .contains(&json!("F4:copy(0)/F3:copy(0)/F2:side(e7)")),
+            .contains(&json!("F4:copy(0)/F2:side(e7)")),
         "{names}"
     );
 }
@@ -829,7 +829,7 @@ fn a_chain_of_copies_saves_reopens_and_regenerates_the_same() {
         names
             .as_array()
             .unwrap()
-            .contains(&json!("F5:copy(4)/F4:copy(0)/F3:copy(0)/F2:side(e6)")),
+            .contains(&json!("F5:copy(4)/F4:copy(0)/F2:side(e6)")),
         "{names}"
     );
     let before = run(&mut s, "document.inspect", json!({}));

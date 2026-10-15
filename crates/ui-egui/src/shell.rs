@@ -223,9 +223,9 @@ struct Turn {
 #[derive(Clone, Debug, PartialEq)]
 struct FrameKey {
     revision: Option<u64>,
-    /// The tolerance the scene was sampled with: another display quality
-    /// is another mesh of the same revision.
-    tolerance: Option<f64>,
+    /// The tolerance and the angle the scene was sampled with: another
+    /// display quality is another mesh of the same revision.
+    tolerance: Option<(f64, Option<f64>)>,
     camera: CameraState,
     /// The viewport, in pixels.
     size: [u32; 2],
@@ -253,7 +253,7 @@ struct FrameKey {
 /// resolved once per scene and per state, not per frame.
 struct SectionCache {
     revision: u64,
-    tolerance: f64,
+    tolerance: (f64, Option<f64>),
     state: SectionState,
     cap: crate::theme::Rgb,
     plane: SectionPlane,
@@ -979,7 +979,7 @@ impl Shell {
         let cap = self.tokens.section_cap;
         let current = self.section_cache.as_ref().is_some_and(|cache| {
             cache.revision == scene.revision
-                && cache.tolerance == scene.tolerance
+                && cache.tolerance == scene.sampling()
                 && cache.state == self.state.section
                 && cache.cap == cap
         });
@@ -990,7 +990,7 @@ impl Shell {
             Ok(plane) => {
                 self.section_cache = Some(SectionCache {
                     revision: scene.revision,
-                    tolerance: scene.tolerance,
+                    tolerance: scene.sampling(),
                     state: self.state.section.clone(),
                     cap,
                     plane,
@@ -1822,7 +1822,7 @@ impl Shell {
         let largest = ui.input(|i| i.max_texture_side);
         let key = FrameKey {
             revision: scene.map(|s| s.revision),
-            tolerance: scene.map(|s| s.tolerance),
+            tolerance: scene.map(Scene::sampling),
             camera: self.state.camera,
             size,
             largest,

@@ -1,5 +1,7 @@
 //! A cut thread at the fine tolerances a viewport asks for: the display
-//! rule meshes at 3e-5 of the model's size, here about 0.00125 mm.
+//! rule meshed at 3e-5 of the model's size until 2026-10-14, here about
+//! 0.00125 mm (now at 2e-4 with an angle criterion, which is checked
+//! too).
 //!
 //! An M10 thread 24 mm long on a shank with a chamfered end did not come
 //! back at 0.0015 mm (a screw with such a thread sat in "meshing" for
@@ -19,7 +21,7 @@
     clippy::indexing_slicing
 )]
 
-use craft3d_engine::{SceneQuality, Session, Workspace};
+use craft3d_engine::{DISPLAY_MAX_TRIANGLES, SceneQuality, Session, Workspace};
 use serde_json::{Value, json};
 use std::time::Instant;
 
@@ -48,9 +50,14 @@ fn a_cut_thread_meshes_at_the_display_tolerance_in_seconds() {
         "feature.thread",
         json!({"face": "F1:face(0)", "start": "F1:face(1)", "size": "M10", "length": "24 mm", "modeled": true, "name": "Thread"}),
     );
-    // 0.0015 is where it hung; the display rule asks for a little less
-    // here, which happened to escape the rounding.
-    for quality in [SceneQuality::Tolerance(0.0015), SceneQuality::display()] {
+    // 0.0015 is where it hung; the display rule at 3e-5 asked for a
+    // little less here, which happened to escape the rounding.
+    let fine = SceneQuality::Display {
+        relative: 3e-5,
+        max_triangles: DISPLAY_MAX_TRIANGLES,
+        max_angle: None,
+    };
+    for quality in [SceneQuality::Tolerance(0.0015), fine] {
         let start = Instant::now();
         let scene = s.scene_with(quality).unwrap().unwrap();
         let seconds = start.elapsed().as_secs_f64();
@@ -75,4 +82,18 @@ fn a_cut_thread_meshes_at_the_display_tolerance_in_seconds() {
         assert!(seconds < 120.0, "{what}");
         println!("{what}");
     }
+    // The display rule as it is now: coarser, with the angle, closed.
+    let start = Instant::now();
+    let scene = s.scene_with(SceneQuality::display()).unwrap().unwrap();
+    let what = format!(
+        "display: {} triangles at {} in {:.1} s: {:?}",
+        scene.mesh.triangles.len(),
+        scene.tolerance,
+        start.elapsed().as_secs_f64(),
+        scene.problems
+    );
+    assert!(scene.problems.is_empty(), "{what}");
+    assert!(!scene.coarsened, "{what}");
+    assert!(scene.mesh.weld().unwrap().is_closed(), "{what}");
+    println!("{what}");
 }

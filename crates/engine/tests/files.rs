@@ -183,3 +183,67 @@ fn a_saved_document_is_found_by_its_path() {
     assert_eq!(switched["active"], 0);
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+/// A document opened by a path relative to the working directory, with
+/// unrestricted access (the desktop app opens the file named on its
+/// command line that way), keeps the absolute path: a save without a path
+/// after the session got a write root reaches the same file, not the
+/// relative path again beneath the root (2026-10-15, a window started as
+/// `craft3d target/work/x.3dcraft --automation-write-root target/work`
+/// saved to `target/work/target/work/x.3dcraft`). Looked up by the path
+/// it was opened with, it is still found.
+#[test]
+fn a_document_opened_by_a_relative_path_keeps_it_absolute() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target/tmp/craft3d-files-relative");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("work")).unwrap();
+    // Integration tests run in the package's directory.
+    let relative = "../../target/tmp/craft3d-files-relative/work/part.3dcraft";
+    let mut author = Session::new(Workspace::unrestricted());
+    run(&mut author, "file.new", json!({}));
+    run(
+        &mut author,
+        "feature.block",
+        json!({"name": "A", "size": [1, 2, 3]}),
+    );
+    let saved = run(&mut author, "file.save", json!({"path": relative}));
+    let file = dir.join("work/part.3dcraft").canonicalize().unwrap();
+    assert_eq!(saved["path"], file.to_str().unwrap());
+
+    let mut s = Session::new(Workspace {
+        read: Access::Unrestricted,
+        write: Access::None,
+    });
+    let opened = run(&mut s, "file.open", json!({"path": relative}));
+    assert_eq!(opened["path"], file.to_str().unwrap());
+    let listed = run(&mut s, "file.list", json!({}));
+    assert_eq!(listed["documents"][0]["path"], file.to_str().unwrap());
+    let found = run(&mut s, "file.activate", json!({"path": relative}));
+    assert_eq!(found["active"], 0);
+
+    let root = dir.canonicalize().unwrap();
+    s.set_workspace(Workspace {
+        read: Access::Root(root.clone()),
+        write: Access::Root(root.clone()),
+    });
+    run(
+        &mut s,
+        "feature.block",
+        json!({"name": "B", "size": [1, 1, 1]}),
+    );
+    let saved = run(&mut s, "file.save", json!({}));
+    assert_eq!(saved["path"], file.to_str().unwrap());
+    assert!(
+        !root.join("target").exists(),
+        "saved beneath the root again"
+    );
+    let mut check = Session::new(Workspace::unrestricted());
+    let reopened = run(
+        &mut check,
+        "file.open",
+        json!({"path": file.to_str().unwrap()}),
+    );
+    assert_eq!(reopened["features"], 2);
+    std::fs::remove_dir_all(&dir).unwrap();
+}

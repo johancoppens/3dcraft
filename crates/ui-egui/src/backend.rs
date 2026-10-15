@@ -298,7 +298,9 @@ impl BodyRenderer {
         }
         let empty = craft3d_tess::Mesh::default();
         let mesh = scene.map_or(&empty, |scene| &scene.mesh);
-        let frame = craft3d_render::render(mesh, &camera.to_render(), &params)
+        let colors = craft3d_render::FaceColors::new();
+        let colors = scene.map_or(&colors, |scene| &scene.face_colors);
+        let frame = craft3d_render::render_colored(mesh, colors, &camera.to_render(), &params)
             .map_err(|e| e.to_string())?;
         Ok((frame, Backend::Cpu))
     }
@@ -321,12 +323,16 @@ mod gpu {
         ForGood(String),
     }
 
+    /// Which mesh of which revision: the revision, and the bits of the
+    /// tolerance and of the angle it was sampled with.
+    type MeshKey = (u64, u64, Option<u64>);
+
     pub(super) struct Gpu {
         offscreen: Offscreen,
-        /// The scene's mesh on the GPU, with the revision it is of and the
-        /// bits of its tolerance: the quick first picture and the display
-        /// scene that replaces it are two meshes of one revision.
-        uploaded: Option<((u64, u64), GpuMesh)>,
+        /// The scene's mesh on the GPU, with the revision it is of and how
+        /// it was sampled: the quick first picture and the display scene
+        /// that replaces it are two meshes of one revision.
+        uploaded: Option<(MeshKey, GpuMesh)>,
     }
 
     fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
@@ -375,8 +381,17 @@ mod gpu {
         ) -> Result<Frame, Failure> {
             let camera = camera.to_render();
             let empty = craft3d_tess::Mesh::default();
-            let (revision, mesh) = scene.map_or(((u64::MAX, 0), &empty), |s| {
-                ((s.revision, s.tolerance.to_bits()), &*s.mesh)
+            let no_colors = craft3d_render::FaceColors::new();
+            let colors = scene.map_or(&no_colors, |s| &s.face_colors);
+            let (revision, mesh) = scene.map_or(((u64::MAX, 0, None), &empty), |s| {
+                (
+                    (
+                        s.revision,
+                        s.tolerance.to_bits(),
+                        s.max_angle.map(f64::to_bits),
+                    ),
+                    &*s.mesh,
+                )
             });
             // A render that panics inside wgpu (a driver bug) must not end
             // the thread; it ends the GPU's use.
@@ -385,7 +400,7 @@ mod gpu {
                     // The old copy goes first: twice the model would not
                     // fit a small device.
                     self.uploaded = None;
-                    let mesh = self.offscreen.renderer().upload(mesh)?;
+                    let mesh = self.offscreen.renderer().upload_colored(mesh, colors)?;
                     self.uploaded = Some((revision, mesh));
                 }
                 let (_, uploaded) = self.uploaded.as_ref().ok_or(GpuError::NothingDrawn)?;

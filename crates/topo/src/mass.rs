@@ -8,6 +8,8 @@
 //! - area:    `f = |Sᵤ × Sᵥ|`
 //! - volume:  `f = S · (Sᵤ × Sᵥ) / 3`
 //! - moments: `f = S_k² (Sᵤ × Sᵥ)_k / 2` for each coordinate `k`
+//! - second moments ([`inertia`] only): `f = S_k³ (Sᵤ × Sᵥ)_k / 3` for
+//!   `∫x_k²`, and `f = S_k² S_l (Sᵤ × Sᵥ)_k / 2` for `∫x_k x_l`
 //!
 //! `D` is only known through its boundary, the face's loops. Green's theorem
 //! turns the domain integral into a boundary one:
@@ -277,12 +279,15 @@ impl fmt::Display for MassError {
 
 impl std::error::Error for MassError {}
 
-/// The five integrands at once: area, volume, and the three moments.
+/// The integrands at once: area, volume, the three moments, and, when
+/// asked for ([`inertia`]), the six second moments: `∫x²`, `∫y²`, `∫z²`,
+/// `∫xy`, `∫yz`, `∫zx` over the volume (zero otherwise).
 #[derive(Clone, Copy, Debug, Default)]
 struct Sums {
     area: f64,
     volume: f64,
     moment: Vec3,
+    second: [f64; 6],
 }
 
 impl Sums {
@@ -290,15 +295,25 @@ impl Sums {
         self.area += o.area * s;
         self.volume += o.volume * s;
         self.moment += o.moment * s;
+        for (mine, theirs) in self.second.iter_mut().zip(o.second) {
+            *mine += theirs * s;
+        }
     }
 
-    fn parts(self) -> [f64; 5] {
+    fn parts(self) -> [f64; 11] {
+        let [xx, yy, zz, xy, yz, zx] = self.second;
         [
             self.area,
             self.volume,
             self.moment.x,
             self.moment.y,
             self.moment.z,
+            xx,
+            yy,
+            zz,
+            xy,
+            yz,
+            zx,
         ]
     }
 }
@@ -315,18 +330,55 @@ impl Sums {
 /// origin of the model that distance would be the whole way there (a
 /// prism of 1e-10 at 2 from the origin: 4e5 times its volume cancelling,
 /// and a volume good to 1e-6 where its vertices are good to 1e-11).
-fn integrand(surface: &Surface, u: f64, v: f64, about: Vec3) -> Total {
+///
+/// With `second`, also the second moments: by the divergence theorem
+/// `∫x² dV = ∮ x³/3 n_x dA` and `∫xy dV = ∮ x²y/2 n_x dA`, and so on
+/// around the axes; their sizes are the same products of the absolute
+/// coordinates and the length of the normal.
+fn integrand(surface: &Surface, u: f64, v: f64, about: Vec3, second: bool) -> Total {
     let (at, su, sv) = surface.derivatives(u, v);
     let s = at - about;
     let n = su.cross(sv);
+    let (seconds, second_sizes) = if second {
+        // Each offset counted as at least its share of the coordinate,
+        // as for the first moments.
+        let [ax, ay, az] = [
+            s.x.abs() + POINT_ROUNDING * at.x.abs(),
+            s.y.abs() + POINT_ROUNDING * at.y.abs(),
+            s.z.abs() + POINT_ROUNDING * at.z.abs(),
+        ];
+        let l = n.length();
+        (
+            [
+                s.x * s.x * s.x * n.x / 3.0,
+                s.y * s.y * s.y * n.y / 3.0,
+                s.z * s.z * s.z * n.z / 3.0,
+                s.x * s.x * s.y * n.x * 0.5,
+                s.y * s.y * s.z * n.y * 0.5,
+                s.z * s.z * s.x * n.z * 0.5,
+            ],
+            [
+                ax * ax * ax * l / 3.0,
+                ay * ay * ay * l / 3.0,
+                az * az * az * l / 3.0,
+                ax * ax * ay * l * 0.5,
+                ay * ay * az * l * 0.5,
+                az * az * ax * l * 0.5,
+            ],
+        )
+    } else {
+        ([0.0; 6], [0.0; 6])
+    };
     let sum = Sums {
         area: n.length(),
         volume: s.dot(n) / 3.0,
         moment: Vec3::new(s.x * s.x * n.x, s.y * s.y * n.y, s.z * s.z * n.z) * 0.5,
+        second: seconds,
     };
     Total {
         sum,
         size: Sums {
+            second: second_sizes,
             area: n.length(),
             // The offset from `about` is known no better than the point
             // is, a few units in the last place of its coordinates: that
@@ -420,6 +472,8 @@ struct Work {
     /// The point positions are measured from in the volume and the
     /// moments ([`integrand`]).
     about: Vec3,
+    /// Whether the second moments are summed too ([`inertia`]).
+    second: bool,
     /// In u and in v: the domain of a spline surface that closes on
     /// itself, when its boundary is unrolled ([`Plan::Unrolled`]) and an
     /// inner integral may run beyond the domain, by whole turns.
@@ -429,15 +483,16 @@ struct Work {
 impl Work {
     #[cfg(test)]
     fn new(surface: &Surface) -> Self {
-        Self::about(surface, Vec3::ZERO)
+        Self::about(surface, Vec3::ZERO, false)
     }
 
-    fn about(surface: &Surface, about: Vec3) -> Self {
+    fn about(surface: &Surface, about: Vec3, second: bool) -> Self {
         let freeform = matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_));
         Work {
             spent: 0,
             each: if freeform { FREEFORM } else { 1 },
             about,
+            second,
             wrap: [None, None],
         }
     }
@@ -599,7 +654,7 @@ fn inner(
                 Along::U => (t, fixed),
                 Along::V => (fixed, t),
             };
-            sum.add(integrand(surface, u, v, work.about), w * sign);
+            sum.add(integrand(surface, u, v, work.about, work.second), w * sign);
         }
     };
     let knots: &[f64] = match (surface, along) {
@@ -2260,9 +2315,10 @@ fn face_integrals(
     index: usize,
     rule: &Rule,
     (size, middle): (f64, Vec3),
+    second: bool,
 ) -> Result<Sums, MassError> {
     if face.loops.is_empty() || seams_only(body, face) {
-        let mut work = Work::about(&face.surface, middle);
+        let mut work = Work::about(&face.surface, middle, second);
         return whole_surface(&face.surface, index, rule, &mut work);
     }
     let own = match &face.surface {
@@ -2270,7 +2326,7 @@ fn face_integrals(
         _ => None,
     };
     let surface = own.as_ref().unwrap_or(&face.surface);
-    let mut work = Work::about(surface, middle);
+    let mut work = Work::about(surface, middle, second);
     integrals_in(body, face, surface, index, rule, size, &mut work)
 }
 
@@ -2477,6 +2533,19 @@ fn each_face<T: Send>(count: usize, work: impl Fn(usize) -> T + Sync) -> Vec<T> 
 /// time is bounded). A face that is outside its own loops is
 /// [`MassError::UnboundedFace`].
 pub fn mass_properties(body: &Body) -> Result<MassProperties, MassError> {
+    let (total, middle) = integrate(body, false)?;
+    let solid = body.kind == BodyKind::Solid;
+    Ok(MassProperties {
+        area: total.area,
+        volume: if solid { total.volume } else { 0.0 },
+        centroid: (solid && total.volume != 0.0)
+            .then(|| middle + total.moment * (1.0 / total.volume)),
+    })
+}
+
+/// The sums over every face of `body`, outward, and the point the
+/// moments are taken about.
+fn integrate(body: &Body, second: bool) -> Result<(Sums, Vec3), MassError> {
     let rule = Rule::new(NODES);
     let (size, middle) = body_extent(body);
     // Every face's integrals on their own, on several threads where there
@@ -2489,7 +2558,7 @@ pub fn mass_properties(body: &Body) -> Result<MassProperties, MassError> {
             face: index,
             what: "a face that is not in the body",
         })?;
-        face_integrals(body, face, index, &rule, (size, middle))
+        face_integrals(body, face, index, &rule, (size, middle), second)
     });
     let mut total = Sums::default();
     for (face, sums) in body.faces.iter().zip(per_face) {
@@ -2497,22 +2566,77 @@ pub fn mass_properties(body: &Body) -> Result<MassProperties, MassError> {
         // Area counts whichever way the face points; volume and moments
         // follow the outward normal.
         let outward = if face.reversed { -1.0 } else { 1.0 };
-        total.area += sums.area;
-        total.volume += sums.volume * outward;
-        total.moment += sums.moment * outward;
+        let area = total.area + sums.area;
+        total.add_scaled(sums, outward);
+        total.area = area;
     }
-    if ![total.area, total.volume].iter().all(|x| x.is_finite()) || !total.moment.is_finite() {
+    if !total.parts().iter().all(|x| x.is_finite()) {
         return Err(MassError::Unsupported {
             face: 0,
             what: "geometry whose integrals are not finite",
         });
     }
-    let solid = body.kind == BodyKind::Solid;
-    Ok(MassProperties {
-        area: total.area,
-        volume: if solid { total.volume } else { 0.0 },
-        centroid: (solid && total.volume != 0.0)
-            .then(|| middle + total.moment * (1.0 / total.volume)),
+    Ok((total, middle))
+}
+
+/// The volume, the centroid and the inertia tensor of a solid of density
+/// 1, from the exact B-rep like [`mass_properties`]. Times a density it
+/// is the body's mass and inertia tensor.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Inertia {
+    pub volume: f64,
+    pub centroid: Vec3,
+    /// About the centroid, along the model's axes: `I[i][i] = ∫(r² - x_i²)`,
+    /// `I[i][j] = -∫x_i x_j` (in length to the fifth power).
+    pub tensor: [[f64; 3]; 3],
+}
+
+/// [`Inertia`] of a solid. Refused like [`mass_properties`], and for a
+/// sheet or a body of no volume, which have no centroid. The second
+/// moments are summed about the middle of the body and moved to the
+/// centroid by the parallel-axis rule, so a small body far from the
+/// origin loses nothing to cancellation.
+pub fn inertia(body: &Body) -> Result<Inertia, MassError> {
+    if body.kind != BodyKind::Solid {
+        return Err(MassError::Unsupported {
+            face: 0,
+            what: "a body that is not a solid, which has no inertia",
+        });
+    }
+    let (total, middle) = integrate(body, true)?;
+    let volume = total.volume;
+    if volume == 0.0 {
+        return Err(MassError::Unsupported {
+            face: 0,
+            what: "a solid of no volume, which has no centroid",
+        });
+    }
+    // The centroid's offset from the middle.
+    let c = total.moment * (1.0 / volume);
+    let [sxx, syy, szz, sxy, syz, szx] = total.second;
+    // About the centroid: ∫(x - cx)² = ∫x² - V cx², ∫(x - cx)(y - cy) =
+    // ∫xy - V cx cy.
+    let xx = sxx - volume * c.x * c.x;
+    let yy = syy - volume * c.y * c.y;
+    let zz = szz - volume * c.z * c.z;
+    let xy = sxy - volume * c.x * c.y;
+    let yz = syz - volume * c.y * c.z;
+    let zx = szx - volume * c.z * c.x;
+    let tensor = [
+        [yy + zz, -xy, -zx],
+        [-xy, xx + zz, -yz],
+        [-zx, -yz, xx + yy],
+    ];
+    if !tensor.iter().flatten().all(|x| x.is_finite()) {
+        return Err(MassError::Unsupported {
+            face: 0,
+            what: "geometry whose integrals are not finite",
+        });
+    }
+    Ok(Inertia {
+        volume,
+        centroid: middle + c,
+        tensor,
     })
 }
 
@@ -2743,6 +2867,7 @@ mod tests {
                 spent,
                 each: 1,
                 about: Vec3::ZERO,
+                second: false,
                 wrap: [None, None],
             };
             let sums = integrals_in(&body, face, &surface, 0, &rule, body_size(&body), &mut work);
@@ -2766,6 +2891,7 @@ mod tests {
             spent: BUDGET + 1,
             each: 1,
             about: Vec3::ZERO,
+            second: false,
             wrap: [None, None],
         };
         assert!(matches!(

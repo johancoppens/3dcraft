@@ -93,6 +93,9 @@ pub(crate) fn build(
                 "path: the sweep cannot be meshed to see whether it passes through itself ({error}); {advice}"
             ));
         }
+        touching @ Crossing::Touching(..) => {
+            touching.refused("path", "sweep", advice)?;
+        }
         Crossing::Found(pair) => {
             let between = pair
                 .map(|[a, b]| format!(": {a} and {b} cross"))

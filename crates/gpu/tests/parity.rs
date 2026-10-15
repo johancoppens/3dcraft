@@ -15,7 +15,7 @@ use common::{
     compare, compare_see_through, evidence, offscreens, orthographic, params, perspective,
     write_evidence,
 };
-use craft3d_gpu::{Camera, Frame, Mesh, NO_FACE, Projection, RenderParams};
+use craft3d_gpu::{Camera, FaceColors, Frame, Mesh, NO_FACE, Projection, RenderParams};
 use craft3d_math::Vec3;
 use craft3d_tess::{TessParams, tessellate_body, tessellate_patches};
 use craft3d_testkit::{solids, teapot::teapot, trimmed};
@@ -25,6 +25,8 @@ struct Scene {
     mesh: Mesh,
     camera: Camera,
     params: RenderParams,
+    /// Faces in colours of their own (a body's appearance).
+    colors: FaceColors,
     /// Leave pictures for the developer.
     evidence: bool,
 }
@@ -37,9 +39,15 @@ fn check(scenes: &[Scene]) -> usize {
     for mut offscreen in offscreens() {
         let adapter = offscreen.adapter().clone();
         for scene in scenes {
-            let cpu = craft3d_render::render(&scene.mesh, &scene.camera, &scene.params).unwrap();
+            let cpu = craft3d_render::render_colored(
+                &scene.mesh,
+                &scene.colors,
+                &scene.camera,
+                &scene.params,
+            )
+            .unwrap();
             let gpu = offscreen
-                .render(&scene.mesh, &scene.camera, &scene.params)
+                .render_colored(&scene.mesh, &scene.colors, &scene.camera, &scene.params)
                 .unwrap_or_else(|e| panic!("{} on {adapter}: {e}", scene.name));
             let (parity, band) = compare(&scene.mesh, &scene.camera, &cpu, &gpu);
             let label = format!("{} on {adapter}", scene.name);
@@ -134,6 +142,7 @@ fn the_teapot_matches_the_cpu_renderer() {
             mesh: mesh.clone(),
             camera,
             params,
+            colors: FaceColors::new(),
             evidence: show,
         });
     }
@@ -192,6 +201,7 @@ fn solid_scenes() -> Vec<Scene> {
                 mesh,
                 camera,
                 params,
+                colors: FaceColors::new(),
                 evidence: round == 0 && [0, 5, 6, 12, 14].contains(&index),
             });
         }
@@ -302,7 +312,13 @@ fn check_see_through(scenes: &[Scene]) -> usize {
     let mut renderers = offscreens();
     for scene in scenes {
         assert!(scene.params.opacity() < 1.0, "{}", scene.name);
-        let cpu = craft3d_render::render(&scene.mesh, &scene.camera, &scene.params).unwrap();
+        let cpu = craft3d_render::render_colored(
+            &scene.mesh,
+            &scene.colors,
+            &scene.camera,
+            &scene.params,
+        )
+        .unwrap();
         // The scene is one where the opacity shows: the picture is not the
         // opaque one. (Highlighted faces are not seen through, and they
         // may be all that faces the eye.)
@@ -310,7 +326,9 @@ fn check_see_through(scenes: &[Scene]) -> usize {
             opacity: 1.0,
             ..scene.params
         };
-        let front = craft3d_render::render(&scene.mesh, &scene.camera, &opaque).unwrap();
+        let front =
+            craft3d_render::render_colored(&scene.mesh, &scene.colors, &scene.camera, &opaque)
+                .unwrap();
         let changed = cpu
             .rgb
             .chunks(3)
@@ -325,7 +343,7 @@ fn check_see_through(scenes: &[Scene]) -> usize {
         for offscreen in &mut renderers {
             let adapter = offscreen.adapter().clone();
             let gpu = offscreen
-                .render(&scene.mesh, &scene.camera, &scene.params)
+                .render_colored(&scene.mesh, &scene.colors, &scene.camera, &scene.params)
                 .unwrap_or_else(|e| panic!("{} on {adapter}: {e}", scene.name));
             let (parity, band) =
                 compare_see_through(&scene.mesh, &scene.camera, &scene.params, &cpu, &gpu);
@@ -398,6 +416,7 @@ fn see_through_reference_solids_match_the_cpu_renderer() {
                     opacity,
                     ..scene.params
                 },
+                colors: scene.colors.clone(),
                 evidence: opacity == 0.5 && [0, 5, 6, 12, 14].contains(&index),
             };
             if scenes.len() % 3 == 2 {
@@ -516,6 +535,7 @@ fn see_through_models_match_the_cpu_renderer() {
                     mesh: mesh.clone(),
                     camera,
                     params,
+                    colors: FaceColors::new(),
                     evidence: opacity == 0.5,
                 };
                 if highlighted {
@@ -719,6 +739,7 @@ fn awkward_meshes_match_the_cpu_renderer() {
         mesh: mesh.clone(),
         camera,
         params,
+        colors: FaceColors::new(),
         evidence: name == "awkward-crossing-persp",
     });
     check(&scenes);
@@ -866,4 +887,77 @@ fn an_adapter_is_available() {
     // The default choice is one of them.
     let default = craft3d_gpu::Offscreen::new().unwrap();
     assert!(found.contains(&default.adapter().to_string()));
+}
+
+/// A palette of body colours, light and dark, saturated and grey.
+const PALETTE: [[u8; 3]; 6] = [
+    [230, 230, 225],
+    [40, 40, 45],
+    [200, 40, 30],
+    [181, 140, 60],
+    [60, 120, 200],
+    [128, 128, 128],
+];
+
+/// The first round of the reference solids with their faces in colours
+/// of their own: every face its own in one scene, every other face (the
+/// rest in the base colour) in the next, opaque and seen through.
+fn colored_scenes() -> Vec<Scene> {
+    let mut scenes = Vec::new();
+    for (index, mut scene) in solid_scenes().into_iter().take(16).enumerate() {
+        let faces = scene
+            .mesh
+            .face_ids
+            .iter()
+            .copied()
+            .max()
+            .map_or(0, |m| m + 1);
+        let mut colors = FaceColors::new();
+        for face in 0..faces {
+            if index % 2 == 0 || face % 2 == 0 {
+                assert!(colors.set(face, Some(PALETTE[(face as usize + index) % PALETTE.len()])));
+            }
+        }
+        scene.colors = colors;
+        scene.name = scene.name.replacen("solids-", "colored-", 1);
+        scene.evidence = [0, 5, 6, 12].contains(&index);
+        if index % 4 == 3 {
+            highlight_some(&mut scene, false);
+            scene.name.push_str("-highlight");
+        }
+        scenes.push(scene);
+    }
+    scenes
+}
+
+#[test]
+fn faces_in_colours_of_their_own_match_the_cpu_renderer() {
+    let scenes = colored_scenes();
+    // The colours are in the picture: the CPU frame differs from the one
+    // without them.
+    for scene in &scenes {
+        let plain = craft3d_render::render(&scene.mesh, &scene.camera, &scene.params).unwrap();
+        let colored = craft3d_render::render_colored(
+            &scene.mesh,
+            &scene.colors,
+            &scene.camera,
+            &scene.params,
+        )
+        .unwrap();
+        // (A highlight may cover every face there is.)
+        if scene.params.highlight.is_empty() {
+            assert_ne!(plain.rgb, colored.rgb, "{}", scene.name);
+        }
+    }
+    assert_eq!(check(&scenes), scenes.len() * offscreens().len());
+    let seen: Vec<Scene> = scenes
+        .into_iter()
+        .enumerate()
+        .map(|(index, mut scene)| {
+            scene.params.opacity = OPACITIES[index % 3];
+            scene.name = scene.name.replacen("colored-", "colored-seethrough-", 1);
+            scene
+        })
+        .collect();
+    assert_eq!(check_see_through(&seen), seen.len() * offscreens().len());
 }

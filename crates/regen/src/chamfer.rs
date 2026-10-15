@@ -185,5 +185,13 @@ pub(crate) fn build(
         &made.vertices,
         tolerance.linear,
     )?;
+    blend::not_through_itself(
+        &made.body,
+        &faces,
+        named.as_ref(),
+        tolerance.linear,
+        ROLES,
+        "size.distance",
+    )?;
     Ok((made.body, named))
 }

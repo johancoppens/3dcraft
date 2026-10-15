@@ -39,6 +39,7 @@ pub(crate) fn to_manifest(document: &doc::Document) -> manifest::Document {
         features,
         rollback,
         next_feature_id,
+        bodies,
     } = document;
     let doc::Units { length, angle } = units;
     let doc::Tolerance { linear, angular } = tolerance;
@@ -74,6 +75,64 @@ pub(crate) fn to_manifest(document: &doc::Document) -> manifest::Document {
         features: features.iter().map(feature_to_manifest).collect(),
         rollback: rollback.map(|doc::FeatureId(id)| id),
         next_feature_id: *next_feature_id,
+        bodies: bodies.iter().map(body_to_manifest).collect(),
+    }
+}
+
+fn body_to_manifest(body: &doc::BodyProperties) -> manifest::BodyProperties {
+    let doc::BodyProperties {
+        feature: doc::FeatureId(feature),
+        appearance,
+        material,
+    } = body;
+    manifest::BodyProperties {
+        feature: *feature,
+        appearance: appearance.map(|appearance| {
+            let doc::Appearance {
+                color,
+                metallic,
+                roughness,
+            } = appearance;
+            manifest::Appearance {
+                color,
+                metallic,
+                roughness,
+            }
+        }),
+        material: material.as_ref().map(|material| {
+            let doc::Material { name, density } = material;
+            manifest::Material {
+                name: name.clone(),
+                density: *density,
+            }
+        }),
+    }
+}
+
+fn body_to_doc(body: manifest::BodyProperties) -> doc::BodyProperties {
+    let manifest::BodyProperties {
+        feature,
+        appearance,
+        material,
+    } = body;
+    doc::BodyProperties {
+        feature: doc::FeatureId(feature),
+        appearance: appearance.map(|appearance| {
+            let manifest::Appearance {
+                color,
+                metallic,
+                roughness,
+            } = appearance;
+            doc::Appearance {
+                color,
+                metallic,
+                roughness,
+            }
+        }),
+        material: material.map(|material| {
+            let manifest::Material { name, density } = material;
+            doc::Material { name, density }
+        }),
     }
 }
 
@@ -712,7 +771,10 @@ fn name_to_manifest_with(name: &doc::PersistentName, lists: bool) -> manifest::N
 }
 
 fn name_to_doc(name: manifest::Name) -> doc::PersistentName {
-    name_to_doc_with(name, true)
+    // A file written before format version 15 has a copy of a copy as two
+    // links (`F9:copy(0)/F7:copy(1)/…`); it means the same entity as the
+    // one link regeneration names it by now (`F9:copy(0,1)/…`).
+    name_to_doc_with(name, true).canonical()
 }
 
 fn name_to_doc_with(name: manifest::Name, lists: bool) -> doc::PersistentName {
@@ -990,6 +1052,7 @@ pub(crate) fn to_doc(document: manifest::Document) -> doc::Document {
         features,
         rollback,
         next_feature_id,
+        bodies,
     } = document;
     doc::Document {
         units: doc::Units {
@@ -1020,6 +1083,7 @@ pub(crate) fn to_doc(document: manifest::Document) -> doc::Document {
         features: features.into_iter().map(feature_to_doc).collect(),
         rollback: rollback.map(doc::FeatureId),
         next_feature_id,
+        bodies: bodies.into_iter().map(body_to_doc).collect(),
     }
 }
 
