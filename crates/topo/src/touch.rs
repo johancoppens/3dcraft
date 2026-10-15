@@ -104,7 +104,7 @@ pub fn touches(
         }
         points.push((vertex.point.x, id, vertex.point));
     }
-    points.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+    let grid = PointGrid::new(&points, near);
     // The shell of every vertex and edge.
     let mut vertex_shell: Vec<Option<u32>> = vec![None; body.vertices.len()];
     let mut edge_shell: Vec<Option<u32>> = vec![None; body.edges.len()];
@@ -143,11 +143,15 @@ pub fn touches(
     let shell_of_vertex = |v: u32| vertex_shell.get(v as usize).copied().flatten();
     let mut pairs: Vec<Touch> = Vec::new();
     // Vertices on vertices.
-    for (i, &(x, a, p)) in points.iter().enumerate() {
-        for &(y, b, q) in points.iter().skip(i + 1) {
-            if y - x > near {
-                break;
+    let reach = Vec3::new(near, near, near);
+    for &(_, a, p) in &points {
+        for b in grid.within(p - reach, p + reach) {
+            if b <= a {
+                continue;
             }
+            let Some(q) = body.vertices.get(b as usize).map(|v| v.point) else {
+                continue;
+            };
             let Some(shells) = wanted(shell_of_vertex(a), shell_of_vertex(b)) else {
                 continue;
             };
@@ -181,11 +185,10 @@ pub fn touches(
         let Some((lo, hi)) = bbox.corners() else {
             continue;
         };
-        let first = points.partition_point(|&(x, _, _)| x < lo.x - near);
-        for &(x, v, p) in points.iter().skip(first) {
-            if x > hi.x + near {
-                break;
-            }
+        for v in grid.within(lo - reach, hi + reach) {
+            let Some(p) = body.vertices.get(v as usize).map(|v| v.point) else {
+                continue;
+            };
             if v == edge.start.0 || v == edge.end.0 || !bbox.contains(p, near) {
                 continue;
             }
@@ -228,4 +231,101 @@ pub fn touches(
     });
     pairs.truncate(limit);
     Ok(pairs)
+}
+
+/// The vertices in a grid of cells, about one vertex per cell (never
+/// narrower than the distance looked for), so that the vertices in a box
+/// are found without looking at all of them, wherever they lie (sorted
+/// along one axis, vertices that share it would all be looked at).
+struct PointGrid {
+    low: Vec3,
+    cell: f64,
+    size: [usize; 3],
+    cells: std::collections::BTreeMap<usize, Vec<u32>>,
+    all: Vec<u32>,
+}
+
+impl PointGrid {
+    fn new(points: &[(f64, u32, Vec3)], near: f64) -> PointGrid {
+        let mut lo = Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
+        let mut hi = Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+        for &(_, _, p) in points {
+            lo = Vec3::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
+            hi = Vec3::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
+        }
+        let extent = hi - lo;
+        let largest = extent.x.max(extent.y).max(extent.z);
+        let thin = (largest * 1e-3).max(near);
+        let count = points.len().max(1) as f64;
+        let cell = (extent.x.max(thin) * extent.y.max(thin) * extent.z.max(thin) / count)
+            .cbrt()
+            .max(near);
+        let all: Vec<u32> = points.iter().map(|&(_, id, _)| id).collect();
+        let mut grid = PointGrid {
+            low: lo,
+            cell,
+            size: [1, 1, 1],
+            cells: std::collections::BTreeMap::new(),
+            all,
+        };
+        if !(cell.is_finite() && cell > 0.0 && largest.is_finite()) {
+            return grid;
+        }
+        let along = |e: f64| ((e / cell).floor() as usize).saturating_add(1).min(1 << 20);
+        grid.size = [along(extent.x), along(extent.y), along(extent.z)];
+        for &(_, id, p) in points {
+            let key = grid.key(grid.index(p));
+            grid.cells.entry(key).or_default().push(id);
+        }
+        grid
+    }
+
+    fn index(&self, p: Vec3) -> [usize; 3] {
+        let at = |x: f64, low: f64, size: usize| {
+            let i = ((x - low) / self.cell).floor();
+            if i.is_finite() && i > 0.0 {
+                (i as usize).min(size.saturating_sub(1))
+            } else {
+                0
+            }
+        };
+        let [sx, sy, sz] = self.size;
+        [
+            at(p.x, self.low.x, sx),
+            at(p.y, self.low.y, sy),
+            at(p.z, self.low.z, sz),
+        ]
+    }
+
+    fn key(&self, [x, y, z]: [usize; 3]) -> usize {
+        let [sx, sy, _] = self.size;
+        x.saturating_add(sx.saturating_mul(y.saturating_add(sy.saturating_mul(z))))
+    }
+
+    /// The vertices in the cells the box from `lo` to `hi` overlaps (a
+    /// superset of those in the box), or all of them when that is more
+    /// cells than vertices.
+    fn within(&self, lo: Vec3, hi: Vec3) -> Vec<u32> {
+        if self.cells.is_empty() {
+            return self.all.clone();
+        }
+        let ([x0, y0, z0], [x1, y1, z1]) = (self.index(lo), self.index(hi));
+        let span = (x1.saturating_sub(x0) + 1)
+            .saturating_mul(y1.saturating_sub(y0) + 1)
+            .saturating_mul(z1.saturating_sub(z0) + 1);
+        if span > self.all.len().saturating_add(8) {
+            return self.all.clone();
+        }
+        let mut found = Vec::new();
+        for z in z0..=z1 {
+            for y in y0..=y1 {
+                for x in x0..=x1 {
+                    if let Some(cell) = self.cells.get(&self.key([x, y, z])) {
+                        found.extend_from_slice(cell);
+                    }
+                }
+            }
+        }
+        found
+    }
 }

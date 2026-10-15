@@ -291,6 +291,8 @@ fn face_id(index: usize) -> FaceId {
 #[derive(Clone, Copy, Debug, Default)]
 struct Meeting {
     kept: Option<(Operand, VertexId)>,
+    /// Which operands have a vertex here: 1 for A, 2 for B.
+    operands: u8,
     a_edge: Option<EdgeId>,
     b_edge: Option<EdgeId>,
     a_face: Option<FaceId>,
@@ -645,11 +647,23 @@ fn run(
         }));
     }
     if options.refuse_zero_thickness && result.body.shells.len() > 1 {
-        // Where the operands meet: their vertices, the section's, the
-        // points where faces only touch, and a point inside every
-        // stretch of curve along which faces meet.
-        let mut meetings = vertices.points.clone();
+        // Where the operands meet: the vertices both are at, those the
+        // section made, the points where faces only touch, and a point
+        // inside every stretch of curve along which faces meet.
+        let mut meetings: Vec<Vec3> = vertices
+            .points
+            .iter()
+            .zip(&vertices.meetings)
+            .filter(|(_, m)| {
+                let a = m.operands & 1 != 0 || m.a_edge.is_some() || m.a_face.is_some();
+                let b = m.operands & 2 != 0 || m.b_edge.is_some() || m.b_face.is_some();
+                a && b
+            })
+            .map(|(p, _)| *p)
+            .collect();
         meetings.extend_from_slice(&sections.touches);
+        meetings.extend(on_the_other(&a, &b, tol));
+        meetings.extend(on_the_other(&b, &a, tol));
         meetings.extend(
             sections
                 .stretches
@@ -663,102 +677,29 @@ fn run(
 
 /// Refuses a result whose parts (shells) touch each other, which is
 /// geometry of zero thickness (the developer's decision of 2026-10-15).
-/// Two ways of finding it: a vertex of one part within twice the
-/// tolerance of a vertex or an edge of another (`craft3d_topo::touches`:
-/// two blocks sharing an edge or a corner); and a point where the
-/// operands meet (`meetings`: every vertex of either operand and every
-/// vertex the section made, and a point inside every stretch of curve in
-/// which their faces meet or touch) that lies on faces of two parts,
-/// within twice the tolerance of each face's surface and not outside its
-/// boundary (a cylinder lying on a block, a cone's tip standing on it, a
-/// ring on it). Parts can only touch where the operands meet, so this
-/// sees every contact the section saw.
+///
+/// Parts can only touch where the operands meet, so only those places are
+/// looked at (`meetings`: the vertices both operands are at, the vertices
+/// the section made, the points where two faces only touch, and a point
+/// inside every stretch of curve along which faces meet). A place is a
+/// touch when it is within twice the tolerance of a face of one part and
+/// of a face of another, not outside either face's boundary, and the
+/// nearest points of the two faces are within twice the tolerance of each
+/// other: the parts are no further apart there than the tolerance can
+/// tell, the rule of `craft3d_topo::touches` for vertices and edges. A
+/// result of one shell, and one with no such place (bodies apart, a
+/// cavity), costs the count of its shells and nothing more.
 fn zero_thickness(
     result: &BooleanResult,
     tolerance: &Tolerance,
     meetings: &[Vec3],
 ) -> Result<(), Stop> {
     let body = &result.body;
-    if body.shells.len() < 2 {
+    if body.shells.len() < 2 || meetings.is_empty() {
         return Ok(());
     }
     let tol = tolerance.linear;
     let near = 2.0 * tol;
-    let found = craft3d_topo::touches(body, near, 1, craft3d_topo::TouchScope::BetweenShells)
-        .map_err(|error| {
-            Stop::Error(KernelError::InvalidBody {
-                operation: OPERATION,
-                defects: vec![craft3d_topo::Defect::NonFinite {
-                    what: error.to_string(),
-                }],
-            })
-        })?;
-    let uses = |face: &craft3d_topo::Face, wanted: &dyn Fn(&craft3d_topo::Edge, u32) -> bool| {
-        face.loops
-            .iter()
-            .filter_map(|l| body.loop_(*l))
-            .flat_map(|l| &l.coedges)
-            .any(|c| body.edge(c.edge).is_some_and(|e| wanted(e, c.edge.0)))
-    };
-    let at_vertex = |v: u32| move |e: &craft3d_topo::Edge, _: u32| e.start.0 == v || e.end.0 == v;
-    let faces_where = |wanted: &dyn Fn(&craft3d_topo::Face) -> bool| -> Vec<usize> {
-        (0..body.faces.len())
-            .filter(|&f| body.faces.get(f).is_some_and(wanted))
-            .collect()
-    };
-    // Where, and the faces of the result there on each of the two parts.
-    let (at, here, there): (Vec3, Vec<usize>, Vec<usize>) = match found.first() {
-        Some(touch) => (
-            touch.at,
-            faces_where(&|f| uses(f, &at_vertex(touch.vertex))),
-            faces_where(&|f| match touch.touches {
-                craft3d_topo::Touched::Vertex(v) => uses(f, &at_vertex(v)),
-                craft3d_topo::Touched::Edge(edge) => uses(f, &|_, id| id == edge),
-            }),
-        ),
-        None => match on_two_parts(body, tolerance, meetings)? {
-            Some(found) => found,
-            None => return Ok(()),
-        },
-    };
-    // The sources of the faces at each, the first pair of two different
-    // faces of the operands (pieces of one face have one source), else
-    // the first two.
-    let source = |f: usize| result.faces.get(f).map(|s| (s.operand, s.face));
-    let here: Vec<(Operand, FaceId)> = here.into_iter().filter_map(source).collect();
-    let there: Vec<(Operand, FaceId)> = there.into_iter().filter_map(source).collect();
-    let pair = here
-        .iter()
-        .flat_map(|a| there.iter().map(move |b| (*a, *b)))
-        .find(|(a, b)| a != b)
-        .or_else(|| Some((*here.first()?, *there.first()?)));
-    let Some((a, b)) = pair else {
-        return Err(Stop::of(LOST));
-    };
-    Err(Stop::Error(KernelError::ZeroThickness {
-        operation: OPERATION,
-        at,
-        faces: [a, b],
-    }))
-}
-
-/// The first of `points` that lies on faces of two shells of `body`:
-/// within twice the tolerance of a face's surface and not outside its
-/// boundary. With the faces it lies on in the first of those shells and
-/// in the second. A body whose faces cannot be outlined is not looked at
-/// this way.
-#[allow(clippy::type_complexity)]
-fn on_two_parts(
-    body: &Body,
-    tolerance: &Tolerance,
-    points: &[Vec3],
-) -> Result<Option<(Vec3, Vec<usize>, Vec<usize>)>, Stop> {
-    let tol = tolerance.linear;
-    let near = 2.0 * tol;
-    let mut pool = Vertices::new(0.5 * tol, 2.0 * tol);
-    let Ok(solid) = section::prepare(body, Operand::A, &mut pool, tolerance, true) else {
-        return Ok(None);
-    };
     let mut face_shell = vec![usize::MAX; body.faces.len()];
     for (s, shell) in body.shells.iter().enumerate() {
         for face in &shell.faces {
@@ -767,34 +708,46 @@ fn on_two_parts(
             }
         }
     }
-    // The faces by the low x of their boxes, to find those near a point
-    // without going through all of them.
-    let mut order: Vec<(f64, f64, usize)> = solid
-        .boxes
-        .iter()
-        .enumerate()
-        .filter_map(|(f, b)| b.corners().map(|(lo, hi)| (lo.x, hi.x, f)))
+    // The faces' boxes, grown by the distance, in a grid of cells about
+    // as wide as a typical face, so that a place finds the faces near it
+    // without looking at all of them.
+    let boxes: Vec<Option<(Vec3, Vec3)>> = (0..body.faces.len())
+        .map(|f| {
+            body.face_bbox(face_id(f))
+                .ok()
+                .and_then(|b| b.corners())
+                .map(|(lo, hi)| {
+                    let grow = Vec3::new(near, near, near);
+                    (lo - grow, hi + grow)
+                })
+        })
         .collect();
-    order.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.2.cmp(&b.2)));
-    let widest = order
-        .iter()
-        .map(|(lo, hi, _)| hi - lo)
-        .fold(0.0_f64, f64::max);
-    for &p in points {
+    let grid = FaceGrid::new(&boxes);
+    let mut outlines: BTreeMap<usize, Option<outline::Outline>> = BTreeMap::new();
+    for &p in meetings {
         if !p.is_finite() {
             continue;
         }
-        let from = order.partition_point(|&(lo, _, _)| lo < p.x - near - widest);
-        let mut on: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-        for &(lo, _, f) in order.iter().skip(from) {
-            if lo > p.x + near {
-                break;
-            }
+        // Per shell, the faces the place is on and the nearest point of
+        // each.
+        let mut on: BTreeMap<usize, Vec<(usize, Vec3)>> = BTreeMap::new();
+        for f in grid.near(p) {
             let shell = face_shell.get(f).copied().unwrap_or(usize::MAX);
-            if shell == usize::MAX || !solid.boxes.get(f).is_some_and(|b| b.contains(p, near)) {
+            let inside = boxes.get(f).copied().flatten().is_some_and(|(lo, hi)| {
+                lo.x <= p.x
+                    && p.x <= hi.x
+                    && lo.y <= p.y
+                    && p.y <= hi.y
+                    && lo.z <= p.z
+                    && p.z <= hi.z
+            });
+            if shell == usize::MAX || !inside {
                 continue;
             }
-            let Ok(outline) = solid.outline(f) else {
+            let outline = outlines
+                .entry(f)
+                .or_insert_with(|| section::face_outline(body, f, tol).ok());
+            let Some(outline) = outline.as_ref() else {
                 continue;
             };
             let Ok((u, v)) = outline.surface.project(p) else {
@@ -807,17 +760,206 @@ fn on_two_parts(
                     Ok(outline::Side::In | outline::Side::On)
                 )
             {
-                on.entry(shell).or_default().push(f);
+                on.entry(shell).or_default().push((f, foot));
             }
         }
-        let mut shells = on.into_values();
-        if let (Some(mut here), Some(mut there)) = (shells.next(), shells.next()) {
-            here.sort_unstable();
-            there.sort_unstable();
-            return Ok(Some((p, here, there)));
+        if on.len() < 2 {
+            continue;
+        }
+        let parts: Vec<&Vec<(usize, Vec3)>> = on.values().collect();
+        for (i, here) in parts.iter().enumerate() {
+            for there in parts.iter().skip(i + 1) {
+                let touching = here.iter().find_map(|&(f, a)| {
+                    there
+                        .iter()
+                        .find(|&&(_, b)| a.distance(b) <= near)
+                        .map(|&(g, _)| (f, g))
+                });
+                let Some((f, g)) = touching else {
+                    continue;
+                };
+                // Name the pair by two different faces of the operands
+                // where the parts have them (pieces of one face share a
+                // source).
+                let source = |f: usize| result.faces.get(f).map(|s| (s.operand, s.face));
+                let pair = here
+                    .iter()
+                    .filter_map(|&(f, _)| source(f))
+                    .flat_map(|a| {
+                        there
+                            .iter()
+                            .filter_map(|&(g, _)| source(g))
+                            .map(move |b| (a, b))
+                    })
+                    .find(|(a, b)| a != b)
+                    .or_else(|| Some((source(f)?, source(g)?)));
+                let Some((a, b)) = pair else {
+                    return Err(Stop::of(LOST));
+                };
+                return Err(Stop::Error(KernelError::ZeroThickness {
+                    operation: OPERATION,
+                    at: p,
+                    faces: [a, b],
+                }));
+            }
         }
     }
-    Ok(None)
+    Ok(())
+}
+
+/// The vertices of `x` that lie on a face of `y`: within twice the
+/// tolerance of its surface and not outside its boundary (a corner of
+/// one body standing on a face of the other, which the section, finding
+/// no curve, leaves alone). Only vertices in `y`'s box are looked at,
+/// against the faces whose boxes hold them.
+fn on_the_other(x: &Solid, y: &Solid, tol: f64) -> Vec<Vec3> {
+    let near = 2.0 * tol;
+    let all = y.bbox();
+    let boxes: Vec<Option<(Vec3, Vec3)>> = y
+        .boxes
+        .iter()
+        .map(|b| {
+            b.corners().map(|(lo, hi)| {
+                let grow = Vec3::new(near, near, near);
+                (lo - grow, hi + grow)
+            })
+        })
+        .collect();
+    let mut grid: Option<FaceGrid> = None;
+    let mut found = Vec::new();
+    for vertex in &x.body.vertices {
+        let p = vertex.point;
+        if !all.contains(p, near) {
+            continue;
+        }
+        let grid = grid.get_or_insert_with(|| FaceGrid::new(&boxes));
+        let on = grid.near(p).into_iter().any(|f| {
+            boxes.get(f).copied().flatten().is_some_and(|(lo, hi)| {
+                lo.x <= p.x
+                    && p.x <= hi.x
+                    && lo.y <= p.y
+                    && p.y <= hi.y
+                    && lo.z <= p.z
+                    && p.z <= hi.z
+            }) && y.outline(f).is_ok_and(|outline| {
+                outline.surface.project(p).is_ok_and(|(u, v)| {
+                    let foot = outline.surface.eval(u, v);
+                    foot.distance(p) <= near
+                        && matches!(
+                            outline.side(foot, tol),
+                            Ok(outline::Side::In | outline::Side::On)
+                        )
+                })
+            })
+        });
+        if on {
+            found.push(p);
+        }
+    }
+    found
+}
+
+/// Boxes in a grid of cells, about as many cells as boxes, each box in
+/// the cells it overlaps (at most [`FaceGrid::MOST_CELLS_PER_BOX`] of
+/// them; a larger box goes in a list of its own that every query sees).
+struct FaceGrid {
+    low: Vec3,
+    cell: f64,
+    size: [usize; 3],
+    cells: BTreeMap<usize, Vec<usize>>,
+    large: Vec<usize>,
+}
+
+impl FaceGrid {
+    const MOST_CELLS_PER_BOX: usize = 64;
+
+    fn new(boxes: &[Option<(Vec3, Vec3)>]) -> FaceGrid {
+        let mut lo = Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
+        let mut hi = Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+        for (a, b) in boxes.iter().flatten() {
+            lo = Vec3::new(lo.x.min(a.x), lo.y.min(a.y), lo.z.min(a.z));
+            hi = Vec3::new(hi.x.max(b.x), hi.y.max(b.y), hi.z.max(b.z));
+        }
+        let extent = hi - lo;
+        let count = boxes.len().max(1) as f64;
+        let largest = extent.x.max(extent.y).max(extent.z);
+        // Cells about as many as boxes.
+        let cell = (extent.x.max(largest * 1e-3)
+            * extent.y.max(largest * 1e-3)
+            * extent.z.max(largest * 1e-3)
+            / count)
+            .cbrt();
+        let mut grid = FaceGrid {
+            low: lo,
+            cell,
+            size: [1, 1, 1],
+            cells: BTreeMap::new(),
+            large: Vec::new(),
+        };
+        if !(cell.is_finite() && cell > 0.0 && largest.is_finite()) {
+            grid.large = (0..boxes.len()).collect();
+            return grid;
+        }
+        let along = |e: f64| ((e / cell).floor() as usize).saturating_add(1).min(1 << 20);
+        grid.size = [along(extent.x), along(extent.y), along(extent.z)];
+        for (f, b) in boxes.iter().enumerate() {
+            let Some((a, b)) = b else {
+                grid.large.push(f);
+                continue;
+            };
+            let (i0, i1) = (grid.index(*a), grid.index(*b));
+            let span = i0
+                .iter()
+                .zip(&i1)
+                .map(|(a, b)| b.saturating_sub(*a).saturating_add(1))
+                .fold(1_usize, usize::saturating_mul);
+            if span > Self::MOST_CELLS_PER_BOX {
+                grid.large.push(f);
+                continue;
+            }
+            for x in i0[0]..=i1[0] {
+                for y in i0[1]..=i1[1] {
+                    for z in i0[2]..=i1[2] {
+                        grid.cells.entry(grid.key([x, y, z])).or_default().push(f);
+                    }
+                }
+            }
+        }
+        grid
+    }
+
+    fn index(&self, p: Vec3) -> [usize; 3] {
+        let at = |x: f64, low: f64, size: usize| {
+            let i = ((x - low) / self.cell).floor();
+            if i.is_finite() && i > 0.0 {
+                (i as usize).min(size.saturating_sub(1))
+            } else {
+                0
+            }
+        };
+        [
+            at(p.x, self.low.x, self.size[0]),
+            at(p.y, self.low.y, self.size[1]),
+            at(p.z, self.low.z, self.size[2]),
+        ]
+    }
+
+    fn key(&self, [x, y, z]: [usize; 3]) -> usize {
+        x.saturating_add(
+            self.size[0].saturating_mul(y.saturating_add(self.size[1].saturating_mul(z))),
+        )
+    }
+
+    /// The boxes that may hold `p`, each once, ascending.
+    fn near(&self, p: Vec3) -> Vec<usize> {
+        let mut found: Vec<usize> = self.large.clone();
+        if let Some(cell) = self.cells.get(&self.key(self.index(p))) {
+            found.extend_from_slice(cell);
+        }
+        found.sort_unstable();
+        found.dedup();
+        found
+    }
 }
 
 /// The union, difference (`a` minus `b`) or intersection of two solids.

@@ -173,11 +173,13 @@ fn corpus_section(out: &mut String, gate: &Path) {
             let agree = get("match") + get("match~") + get("empty");
             let _ = writeln!(
                 out,
-                "Boolean corpus ({written}): agree **{agree}** (match {}, match~ {}, empty {}), \
+                "Boolean corpus ({written}): agree **{agree}** (match {}, match~ {}, empty {}) \
+                 + {} refused by design (zero thickness, the body without the refusal agreeing), \
                  refused {}, unscored {}, mismatch **{}**, invalid **{}**, of {} outcomes; digest {digest}",
                 get("match"),
                 get("match~"),
                 get("empty"),
+                get("zero-thick"),
                 get("unsupported"),
                 get("unscored"),
                 get("MISMATCH"),

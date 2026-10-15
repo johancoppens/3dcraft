@@ -53,6 +53,8 @@
     clippy::indexing_slicing
 )]
 
+mod boolean_common;
+
 use craft3d_kernel::KernelError;
 use craft3d_kernel::boolean::{BooleanOp, BooleanOptions, boolean, boolean_with, contains_points};
 use craft3d_kernel::primitives;
@@ -1046,13 +1048,19 @@ fn run_case(case: &Value, snap: Option<&Value>, verbose: bool) -> Vec<Outcome> {
         // it (and must have parts to be one).
         let mut zero = None;
         let result = catch_unwind(AssertUnwindSafe(|| match boolean(&a, &b, op, &tolerance) {
-            Err(KernelError::ZeroThickness { .. }) => {
+            Err(KernelError::ZeroThickness { at, .. }) => {
                 let unrefused = BooleanOptions {
                     refuse_zero_thickness: false,
                     ..BooleanOptions::default()
                 };
                 let made = boolean_with(&a, &b, op, &tolerance, &unrefused);
-                zero = Some(made.as_ref().map_or(0, |r| r.body.shells.len()));
+                // The refusal is real when the point it names lies on two
+                // parts of the body made without it, by the rays of
+                // `contains_points` on each part alone.
+                zero = Some(
+                    made.as_ref()
+                        .map_or(0, |r| boolean_common::on_parts(&r.body, at, &tolerance)),
+                );
                 made
             }
             other => other,
@@ -1106,9 +1114,9 @@ fn run_case(case: &Value, snap: Option<&Value>, verbose: bool) -> Vec<Outcome> {
             other => other,
         };
         let outcome = match zero {
-            Some(parts) if parts < 2 => {
-                Outcome::Invalid(format!("refused as zero thickness, with {parts} parts"))
-            }
+            Some(parts) if parts < 2 => Outcome::Invalid(format!(
+                "refused as zero thickness at a point on {parts} parts of the body made without the refusal"
+            )),
             Some(_) if outcome.agrees() => Outcome::ZeroThickness,
             _ => outcome,
         };
@@ -1489,9 +1497,10 @@ fn the_kernel_agrees_with_the_reference_kernel() {
     report.push_str(&table(&rows, &categories));
     let _ = writeln!(
         report,
-        "\nagreeing (match + match~ + empty + zero-thick): {agreeing}; floor {AGREEING_FLOOR}\n\
-         of them refused as zero thickness, their bodies made without the refusal agreeing: \
-         {zero_thick}"
+        "\nagreeing: {} (match + match~ + empty) + {zero_thick} refused by design (zero \
+         thickness, the body made without the refusal agreeing) = {agreeing}; floor \
+         {AGREEING_FLOOR} on that sum",
+        agreeing - zero_thick
     );
     // In the score too, where `cargo xtask health` reads it.
     let _ = writeln!(

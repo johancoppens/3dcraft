@@ -145,6 +145,30 @@ pub(super) struct Sections {
     pub splits_b: BTreeMap<EdgeId, BTreeSet<usize>>,
 }
 
+/// The outline of face `index` of `body`, as [`prepare`] makes it.
+pub(super) fn face_outline(body: &Body, index: usize, tol: f64) -> Result<Outline, Stop> {
+    let face = body.faces.get(index).ok_or(Stop::of(LOST))?;
+    let mut loops = Vec::with_capacity(face.loops.len());
+    for loop_ in face.loops.iter().filter_map(|&l| body.loop_(l)) {
+        let mut segs = Vec::with_capacity(loop_.coedges.len());
+        for coedge in &loop_.coedges {
+            let edge = body.edge(coedge.edge).ok_or(Stop::of(LOST))?;
+            let (Some(a), Some(b)) = (body.vertex(edge.start), body.vertex(edge.end)) else {
+                return Err(Stop::of(LOST));
+            };
+            segs.push(Seg {
+                curve: edge.curve.clone(),
+                range: edge.range,
+                a: a.point,
+                b: b.point,
+                reversed: coedge.reversed,
+            });
+        }
+        loops.push(segs);
+    }
+    Outline::new(face.surface.clone(), face.reversed, loops, 4.0 * tol).map_err(Stop::of)
+}
+
 pub(super) fn prepare<'a>(
     body: &'a Body,
     operand: Operand,
@@ -178,6 +202,10 @@ pub(super) fn prepare<'a>(
         if meeting.kept.is_none() {
             meeting.kept = Some((operand, VertexId(u32::try_from(index).unwrap_or(u32::MAX))));
         }
+        meeting.operands |= match operand {
+            Operand::A => 1,
+            Operand::B => 2,
+        };
         merged.push(at);
     }
     let mut outlines = Vec::with_capacity(body.faces.len());

@@ -45,7 +45,7 @@
 //! by the faces they lie between.
 
 use crate::boolean::{
-    BooleanOp, BooleanResult, EdgeSource, Entity, Operand, VertexSource, boolean, contains_points,
+    BooleanOp, BooleanResult, EdgeSource, Entity, Operand, VertexSource, contains_points,
 };
 use crate::extrude::{OpResult, Origin, Origins, Role, extrude};
 use crate::primitives;
@@ -731,7 +731,13 @@ pub fn extrude_up_to(
     } else {
         BooleanOp::Subtract
     };
-    let cut = match boolean(&prism.body, &tool.body, op, tolerance) {
+    // A step: what is kept of the prism is looked at for parts that
+    // touch where it is used (regeneration's check).
+    let step = super::boolean::BooleanOptions {
+        refuse_zero_thickness: false,
+        ..super::boolean::BooleanOptions::default()
+    };
+    let cut = match super::boolean::boolean_with(&prism.body, &tool.body, op, tolerance, &step) {
         Ok(cut) => cut,
         // Nothing left: the whole prism is on the wrong side.
         Err(KernelError::EmptyResult { .. }) => return Err(no_end(THROUGH_START)),

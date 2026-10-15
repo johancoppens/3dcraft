@@ -1780,7 +1780,9 @@ fn combine(
         merge: true,
         // What the kernel itself made has passed the check.
         trust_operands: !first,
-        refuse_zero_thickness: true,
+        // A step of the blend: regeneration checks the blended body for
+        // parts that touch (and names the user's features).
+        refuse_zero_thickness: false,
     };
     let result =
         boolean_with(&state.body, tool, op, tolerance, &options).map_err(|error| match error {
@@ -2082,6 +2084,12 @@ fn ball_tool(
     let [wa, wb, wc] = leaving;
     // Three blocks, each with a face in one of the planes. They differ
     // in size, so that no two of their other faces fall together.
+    // Steps of the tool, not results: whether the blended body's parts
+    // touch is checked on it.
+    let tool_step = BooleanOptions {
+        refuse_zero_thickness: false,
+        ..BooleanOptions::default()
+    };
     let mut cell: Option<Body> = None;
     for (w, hint, grow) in [(wa, wb, 1.0), (wb, wc, 1.125), (wc, wa, 1.25)] {
         let frame = Frame::new(centre, -w, hint).ok_or_else(refuse)?;
@@ -2093,28 +2101,16 @@ fn ball_tool(
         cell = Some(match cell {
             None => block,
             Some(so_far) => {
-                boolean_with(
-                    &so_far,
-                    &block,
-                    BooleanOp::Intersect,
-                    tolerance,
-                    &BooleanOptions::default(),
-                )
-                .map_err(refused_by)?
-                .body
+                boolean_with(&so_far, &block, BooleanOp::Intersect, tolerance, &tool_step)
+                    .map_err(refused_by)?
+                    .body
             }
         });
     }
     let cell = cell.ok_or_else(refuse)?;
     let ball = primitives::sphere(&Frame::WORLD.at(centre).ok_or_else(refuse)?, radius)?;
-    let cut = boolean_with(
-        &cell,
-        &ball,
-        BooleanOp::Subtract,
-        tolerance,
-        &BooleanOptions::default(),
-    )
-    .map_err(refused_by)?;
+    let cut = boolean_with(&cell, &ball, BooleanOp::Subtract, tolerance, &tool_step)
+        .map_err(refused_by)?;
     let round: Vec<usize> = cut
         .faces
         .iter()

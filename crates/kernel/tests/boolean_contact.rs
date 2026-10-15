@@ -592,11 +592,15 @@ fn cones_that_share_a_ruling() {
                             volumes.push(0.0);
                             continue;
                         }
-                        // A difference that falls into parts meeting along
-                        // the shared ruling or at an apex is refused as
-                        // zero thickness (since 2026-10-15); it is held
-                        // to the points as made without the refusal.
-                        let (result, _) = solve_parts(x, y, op, k);
+                        // A difference that falls into parts meeting at
+                        // the shared apex is refused as zero thickness
+                        // (since 2026-10-15); it is held to the points as
+                        // made without the refusal.
+                        let (result, refused) = solve_parts(x, y, op, k);
+                        // Only the first cone less the second, where the two share
+                        // their apex, falls into parts that meet there.
+                        let parts = along == 0.0 && op == Subtract && std::ptr::eq(x, &a);
+                        assert_eq!(refused.is_some(), parts, "{along} {op:?} at {k}");
                         volumes.push(mass(&result.body).volume);
                         let found = contains_points(&result.body, &places, &tolerance(k)).unwrap();
                         let mut decided = 0;
@@ -921,5 +925,46 @@ fn a_cylinder_touching_the_top_of_a_torus_tube_from_inside() {
                 }
             }
         }
+    }
+}
+
+/// Bodies apart by a few tolerances are not touching: their union is two
+/// parts, not refused (a gap of three and of ten tolerances, along a face,
+/// an edge and a corner). A ball inside a block, taken out, leaves a
+/// cavity: two shells, one inside the other, apart everywhere, not
+/// refused. At three scales.
+#[test]
+fn parts_a_few_tolerances_apart_and_a_cavity_are_not_refused() {
+    for k in SCALES {
+        let tol = tolerance(k).linear;
+        let plate = boxed(k, [0.0, 0.0, 0.0], [4.0, 3.0, 2.0]);
+        for gap in [3.0, 10.0] {
+            let d = gap * tol / k;
+            for (lo, hi) in [
+                // Face to face, edge to edge, corner to corner.
+                ([4.0 + d, 0.0, 0.0], [5.0, 3.0, 2.0]),
+                ([4.0 + d, 3.0 + d, 0.0], [5.0, 4.0, 2.0]),
+                ([4.0 + d, 3.0 + d, 2.0 + d], [5.0, 4.0, 3.0]),
+            ] {
+                let other = boxed(k, lo, hi);
+                let (both, refused) = solve_parts(&plate, &other, Union, k);
+                assert_eq!(refused, None, "gap {gap} at {k}: {lo:?}");
+                assert_eq!(both.body.shells.len(), 2);
+                assert_close(
+                    mass(&both.body).volume,
+                    mass(&plate).volume + mass(&other).volume,
+                    "the two",
+                );
+            }
+        }
+        let inside = ball(k, [2.0, 1.5, 1.0], 0.75);
+        let (hollow, refused) = solve_parts(&plate, &inside, Subtract, k);
+        assert_eq!(refused, None, "the cavity at {k}");
+        assert_eq!(hollow.body.shells.len(), 2);
+        assert_close(
+            mass(&hollow.body).volume,
+            mass(&plate).volume - mass(&inside).volume,
+            "the block less the ball",
+        );
     }
 }
