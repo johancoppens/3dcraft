@@ -11,6 +11,7 @@
 
 mod blend;
 pub mod boolean;
+pub use boolean::{release_unused, shelf_size};
 pub mod chamfer;
 pub mod delete_face;
 pub mod draft;

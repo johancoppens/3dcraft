@@ -1455,8 +1455,48 @@ static SHELF: Mutex<Shelf> = Mutex::new(Vec::new());
 /// went round the shelf in the order they were asked for, each pushing
 /// out the one asked for next, and every boolean on it built them all
 /// again: most of the time of a chamfer far from the blades.
+///
+/// In a browser (WebAssembly) memory is scarcer: an eighth of the trees
+/// and a sixth of the bytes.
+#[cfg(not(target_arch = "wasm32"))]
 const SHELF_TREES: usize = 1024;
+#[cfg(not(target_arch = "wasm32"))]
 const SHELF_BYTES: usize = 768 << 20;
+#[cfg(target_arch = "wasm32")]
+const SHELF_TREES: usize = 128;
+#[cfg(target_arch = "wasm32")]
+const SHELF_BYTES: usize = 128 << 20;
+
+/// Lets go of the trees on the shelf whose surface is not the surface of a
+/// face of any of `bodies` (the bodies something still holds: every open
+/// document's), so that a big freeform model that was closed or edited
+/// away does not keep its trees. Returns how many trees were let go. A
+/// tree is a function of its surface alone, so this changes no result:
+/// a tree let go is built again, the same, when it is asked for.
+pub fn release_unused(bodies: &[&craft3d_topo::Body]) -> usize {
+    let mut held = std::collections::BTreeSet::new();
+    for body in bodies {
+        for face in &body.faces {
+            if is_freeform(&face.surface) {
+                held.insert(format!("{:?}", face.surface));
+            }
+        }
+    }
+    let mut shelf = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
+    let before = shelf.len();
+    shelf.retain(|(key, _, _)| held.contains(key));
+    before.saturating_sub(shelf.len())
+}
+
+/// How many trees the shelf holds, and about how many bytes they take.
+pub fn shelf_size() -> (usize, usize) {
+    let shelf = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
+    let bytes = shelf
+        .iter()
+        .map(|(_, _, b)| *b)
+        .fold(0_usize, usize::saturating_add);
+    (shelf.len(), bytes)
+}
 
 thread_local! {
     /// Trees this thread built ([`trees_built`]).

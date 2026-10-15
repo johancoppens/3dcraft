@@ -48,6 +48,9 @@ pub use cache::RegenCache;
 pub use cause::root_cause;
 pub use craft3d_kernel::extrude::{Origin, Origins, Role};
 pub use craft3d_kernel::helix::Helix;
+/// The kernel keeps search trees of freeform surfaces between operations;
+/// the engine lets go of those no open document holds.
+pub use craft3d_kernel::release_unused as release_unused_trees;
 pub use craft3d_kernel::thread::{coarse_pitch, no_coarse_pitch, nominal_diameter};
 pub use datum::{Datum, EdgeReference, References, references};
 pub use derive::{MAX_PATTERN_FACES, MAX_PATTERN_INSTANCES};

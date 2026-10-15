@@ -201,6 +201,10 @@ pub struct Session {
     /// Autosave and crash recovery (`recovery.rs`); none in a clone.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) recovery: recovery::RecoveryHandle,
+    /// The open documents and the revisions of their regenerations when
+    /// the kernel last let go of the trees of surfaces no body holds
+    /// ([`Session::release_unused_trees`]).
+    trees_held_for: Vec<(u64, Option<u64>)>,
 }
 
 /// Most documents open at once.
@@ -214,7 +218,35 @@ impl Session {
             workspace,
             scene: scene::SceneCache::default(),
             recovery: recovery::RecoveryHandle::default(),
+            trees_held_for: Vec::new(),
         }
+    }
+
+    /// Lets the kernel go of the trees it keeps for freeform surfaces that
+    /// no body of an open document holds any more
+    /// (`craft3d_kernel::release_unused`), when a document was closed or
+    /// regenerated since it last did. Every body a regeneration made is
+    /// held, also those that went into later features, so that an edit
+    /// further down finds the trees of what it starts from. Results do not
+    /// change: a tree is a function of its surface.
+    fn release_unused_trees(&mut self) {
+        let now: Vec<(u64, Option<u64>)> = self
+            .documents
+            .iter()
+            .map(|d| (d.id, d.regen.as_ref().map(|(revision, _)| *revision)))
+            .collect();
+        if now == self.trees_held_for {
+            return;
+        }
+        let bodies: Vec<&craft3d_topo::Body> = self
+            .documents
+            .iter()
+            .filter_map(|d| d.regen.as_ref())
+            .flat_map(|(_, regen)| regen.features.iter())
+            .filter_map(|f| f.body.as_deref())
+            .collect();
+        craft3d_regen::release_unused_trees(&bodies);
+        self.trees_held_for = now;
     }
 
     /// The revision of the active document: it moves with every edit
@@ -317,10 +349,12 @@ impl Session {
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(self, params))) {
             Ok(result) => {
                 self.recovery_sync(false);
+                self.release_unused_trees();
                 result
             }
             Err(payload) => {
                 self.recovery_sync(true);
+                self.release_unused_trees();
                 let detail = payload
                     .downcast_ref::<&str>()
                     .map(|s| (*s).to_string())

@@ -57,6 +57,8 @@ mod regions;
 mod section;
 mod sew;
 
+pub use freeform::{release_unused, shelf_size};
+
 use crate::{KernelError, MAX_REPORTED};
 use craft3d_geom::{Curve3, GeomError};
 use craft3d_math::{Bits, Tolerance, Vec3};
