@@ -33,6 +33,10 @@ fn blend(a: H, b: H, t: f64) -> H {
     out
 }
 
+fn singular() -> GeomError {
+    GeomError::NoConvergence("the interpolation has no unique solution")
+}
+
 fn internal() -> GeomError {
     GeomError::InvalidParameter("a spline lost track of its control points; this is a bug")
 }
@@ -516,6 +520,170 @@ fn check_params(params: &[f64]) -> Result<(), GeomError> {
     Ok(())
 }
 
+/// Most points [`interpolate`] accepts: its system is banded, solved in
+/// time and room linear in the points.
+pub const MAX_INTERPOLATED_BANDED: usize = 1 << 14;
+
+/// The control values of the B-spline of `degree` through `values` (each
+/// a vector of the same length: a point's coordinates, weighted ones)
+/// at the increasing `params`, with its knot vector (clamped, the inner
+/// knots the averages of `degree` consecutive parameters, as
+/// [`interpolation`]). The collocation matrix is banded and totally
+/// positive, so Gaussian elimination within the band needs no pivoting
+/// (de Boor, *A Practical Guide to Splines*, ch. XIII).
+pub fn interpolate(
+    params: &[f64],
+    degree: usize,
+    values: &[Vec<f64>],
+) -> Result<(Vec<f64>, Vec<Vec<f64>>), GeomError> {
+    let count = params.len();
+    if !(2..=MAX_INTERPOLATED_BANDED).contains(&count) || values.len() != count {
+        return Err(GeomError::InvalidParameter(
+            "interpolation needs at least two points, a value for each (and no more than the supported maximum)",
+        ));
+    }
+    if params.iter().any(|v| !v.is_finite())
+        || params.windows(2).any(|w| !matches!(w, [a, b] if a < b))
+    {
+        return Err(GeomError::InvalidParameter(
+            "the parameters of interpolated points must be finite and increasing",
+        ));
+    }
+    if degree == 0 || degree >= count || degree > MAX_DEGREE {
+        return Err(GeomError::InvalidParameter(
+            "the degree of an interpolating spline is at least 1 and below the number of points",
+        ));
+    }
+    let width = values.first().map_or(0, Vec::len);
+    if values.iter().any(|v| v.len() != width) {
+        return Err(GeomError::InvalidParameter(
+            "the interpolated values must all have the same length",
+        ));
+    }
+    let (Some(&first), Some(&last)) = (params.first(), params.last()) else {
+        return Err(internal());
+    };
+    let mut knots = vec![first; degree + 1];
+    for j in 1..count - degree {
+        let sum: f64 = params.iter().skip(j).take(degree).sum();
+        knots.push(sum / degree as f64);
+    }
+    knots.extend(std::iter::repeat_n(last, degree + 1));
+    // Row i holds columns i - degree ..= i + degree.
+    let band = 2 * degree + 1;
+    let mut rows = vec![vec![0.0; band]; count];
+    // The span of each parameter: the last knot at or below it, found
+    // going on from the previous one (the parameters increase).
+    let mut span = degree;
+    for (i, &t) in params.iter().enumerate() {
+        while span + 1 < count && knots.get(span + 1).is_some_and(|x| *x <= t) {
+            span += 1;
+        }
+        let local = basis_local(&knots, degree, span, t)?;
+        for (offset, value) in local.into_iter().enumerate() {
+            let column = span - degree + offset;
+            // Within the band (Schoenberg-Whitney: the averaged knots
+            // keep every parameter's span next to its own index).
+            let slot = (column + degree)
+                .checked_sub(i)
+                .and_then(|c| rows.get_mut(i).and_then(|r| r.get_mut(c)))
+                .ok_or_else(singular)?;
+            *slot = value;
+        }
+    }
+    let mut rhs: Vec<Vec<f64>> = values.to_vec();
+    let at = |rows: &Vec<Vec<f64>>, i: usize, c: usize| -> f64 {
+        (c + degree)
+            .checked_sub(i)
+            .and_then(|k| rows.get(i).and_then(|r| r.get(k)))
+            .copied()
+            .unwrap_or(0.0)
+    };
+    for k in 0..count {
+        let pivot = at(&rows, k, k);
+        if pivot.abs().partial_cmp(&1e-300) != Some(std::cmp::Ordering::Greater)
+            || !pivot.is_finite()
+        {
+            return Err(singular());
+        }
+        for i in k + 1..(k + degree + 1).min(count) {
+            let factor = at(&rows, i, k) / pivot;
+            if factor == 0.0 {
+                continue;
+            }
+            for c in k..(k + degree + 1).min(count) {
+                let value = at(&rows, i, c) - factor * at(&rows, k, c);
+                if let Some(slot) = (c + degree)
+                    .checked_sub(i)
+                    .and_then(|x| rows.get_mut(i).and_then(|r| r.get_mut(x)))
+                {
+                    *slot = value;
+                }
+            }
+            let source = rhs.get(k).cloned().ok_or_else(internal)?;
+            let target = rhs.get_mut(i).ok_or_else(internal)?;
+            for (t, s) in target.iter_mut().zip(&source) {
+                *t -= factor * s;
+            }
+        }
+    }
+    let mut out = vec![vec![0.0; width]; count];
+    for k in (0..count).rev() {
+        let mut value = rhs.get(k).cloned().ok_or_else(internal)?;
+        for c in k + 1..(k + degree + 1).min(count) {
+            let a = at(&rows, k, c);
+            let known = out.get(c).ok_or_else(internal)?;
+            for (v, x) in value.iter_mut().zip(known) {
+                *v -= a * x;
+            }
+        }
+        let pivot = at(&rows, k, k);
+        for v in &mut value {
+            *v /= pivot;
+        }
+        *out.get_mut(k).ok_or_else(internal)? = value;
+    }
+    if out.iter().flatten().any(|v| !v.is_finite()) {
+        return Err(singular());
+    }
+    Ok((knots, out))
+}
+
+/// The `degree + 1` nonzero B-spline basis values at `t` in `span`.
+fn basis_local(knots: &[f64], degree: usize, span: usize, t: f64) -> Result<Vec<f64>, GeomError> {
+    let knot = |i: usize| knots.get(i).copied().ok_or_else(internal);
+    let mut values = vec![0.0; degree + 1];
+    let mut left = vec![0.0; degree + 1];
+    let mut right = vec![0.0; degree + 1];
+    if let Some(first) = values.first_mut() {
+        *first = 1.0;
+    }
+    for j in 1..=degree {
+        let (l, r) = (t - knot(span + 1 - j)?, knot(span + j)? - t);
+        if let (Some(a), Some(b)) = (left.get_mut(j), right.get_mut(j)) {
+            *a = l;
+            *b = r;
+        }
+        let mut saved = 0.0;
+        for r in 0..j {
+            let (Some(&right_r), Some(&left_r), Some(&value)) =
+                (right.get(r + 1), left.get(j - r), values.get(r))
+            else {
+                return Err(internal());
+            };
+            let share = value / (right_r + left_r);
+            if let Some(slot) = values.get_mut(r) {
+                *slot = saved + right_r * share;
+            }
+            saved = left_r * share;
+        }
+        if let Some(slot) = values.get_mut(j) {
+            *slot = saved;
+        }
+    }
+    Ok(values)
+}
+
 /// How to lay a B-spline of `degree` through points at the parameters
 /// `params` (increasing): the knot vector (clamped, its inner knots the
 /// averages of `degree` consecutive parameters), and the matrix that
@@ -611,6 +779,29 @@ pub fn periodic_tangents(steps: &[f64]) -> Result<Vec<Vec<f64>>, GeomError> {
 mod tests {
     use super::*;
     use craft3d_math::Frame;
+
+    #[test]
+    fn the_banded_interpolation_is_the_dense_one() {
+        let params: Vec<f64> = (0..40).map(|i| f64::from(i).powf(1.3) / 40.0).collect();
+        let values: Vec<Vec<f64>> = params
+            .iter()
+            .map(|t| vec![(3.0 * t).sin(), t * t, 1.0 + 0.1 * t])
+            .collect();
+        let (knots, matrix) = interpolation(&params, 3).unwrap();
+        let (banded_knots, control) = interpolate(&params, 3, &values).unwrap();
+        assert_eq!(knots, banded_knots);
+        for (row, got) in matrix.iter().zip(&control) {
+            for d in 0..3 {
+                let want: f64 = row.iter().zip(&values).map(|(m, v)| m * v[d]).sum();
+                assert!((want - got[d]).abs() < 1e-12, "{want} {}", got[d]);
+            }
+        }
+        // Far more points than the dense one takes.
+        let many: Vec<f64> = (0..3000).map(|i| f64::from(i) / 2999.0).collect();
+        let line: Vec<Vec<f64>> = many.iter().map(|t| vec![*t, 2.0 * t]).collect();
+        let (_, c) = interpolate(&many, 3, &line).unwrap();
+        assert_eq!(c.len(), 3000);
+    }
 
     fn spline() -> NurbsCurve {
         NurbsCurve::polynomial(

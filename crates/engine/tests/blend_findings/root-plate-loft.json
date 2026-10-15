@@ -1,0 +1,320 @@
+[
+[
+"file.new",
+{
+"units": "mm",
+"tolerance": 0.0001
+}
+],
+[
+"feature.block",
+{
+"size": [
+"40 mm",
+"40 mm",
+"4 mm"
+],
+"position": [
+"-20 mm",
+"-20 mm",
+"0 mm"
+],
+"name": "Plate"
+}
+],
+[
+"sketch.create",
+{
+"plane": "xy",
+"offset": "2.0 mm",
+"name": "BladeS0"
+}
+],
+[
+"sketch.spline",
+{
+"sketch": "BladeS0",
+"through": [
+[
+-12.1897,
+0.5692
+],
+[
+-6.0986,
+2.0918
+],
+[
+0.0,
+2.6
+],
+[
+6.0986,
+2.0918
+],
+[
+12.1897,
+0.5692
+]
+]
+}
+],
+[
+"sketch.polyline",
+{
+"sketch": "BladeS0",
+"points": [
+"e5",
+[
+11.8103,
+-0.5692
+]
+]
+}
+],
+[
+"sketch.polyline",
+{
+"sketch": "BladeS0",
+"points": [
+"e1",
+[
+-11.8103,
+-0.5692
+]
+]
+}
+],
+[
+"sketch.spline",
+{
+"sketch": "BladeS0",
+"through": [
+"e7",
+[
+5.9014,
+0.9082
+],
+[
+0.0,
+1.4
+],
+[
+-5.9014,
+0.9082
+],
+"e9"
+]
+}
+],
+[
+"sketch.create",
+{
+"plane": "xy",
+"offset": "8.0 mm",
+"name": "BladeS1"
+}
+],
+[
+"sketch.spline",
+{
+"sketch": "BladeS1",
+"through": [
+[
+-11.9516,
+-2.4643
+],
+[
+-6.4266,
+0.518
+],
+[
+-0.6433,
+2.5192
+],
+[
+5.3915,
+3.5356
+],
+[
+11.67,
+3.5673
+]
+]
+}
+],
+[
+"sketch.polyline",
+{
+"sketch": "BladeS1",
+"points": [
+"e5",
+[
+11.5839,
+2.3704
+]
+]
+}
+],
+[
+"sketch.polyline",
+{
+"sketch": "BladeS1",
+"points": [
+"e1",
+[
+-11.3023,
+-3.4734
+]
+]
+}
+],
+[
+"sketch.spline",
+{
+"sketch": "BladeS1",
+"through": [
+"e7",
+[
+5.4932,
+2.34
+],
+[
+-0.3464,
+1.3565
+],
+[
+-5.9426,
+-0.5801
+],
+"e9"
+]
+}
+],
+[
+"sketch.create",
+{
+"plane": "xy",
+"offset": "14.0 mm",
+"name": "BladeS2"
+}
+],
+[
+"sketch.spline",
+{
+"sketch": "BladeS2",
+"through": [
+[
+-10.9704,
+-5.3445
+],
+[
+-6.3549,
+-1.0881
+],
+[
+-1.2465,
+2.2817
+],
+[
+4.3492,
+4.7596
+],
+[
+10.4246,
+6.3436
+]
+]
+}
+],
+[
+"sketch.polyline",
+{
+"sketch": "BladeS2",
+"points": [
+"e5",
+[
+10.6374,
+5.1626
+]
+]
+}
+],
+[
+"sketch.polyline",
+{
+"sketch": "BladeS2",
+"points": [
+"e1",
+[
+-10.0916,
+-6.1617
+]
+]
+}
+],
+[
+"sketch.spline",
+{
+"sketch": "BladeS2",
+"through": [
+"e7",
+[
+4.7435,
+3.6263
+],
+[
+-0.6712,
+1.2286
+],
+[
+-5.6143,
+-2.0323
+],
+"e9"
+]
+}
+],
+[
+"feature.loft",
+{
+"sections": [
+"BladeS0",
+"BladeS1",
+"BladeS2"
+],
+"name": "Blade"
+}
+],
+[
+"feature.boolean",
+{
+"op": "union",
+"target": "Plate",
+"tool": "Blade",
+"name": "U"
+}
+],
+[
+"document.edges",
+{
+"feature": "U"
+}
+],
+[
+"feature.fillet",
+{
+"edges": [
+[
+"F6:copy(0)/F1:face(1)",
+"F6:copy(1)/F5:side(e6,e6,e6)"
+]
+],
+"radius": "0.6 mm",
+"name": "Root"
+}
+],
+[
+"document.check",
+{}
+]
+]

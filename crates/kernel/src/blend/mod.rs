@@ -520,6 +520,38 @@ struct Across {
 /// Below this sine two faces are tangent along their edge.
 const SMOOTH_SINE: f64 = 1e-6;
 
+/// How far the two faces of `edge` turn against each other where it
+/// passes nearest `point` (an end of it): the sine of the angle between
+/// their normals, `None` where the edge is not between two faces.
+fn sine_at(
+    body: &Body,
+    uses: &[Vec<Use>],
+    edge: EdgeId,
+    point: Vec3,
+) -> Result<Option<f64>, BlendError> {
+    let Some(data) = body.edge(edge) else {
+        return Ok(None);
+    };
+    let Some([a, b]) = uses
+        .get(edge.0 as usize)
+        .and_then(|list| <[Use; 2]>::try_from(list.as_slice()).ok())
+    else {
+        return Ok(None);
+    };
+    if a.face == b.face {
+        return Ok(None);
+    }
+    let t = data.curve.project(point)?;
+    let at = data.curve.eval(t);
+    let (na, nb) = (outward(body, a.face, at)?, outward(body, b.face, at)?);
+    // Normals of opposite sense (a knife edge) are as far apart as can be.
+    Ok(Some(if na.dot(nb) > 0.0 {
+        na.cross(nb).length()
+    } else {
+        1.0
+    }))
+}
+
 fn across(body: &Body, uses: &[Vec<Use>], edge: EdgeId) -> Result<Option<Across>, BlendError> {
     let Some(data) = body.edge(edge) else {
         return Ok(None);

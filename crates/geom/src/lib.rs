@@ -6,6 +6,7 @@
 
 pub mod closure;
 mod curve;
+mod extend;
 pub mod intersect;
 mod nurbs;
 pub mod pole;

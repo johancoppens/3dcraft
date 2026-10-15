@@ -41,7 +41,9 @@
 // `!(x > 0.0)` is deliberate: unlike `x <= 0.0` it is also true for NaN.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
-use super::super::{BlendError, Reason, Size, Turn, Use, across, lost, refused, vertex_edges};
+use super::super::{
+    BlendError, Reason, Size, Turn, Use, across, lost, refused, sine_at, vertex_edges,
+};
 use super::{
     Across, BEND, End, FOLLOW_DEPTH, Item, MAX_SAMPLES, Section, Shape, Side, Solver, Spine, Steps,
     Stop, beyond_by, border, cut_back, cut_curve, edge_length, end_at, end_cut, first_section,
@@ -308,8 +310,26 @@ impl Around<'_> {
                 };
                 let between = (sa == before && sb == after) || (sa == after && sb == before);
                 let data = body.edge(*smooth).ok_or_else(lost)?;
-                let turn = across(body, self.uses, *smooth)?.map(|a| a.turn);
-                if !between || turn != Some(Turn::Smooth) || data.start == data.end {
+                // Tangent at the joint: the faces' normals there agree as closely
+                // as the blend's own tangency across a joint is measured (ten
+                // times what its faces are refined to: the angular tolerance,
+                // or the angle the linear tolerance makes over the size), at the
+                // vertex rather than along the edge.
+                let reach = match item.request.size {
+                    Size::Radius(r) => r,
+                    Size::Chamfer(ChamferSize::Distances { first, second }) => first.max(second),
+                    Size::Chamfer(ChamferSize::DistanceAngle { distance, .. }) => distance,
+                };
+                let bound = 10.0
+                    * self
+                        .tolerance
+                        .angular
+                        .max(BEND)
+                        .max(self.tolerance.linear / reach.abs().max(self.tolerance.linear));
+                let at = body.vertex(vertex).ok_or_else(lost)?.point;
+                let smooth_here =
+                    sine_at(body, self.uses, *smooth, at)?.is_some_and(|s| s <= bound);
+                if !between || !smooth_here || data.start == data.end {
                     return Err(joint_refused());
                 }
                 let mut faces = [kept; 2];
@@ -817,6 +837,17 @@ fn agree(a: &Section, b: &Section, limit: f64) -> bool {
     feet && centres
 }
 
+/// How far apart the arcs (or lines) of two sections are, the largest
+/// distance at nine points of the same parameter.
+fn apart(a: &Section, b: &Section) -> Option<f64> {
+    let mut most = 0.0_f64;
+    for k in 0..=8 {
+        let v = f64::from(k) / 8.0;
+        most = most.max(a.eval(v)?.distance(b.eval(v)?));
+    }
+    Some(most)
+}
+
 /// Works out the blend faces of `chain` on `body` (unchanged), with the
 /// sections in planes across the edges (a chamfer's, whose lines depend
 /// on those planes).
@@ -953,22 +984,18 @@ fn compute(
                 first.edge,
                 first.faces,
                 vertex_of(fd, first.forward, false),
+                tolerance.angular.max(BEND).max(tolerance.linear / size),
             )?,
             end_at(
                 body,
                 last.edge,
                 last.faces,
                 vertex_of(ld, last.forward, true),
+                tolerance.angular.max(BEND).max(tolerance.linear / size),
             )?,
         ])
     };
-    let third_of = |end: &End| -> Result<Side<'_>, BlendError> {
-        let face = body.face(end.third).ok_or_else(lost)?;
-        Ok(Side {
-            surface: &face.surface,
-            reversed: face.reversed,
-        })
-    };
+    let third_of = |end: &End| end.side(body);
     let stop = |stop: Stop, face: Option<FaceId>| match stop {
         Stop::Unsolvable => unsolvable(),
         Stop::TooFar => refuse(edge, face, Reason::FreeEnd),
@@ -991,7 +1018,7 @@ fn compute(
         }
         if i + 1 == n && !chain.closed {
             let end = ends.as_ref().ok_or_else(lost)?.get(1).ok_or_else(lost)?;
-            let (more, past) = march_out(solver, from, 1.0, third_of(end)?, *step, tol)
+            let (more, past) = march_out(solver, from, 1.0, third_of(end)?, end.steps(*step), tol)
                 .map_err(|s| stop(s, Some(end.third)))?;
             list.extend(more);
             reach[1] = past;
@@ -1046,8 +1073,15 @@ fn compute(
         more
     } else {
         let end = ends.as_ref().ok_or_else(lost)?.first().ok_or_else(lost)?;
-        let (more, past) = march_out(solver, (0.5, seed), 0.0, third_of(end)?, step, tol)
-            .map_err(|s| stop(s, Some(end.third)))?;
+        let (more, past) = march_out(
+            solver,
+            (0.5, seed),
+            0.0,
+            third_of(end)?,
+            end.steps(step),
+            tol,
+        )
+        .map_err(|s| stop(s, Some(end.third)))?;
         reach[0] = past;
         more
     };
@@ -1653,7 +1687,9 @@ fn walk(
                         balls.push(next);
                         return Ok(Walked { balls });
                     }
-                    if travelled - at > most_out {
+                    // No further than the face's approximation can take
+                    // samples (`march_out`).
+                    if travelled - at > most_out || balls.len() >= MAX_SAMPLES {
                         return Err(Stop::TooFar);
                     }
                 }
@@ -1965,6 +2001,7 @@ fn along_spine(
                 piece.edge,
                 piece.faces,
                 vertex_of(data, piece.forward, at_end),
+                tolerance.angular.max(BEND).max(tolerance.linear / size),
             )
             .map(Ending::Third),
         };
@@ -1974,11 +2011,16 @@ fn along_spine(
         ])
     };
     let third_of = |end: &Ending| -> Result<Side<'_>, BlendError> {
-        let face = body.face(end.third()).ok_or_else(lost)?;
-        Ok(Side {
-            surface: &face.surface,
-            reversed: face.reversed,
-        })
+        match end {
+            Ending::Third(end) => end.side(body),
+            Ending::Meet { .. } => {
+                let face = body.face(end.third()).ok_or_else(lost)?;
+                Ok(Side {
+                    surface: &face.surface,
+                    reversed: face.reversed,
+                })
+            }
+        }
     };
     // Steps of up to two radii, or a 24th of the edge where that is
     // more: the walk only has to follow the path, which the steps adapt
@@ -2039,7 +2081,7 @@ fn along_spine(
                     third: third_of(end)?,
                     sign: sign_of(end),
                 },
-                most_out,
+                end.most_out(most_out),
                 tol,
             )
             .map_err(|s| stopped(s, Some(end.third())))?;
@@ -2133,7 +2175,7 @@ fn along_spine(
                 third: third_of(end)?,
                 sign: sign_of(end),
             },
-            most_out,
+            end.most_out(most_out),
             tol,
         )
         .map_err(|s| stopped(s, Some(end.third())))?;
@@ -2196,7 +2238,22 @@ fn along_spine(
             };
             let fixed = (k == 0 && before.is_some()) || (k + 1 == count && behind.is_some());
             if fixed {
-                sections.push(*ball);
+                // The joint's ball, as this piece's faces hold it: where a
+                // face changes across an edge along which the two are
+                // tangent only to within the tolerance, the ball of this
+                // piece's own faces in the joint's plane is a little off
+                // the shared one, and the face has to end in its own. The
+                // shared arc is the edge: it has to be within the tolerance
+                // of the face, which is within a quarter of it of its own
+                // arc, so the two arcs may be three quarters of it apart.
+                // Further off, the faces are creased at the joint by more
+                // than the tolerance allows at this size: refused.
+                let own = solver.follow(*s, ball, *s, 0).ok_or_else(unsolvable)?;
+                if !apart(&own, ball).is_some_and(|d| d <= 0.75 * tol) {
+                    let edge = pieces.get(i).ok_or_else(lost)?.edge;
+                    return Err(refused(edge, Reason::FreeJoint));
+                }
+                sections.push(own);
             } else {
                 sections.push(solver.follow(*s, ball, *s, 0).ok_or_else(unsolvable)?);
             }
@@ -2244,11 +2301,7 @@ fn along_spine(
                 };
                 let surface = &made.get(piece).ok_or_else(lost)?.surface;
                 let (inner, outer) = range;
-                let third = body.face(end.third).ok_or_else(lost)?;
-                let side = Side {
-                    surface: &third.surface,
-                    reversed: third.reversed,
-                };
+                let side = end.side(body)?;
                 let (cut, at) =
                     cut_curve(surface, side, inner, outer, limit, scale).ok_or_else(|| {
                         refuse(
@@ -2309,6 +2362,15 @@ impl Ending {
         match self {
             Ending::Third(end) => end.third,
             Ending::Meet { far, .. } => *far,
+        }
+    }
+
+    /// How far past this end the walk may go before giving up: longer the
+    /// more nearly the edge runs along the third face (`End::steps`).
+    fn most_out(&self, most_out: f64) -> f64 {
+        match self {
+            Ending::Third(end) => most_out / end.slant,
+            Ending::Meet { .. } => most_out,
         }
     }
 }
