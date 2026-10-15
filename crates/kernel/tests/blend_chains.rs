@@ -1671,3 +1671,70 @@ fn two_fillets_that_meet_at_the_corner_of_a_spline_wall() {
         }
     }
 }
+
+/// The rim of an outline of two Béziers whose wall faces meet at one end
+/// tangent only to a few millionths of a radian (as two spline pieces
+/// a sketch joins tangentially are, to its solver's precision; the lamp
+/// shade's finding B2): the fillet goes on across that joint, which is
+/// judged where the edges meet rather than halfway along the wall's edge,
+/// and each face ends in the ball its own faces hold. What it takes away
+/// is the swept corner, as across an exact joint.
+#[test]
+fn a_rim_across_a_joint_tangent_to_within_the_tolerance() {
+    let r = 0.1;
+    let height = 1.0;
+    for crease in [0.0, 3e-6] {
+        let top = Bez([[-1.0, 0.0], [-1.0, 0.8], [1.0, 0.8], [1.0, 0.0]]);
+        let bottom = Bez([
+            [1.0, 0.0],
+            [1.0 + 0.8 * crease, -0.8],
+            [-1.0, -0.8],
+            [-1.0, 0.0],
+        ]);
+        let length = top.length() + bottom.length();
+        for k in SCALES {
+            let tol = tolerance(k);
+            let frame = Frame::new(
+                Vec3::new(0.3, -0.2, 0.1) * k,
+                Vec3::new(0.2, -0.3, 1.0),
+                Vec3::new(1.0, 0.4, 0.0),
+            )
+            .unwrap();
+            let curves = vec![bezier(1, &top.scaled(k)), bezier(2, &bottom.scaled(k))];
+            let body = prism(&curves, &frame, height * k, k);
+            let chain = rim(
+                &body,
+                &frame,
+                height * k,
+                &[[0.0, 0.6 * k], [0.0, -0.6 * k]],
+            );
+            let edges: Vec<FilletEdge> = chain
+                .iter()
+                .map(|e| FilletEdge {
+                    edge: *e,
+                    radius: r * k,
+                })
+                .collect();
+            let made = match fillet(&body, &edges, &tol) {
+                Ok(m) => m,
+                Err(e) => panic!("crease {crease}, scale {k}: {e}"),
+            };
+            assert_eq!(check(&made.body, &tol), []);
+            let removed = mass(&body).volume - mass(&made.body).volume;
+            let expected = swept_corner(r * k, length * k, std::f64::consts::TAU);
+            let (worst, seams) = creases(&made.body, &made.faces);
+            println!(
+                "crease {crease}, scale {k}: removed {removed:e}, expected {expected:e} (off by {:e} of the tolerance times the fillet's area), crease {worst:e} over {seams}",
+                (removed - expected)
+                    / (tol.linear * length * k * r * k * std::f64::consts::FRAC_PI_2)
+            );
+            assert_eq!(seams, 6);
+            assert!(worst <= 10.0 * tol.linear / (r * k), "a crease of {worst}");
+            let bound = 0.25 * tol.linear * length * k * r * k * std::f64::consts::FRAC_PI_2;
+            assert!(
+                (removed - expected).abs() <= bound,
+                "removed {removed} instead of {expected}, more than {bound} off"
+            );
+        }
+    }
+}

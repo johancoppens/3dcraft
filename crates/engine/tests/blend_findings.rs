@@ -136,3 +136,23 @@ fn the_root_of_a_blade_on_a_plate() {
         deep_ok(&mut s);
     }
 }
+
+/// The lamp shade's B2: the rim of a closed-spline cell cut through the
+/// revolved shade, rounded all round. Where the rim crosses from one piece
+/// of the shade to the next, the two are tangent only to about 2e-6 rad
+/// (cells 70 and 92, refused or not depending on where the cell's seam
+/// lay, since that was judged halfway along the edge between the pieces);
+/// cell 22 needed more samples than a dense interpolation took.
+#[test]
+fn the_rims_of_lamp_shade_cells() {
+    for steps in [
+        include_str!("blend_findings/lamp-cell22-rim-fillet.json"),
+        include_str!("blend_findings/lamp-cell70-rim-fillet.json"),
+        include_str!("blend_findings/lamp-cell92-rim-fillet.json"),
+    ] {
+        let (mut s, _) = replay(steps);
+        let round = feature(&mut s, "Round");
+        assert_eq!(round["status"], "ok", "{round}");
+        deep_ok(&mut s);
+    }
+}
