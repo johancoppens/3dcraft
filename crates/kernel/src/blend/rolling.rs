@@ -68,7 +68,7 @@
 use super::{BlendError, Blended, Face, Reason, Request, Size, lost, refused};
 use crate::KernelError;
 use crate::chamfer::ChamferSize;
-use craft3d_geom::refine::interpolation;
+use craft3d_geom::refine::interpolate;
 use craft3d_geom::{Curve3, NurbsCurve, NurbsSurface, Surface};
 use craft3d_math::{Tolerance, Vec3};
 use craft3d_topo::{Body, BodyKind, Coedge, Edge, EdgeId, FaceId, Loop, LoopId, Vertex, VertexId};
@@ -80,7 +80,7 @@ mod chain;
 const FOLLOW_DEPTH: u32 = 8;
 
 /// Most samples along one blend face, and across one cut at its end.
-const MAX_SAMPLES: usize = 256;
+const MAX_SAMPLES: usize = 4096;
 /// Steps of the search for one ball, and of the search for a nearest point.
 const BALL_STEPS: usize = 100;
 const FOOT_STEPS: usize = 60;
@@ -471,23 +471,27 @@ fn surface_through(params: &[f64], sections: &[Section]) -> Option<NurbsSurface>
         return None;
     }
     let degree = (params.len() - 1).min(3);
-    let (knots_u, matrix) = interpolation(params, degree).ok()?;
+    // Per sample, its net's weighted points and weights, in one row.
+    let values: Vec<Vec<f64>> = nets
+        .iter()
+        .map(|net| {
+            net.iter()
+                .flat_map(|(p, w)| [p.x * w, p.y * w, p.z * w, *w])
+                .collect()
+        })
+        .collect();
+    let (knots_u, rows) = interpolate(params, degree, &values).ok()?;
     let count_u = params.len();
     let mut ctrl = Vec::with_capacity(count_u * across);
     let mut weights = Vec::with_capacity(count_u * across);
-    for row in &matrix {
+    for row in &rows {
         for j in 0..across {
-            let mut point = Vec3::ZERO;
-            let mut weight = 0.0;
-            for (m, net) in row.iter().zip(&nets) {
-                let (p, w) = *net.get(j)?;
-                point += p * (m * w);
-                weight += m * w;
-            }
+            let at = |k: usize| row.get(4 * j + k).copied();
+            let (x, y, z, weight) = (at(0)?, at(1)?, at(2)?, at(3)?);
             if !(weight > 0.0) {
                 return None;
             }
-            ctrl.push(point * (1.0 / weight));
+            ctrl.push(Vec3::new(x, y, z) * (1.0 / weight));
             weights.push(weight);
         }
     }
@@ -523,15 +527,15 @@ fn border(surface: &NurbsSurface, last: bool) -> Option<NurbsCurve> {
 /// A polynomial cubic (or lower) through `points` at `params`.
 fn curve_through(params: &[f64], points: &[Vec3]) -> Option<NurbsCurve> {
     let degree = (params.len().checked_sub(1)?).min(3);
-    let (knots, matrix) = interpolation(params, degree).ok()?;
-    let ctrl: Vec<Vec3> = matrix
+    let values: Vec<Vec<f64>> = points.iter().map(|p| vec![p.x, p.y, p.z]).collect();
+    let (knots, rows) = interpolate(params, degree, &values).ok()?;
+    let ctrl: Vec<Vec3> = rows
         .iter()
-        .map(|row| {
-            row.iter()
-                .zip(points)
-                .fold(Vec3::ZERO, |sum, (m, p)| sum + *p * *m)
+        .map(|r| match r.as_slice() {
+            [x, y, z] => Some(Vec3::new(*x, *y, *z)),
+            _ => None,
         })
-        .collect();
+        .collect::<Option<_>>()?;
     NurbsCurve::polynomial(degree, knots, ctrl).ok()
 }
 

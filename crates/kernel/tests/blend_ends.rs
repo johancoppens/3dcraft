@@ -20,7 +20,7 @@ use boolean_common::{SCALES, tolerance};
 use craft3d_kernel::boolean::{BooleanOp, boolean, contains_points};
 use craft3d_kernel::fillet::{FilletEdge, FilletFace, FilletResult, fillet};
 use craft3d_kernel::profile::{Curve2, SketchCurve, Spline2, detect_profiles};
-use craft3d_math::{Frame, Vec3};
+use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_tess::{SelfCheckParams, TessParams, body_self_intersections, tessellate_body};
 use craft3d_topo::{Body, EdgeId, check};
 
@@ -205,16 +205,19 @@ fn block(frame: &Frame, lo: [f64; 3], hi: [f64; 3], k: f64) -> Body {
 /// points of `grid` (in the frame's units over `k`) inside exactly where
 /// `want` says; every mesh point of the fillet within four tolerances of
 /// where `on_fillet` is zero. Returns how many points changed sides.
+#[allow(clippy::too_many_arguments)]
 fn held(
     made: &FilletResult,
     before: &Body,
     k: f64,
+    tol: &Tolerance,
+    least: usize,
     grid: &[[f64; 3]],
     want: &dyn Fn([f64; 3]) -> Option<bool>,
     on_fillet: &dyn Fn([f64; 3]) -> Option<f64>,
     what: &str,
 ) {
-    let tol = tolerance(k);
+    let tol = *tol;
     let frame = frame(k);
     assert_eq!(check(&made.body, &tol), [], "{what}");
     let deep = body_self_intersections(&made.body, &SelfCheckParams::new(tol.linear)).unwrap();
@@ -242,7 +245,10 @@ fn held(
         undecided * 100 < points.len(),
         "{what}: {undecided} undecided"
     );
-    assert!(changed > 40, "{what}: only {changed} points changed sides");
+    assert!(
+        changed > least,
+        "{what}: only {changed} points changed sides"
+    );
     let params = TessParams {
         chordal_tolerance: 1e-3 * k,
         ..TessParams::default()
@@ -331,6 +337,8 @@ fn a_convex_fillet_that_runs_into_a_wall() {
             &made,
             &body,
             k,
+            &tol,
+            40,
             &grid([0.3, -0.05, h - 0.3], [1.0, 0.45, h + 0.02], 14),
             &want,
             &on_fillet,
@@ -396,11 +404,152 @@ fn a_concave_root_fillet_that_runs_out_at_the_end_of_a_wall() {
                 &made,
                 &body,
                 k,
+                &tol,
+                40,
                 &grid([0.4, -0.15, -0.03], [1.3, 0.4, 0.25], 14),
                 &want,
                 &on_fillet,
                 &format!("{degrees}°, scale {k}"),
             );
         }
+    }
+}
+
+/// A wavy spline (a cubic B-spline of 24 control points over x from -1
+/// to 1, its ends on y = 0, the material below it), in the plane and as
+/// a sketch curve.
+fn wavy() -> (craft3d_geom::NurbsCurve, Vec<f64>, Vec<[f64; 2]>) {
+    let n = 24;
+    let control: Vec<[f64; 2]> = (0..n)
+        .map(|i| {
+            let x = -1.0 + 2.0 * f64::from(i) / f64::from(n - 1);
+            [x, (1.0 - x * x) * (0.3 + 0.08 * (9.0 * x).sin())]
+        })
+        .collect();
+    let mut knots = vec![0.0; 4];
+    for j in 1..(n - 3) {
+        knots.push(f64::from(j) / f64::from(n - 3));
+    }
+    knots.extend([1.0; 4]);
+    let curve = craft3d_geom::NurbsCurve::polynomial(
+        3,
+        knots.clone(),
+        control.iter().map(|p| Vec3::new(p[0], p[1], 0.0)).collect(),
+    )
+    .unwrap();
+    (curve, knots, control)
+}
+
+/// The signed distance of `q` from `curve` in the plane, positive to the
+/// right of its direction (below the wavy top).
+fn signed_from(curve: &craft3d_geom::NurbsCurve, q: [f64; 2]) -> f64 {
+    let p = Vec3::new(q[0], q[1], 0.0);
+    let mut t = (0..=400)
+        .map(|i| f64::from(i) / 400.0)
+        .min_by(|a, b| {
+            curve
+                .eval(*a)
+                .distance(p)
+                .total_cmp(&curve.eval(*b).distance(p))
+        })
+        .unwrap();
+    for _ in 0..40 {
+        let (c, d) = curve.derivatives(t);
+        let h = 1e-6;
+        let (_, d2) = curve.derivatives(t + h);
+        let dd = (d2 - d) * (1.0 / h);
+        let r = c - p;
+        t -= r.dot(d) / (d.dot(d) + r.dot(dd));
+        t = t.clamp(0.0, 1.0);
+    }
+    let (c, d) = curve.derivatives(t);
+    let d = d.normalized().unwrap();
+    (p.x - c.x) * d.y - (p.y - c.y) * d.x
+}
+
+/// The top rim of a wall standing on a wavy spline, rounded with a small
+/// radius at a fine tolerance (the impeller's finding F6: a blade's tip
+/// fillet at the default tolerance): the fillet face needs more samples
+/// along the edge than a dense interpolation takes (it is laid through
+/// them by the banded system), and is held to the definition.
+#[test]
+fn a_small_fillet_along_a_wavy_rim_at_a_fine_tolerance() {
+    use craft3d_kernel::extrude::extrude;
+    let (r, h) = (0.02, 1.0);
+    let (curve, knots, control) = wavy();
+    for k in SCALES {
+        let tol = Tolerance::new(1e-7 * k, 1e-9).unwrap();
+        let f = frame(k);
+        let line = |id: u64, a: [f64; 2], b: [f64; 2]| SketchCurve {
+            id,
+            curve: Curve2::Line {
+                start: [a[0] * k, a[1] * k],
+                end: [b[0] * k, b[1] * k],
+            },
+        };
+        let curves = vec![
+            SketchCurve {
+                id: 1,
+                curve: Curve2::Spline(Spline2 {
+                    degree: 3,
+                    knots: knots.clone(),
+                    control: control.iter().map(|p| [p[0] * k, p[1] * k]).collect(),
+                }),
+            },
+            line(2, [1.0, 0.0], [1.0, -0.5]),
+            line(3, [1.0, -0.5], [-1.0, -0.5]),
+            line(4, [-1.0, -0.5], [-1.0, 0.0]),
+        ];
+        let profiles = detect_profiles(&curves, &tol).unwrap();
+        let body = extrude(&profiles, &f, 0.0, h * k, &tol).unwrap().body;
+        assert_eq!(check(&body, &tol), []);
+        let rim = edge_near(&body, f.point(0.0, 0.3 * k, h * k));
+        let made = fillet(
+            &body,
+            &[FilletEdge {
+                edge: rim,
+                radius: r * k,
+            }],
+            &tol,
+        )
+        .unwrap_or_else(|e| panic!("scale {k}: {e}"));
+        let samples = made
+            .faces
+            .iter()
+            .zip(&made.body.faces)
+            .filter(|(f, _)| matches!(f, FilletFace::Fillet(_)))
+            .map(|(_, face)| match &face.surface {
+                craft3d_geom::Surface::Nurbs(n) => n.counts().0,
+                _ => 0,
+            })
+            .max()
+            .unwrap();
+        assert!(samples > 256, "{samples} samples");
+        let margin = 2e-5;
+        let to_centres = |p: [f64; 3]| {
+            let s = signed_from(&curve, [p[0], p[1]]);
+            (p[2] - (h - r)).max(0.0).hypot((r - s).max(0.0))
+        };
+        let want = |p: [f64; 3]| {
+            let s = signed_from(&curve, [p[0], p[1]]);
+            let in_wall = s > 0.0 && p[2] > 0.0 && p[2] < h;
+            let d = to_centres(p);
+            let near = [s, p[2] - h, d - r].iter().any(|x| x.abs() < margin);
+            (!near).then_some(in_wall && d <= r)
+        };
+        let on_fillet = |p: [f64; 3]| (p[0].abs() < 0.25).then(|| to_centres(p) - r);
+        // Across the rim over a stretch of it.
+        let y = curve.eval(0.5).y;
+        held(
+            &made,
+            &body,
+            k,
+            &tol,
+            15,
+            &grid([-0.06, y - 0.04, h - 0.04], [0.06, y + 0.01, h + 0.005], 14),
+            &want,
+            &on_fillet,
+            &format!("{samples} samples, scale {k}"),
+        );
     }
 }

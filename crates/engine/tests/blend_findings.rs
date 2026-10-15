@@ -29,6 +29,11 @@ fn replay(steps: &str) -> (Session, Vec<Value>) {
         write: Access::None,
     });
     let mut results = Vec::new();
+    // `craft3d-cli run` starts from a new document (at the default
+    // tolerance) when the script does not open one.
+    if steps.first().is_none_or(|(id, _)| id != "file.new") {
+        run(&mut s, "file.new", json!({"units": "mm"}));
+    }
     for (id, params) in &steps {
         if id == "document.check" {
             continue;
@@ -100,6 +105,18 @@ fn a_blade_rim_that_runs_into_a_wall() {
     let (mut s, _) = replay(include_str!("blend_findings/edge-into-wall.json"));
     let top = feature(&mut s, "Top");
     assert_eq!(top["status"], "ok", "{top}");
+    deep_ok(&mut s);
+}
+
+/// F6: a lofted blade's tip fillet at the default tolerance (1e-6 mm)
+/// needs more samples than a dense interpolation took.
+#[test]
+fn a_blade_tip_at_the_default_tolerance() {
+    let (mut s, _) = replay(include_str!(
+        "blend_findings/approx-tip-fillet-default-tol.json"
+    ));
+    let blade = feature(&mut s, "Blade");
+    assert_eq!(blade["status"], "ok", "{blade}");
     deep_ok(&mut s);
 }
 
