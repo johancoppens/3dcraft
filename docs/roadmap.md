@@ -260,6 +260,7 @@ Surface/surface intersection, imprint, classify and sew; union, subtract and int
 - Poles at a corner of a patch's parameters (a lune as the stereographic image of a quadrant): a chart, the side at the pole, the marcher and the tessellator; the eight cuts through a pole the tessellator declined were already meshed (2026-10-15)
 - Coincident freeform faces: a patch on its analytic twin moved along itself, two patches of one surface ([`architecture.md`](architecture.md) §5.3) (2026-10-15)
 - The self-intersection check inside every operation, near what it changed, and a shell that touches itself refused (2026-10-15)
+- A row of booleans on a body of many freeform faces indexes each surface once (the impeller: a chamfer of the bore 12 s to 1 s); a material measures nothing, mass and inertia are measured at once ([`architecture.md`](architecture.md) §5.3, §5.5) (2026-10-16)
 
 #### Open
 The [boolean checklist](#the-boolean-checklist) › *Owed*.

@@ -1302,12 +1302,35 @@ impl Ord for Pending {
 
 /// Trees built lately, by the surface they index (written out in full, so
 /// that two surfaces are the same key only when every number of them is
-/// the same, bit for bit), the most recently used last.
-type Shelf = Vec<(String, Arc<PatchTree>)>;
+/// the same, bit for bit), with what each takes ([`PatchTree::bytes`]),
+/// the most recently used last.
+type Shelf = Vec<(String, Arc<PatchTree>, usize)>;
 static SHELF: Mutex<Shelf> = Mutex::new(Vec::new());
-/// How many trees are kept, and how many nodes all of them have at most.
-const SHELF_TREES: usize = 32;
-const SHELF_NODES: usize = 1 << 17;
+/// How many trees are kept, and how much memory all of them take at most
+/// ([`PatchTree::bytes`]). A boolean holds the trees of every freeform
+/// face of both operands while it works, so a body of many freeform faces
+/// takes that much anyway; the shelf keeps the trees of such a body (the
+/// impeller of the showcase: 62 freeform faces, some 860 000 nodes, about
+/// 450 MB; with the trees of the operations before it 600 MB) for the next
+/// operation on it. Smaller, the trees of one body
+/// went round the shelf in the order they were asked for, each pushing
+/// out the one asked for next, and every boolean on it built them all
+/// again: most of the time of a chamfer far from the blades.
+const SHELF_TREES: usize = 1024;
+const SHELF_BYTES: usize = 768 << 20;
+
+thread_local! {
+    /// Trees this thread built ([`trees_built`]).
+    static BUILT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How many trees [`PatchTree::shared`] built on this thread (not found on
+/// the shelf) so far: for tests that hold a row of booleans on one body
+/// to building each tree once.
+#[cfg(test)]
+pub(super) fn trees_built() -> usize {
+    BUILT.with(std::cell::Cell::get)
+}
 
 impl PatchTree {
     /// The tree of `surface`, shared with the booleans before that asked
@@ -1319,7 +1342,7 @@ impl PatchTree {
         let key = format!("{surface:?}");
         {
             let mut shelf = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Some(at) = shelf.iter().position(|(k, _)| *k == key) {
+            if let Some(at) = shelf.iter().position(|(k, _, _)| *k == key) {
                 let entry = shelf.remove(at);
                 let tree = Arc::clone(&entry.1);
                 shelf.push(entry);
@@ -1329,18 +1352,43 @@ impl PatchTree {
         // Built outside the lock: another thread may build the same tree
         // meanwhile, which is only work done twice.
         let tree = Arc::new(PatchTree::new(surface)?);
-        if tree.nodes.len() <= SHELF_NODES {
+        BUILT.with(|built| built.set(built.get().saturating_add(1)));
+        let bytes = tree.bytes();
+        if bytes <= SHELF_BYTES {
             let mut shelf = SHELF.lock().unwrap_or_else(PoisonError::into_inner);
-            if !shelf.iter().any(|(k, _)| *k == key) {
-                shelf.push((key, Arc::clone(&tree)));
+            if !shelf.iter().any(|(k, _, _)| *k == key) {
+                shelf.push((key, Arc::clone(&tree), bytes));
             }
-            while shelf.len() > SHELF_TREES
-                || shelf.iter().map(|(_, t)| t.nodes.len()).sum::<usize>() > SHELF_NODES
-            {
-                let _forgotten = shelf.remove(0);
+            let mut total = shelf
+                .iter()
+                .map(|(_, _, b)| *b)
+                .fold(0_usize, usize::saturating_add);
+            while shelf.len() > SHELF_TREES || total > SHELF_BYTES {
+                let (_, _forgotten, b) = shelf.remove(0);
+                total = total.saturating_sub(b);
             }
         }
         Ok(tree)
+    }
+
+    /// About how much memory the tree takes: its nodes and the pieces its
+    /// leaves keep (not the memo of nearest points, which is small).
+    fn bytes(&self) -> usize {
+        let leaves: usize = self
+            .nodes
+            .iter()
+            .filter_map(|n| n.patch.as_ref())
+            .map(|p| {
+                let (du, dv) = p.degrees();
+                (du + 1)
+                    .saturating_mul(dv + 1)
+                    .saturating_mul(4 * std::mem::size_of::<f64>())
+            })
+            .fold(0_usize, usize::saturating_add);
+        self.nodes
+            .len()
+            .saturating_mul(std::mem::size_of::<Node>())
+            .saturating_add(leaves)
     }
 
     pub fn new(surface: &Surface) -> Result<PatchTree, Reason> {
@@ -2051,6 +2099,43 @@ mod tests {
                 near.distance
             );
             assert!(near.point.distance(surface.eval(near.u, near.v)) < 1e-12);
+        }
+    }
+
+    /// A row of booleans on a body of many freeform faces asks for the
+    /// trees of all of them every time, in the same order: the shelf keeps
+    /// them all, so the second round builds none (with room for 32 trees
+    /// the first round pushed out each tree before it was asked for again,
+    /// and every boolean built them all).
+    #[test]
+    fn the_trees_of_a_body_of_many_freeform_faces_are_built_once() {
+        let surfaces: Vec<Surface> = (0..48)
+            .map(|k| {
+                let frame = Frame::WORLD
+                    .at(Vec3::new(10.0 * f64::from(k), 0.0, 0.0))
+                    .unwrap();
+                let roof = craft3d_testkit::trimmed::domed_block(&frame, 4.0, 3.0, 2.0, k % 2 == 0)
+                    .unwrap()
+                    .body;
+                roof.faces
+                    .iter()
+                    .map(|f| f.surface.clone())
+                    .find(is_freeform)
+                    .unwrap()
+            })
+            .collect();
+        let before = trees_built();
+        for surface in &surfaces {
+            PatchTree::shared(surface).unwrap();
+        }
+        let first = trees_built() - before;
+        assert!(first <= surfaces.len(), "{first}");
+        for _round in 0..2 {
+            let before = trees_built();
+            for surface in &surfaces {
+                PatchTree::shared(surface).unwrap();
+            }
+            assert_eq!(trees_built() - before, 0);
         }
     }
 
