@@ -225,6 +225,7 @@ Profile detection; `kernel` extrude and revolve from profiles; origin maps; the 
 - Revolve (`feature.revolve`, Pappus through the command layer) (2026-10-13)
 - The per-feature regeneration cache; incremental = full is asserted after every command of the engine suites ([`architecture.md`](architecture.md) §5.5) (2026-10-13)
 - Transform, mirror and pattern, names through copies, names for the entities of primitives (2026-10-13)
+- Regeneration on long rows: a feature whose inputs did not change is not compared input by input, so adding a feature costs the length of the history, not its square; the boolean's check memo keys bodies by their bits instead of their text ([`architecture.md`](architecture.md) §5.5, *Long rows*) (2026-10-15)
 - Deviation: no datum planes; they came with M8.5 (2026-10-13)
 
 #### Open
