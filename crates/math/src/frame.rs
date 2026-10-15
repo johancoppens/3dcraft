@@ -107,6 +107,15 @@ impl Frame {
     }
 }
 
+impl crate::Bits for Frame {
+    fn push_bits(&self, out: &mut Vec<u64>) {
+        let Frame { origin, x, y, z } = self;
+        for v in [origin, x, y, z] {
+            crate::Bits::push_bits(v, out);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

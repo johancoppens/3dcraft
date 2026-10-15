@@ -20,7 +20,7 @@ pub use nurbs::{
 pub use surface::{Cone, Cylinder, Plane, Sphere, Surface, Torus};
 pub use transform::{ISOMETRY_EPSILON, MirrorRule};
 
-use craft3d_math::{Bbox3, Vec3};
+use craft3d_math::{Bbox3, Bits, Vec3};
 use std::fmt;
 
 /// Highest polynomial degree accepted per direction. Caps the allocation an
@@ -346,6 +346,19 @@ impl BezierPatch {
             mf * nf * uv,
             nf * (nf - 1.0).max(0.0) * vv,
         )
+    }
+}
+
+impl Bits for BezierPatch {
+    fn push_bits(&self, out: &mut Vec<u64>) {
+        let BezierPatch {
+            degree_u,
+            degree_v,
+            ctrl,
+        } = self;
+        degree_u.push_bits(out);
+        degree_v.push_bits(out);
+        ctrl.push_bits(out);
     }
 }
 

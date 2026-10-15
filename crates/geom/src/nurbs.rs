@@ -15,7 +15,7 @@
 //! (`tests/spline_eval.rs` keeps that older algorithm to compare with).
 
 use crate::{BezierPatch, GeomError, MAX_DEGREE};
-use craft3d_math::{Bbox3, Frame, Vec3};
+use craft3d_math::{Bbox3, Bits, Frame, Vec3};
 use std::fmt;
 
 /// Largest accepted number of control points per direction.
@@ -1442,6 +1442,46 @@ impl NurbsSurface {
             ));
         }
         Ok(out)
+    }
+}
+
+impl Bits for NurbsCurve {
+    fn push_bits(&self, out: &mut Vec<u64>) {
+        // `homogeneous` is made from `ctrl` and `weights`: not part of the
+        // curve's value, as in `==`.
+        let NurbsCurve {
+            degree,
+            knots,
+            ctrl,
+            weights,
+            homogeneous: _,
+        } = self;
+        degree.push_bits(out);
+        knots.push_bits(out);
+        ctrl.push_bits(out);
+        weights.push_bits(out);
+    }
+}
+
+impl Bits for NurbsSurface {
+    fn push_bits(&self, out: &mut Vec<u64>) {
+        let NurbsSurface {
+            degree_u,
+            degree_v,
+            knots_u,
+            knots_v,
+            count_v,
+            ctrl,
+            weights,
+            homogeneous: _,
+        } = self;
+        degree_u.push_bits(out);
+        degree_v.push_bits(out);
+        knots_u.push_bits(out);
+        knots_v.push_bits(out);
+        count_v.push_bits(out);
+        ctrl.push_bits(out);
+        weights.push_bits(out);
     }
 }
 

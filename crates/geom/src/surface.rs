@@ -5,7 +5,7 @@
 
 use crate::curve::wrap_angle;
 use crate::{BezierPatch, GeomError, NurbsSurface};
-use craft3d_math::{Frame, Vec3};
+use craft3d_math::{Bits, Frame, Vec3};
 use std::f64::consts::{FRAC_PI_2, TAU};
 
 /// Steps each way of the grid a numeric projection starts from.
@@ -965,6 +965,90 @@ impl Surface {
             }
         }
         (here.0.length(), u, v, settled)
+    }
+}
+
+impl Bits for Plane {
+    fn push_bits(&self, out: &mut Vec<u64>) {
+        let Plane { frame } = self;
+        frame.push_bits(out);
+    }
+}
+
+impl Bits for Cylinder {
+    fn push_bits(&self, out: &mut Vec<u64>) {
+        let Cylinder { frame, radius } = self;
+        frame.push_bits(out);
+        radius.push_bits(out);
+    }
+}
+
+impl Bits for Cone {
+    fn push_bits(&self, out: &mut Vec<u64>) {
+        let Cone {
+            frame,
+            radius,
+            half_angle,
+        } = self;
+        frame.push_bits(out);
+        radius.push_bits(out);
+        half_angle.push_bits(out);
+    }
+}
+
+impl Bits for Sphere {
+    fn push_bits(&self, out: &mut Vec<u64>) {
+        let Sphere { frame, radius } = self;
+        frame.push_bits(out);
+        radius.push_bits(out);
+    }
+}
+
+impl Bits for Torus {
+    fn push_bits(&self, out: &mut Vec<u64>) {
+        let Torus {
+            frame,
+            major,
+            minor,
+        } = self;
+        frame.push_bits(out);
+        major.push_bits(out);
+        minor.push_bits(out);
+    }
+}
+
+impl Bits for Surface {
+    fn push_bits(&self, out: &mut Vec<u64>) {
+        match self {
+            Surface::Plane(s) => {
+                out.push(0);
+                s.push_bits(out);
+            }
+            Surface::Cylinder(s) => {
+                out.push(1);
+                s.push_bits(out);
+            }
+            Surface::Cone(s) => {
+                out.push(2);
+                s.push_bits(out);
+            }
+            Surface::Sphere(s) => {
+                out.push(3);
+                s.push_bits(out);
+            }
+            Surface::Torus(s) => {
+                out.push(4);
+                s.push_bits(out);
+            }
+            Surface::Bezier(s) => {
+                out.push(5);
+                s.push_bits(out);
+            }
+            Surface::Nurbs(s) => {
+                out.push(6);
+                s.push_bits(out);
+            }
+        }
     }
 }
 

@@ -425,3 +425,81 @@ fn time_of_one_more_hole_by_command() {
         );
     }
 }
+
+/// What regeneration does besides building, counted rather than timed so
+/// that it cannot grow back unseen: adding a feature to a long row, or
+/// changing one near its end, looks at what the features are made from in
+/// proportion to the length of the history. Until 2026-10-15 every
+/// feature's whole context was put together for every command, the square
+/// of the length of the history (a thousand holes cut one by one took
+/// 593 s, of which 18 s was building).
+#[test]
+fn the_work_of_adding_to_a_long_row_grows_with_its_length() {
+    let mut per_feature = Vec::new();
+    for holes in [30, 90] {
+        let (mut s, last) = plate_with_holes(holes);
+        let mut worst = 0usize;
+        let mut step = |s: &mut Session, id: &str, params: Value| {
+            run(s, id, params.clone());
+            let features = run(s, "document.inspect", json!({}))["features"]
+                .as_array()
+                .unwrap()
+                .len();
+            let work = s.last_regeneration_work().unwrap();
+            assert!(
+                work <= 4 * features,
+                "{holes} holes, {id} {params}: {work} entries looked at for {features} features"
+            );
+            worst = worst.max(work);
+        };
+        // A variable nothing uses yet, then one more hole whose radius is
+        // that variable.
+        step(&mut s, "variable.set", json!({"name": "r", "expr": "1 mm"}));
+        step(&mut s, "sketch.create", json!({"name": "Last"}));
+        step(
+            &mut s,
+            "sketch.circle",
+            json!({"sketch": "Last", "center": [5, 20], "radius": 1}),
+        );
+        step(
+            &mut s,
+            "sketch.constrain",
+            json!({"sketch": "Last", "type": "diameter", "entities": ["e2"], "value": "2 * r"}),
+        );
+        step(
+            &mut s,
+            "feature.extrude",
+            json!({"sketch": "Last", "distance": 3.0 * THICK, "symmetric": true,
+                   "cut": last, "name": "Final"}),
+        );
+        // Changing it rebuilds the sketch, the extrusion and the cut,
+        // nothing else.
+        step(
+            &mut s,
+            "variable.set",
+            json!({"name": "r", "expr": "1.5 mm"}),
+        );
+        assert_eq!(
+            s.last_regeneration().map(|(rebuilt, _)| rebuilt),
+            Some(3),
+            "{holes} holes"
+        );
+        let made = body(&mut s, "Final");
+        assert_close(
+            made["volume"].as_f64().unwrap(),
+            plate_volume(holes) - PI * 1.5 * 1.5 * THICK,
+            "volume",
+        );
+        step(&mut s, "edit.undo", json!({}));
+        step(&mut s, "edit.undo", json!({}));
+        assert_ne!(s.regeneration_matches_a_full_one(), Some(false));
+        per_feature.push(worst as f64 / (1 + 3 * holes) as f64);
+    }
+    // Three times the features: about the same work per feature, not three
+    // times as much.
+    println!("most entries looked at per feature, at 30 and 90 holes: {per_feature:?}");
+    assert!(
+        per_feature[1] <= 1.5 * per_feature[0],
+        "work per feature at 30 and 90 holes: {per_feature:?}"
+    );
+}

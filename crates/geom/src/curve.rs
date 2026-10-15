@@ -1,7 +1,7 @@
 //! Curves in space: analytic kinds stay analytic, everything else is NURBS.
 
 use crate::{GeomError, NurbsCurve};
-use craft3d_math::{Frame, Vec3};
+use craft3d_math::{Bits, Frame, Vec3};
 use std::f64::consts::TAU;
 
 /// An angle wrapped to `[0, 2π)`.
@@ -241,6 +241,54 @@ impl Curve3 {
         } else {
             best.1
         })
+    }
+}
+
+impl Bits for Line {
+    fn push_bits(&self, out: &mut Vec<u64>) {
+        let Line { origin, direction } = self;
+        origin.push_bits(out);
+        direction.push_bits(out);
+    }
+}
+
+impl Bits for Circle {
+    fn push_bits(&self, out: &mut Vec<u64>) {
+        let Circle { frame, radius } = self;
+        frame.push_bits(out);
+        radius.push_bits(out);
+    }
+}
+
+impl Bits for Ellipse {
+    fn push_bits(&self, out: &mut Vec<u64>) {
+        let Ellipse { frame, a, b } = self;
+        frame.push_bits(out);
+        a.push_bits(out);
+        b.push_bits(out);
+    }
+}
+
+impl Bits for Curve3 {
+    fn push_bits(&self, out: &mut Vec<u64>) {
+        match self {
+            Curve3::Line(c) => {
+                out.push(0);
+                c.push_bits(out);
+            }
+            Curve3::Circle(c) => {
+                out.push(1);
+                c.push_bits(out);
+            }
+            Curve3::Ellipse(c) => {
+                out.push(2);
+                c.push_bits(out);
+            }
+            Curve3::Nurbs(c) => {
+                out.push(3);
+                c.push_bits(out);
+            }
+        }
     }
 }
 
