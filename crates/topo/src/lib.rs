@@ -15,7 +15,7 @@
 //!
 //! Not here yet: parameter-space curves on faces (they are recovered by
 //! projection where needed), per-entity tolerances, persistent names
-//! (docs/architecture.md §4.1, milestone M6).
+//! (docs/design/names.md, milestone M6).
 
 mod bits;
 mod check;

@@ -2,7 +2,7 @@
 //! points once (`edge.rs`), and every face that uses the edge uses those
 //! same points. Faces therefore meet without gaps or T-junctions, and
 //! welding the mesh of a valid solid gives a closed manifold
-//! (docs/architecture.md §6). That is checked, not assumed: the mesh of
+//! (docs/design/tessellator.md). That is checked, not assumed: the mesh of
 //! every face is held against the chords of the face's edges before it
 //! is returned (`closes_along_edges`), and a face whose mesh does not
 //! end on them, each as often and in the direction its loops use it, is

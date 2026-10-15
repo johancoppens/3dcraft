@@ -16,7 +16,7 @@
 //! the profile only, not on the direction its lines were drawn in.
 //!
 //! Every entity is reported with its origin (see [`Origin`]), from which
-//! persistent names are made (docs/architecture.md §4.1).
+//! persistent names are made (docs/design/names.md).
 
 use crate::profile::{Loop2, Profile, Segment, Shape};
 use crate::{KernelError, MAX_REPORTED};

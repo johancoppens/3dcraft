@@ -1,6 +1,6 @@
 //! Freeform blends that two showcases found refused or wrong, run from
 //! their reproducers (a compressor wheel's blades, a lamp shade's cells;
-//! docs/architecture.md §5.3 › *Blend findings of the impeller and the
+//! docs/design/blends.md › *Blend findings of the impeller and the
 //! lamp*): each builds now and passes the deep check, or is refused with
 //! the reason that holds.
 

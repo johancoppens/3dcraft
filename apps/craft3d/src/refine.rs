@@ -1,7 +1,7 @@
 //! Coarse first, then sharp: the display scene of the active document is
 //! built on a thread of its own while the window shows the quick first
 //! picture, and while the session goes on running commands on the engine
-//! thread (docs/architecture.md §8).
+//! thread (docs/design/engine.md).
 //!
 //! The engine thread builds the first picture as part of a task, as it
 //! built the display scene before; this module takes it from there. A

@@ -1,4 +1,4 @@
-//! Modelling tolerance as data (docs/architecture.md §1.1): every predicate
+//! Modelling tolerance as data (docs/design/plan.md): every predicate
 //! takes one, nothing uses a global epsilon.
 
 /// How close counts as the same place or the same direction.

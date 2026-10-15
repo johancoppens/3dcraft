@@ -11,7 +11,7 @@
 //! depends on the samples per pixel: with one it compares depths
 //! (`peel.wgsl`), with several it compares a key of the front triangle
 //! that the first pass stored per sample (`peel_samples.wgsl`). Both files
-//! say why; docs/architecture.md §7.2 has the measurements.
+//! say why; docs/design/rendering.md has the measurements.
 
 use crate::renderer::{COLOR_FORMAT, DATA_FORMAT, texture_entry, uniform_entry};
 use std::cell::Cell;

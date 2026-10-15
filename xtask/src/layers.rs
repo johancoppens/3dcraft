@@ -1,4 +1,4 @@
-//! Dependency layering and lint opt-in checks (docs/architecture.md §3).
+//! Dependency layering and lint opt-in checks (docs/architecture.md §2).
 
 use std::process::Command;
 
@@ -59,7 +59,7 @@ const SAME_LAYER: &[(&str, &str)] = &[
     ("geom", "math"),
     // The wgpu renderer takes its camera, parameters, frame type and shading
     // constants from the CPU reference renderer, so the two share one
-    // projection and can be compared pixel by pixel (docs/architecture.md §7).
+    // projection and can be compared pixel by pixel (docs/design/rendering.md).
     ("gpu", "render"),
 ];
 

@@ -6,7 +6,7 @@
 //! from, on the surface it had, so it is named as a copy of that face
 //! (`F9:copy(0)/F2:side(e7)`), as in every feature that makes its body
 //! from another. Edges and vertices are named by the faces they lie on
-//! (docs/architecture.md §4.1), with the copy of the name they had as an
+//! (docs/design/names.md), with the copy of the name they had as an
 //! alias when they were there before: the edge a strip collapsed into and
 //! the vertex its two ends became are new and have only the first.
 
