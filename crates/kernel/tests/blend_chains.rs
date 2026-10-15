@@ -1364,3 +1364,310 @@ fn two_fillets_that_meet_in_a_pocket() {
         assert!(added > 50, "only {added} points in what the fillets add");
     }
 }
+
+/// The top view of a wall: a Bézier arch over (-1, 0) to (1, 0), the
+/// material below it, and a side line leaving its right end at the angle
+/// `phi` (radians) to the arch, the material to its right.
+struct ArchCorner {
+    arch: Bez,
+    /// The side line's direction from (1, 0), a unit vector.
+    side: [f64; 2],
+}
+
+impl ArchCorner {
+    fn new(phi: f64) -> ArchCorner {
+        let arch = Bez([[-1.0, 0.0], [-1.0 / 3.0, 0.5], [1.0 / 3.0, 0.5], [1.0, 0.0]]);
+        // Back along the arch from its end, turned on by `phi`.
+        let back = [-0.8_f64, 0.6_f64];
+        let (s, c) = phi.sin_cos();
+        let side = [back[0] * c - back[1] * s, back[0] * s + back[1] * c];
+        ArchCorner { arch, side }
+    }
+
+    fn eval(&self, t: f64) -> [f64; 2] {
+        let p = self.arch.0;
+        let s = 1.0 - t;
+        let b = [s * s * s, 3.0 * s * s * t, 3.0 * s * t * t, t * t * t];
+        [
+            (0..4).map(|i| b[i] * p[i][0]).sum(),
+            (0..4).map(|i| b[i] * p[i][1]).sum(),
+        ]
+    }
+
+    fn dd(&self, t: f64) -> [f64; 2] {
+        let p = self.arch.0;
+        let s = 1.0 - t;
+        let c = |k: usize| {
+            6.0 * (s * (p[2][k] - 2.0 * p[1][k] + p[0][k])
+                + t * (p[3][k] - 2.0 * p[2][k] + p[1][k]))
+        };
+        [c(0), c(1)]
+    }
+
+    /// The nearest point of the arch (continued past its ends as the cubic
+    /// it is) to `q`: its parameter, and the signed distance of `q`,
+    /// positive below the arch (in the material).
+    fn to_arch(&self, q: [f64; 2]) -> (f64, f64) {
+        let mut t = (0..=400)
+            .map(|i| -0.3 + 1.6 * f64::from(i) / 400.0)
+            .min_by(|a, b| {
+                let (pa, pb) = (self.eval(*a), self.eval(*b));
+                let da = (pa[0] - q[0]).hypot(pa[1] - q[1]);
+                let db = (pb[0] - q[0]).hypot(pb[1] - q[1]);
+                da.total_cmp(&db)
+            })
+            .unwrap();
+        for _ in 0..50 {
+            let (c, d, e) = (self.eval(t), self.arch.d(t), self.dd(t));
+            let r = [c[0] - q[0], c[1] - q[1]];
+            let f = r[0] * d[0] + r[1] * d[1];
+            let df = d[0] * d[0] + d[1] * d[1] + r[0] * e[0] + r[1] * e[1];
+            t -= f / df;
+        }
+        let (c, d) = (self.eval(t), self.arch.d(t));
+        let len = d[0].hypot(d[1]);
+        // Right of the direction of travel is below the arch.
+        let n = [d[1] / len, -d[0] / len];
+        (t, (q[0] - c[0]) * n[0] + (q[1] - c[1]) * n[1])
+    }
+
+    /// The point `r` in from the arch at `t`.
+    fn inset(&self, t: f64, r: f64) -> [f64; 2] {
+        let (c, d) = (self.eval(t), self.arch.d(t));
+        let len = d[0].hypot(d[1]);
+        [c[0] + r * d[1] / len, c[1] - r * d[0] / len]
+    }
+
+    /// The signed distance of `q` from the side line, positive in the
+    /// material.
+    fn to_side(&self, q: [f64; 2]) -> f64 {
+        let (dx, dy) = (q[0] - 1.0, q[1]);
+        -(self.side[0] * dy - self.side[1] * dx)
+    }
+
+    /// The distance from `q` to the centres of balls of radius `r` behind
+    /// the arch (`side` false) or behind the arch and the side line, in
+    /// the top view: the material eroded by `r`, a convex set (the arch is
+    /// concave, the side straight).
+    fn to_centres(&self, q: [f64; 2], r: f64, side: bool) -> f64 {
+        let in_arch = |p: [f64; 2]| self.to_arch(p).1 >= r - 1e-12;
+        let in_side = |p: [f64; 2]| self.to_side(p) >= r - 1e-12;
+        let onto_arch = |p: [f64; 2]| {
+            let (t, d) = self.to_arch(p);
+            if d >= r { p } else { self.inset(t, r) }
+        };
+        let onto_side = |p: [f64; 2]| {
+            let d = self.to_side(p);
+            if d >= r {
+                p
+            } else {
+                // The side's inward normal: its direction turned clockwise.
+                let n = [self.side[1], -self.side[0]];
+                [p[0] + n[0] * (r - d), p[1] + n[1] * (r - d)]
+            }
+        };
+        let dist = |p: [f64; 2]| (p[0] - q[0]).hypot(p[1] - q[1]);
+        if !side {
+            return dist(onto_arch(q));
+        }
+        if in_arch(q) && in_side(q) {
+            return 0.0;
+        }
+        let mut best = f64::INFINITY;
+        if !in_arch(q) {
+            let p = onto_arch(q);
+            if in_side(p) {
+                best = best.min(dist(p));
+            }
+        }
+        if !in_side(q) {
+            let p = onto_side(q);
+            if in_arch(p) {
+                best = best.min(dist(p));
+            }
+        }
+        if best.is_finite() {
+            return best;
+        }
+        // The corner of the eroded set: the point `r` in from the arch
+        // that is `r` in from the side, by bisection along the arch.
+        let g = |t: f64| self.to_side(self.inset(t, r)) - r;
+        let (mut lo, mut hi) = (0.3, 1.3);
+        assert!(g(lo) > 0.0 && g(hi) < 0.0);
+        for _ in 0..200 {
+            let mid = 0.5 * (lo + hi);
+            if g(mid) > 0.0 {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        dist(self.inset(0.5 * (lo + hi), r))
+    }
+}
+
+/// The top rim of a wall standing on a Bézier arch and the edge where the
+/// wall meets a flat side, rounded with one radius: two freeform fillets
+/// that meet at the top corner, the side's top edge left sharp (the
+/// impeller's finding F3: the cap and the end of a blade-like wall). The
+/// side meets the arch at angles each side of a right angle and close to
+/// it, where the two fillets reach the side's top edge in one point or
+/// close to each other (one of them then runs on along the other's face
+/// for a few hundredths of the radius, which the meet had taken for one
+/// point). A point near the corner is kept exactly when a ball behind the
+/// cap and the arch holds it and a ball behind the arch and the side
+/// holds it; every mesh point of the fillets lies where the larger of the
+/// two distances is the radius.
+#[test]
+fn two_fillets_that_meet_at_the_corner_of_a_spline_wall() {
+    use craft3d_kernel::boolean::contains_points;
+    use craft3d_tess::{SelfCheckParams, TessParams, body_self_intersections, tessellate_body};
+    let (r, h) = (0.15, 1.0);
+    for degrees in [80.0_f64, 89.5, 90.0, 100.0] {
+        let corner = ArchCorner::new(degrees.to_radians());
+        let q = [1.0 + 1.2 * corner.side[0], 1.2 * corner.side[1]];
+        for k in SCALES {
+            let tol = tolerance(k);
+            let frame = Frame::new(
+                Vec3::new(0.3, -0.2, 0.5) * k,
+                Vec3::new(0.2, 0.3, 1.0),
+                Vec3::new(1.0, 0.0, -0.2),
+            )
+            .unwrap();
+            let line = |id: u64, a: [f64; 2], b: [f64; 2]| SketchCurve {
+                id,
+                curve: Curve2::Line {
+                    start: [a[0] * k, a[1] * k],
+                    end: [b[0] * k, b[1] * k],
+                },
+            };
+            let curves = vec![
+                bezier(1, &corner.arch.scaled(k)),
+                line(2, [1.0, 0.0], q),
+                line(3, q, [-1.0, q[1]]),
+                line(4, [-1.0, q[1]], [-1.0, 0.0]),
+            ];
+            let body = prism(&curves, &frame, h * k, k);
+            assert_eq!(check(&body, &tol), []);
+            let rim = edge_near(&body, frame.point(0.0, 0.375 * k, h * k));
+            let end = edge_near(&body, frame.point(k, 0.0, 0.5 * h * k));
+            let made = match fillet(
+                &body,
+                &[
+                    FilletEdge {
+                        edge: rim,
+                        radius: r * k,
+                    },
+                    FilletEdge {
+                        edge: end,
+                        radius: r * k,
+                    },
+                ],
+                &tol,
+            ) {
+                Ok(m) => m,
+                Err(e) => panic!("{degrees}°, scale {k}: {e}"),
+            };
+            assert_eq!(check(&made.body, &tol), [], "{degrees}°, scale {k}");
+            let deep =
+                body_self_intersections(&made.body, &SelfCheckParams::new(tol.linear)).unwrap();
+            assert_eq!(deep.certain_crossings, 0, "{deep:?}");
+            let (crease, seams) = creases(&made.body, &made.faces);
+            assert_eq!(seams, 4, "{degrees}°, scale {k}");
+            assert!(
+                crease <= 10.0 * tol.linear / (r * k),
+                "a crease of {crease}"
+            );
+            // The distances, in the top view's units, of a point given in
+            // the frame's.
+            let local = |p: Vec3| {
+                let (x, y, z) = frame.local(p);
+                ([x / k, y / k], z / k)
+            };
+            let to_a = |xy: [f64; 2], z: f64| {
+                let dz = (z - (h - r)).max(0.0);
+                dz.hypot(corner.to_centres(xy, r, false))
+            };
+            let to_b = |xy: [f64; 2]| corner.to_centres(xy, r, true);
+            // Points near the corner.
+            let n_grid = 14;
+            let margin = 2e-4;
+            let mut points = Vec::new();
+            let mut expected = Vec::new();
+            let mut inside = Vec::new();
+            for i in 0..n_grid {
+                for j in 0..n_grid {
+                    for l in 0..n_grid {
+                        let f = |m: usize, lo: f64, hi: f64| {
+                            lo + (hi - lo) * (m as f64 + 0.37) / n_grid as f64
+                        };
+                        let xy = [f(i, 0.55, 1.05), f(j, -0.45, 0.05)];
+                        let z = f(l, h - 0.45, h + 0.02);
+                        let (sa, ss, sz) = (corner.to_arch(xy).1, corner.to_side(xy), h - z);
+                        let in_body = sa > 0.0 && ss > 0.0 && sz > 0.0;
+                        let (da, db) = (to_a(xy, z), to_b(xy));
+                        let near = [sa, ss, sz, da - r, db - r]
+                            .iter()
+                            .any(|d| d.abs() < margin);
+                        if near {
+                            continue;
+                        }
+                        points.push(frame.point(xy[0] * k, xy[1] * k, z * k));
+                        expected.push(in_body && da <= r && db <= r);
+                        inside.push(in_body);
+                    }
+                }
+            }
+            let found = contains_points(&made.body, &points, &tol).unwrap();
+            let mut undecided = 0;
+            let mut removed = 0;
+            for (((p, want), got), in_body) in points.iter().zip(&expected).zip(&found).zip(&inside)
+            {
+                match got {
+                    Some(got) => assert_eq!(got, want, "at {p:?}, {degrees}°, scale {k}"),
+                    None => undecided += 1,
+                }
+                if *in_body && !want {
+                    removed += 1;
+                }
+            }
+            assert!(undecided * 100 < points.len(), "{undecided} undecided");
+            assert!(removed > 50, "only {removed} points taken away");
+            // Every mesh point of the fillets near the corner is on the
+            // boundary of what both keep.
+            let params = TessParams {
+                chordal_tolerance: 1e-3 * k,
+                ..TessParams::default()
+            };
+            let mesh = tessellate_body(&made.body, &params).unwrap();
+            let mut worst = 0.0_f64;
+            let mut seen = 0;
+            for (t, face) in mesh.face_ids.iter().enumerate() {
+                if !matches!(made.faces[*face as usize], FilletFace::Fillet(_)) {
+                    continue;
+                }
+                for p in mesh.corners(t).unwrap() {
+                    let (xy, z) = local(p);
+                    // Away from the other ends of the two edges.
+                    if xy[0] < 0.5 || z < 0.3 {
+                        continue;
+                    }
+                    let g = to_a(xy, z).max(to_b(xy)) - r;
+                    worst = worst.max(g.abs());
+                    seen += 1;
+                }
+            }
+            println!(
+                "{degrees}°, scale {k}: {} points, {removed} taken away, {undecided} undecided; {seen} mesh points of the fillets off the definition by {:e} of the tolerance",
+                points.len(),
+                worst * k / tol.linear
+            );
+            assert!(seen > 100);
+            assert!(
+                worst * k <= 4.0 * tol.linear,
+                "{} off the rolling balls",
+                worst * k
+            );
+        }
+    }
+}
