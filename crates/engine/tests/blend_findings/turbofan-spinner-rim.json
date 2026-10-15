@@ -1,0 +1,82 @@
+[
+[
+"sketch.create",
+{
+"plane": "xy",
+"name": "SpinnerSk"
+}
+],
+[
+"sketch.path",
+{
+"sketch": "SpinnerSk",
+"start": [
+22.0,
+40.0
+],
+"segments": [
+{
+"line": [
+0,
+40.0
+]
+},
+{
+"line": [
+0,
+0
+]
+},
+{
+"arc": [
+1.4358,
+0.4534
+],
+"center": [
+0,
+2.5
+]
+}
+]
+}
+],
+[
+"sketch.spline",
+{
+"sketch": "SpinnerSk",
+"control": [
+"e6",
+[
+14.326,
+9.4964
+],
+[
+22.0,
+24.2541
+],
+"e1"
+]
+}
+],
+[
+"feature.revolve",
+{
+"sketch": "SpinnerSk",
+"axis": "y",
+"name": "SpinnerRaw"
+}
+],
+[
+"feature.fillet",
+{
+"edges": [
+[
+"F2:side(e11)",
+"F2:side(e3)"
+]
+],
+"radius": "1 mm",
+"name": "Spinner"
+}
+]
+]

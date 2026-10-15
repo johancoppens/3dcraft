@@ -619,6 +619,11 @@ fn end_at(
     } else {
         return Err(refuse(edge, None, Reason::FreeEnd));
     };
+    // An edge that goes on straight into another edge here is the middle
+    // of a chain, not an end the blend can be cut at.
+    if goes_on(body, edge, vertex, [ox, oy]) {
+        return Err(refuse(edge, None, Reason::FreeGoesOn));
+    }
     let (fa, fb) = (faces_of_edge(body, ox), faces_of_edge(body, oy));
     let (Some(t1), Some(t2)) = (pick(&fa, first), pick(&fb, second)) else {
         return Err(refuse(edge, None, Reason::FreeEnd));
@@ -639,6 +644,29 @@ fn end_at(
         facing,
         slant,
     })
+}
+
+/// Whether `edge`, arriving at `vertex`, leaves it again along one of
+/// `others`: by the test `tangent_chain` picks the edges of a chain with
+/// (their directions' cosine within 1e-9 of one), so the chain is what
+/// the refusal asks for.
+fn goes_on(body: &Body, edge: EdgeId, vertex: VertexId, others: [EdgeId; 2]) -> bool {
+    let leaving = |e: EdgeId| -> Option<Vec3> {
+        let d = body.edge(e)?;
+        let (t, sign) = if d.start == vertex {
+            (d.range.0, 1.0)
+        } else {
+            (d.range.1, -1.0)
+        };
+        let (_, der) = d.curve.derivatives(t);
+        (der * sign).normalized()
+    };
+    let Some(back) = leaving(edge) else {
+        return false;
+    };
+    others
+        .into_iter()
+        .any(|o| leaving(o).is_some_and(|l| -back.dot(l) > 1.0 - 1e-9))
 }
 
 /// Whether the edge, continued past its end at `vertex`, runs into the
@@ -1409,8 +1437,14 @@ fn outward_from(
 
 /// The border `border` of a blend face lies on `face` and stays on it:
 /// it meets no other edge of that face but the ones at its own ends.
-/// Sampled as polylines, which come within the tolerance of each other
-/// where two curves on one surface cross.
+/// Both curves are sampled as polylines; where two chords come within
+/// half their lengths of each other (every point of a piece of curve
+/// lies within half its length of one of its ends, so two pieces that
+/// meet have chords that near) the curves' own nearest points are found
+/// from there ([`nearest_points`]), and a border that comes within ten
+/// tolerances of the other curve meets it. Chords alone miss crossings
+/// on a curved face: each chord cuts inside the surface by its sagitta,
+/// two that cross on it pass each other in space by the difference.
 fn stays_on(
     body: &Body,
     edge: EdgeId,
@@ -1420,11 +1454,11 @@ fn stays_on(
 ) -> Result<(), BlendError> {
     let tol = tolerance.linear;
     let data = body.edge(border).ok_or_else(lost)?;
-    let polyline = |e: &Edge| -> Vec<Vec3> {
+    let polyline = |e: &Edge| -> Vec<(f64, Vec3)> {
         (0..=64)
             .map(|j| {
                 let t = e.range.0 + (e.range.1 - e.range.0) * f64::from(j) / 64.0;
-                e.curve.eval(t)
+                (t, e.curve.eval(t))
             })
             .collect()
     };
@@ -1443,10 +1477,18 @@ fn stays_on(
             let theirs = polyline(other);
             for a in mine.windows(2) {
                 for b in theirs.windows(2) {
-                    let ([a0, a1], [b0, b1]) = (a, b) else {
+                    let ([(sa, a0), (ta, a1)], [(sb, b0), (tb, b1)]) = (a, b) else {
                         continue;
                     };
-                    if segment_distance(*a0, *a1, *b0, *b1) <= 10.0 * tol {
+                    let apart = segment_distance(*a0, *a1, *b0, *b1);
+                    if apart <= 10.0 * tol {
+                        return Err(refuse(edge, Some(face), Reason::FreeRunsOver));
+                    }
+                    if apart > 0.5 * (a0.distance(*a1) + b0.distance(*b1)) {
+                        continue;
+                    }
+                    let start = [0.5 * (sa + ta), 0.5 * (sb + tb)];
+                    if nearest_points(data, other, start).is_some_and(|d| d <= 10.0 * tol) {
                         return Err(refuse(edge, Some(face), Reason::FreeRunsOver));
                     }
                 }
@@ -1454,6 +1496,43 @@ fn stays_on(
         }
     }
     Ok(())
+}
+
+/// The least distance between the curves of edges `a` and `b` (within
+/// their ranges), from the parameters `start` on them: Gauss-Newton on
+/// the distance, each step at most a twentieth of the ranges. `None`
+/// where the two run along each other there (the step is not defined).
+fn nearest_points(a: &Edge, b: &Edge, [mut s, mut t]: [f64; 2]) -> Option<f64> {
+    let clamp = |x: f64, (lo, hi): (f64, f64)| x.clamp(lo.min(hi), lo.max(hi));
+    let (wa, wb) = ((a.range.1 - a.range.0).abs(), (b.range.1 - b.range.0).abs());
+    for _ in 0..60 {
+        let (p, pu) = a.curve.derivatives(s);
+        let (q, qu) = b.curve.derivatives(t);
+        let r = p - q;
+        let (m11, m12, m22) = (pu.dot(pu), -pu.dot(qu), qu.dot(qu));
+        let (g1, g2) = (pu.dot(r), -qu.dot(r));
+        let det = m11 * m22 - m12 * m12;
+        if !(det > 0.0) {
+            return None;
+        }
+        let mut ds = -(m22 * g1 - m12 * g2) / det;
+        let mut dt = -(m11 * g2 - m12 * g1) / det;
+        let longest = (ds / wa.max(1e-300)).abs().max((dt / wb.max(1e-300)).abs());
+        if longest > 0.05 {
+            ds *= 0.05 / longest;
+            dt *= 0.05 / longest;
+        }
+        let (s1, t1) = (clamp(s + ds, a.range), clamp(t + dt, b.range));
+        if !(s1.is_finite() && t1.is_finite()) {
+            return None;
+        }
+        let moved = (pu * (s1 - s)).length() + (qu * (t1 - t)).length();
+        (s, t) = (s1, t1);
+        if moved <= 1e-15 * (1.0 + p.length()) {
+            break;
+        }
+    }
+    Some(a.curve.eval(s).distance(b.curve.eval(t)))
 }
 
 /// The distance between the segments from `a0` to `a1` and from `b0` to

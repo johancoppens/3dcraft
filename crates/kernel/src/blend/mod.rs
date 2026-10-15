@@ -191,6 +191,7 @@ pub(crate) enum Reason {
     FreeJoint,
     FreeChainSize,
     FreeRunsOver,
+    FreeGoesOn,
 }
 
 impl Reason {
@@ -278,6 +279,9 @@ impl Reason {
             }
             Reason::FreeChainSize => {
                 "edges that go on smoothly into each other are chamfered by different distances: a chamfer along such a chain has one size; give them the same, or chamfer them in separate features"
+            }
+            Reason::FreeGoesOn => {
+                "the chamfer cannot stop where the edge goes on smoothly into the next edge: chamfer the edges it continues in as well (with chain), or leave this one out"
             }
             Reason::FreeRunsOver => {
                 "the chamfer's border runs off a face beside the edge across one of its other edges along the way: the distance is too large for that face, or the chamfer would have to carry on onto the next face, which is not built yet"
@@ -368,6 +372,9 @@ impl Reason {
             }
             Reason::FreeChainSize => {
                 "edges that go on smoothly into each other are filleted with different radii: a fillet along such a chain has one radius; give them the same, or fillet them in separate features"
+            }
+            Reason::FreeGoesOn => {
+                "the fillet cannot stop where the edge goes on smoothly into the next edge: fillet the edges it continues in as well (with chain), or leave this one out"
             }
             Reason::FreeRunsOver => {
                 "the fillet's border runs off a face beside the edge across one of its other edges along the way (where the ball would roll on over a smooth edge onto the next face, or the face is too narrow for the radius); a fillet that carries on onto the next face in the middle of an edge is not built yet: give a smaller radius"

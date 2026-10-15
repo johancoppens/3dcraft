@@ -50,7 +50,9 @@
 use crate::extrude::{Origin, Role};
 use crate::profile::{Loop2, Profile, Segment, Shape};
 use crate::{KernelError, MAX_REPORTED};
-use craft3d_geom::refine::{compatible, interpolation, periodic_tangents, piece, reversed};
+use craft3d_geom::refine::{
+    compatible, interpolation, level_weights, periodic_tangents, piece, reparametrized, reversed,
+};
 use craft3d_geom::{
     Circle, Cone, Curve3, Cylinder, Line, NurbsCurve, NurbsSurface, Plane, Surface,
 };
@@ -1145,11 +1147,15 @@ pub fn loft(
         matched(pieces, tol)?
     };
     let width = pieces.first().map_or(0, Vec::len);
-    let sections_walked: Vec<Walk> = pieces
+    let mut sections_walked: Vec<Walk> = pieces
         .into_iter()
         .zip(walks)
         .map(|(pieces, forward)| Walk { pieces, forward })
         .collect();
+    // Faces that meet tangentially where every section is tangent.
+    let through_more = !(options.ruled || (count == 2 && !options.closed));
+    tangent_columns(&mut sections_walked, through_more, tolerance)?;
+    let sections_walked = sections_walked;
     let walk = |k: usize| sections_walked.get(k).ok_or_else(internal);
 
     // No section may reach the plane of the one next to it.
@@ -1412,6 +1418,145 @@ pub fn loft(
         body: b.body,
         faces: b.faces,
     })
+}
+
+/// Makes the side faces meet tangentially across a rail wherever the
+/// curves of every section meet tangentially at its vertices (an oval of
+/// arcs lofted into a circle: the faces met at a crease of up to 1.6°
+/// between the sections, though both sections are smooth there).
+///
+/// Every band's surface is Σₛ cₛ(v) Hₛ(u) in homogeneous coordinates (the
+/// sections' curves Hₛ, the same functions cₛ of v for every column, as
+/// [`skin`] lays it), and the ends of the curves have weight 1. Across the
+/// rail at a joint, the face before has the tangent Σ cₛ (Dₛ + W′ₛ (Pₛ −
+/// S)) along u and the face after Σ cₛ (Eₛ + V′ₛ (Pₛ − S)), with D and E
+/// the curves' derivatives before and after the vertex Pₛ, W′ and V′ their
+/// weights' and S the point of the rail. With E = λₛ D in every section
+/// (tangent curves), the two faces are tangent all along the rail exactly
+/// when λₛ is the same for every section and V′ₛ − λ W′ₛ is too (then the
+/// second sum, Σ cₛ (Pₛ − S) times it, vanishes; between two sections Pₛ −
+/// S lies along the rail anyway, so the weights do not matter there).
+///
+/// The same holds inside a face at a knot of a piece (an arc of more than
+/// a quarter turn is two rational pieces, its weight falling into the
+/// knot and rising out of it): there E = D and W′ jumps.
+///
+/// Both are made so, keeping every curve as it is: λ by running each
+/// piece's parameter through a cubic (`craft3d_geom::refine::
+/// reparametrized`), which multiplies its derivatives at its ends by any
+/// factors that keep it increasing, so that every section's λ at a joint
+/// is their geometric mean; then, through three or more sections, every
+/// weight is made level at every knot (`level_weights`: V′ = W′ = 0). A
+/// piece whose change would not keep its parameter increasing or its
+/// weights positive is left as it is (its faces meet at the crease they
+/// had). Joints next to a face that is a cylinder or a cone (arcs about
+/// one axis) are left as they are: those faces are made from the arcs,
+/// not from the curves.
+fn tangent_columns(
+    walks: &mut [Walk],
+    through_more: bool,
+    tolerance: &Tolerance,
+) -> Result<(), KernelError> {
+    let width = walks.first().map_or(0, |w| w.pieces.len());
+    if width == 0 || walks.iter().any(|w| w.pieces.len() != width) {
+        return Ok(());
+    }
+    // Columns that become a cylinder or a cone in some band.
+    let analytic: Vec<bool> = (0..width)
+        .map(|j| {
+            walks.windows(2).any(|pair| match pair {
+                [a, b] => match (
+                    a.pieces.get(j).and_then(|p| p.arc.as_ref()),
+                    b.pieces.get(j).and_then(|p| p.arc.as_ref()),
+                ) {
+                    (Some(x), Some(y)) => round(x, y, a.forward, tolerance).is_some(),
+                    _ => false,
+                },
+                _ => false,
+            })
+        })
+        .collect();
+    let next = |j: usize| (j + 1) % width;
+    // The curve's derivatives at its ends, and its weight's, per unit of
+    // the parameter scaled to [0, 1] (as [`compatible`] lays it).
+    let ends = |c: &NurbsCurve| -> Option<[(Vec3, f64); 2]> {
+        let (a, b) = c.domain();
+        let width = b - a;
+        let n = c.degree() as f64;
+        let (k, w) = (c.knots(), c.weights());
+        let first_span = k.get(c.degree() + 1)? - k.get(c.degree())?;
+        let last_span = k.get(k.len().checked_sub(c.degree() + 1)?)?
+            - k.get(k.len().checked_sub(c.degree() + 2)?)?;
+        let slope0 = n * (w.get(1)? - w.first()?) / first_span * width;
+        let slope1 = n * (w.last()? - w.get(w.len().checked_sub(2)?)?) / last_span * width;
+        Some([
+            (c.derivatives(a).1 * width, slope0),
+            (c.derivatives(b).1 * width, slope1),
+        ])
+    };
+    // The joints every section is tangent at, away from cylinders and
+    // cones: per section, λ there.
+    let lambdas = |walks: &[Walk], j: usize| -> Option<Vec<f64>> {
+        if *analytic.get(j)? || *analytic.get(next(j))? {
+            return None;
+        }
+        walks
+            .iter()
+            .map(|w| {
+                let (a, b) = (w.pieces.get(j)?, w.pieces.get(next(j))?);
+                let [_, (d, _)] = ends(&a.curve)?;
+                let [(e, _), _] = ends(&b.curve)?;
+                let (ud, ue) = (d.normalized()?, e.normalized()?);
+                let scale = 1.0 + a.end.length();
+                (ud.dot(ue) > 1.0 - 1e-9 && a.end.distance(b.start) <= 1e-9 * scale)
+                    .then(|| e.length() / d.length())
+                    .filter(|l| l.is_finite() && *l > 0.0)
+            })
+            .collect()
+    };
+    // λ: per section and piece, the factors at its start and its end.
+    let mut factors = vec![vec![(1.0_f64, 1.0_f64); width]; walks.len()];
+    for j in 0..width {
+        let Some(ls) = lambdas(walks, j) else {
+            continue;
+        };
+        let mean = (ls.iter().map(|l| l.ln()).sum::<f64>() / ls.len() as f64).exp();
+        for (s, l) in ls.iter().enumerate() {
+            let half = (mean / l).sqrt();
+            let Some(row) = factors.get_mut(s) else {
+                continue;
+            };
+            if let Some(f) = row.get_mut(next(j)) {
+                f.0 *= half;
+            }
+            if let Some(f) = row.get_mut(j) {
+                f.1 /= half;
+            }
+        }
+    }
+    for (w, row) in walks.iter_mut().zip(&factors) {
+        for (piece, &(start, end)) in w.pieces.iter_mut().zip(row) {
+            if (start - 1.0).abs() <= 1e-12 && (end - 1.0).abs() <= 1e-12 {
+                continue;
+            }
+            if let Ok(made) = reparametrized(&piece.curve, start, end) {
+                piece.curve = made;
+            }
+        }
+    }
+    if !through_more {
+        return Ok(());
+    }
+    // Level weights at every knot (V′ = W′ = 0 at the joints, and no
+    // turn of a weight inside a piece).
+    for w in walks.iter_mut() {
+        for piece in &mut w.pieces {
+            if let Ok(made) = level_weights(&piece.curve) {
+                piece.curve = made;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// True when the loft is a row of cylinders and cones: whole circles

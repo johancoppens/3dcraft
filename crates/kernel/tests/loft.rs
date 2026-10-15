@@ -928,3 +928,103 @@ fn a_loft_at_1e6_in_a_boolean() {
         assert!(result.is_ok(), "{op:?}: {}", result.unwrap_err());
     }
 }
+
+/// An oval of four arcs that meet tangentially (side arcs of radius `big`
+/// about (∓d, 0), on the far side of the oval, end arcs about (0, ±e)
+/// tangent to them inside), at scale `k`, ids from 1.
+fn oval(k: f64, d: f64, e: f64, big: f64) -> Vec<SketchCurve> {
+    let apart = d.hypot(e);
+    // The top left junction, on the line through the two centres.
+    let (jx, jy) = (d - big * d / apart, big * e / apart);
+    let s = |x: f64, y: f64| [x * k, y * k];
+    vec![
+        arc(1, s(-d, 0.0), s(-jx, -jy), s(-jx, jy)),
+        arc(2, s(0.0, e), s(-jx, jy), s(jx, jy)),
+        arc(3, s(d, 0.0), s(jx, jy), s(jx, -jy)),
+        arc(4, s(0.0, -e), s(jx, -jy), s(-jx, -jy)),
+    ]
+}
+
+/// The largest sine of the angle between the normals of two side faces
+/// across every edge they share (33 points along each), and across every
+/// knot inside a side face (both sides of it, 9 points across).
+fn creases(lofted: &Lofted) -> f64 {
+    let body = &lofted.body;
+    let sides: Vec<usize> = (0..body.faces.len())
+        .filter(|f| lofted.faces[*f].role == Role::Side)
+        .collect();
+    let normal = |f: usize, p: Vec3| {
+        let face = &body.faces[f];
+        let (u, v) = face.surface.project(p).unwrap();
+        let n = face.surface.normal(u, v).unwrap();
+        if face.reversed { -n } else { n }
+    };
+    let edges_of = |f: usize| -> Vec<u32> {
+        body.faces[f]
+            .loops
+            .iter()
+            .flat_map(|l| body.loop_(*l).unwrap().coedges.iter().map(|c| c.edge.0))
+            .collect()
+    };
+    let mut worst = 0.0_f64;
+    for (i, &a) in sides.iter().enumerate() {
+        for &b in &sides[i + 1..] {
+            let (ea, eb) = (edges_of(a), edges_of(b));
+            for e in ea.iter().filter(|e| eb.contains(e)) {
+                let edge = &body.edges[*e as usize];
+                for j in 0..=32 {
+                    let t = edge.range.0 + (edge.range.1 - edge.range.0) * f64::from(j) / 32.0;
+                    let p = edge.curve.eval(t);
+                    worst = worst.max(normal(a, p).cross(normal(b, p)).length());
+                }
+            }
+        }
+        if let Surface::Nurbs(s) = &body.faces[a].surface {
+            let ((u0, u1), (v0, v1)) = s.domain();
+            for &knot in s.knots_u().iter().filter(|x| **x > u0 && **x < u1) {
+                for j in 0..=8 {
+                    let v = v0 + (v1 - v0) * f64::from(j) / 8.0;
+                    let h = 1e-12 * (u1 - u0);
+                    let n = |u: f64| {
+                        let (_, du, dv) = s.derivatives(u, v);
+                        du.cross(dv).normalized().unwrap()
+                    };
+                    worst = worst.max(n(knot - h).cross(n(knot + h)).length());
+                }
+            }
+        }
+    }
+    worst
+}
+
+/// The bike's B1: an oval of tangent arcs lofted into a circle (and
+/// through a narrower oval on the way). Where the arcs meet both sections
+/// are smooth, and so is the loft now: the side faces meet tangentially
+/// across every rail, and the long arcs (more than a quarter turn, two
+/// rational pieces each) leave no crease inside their faces. They met at
+/// creases of up to 1.6° (two sections) and more (three) before. Three
+/// scales in a tilted frame, the volume against the integral over the
+/// sides.
+#[test]
+fn faces_meet_tangentially_where_the_sections_are_smooth() {
+    for k in SCALES {
+        let tilt = Frame::new(
+            Vec3::new(2.0, -1.0, 3.0) * k,
+            Vec3::new(0.2, -0.3, 1.0).normalized().unwrap(),
+            Vec3::X,
+        )
+        .unwrap();
+        let at = |z: f64| Frame::new(tilt.point(0.0, 0.0, z * k), tilt.z(), tilt.x()).unwrap();
+        let first = section(&oval(k, 6.0, 13.0, 28.0), at(0.0));
+        let middle = section(&oval(k, 2.0, 10.0, 24.0), at(60.0));
+        let last = section(&[circle(1, [0.0, 0.0], 21.0 * k)], at(160.0));
+        for sections in [vec![first.clone(), last.clone()], vec![first, middle, last]] {
+            let made = loft(&sections, &SMOOTH, &tol())
+                .unwrap_or_else(|e| panic!("{} sections at scale {k}: {e}", sections.len()));
+            let (volume, _) = sound(&made);
+            assert!(close(volume, sliced_volume(&made), 1e-7));
+            let worst = creases(&made);
+            assert!(worst <= tol().angular, "a crease of {worst} at scale {k}");
+        }
+    }
+}

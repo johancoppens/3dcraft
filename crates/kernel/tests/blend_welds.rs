@@ -40,13 +40,14 @@ fn tilted(k: f64) -> Frame {
 }
 
 /// The post and the stay, at scale `k` in the tilted frame, joined or
-/// the stay taken out of the post (a blind cross hole).
-fn tee(k: f64, alpha: f64, op: BooleanOp) -> Body {
+/// the stay taken out of the post (a blind cross hole); the post reaches
+/// `below` under the stay's axis and 100 above it.
+fn tee(k: f64, alpha: f64, op: BooleanOp, below: f64) -> Body {
     let t = tilted(k);
-    let post_frame = Frame::new(t.point(0.0, 0.0, -100.0 * k), t.z(), t.x()).unwrap();
+    let post_frame = Frame::new(t.point(0.0, 0.0, -below * k), t.z(), t.x()).unwrap();
     let d = stay_axis(alpha);
     let stay_frame = Frame::new(t.origin(), t.vector(d.x, d.y, d.z), t.y()).unwrap();
-    let post = primitives::cylinder(&post_frame, POST * k, 200.0 * k).unwrap();
+    let post = primitives::cylinder(&post_frame, POST * k, (100.0 + below) * k).unwrap();
     let stay = primitives::cylinder(&stay_frame, STAY * k, 150.0 * k).unwrap();
     boolean(&post, &stay, op, &tolerance(k)).unwrap().body
 }
@@ -196,11 +197,17 @@ fn grid(alpha: f64, r: f64) -> Vec<Vec3> {
 /// point is in the rounded hole's body exactly when a ball of the radius
 /// inside the post and outside the hole holds it.
 fn weld_by_definition(alpha: f64, r: f64, op: BooleanOp) {
+    weld_by_definition_below(alpha, r, op, 100.0);
+}
+
+/// [`weld_by_definition`] with the post's end `below` under the stay's
+/// axis (the grid stays two radii clear of it).
+fn weld_by_definition_below(alpha: f64, r: f64, op: BooleanOp, below: f64) {
     let concave = op == BooleanOp::Union;
     let d = stay_axis(alpha);
     for k in SCALES {
         let tol = tolerance(k);
-        let body = tee(k, alpha, op);
+        let body = tee(k, alpha, op, below);
         let edge = weld_edge(&body);
         let made = fillet(
             &body,
@@ -277,4 +284,34 @@ fn a_tube_welded_at_a_slant_into_a_tube() {
 fn the_mouth_of_a_cross_hole_rounded() {
     weld_by_definition(std::f64::consts::FRAC_PI_2, 1.5, BooleanOp::Subtract);
     weld_by_definition(60_f64.to_radians(), 1.0, BooleanOp::Subtract);
+}
+
+/// The bike's B2: a weld whose ball runs past the end of the post (the
+/// stay comes within 1 mm of the post's end, the weld's border on the
+/// post would cross the end's rim). The border crosses the rim on the
+/// post's curved wall, where sampled chords of the two curves pass each
+/// other by their sagittas: it was let through and the body could not be
+/// meshed. Refused now as running off the face; a weld small enough to
+/// stay on the wall is built, held against the definition.
+#[test]
+fn a_weld_that_runs_off_the_end_of_the_post() {
+    let below = STAY + 1.0;
+    for k in SCALES {
+        let tol = tolerance(k);
+        let body = tee(k, std::f64::consts::FRAC_PI_2, BooleanOp::Union, below);
+        let edge = weld_edge(&body);
+        let refused = fillet(
+            &body,
+            &[FilletEdge {
+                edge,
+                radius: 4.0 * k,
+            }],
+            &tol,
+        )
+        .map(|_| ())
+        .unwrap_err()
+        .to_string();
+        assert!(refused.contains("runs off a face"), "scale {k}: {refused}");
+    }
+    weld_by_definition_below(std::f64::consts::FRAC_PI_2, 0.3, BooleanOp::Union, below);
 }

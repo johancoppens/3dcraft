@@ -1,0 +1,15 @@
+[
+["datum.axis", {"through": [["0 mm", "0 mm", "-100 mm"], ["0 mm", "0 mm", "100 mm"]], "name": "Ax"}],
+["sketch.create", {"plane": "zx", "name": "PostSk"}],
+["sketch.polyline", {"sketch": "PostSk", "closed": true, "points": [[128, 0], [128, 25], [68, 25], [-52, 31], [-52, 0]]}],
+["feature.revolve", {"sketch": "PostSk", "axis": "Ax", "name": "Post"}],
+["datum.plane", {"through": [["0.0 mm", "0.0 mm", "0.0 mm"], ["0.0 mm", "10.0 mm", "0.0 mm"], ["5.150380749 mm", "0.0 mm", "-8.571673007 mm"]], "name": "TubeP0"}],
+["sketch.create", {"plane": "TubeP0", "name": "TubeS0"}],
+["sketch.path", {"sketch": "TubeS0", "start": [5.963881034, 25.62709921], "segments": [{"arc": [-5.963881034, 25.62709921], "center": [0, 13.36]}, {"arc": [-5.963881034, -25.62709921], "center": [6.495215311, 0]}, {"arc": [5.963881034, -25.62709921], "center": [0, -13.36]}, {"arc": "start", "center": [-6.495215311, 0]}]}],
+["datum.plane", {"through": [["-342.866920281 mm", "0.0 mm", "-206.015229964 mm"], ["-342.866920281 mm", "10.0 mm", "-206.015229964 mm"], ["-337.716539532 mm", "0.0 mm", "-214.586902971 mm"]], "name": "TubeP1"}],
+["sketch.create", {"plane": "TubeP1", "name": "TubeS1"}],
+["sketch.path", {"sketch": "TubeS1", "start": [5.963881034, 25.62709921], "segments": [{"arc": [-5.963881034, 25.62709921], "center": [0, 13.36]}, {"arc": [-5.963881034, -25.62709921], "center": [6.495215311, 0]}, {"arc": [5.963881034, -25.62709921], "center": [0, -13.36]}, {"arc": "start", "center": [-6.495215311, 0]}]}],
+["feature.loft", {"sections": ["TubeS0", "TubeS1"], "ruled": false, "name": "Tube"}],
+["feature.boolean", {"op": "union", "target": "Post", "tool": "Tube", "name": "U"}],
+["feature.fillet", {"edges": [["F3:side(e8)", "F8:side(e4,e4)"]], "radius": "4 mm", "chain": true, "name": "Weld"}]
+]

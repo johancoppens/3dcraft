@@ -287,6 +287,284 @@ pub fn elevated(curve: &NurbsCurve, degree: usize) -> Result<NurbsCurve, GeomErr
     raw.curve()
 }
 
+/// The binomial coefficient, as a number.
+fn binomial(n: usize, k: usize) -> f64 {
+    (0..k.min(n)).fold(1.0, |acc, i| acc * (n - i) as f64 / (i + 1) as f64)
+}
+
+/// The Bernstein coefficients of the product of two polynomials given by
+/// theirs (of degrees `a.len() - 1` and `b.len() - 1`).
+fn bernstein_product(a: &[f64], b: &[f64]) -> Vec<f64> {
+    let (m, k) = (a.len().saturating_sub(1), b.len().saturating_sub(1));
+    let mut out = vec![0.0; m + k + 1];
+    for (i, x) in a.iter().enumerate() {
+        for (j, y) in b.iter().enumerate() {
+            if let Some(slot) = out.get_mut(i + j) {
+                *slot += binomial(m, i) * binomial(k, j) / binomial(m + k, i + j) * x * y;
+            }
+        }
+    }
+    out
+}
+
+/// The Bernstein coefficients of the polynomial `c` (Bernstein, on
+/// [0, 1]) restricted to `[lo, hi]` and run over [0, 1] there (de
+/// Casteljau's subdivision at `hi`, then at `lo / hi` of what is left).
+fn restricted(c: &[f64], lo: f64, hi: f64) -> Vec<f64> {
+    let split = |c: &[f64], t: f64| -> (Vec<f64>, Vec<f64>) {
+        let mut row = c.to_vec();
+        let n = row.len();
+        let (mut left, mut right) = (Vec::with_capacity(n), Vec::with_capacity(n));
+        for level in 0..n {
+            left.push(row.first().copied().unwrap_or(0.0));
+            right.push(row.last().copied().unwrap_or(0.0));
+            if level + 1 < n {
+                row = row
+                    .windows(2)
+                    .map(|w| match w {
+                        [x, y] => x * (1.0 - t) + y * t,
+                        _ => 0.0,
+                    })
+                    .collect();
+            }
+        }
+        right.reverse();
+        (left, right)
+    };
+    let (below, _) = split(c, hi);
+    if hi > 0.0 {
+        split(&below, lo / hi).1
+    } else {
+        below
+    }
+}
+
+/// The curve as its Bézier pieces: the knots that bound them (the
+/// domain's ends and every distinct knot inside it) and the homogeneous
+/// points of each.
+fn bezier_pieces(curve: &NurbsCurve) -> Result<(Vec<f64>, Vec<Vec<H>>), GeomError> {
+    let mut raw = Raw::of(curve);
+    if !raw.clamped() {
+        return Err(GeomError::Unsupported(
+            "changing the parameter of a curve whose end knots are not repeated (not clamped)",
+        ));
+    }
+    let p = raw.degree;
+    let (a, b) = raw.domain()?;
+    let interior = raw.interior();
+    for &k in &interior {
+        for _ in raw.multiplicity(k)..p {
+            raw.insert(k)?;
+        }
+    }
+    if raw.points.len() != (interior.len() + 1) * p + 1 {
+        return Err(internal());
+    }
+    let bounds: Vec<f64> = std::iter::once(a)
+        .chain(interior)
+        .chain(std::iter::once(b))
+        .collect();
+    let pieces = (0..bounds.len() - 1)
+        .map(|i| {
+            raw.points
+                .get(i * p..=i * p + p)
+                .map(<[H]>::to_vec)
+                .ok_or_else(internal)
+        })
+        .collect::<Result<_, _>>()?;
+    Ok((bounds, pieces))
+}
+
+/// The curve of `degree` whose Bézier pieces are `pieces`, between the
+/// knots `bounds` (each inside one repeated `degree` times).
+fn from_pieces(degree: usize, bounds: &[f64], pieces: &[Vec<H>]) -> Result<NurbsCurve, GeomError> {
+    if degree > MAX_DEGREE {
+        return Err(GeomError::DegreeTooHigh {
+            degree,
+            max: MAX_DEGREE,
+        });
+    }
+    let (Some(&a), Some(&b)) = (bounds.first(), bounds.last()) else {
+        return Err(internal());
+    };
+    let mut knots = vec![a; degree + 1];
+    for k in bounds.iter().skip(1).take(bounds.len().saturating_sub(2)) {
+        knots.extend(std::iter::repeat_n(*k, degree));
+    }
+    knots.extend(std::iter::repeat_n(b, degree + 1));
+    let mut points: Vec<H> = Vec::with_capacity(pieces.len() * degree + 1);
+    for (i, piece) in pieces.iter().enumerate() {
+        if piece.len() != degree + 1 {
+            return Err(internal());
+        }
+        points.extend(piece.iter().skip(usize::from(i > 0)));
+    }
+    Raw {
+        degree,
+        knots,
+        points,
+    }
+    .curve()
+}
+
+/// The same curve, each point where it was, with its parameter run
+/// through the cubic φ that is increasing from the start of the domain
+/// to its end and leaves the start `start` times as fast and arrives at
+/// the end `end` times as fast (in the parameter scaled to [0, 1], φ is
+/// Hermite's cubic from 0 to 1 with those slopes): the curve's
+/// derivative at its start is `start` times what it was, at its end
+/// `end` times. Three times the degree, cut into Bézier pieces (each a
+/// piece composed with φ there, exactly). Refused where φ would not
+/// increase all along (its slope, a quadratic, has to stay positive).
+pub fn reparametrized(curve: &NurbsCurve, start: f64, end: f64) -> Result<NurbsCurve, GeomError> {
+    // φ' in Bernstein form is (start, 3 − start − end, end); it is
+    // positive on [0, 1] exactly when both ends are and the middle
+    // coefficient is above −√(start · end).
+    let middle = 3.0 - start - end;
+    if !(start.is_finite() && end.is_finite() && start > 0.0 && end > 0.0)
+        || middle <= -(start * end).sqrt()
+    {
+        return Err(GeomError::InvalidParameter(
+            "a change of parameter has to keep the curve's direction all along",
+        ));
+    }
+    let phi = [0.0, start / 3.0, 1.0 - end / 3.0, 1.0];
+    let at = |u: f64| {
+        let v = 1.0 - u;
+        phi[1] * 3.0 * u * v * v + phi[2] * 3.0 * u * u * v + u * u * u
+    };
+    let (bounds, pieces) = bezier_pieces(curve)?;
+    let p = curve.degree();
+    let (Some(&a), Some(&b)) = (bounds.first(), bounds.last()) else {
+        return Err(internal());
+    };
+    // Where each knot goes: φ⁻¹ of its place in the domain, by bisection
+    // (φ increases).
+    let inverse = |tau: f64| {
+        let (mut lo, mut hi) = (0.0_f64, 1.0_f64);
+        for _ in 0..200 {
+            let mid = 0.5 * (lo + hi);
+            if at(mid) < tau {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+            if hi - lo <= f64::EPSILON {
+                break;
+            }
+        }
+        0.5 * (lo + hi)
+    };
+    let taus: Vec<f64> = bounds.iter().map(|k| (k - a) / (b - a)).collect();
+    let sigmas: Vec<f64> = taus
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            if i == 0 {
+                0.0
+            } else if i + 1 == taus.len() {
+                1.0
+            } else {
+                inverse(*t)
+            }
+        })
+        .collect();
+    let degree = 3 * p;
+    let mut made = Vec::with_capacity(pieces.len());
+    for (i, piece) in pieces.iter().enumerate() {
+        let (Some(&t0), Some(&t1), Some(&s0), Some(&s1)) = (
+            taus.get(i),
+            taus.get(i + 1),
+            sigmas.get(i),
+            sigmas.get(i + 1),
+        ) else {
+            return Err(internal());
+        };
+        if !(s1 > s0 && t1 > t0) {
+            return Err(internal());
+        }
+        // The piece's own parameter along the new span: φ there, moved
+        // to run from 0 to 1 (its ends exactly).
+        let mut local: Vec<f64> = restricted(&phi, s0, s1)
+            .iter()
+            .map(|d| (d - t0) / (t1 - t0))
+            .collect();
+        if let Some(first) = local.first_mut() {
+            *first = 0.0;
+        }
+        if let Some(last) = local.last_mut() {
+            *last = 1.0;
+        }
+        let other: Vec<f64> = local.iter().map(|x| 1.0 - x).collect();
+        let mut points = vec![[0.0; 4]; degree + 1];
+        for (j, h) in piece.iter().enumerate() {
+            let mut basis = vec![binomial(p, j)];
+            for _ in 0..j {
+                basis = bernstein_product(&basis, &local);
+            }
+            for _ in j..p {
+                basis = bernstein_product(&basis, &other);
+            }
+            for (slot, c) in points.iter_mut().zip(&basis) {
+                for (x, y) in slot.iter_mut().zip(h) {
+                    *x += c * y;
+                }
+            }
+        }
+        made.push(points);
+    }
+    let new_bounds: Vec<f64> = sigmas.iter().map(|s| a + s * (b - a)).collect();
+    from_pieces(degree, &new_bounds, &made)
+}
+
+/// The same curve, every point at the same parameter, its weight level
+/// at every knot: each Bézier piece's homogeneous coordinates multiplied
+/// by the cubic that is 1 at the piece's ends and has there the slope
+/// that cancels the weight's (−w′/w), so the weight keeps its values at
+/// the knots and has slope 0 at each. Where a curve's weight turns at a
+/// knot (an arc of more than a quarter turn is two rational pieces whose
+/// weight falls into the knot and rises out of it), a surface laid
+/// through several such curves inherits a crease there; with level
+/// weights it does not. A polynomial curve comes back as it is; a
+/// rational one three degrees higher. Refused where a cubic is not
+/// positive all along (its Bernstein coefficients are).
+pub fn level_weights(curve: &NurbsCurve) -> Result<NurbsCurve, GeomError> {
+    let w = curve.weights();
+    if w.iter().all(|x| Some(x) == w.first()) {
+        return Ok(curve.clone());
+    }
+    let (bounds, pieces) = bezier_pieces(curve)?;
+    let p = curve.degree();
+    let mut made = Vec::with_capacity(pieces.len());
+    for piece in &pieces {
+        let weight = |i: usize| piece.get(i).map_or(1.0, |h| h[3]);
+        let (w0, w1, wn1, wn) = (weight(0), weight(1), weight(p.saturating_sub(1)), weight(p));
+        // The weight's slopes at the piece's ends, per unit of its own
+        // parameter: p (w1 − w0) and p (wn − wn−1).
+        let (s0, s1) = (p as f64 * (w1 - w0) / w0, p as f64 * (wn - wn1) / wn);
+        let f = [1.0, 1.0 - s0 / 3.0, 1.0 + s1 / 3.0, 1.0];
+        if f.iter().any(|c| !(c.is_finite() && *c > 0.0)) {
+            return Err(GeomError::InvalidParameter(
+                "a curve's weights are multiplied by a positive function",
+            ));
+        }
+        let mut points = vec![[0.0; 4]; p + 4];
+        for d in 0..4 {
+            let column: Vec<f64> = piece
+                .iter()
+                .map(|h| h.get(d).copied().unwrap_or(0.0))
+                .collect();
+            for (slot, c) in points.iter_mut().zip(bernstein_product(&column, &f)) {
+                if let Some(x) = slot.get_mut(d) {
+                    *x = c;
+                }
+            }
+        }
+        made.push(points);
+    }
+    from_pieces(p + 3, &bounds, &made)
+}
+
 /// The piece of the curve between parameters `from < to` of its domain, as
 /// a curve of its own over `[0, 1]`.
 pub fn piece(curve: &NurbsCurve, from: f64, to: f64) -> Result<NurbsCurve, GeomError> {
@@ -932,6 +1210,114 @@ pub fn periodic_derivatives(
 mod tests {
     use super::*;
     use craft3d_math::Frame;
+
+    fn arc_and_spline() -> [NurbsCurve; 2] {
+        let arc = NurbsCurve::new(
+            2,
+            vec![0.0, 0.0, 0.0, 2.0, 2.0, 2.0],
+            vec![
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(1.0, 1.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+            ],
+            vec![1.0, std::f64::consts::FRAC_1_SQRT_2, 1.0],
+        )
+        .unwrap();
+        let spline = NurbsCurve::polynomial(
+            3,
+            vec![0.0, 0.0, 0.0, 0.0, 0.4, 1.0, 1.0, 1.0, 1.0],
+            vec![
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(1.0, 2.0, 0.0),
+                Vec3::new(2.0, -1.0, 1.0),
+                Vec3::new(3.0, 1.0, 0.5),
+                Vec3::new(4.0, 0.0, 0.0),
+            ],
+        )
+        .unwrap();
+        [arc, spline]
+    }
+
+    #[test]
+    fn a_curve_run_through_a_cubic_is_the_same_curve() {
+        for curve in arc_and_spline() {
+            let (a, b) = curve.domain();
+            for (start, end) in [(0.5, 2.0), (2.25, 2.25), (1.0, 0.3)] {
+                let made = reparametrized(&curve, start, end).unwrap();
+                assert_eq!(made.degree(), 3 * curve.degree());
+                assert_eq!(made.domain(), (a, b));
+                let phi = |u: f64| {
+                    let v = 1.0 - u;
+                    start * u * v * v + (3.0 - end) * u * u * v + u * u * u
+                };
+                for k in 0..=40 {
+                    let u = a + (b - a) * f64::from(k) / 40.0;
+                    let t = a + (b - a) * phi((u - a) / (b - a));
+                    let (p, q) = (curve.eval(t), made.eval(u));
+                    assert!(p.distance(q) < 1e-12, "{start} {end} at {u}: {p:?} {q:?}");
+                }
+                let ((_, d0), (_, e0)) = (curve.derivatives(a), made.derivatives(a));
+                let ((_, d1), (_, e1)) = (curve.derivatives(b), made.derivatives(b));
+                assert!((e0 - d0 * start).length() < 1e-10 * d0.length());
+                assert!((e1 - d1 * end).length() < 1e-10 * d1.length());
+            }
+            // Not increasing all along.
+            assert!(reparametrized(&curve, 4.0, 4.0).is_err());
+            assert!(reparametrized(&curve, 0.0, 1.0).is_err());
+        }
+    }
+
+    #[test]
+    fn a_curve_with_level_weights_is_the_same_curve() {
+        // Half a turn as two rational pieces, a quarter, and the quarter
+        // after a change of parameter.
+        let half = NurbsCurve::new(
+            2,
+            vec![0.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0],
+            vec![
+                Vec3::new(1.0, 0.0, 0.0),
+                Vec3::new(1.0, 1.0, 0.0),
+                Vec3::new(0.0, 1.0, 0.0),
+                Vec3::new(-1.0, 1.0, 0.0),
+                Vec3::new(-1.0, 0.0, 0.0),
+            ],
+            vec![
+                1.0,
+                std::f64::consts::FRAC_1_SQRT_2,
+                1.0,
+                std::f64::consts::FRAC_1_SQRT_2,
+                1.0,
+            ],
+        )
+        .unwrap();
+        let [arc, spline] = arc_and_spline();
+        let moved = reparametrized(&arc, 0.6, 1.7).unwrap();
+        for curve in [half, arc, moved] {
+            let (a, b) = curve.domain();
+            let made = level_weights(&curve).unwrap();
+            assert_eq!(made.degree(), curve.degree() + 3);
+            for k in 0..=40 {
+                let t = a + (b - a) * f64::from(k) / 40.0;
+                let ((p, d), (q, e)) = (curve.derivatives(t), made.derivatives(t));
+                assert!(p.distance(q) < 1e-12);
+                assert!((d - e).length() < 1e-10 * (1.0 + d.length()));
+            }
+            // Level at every knot: the control weights next to a knot's
+            // are the knot's.
+            let (n, w) = (made.degree(), made.weights());
+            for i in (0..w.len()).step_by(n) {
+                for j in [i.checked_sub(1), Some(i + 1)].into_iter().flatten() {
+                    if j < w.len() {
+                        assert!((w[j] - w[i]).abs() < 1e-12, "{w:?}");
+                    }
+                }
+            }
+        }
+        // A polynomial curve is left as it is.
+        let same = level_weights(&spline).unwrap();
+        assert_eq!(same.degree(), spline.degree());
+        assert_eq!(same.control_points(), spline.control_points());
+    }
 
     #[test]
     fn the_linear_periodic_solve_is_the_dense_one() {
