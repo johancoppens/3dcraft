@@ -71,6 +71,7 @@
 use super::{BlendError, Blended, Face, Reason, Request, Size, lost, refused};
 use crate::KernelError;
 use crate::chamfer::ChamferSize;
+use craft3d_geom::certify::{CurveBound, SurfaceBound};
 use craft3d_geom::refine::interpolate;
 use craft3d_geom::{Curve3, NurbsCurve, NurbsSurface, Surface};
 use craft3d_math::{Tolerance, Vec3};
@@ -1015,6 +1016,31 @@ fn cut_curve(
                 added.push(v);
             }
         }
+        // Between the middles: proven on both surfaces, the blend's and
+        // the third face's; where not, the step the proof stopped in is
+        // halved too.
+        if added.is_empty() {
+            let (Some(&s0), Some(&v0), Some(&p0)) = (ss.first(), vs.first(), points.first()) else {
+                return None;
+            };
+            let on_third = third.surface.project(p0).ok()?;
+            for (on, start) in [
+                (&Surface::Nurbs(surface.clone()), (s0, v0)),
+                (third.surface, on_third),
+            ] {
+                if let Err(at) = proven_on(&curve, (0.0, 1.0), on, start, &vs, limit) {
+                    let k = vs.partition_point(|v| *v <= at);
+                    if let (Some(a), Some(b)) =
+                        (k.checked_sub(1).and_then(|i| vs.get(i)), vs.get(k))
+                    {
+                        added.push(0.5 * (a + b));
+                    } else {
+                        return None;
+                    }
+                    break;
+                }
+            }
+        }
         if added.is_empty() {
             let (Some(&first), Some(&last)) = (ss.first(), ss.last()) else {
                 return None;
@@ -1028,6 +1054,41 @@ fn cut_curve(
         vs.sort_by(f64::total_cmp);
     }
     None
+}
+
+/// Most pieces a proof that a fitted curve lies on a surface may take
+/// (`geom::certify`): bounded work; a proof that needs more is not had,
+/// and the curve is refined or refused.
+const PROOF_PIECES: usize = 1 << 16;
+
+/// Whether every point of `curve` over `range` is proven within `limit`
+/// of `surface` (`start`: the surface's parameters near the curve's
+/// point at `range.0`; `breaks`: where the curve was fitted through
+/// points of the surface). Where it is not, the curve's parameter where
+/// the proof stopped.
+fn proven_on(
+    curve: &NurbsCurve,
+    range: (f64, f64),
+    surface: &Surface,
+    start: (f64, f64),
+    breaks: &[f64],
+    limit: f64,
+) -> Result<(), f64> {
+    let middle = 0.5 * (range.0 + range.1);
+    let Some(bound) = SurfaceBound::new(surface) else {
+        return Err(middle);
+    };
+    bound
+        .curve_within(
+            &CurveBound::nurbs(curve),
+            range,
+            start,
+            breaks,
+            limit,
+            PROOF_PIECES,
+        )
+        .map(|_| ())
+        .map_err(|stop| stop.at)
 }
 
 /// Blends `request` of `body` (an edge none of the closed forms covers)
@@ -2630,5 +2691,93 @@ mod tests {
         };
         let stopped = march_out(&solver, (0.5, seed), 1.0, third, steps, 1e-6);
         assert!(matches!(stopped, Err(Stop::TooFar)));
+    }
+
+    /// A wall across a flat blend face, waving along it with nodes at
+    /// every sixteenth of the face's width: where the cut is first fitted
+    /// (eight steps) and at the middles between, the wall is where a
+    /// straight cut would be; between them it is `amplitude` off it.
+    fn waving_wall(amplitude: f64, k: f64) -> (NurbsSurface, Surface) {
+        let flat = NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            2,
+            2,
+            vec![
+                Vec3::new(0.0, 0.0, 0.0),
+                Vec3::new(0.0, k, 0.0),
+                Vec3::new(k, 0.0, 0.0),
+                Vec3::new(k, k, 0.0),
+            ],
+            vec![1.0; 4],
+        )
+        .unwrap();
+        // x = k / 2 + amplitude sin(16 π y / k), interpolated at every
+        // 1/128 of y; straight up and down in z.
+        let params: Vec<f64> = (0..=128).map(|i| f64::from(i) / 128.0).collect();
+        let values: Vec<Vec<f64>> = params
+            .iter()
+            .map(|a| {
+                let x = 0.5 * k + amplitude * k * (16.0 * std::f64::consts::PI * a).sin();
+                vec![x, a * k]
+            })
+            .collect();
+        let (knots, rows) = interpolate(&params, 3, &values).unwrap();
+        let mut ctrl = Vec::new();
+        for r in &rows {
+            for z in [-0.5 * k, 0.5 * k] {
+                ctrl.push(Vec3::new(r[0], r[1], z));
+            }
+        }
+        let count = rows.len();
+        let wall = NurbsSurface::new(
+            3,
+            1,
+            knots,
+            vec![0.0, 0.0, 1.0, 1.0],
+            count,
+            2,
+            ctrl,
+            vec![1.0; 2 * count],
+        )
+        .unwrap();
+        (flat, Surface::Nurbs(wall))
+    }
+
+    /// The cut where a blend face crosses the third face is fitted to
+    /// points found exactly and held to a quarter of the tolerance at the
+    /// middles between them; a third face that waves between those
+    /// middles (here a wall a hundred quarter-tolerances off the straight
+    /// line through them) is now followed, the cut proven on it.
+    #[test]
+    fn a_cut_curve_that_would_leave_the_third_face_between_its_middles_is_refined() {
+        for k in [1e-3, 1.0, 1e3] {
+            let limit = 0.25e-6 * k;
+            let (flat, wall) = waving_wall(1e-4, k);
+            let third = Side {
+                surface: &wall,
+                reversed: false,
+            };
+            let (curve, _) = cut_curve(&flat, third, 0.1, 0.9, limit, k).expect("a cut");
+            let start = wall.project(curve.eval(0.0)).unwrap();
+            let mut hint = start;
+            for i in 0..=2000 {
+                let t = f64::from(i) / 2000.0;
+                let p = curve.eval(t);
+                hint = wall.project_from(p, hint).unwrap();
+                let d = wall.eval(hint.0, hint.1).distance(p);
+                assert!(d <= limit, "{k}: {d:e} off the wall at {t}");
+            }
+            // And proven so.
+            let bound = SurfaceBound::new(&wall).unwrap();
+            let curve = CurveBound::nurbs(&curve);
+            assert!(
+                bound
+                    .curve_within(&curve, (0.0, 1.0), start, &[], limit, 1 << 16)
+                    .is_ok()
+            );
+        }
     }
 }
