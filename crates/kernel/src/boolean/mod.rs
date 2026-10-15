@@ -664,6 +664,16 @@ fn run(
         meetings.extend_from_slice(&sections.touches);
         meetings.extend(on_the_other(&a, &b, tol));
         meetings.extend(on_the_other(&b, &a, tol));
+        // Where an operand already touches itself (a shell meeting itself
+        // at a vertex or along an edge, or two of its shells): the parts
+        // a cut makes may touch there although the operands never met.
+        for operand in [a.body, b.body] {
+            if let Ok(found) =
+                craft3d_topo::touches(operand, 2.0 * tol, 1024, craft3d_topo::TouchScope::All)
+            {
+                meetings.extend(found.iter().map(|t| t.at));
+            }
+        }
         meetings.extend(
             sections
                 .stretches
@@ -678,10 +688,16 @@ fn run(
 /// Refuses a result whose parts (shells) touch each other, which is
 /// geometry of zero thickness (the developer's decision of 2026-10-15).
 ///
-/// Parts can only touch where the operands meet, so only those places are
-/// looked at (`meetings`: the vertices both operands are at, the vertices
-/// the section made, the points where two faces only touch, and a point
-/// inside every stretch of curve along which faces meet). A place is a
+/// Parts can only touch where the operands meet, or where an operand
+/// already touches itself, so only those places are looked at
+/// (`meetings`: the vertices both operands are at, the vertices the
+/// section made, the points where two faces only touch, a point inside
+/// every stretch of curve along which faces meet, and the places where a
+/// vertex of an operand lies on a vertex or an edge of that operand
+/// not its own, `craft3d_topo::touches`). Faces of one operand that touch
+/// with no vertex there are not seen here (owed); regeneration's
+/// `body_touches_itself` also looks at every result for the vertex and
+/// edge forms. A place is a
 /// touch when it is within twice the tolerance of a face of one part and
 /// of a face of another, not outside either face's boundary, and the
 /// nearest points of the two faces are within twice the tolerance of each

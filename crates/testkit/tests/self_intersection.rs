@@ -1866,3 +1866,38 @@ fn one_pair() {
         }
     }
 }
+
+/// The notch above, whose shell touches itself along a line, cut across
+/// away from that line so that the part falls into two pieces that touch
+/// there: the operands never meet where the pieces touch, and the boolean
+/// still refuses it as zero thickness, on that line (it looks where an
+/// operand touches itself too). At three scales, along the axes and
+/// turned.
+#[test]
+fn a_shell_touching_itself_cut_into_two_parts_is_refused() {
+    for k in SCALES {
+        let tol = tolerance(k);
+        for frame in [Frame::WORLD, tilted(k)] {
+            let block = primitives::block(&frame, 4.0 * k, 4.0 * k, k).unwrap();
+            let curves = polygon(&[[2.0 * k, 0.0], [3.0 * k, 2.0 * k], [k, 2.0 * k]]);
+            let profiles = detect_profiles(&curves, &tol).unwrap();
+            let under = frame.at(frame.point(0.0, 0.0, -k)).unwrap();
+            let notch = extrude(&profiles, &under, 0.0, 3.0 * k, &tol).unwrap().body;
+            let touching = boolean(&block, &notch, Subtract, &tol).unwrap().body;
+            assert_eq!(touching.shells.len(), 1);
+            // Everything from the notch's mouth on taken off.
+            let beyond = frame.at(frame.point(-k, 1.5 * k, -k)).unwrap();
+            let cutter = primitives::block(&beyond, 6.0 * k, 4.0 * k, 3.0 * k).unwrap();
+            match boolean(&touching, &cutter, Subtract, &tol) {
+                Err(KernelError::ZeroThickness { at, .. }) => {
+                    let (x, y, _) = frame.local(at);
+                    assert!(
+                        (x - 2.0 * k).abs() < 1e-9 * k && y.abs() < 1e-9 * k,
+                        "at scale {k}: {at:?}"
+                    );
+                }
+                other => panic!("at scale {k}: {other:?}"),
+            }
+        }
+    }
+}
