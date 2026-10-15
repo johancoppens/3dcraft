@@ -140,7 +140,7 @@ Closed-form tests for every kind; the checker detects each seeded defect; hand-b
 - The six parts above, with the start of M3: primitives as features, regeneration, B-rep tessellation for the five primitives (2026-10-12)
 - Deviations: a synchronous engine without jobs or events; undo as snapshots ([`decisions.md`](decisions.md)) (2026-10-12)
 - `file.list` and `file.activate`, from the first field test (2026-10-13)
-- `craft3d-cli run --keep-going`: a failing command is reported on its line, the rest run and `--out` saves what was built (2026-10-16)
+- `craft3d-cli run --keep-going`: a failing command is reported on its line, the rest run and `--out` saves what was built (2026-10-15)
 
 #### Open
 - [ ] `thumb.png` in `.3dcraft`
@@ -183,8 +183,8 @@ Oracles 1 and 4 for all primitives at three scales; exported meshes closed and o
 - The angle criterion on thin fillets costs what it needs: tori and spheres refined in the plane of their grid, the grid's diagonals held to the angle; the turbofan's display mesh 129,532 triangles instead of 579,314 (2.0 times its mesh without the angle, was 9.1) ([`architecture.md`](architecture.md) §6, *The angle on a thin fillet*) (2026-10-15)
 - Every solid of the showcase, the turbofan and the engine block meshes closed at the display quality and at export tolerances (`display_quality.rs` strict): the hull's bow got a wall, a seam no longer runs along a straight edge at the wrap of a cylinder (2026-10-15)
 - Long straight edges of flat faces are cut where holes run along them, so a plate with a row of holes is no longer fans of slivers across its length: the self-intersection check of a 4 m plate with 400 holes 13 times faster, export meshes unchanged but for 27 of 440 reference meshes (two triangles more each) ([`architecture.md`](architecture.md) §6, *Long straight chords of flat faces*) (2026-10-15)
-- The angle criterion on spline faces in a plane and on a grid graded to where the surface turns: the turbofan's spline faces 30,720 triangles instead of 35,302, a twisted blade within 1.4 times a grid that meets both criteria unrefined (was 1.9) ([`architecture.md`](architecture.md) §6, *The angle on a spline face*) (2026-10-16)
-- A spline surface's pole is shaded with its limit normal, and `view.render`, `view.pick` and `view.replay` mesh at a quarter to half a pixel of the picture within a total triangle budget, never finer than the display's floor, coarsening a body too fine for the tessellator instead of refusing ([`architecture.md`](architecture.md) §6) (2026-10-16)
+- The angle criterion on spline faces in a plane and on a grid graded to where the surface turns: the turbofan's spline faces 30,720 triangles instead of 35,302, a twisted blade within 1.4 times a grid that meets both criteria unrefined (was 1.9) ([`architecture.md`](architecture.md) §6, *The angle on a spline face*) (2026-10-15)
+- A spline surface's pole is shaded with its limit normal, and `view.render`, `view.pick` and `view.replay` mesh at a quarter to half a pixel of the picture within a total triangle budget, never finer than the display's floor, coarsening a body too fine for the tessellator instead of refusing ([`architecture.md`](architecture.md) §6) (2026-10-15)
 - `view.replay` and `craft3d-cli replay`: a showcase video (frames, MP4, GIF) of how a document is built, one fixed camera, an optional orbit, captions as subtitles; the document is not touched (2026-10-14)
 
 #### Open
@@ -264,7 +264,7 @@ Surface/surface intersection, imprint, classify and sew; union, subtract and int
 - A cusp as a boolean operand: the wedge and the disc drawn to the pole's order, the pieces at the point put in order further along ([`architecture.md`](architecture.md) §5.3 › *Cusps*) (2026-10-15)
 - Rational faces with weights a hundred apart as operands: the winding numbers take the chart's speed near each stretch, held by point membership against the plain block ([`architecture.md`](architecture.md) §5.3 › *Rational faces*) (2026-10-15)
 - Fourth-order contact: a tacnode or cusp of the intersection is a vertex whose tangent arms are made as graphs around it, a cylinder touching the top of a torus' tube from inside held to its closed-form volume ([`architecture.md`](architecture.md) §5.1 › *Tacnodes and cusps*) (2026-10-15)
-- A row of booleans on a body of many freeform faces indexes each surface once (the impeller: a chamfer of the bore 12 s to 1 s); a material measures nothing, mass and inertia are measured at once ([`architecture.md`](architecture.md) §5.3, §5.5) (2026-10-16)
+- A row of booleans on a body of many freeform faces indexes each surface once (the impeller: a chamfer of the bore 12 s to 1 s); a material measures nothing, mass and inertia are measured at once ([`architecture.md`](architecture.md) §5.3, §5.5) (2026-10-15)
 
 #### Open
 The [boolean checklist](#the-boolean-checklist) › *Owed*.
@@ -350,7 +350,7 @@ The blends first (chamfer and fillet, the first consumers of edge references), t
 - The engine block's blend findings (E1–E8): the estimate of what fits follows a face's boundary round tangent arcs and across a cylinder's seam, takes a cut line that runs exactly into a corner, and refuses a face that pinches to nothing; a blend ends in the plane of a face it runs into at a slant; equal-distance chamfer chains are one tool; a boolean hit next to an edge's end on the surface is that end (§5.3 › *Blend findings of the engine block*) (2026-10-15)
 - Freeform blends along chains of tangent edges, one family of balls with a face per edge, also where a face changes across a smooth edge (the turbofan casing's cut edge through its flange root, the engine block's boss foot E6 in its first form), and freeform with closed-form edges in one feature ([`architecture.md`](architecture.md) §5.3 › *Chains and meets of freeform blends*) (2026-10-15)
 - Two freeform fillets that meet at a vertex whose third edge stays sharp, convex or concave (the tip of a lofted blade rounded all round) (§5.3 › *Chains and meets of freeform blends*) (2026-10-15)
-- The impeller's and the lamp's blend findings: freeform meets found where the borders cross, blends that run into a wall or end past a corner (edges lengthened, spline faces grown), up to 4096 samples by a banded solve, face changes at joints judged at the vertex (§5.3 › *Blend findings of the impeller and the lamp*) (2026-10-16)
+- The impeller's and the lamp's blend findings: freeform meets found where the borders cross, blends that run into a wall or end past a corner (edges lengthened, spline faces grown), up to 4096 samples by a banded solve, face changes at joints judged at the vertex (§5.3 › *Blend findings of the impeller and the lamp*) (2026-10-15)
 
 #### Open
 - [ ] Replace face

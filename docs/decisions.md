@@ -1,12 +1,12 @@
 # Decisions
 
-> **Last updated:** 2026-10-16
+> **Last updated:** 2026-10-15
 
 Decisions that shape the project, newest first, each with its reason. An agent that needs something listed under *Open decisions* asks the developer; it does not pick silently. When one is settled, move it up with the date.
 
 ## Taken
 
-### 2026-10-16: Colours of cut faces, bodies of zero thickness, the trees shelf (decided by the developer)
+### 2026-10-15: Colours of cut faces, bodies of zero thickness, the trees shelf (decided by the developer)
 
 - **Format 16** holds the bodies' appearance and material and the feature kinds `moveFace`, `thicken` and `draft`, in one version.
 - **A face a tool cuts takes the colour of its own body** (the target), as SolidWorks, Fusion and Onshape do, not the tool's colour. A cutaway's faces in a colour of their own come later, from an appearance given per face.
