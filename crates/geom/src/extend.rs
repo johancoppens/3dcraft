@@ -13,6 +13,9 @@
 //! parameter past 1, on the weighted points), and the end knots move to
 //! the new end.
 
+// `!(x > y)` is deliberate: unlike `x <= y` it is also true for NaN.
+#![allow(clippy::neg_cmp_op_on_partial_ord)]
+
 use crate::GeomError;
 use crate::nurbs::NurbsSurface;
 use craft3d_math::Vec3;

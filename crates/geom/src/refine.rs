@@ -599,7 +599,9 @@ pub fn interpolate(
     };
     for k in 0..count {
         let pivot = at(&rows, k, k);
-        if !(pivot.abs() > 1e-300) || !pivot.is_finite() {
+        if pivot.abs().partial_cmp(&1e-300) != Some(std::cmp::Ordering::Greater)
+            || !pivot.is_finite()
+        {
             return Err(singular());
         }
         for i in k + 1..(k + degree + 1).min(count) {
