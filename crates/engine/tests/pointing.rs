@@ -203,7 +203,8 @@ fn check_view(s: &mut Session, label: &str, view: &Value) -> (usize, usize) {
     let first = run(s, "view.pick", pick_params(view, 0.5, 0.5));
     let camera = camera_of(&first);
     let tolerance = view.get("tolerance").and_then(Value::as_f64);
-    let scene = s.scene(tolerance).unwrap().unwrap();
+    // The scene view.pick looks at.
+    let scene = s.picture_scene(tolerance).unwrap().unwrap();
     let frame = craft3d_render::render(
         &scene.mesh,
         &camera,
@@ -592,7 +593,7 @@ fn a_pick_that_finds_nothing_or_makes_no_sense_is_an_answer_or_an_error() {
     // On the silhouette: every pixel of the picture, the edge ones too,
     // gives the face of the id buffer or nothing, and never a panic.
     let camera = camera_of(&corner);
-    let scene = s.scene(None).unwrap().unwrap();
+    let scene = s.picture_scene(None).unwrap().unwrap();
     let frame = craft3d_render::render(
         &scene.mesh,
         &camera,

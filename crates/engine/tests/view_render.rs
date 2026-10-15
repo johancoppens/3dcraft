@@ -553,3 +553,36 @@ fn the_same_request_gives_the_same_picture() {
     assert_eq!(shoot(&mut other, params).png, first.png);
     evidence("view-render-iso-ortho-box-zoom.png", &first);
 }
+
+/// Without a tolerance the picture is the window's: the display quality,
+/// with its angle, so a small hole or post is drawn round (impeller T1,
+/// 2026-10-16, when it was the automatic tolerance alone). With a
+/// tolerance the tessellator cannot meet on a body, the body is drawn
+/// coarser and the result says so, rather than the picture failing
+/// (lamp T2, 2026-10-16).
+#[test]
+fn a_picture_is_what_the_window_draws_and_never_too_fine() {
+    let mut s = plate_post_and_wall();
+    let small = json!({"width": 64, "height": 48});
+    let drawn = run(&mut s, "view.render", small.clone());
+    let window = s
+        .scene_with(craft3d_engine::SceneQuality::display())
+        .unwrap()
+        .unwrap();
+    assert_eq!(drawn["tolerance"], window.tolerance);
+    assert_eq!(drawn["triangles"], window.triangles());
+    assert_eq!(drawn["coarsened"], false);
+    assert!((drawn["maxAngle"].as_f64().unwrap() - 12.0).abs() < 1e-9);
+    // The post, radius 3, has at least the 30 chords to a turn that 12
+    // degrees ask for; the automatic tolerance alone gives it fewer.
+    let automatic = s.scene(None).unwrap().unwrap();
+    assert!(window.triangles() > automatic.triangles(), "{drawn}");
+
+    let mut fine = small;
+    fine["tolerance"] = 1e-9.into();
+    let drawn = run(&mut s, "view.render", fine);
+    assert_eq!(drawn["coarsened"], true, "{drawn}");
+    assert_eq!(drawn["tolerance"], 1e-9);
+    assert_eq!(drawn["maxAngle"], Value::Null);
+    assert_eq!(drawn["bodies"].as_array().unwrap().len(), 2, "{drawn}");
+}

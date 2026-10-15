@@ -653,7 +653,8 @@ fn picture_of(s: &mut Session, view: &Value) -> Picture {
     let first = run(s, "view.pick", pick_params(view, 0.5, 0.5));
     let camera = camera_of(&first);
     let tolerance = view.get("tolerance").and_then(Value::as_f64);
-    let scene = s.scene(tolerance).unwrap().unwrap();
+    // The scene view.pick looks at.
+    let scene = s.picture_scene(tolerance).unwrap().unwrap();
     Picture::new(&camera, width, height, scene)
 }
 

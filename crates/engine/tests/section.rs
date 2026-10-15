@@ -285,7 +285,7 @@ fn a_section_that_means_no_plane_is_an_error_that_says_why() {
 #[test]
 fn a_pick_on_a_cut_open_model_is_what_is_seen() {
     let mut s = pocketed();
-    let scene = s.scene(None).unwrap().unwrap();
+    let scene = s.picture_scene(None).unwrap().unwrap();
     let plane = s
         .section_plane(
             &scene,

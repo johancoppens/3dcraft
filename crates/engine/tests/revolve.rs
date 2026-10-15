@@ -466,8 +466,8 @@ fn a_revolved_spline_dome_is_shaded_with_the_axis_at_its_pole() {
             "sketch.create",
             json!({"plane": "zx", "name": "Profile"}),
         );
-        let control = [[50.0, 0.0], [50.0, 30.0], [20.0, 40.0], [0.0, 40.0]]
-            .map(|[a, b]| [a * k, b * k]);
+        let control =
+            [[50.0, 0.0], [50.0, 30.0], [20.0, 40.0], [0.0, 40.0]].map(|[a, b]| [a * k, b * k]);
         run(
             &mut s,
             "sketch.spline",

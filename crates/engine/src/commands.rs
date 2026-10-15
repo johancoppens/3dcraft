@@ -95,8 +95,8 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Checks every body for validity and lists every problem: failed variables, failed features (with causedBy as in document.inspect), defects of bodies. ok is true when there is none. deep also looks for bodies that pass through themselves (faces crossing, shells overlapping or nested the wrong way), on a fine mesh: slower, and what it reports is certain (deeper than the mesh could be off); doubts are counted under marginal.", doc: true, document_check),
     spec!("document.measure", "Measure", r#"{"feature": id or name = all bodies}"#,
         "Returns volume, area and centroid, per body and in total, in document units. A body with a material (body.material) also has its mass (kg) and its inertia tensor about its centroid (kg times the length unit squared, along the model's axes), and its appearance (body.appearance); the total has the mass when every body has one.", doc: true, document_measure),
-    spec!("view.render", "Render", r#"{"path": string, "width": integer = 800, "height": integer = 600, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the whole model, "mode": "shaded|ids" = "shaded", "section": {plane, feature, point, normal, offset, flip, cap} = none, "tolerance": number = automatic}"#,
-        "Renders the bodies with the CPU renderer. Writes a PNG under the write root when path is given, otherwise returns it as base64. orthographic shows lengths across the view to scale. box frames the region between two opposite corners (document units) instead of the whole model, seen from outside the model. zoom magnifies about the centre of the picture (2 shows half as much, twice as large; from 0.01 to 1000). section cuts the picture open with a plane, to look inside a shell, a pocket or a cavity; the document does not change. It is an object: the plane is plane (xy, yz or zx, a datum plane by id or name, or a flat face by its persistent name, with feature to say which body when several have that face) or point and normal ([x, y, z] each), moved by offset (a number, default 0) along its normal; what lies on the side the normal points to is not drawn (a face's normal points out of its body; flip: true keeps the other half). Where the plane passes through the inside of a body the cut is closed with a flat cap in a colour of its own (cap: false leaves it open). The result then has section: {point, normal, range}, the plane as it was used and the offsets between which it passes through the model.", doc: true, view_render),
+    spec!("view.render", "Render", r#"{"path": string, "width": integer = 800, "height": integer = 600, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the whole model, "mode": "shaded|ids" = "shaded", "section": {plane, feature, point, normal, offset, flip, cap} = none, "tolerance": number = the window's display quality}"#,
+        "Renders the bodies with the CPU renderer. Writes a PNG under the write root when path is given, otherwise returns it as base64. Without tolerance the bodies are meshed as the window draws them (a chordal tolerance of 2e-4 of the model's size and at most 12 degrees per chord, coarser when the model would need more than a million triangles); with one, at that chordal tolerance. A body too fine for the tessellator at it is meshed coarser rather than refused. The result says the tolerance (document units), maxAngle (degrees, or null) and coarsened (true when the tolerance was coarsened for the triangle budget or for a body). orthographic shows lengths across the view to scale. box frames the region between two opposite corners (document units) instead of the whole model, seen from outside the model. zoom magnifies about the centre of the picture (2 shows half as much, twice as large; from 0.01 to 1000). section cuts the picture open with a plane, to look inside a shell, a pocket or a cavity; the document does not change. It is an object: the plane is plane (xy, yz or zx, a datum plane by id or name, or a flat face by its persistent name, with feature to say which body when several have that face) or point and normal ([x, y, z] each), moved by offset (a number, default 0) along its normal; what lies on the side the normal points to is not drawn (a face's normal points out of its body; flip: true keeps the other half). Where the plane passes through the inside of a body the cut is closed with a flat cap in a colour of its own (cap: false leaves it open). The result then has section: {point, normal, range}, the plane as it was used and the offsets between which it passes through the model.", doc: true, view_render),
 ];
 
 /// The command id most like `id`, for "did you mean".
@@ -2181,19 +2181,28 @@ fn view_render(session: &mut Session, params: &Value) -> Run {
         .map(|path| session.workspace.resolve_write(path))
         .transpose()?;
 
-    // The section, resolved against the scene of the same tolerance: a
-    // face's name means the face of that mesh.
+    // The picture's scene: the window's display quality, or the tolerance
+    // given. A section is resolved against it: a face's name means the
+    // face of that mesh.
+    let tolerance = match p.number("tolerance")? {
+        Some(t) if t > 0.0 => Some(t),
+        Some(_) => return fail("view.render: `tolerance` must be positive"),
+        None => None,
+    };
+    let Some(scene) = session.picture_scene(tolerance)? else {
+        return fail("view.render: no document is open; run file.new or file.open first");
+    };
+    if let Some(problem) = scene.problems.first() {
+        return fail(format!("view.render: {problem}"));
+    }
+    if scene.bodies.is_empty() {
+        return fail(
+            "view.render: there are no bodies; add a feature, or check document.inspect for failed features",
+        );
+    }
     let section = match p.get("section") {
         None | Some(Value::Null) => None,
         Some(value) => {
-            let tolerance = match p.number("tolerance")? {
-                Some(t) if t > 0.0 => Some(t),
-                Some(_) => return fail("view.render: `tolerance` must be positive"),
-                None => None,
-            };
-            let Some(scene) = session.scene(tolerance)? else {
-                return fail("view.render: no document is open; run file.new or file.open first");
-            };
             let (spec, cap) = crate::section::section_param("view.render", value)?;
             let plane = session
                 .section_plane(&scene, &spec)
@@ -2201,34 +2210,13 @@ fn view_render(session: &mut Session, params: &Value) -> Run {
             Some((plane, cap))
         }
     };
-
-    let open = session.document_mut()?;
-    let tess = tolerance_param(&p, "view.render", &open.regen())?;
-    let meshes = meshes(open, "view.render", &tess)?;
-    // One mesh for the renderer; face ids keep counting across bodies.
-    let mut all = Mesh::default();
-    let mut legend = Vec::new();
-    let mut colors = craft3d_render::FaceColors::new();
-    for BodyMesh {
-        name, mesh, faces, ..
-    } in &meshes
-    {
-        let vertex_base = u32::try_from(all.positions.len())
-            .map_err(|_| CommandError::new("view.render: mesh too large"))?;
-        let face_base = all.face_ids.iter().copied().max().map_or(0, |m| m + 1);
-        for (face, appearance) in faces.iter().enumerate() {
-            if let (Some(appearance), Ok(face)) = (appearance, u32::try_from(face)) {
-                colors.set(face_base.saturating_add(face), Some(appearance.color));
-            }
-        }
-        all.positions.extend(&mesh.positions);
-        all.normals.extend(&mesh.normals);
-        all.triangles
-            .extend(mesh.triangles.iter().map(|t| t.map(|k| k + vertex_base)));
-        all.face_ids
-            .extend(mesh.face_ids.iter().map(|f| f + face_base));
-        legend.push(json!({ "body": name, "firstFaceId": face_base }));
-    }
+    let all: &Mesh = &scene.mesh;
+    let colors: &craft3d_render::FaceColors = &scene.face_colors;
+    let legend: Vec<Value> = scene
+        .bodies
+        .iter()
+        .map(|body| json!({ "body": body.name, "firstFaceId": body.first_face_id }))
+        .collect();
     // Both are within 16..=4096.
     let render_params = RenderParams {
         width: width as u32,
@@ -2243,7 +2231,7 @@ fn view_render(session: &mut Session, params: &Value) -> Run {
     let model = all.bbox();
     let framed = look_at.unwrap_or(model);
     let camera = framing.camera(&model, aspect)?;
-    let frame = craft3d_render::render_colored(&all, &colors, &camera, &render_params)
+    let frame = craft3d_render::render_colored(all, colors, &camera, &render_params)
         .map_err(|e| CommandError::new(format!("view.render: {e}")))?;
     let png = if ids {
         craft3d_render::encode_png(frame.width, frame.height, &frame.false_color())
@@ -2260,6 +2248,9 @@ fn view_render(session: &mut Session, params: &Value) -> Run {
         "triangles": all.triangles.len(),
         "coverage": frame.coverage(),
         "bodies": legend,
+        "tolerance": scene.tolerance,
+        "maxAngle": scene.max_angle.map(f64::to_degrees),
+        "coarsened": scene.coarsened,
     });
     let Some(map) = result.as_object_mut() else {
         return Ok(result);

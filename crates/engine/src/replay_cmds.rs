@@ -21,7 +21,7 @@ use serde_json::Value;
 pub(crate) static SPECS: &[CommandSpec] = &[spec!(
     "view.replay",
     "Replay",
-    r#"{"dir": string, "width": integer = 800, "height": integer = 600, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the finished model, "tolerance": number = automatic, "from": id or name = the first feature, "to": id or name = the rollback marker or the last feature, "every": boolean = false, "framesPerStep": integer = 1, "hold": integer = 0, "orbit": number = 0, "fps": integer = 30}"#,
+    r#"{"dir": string, "width": integer = 800, "height": integer = 600, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the finished model, "tolerance": number = the window's display quality, as view.render, "from": id or name = the first feature, "to": id or name = the rollback marker or the last feature, "every": boolean = false, "framesPerStep": integer = 1, "hold": integer = 0, "orbit": number = 0, "fps": integer = 30}"#,
     "Renders how the document is built, for a showcase video: the history is rolled back to nothing and forward one feature at a time, from from to to, and each step is drawn with the CPU renderer as view.render would, from one camera framed on the model as it is at to, so the picture stays put. Writes the frames as dir/frame-00000.png, frame-00001.png, ... under the write root (frames of an earlier, longer replay there are removed) and dir/captions.srt, a subtitle per step with the feature's place, name and type, timed at fps. The first framesPerStep frames show the model before from (nothing, from the first feature), then framesPerStep frames per step, then hold more of the end; without an orbit the last frame is the picture view.render gives of the document with the same view, projection, zoom, box and tolerance. A step that changes no body (a sketch, a datum, a failed or suppressed feature) gets no frames unless every is true. orbit turns the camera that many degrees about the vertical over the whole replay (the model is then framed so that it stays in the picture all round). The document does not change: not its rollback marker, not its undo history. At most 3600 frames, and 8e9 pixels in all. Returns the frame count, the steps (with the frames each got, or none) and the captions. craft3d-cli replay makes an MP4 or a GIF of it.",
     doc: true,
     view_replay
@@ -85,7 +85,7 @@ mod native {
     use craft3d_math::{Bbox3, Vec3};
     use craft3d_regen::Status;
     use craft3d_render::{Camera, Projection, RenderParams};
-    use craft3d_tess::{Mesh, TessParams, tessellate_body};
+    use craft3d_tess::{Mesh, TessParams, tessellate_within_budget};
     use craft3d_topo::Body;
     use serde_json::json;
     use std::sync::Arc;
@@ -133,9 +133,20 @@ mod native {
         ) -> Result<(), CommandError> {
             for (id, body, _) in bodies {
                 if self.get(body).is_none() {
-                    let mesh = tessellate_body(body, tess).map_err(|e| {
-                        CommandError::new(format!("view.replay: {}: {e}", names(*id)))
-                    })?;
+                    // As the picture's scene meshes a body: coarser where
+                    // the tolerance is too fine for the tessellator, and
+                    // without the angle where that cannot be met.
+                    let mesh = |tess: &TessParams| {
+                        tessellate_within_budget(body, tess).map(|within| within.mesh)
+                    };
+                    let mesh = match mesh(tess) {
+                        Err(_) if tess.max_angle.is_some() => mesh(&TessParams {
+                            max_angle: None,
+                            ..*tess
+                        }),
+                        other => other,
+                    }
+                    .map_err(|e| CommandError::new(format!("view.replay: {}: {e}", names(*id))))?;
                     self.held.push((Arc::clone(body), Arc::new(mesh)));
                 }
             }
@@ -360,6 +371,15 @@ mod native {
             }
         };
         let dir = session.workspace.resolve_write(dir_param)?;
+        // Sampled as view.render samples the document: at the tolerance
+        // given, or as the window draws it (the display scene's tolerance
+        // and angle).
+        let given = match p.number("tolerance")? {
+            Some(t) if t > 0.0 => Some(t),
+            Some(_) => return fail("view.replay: `tolerance` must be positive"),
+            None => None,
+        };
+        let sampling = session.picture_scene(given)?.map(|scene| scene.sampling());
 
         let open = session.document_mut()?;
         // The document's own regeneration, so its cache holds every
@@ -451,9 +471,16 @@ mod native {
         let Some(final_regen) = final_regen else {
             return fail("view.replay: nothing to replay");
         };
-        // The tolerance view.render picks for these bodies: when the
-        // replay ends where the document does, the document's.
-        let tess = tolerance_param(&p, "view.replay", &final_regen)?;
+        // The sampling view.render picks for the document, so that the
+        // last frame is its picture.
+        let tess = match sampling {
+            Some((chordal_tolerance, max_angle)) => TessParams {
+                chordal_tolerance,
+                max_angle,
+                ..TessParams::default()
+            },
+            None => tolerance_param(&p, "view.replay", &final_regen)?,
+        };
 
         let shown = steps.iter().filter(|s| s.shown).count() as u64;
         let frames = (shown + 1).saturating_mul(per_step).saturating_add(hold);

@@ -365,9 +365,11 @@ pub struct Scene {
     pub max_angle: Option<f64>,
     /// True when the display rule ([`SceneQuality::Display`]) had to
     /// coarsen its tolerance to stay within its triangle budget or within
-    /// what the tessellator can do, or when a body of the quick first
+    /// what the tessellator can do, when a body of the quick first
     /// picture was coarsened to stay within [`DISPLAY_MAX_TRIANGLES`] on
-    /// its own. False for the other qualities.
+    /// its own, or when a body of any scene was too fine for the
+    /// tessellator at the tolerance asked for and was meshed coarser (the
+    /// tolerance is then the one asked for; the body's is coarser).
     pub coarsened: bool,
     /// True for the quick first picture ([`PREVIEW_RELATIVE_TOLERANCE`])
     /// that stands in for the display scene while that is built elsewhere
@@ -968,8 +970,8 @@ struct Sampling {
 }
 
 impl Sampling {
-    /// At `tolerance` with the chordal tolerance alone and no budget:
-    /// `view.render`, export and the scenes of a given tolerance.
+    /// At `tolerance` with the chordal tolerance alone and no budget: the
+    /// scenes of a given tolerance and of the automatic one.
     fn plain(tolerance: f64) -> Self {
         Self {
             tolerance,
@@ -994,11 +996,14 @@ impl Sampling {
 /// depend on the document and the tolerance only, not on the number of
 /// threads: the tessellator's promise, kept here by the fixed order.
 ///
-/// With `per_body` instead (and no `budget`), every body on its own is
-/// kept within that many triangles by coarsening its tolerance
-/// (`craft3d_tess::tessellate_within_budget`): what the quick first
+/// Without a `budget`, a body the tessellator cannot do at the tolerance
+/// because it would need more segments on a patch than it allows
+/// (`TessError::TooFine`) is meshed at the finest coarser tolerance it can
+/// do (`craft3d_tess::tessellate_within_budget`), and the scene is
+/// [`Scene::coarsened`]. With `per_body` too, every body on its own is
+/// kept within that many triangles the same way: what the quick first
 /// picture does, so that one large body cannot make it slow. A body within
-/// it is the body meshed without one.
+/// both is the body meshed at the tolerance.
 ///
 /// `angle` is the tessellator's angle criterion, if any.
 ///
@@ -1110,17 +1115,23 @@ fn build(
         // The mesh and the edges with the angle criterion `max_angle`, and
         // whether the tolerance was coarsened for the body.
         let mesh_with = |max_angle: Option<f64>| {
-            let meshed = match per_body.filter(|_| budget.is_none()) {
-                Some(most) => tessellate_within_budget(
+            let meshed = match budget {
+                // Without the scene's budget a body too fine for the
+                // tessellator at this tolerance is coarsened until it is
+                // not, and the scene says so (lamp T2, 2026-10-16: a
+                // picture refused for it); within `per_body` triangles
+                // too, when that is asked for. A body that needs neither
+                // is the body meshed at the tolerance.
+                None => tessellate_within_budget(
                     body,
                     &TessParams {
-                        max_triangles: Some(most),
+                        max_triangles: per_body,
                         max_angle,
                         ..tess
                     },
                 )
                 .map(|within| (within.mesh, within.edges, within.tolerance > tolerance)),
-                None => tessellate_body_and_edges(
+                Some(_) => tessellate_body_and_edges(
                     body,
                     &TessParams {
                         max_triangles: left,
@@ -1593,6 +1604,28 @@ impl Session {
     /// not changed returns the same `Arc`.
     pub fn scene(&mut self, tolerance: Option<f64>) -> Result<Option<Arc<Scene>>, CommandError> {
         self.scene_with(tolerance.map_or(SceneQuality::Automatic, SceneQuality::Tolerance))
+    }
+
+    /// The scene a picture of the active document is drawn from
+    /// (`view.render`, `view.pick`, `view.replay`): at `tolerance` when one
+    /// is given, and otherwise what the window shows,
+    /// [`SceneQuality::display`] with its defaults, built here and now
+    /// also when the window builds its own elsewhere (impeller T1,
+    /// 2026-10-16: pictures at the automatic tolerance alone showed small
+    /// holes and fillets as polygons the window draws round). Neither
+    /// refuses a body that is too fine for the tessellator: it is
+    /// coarsened, and the scene says so ([`Scene::coarsened`]).
+    pub fn picture_scene(
+        &mut self,
+        tolerance: Option<f64>,
+    ) -> Result<Option<Arc<Scene>>, CommandError> {
+        if let Some(tolerance) = tolerance {
+            return self.scene(Some(tolerance));
+        }
+        let elsewhere = std::mem::replace(&mut self.scene.refine_elsewhere, false);
+        let scene = self.scene_with(SceneQuality::display());
+        self.scene.refine_elsewhere = elsewhere;
+        scene
     }
 
     /// [`Self::scene`] for any [`SceneQuality`]: what a viewport asks for
