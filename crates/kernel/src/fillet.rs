@@ -77,7 +77,15 @@ fn said(error: BlendError) -> KernelError {
             face,
             reason: reason.text(Kind::Fillet),
         },
-        BlendError::Boolean { edge, error } => KernelError::FilletBoolean { edge, error },
+        BlendError::Boolean {
+            edge,
+            error,
+            smaller_fails,
+        } => KernelError::FilletBoolean {
+            edge,
+            error,
+            smaller_fails,
+        },
     }
 }
 
