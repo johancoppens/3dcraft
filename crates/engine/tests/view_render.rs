@@ -806,8 +806,8 @@ fn the_default_frame_is_the_box_of_what_the_faces_hold() {
             json!({"sketch": "Profile", "axis": "y", "angle": "50 deg", "name": "Body"}),
         );
     };
-    let models: [(&str, &dyn Fn(&mut Session)); 3] =
-        [("stay", &stay), ("ring part", &ring_part), ("lune", &lune)];
+    type Build = fn(&mut Session);
+    let models: [(&str, Build); 3] = [("stay", stay), ("ring part", ring_part), ("lune", lune)];
     for (name, build) in models {
         let mut s = Session::new(Workspace::none());
         run(&mut s, "file.new", json!({}));
