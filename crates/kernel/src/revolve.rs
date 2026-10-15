@@ -12,6 +12,7 @@
 //! | any other line | cone, through its apex when the line ends on the axis |
 //! | arc centred on the axis | sphere, through a pole when the arc ends on the axis |
 //! | arc or circle whose whole circle stays clear of the axis | torus |
+//! | arc whose circle reaches the axis, the arc itself clear of it but for its ends | rational B-spline surface |
 //! | spline that stays clear of the axis but for its ends | rational B-spline surface |
 //!
 //! A spline sweeps a surface of revolution that is a NURBS surface exactly:
@@ -23,10 +24,16 @@
 //! surface whose border there is one point (as a cone has its apex); one
 //! that reaches the axis anywhere else is an error that names it.
 //!
-//! An arc or circle whose own circle reaches the axis without being
-//! centred on it would sweep a spindle torus, which `craft3d-geom` does not
-//! have: an error that names the curve. A profile with points on both
-//! sides of the axis is an error too; touching the axis is fine.
+//! An arc whose own circle reaches the axis without being centred on it
+//! lies on a spindle or horn torus, which `craft3d-geom` does not have;
+//! the face it sweeps is only the part of that torus the arc reaches,
+//! which is clear of the axis (the profile is on one side of it), so it is
+//! made as a spline is: the arc as an exact rational quadratic B-spline,
+//! swept into a rational B-spline surface of revolution, and in two halves
+//! in a full revolution. Such an arc, like a spline, may reach the axis at
+//! an end only; a whole circle that touches the axis pinches there and is
+//! an error that names it. A profile with points on both sides of the
+//! axis is an error too; touching the axis is fine.
 //!
 //! A partial revolution is built like an extrusion bent around the axis:
 //! per profile one shell with the profile as a planar cap at each end, per
@@ -45,8 +52,8 @@
 //! circle sweeps a torus without edges, a half circle on the axis a sphere
 //! without edges, as the primitives are.
 //!
-//! A spline is the exception: `craft3d-geom` knows no period for a spline
-//! surface, so a face that goes all the way around on one could not be
+//! A spline (and an arc on a rational surface, above) is the exception:
+//! `craft3d-geom` knows no period for a spline surface, so a face that goes all the way around on one could not be
 //! followed across its seam by anything downstream. A full revolution of
 //! a loop with a spline in it is therefore made in two halves. Each
 //! spline sweeps two faces, from the sketch plane half a turn on and from
@@ -170,13 +177,24 @@ struct Part<'a> {
     end: Rz,
     /// The centre of an arc or circle.
     centre: Rz,
-    /// For a spline: its control points in the half-plane, in the spline's
-    /// own order, as (distance from the axis, height along it). The end
-    /// ones are the corners exactly. Empty for the other shapes.
-    net: Vec<(f64, f64)>,
+    /// For a spline, and for an arc whose circle reaches the axis: the
+    /// curve in the half-plane as a B-spline, in the curve's own order.
+    /// `None` for the other shapes.
+    generatrix: Option<Generatrix>,
     /// The surface and whether the outside is against its normal; `None`
     /// for a line on the axis.
     face: Option<(Surface, bool)>,
+}
+
+/// A curve of the profile in the turning half-plane as a (rational)
+/// B-spline: its degree, knots, control points as (distance from the axis,
+/// height along it) and weights, in the curve's own order. The end control
+/// points are the corners exactly.
+struct Generatrix {
+    degree: usize,
+    knots: Vec<f64>,
+    net: Vec<(f64, f64)>,
+    weights: Vec<f64>,
 }
 
 /// The body under construction, with an origin for everything added.
@@ -288,12 +306,19 @@ impl Builder {
             reason,
         };
         let mut centre = start;
-        let mut net = Vec::new();
+        let mut generatrix = None;
+        let turn = if self.full { PI } else { self.sweep };
         let face = match &segment.shape {
             Shape::Spline(spline) => {
-                net = self.spline_net(axis, segment, spline, start, end)?;
-                let turn = if self.full { PI } else { self.sweep };
-                let surface = self.spline_surface(spline, &net, 0.0, turn)?;
+                let net = self.spline_net(axis, segment, spline, start, end)?;
+                let curve = Generatrix {
+                    degree: spline.degree,
+                    knots: spline.knots.clone(),
+                    weights: vec![1.0; net.len()],
+                    net,
+                };
+                let surface = self.spline_surface(&curve, 0.0, turn)?;
+                generatrix = Some(curve);
                 // The normal (around the axis crossed with along the
                 // spline) is to the right of the spline in the half-plane,
                 // which mirrors the sketch when the profile is to the left
@@ -353,12 +378,27 @@ impl Builder {
                     centre = Rz { rho, z: along };
                     let torus = Torus::new(self.level(along)?, rho, radius)?;
                     Some((Surface::Torus(torus), segment.reversed))
-                } else {
+                } else if matches!(segment.shape, Shape::Circle { .. }) {
+                    // On one side of the axis (`revolve` refuses one that
+                    // crosses it), so it touches the axis.
                     return Err(unsupported(
-                        "its circle reaches the axis without being centred on it, which \
-                         sweeps a spindle torus; centre it on the axis or keep the whole \
-                         circle clear of it",
+                        "the circle touches the axis, where the surface it sweeps would \
+                         pinch into a point; keep it clear of the axis",
                     ));
+                } else {
+                    // The torus of its circle would be a spindle or horn
+                    // torus, which `craft3d-geom` does not have; the arc
+                    // itself sweeps a surface of revolution that a
+                    // rational B-spline is exactly.
+                    centre = Rz { rho, z: along };
+                    let curve = self.arc_generatrix(axis, segment, center, radius, start, end)?;
+                    let surface = self.spline_surface(&curve, 0.0, turn)?;
+                    generatrix = Some(curve);
+                    // As for a spline: the curve runs its own way.
+                    Some((
+                        Surface::Nurbs(surface),
+                        (self.side > 0.0) != segment.reversed,
+                    ))
                 }
             }
         };
@@ -367,7 +407,7 @@ impl Builder {
             start,
             end,
             centre,
-            net,
+            generatrix,
             face,
         })
     }
@@ -439,30 +479,104 @@ impl Builder {
     /// turn, v along the spline.
     fn spline_surface(
         &self,
-        spline: &spline2::Spline2,
-        net: &[(f64, f64)],
+        curve: &Generatrix,
         from: f64,
         turn: f64,
     ) -> Result<NurbsSurface, KernelError> {
         let ring = arcs_about(from, turn);
+        let net = &curve.net;
         let mut control = Vec::with_capacity(ring.points.len() * net.len());
         let mut weights = Vec::with_capacity(ring.points.len() * net.len());
         for &(x, y, weight) in &ring.points {
-            for &(rho, z) in net {
+            for (&(rho, z), &own) in net.iter().zip(&curve.weights) {
                 control.push(self.frame.point(rho * x, rho * y, z));
-                weights.push(weight);
+                weights.push(weight * own);
             }
         }
         Ok(NurbsSurface::new(
             2,
-            spline.degree,
+            curve.degree,
             ring.knots,
-            spline.knots.clone(),
+            curve.knots.clone(),
             ring.points.len(),
             net.len(),
             control,
             weights,
         )?)
+    }
+
+    /// An arc about `center` whose circle reaches the axis, from the
+    /// corner `start` to `end` as the loop runs, as a rational quadratic
+    /// B-spline in the half-plane in its own direction (counter-clockwise
+    /// in the sketch; *The NURBS Book* §7.3): made in the sketch, where
+    /// the arc is, and taken to the half-plane control point by control
+    /// point, which an affine map allows. Errors when the arc comes
+    /// within tolerance of the axis anywhere but at an end that is on it,
+    /// where the surface it sweeps would pinch into a point.
+    fn arc_generatrix(
+        &self,
+        axis: &Axis,
+        segment: &Segment,
+        center: P2,
+        radius: f64,
+        start: Rz,
+        end: Rz,
+    ) -> Result<Generatrix, KernelError> {
+        let (begin, sweep) = segment.angles().unwrap_or((0.0, TAU));
+        if !(sweep > 0.0 && sweep < TAU) {
+            return Err(invalid(
+                "an arc whose start and end coincide; a full turn is a circle",
+            ));
+        }
+        let (first, last) = if segment.reversed {
+            (end, start)
+        } else {
+            (start, end)
+        };
+        // Nearest the axis is the point of the circle towards it, when the
+        // arc runs through it (as in `Axis::reach`).
+        let (left, along) = axis.coordinates(center);
+        let nearest = self.side * left - radius;
+        let towards = (-self.side * axis.left[1]).atan2(-self.side * axis.left[0]);
+        let inside = wrap(towards - begin);
+        if nearest <= self.linear && inside > 0.0 && inside < sweep {
+            let at_end = [first, last]
+                .iter()
+                .any(|c| c.rho == 0.0 && (c.z - along).abs() <= self.linear);
+            if !at_end {
+                return Err(KernelError::UnsupportedCurve {
+                    id: segment.source,
+                    reason: "the arc reaches the axis between its ends, where the surface \
+                             it sweeps would pinch into a point; keep it clear of the axis, \
+                             or end it there",
+                });
+            }
+        }
+        let ring = arcs_about(begin, sweep);
+        let mut net: Vec<(f64, f64)> = ring
+            .points
+            .iter()
+            .map(|&(x, y, _)| {
+                let (left, along) =
+                    axis.coordinates([center[0] + radius * x, center[1] + radius * y]);
+                (self.side * left, along)
+            })
+            .collect();
+        if let Some(slot) = net.first_mut() {
+            *slot = (first.rho, first.z);
+        }
+        if let Some(slot) = net.last_mut() {
+            *slot = (last.rho, last.z);
+        }
+        if !net.iter().all(|p| p.0.is_finite() && p.1.is_finite()) {
+            return Err(degenerate_frame());
+        }
+        Ok(Generatrix {
+            degree: 2,
+            knots: ring.knots,
+            weights: ring.points.iter().map(|p| p.2).collect(),
+            net,
+        })
     }
 
     /// The edge of `part` in the half-plane at `angle`, between the
@@ -486,8 +600,8 @@ impl Builder {
         };
         match &segment.shape {
             Shape::Spline(spline) => {
-                let control = part
-                    .net
+                let net = part.generatrix.as_ref().map_or(&[][..], |g| &g.net[..]);
+                let control = net
                     .iter()
                     .map(|&(rho, z)| self.point(Rz { rho, z }, angle))
                     .collect();
@@ -618,7 +732,7 @@ impl Builder {
         // A full revolution of a loop with a spline in it is made in two
         // halves (see the module documentation): the entities of the
         // second half are the second their sources give.
-        let halved = full && parts.iter().any(|p| !p.net.is_empty());
+        let halved = full && parts.iter().any(|p| p.generatrix.is_some());
         let numbered = |piece: u32, half: u32| {
             if halved {
                 piece.saturating_mul(2).saturating_add(half)
@@ -628,7 +742,7 @@ impl Builder {
         };
         // The corners at an end of a spline: there the halves meet in a
         // vertex, and the circle about the axis is two arcs.
-        let is_spline: Vec<bool> = parts.iter().map(|p| !p.net.is_empty()).collect();
+        let is_spline: Vec<bool> = parts.iter().map(|p| p.generatrix.is_some()).collect();
         let spline_before = is_spline.iter().cycle().skip(n - 1);
         let cut: Vec<bool> = is_spline
             .iter()
@@ -667,6 +781,30 @@ impl Builder {
                 Some(self.vertex(point, origin))
             });
         }
+        // A point of the axis between two curves that are both made in
+        // two halves in a full revolution is where the boundary meets
+        // itself (a pinch, as at the tip of two cones): the faces either
+        // side share no edge there, and each side gets a vertex of its own.
+        // The arriving side's is named by the arriving curve alone.
+        let mut apex: Vec<Option<VertexId>> = vec![None; n];
+        for (i, ((part, arriving), (&leaving, &before))) in parts
+            .iter()
+            .zip(segments.iter().cycle().skip(n - 1))
+            .zip(is_spline.iter().zip(is_spline.iter().cycle().skip(n - 1)))
+            .enumerate()
+        {
+            if full && part.start.rho == 0.0 && leaving && before {
+                let point = self.point(part.start, 0.0);
+                let origin = Origin::of_piece(
+                    Role::StartVertex,
+                    &[arriving.source],
+                    numbered(arriving.piece, 0),
+                );
+                if let Some(slot) = apex.get_mut(i) {
+                    *slot = Some(self.vertex(point, origin));
+                }
+            }
+        }
 
         // The profile's edges at the start and at the end (in a full
         // revolution: of the splines only, at the start and half a turn
@@ -680,7 +818,7 @@ impl Builder {
             for (i, (part, (&here, &there))) in
                 parts.iter().zip(vertices.iter().zip(after)).enumerate()
             {
-                if full && part.net.is_empty() {
+                if full && part.generatrix.is_none() {
                     made.push(None);
                     continue;
                 }
@@ -688,6 +826,7 @@ impl Builder {
                 made.push(match (part.face.is_none(), shared, layer) {
                     (true, Some(edge), 1) => Some(edge),
                     _ => {
+                        let there = apex.get((i + 1) % n).copied().flatten().or(there);
                         let (Some(here), Some(there)) = (here, there) else {
                             return Err(invalid("a loop lost a vertex"));
                         };
@@ -774,13 +913,13 @@ impl Builder {
                 top.get(i).copied().flatten(),
             );
             let mut made = Vec::with_capacity(2);
-            if let (true, Shape::Spline(spline)) = (full, &part.segment.shape) {
+            if let (true, Some(curve)) = (full, &part.generatrix) {
                 // Two halves: from the start edge to the one half a turn
                 // on, and from that one back to the start edge.
                 let (Some(first), Some(last)) = edges else {
                     return Err(invalid("a loop lost an edge"));
                 };
-                let second = self.spline_surface(spline, &part.net, PI, PI)?;
+                let second = self.spline_surface(curve, PI, PI)?;
                 let first_loop = ring(self, first, last, 0);
                 let second_loop = ring(self, last, first, 1);
                 for (surface, ring, half) in [

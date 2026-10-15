@@ -28,3 +28,4 @@ craft3d-step.workspace = true
 craft3d-testkit.workspace = true
 craft3d-geom.workspace = true
 craft3d-kernel.workspace = true
+craft3d-zipstore.workspace = true

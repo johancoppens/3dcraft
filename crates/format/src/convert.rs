@@ -1106,6 +1106,8 @@ pub(crate) fn to_doc(document: manifest::Document) -> doc::Document {
                 manifest::AngleUnit::Radian => doc::AngleUnit::Radian,
             },
         },
+        // As written; one outside the range is brought into it, and said
+        // so, by `from_manifest_json_noted`.
         tolerance: doc::Tolerance { linear, angular },
         variables: variables
             .into_iter()
