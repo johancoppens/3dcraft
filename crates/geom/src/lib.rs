@@ -4,6 +4,7 @@
 //! Reference: Piegl & Tiller, *The NURBS Book*, 2nd ed., ch. 1 (Bernstein
 //! polynomials, Bézier surfaces).
 
+pub mod certify;
 pub mod closure;
 mod curve;
 mod extend;
@@ -16,7 +17,8 @@ mod transform;
 
 pub use curve::{Circle, Curve3, Ellipse, Line};
 pub use nurbs::{
-    BezierSpan, DerivativeBounds, MAX_CONTROL_POINTS, NurbsCurve, NurbsSurface, RationalBezierPatch,
+    BezierSpan, CurvePiece, DerivativeBounds, MAX_CONTROL_POINTS, NurbsCurve, NurbsSurface,
+    RationalBezierPatch,
 };
 pub use surface::{Cone, Cylinder, Plane, Sphere, Surface, Torus};
 pub use transform::{ISOMETRY_EPSILON, MirrorRule};

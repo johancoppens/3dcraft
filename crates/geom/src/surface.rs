@@ -112,7 +112,7 @@ impl Cone {
         -self.radius / self.half_angle.tan()
     }
 
-    fn radius_at(&self, v: f64) -> f64 {
+    pub(crate) fn radius_at(&self, v: f64) -> f64 {
         self.radius + v * self.half_angle.tan()
     }
 }
