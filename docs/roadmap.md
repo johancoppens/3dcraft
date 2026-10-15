@@ -56,7 +56,7 @@ The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item i
 7. 🟡 **Speed on bodies with thousands of faces** (a spatial index).
 8. ✅ 2026-10-15 **Never an invalid body:** every operation is checked for crossing, overlapping and self-touching shells near what it changed, or proven unable to make them ([`architecture.md`](architecture.md) §5.5 › *Never through itself*).
 
-**Measured (2026-10-14, morning; the same on 2026-10-15 after the helmet's findings, and after poles at a corner and coincident freeform faces):** 11573 of 11988 corpus outcomes agree, 249 refused (all in the category near, about 250 being the tolerance rule itself: cases built one tolerance apart or into each other), 0 wrong, 0 invalid. Speed (2026-10-13): 1024 holes one by one in 7.1 s, a cylinder through a plate of 1030 faces in 36.5 ms; the corpus test takes about 230 s on 14 threads on an idle machine (640 s at noon on 2026-10-13) and is the gate's longest binary.
+**Measured (2026-10-14, morning; the same on 2026-10-15 after the helmet's findings, after poles at a corner and coincident freeform faces, and after fourth-order contact):** 11573 of 11988 corpus outcomes agree, 249 refused (all in the category near, about 250 being the tolerance rule itself: cases built one tolerance apart or into each other), 0 wrong, 0 invalid. Speed (2026-10-13): 1024 holes one by one in 7.1 s, a cylinder through a plate of 1030 faces in 36.5 ms; the corpus test takes about 230 s on 14 threads on an idle machine (640 s at noon on 2026-10-13) and is the gate's longest binary.
 
 **Owed, in order:**
 
