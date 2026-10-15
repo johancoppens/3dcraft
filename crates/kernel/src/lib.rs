@@ -171,10 +171,12 @@ pub enum KernelError {
         face: Option<craft3d_topo::FaceId>,
         reason: &'static str,
     },
-    /// The boolean refused the tool of a chamfered edge.
+    /// The boolean refused the tool of a chamfered edge; `smaller_fails`
+    /// when smaller distances were tried and fail the same way.
     ChamferBoolean {
         edge: craft3d_topo::EdgeId,
         error: Box<KernelError>,
+        smaller_fails: bool,
     },
     /// A fillet radius for which the line along which the ball touches
     /// `face`, one of the two faces of `edge`, would leave that face:
@@ -193,10 +195,12 @@ pub enum KernelError {
         face: Option<craft3d_topo::FaceId>,
         reason: &'static str,
     },
-    /// The boolean refused the tool of a filleted edge.
+    /// The boolean refused the tool of a filleted edge; `smaller_fails`
+    /// when smaller radii were tried and fail the same way.
     FilletBoolean {
         edge: craft3d_topo::EdgeId,
         error: Box<KernelError>,
+        smaller_fails: bool,
     },
     /// A face operation (offset face, shell) that is refused:
     /// the faces and the edge it is about, when there are.
@@ -403,8 +407,16 @@ impl fmt::Display for KernelError {
                 }
                 write!(f, ": {reason}")
             }
-            KernelError::ChamferBoolean { edge, error } => {
-                write!(f, "chamfer of edge {}: {error}", edge.0)
+            KernelError::ChamferBoolean {
+                edge,
+                error,
+                smaller_fails,
+            } => {
+                write!(f, "chamfer of edge {}: {error}", edge.0)?;
+                if *smaller_fails {
+                    write!(f, "; smaller distances tried fail the same way")?;
+                }
+                Ok(())
             }
             KernelError::FilletTooLarge {
                 edge,
@@ -428,8 +440,16 @@ impl fmt::Display for KernelError {
                 }
                 write!(f, ": {reason}")
             }
-            KernelError::FilletBoolean { edge, error } => {
-                write!(f, "fillet of edge {}: {error}", edge.0)
+            KernelError::FilletBoolean {
+                edge,
+                error,
+                smaller_fails,
+            } => {
+                write!(f, "fillet of edge {}: {error}", edge.0)?;
+                if *smaller_fails {
+                    write!(f, "; smaller radii tried fail the same way")?;
+                }
+                Ok(())
             }
             KernelError::FaceOp {
                 operation,

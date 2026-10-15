@@ -61,9 +61,18 @@ fn explain(
                 None => format!("{at}: {reason}"),
             }
         }
-        KernelError::FilletBoolean { edge, error } => format!(
-            "{}: the boolean that cuts this fillet refused it: {error}",
-            role(edge)
+        KernelError::FilletBoolean {
+            edge,
+            error,
+            smaller_fails,
+        } => format!(
+            "{}: the boolean that cuts this fillet refused it: {error}{}",
+            role(edge),
+            if smaller_fails {
+                "; smaller radii tried fail the same way"
+            } else {
+                ""
+            }
         ),
         other => other.to_string(),
     }

@@ -85,7 +85,15 @@ pub(crate) fn said(error: BlendError) -> KernelError {
             face,
             reason: reason.text(Kind::Chamfer),
         },
-        BlendError::Boolean { edge, error } => KernelError::ChamferBoolean { edge, error },
+        BlendError::Boolean {
+            edge,
+            error,
+            smaller_fails,
+        } => KernelError::ChamferBoolean {
+            edge,
+            error,
+            smaller_fails,
+        },
     }
 }
 

@@ -355,6 +355,7 @@ The blends first (chamfer and fillet, the first consumers of edge references), t
 - Freeform blends along chains of tangent edges, one family of balls with a face per edge, also where a face changes across a smooth edge (the turbofan casing's cut edge through its flange root, the engine block's boss foot E6 in its first form), and freeform with closed-form edges in one feature ([`design/blends.md`](design/blends.md) › *Chains and meets of freeform blends*) (2026-10-15)
 - Two freeform fillets that meet at a vertex whose third edge stays sharp, convex or concave (the tip of a lofted blade rounded all round) (§5.3 › *Chains and meets of freeform blends*) (2026-10-15)
 - The impeller's and the lamp's blend findings: freeform meets found where the borders cross, blends that run into a wall or end past a corner (edges lengthened, spline faces grown), up to 4096 samples by a banded solve, face changes at joints judged at the vertex (§5.3 › *Blend findings of the impeller and the lamp*) (2026-10-15)
+- What fits is decided by building the blend and checking it, not by an estimate; the largest size that fits is found by more builds ([`design/blends.md`](design/blends.md) › *What fits, decided by building*) (2026-10-15)
 
 #### Open
 - [ ] Replace face
@@ -365,7 +366,7 @@ The blends first (chamfer and fillet, the first consumers of edge references), t
 - [ ] Freeform blends that are still refused: a blend whose end runs over more than one face (F9), a joint creased by more than the tolerance allows at the radius (the lamp's cells, B4), a chamfer chain whose face changes at a joint (B5); a fillet whose border runs over a smooth edge of a face beside it in the middle of an edge (the engine block's E6 in the full block, next to the waist round); concave fillets that meet round a sharp convex edge (a blade's root loop, the turbofan's F3); a chain whose ends meet at one vertex; chamfers whose face changes at a joint or that meet; a freeform chamfer by distance and angle; a vertex patch with tangency (a setback) in place of the crease where two fillets meet
 - [ ] A blend that ends in a face of its own in the middle of a chain
 - [ ] Chamfers: a reference to one of several edges between the same two faces
-- [ ] Fillets: an outside and an inside fillet that meet; the rim of a rod with half its radius or more (a spindle torus); a rim fillet along an earlier round of the same radius or more (the torus would reach its axis: all edges of a prism in two steps); variable radius (later)
+- [ ] Fillets: an outside and an inside fillet that meet; a fillet on a circular rim past half its radius (a spindle torus face: R/2 is the kernel's limit, which the hint for what fits reports, not the geometric one); a rim fillet along an earlier round of the same radius or more (the torus would reach its axis: all edges of a prism in two steps); variable radius (later)
 - [ ] Blends whose touch line runs over a tangent edge onto the next face (a rib's root that reaches the round of a rail below it), and a blend ending on a face that is not a plane
 - [ ] Offset face: a neighbour tangent to the moved face, a vertex of four or more faces that would become an edge, an elliptic or freeform edge next to a moved face
 - [ ] Shell: a thickness at a rounded edge's radius or more

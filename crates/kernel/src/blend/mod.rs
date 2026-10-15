@@ -72,9 +72,10 @@
 //! vertex in any other arrangement (different radii, a circular edge, a
 //! fourth edge) need a vertex blend that is not built, and are refused.
 //!
-//! **Never a wrong solid.** A size for which a cut line or a tangent line
-//! would leave its face is refused before anything is built, with the
-//! largest size that fits. After the last boolean the result is held
+//! **Never a wrong solid.** Whether a size fits is not estimated: the
+//! blend is built and checked, and a size that does not build is refused
+//! with the largest that does, found by building again ([`fit`]). After
+//! the last boolean the result is held
 //! against what a blend is: every blend face is there, in one piece,
 //! borders both neighbours of its edge, and borders nothing but those,
 //! the faces at the ends of its edge and the blends and corners there; no
@@ -99,6 +100,7 @@ use craft3d_topo::{Body, BodyKind, EdgeId, FaceId, VertexId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::{PI, TAU};
 
+mod fit;
 mod rolling;
 mod section;
 use section::{Section, Trace};
@@ -397,6 +399,8 @@ pub(crate) enum BlendError {
     Boolean {
         edge: EdgeId,
         error: Box<KernelError>,
+        /// Smaller sizes, tried, fail the same way.
+        smaller_fails: bool,
     },
 }
 
@@ -946,25 +950,6 @@ fn plan(body: &Body, uses: &[Vec<Use>], request: &Request, tol: f64) -> Result<P
     })
 }
 
-/// Points along an edge for measuring: its ends, and for a curve some in
-/// between.
-fn samples(body: &Body, edge: EdgeId, fine: bool) -> Vec<Vec3> {
-    let Some(data) = body.edge(edge) else {
-        return Vec::new();
-    };
-    let count: u32 = match data.curve {
-        Curve3::Line(_) if !fine => 1,
-        Curve3::Line(_) | Curve3::Circle(_) | Curve3::Ellipse(_) | Curve3::Nurbs(_) => 64,
-    };
-    (0..=count)
-        .map(|i| {
-            let s = f64::from(i) / f64::from(count);
-            data.curve
-                .eval(data.range.0 + s * (data.range.1 - data.range.0))
-        })
-        .collect()
-}
-
 /// The edges of the loops of `face`.
 fn face_edges(body: &Body, face: FaceId) -> Vec<EdgeId> {
     let mut edges = Vec::new();
@@ -980,311 +965,6 @@ fn face_edges(body: &Body, face: FaceId) -> Vec<EdgeId> {
         }
     }
     edges
-}
-
-/// Refuses a distance for which the cut line would leave its face, with
-/// the largest distance that fits. The measure is how far the rest of the
-/// face's boundary is from the edge, along the face: for a straight edge
-/// the part of the boundary beside the edge, less the distance of another
-/// chamfer that cuts the face from there.
-fn fits(body: &Body, plans: &[Plan], tol: f64) -> Result<(), BlendError> {
-    let planned: BTreeMap<EdgeId, &Plan> = plans.iter().map(|p| (p.edge, p)).collect();
-    for plan in plans {
-        // The vertices of the edge: its two ends, or the one vertex of a
-        // whole circle.
-        let ends: Vec<VertexId> = body
-            .edge(plan.edge)
-            .map(|e| vec![e.start, e.end])
-            .unwrap_or_default();
-        for (side, face) in plan.faces.into_iter().enumerate() {
-            let (Some(&into), Some(&distance)) = (plan.into.get(side), plan.distances.get(side))
-            else {
-                continue;
-            };
-            let mut largest = f64::INFINITY;
-            // Whether `largest` is where the boundary that leaves an end
-            // of the edge turns at a corner of the face: a cut line that
-            // runs exactly into that corner still fits (a chamfer next to
-            // an earlier one of the same distance).
-            let mut into_corner = false;
-            for other in face_edges(body, face) {
-                if other == plan.edge {
-                    continue;
-                }
-                let Some(data) = body.edge(other) else {
-                    continue;
-                };
-                let touches = ends.contains(&data.start) || ends.contains(&data.end);
-                // What another chamfer takes of the face from that side.
-                let taken = match planned.get(&other) {
-                    Some(there) if !touches => there.distance_on(face).unwrap_or(0.0),
-                    _ => 0.0,
-                };
-                let points = samples(body, other, matches!(plan.path, Path::Circle { .. }));
-                let mut corner = false;
-                if touches && alongside(body, plan.edge, other) {
-                    // It leaves an end of the edge the way the edge does
-                    // (a rib's foot whose arc touches the boundary of the
-                    // wall it stands on): the face pinches to nothing
-                    // between them there, and no blend fits.
-                    largest = largest.min(0.0);
-                    into_corner = false;
-                    continue;
-                }
-                let reach = match plan.path {
-                    Path::Line {
-                        start,
-                        along,
-                        length,
-                    } => {
-                        // How far into the face a point is, and where
-                        // along the edge.
-                        let place =
-                            |p: Vec3| (plan.coordinate(side, p - start), (p - start).dot(along));
-                        if touches {
-                            // An edge that leaves from an end of this one
-                            // bounds the strip up to its own far end, and
-                            // on along the edges of the face that continue
-                            // it smoothly (a rim that runs on round a
-                            // tangent arc, a circle split at its seam):
-                            // the face can only turn back at a corner.
-                            let mut far = points
-                                .iter()
-                                .map(|p| place(*p).0)
-                                .fold(0.0_f64, f64::max)
-                                .max(0.0);
-                            let run = smooth_run(body, face, plan.edge, other, &ends);
-                            for next in &run {
-                                for p in samples(body, *next, true) {
-                                    far = far.max(place(p).0);
-                                }
-                            }
-                            // The far vertex of the run: the end of its
-                            // last edge that lies furthest into the face.
-                            let tip =
-                                body.edge(run.last().copied().unwrap_or(other))
-                                    .and_then(|e| {
-                                        [e.start, e.end]
-                                            .into_iter()
-                                            .filter(|v| !ends.contains(v))
-                                            .filter_map(|v| body.vertex(v))
-                                            .map(|v| place(v.point).0)
-                                            .reduce(f64::max)
-                                    });
-                            corner = tip.is_some_and(|tip| tip >= far - tol);
-                            far
-                        } else {
-                            let mut nearest = f64::INFINITY;
-                            for pair in points.windows(2) {
-                                let [p, q] = pair else { continue };
-                                let ((sp, tp), (sq, tq)) = (place(*p), place(*q));
-                                // The part of the piece beside the edge.
-                                let (lo, hi) = (tp.min(tq), tp.max(tq));
-                                if hi <= tol || lo >= length - tol {
-                                    continue;
-                                }
-                                let at = |t: f64| {
-                                    if (tq - tp).abs() <= f64::MIN_POSITIVE {
-                                        sp.min(sq)
-                                    } else {
-                                        sp + (sq - sp) * ((t - tp) / (tq - tp)).clamp(0.0, 1.0)
-                                    }
-                                };
-                                // Boundary behind the edge's own line is
-                                // not beside it on the face.
-                                for s in [at(0.0_f64.max(lo)), at(length.min(hi))] {
-                                    if s > tol {
-                                        nearest = nearest.min(s);
-                                    }
-                                }
-                            }
-                            nearest
-                        }
-                    }
-                    Path::Circle {
-                        centre, axis, arc, ..
-                    } => {
-                        // Along a plane: across the axis; along a cylinder
-                        // or a cone: the same measured along the slope.
-                        // Beside an arc only what lies in its sector.
-                        let beside = |p: Vec3| match arc {
-                            None => true,
-                            Some((from, sweep)) => {
-                                let offset = p - centre;
-                                let turned = offset
-                                    .dot(axis.cross(from))
-                                    .atan2(offset.dot(from))
-                                    .rem_euclid(TAU);
-                                turned > 1e-9 && turned < sweep - 1e-9
-                            }
-                        };
-                        let start = body
-                            .edge(plan.edge)
-                            .map(|e| e.curve.eval(e.range.0))
-                            .unwrap_or(centre);
-                        let level = |p: Vec3| {
-                            let offset = p - centre;
-                            let height = offset.dot(axis);
-                            ((offset - axis * height).length(), height)
-                        };
-                        let (r0, h0) = level(start);
-                        if touches && continues(body, plan.edge, other) {
-                            // It goes on from an end of the arc along the
-                            // circle's tangent: beyond the arc's sector,
-                            // beside nothing of it (the edges after it are
-                            // measured as all others are).
-                            continue;
-                        }
-                        let away = points.iter().filter(|p| touches || beside(**p)).map(|p| {
-                            let (r, h) = level(*p);
-                            (r - r0).hypot(h - h0)
-                        });
-                        if touches {
-                            // A seam: it leaves the circle and bounds
-                            // nothing before its far end.
-                            away.fold(0.0_f64, f64::max)
-                        } else {
-                            away.fold(f64::INFINITY, f64::min)
-                        }
-                    }
-                };
-                if reach.is_finite() && (reach > tol || !touches) && reach - taken < largest {
-                    largest = reach - taken;
-                    into_corner = touches && corner && taken == 0.0;
-                }
-            }
-            // A cut line that runs into the axis leaves nothing of a face
-            // across it.
-            if let Path::Circle {
-                axis,
-                radial,
-                radius,
-                ..
-            } = plan.path
-            {
-                let inward = -into.dot(radial);
-                if inward > 1e-9 && into.dot(axis).abs() < 1.0 {
-                    largest = largest.min(radius / inward);
-                }
-            }
-            let exactly_into_corner = into_corner && (distance - largest).abs() <= 2.0 * tol;
-            if distance >= largest - 2.0 * tol && !exactly_into_corner {
-                // A fillet is said by its radius.
-                let per = match plan.scale.get(side) {
-                    Some(per) if plan.round.is_some() && per.is_finite() => *per,
-                    _ => 1.0,
-                };
-                return Err(BlendError::TooLarge {
-                    edge: plan.edge,
-                    face,
-                    size: distance * per,
-                    largest: largest.max(0.0) * per,
-                });
-            }
-        }
-    }
-    Ok(())
-}
-
-/// The edges of `face` that continue `first` smoothly, one after the
-/// other, away from the end of `first` that is an end of `edge` (`ends`):
-/// at each far vertex the one other edge of the face that leaves it
-/// straight on. Stops at a corner, at `edge`, or when the run closes.
-fn smooth_run(
-    body: &Body,
-    face: FaceId,
-    edge: EdgeId,
-    first: EdgeId,
-    ends: &[VertexId],
-) -> Vec<EdgeId> {
-    let edges = face_edges(body, face);
-    // The direction an edge leaves `vertex` in, if it ends there.
-    let away = |id: EdgeId, vertex: VertexId| -> Option<Vec3> {
-        let data = body.edge(id)?;
-        if data.start == vertex {
-            tangent(&data.curve, data.range.0).ok()
-        } else if data.end == vertex {
-            tangent(&data.curve, data.range.1).ok().map(|t| -t)
-        } else {
-            None
-        }
-    };
-    let mut run = Vec::new();
-    let Some(data) = body.edge(first) else {
-        return run;
-    };
-    let mut current = first;
-    let mut vertex = if ends.contains(&data.start) {
-        data.end
-    } else {
-        data.start
-    };
-    for _ in 0..edges.len() {
-        if ends.contains(&vertex) {
-            break;
-        }
-        let Some(arriving) = away(current, vertex) else {
-            break;
-        };
-        let mut next = edges.iter().copied().filter(|e| {
-            *e != current
-                && *e != edge
-                && away(*e, vertex).is_some_and(|d| d.dot(arriving) < -1.0 + 1e-9)
-        });
-        let (Some(found), None) = (next.next(), next.next()) else {
-            break;
-        };
-        if found == first || run.contains(&found) {
-            break;
-        }
-        run.push(found);
-        let Some(data) = body.edge(found) else {
-            break;
-        };
-        vertex = if data.start == vertex {
-            data.end
-        } else {
-            data.start
-        };
-        current = found;
-    }
-    run
-}
-
-/// True when `other` goes on from an end of `edge` straight on (the two
-/// leave their common vertex in opposite directions).
-fn continues(body: &Body, edge: EdgeId, other: EdgeId) -> bool {
-    leave_together(body, edge, other, -1.0)
-}
-
-/// True when `other` leaves a common vertex with `edge` in the direction
-/// `edge` leaves it in (they touch there).
-fn alongside(body: &Body, edge: EdgeId, other: EdgeId) -> bool {
-    leave_together(body, edge, other, 1.0)
-}
-
-/// True when at a vertex they share the directions in which `edge` and
-/// `other` leave it, the second times `sign`, agree.
-fn leave_together(body: &Body, edge: EdgeId, other: EdgeId, sign: f64) -> bool {
-    let away = |id: EdgeId, vertex: VertexId| -> Option<Vec3> {
-        let data = body.edge(id)?;
-        if data.start == vertex {
-            tangent(&data.curve, data.range.0).ok()
-        } else if data.end == vertex {
-            tangent(&data.curve, data.range.1).ok().map(|t| -t)
-        } else {
-            None
-        }
-    };
-    let Some(data) = body.edge(edge) else {
-        return false;
-    };
-    [data.start, data.end].into_iter().any(|vertex| {
-        match (away(edge, vertex), away(other, vertex)) {
-            (Some(a), Some(b)) => a.dot(b * sign) > 1.0 - 1e-9,
-            _ => false,
-        }
-    })
 }
 
 /// An edge at a vertex: which way it leaves, and how it turns.
@@ -2108,6 +1788,7 @@ fn combine(
             other => BlendError::Boolean {
                 edge,
                 error: Box::new(other),
+                smaller_fails: false,
             },
         })?;
     state.take(result, marks, plan);
@@ -2392,6 +2073,7 @@ fn ball_tool(
     let refused_by = |error: KernelError| BlendError::Boolean {
         edge,
         error: Box::new(error),
+        smaller_fails: false,
     };
     let reach = 1.25 * vertex.distance(centre);
     if !(reach.is_finite() && reach > 0.0) {
@@ -2858,12 +2540,55 @@ fn blend_inner(
         }
         return mixed(body, edges, free, tolerance);
     }
-    fits(body, &plans, tol)?;
-    lengthen(body, &uses, &at, &mut plans)?;
+    match build(body, &uses, &at, plans.clone(), tolerance) {
+        Ok(made) => Ok(made),
+        Err(failure) => Err(fit::explain(
+            body, &uses, &at, edges, &plans, failure, tolerance,
+        )),
+    }
+}
+
+/// A build that failed, with the edge it failed at when that is known.
+struct Failure {
+    edge: Option<EdgeId>,
+    error: BlendError,
+}
+
+impl From<BlendError> for Failure {
+    fn from(error: BlendError) -> Self {
+        let edge = match &error {
+            BlendError::Refused { edge, .. } => *edge,
+            BlendError::Boolean { edge, .. } | BlendError::TooLarge { edge, .. } => Some(*edge),
+            BlendError::Kernel(_) => None,
+        };
+        Failure { edge, error }
+    }
+}
+
+/// A failure at `edge`, unless the error names one itself.
+fn at_edge(edge: EdgeId) -> impl Fn(BlendError) -> Failure {
+    move |error| {
+        let mut failure = Failure::from(error);
+        failure.edge.get_or_insert(edge);
+        failure
+    }
+}
+
+/// Builds the blends the plans describe, exactly, and holds the result
+/// against what a blend is ([`finish`]): everything after the plans.
+fn build(
+    body: &Body,
+    uses: &[Vec<Use>],
+    at: &[Vec<EdgeId>],
+    mut plans: Vec<Plan>,
+    tolerance: &Tolerance,
+) -> Result<Blended, Failure> {
+    let tol = tolerance.linear;
+    lengthen(body, uses, at, &mut plans)?;
     let found = if plans.iter().any(|p| p.round.is_some()) {
-        ball_corners(body, &uses, &at, &plans, tol)?
+        ball_corners(body, uses, at, &plans, tol)?
     } else {
-        corners(body, &uses, &at, &plans, tol)?
+        corners(body, uses, at, &plans, tol)?
     };
 
     let mut state = State {
@@ -2882,7 +2607,7 @@ fn blend_inner(
             .collect(),
     };
     // Blends that continue each other are one tool (see `joints`).
-    let joined = joints(body, &uses, &at, &plans)?;
+    let joined = joints(body, uses, at, &plans)?;
     // Per plan, the least plan it is joined to, through any number of
     // joints.
     let mut group: Vec<usize> = (0..plans.len()).collect();
@@ -2922,7 +2647,7 @@ fn blend_inner(
             .filter(|i| group.get(*i) == Some(&index))
             .collect();
         if let [_] = members.as_slice() {
-            let made = tool(plan, tolerance)?;
+            let made = tool(plan, tolerance).map_err(at_edge(plan.edge))?;
             combine(
                 &mut state,
                 &made.body,
@@ -2936,13 +2661,13 @@ fn blend_inner(
             let mut tools = Vec::with_capacity(members.len());
             for member in &members {
                 let plan = plans.get(*member).ok_or_else(lost)?;
-                tools.push((*member, tool(plan, tolerance)?));
+                tools.push((*member, tool(plan, tolerance).map_err(at_edge(plan.edge))?));
             }
             let between: Vec<&Joint> = joined
                 .iter()
                 .filter(|j| j.plans.iter().any(|p| members.contains(p)))
                 .collect();
-            let made = join(body, &tools, &between, tolerance)?;
+            let made = join(body, &tools, &between, tolerance).map_err(at_edge(plan.edge))?;
             let marks: BTreeMap<FaceId, Made> = made
                 .blends
                 .iter()
@@ -2964,7 +2689,7 @@ fn blend_inner(
     for corner in &found {
         let index = corner.plans.first().copied().unwrap_or(usize::MAX);
         let edge = plans.get(index).map_or(EdgeId(u32::MAX), |p| p.edge);
-        let made = corner_tool(body, corner, edge, tolerance)?;
+        let made = corner_tool(body, corner, edge, tolerance).map_err(at_edge(edge))?;
         let marked = Made {
             corners: BTreeSet::from([corner.vertex]),
             ..Made::default()
@@ -2980,7 +2705,7 @@ fn blend_inner(
         )?;
         first = false;
     }
-    finish(&at, &uses, &plans, state, tolerance)
+    Ok(finish(at, uses, &plans, state, tolerance)?)
 }
 
 /// The edges that continue `edge` smoothly, with it: at each end the one

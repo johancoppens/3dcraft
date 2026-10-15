@@ -68,9 +68,18 @@ fn explain(
                 None => format!("{at}: {reason}"),
             }
         }
-        KernelError::ChamferBoolean { edge, error } => format!(
-            "{}: the boolean that cuts this chamfer refused it: {error}",
-            role(edge)
+        KernelError::ChamferBoolean {
+            edge,
+            error,
+            smaller_fails,
+        } => format!(
+            "{}: the boolean that cuts this chamfer refused it: {error}{}",
+            role(edge),
+            if smaller_fails {
+                "; smaller distances tried fail the same way"
+            } else {
+                ""
+            }
         ),
         other => other.to_string(),
     }

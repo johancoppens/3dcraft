@@ -314,7 +314,10 @@ fn a_distance_too_large_names_the_edge_the_face_and_what_fits() {
             }
             other => panic!("expected too large, got {other:?}"),
         }
-        // Two chamfers that meet in the middle of a face.
+        // Two chamfers that meet in the middle of a face: of one size,
+        // they fit up to half its width each (until 2026-10-15 the hint
+        // held the other at 1.6 and said 1.4, though both shrink with the
+        // one distance asked for).
         let pair = [
             equal(&block, k, [0.0, 0.0, 1.0], 1.6),
             equal(&block, k, [0.0, 3.0, 1.0], 1.6),
@@ -322,10 +325,22 @@ fn a_distance_too_large_names_the_edge_the_face_and_what_fits() {
         match chamfer(&block, &pair, &tolerance(k)) {
             Err(KernelError::ChamferTooLarge { face, largest, .. }) => {
                 assert_eq!(face, narrow);
-                assert_close(largest, 1.4 * k, "largest");
+                assert_close(largest, 1.5 * k, "largest");
             }
             other => panic!("expected too large, got {other:?}"),
         }
+        // Just below it both build: two prisms of d^2 / 2 by 2 taken off.
+        let d = 1.49;
+        let pair = [
+            equal(&block, k, [0.0, 0.0, 1.0], d),
+            equal(&block, k, [0.0, 3.0, 1.0], d),
+        ];
+        let made = solve(&block, &pair, k);
+        assert_close(
+            mass(&made.body).volume,
+            (24.0 - 2.0 * d * d) * k * k * k,
+            "volume just below half the face",
+        );
     }
 }
 
