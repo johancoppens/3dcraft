@@ -417,18 +417,27 @@ mod tests {
             json!({"radius": 1}),
         );
         run(&mut desk.host.session, "file.new", json!({}));
+        // Wait for this save's own report, not the one before it, and read
+        // it before settling: on a busy machine the shell's next command
+        // (a `file.list` for the tabs) can report after it (gate 63).
+        desk.host.shell.last_command = None;
         desk.host
             .shell
             .request_doc_action(DocAction::SaveAndClose(0));
         let deadline = Instant::now() + Duration::from_secs(20);
-        while last(&desk).0 != "file.save" || desk.away() {
+        while desk
+            .host
+            .shell
+            .last_command
+            .as_ref()
+            .map(|r| r.label.as_str())
+            != Some("file.save")
+            || desk.away()
+        {
             assert!(Instant::now() < deadline, "the dialog did not answer");
             let _ = desk.turn();
             std::thread::sleep(Duration::from_millis(2));
         }
-        // The save's own report, read before settling: a busy machine can
-        // let the shell's next command (a `file.list` for the tabs) report
-        // after it (gate 63).
         let (_, ok, text) = last(&desk);
         settle(&mut desk);
         assert!(!ok && text.contains("cancelled"), "{text}");
