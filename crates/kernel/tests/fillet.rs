@@ -957,7 +957,12 @@ fn the_mouth_of_a_hole_loses_material_and_the_foot_of_a_boss_gains_it() {
             "volume",
         );
         // A ball that does not fit in the hole: the bottom's tangent
-        // circle would run into the axis.
+        // circle would run into the axis. What fits is less than that:
+        // from half the hole's radius on, the ball's centre (rh - r from
+        // the axis) comes as near to the axis as its radius, and the
+        // torus would reach its own axis, which is refused (until
+        // 2026-10-15 the estimate said rh, while every radius from rh / 2
+        // up to it was refused that way).
         match fillet(
             &blind,
             &[round(&blind, k, [2.0 - rh, 1.5, 1.0], 0.6)],
@@ -967,10 +972,28 @@ fn the_mouth_of_a_hole_loses_material_and_the_foot_of_a_boss_gains_it() {
                 radius, largest, ..
             }) => {
                 assert_close(radius, 0.6 * k, "radius");
-                assert_close(largest, rh * k, "largest");
+                assert_close(largest, rh / 2.0 * k, "largest");
             }
             other => panic!("expected too large, got {other:?}"),
         }
+        match fillet(
+            &blind,
+            &[round(&blind, k, [2.0 - rh, 1.5, 1.0], 0.26)],
+            &tolerance(k),
+        ) {
+            Err(KernelError::Fillet { reason, .. }) => {
+                assert!(reason.contains("half the rim's"), "{reason}");
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        let r = 0.24;
+        let made = solve(&blind, &[round(&blind, k, [2.0 - rh, 1.5, 1.0], r)], k);
+        let (added, _) = ring([rh, 1.0], [-1.0, 0.0], [0.0, 1.0], r);
+        assert_close(
+            mass(&made.body).volume,
+            (24.0 - PI * rh * rh * 1.0 + added) * k * k * k,
+            "volume just below half the hole's radius",
+        );
         // A boss on the plate: its foot is an inside corner too.
         let boss = rod(&at(2.0), k, rh, 1.0);
         let raised = boolean(&plate, &boss, BooleanOp::Union, &tolerance(k))
@@ -1178,16 +1201,28 @@ fn a_radius_too_large_names_the_edge_the_face_and_what_fits() {
             }
             other => panic!("expected a refusal, got {other:?}"),
         }
+        // Far too large: what fits is below half the rod's radius, where
+        // the torus would reach its axis (until 2026-10-15 the estimate
+        // said the whole radius, where the end's tangent circle runs into
+        // the axis, while 0.6 above is refused).
         match fillet(
             &part,
             &[round(&part, k, [-1.0, 0.0, 3.0], 1.5)],
             &tolerance(k),
         ) {
             Err(KernelError::FilletTooLarge { largest, .. }) => {
-                assert_close(largest, 1.0 * k, "largest on the end of a rod");
+                assert_close(largest, 0.5 * k, "largest on the end of a rod");
             }
             other => panic!("expected too large, got {other:?}"),
         }
+        let r = 0.49;
+        let made = solve(&part, &[round(&part, k, [-1.0, 0.0, 3.0], r)], k);
+        let (removed, _) = ring([1.0, 3.0], [-1.0, 0.0], [0.0, -1.0], r);
+        assert_close(
+            mass(&made.body).volume,
+            (PI * 3.0 - removed) * k * k * k,
+            "volume just below half the rod's radius",
+        );
     }
 }
 
