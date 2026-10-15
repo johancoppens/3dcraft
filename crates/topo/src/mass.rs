@@ -70,7 +70,11 @@
 //! lines, and so are `f` and `G`. The inner integral is summed stretch by
 //! stretch between the surface's knots in its direction, and the boundary
 //! panels end where an edge crosses a knot line (found by a change of side
-//! along the edge and bisection) as well as at the edge's own knots. `f`
+//! along the edge and bisection) as well as at the edge's own knots, and
+//! where an edge within the tolerance of a Bézier or NURBS surface, not
+//! on it, runs off the surface's domain: past the border its points are
+//! projected onto the border, and the parameters along it have a kink
+//! there ([`run_off`]). `f`
 //! is a square root of a polynomial or rational function there, for which
 //! no panel count is known to do: the inner panels are doubled along with
 //! the boundary's, so the sums below only agree once both have settled. A
@@ -596,7 +600,6 @@ impl<'a> Follow<'a> {
     #[allow(clippy::type_complexity)]
     fn project(&mut self, p: Vec3) -> Result<((f64, f64), (Vec3, Vec3, Vec3)), GeomError> {
         if self.touch > 0.0
-            && std::env::var_os("MASSNOWARM").is_none()
             && let Some(start) = self.last
             && let Ok((u, v)) = self.surface.project_from(p, start)
         {
@@ -733,7 +736,6 @@ fn inner(
         } else {
             (to, from, -1.0)
         };
-        let doublings = std::env::var("MASSINNER").ok().and_then(|x| x.parse().ok()).unwrap_or(doublings);
         let count = ((INNER_PANELS << doublings.min(8)) / 2).clamp(1, MAX_INNER_PANELS);
         let mut stretch = |start: f64, end: f64| {
             let width = (end - start) / count as f64;
@@ -928,10 +930,8 @@ fn knot_crossings(
     // end where it goes over the seam as well. On a freeform surface they
     // end where the edge leaves the domain too (see below).
     let freeform = matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_));
-    if (lines_u.is_empty() && lines_v.is_empty() && !seams && !freeform)
-        || high <= low
-        || (high - low).is_nan()
-    {
+    let lined = !(lines_u.is_empty() && lines_v.is_empty() && !seams);
+    if !(lined || freeform) || high <= low || (high - low).is_nan() {
         return Ok(crossings);
     }
     let ((u0, u1), (v0, v1)) = surface.domain();
@@ -939,6 +939,19 @@ fn knot_crossings(
     // or the middle of a stretch that is being narrowed.
     let mut follow = Follow::new(surface, touch);
     let mut at = |t: f64| follow.project(curve.eval(t)).map(|(uv, _)| uv);
+    // Looks of its own for where the edge runs off the domain, so that
+    // the places above are projected as they are without it.
+    let mut aside = Follow::new(surface, touch);
+    // A border that is one point (a pole) has no outside to run off to:
+    // the parameter along it says nothing there.
+    let poles: Vec<(bool, f64)> = if freeform {
+        craft3d_geom::pole::poles(surface)
+            .iter()
+            .map(|pole| (pole.across_v(), pole.at(surface)))
+            .collect()
+    } else {
+        Vec::new()
+    };
     // The places to look at: evenly between the edge's own knots.
     let mut places = vec![low];
     let mut ends = vec![low];
@@ -963,14 +976,19 @@ fn knot_crossings(
             ] {
                 let width = end - start;
                 let pick = |uv: (f64, f64)| if pick_u { uv.0 } else { uv.1 };
-                // On a line (within rounding) is on neither side of it.
-                let clear = 1e-9 * width;
                 if freeform {
                     for border in [start, end] {
-                        if let Some(t) = run_off(&mut at, &pick, (s, t), (from, to), border, clear)? {
-                            crossings.push(t);
+                        if poles.contains(&(!pick_u, border)) {
+                            continue;
+                        }
+                        let run: (_, _, &dyn Fn((f64, f64)) -> f64) = (curve, &mut aside, &pick);
+                        if let Some(kink) = run_off(run, (s, t), (from, to), (border, width))? {
+                            crossings.push(kink);
                         }
                     }
+                }
+                if !lined {
+                    continue;
                 }
                 // The side of `x` the stretch started on, for bisection.
                 let mut narrow = |starts: &dyn Fn(f64) -> bool| -> Result<(), GeomError> {
@@ -994,6 +1012,8 @@ fn knot_crossings(
                     narrow(&|x| (x - from).abs() < (x - to).abs())?;
                     continue;
                 }
+                // On a line (within rounding) is on neither side of it.
+                let clear = 1e-9 * width;
                 for &line in lines.iter() {
                     let (d0, d1) = (from - line, to - line);
                     if (d0 > clear && d1 < -clear) || (d0 < -clear && d1 > clear) {
@@ -1009,45 +1029,58 @@ fn knot_crossings(
 
 /// Where an edge that lies within the tolerance of a freeform surface,
 /// not on it, runs off the surface's domain between the places `s` and
-/// `t` along it (with the parameter `from` and `to` there): past the
-/// border `border` its points are projected onto the border, so the
-/// parameter stops there with a kink, as it has at a knot line. A fitted
-/// edge that ends on the border, tangent to it, does that over its last
-/// thousandths. Between a place clear of the border (by more than
-/// `clear`) and one at it, the kink is narrowed down by bisection, and is
-/// one only where the points beyond it are held at the border to
-/// rounding: an edge that only reaches the border, at its end or tangent
-/// to it, has none.
+/// `t` along it (its parameter `from` and `to` there, in the direction
+/// `pick` takes). Past the border its points are projected onto the
+/// border, so the parameter stops there with a kink, as it has where the
+/// edge crosses a knot line: a fitted edge that ends on the border,
+/// tangent to it, does that over its last thousandths, and the sums of
+/// its panels then settle only by chance. Between a place clear of the
+/// border (by more than `1e-9` of the domain's `width`) and one at it,
+/// the kink is narrowed down by bisection. It is one only where the
+/// point beyond it is held at the border: its parameter is the border's
+/// to rounding and it is off the surface. An edge that only reaches the
+/// border (at its end, or tangent to it), or comes to it where the
+/// parameters say little (next to a pole), has none and is left as it
+/// was. Nothing is projected unless one place is at the border and the
+/// other clear of it.
+#[allow(clippy::type_complexity)]
 fn run_off(
-    at: &mut dyn FnMut(f64) -> Result<(f64, f64), GeomError>,
-    pick: &dyn Fn((f64, f64)) -> f64,
+    (curve, follow, pick): (&Curve3, &mut Follow<'_>, &dyn Fn((f64, f64)) -> f64),
     (s, t): (f64, f64),
     (from, to): (f64, f64),
-    border: f64,
-    clear: f64,
+    (border, width): (f64, f64),
 ) -> Result<Option<f64>, GeomError> {
+    let clear = 1e-9 * width;
     let near = |x: f64| (x - border).abs() <= clear;
     if near(from) == near(to) {
         return Ok(None);
     }
-    // From the place clear of the border towards the one at it.
+    let mut at = |t: f64| follow.project(curve.eval(t)).map(|(uv, _)| pick(uv));
+    // `a` clear of the border, `b` at it.
     let (mut a, mut b) = if near(to) { (s, t) } else { (t, s) };
     for _ in 0..48 {
         let middle = 0.5 * (a + b);
-        if !(middle != a && middle != b && (middle > a.min(b)) && middle < a.max(b)) {
+        if middle == a || middle == b {
             break;
         }
-        if near(pick(at(middle)?)) {
+        if near(at(middle)?) {
             b = middle;
         } else {
             a = middle;
         }
     }
     let kink = 0.5 * (a + b);
-    // Held at the border beyond it: halfway on towards the place at the
-    // border, the parameter is the border's to rounding.
-    let beyond = if near(to) { 0.5 * (kink + t) } else { 0.5 * (kink + s) };
-    let held = (pick(at(beyond)?) - border).abs() <= 4.0 * f64::EPSILON * border.abs().max(clear * 1e9);
+    // Halfway on from it to the place at the border, the point is held
+    // there: its parameter is the border's to rounding (a projection
+    // stops on it exactly), and it is off the surface, beyond the border.
+    // (A point of the surface at its border, such as one next to a pole
+    // whose parameters say little, is not held.)
+    let beyond = 0.5 * (kink + if near(to) { t } else { s });
+    let p = curve.eval(beyond);
+    let (uv, (foot, _, _)) = follow.project(p)?;
+    let rounding = 4.0 * f64::EPSILON * border.abs().max(width);
+    let held = (pick(uv) - border).abs() <= rounding
+        && (p - foot).length() > SQUARE * (p.length() + foot.length());
     Ok(held.then_some(kink))
 }
 
@@ -2572,7 +2605,7 @@ fn integrals_in(
     // Through two poles the integral has a term of the whole boundary
     // (where it crosses the dividing line): the boundary goes together.
     let separable = outline.poled.is_none_or(|poled| poled.far.is_none());
-    if !exact && separable && std::env::var_os("MASSOLD").is_none() {
+    if !exact && separable {
         return part_by_part(
             face,
             (surface, &outline),
@@ -2656,15 +2689,6 @@ fn together(
             break;
         };
         let noise = outline.noise(total.size.area);
-        if std::env::var_os("MASSDBG").is_some() {
-            let worst = coarser.map(|b| {
-                let sz = total.size.parts();
-                b.sum.parts().into_iter().zip(total.sum.parts()).zip(sz).enumerate()
-                    .map(|(i, ((a, c), z))| (i, (a - c).abs() / z, z))
-                    .fold((0, 0.0, 0.0), |m, x| if x.1 > m.1 { x } else { m })
-            });
-            eprintln!("DBG together face {index} d{doublings} area {:.17e} size {:.3e} noise {noise:.3e} worst {worst:?} spent {} limit {}", total.sum.area, total.size.area, work.spent, work.limit);
-        }
         if let Some(slot) = first.as_deref_mut()
             && slot.is_none()
             && (exact || coarser.is_some_and(|coarser| coarser.first_agrees_with(&total, noise)))
@@ -2814,15 +2838,6 @@ fn part_by_part(
             let Some(part) = parts.get_mut(&at) else {
                 continue;
             };
-            if std::env::var_os("MASSDBG").is_some() {
-                let worst = part.coarser.map(|b| {
-                    let sz = total.size.parts();
-                    b.sum.parts().into_iter().zip(total.sum.parts()).zip(sz).enumerate()
-                        .map(|(i, ((a, c), z))| (i, (a - c).abs() / z, z))
-                        .fold((0, 0.0, 0.0), |m, x| if x.1 > m.1 { x } else { m })
-                });
-                eprintln!("DBG face {index} part {at:?} d{doublings} area {:.17e} size {:.3e} noise {noise:.3e} worst {worst:?} spent {} limit {}", total.sum.area, total.size.area, work.spent, work.limit);
-            }
             if part.first.is_none()
                 && part
                     .coarser
@@ -3080,14 +3095,6 @@ fn integrate(
     Option<Result<Sums, MassError>>,
     Vec3,
 ) {
-    if let Some(path) = std::env::var_os("MASSDUMP") {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        static N: AtomicUsize = AtomicUsize::new(0);
-        let n = N.fetch_add(1, Ordering::SeqCst);
-        let mut path = path.into_string().unwrap_or_default();
-        path.push_str(&format!("-{n}.json"));
-        let _ = std::fs::write(path, dump_body(body));
-    }
     let rule = Rule::new(NODES);
     let (size, middle) = body_extent(body);
     // Every face's integrals on their own, on several threads where there
@@ -3672,52 +3679,4 @@ mod tests {
             "{spent}"
         );
     }
-}
-
-/// TEMPORARY: the body as JSON.
-pub fn dump_body(body: &Body) -> String {
-    use std::fmt::Write;
-    let v = |p: Vec3| format!("[{:?},{:?},{:?}]", p.x, p.y, p.z);
-    let fr = |f: &Frame| format!("{{\"o\":{},\"x\":{},\"z\":{}}}", v(f.origin()), v(f.x()), v(f.z()));
-    let mut s = String::new();
-    let _ = write!(s, "{{\"kind\":\"{:?}\",\"vertices\":[", body.kind);
-    for (i, p) in body.vertices.iter().enumerate() {
-        let _ = write!(s, "{}{}", if i > 0 { "," } else { "" }, v(p.point));
-    }
-    s.push_str("],\"edges\":[");
-    for (i, e) in body.edges.iter().enumerate() {
-        let c = match &e.curve {
-            Curve3::Line(l) => format!("{{\"line\":{{\"o\":{},\"d\":{}}}}}", v(l.origin()), v(l.direction())),
-            Curve3::Circle(c) => format!("{{\"circle\":{{\"f\":{},\"r\":{:?}}}}}", fr(c.frame()), c.radius()),
-            Curve3::Nurbs(n) => format!(
-                "{{\"nurbs\":{{\"degree\":{},\"knots\":{:?},\"ctrl\":[{}],\"weights\":{:?}}}}}",
-                n.degree(), n.knots(), n.control_points().iter().map(|p| v(*p)).collect::<Vec<_>>().join(","), n.weights()),
-            other => format!("\"{}\"", other.kind()),
-        };
-        let _ = write!(s, "{}{{\"curve\":{c},\"range\":[{:?},{:?}],\"start\":{},\"end\":{}}}", if i > 0 { "," } else { "" }, e.range.0, e.range.1, e.start.0, e.end.0);
-    }
-    s.push_str("],\"loops\":[");
-    for (i, l) in body.loops.iter().enumerate() {
-        let c: Vec<String> = l.coedges.iter().map(|c| format!("[{},{}]", c.edge.0, c.reversed)).collect();
-        let _ = write!(s, "{}[{}]", if i > 0 { "," } else { "" }, c.join(","));
-    }
-    s.push_str("],\"faces\":[");
-    for (i, f) in body.faces.iter().enumerate() {
-        let surf = match &f.surface {
-            Surface::Plane(p) => format!("{{\"plane\":{}}}", fr(p.frame())),
-            Surface::Nurbs(n) => format!(
-                "{{\"nurbs\":{{\"degrees\":[{},{}],\"knots_u\":{:?},\"knots_v\":{:?},\"counts\":[{},{}],\"ctrl\":[{}],\"weights\":{:?}}}}}",
-                n.degrees().0, n.degrees().1, n.knots_u(), n.knots_v(), n.counts().0, n.counts().1, n.control_points().iter().map(|p| v(*p)).collect::<Vec<_>>().join(","), n.weights()),
-            other => format!("\"{}\"", other.kind()),
-        };
-        let ls: Vec<String> = f.loops.iter().map(|l| l.0.to_string()).collect();
-        let _ = write!(s, "{}{{\"surface\":{surf},\"reversed\":{},\"loops\":[{}]}}", if i > 0 { "," } else { "" }, f.reversed, ls.join(","));
-    }
-    s.push_str("],\"shells\":[");
-    for (i, sh) in body.shells.iter().enumerate() {
-        let fs: Vec<String> = sh.faces.iter().map(|f| f.0.to_string()).collect();
-        let _ = write!(s, "{}[{}]", if i > 0 { "," } else { "" }, fs.join(","));
-    }
-    s.push_str("]}");
-    s
 }

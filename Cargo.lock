@@ -594,7 +594,6 @@ dependencies = [
  "craft3d-geom",
  "craft3d-math",
  "craft3d-testkit",
- "serde_json",
 ]
 
 [[package]]

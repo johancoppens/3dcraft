@@ -14,4 +14,3 @@ craft3d-geom.workspace = true
 
 [dev-dependencies]
 craft3d-testkit.workspace = true
-serde_json.workspace = true
