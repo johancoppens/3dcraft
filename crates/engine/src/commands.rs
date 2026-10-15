@@ -1805,6 +1805,7 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
                 "edges": body.edges.len(),
                 "vertices": body.vertices.len(),
             });
+            crate::appearance_cmds::measure_ahead(doc, &regen, feature.id, body);
             if let (Some(map), Ok(mass)) = (entry.as_object_mut(), mass_of(body)) {
                 map.insert("volume".into(), mass.volume.into());
                 map.insert("area".into(), mass.area.into());
@@ -1896,6 +1897,7 @@ fn document_measure(session: &mut Session, params: &Value) -> Run {
         let name = doc
             .feature(id)
             .map_or_else(|| id.to_string(), |f| f.name.clone());
+        crate::appearance_cmds::measure_ahead(doc, &regen, id, body);
         let mass = mass_of(body)
             .map_err(|e| CommandError::new(format!("document.measure: {name}: {e}")))?;
         volume += mass.volume;
@@ -1984,6 +1986,7 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
                 }));
             }
             // An unbounded or otherwise unmeasurable face shows up here.
+            crate::appearance_cmds::measure_ahead(doc, &regen, outcome.id, body);
             if let Err(error) = mass_of(body) {
                 problems.push(json!({
                     "feature": outcome.id.to_string(), "name": name, "problem": format!("cannot be measured: {error}"),
