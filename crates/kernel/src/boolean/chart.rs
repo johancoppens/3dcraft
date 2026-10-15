@@ -123,9 +123,12 @@ pub(super) enum Layout {
     /// ([`PatchTree::chart`]).
     Open,
     Annulus,
-    /// The pole at the end of `t` when `high`, else at its start.
+    /// The pole at the end of `t` when `high`, else at its start; drawn
+    /// with the radius `ω = t^order` (or `(1 − t)^order`), the width of
+    /// the wedge at a pole of that order (`freeform::pole_order`).
     Disc {
         high: bool,
+        order: i32,
     },
     /// The point sent to infinity, as `(a₀, b₀)` with `a = t e^{iθ}` and
     /// `b = 1 − t`: `(re a₀, im a₀, b₀)`.
@@ -441,8 +444,8 @@ impl Chart {
     /// Its speed, from the tree's bound `k` on how fast the shares move
     /// (`Closure::speed`). Annulus and torus: the image moves by
     /// `|(dr, r dθ)|` with `r ≤ 2` and `dθ = 2π ds`, at most `4π |(ds, dt)|`.
-    /// Disc: with `ω = t` (or `1 − t`) the wedge's width, by
-    /// `|(dt, 2π ω ds)| ≤ √(1 + 4π²) |(ω ds, dt)|`. Sphere: see
+    /// Disc: with `ω = tᵐ` (or `(1 − t)ᵐ`) the wedge's width at a pole of
+    /// order `m`, by `|(m tᵐ⁻¹ dt, 2π ω ds)| ≤ √(m² + 4π²) |(ω ds, dt)|`. Sphere: see
     /// [`Chart::direction`]; `√(4 + 4π²)` likewise.
     fn closed_patch(
         tree: &Arc<PatchTree>,
@@ -474,7 +477,11 @@ impl Chart {
         } else {
             match (closure.low, closure.high) {
                 (false, false) => (Layout::Annulus, 4.0 * PI),
-                (low, high) if low != high => (Layout::Disc { high }, (1.0 + 4.0 * PI * PI).sqrt()),
+                (low, high) if low != high => {
+                    let order = closure.order.max(1);
+                    let m = f64::from(order);
+                    (Layout::Disc { high, order }, (m * m + 4.0 * PI * PI).sqrt())
+                }
                 _ => {
                     // The point furthest from the loops: a pole, or one of
                     // twelve places between them.
@@ -563,7 +570,7 @@ impl Chart {
         };
         let (s, reach) = match *layout {
             Layout::Annulus => (s, 1.0 + t),
-            Layout::Disc { high } => (s, if high { 1.0 - t } else { t }),
+            Layout::Disc { high, order } => (s, (if high { 1.0 - t } else { t }).powi(order)),
             Layout::Torus { cut, swapped } => {
                 let (s, t) = if swapped { (t, s) } else { (s, t) };
                 (s, 1.0 + wrap_share(t - cut))
@@ -997,6 +1004,17 @@ mod tests {
                 ),
             ),
             ("torus", turned(&tube, 2, circle, around_v)),
+            // A needle: the profile leaves the axis along it (a cusp, a
+            // disc whose radius is the square of the share across).
+            (
+                "needle",
+                turned(
+                    &[(0.0, 0.0, 1.0), (0.0, 1.0, 1.0), (1.5, 2.0, 1.0)],
+                    2,
+                    vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                    around_v,
+                ),
+            ),
         ]
     }
 

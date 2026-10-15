@@ -10,7 +10,7 @@ Status legend: ✅ done · 🟡 in progress · ⬜ not started. Put the date nex
 
 ## Current focus
 
-1. **The boolean kernel (M7), the developer's first priority** (2026-10-13): a refusal is work owed. Next: the rest of the [boolean checklist](#the-boolean-checklist) in its order (a cusp, the measure of a face with rational weights far apart).
+1. **The boolean kernel (M7), the developer's first priority** (2026-10-13): a refusal is work owed. Next: the rest of the [boolean checklist](#the-boolean-checklist) in its order (the measure of a face with rational weights far apart, a cusp against a face along its axis).
 2. **M9, the rest:** replace face, and what the blends and the face operations leave open, beside M7 since none of it touches the boolean kernel ([M9](#m9-local-operations-and-sweeps)).
 3. **R1, the first release:** the pinned set of modelling tasks, installers, the format promise, material and colour per body, a user guide ([R1](#r1-first-release)).
 
@@ -60,7 +60,7 @@ The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item i
 
 **Owed, in order:**
 
-- [ ] A cusp: a spline that leaves the axis along it (no fan of meridians; the wedge's width would have to vanish as `t²`, and the closed layouts with it).
+- [ ] A cusp against a face that holds its axis through the point (the marcher's chart stopped short of a cusp to its order; [`architecture.md`](architecture.md) §5.3 › *Cusps*).
 - [ ] Rational weights far apart: a hundred apart is built (2026-10-15), but `topo::mass_properties` does not settle on such a face, and a thousand apart the winding numbers still refuse ([`architecture.md`](architecture.md) §5.3 › *Rational faces*).
 - [ ] The contact a fillet's boolean refused ([`architecture.md`](architecture.md) §5.3 › *Fillets as built*), and whether fillet chains still need `blend::join`.
 - [ ] Sheet bodies, several lumps and cavities (item 5).
@@ -259,6 +259,7 @@ Surface/surface intersection, imprint, classify and sew; union, subtract and int
 - Poles at a corner of a patch's parameters (a lune as the stereographic image of a quadrant): a chart, the side at the pole, the marcher and the tessellator; the eight cuts through a pole the tessellator declined were already meshed (2026-10-15)
 - Coincident freeform faces: a patch on its analytic twin moved along itself, two patches of one surface ([`architecture.md`](architecture.md) §5.3) (2026-10-15)
 - The self-intersection check inside every operation, near what it changed, and a shell that touches itself refused (2026-10-15)
+- A cusp as a boolean operand: the wedge and the disc drawn to the pole's order, the pieces at the point put in order further along ([`architecture.md`](architecture.md) §5.3 › *Cusps*) (2026-10-15)
 - Rational faces with weights a hundred apart as operands: the winding numbers take the chart's speed near each stretch, held by point membership against the plain block ([`architecture.md`](architecture.md) §5.3 › *Rational faces*) (2026-10-15)
 - Fourth-order contact: a tacnode or cusp of the intersection is a vertex whose tangent arms are made as graphs around it, a cylinder touching the top of a torus' tube from inside held to its closed-form volume ([`architecture.md`](architecture.md) §5.1 › *Tacnodes and cusps*) (2026-10-15)
 
