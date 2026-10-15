@@ -71,7 +71,7 @@
 use super::{BlendError, Blended, Face, Reason, Request, Size, lost, refused};
 use crate::KernelError;
 use crate::chamfer::ChamferSize;
-use craft3d_geom::certify::{CurveBound, SurfaceBound};
+use craft3d_geom::certify::{Apart, CurveBound, SurfaceBound, curves_apart};
 use craft3d_geom::refine::interpolate;
 use craft3d_geom::{Curve3, NurbsCurve, NurbsSurface, Surface};
 use craft3d_math::{Tolerance, Vec3};
@@ -1530,17 +1530,18 @@ fn outward_from(
 }
 
 /// The border `border` of a blend face lies on `face` and stays on it:
-/// it meets no other edge of that face but the ones at its own ends.
-/// Both curves are sampled as polylines; where two chords come within
-/// half their lengths of each other (every point of a piece of curve lies
-/// within half its arc length of one of its ends, so two pieces that meet
-/// have chords that near; a chord is shorter than its arc only by a
-/// fraction of the square of the piece's turn, and the window is the
-/// chords' lengths, sampled as the other checks of fitted curves are) the
-/// curves' own nearest points are found from there ([`nearest_points`]), and a border that comes within ten
-/// tolerances of the other curve meets it. Chords alone miss crossings
-/// on a curved face: each chord cuts inside the surface by its sagitta,
-/// two that cross on it pass each other in space by the difference.
+/// it comes within ten tolerances of no other edge of that face but the
+/// ones at its own ends. Proven (`geom::certify::curves_apart`): both
+/// curves are cut into pieces held within capsules round their chords (a
+/// radius from the bound on their second derivatives), pieces whose
+/// capsules are further apart are apart, and the others are halved until
+/// they are, or until two points of the curves are seen within ten
+/// tolerances (the border meets the edge). A pair of curves that cannot be
+/// told apart in the pieces allowed is refused as meeting: never a border
+/// taken to stay on its face unproven. (Chords alone, as sampled before,
+/// miss crossings on a curved face: each chord cuts inside the surface by
+/// its sagitta, two that cross on it pass each other in space by the
+/// difference.)
 fn stays_on(
     body: &Body,
     edge: EdgeId,
@@ -1550,15 +1551,8 @@ fn stays_on(
 ) -> Result<(), BlendError> {
     let tol = tolerance.linear;
     let data = body.edge(border).ok_or_else(lost)?;
-    let polyline = |e: &Edge| -> Vec<(f64, Vec3)> {
-        (0..=64)
-            .map(|j| {
-                let t = e.range.0 + (e.range.1 - e.range.0) * f64::from(j) / 64.0;
-                (t, e.curve.eval(t))
-            })
-            .collect()
-    };
-    let mine = polyline(data);
+    let ordered = |(a, b): (f64, f64)| (a.min(b), a.max(b));
+    let mine = CurveBound::new(&data.curve);
     let ends = [data.start, data.end];
     let loops = &body.face(face).ok_or_else(lost)?.loops;
     for l in loops {
@@ -1570,98 +1564,21 @@ fn stays_on(
             if ends.contains(&other.start) || ends.contains(&other.end) {
                 continue;
             }
-            let theirs = polyline(other);
-            for a in mine.windows(2) {
-                for b in theirs.windows(2) {
-                    let ([(sa, a0), (ta, a1)], [(sb, b0), (tb, b1)]) = (a, b) else {
-                        continue;
-                    };
-                    let apart = segment_distance(*a0, *a1, *b0, *b1);
-                    if apart <= 10.0 * tol {
-                        return Err(refuse(edge, Some(face), Reason::FreeRunsOver));
-                    }
-                    if apart > 0.5 * (a0.distance(*a1) + b0.distance(*b1)) {
-                        continue;
-                    }
-                    let start = [0.5 * (sa + ta), 0.5 * (sb + tb)];
-                    if nearest_points(data, other, start).is_some_and(|d| d <= 10.0 * tol) {
-                        return Err(refuse(edge, Some(face), Reason::FreeRunsOver));
-                    }
-                }
+            let theirs = CurveBound::new(&other.curve);
+            let apart = curves_apart(
+                &mine,
+                ordered(data.range),
+                &theirs,
+                ordered(other.range),
+                10.0 * tol,
+                PROOF_PIECES,
+            );
+            if apart != Apart::Yes {
+                return Err(refuse(edge, Some(face), Reason::FreeRunsOver));
             }
         }
     }
     Ok(())
-}
-
-/// The least distance between the curves of edges `a` and `b` (within
-/// their ranges), from the parameters `start` on them: Gauss-Newton on
-/// the distance, each step at most a twentieth of the ranges. `None`
-/// where the two run along each other there (the step is not defined):
-/// that case is the chords' own, which [`stays_on`] holds to ten
-/// tolerances before it asks here.
-fn nearest_points(a: &Edge, b: &Edge, [mut s, mut t]: [f64; 2]) -> Option<f64> {
-    let clamp = |x: f64, (lo, hi): (f64, f64)| x.clamp(lo.min(hi), lo.max(hi));
-    let (wa, wb) = ((a.range.1 - a.range.0).abs(), (b.range.1 - b.range.0).abs());
-    for _ in 0..60 {
-        let (p, pu) = a.curve.derivatives(s);
-        let (q, qu) = b.curve.derivatives(t);
-        let r = p - q;
-        let (m11, m12, m22) = (pu.dot(pu), -pu.dot(qu), qu.dot(qu));
-        let (g1, g2) = (pu.dot(r), -qu.dot(r));
-        let det = m11 * m22 - m12 * m12;
-        if !(det > 0.0) {
-            return None;
-        }
-        let mut ds = -(m22 * g1 - m12 * g2) / det;
-        let mut dt = -(m11 * g2 - m12 * g1) / det;
-        let longest = (ds / wa.max(1e-300)).abs().max((dt / wb.max(1e-300)).abs());
-        if longest > 0.05 {
-            ds *= 0.05 / longest;
-            dt *= 0.05 / longest;
-        }
-        let (s1, t1) = (clamp(s + ds, a.range), clamp(t + dt, b.range));
-        if !(s1.is_finite() && t1.is_finite()) {
-            return None;
-        }
-        let moved = (pu * (s1 - s)).length() + (qu * (t1 - t)).length();
-        (s, t) = (s1, t1);
-        if moved <= 1e-15 * (1.0 + p.length()) {
-            break;
-        }
-    }
-    Some(a.curve.eval(s).distance(b.curve.eval(t)))
-}
-
-/// The distance between the segments from `a0` to `a1` and from `b0` to
-/// `b1`.
-fn segment_distance(a0: Vec3, a1: Vec3, b0: Vec3, b1: Vec3) -> f64 {
-    let (d1, d2, r) = (a1 - a0, b1 - b0, a0 - b0);
-    let (a, e, f) = (d1.dot(d1), d2.dot(d2), d2.dot(r));
-    let (c, b) = (d1.dot(r), d1.dot(d2));
-    let denominator = a * e - b * b;
-    let mut s = if denominator > 1e-300 {
-        ((b * f - c * e) / denominator).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    let mut t = if e > 1e-300 { (b * s + f) / e } else { 0.0 };
-    if t < 0.0 {
-        t = 0.0;
-        s = if a > 1e-300 {
-            (-c / a).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-    } else if t > 1.0 {
-        t = 1.0;
-        s = if a > 1e-300 {
-            ((b - c) / a).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-    }
-    (a0 + d1 * s).distance(b0 + d2 * t)
 }
 
 /// A fillet face is tangent to both faces along its borders, measured
@@ -2820,6 +2737,136 @@ mod tests {
                     .curve_within(&curve, (0.0, 1.0), start, &[], limit, 1 << 16)
                     .is_ok()
             );
+        }
+    }
+
+    /// A flat face with a border that bows down towards another edge of
+    /// it, its nearest point `gap` from it between the samples a polyline
+    /// of the border would take.
+    fn bowed_border(gap: f64, k: f64) -> Body {
+        let params: Vec<f64> = (0..=40).map(|i| f64::from(i) / 40.0).collect();
+        let points: Vec<Vec3> = params
+            .iter()
+            .map(|t| Vec3::new(t * k, (gap + 4e-2 * (t - 0.507).powi(2)) * k, 0.0))
+            .collect();
+        let bow = curve_through(&params, &points).unwrap();
+        let line = Line::new(Vec3::new(-0.2 * k, 0.0, 0.0), Vec3::X).unwrap();
+        let mut body = Body::new(BodyKind::Sheet);
+        for p in [
+            *points.first().unwrap(),
+            *points.last().unwrap(),
+            Vec3::new(-0.2 * k, 0.0, 0.0),
+            Vec3::new(1.2 * k, 0.0, 0.0),
+        ] {
+            body.vertices.push(Vertex { point: p });
+        }
+        body.edges.push(Edge {
+            curve: Curve3::Nurbs(bow),
+            range: (0.0, 1.0),
+            start: VertexId(0),
+            end: VertexId(1),
+        });
+        body.edges.push(Edge {
+            curve: Curve3::Line(line),
+            range: (0.0, 1.4 * k),
+            start: VertexId(2),
+            end: VertexId(3),
+        });
+        body.loops.push(Loop {
+            coedges: vec![
+                Coedge {
+                    edge: EdgeId(0),
+                    reversed: false,
+                },
+                Coedge {
+                    edge: EdgeId(1),
+                    reversed: true,
+                },
+            ],
+        });
+        body.faces.push(craft3d_topo::Face {
+            surface: Surface::Plane(Plane::new(Frame::WORLD)),
+            reversed: false,
+            loops: vec![LoopId(0)],
+        });
+        body
+    }
+
+    /// A border is held apart from the face's other edges by proof: one
+    /// that comes within ten tolerances of another edge between the
+    /// samples is refused, one that keeps twenty away is not.
+    #[test]
+    fn a_border_that_comes_near_another_edge_between_samples_is_refused() {
+        for k in [1e-3, 1.0, 1e3] {
+            let tolerance = Tolerance::new(1e-6 * k, 1e-9).unwrap();
+            for (gap, refused) in [(5e-6, true), (9e-6, true), (2e-5, false)] {
+                let body = bowed_border(gap, k);
+                let found = stays_on(&body, EdgeId(0), EdgeId(0), FaceId(0), &tolerance);
+                assert_eq!(found.is_err(), refused, "{k} {gap}");
+            }
+        }
+    }
+
+    /// The new edge from a vertex to a corner is fitted through points
+    /// where two faces meet and held to them at the middles; where the
+    /// faces meet in a curve that waves between those middles (a flat face
+    /// and a wall waving with nodes at every eighth) it is now refined
+    /// until it is proven on both.
+    #[test]
+    fn a_new_edge_that_would_leave_its_faces_between_its_middles_is_refined() {
+        for k in [1e-3, 1.0, 1e3] {
+            let tol = 1e-6 * k;
+            let params: Vec<f64> = (0..=128).map(|i| f64::from(i) / 128.0).collect();
+            let values: Vec<Vec<f64>> = params
+                .iter()
+                .map(|a| {
+                    let x = 0.5 * k + 1e-4 * k * (8.0 * std::f64::consts::PI * a).sin();
+                    vec![x, a * k]
+                })
+                .collect();
+            let (knots, rows) = interpolate(&params, 3, &values).unwrap();
+            let mut ctrl = Vec::new();
+            for r in &rows {
+                for z in [-0.5 * k, 0.5 * k] {
+                    ctrl.push(Vec3::new(r[0], r[1], z));
+                }
+            }
+            let count = rows.len();
+            let wall = NurbsSurface::new(
+                3,
+                1,
+                knots,
+                vec![0.0, 0.0, 1.0, 1.0],
+                count,
+                2,
+                ctrl,
+                vec![1.0; 2 * count],
+            )
+            .unwrap();
+            let mut body = Body::new(BodyKind::Sheet);
+            for surface in [
+                Surface::Plane(Plane::new(Frame::WORLD)),
+                Surface::Nurbs(wall),
+            ] {
+                body.faces.push(craft3d_topo::Face {
+                    surface,
+                    reversed: false,
+                    loops: Vec::new(),
+                });
+            }
+            let (from, to) = (Vec3::new(0.5 * k, 0.0, 0.0), Vec3::new(0.5 * k, k, 0.0));
+            let (curve, range) =
+                going_on(&body, from, to, [FaceId(0), FaceId(1)], tol).expect("an edge");
+            let wall = &body.faces[1].surface;
+            let mut hint = (0.0, 0.5);
+            for i in 0..=2000 {
+                let t = range.0 + (range.1 - range.0) * f64::from(i) / 2000.0;
+                let p = curve.eval(t);
+                hint = wall.project_from(p, hint).unwrap();
+                let d = wall.eval(hint.0, hint.1).distance(p);
+                assert!(d <= 0.25 * tol, "{k}: {d:e} off the wall at {t}");
+                assert!(p.z.abs() <= 0.25 * tol);
+            }
         }
     }
 
