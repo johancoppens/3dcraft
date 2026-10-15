@@ -419,7 +419,13 @@ fn commands_that_fail_change_nothing_and_say_why() {
         (
             "file.new",
             json!({"tolerance": 0}),
-            "`tolerance` must be positive",
+            "`tolerance` must be between 1e-12 and 1e3 mm",
+        ),
+        ("file.new", json!({"tolerance": 1e-300}), "got 1e-300"),
+        (
+            "file.new",
+            json!({"units": "in", "tolerance": 1e4}),
+            "`tolerance` must be between 1e-12 and 1e3 in",
         ),
         (
             "file.export",

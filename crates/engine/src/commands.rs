@@ -48,7 +48,7 @@ pub(crate) use spec;
 
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("file.new", "New Document", r#"{"units": "um|mm|cm|m|in|ft" = "mm", "tolerance": number = 1e-6}"#,
-        "Creates an empty document and makes it the active one.", doc: false, file_new),
+        "Creates an empty document and makes it the active one. The tolerance is in the document's length unit, from 1e-12 to 1e3.", doc: false, file_new),
     spec!("file.open", "Open", r#"{"path": string}"#,
         "Opens a .3dcraft file from the read root and makes it the active document.", doc: false, file_open),
     spec!("file.save", "Save", r#"{"path": string = the document's own path, "overwrite": boolean = false}"#,
@@ -377,8 +377,13 @@ fn file_new(session: &mut Session, params: &Value) -> Run {
         ..Units::default()
     });
     if let Some(linear) = p.number("tolerance")? {
-        if linear <= 0.0 {
-            return fail("file.new: `tolerance` must be positive");
+        if !Tolerance::linear_in_range(linear) {
+            return fail(format!(
+                "file.new: `tolerance` must be between {:e} and {:e} {}, the range of a modelling tolerance in the document's length unit; got {linear:e}",
+                Tolerance::LEAST_LINEAR,
+                Tolerance::GREATEST_LINEAR,
+                length.symbol()
+            ));
         }
         document.tolerance = Tolerance {
             linear,

@@ -693,6 +693,40 @@ fn a_document_that_breaks_the_models_rules_is_rejected() {
     }
 }
 
+/// A file saved before 2026-10-15 may hold any positive linear tolerance
+/// (`file.new` took 1e-300): it is read as the nearer end of the range a
+/// document may have, and one within the range as it is. A document with
+/// one outside the range is not saved.
+#[test]
+fn a_tolerance_outside_the_range_is_read_as_its_nearer_end() {
+    let doc = small();
+    let manifest = to_manifest_json(&doc).unwrap();
+    let mut value: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+    for (written, read) in [
+        (1e-300, 1e-12),
+        (5e-13, 1e-12),
+        (1e-12, 1e-12),
+        (3.5e-7, 3.5e-7),
+        (1e3, 1e3),
+        (2.5e4, 1e3),
+        (1e300, 1e3),
+    ] {
+        value["document"]["tolerance"]["linear"] = written.into();
+        let bytes = serde_json::to_vec(&value).unwrap();
+        let loaded = from_manifest_json(&bytes).unwrap();
+        assert_eq!(loaded.tolerance.linear, read, "{written}");
+        assert_eq!(loaded.tolerance.angular, doc.tolerance.angular);
+    }
+    for bad in [0.0, -1.0] {
+        value["document"]["tolerance"]["linear"] = bad.into();
+        let bytes = serde_json::to_vec(&value).unwrap();
+        assert!(from_manifest_json(&bytes).is_err(), "{bad}");
+    }
+    let mut far = small();
+    far.tolerance.linear = 1e-300;
+    assert!(matches!(to_bytes(&far), Err(FormatError::CannotSave(_))));
+}
+
 #[test]
 fn a_document_that_breaks_the_rules_is_not_saved() {
     let mut doc = small();

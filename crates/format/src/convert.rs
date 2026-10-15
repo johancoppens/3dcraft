@@ -1106,7 +1106,10 @@ pub(crate) fn to_doc(document: manifest::Document) -> doc::Document {
                 manifest::AngleUnit::Radian => doc::AngleUnit::Radian,
             },
         },
-        tolerance: doc::Tolerance { linear, angular },
+        // A linear tolerance outside the range a document may have
+        // (saved before 2026-10-15, when any positive one was accepted)
+        // is read as the nearer end of the range.
+        tolerance: doc::Tolerance { linear, angular }.in_range(),
         variables: variables
             .into_iter()
             .map(|variable| {

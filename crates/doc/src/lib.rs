@@ -136,6 +136,37 @@ impl Default for Tolerance {
     }
 }
 
+impl Tolerance {
+    /// The least linear tolerance, in the document's length unit: 1e-9 of
+    /// the smallest size the kernel is built and tested for (1e-3 units;
+    /// AGENTS.md rule 3). Below it a tolerance is no longer about the
+    /// geometry but about rounding (1e-300 was accepted until 2026-10-15).
+    pub const LEAST_LINEAR: f64 = 1e-12;
+    /// The greatest linear tolerance, in the document's length unit: 1e-3
+    /// of the largest size the kernel is built and tested for (1e6 units).
+    /// Coarser, it would merge what any model at those sizes keeps apart.
+    pub const GREATEST_LINEAR: f64 = 1e3;
+
+    /// Whether `linear` is a linear tolerance a document may have:
+    /// finite and within [`Self::LEAST_LINEAR`]..=[`Self::GREATEST_LINEAR`].
+    pub fn linear_in_range(linear: f64) -> bool {
+        (Self::LEAST_LINEAR..=Self::GREATEST_LINEAR).contains(&linear)
+    }
+
+    /// This tolerance with a positive, finite linear part outside the
+    /// range brought to the nearer end of it (what a file that was saved
+    /// with one is read as). Anything else is kept, for
+    /// [`Document::validate`] to refuse.
+    pub fn in_range(self) -> Self {
+        let linear = if self.linear.is_finite() && self.linear > 0.0 {
+            self.linear.clamp(Self::LEAST_LINEAR, Self::GREATEST_LINEAR)
+        } else {
+            self.linear
+        };
+        Self { linear, ..self }
+    }
+}
+
 /// An expression as the user wrote it, such as `"width / 2 + 3 mm"`.
 #[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -1294,7 +1325,8 @@ impl Document {
 
     /// Checks the rules every document built through this API satisfies,
     /// for documents that come from elsewhere (a file): tolerances are
-    /// positive and finite, variable and feature names are valid and
+    /// positive and finite (the linear one within
+    /// [`Tolerance::linear_in_range`]), variable and feature names are valid and
     /// unique, feature ids are unique and below `next_feature_id`, the
     /// rollback marker points at a feature, and the caps hold. Expressions
     /// are not evaluated: a formula that fails is a regeneration result,
@@ -1305,6 +1337,14 @@ impl Document {
             return Err(DocError::Invalid(
                 "tolerances must be positive and finite".to_string(),
             ));
+        }
+        if !Tolerance::linear_in_range(self.tolerance.linear) {
+            return Err(DocError::Invalid(format!(
+                "the linear tolerance {:e} is outside {:e} to {:e} of the length unit",
+                self.tolerance.linear,
+                Tolerance::LEAST_LINEAR,
+                Tolerance::GREATEST_LINEAR
+            )));
         }
         self.variable_table()?;
         let mut names = std::collections::BTreeSet::new();
@@ -2133,8 +2173,10 @@ mod tests {
         assert_eq!(doc.validate(), Ok(()));
         assert_eq!(Document::new(Units::default()).validate(), Ok(()));
         type Damage = fn(&mut Document);
-        let broken: [(&str, Damage); 9] = [
+        let broken: [(&str, Damage); 11] = [
             ("zero tolerance", |d| d.tolerance.linear = 0.0),
+            ("vanishing tolerance", |d| d.tolerance.linear = 1e-300),
+            ("tolerance above the range", |d| d.tolerance.linear = 2e3),
             ("NaN tolerance", |d| d.tolerance.angular = f64::NAN),
             ("reserved variable name", |d| {
                 d.variables[0].name = "mm".into()
