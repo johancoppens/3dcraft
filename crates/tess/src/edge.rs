@@ -248,13 +248,30 @@ impl EdgeSamples {
 
 /// The points of every edge, each within the chordal tolerance of its
 /// curve.
+#[cfg(test)]
 pub(crate) fn edge_points(body: &Body, params: &TessParams) -> Result<EdgeSamples, TessError> {
+    edge_points_of(body, params, None)
+}
+
+/// [`edge_points`] for the edges `wanted` marks (all when `None`); the
+/// others get no points at all, and nothing about them is checked.
+pub(crate) fn edge_points_of(
+    body: &Body,
+    params: &TessParams,
+    wanted: Option<&[bool]>,
+) -> Result<EdgeSamples, TessError> {
     let mut all = EdgeSamples {
         points: Vec::with_capacity(body.edges.len()),
         at: Vec::with_capacity(body.edges.len()),
         first: Vec::with_capacity(body.edges.len()),
     };
     for (index, edge) in body.edges.iter().enumerate() {
+        if wanted.is_some_and(|wanted| !wanted.get(index).copied().unwrap_or(false)) {
+            all.first.push(0);
+            all.points.push(Vec::new());
+            all.at.push(Vec::new());
+            continue;
+        }
         let (Some(start), Some(end)) = (body.vertex(edge.start), body.vertex(edge.end)) else {
             return Err(TessError::InvalidBody(format!(
                 "edge {index} refers to a vertex that does not exist"

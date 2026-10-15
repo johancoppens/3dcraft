@@ -54,7 +54,7 @@ The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item i
 5. ⬜ **Several lumps, cavities, sheet bodies.**
 6. ✅ 2026-10-14 **Entities through booleans:** edges by the faces they lie between (2026-10-13), vertices by the faces they meet in (`document.edges`).
 7. 🟡 **Speed on bodies with thousands of faces** (a spatial index).
-8. 🟡 **Never an invalid body:** the mesh detector exists (`tess::body_self_intersections`, `document.check` with `deep`) and found nothing in 39,834 boolean results (2026-10-13); it is not yet run inside every operation.
+8. ✅ 2026-10-15 **Never an invalid body:** every operation is checked for crossing, overlapping and self-touching shells near what it changed, or proven unable to make them ([`architecture.md`](architecture.md) §5.5 › *Never through itself*).
 
 **Measured (2026-10-14, morning; the same on 2026-10-15 after the helmet's findings, and after poles at a corner and coincident freeform faces):** 11573 of 11988 corpus outcomes agree, 249 refused (all in the category near, about 250 being the tolerance rule itself: cases built one tolerance apart or into each other), 0 wrong, 0 invalid. Speed (2026-10-13): 1024 holes one by one in 7.1 s, a cylinder through a plate of 1030 faces in 36.5 ms; the corpus test takes about 230 s on 14 threads on an idle machine (640 s at noon on 2026-10-13) and is the gate's longest binary.
 
@@ -65,7 +65,7 @@ The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item i
 - [ ] Rational weights far apart: already a hundred apart the winding numbers refuse, and with a local chart speed the measure does not settle (reproducer in `boolean.rs`; [`architecture.md`](architecture.md) §5.3 › *Rational faces*).
 - [ ] The contact a fillet's boolean refused ([`architecture.md`](architecture.md) §5.3 › *Fillets as built*), and whether fillet chains still need `blend::join`.
 - [ ] Sheet bodies, several lumps and cavities (item 5).
-- [ ] The self-intersection check inside every operation (item 8).
+- [ ] The check of offset face, shell and delete face near what they changed (they check the whole body), and a tessellation of long straight edges that does not fan across a plate (the first cut of 400 holes at once is checked in 140 ms).
 - [ ] Speed: what is left is the booleans with a freeform face (the chart's projections and the marcher) and the measurement of their results.
 - [ ] Tolerant modelling (item 4), before STEP import.
 
@@ -256,6 +256,7 @@ Surface/surface intersection, imprint, classify and sew; union, subtract and int
 - The Voronoi helmet's findings: a lofted tool against a spline shell with a pole, pieces of curve between a freeform face's borders, a pole border that is no curve, a loop through a cut, a bound below the distance that is one; the octant against a torus through its pole at 1e6 ([`architecture.md`](architecture.md) §5.3) (2026-10-15)
 - Poles at a corner of a patch's parameters (a lune as the stereographic image of a quadrant): a chart, the side at the pole, the marcher and the tessellator; the eight cuts through a pole the tessellator declined were already meshed (2026-10-15)
 - Coincident freeform faces: a patch on its analytic twin moved along itself, two patches of one surface ([`architecture.md`](architecture.md) §5.3) (2026-10-15)
+- The self-intersection check inside every operation, near what it changed, and a shell that touches itself refused (2026-10-15)
 
 #### Open
 The [boolean checklist](#the-boolean-checklist) › *Owed*.

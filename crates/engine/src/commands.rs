@@ -1952,7 +1952,7 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
                         if !found.is_clean() {
                             problems.push(json!({
                                 "feature": outcome.id.to_string(), "name": name,
-                                "problem": format!("the body passes through itself: {found}"),
+                                "problem": format!("the body passes through or touches itself: {found}"),
                             }));
                         }
                     }

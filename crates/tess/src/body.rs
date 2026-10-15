@@ -73,7 +73,7 @@
 //! a bounded number of rounds, each the same for any number of threads
 //! (see `tessellate` below).
 
-use crate::edge::{EdgeSamples, edge_points};
+use crate::edge::{EdgeSamples, edge_points_of};
 use crate::face::{Chord, FaceMesh, curved_chords, face_boundary, mesh_face};
 use crate::{Mesh, TessError, TessParams};
 use craft3d_geom::{Curve3, Surface};
@@ -424,7 +424,44 @@ fn tessellate(
     threads: usize,
     mesh: bool,
 ) -> Result<(EdgeSamples, Vec<Option<FaceResult>>), TessError> {
-    let mut edges = edge_points(body, params)?;
+    tessellate_some(body, params, threads, mesh, None)
+}
+
+/// [`tessellate`] of the faces `only` marks (all when `None`): the others
+/// are left out, with their edges unless a face that is in uses them.
+/// The points of an edge are cut where the faces that are in ask, so a
+/// face may get fewer points along an edge than when every face is in
+/// (a neighbour left out asked for more); its mesh is as good a mesh of
+/// the face all the same, and neighbours that are both in share their
+/// points as always.
+fn tessellate_some(
+    body: &Body,
+    params: &TessParams,
+    threads: usize,
+    mesh: bool,
+    only: Option<&[bool]>,
+) -> Result<(EdgeSamples, Vec<Option<FaceResult>>), TessError> {
+    let chosen = |index: usize| only.is_none_or(|only| only.get(index).copied().unwrap_or(false));
+    let used = only.map(|_| {
+        let mut used = vec![false; body.edges.len()];
+        for (index, face) in body.faces.iter().enumerate() {
+            if !chosen(index) {
+                continue;
+            }
+            for coedge in face
+                .loops
+                .iter()
+                .filter_map(|id| body.loop_(*id))
+                .flat_map(|loop_| &loop_.coedges)
+            {
+                if let Some(slot) = used.get_mut(coedge.edge.0 as usize) {
+                    *slot = true;
+                }
+            }
+        }
+        used
+    });
+    let mut edges = edge_points_of(body, params, used.as_deref())?;
     let count = body.faces.len();
     let mut results: Vec<Option<FaceResult>> = (0..count).map(|_| None).collect();
     // The faces that still ask for finer chords.
@@ -432,7 +469,9 @@ fn tessellate(
     // Without triangles to make, only the faces that may ask for
     // something are looked at.
     let mut todo: Vec<usize> = (0..count)
-        .filter(|&index| mesh || body.faces.get(index).is_some_and(|f| can_ask(body, f)))
+        .filter(|&index| {
+            chosen(index) && (mesh || body.faces.get(index).is_some_and(|f| can_ask(body, f)))
+        })
         .collect();
     let mut last = false;
     for round in 0..=MAX_ROUNDS {
@@ -540,7 +579,9 @@ fn tessellate(
         let users = faces_using(body, &changed);
         todo = (0..count)
             .filter(|index| {
-                users.binary_search(index).is_ok() || asking.get(*index).copied().unwrap_or(false)
+                chosen(*index)
+                    && (users.binary_search(index).is_ok()
+                        || asking.get(*index).copied().unwrap_or(false))
             })
             .collect();
     }
@@ -728,6 +769,37 @@ pub fn tessellate_body_with_threads(
         threads
     };
     let (_, patches) = tessellate(body, params, threads, true)?;
+    assemble(patches)
+}
+
+/// The faces of `body` that `only` marks, tessellated as by
+/// [`tessellate_body_with_threads`] (see [`tessellate_some`]); the mesh
+/// has triangles for those faces only, with their face indices.
+pub(crate) fn tessellate_faces(
+    body: &Body,
+    params: &TessParams,
+    threads: usize,
+    only: &[bool],
+) -> Result<Mesh, TessError> {
+    let tol = params.chordal_tolerance;
+    if !(tol.is_finite() && tol > 0.0) {
+        return Err(TessError::InvalidTolerance(tol));
+    }
+    let threads = if threads == 0 {
+        automatic_threads()
+    } else {
+        threads
+    };
+    let (_, patches) = tessellate_some(body, params, threads, true, Some(only))?;
+    let chosen = |index: usize| only.get(index).copied().unwrap_or(false);
+    let patches = patches
+        .into_iter()
+        .enumerate()
+        .map(|(index, patch)| match patch {
+            None if !chosen(index) => Some(Ok(FaceMesh::default())),
+            other => other,
+        })
+        .collect();
     assemble(patches)
 }
 
@@ -922,6 +994,7 @@ pub fn tessellate_within_budget(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::edge::edge_points;
     use craft3d_math::Frame;
     use craft3d_testkit::solids;
 

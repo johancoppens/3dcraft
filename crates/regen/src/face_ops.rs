@@ -30,7 +30,6 @@ use crate::{FeatureResult, Names};
 use craft3d_doc::{Document, FeatureId, PersistentName};
 use craft3d_kernel::KernelError;
 use craft3d_math::Tolerance;
-use craft3d_tess::{SelfCheckParams, body_self_intersections};
 use craft3d_topo::{Body, EdgeId, FaceId};
 
 /// The body a face operation works on, with what its entities are called.
@@ -226,29 +225,22 @@ pub(crate) fn not_through_itself(
     why: &str,
     tolerance: &Tolerance,
 ) -> Result<(), String> {
-    let found = body_self_intersections(body, &SelfCheckParams::new(tolerance.linear)).map_err(
-        |error| {
-            format!("{param}: the {noun} cannot be meshed to see whether it passes through itself ({error})")
-        },
-    )?;
-    if found.is_clean() {
-        return Ok(());
+    use crate::selfcheck::{Crossing, crossing};
+    match crossing(body, faces, tolerance.linear) {
+        Crossing::None => Ok(()),
+        Crossing::Unknown(error) => Err(format!(
+            "{param}: the {noun} cannot be meshed to see whether it passes through itself ({error})"
+        )),
+        touching @ Crossing::Touching(..) => {
+            touching.refused(param, noun, "make it smaller, or move what it runs into")
+        }
+        Crossing::Found(pair) => {
+            let between = pair
+                .map(|[a, b]| format!(": {a} and {b} cross"))
+                .unwrap_or_default();
+            Err(format!(
+                "{param}: {why}the {noun} passes through itself{between}"
+            ))
+        }
     }
-    let between = found
-        .crossings
-        .iter()
-        .find(|c| c.certain)
-        .map(|c| {
-            let name = |face: u32| {
-                faces
-                    .get(face as usize)
-                    .map_or_else(|| format!("face {face}"), ToString::to_string)
-            };
-            let [a, b] = c.faces;
-            format!(": {} and {} cross", name(a), name(b))
-        })
-        .unwrap_or_default();
-    Err(format!(
-        "{param}: {why}the {noun} passes through itself{between}"
-    ))
 }

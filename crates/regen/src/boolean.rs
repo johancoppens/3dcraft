@@ -11,6 +11,7 @@
 //! name it had there too (`F7:copy(0)/F1:vertex(3)`).
 
 use crate::derive::source_body;
+use crate::selfcheck::{crossing_near, roles_of};
 use crate::{Contributors, FeatureResult, Kept, Names};
 use craft3d_doc::{Boolean, BooleanOp, Document, FeatureId};
 use craft3d_math::Tolerance;
@@ -123,5 +124,29 @@ pub(crate) fn build(
             operand,
         );
     }
+    not_through_itself(&made, names.as_ref(), tolerance.linear, &[])?;
     Ok((made.body, names))
+}
+
+/// Fails when the result of a boolean passes through itself. Its faces
+/// are pieces of the faces of two bodies that do not (each was looked at,
+/// or cannot, when it was made), so pieces of one operand do not cross
+/// each other: what is looked at is where pieces of the two can meet,
+/// and the faces merged from both (`selfcheck::crossing_near`). A
+/// crossing there is a place where the operands meet that the boolean
+/// did not find. `new_from` names operands that were not looked at on
+/// their own.
+pub(crate) fn not_through_itself(
+    made: &Combined,
+    names: Option<&Names>,
+    linear: f64,
+    new_from: &[u64],
+) -> Result<(), String> {
+    let roles = roles_of(&made.contributors, new_from);
+    let faces = names.map_or(&[][..], |names| names.faces.as_slice());
+    crossing_near(&made.body, faces, linear, &roles).refused(
+        "tool",
+        "result",
+        "the boolean did not find where the operands meet there, and the result is refused rather than handed on",
+    )
 }

@@ -451,6 +451,17 @@ pub(crate) fn build(
                 |_| source.names.as_deref(),
             );
         }
+        // Each instance is the source moved, which does not pass through
+        // itself: what is looked at is where instances meet.
+        let roles = crate::selfcheck::roles_of(&contributors, &[]);
+        let faces = names
+            .as_ref()
+            .map_or(&[][..], |names| names.faces.as_slice());
+        crate::selfcheck::crossing_near(&result, faces, doc.tolerance.linear, &roles).refused(
+            "count",
+            "pattern",
+            "the union of the instances did not find where they meet there, and the result is refused rather than handed on",
+        )?;
         return Ok(Derived {
             body: result,
             names,

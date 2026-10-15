@@ -24,10 +24,12 @@
 
 use crate::datum::listed;
 use crate::query::{edges_between, faces_named, faces_of_edges};
+use crate::selfcheck;
 use crate::{Contributors, Kept, Names, entity};
 use craft3d_doc::{FeatureId, NameRole, PersistentName};
 use craft3d_kernel::chamfer::tangent_chain;
 use craft3d_math::Vec3;
+use craft3d_tess::FaceRole;
 use craft3d_topo::{Body, EdgeId, FaceId, VertexId};
 use std::collections::BTreeMap;
 
@@ -291,42 +293,40 @@ pub(crate) fn name(
     Ok(Some(named))
 }
 
-/// A blend whose face has no closed form (a spline surface along a
-/// freeform edge, `kernel::blend`'s `rolling`) is held to the face it was
-/// asked for and to the faces next to the edge; whether it runs into a
-/// face further away (a radius that is too large for what lies across the
-/// body) the kernel does not see. Such a body is meshed and looked at for
-/// places where it passes through itself, as a loft is, before it is
-/// handed on.
-pub(crate) fn through_itself(
+/// Fails when the blended body `made` passes through itself. A blend is
+/// made by booleans of the body with tools, so a face kept from the body
+/// is a piece of a face of a body that does not pass through itself,
+/// unless it was merged from several or lies next to a new face (it may
+/// have taken a tool's face that lies in its plane: a wall the end of a
+/// chamfer runs into). The new faces, those, and what is near them are
+/// looked at (`selfcheck::crossing_near`). That includes a blend whose
+/// face has no closed form (a spline surface along a freeform edge,
+/// `kernel::blend`'s `rolling`), which the kernel holds to the faces next
+/// to the edge only: whether it runs into a face further away (a radius
+/// too large for what lies across the body) is found here.
+pub(crate) fn not_through_itself(
     made: &Body,
     faces: &[Made<'_>],
     names: Option<&Names>,
     linear: f64,
-    noun: &str,
+    roles: Roles,
+    param: &str,
 ) -> Result<(), String> {
-    use crate::selfcheck::{Crossing, crossing};
-    use craft3d_geom::Surface;
-    let freeform = faces.iter().zip(&made.faces).any(|(made, face)| {
-        matches!(made, Made::Blend(_))
-            && matches!(face.surface, Surface::Nurbs(_) | Surface::Bezier(_))
-    });
-    if !freeform {
-        return Ok(());
-    }
-    let named: Vec<PersistentName> = names.map(|n| n.faces.clone()).unwrap_or_default();
-    match crossing(made, &named, linear) {
-        Crossing::None => Ok(()),
-        Crossing::Unknown(error) => Err(format!(
-            "edges: the {noun} along a freeform edge cannot be meshed to see whether it runs into the body ({error})"
-        )),
-        Crossing::Found(pair) => {
-            let between = pair
-                .map(|[a, b]| format!(": {a} and {b} cross"))
-                .unwrap_or_default();
-            Err(format!(
-                "edges: the {noun} runs into the body{between}; the size is too large for what lies across it"
-            ))
-        }
-    }
+    let mut kinds: Vec<FaceRole> = faces
+        .iter()
+        .map(|face| match face {
+            Made::Kept([_]) => FaceRole::Known(0),
+            Made::Kept(_) | Made::Blend(_) | Made::Corner(_) => FaceRole::New,
+        })
+        .collect();
+    selfcheck::with_neighbours(made, &mut kinds);
+    let named = names.map_or(&[][..], |names| names.faces.as_slice());
+    selfcheck::crossing_near(made, named, linear, &kinds).refused(
+        param,
+        &format!("{}ed body", roles.noun),
+        &format!(
+            "a {} runs into a face it does not border; make it smaller",
+            roles.noun
+        ),
+    )
 }
