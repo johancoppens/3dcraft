@@ -503,6 +503,86 @@ fn boxes_are_tight_where_promised_and_bounded_elsewhere() {
     }
 }
 
+/// A face on a sphere or a torus is boxed by what it holds, not by the
+/// whole surface (the bike's 455 mm stay, a tube swept along an arc of a
+/// 1332 mm circle, was framed as 2671 mm): the box holds every point of
+/// the face and is within the sag of the samples of the box of those
+/// points. Elbows through a little, most and nearly all of a turn, an
+/// octant through a pole, caps below and above the equator; three scales,
+/// two frames, every isometry.
+#[test]
+fn faces_on_spheres_and_tori_are_boxed_by_what_they_hold() {
+    for scale in [1e-3, 1.0, 1e6] {
+        for frame in frames(scale) {
+            // Each solid with the test that tells which points of its
+            // surface (in the frame's own terms) are in its curved face.
+            type Region = Box<dyn Fn(f64, f64, f64) -> bool>;
+            let mut cases: Vec<(Reference, Region)> = Vec::new();
+            for sweep in [0.3, 1.9, 4.0, 6.0] {
+                let elbow = trimmed::pipe_elbow(&frame, 3.0 * scale, scale, sweep).unwrap();
+                cases.push((
+                    elbow,
+                    Box::new(move |x, y, _| y.atan2(x).rem_euclid(TAU) <= sweep),
+                ));
+            }
+            cases.push((
+                trimmed::sphere_octant(&frame, 2.0 * scale).unwrap(),
+                Box::new(|x, y, z| x >= 0.0 && y >= 0.0 && z >= 0.0),
+            ));
+            for height in [0.5, 1.5, 3.0] {
+                let level = (2.0 - height) * scale;
+                cases.push((
+                    trimmed::spherical_cap(&frame, 2.0 * scale, height * scale).unwrap(),
+                    Box::new(move |_, _, z| z >= level),
+                ));
+            }
+            for (solid, region) in &cases {
+                let curved = solid
+                    .body
+                    .faces
+                    .iter()
+                    .find(|f| matches!(f.surface, Surface::Sphere(_) | Surface::Torus(_)))
+                    .unwrap();
+                // The face's points, in the frame's terms and then placed.
+                let mut held = Vec::new();
+                for a in 0..=512 {
+                    for b in 0..=512 {
+                        let u = TAU * f64::from(a) / 512.0;
+                        let v = if curved.surface.period_v().is_some() {
+                            TAU * f64::from(b) / 512.0
+                        } else {
+                            -FRAC_PI_2 + PI * f64::from(b) / 512.0
+                        };
+                        let p = curved.surface.eval(u, v);
+                        let (x, y, z) = frame.local(p);
+                        if region(x, y, z) {
+                            held.push(p);
+                        }
+                    }
+                }
+                held.extend(edge_points(&solid.body));
+                for (name, t) in isometries(scale) {
+                    let what = format!("{} at scale {scale} under {name}", solid.name);
+                    let body = solid.body.transformed(&t).unwrap();
+                    let bbox = body.bbox().unwrap();
+                    let want = box_of(held.iter().map(|&p| t.point(p)));
+                    let size = want.diagonal();
+                    assert!(
+                        within(&want, &bbox, 1e-12 * size),
+                        "{what}: the box {bbox:?} misses {want:?}"
+                    );
+                    // The samples miss the true extremes by the sag of an
+                    // arc between two of them: r (1 − cos(π/512)) < 2e-5 r.
+                    assert!(
+                        within(&bbox, &want, 2e-5 * size),
+                        "{what}: the box {bbox:?} is looser than {want:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn arcs_are_boxed_by_the_part_that_is_there() {
     // A quarter circle of radius 2 in the xy plane, from 30° to 120°: its

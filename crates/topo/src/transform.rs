@@ -236,23 +236,35 @@ impl Body {
     /// - A face on a plane or a cylinder lies within the convex hull of its
     ///   edges and adds nothing; so does a face on a cone, except for the
     ///   apex when the face surrounds it.
-    /// - A face on a sphere or a torus contributes the box of the *whole*
-    ///   sphere or torus, a face on a Bézier or NURBS surface the box of
-    ///   the whole control net, however little of the surface the face
-    ///   uses.
+    /// - A face on a sphere or a torus reaches past its boundary along an
+    ///   axis only at a point where the axis is normal to the surface (two
+    ///   on a sphere, four on a torus, or a circle along the top or the
+    ///   bottom of its tube): each such point that the boundary does not
+    ///   already reach adds its coordinate along that axis unless it is
+    ///   certainly not in the face (since 2026-10-15; before, the face
+    ///   contributed the box of the whole sphere or torus). A face without
+    ///   loops is the whole surface.
+    /// - A face on a Bézier or NURBS surface contributes the box of the
+    ///   whole control net, however little of the surface the face uses.
     ///
     /// So the box is the tight one (up to the padding below) for a body
-    /// whose faces are planes, cylinders and cones and whose edges are
-    /// lines, circles and ellipses, and for whole spheres and tori; for
-    /// other bodies it is never larger than the box of the body's edges
-    /// together with its whole spheres, tori and control nets. It is
-    /// padded by a few rounding errors of the largest coordinate (a
-    /// relative 1.5e-14), so that points computed on the geometry are
-    /// inside whatever the last bit does.
+    /// whose faces are planes, cylinders, cones, spheres and tori and whose
+    /// edges are lines, circles and ellipses, wherever the test that a
+    /// point is not in a face gives an answer; for other bodies it is
+    /// never larger than the box of the body's edges together with its
+    /// whole spheres, tori and control nets. It is padded by a few rounding
+    /// errors of the largest coordinate (a relative 1.5e-14), so that
+    /// points computed on the geometry are inside whatever the last bit
+    /// does.
     ///
-    /// One step is not a proof: whether a cone face surrounds its apex is
+    /// Two steps are not proofs. Whether a cone face surrounds its apex is
     /// decided by following its boundary around the axis at sampled
-    /// points. Where that is doubtful the apex is included.
+    /// points; where that is doubtful the apex is included. Whether a point
+    /// of a sphere or a torus is in a face is decided by walking from it
+    /// along circles of the surface to the first place where the face's
+    /// boundary crosses them (found on sampled edges and then by regula
+    /// falsi), whose side tells; where no walk tells for certain the point
+    /// is included.
     ///
     /// An empty box for a body without vertices, edges and faces. An error
     /// for a face that is not bounded (a plane, cylinder or cone without
@@ -403,6 +415,15 @@ impl Extent {
         max: [f64::NEG_INFINITY; 3],
         finite: true,
     };
+
+    /// Whether the extent already reaches `value` along `axis`: adding it
+    /// would change nothing.
+    fn covers(&self, axis: usize, value: f64) -> bool {
+        match (self.min.get(axis), self.max.get(axis)) {
+            (Some(&min), Some(&max)) => min <= value && value <= max,
+            _ => false,
+        }
+    }
 
     /// Adds one coordinate along one axis (0, 1 or 2).
     fn add_axis(&mut self, axis: usize, value: f64) {
@@ -584,6 +605,244 @@ fn reaches_apex(body: &Body, face: &Face, cone: &Cone) -> Result<bool, Transform
     Ok(total.abs() > PI)
 }
 
+/// The points of `torus` where the direction `e` is normal to it: where
+/// `e · p` can have an extreme inside a face, in groups of points with the
+/// same `e · p`. Generally four groups of one, on the section of the tube
+/// in the plane of the axis and `e`. Where `e` is along the axis, `e · p`
+/// is greatest and least on the circles along the top and the bottom of
+/// the tube, each a group of points spread round it: where one of them is
+/// certainly not in a face, either the face holds none of the circle or
+/// its boundary meets the circle and so reaches the same `e · p`. They
+/// are spread away from angle 0, where a revolution starts and a section
+/// plane would hold its edge.
+fn torus_extremes(torus: &craft3d_geom::Torus, e: Vec3) -> Vec<Vec<Vec3>> {
+    let frame = torus.frame();
+    let (major, minor) = torus.radii();
+    let (ex, ey, ez) = (
+        e.dot(frame.vector(1.0, 0.0, 0.0)),
+        e.dot(frame.vector(0.0, 1.0, 0.0)),
+        e.dot(frame.z()),
+    );
+    let flat = ex.hypot(ey);
+    let at = |u: f64, v: f64| {
+        let (su, cu) = u.sin_cos();
+        let (sv, cv) = v.sin_cos();
+        let ring = major + minor * cv;
+        frame.point(ring * cu, ring * su, minor * sv)
+    };
+    let mut groups = Vec::with_capacity(4);
+    if flat > 0.0 {
+        let u = ey.atan2(ex);
+        for (u, toward) in [(u, flat), (u + PI, -flat)] {
+            let v = ez.atan2(toward);
+            groups.push(vec![at(u, v)]);
+            groups.push(vec![at(u, v + PI)]);
+        }
+    } else {
+        for v in [FRAC_PI_2, -FRAC_PI_2] {
+            groups.push([1.0, 2.5, 4.0, 5.5].map(|u| at(u, v)).to_vec());
+        }
+    }
+    groups
+}
+
+/// An arc of a circle in which a plane cuts a face's surface: from
+/// `start` counter-clockwise about `normal` round `centre` to `end` (all
+/// the way round when there is none). Where the plane cuts the surface in
+/// more than this circle, `keep` tells which points are on it (`None`:
+/// cannot tell).
+struct Arc<'a> {
+    start: Vec3,
+    end: Option<Vec3>,
+    normal: Vec3,
+    centre: Vec3,
+    keep: Box<dyn Fn(Vec3) -> Option<bool> + 'a>,
+}
+
+/// Up to `most` points of the face's boundary: the middles of its first
+/// edges, where a path that ends on one certainly crosses the boundary.
+fn boundary_marks(body: &Body, face: &Face, most: usize) -> Vec<Vec3> {
+    face.loops
+        .iter()
+        .filter_map(|l| body.loop_(*l))
+        .flat_map(|l| l.coedges.iter())
+        .filter_map(|c| body.edge(c.edge))
+        .map(|e| e.curve.eval(0.5 * (e.range.0 + e.range.1)))
+        .filter(|p| p.is_finite())
+        .take(most)
+        .collect()
+}
+
+/// Whether the start of `path` (a point of the face's surface) is in the
+/// face, as far as walking along the path tells: `None` where it does not.
+///
+/// The first place along the path where the face's boundary crosses it
+/// tells: the face lies to the left of its boundary seen from outside
+/// (`outward` gives the outward normal at a point of the surface), so
+/// where it lies beyond the crossing the start is outside, and where it
+/// lies back towards the start, inside. Crossings are found on samples of
+/// the edges, as in [`reaches_apex`], and then by bisection; one missed in
+/// a pair that dips across the plane and back does not change the answer,
+/// since along the path the boundary is crossed into and out of the face
+/// in turn. No answer where the path meets no boundary, where the first
+/// crossing grazes it, is at the start of an arc, or is within rounding of
+/// another that says the opposite, or where a crossing is not clearly on
+/// the arc's circle or off it.
+fn walk(
+    body: &Body,
+    face: &Face,
+    path: &[Arc],
+    outward: &dyn Fn(Vec3) -> Option<Vec3>,
+) -> Result<Option<bool>, TransformError> {
+    let owner = 0;
+    let near = 1e-9 * TAU;
+    for arc in path {
+        let Some(along) = (arc.start - arc.centre).normalized() else {
+            return Ok(None);
+        };
+        let across = arc.normal.cross(along);
+        let angle = |p: Vec3| {
+            let d = p - arc.centre;
+            let a = d.dot(across).atan2(d.dot(along));
+            if a <= 0.0 { a + TAU } else { a }
+        };
+        let reach = arc.end.map_or(TAU, angle);
+        // Per crossing: its angle from the start, and whether the start is
+        // inside, or `None` where it grazes.
+        let mut crossings: Vec<(f64, Option<bool>)> = Vec::new();
+        for loop_id in &face.loops {
+            let loop_ = body
+                .loop_(*loop_id)
+                .ok_or(TransformError::DanglingReference { body: owner })?;
+            for coedge in &loop_.coedges {
+                let edge = body
+                    .edge(coedge.edge)
+                    .ok_or(TransformError::DanglingReference { body: owner })?;
+                let (t0, t1) = edge.range;
+                if !(t0.is_finite() && t1.is_finite()) {
+                    return Err(TransformError::EdgeRange { edge: coedge.edge });
+                }
+                let count = winding_samples(&edge.curve);
+                // The ends are the vertices, so that where edges meet (a
+                // closed edge with itself, too) both see the same side,
+                // and a crossing there is counted once.
+                let ends = [edge.start, edge.end].map(|v| body.vertex(v).map(|v| v.point));
+                let [Some(first), Some(last)] = ends else {
+                    return Err(TransformError::DanglingReference { body: owner });
+                };
+                let side = |p: Vec3| arc.normal.dot(p - arc.start);
+                let mut previous: Option<(f64, f64)> = None;
+                for k in 0..=count {
+                    let t = t0 + (t1 - t0) * (k as f64 / count as f64);
+                    let g = side(if k == 0 {
+                        first
+                    } else if k == count {
+                        last
+                    } else {
+                        edge.curve.eval(t)
+                    });
+                    if !g.is_finite() {
+                        return Ok(None);
+                    }
+                    let crossed = previous.filter(|&(_, h)| (h < 0.0) != (g < 0.0));
+                    previous = Some((t, g));
+                    let Some((s, h)) = crossed else {
+                        continue;
+                    };
+                    // Where the side changes, by regula falsi with the
+                    // Illinois step (which keeps the bracket shrinking from
+                    // both ends), to a bracket as narrow as rounding allows
+                    // or 48 steps, so that a crossing is sharp.
+                    let (mut low, mut high, mut g_low, mut g_high) = (s, t, h, g);
+                    let mut kept_end = 0_i8;
+                    for _ in 0..48 {
+                        let mut middle = low + (high - low) * g_low / (g_low - g_high);
+                        if !(middle > low && middle < high) {
+                            middle = 0.5 * (low + high);
+                            if !(middle > low && middle < high) {
+                                break;
+                            }
+                        }
+                        let g_middle = side(edge.curve.eval(middle));
+                        if g_middle == 0.0 || !g_middle.is_finite() {
+                            (low, high) = (middle, middle);
+                            break;
+                        }
+                        if (g_middle < 0.0) == (g_low < 0.0) {
+                            (low, g_low) = (middle, g_middle);
+                            if kept_end == 1 {
+                                g_high *= 0.5;
+                            }
+                            kept_end = 1;
+                        } else {
+                            (high, g_high) = (middle, g_middle);
+                            if kept_end == -1 {
+                                g_low *= 0.5;
+                            }
+                            kept_end = -1;
+                        }
+                    }
+                    let (p, mut tangent) = edge.curve.derivatives(0.5 * (low + high));
+                    match (arc.keep)(p) {
+                        Some(true) => {}
+                        Some(false) => continue,
+                        None => return Ok(None),
+                    }
+                    let at = angle(p);
+                    if at > reach + near {
+                        continue;
+                    }
+                    if coedge.reversed {
+                        tangent = -tangent;
+                    }
+                    let Some(normal) = outward(p) else {
+                        return Ok(None);
+                    };
+                    let left = normal.cross(tangent);
+                    let onward = arc.normal.cross(p - arc.centre);
+                    let ahead = left.dot(onward);
+                    let scale = left.length() * onward.length();
+                    crossings.push((at, (ahead.abs() > 0.1 * scale).then_some(ahead < 0.0)));
+                }
+            }
+        }
+        crossings.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let Some(&(first, verdict)) = crossings.first() else {
+            continue;
+        };
+        let agreed = crossings
+            .iter()
+            .take_while(|c| c.0 - first <= near)
+            .all(|c| c.1 == verdict);
+        if !agreed || first <= near || first >= TAU - near {
+            return Ok(None);
+        }
+        return Ok(verdict);
+    }
+    Ok(None)
+}
+
+/// Whether a point of the face's surface is certainly not in the face:
+/// the first of the paths from it that gives an answer ([`walk`]) says so.
+/// Errs on the side of no.
+fn certainly_outside(
+    body: &Body,
+    face: &Face,
+    paths: &[Vec<Arc>],
+    outward: &dyn Fn(Vec3) -> Option<Vec3>,
+) -> Result<bool, TransformError> {
+    for path in paths {
+        if let Some(inside) = walk(body, face, path, outward)? {
+            return Ok(!inside);
+        }
+    }
+    Ok(false)
+}
+
+/// How many points of a face's boundary the paths from a point to it go
+/// to ([`boundary_marks`]).
+const MARKS: usize = 3;
+
 fn face_extent(
     body: &Body,
     face: &Face,
@@ -611,15 +870,165 @@ fn face_extent(
         }
         Surface::Sphere(sphere) => {
             let r = sphere.radius();
-            out.add_reach(sphere.frame().origin(), Vec3::new(r, r, r));
+            let centre = sphere.frame().origin();
+            if face.loops.is_empty() {
+                out.add_reach(centre, Vec3::new(r, r, r));
+                return Ok(());
+            }
+            // Along each axis the sphere is furthest at `centre ± r e`,
+            // its only points where the axis is normal to it; one is left
+            // out where it is certainly not in the face. The paths from it
+            // are great circles: through points of the boundary, and two
+            // turned away from the coordinate planes and their diagonals
+            // (where boundaries lie most often: an octant, a half), since a
+            // walk along a boundary that lies in its plane has no answer.
+            let sign = if face.reversed { -1.0 } else { 1.0 };
+            let outward = |p: Vec3| (p - centre).normalized().map(|n| n * sign);
+            let marks = boundary_marks(body, face, MARKS);
+            let axes = [Vec3::X, Vec3::Y, Vec3::Z];
+            for (i, e) in axes.into_iter().enumerate() {
+                let (j, k) = (
+                    axes.get((i + 1) % 3).copied().unwrap_or(Vec3::X),
+                    axes.get((i + 2) % 3).copied().unwrap_or(Vec3::Y),
+                );
+                for q in [centre + e * r, centre - e * r] {
+                    if components(q).get(i).is_some_and(|&v| out.covers(i, v)) {
+                        continue;
+                    }
+                    let normals = marks
+                        .iter()
+                        .filter_map(|&b| (q - centre).cross(b - centre).normalized())
+                        .chain([0.5_f64, 2.0].map(|a| j * a.cos() + k * a.sin()));
+                    let paths: Vec<Vec<Arc>> = normals
+                        .map(|normal| {
+                            vec![Arc {
+                                start: q,
+                                end: None,
+                                normal,
+                                centre,
+                                keep: Box::new(|_| Some(true)),
+                            }]
+                        })
+                        .collect();
+                    if !certainly_outside(body, face, &paths, &outward)? {
+                        out.add_axis(i, components(q).get(i).copied().unwrap_or(f64::NAN));
+                    }
+                }
+            }
         }
         Surface::Torus(torus) => {
             // A circle of radius R about the axis, thickened by r: along a
             // unit direction e it reaches R·|e − (e·z) z| + r.
             let (major, minor) = torus.radii();
-            let [x, y, z] = components(torus.frame().z())
-                .map(|c| major * (1.0 - c * c).max(0.0).sqrt() + minor);
-            out.add_reach(torus.frame().origin(), Vec3::new(x, y, z));
+            let frame = torus.frame();
+            if face.loops.is_empty() {
+                let [x, y, z] =
+                    components(frame.z()).map(|c| major * (1.0 - c * c).max(0.0).sqrt() + minor);
+                out.add_reach(frame.origin(), Vec3::new(x, y, z));
+                return Ok(());
+            }
+            let sign = if face.reversed { -1.0 } else { 1.0 };
+            // Away from the tube's middle circle.
+            let outward = |p: Vec3| {
+                let (x, y, _) = frame.local(p);
+                let ring = x.hypot(y);
+                let middle = frame.point(major * x / ring, major * y / ring, 0.0);
+                (p - middle).normalized().map(|n| n * sign)
+            };
+            let at = |u: f64, v: f64| {
+                let (su, cu) = u.sin_cos();
+                let (sv, cv) = v.sin_cos();
+                let ring = major + minor * cv;
+                frame.point(ring * cu, ring * su, minor * sv)
+            };
+            // A point's angles about the axis and about the tube.
+            let angles = |p: Vec3| {
+                let (x, y, z) = frame.local(p);
+                (y.atan2(x), z.atan2(x.hypot(y) - major))
+            };
+            // The circle about the axis through the point at `v`, and the
+            // tube's section at `u`. Each plane cuts the torus in two
+            // circles; a crossing is on the arc's when it is clearly nearer
+            // to it than to the other (within a quarter of their distance
+            // apart).
+            let parallel = |start: Vec3, end: Option<Vec3>| {
+                let (_, v) = angles(start);
+                let ring = major + minor * v.cos();
+                let other = major - minor * v.cos();
+                Arc {
+                    start,
+                    end,
+                    normal: frame.z(),
+                    centre: frame.point(0.0, 0.0, minor * v.sin()),
+                    keep: Box::new(move |p: Vec3| {
+                        let (px, py, _) = frame.local(p);
+                        let r = px.hypot(py);
+                        let (own, far) = ((r - ring).abs(), (r - other).abs());
+                        let apart = 0.25 * (ring - other).abs();
+                        if own <= apart && own < far {
+                            Some(true)
+                        } else if far <= apart && far < own {
+                            Some(false)
+                        } else {
+                            None
+                        }
+                    }),
+                }
+            };
+            // The two sections are centred `major` either side of the
+            // axis, their points at least `major − minor` from it.
+            let section = |start: Vec3, end: Option<Vec3>| {
+                let (u, _) = angles(start);
+                let (su, cu) = u.sin_cos();
+                Arc {
+                    start,
+                    end,
+                    normal: frame.vector(-su, cu, 0.0),
+                    centre: frame.point(major * cu, major * su, 0.0),
+                    keep: Box::new(move |p: Vec3| {
+                        let (px, py, _) = frame.local(p);
+                        let along = px * cu + py * su;
+                        (along.abs() >= 0.5 * (major - minor)).then_some(along > 0.0)
+                    }),
+                }
+            };
+            let marks: Vec<(Vec3, (f64, f64))> = boundary_marks(body, face, MARKS)
+                .into_iter()
+                .map(|b| (b, angles(b)))
+                .collect();
+            for (axis, e) in [Vec3::X, Vec3::Y, Vec3::Z].into_iter().enumerate() {
+                for group in torus_extremes(torus, e) {
+                    // The boundary (added before the faces) may already
+                    // reach as far.
+                    let reach = group
+                        .first()
+                        .and_then(|q| components(*q).get(axis).copied());
+                    if reach.is_some_and(|value| out.covers(axis, value)) {
+                        continue;
+                    }
+                    let mut left_out = false;
+                    for &q in &group {
+                        // The whole circles through q, and to each mark a
+                        // path along a section and then a circle about the
+                        // axis, or the other way round.
+                        let (u, v) = angles(q);
+                        let mut paths = vec![vec![parallel(q, None)], vec![section(q, None)]];
+                        for &(b, (ub, vb)) in &marks {
+                            let corner = at(u, vb);
+                            paths.push(vec![section(q, Some(corner)), parallel(corner, Some(b))]);
+                            let corner = at(ub, v);
+                            paths.push(vec![parallel(q, Some(corner)), section(corner, Some(b))]);
+                        }
+                        if certainly_outside(body, face, &paths, &outward)? {
+                            left_out = true;
+                            break;
+                        }
+                    }
+                    if !left_out && let Some(q) = group.first() {
+                        out.add_axis(axis, components(*q).get(axis).copied().unwrap_or(f64::NAN));
+                    }
+                }
+            }
         }
         // Convex hull property (weights are positive).
         Surface::Bezier(patch) => patch.control_points().iter().for_each(|&p| out.add(p)),
