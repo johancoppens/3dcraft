@@ -735,3 +735,95 @@ fn a_degenerate_contact_that_crosses_in_a_cusp_is_not_a_touch() {
         }
     }
 }
+
+/// A cylinder inside the tube of a torus, its axis square to the torus'
+/// axis, touching the top of the tube from inside: the contact is of the
+/// fourth order. Across the cylinder the two are tangent circles; along
+/// it the tube bends down and away, so that on either side of the point
+/// the cylinder pokes out of the tube in a sliver between two curves that
+/// leave the point in the same direction (a tacnode: in the distance
+/// `f ≈ −s² + (2/3) s y² + y⁴/9` near the point, with `s` across and `y`
+/// along the cylinder in units of the minor radius, the curves are
+/// `s ≈ 0.81 y²` and `s ≈ −0.14 y²`). The meeting is two loops, one on
+/// either side, each leaving the point along one of its curves and coming
+/// back along the other: four ends on the point and none elsewhere.
+/// (Until 2026-10-15 the stationary search took no step where the Hessian
+/// is flat, no point was made there, and the branches were marched
+/// through it until the march stalled: the random runs' seed 2001169.)
+///
+/// `lift` moves the cylinder up (out of the tube) by that share of the
+/// tolerance; `radius` is the cylinder's radius over the torus' minor
+/// radius.
+fn tacnode_case(k: f64, radius: f64, lift: f64) -> (Surface, Surface, Vec3, Frame) {
+    let frame = tilted(k);
+    let (major, minor) = (1.5 * k, 0.5 * k);
+    let rho = radius * minor;
+    let ring = torus(frame, major, minor);
+    let t = tol(k);
+    let axis = Frame::new(
+        frame.point(major, 0.0, minor - rho + lift * t.linear),
+        frame.y(),
+        frame.x(),
+    )
+    .unwrap();
+    let tube = cylinder(axis, rho);
+    (ring, tube, frame.point(major, 0.0, minor), frame)
+}
+
+/// Points of the exact meeting of [`tacnode_case`] (with no lift): for an
+/// angle `φ` round the cylinder from its top, the point of the cylinder
+/// there at `y = ± sqrt((R + w)² − x²)`, `w = sqrt(r² − z²)`.
+fn tacnode_reference(k: f64, radius: f64, frame: &Frame) -> Vec<Vec3> {
+    let (major, minor) = (1.5 * k, 0.5 * k);
+    let rho = radius * minor;
+    let mut out = Vec::new();
+    for i in 1..400 {
+        let phi = std::f64::consts::TAU * f64::from(i) / 400.0;
+        let x = major + rho * phi.sin();
+        let z = minor - rho + rho * phi.cos();
+        let w = (minor * minor - z * z).max(0.0).sqrt();
+        let y = ((major + w) * (major + w) - x * x).max(0.0).sqrt();
+        for side in [1.0, -1.0] {
+            out.push(frame.point(x, side * y, z));
+        }
+    }
+    out
+}
+
+#[test]
+fn a_cylinder_touching_the_top_of_a_torus_tube_from_inside_meets_it_in_a_tacnode() {
+    for k in SCALES {
+        for (radius, lift) in [(0.5, 0.0), (0.2, 0.0), (0.5, 0.3), (0.5, -0.3)] {
+            let (ring, tube, touch, frame) = tacnode_case(k, radius, lift);
+            let t = tol(k);
+            let within = cube(frame.origin(), 2.5 * k);
+            let what = format!("scale {k}, radius {radius}, lift {lift}");
+            let m = meeting(
+                meet_surfaces(&ring, &tube, &within, &t).unwrap_or_else(|e| panic!("{what}: {e}")),
+            );
+            check_meeting(&m, &ring, &tube, &within, &t);
+            assert!(m.points.is_empty(), "{what}: {:?}", m.points);
+            let ends: usize = m
+                .curves
+                .iter()
+                .map(|c| {
+                    usize::from(start(c).distance(touch) <= t.linear)
+                        + usize::from(end(c).distance(touch) <= t.linear)
+                })
+                .sum();
+            assert_eq!(ends, 2 * m.curves.len(), "{what}: {} curves", m.curves.len());
+            assert_eq!(ends, 4, "{what}");
+            // Along the exact meeting and only there.
+            if lift == 0.0 {
+                let drawn = Lines::of(&m, 2000);
+                for p in tacnode_reference(k, radius, &frame) {
+                    let off = drawn.distance(p);
+                    assert!(
+                        off <= 4.0 * t.linear,
+                        "{what}: {off} from the exact meeting"
+                    );
+                }
+            }
+        }
+    }
+}

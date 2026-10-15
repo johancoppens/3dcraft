@@ -71,6 +71,8 @@
 // for NaN.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
+mod tacnode;
+
 use super::field::{Chart, Field, Sample};
 use super::meet::{Meeting, MeetingCurve};
 use crate::{Curve3, GeomError, NurbsCurve, NurbsSurface, Surface};
@@ -169,6 +171,9 @@ enum SingularKind {
     Cross,
     /// The apex of the field's cone.
     Apex,
+    /// A point of contact of higher order with arms that leave it in the
+    /// same direction (a tacnode or a cusp, `tacnode.rs`).
+    Tacnode,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -275,6 +280,8 @@ pub(super) struct Marcher {
     /// straight to the point instead of along `f = 0`, which turns away
     /// before it gets there.
     zones: Vec<(Vec3, f64)>,
+    /// Points of contact of higher order whose arms are made near them.
+    tacnodes: Vec<tacnode::Tacnode>,
 }
 
 impl Marcher {
@@ -308,6 +315,7 @@ impl Marcher {
             evals: 0,
             lying: [false; 4],
             zones: Vec::new(),
+            tacnodes: Vec::new(),
         })
     }
 
@@ -802,11 +810,57 @@ impl Marcher {
                 // A touch the Hessian does not classify (along a curve, or
                 // of higher order) that keeps to one side all around.
                 let found = if at_apex { None } else { self.stationary(u, v) };
-                let grazing = match found {
-                    Some(s) if s.flat && self.touches(&s, finest) => self.one_sided(&s, finest),
+                if std::env::var_os("MARCH_DEBUG").is_some() {
+                    eprintln!(
+                        "cell size {size} at {:?}: {:?}",
+                        self.chart.surface.eval(u, v),
+                        found.map(|s| (s.e.p, s.e.f, s.g, s.h, s.flat))
+                    );
+                }
+                // A tacnode found again (anywhere near: where it lies
+                // along its arms is ill-conditioned) has its disc already.
+                let found = found.filter(|s| {
+                    !singular.iter().any(|x| {
+                        x.kind == SingularKind::Tacnode && x.p.distance(s.e.p) <= merge.max(x.arm)
+                    })
+                });
+                // A contact of higher order along one direction with arms
+                // (a tacnode or a cusp); failing that, one that keeps to
+                // one side (a touch).
+                let arms = match found {
+                    Some(s) if s.flat && self.touches(&s, finest) => self.tacnode(&s, finest),
                     _ => None,
                 };
-                if let (Some(found), Some(disc)) = (found, grazing) {
+                if std::env::var_os("MARCH_DEBUG").is_some() {
+                    eprintln!("  touches {:?} tacnode {:?}", found.map(|s| (s.flat, self.touches(&s, finest), s.e.dist, finest)), arms);
+                }
+                let grazing = match found {
+                    Some(s) if arms.is_none() && s.flat && self.touches(&s, finest) => {
+                        self.one_sided(&s, finest)
+                    }
+                    _ => None,
+                };
+                if let (Some(found), Some(tac)) = (found, arms) {
+                    singular.push(Singular {
+                        u: tac.u,
+                        v: tac.v,
+                        p: tac.p,
+                        kind: SingularKind::Tacnode,
+                        arm: 1.25 * tac.radius,
+                        turn: 0.0,
+                    });
+                    let disc = Disc {
+                        u: tac.u,
+                        v: tac.v,
+                        lu: found.lu,
+                        lv: found.lv,
+                        radius: tac.radius,
+                    };
+                    settled = disc.covers(u, v, hu, hv);
+                    discs.push(disc);
+                    patience = FIRST_LOOK;
+                    self.tacnodes.push(tac);
+                } else if let (Some(found), Some(disc)) = (found, grazing) {
                     // (On a border of the chart that lies on the other
                     // surface the border is the meeting, already reported
                     // as a curve: that the surfaces are tangent along it,
@@ -975,7 +1029,7 @@ impl Marcher {
             let moved = step_u.hypot(step_v);
             if flat || moved <= self.on {
                 // Converged (or no better step exists).
-                return Some(Stationary {
+                let found = Stationary {
                     u,
                     v,
                     e,
@@ -984,7 +1038,16 @@ impl Marcher {
                     g: (gu, gv),
                     h: (ha, hb, hc),
                     flat,
-                });
+                };
+                // Where the Hessian is nearly singular and the gradient is
+                // not zero yet (near a contact of higher order along one
+                // direction), the critical point is looked for along the
+                // valley of the other direction.
+                let tangent = gu.hypot(gv) <= 1e-6_f64.max(4.0 * size * self.tol.linear);
+                if flat && !tangent {
+                    return Some(self.settle_flat(&found).unwrap_or(found));
+                }
+                return Some(found);
             }
             u += step_u / lu;
             v += step_v / lv;
@@ -993,6 +1056,29 @@ impl Marcher {
             }
         }
         None
+    }
+
+    /// The gradient and Hessian of `f` at `(u, v)`, as a stationary point.
+    fn stationary_at(&mut self, u: f64, v: f64) -> Option<Stationary> {
+        let e = self.eval(u, v)?;
+        let (a, b, c) = self.hessian(u, v)?;
+        let (lu, lv) = (e.su.length(), e.sv.length());
+        if !(lu > 0.0 && lv > 0.0) {
+            return None;
+        }
+        let (ha, hb, hc) = (a / (lu * lu), b / (lu * lv), c / (lv * lv));
+        let size = ha.abs().max(hb.abs()).max(hc.abs());
+        let flat = !((ha * hc - hb * hb).abs() > 1e-3 * size * size);
+        Some(Stationary {
+            u,
+            v,
+            e,
+            lu,
+            lv,
+            g: (e.gu / lu, e.gv / lv),
+            h: (ha, hb, hc),
+            flat,
+        })
     }
 
     /// True when the surfaces touch at the stationary point: nearer to
@@ -1341,7 +1427,7 @@ impl Marcher {
                 // just before the point, and a step that lands there would
                 // pass it by and go on along the next arm; where they are
                 // not, a step that lands on the point itself would.
-                let reach = if s.kind == SingularKind::Cross {
+                let reach = if matches!(s.kind, SingularKind::Cross | SingularKind::Tacnode) {
                     (2.0 * h).max(s.arm)
                 } else {
                     h
@@ -1375,6 +1461,8 @@ impl Marcher {
                 pts.push(end);
                 return Ok((pts, End::Open));
             }
+            // Near a tacnode the other arm is close: short steps.
+            h = self.tac_step(cur.p, h).max(hmin);
             let (pu, pv) = (cur.u + h * cur.du, cur.v + h * cur.dv);
             let Some((e, u, v)) = self.correct(pu, pv) else {
                 // Past the border of the chart there may be nothing to
@@ -1617,6 +1705,9 @@ impl Marcher {
 
     /// A point of the branch between `a` and `b`.
     fn between(&mut self, a: &Pt, b: &Pt) -> Option<Pt> {
+        if let Some(made) = self.tac_between(a, b) {
+            return made;
+        }
         let (e, u, v) = self.correct(0.5 * (a.u + b.u), 0.5 * (a.v + b.v))?;
         let chord = b.p - a.p;
         let along = (e.p - a.p).dot(chord);
@@ -1869,6 +1960,9 @@ impl Marcher {
                 }
             }
         }
+        for tac in &self.tacnodes {
+            seeds.extend(tac.seeds.iter().copied());
+        }
         let mut branches: Vec<Branch> = Vec::new();
         for seed in seeds {
             self.spent()?;
@@ -1886,7 +1980,7 @@ impl Marcher {
             // Close to a crossing point every arm has its own seed.
             let covered = |s: &Singular| {
                 let radius = match s.kind {
-                    SingularKind::Cross => 0.5 * s.arm,
+                    SingularKind::Cross | SingularKind::Tacnode => 0.5 * s.arm,
                     _ => 2.0 * merge,
                 };
                 e.p.distance(s.p) <= radius.max(2.0 * merge)
