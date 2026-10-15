@@ -361,6 +361,43 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                     distance: expr_to_manifest(distance),
                 }
             }
+            doc::FeatureKind::MoveFace(doc::MoveFace {
+                faces,
+                translate,
+                pivot,
+                axis,
+                angle,
+            }) => manifest::FeatureKind::MoveFace {
+                faces: faces.iter().map(name_to_manifest).collect(),
+                translate: exprs_to_manifest(translate),
+                pivot: exprs_to_manifest(pivot),
+                axis: exprs_to_manifest(axis),
+                angle: expr_to_manifest(angle),
+            },
+            doc::FeatureKind::Draft(doc::Draft {
+                faces,
+                neutral,
+                angle,
+                reversed,
+            }) => manifest::FeatureKind::Draft {
+                faces: faces.iter().map(name_to_manifest).collect(),
+                neutral: plane_ref_to_manifest(neutral),
+                angle: expr_to_manifest(angle),
+                reversed: *reversed,
+            },
+            doc::FeatureKind::Thicken(doc::Thicken {
+                faces,
+                thickness,
+                side,
+            }) => manifest::FeatureKind::Thicken {
+                faces: faces.iter().map(name_to_manifest).collect(),
+                thickness: expr_to_manifest(thickness),
+                side: match side {
+                    doc::ThickenSide::Outside => manifest::ThickenSide::Outside,
+                    doc::ThickenSide::Inside => manifest::ThickenSide::Inside,
+                    doc::ThickenSide::Both => manifest::ThickenSide::Both,
+                },
+            },
             doc::FeatureKind::DeleteFace(doc::DeleteFace { faces }) => {
                 manifest::FeatureKind::DeleteFace {
                     faces: faces.iter().map(name_to_manifest).collect(),
@@ -1301,6 +1338,43 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
                     distance: doc::Expr(distance),
                 })
             }
+            manifest::FeatureKind::MoveFace {
+                faces,
+                translate,
+                pivot,
+                axis,
+                angle,
+            } => doc::FeatureKind::MoveFace(doc::MoveFace {
+                faces: faces.into_iter().map(name_to_doc).collect(),
+                translate: exprs_to_doc(translate),
+                pivot: exprs_to_doc(pivot),
+                axis: exprs_to_doc(axis),
+                angle: doc::Expr(angle),
+            }),
+            manifest::FeatureKind::Draft {
+                faces,
+                neutral,
+                angle,
+                reversed,
+            } => doc::FeatureKind::Draft(doc::Draft {
+                faces: faces.into_iter().map(name_to_doc).collect(),
+                neutral: plane_ref_to_doc(neutral),
+                angle: doc::Expr(angle),
+                reversed,
+            }),
+            manifest::FeatureKind::Thicken {
+                faces,
+                thickness,
+                side,
+            } => doc::FeatureKind::Thicken(doc::Thicken {
+                faces: faces.into_iter().map(name_to_doc).collect(),
+                thickness: doc::Expr(thickness),
+                side: match side {
+                    manifest::ThickenSide::Outside => doc::ThickenSide::Outside,
+                    manifest::ThickenSide::Inside => doc::ThickenSide::Inside,
+                    manifest::ThickenSide::Both => doc::ThickenSide::Both,
+                },
+            }),
             manifest::FeatureKind::DeleteFace { faces } => {
                 doc::FeatureKind::DeleteFace(doc::DeleteFace {
                     faces: faces.into_iter().map(name_to_doc).collect(),

@@ -342,6 +342,37 @@ pub enum FeatureKind {
     /// following. The body is that of the feature the first name starts
     /// with.
     OffsetFace { faces: Vec<Name>, distance: String },
+    /// Faces of the body of an earlier feature moved together by one
+    /// rigid motion: turned by `angle` about the line through `pivot`
+    /// along `axis`, then shifted by `translate`; the faces next to them
+    /// follow. The body is that of the feature the first name starts
+    /// with. Format version 16.
+    MoveFace {
+        faces: Vec<Name>,
+        translate: [String; 3],
+        pivot: [String; 3],
+        axis: [String; 3],
+        angle: String,
+    },
+    /// A solid of its own: faces of the body of an earlier feature given
+    /// `thickness`, to `side` of them (`outside`, `inside` or `both`;
+    /// written always). Format version 16.
+    Thicken {
+        faces: Vec<Name>,
+        thickness: String,
+        side: ThickenSide,
+    },
+    /// Faces of the body of an earlier feature tilted by `angle` about
+    /// the plane `neutral`, the pull along its normal (into the body for
+    /// a face), the other way when `reversed` (written only when set).
+    /// Format version 16.
+    Draft {
+        faces: Vec<Name>,
+        neutral: PlaneRef,
+        angle: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        reversed: bool,
+    },
     /// Faces of the body of an earlier feature taken out, the body closed
     /// again by the faces round them. The body is that of the feature
     /// the first name starts with.
@@ -376,6 +407,15 @@ pub enum FeatureKind {
         #[serde(default)]
         open: Vec<Name>,
     },
+}
+
+/// Where the layer of a `thicken` lies against its faces.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThickenSide {
+    Outside,
+    Inside,
+    Both,
 }
 
 /// The size of a thread: a designation of ISO 261 (`"M10"`), or the

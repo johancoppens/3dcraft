@@ -609,7 +609,14 @@ pub(crate) fn resolve_face(
                 .reversed_at(frame.origin())
                 .ok_or_else(|| format!("plane: the face {name} has a degenerate plane"))?;
         }
-        if let Some((on, outward, hollow)) = moved {
+        if let Some((on, outward, hollow, turns)) = moved {
+            if *turns {
+                // Turned the shortest way onto the face's new normal:
+                // about the line the old and the new plane share, which
+                // is the face's own turn for every turn that tilts it.
+                frame = turned_onto(&frame, *outward)
+                    .ok_or_else(|| format!("plane: the face {name} has a degenerate plane"))?;
+            }
             // The origin dropped straight onto the plane the face lies in
             // now; the axes stay what they were. The face of a hollow
             // looks into it: its z is the face's own normal and its x
@@ -628,11 +635,35 @@ pub(crate) fn resolve_face(
     Ok(frame)
 }
 
+/// `frame` turned the shortest way so that its z is `normal` (a unit
+/// vector): its x and y turn with it about the line square to both.
+/// The frame itself when z is `normal` already.
+fn turned_onto(frame: &Frame, normal: Vec3) -> Option<Frame> {
+    let z = frame.z();
+    let across = z.cross(normal);
+    let sine = across.length();
+    let cosine = z.dot(normal);
+    if sine <= 1e-15 && cosine > 0.0 {
+        return Some(*frame);
+    }
+    let turn = match across.normalized() {
+        Some(axis) => craft3d_math::Transform::rotation(axis, sine.atan2(cosine))?,
+        // Turned right round: about x.
+        None => craft3d_math::Transform::rotation(frame.x(), std::f64::consts::PI)?,
+    };
+    Frame::new(frame.origin(), normal, turn.vector(frame.x()))
+}
+
 /// What one step of the way of a copy does to a face's frame: the map of
 /// its instance, where a face operation moved the face (the point on its
-/// plane, its outward normal, and whether it is the face of a hollow),
-/// and whether a subtraction turned it inside out.
-type Carried = (craft3d_math::Transform, Option<(Vec3, Vec3, bool)>, bool);
+/// plane, its outward normal, whether it is the face of a hollow, and
+/// whether the face may have turned), and whether a subtraction turned it
+/// inside out.
+type Carried = (
+    craft3d_math::Transform,
+    Option<(Vec3, Vec3, bool, bool)>,
+    bool,
+);
 
 /// One step of the way of a copy (see [`resolve_face`]): `link` is what
 /// the face is called in the body of `feature`, where it is in instance
@@ -673,7 +704,11 @@ fn walk_copy(
     // A face operation moves faces one by one, which no map of the
     // whole body says: the face is found where it lies now.
     let moved = match source.kind {
-        FeatureKind::OffsetFace(_) | FeatureKind::Shell(_) => {
+        FeatureKind::OffsetFace(_)
+        | FeatureKind::MoveFace(_)
+        | FeatureKind::Draft(_)
+        | FeatureKind::Thicken(_)
+        | FeatureKind::Shell(_) => {
             let index = names.and_then(|names| {
                 (0..names.faces.len())
                     .find(|&face| names.names_of(face).any(|own| same_plane(own, link)))
@@ -689,8 +724,17 @@ fn walk_copy(
                     // The faces of a shell's hollow (instance 1)
                     // look the other way than the faces they lie
                     // behind.
-                    let hollow = matches!(source.kind, FeatureKind::Shell(_)) && instance == 1;
-                    Some((plane.frame().origin(), outward, hollow))
+                    // So do the faces a layer has from under the faces
+                    // it thickens.
+                    let hollow =
+                        matches!(source.kind, FeatureKind::Shell(_) | FeatureKind::Thicken(_))
+                            && instance == 1;
+                    // A moved or drafted face may also have turned.
+                    let turns = matches!(
+                        source.kind,
+                        FeatureKind::MoveFace(_) | FeatureKind::Draft(_)
+                    );
+                    Some((plane.frame().origin(), outward, hollow, turns))
                 }
                 Some((surface, _)) => {
                     return Err(format!(

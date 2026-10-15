@@ -5,7 +5,10 @@
 //! at one end, a rounded tray with a bored boss on the floor of its
 //! hollow); and faces deleted (a fillet and a chamfer on a block's edge,
 //! the round of a rod's rim, a hole through a block, the round at the
-//! foot of a boss); at the scales 1e-3, 1 and 1e6.
+//! foot of a boss); at the scales 1e-3, 1 and 1e6. A second set (2026-10-15):
+//! faces moved (a wedge, a boss moved with its top), thickened (an angle
+//! on two faces of a block, a sleeve on both sides of a hole's wall) and
+//! drafted (a frustum, a rounded box into a rounded frustum).
 //!
 //! Per body: ours against a closed form written out here, and FreeCAD's
 //! reading of the STEP file against ours (valid, the solids, our volume,
@@ -434,6 +437,156 @@ fn freecad_reads_bodies_of_the_face_operations() {
     let rows = harness::check(
         "step-face-ops-files",
         "STEP: bodies of the face operations, read by FreeCAD",
+        &set.cases,
+    );
+    for row in rows.iter().filter(|r| !r.problems.is_empty()) {
+        bad.push(format!("{}: {}", row.file, row.problems.join("; ")));
+    }
+    assert!(bad.is_empty(), "{bad:#?}");
+}
+
+// ------------------------------------------- move face, thicken, draft
+
+fn wedge(s: &mut Session, k: f64) -> Forms {
+    base(s, k)?;
+    step(
+        s,
+        "feature.moveFace",
+        json!({"faces": ["F1:face(1)"], "angle": "20 deg", "axis": [0, 1, 0],
+               "pivot": [0.0, 0.0, 5.0 * k], "name": "Wedge"}),
+    )?;
+    let low = 5.0 - 10.0 * 20.0_f64.to_radians().tan();
+    Ok(vec![("Wedge", 10.0 * 10.0 * (5.0 + low) / 2.0)])
+}
+
+fn boss_moved(s: &mut Session, k: f64) -> Forms {
+    let stud = json!({"kind": "cylinder", "params": {"name": "Tool",
+        "position": [5.0 * k, 5.0 * k, 5.0 * k], "radius": 2.0 * k, "height": 3.0 * k}});
+    with(s, k, stud, "union")?;
+    step(
+        s,
+        "feature.moveFace",
+        json!({"faces": ["F3:copy(1)/F2:face(0)", "F3:copy(1)/F2:face(2)"],
+               "translate": [-2.0 * k, 1.5 * k, k], "name": "Moved"}),
+    )?;
+    Ok(vec![("Moved", 500.0 + PI * 4.0 * 4.0)])
+}
+
+fn plate(s: &mut Session, k: f64) -> Forms {
+    base(s, k)?;
+    step(
+        s,
+        "feature.thicken",
+        json!({"faces": ["F1:face(1)", "F1:face(5)"], "thickness": 1.5 * k,
+               "name": "Angle"}),
+    )?;
+    Ok(vec![("Angle", 11.5 * 10.0 * 6.5 - 500.0), ("Base", 500.0)])
+}
+
+fn sleeve(s: &mut Session, k: f64) -> Forms {
+    let drill = json!({"kind": "cylinder", "params": {"name": "Tool",
+        "position": [5.0 * k, 5.0 * k, -k], "radius": 2.0 * k, "height": 7.0 * k}});
+    with(s, k, drill, "subtract")?;
+    step(
+        s,
+        "feature.thicken",
+        json!({"faces": ["F3:copy(1)/F2:face(0)"], "thickness": 0.75 * k, "side": "both",
+               "name": "Sleeve"}),
+    )?;
+    let (inner, outer) = (1.625_f64, 2.375_f64);
+    Ok(vec![("Sleeve", PI * (outer * outer - inner * inner) * 5.0)])
+}
+
+fn frustum_drafted(s: &mut Session, k: f64) -> Forms {
+    base(s, k)?;
+    step(
+        s,
+        "feature.draft",
+        json!({"faces": ["F1:face(2)", "F1:face(3)", "F1:face(4)", "F1:face(5)"],
+               "neutral": "F1:face(0)", "angle": "8 deg", "name": "Tapered"}),
+    )?;
+    let b = 10.0 - 10.0 * 8.0_f64.to_radians().tan();
+    Ok(vec![("Tapered", 5.0 / 3.0 * (100.0 + 10.0 * b + b * b))])
+}
+
+fn rounded_drafted(s: &mut Session, k: f64) -> Forms {
+    let (a, b, h, r) = (10.0, 10.0, 5.0, 1.5);
+    base(s, k)?;
+    step(
+        s,
+        "feature.fillet",
+        json!({"edges": [["F1:face(2)", "F1:face(4)"], ["F1:face(2)", "F1:face(5)"],
+                         ["F1:face(3)", "F1:face(4)"], ["F1:face(3)", "F1:face(5)"]],
+               "radius": r * k, "name": "Round"}),
+    )?;
+    let mut walls: Vec<String> = (2..6).map(|i| format!("F2:copy(0)/F1:face({i})")).collect();
+    walls.extend((0..4).map(|i| format!("F2:fillet({i})")));
+    step(
+        s,
+        "feature.draft",
+        json!({"faces": walls, "neutral": "xy", "angle": "6 deg", "name": "Moulded"}),
+    )?;
+    let t = 6.0_f64.to_radians().tan();
+    let volume = a * b * h - (a + b) * t * h * h + 4.0 / 3.0 * t * t * h * h * h
+        - (4.0 - PI) * (r * r * h - r * t * h * h + t * t * h * h * h / 3.0);
+    Ok(vec![("Moulded", volume)])
+}
+
+#[test]
+#[ignore = "needs FreeCAD: set CRAFT3D_FREECAD"]
+fn freecad_reads_bodies_moved_thickened_and_drafted() {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("step-face-ops-more");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut set = Set {
+        dir,
+        cases: Vec::new(),
+        refused: Vec::new(),
+        unmeasured: Vec::new(),
+        per_body: true,
+        meshes: None,
+    };
+    type Build = fn(&mut Session, f64) -> Forms;
+    let cases: [(&str, Expect, Build); 6] = [
+        ("move-wedge", EXACT, wedge),
+        ("move-boss", RING, boss_moved),
+        ("thicken-angle", EXACT, plate),
+        ("thicken-sleeve", RING, sleeve),
+        ("draft-frustum", EXACT, frustum_drafted),
+        ("draft-rounded", RING, rounded_drafted),
+    ];
+    let mut bad = Vec::new();
+    for (k, tag) in [(1e-3, "milli"), (1.0, "one"), (1e6, "mega")] {
+        for (name, expect, build) in &cases {
+            let file = format!("{tag}-{name}");
+            let mut forms = Vec::new();
+            let before = set.cases.len();
+            set.add(&file, "mm", k, *expect, |s, k| {
+                forms = build(s, k)?;
+                Ok(())
+            });
+            if set.cases.len() == before {
+                continue;
+            }
+            let case = &set.cases[before];
+            for (body, volume) in forms {
+                let Some(part) = case.parts.iter().find(|p| p.name == body) else {
+                    bad.push(format!("{file}: no body {body}"));
+                    continue;
+                };
+                let off = part.volume / (volume * k.powi(3)) - 1.0;
+                if !(off.abs() <= 1e-9) {
+                    bad.push(format!("{file}: {body} is {off:+e} off its closed form"));
+                }
+            }
+        }
+    }
+    assert!(set.refused.is_empty(), "refused: {:#?}", set.refused);
+    assert!(set.unmeasured.is_empty(), "{:#?}", set.unmeasured);
+    assert_eq!(set.cases.len(), 18);
+    let rows = harness::check(
+        "step-face-ops-more-files",
+        "STEP: bodies moved, thickened and drafted, read by FreeCAD",
         &set.cases,
     );
     for row in rows.iter().filter(|r| !r.problems.is_empty()) {
