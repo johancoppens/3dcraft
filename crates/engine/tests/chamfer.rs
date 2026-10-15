@@ -711,7 +711,9 @@ fn a_distance_too_large_names_the_edge_the_face_and_what_fits() {
             reason.starts_with("size.second: too large for edges.0"),
             "{reason}"
         );
-        // Two chamfers that would meet in the middle of the top.
+        // Two chamfers that would meet in the middle of the top: of one
+        // size they fit up to half its depth each (until 2026-10-15 the
+        // hint held the other at 1.6 and said 1.4).
         let reason = failed(
             &mut s,
             "feature.edit",
@@ -721,7 +723,7 @@ fn a_distance_too_large_names_the_edge_the_face_and_what_fits() {
         assert!(reason.contains("too large for edges."), "{reason}");
         assert!(reason.contains("the face F1:face(1)"), "{reason}");
         assert!(
-            reason.contains(&format!("below {} mm", 1.4 * k)),
+            reason.contains(&format!("below {} mm", 1.5 * k)),
             "{reason}"
         );
         // A size that fits repairs it.

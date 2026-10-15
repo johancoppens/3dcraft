@@ -23,7 +23,7 @@ use craft3d_kernel::extrude::extrude;
 use craft3d_kernel::fillet::{FilletEdge, FilletFace, FilletResult, fillet, tangent_chain};
 use craft3d_kernel::primitives;
 use craft3d_kernel::profile::detect_profiles;
-use craft3d_math::{Frame, Vec3};
+use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{Body, EdgeId, FaceId, check, genus};
 use std::f64::consts::PI;
 
@@ -1168,13 +1168,27 @@ fn a_radius_too_large_names_the_edge_the_face_and_what_fits() {
             round(&block, k, [0.0, 0.0, 1.0], 2.1),
             round(&block, k, [4.0, 0.0, 1.0], 2.1),
         ];
+        // Of one radius they fit up to half the face's width each (until
+        // 2026-10-15 the hint held the other at 2.1 and said 1.9).
         match fillet(&block, &pair, &tolerance(k)) {
             Err(KernelError::FilletTooLarge { face, largest, .. }) => {
                 assert!(normal_at(&block, face, Vec3::ZERO).dot(-Vec3::Y) > 0.999);
-                assert_close(largest, 1.9 * k, "largest");
+                assert_close(largest, 2.0 * k, "largest");
             }
             other => panic!("expected too large, got {other:?}"),
         }
+        // Just below it both build: two corners of (1 - pi / 4) r^2 by 2.
+        let r = 1.99;
+        let pair = [
+            round(&block, k, [0.0, 0.0, 1.0], r),
+            round(&block, k, [4.0, 0.0, 1.0], r),
+        ];
+        let made = solve(&block, &pair, k);
+        assert_close(
+            mass(&made.body).volume,
+            (24.0 - 2.0 * (1.0 - PI / 4.0) * r * r * 2.0) * k * k * k,
+            "volume just below half the face",
+        );
         // Where the faces are not square the radius and the distance
         // along the face differ: at sixty degrees a side of 2 sqrt(3)
         // takes a radius of 2 (the inscribed circle is of radius 1, and
@@ -1747,10 +1761,12 @@ fn a_ball_corner_where_the_outline_turns_by_less_than_a_right_angle() {
 /// touches exactly the line where the wall goes over into the round of a
 /// rail below it. The root of the rib, rounded as one chain, would have
 /// to run onto that round; and the wall pinches to nothing between the
-/// rib's foot and the round where they touch. The boolean refused it
-/// ("an imprinted curve that does not fit"); it is refused before
-/// anything is built, as too large, with nothing that fits there. Moved
-/// clear by more than the radius, the same chain is built.
+/// rib's foot and the round where they touch. The boolean refuses the
+/// tool ("an imprinted curve that does not fit"), and a quarter of the
+/// radius fails the same way: it is refused with the boolean's reason,
+/// saying that smaller radii fail too (until 2026-10-15 it was called too
+/// large with nothing that fits, which nothing in the result showed).
+/// Moved clear by more than the radius, the same chain is built.
 #[test]
 fn a_rib_that_touches_the_round_below_it() {
     let r = 0.3;
@@ -1823,12 +1839,28 @@ fn a_rib_that_touches_the_round_below_it() {
                             + SPANDREL * r * r * (2.0 * long + 2.0 * PI * (0.5 + inset));
                         assert_close(mass(&made.body).volume, volume * k * k * k, "volume");
                     }
-                    Err(KernelError::FilletTooLarge { largest, .. }) if !builds => {
-                        assert!(largest <= 0.0, "{largest}");
+                    Err(KernelError::FilletBoolean {
+                        edge,
+                        smaller_fails,
+                        ..
+                    }) if !builds => {
+                        assert!(edges.iter().any(|e| e.edge == edge), "{edge:?}");
+                        assert!(smaller_fails, "lift {lift} at scale {k}");
                     }
                     other => panic!("lift {lift} at scale {k}: {other:?}"),
                 }
             }
         }
     }
+}
+
+/// A document tolerance as fine as a float allows (1e-300): a radius too
+/// large for a block is refused, and the search for what fits ends (its
+/// bisection once went on for ever when the middle rounded to an end).
+#[test]
+fn a_radius_too_large_at_the_finest_tolerance_is_refused() {
+    let block = boxed(1.0, [0.0, 0.0, 0.0], [4.0, 3.0, 2.0]);
+    let tol = Tolerance::new(1e-300, 1e-9).unwrap();
+    let request = round(&block, 1.0, [0.0, 0.0, 1.0], 3.5);
+    assert!(fillet(&block, &[request], &tol).is_err());
 }

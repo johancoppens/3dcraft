@@ -80,17 +80,54 @@ fn sized(error: &BlendError) -> bool {
     }
 }
 
-/// Whether a failure at the smallest size there is says that the faces
-/// leave no room at all (rather than that the blend is of a kind that is
-/// not built there).
+/// Whether a failure carries evidence from the result that the faces
+/// leave no room for the blend: [`super::finish`] found it reaching a
+/// face it should not, taking a neighbour away or in pieces. A boolean or
+/// a sweep that refuses a tool says nothing about room, and may refuse
+/// the same at every size (work owed, not a size).
 fn no_room(error: &BlendError) -> bool {
-    match error {
-        BlendError::Refused { reason, .. } => matches!(
-            reason,
-            Reason::Reaches | Reason::LostNeighbour | Reason::InPieces
-        ),
-        other => sized(other),
+    matches!(
+        error,
+        BlendError::Refused {
+            reason: Reason::Reaches | Reason::LostNeighbour | Reason::InPieces,
+            ..
+        }
+    )
+}
+
+/// Whether two failures are the same failure: the same refusal, or both
+/// the boolean's, or both the same kind of kernel error.
+fn same_way(a: &BlendError, b: &BlendError) -> bool {
+    match (a, b) {
+        (BlendError::Refused { reason: x, .. }, BlendError::Refused { reason: y, .. }) => x == y,
+        (BlendError::Boolean { .. }, BlendError::Boolean { .. }) => true,
+        (BlendError::Kernel(x), BlendError::Kernel(y)) => {
+            std::mem::discriminant(x) == std::mem::discriminant(y)
+        }
+        _ => false,
     }
+}
+
+/// `error`, said to fail the same way at smaller sizes too (where it can
+/// say so: a boolean's refusal).
+fn smaller_too(error: BlendError) -> BlendError {
+    match error {
+        BlendError::Boolean { edge, error, .. } => BlendError::Boolean {
+            edge,
+            error,
+            smaller_fails: true,
+        },
+        other => other,
+    }
+}
+
+/// What one build at a size gave.
+#[derive(Clone, Debug)]
+enum Outcome {
+    Built,
+    Failed(BlendError),
+    /// Not built: the search had made all the builds it may.
+    Spent,
 }
 
 /// `size` times `scale`.
@@ -112,38 +149,20 @@ fn scaled(size: Size, scale: f64) -> Size {
     }
 }
 
-/// The requests that change size with request `index`: those of the same
-/// size that share a vertex with it, through any number of others (a
-/// chain, the edges round a corner, which have to stay one size).
-fn group(body: &Body, requests: &[Request], index: usize) -> BTreeSet<usize> {
+/// The requests that change size with request `index`: all those of
+/// its size. A feature has one size for all its edges, and the largest
+/// that fits is the size at which they all build together (two fillets
+/// that would meet in the middle of a face fit up to half its width each).
+fn group(requests: &[Request], index: usize) -> BTreeSet<usize> {
     let Some(own) = requests.get(index) else {
         return BTreeSet::new();
     };
-    let ends = |request: &Request| -> Vec<VertexId> {
-        body.edge(request.edge)
-            .map(|e| vec![e.start, e.end])
-            .unwrap_or_default()
-    };
-    let mut members = BTreeSet::from([index]);
-    let mut touched: BTreeSet<VertexId> = ends(own).into_iter().collect();
-    for _ in 0..requests.len() {
-        let mut grew = false;
-        for (i, request) in requests.iter().enumerate() {
-            if members.contains(&i) || request.size != own.size {
-                continue;
-            }
-            let at = ends(request);
-            if at.iter().any(|v| touched.contains(v)) {
-                members.insert(i);
-                touched.extend(at);
-                grew = true;
-            }
-        }
-        if !grew {
-            break;
-        }
-    }
-    members
+    requests
+        .iter()
+        .enumerate()
+        .filter(|(_, request)| request.size == own.size)
+        .map(|(i, _)| i)
+        .collect()
 }
 
 /// One search: the body, the requests, and the builds made so far.
@@ -155,23 +174,21 @@ struct Search<'a> {
     group: &'a BTreeSet<usize>,
     tolerance: &'a Tolerance,
     builds: usize,
-    seen: BTreeMap<u64, Option<BlendError>>,
+    seen: BTreeMap<u64, Outcome>,
+    /// Whether a size was asked for after the bound of builds.
+    spent: bool,
 }
 
 impl Search<'_> {
-    /// Builds the blend with the group's sizes times `scale`: `None` when
-    /// it builds, the error otherwise. A search past its bound of builds
-    /// fails every further size.
-    fn attempt(&mut self, scale: f64) -> Option<BlendError> {
+    /// Builds the blend with the group's sizes times `scale`. Past its
+    /// bound of builds a search builds nothing more.
+    fn attempt(&mut self, scale: f64) -> Outcome {
         if let Some(known) = self.seen.get(&scale.to_bits()) {
             return known.clone();
         }
         if self.builds >= MOST_BUILDS {
-            return Some(BlendError::Refused {
-                edge: None,
-                face: None,
-                reason: Reason::InPieces,
-            });
+            self.spent = true;
+            return Outcome::Spent;
         }
         self.builds += 1;
         let tol = self.tolerance.linear;
@@ -194,18 +211,19 @@ impl Search<'_> {
                 }
             }
         }
-        let outcome = match failed {
+        let failed = match failed {
             Some(error) => Some(error),
             None => build(self.body, self.uses, self.at, plans, self.tolerance)
                 .err()
                 .map(|f| f.error),
         };
+        let outcome = failed.map_or(Outcome::Built, Outcome::Failed);
         self.seen.insert(scale.to_bits(), outcome.clone());
         outcome
     }
 
     fn fits(&mut self, scale: f64) -> bool {
-        self.attempt(scale).is_none()
+        matches!(self.attempt(scale), Outcome::Built)
     }
 }
 
@@ -364,7 +382,7 @@ fn events(body: &Body, plans: &[Plan], group: &BTreeSet<usize>, tol: f64) -> Vec
                         continue;
                     };
                     if group.contains(&other) {
-                        push(reach * distance / (distance + taken));
+                        push(reach * (distance / (distance + taken)));
                     } else {
                         push(reach - taken);
                     }
@@ -441,7 +459,7 @@ pub(super) fn explain(
     }
     .unwrap_or(0);
     let tol = tolerance.linear;
-    let group = group(body, requests, index);
+    let group = group(requests, index);
     // The smallest size the booleans still tell apart, as a multiple.
     let smallest = group
         .iter()
@@ -463,19 +481,41 @@ pub(super) fn explain(
         tolerance,
         builds: 0,
         seen: BTreeMap::new(),
+        spent: false,
     };
-    // A refusal of the kind of blend (one that does not end cleanly) that
-    // a quarter of the size does not mend is not about the size.
-    if !no_room(&error)
-        && search
-            .attempt(QUARTER)
-            .is_some_and(|smaller| !no_room(&smaller))
-    {
-        return error;
+    // A quarter of the size at a time until something builds: what is
+    // known to build and to fail, as multiples.
+    let (mut fits, mut fails) = (QUARTER, 1.0_f64);
+    let mut all_room = no_room(&error);
+    let mut all_same = true;
+    loop {
+        if fits < floor {
+            // Not even the smallest builds. Nothing fits where every
+            // failure says the faces leave no room; any other failure is
+            // reported as it is, saying that smaller sizes fail the same
+            // way when they do.
+            return if all_room {
+                too_large(own, named, 0.0)
+            } else if all_same {
+                smaller_too(error)
+            } else {
+                error
+            };
+        }
+        match search.attempt(fits) {
+            Outcome::Built => break,
+            Outcome::Failed(failure) => {
+                all_room &= no_room(&failure);
+                all_same &= same_way(&error, &failure);
+            }
+            Outcome::Spent => return error,
+        }
+        fails = fits;
+        fits *= QUARTER;
     }
     let events: Vec<Event> = events(body, plans, &group, tol)
         .into_iter()
-        .filter(|e| e.scale > floor + PAST * e.unit && e.scale < 1.0 + PAST * e.unit)
+        .filter(|e| e.scale > fits + PAST * e.unit && e.scale < fails + PAST * e.unit)
         .collect();
     // The first event just past which nothing builds.
     let (mut lo, mut hi) = (0, events.len());
@@ -485,70 +525,103 @@ pub(super) fn explain(
             break;
         };
         let past = event.scale + PAST * event.unit;
-        if past < 1.0 && search.fits(past) {
+        if past < fails && search.fits(past) {
             lo = middle + 1;
         } else {
             hi = middle;
         }
     }
-    // What is known to build and to fail, as multiples; nothing is known
-    // to build yet when no event before it did.
-    let mut known = (None, 1.0_f64);
+    if search.spent {
+        return error;
+    }
     if let Some(event) = lo.checked_sub(1).and_then(|i| events.get(i)) {
-        known.0 = Some(event.scale + PAST * event.unit);
+        fits = fits.max(event.scale + PAST * event.unit);
     }
     if let Some(event) = events.get(lo) {
         // Just before it something builds: the event is where the blend
-        // stops fitting. How near before depends on how well the
-        // booleans tell the border from what it reaches.
+        // stops fitting, to within the probes (it builds a few tolerances
+        // before it and fails a few past it). How near before depends on
+        // how well the booleans tell the border from what it reaches.
         for before in BEFORE {
             let at = event.scale - before * event.unit;
-            if at <= known.0.unwrap_or(floor) {
+            if at <= fits {
                 break;
             }
-            if search.fits(at) {
-                let plan = plans.get(event.plan).unwrap_or(own);
-                return too_large(plan, event.side, event.size);
+            match search.attempt(at) {
+                Outcome::Built => {
+                    let plan = plans.get(event.plan).unwrap_or(own);
+                    return too_large(plan, event.side, event.size);
+                }
+                Outcome::Failed(_) => fails = fails.min(at),
+                Outcome::Spent => return error,
             }
-            known.1 = known.1.min(at);
         }
     }
-    let fits = match known.0 {
-        Some(fits) => fits,
-        None => {
-            // A quarter at a time until something builds.
-            let mut at = QUARTER * known.1;
-            loop {
-                if at < floor {
-                    // Not even the smallest builds: the faces leave no
-                    // room, or the blend is not built there at any size.
-                    let least = search.attempt(known.1);
-                    return if no_room(&error) && least.as_ref().is_none_or(no_room) {
-                        too_large(own, named, 0.0)
-                    } else {
-                        error
-                    };
-                }
-                if search.fits(at) {
-                    break at;
-                }
-                known.1 = at;
-                at *= QUARTER;
-            }
-        }
-    };
-    let known = (fits, known.1);
     // No event explains it: bisect on the builds alone.
-    let resolution = 4.0 * tol / smallest;
-    let (mut fits, mut fails) = known;
-    while fails - fits > resolution && search.builds < MOST_BUILDS {
-        let middle = 0.5 * (fits + fails);
-        if search.fits(middle) {
-            fits = middle;
-        } else {
-            fails = middle;
-        }
-    }
+    let fails = bisect(fits, fails, 4.0 * tol / smallest, |at| search.attempt(at));
     let size = own.distances.get(named).copied().unwrap_or(0.0) * per(own, named);
     too_large(own, named, fails * size)
+}
+
+/// Bisects between `fits` (built) and `fails` (failed) with `attempt`
+/// until the two are `resolution` apart, no number lies between them, or
+/// [`MOST_BUILDS`] steps are made; gives the least size seen to fail.
+fn bisect(
+    mut fits: f64,
+    mut fails: f64,
+    resolution: f64,
+    mut attempt: impl FnMut(f64) -> Outcome,
+) -> f64 {
+    for _ in 0..MOST_BUILDS {
+        let middle = 0.5 * (fits + fails);
+        if fails - fits <= resolution || middle <= fits || middle >= fails {
+            break;
+        }
+        match attempt(middle) {
+            Outcome::Built => fits = middle,
+            Outcome::Failed(_) => fails = middle,
+            Outcome::Spent => break,
+        }
+    }
+    fails
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A resolution below what a float can halve (a document tolerance
+    /// of 1e-300) ends the bisection when the middle rounds to an end,
+    /// and a size it has seen does not keep it going: it once looped for
+    /// ever there.
+    #[test]
+    fn a_bisection_finer_than_floats_ends() {
+        let limit = 0.3;
+        let mut calls = 0;
+        let fails = bisect(0.25, 0.5, 1e-300, |at| {
+            calls += 1;
+            if at <= limit {
+                Outcome::Built
+            } else {
+                Outcome::Failed(BlendError::Refused {
+                    edge: None,
+                    face: None,
+                    reason: Reason::Reaches,
+                })
+            }
+        });
+        assert!(calls <= MOST_BUILDS, "{calls}");
+        assert!(fails > limit && fails - limit < 1e-9, "{fails}");
+        // An attempt that answers from a cache without building does not
+        // stop it either: it is bounded by steps.
+        let next = f64::from_bits(0.25_f64.to_bits() + 1);
+        let fails = bisect(0.25, next, 0.0, |_| Outcome::Built);
+        assert_eq!(fails, next);
+        let mut steps = 0;
+        let fails = bisect(0.0, 1.0, 0.0, |_| {
+            steps += 1;
+            Outcome::Built
+        });
+        assert!(steps <= MOST_BUILDS && fails == 1.0, "{steps} {fails}");
+    }
 }

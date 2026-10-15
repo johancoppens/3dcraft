@@ -399,6 +399,8 @@ pub(crate) enum BlendError {
     Boolean {
         edge: EdgeId,
         error: Box<KernelError>,
+        /// Smaller sizes, tried, fail the same way.
+        smaller_fails: bool,
     },
 }
 
@@ -1783,6 +1785,7 @@ fn combine(
             other => BlendError::Boolean {
                 edge,
                 error: Box::new(other),
+                smaller_fails: false,
             },
         })?;
     state.take(result, marks, plan);
@@ -2067,6 +2070,7 @@ fn ball_tool(
     let refused_by = |error: KernelError| BlendError::Boolean {
         edge,
         error: Box::new(error),
+        smaller_fails: false,
     };
     let reach = 1.25 * vertex.distance(centre);
     if !(reach.is_finite() && reach > 0.0) {
