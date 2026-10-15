@@ -702,6 +702,74 @@ fn run_stops_at_the_first_failing_command_with_exit_code_1() {
     assert!(ran.stderr.contains("furlong"), "{}", ran.stderr);
 }
 
+/// With `--keep-going` a failing command does not throw away what the
+/// others built (showcase U1, 2026-10-16: a failing last command lost a
+/// ten-minute build): it is reported on its line, the rest run, `--out`
+/// saves the document, and the exit code still says something failed.
+#[test]
+fn run_keep_going_runs_past_a_failure_and_saves_what_was_built() {
+    let dir = workdir("keep-going");
+    let kept = path(&dir, "kept.3dcraft");
+    let ran = cli(&[
+        "run",
+        "--keep-going",
+        "--cmd",
+        "feature.block",
+        "--params",
+        r#"{"size": [1, 2, 3]}"#,
+        "--cmd",
+        "feature.blok",
+        "--cmd",
+        "feature.cylinder",
+        "--params",
+        r#"{"radius": 1, "height": 1, "position": [5, 0, 0]}"#,
+        "--cmd",
+        "feature.block",
+        "--params",
+        r#"{"size": [1, 2]}"#,
+        "--out",
+        &kept,
+    ])
+    .failed(1);
+    let lines = ran.json_lines();
+    assert_eq!(lines.len(), 4, "a line per command: {}", ran.stdout);
+    assert_eq!(lines[1]["failed"], "feature.blok", "{}", ran.stdout);
+    assert_eq!(lines[1]["step"], 1);
+    assert!(
+        lines[1]["error"]
+            .as_str()
+            .unwrap()
+            .contains("unknown command")
+    );
+    assert_eq!(lines[2]["status"], "ok", "{}", ran.stdout);
+    assert_eq!(lines[3]["failed"], "feature.block");
+    assert!(
+        ran.stderr
+            .starts_with("craft3d-cli: 2 of 4 commands failed, the first step 1 `feature.blok`")
+            && ran.stderr.contains(&kept),
+        "{}",
+        ran.stderr
+    );
+    // The two features that were built are in the file.
+    let info = cli(&["info", &kept]).ok();
+    let info: Value = serde_json::from_str(&info.stdout).unwrap();
+    assert_eq!(info["features"].as_array().unwrap().len(), 2, "{info}");
+
+    // Without a failure it is a run like any other.
+    cli(&[
+        "run",
+        "--keep-going",
+        "--cmd",
+        "feature.block",
+        "--params",
+        r#"{"size": [1, 2, 3]}"#,
+    ])
+    .ok();
+    // Given twice, or with a value, it is a usage error.
+    cli(&["run", "--keep-going", "--keep-going"]).failed(2);
+    cli(&["run", "--keep-going=yes"]).failed(2);
+}
+
 #[test]
 fn files_that_cannot_be_read_or_written_fail_with_exit_code_1() {
     let dir = workdir("files");

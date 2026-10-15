@@ -28,7 +28,10 @@ craft3d-cli info part.3dcraft                   # the whole state as JSON: featu
 craft3d-cli render part.3dcraft --out part.png --size 1000x700 --view iso
 craft3d-cli convert part.3dcraft part.3mf       # or .stl, .obj
 craft3d-cli run part.3dcraft --cmd variable.set --params '{"name":"width","expr":"80 mm"}' --out wider.3dcraft
+craft3d-cli run --new '{"units":"mm"}' --script long-build.json --out build.3dcraft --keep-going
 ```
+
+`run` stops at the first command that fails, saves nothing and exits with 1. A long script is better run with `--keep-going`: a failing command gets the line `{"failed": id, "step": n, "error": text}`, the next one runs (a command that fails leaves the document as it was), `--out` saves what was built, and the exit code is still 1, with the first failure on stderr. `render` (and `view.render`) meshes the model for the picture: between a quarter and half a pixel of the picture where it shows the model nearest, never finer than the floor (2e-4 of the diagonal of the box around the bodies), at most 12 degrees per chord, within a total budget of a million triangles; its JSON says the tolerance it used and whether it had to coarsen it.
 
 Drive it as a server (see [`control-protocol.md`](control-protocol.md)):
 

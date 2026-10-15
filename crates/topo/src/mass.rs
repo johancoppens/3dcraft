@@ -294,6 +294,11 @@ impl fmt::Display for MassError {
 
 impl std::error::Error for MassError {}
 
+/// How many sums there are, and how many of them are the area, the volume
+/// and the moments (the first of [`Sums::parts`]).
+const SUMS: usize = 11;
+const FIRST_SUMS: usize = 5;
+
 /// The integrands at once: area, volume, the three moments, and, when
 /// asked for ([`inertia`]), the six second moments: `∫x²`, `∫y²`, `∫z²`,
 /// `∫xy`, `∫yz`, `∫zx` over the volume (zero otherwise).
@@ -315,7 +320,7 @@ impl Sums {
         }
     }
 
-    fn parts(self) -> [f64; 11] {
+    fn parts(self) -> [f64; SUMS] {
         let [xx, yy, zz, xy, yz, zx] = self.second;
         [
             self.area,
@@ -480,6 +485,7 @@ const FREEFORM: u64 = 8;
 /// projections of boundary points at [`PROJECTION`] of them each, all
 /// [`FREEFORM`] times over on a freeform surface. A count, not a clock:
 /// the same face is given up at the same place on every machine.
+#[derive(Clone)]
 struct Work {
     spent: u64,
     /// What one evaluation on the face's surface counts for.
@@ -619,12 +625,25 @@ impl Total {
     /// Whether `finer`, the same sum with twice the panels, says the same,
     /// given the share `noise` of every term that is rounding.
     fn agrees_with(&self, finer: &Total, noise: f64) -> bool {
+        self.agrees_in(finer, noise, SUMS)
+    }
+
+    /// [`Self::agrees_with`] in the area, the volume and the moments only:
+    /// what it says of sums without the second moments, which are zero
+    /// there and agree.
+    fn first_agrees_with(&self, finer: &Total, noise: f64) -> bool {
+        self.agrees_in(finer, noise, FIRST_SUMS)
+    }
+
+    /// Whether the first `parts` of the sums agree.
+    fn agrees_in(&self, finer: &Total, noise: f64, parts: usize) -> bool {
         let size = finer.size.parts();
         self.sum
             .parts()
             .into_iter()
             .zip(finer.sum.parts())
             .zip(size)
+            .take(parts)
             // Not `>`: a NaN agrees with nothing.
             .all(|((a, b), size)| (a - b).abs() <= (CONVERGED + noise) * size)
     }
@@ -2329,17 +2348,31 @@ fn settle(
 
 /// `∬_D f du dv` over one face, with `D` oriented by the surface (not by
 /// the face's `reversed` flag).
+///
+/// With `sums` [`Wanted::Both`], the second moments too, and beside them
+/// the sums without them as [`Wanted::First`] gives them, bit for bit:
+/// the integrals of the area, the volume and the moments do not depend on
+/// whether the second moments are summed beside them, so the sums are
+/// those of [`Wanted::First`] after as many doublings, which are taken as
+/// they stand once those parts agree, and the work they took is the same
+/// (see [`integrals_in`]).
 fn face_integrals(
     body: &Body,
     face: &Face,
     index: usize,
     rule: &Rule,
     (size, middle): (f64, Vec3),
-    second: bool,
-) -> Result<Sums, MassError> {
+    sums: Wanted,
+) -> FaceSums {
+    let second = sums != Wanted::First;
     if face.loops.is_empty() || seams_only(body, face) {
         let mut work = Work::about(&face.surface, middle, second);
-        return whole_surface(&face.surface, index, rule, &mut work);
+        let all = whole_surface(&face.surface, index, rule, &mut work);
+        let first = (sums == Wanted::Both).then(|| {
+            let mut work = Work::about(&face.surface, middle, false);
+            whole_surface(&face.surface, index, rule, &mut work)
+        });
+        return FaceSums { first, all };
     }
     let own = match &face.surface {
         Surface::Sphere(sphere) => own_sphere(body, face, sphere),
@@ -2347,21 +2380,54 @@ fn face_integrals(
     };
     let surface = own.as_ref().unwrap_or(&face.surface);
     let mut work = Work::about(surface, middle, second);
-    integrals_in(body, face, surface, index, rule, size, &mut work)
+    let mut first = None;
+    let all = integrals_in(
+        (body, face, surface, index),
+        rule,
+        size,
+        &mut work,
+        (sums == Wanted::Both).then_some(&mut first),
+    );
+    // Without first-order sums that agreed, the sums without the second
+    // moments ended where these did, with the same error.
+    let first = (sums == Wanted::Both).then(|| first.unwrap_or_else(|| all.clone()));
+    FaceSums { first, all }
+}
+
+/// Which sums [`integrate`] makes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Wanted {
+    /// The area, the volume and the moments ([`mass_properties`]).
+    First,
+    /// Those and the second moments ([`inertia`]).
+    Second,
+    /// Both of the above at once ([`mass_and_inertia`]).
+    Both,
+}
+
+/// What [`face_integrals`] gives: the sums asked for, and with
+/// [`Wanted::Both`] the sums [`Wanted::First`] gives.
+struct FaceSums {
+    first: Option<Result<Sums, MassError>>,
+    all: Result<Sums, MassError>,
 }
 
 /// [`face_integrals`] of a face with loops, with `surface` standing in for
 /// the face's own: the same surface, parametrised to suit the face.
 /// `size` is how big the body is ([`body_size`]), `work` what the face
 /// has taken so far: past [`BUDGET`] it is given up.
+///
+/// With `first` (the second moments being summed), it is also given the
+/// sums as they would be without the second moments, once their area,
+/// volume and moments agree: settled with a copy of the work as it stands
+/// then and without the second moments, which is the work and the sums
+/// the face takes without them up to there.
 fn integrals_in(
-    body: &Body,
-    face: &Face,
-    surface: &Surface,
-    index: usize,
+    (body, face, surface, index): (&Body, &Face, &Surface, usize),
     rule: &Rule,
     size: f64,
     work: &mut Work,
+    mut first: Option<&mut Option<Result<Sums, MassError>>>,
 ) -> Result<Sums, MassError> {
     let outline = outline(body, face, surface, index, size)?;
     // Loops run counter-clockwise around the face seen from outside, which
@@ -2433,6 +2499,20 @@ fn integrals_in(
             break;
         };
         let noise = outline.noise(total.size.area);
+        if let Some(slot) = first.as_deref_mut()
+            && slot.is_none()
+            && (exact || coarser.is_some_and(|coarser| coarser.first_agrees_with(&total, noise)))
+        {
+            let mut alone = work.clone();
+            alone.second = false;
+            *slot = Some(settle(
+                surface,
+                index,
+                rule,
+                (total, plan.up_to_whole_surfaces()),
+                &mut alone,
+            ));
+        }
         if exact || coarser.is_some_and(|coarser| coarser.agrees_with(&total, noise)) {
             return settle(
                 surface,
@@ -2730,19 +2810,56 @@ fn each_face<T: Send>(count: usize, work: impl Fn(usize) -> T + Sync) -> Vec<T> 
 /// time is bounded). A face that is outside its own loops is
 /// [`MassError::UnboundedFace`].
 pub fn mass_properties(body: &Body) -> Result<MassProperties, MassError> {
-    let (total, middle) = integrate(body, false)?;
+    let (all, _, middle) = integrate(body, Wanted::First);
+    Ok(mass_from(body, all?, middle))
+}
+
+/// [`MassProperties`] from the sums of the faces.
+fn mass_from(body: &Body, total: Sums, middle: Vec3) -> MassProperties {
     let solid = body.kind == BodyKind::Solid;
-    Ok(MassProperties {
+    MassProperties {
         area: total.area,
         volume: if solid { total.volume } else { 0.0 },
         centroid: (solid && total.volume != 0.0)
             .then(|| middle + total.moment * (1.0 / total.volume)),
-    })
+    }
+}
+
+/// [`mass_properties`] and [`inertia`] of `body` at once, each the very
+/// value (or error) the function on its own gives, in about the time of
+/// [`inertia`] alone: the faces are integrated once, with the second
+/// moments, and the sums without them are taken where they settle (see
+/// [`face_integrals`]). Of a body that is not a solid only the first is
+/// measured.
+#[allow(clippy::type_complexity)]
+pub fn mass_and_inertia(
+    body: &Body,
+) -> (
+    Result<MassProperties, MassError>,
+    Result<Inertia, MassError>,
+) {
+    if body.kind != BodyKind::Solid {
+        return (mass_properties(body), Err(NOT_A_SOLID));
+    }
+    let (all, first, middle) = integrate(body, Wanted::Both);
+    let mass = first
+        .unwrap_or_else(|| all.clone())
+        .map(|total| mass_from(body, total, middle));
+    (mass, all.and_then(|total| inertia_from(total, middle)))
 }
 
 /// The sums over every face of `body`, outward, and the point the
-/// moments are taken about.
-fn integrate(body: &Body, second: bool) -> Result<(Sums, Vec3), MassError> {
+/// moments are taken about: those asked for, and with [`Wanted::Both`]
+/// beside them those of [`Wanted::First`].
+#[allow(clippy::type_complexity)]
+fn integrate(
+    body: &Body,
+    sums: Wanted,
+) -> (
+    Result<Sums, MassError>,
+    Option<Result<Sums, MassError>>,
+    Vec3,
+) {
     let rule = Rule::new(NODES);
     let (size, middle) = body_extent(body);
     // Every face's integrals on their own, on several threads where there
@@ -2750,13 +2867,34 @@ fn integrate(body: &Body, second: bool) -> Result<(Sums, Vec3), MassError> {
     // bits whatever the number of threads (AGENTS.md rule 5), and the
     // error is the first face's that has one, as one face after another
     // would give.
-    let per_face = each_face(body.faces.len(), |index| {
-        let face = body.faces.get(index).ok_or(MassError::Unsupported {
-            face: index,
-            what: "a face that is not in the body",
-        })?;
-        face_integrals(body, face, index, &rule, (size, middle), second)
+    let per_face = each_face(body.faces.len(), |index| match body.faces.get(index) {
+        Some(face) => face_integrals(body, face, index, &rule, (size, middle), sums),
+        None => {
+            let lost = MassError::Unsupported {
+                face: index,
+                what: "a face that is not in the body",
+            };
+            FaceSums {
+                first: (sums == Wanted::Both).then(|| Err(lost.clone())),
+                all: Err(lost),
+            }
+        }
     });
+    let mut all: Vec<Result<Sums, MassError>> = Vec::with_capacity(per_face.len());
+    let mut first: Vec<Result<Sums, MassError>> = Vec::new();
+    for face in per_face {
+        all.push(face.all);
+        if let Some(sums) = face.first {
+            first.push(sums);
+        }
+    }
+    let first = (sums == Wanted::Both).then(|| total_of(body, first));
+    (total_of(body, all), first, middle)
+}
+
+/// The sums of the faces of `body` (one per face, in order), outward: the
+/// first face's error if one has one.
+fn total_of(body: &Body, per_face: Vec<Result<Sums, MassError>>) -> Result<Sums, MassError> {
     let mut total = Sums::default();
     for (face, sums) in body.faces.iter().zip(per_face) {
         let sums = sums?;
@@ -2773,7 +2911,7 @@ fn integrate(body: &Body, second: bool) -> Result<(Sums, Vec3), MassError> {
             what: "geometry whose integrals are not finite",
         });
     }
-    Ok((total, middle))
+    Ok(total)
 }
 
 /// The volume, the centroid and the inertia tensor of a solid of density
@@ -2795,12 +2933,20 @@ pub struct Inertia {
 /// origin loses nothing to cancellation.
 pub fn inertia(body: &Body) -> Result<Inertia, MassError> {
     if body.kind != BodyKind::Solid {
-        return Err(MassError::Unsupported {
-            face: 0,
-            what: "a body that is not a solid, which has no inertia",
-        });
+        return Err(NOT_A_SOLID);
     }
-    let (total, middle) = integrate(body, true)?;
+    let (all, _, middle) = integrate(body, Wanted::Second);
+    inertia_from(all?, middle)
+}
+
+const NOT_A_SOLID: MassError = MassError::Unsupported {
+    face: 0,
+    what: "a body that is not a solid, which has no inertia",
+};
+
+/// [`Inertia`] from the sums of the faces of a solid, with the second
+/// moments.
+fn inertia_from(total: Sums, middle: Vec3) -> Result<Inertia, MassError> {
     let volume = total.volume;
     if volume == 0.0 {
         return Err(MassError::Unsupported {
@@ -2895,8 +3041,14 @@ mod tests {
         let rule = Rule::new(NODES);
         let face = body.faces.first().unwrap();
         let mut work = Work::new(surface);
-        integrals_in(body, face, surface, 0, &rule, body_size(body), &mut work)
-            .map(|sums| sums.area)
+        integrals_in(
+            (body, face, surface, 0),
+            &rule,
+            body_size(body),
+            &mut work,
+            None,
+        )
+        .map(|sums| sums.area)
     }
 
     /// The pole `G` runs from may be anywhere: in the face, outside it,
@@ -3067,7 +3219,13 @@ mod tests {
                 second: false,
                 wrap: [None, None],
             };
-            let sums = integrals_in(&body, face, &surface, 0, &rule, body_size(&body), &mut work);
+            let sums = integrals_in(
+                (&body, face, &surface, 0),
+                &rule,
+                body_size(&body),
+                &mut work,
+                None,
+            );
             (sums.map(|sums| sums.area), work.spent)
         };
         let (area, taken) = run(0);

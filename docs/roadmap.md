@@ -1,6 +1,6 @@
 # Roadmap
 
-> **Last updated:** 2026-10-15 · **Stage:** M7 (booleans) and M8.5 in progress, M9 started, M4 nearly done; M0–M3, M5, M6 and M8 done · **Change:** minor (M9: move face, thicken and draft; boolean checklist: poles at a corner of a patch, coincident freeform faces; fourth-order contact and rational weights far apart diagnosed)
+> **Last updated:** 2026-10-15 · **Stage:** M7 (booleans) and M8.5 in progress, M9 started, M4 nearly done; M0–M3, M5, M6 and M8 done · **Change:** minor (M9: move face, thicken and draft; boolean checklist: fourth-order contact built, rational weights a hundred apart built; poles at a corner of a patch, coincident freeform faces)
 
 Forward-looking plan: the **Current focus** agents pick from, one line per milestone, and per milestone what it is for, what is done, what is open and what "done" means. There is no parity percentage: 3DCraft is AI-first with a minimal UI and has no target app ([`decisions.md`](decisions.md)). Progress is measured by milestones whose acceptance tests pass. How something was built (algorithms, thresholds, measurements, file paths of internals) is in [`architecture.md`](architecture.md), and how it is tested in [`testing.md`](testing.md).
 
@@ -10,7 +10,7 @@ Status legend: ✅ done · 🟡 in progress · ⬜ not started. Put the date nex
 
 ## Current focus
 
-1. **The boolean kernel (M7), the developer's first priority** (2026-10-13): a refusal is work owed. Next: the rest of the [boolean checklist](#the-boolean-checklist) in its order (a cusp, fourth-order contact, rational weights far apart).
+1. **The boolean kernel (M7), the developer's first priority** (2026-10-13): a refusal is work owed. Next: the rest of the [boolean checklist](#the-boolean-checklist) in its order (the measure of a face with rational weights far apart, a cusp against a face along its axis).
 2. **M9, the rest:** replace face, and what the blends and the face operations leave open, beside M7 since none of it touches the boolean kernel ([M9](#m9-local-operations-and-sweeps)).
 3. **R1, the first release:** the pinned set of modelling tasks, installers, the format promise, material and colour per body, a user guide ([R1](#r1-first-release)).
 
@@ -56,15 +56,14 @@ The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item i
 7. 🟡 **Speed on bodies with thousands of faces** (a spatial index). Since 2026-10-16 a face's outline (and the index of a freeform surface) is made only when the boolean needs it: a bead on a shade of 2000 faces 2.2 GB instead of 7.2 GB.
 8. ✅ 2026-10-15 **Never an invalid body:** every operation is checked for crossing, overlapping and self-touching shells near what it changed, or proven unable to make them ([`architecture.md`](architecture.md) §5.5 › *Never through itself*).
 
-**Measured (2026-10-14, morning; the same on 2026-10-15 after the helmet's findings, and after poles at a corner and coincident freeform faces):** 11573 of 11988 corpus outcomes agree, 249 refused (all in the category near, about 250 being the tolerance rule itself: cases built one tolerance apart or into each other), 0 wrong, 0 invalid. Speed (2026-10-13): 1024 holes one by one in 7.1 s, a cylinder through a plate of 1030 faces in 36.5 ms; the corpus test takes about 230 s on 14 threads on an idle machine (640 s at noon on 2026-10-13) and is the gate's longest binary.
+**Measured (2026-10-14, morning; the same on 2026-10-15 after the helmet's findings, after poles at a corner and coincident freeform faces, and after fourth-order contact):** 11573 of 11988 corpus outcomes agree, 249 refused (all in the category near, about 250 being the tolerance rule itself: cases built one tolerance apart or into each other), 0 wrong, 0 invalid. Speed (2026-10-13): 1024 holes one by one in 7.1 s, a cylinder through a plate of 1030 faces in 36.5 ms; the corpus test takes about 230 s on 14 threads on an idle machine (640 s at noon on 2026-10-13) and is the gate's longest binary.
 
 **Measured (2026-10-16, after the lamp's and the impeller's findings: the pieces of a curve a box cuts refined; outlines made when needed; two places where the same two edges meet one vertex):** the same counts, digest `19af10963b6f12c2` (the same results bit for bit after all three); of the 249 refusals 21 now refuse one step later, as two faces between half and twice the tolerance apart rather than two points the tolerance cannot tell apart.
 
 **Owed, in order:**
 
-- [ ] A cusp: a spline that leaves the axis along it (no fan of meridians; the wedge's width would have to vanish as `t²`, and the closed layouts with it).
-- [ ] A cylinder inside a torus's tube touching its top with its axis square to the torus' axis (fourth-order contact, a tacnode the marcher passes through; the random runs' seed 2001169; reproducer in `boolean_contact.rs`).
-- [ ] Rational weights far apart: already a hundred apart the winding numbers refuse, and with a local chart speed the measure does not settle (reproducer in `boolean.rs`; [`architecture.md`](architecture.md) §5.3 › *Rational faces*).
+- [ ] A cusp against a face that holds its axis through the point (the marcher's chart stopped short of a cusp to its order; [`architecture.md`](architecture.md) §5.3 › *Cusps*).
+- [ ] Rational weights far apart: a hundred apart is built (2026-10-15), but `topo::mass_properties` does not settle on such a face, and a thousand apart the winding numbers still refuse ([`architecture.md`](architecture.md) §5.3 › *Rational faces*).
 - [ ] The contact a fillet's boolean refused ([`architecture.md`](architecture.md) §5.3 › *Fillets as built*), and whether fillet chains still need `blend::join`.
 - [ ] Sheet bodies, several lumps and cavities (item 5).
 - [ ] The check of offset face, shell and delete face near what they changed (they check the whole body), and a tessellation of long straight edges that does not fan across a plate (the first cut of 400 holes at once is checked in 140 ms).
@@ -144,6 +143,7 @@ Closed-form tests for every kind; the checker detects each seeded defect; hand-b
 - The six parts above, with the start of M3: primitives as features, regeneration, B-rep tessellation for the five primitives (2026-10-12)
 - Deviations: a synchronous engine without jobs or events; undo as snapshots ([`decisions.md`](decisions.md)) (2026-10-12)
 - `file.list` and `file.activate`, from the first field test (2026-10-13)
+- `craft3d-cli run --keep-going`: a failing command is reported on its line, the rest run and `--out` saves what was built (2026-10-16)
 
 #### Open
 - [ ] `thumb.png` in `.3dcraft`
@@ -187,6 +187,7 @@ Oracles 1 and 4 for all primitives at three scales; exported meshes closed and o
 - Every solid of the showcase, the turbofan and the engine block meshes closed at the display quality and at export tolerances (`display_quality.rs` strict): the hull's bow got a wall, a seam no longer runs along a straight edge at the wrap of a cylinder (2026-10-15)
 - Long straight edges of flat faces are cut where holes run along them, so a plate with a row of holes is no longer fans of slivers across its length: the self-intersection check of a 4 m plate with 400 holes 13 times faster, export meshes unchanged but for 27 of 440 reference meshes (two triangles more each) ([`architecture.md`](architecture.md) §6, *Long straight chords of flat faces*) (2026-10-15)
 - The angle criterion on spline faces in a plane and on a grid graded to where the surface turns: the turbofan's spline faces 30,720 triangles instead of 35,302, a twisted blade within 1.4 times a grid that meets both criteria unrefined (was 1.9) ([`architecture.md`](architecture.md) §6, *The angle on a spline face*) (2026-10-16)
+- A spline surface's pole is shaded with its limit normal, and `view.render`, `view.pick` and `view.replay` mesh at a quarter to half a pixel of the picture within a total triangle budget, never finer than the display's floor, coarsening a body too fine for the tessellator instead of refusing ([`architecture.md`](architecture.md) §6) (2026-10-16)
 - `view.replay` and `craft3d-cli replay`: a showcase video (frames, MP4, GIF) of how a document is built, one fixed camera, an optional orbit, captions as subtitles; the document is not touched (2026-10-14)
 
 #### Open
@@ -263,6 +264,10 @@ Surface/surface intersection, imprint, classify and sew; union, subtract and int
 - Poles at a corner of a patch's parameters (a lune as the stereographic image of a quadrant): a chart, the side at the pole, the marcher and the tessellator; the eight cuts through a pole the tessellator declined were already meshed (2026-10-15)
 - Coincident freeform faces: a patch on its analytic twin moved along itself, two patches of one surface ([`architecture.md`](architecture.md) §5.3) (2026-10-15)
 - The self-intersection check inside every operation, near what it changed, and a shell that touches itself refused (2026-10-15)
+- A cusp as a boolean operand: the wedge and the disc drawn to the pole's order, the pieces at the point put in order further along ([`architecture.md`](architecture.md) §5.3 › *Cusps*) (2026-10-15)
+- Rational faces with weights a hundred apart as operands: the winding numbers take the chart's speed near each stretch, held by point membership against the plain block ([`architecture.md`](architecture.md) §5.3 › *Rational faces*) (2026-10-15)
+- Fourth-order contact: a tacnode or cusp of the intersection is a vertex whose tangent arms are made as graphs around it, a cylinder touching the top of a torus' tube from inside held to its closed-form volume ([`architecture.md`](architecture.md) §5.1 › *Tacnodes and cusps*) (2026-10-15)
+- A row of booleans on a body of many freeform faces indexes each surface once (the impeller: a chamfer of the bore 12 s to 1 s); a material measures nothing, mass and inertia are measured at once ([`architecture.md`](architecture.md) §5.3, §5.5) (2026-10-16)
 
 #### Open
 The [boolean checklist](#the-boolean-checklist) › *Owed*.

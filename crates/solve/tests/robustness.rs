@@ -13,6 +13,43 @@ mod common;
 
 use std::time::{Duration, Instant};
 
+/// A clock of the work this thread does: its CPU time where the system
+/// reports it (Linux), the wall clock elsewhere. The bounds below are there
+/// to catch a loop that is not bounded, and a machine busy with other work
+/// stretches the wall clock of a solve that does the same work (gate 56:
+/// 13.7 s on the wall for a sketch that takes 0.5 s alone).
+struct WorkClock {
+    cpu: Option<u64>,
+    wall: Instant,
+}
+
+impl WorkClock {
+    fn start() -> Self {
+        Self {
+            cpu: thread_cpu_nanos(),
+            wall: Instant::now(),
+        }
+    }
+
+    fn elapsed(&self) -> Duration {
+        match (self.cpu, thread_cpu_nanos()) {
+            (Some(start), Some(now)) => Duration::from_nanos(now.saturating_sub(start)),
+            _ => self.wall.elapsed(),
+        }
+    }
+}
+
+/// Nanoseconds this thread has spent on a CPU, from the first field of
+/// `/proc/thread-self/schedstat`; `None` where there is no such file.
+fn thread_cpu_nanos() -> Option<u64> {
+    std::fs::read_to_string("/proc/thread-self/schedstat")
+        .ok()?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
 use common::options;
 use craft3d_solve::{
     Constraint as C, ConstraintStatus, Entity, EntityId, Sketch, Solution, SolveError, solve,
@@ -296,7 +333,7 @@ fn run(seed: u64, count: usize, hostile: bool, most_constraints: usize) -> Tally
     for i in 0..count {
         let sketch = random_sketch(&mut rng, hostile, most_constraints);
         let what = format!("seed {seed} sketch {i}");
-        let started = Instant::now();
+        let started = WorkClock::start();
         let result = solve(&sketch, &options());
         let took = started.elapsed();
         tally.slowest = tally.slowest.max(took);
@@ -488,7 +525,7 @@ fn thousands_of_constraints() {
             _ => C::HorizontalPoints { a, b },
         });
     }
-    let started = Instant::now();
+    let started = WorkClock::start();
     let solution = solve(&s, &options()).unwrap();
     assert!(started.elapsed() < Duration::from_secs(10));
     check_solution(&s, &solution, "flood");
@@ -508,7 +545,7 @@ fn thousands_of_constraints() {
             value: if i % 2 == 0 { 5.0 } else { 6.0 },
         });
     }
-    let started = Instant::now();
+    let started = WorkClock::start();
     let solution = solve(&s, &options()).unwrap();
     assert!(started.elapsed() < Duration::from_secs(10));
     assert_eq!(solution.conflicting().len(), 1500);

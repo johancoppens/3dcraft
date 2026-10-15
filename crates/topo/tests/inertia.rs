@@ -11,8 +11,8 @@
 )]
 
 use craft3d_math::{Frame, Vec3};
-use craft3d_testkit::solids;
-use craft3d_topo::{inertia, mass_properties};
+use craft3d_testkit::{solids, trimmed};
+use craft3d_topo::{inertia, mass_and_inertia, mass_properties};
 
 /// A frame tilted about all three axes, away from the origin.
 fn tilted(scale: f64) -> Frame {
@@ -140,5 +140,26 @@ fn inertia_agrees_with_the_mass_properties_it_extends() {
         let d = [t[0][0], t[1][1], t[2][2]];
         assert!(d.iter().all(|&x| x > 0.0), "{}", reference.name);
         assert!(d[0] + d[1] >= d[2] * (1.0 - 1e-9), "{}", reference.name);
+    }
+}
+
+/// `mass_and_inertia` integrates every face once, with the second
+/// moments, and takes the sums without them where those settle: what it
+/// gives is what `mass_properties` and `inertia` give on their own, bit
+/// for bit (and error for error), on analytic and freeform faces alike.
+#[test]
+fn mass_and_inertia_at_once_are_each_bit_for_bit_what_they_are_alone() {
+    let frame = tilted(1.0);
+    let mut bodies = solids::all(&frame, 1.0).unwrap();
+    bodies.extend(trimmed::all(&frame, 1.0).unwrap());
+    bodies.extend(trimmed::all(&tilted(1e3), 1e3).unwrap());
+    for nurbs in [false, true] {
+        bodies.push(trimmed::domed_block(&frame, 4.0, 3.0, 2.0, nurbs).unwrap());
+    }
+    assert!(bodies.len() > 10);
+    for reference in &bodies {
+        let (mass, turned) = mass_and_inertia(&reference.body);
+        assert_eq!(mass, mass_properties(&reference.body), "{}", reference.name);
+        assert_eq!(turned, inertia(&reference.body), "{}", reference.name);
     }
 }
