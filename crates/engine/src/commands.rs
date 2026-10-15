@@ -2186,8 +2186,9 @@ fn view_render(session: &mut Session, params: &Value) -> Run {
 
     // The picture's scene: at the tolerance given, or at a quarter to half
     // a pixel where the picture shows the model, never finer than the
-    // display's floor, within a total budget (`Session::picture_scene`). A section is resolved against it: a
-    // face's name means the face of that mesh.
+    // display's floor, within a total budget (`Session::picture_scene`).
+    // A section is resolved against it: a face's name means the face of
+    // that mesh.
     let tolerance = match p.number("tolerance")? {
         Some(t) if t > 0.0 => Some(t),
         Some(_) => return fail("view.render: `tolerance` must be positive"),

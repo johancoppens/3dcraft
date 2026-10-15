@@ -636,7 +636,17 @@ fn render_and_pick_agree_on_the_tolerance_of_a_picture() {
             tolerance > pixel / 4.0 && tolerance <= pixel / 2.0,
             "{tolerance} for pixels of {pixel}"
         );
-        assert!(tolerance > floor, "{tolerance} {floor}");
+        // Half a pixel is 6.8 and 3.4 floors at heights 60 and 30: a rung
+        // above the floor. At 12 it is 1.36 floors: the floor itself, which
+        // is still within the band.
+        if height > 12.0 {
+            assert!(tolerance >= 2.0 * floor, "{tolerance} {floor}");
+        } else {
+            assert!(
+                (tolerance / floor - 1.0).abs() < 1e-9,
+                "{tolerance} {floor}"
+            );
+        }
     }
     for params in [
         json!({"width": 400, "height": 300}),

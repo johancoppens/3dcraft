@@ -518,6 +518,9 @@ mod native {
                     crate::scene::pixel_footprint(&camera, height as u32, model)
                 });
                 let settled = crate::scene::picture_scene_of(&doc, &final_regen, 0, rung);
+                if let Some(problem) = settled.problems.first() {
+                    return fail(format!("view.replay: {problem}"));
+                }
                 TessParams {
                     chordal_tolerance: settled.tolerance,
                     max_angle: settled.max_angle,

@@ -1509,16 +1509,6 @@ fn scene_datums(doc: &Document, regen: &Regen, bbox: &Bbox3) -> Vec<SceneDatum> 
         .collect()
 }
 
-/// The display rule: the scene at `fine`, or at the coarsest tolerance
-/// between `fine` and `cap` (the quick first picture's) that keeps the
-/// scene within `max_triangles` triangles and within the tessellator's
-/// reach. Each attempt that stops early says how far over it was, and the
-/// next tolerance is coarser by that ratio (triangles grow as the inverse
-/// of the tolerance at worst, so the estimate errs towards another
-/// attempt, never towards a coarser mesh than needed), at least twice as
-/// coarse and at most 64 times. At or beyond `cap` no budget applies, and
-/// the scene is the first picture itself: the same tolerance gives the
-/// same mesh. `None` when `cancel` was set meanwhile.
 /// How much coarser the next rung of a ladder is after a build that
 /// stopped with `stop` under a budget of `max_triangles`: by the estimated
 /// excess (the triangles so far over the share of the faces done, against
@@ -1554,20 +1544,22 @@ fn coarser_by(stop: &Stop, max_triangles: usize) -> Option<f64> {
 /// A picture's scene of `doc` at the chordal tolerance `fine` with the
 /// display's angle ([`SceneQuality::Picture`]): the display rule's ladder
 /// ([`build_for_display`]) with a budget of [`DISPLAY_MAX_TRIANGLES`] for
-/// the whole scene and no cap. Out of attempts, the last rung without the
-/// budget, each body within it on its own. [`Scene::coarsened`] when the
-/// tolerance or a body's had to be coarser than `fine`.
+/// the whole scene and no cap, climbed until the scene is within it. Each
+/// rung is at least twice as coarse, so the climb ends within the range of
+/// an `f64`; a scene that is over the budget at every tolerance (more
+/// faces than the budget has triangles) is that partial scene with a
+/// problem that says so, which a picture refuses. [`Scene::coarsened`]
+/// when the tolerance or a body's had to be coarser than `fine`.
 pub(crate) fn picture_scene_of(doc: &Document, regen: &Regen, revision: u64, fine: f64) -> Scene {
-    let angle = Some(DISPLAY_MAX_ANGLE);
     let mut tolerance = fine;
-    for _ in 0..MAX_DISPLAY_ATTEMPTS {
+    loop {
         let sampling = Sampling {
             tolerance,
-            angle,
+            angle: Some(DISPLAY_MAX_ANGLE),
             budget: Some(DISPLAY_MAX_TRIANGLES),
             per_body: None,
         };
-        let (scene, stop) = build(doc, regen, revision, sampling, None);
+        let (mut scene, stop) = build(doc, regen, revision, sampling, None);
         let Some(stop) = stop else {
             return Scene {
                 coarsened: scene.coarsened || tolerance > fine,
@@ -1577,28 +1569,27 @@ pub(crate) fn picture_scene_of(doc: &Document, regen: &Regen, revision: u64, fin
         let Some(factor) = coarser_by(&stop, DISPLAY_MAX_TRIANGLES) else {
             return scene;
         };
-        tolerance *= factor;
-        if !tolerance.is_finite() {
-            break;
+        let next = tolerance * factor;
+        if !(next.is_finite() && next > tolerance) {
+            scene.problems.push(format!(
+                "the picture has more than {DISPLAY_MAX_TRIANGLES} triangles at any chordal tolerance"
+            ));
+            return scene;
         }
-    }
-    let tolerance = if tolerance.is_finite() {
-        tolerance
-    } else {
-        fine
-    };
-    let sampling = Sampling {
-        tolerance,
-        angle,
-        budget: None,
-        per_body: Some(DISPLAY_MAX_TRIANGLES),
-    };
-    Scene {
-        coarsened: true,
-        ..build(doc, regen, revision, sampling, None).0
+        tolerance = next;
     }
 }
 
+/// The display rule: the scene at `fine`, or at the coarsest tolerance
+/// between `fine` and `cap` (the quick first picture's) that keeps the
+/// scene within `max_triangles` triangles and within the tessellator's
+/// reach. Each attempt that stops early says how far over it was, and the
+/// next tolerance is coarser by that ratio (triangles grow as the inverse
+/// of the tolerance at worst, so the estimate errs towards another
+/// attempt, never towards a coarser mesh than needed), at least twice as
+/// coarse and at most 64 times. At or beyond `cap` no budget applies, and
+/// the scene is the first picture itself: the same tolerance gives the
+/// same mesh. `None` when `cancel` was set meanwhile.
 fn build_for_display(
     doc: &Document,
     regen: &Regen,
