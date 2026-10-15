@@ -4,20 +4,11 @@
 //! - The lamp: a shell of revolution with thin walls less a union of ten
 //!   lofted cells was refused, "an intersection curve could not be fitted
 //!   within the tolerance", though every nine of them and each alone
-//!   passed. Every face pair was intersected inside the box both *bodies*
+//!   passed. Every face pair is intersected inside the box both bodies
 //!   share, so the union decided the box; the box cut a branch of the
 //!   curve of the shell and one cell, and the span to the new end was a
 //!   new cubic nobody held to the tolerance. The marcher now refines the
-//!   pieces a box cuts, and a pair is intersected inside the box the two
-//!   *faces* share.
-//! - The impeller: a pattern of two blades with a rounded leading edge,
-//!   apart from each other, was refused as "tangent or nearly coincident
-//!   over too large an area": the fillet surface of one and the side of
-//!   the other run tangent far from both faces, inside the box the bodies
-//!   share but not inside the one the faces share.
-//! - The impeller: a blade with a rounded leading edge on a hub of
-//!   revolution, refused as "two curves leave a point in the same
-//!   direction"; it builds with the box of the faces.
+//!   pieces a box cuts.
 
 #![allow(
     clippy::unwrap_used,
@@ -185,62 +176,4 @@ fn the_lamp_shell_less_a_lofted_cell() {
             "{all} + {common} != {va} + {vb}"
         );
     }
-}
-
-/// How far a volume of bodies whose faces were approximated within the
-/// tolerance can be off: the tolerance over their area. (The blade's
-/// fillet is such a face, at the impeller's tolerance of 1e-4 mm: the
-/// blade turned by 30 degrees measures 6e-5 mm³ more, of 511 mm³.)
-fn slack(tol: &craft3d_math::Tolerance, bodies: &[&Body]) -> f64 {
-    tol.linear
-        * bodies
-            .iter()
-            .map(|b| mass_properties(b).unwrap().area)
-            .sum::<f64>()
-}
-
-#[test]
-fn a_pattern_of_blades_with_a_rounded_leading_edge() {
-    let mut s = steps("impeller_pattern.steps.json");
-    assert_ok(&mut s, "Blades");
-    let (bodies, tol) = bodies(&mut s, "pattern.3dcraft");
-    // The instances do not touch: the pattern is twice the blade, with
-    // every face of both.
-    let (blade, blades) = (body(&bodies, "Blade"), body(&bodies, "Blades"));
-    assert_eq!(blades.faces.len(), 2 * blade.faces.len());
-    let (one, two) = (
-        mass_properties(blade).unwrap(),
-        mass_properties(blades).unwrap(),
-    );
-    assert!(
-        (two.area - 2.0 * one.area).abs() <= 1e-9 * two.area,
-        "{two:?} {one:?}"
-    );
-    let off = (two.volume - 2.0 * one.volume).abs();
-    assert!(off <= slack(&tol, &[blades]), "{two:?} {one:?}");
-}
-
-#[test]
-fn a_blade_with_a_rounded_leading_edge_on_a_spline_hub() {
-    let mut s = steps("impeller_le_hub.steps.json");
-    assert_ok(&mut s, "U1");
-    let (bodies, tol) = bodies(&mut s, "hub.3dcraft");
-    let (hub, blade, united) = (
-        body(&bodies, "HubRaw"),
-        body(&bodies, "Blade"),
-        body(&bodies, "U1"),
-    );
-    let common = boolean(hub, blade, BooleanOp::Intersect, &tol)
-        .unwrap()
-        .body;
-    let rest = boolean(hub, blade, BooleanOp::Subtract, &tol).unwrap().body;
-    let (vc, vr) = (volume(&common), volume(&rest));
-    let (vh, vb, all) = (volume(hub), volume(blade), volume(united));
-    assert!(vc > 1e-3 * vb, "the blade sits in the hub: {vc}");
-    let slack = slack(&tol, &[hub, blade]);
-    assert!(
-        (all + vc - vh - vb).abs() <= slack,
-        "{all} + {vc} != {vh} + {vb}"
-    );
-    assert!((vr + vc - vh).abs() <= slack, "{vr} + {vc} != {vh}");
 }

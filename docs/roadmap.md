@@ -58,6 +58,8 @@ The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item i
 
 **Measured (2026-10-14, morning; the same on 2026-10-15 after the helmet's findings, and after poles at a corner and coincident freeform faces):** 11573 of 11988 corpus outcomes agree, 249 refused (all in the category near, about 250 being the tolerance rule itself: cases built one tolerance apart or into each other), 0 wrong, 0 invalid. Speed (2026-10-13): 1024 holes one by one in 7.1 s, a cylinder through a plate of 1030 faces in 36.5 ms; the corpus test takes about 230 s on 14 threads on an idle machine (640 s at noon on 2026-10-13) and is the gate's longest binary.
 
+**Measured (2026-10-16, after the lamp's and the impeller's findings: the pieces of a curve a box cuts refined):** the same counts, digest `19af10963b6f12c2`.
+
 **Owed, in order:**
 
 - [ ] A cusp: a spline that leaves the axis along it (no fan of meridians; the wedge's width would have to vanish as `t²`, and the closed layouts with it).
@@ -67,6 +69,7 @@ The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item i
 - [ ] Sheet bodies, several lumps and cavities (item 5).
 - [ ] The check of offset face, shell and delete face near what they changed (they check the whole body), and a tessellation of long straight edges that does not fan across a plate (the first cut of 400 holes at once is checked in 140 ms).
 - [ ] Speed: what is left is the booleans with a freeform face (the chart's projections and the marcher) and the measurement of their results.
+- [ ] Each pair of faces intersected in the box of the two faces, not of the two bodies (the impeller's pattern of blades with rounded leading edges, and such a blade on a hub of revolution), after `mass_properties` settles near a pole with the curves that gives ([`architecture.md`](architecture.md) §5.3 › *Showcase findings (2026-10-16)*).
 - [ ] Tolerant modelling (item 4), before STEP import.
 
 ## Milestones in detail

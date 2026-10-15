@@ -5,7 +5,8 @@
 use super::freeform::is_freeform;
 use super::hits::{curve_hits, signed_distance};
 use super::outline::{
-    Hull, Outline, Seg, Sheet, Side, locate, nearest, onto, outward_normal, surface_distance,
+    Hull, Outline, Seg, Sheet, Side, boxes_meet, locate, nearest, onto, outward_normal,
+    surface_distance,
 };
 use super::{
     AMBIGUOUS, LOST, Meeting, NEAR, NEARLY_COINCIDENT, NEARLY_TOUCHING, Operand, Stop, Vertices,
@@ -816,24 +817,21 @@ pub(super) fn section(
     let tol = tolerance.linear;
     let mut sections = Sections::default();
     // Only where both bodies are can their faces meet.
-    if overlap(&a.bbox(), &b.bbox(), 2.0 * tol).is_none() {
+    // (With room to spare, so that where a curve is cut off is not where
+    // anything else is.)
+    let (box_a, box_b) = (a.bbox(), b.bbox());
+    let Some(snug) = overlap(&box_a, &box_b, 2.0 * tol) else {
         return Ok(sections);
-    }
+    };
+    let room = 16.0 * tol + 0.013 * snug.diagonal();
+    let Some(within) = overlap(&box_a, &box_b, room) else {
+        return Ok(sections);
+    };
     for (fa, (oa, box_a)) in a.outlines.iter().zip(&a.boxes).enumerate() {
         for (fb, (ob, box_b)) in b.outlines.iter().zip(&b.boxes).enumerate() {
-            // Only where both faces are can they meet: their surfaces are
-            // intersected there and nowhere else, so that what the surfaces
-            // do far from the faces (cross, touch, run tangent, leave a
-            // curve the fit cannot follow) does not depend on what else
-            // either body holds. (With room to spare, so that where a
-            // curve is cut off is not where anything of either face is.)
-            let Some(snug) = overlap(box_a, box_b, 2.0 * tol) else {
+            if !boxes_meet(box_a, box_b, 2.0 * tol) {
                 continue;
-            };
-            let room = 16.0 * tol + 0.013 * snug.diagonal();
-            let Some(within) = overlap(box_a, box_b, room) else {
-                continue;
-            };
+            }
             let (Some(hull_a), Some(hull_b)) = (a.hulls.get(fa), b.hulls.get(fb)) else {
                 return Err(Stop::of(LOST));
             };
