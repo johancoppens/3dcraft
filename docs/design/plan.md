@@ -1,10 +1,18 @@
 # 3DCraft design: The design plan of 2026-10-12
 
+The design plan v1 of 2026-10-12 as it was written, with the parts of the old single `architecture.md` that belonged to no one part: goals and principles, the CAD holes to avoid, the workspace layout and layering as first planned, the test layers, the workspace sketch, the open questions, and that file's revision history.
+
+## Method
+
+This document is history. The structure that holds now is the map, [`../architecture.md`](../architecture.md): where the two differ, the map and the detail documents win. Most of the plan was built as written; where it was not (the plan's `Session` with jobs, events and lock-free snapshots; persistent bodies that share unchanged parts; a stored evaluation order of variables; per-entity tolerances; `Skipped` statuses; rayon; content-addressed blobs; a `fuzz/` directory), the detail documents describe what was built instead, and the map's structural-debt table lists what is still owed.
+
+## Findings and history
+
 > Moved verbatim from `docs/architecture.md` on 2026-10-15. Section numbers (§4.1, §5.3, …) in the text are those of that file before the split; [README.md](README.md) says where each one is now.
 
 > **Last updated:** 2026-10-15 · **Status:** design plan v1; first crates built · **Change:** minor (showcase findings, §5.3 › *Showcase findings (2026-10-15)*: a curve a box cuts is refined, outlines made when needed, one vertex where two edges meet, the mass of a face settled part by part with its work bounded by its first sums)
 
-## Current state (2026-10-12)
+### Current state (2026-10-12)
 
 What exists on `main` today; where the code differs from the plan below, this summary wins.
 
@@ -23,7 +31,7 @@ When code exists and differs from this plan, add a dated "Current state" section
 
 ---
 
-## 1. Goals and principles
+### 1. Goals and principles
 
 **Goals**
 - A native, portable (Linux / macOS / Windows), fully open-source parametric 3D CAD modeller with its **own kernel and tessellator**, in pure Rust.
@@ -44,7 +52,7 @@ When code exists and differs from this plan, add a dated "Current state" section
 7. **Pure Rust.** No C/C++ dependencies in the kernel, tessellator, formats or engine. System libraries appear only at the windowing/GPU edge (through winit and wgpu).
 8. **Clean-room.** Public specs, textbooks, papers and observed behaviour only. No proprietary code, shaders or assets; no code from copyleft kernels.
 
-### 1.1 Avoiding the usual CAD holes
+#### 1.1 Avoiding the usual CAD holes
 
 PhotoCraft's plan starts from GIMP's lesson: properties baked into the core as assumptions (8-bit pixels, RGB only) cost years to undo. CAD systems have their own versions of that mistake. Each rule below is cheap on day one and a rewrite later.
 
@@ -65,7 +73,7 @@ The test is simple: **adding a surface kind, a feature type, or a file format sh
 
 ---
 
-## 2. Workspace layout
+### 2. Workspace layout
 
 ```text
 3dcraft/
@@ -126,7 +134,7 @@ The test is simple: **adding a surface kind, a feature type, or a file format sh
 
 ---
 
-## 3. Dependency layering (enforced)
+### 3. Dependency layering (enforced)
 
 ```text
  L8  apps/*                         (binaries: wire everything together)
@@ -154,7 +162,7 @@ The test is simple: **adding a surface kind, a feature type, or a file format sh
 
 ---
 
-## 11. Testing and quality
+### 11. Testing and quality
 
 Detail in [`testing.md`](../testing.md).
 
@@ -171,7 +179,7 @@ Detail in [`testing.md`](../testing.md).
 
 ---
 
-## 12. Cargo workspace sketch
+### 12. Cargo workspace sketch
 
 ```toml
 [workspace]
@@ -214,11 +222,11 @@ Which general-purpose crates the kernel may use (linear algebra, big-number or i
 
 ---
 
-## 13. Open questions in this plan
+### 13. Open questions in this plan
 
 Tracked in [`decisions.md`](../decisions.md): target app (if any), licence, UI toolkit confirmation, external maths crates, exact vs tolerant predicates, STEP application protocol, use of open-source tools as external test oracles.
 
-## Revision history
+### Revision history
 
 | Date | Change | Summary |
 |---|---|---|

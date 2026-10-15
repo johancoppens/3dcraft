@@ -1,8 +1,30 @@
 # 3DCraft design: Booleans
 
+Union, difference and intersection of solids (`kernel::boolean`, one file per step in `crates/kernel/src/boolean/`). Method 2 of the map ([`../architecture.md`](../architecture.md) §5); what is still owed is the boolean checklist of [`../roadmap.md`](../roadmap.md).
+
+## Method
+
+`boolean(a, b, op, tolerance)` returns the body and a source for every face, edge and vertex of it (`FaceSource`, `EdgeSource`, `VertexSource`; `merged` lists every operand face a result face has a piece of). Operands are any solids on planes, quadrics, tori, Bézier and NURBS surfaces (rational ones, with poles, closing on themselves), with edges on lines, circles, ellipses and splines.
+
+1. **Section** (`section.rs`, `hits.rs`). For each pair of faces that can meet (boxes and sides), the curves in which their surfaces meet come from `geom::meet_surfaces`, asked inside the box the two bodies share. A curve is cut where an edge of either face meets the other's surface (closed forms, or roots of the signed distance isolated by a bound on how fast it can change, never by sampling) and where it ends; a stretch is kept when its middle is in or on both faces. A vertex is always where an edge's *own* curve meets a surface.
+2. **Imprint.** Edges are split at the vertices found; edge pieces and stretches become arcs, two arcs between the same vertices along the same curve are one, and an edge that lies on a face or edge of the other body is shared from then on. Nothing is matched by position afterwards.
+3. **Regions** (`regions.rs`). Around each vertex the arcs are sorted by direction in the tangent plane, told apart further along when they leave together (`untie`); loops are followed keeping the region on the left and grouped in a chart of the surface.
+4. **Classify** (`classify.rs`, `chart.rs`). One point well inside a region decides it: on a coincident face of the other body, or inside or outside it by ray casting. Inside or outside a face is a winding number in a chart of its surface computed from points in space, so seams and poles are ordinary points: conformal maps for the analytic kinds, the parameter rectangle (drawn as a wedge, a lens, a disc or an annulus where a border is a pole or the surface closes) for freeform faces, whose nearest points and bounds come from a `PatchTree` of Bézier pieces (`freeform.rs`).
+5. **Select** by the table below (coincident faces with the same or opposite normals included).
+6. **Sew** (`sew.rs`). Where more than two faces meet along an arc or a vertex, each fan gets its own copy, so every result is a manifold.
+7. **Merge** (`merge.rs`). Pieces of one operand face, or coincident faces of both, that share an edge and a surface become one face again; the result passes `topo::check` or the operation fails.
+
+**Tolerances.** Points within half the tolerance are one vertex, apart at twice it, refused in between; the same for faces over each other, and a lens thinner than twice the tolerance between faces of different kinds is measured: up to half the tolerance they touch, above it the operation refuses. No decision is taken on the sign of a number that could be rounding. Bodies that only touch have nothing in common: the union is both bodies, the intersection empty, the difference the first body. These distance rules, and the snapping of hits onto the ends of edges, are structural debt (the map's §9): tolerant entities are owed.
+
+**Speed.** Outlines are made when a pair of faces first needs them, kept with a box per boundary piece; pure functions are remembered by the exact bits of what was asked (nearest points per tree, the trees themselves, checked bodies, projectors, numeric intersections), so nothing changes but the time. Each change meant only for speed is held bit for bit to the corpus digest and the random runs.
+
+**Held to**: closed forms, the identities of sets, analytic twins of rational faces, 400 to 4000 seeded points against exact membership, the mesh self-intersection check, and a corpus of 3996 pairs against FreeCAD (11,988 outcomes: 11,573 agree, 249 refused, none wrong or invalid; [`../testing.md`](../testing.md)).
+
+## Findings and history
+
 > Moved verbatim from `docs/architecture.md` on 2026-10-15. Section numbers (§4.1, §5.3, …) in the text are those of that file before the split; [README.md](README.md) says where each one is now.
 
-#### Booleans as built (M7, generalised 2026-10-13)
+### Booleans as built (M7, generalised 2026-10-13)
 
 `kernel::boolean::boolean(a, b, op, tolerance)` returns a `BooleanResult`: the body and, per face, edge and vertex of it, a source (`FaceSource`, `EdgeSource`, `VertexSource`). `boolean_with` takes `BooleanOptions` (`merge`, on by default). `boolean::contains_points` classifies points against a solid with the same ray casting the booleans use; it does not go through `mass_properties`, so a count of sampled points measures a body independently of it.
 

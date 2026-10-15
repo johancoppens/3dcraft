@@ -1,13 +1,33 @@
 # 3DCraft design: Geometry and intersections
 
+Curves, surfaces and their intersections (`craft3d-geom`, with `craft3d-math` beneath it). Method 1 of the map ([`../architecture.md`](../architecture.md) §5).
+
+## Method
+
+**The kinds.** `Curve3` is a line, circle, ellipse or NURBS curve; `Surface` is a plane, cylinder, cone, sphere, torus, Bézier patch or NURBS surface. Analytic kinds stay analytic, so results stay exact where they can; NURBS, rational ones included, are first-class everywhere. Every kind evaluates with first derivatives and normals, knows its parameter domain and periodicity, and projects a point onto itself: in closed form for the analytic kinds, for freeform surfaces by a search from a coarse grid followed by damped Gauss–Newton steps (`Surface::project`, or `project_from` when a nearby foot is known). The kinds of the first plan that are not built (trimmed, offset and intersection curves; extrusion, revolution and offset surfaces; parameter-space curves) are needed by nothing yet: a curve on a surface is recovered by projection.
+
+**Splines.** NURBS are evaluated by de Boor's algorithm on homogeneous points. `refine` changes a description without changing the curve (knot insertion, degree elevation) and interpolates (a banded, totally positive collocation solve, linear in the samples); `extend` grows a surface past its domain without moving any point of it; `pole` finds a border of a patch that is one point; `closure` finds a surface whose control net closes on itself on clamped knots (`geom` gives it no period). Bounds on the first and second derivatives and on the normal come from Bézier nets (for rational ones by the quotient rule over the lightest weight) and are proofs, not samples.
+
+**Intersections.** `meet_surfaces(a, b, within, tolerance)` intersects any two surfaces inside a box and returns nothing, `Coincident`, or curves and isolated touch points. Each curve has the range meant and flags for closed, tangent and exact; an approximate curve carries its deviation, at most the tolerance. The pair is put in a fixed order first, so the answer does not depend on the order asked. Curves never cross except at their ends: where two branches cross, each arm is a curve of its own.
+
+- *Closed forms* wherever one exists: planes, quadrics and tori in the configurations of the table below (coaxial surfaces, sections of a cone, equal cylinders that cross, cones along a ruling, a cylinder or a torus that goes on in a torus).
+- *Everything else is marched* (`intersect/march.rs`). One surface is walked in its parameters, the other is a signed distance. A quadtree discards the cells the distance proves empty and stops where a bound on the second derivatives proves the distance monotonic; a cell that reaches the floor (twice the tolerance) without either is searched for a point of tangency, which the Hessian of the distance classifies: a touch (a minimum or maximum), a crossing (a saddle), a tacnode or a cusp (rank one, by the splitting lemma, the arms then made as graphs near the point), else refused. Branches are marched with the step held by the turn of the tangent and fitted by cubic Hermite splines, refined until they are within half the tolerance of both surfaces at three places per span; the pieces the box cuts are refined again.
+- *A curve against a surface* (`intersect_curve_surface`): closed forms for the analytic pairs, otherwise root isolation on the signed distance along the curve, with certificates of the same kind in one dimension.
+
+**What is refused**, as an error and never partially: a degenerate contact whose sign changes on every ring around it, surfaces tangent or coincident over an area (more than a million cells), curves that need more points than the caps allow, a fit that does not reach the tolerance, a tolerance finer than rounding allows at the size of the box. Some steps are checked by samples rather than bounds (the rings around a tangency, the tacnode model, the curvature of a freeform field); the map lists them as structural debt.
+
+**Memory.** Projectors (the grid a freeform search starts from) and numeric intersections are remembered by the exact bits of what was asked, so the union, difference and intersection of the same bodies, and a boolean done again, compute once; the answers are the same.
+
+## Findings and history
+
 > Moved verbatim from `docs/architecture.md` on 2026-10-15. Section numbers (§4.1, §5.3, …) in the text are those of that file before the split; [README.md](README.md) says where each one is now.
 
-## From *Current state (2026-10-12)*
+### From *Current state (2026-10-12)*
 
 - **Maths:** `math` has `Vec3`, `Bbox3`, `Frame` (placement of analytic geometry), `Transform` (affine, with inverse), `Tolerance` (linear and angular, as data) and Gauss–Legendre quadrature. Not built: robust orientation predicates (first needed by booleans, M7), intervals, root finding.
 - **Geometry:** `geom` has the `Curve3` enum (line, circle, ellipse, NURBS) and the `Surface` enum (plane, cylinder, cone, sphere, torus, Bézier patch, NURBS), each with evaluation, first derivatives, parameter domain and periodicity, normals, and closest-point projection (closed form for the analytic kinds, sampled Newton / Gauss–Newton for ellipses and freeform). NURBS are de Boor on homogeneous points with hodograph derivatives. Not built: 2D parameter-space curves, trimmed and offset curves, extrusion/revolution/offset surfaces, second derivatives. `geom::intersect` intersects every pair of surface kinds (`meet_surfaces`, inside a box) and every curve kind with every surface kind (`intersect_curve_surface`): in closed form where one exists, numerically otherwise, within the tolerance or an error (§5.1 › Intersections as built).
 
-### 5.1 Geometry (`geom`)
+#### 5.1 Geometry (`geom`)
 
 ```rust
 pub enum Curve3 { Line(..), Circle(..), Ellipse(..), Nurbs(..), Trimmed(..), Offset(..), SurfaceIso(..), Intersection(..) }
@@ -17,7 +37,7 @@ pub enum Surface { Plane(..), Cylinder(..), Cone(..), Sphere(..), Torus(..), Ext
 
 Every kind implements evaluation with derivatives, parameter range and periodicity, bounding box, closest-point projection and inversion, and reversal. Projection as built (`Surface::project`): closed form for the analytic kinds; for Bézier and NURBS surfaces a search from the samples of a 16 × 16 grid that are nearer than their neighbours (and from a four times closer look around the nearest), each followed downhill by a damped Gauss–Newton iteration that puts the curving of the surface in when its steps fall short (Newton). It walks across the seam of a surface that closes on itself, half-steps towards a border that is a single point (a pole, a collapsed patch edge) and slides along a border of an open patch. The answer is a local nearest point, and the nearest one for a point closer to the surface than the surface curves, on a surface whose features are larger than a sixteenth of its domain (`crates/geom/tests/project.rs`). Intersections (curve/curve, curve/surface, surface/surface) are dispatched on the pair of kinds: closed-form where a formula exists (plane/plane, plane/cylinder, …), numeric marching with a tolerance otherwise. A pair that is not implemented returns `Unsupported`, and the test suite lists which pairs are covered.
 
-#### Intersections as built (2026-10-13)
+##### Intersections as built (2026-10-13)
 
 `geom::intersect::meet_surfaces(a, b, within, tolerance)` returns `None`, `Coincident { same_normal }` or `Meets(Meeting { curves, points })` for any two surfaces. Each `MeetingCurve` has the curve, the `range` of it that is meant, and the flags `closed`, `tangent` (the surfaces touch along it without crossing) and `exact`; an approximate curve carries a `deviation` that bounds its distance to both surfaces and is at most the linear tolerance. `points` are isolated touches. Curves are clipped to the box `within`, which is what makes a hyperbola or the curve of two crossing cylinders finite. The two surfaces are put in a fixed order first, so `meet(a, b)` and `meet(b, a)` are the same computation and the same result, bit for bit. **Curves never cross each other except at their ends:** where two branches cross (the surfaces are tangent there: two equal cylinders at right angles, a bitangent plane on a torus, Viviani's curve) every arm is a curve of its own that ends on the crossing point. `intersect_surfaces` (planes and cylinders, no box) is unchanged and still what `kernel::boolean` calls.
 

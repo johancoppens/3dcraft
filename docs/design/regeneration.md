@@ -1,8 +1,24 @@
 # 3DCraft design: Regeneration
 
+History → bodies (`craft3d-regen`): evaluation, references, the cache, statuses and reasons, and the check that no body passes through itself. The pipeline of the map ([`../architecture.md`](../architecture.md) §4).
+
+## Method
+
+**One pass over the history.** `regen` evaluates the variables, then walks the features in order up to the rollback marker. For each: evaluate its expressions; resolve its references against the results before it (sketches, bodies, faces and edges by persistent names followed to the newest body where the feature takes that body, datums); reuse the cached result if nothing it depends on changed, otherwise build it (solve a sketch, place a datum, or call the kernel); check the result; name its entities; record its status. Statuses are `Ok`, `Suppressed`, `RolledBack` and `Failed(reason)`.
+
+**Failure is data.** A reason starts with the parameter (as `document.inspect` shows it), names the feature referred to and what it lost, and lists what is there instead. A feature made from a failed one fails naming it, and `root_cause` gives the one to fix (`causedBy`). A failed feature has no body and takes none; everything else is built as if it were not there. A reference to a later feature fails with "comes after", a circle of references says that no order can build it, and repair is pointing the reference elsewhere with `feature.edit`. Nothing of this is stored: a saved and reopened document regenerates to the same states and reasons.
+
+**The cache** (`cache.rs`). A feature's entry is keyed by its definition, the values of its expressions, units, tolerance, and for everything it is made from the stamp of that result and who took its body; a rebuilt result equal to the old keeps its stamp, so a change that makes no difference stops there. To keep long rows linear, a trail of the last run marks only the features whose inputs may have changed, and the others are compared on their own definition. Incremental and full regeneration give the same result; the tests hold them to it after every command. Sketch solves are cached apart.
+
+**Never through itself** (`selfcheck.rs`). Every operation that can make a body that passes through or touches itself is checked with the parameters of `document.check {"deep": true}` (`tess::body_self_intersections_near` with a role per face, `tess::body_touches_itself`); the table below says which operation is checked how and why that is enough. Primitives, extrusions by a distance, revolutions, transforms and patterns whose instances are apart are proven by construction; booleans, blends, threads, move face and draft are checked near what changed; lofts, sweeps, offset face, shell and thicken over the whole body.
+
+**Progress.** Regeneration reports each feature it rebuilds to a per-thread sink (`progress`), which the window shows; nothing reported changes what is built. Regeneration is synchronous and not cancellable.
+
+## Findings and history
+
 > Moved verbatim from `docs/architecture.md` on 2026-10-15. Section numbers (§4.1, §5.3, …) in the text are those of that file before the split; [README.md](README.md) says where each one is now.
 
-## From *Current state (2026-10-12)*
+### From *Current state (2026-10-12)*
 
 - **Regeneration:** `regen::regenerate` evaluates variables and builds each feature's body, with a status per feature (`Ok`, `Suppressed`, `RolledBack`, `Failed(reason)`); every body is run through `topo::check`. A bare number in a length parameter is taken in the document's unit. A sketch feature has no body: its result is the solved sketch (degrees of freedom, a state per constraint, solved coordinates, its frame in space), and `regen::settle_sketches` writes a solution back into the document, which the engine does at the end of every edit. No caching: a full rebuild per document revision, every sketch solved again.
 
@@ -18,7 +34,7 @@
 - *Saved and reopened,* failed, suppressed and rolled-back features have the same states, reasons and bodies: none of it is stored, all of it is regenerated from the same history.
 - *Incremental regeneration* gives the same as a full one through all of this. What a reason quotes is part of what the cache compares: the name and kind of every feature it is made from, also one that comes later, who took its body, and whether a later one is made from the feature itself.
 
-### 5.5 Regeneration (`regen`)
+#### 5.5 Regeneration (`regen`)
 
 `regen` walks `Document::features` in order and produces, per feature, a status (`Ok`, `Suppressed`, `Failed { reason }`, `Skipped` because an input failed) and the bodies that exist after it.
 

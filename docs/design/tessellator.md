@@ -1,14 +1,32 @@
 # 3DCraft design: The tessellator
 
+B-rep → triangle meshes and edge polylines (`craft3d-tess`), the qualities a scene, a picture and an export ask for (`engine/src/scene.rs`), and the mesh self-intersection test. The tessellator of the map ([`../architecture.md`](../architecture.md) §6).
+
+## Method
+
+**Entry points.** `tessellate_body(&Body, &TessParams)` with `TessParams { chordal_tolerance, max_segments, max_triangles, max_angle }`; `tessellate_body_and_edges` gives the mesh and the edges' polylines for the work of one; `tessellate_edges` the polylines alone; `tessellate_within_budget` coarsens the tolerance for a whole body until it fits a triangle budget. Every triangle carries its face, every polyline its edge.
+
+**Edges first.** Each edge becomes points once, within the chordal tolerance (and the angle, when one is given), and every face that uses it uses those points, so a valid solid gives a closed mesh by construction. A face may ask for more: chords that cross another of its edges, lie beside its surface (a tight fillet, a slender nose), bulge past nearby points, are shared by two faces as a rung, or are long and straight beside points of a flat face, are cut in two on the curve, for every face that uses the edge, in rounds that are the same for any number of threads. Each face's mesh is then checked against its loops chord by chord before it is returned: a mesh that is not closed is an error, never a result.
+
+**Faces in their parameter plane.** A face is triangulated in its surface's parameters by our own constrained Delaunay triangulation (holes by the even–odd rule), seeded with a grid whose cells are within the tolerance by the arc for analytic kinds and by proven bounds on the second derivatives for Bézier and NURBS surfaces, then refined until every triangle is within the tolerance (and its sides within the angle), measured at its centroid and side middles. A face that goes round its surface is cut along a seam (straight where one exists, else in pieces from loop to loop); poles, apexes and spline surfaces that close on themselves are followed explicitly; with the angle, tori, spheres and spline faces are triangulated in a plane scaled or warped so that a cell is square in the angle. Planar faces get no interior points.
+
+**No size of its own, deterministic, bounded.** Every threshold is a ratio, so a body and its tolerance *k* times larger give the same mesh *k* times larger (bit for bit for powers of two). Faces are meshed in parallel (`std::thread::scope`) and merged in face order. A triangulation has a work budget; a face and a body stop as soon as a count that is a function of the input exceeds the triangle budget, so a scene within the budget is the one built without it.
+
+**Qualities** (`SceneQuality`): `Automatic` (1e-3 of the model's size: export and previews without a tolerance), `Tolerance(t)`, `Preview` (1e-3 of the bodies' box: the quick first picture), `Display` (2e-4 of the size and 12°, within a million triangles, coarsened by a ladder, never coarser than the automatic tolerance) and `Picture` (a picture's own: the display's floor, coarsened by powers of two to between a quarter and half a pixel for the picture's camera). Export refuses a tolerance it cannot mesh rather than coarsen it.
+
+**Self-intersections of a mesh** (`self_intersections`): triangles that cross or overlap without being neighbours, decided exactly by orientation predicates with an exact fallback, measured in depth, found through a bounding-volume hierarchy on several threads and merged in order; the body checks built on it are in [`topology.md`](topology.md).
+
+## Findings and history
+
 > Moved verbatim from `docs/architecture.md` on 2026-10-15. Section numbers (§4.1, §5.3, …) in the text are those of that file before the split; [README.md](README.md) says where each one is now.
 
-## From *Current state (2026-10-12)*
+### From *Current state (2026-10-12)*
 
 - **Tessellation:** two entry points. `tessellate_patches` meshes untrimmed Bézier patches on one uniform grid (the teapot). `tessellate_body` meshes any B-rep body edges first: every edge (line, circle, ellipse, NURBS) becomes points once, within the chordal tolerance, and every face that uses it uses those points, so the welded mesh of a valid solid is a closed manifold. Each face is triangulated in its surface's parameter space by our own constrained Delaunay triangulation (holes by the even–odd rule), with interior points added until every triangle is within tolerance of the surface; loops that wind around an axis are cut along a seam whose two sides share their 3D points; poles, apexes and collapsed patch edges become one point. Faces are tessellated in parallel (`std::thread::scope`) and merged in face order: 1, 2 and 8 threads give byte-identical meshes. Planar faces get no interior points (a block is 12 triangles). A face around an axis whose other loops leave no room for a straight seam is cut along a seam in pieces, from loop to loop (§6). A face on a spline surface that closes on itself (a NURBS surface of revolution, with or without its seam as an edge) is followed across the seam like one on a cylinder, and every face's mesh is held against the chords of its edges before it is returned, so a mesh that is not closed is an error, never a result (2026-10-14, §6). Still `Unsupported`: a loop winding more than once, or around both the axis and the tube of a torus; refused as well: a face across the seam of a spline surface that closes on knots that are not clamped.
 
 ---
 
-## 6. Tessellator (`tess`)
+### 6. Tessellator (`tess`)
 
 `tessellate(&Body, &TessParams, cancel) -> Result<Mesh, TessError>` with `TessParams { chordal_tolerance, angular_tolerance, max_edge_length }`. *As built:* `tessellate_body(&Body, &TessParams)` with `TessParams { chordal_tolerance, max_segments, max_triangles, max_angle }` (no cancel token yet), `tessellate_body_and_edges`, `tessellate_edges` and `tessellate_within_budget`.
 

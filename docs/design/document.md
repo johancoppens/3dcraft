@@ -1,14 +1,30 @@
 # 3DCraft design: The document, sketches, datums and appearance
 
+The document as data (`craft3d-doc`), expressions and variables (`craft3d-expr`), sketches and their solver (`craft3d-solve`, mapped in `regen/src/sketch.rs`), datums, and the appearance and material of bodies. The *Data* of the map ([`../architecture.md`](../architecture.md) §3).
+
+## Method
+
+**The document is the recipe.** `Document` holds units, tolerance, variables (in the order they were defined), the features in order of application, a rollback marker, the next feature id (ids are never reused), and beside the history `bodies`: the appearance and material given to the body of a feature. It is pure data with serde; nothing in it is derived, and `validate()` checks it. Every numeric parameter is an expression kept as source text (`"height - 2 * wall"`), evaluated at regeneration in the document's units; a bare number is in the document's unit.
+
+**Expressions** (`expr`): dimensions (length and angle exponents) and units, a parser and evaluator with functions and `pi`, and a `VariableTable` that evaluates in a deterministic order from the dependencies, detects cycles, fails only what depends on a bad variable, and rewrites references on rename. Sizes are capped against hostile input.
+
+**Sketches** are features: a plane (a world plane, a face by name, or a datum plane, with an offset), point, line, circle, arc and spline entities (a polynomial B-spline on clamped uniform knots whose control points are point entities), and constraints in the order they were added. The stored coordinates *are* the last solution, so a reopened sketch does not flip. `solve` takes plain numbers: point coordinates and radii are the unknowns, gradients exact (dual numbers), steps minimum-norm with a line search from the stored solution, so free geometry moves as little as possible. It reports the degrees of freedom and, from the rank of the Jacobian in the order of the constraints, which ones are redundant or conflicting; a point on a spline is one equation with the curve's parameter eliminated at the foot of the point. Every loop is capped; "did not converge" is a normal answer.
+
+**Datums** (`datum.plane`, `axis`, `point`, `helix`) are features without a body. Each is placed by small reference types (`PlaneRef`, `AxisRef`, `PointRef`: base geometry, a face by name, an edge by its two faces, a vertex by name, another datum) and found again at every regeneration; a sketch, a mirror, a revolution or a pattern can be placed by one.
+
+**Appearance and material** are not features: regeneration does not read them. A body has the appearance and material of the feature that makes it, else of the body it was made from as instance 0; a face has the appearance of the nearest feature on the way its name records. Mass and inertia come from the material's density and are measured when asked, once per body.
+
+## Findings and history
+
 > Moved verbatim from `docs/architecture.md` on 2026-10-15. Section numbers (§4.1, §5.3, …) in the text are those of that file before the split; [README.md](README.md) says where each one is now.
 
-## From *Current state (2026-10-12)*
+### From *Current state (2026-10-12)*
 
 - **Expressions:** `expr` has dimensions (length and angle exponents) and units (`um mm cm m in ft`, `deg rad`), a parser and evaluator for formula text (`+ - * / ^`, functions, `pi`, variables, a unit after a number), and `VariableTable` (deterministic evaluation order, cycle detection, partial failure, rename that rewrites references). Source length, nesting depth and table size are capped. Not built: printing an expression back to text, storing the evaluation order (computed on demand; storing it is `doc`/`format`'s job).
 - **Document:** `doc` has `Document` (units, tolerance, variables, ordered features, rollback marker, next feature id), features `Block`, `Cylinder`, `Sphere`, `Cone`, `Torus` whose parameters are expressions kept as source text, an `Orientation` (axis and angle) on all but the sphere, stable never-reused feature ids, and `validate()`. Sketches are features too (`doc::sketch`): a plane (a world plane with an offset), point, line, circle, arc and (2026-10-13) spline entities with ids that are never reused, sixteen kinds of constraint in the order they were added, and the last solution as the stored coordinates. Not built: the other feature kinds, references between features.
 - **Sketch solver:** `solve` takes a sketch as plain numbers (points, lines, circles, arcs; constraints with evaluated values) and returns solved coordinates, the degrees of freedom left, and per constraint whether it is satisfied, redundant or conflicting (the later constraint is blamed). Newton-type with minimum-norm steps from the given start, so a solved sketch does not move and a free part moves as little as possible; every loop is capped. It knows nothing about the document: `regen` maps one onto the other.
 
-## 4. Document model (`craft3d-doc`)
+### 4. Document model (`craft3d-doc`)
 
 A document is the recipe. Sketch of the types (final names are settled in M1/M2):
 
@@ -83,7 +99,7 @@ pub enum Ref {                           // how a feature points at geometry
 - *Not built:* a datum at a vertex of a body a boolean made (vertices need names that survive a boolean, or a reference by the faces that meet there); an axis or centre from an elliptic or freeform edge; a plane tangent to a face, normal to a curve, or midway between two planes; a transform about a datum axis; drawing datums in the viewport.
 - *Tests:* `crates/engine/tests/datums.rs` (boxes, discs and rings on offset, angled and three-point planes at 1e-3, 1 and 1e6 against closed forms, with their boxes and centres; mirrors, revolves and patterns about datums; upstream edits; lost references and repair; save and reopen; everything that is refused), `crates/regen/tests/datums.rs` (documents no command builds: cycles, datums of the wrong kind, the cache), `crates/format/tests/format.rs` (the file).
 
-### 4.2 Appearance and material per body (2026-10-15)
+#### 4.2 Appearance and material per body (2026-10-15)
 
 A colour (`Appearance`: sRGB, and `metallic` and `roughness` from 0 to 1) and a material (`Material`: a name and a density in kg/m³) are given to the body of a feature (`body.appearance`, `body.material`) and kept in `Document::bodies`, a list by feature id beside the history (`crates/doc/src/appearance.rs`). They are not features: regeneration does not read them, an edit of a feature's parameters keeps them (the id stays), deleting the feature drops its entry, undo and redo treat them as any edit. Saved in `.3dcraft` from format 16 ([`file-formats.md`](../file-formats.md)).
 
@@ -98,7 +114,7 @@ The colours reach every picture through `craft3d_render::FaceColors` (a colour p
 
 *Setting them costs nothing (2026-10-15).* `body.appearance` and `body.material` change `Document::bodies` and nothing regeneration reads, so the regeneration after them, and after undoing or redoing them, rebuilds no feature and checks none (`colours_and_materials_rebuild_nothing` counts it). `body.material` says which bodies have the material and from where; it measures nothing. It used to report each body's mass and inertia as well, and the exact measure of a body of spline faces takes seconds: on the impeller (99 faces, 62 of them freeform) 35 to 44 s of CPU (4 to 11 s on fourteen threads), for one command that only names a material. The mass and the inertia are measured when `document.inspect`, `document.measure` or `document.check` asks, once per body (`engine/src/mass.rs`), and both at once for a body with a material (`topo::mass_and_inertia`): the faces are integrated once with the second moments, and the area, volume and moments are taken at the doubling where they agree, settled with a copy of the work spent so far, which is what `mass_properties` alone does, bit for bit (`mass_and_inertia_at_once_are_each_bit_for_bit_what_they_are_alone`, on analytic and freeform reference solids at two scales). One measure of both costs about what the inertia alone did: on the impeller about 20 s of CPU (in `document.check`, the first to ask) where the mass and then the inertia took 35 to 44 s. `colours_and_materials_measure_nothing` counts the measures (`mass::fresh_measures`).
 
-### 5.4 Sketch solver (`solve`)
+#### 5.4 Sketch solver (`solve`)
 
 A 2D geometric constraint solver: entities become unknowns, constraints become equations, solved numerically (Newton-type with a rank-revealing step) from the stored previous solution. It reports degrees of freedom, which constraints are redundant or conflicting, and never loops forever (iteration cap → `DidNotConverge`). Dragging (later, with the UI) is the same solve with a soft target. Decomposition into small sub-problems is an optimisation for later; correctness and diagnostics come first.
 

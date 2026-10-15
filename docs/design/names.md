@@ -1,5 +1,23 @@
 # 3DCraft design: Persistent names
 
+Persistent names of faces, edges and vertices: how they are made (`regen` from the kernel's origins, `regen/src/entity.rs`), stored (`doc::PersistentName`, `doc/src/name.rs`), followed (`regen/src/follow.rs`) and resolved. Rule 6 of the map ([`../architecture.md`](../architecture.md) §1).
+
+## Method
+
+**A name says how an entity was made, never where it sits in a body.** Every kernel operation reports an origin for every entity of its result; `regen` turns origins into names, three ways:
+
+- *By role and source*, for what a feature makes: `F3:face(1)` for a primitive (its entities are made in a fixed order), `F2:side(e7)`, `F2:endCap(e5,e6,e7,e8)`, `F2:lateralEdge(e5,e6)` for a sweep (the sketch entities involved; `piece(k)/` for the further pieces of one source), `F9:fillet(k)`, `F9:chamfer(k,i)`, `F9:thread(0)` for what a blend or a thread adds.
+- *As a copy*, for what a feature takes over from a body: `F7:copy(1)/F3:side(e2)` is the image in instance 1 (a boolean's tool, a pattern's instance) of what F3 called `side(e2)`. A name has one link per *run* of instance 0 or of other instances along the way, so it does not grow with a row of cuts (`copy(0)` through a thousand features).
+- *By faces*, for edges and vertices of a body a boolean or a joined pattern made: `F7:between[a,b]` and `F7:corner[a,b,c]`, with faces near it after `|` when several entities lie on the same faces, and a number by position in space only when no face tells them apart. An entity an operand already had also answers to its old name as an alias; a merged face answers to the names of every face it was merged from.
+
+**Resolution.** At every regeneration a reference is found again against the results so far: the feature must exist, come earlier, have succeeded and have an entity with that name or alias. The outcome is one entity, several (a face cut in pieces shares its name: accepted where the pieces lie on one surface, as for a sketch's plane), or none, which fails the referring feature with the name and the names that are there; a name never resolves to a different entity. A cap's name survives a change of its outline, since all caps of one role lie in one plane. Edges are referred to by the pair of faces they lie between wherever a feature takes them (chamfers, fillets, datums), which survives what an edge's own name does not.
+
+**Following a body.** A feature that takes the body it works on (a blend, a face operation, a thread) may name faces as an earlier body of the same chain had them; each name is followed through the features that took that body, copy by copy, to its newest form, and the feature is built from the full names. What cannot be followed (gone, or several copies) fails the feature and says why. References that do not take the body (a sketch on a face, an extrusion up to a face, a datum) keep meaning the face of the body they name.
+
+**Where stability cannot be had** (stated, not hidden): a numbered name follows position, so an edit that reorders tied entities moves the number; an alias follows the kernel's choice where entities of both operands coincide; a name with faces after `|` is lost when those faces change. Each is in the findings below.
+
+## Findings and history
+
 > Moved verbatim from `docs/architecture.md` on 2026-10-15. Section numbers (§4.1, §5.3, …) in the text are those of that file before the split; [README.md](README.md) says where each one is now.
 
 ### 4.1 Persistent names

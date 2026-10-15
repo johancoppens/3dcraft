@@ -1,12 +1,28 @@
 # 3DCraft design: Topology, checks and measures
 
+The boundary representation and what is decided and measured on it (`craft3d-topo`), with the mesh-based checks of `craft3d-tess` that stand beside it. Methods 6 and 7 of the map ([`../architecture.md`](../architecture.md) §5).
+
+## Method
+
+**The B-rep.** A `Body` holds vectors of vertices, edges, loops (of coedges), faces and shells, referred to by `u32` ids; it is a solid (closed, oriented shells), a sheet or a wire. A face lies on a `Surface` and is to the left of its loops seen from outside (`reversed` turns its normal); an edge lies on a `Curve3` between two vertices; a coedge is the use of an edge by a loop, with a direction. Parameter-space curves are not stored and entities carry no tolerance of their own: the document's tolerance is passed to every check. A body is shared whole (`Arc`), not part by part.
+
+**Validity** (`topo::check`): references in range, finite numbers, vertices on their edges, closed loops, edges on their faces' surfaces within the tolerance, every edge of a solid used once each way, and Euler–Poincaré with the genus (`topo::genus`, which knows torus faces that keep a handle). It does not test self-intersection or that a face is bounded by its loops: those are the mesh checks below and the measure.
+
+**Self-intersection and self-touch** (`tess::body_self_intersections`, `body_self_intersections_near`, `body_touches_itself`). The body is meshed, and triangles that meet without being neighbours are found exactly (orientation predicates with an exact fallback); each finding has a depth and the margin the approximation alone could explain, so it is *certain* or not. Shells that do not cross are placed by winding numbers. The *near* form takes a role per face (a known group, or new) and looks only where new faces, or faces of different groups, can meet. Touching is decided on the B-rep: a vertex within twice the tolerance of another vertex, or of an edge, of the same shell. Regeneration runs these per operation ([`regeneration.md`](regeneration.md)); the kernel does not, since it shares a layer with `tess`.
+
+**Measure** (`topo::mass_properties`, `inertia`, `mass_and_inertia`). Area, volume, centroid and the inertia tensor are boundary integrals over the exact surfaces, in each surface's parameters, taken about the middle of the body. Each face's boundary is integrated with Gauss–Legendre panels, doubled until two sums in a row agree to 1e-12 (piece by piece of the boundary, within a work budget per face); a face that does not settle is an error, never a guess. Poles of spheres, cones and spline surfaces, seams of surfaces that close on themselves and faces that are their whole surface each have an explicit rule. Faces are measured on several threads and summed in face order.
+
+**Transforms** (`Body::transformed`): rigid motions and mirrors map every curve and surface exactly and keep every entity id; `Body::bbox` is a conservative box from the exact geometry; `merge` puts the shells of several bodies into one.
+
+## Findings and history
+
 > Moved verbatim from `docs/architecture.md` on 2026-10-15. Section numbers (§4.1, §5.3, …) in the text are those of that file before the split; [README.md](README.md) says where each one is now.
 
-## From *Current state (2026-10-12)*
+### From *Current state (2026-10-12)*
 
 - **Topology:** `topo` has the B-rep (`Body` with vertices, edges, loops of coedges, faces, shells), the validity checker `check` (references, finite numbers, vertices on edges, closed loops, edges on their faces' surfaces, each edge of a solid used once each way, Euler–Poincaré with genus) and `mass_properties` (area, volume, centroid by boundary integrals over the exact geometry). Fourteen reference solids (six primitives and hemisphere, and eight with trimmed faces: holes, half walls, a spherical cap, a frustum, an ellipse edge, Bézier and NURBS roofs) match their closed forms at three scales and in tilted frames. `mass_properties` also measures the faces a revolution makes: torus faces bounded around the tube, around the axis or both (the surface is closed both ways, so the boundary integral is right only up to a whole number of times the entire torus, which the area settles), and faces whose boundary passes through a pole of a sphere or the apex of a cone (the point stands for a stretch of the edge of the parameter range, which is added). It still refuses, rather than gets wrong, a boundary through a collapsed edge of a Bézier or NURBS surface, a boundary that winds around an axis more than once, torus loops that wind around the axis and the tube at once, and a boundary that turns back on itself at a pole. Deviations from the plan below: parameter-space curves are not stored (recovered by projection), no per-entity tolerances, no persistent names yet (M6), no inertia tensor, and the checker does not test self-intersection or that each face is bounded by its loops.
 
-### 5.2 Topology (`topo`)
+#### 5.2 Topology (`topo`)
 
 ```text
 Body ── Shell ── Face ── Loop ── Coedge ── Edge ── Vertex

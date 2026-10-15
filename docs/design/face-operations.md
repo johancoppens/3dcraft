@@ -1,11 +1,30 @@
 # 3DCraft design: Face operations
 
+Offset face, shell, move face, draft, thicken and delete face (`kernel::tweak` and its users; `regen::face_ops` and the module per operation; `engine::face_cmds`). Method 5 of the map ([`../architecture.md`](../architecture.md) §5).
+
+## Method
+
+**Give faces new surfaces and close the body again, keeping every entity.** `kernel::tweak::resurface` takes a body and new surfaces for some faces. Every vertex on such a face is found again where the surfaces of its faces meet, nearest where it was (Newton on the signed distances); every edge that ends in such a vertex is made again on its two faces' surfaces (a line, or a circle about the axis of its round face; an elliptic or spline edge only when neither face moved). Nothing about how the body hangs together changes: every face, edge and vertex of the result has the number it had. The result is then held against what a body is (edges that shrink to nothing or turn round, flat faces whose loops change their turning or cross, round faces whose rims change places, points just inside and outside each moved edge classified by ray casting, `topo::check`).
+
+- **Offset face**: a plane moves to the parallel plane, a cylinder, sphere or torus changes its radius, a cone its radius at the frame; positive is away from the material.
+- **Move face**: one rigid motion of several faces (`resurface_rigid`): what lies wholly on moved faces is moved exactly, what lies between moved and fixed faces is found again as for an offset.
+- **Draft**: flat faces square to the pull turn about their line on the neutral plane, cylinders along the pull become cones; closed forms only.
+- **Shell**: every face offset inward by the thickness, open faces outward, and the hollow taken from the solid by the boolean.
+- **Thicken**: the layer between the solid with the faces moved outward and with them moved inward (two offsets and a boolean), as a body of its own.
+- **Delete face**: a group of faces that fills holes of the faces around it goes, and those faces go on across (topological only); a strip (a chamfer or fillet along an edge, a round of a rim) collapses into the edge where its neighbours meet when continued (`resurface_at`).
+
+**Too far** is found, not guessed: a check that fails at the given size but passes at a smaller one gives the largest that fits (halving, 48 times at most) and the edge or face that stops it. **Refused, with the faces**: a neighbour tangent to a moved face, a vertex of four or more faces that would have to become an edge, a freeform neighbour of a face moved outward, an edge between moved and fixed faces that would no longer be a line or a circle, the offset of a freeform face.
+
+**Names**: every entity of an offset, move or draft is the copy of what it was; a shell or thicken names its skin and the faces of the hollow or layer as copies in instance 0 and 1; a deletion names edges and vertices by their faces. A sketch on a moved face moves and turns with it. What local checks cannot see, two faces far apart that ran into each other, regeneration finds on a mesh: near the change for move face and draft, over the whole body for offset face, shell and thicken (structural debt, the map's §9).
+
+## Findings and history
+
 > Moved verbatim from `docs/architecture.md` on 2026-10-15. Section numbers (§4.1, §5.3, …) in the text are those of that file before the split; [README.md](README.md) says where each one is now.
 
 
 **The face operations' faces** (2026-10-14): an offset face names every face, edge and vertex of its result as the copy of what it was, instance 0; a shell names its skin's faces so and the faces of the hollow as copies in instance 1 of the faces they lie behind (`F9:copy(1)/F1:face(0)` is the floor of the hollow of a block). A deletion names the faces that stay as copies in instance 0 and its edges and vertices by their faces, with the copies of their old names as aliases. A move face and a draft (2026-10-15) name everything as an offset does; a layer made by thicken as a shell names its faces: instance 0 for a face on or along a face of the source, instance 1 for one under a face it thickens. No name role was added (§5.3 › *Face operations as built*).
 
-#### Face operations as built (M9, 2026-10-14)
+### Face operations as built (M9, 2026-10-14)
 
 `feature.offsetFace`, `feature.moveFace`, `feature.draft`, `feature.shell` and `feature.thicken`; `kernel::offset_face`, `kernel::move_face`, `kernel::draft`, `kernel::shell`, `kernel::thicken`, and what they share in `kernel::tweak`; `regen::face_ops`, `regen::offset_face`, `regen::move_face`, `regen::draft`, `regen::shell`, `regen::thicken`; `engine::face_cmds`.
 
