@@ -1448,7 +1448,7 @@ pub fn loft(
 /// - A joint whose λ differ by so much that two of the sections would
 ///   make the faces meet at more than the angular tolerance (the angle
 ///   between (1 − t) Dₛ + t Dᵣ and (1 − t) Eₛ + t Eᵣ, the faces' tangents
-///   between them, at 33 values of t): each section's λ there is made the
+///   between them, at the 31 values k / 32 of t inside (0, 1)): each section's λ there is made the
 ///   sections' geometric mean by running a piece's parameter through a
 ///   polynomial (`craft3d_geom::refine`). Where the piece's other end is a
 ///   corner (a vertex at which some section is not tangent, whose ratio
@@ -1605,8 +1605,12 @@ fn tangent_columns(
                     [Some(s), None] if one(s) => continue,
                     [None, Some(e)] if one(e) => continue,
                     [None, None] => continue,
-                    [Some(s), None] => reparametrized_at(&piece.curve, s, false),
-                    [None, Some(e)] => reparametrized_at(&piece.curve, e, true),
+                    // The quadratic takes a factor below 2; beyond it the
+                    // cubic, which keeps the corner's end as it was.
+                    [Some(s), None] => reparametrized_at(&piece.curve, s, false)
+                        .or_else(|_| reparametrized(&piece.curve, s, 1.0)),
+                    [None, Some(e)] => reparametrized_at(&piece.curve, e, true)
+                        .or_else(|_| reparametrized(&piece.curve, 1.0, e)),
                     [Some(s), Some(e)] => reparametrized(&piece.curve, s, e),
                 };
                 if let Ok(made) = made {

@@ -964,7 +964,8 @@ fn on_arcs(curves: &[SketchCurve], plane: &Frame) -> Vec<Vec3> {
 }
 
 /// The largest sine of the angle between the normals of two side faces
-/// across every edge they share (33 points along each), and across every
+/// across every edge they share where they are tangent at the edge's
+/// start, a section (33 points along each), and across every
 /// knot inside a side face (both sides of it, 9 points across).
 fn creases(lofted: &Lofted) -> f64 {
     let body = &lofted.body;
@@ -990,6 +991,15 @@ fn creases(lofted: &Lofted) -> f64 {
             let (ea, eb) = (edges_of(a), edges_of(b));
             for e in ea.iter().filter(|e| eb.contains(e)) {
                 let edge = &body.edges[*e as usize];
+                // A rail at a corner of the sections is a corner of the
+                // faces at its ends already: not a crease.
+                let at = |t: f64| {
+                    let p = edge.curve.eval(t);
+                    normal(a, p).cross(normal(b, p)).length()
+                };
+                if at(edge.range.0) > 1e-6 {
+                    continue;
+                }
                 for j in 0..=32 {
                     let t = edge.range.0 + (edge.range.1 - edge.range.0) * f64::from(j) / 32.0;
                     let p = edge.curve.eval(t);
@@ -1057,6 +1067,88 @@ fn faces_meet_tangentially_where_the_sections_are_smooth() {
             assert!(off < 1e-9 * k.max(1.0), "a section is {off} off the sides");
             let worst = creases(&made);
             assert!(worst <= tol().angular, "a crease of {worst} at scale {k}");
+        }
+    }
+}
+
+/// An aerofoil of two cubic Béziers at scale `k`: tangent at the leading
+/// edge (0, 0), where the lower one arrives `m` times slower than the
+/// upper one leaves, and meeting at a corner at the trailing edge. With
+/// points of both curves from Bernstein's form, in the sketch's axes.
+fn aerofoil(k: f64, chord: f64, m: f64) -> (Vec<SketchCurve>, Vec<P>) {
+    let lead = [0.0, 0.0];
+    let up = [-0.1 * chord, 0.6];
+    let trail = [chord, 0.1];
+    let upper = [lead, up, [0.5 * chord, 1.2], trail];
+    // The lower curve's last leg points the way the upper's first does,
+    // m times shorter.
+    let back = [
+        lead[0] - (up[0] - lead[0]) / m,
+        lead[1] - (up[1] - lead[1]) / m,
+    ];
+    let lower = [trail, [0.6 * chord, -0.8], back, lead];
+    let scaled = |c: &[P; 4]| c.iter().map(|p| [p[0] * k, p[1] * k]).collect::<Vec<P>>();
+    let mut points = Vec::new();
+    for c in [&upper, &lower] {
+        for i in 0..=16 {
+            let t = f64::from(i) / 16.0;
+            let b = [
+                (1.0 - t).powi(3),
+                3.0 * t * (1.0 - t).powi(2),
+                3.0 * t * t * (1.0 - t),
+                t.powi(3),
+            ];
+            let x: f64 = (0..4).map(|j| b[j] * c[j][0]).sum();
+            let y: f64 = (0..4).map(|j| b[j] * c[j][1]).sum();
+            points.push([x * k, y * k]);
+        }
+    }
+    (
+        vec![spline(1, 3, &scaled(&upper)), spline(2, 3, &scaled(&lower))],
+        points,
+    )
+}
+
+/// The rotor's blades: aerofoils of two Béziers, tangent at the leading
+/// edge and with a corner at the trailing edge, lofted smoothly through
+/// three and four sections whose ratios of speeds at the leading edge
+/// differ (by up to nine times, so one section's factor is beyond what the
+/// quadratic change of parameter takes and the cubic is used): the faces
+/// meet tangentially across the leading edge's rail and every section lies
+/// on the sides.
+#[test]
+fn an_aerofoil_loft_is_tangent_at_its_leading_edge() {
+    for k in SCALES {
+        let tilt = Frame::new(
+            Vec3::new(-1.0, 2.0, 0.5) * k,
+            Vec3::new(-0.1, 0.25, 1.0).normalized().unwrap(),
+            Vec3::X,
+        )
+        .unwrap();
+        let at = |z: f64| Frame::new(tilt.point(0.0, 0.0, z * k), tilt.z(), tilt.x()).unwrap();
+        for rows in [
+            vec![(4.0, 1.0, 0.0), (3.5, 1.5, 3.0), (3.0, 1.2, 7.0)],
+            vec![
+                (4.0, 1.0, 0.0),
+                (3.5, 9.0, 3.0),
+                (3.0, 3.0, 7.0),
+                (2.0, 1.0, 9.0),
+            ],
+        ] {
+            let mut sections = Vec::new();
+            let mut points = Vec::new();
+            for &(chord, m, z) in &rows {
+                let (curves, on) = aerofoil(k, chord, m);
+                let plane = at(z);
+                sections.push(section(&curves, plane));
+                points.extend(on.iter().map(|p| plane.point(p[0], p[1], 0.0)));
+            }
+            let made = loft(&sections, &SMOOTH, &tol()).unwrap();
+            sound(&made);
+            let worst = creases(&made);
+            assert!(worst <= tol().angular, "a crease of {worst} at scale {k}");
+            let off = off_the_sides(&made, &points);
+            assert!(off < 1e-9 * k.max(1.0), "a section is {off} off the sides");
         }
     }
 }
