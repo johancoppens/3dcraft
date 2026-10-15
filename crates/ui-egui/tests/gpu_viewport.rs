@@ -1,6 +1,6 @@
 //! The GPU viewport against the CPU viewport: the two renderers through
 //! the shell's own code path ([`BodyRenderer`] and `viewport::compose_with`),
-//! compared with the tolerances of docs/architecture.md §7.2 (oracle 7),
+//! compared with the tolerances of docs/design/rendering.md (oracle 7),
 //! and the shell showing and reporting the GPU's picture.
 //!
 //! The comparison is the one of `crates/gpu/tests/parity.rs`, included
@@ -1512,7 +1512,7 @@ fn visible_faces(frame: &Frame) -> Vec<(u32, [u32; 2])> {
 
 /// A highlighted face is the same face, in the same colour, whichever
 /// renderer shades the viewport: the read-back GPU path against the CPU
-/// path, within the tolerance of docs/architecture.md §7.2.
+/// path, within the tolerance of docs/design/rendering.md.
 #[test]
 fn a_highlighted_face_looks_the_same_from_the_gpu_and_from_the_cpu() {
     let mut session = part();

@@ -1,5 +1,5 @@
 //! wgpu renderer: the same picture as the CPU reference renderer, on the GPU
-//! (docs/architecture.md §7).
+//! (docs/design/rendering.md).
 //!
 //! It takes what [`craft3d_render::render`] takes (a [`Mesh`], a [`Camera`],
 //! [`RenderParams`]) and gives back the same [`Frame`]: colour, face ids and

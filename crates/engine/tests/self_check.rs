@@ -1,5 +1,5 @@
 //! No feature hands on a body that passes through or touches itself
-//! (docs/architecture.md §5.5 › *Never through itself*): what the kernel
+//! (docs/design/regeneration.md › *Never through itself*): what the kernel
 //! builds and the checker passes is still refused, with the faces named.
 
 #![allow(

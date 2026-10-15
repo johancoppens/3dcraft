@@ -5,7 +5,7 @@
 //! the last solution: the numbers in [`Geometry::Point`] and
 //! [`Geometry::Circle`] are where the solver left the sketch. They are the
 //! solver's starting point next time, so a reopened sketch does not flip to
-//! a mirror solution (docs/architecture.md §4). Dimension values are
+//! a mirror solution (docs/design/document.md). Dimension values are
 //! expressions; coordinates are plain numbers in the document's length unit.
 //!
 //! Entities and constraints are addressed by ids that are never reused

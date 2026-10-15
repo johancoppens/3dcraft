@@ -884,6 +884,7 @@ pub fn boolean_with(
     tolerance: &Tolerance,
     options: &BooleanOptions,
 ) -> Result<BooleanResult, KernelError> {
+    crate::work::boolean();
     run(a, b, op, tolerance, options).map_err(|stop| match stop {
         Stop::Error(error) => error,
         Stop::Unsupported { reason, mut faces } => {

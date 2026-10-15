@@ -1,7 +1,7 @@
 //! Names of faces that a boolean, or the union that joins the touching
 //! instances of a pattern, merged from faces of several operands: the face
 //! is named after the first contributor in the kernel's order and answers
-//! to the names of the others as aliases (docs/architecture.md §4.1).
+//! to the names of the others as aliases (docs/design/names.md).
 
 #![allow(
     clippy::unwrap_used,

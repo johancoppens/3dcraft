@@ -1,5 +1,5 @@
-//! Acceptance checks written from the specification (docs/architecture.md
-//! §1.1 "Units", §4), independently of the crate's own unit tests.
+//! Acceptance checks written from the specification (docs/design/plan.md
+//! "Units", docs/design/document.md), independently of the crate's own unit tests.
 
 #![allow(
     clippy::unwrap_used,

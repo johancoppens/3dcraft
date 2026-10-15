@@ -703,7 +703,7 @@ fn run_stops_at_the_first_failing_command_with_exit_code_1() {
 }
 
 /// With `--keep-going` a failing command does not throw away what the
-/// others built (showcase U1, 2026-10-16: a failing last command lost a
+/// others built (showcase U1, 2026-10-15: a failing last command lost a
 /// ten-minute build): it is reported on its line, the rest run, `--out`
 /// saves the document, and the exit code still says something failed.
 #[test]

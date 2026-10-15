@@ -301,6 +301,7 @@ impl Solver<'_> {
     /// The section in the plane at `s`, started from `near` (a section
     /// nearby).
     fn section(&self, s: f64, near: &Section) -> Option<Section> {
+        crate::work::blend_section();
         let across = self.spine.at(s)?;
         match self.shape {
             Shape::Ball { radius, convex } => self.ball(across, near, radius, convex),

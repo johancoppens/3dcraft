@@ -1,6 +1,6 @@
 //! Modelling operations on B-rep bodies. Each is a pure function that
 //! returns a body which passes `craft3d_topo::check`, or an error that says
-//! why it cannot (docs/architecture.md §5.3).
+//! why it cannot (docs/design/kernel.md).
 //!
 //! So far: primitive solids, closed profiles from sketch curves
 //! ([`profile`]), their extrusion ([`extrude`]), their revolution
@@ -31,6 +31,7 @@ pub mod sweep;
 pub mod thicken;
 pub mod thread;
 mod tweak;
+pub mod work;
 
 use craft3d_geom::GeomError;
 use craft3d_topo::Defect;

@@ -1,4 +1,4 @@
-//! CPU reference renderer: the display oracle (docs/architecture.md §7).
+//! CPU reference renderer: the display oracle (docs/design/rendering.md).
 //!
 //! A software rasteriser with a depth buffer, smooth two-sided shading and an
 //! id buffer that says which face is under each pixel. It favours exactness

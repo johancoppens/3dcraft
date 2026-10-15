@@ -2,7 +2,7 @@
 //! where they were by the faces round them.
 //!
 //! Two ways of closing it are built, and a set of faces that neither fits
-//! is refused with the faces and the reason (docs/architecture.md §5.3 ›
+//! is refused with the faces and the reason (docs/design/face-operations.md ›
 //! *Face operations as built*). The faces given fall into groups that
 //! hang together by edges; each group is closed on its own, one after the
 //! other.

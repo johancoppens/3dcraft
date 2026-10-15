@@ -4,7 +4,7 @@
 //! text (`"25 mm"`, `"width / 2 + 3 mm"`, `"height - 2 * wall"`). This crate
 //! turns that text into a [`Quantity`]: a number in base units (millimetres,
 //! radians) with a [`Dimension`], so that `10 mm + 1 in` is 35.4 mm and
-//! `10 mm + 30 deg` is an error (docs/architecture.md §1.1, §4).
+//! `10 mm + 30 deg` is an error (docs/design/plan.md, docs/design/document.md).
 //!
 //! Three steps, kept apart:
 //!

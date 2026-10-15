@@ -473,7 +473,7 @@ pub const DEPTH_SLACK: f64 = 1e-6;
 
 /// The GPU renderer's distance is an `f32` computation: sixteen roundings
 /// of 2⁻²⁴ on numbers as large as the eye's distance to the model's centre
-/// plus the model's diagonal (the `reach` of docs/architecture.md §7.2).
+/// plus the model's diagonal (the `reach` of docs/design/rendering.md).
 /// The depth test of the overlay allows a GPU frame that much more.
 pub const GPU_DEPTH_ERROR: f64 = 16.0 / 16_777_216.0;
 

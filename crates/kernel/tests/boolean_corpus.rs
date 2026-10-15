@@ -1493,7 +1493,9 @@ fn the_kernel_agrees_with_the_reference_kernel() {
          of them refused as zero thickness, their bodies made without the refusal agreeing: \
          {zero_thick}"
     );
-    println!(
+    // In the score too, where `cargo xtask health` reads it.
+    let _ = writeln!(
+        report,
         "digest of all results: {:016x}",
         DIGEST.load(std::sync::atomic::Ordering::Relaxed)
     );

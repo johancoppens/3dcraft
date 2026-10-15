@@ -2,11 +2,11 @@
 
 > **Last updated:** 2026-10-15 · **Stage:** M7 (booleans) and M8.5 in progress, M9 started, M4 nearly done; M0–M3, M5, M6 and M8 done · **Change:** minor (M9: move face, thicken and draft; boolean checklist: fourth-order contact built, rational weights a hundred apart built; poles at a corner of a patch, coincident freeform faces)
 
-Forward-looking plan: the **Current focus** agents pick from, one line per milestone, and per milestone what it is for, what is done, what is open and what "done" means. There is no parity percentage: 3DCraft is AI-first with a minimal UI and has no target app ([`decisions.md`](decisions.md)). Progress is measured by milestones whose acceptance tests pass. How something was built (algorithms, thresholds, measurements, file paths of internals) is in [`architecture.md`](architecture.md), and how it is tested in [`testing.md`](testing.md).
+Forward-looking plan: the **Current focus** agents pick from, one line per milestone, and per milestone what it is for, what is done, what is open and what "done" means. There is no parity percentage: 3DCraft is AI-first with a minimal UI and has no target app ([`decisions.md`](decisions.md)). Progress is measured by milestones whose acceptance tests pass. How something was built (algorithms, thresholds, measurements, file paths of internals) is in the detail documents under [`design/`](design/README.md) (the structure in [`architecture.md`](architecture.md)), and how it is tested in [`testing.md`](testing.md).
 
 Status legend: ✅ done · 🟡 in progress · ⬜ not started. Put the date next to a status when it changes. No effort estimates yet: they are added once M0–M2 give a calibration from this repository's own history.
 
-**Keeping this file readable:** a table cell holds at most one sentence; what was done goes as one line with its date under **Done** in the milestone's section; what is left goes as a checkbox under **Open**, in priority order; how it was built goes in `architecture.md`, and the roadmap links to it.
+**Keeping this file readable:** a table cell holds at most one sentence; what was done goes as one line with its date under **Done** in the milestone's section; what is left goes as a checkbox under **Open**, in priority order; how it was built goes in its detail document under `design/`, and the roadmap links to it.
 
 ## Current focus
 
@@ -45,7 +45,7 @@ Phase 1 is M0–M8. Its acceptance scenario, run entirely by an agent over MCP w
 
 ## The boolean checklist
 
-The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item is measured by the share of seeded random pairs that is refused (by reason), with zero wrong or invalid results. Two independent oracles belong to it: a pinned corpus of cases with FreeCAD's answers ([`testing.md`](testing.md) › *The boolean corpus*, with its history), and a mesh-level self-intersection detector. How the kernel does it: [`architecture.md`](architecture.md) §5.3 › *Booleans as built*.
+The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item is measured by the share of seeded random pairs that is refused (by reason), with zero wrong or invalid results. Two independent oracles belong to it: a pinned corpus of cases with FreeCAD's answers ([`testing.md`](testing.md) › *The boolean corpus*, with its history), and a mesh-level self-intersection detector. How the kernel does it: [`design/booleans.md`](design/booleans.md) › *Booleans as built*.
 
 1. 🟡 **Every surface kind, NURBS included, in any position.** Analytic, polynomial and rational freeform faces, faces with a pole and faces on closed spline surfaces are operands.
 2. 🟡 **Every contact case:** coincident, tangent along a line or at a point, along an edge, at a vertex. Tangent contact with freeform faces and contact along a curve are built; the cases below are owed.
@@ -54,7 +54,7 @@ The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item i
 5. ⬜ **Several lumps, cavities, sheet bodies.**
 6. ✅ 2026-10-14 **Entities through booleans:** edges by the faces they lie between (2026-10-13), vertices by the faces they meet in (`document.edges`).
 7. 🟡 **Speed on bodies with thousands of faces** (a spatial index). Since 2026-10-15 a face's outline (and the index of a freeform surface) is made only when the boolean needs it: a bead on a shade of 2000 faces 2.2 GB instead of 7.2 GB.
-8. ✅ 2026-10-15 **Never an invalid body:** every operation is checked for crossing, overlapping and self-touching shells near what it changed, or proven unable to make them ([`architecture.md`](architecture.md) §5.5 › *Never through itself*).
+8. ✅ 2026-10-15 **Never an invalid body:** every operation is checked for crossing, overlapping and self-touching shells near what it changed, or proven unable to make them ([`design/regeneration.md`](design/regeneration.md) › *Never through itself*).
 
 **Measured (2026-10-14, morning; the same on 2026-10-15 after the helmet's findings, after poles at a corner and coincident freeform faces, and after fourth-order contact):** 11573 of 11988 corpus outcomes agree, 249 refused (all in the category near, about 250 being the tolerance rule itself: cases built one tolerance apart or into each other), 0 wrong, 0 invalid. Speed (2026-10-13): 1024 holes one by one in 7.1 s, a cylinder through a plate of 1030 faces in 36.5 ms; the corpus test takes about 230 s on 14 threads on an idle machine (640 s at noon on 2026-10-13) and is the gate's longest binary.
 
@@ -62,13 +62,13 @@ The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item i
 
 **Owed, in order:**
 
-- [ ] A cusp against a face that holds its axis through the point (the marcher's chart stopped short of a cusp to its order; [`architecture.md`](architecture.md) §5.3 › *Cusps*).
-- [ ] Rational weights far apart: a hundred apart is built (2026-10-15), but `topo::mass_properties` does not settle on such a face, and a thousand apart the winding numbers still refuse ([`architecture.md`](architecture.md) §5.3 › *Rational faces*).
-- [ ] The contact a fillet's boolean refused ([`architecture.md`](architecture.md) §5.3 › *Fillets as built*), and whether fillet chains still need `blend::join`.
+- [ ] A cusp against a face that holds its axis through the point (the marcher's chart stopped short of a cusp to its order; [`design/booleans.md`](design/booleans.md) › *Cusps*).
+- [ ] Rational weights far apart: a hundred apart is built (2026-10-15), but `topo::mass_properties` does not settle on such a face, and a thousand apart the winding numbers still refuse ([`design/booleans.md`](design/booleans.md) › *Rational faces*).
+- [ ] The contact a fillet's boolean refused ([`design/blends.md`](design/blends.md) › *Fillets as built*), and whether fillet chains still need `blend::join`.
 - [ ] Sheet bodies, several lumps and cavities (item 5).
 - [ ] The check of offset face, shell and delete face near what they changed (they check the whole body), and a tessellation of long straight edges that does not fan across a plate (the first cut of 400 holes at once is checked in 140 ms).
 - [ ] Speed: what is left is the booleans with a freeform face (the chart's projections and the marcher) and the measurement of their results.
-- [ ] Each pair of faces intersected in the box of the two faces, not of the two bodies (the impeller's pattern of blades with rounded leading edges, and such a blade on a hub of revolution), after the curves that gives near a pole are measured, meshed and sorted around the pole (branch `boolfind-facebox-wip`: the measure and the mesh done, the octant cut through its pole at scale 1e-3 still refused by `regions::untie`) ([`architecture.md`](architecture.md) §5.3 › *Showcase findings (2026-10-15)*).
+- [ ] Each pair of faces intersected in the box of the two faces, not of the two bodies (the impeller's pattern of blades with rounded leading edges, and such a blade on a hub of revolution), after the curves that gives near a pole are measured, meshed and sorted around the pole (branch `boolfind-facebox-wip`: the measure and the mesh done, the octant cut through its pole at scale 1e-3 still refused by `regions::untie`) ([`design/booleans.md`](design/booleans.md) › *Showcase findings (2026-10-15)*).
 - [ ] Tolerant modelling (item 4), before STEP import.
 
 ## Milestones in detail
@@ -176,18 +176,18 @@ Oracles 1 and 4 for all primitives at three scales; exported meshes closed and o
 #### Done
 - The desktop app `craft3d`: bodies, sketches as lines, orbit/pan/zoom, a read-only feature tree, a status bar (2026-10-12)
 - The control server with `ui.*` methods and `ui.screenshot`, and the MCP bridge (`craft3d-cli mcp --bridge`), used by a real MCP client in the [field test](field-test/2026-10-12/README.md) (2026-10-12)
-- The viewport renders with the wgpu renderer (`--renderer auto|cpu`, `CRAFT3D_RENDERER`), the CPU renderer as the fallback, parity within the tolerances of [`architecture.md`](architecture.md) §7.2; `ui.get` reports the renderer and adapter (2026-10-13)
+- The viewport renders with the wgpu renderer (`--renderer auto|cpu`, `CRAFT3D_RENDERER`), the CPU renderer as the fallback, parity within the tolerances of [`design/rendering.md`](design/rendering.md); `ui.get` reports the renderer and adapter (2026-10-13)
 - The viewport draws without readback on eframe's own device, 4× MSAA, the overlay on the GPU; parity on Intel Vulkan, lavapipe and Intel GL (`crates/gpu/tests/onscreen.rs`, `crates/ui-egui/tests/gpu_viewport.rs`) (2026-10-13)
 - The viewport tessellates at its own display quality (`ui.set quality`): a 4 mm hole is round instead of a twelve-gon; `view.render`, previews and export keep the automatic tolerance (2026-10-13)
 - An orbit gizmo (2026-10-13), replaced by a view cube (2026-10-14); a see-through slider (2026-10-13), drawn by the wgpu renderer too (2026-10-14)
 - Tabs of the open documents: switch with a click, Ctrl+Tab and Ctrl+Shift+Tab, close with `file.close` after Save / Don't Save / Cancel, Ctrl+W; the open documents in the File menu; `ui.get` › `tabs` and `closing` ([`development.md`](development.md) › *Tabs of the open documents*) (2026-10-14)
 - Every open document's scene kept within a memory budget, a quick first picture refined beside the engine thread (2026-10-14)
 - An angle criterion and a triangle budget inside a face in the tessellator, a body coarsened to its budget; the display quality at 2e-4 of the size and 12 degrees, a fifth to a sixth of the triangles (2026-10-14)
-- The angle criterion on thin fillets costs what it needs: tori and spheres refined in the plane of their grid, the grid's diagonals held to the angle; the turbofan's display mesh 129,532 triangles instead of 579,314 (2.0 times its mesh without the angle, was 9.1) ([`architecture.md`](architecture.md) §6, *The angle on a thin fillet*) (2026-10-15)
+- The angle criterion on thin fillets costs what it needs: tori and spheres refined in the plane of their grid, the grid's diagonals held to the angle; the turbofan's display mesh 129,532 triangles instead of 579,314 (2.0 times its mesh without the angle, was 9.1) ([`design/tessellator.md`](design/tessellator.md), *The angle on a thin fillet*) (2026-10-15)
 - Every solid of the showcase, the turbofan and the engine block meshes closed at the display quality and at export tolerances (`display_quality.rs` strict): the hull's bow got a wall, a seam no longer runs along a straight edge at the wrap of a cylinder (2026-10-15)
-- Long straight edges of flat faces are cut where holes run along them, so a plate with a row of holes is no longer fans of slivers across its length: the self-intersection check of a 4 m plate with 400 holes 13 times faster, export meshes unchanged but for 27 of 440 reference meshes (two triangles more each) ([`architecture.md`](architecture.md) §6, *Long straight chords of flat faces*) (2026-10-15)
-- The angle criterion on spline faces in a plane and on a grid graded to where the surface turns: the turbofan's spline faces 30,720 triangles instead of 35,302, a twisted blade within 1.4 times a grid that meets both criteria unrefined (was 1.9) ([`architecture.md`](architecture.md) §6, *The angle on a spline face*) (2026-10-15)
-- A spline surface's pole is shaded with its limit normal, and `view.render`, `view.pick` and `view.replay` mesh at a quarter to half a pixel of the picture within a total triangle budget, never finer than the display's floor, coarsening a body too fine for the tessellator instead of refusing ([`architecture.md`](architecture.md) §6) (2026-10-15)
+- Long straight edges of flat faces are cut where holes run along them, so a plate with a row of holes is no longer fans of slivers across its length: the self-intersection check of a 4 m plate with 400 holes 13 times faster, export meshes unchanged but for 27 of 440 reference meshes (two triangles more each) ([`design/tessellator.md`](design/tessellator.md), *Long straight chords of flat faces*) (2026-10-15)
+- The angle criterion on spline faces in a plane and on a grid graded to where the surface turns: the turbofan's spline faces 30,720 triangles instead of 35,302, a twisted blade within 1.4 times a grid that meets both criteria unrefined (was 1.9) ([`design/tessellator.md`](design/tessellator.md), *The angle on a spline face*) (2026-10-15)
+- A spline surface's pole is shaded with its limit normal, and `view.render`, `view.pick` and `view.replay` mesh at a quarter to half a pixel of the picture within a total triangle budget, never finer than the display's floor, coarsening a body too fine for the tessellator instead of refusing ([`design/tessellator.md`](design/tessellator.md)) (2026-10-15)
 - `view.replay` and `craft3d-cli replay`: a showcase video (frames, MP4, GIF) of how a document is built, one fixed camera, an optional orbit, captions as subtitles; the document is not touched (2026-10-14)
 
 #### Open
@@ -230,9 +230,9 @@ Profile detection; `kernel` extrude and revolve from profiles; origin maps; the 
 - Persistent names and a sketch on a face (2026-10-12)
 - A sketch on a cap keeps its plane when the cap's outline changes; a sketch on a side face is measured from the extruded sketch's origin dropped onto the face (2026-10-13)
 - Revolve (`feature.revolve`, Pappus through the command layer) (2026-10-13)
-- The per-feature regeneration cache; incremental = full is asserted after every command of the engine suites ([`architecture.md`](architecture.md) §5.5) (2026-10-13)
+- The per-feature regeneration cache; incremental = full is asserted after every command of the engine suites ([`design/regeneration.md`](design/regeneration.md)) (2026-10-13)
 - Transform, mirror and pattern, names through copies, names for the entities of primitives (2026-10-13)
-- Regeneration on long rows: a feature whose inputs did not change is not compared input by input, so adding a feature costs the length of the history, not its square; the boolean's check memo keys bodies by their bits instead of their text ([`architecture.md`](architecture.md) §5.5, *Long rows*) (2026-10-15)
+- Regeneration on long rows: a feature whose inputs did not change is not compared input by input, so adding a feature costs the length of the history, not its square; the boolean's check memo keys bodies by their bits instead of their text ([`design/regeneration.md`](design/regeneration.md), *Long rows*) (2026-10-15)
 - Deviation: no datum planes; they came with M8.5 (2026-10-13)
 
 #### Open
@@ -252,22 +252,22 @@ Surface/surface intersection, imprint, classify and sew; union, subtract and int
 - Cut-extrude (`feature.extrude` with `cut`) and a pattern of cutters (2026-10-13)
 - Names of merged faces resolve through any contributor (aliases, `document.inspect` › `faceAliases`) (2026-10-13)
 - A self-intersection and shell-overlap detector on the mesh (`tess::body_self_intersections`, `document.check` with `deep`) (2026-10-13)
-- Polynomial Bézier and B-spline faces as operands, measured on 1871 corpus pairs (`PatchTree`; [`architecture.md`](architecture.md) §5.3) (2026-10-13)
+- Polynomial Bézier and B-spline faces as operands, measured on 1871 corpus pairs (`PatchTree`; [`design/booleans.md`](design/booleans.md)) (2026-10-13)
 - Rational freeform faces as operands (`derivative_bounds`, `weighted_normal_net`), held against analytic twins (`crates/kernel/tests/boolean_rational.rs`) (2026-10-13)
 - Tangent contact with freeform faces, surfaces that touch along a curve, slivers ten tolerances thick (2026-10-13)
 - Contact along a curve in closed form: a cylinder that goes on in a torus, cones along a ruling or sharing an apex (`geom::intersect`) (2026-10-14)
 - A torus that goes on in a torus, a rim within the tolerance of an edge (`near/cone-dome/005`), an edge along a cone's ruling (`contact/cone-dome/002`; `near/cone-cone/002` now meets the sliver refusal), a rational face on the analytic surface it equals (2026-10-14)
-- Freeform faces with a pole, measured (`topo::mass_properties`) and cut; `feature.revolve` no longer refuses a spline that ends on the axis ([`architecture.md`](architecture.md) §5.3) (2026-10-14)
+- Freeform faces with a pole, measured (`topo::mass_properties`) and cut; `feature.revolve` no longer refuses a spline that ends on the axis ([`design/booleans.md`](design/booleans.md)) (2026-10-14)
 - Every edge and vertex named after a boolean by its faces (`F7:between[…]`, `F7:corner[…]`) (2026-10-14)
 - What is asked again is answered from memory (pure results remembered) (2026-10-14)
-- The Voronoi helmet's findings: a lofted tool against a spline shell with a pole, pieces of curve between a freeform face's borders, a pole border that is no curve, a loop through a cut, a bound below the distance that is one; the octant against a torus through its pole at 1e6 ([`architecture.md`](architecture.md) §5.3) (2026-10-15)
+- The Voronoi helmet's findings: a lofted tool against a spline shell with a pole, pieces of curve between a freeform face's borders, a pole border that is no curve, a loop through a cut, a bound below the distance that is one; the octant against a torus through its pole at 1e6 ([`design/booleans.md`](design/booleans.md)) (2026-10-15)
 - Poles at a corner of a patch's parameters (a lune as the stereographic image of a quadrant): a chart, the side at the pole, the marcher and the tessellator; the eight cuts through a pole the tessellator declined were already meshed (2026-10-15)
-- Coincident freeform faces: a patch on its analytic twin moved along itself, two patches of one surface ([`architecture.md`](architecture.md) §5.3) (2026-10-15)
+- Coincident freeform faces: a patch on its analytic twin moved along itself, two patches of one surface ([`design/booleans.md`](design/booleans.md)) (2026-10-15)
 - The self-intersection check inside every operation, near what it changed, and a shell that touches itself refused (2026-10-15)
-- A cusp as a boolean operand: the wedge and the disc drawn to the pole's order, the pieces at the point put in order further along ([`architecture.md`](architecture.md) §5.3 › *Cusps*) (2026-10-15)
-- Rational faces with weights a hundred apart as operands: the winding numbers take the chart's speed near each stretch, held by point membership against the plain block ([`architecture.md`](architecture.md) §5.3 › *Rational faces*) (2026-10-15)
-- Fourth-order contact: a tacnode or cusp of the intersection is a vertex whose tangent arms are made as graphs around it, a cylinder touching the top of a torus' tube from inside held to its closed-form volume ([`architecture.md`](architecture.md) §5.1 › *Tacnodes and cusps*) (2026-10-15)
-- A row of booleans on a body of many freeform faces indexes each surface once (the impeller: a chamfer of the bore 12 s to 1 s); a material measures nothing, mass and inertia are measured at once ([`architecture.md`](architecture.md) §5.3, §5.5) (2026-10-15)
+- A cusp as a boolean operand: the wedge and the disc drawn to the pole's order, the pieces at the point put in order further along ([`design/booleans.md`](design/booleans.md) › *Cusps*) (2026-10-15)
+- Rational faces with weights a hundred apart as operands: the winding numbers take the chart's speed near each stretch, held by point membership against the plain block ([`design/booleans.md`](design/booleans.md) › *Rational faces*) (2026-10-15)
+- Fourth-order contact: a tacnode or cusp of the intersection is a vertex whose tangent arms are made as graphs around it, a cylinder touching the top of a torus' tube from inside held to its closed-form volume ([`design/geometry.md`](design/geometry.md) › *Tacnodes and cusps*) (2026-10-15)
+- A row of booleans on a body of many freeform faces indexes each surface once (the impeller: a chamfer of the bore 12 s to 1 s); a material measures nothing, mass and inertia are measured at once ([`design/booleans.md`](design/booleans.md), [`design/regeneration.md`](design/regeneration.md)) (2026-10-15)
 - Zero thickness refused: a result whose parts touch along an edge, a line or in a point (`KernelError::ZeroThickness`, the developer's decision); the trees of freeform surfaces no open document holds let go (2026-10-15)
 
 #### Open
@@ -303,13 +303,13 @@ What M9 needs before it starts. A feature that cannot be built is marked failed 
 - Pointing at faces: a click, `ui.pick` and the command `view.pick` give the face's persistent name, the body and the point; `ui.highlight` shows a face by its name; an MCP client reaches `ui.*` through the tool `control_call` ([`control-protocol.md`](control-protocol.md), *Pointing*) (2026-10-13)
 - Pointing at edges: the edge near the pointer as `document.edges` lists it; `ui.highlight {edge | between}` (2026-10-13)
 - Pointing at vertices: as `document.edges` lists them under `vertices`; `ui.highlight {vertex | corner}` (2026-10-13)
-- The section plane: `ui.set {"section": {…}}` (`state.section`), the controls beside the view cube and `view.render {"section": {…}}`; `view.pick` takes it too; the two renderers agree under the tolerances of [`architecture.md`](architecture.md) §7.2 and the cap has the area of the cross-section (2026-10-14)
+- The section plane: `ui.set {"section": {…}}` (`state.section`), the controls beside the view cube and `view.render {"section": {…}}`; `view.pick` takes it too; the two renderers agree under the tolerances of [`design/rendering.md`](design/rendering.md) and the cap has the area of the cross-section (2026-10-14)
 - Failed features: every reference of every feature kind fails its feature with the parameter, the feature and the name it lost; what is made from it fails naming it and carries `causedBy`; repair by `feature.edit`, `sketch.edit` or a datum's `replace`; `feature.move` takes any order and fails what is out of order; roll back gives the document that ends at the marker (2026-10-14)
 - A feature added while rolled back goes in at the marker, which moves onto it (2026-10-14)
 - The window's feature tree shows failed, suppressed and rolled-back features, the reason on hover and the cause as a link that selects it (2026-10-14)
-- Every edge and vertex of every body has a name of its own, so a datum at a vertex of a body a boolean or a joined pattern made works ([`architecture.md`](architecture.md) §4.1) (2026-10-14)
+- Every edge and vertex of every body has a name of its own, so a datum at a vertex of a body a boolean or a joined pattern made works ([`design/names.md`](design/names.md)) (2026-10-14)
 - Datums drawn in the viewport in both renderers, hidden with `ui.set {"show": {"datums": false}}` (2026-10-14)
-- Rows of features that each make their body from the one before have no length limit: a copy of a copy is one link per run of instance 0 or of other instances, so 1000 holes cut one after another regenerate; format 15 ([`architecture.md`](architecture.md) §4.1, *Copies of copies*) (2026-10-14)
+- Rows of features that each make their body from the one before have no length limit: a copy of a copy is one link per run of instance 0 or of other instances, so 1000 holes cut one after another regenerate; format 15 ([`design/names.md`](design/names.md), *Copies of copies*) (2026-10-14)
 
 #### Open
 - [ ] A way that switches between target and tool more than about 30 times in a row still hits the 32-link cap of a name
@@ -328,7 +328,7 @@ The blends first (chamfer and fillet, the first consumers of edge references), t
 #### Done
 - Splines in sketches, first step: `sketch.spline` (a polynomial B-spline on control points that are sketch points, or through given points), format version 6, shaped by constraints on its points, tangent to a neighbour, extruded into a B-spline wall that booleans cut (2026-10-13)
 - Splines, second step: a profile with a spline revolved; a spline that closes on itself and a polyline (degree 1) are profiles on their own; further faces named `F2:piece(1)/F2:side(e7)`; a point held on a spline (`pointOn`) (2026-10-14)
-- Chamfers (`feature.chamfer`): one distance, two, a distance and an angle; mitres and flat corners; a chain of tangent edges picked as one; the edge held as the two faces it lies between; format version 7 ([`architecture.md`](architecture.md) §5.3 › *Chamfers as built*) (2026-10-14)
+- Chamfers (`feature.chamfer`): one distance, two, a distance and an angle; mitres and flat corners; a chain of tangent edges picked as one; the edge held as the two faces it lies between; format version 7 ([`design/blends.md`](design/blends.md) › *Chamfers as built*) (2026-10-14)
 - Loft (`feature.loft`): closed profiles on offset or datum planes, ruled or smooth, open or closed into a ring; format version 8 (2026-10-14)
 - Fillets with a constant radius (`feature.fillet`): convex and concave, run-outs, a piece of a ball where three meet, chains of tangent edges; one kernel module for both blends (`blend`); format version 9 (§5.3 › *Fillets as built*) (2026-10-14)
 - Sweep along a path in a plane (`feature.sweep`): a closed profile, holes and all, along lines, arcs and splines, mitred corners, open or closed; format version 10 (2026-10-14)
@@ -338,21 +338,21 @@ The blends first (chamfer and fillet, the first consumers of edge references), t
 - Thicken (`feature.thicken`): faces of a solid given a thickness outside, inside or on both sides, as a body of its own bounded at its rim by the faces round them (two offsets and the boolean); there are no sheet bodies yet (2026-10-15)
 - Draft (`feature.draft`): flat faces and cylinders along the pull direction tilted about a neutral plane (a face, a world or a datum plane) into planes and cones, the neighbours following; a drafted box is a frustum, a rounded box a rounded frustum (2026-10-15)
 - References that follow a body: a face of an earlier body (`F1:face(0)`) resolves to its newest form, so no `copy(0)` prefixes; `document.edges` lists `short` names (2026-10-14)
-- Helix and thread: `datum.helix`, `feature.sweep` with a helix as its `path`, `feature.thread` (external ISO metric, by designation such as `"M10"` and pitch); format version 13 ([`architecture.md`](architecture.md) §4.1 › *Helix, and the sweep along it*, *Thread*) (2026-10-14)
+- Helix and thread: `datum.helix`, `feature.sweep` with a helix as its `path`, `feature.thread` (external ISO metric, by designation such as `"M10"` and pitch); format version 13 ([`design/sweeps.md`](design/sweeps.md) › *Helix, and the sweep along it*, *Thread*) (2026-10-14)
 - A thread is cosmetic unless `modeled: true`, as in other modellers (2026-10-14)
 - A thread's size and pitch follow the model: `size` left out (the size of the face), a length (`"d"`) or a designation; the coarse pitch of the size unless given; `v13_to_v14`; format version 14 (2026-10-14)
 - A face that winds along a thread is meshed; every triangulation has a work budget (2026-10-14)
 - A smooth loft through slender twisted sections builds (the rotor blade with its tip right after 18 m, also from a circle): a face whose triangles cannot follow a chord of its boundary has that chord cut finer (2026-10-14)
 - A sweep whose path is off square to the profile's plane by a lean that moves the profile no more than the tolerance is built, the profile laid square; `sketch.path` warns of an arc end off its circle (the turbofan's F6, still refused at the default tolerance: see Open) (2026-10-15)
-- Blends along a straight edge next to a cylinder (the cut edges of a halved rod or tube, the tip of a lens of two arcs), worked out in the plane across the edge; both tip rims of a lens blade, after two surgical changes to the boolean ([`architecture.md`](architecture.md) §5.3 › *Blends next to a cylinder*) (2026-10-14)
+- Blends along a straight edge next to a cylinder (the cut edges of a halved rod or tube, the tip of a lens of two arcs), worked out in the plane across the edge; both tip rims of a lens blade, after two surgical changes to the boolean ([`design/blends.md`](design/blends.md) › *Blends next to a cylinder*) (2026-10-14)
 - Blends along freeform edges (a straight edge next to a cone, the edge between two lofted faces, a spline wall's edge): a rolling-ball fillet or a ruled chamfer as a spline surface within the tolerance, built in place, each end a corner of three faces or the edge closed (a slanted hole's mouth) (§5.3 › *Blends along freeform edges*) (2026-10-14)
 - The turbofan's tube (F6) builds at the default tolerance: `sketch.path` puts a `center` arc's end given within 1 % of the radius onto its circle (`snapped`), and a sweep takes a kink of the path as tangent when turning the profile through it stays within the tolerance (2026-10-15)
-- The sweep's kink rule measured against the exact sweep both ways (line→arc, arc→line, arc→arc, arc→spline; round and rectangular profiles; three scales): half the tolerance at the largest kink admitted ([`architecture.md`](architecture.md) §5.3 › *Kinks*) (2026-10-15)
+- The sweep's kink rule measured against the exact sweep both ways (line→arc, arc→line, arc→arc, arc→spline; round and rectangular profiles; three scales): half the tolerance at the largest kink admitted ([`design/sweeps.md`](design/sweeps.md) › *Kinks*) (2026-10-15)
 - Internal threads: `feature.thread` on a hole is a tapped hole, its size from the tap drill, cosmetic or modeled (the nut's groove cut into the wall) (2026-10-15)
 - The ISO 261 table complete from M1 to M68: every coarse pitch (M11: 1.5 mm), and the fine pitches named when a size has none (2026-10-15)
 - A file opened by a path relative to the working directory keeps it absolute, so the window saves it back to itself under a write root (2026-10-15)
 - The engine block's blend findings (E1–E8): the estimate of what fits follows a face's boundary round tangent arcs and across a cylinder's seam, takes a cut line that runs exactly into a corner, and refuses a face that pinches to nothing; a blend ends in the plane of a face it runs into at a slant; equal-distance chamfer chains are one tool; a boolean hit next to an edge's end on the surface is that end (§5.3 › *Blend findings of the engine block*) (2026-10-15)
-- Freeform blends along chains of tangent edges, one family of balls with a face per edge, also where a face changes across a smooth edge (the turbofan casing's cut edge through its flange root, the engine block's boss foot E6 in its first form), and freeform with closed-form edges in one feature ([`architecture.md`](architecture.md) §5.3 › *Chains and meets of freeform blends*) (2026-10-15)
+- Freeform blends along chains of tangent edges, one family of balls with a face per edge, also where a face changes across a smooth edge (the turbofan casing's cut edge through its flange root, the engine block's boss foot E6 in its first form), and freeform with closed-form edges in one feature ([`design/blends.md`](design/blends.md) › *Chains and meets of freeform blends*) (2026-10-15)
 - Two freeform fillets that meet at a vertex whose third edge stays sharp, convex or concave (the tip of a lofted blade rounded all round) (§5.3 › *Chains and meets of freeform blends*) (2026-10-15)
 - The impeller's and the lamp's blend findings: freeform meets found where the borders cross, blends that run into a wall or end past a corner (edges lengthened, spline faces grown), up to 4096 samples by a banded solve, face changes at joints judged at the vertex (§5.3 › *Blend findings of the impeller and the lamp*) (2026-10-15)
 
@@ -388,7 +388,7 @@ The first version for people outside the project; it follows M9 and does not wai
 #### Done
 - Autosave and crash recovery in the app and in `craft3d-cli serve`/`mcp` (`recovery.list`, `recovery.open`, `recovery.discard`; `crates/engine/src/recovery.rs`) (2026-10-13)
 - DXF and SVG export of a sketch or a flat face, for laser cutting (`file.export` to `.dxf` and `.svg`, `crates/drawing`, [`file-formats.md`](file-formats.md) › *Flat outlines*) (2026-10-13)
-- A colour and a material per body (`body.appearance`, `body.material`; format 16), following a body through booleans and moves with tool faces keeping their own colour, drawn by both renderers and in 3MF and STEP exports ([`architecture.md`](architecture.md) §4.2) (2026-10-15)
+- A colour and a material per body (`body.appearance`, `body.material`; format 16), following a body through booleans and moves with tool faces keeping their own colour, drawn by both renderers and in 3MF and STEP exports ([`design/document.md`](design/document.md)) (2026-10-15)
 - Mass and the inertia tensor about the centroid from the exact B-rep for a body with a density, in `document.inspect` and `document.measure` (2026-10-15)
 
 #### Open
@@ -426,7 +426,7 @@ STEP files read into the document as bodies (an `Import` feature), a pinned publ
 #### Done
 - The tessellator meshes faces on spline surfaces that close on themselves and closed surfaces of every kind with their seams as edges, also from pole to pole or to an apex (`crates/tess/tests/closed_freeform.rs`, `periodic.rs` › `closed_faces_with_their_seams_as_edges`) (2026-10-14)
 - The exact measure follows such faces, closed in u, in v, both ways and to a point (before, it gave a wrong volume without an error for a face that closes in v) (2026-10-14)
-- The booleans cut such faces, across the seam, along it, through the poles and around the axis (`crates/kernel/tests/boolean_closed_twins.rs`, `boolean_closed_freeform.rs`; [`architecture.md`](architecture.md) §5.3 › *Freeform faces that close on themselves*) (2026-10-14)
+- The booleans cut such faces, across the seam, along it, through the poles and around the axis (`crates/kernel/tests/boolean_closed_twins.rs`, `boolean_closed_freeform.rs`; [`design/booleans.md`](design/booleans.md) › *Freeform faces that close on themselves*) (2026-10-14)
 
 #### Open
 - [ ] Share large blobs between undo snapshots instead of copying them, before imported bodies enter the document (undo keeps a whole document per step, [`decisions.md`](decisions.md))
@@ -474,7 +474,7 @@ Applications built on 3DCraft, not part of it (the rule in `docs/decisions.md`, 
 ## Risks, in order
 
 1. **Booleans (M7)** are where CAD kernels fail. Mitigation: analytic pairs first, strict "valid or `Err`", property tests from day one, no feature may depend on a boolean case that is not covered by tests.
-2. **Persistent naming (M6)** is a design problem, not an implementation one. Mitigation: prototype with the naming suite before M7 builds on it; record the scheme in `architecture.md`.
+2. **Persistent naming (M6)** is a design problem, not an implementation one. Mitigation: prototype with the naming suite before M7 builds on it; record the scheme in `architecture.md` (now [`design/names.md`](design/names.md)).
 3. **Numerical robustness** everywhere. Mitigation: tolerance as data, guarded floating point (never-crash rules), scale tests, the predicates decision in [`decisions.md`](decisions.md).
 4. **STEP acceptance by other systems (M8).** Mitigation: the external validator in the loop as early as M8 starts.
 5. **Scope.** A kernel is years of work for a human team. Mitigation: phase 1 is deliberately narrow (prismatic parts with holes), and every milestone ends with something the developer can see and an agent can verify.
@@ -508,7 +508,7 @@ Applications built on 3DCraft, not part of it (the rule in `docs/decisions.md`, 
 | 2026-10-13 | minor | Splines in sketches, the first step of M9's sweeps: drawn, constrained by their points, extruded; loft and sweep are not started |
 | 2026-10-13 | minor | The viewport has a see-through slider (the developer's request): done in the CPU renderer and the shell |
 | 2026-10-14 | minor | The viewport has a view cube in place of the orbit gizmo (the developer's request): faces, edge and corner facets as views, the projection on its ring |
-| 2026-10-14 | minor | See-through bodies are drawn by the wgpu renderer (two depth layers and a blend, both the readback renderer and the viewport's, within the tolerances of architecture §7.2): the window no longer hands those frames to the CPU |
+| 2026-10-14 | minor | See-through bodies are drawn by the wgpu renderer (two depth layers and a blend, both the readback renderer and the viewport's, within the tolerances of [`design/rendering.md`](design/rendering.md)): the window no longer hands those frames to the CPU |
 | 2026-10-13 | minor | The viewport has an orbit gizmo instead of the view buttons (the developer's request) |
 | 2026-10-13 | minor | M8.5: pointing at vertices done; the section plane open |
 | 2026-10-13 | minor | M8.5: pointing at edges done; vertices and the section plane open |

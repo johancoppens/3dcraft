@@ -1,4 +1,4 @@
-//! The engine: the façade every frontend talks to (docs/architecture.md §8).
+//! The engine: the façade every frontend talks to (docs/design/engine.md).
 //!
 //! A [`Session`] holds open documents and runs commands. Every action is a
 //! command with a stable id and JSON parameters, so the UI, the CLI, the

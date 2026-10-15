@@ -20,7 +20,7 @@
 //! changes nothing about how the body hangs together, each is the copy
 //! of what it was, as after a move; in a shell they
 //! are named by the faces they lie on and answer to a copy of the name
-//! they had (docs/architecture.md §4.1).
+//! they had (docs/design/names.md).
 
 use crate::datum::{listed, named_body_of};
 use crate::derive::source_body;
@@ -105,7 +105,7 @@ pub(crate) fn pick(
         if found.is_empty() {
             // A reference to a cap survives a change of its outline: the
             // caps of one role of one feature lie in one plane
-            // (docs/architecture.md §1.1).
+            // (docs/design/names.md).
             found = (0..source.names.faces.len())
                 .filter(|&face| source.names.names_of(face).any(|own| same_plane(own, name)))
                 .filter_map(|face| u32::try_from(face).ok().map(FaceId))

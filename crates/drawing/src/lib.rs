@@ -1,6 +1,6 @@
 //! DXF and SVG writers for flat outlines, with their own 2D model.
 //!
-//! Standalone: depends on no workspace crate (docs/architecture.md §3). A
+//! Standalone: depends on no workspace crate (docs/architecture.md §2). A
 //! [`Drawing`] is a length unit and layers of paths; a path is a chain of
 //! lines, circular arcs, elliptic arcs and splines, or a whole circle or
 //! ellipse. Both writers keep every curve the curve it is: nothing is
