@@ -27,6 +27,18 @@ use craft3d_tess::{TessParams, tessellate_body};
 use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, VertexId, mass_properties};
 use serde_json::Value;
 
+/// The area of each face without the fix, every piece of its boundary
+/// summed at the last doubling the measure allows (the seventh: 128 times
+/// the panels of the first sums) whether or not it settled, by a build of
+/// `topo` with the panel end at the run-off and the convergence test
+/// switched off (2026-10-15). The run-off pieces converge slowly but do
+/// converge; these are where they go.
+const SLOW: [f64; 3] = [
+    22.343_815_774_683_396,
+    32.100_614_427_099_89,
+    22.347_896_070_048_57,
+];
+
 const FACES: [&str; 3] = [
     include_str!("fixtures/mass_run_off/side-1.json"),
     include_str!("fixtures/mass_run_off/side-2.json"),
@@ -129,8 +141,8 @@ fn sheet(json: &str) -> Body {
     body
 }
 
-/// Each face is measured, and its area is that of its mesh to what the
-/// mesh is off by.
+/// Each face is measured: its area is the slow sums' to 1e-11 (measured:
+/// 9e-15 at the most), and that of its mesh to what the mesh is off by.
 #[test]
 fn faces_whose_edges_run_off_their_surface_are_measured() {
     for (k, json) in FACES.iter().enumerate() {
@@ -138,6 +150,11 @@ fn faces_whose_edges_run_off_their_surface_are_measured() {
         let area = mass_properties(&body)
             .unwrap_or_else(|e| panic!("face {k}: {e}"))
             .area;
+        let slow = SLOW[k];
+        assert!(
+            (area - slow).abs() <= 1e-11 * slow,
+            "face {k}: {area} against the slow sums' {slow}"
+        );
         let chord = 1e-4;
         let params = TessParams {
             chordal_tolerance: chord,

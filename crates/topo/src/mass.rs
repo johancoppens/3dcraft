@@ -1036,7 +1036,12 @@ fn knot_crossings(
 /// tangent to it, does that over its last thousandths, and the sums of
 /// its panels then settle only by chance. Between a place clear of the
 /// border (by more than `1e-9` of the domain's `width`) and one at it,
-/// the kink is narrowed down by bisection. It is one only where the
+/// the kink is narrowed down by bisection. (`1e-9` is the clearance the
+/// knot lines are held to: a chosen bound, not a derived one. Where the
+/// parameter comes to the border quadratically the bisection ends up to
+/// about `√1e-9` of its approach early, inside the stretch that is still
+/// smooth; the panel end is then not at the kink, and a sum that does
+/// not settle for it is refused as any other.) It is one only where the
 /// point beyond it is held at the border: its parameter is the border's
 /// to rounding and it is off the surface. An edge that only reaches the
 /// border (at its end, or tangent to it), or comes to it where the
