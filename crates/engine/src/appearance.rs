@@ -10,17 +10,28 @@
 //!   rounds, a pattern repeats or a transform moves), and so on back. So
 //!   a cut keeps the colour of the plate it cut, and a fillet does not
 //!   turn a red part grey.
-//! - **A face** has the appearance of the nearest feature on its own way
-//!   back that has one: the way its persistent name records
-//!   (`F7:copy(1)/F3:side(e2)` came through instance 1 of F7, the tool,
-//!   from F3). So the walls a coloured tool cut into a plate keep the
-//!   tool's colour, which makes a cut readable; a face the feature made
-//!   itself (a fillet's round) has the body's colour. A face whose way
-//!   meets no appearance has the body's.
+//! - **A face** has its body's colour, unless it came into its body as
+//!   part of another body that has a colour of its own (decided
+//!   2026-10-15). Precisely: walk the face's way back as its persistent
+//!   name records it (`F7:copy(1)/F3:side(e2)` came through instance 1 of
+//!   F7, the tool, from F3), the feature whose body it is in first. The
+//!   first feature on that way that has an appearance of its own gives
+//!   the face its colour. A step through an instance whose material the
+//!   result does not keep (the tool of a subtraction: its faces bound
+//!   the target's material there, turned inside out) ends the way: the
+//!   face has the colour of the body at that step, the target's. So a
+//!   red boss united with a grey block keeps red faces, and the wall of
+//!   a hole a red tool cut into a grey plate is grey, as SolidWorks,
+//!   Fusion and Onshape colour it. A face the feature made itself (a
+//!   fillet's round) has the body's colour, and so has a face whose way
+//!   meets no appearance.
 //!
 //! Neither changes regeneration: a colour is not part of the history.
 
-use craft3d_doc::{Appearance, Document, Feature, FeatureId, Material, NameRole, PersistentName};
+use craft3d_doc::{
+    Appearance, BooleanOp, Document, Feature, FeatureId, FeatureKind, Material, NameRole,
+    PersistentName,
+};
 use craft3d_regen::Regen;
 
 /// The features whose bodies `feature` was made from, in instance order
@@ -51,6 +62,20 @@ fn source_of(
         .and_then(|i| sources.get(i))
         .or_else(|| sources.first())
         .copied()
+}
+
+/// Whether the result of `feature` keeps the material of its instance
+/// `instance`, so that a face that came through it still bounds that
+/// body's material: every instance of every feature but the tools of a
+/// subtraction (whose faces bound the target's material, inside out).
+fn keeps_material(doc: &Document, regen: &Regen, feature: FeatureId, instance: u64) -> bool {
+    let built: Option<&Feature> = regen
+        .feature(feature)
+        .and_then(|result| result.followed.as_deref());
+    match built.or_else(|| doc.feature(feature)).map(|f| &f.kind) {
+        Some(FeatureKind::Boolean(b)) => b.op != BooleanOp::Subtract || instance == 0,
+        _ => true,
+    }
 }
 
 /// The first of what `pick` finds on the way from `feature` back through
@@ -133,6 +158,10 @@ pub fn face_appearance(
         let Some((&first, rest)) = path.split_first() else {
             return body_appearance(doc, regen, at);
         };
+        if !keeps_material(doc, regen, at, first) {
+            // Cut by a tool: the face bounds this body's material.
+            return body_appearance(doc, regen, at);
+        }
         let Some(next) = source_of(doc, regen, at, first) else {
             return body_appearance(doc, regen, at);
         };
