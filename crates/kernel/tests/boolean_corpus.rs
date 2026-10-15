@@ -1459,7 +1459,9 @@ fn the_kernel_agrees_with_the_reference_kernel() {
         report,
         "\nagreeing (match + match~ + empty): {agreeing}; floor {AGREEING_FLOOR}"
     );
-    println!(
+    // In the score too, where `cargo xtask health` reads it.
+    let _ = writeln!(
+        report,
         "digest of all results: {:016x}",
         DIGEST.load(std::sync::atomic::Ordering::Relaxed)
     );

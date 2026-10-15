@@ -32,7 +32,9 @@ fn count(dir: &Path, depth: u32) -> (usize, usize) {
     (lines, tests)
 }
 
-pub fn run() -> Result<(), String> {
+/// Lines of Rust and `#[test]` attributes per package of the workspace,
+/// sorted by name.
+pub fn rows() -> Result<Vec<(String, usize, usize)>, String> {
     let mut rows = Vec::new();
     for package in layers::packages()? {
         let name = package
@@ -51,6 +53,11 @@ pub fn run() -> Result<(), String> {
         rows.push((name, lines, tests));
     }
     rows.sort();
+    Ok(rows)
+}
+
+pub fn run() -> Result<(), String> {
+    let rows = rows()?;
     println!("{:<22} {:>7} {:>6}", "crate", "lines", "tests");
     for (name, lines, tests) in &rows {
         println!("{name:<22} {lines:>7} {tests:>6}");

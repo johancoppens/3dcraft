@@ -1,7 +1,8 @@
-//! Build tasks: `cargo xtask layers | wasm | ci | stats | freecad | boolean-corpus`.
+//! Build tasks: `cargo xtask layers | wasm | ci | stats | health | freecad | boolean-corpus`.
 
 mod boolean_corpus;
 mod ci;
+mod health;
 mod layers;
 mod stats;
 
@@ -82,13 +83,14 @@ fn main() -> ExitCode {
         "wasm" => wasm(),
         "ci" => ci::run(),
         "stats" => stats::run(),
+        "health" => health::run(),
         "freecad" => freecad(),
         "boolean-corpus" => {
             let args: Vec<String> = std::env::args().skip(2).collect();
             boolean_corpus::run(&args)
         }
         other => Err(format!(
-            "unknown task `{other}`; tasks: layers, wasm, ci, stats, freecad, boolean-corpus"
+            "unknown task `{other}`; tasks: layers, wasm, ci, stats, health, freecad, boolean-corpus"
         )),
     };
     match result {

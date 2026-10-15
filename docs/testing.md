@@ -251,7 +251,21 @@ A test that renders writes its images under `target/evidence/<crate>/<test>/` (a
 
 ## Performance tests
 
-Benchmarks (criterion or simple timed examples) start with the first heavy algorithm: tessellation of a body with thousands of faces, a boolean between two such bodies, full and incremental regeneration of a 100-feature history. Numbers are recorded in the dev log with the machine and its load. Budgets and a generated scorecard follow PhotoCraft's model once there is a baseline (M4+).
+**The gate counts work, not time** (`crates/engine/tests/benchmark.rs`, since 2026-10-15). A wall-clock bound fails on a machine at load 55 (gate 56) and passes a slowdown on an idle one; a count of the work done is the same on both. The benchmark builds fixed models command by command, as an agent does, edits them, then measures (`document.measure`), checks (`document.check`) and meshes (`file.export` to STL) them, and reads process-wide counters before and after each model:
+
+| Counter | Crate | What one unit is |
+|---|---|---|
+| `regenerations`, `features_rebuilt`, `features_reused`, `context_entries`, `sketch_solves` | `craft3d_regen::work` | one regeneration; a feature built or given back by the cache; an entry of what features are made from compared (`RegenCache::last_run_work`); a sketch solved afresh |
+| `booleans`, `boolean_face_pairs`, `patch_trees`, `blend_sections` | `craft3d_kernel::work` | a boolean; a pair of faces whose surfaces it intersected; a freeform patch tree built (not found on the shelf); a blend cross-section solved |
+| `mass_faces`, `mass_evaluations` | `craft3d_topo::mass_work` | a face integrated; an evaluation of the integrand (the `Work` the face budget counts) |
+| `meshes`, `mesh_faces`, `triangles` | `craft3d_tess::tess_work` | a body tessellated; its faces; triangles made |
+| `refusals`, `check_problems`, `commands` | the test | a measure or export refused; a problem `document.check` lists; a command of the model |
+
+The models are pinned in `crates/engine/tests/bench_models/`: the turbofan (whole, edited `mixFingers = 14`), the engine block (whole, `chSmall = 0.6 mm`), the impeller's first 82 steps (hub, one lofted blade cut by the shroud, patterned and filleted; `filletSeat = 0.2 mm`; its blades cannot be measured today, which is counted, not failed), and a plate with 250 holes cut one after another (then the hole radius and the plate's length edited). They are copies of the showcase scripts under `target/work/`, taken on 2026-10-15; a showcase that changes later does not change them.
+
+Every count is held to `bench_models/baseline.txt`: the test fails when one exceeds its baseline by more than 10 % (`MARGIN`), or, for `refusals` and `check_problems`, by anything. The failure lists the counts that rose and how to accept them. The counters are deterministic (added to once per operation or per face, summed the same on any number of threads; nothing in the kernel depends on the clock), so the margin is room for small deliberate changes, not for noise: two runs, and three at once at load 40, gave identical counts. A count far below its baseline is printed as a gain to lock in. **Updating the baseline is an expectation change** (see *Changing an expectation* above): run `CRAFT3D_BENCH_UPDATE=1 cargo test -p craft3d-engine --test benchmark`, and log the counts before and after and the reason in the dev log under "Expectation change". The CPU time per model is printed beside the counts for information only; it never fails the test. `BENCH_MODEL=<name>` runs one model (only the full run is held to the baseline: the turbofan and the impeller share freeform patch trees on the shelf).
+
+It is an ordinary integration test, so `cargo xtask ci` runs it with the others (about 2 to 2.5 minutes in the dev profile under load, beside binaries that take up to 12; the gate's wall time does not grow). The counts of the last run are left in `$CARGO_TARGET_TMPDIR/benchmark/last-counts.txt`, where `cargo xtask health` reads them. Timed benchmarks (`examples/regen_rows.rs`, `tests/regen_bench.rs`, `display_speed.rs`) remain for measuring in release; their numbers go in the dev log with the machine and its load.
 
 
 ## Geometry: intersections (`crates/geom/tests/`)

@@ -251,6 +251,7 @@ use craft3d_math::{Bbox3, Frame, Vec3};
 use std::collections::BTreeMap;
 use std::f64::consts::{FRAC_PI_2, PI};
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct MassProperties {
@@ -2414,9 +2415,12 @@ fn face_integrals(
     if face.loops.is_empty() || seams_only(body, face) {
         let mut work = Work::about(&face.surface, middle, second);
         let all = whole_surface(&face.surface, index, rule, &mut work);
+        counted(&work);
         let first = (sums == Wanted::Both).then(|| {
             let mut work = Work::about(&face.surface, middle, false);
-            whole_surface(&face.surface, index, rule, &mut work)
+            let first = whole_surface(&face.surface, index, rule, &mut work);
+            counted(&work);
+            first
         });
         return FaceSums { first, all };
     }
@@ -2434,10 +2438,34 @@ fn face_integrals(
         &mut work,
         (sums == Wanted::Both).then_some(&mut first),
     );
+    counted(&work);
     // Without first-order sums that agreed, the sums without the second
     // moments ended where these did, with the same error.
     let first = (sums == Wanted::Both).then(|| first.unwrap_or_else(|| all.clone()));
     FaceSums { first, all }
+}
+
+/// Faces integrated, and the work they took ([`Work::spent`]), since the
+/// process started: for the performance benchmark of the gate
+/// (`crates/engine/tests/benchmark.rs`). Added to once per face, and
+/// summed the same whatever the threads.
+static FACES_INTEGRATED: AtomicU64 = AtomicU64::new(0);
+static WORK_SPENT: AtomicU64 = AtomicU64::new(0);
+
+/// How many faces [`mass_properties`], [`inertia`] and
+/// [`mass_and_inertia`] have integrated since the process started, and
+/// the work that took in evaluations of the integrand (a count, not a
+/// clock: the same on every machine and under any load).
+pub fn mass_work() -> (u64, u64) {
+    (
+        FACES_INTEGRATED.load(Ordering::Relaxed),
+        WORK_SPENT.load(Ordering::Relaxed),
+    )
+}
+
+fn counted(work: &Work) {
+    FACES_INTEGRATED.fetch_add(1, Ordering::Relaxed);
+    WORK_SPENT.fetch_add(work.spent, Ordering::Relaxed);
 }
 
 /// Which sums [`integrate`] makes.
@@ -3119,6 +3147,19 @@ mod tests {
 
     const RADIUS: f64 = 2.0;
     const CENTRE: Vec3 = Vec3::new(0.3, -1.1, 0.7);
+
+    /// Integrating a face is counted, with the evaluations it took.
+    /// (Other tests add to the counts at the same time: only growth is
+    /// certain.)
+    #[test]
+    fn integrating_is_counted() {
+        let (faces, spent) = mass_work();
+        let body = cap(0.5);
+        mass_properties(&body).ok();
+        let (faces_after, spent_after) = mass_work();
+        assert!(faces_after > faces);
+        assert!(spent_after > spent);
+    }
 
     /// A cap of the sphere about `CENTRE` beyond the plane `level` along
     /// z, as a sheet of one face; its area is 2πr (r − level).
