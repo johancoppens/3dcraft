@@ -71,7 +71,7 @@ pub(crate) fn source_body<'a>(
     Ok(outcome)
 }
 
-fn lengths(
+pub(crate) fn lengths(
     doc: &Document,
     variables: &Evaluation,
     name: &str,
@@ -90,7 +90,11 @@ fn lengths(
     }
 }
 
-fn direction(variables: &Evaluation, name: &str, exprs: &[Expr; 3]) -> Result<Vec3, String> {
+pub(crate) fn direction(
+    variables: &Evaluation,
+    name: &str,
+    exprs: &[Expr; 3],
+) -> Result<Vec3, String> {
     let [x, y, z] = exprs;
     let v = Vec3::new(
         number(variables, &format!("{name}.x"), x)?,

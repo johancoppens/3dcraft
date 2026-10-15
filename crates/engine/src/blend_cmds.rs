@@ -98,6 +98,9 @@ pub(crate) fn of_one_body(
         FeatureKind::Fillet(f) => ("edges", "fillet", f.edges.iter().flatten().collect()),
         FeatureKind::OffsetFace(o) => ("faces", "offset", o.faces.iter().collect()),
         FeatureKind::DeleteFace(d) => ("faces", "deletion", d.faces.iter().collect()),
+        FeatureKind::MoveFace(m) => ("faces", "move", m.faces.iter().collect()),
+        FeatureKind::Thicken(t) => ("faces", "layer", t.faces.iter().collect()),
+        FeatureKind::Draft(d) => ("faces", "draft", d.faces.iter().collect()),
         FeatureKind::Shell(s) => ("open", "shell", s.open.iter().collect()),
         _ => return Ok(()),
     };

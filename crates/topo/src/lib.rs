@@ -17,6 +17,7 @@
 //! projection where needed), per-entity tolerances, persistent names
 //! (docs/architecture.md §4.1, milestone M6).
 
+mod bits;
 mod check;
 mod mass;
 mod transform;

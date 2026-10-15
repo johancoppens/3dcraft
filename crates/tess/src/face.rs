@@ -397,7 +397,7 @@ fn shifted(uv: Uv, turns: [i32; 2], periods: [Option<f64>; 2]) -> Uv {
 
 /// The points around one loop, in loop order, without repeating the point
 /// where it closes; each with the chord that runs from it to the next.
-fn loop_points(
+pub(crate) fn loop_points(
     body: &Body,
     edges: &[Vec<Vec3>],
     face: &Face,
@@ -2814,9 +2814,11 @@ struct Work<'a> {
     uv: Vec<Uv>,
     pos: Vec<Vec3>,
     free: Vec<Option<usize>>,
-    /// Parameters are scaled about `centre` for the triangulation.
+    /// Parameters are scaled about `centre` for the triangulation, or
+    /// mapped by `warp`.
     centre: Uv,
     scale: Uv,
+    warp: Option<[Warp; 2]>,
     tolerance: f64,
     /// `TessParams::max_angle`, and the shortest side held to it.
     angle: Option<f64>,
@@ -2827,7 +2829,13 @@ struct Work<'a> {
 
 impl Work<'_> {
     fn plane(&self, uv: Uv) -> P2 {
-        to_plane(uv, self.centre, self.scale)
+        match &self.warp {
+            Some([wa, wb]) => {
+                let [a, b] = uv;
+                (wa.map(a), wb.map(b))
+            }
+            None => to_plane(uv, self.centre, self.scale),
+        }
     }
 
     fn vertex(&self, v: u32) -> Option<(Uv, Vec3, Option<usize>)> {
@@ -3200,6 +3208,235 @@ fn finish_boundary(
     Ok(())
 }
 
+/// How many pieces each parameter of a spline face is cut into to see
+/// where its normal turns ([`angle_warp`]), before pieces that turn
+/// further than a cell may are cut again.
+const WARP_PIECES: usize = 32;
+
+/// How many lines across the face each piece is looked at along.
+const WARP_ACROSS: usize = 9;
+
+/// How many pieces are looked at per parameter at most.
+const WARP_MOST: usize = 1024;
+
+/// A monotone map of one parameter onto one axis of the plane a spline
+/// face is triangulated in (with the angle criterion, [`angle_warp`]):
+/// piecewise linear through `(at, level)`, `level` increasing with `at`,
+/// one unit per cell of the face's grid, zero at the centre of the face.
+#[derive(Clone, Debug)]
+struct Warp {
+    at: Vec<f64>,
+    level: Vec<f64>,
+}
+
+impl Warp {
+    /// The level of `x`; beyond the ends, along the first or last piece.
+    fn map(&self, x: f64) -> f64 {
+        let n = self.at.partition_point(|&a| a <= x);
+        let k = n.clamp(1, self.at.len().saturating_sub(1).max(1));
+        let (Some(&a0), Some(&a1), Some(&l0), Some(&l1)) = (
+            self.at.get(k - 1),
+            self.at.get(k),
+            self.level.get(k - 1),
+            self.level.get(k),
+        ) else {
+            return 0.0;
+        };
+        if a1 > a0 {
+            l0 + (l1 - l0) * (x - a0) / (a1 - a0)
+        } else {
+            l0
+        }
+    }
+
+    /// The parameter at `level`, within the ends.
+    fn unmap(&self, level: f64) -> Option<f64> {
+        let n = self.level.partition_point(|&l| l <= level);
+        let k = n.clamp(1, self.level.len().saturating_sub(1).max(1));
+        let (a0, a1, l0, l1) = (
+            *self.at.get(k - 1)?,
+            *self.at.get(k)?,
+            *self.level.get(k - 1)?,
+            *self.level.get(k)?,
+        );
+        Some(if l1 > l0 {
+            a0 + (a1 - a0) * ((level - l0) / (l1 - l0)).clamp(0.0, 1.0)
+        } else {
+            a0
+        })
+    }
+}
+
+/// With the angle criterion, the plane a spline face is triangulated in
+/// and the grid it is seeded with, where the surface turns its normal
+/// unevenly; `None` where the chordal grid (`cells` over `low..high`)
+/// meets the angle everywhere already, where the surface has no normal
+/// at a sample, or where the grid would need more than `max_segments`
+/// cells a parameter.
+///
+/// A spline face can turn its normal very unevenly, and its parameters
+/// can run very unevenly over it: a side of an aerofoil turns half a turn
+/// around its nose in a few hundredths of its chord and hardly at all
+/// along its span, and the parameter across it moves forty times slower
+/// near the nose than at the root of the side (the turbofan's fan
+/// blades). One scale per parameter (lengths in space, as everywhere
+/// else, or the cells of the grid, as on a torus) fits one part of such
+/// a face and not the rest; and the uniform grid of the chordal tolerance
+/// knows nothing of the angle, so the refinement put the points the
+/// angle asks for one by one, each joined by Delaunay's rule to points
+/// where the plane said they were near and the surface did not (1.9
+/// times the triangles of a grid that meets both criteria, on the
+/// twisted blade of `crates/testkit/tests/spline_angle.rs`).
+///
+/// So each parameter is cut into [`WARP_PIECES`] pieces, the normal is
+/// sampled at the ends and the middle of each along [`WARP_ACROSS`] lines
+/// across the face's box, and a piece over which it turns further than
+/// a cell may (`angle / √2`, so that a cell's diagonal keeps within the
+/// angle) is cut in two and looked at again. Each piece gets as many
+/// cells as its turn asks for, and at least the chordal grid's share;
+/// where the sides across the face are below the floor (`ANGLE_FLOOR`
+/// tolerances), none shorter than the floor along it either, so that the
+/// angle never asks for more than a fine tolerance would (a count of
+/// ratios, no length of its own; where the sides across are longer, their
+/// diagonals are held to the angle, and the pieces get the cells the
+/// angle asks for whatever the floor, as a thin torus does). The plane
+/// along the parameter is then the count of cells so far: a cell of the
+/// grid is a unit square of the plane everywhere, the grid is graded to
+/// where the surface turns, and a point added stays among its
+/// neighbours. A sample, not a bound: the refinement still holds every
+/// side to the angle; the grid puts the points where it would have.
+fn angle_warp(
+    param: &Param,
+    low: Uv,
+    high: Uv,
+    centre: Uv,
+    cells: [u32; 2],
+    params: &TessParams,
+) -> Option<([Warp; 2], [Vec<f64>; 2])> {
+    let angle = params.max_angle?;
+    let per_cell = angle * std::f64::consts::FRAC_1_SQRT_2;
+    let floor = crate::ANGLE_FLOOR * params.chordal_tolerance;
+    let most = f64::from(params.max_segments);
+    let mut found: Vec<(Warp, Vec<f64>)> = Vec::with_capacity(2);
+    let mut finer = false;
+    for k in 0..2 {
+        let (from, to) = (get2(low, k), get2(high, k));
+        let span = to - from;
+        let other = 1 - k;
+        let (across_from, across_to) = (get2(low, other), get2(high, other));
+        let uniform = f64::from(get2(cells, k).max(1));
+        if !(span.is_finite() && span > 0.0) {
+            return None;
+        }
+        let at = |along: f64, across: f64| -> Uv {
+            if k == 0 {
+                [along, across]
+            } else {
+                [across, along]
+            }
+        };
+        // The surface's point and normal along each line across, at `x`.
+        let sample = |x: f64| -> Option<Vec<(Vec3, Vec3)>> {
+            (0..WARP_ACROSS)
+                .map(|line| {
+                    let across = across_from
+                        + (across_to - across_from) * (line as f64) / ((WARP_ACROSS - 1) as f64);
+                    let uv = at(x, across);
+                    Some((param.eval(uv), param.normal(uv)?))
+                })
+                .collect()
+        };
+        // How long a side of a cell across the face is, at most.
+        let mut across_side = 0.0_f64;
+        let mut ends = Vec::with_capacity(WARP_PIECES + 1);
+        for n in 0..=WARP_PIECES {
+            let x = from + span * (n as f64) / (WARP_PIECES as f64);
+            let line = sample(x)?;
+            let length: f64 = line
+                .windows(2)
+                .map(|w| match w {
+                    [(p, _), (q, _)] => p.distance(*q),
+                    _ => 0.0,
+                })
+                .sum();
+            across_side = across_side.max(length / f64::from(get2(cells, other).max(1)));
+            ends.push((x, line));
+        }
+        let angle_alone = across_side >= floor;
+        // Pieces still to look at, the leftmost on top; then per piece,
+        // from left to right, its start, width and cells per unit of the
+        // parameter.
+        let mut pieces = Vec::with_capacity(WARP_PIECES);
+        for pair in ends.windows(2).rev() {
+            if let [(a, sa), (b, sb)] = pair {
+                pieces.push((*a, *b, sa.clone(), sb.clone()));
+            }
+        }
+        let mut density: Vec<(f64, f64, f64)> = Vec::new();
+        let mut looked_at = 0_usize;
+        while let Some((a, b, sa, sb)) = pieces.pop() {
+            looked_at += 1;
+            let m = 0.5 * (a + b);
+            let sm = sample(m)?;
+            let (mut turn, mut length) = (0.0_f64, 0.0_f64);
+            for ((pa, na), ((pm, nm), (pb, nb))) in sa.iter().zip(sm.iter().zip(&sb)) {
+                let here = crate::angle_between(*na, *nm)? + crate::angle_between(*nm, *nb)?;
+                turn = turn.max(here);
+                length = length.max(pa.distance(*pm) + pm.distance(*pb));
+            }
+            let mut by_angle = turn / per_cell;
+            if !angle_alone {
+                by_angle = by_angle.min(length / floor);
+            }
+            if by_angle > 1.0 && a < m && m < b && looked_at + pieces.len() < WARP_MOST {
+                pieces.push((m, b, sm.clone(), sb));
+                pieces.push((a, m, sa, sm));
+                continue;
+            }
+            let width = b - a;
+            let wanted = by_angle / width;
+            if !(wanted.is_finite() && width > 0.0) {
+                return None;
+            }
+            finer |= wanted > uniform / span * (1.0 + 1e-9);
+            density.push((a, width, wanted.max(uniform / span)));
+        }
+        let total: f64 = density.iter().map(|&(_, w, d)| w * d).sum();
+        let count = (total - 1e-9).ceil().max(uniform);
+        if !(count <= most && total > 0.0) {
+            return None;
+        }
+        // One unit of the plane per cell: the measure times `count / total`.
+        let unit = count / total;
+        let mut warp = Warp {
+            at: vec![from],
+            level: vec![0.0],
+        };
+        let mut reached = 0.0;
+        for &(a, width, d) in &density {
+            reached += width * d * unit;
+            warp.at.push(a + width);
+            warp.level.push(reached);
+        }
+        if let Some(last) = warp.at.last_mut() {
+            *last = to;
+        }
+        let lines: Vec<f64> = (0..=(count as usize))
+            .filter_map(|i| warp.unmap(i as f64))
+            .collect();
+        let middle = warp.map(get2(centre, k));
+        for level in &mut warp.level {
+            *level -= middle;
+        }
+        found.push((warp, lines));
+    }
+    if !finer {
+        return None;
+    }
+    let [(wa, la), (wb, lb)]: [(Warp, Vec<f64>); 2] = found.try_into().ok()?;
+    Some(([wa, wb], [la, lb]))
+}
+
 /// The grid nodes `(i, j)`, `0 < i < columns`, `0 < j < rows`, coarse
 /// levels first: points arrive spread out, as a Delaunay triangulation
 /// likes them, and each next to one that is already there.
@@ -3242,6 +3479,11 @@ pub(crate) struct Boundary<'a> {
     high: Uv,
     cells: [u32; 2],
     step: Uv,
+    /// With the angle criterion on a spline face whose normal turns
+    /// unevenly: the plane it is triangulated in, per parameter, and the
+    /// lines of its grid ([`angle_warp`]). Tried first; the face is
+    /// triangulated as without them where that fails.
+    warp: Option<([Warp; 2], [Vec<f64>; 2])>,
     scale: Uv,
     /// How much further than lengths in space the plane is scaled, per
     /// parameter: 1 but where it is the plane of the grid (see
@@ -3439,6 +3681,37 @@ impl Boundary<'_> {
                 pos: [p.pos, q.pos],
                 bulge,
             });
+        }
+        if let (true, Some(([wa, wb], _))) = (any_curable, &self.warp) {
+            // The same crossings in the plane of the warp, which the face
+            // is triangulated in first.
+            let mut warped: Vec<([P2; 2], Option<Chord>)> = region
+                .segs
+                .iter()
+                .enumerate()
+                .filter_map(|(n, &(i, j))| {
+                    let (p, q) = (region.verts.get(i)?, region.verts.get(j)?);
+                    let plane = |uv: Uv| (wa.map(uv[0]), wb.map(uv[1]));
+                    let chord = curable(region.chords.get(n).copied().flatten());
+                    Some(([plane(p.uv), plane(q.uv)], chord))
+                })
+                .collect();
+            warped.sort_by(|x, y| x.0[0].0.min(x.0[1].0).total_cmp(&y.0[0].0.min(y.0[1].0)));
+            for (n, ([a, b], first)) in warped.iter().enumerate() {
+                let right = a.0.max(b.0);
+                for ([c, d], second) in warped.iter().skip(n + 1) {
+                    if c.0.min(d.0) > right {
+                        break;
+                    }
+                    if first.is_none() && second.is_none() {
+                        continue;
+                    }
+                    if seam_blocked([a.0, a.1], [b.0, b.1], [c.0, c.1], [d.0, d.1]) {
+                        wanted.extend(*first);
+                        wanted.extend(*second);
+                    }
+                }
+            }
         }
         if any_curable {
             // Every pair of segments whose boxes overlap, found by going
@@ -3727,6 +4000,11 @@ pub(crate) fn face_boundary<'a>(
         0.5 * (get2(low, 0) + get2(high, 0)),
         0.5 * (get2(low, 1) + get2(high, 1)),
     ];
+    let warp = if param.is_freeform() {
+        angle_warp(&param, low, high, centre, cells, params)
+    } else {
+        None
+    };
     Ok(Boundary {
         param,
         region,
@@ -3734,6 +4012,7 @@ pub(crate) fn face_boundary<'a>(
         high,
         cells,
         step,
+        warp,
         scale,
         stretch,
         centre,
@@ -3757,6 +4036,9 @@ pub(crate) fn face_boundary<'a>(
 /// across the edge than the tolerance (the nose of a slender aerofoil
 /// along a loft): within the tolerance of its curve, and still over the
 /// next face. Cut in two, it lies four times nearer to the surface.
+/// `retry`: the caller cuts such chords and calls again (not in its last
+/// round), so a face with a warp ([`angle_warp`]) asks for them rather
+/// than fall back to the plane of its scales.
 pub(crate) fn mesh_face(
     boundary: &Boundary,
     face: &Face,
@@ -3764,8 +4046,43 @@ pub(crate) fn mesh_face(
     params: &TessParams,
     splits: &[(Vec3, Vec3)],
     ask: &mut Vec<Chord>,
+    retry: bool,
+) -> Result<FaceMesh, TessError> {
+    if boundary.warp.is_none() {
+        return mesh_face_in(boundary, face, index, params, splits, ask, false);
+    }
+    // The plane of the warp first. Where it fails for chords of the edges
+    // that its triangles cannot follow (along a nose that turns within a
+    // few cells), those chords are asked for when the caller can cut them
+    // and try again (`retry`), as in the plane of the scales. Otherwise,
+    // where it fails (a boundary that the warp makes cross itself, or
+    // anything else), the plane of the scales, as without the warp. A
+    // budget exceeded is the face's, in either plane.
+    let before = ask.len();
+    match mesh_face_in(boundary, face, index, params, splits, ask, true) {
+        Err(error)
+            if !matches!(error, TessError::OverBudget { .. }) && !(retry && ask.len() > before) =>
+        {
+            ask.truncate(before);
+            mesh_face_in(boundary, face, index, params, splits, ask, false)
+        }
+        done => done,
+    }
+}
+
+/// [`mesh_face`] in the plane of the boundary's warp (`warped`), or of
+/// its scales.
+fn mesh_face_in(
+    boundary: &Boundary,
+    face: &Face,
+    index: usize,
+    params: &TessParams,
+    splits: &[(Vec3, Vec3)],
+    ask: &mut Vec<Chord>,
+    warped: bool,
 ) -> Result<FaceMesh, TessError> {
     let (param, region) = (boundary.param, &boundary.region);
+    let warp = boundary.warp.as_ref().filter(|_| warped);
     if let Some(doubt) = &region.doubt {
         return Err(doubt.clone());
     }
@@ -3841,9 +4158,12 @@ pub(crate) fn mesh_face(
         }
     };
 
-    let mut work = Work {
-        param,
-        cdt: Cdt::new(
+    let corners = match warp {
+        Some(([wa, wb], _)) => (
+            (wa.map(low[0]), wb.map(low[1])),
+            (wa.map(high[0]), wb.map(high[1])),
+        ),
+        None => (
             (
                 (low[0] - centre[0]) * scale[0],
                 (low[1] - centre[1]) * scale[1],
@@ -3852,14 +4172,17 @@ pub(crate) fn mesh_face(
                 (high[0] - centre[0]) * scale[0],
                 (high[1] - centre[1]) * scale[1],
             ),
-            limit,
-        )
-        .map_err(explain)?,
+        ),
+    };
+    let mut work = Work {
+        param,
+        cdt: Cdt::new(corners.0, corners.1, limit).map_err(explain)?,
         uv: Vec::new(),
         pos: Vec::new(),
         free: Vec::new(),
         centre,
         scale,
+        warp: warp.map(|(planes, _)| planes.clone()),
         tolerance,
         angle: params.max_angle.filter(|_| !param.is_plane()),
         angle_floor: crate::ANGLE_FLOOR * tolerance,
@@ -4071,13 +4394,32 @@ pub(crate) fn mesh_face(
     if !work.param.is_plane() {
         // Seed with the grid, away from the boundary: a point just inside
         // a boundary chord makes a triangle that stands on its side.
-        let [columns, rows] = cells;
-        let plane_step = (step[0] * scale[0]).min(step[1] * scale[1]);
+        // On the grid of the warp, each cell a unit square of its plane.
+        let lines = warp.map(|(_, lines)| lines);
+        let [columns, rows] = match lines {
+            Some(lines) => lines
+                .each_ref()
+                .map(|line| u32::try_from(line.len().saturating_sub(1)).unwrap_or(0)),
+            None => cells,
+        };
+        let plane_step = match lines {
+            Some(_) => 1.0,
+            None => (step[0] * scale[0]).min(step[1] * scale[1]),
+        };
         for (i, j) in grid_order(columns, rows) {
-            let uv = [
-                low[0] + step[0] * f64::from(i),
-                low[1] + step[1] * f64::from(j),
-            ];
+            let uv = match lines {
+                Some([along_a, along_b]) => {
+                    let (Some(&a), Some(&b)) = (along_a.get(i as usize), along_b.get(j as usize))
+                    else {
+                        continue;
+                    };
+                    [a, b]
+                }
+                None => [
+                    low[0] + step[0] * f64::from(i),
+                    low[1] + step[1] * f64::from(j),
+                ],
+            };
             let added = work
                 .cdt
                 .insert_interior(work.plane(uv), 0.3 * plane_step)

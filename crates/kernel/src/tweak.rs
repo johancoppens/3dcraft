@@ -31,7 +31,7 @@
 use crate::KernelError;
 use crate::profile::{Curve2, SketchCurve, detect_profiles};
 use craft3d_geom::{Circle, Curve3, Line, Surface};
-use craft3d_math::{Frame, Tolerance, Vec3};
+use craft3d_math::{Frame, Tolerance, Transform, Vec3};
 use craft3d_topo::{Body, EdgeId, FaceId, VertexId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::{PI, TAU};
@@ -526,7 +526,44 @@ pub(crate) fn resurface_at(
     operation: &'static str,
     tolerance: &Tolerance,
 ) -> Result<Body, TweakError> {
+    resurface_with(body, surfaces, also, None, operation, tolerance)
+}
+
+/// [`resurface`] for faces that all move by one rigid motion `rigid`
+/// (their new surfaces are the images of the old ones): a vertex all of
+/// whose faces move, and an edge both of whose faces do, are the images
+/// of what they were, exactly, whatever their kind; the rest is found
+/// again as [`resurface`] finds it.
+pub(crate) fn resurface_rigid(
+    body: &Body,
+    surfaces: &BTreeMap<FaceId, Surface>,
+    rigid: &Transform,
+    operation: &'static str,
+    tolerance: &Tolerance,
+) -> Result<Body, TweakError> {
+    resurface_with(
+        body,
+        surfaces,
+        &BTreeSet::new(),
+        Some(rigid),
+        operation,
+        tolerance,
+    )
+}
+
+fn resurface_with(
+    body: &Body,
+    surfaces: &BTreeMap<FaceId, Surface>,
+    also: &BTreeSet<VertexId>,
+    rigid: Option<&Transform>,
+    operation: &'static str,
+    tolerance: &Tolerance,
+) -> Result<Body, TweakError> {
     let tol = tolerance.linear;
+    // Whether every one of `faces` moves with the rigid motion.
+    let carried = |faces: &[FaceId]| {
+        rigid.is_some() && !faces.is_empty() && faces.iter().all(|face| surfaces.contains_key(face))
+    };
     let uses = edge_faces(body);
     let mut made = body.clone();
     for (face, surface) in surfaces {
@@ -559,6 +596,22 @@ pub(crate) fn resurface_at(
         let Some(was) = body.vertex(vertex).map(|v| v.point) else {
             continue;
         };
+        if let Some(motion) = rigid
+            && carried(&faces.iter().copied().collect::<Vec<_>>())
+        {
+            let point = motion.point(was);
+            if !point.is_finite() {
+                return Err(TweakError::Kernel(KernelError::InvalidSize {
+                    name: "motion",
+                    value: f64::NAN,
+                }));
+            }
+            if let Some(slot) = made.vertices.get_mut(index) {
+                slot.point = point;
+            }
+            moved_vertices.insert(vertex);
+            continue;
+        }
         let meeting: Vec<&Surface> = faces
             .iter()
             .filter_map(|face| made.face(*face).map(|f| &f.surface))
@@ -605,6 +658,17 @@ pub(crate) fn resurface_at(
         ) else {
             continue;
         };
+        if let Some(motion) = rigid
+            && carried(&faces)
+        {
+            // The image of the edge, with the same parameters.
+            let curve = edge.curve.transformed(motion).map_err(KernelError::from)?;
+            if let Some(slot) = made.edges.get_mut(index) {
+                slot.curve = curve;
+            }
+            remade.insert(id);
+            continue;
+        }
         let closed = edge.start == edge.end;
         let fail = |vanishes: bool, reason: &'static str| {
             let (faces, edge) = (faces.clone(), Some(id));
@@ -768,4 +832,16 @@ fn buried(
         .zip(found)
         .find(|((_, expected), inside)| inside.is_some_and(|inside| inside != *expected))
         .map(|((face, _), _)| *face)
+}
+
+/// The vertices on the loops of `face`, ascending, each once.
+pub(crate) fn face_vertices(body: &Body, face: FaceId) -> BTreeSet<VertexId> {
+    body.face(face)
+        .into_iter()
+        .flat_map(|f| &f.loops)
+        .filter_map(|l| body.loop_(*l))
+        .flat_map(|l| &l.coedges)
+        .filter_map(|c| body.edge(c.edge))
+        .flat_map(|e| [e.start, e.end])
+        .collect()
 }

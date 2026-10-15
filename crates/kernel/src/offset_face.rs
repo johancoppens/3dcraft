@@ -237,7 +237,27 @@ pub(crate) fn offset_for(
             defects: defects.into_iter().take(crate::MAX_REPORTED).collect(),
         });
     }
-    let (faces, edge, reason) = match at(body, offsets, 1.0, operation, tolerance) {
+    fitting(
+        |fraction| at(body, offsets, fraction, operation, tolerance),
+        largest,
+        operation,
+        tolerance,
+    )
+}
+
+/// `attempt(1.0)`, the whole of an operation whose size is `largest`
+/// (a length: how far the farthest thing moves); when that goes too far,
+/// [`KernelError::FaceOpTooFar`] with the largest part of it that fits,
+/// found by halving (`attempt(fraction)`), or, when no part of it fits,
+/// [`KernelError::FaceOp`] with what is not built.
+pub(crate) fn fitting(
+    attempt: impl Fn(f64) -> Result<Body, TweakError>,
+    largest: f64,
+    operation: &'static str,
+    tolerance: &Tolerance,
+) -> Result<Body, KernelError> {
+    let tol = tolerance.linear;
+    let (faces, edge, reason) = match attempt(1.0) {
         Ok(made) => return Ok(made),
         Err(TweakError::Kernel(error)) => return Err(error),
         Err(TweakError::Unsupported {
@@ -258,7 +278,7 @@ pub(crate) fn offset_for(
         if middle * largest <= tol {
             break;
         }
-        match at(body, offsets, middle, operation, tolerance) {
+        match attempt(middle) {
             Ok(_) => fits = middle,
             Err(_) => fails = middle,
         }
@@ -290,9 +310,77 @@ pub fn offset_faces(
     offsets: &[FaceOffset],
     tolerance: &Tolerance,
 ) -> Result<Offset, KernelError> {
-    let made = offset_for(body, offsets, OPERATION, tolerance)?;
+    offset_for(body, offsets, OPERATION, tolerance).map(same_numbers)
+}
+
+/// What every face operation that moves faces asks of its input: a
+/// usable tolerance, a solid that passes the checker, and faces of it,
+/// each once and not too many.
+pub(crate) fn usable(
+    body: &Body,
+    faces: &[FaceId],
+    operation: &'static str,
+    tolerance: &Tolerance,
+) -> Result<(), KernelError> {
+    let tol = tolerance.linear;
+    if !(tol.is_finite() && tol > 0.0 && tolerance.angular.is_finite() && tolerance.angular > 0.0) {
+        return Err(KernelError::InvalidSize {
+            name: "tolerance",
+            value: tol,
+        });
+    }
+    if body.kind != BodyKind::Solid {
+        return Err(refuse(
+            operation,
+            Vec::new(),
+            None,
+            "only the faces of a solid can be moved",
+        ));
+    }
+    if faces.is_empty() {
+        return Err(refuse(operation, Vec::new(), None, "no face is given"));
+    }
+    if faces.len() > MAX_FACES {
+        return Err(refuse(
+            operation,
+            Vec::new(),
+            None,
+            "more faces than one operation takes",
+        ));
+    }
+    for (index, face) in faces.iter().enumerate() {
+        if body.face(*face).is_none() {
+            return Err(refuse(
+                operation,
+                vec![*face],
+                None,
+                "there is no such face in the body",
+            ));
+        }
+        if faces.iter().take(index).any(|earlier| earlier == face) {
+            return Err(refuse(
+                operation,
+                vec![*face],
+                None,
+                "the face is given twice",
+            ));
+        }
+    }
+    let defects = craft3d_topo::check(body, tolerance);
+    if !defects.is_empty() {
+        return Err(KernelError::InvalidBody {
+            operation,
+            defects: defects.into_iter().take(crate::MAX_REPORTED).collect(),
+        });
+    }
+    Ok(())
+}
+
+/// What a body made by [`crate::tweak`] is: every entity under its own
+/// number.
+pub(crate) fn same_numbers(made: Body) -> Offset {
     let numbered = |count: usize| (0..count).map(|i| u32::try_from(i).unwrap_or(u32::MAX));
-    Ok(Offset {
+    Offset {
         faces: numbered(made.faces.len()).map(FaceId).collect(),
         edges: numbered(made.edges.len())
             .map(|i| Some(EdgeId(i)))
@@ -301,5 +389,5 @@ pub fn offset_faces(
             .map(|i| Some(VertexId(i)))
             .collect(),
         body: made,
-    })
+    }
 }

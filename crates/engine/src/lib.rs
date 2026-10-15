@@ -273,6 +273,15 @@ impl Session {
         Some(self.documents.get(self.active)?.cache.last_run())
     }
 
+    /// How many entries of what features are made from the last
+    /// regeneration of the active document looked at
+    /// (`craft3d_regen::RegenCache::last_run_work`): for tests and
+    /// benchmarks that hold regeneration to grow with the history, not
+    /// with its square.
+    pub fn last_regeneration_work(&self) -> Option<usize> {
+        Some(self.documents.get(self.active)?.cache.last_run_work())
+    }
+
     pub fn has_document(&self) -> bool {
         self.documents.get(self.active).is_some()
     }

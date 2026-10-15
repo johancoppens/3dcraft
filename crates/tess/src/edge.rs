@@ -244,6 +244,82 @@ impl EdgeSamples {
         }
         changed
     }
+
+    /// Cuts chords at the places `wanted` gives (parts of each chord, as
+    /// the edge runs; `long.rs`), several faces' wishes for one chord
+    /// together. The points are the edge's own from then on: what
+    /// [`most_points`] allows is counted from them. Returns the edges
+    /// that changed, in order.
+    pub(crate) fn cut_long(
+        &mut self,
+        body: &Body,
+        wanted: &[crate::long::Cuts],
+        params: &TessParams,
+    ) -> Vec<u32> {
+        let limit = (params.max_segments as usize).saturating_mul(8);
+        let mut by_edge: BTreeMap<u32, BTreeMap<u32, Vec<f64>>> = BTreeMap::new();
+        for ((edge, chord), parts) in wanted {
+            by_edge
+                .entry(*edge)
+                .or_default()
+                .entry(*chord)
+                .or_default()
+                .extend(parts.iter().copied());
+        }
+        let mut changed = Vec::new();
+        for (index, chords) in by_edge {
+            let (Some(edge), Some(points), Some(at)) = (
+                body.edges.get(index as usize),
+                self.points.get_mut(index as usize),
+                self.at.get_mut(index as usize),
+            ) else {
+                continue;
+            };
+            let mut room = limit.saturating_sub(points.len());
+            let mut new_points = Vec::with_capacity(points.len());
+            let mut new_at = Vec::with_capacity(points.len());
+            for (k, (&p, &t)) in points.iter().zip(at.iter()).enumerate() {
+                new_points.push(p);
+                new_at.push(t);
+                let (Some(parts), Some(&q), Some(&u)) = (
+                    u32::try_from(k).ok().and_then(|k| chords.get(&k)),
+                    points.get(k + 1),
+                    at.get(k + 1),
+                ) else {
+                    continue;
+                };
+                let mut parts = parts.clone();
+                parts.sort_by(f64::total_cmp);
+                parts.dedup();
+                let mut last = t;
+                for part in parts {
+                    let place = t + (u - t) * part;
+                    let point = edge.curve.eval(place);
+                    let apart = last < place
+                        && place < u
+                        && point.is_finite()
+                        && point != p
+                        && point != q
+                        && new_points.last() != Some(&point);
+                    if room > 0 && apart {
+                        new_points.push(point);
+                        new_at.push(place);
+                        last = place;
+                        room -= 1;
+                    }
+                }
+            }
+            if new_points.len() > points.len() {
+                *points = new_points;
+                *at = new_at;
+                if let Some(first) = self.first.get_mut(index as usize) {
+                    *first = points.len();
+                }
+                changed.push(index);
+            }
+        }
+        changed
+    }
 }
 
 /// The points of every edge, each within the chordal tolerance of its

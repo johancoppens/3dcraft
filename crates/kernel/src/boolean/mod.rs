@@ -58,7 +58,7 @@ mod sew;
 
 use crate::{KernelError, MAX_REPORTED};
 use craft3d_geom::{Curve3, GeomError};
-use craft3d_math::{Tolerance, Vec3};
+use craft3d_math::{Bits, Tolerance, Vec3};
 use craft3d_topo::{Body, EdgeId, FaceId, VertexId, check};
 use outline::locate;
 use regions::Half;
@@ -234,19 +234,23 @@ fn geometry(error: GeomError, faces: &[(Operand, FaceId)]) -> Stop {
 }
 
 /// Bodies that passed `craft3d_topo::check` lately, each written out in
-/// full with the tolerance it was checked with (so that two are the same
-/// only when every number of them is, bit for bit), the most recent last.
-static PASSED: Mutex<Vec<String>> = Mutex::new(Vec::new());
-/// How many are remembered, and how long all of them are at most.
+/// full with the tolerance it was checked with, every bit of every number
+/// (`craft3d_math::Bits`: two are the same only when every number of them
+/// is, bit for bit), the most recent last.
+static PASSED: Mutex<Vec<Vec<u64>>> = Mutex::new(Vec::new());
+/// How many are remembered, and how many words all of them are at most.
 const PASSED_BODIES: usize = 8;
-const PASSED_BYTES: usize = 1 << 25;
+const PASSED_WORDS: usize = 1 << 22;
 
 /// `craft3d_topo::check` of `body`, remembering the bodies that pass. In a
 /// row of booleans each result is the first operand of the next, and is
 /// checked as a result and again as an operand; written out, a body is
-/// compared at a small part of what checking it costs.
+/// compared at a small part of what checking it costs. Written out as its
+/// bits, not as text: formatting every number of a large body cost a
+/// quarter of a long row of cuts.
 pub(crate) fn checked(body: &Body, tolerance: &Tolerance) -> Vec<craft3d_topo::Defect> {
-    let key = format!("{tolerance:?}{body:?}");
+    let mut key = craft3d_math::bits_of(tolerance);
+    body.push_bits(&mut key);
     {
         let mut passed = PASSED.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(at) = passed.iter().position(|k| *k == key) {
@@ -256,13 +260,13 @@ pub(crate) fn checked(body: &Body, tolerance: &Tolerance) -> Vec<craft3d_topo::D
         }
     }
     let defects = check(body, tolerance);
-    if defects.is_empty() && key.len() <= PASSED_BYTES {
+    if defects.is_empty() && key.len() <= PASSED_WORDS {
         let mut passed = PASSED.lock().unwrap_or_else(PoisonError::into_inner);
         if !passed.contains(&key) {
             passed.push(key);
         }
         while passed.len() > PASSED_BODIES
-            || passed.iter().map(String::len).sum::<usize>() > PASSED_BYTES
+            || passed.iter().map(Vec::len).sum::<usize>() > PASSED_WORDS
         {
             let _forgotten = passed.remove(0);
         }

@@ -99,9 +99,30 @@ pub struct RegenCache {
     entries: BTreeMap<FeatureId, Entry>,
     solves: BTreeMap<FeatureId, Solve>,
     next_stamp: u64,
+    /// What the last regeneration found of each feature, in the order of
+    /// its history: what the next one compares with to know, without
+    /// looking at everything a feature is made from, that none of it
+    /// changed ([`Step`]).
+    trail: Vec<(FeatureId, Step)>,
     /// Features rebuilt and reused by the last regeneration.
     rebuilt: usize,
     reused: usize,
+    /// How many entries of what features are made from the last
+    /// regeneration looked at ([`RegenCache::last_run_work`]).
+    work: usize,
+}
+
+/// What a regeneration found of one feature that the features after it
+/// can see: its name and kind (which reasons quote), the stamp of its
+/// result, and the bodies it took. When every feature a feature is made
+/// from, directly or through others, has the same step as the last time,
+/// and so has every feature that took one of their bodies before it, all
+/// of its context but its own definition is what it was.
+#[derive(Clone, Debug, PartialEq)]
+struct Step {
+    named: (Arc<str>, &'static str),
+    stamp: u64,
+    takes: Vec<FeatureId>,
 }
 
 impl RegenCache {
@@ -109,6 +130,16 @@ impl RegenCache {
     /// reused.
     pub fn last_run(&self) -> (usize, usize) {
         (self.rebuilt, self.reused)
+    }
+
+    /// How many entries of what features are made from the last
+    /// regeneration put together and compared: the features made from
+    /// others, directly or through others, summed over the features whose
+    /// context had to be looked at in full. A measure of the work that is
+    /// not building, which tests hold to grow with the length of the
+    /// history and not with its square when one feature is added.
+    pub fn last_run_work(&self) -> usize {
+        self.work
     }
 
     /// Solves `sketch` on the flat plane, or returns how it solved the
@@ -169,6 +200,8 @@ struct Lookup<'a> {
     by_id: BTreeMap<FeatureId, (usize, &'a Feature)>,
     names: BTreeMap<FeatureId, Arc<str>>,
     made_from: BTreeMap<FeatureId, Arc<[FeatureId]>>,
+    /// Entries of what features are made from that were looked at.
+    work: usize,
 }
 
 impl<'a> Lookup<'a> {
@@ -187,6 +220,7 @@ impl<'a> Lookup<'a> {
             by_id,
             names,
             made_from: BTreeMap::new(),
+            work: 0,
         }
     }
 
@@ -212,10 +246,11 @@ impl<'a> Lookup<'a> {
     }
 
     /// [`dependencies`] by a walk of the graph, as it always was.
-    fn walked(&self, feature: &Feature) -> Vec<FeatureId> {
+    fn walked(&mut self, feature: &Feature) -> Vec<FeatureId> {
         let mut seen = BTreeSet::new();
         let mut open = self.inputs(feature);
         while let Some(id) = open.pop() {
+            self.work = self.work.saturating_add(1);
             if id == feature.id || !seen.insert(id) {
                 continue;
             }
@@ -255,6 +290,7 @@ impl<'a> Lookup<'a> {
                 all.extend(self.made_from(input).iter().copied());
             }
         }
+        self.work = self.work.saturating_add(all.len());
         all.sort();
         all.dedup();
         all.retain(|id| *id != feature.id);
@@ -262,10 +298,107 @@ impl<'a> Lookup<'a> {
     }
 }
 
+/// The features whose [`Step`] is not what it was in the last
+/// regeneration, the bodies they took or no longer take, and everything
+/// made from any of those, directly or through others: what cannot be
+/// known to have the context it had without looking at it in full. Marked
+/// as the regeneration goes; a mark on a feature already built changes
+/// nothing of it, only of the features made from it that come later.
+struct Changed {
+    marked: BTreeSet<FeatureId>,
+    /// The features that name each feature (`FeatureKind::inputs`), made
+    /// when the first feature is marked.
+    users: Option<BTreeMap<FeatureId, Vec<FeatureId>>>,
+    /// The features that are made from every feature before them
+    /// (`FeatureKind::uses_all_earlier`), by their place in the history.
+    all_earlier: Vec<(usize, FeatureId)>,
+    /// Every one of `all_earlier` after this place is marked.
+    all_earlier_after: Option<usize>,
+}
+
+impl Changed {
+    fn new(doc: &Document) -> Self {
+        Self {
+            marked: BTreeSet::new(),
+            users: None,
+            all_earlier: doc
+                .features
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| f.kind.uses_all_earlier())
+                .map(|(place, f)| (place, f.id))
+                .collect(),
+            all_earlier_after: None,
+        }
+    }
+
+    fn is_marked(&self, id: FeatureId) -> bool {
+        self.marked.contains(&id)
+    }
+
+    /// Marks `id` and everything made from it. Each feature is marked at
+    /// most once, so all the marks of one regeneration together take time
+    /// in proportion to the history and what its features name.
+    fn mark(&mut self, doc: &Document, lookup: &Lookup, id: FeatureId) {
+        if !self.marked.insert(id) {
+            return;
+        }
+        let users = self.users.get_or_insert_with(|| {
+            let mut users: BTreeMap<FeatureId, Vec<FeatureId>> = BTreeMap::new();
+            for feature in &doc.features {
+                for input in feature.kind.inputs() {
+                    users.entry(input).or_default().push(feature.id);
+                }
+            }
+            users
+        });
+        let mut open = vec![id];
+        while let Some(at) = open.pop() {
+            for user in users.get(&at).map(Vec::as_slice).unwrap_or_default() {
+                if self.marked.insert(*user) {
+                    open.push(*user);
+                }
+            }
+            // The features made from every one before them, after this
+            // one: those after the last place this was done for are
+            // marked already.
+            let Some(place) = lookup.by_id.get(&at).map(|(place, _)| *place) else {
+                continue;
+            };
+            if self.all_earlier_after.is_some_and(|after| after <= place) {
+                continue;
+            }
+            let after = self.all_earlier_after;
+            for (later, user) in &self.all_earlier {
+                if *later > place
+                    && after.is_none_or(|after| *later <= after)
+                    && self.marked.insert(*user)
+                {
+                    open.push(*user);
+                }
+            }
+            self.all_earlier_after = Some(place);
+        }
+    }
+}
+
 /// Runs `build` for every feature of the document that cannot reuse what
 /// it gave the last time. `build` gets the feature, whether it is rolled
 /// back, and the results so far; it returns the feature's result and the
 /// earlier feature whose body it took, if any.
+///
+/// A feature reuses its result when its definition and its context are
+/// what they were ([`Context`]). The context lists everything the feature
+/// is made from, directly or through others, which in a long row of
+/// features is most of the history: put together for every feature, that
+/// is the square of the length of the history for each regeneration. So
+/// the context is put together only for a feature that may have a new
+/// one. One that stands where it stood in the last regeneration, made
+/// only from features before it, none of which (nor any feature that took
+/// one of their bodies before it) found something else than the last time
+/// ([`Step`], [`Changed`]), has the inputs it had: only the rest of its
+/// context is compared. What is reused is exactly what the full
+/// comparison reuses.
 pub(crate) fn features(
     doc: &Document,
     variables: &Evaluation,
@@ -287,11 +420,54 @@ pub(crate) fn features(
     let mut stamps: BTreeMap<FeatureId, u64> = BTreeMap::new();
     let mut rolled_back = false;
     let steps = doc.features.len();
+    // The last regeneration's steps; left empty until this one is done,
+    // so that one that does not finish leaves nothing to rely on.
+    let last = std::mem::take(&mut cache.trail);
+    // How many features stand where they stood the last time. With an id
+    // twice in the history (a damaged file), what is looked up by id is
+    // not each feature's own: then none.
+    let same_places = if lookup.by_id.len() == doc.features.len() {
+        last.iter()
+            .zip(&doc.features)
+            .take_while(|((id, _), feature)| *id == feature.id)
+            .count()
+    } else {
+        0
+    };
+    let mut trail: Vec<(FeatureId, Step)> = Vec::with_capacity(steps);
+    let mut changed = Changed::new(doc);
+    // For each feature built so far: whether everything it is made from,
+    // directly or through others, came before it; and whether that holds
+    // of every feature so far.
+    let mut before: BTreeMap<FeatureId, bool> = BTreeMap::new();
+    let mut all_before = true;
     for (index, stated) in doc.features.iter().enumerate() {
         // Names of an earlier body are followed to the newest one before
         // this feature; it is then built, depends and takes as followed.
+        let made_before = |f: &Feature| {
+            f.kind
+                .inputs()
+                .iter()
+                .all(|input| before.get(input).copied().unwrap_or(false))
+                && (all_before || !f.kind.uses_all_earlier())
+        };
+        let stated_before = made_before(stated);
         let followed = if rolled_back || stated.suppressed {
             Ok(None)
+        } else if let Some(entry) = cache.entries.get(&stated.id).filter(|entry| {
+            // Following names reads the results before this feature and
+            // the names and kinds of the features it names and of those
+            // that took their bodies, all of them earlier. When every
+            // feature before it found what it found the last time (no
+            // mark yet) and it stands where it stood, made only from
+            // earlier features, the names follow as they did then.
+            index < same_places
+                && changed.marked.is_empty()
+                && stated_before
+                && !entry.context.rolled_back
+                && entry.feature == *stated
+        }) {
+            entry.context.followed.clone()
         } else {
             crate::follow::feature(doc, &results, stated)
         };
@@ -299,113 +475,146 @@ pub(crate) fn features(
             Ok(Some(followed)) => followed,
             Ok(None) | Err(_) => stated,
         };
-        let made_from = lookup.dependencies(feature);
-        // Remembered for the features made from this one, when it is the
-        // feature of the history with this id, as stated.
-        if !matches!(followed, Ok(Some(_)))
-            && lookup.by_id.get(&stated.id).map(|(i, _)| *i) == Some(index)
-        {
-            lookup
-                .made_from
-                .entry(stated.id)
-                .or_insert_with(|| made_from.clone().into());
-        }
-        let mut inputs = Vec::with_capacity(made_from.len());
-        for id in made_from {
-            let circle = !stamps.contains_key(&id)
-                && lookup.feature(id).is_some()
-                && lookup.made_from(id).contains(&feature.id);
-            let name = |id: FeatureId| lookup.names.get(&id).cloned();
-            inputs.push(Input {
-                id,
-                named: lookup
-                    .feature(id)
-                    .and_then(|f| Some((name(id)?, f.kind.type_name()))),
-                stamp: stamps.get(&id).copied(),
-                taken_by: at
-                    .get(&id)
-                    .and_then(|i| results.get(*i))
-                    .and_then(|r| r.consumed_by)
-                    .map(|taker| (taker, name(taker).unwrap_or_else(|| Arc::from("")))),
-                circle,
-            });
-        }
-        let context = Context {
-            rolled_back,
-            followed: followed.clone(),
-            values: evaluated(variables, &feature.kind.exprs()),
-            units: doc.units,
-            tolerance: bits(doc.tolerance),
-            inputs,
-        };
-        let hit = cache
+        let values = evaluated(variables, &feature.kind.exprs());
+        let unchanged = !changed.is_marked(stated.id)
+            && feature
+                .kind
+                .inputs()
+                .iter()
+                .all(|input| !changed.is_marked(*input));
+        let known_inputs = index < same_places && unchanged && made_before(feature);
+        before.insert(stated.id, stated_before);
+        all_before &= stated_before;
+        let reused = cache
             .entries
             .get(&feature.id)
-            .filter(|entry| entry.context == context && entry.feature == *stated)
+            .filter(|entry| {
+                known_inputs
+                    && entry.feature == *stated
+                    && entry.context.rolled_back == rolled_back
+                    && entry.context.units == doc.units
+                    && entry.context.tolerance == bits(doc.tolerance)
+                    && entry.context.values == values
+                    && entry.context.followed == followed
+            })
             .map(|entry| (entry.result.clone(), entry.stamp));
-        let (result, stamp) = match hit {
+        let (result, stamp) = match reused {
             Some(hit) => {
                 cache.reused += 1;
                 hit
             }
             None => {
-                cache.rebuilt += 1;
-                crate::progress::report(&crate::progress::Progress {
-                    phase: "regenerating",
-                    feature: Some(feature.id.to_string()),
-                    name: Some(feature.name.clone()),
-                    step: index.saturating_add(1),
-                    steps,
-                });
-                let result = match &followed {
-                    Err(reason) => FeatureResult {
-                        id: stated.id,
-                        status: Status::Failed(reason.clone()),
-                        body: None,
-                        sketch: None,
-                        datum: None,
-                        names: None,
-                        instances: None,
-                        sweep: None,
-                        thread: None,
-                        consumed_by: None,
-                        followed: None,
-                    },
-                    Ok(as_built) => FeatureResult {
-                        followed: as_built.clone().map(Arc::new),
-                        ..build(feature, rolled_back, &results, cache).0
-                    },
-                };
-                // The same definition giving the same result keeps its
-                // stamp: nothing made from it has to be rebuilt.
-                let stamp = match cache.entries.get(&feature.id) {
-                    Some(old) if old.feature == *stated && old.result == result => old.stamp,
-                    _ => {
-                        cache.next_stamp = cache.next_stamp.wrapping_add(1);
-                        cache.next_stamp
-                    }
-                };
-                cache.entries.insert(
-                    feature.id,
-                    Entry {
-                        feature: stated.clone(),
-                        context,
-                        result: result.clone(),
-                        stamp,
+                let context = context(
+                    &mut lookup,
+                    &stamps,
+                    &at,
+                    &results,
+                    (index, stated, feature),
+                    Context {
+                        rolled_back,
+                        followed: followed.clone(),
+                        values,
+                        units: doc.units,
+                        tolerance: bits(doc.tolerance),
+                        inputs: Vec::new(),
                     },
                 );
-                (result, stamp)
+                let hit = cache
+                    .entries
+                    .get(&feature.id)
+                    .filter(|entry| entry.context == context && entry.feature == *stated)
+                    .map(|entry| (entry.result.clone(), entry.stamp));
+                match hit {
+                    Some(hit) => {
+                        cache.reused += 1;
+                        hit
+                    }
+                    None => {
+                        cache.rebuilt += 1;
+                        crate::progress::report(&crate::progress::Progress {
+                            phase: "regenerating",
+                            feature: Some(feature.id.to_string()),
+                            name: Some(feature.name.clone()),
+                            step: index.saturating_add(1),
+                            steps,
+                        });
+                        let result = match &followed {
+                            Err(reason) => FeatureResult {
+                                id: stated.id,
+                                status: Status::Failed(reason.clone()),
+                                body: None,
+                                sketch: None,
+                                datum: None,
+                                names: None,
+                                instances: None,
+                                sweep: None,
+                                thread: None,
+                                consumed_by: None,
+                                followed: None,
+                            },
+                            Ok(as_built) => FeatureResult {
+                                followed: as_built.clone().map(Arc::new),
+                                ..build(feature, rolled_back, &results, cache).0
+                            },
+                        };
+                        // The same definition giving the same result keeps
+                        // its stamp: nothing made from it has to be rebuilt.
+                        let stamp = match cache.entries.get(&feature.id) {
+                            Some(old) if old.feature == *stated && old.result == result => {
+                                old.stamp
+                            }
+                            _ => {
+                                cache.next_stamp = cache.next_stamp.wrapping_add(1);
+                                cache.next_stamp
+                            }
+                        };
+                        cache.entries.insert(
+                            feature.id,
+                            Entry {
+                                feature: stated.clone(),
+                                context,
+                                result: result.clone(),
+                                stamp,
+                            },
+                        );
+                        (result, stamp)
+                    }
+                }
             }
         };
         // A feature made from another one's body takes that body, on a
         // reused result as on a rebuilt one.
+        let mut takes = Vec::new();
         if matches!(result.status, Status::Ok) {
             for (source, keep) in feature.kind.sources() {
                 if !keep && let Some(taken) = at.get(&source).and_then(|i| results.get_mut(*i)) {
                     taken.consumed_by = Some(feature.id);
+                    takes.push(source);
                 }
             }
         }
+        let step = Step {
+            named: (
+                lookup
+                    .names
+                    .get(&stated.id)
+                    .cloned()
+                    .unwrap_or_else(|| Arc::from(stated.name.as_str())),
+                stated.kind.type_name(),
+            ),
+            stamp,
+            takes,
+        };
+        if index < same_places
+            && let Some((_, old)) = last.get(index)
+            && *old != step
+        {
+            changed.mark(doc, &lookup, stated.id);
+            for taken in old.takes.iter().chain(&step.takes) {
+                changed.mark(doc, &lookup, *taken);
+            }
+        }
+        trail.push((stated.id, step));
         stamps.insert(feature.id, stamp);
         at.entry(result.id).or_insert(results.len());
         results.push(result);
@@ -413,5 +622,50 @@ pub(crate) fn features(
             rolled_back = true;
         }
     }
+    cache.trail = trail;
+    cache.work = lookup.work;
     results
+}
+
+/// The full context of the feature at `index` of the history (`stated`,
+/// built as `feature`): `partial` with the inputs filled in.
+fn context(
+    lookup: &mut Lookup,
+    stamps: &BTreeMap<FeatureId, u64>,
+    at: &BTreeMap<FeatureId, usize>,
+    results: &[FeatureResult],
+    (index, stated, feature): (usize, &Feature, &Feature),
+    partial: Context,
+) -> Context {
+    let made_from = lookup.dependencies(feature);
+    // Remembered for the features made from this one, when it is the
+    // feature of the history with this id, as stated.
+    if std::ptr::eq(feature, stated) && lookup.by_id.get(&stated.id).map(|(i, _)| *i) == Some(index)
+    {
+        lookup
+            .made_from
+            .entry(stated.id)
+            .or_insert_with(|| made_from.clone().into());
+    }
+    let mut inputs = Vec::with_capacity(made_from.len());
+    for id in made_from {
+        let circle = !stamps.contains_key(&id)
+            && lookup.feature(id).is_some()
+            && lookup.made_from(id).contains(&feature.id);
+        let name = |id: FeatureId| lookup.names.get(&id).cloned();
+        inputs.push(Input {
+            id,
+            named: lookup
+                .feature(id)
+                .and_then(|f| Some((name(id)?, f.kind.type_name()))),
+            stamp: stamps.get(&id).copied(),
+            taken_by: at
+                .get(&id)
+                .and_then(|i| results.get(*i))
+                .and_then(|r| r.consumed_by)
+                .map(|taker| (taker, name(taker).unwrap_or_else(|| Arc::from("")))),
+            circle,
+        });
+    }
+    Context { inputs, ..partial }
 }
