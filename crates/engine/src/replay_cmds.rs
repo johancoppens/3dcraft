@@ -22,7 +22,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[spec!(
     "view.replay",
     "Replay",
     r#"{"dir": string, "width": integer = 800, "height": integer = 600, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the finished model, "tolerance": number = the picture's at to, as view.render, "from": id or name = the first feature, "to": id or name = the rollback marker or the last feature, "every": boolean = false, "framesPerStep": integer = 1, "hold": integer = 0, "orbit": number = 0, "fps": integer = 30}"#,
-    "Renders how the document is built, for a showcase video: the history is rolled back to nothing and forward one feature at a time, from from to to, and each step is drawn with the CPU renderer as view.render would, from one camera framed on the model as it is at to, so the picture stays put. Writes the frames as dir/frame-00000.png, frame-00001.png, ... under the write root (frames of an earlier, longer replay there are removed) and dir/captions.srt, a subtitle per step with the feature's place, name and type, timed at fps. The first framesPerStep frames show the model before from (nothing, from the first feature), then framesPerStep frames per step, then hold more of the end; without an orbit the last frame is the picture view.render gives of the document with the same view, projection, zoom, box and tolerance (unless view.render draws a display scene the window has built already). Without tolerance every step is meshed as view.render meshes the model as it is at to, for the camera of the replay. A step that changes no body (a sketch, a datum, a failed or suppressed feature) gets no frames unless every is true. orbit turns the camera that many degrees about the vertical over the whole replay (the model is then framed so that it stays in the picture all round). The document does not change: not its rollback marker, not its undo history. At most 3600 frames, and 8e9 pixels in all. Returns the frame count, the steps (with the frames each got, or none) and the captions. craft3d-cli replay makes an MP4 or a GIF of it.",
+    "Renders how the document is built, for a showcase video: the history is rolled back to nothing and forward one feature at a time, from from to to, and each step is drawn with the CPU renderer as view.render would, from one camera framed on the model as it is at to, so the picture stays put. Writes the frames as dir/frame-00000.png, frame-00001.png, ... under the write root (frames of an earlier, longer replay there are removed) and dir/captions.srt, a subtitle per step with the feature's place, name and type, timed at fps. The first framesPerStep frames show the model before from (nothing, from the first feature), then framesPerStep frames per step, then hold more of the end; without an orbit the last frame is the picture view.render gives of the document with the same view, projection, zoom, box and tolerance. Without tolerance every step is meshed at the tolerance view.render chooses for the model as it is at to, for the camera of the replay. A step that changes no body (a sketch, a datum, a failed or suppressed feature) gets no frames unless every is true. orbit turns the camera that many degrees about the vertical over the whole replay (the model is then framed so that it stays in the picture all round). The document does not change: not its rollback marker, not its undo history. At most 3600 frames, and 8e9 pixels in all. Returns the frame count, the steps (with the frames each got, or none) and the captions. craft3d-cli replay makes an MP4 or a GIF of it.",
     doc: true,
     view_replay
 )];
@@ -472,37 +472,6 @@ mod native {
         let Some(final_regen) = final_regen else {
             return fail("view.replay: nothing to replay");
         };
-        // Every step is sampled as view.render samples the state at `to`
-        // (the document's own when the replay ends where it does, so that
-        // the last frame is its picture): at the tolerance given, or at
-        // the picture's tolerance for the camera the replay frames from
-        // (`crate::scene::picture_tolerance`) with the display's angle,
-        // each body within the display's triangles.
-        let aspect = width as f64 / height as f64;
-        let frame_on = |model: &craft3d_math::Bbox3| {
-            if orbit == 0.0 {
-                framing.camera(model, aspect).ok()
-            } else {
-                orbit_camera(&framing, &framing.look_at.unwrap_or(*model), orbit, aspect)
-            }
-        };
-        let tess = match given {
-            Some(chordal_tolerance) => TessParams {
-                chordal_tolerance,
-                ..TessParams::default()
-            },
-            None => TessParams {
-                chordal_tolerance: crate::scene::picture_tolerance(&final_regen, &doc, |model| {
-                    let camera = frame_on(model)?;
-                    // Both are within 16..=4096.
-                    crate::scene::pixel_footprint(&camera, height as u32, model)
-                }),
-                max_angle: Some(crate::scene::DISPLAY_MAX_ANGLE),
-                max_triangles: Some(crate::scene::DISPLAY_MAX_TRIANGLES),
-                ..TessParams::default()
-            },
-        };
-
         let shown = steps.iter().filter(|s| s.shown).count() as u64;
         let frames = (shown + 1).saturating_mul(per_step).saturating_add(hold);
         if frames > MAX_REPLAY_FRAMES {
@@ -522,10 +491,43 @@ mod native {
             doc.feature(id)
                 .map_or_else(|| id.to_string(), |f| f.name.clone())
         };
+        // Framed, as view.render frames, on the box around the bodies at
+        // `to` from their B-rep.
+        let model = crate::scene::bodies_box(&final_regen);
+        let aspect = width as f64 / height as f64;
+        // Every step is sampled as view.render samples the state at `to`
+        // (the document's own when the replay ends where it does, so that
+        // the last frame is its picture): at the tolerance given, or at the
+        // tolerance of the picture's scene of that state for the replay's
+        // camera (`crate::scene::picture_tolerance` and the ladder of
+        // `crate::scene::picture_scene_of`), with the display's angle, each
+        // body within the display's triangles.
+        let tess = match given {
+            Some(chordal_tolerance) => TessParams {
+                chordal_tolerance,
+                ..TessParams::default()
+            },
+            None => {
+                let rung = crate::scene::picture_tolerance(&final_regen, &doc, |model| {
+                    let camera = if orbit == 0.0 {
+                        framing.camera(model, aspect).ok()?
+                    } else {
+                        orbit_camera(&framing, &framing.look_at.unwrap_or(*model), orbit, aspect)?
+                    };
+                    // Both are within 16..=4096.
+                    crate::scene::pixel_footprint(&camera, height as u32, model)
+                });
+                let settled = crate::scene::picture_scene_of(&doc, &final_regen, 0, rung);
+                TessParams {
+                    chordal_tolerance: settled.tolerance,
+                    max_angle: settled.max_angle,
+                    max_triangles: Some(crate::scene::DISPLAY_MAX_TRIANGLES),
+                    ..TessParams::default()
+                }
+            }
+        };
         let mut meshes = Meshes::default();
         meshes.fill(&last, &names, &tess)?;
-        let (end, _) = meshes.joined(&last)?;
-        let model = end.bbox();
         if model.is_empty() {
             return fail(
                 "view.replay: there are no bodies at the end of the replay; check document.inspect for failed features",

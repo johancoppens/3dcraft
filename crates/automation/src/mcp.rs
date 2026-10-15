@@ -427,7 +427,7 @@ fn tools() -> Value {
                     },
                     "tolerance": {
                         "type": "number",
-                        "description": "Chordal tolerance of the mesh in document units. Default: about half a pixel of the picture where it shows the model (so a close-up box or a larger picture is finer), never finer than the window's display tolerance, at most 12 degrees per chord. Give one to fix it."
+                        "description": "Chordal tolerance of the mesh in document units. Default: between a quarter and half a pixel of the picture where it shows the model nearest, never finer than the floor (2e-4 of the diagonal of the box around the bodies), at most 12 degrees per chord, within a total budget of a million triangles (so a close-up box or a larger picture is finer). Give one to fix it."
                     },
                     "max_side": {
                         "type": "integer",

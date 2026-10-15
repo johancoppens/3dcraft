@@ -31,7 +31,7 @@ craft3d-cli run part.3dcraft --cmd variable.set --params '{"name":"width","expr"
 craft3d-cli run --new '{"units":"mm"}' --script long-build.json --out build.3dcraft --keep-going
 ```
 
-`run` stops at the first command that fails, saves nothing and exits with 1. A long script is better run with `--keep-going`: a failing command gets the line `{"failed": id, "step": n, "error": text}`, the next one runs (a command that fails leaves the document as it was), `--out` saves what was built, and the exit code is still 1, with the first failure on stderr. `render` (and `view.render`) meshes the model for the picture: about half a pixel where it shows the model, never finer than the window's display tolerance, 12 degrees per chord; its JSON says the tolerance it used and whether it had to coarsen it.
+`run` stops at the first command that fails, saves nothing and exits with 1. A long script is better run with `--keep-going`: a failing command gets the line `{"failed": id, "step": n, "error": text}`, the next one runs (a command that fails leaves the document as it was), `--out` saves what was built, and the exit code is still 1, with the first failure on stderr. `render` (and `view.render`) meshes the model for the picture: between a quarter and half a pixel of the picture where it shows the model nearest, never finer than the floor (2e-4 of the diagonal of the box around the bodies), at most 12 degrees per chord, within a total budget of a million triangles; its JSON says the tolerance it used and whether it had to coarsen it.
 
 Drive it as a server (see [`control-protocol.md`](control-protocol.md)):
 

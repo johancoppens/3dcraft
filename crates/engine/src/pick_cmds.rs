@@ -1232,8 +1232,8 @@ fn view_pick(session: &mut Session, params: &Value) -> Run {
     };
     let camera = match given {
         Some(camera) => camera,
-        // The picture of view.render: the model is the box of its mesh.
-        None => framing.camera(&scene.mesh.bbox(), width as f64 / height as f64)?,
+        // The picture of view.render: framed on the bodies' B-rep.
+        None => framing.camera(&scene.bodies_box, width as f64 / height as f64)?,
     };
     let section = match p.get("section") {
         None | Some(Value::Null) => None,

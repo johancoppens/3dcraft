@@ -115,9 +115,11 @@ Usage: craft3d-cli render FILE --out PNG [--size WxH] [--view V] [--mode M]
 
 Renders the bodies of a .3dcraft file to a PNG with the CPU renderer (no
 window, no GPU) and prints what it drew as one line of JSON. The bodies are
-meshed for the picture (the command view.render without a tolerance: about
-half a pixel, never finer than the window's display tolerance); the JSON
-says the tolerance used and whether it was coarsened.
+meshed for the picture (the command view.render without a tolerance):
+between a quarter and half a pixel where it shows the model, never finer
+than the floor of 2e-4 of the diagonal of the bodies' box, within a total
+budget of a million triangles; the JSON says the tolerance used and
+whether it was coarsened.
 
 Options:
   --out PNG     The image file to write (required)

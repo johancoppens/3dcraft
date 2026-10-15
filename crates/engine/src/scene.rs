@@ -111,9 +111,11 @@ pub enum SceneQuality {
     /// (`view.render`, `view.pick`, `view.replay`;
     /// [`Session::picture_scene`] chooses the tolerance): this chordal
     /// tolerance in document units with the display's angle
-    /// ([`DISPLAY_MAX_ANGLE`]), each body coarsened on its own to within
-    /// [`DISPLAY_MAX_TRIANGLES`] or what the tessellator can do. A
-    /// document state keeps one such scene, the latest.
+    /// ([`DISPLAY_MAX_ANGLE`]), coarsened by the display rule's ladder
+    /// until the scene has at most [`DISPLAY_MAX_TRIANGLES`] triangles and
+    /// every body is within what the tessellator can do
+    /// ([`Scene::coarsened`] says so). A document state keeps one such
+    /// scene, the latest.
     Picture(f64),
     /// The quick first picture the display rule starts from and a viewer
     /// shows while the display scene is built elsewhere:
@@ -411,6 +413,10 @@ pub struct Scene {
     pub problems: Vec<String>,
     /// The box around the meshes and the sketch geometry.
     pub bbox: Bbox3,
+    /// The box around the bodies from their B-rep, whatever the tolerance:
+    /// what pictures are framed on (`view.render`, `view.pick`), so that
+    /// the camera and the picture's tolerance do not depend on the mesh.
+    pub bodies_box: Bbox3,
 }
 
 impl Scene {
@@ -613,26 +619,6 @@ impl SceneCache {
         Some(built.clone())
     }
 
-    /// A display scene of the active document that is kept already, not
-    /// a preview, with the display's angle or a finer one and a tolerance
-    /// of at most `tolerance`: the first such in the order they were
-    /// kept.
-    fn display_at_most(&mut self, tolerance: f64) -> Option<Arc<Scene>> {
-        let key = self
-            .active_mut()?
-            .scenes
-            .iter()
-            .find_map(|(key, built, _)| {
-                let scene = built.as_ref().ok()?;
-                let fine = matches!(key, SceneKey::Display { .. })
-                    && !scene.preview
-                    && scene.tolerance <= tolerance
-                    && scene.max_angle.is_some_and(|a| a <= DISPLAY_MAX_ANGLE);
-                fine.then_some(*key)
-            })?;
-        self.lookup(key)?.ok()
-    }
-
     /// True when the active document has a scene (or an error) for `key`.
     fn has(&mut self, key: SceneKey) -> bool {
         self.active_mut()
@@ -661,8 +647,20 @@ impl SceneCache {
             kept.scenes
                 .retain(|(k, ..)| *k != key && !(picture && matches!(k, SceneKey::Picture(_))));
             if kept.scenes.len() >= MAX_CACHED {
-                // The oldest goes; whether it was a scene or a failure.
-                drop(kept.scenes.remove(0));
+                // The oldest goes, whether it was a scene or a failure;
+                // the oldest that is not the viewer's (its display scene
+                // and its quick first picture) when there is one, so that
+                // pictures of other tolerances do not push those out.
+                let viewer =
+                    |k: &SceneKey| matches!(k, SceneKey::Display { .. } | SceneKey::Preview);
+                let oldest = kept
+                    .scenes
+                    .iter()
+                    .position(|(k, ..)| !viewer(k))
+                    .unwrap_or(0);
+                if oldest < kept.scenes.len() {
+                    drop(kept.scenes.remove(oldest));
+                }
             }
             kept.scenes.push((key, built, bytes));
         }
@@ -784,12 +782,12 @@ pub(crate) fn bodies_box(regen: &Regen) -> Bbox3 {
 /// floor is the display rule's fraction ([`DISPLAY_RELATIVE_TOLERANCE`])
 /// of the diagonal of the box around the bodies (of the sketches without
 /// any); above it the tolerance is the coarsest of the floor times a power
-/// of two that is at most [`PICTURE_PIXEL_SHARE`] of the model units a
-/// pixel covers (`pixel`, asked with the box around the bodies): between
-/// a quarter and half a pixel. The ladder makes pictures of nearly the
-/// same framing (a camera passed back as `view.pick` returned it, a
-/// picture a few pixels larger) share one tolerance, and so one mesh and
-/// one scene; twice the pixels is one rung finer.
+/// of two, `floor · 2^⌊log2(footprint / floor)⌋`, that is at most
+/// `footprint`, [`PICTURE_PIXEL_SHARE`] of the model units a pixel covers
+/// (`pixel`, asked with the box around the bodies): so between a quarter
+/// and half a pixel. The rungs make pictures of nearly the same framing
+/// (a picture a few pixels larger) share one tolerance, and so one scene;
+/// twice the pixels is one rung finer.
 pub(crate) fn picture_tolerance(
     regen: &Regen,
     doc: &Document,
@@ -797,23 +795,28 @@ pub(crate) fn picture_tolerance(
 ) -> f64 {
     let floor = preview_size(regen, doc) * DISPLAY_RELATIVE_TOLERANCE;
     let model = bodies_box(regen);
-    let Some(footprint) = pixel(&model)
-        .map(|p| p * PICTURE_PIXEL_SHARE)
-        .filter(|f| f.is_finite())
-    else {
+    let Some(footprint) = pixel(&model).map(|p| p * PICTURE_PIXEL_SHARE) else {
         return floor;
     };
-    let mut tolerance = floor;
-    // Doubling is exact: the rungs are the floor times powers of two. A
-    // thousand rungs are more than an `f64` has.
-    for _ in 0..1100 {
-        let next = tolerance * 2.0;
-        if !(next <= footprint && next.is_finite()) {
-            break;
-        }
-        tolerance = next;
+    let ratio = footprint / floor;
+    if !(ratio.is_finite() && ratio >= 2.0) {
+        return floor;
     }
-    tolerance
+    // ⌊log2⌋ of a ratio of at least 2 and at most f64::MAX: 1 to 1023.
+    let mut rung = ratio.log2().floor().clamp(1.0, 1023.0) as i32;
+    // `log2` may round across an integer: put the rung right, exactly
+    // (the rungs are the floor times powers of two).
+    if floor * 2f64.powi(rung) > footprint {
+        rung -= 1;
+    } else if rung < 1023 && floor * 2f64.powi(rung + 1) <= footprint {
+        rung += 1;
+    }
+    let tolerance = floor * 2f64.powi(rung);
+    if tolerance.is_finite() {
+        tolerance
+    } else {
+        floor
+    }
 }
 
 /// The model units one pixel of a picture `height` pixels high covers at
@@ -1085,17 +1088,6 @@ struct Sampling {
 }
 
 impl Sampling {
-    /// A picture's ([`Session::picture_scene`]): the display's angle, and
-    /// each body within [`DISPLAY_MAX_TRIANGLES`] on its own.
-    fn picture(tolerance: f64) -> Self {
-        Self {
-            tolerance,
-            angle: Some(DISPLAY_MAX_ANGLE),
-            budget: None,
-            per_body: Some(DISPLAY_MAX_TRIANGLES),
-        }
-    }
-
     /// At `tolerance` with the chordal tolerance alone and no budget: the
     /// scenes of a given tolerance and of the automatic one.
     fn plain(tolerance: f64) -> Self {
@@ -1168,6 +1160,7 @@ fn build(
         features: Vec::new(),
         problems: Vec::new(),
         bbox: Bbox3::EMPTY,
+        bodies_box: bodies_box(regen),
     };
     // How much of the model is done, for the estimate when the budget is
     // exceeded: by faces, which every body has and which cost nothing to
@@ -1526,6 +1519,86 @@ fn scene_datums(doc: &Document, regen: &Regen, bbox: &Bbox3) -> Vec<SceneDatum> 
 /// coarse and at most 64 times. At or beyond `cap` no budget applies, and
 /// the scene is the first picture itself: the same tolerance gives the
 /// same mesh. `None` when `cancel` was set meanwhile.
+/// How much coarser the next rung of a ladder is after a build that
+/// stopped with `stop` under a budget of `max_triangles`: by the estimated
+/// excess (the triangles so far over the share of the faces done, against
+/// the budget), or for a body too fine for the tessellator by the square
+/// of how far over the limit it is, at least twice and at most 64 times.
+/// `None` when the build was cancelled.
+fn coarser_by(stop: &Stop, max_triangles: usize) -> Option<f64> {
+    let factor = match *stop {
+        Stop::Cancelled => return None,
+        Stop::OverBudget {
+            triangles,
+            faces_done,
+            faces_total,
+        } => {
+            let share = if faces_total > 0 {
+                (faces_done as f64 / faces_total as f64).clamp(1e-3, 1.0)
+            } else {
+                1.0
+            };
+            (triangles as f64 / share) / (max_triangles.max(1) as f64)
+        }
+        // Segments on a patch grow as the inverse square root of the
+        // tolerance; a tenth more for the rounding of the count.
+        Stop::TooFine { needed, max } => (needed / f64::from(max.max(1)) * 1.1).powi(2),
+    };
+    Some(if factor.is_finite() {
+        factor.clamp(2.0, 64.0)
+    } else {
+        4.0
+    })
+}
+
+/// A picture's scene of `doc` at the chordal tolerance `fine` with the
+/// display's angle ([`SceneQuality::Picture`]): the display rule's ladder
+/// ([`build_for_display`]) with a budget of [`DISPLAY_MAX_TRIANGLES`] for
+/// the whole scene and no cap. Out of attempts, the last rung without the
+/// budget, each body within it on its own. [`Scene::coarsened`] when the
+/// tolerance or a body's had to be coarser than `fine`.
+pub(crate) fn picture_scene_of(doc: &Document, regen: &Regen, revision: u64, fine: f64) -> Scene {
+    let angle = Some(DISPLAY_MAX_ANGLE);
+    let mut tolerance = fine;
+    for _ in 0..MAX_DISPLAY_ATTEMPTS {
+        let sampling = Sampling {
+            tolerance,
+            angle,
+            budget: Some(DISPLAY_MAX_TRIANGLES),
+            per_body: None,
+        };
+        let (scene, stop) = build(doc, regen, revision, sampling, None);
+        let Some(stop) = stop else {
+            return Scene {
+                coarsened: scene.coarsened || tolerance > fine,
+                ..scene
+            };
+        };
+        let Some(factor) = coarser_by(&stop, DISPLAY_MAX_TRIANGLES) else {
+            return scene;
+        };
+        tolerance *= factor;
+        if !tolerance.is_finite() {
+            break;
+        }
+    }
+    let tolerance = if tolerance.is_finite() {
+        tolerance
+    } else {
+        fine
+    };
+    let sampling = Sampling {
+        tolerance,
+        angle,
+        budget: None,
+        per_body: Some(DISPLAY_MAX_TRIANGLES),
+    };
+    Scene {
+        coarsened: true,
+        ..build(doc, regen, revision, sampling, None).0
+    }
+}
+
 fn build_for_display(
     doc: &Document,
     regen: &Regen,
@@ -1553,29 +1626,7 @@ fn build_for_display(
                 ..scene
             });
         };
-        let factor = match stop {
-            Stop::Cancelled => return None,
-            Stop::OverBudget {
-                triangles,
-                faces_done,
-                faces_total,
-            } => {
-                let share = if faces_total > 0 {
-                    (faces_done as f64 / faces_total as f64).clamp(1e-3, 1.0)
-                } else {
-                    1.0
-                };
-                (triangles as f64 / share) / (max_triangles as f64)
-            }
-            // Segments on a patch grow as the inverse square root of the
-            // tolerance; a tenth more for the rounding of the count.
-            Stop::TooFine { needed, max } => (needed / f64::from(max.max(1)) * 1.1).powi(2),
-        };
-        let factor = if factor.is_finite() {
-            factor.clamp(2.0, 64.0)
-        } else {
-            4.0
-        };
+        let factor = coarser_by(&stop, max_triangles)?;
         tolerance = (tolerance * factor).min(cap);
     }
     // At the cap, out of attempts below it, or asked for something
@@ -1735,20 +1786,21 @@ impl Session {
     /// The scene a picture of the active document is drawn from
     /// (`view.render`, `view.pick`, `view.replay`, MCP's
     /// `doc_render_preview`). At `tolerance` when one is given. Otherwise
-    /// at the picture's own tolerance ([`picture_tolerance`]): about half a pixel
-    /// in model units where the picture shows the model, but never finer
-    /// than the display rule's tolerance, with the display's angle, each
-    /// body kept within [`DISPLAY_MAX_TRIANGLES`]. `pixel` is given the
-    /// box around the bodies and says how many model units a pixel of the
-    /// picture covers at its nearest point ([`pixel_footprint`]); `None`
-    /// leaves the display tolerance. So a close-up is as fine as the
-    /// display and a whole view of a large model costs what its pixels
-    /// can show (lamp T2, 2026-10-16: the display scene of the lamp took
-    /// minutes for a picture). A display scene of this state that is
-    /// already kept (the window's) and at least as fine is drawn instead;
-    /// none is built or waited for here. No scene refuses a body that is
-    /// too fine for the tessellator: it is coarsened, and the scene says
-    /// so ([`Scene::coarsened`]).
+    /// [`SceneQuality::Picture`] at the picture's own tolerance
+    /// ([`picture_tolerance`]: between a quarter and half a pixel in model
+    /// units where the picture shows the model, never finer than the
+    /// display rule's tolerance), with the display's angle, coarsened by
+    /// the display's ladder until the scene has at most
+    /// [`DISPLAY_MAX_TRIANGLES`] triangles. `pixel` is given the box around
+    /// the bodies (the one pictures are framed on, [`Scene::bodies_box`])
+    /// and says how many model units a pixel of the picture covers at its
+    /// nearest point ([`pixel_footprint`]); `None` leaves the display
+    /// tolerance. A function of the document and the picture's parameters
+    /// alone: no scene the window keeps is drawn instead (lamp T2,
+    /// 2026-10-16: the display scene of the lamp took minutes for one
+    /// picture). No scene refuses a body that is too fine for the
+    /// tessellator: it is coarsened, and the scene says so
+    /// ([`Scene::coarsened`]).
     pub fn picture_scene(
         &mut self,
         tolerance: Option<f64>,
@@ -1764,9 +1816,6 @@ impl Session {
         let doc = Arc::clone(open.history.current());
         let regen = open.regen();
         let tolerance = picture_tolerance(&regen, &doc, pixel);
-        if let Some(display) = self.scene.display_at_most(tolerance) {
-            return Ok(Some(display));
-        }
         self.scene_with(SceneQuality::Picture(tolerance))
     }
 
@@ -1812,7 +1861,7 @@ impl Session {
             }
             SceneQuality::Picture(tolerance) => {
                 return self.build_and_keep(key, |doc, regen| {
-                    build(doc, regen, revision, Sampling::picture(tolerance), None).0
+                    picture_scene_of(doc, regen, revision, tolerance)
                 });
             }
             SceneQuality::Automatic | SceneQuality::Tolerance(_) => {

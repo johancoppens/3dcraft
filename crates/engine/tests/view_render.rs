@@ -554,14 +554,14 @@ fn the_same_request_gives_the_same_picture() {
     evidence("view-render-iso-ortho-box-zoom.png", &first);
 }
 
-/// Without a tolerance a picture is meshed at half a pixel where it shows
-/// the model, never finer than the window's display tolerance, with the
-/// display's angle (lamp T2 and impeller T1, 2026-10-16): a larger
-/// picture, a zoom or a close-up box is finer, a whole view costs no more
-/// triangles than the window's scene, and a display scene the window has
-/// already built is drawn when it is as fine. With a tolerance the
-/// tessellator cannot meet on a body, the body is drawn coarser and the
-/// result says so, rather than the picture failing.
+/// Without a tolerance a picture is meshed at between a quarter and half
+/// a pixel where it shows the model, never finer than the display rule's
+/// floor (2e-4 of the diagonal of the bodies' box), with the display's
+/// angle (lamp T2 and impeller T1, 2026-10-16): a larger picture, a zoom
+/// or a close-up box is finer, and a whole view costs no more triangles
+/// than the window's scene. With a tolerance the tessellator cannot meet
+/// on a body, the body is drawn coarser and the result says so, rather
+/// than the picture failing.
 #[test]
 fn a_picture_is_as_fine_as_its_pixels_and_never_too_fine() {
     let mut s = plate_post_and_wall();
@@ -592,18 +592,17 @@ fn a_picture_is_as_fine_as_its_pixels_and_never_too_fine() {
     assert!(close < small, "{close} {small}");
     let (deep, _) = tolerance(&mut s, json!({"width": 200, "height": 150, "zoom": 1000}));
     assert!((deep / floor - 1.0).abs() < 1e-6, "{deep} against {floor}");
-
-    // The window's display scene: a picture of the whole model costs no
-    // more triangles; once it is built, a picture it is fine enough for
-    // draws it rather than building another.
+    // A whole view costs no more than the window's scene.
     let window = s
         .scene_with(craft3d_engine::SceneQuality::display())
         .unwrap()
         .unwrap();
     assert!(large_triangles <= window.triangles() as u64);
-    let drawn = run(&mut s, "view.render", json!({"width": 400, "height": 300}));
-    assert_eq!(drawn["tolerance"], window.tolerance, "{drawn}");
-    assert_eq!(drawn["triangles"], window.triangles());
+    // The same request gives the same tolerance and mesh whatever the
+    // window has built meanwhile: a picture is a function of the document
+    // and its parameters.
+    let (again, again_triangles) = tolerance(&mut s, json!({"width": 400, "height": 300}));
+    assert_eq!((again, again_triangles), (large, large_triangles));
 
     let fine = json!({"width": 64, "height": 48, "tolerance": 1e-9});
     let drawn = run(&mut s, "view.render", fine);
@@ -613,10 +612,65 @@ fn a_picture_is_as_fine_as_its_pixels_and_never_too_fine() {
     assert_eq!(drawn["bodies"].as_array().unwrap().len(), 2, "{drawn}");
 }
 
+/// The picture's tolerance against a pixel the test works out itself: an
+/// orthographic camera `height` model units high on a picture of 300
+/// pixels has pixels of `height / 300` units, and the tolerance lies in
+/// (a quarter, a half] of that. `view.render` and `view.pick` with the
+/// same parameters choose the same tolerance, and so does a pick with the
+/// camera a pick passed back.
+#[test]
+fn render_and_pick_agree_on_the_tolerance_of_a_picture() {
+    let mut s = plate_post_and_wall();
+    let floor = DISPLAY_RELATIVE_TOLERANCE * (60.0_f64 * 60.0 + 40.0 * 40.0 + 14.0 * 14.0).sqrt();
+    for height in [60.0, 30.0, 12.0] {
+        let camera = json!({"eye": [30, -200, 7], "target": [30, 20, 7],
+                            "projection": "orthographic", "height": height});
+        let picked = run(
+            &mut s,
+            "view.pick",
+            json!({"x": 200, "y": 150, "width": 400, "height": 300, "camera": camera}),
+        );
+        let tolerance = picked["tolerance"].as_f64().unwrap();
+        let pixel = height / 300.0;
+        assert!(
+            tolerance > pixel / 4.0 && tolerance <= pixel / 2.0,
+            "{tolerance} for pixels of {pixel}"
+        );
+        assert!(tolerance > floor, "{tolerance} {floor}");
+    }
+    for params in [
+        json!({"width": 400, "height": 300}),
+        json!({"width": 640, "height": 200, "view": "top", "projection": "orthographic"}),
+        json!({"width": 300, "height": 300, "view": "front", "zoom": 3}),
+        json!({"width": 320, "height": 240, "box": [[45, 25, 8], [55, 35, 14]]}),
+    ] {
+        let drawn = run(&mut s, "view.render", params.clone());
+        let mut pick = params.clone();
+        pick["x"] = 10.into();
+        pick["y"] = 10.into();
+        let picked = run(&mut s, "view.pick", pick);
+        assert_eq!(picked["tolerance"], drawn["tolerance"], "{params}");
+        let again = run(
+            &mut s,
+            "view.pick",
+            json!({"x": 10, "y": 10, "width": params["width"], "height": params["height"],
+                   "camera": picked["camera"]}),
+        );
+        assert_eq!(again["tolerance"], drawn["tolerance"], "{params}");
+    }
+}
+
 /// The work of a small picture of a whole model is what its pixels can
 /// show, not what the window's display scene costs (lamp T2, 2026-10-16:
 /// the display scene of the lamp took minutes for one picture). Counted
-/// in triangles, at three scales.
+/// in triangles, at three scales. Where the chordal tolerance and not the
+/// angle decides, a sphere's mesh has triangles in proportion to one over
+/// the tolerance. The picture's tolerance is here some sixteen times the
+/// window's (between a quarter and half a pixel of a 120-pixel picture of
+/// the ball, against 2e-4 of the side of a square with the ball's area),
+/// held to at least twelve times; so its mesh has at least eight times
+/// fewer triangles, the rest of the factor left for the angle and the
+/// rounding of the counts.
 #[test]
 fn a_small_picture_of_a_whole_model_costs_what_its_pixels_show() {
     for k in [1e-3, 1.0, 1e3] {
@@ -628,6 +682,12 @@ fn a_small_picture_of_a_whole_model_costs_what_its_pixels_show() {
             .scene_with(craft3d_engine::SceneQuality::display())
             .unwrap()
             .unwrap();
+        let tolerance = drawn["tolerance"].as_f64().unwrap();
+        assert!(
+            tolerance >= 12.0 * window.tolerance,
+            "size {k}: {tolerance} against the window's {}",
+            window.tolerance
+        );
         let triangles = drawn["triangles"].as_u64().unwrap();
         assert!(
             triangles * 8 <= window.triangles() as u64,
@@ -637,4 +697,36 @@ fn a_small_picture_of_a_whole_model_costs_what_its_pixels_show() {
         // And it is still round: the angle holds whatever the tolerance.
         assert!(triangles >= 2 * 30 * 15, "size {k}: {triangles}");
     }
+}
+
+/// A picture's scene has a budget for the whole scene, as the window's
+/// has: a close-up of many bodies at the floor does not mesh them all at
+/// the floor, it climbs the ladder until the scene is within the budget
+/// and says it was coarsened. Shown with a budget made small by the
+/// number of bodies: 900 balls, each of which has some 1700 triangles at
+/// any tolerance as fine as the floor (the angle alone asks for that), so
+/// 1.5 million together.
+#[test]
+fn a_close_up_of_a_large_model_stays_within_the_budget() {
+    let mut s = Session::new(Workspace::none());
+    run(&mut s, "file.new", json!({}));
+    for i in 0..30 {
+        for j in 0..30 {
+            run(
+                &mut s,
+                "feature.sphere",
+                json!({"radius": 1, "position": [3 * i, 3 * j, 0]}),
+            );
+        }
+    }
+    let drawn = run(
+        &mut s,
+        "view.render",
+        json!({"width": 64, "height": 48, "zoom": 1000}),
+    );
+    let triangles = drawn["triangles"].as_u64().unwrap();
+    assert!(triangles <= 1_000_000, "{triangles}");
+    assert_eq!(drawn["coarsened"], true, "{drawn}");
+    let floor = DISPLAY_RELATIVE_TOLERANCE * (89.0_f64 * 89.0 * 2.0 + 2.0 * 2.0).sqrt();
+    assert!(drawn["tolerance"].as_f64().unwrap() > floor, "{drawn}");
 }

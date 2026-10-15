@@ -96,7 +96,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("document.measure", "Measure", r#"{"feature": id or name = all bodies}"#,
         "Returns volume, area and centroid, per body and in total, in document units. A body with a material (body.material) also has its mass (kg) and its inertia tensor about its centroid (kg times the length unit squared, along the model's axes), and its appearance (body.appearance); the total has the mass when every body has one.", doc: true, document_measure),
     spec!("view.render", "Render", r#"{"path": string, "width": integer = 800, "height": integer = 600, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the whole model, "mode": "shaded|ids" = "shaded", "section": {plane, feature, point, normal, offset, flip, cap} = none, "tolerance": number = the picture's}"#,
-        "Renders the bodies with the CPU renderer. Writes a PNG under the write root when path is given, otherwise returns it as base64. Without tolerance the bodies are meshed for the picture: a chordal tolerance of half a pixel where the picture shows the model nearest (so a close-up box, a zoom or a larger picture is finer), but not finer than the window's display tolerance (2e-4 of the size of the box around the bodies), with at most 12 degrees per chord as the window draws, each body coarsened to at most a million triangles; a display scene the window has already built for this state that is at least as fine is drawn instead. With tolerance, at that chordal tolerance alone. A body too fine for the tessellator at it is meshed coarser rather than refused. The result says the tolerance (document units), maxAngle (degrees, or null) and coarsened (true when the tolerance was coarsened for the triangle budget or for a body). orthographic shows lengths across the view to scale. box frames the region between two opposite corners (document units) instead of the whole model, seen from outside the model. zoom magnifies about the centre of the picture (2 shows half as much, twice as large; from 0.01 to 1000). section cuts the picture open with a plane, to look inside a shell, a pocket or a cavity; the document does not change. It is an object: the plane is plane (xy, yz or zx, a datum plane by id or name, or a flat face by its persistent name, with feature to say which body when several have that face) or point and normal ([x, y, z] each), moved by offset (a number, default 0) along its normal; what lies on the side the normal points to is not drawn (a face's normal points out of its body; flip: true keeps the other half). Where the plane passes through the inside of a body the cut is closed with a flat cap in a colour of its own (cap: false leaves it open). The result then has section: {point, normal, range}, the plane as it was used and the offsets between which it passes through the model.", doc: true, view_render),
+        "Renders the bodies with the CPU renderer. Writes a PNG under the write root when path is given, otherwise returns it as base64. Without tolerance the bodies are meshed for the picture: between a quarter and half a pixel of the picture where it shows the model nearest, never finer than the floor (2e-4 of the diagonal of the box around the bodies), at most 12 degrees per chord, within a total budget of a million triangles (coarser, and coarsened true, when the picture would have more), so a close-up box, a zoom or a larger picture is finer; the same params give the same picture, and the same view, size, zoom and box (or camera, in view.pick) give the same tolerance. With tolerance, at that chordal tolerance alone. A body too fine for the tessellator at it is meshed coarser rather than refused. The result says the tolerance (document units), maxAngle (degrees, or null) and coarsened (true when the tolerance was coarsened for the triangle budget or for a body). orthographic shows lengths across the view to scale. box frames the region between two opposite corners (document units) instead of the whole model, seen from outside the model. zoom magnifies about the centre of the picture (2 shows half as much, twice as large; from 0.01 to 1000). section cuts the picture open with a plane, to look inside a shell, a pocket or a cavity; the document does not change. It is an object: the plane is plane (xy, yz or zx, a datum plane by id or name, or a flat face by its persistent name, with feature to say which body when several have that face) or point and normal ([x, y, z] each), moved by offset (a number, default 0) along its normal; what lies on the side the normal points to is not drawn (a face's normal points out of its body; flip: true keeps the other half). Where the plane passes through the inside of a body the cut is closed with a flat cap in a colour of its own (cap: false leaves it open). The result then has section: {point, normal, range}, the plane as it was used and the offsets between which it passes through the model.", doc: true, view_render),
 ];
 
 /// The command id most like `id`, for "did you mean".
@@ -2184,9 +2184,9 @@ fn view_render(session: &mut Session, params: &Value) -> Run {
         .map(|path| session.workspace.resolve_write(path))
         .transpose()?;
 
-    // The picture's scene: at the tolerance given, or at half a pixel
-    // where the picture shows the model, never finer than the display's
-    // (`Session::picture_scene`). A section is resolved against it: a
+    // The picture's scene: at the tolerance given, or at a quarter to half
+    // a pixel where the picture shows the model, never finer than the
+    // display's floor, within a total budget (`Session::picture_scene`). A section is resolved against it: a
     // face's name means the face of that mesh.
     let tolerance = match p.number("tolerance")? {
         Some(t) if t > 0.0 => Some(t),
@@ -2236,7 +2236,8 @@ fn view_render(session: &mut Session, params: &Value) -> Run {
         }),
         ..RenderParams::default()
     };
-    let model = all.bbox();
+    // Framed on the bodies' B-rep, as the tolerance was chosen.
+    let model = scene.bodies_box;
     let framed = look_at.unwrap_or(model);
     let camera = framing.camera(&model, aspect)?;
     let frame = craft3d_render::render_colored(all, colors, &camera, &render_params)
@@ -2269,7 +2270,8 @@ fn view_render(session: &mut Session, params: &Value) -> Run {
             json!({
                 "point": vec3(plane.origin),
                 "normal": vec3(plane.normal),
-                "range": plane.range(&model),
+                // Where the plane passes through what is drawn: the mesh.
+                "range": plane.range(&all.bbox()),
             }),
         );
     }
