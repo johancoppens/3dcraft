@@ -141,6 +141,7 @@ Closed-form tests for every kind; the checker detects each seeded defect; hand-b
 - The six parts above, with the start of M3: primitives as features, regeneration, B-rep tessellation for the five primitives (2026-10-12)
 - Deviations: a synchronous engine without jobs or events; undo as snapshots ([`decisions.md`](decisions.md)) (2026-10-12)
 - `file.list` and `file.activate`, from the first field test (2026-10-13)
+- `craft3d-cli run --keep-going`: a failing command is reported on its line, the rest run and `--out` saves what was built (2026-10-16)
 
 #### Open
 - [ ] `thumb.png` in `.3dcraft`

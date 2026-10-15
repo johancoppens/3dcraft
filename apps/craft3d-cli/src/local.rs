@@ -125,6 +125,8 @@ struct RunOptions {
     script: Option<String>,
     steps: Vec<Step>,
     out: Option<String>,
+    /// Go on after a command that fails, and save what was built.
+    keep_going: bool,
 }
 
 fn parse_run(mut args: Args) -> Result<Parsed<RunOptions>, CliError> {
@@ -149,6 +151,13 @@ fn parse_run(mut args: Args) -> Result<Parsed<RunOptions>, CliError> {
                 "--out" => {
                     let value = args.value(&name, inline)?;
                     set_once(&mut options.out, &name, value)?;
+                }
+                "--keep-going" => {
+                    args::no_value(&name, inline.as_ref())?;
+                    if options.keep_going {
+                        return Err(given_twice(&name));
+                    }
+                    options.keep_going = true;
                 }
                 "--cmd" => {
                     options.steps.push(Step {
@@ -283,12 +292,36 @@ pub(crate) fn run(args: Args) -> Result<Parsed<()>, CliError> {
             execute(&mut session, "file.new", &params)?;
         }
     }
-    for step in &steps {
-        let result = execute(&mut session, &step.command, &step.params)?;
-        print_json(&result)?;
+    // With `--keep-going`, a command that fails is reported on its line
+    // and the next one runs: a failed command leaves the document as it
+    // was, so what the others built is kept and saved.
+    let mut failed: Vec<String> = Vec::new();
+    for (index, step) in steps.iter().enumerate() {
+        match execute(&mut session, &step.command, &step.params) {
+            Ok(result) => print_json(&result)?,
+            Err(CliError::Failed(error)) if options.keep_going => {
+                print_json(&json!({
+                    "failed": step.command,
+                    "step": index,
+                    "error": error,
+                }))?;
+                failed.push(format!("step {index} `{}`: {error}", step.command));
+            }
+            Err(error) => return Err(error),
+        }
     }
     if let Some(out) = &options.out {
         execute(&mut session, "file.save", &json!({ "path": out }))?;
+    }
+    if let Some(first) = failed.first() {
+        let saved = options.out.as_ref().map_or_else(String::new, |out| {
+            format!("; what the others built is saved to `{out}`")
+        });
+        return Err(CliError::Failed(format!(
+            "{} of {} commands failed, the first {first}{saved}",
+            failed.len(),
+            steps.len()
+        )));
     }
     Ok(Parsed::Run(()))
 }
