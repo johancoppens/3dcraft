@@ -962,13 +962,7 @@ fn compute(
             )?,
         ])
     };
-    let third_of = |end: &End| -> Result<Side<'_>, BlendError> {
-        let face = body.face(end.third).ok_or_else(lost)?;
-        Ok(Side {
-            surface: &face.surface,
-            reversed: face.reversed,
-        })
-    };
+    let third_of = |end: &End| end.side(body);
     let stop = |stop: Stop, face: Option<FaceId>| match stop {
         Stop::Unsolvable => unsolvable(),
         Stop::TooFar => refuse(edge, face, Reason::FreeEnd),
@@ -1974,11 +1968,16 @@ fn along_spine(
         ])
     };
     let third_of = |end: &Ending| -> Result<Side<'_>, BlendError> {
-        let face = body.face(end.third()).ok_or_else(lost)?;
-        Ok(Side {
-            surface: &face.surface,
-            reversed: face.reversed,
-        })
+        match end {
+            Ending::Third(end) => end.side(body),
+            Ending::Meet { .. } => {
+                let face = body.face(end.third()).ok_or_else(lost)?;
+                Ok(Side {
+                    surface: &face.surface,
+                    reversed: face.reversed,
+                })
+            }
+        }
     };
     // Steps of up to two radii, or a 24th of the edge where that is
     // more: the walk only has to follow the path, which the steps adapt
@@ -2244,11 +2243,7 @@ fn along_spine(
                 };
                 let surface = &made.get(piece).ok_or_else(lost)?.surface;
                 let (inner, outer) = range;
-                let third = body.face(end.third).ok_or_else(lost)?;
-                let side = Side {
-                    surface: &third.surface,
-                    reversed: third.reversed,
-                };
+                let side = end.side(body)?;
                 let (cut, at) =
                     cut_curve(surface, side, inner, outer, limit, scale).ok_or_else(|| {
                         refuse(

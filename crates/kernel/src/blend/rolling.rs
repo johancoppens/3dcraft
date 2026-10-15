@@ -543,6 +543,9 @@ struct End {
     others: [EdgeId; 2],
     /// The third face.
     third: FaceId,
+    /// The edge runs on into the material behind the third face (it ends
+    /// in a wall), so the blend is cut where it goes into it.
+    facing: bool,
 }
 
 /// Per face, its edges; per edge, its faces.
@@ -610,7 +613,50 @@ fn end_at(
         vertex,
         others: [ox, oy],
         third: t1,
+        facing: runs_into(body, edge, vertex, t1)
+            .ok_or_else(|| refuse(edge, Some(t1), Reason::FreeEnd))?,
     })
+}
+
+/// Whether the edge, continued past its end at `vertex`, runs into the
+/// material behind the face `third` (a wall the edge ends in, at
+/// concave edges) rather than out of it (an end face, at convex ones).
+/// `None` where it runs along the face.
+fn runs_into(body: &Body, edge: EdgeId, vertex: VertexId, third: FaceId) -> Option<bool> {
+    let data = body.edge(edge)?;
+    let (t, sign) = if data.start == vertex {
+        (data.range.0, -1.0)
+    } else {
+        (data.range.1, 1.0)
+    };
+    let (point, d) = data.curve.derivatives(t);
+    let out = (d * sign).normalized()?;
+    let face = body.face(third)?;
+    let side = Side {
+        surface: &face.surface,
+        reversed: face.reversed,
+    };
+    let uv = face.surface.project(point).ok()?;
+    let n = side.normal(uv)?;
+    let along = n.dot(out);
+    // Within about a degree of the face: no clean end either way.
+    if !(along.abs() > 0.02) {
+        return None;
+    }
+    Some(along < 0.0)
+}
+
+impl End {
+    /// The third face as the side a blend has to get out of past this
+    /// end: turned round where the blend runs into the material behind
+    /// it.
+    fn side<'a>(&self, body: &'a Body) -> Result<Side<'a>, BlendError> {
+        let face = body.face(self.third).ok_or_else(lost)?;
+        Ok(Side {
+            surface: &face.surface,
+            reversed: face.reversed != self.facing,
+        })
+    }
 }
 
 /// The blend face of one edge, worked out: its surface, the samples it
@@ -900,12 +946,7 @@ fn blend_one(
     let steps = Steps::of(size, length);
     let thirds: Vec<Side<'_>> = ends
         .iter()
-        .map(|end| {
-            face(end.third).map(|f| Side {
-                surface: &f.surface,
-                reversed: f.reversed,
-            })
-        })
+        .map(|end| end.side(body))
         .collect::<Result<_, _>>()?;
     // Sections from the middle outwards, each from its neighbour: along
     // the edge in steps of a few radii, past its ends in steps of a
