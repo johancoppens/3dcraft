@@ -122,16 +122,7 @@ pub(super) struct PatchTree {
     /// taken about a point of it). A pure function of the point, so the
     /// answer from here is the answer the search would give.
     memo: Mutex<BTreeMap<[u64; 3], Option<Nearest>>>,
-    /// Whether the bounds on the parameter speed of the smallest pieces
-    /// are far apart (a rational surface whose weights are: its
-    /// parametrisation is far from uniform), so that a bound taken near a
-    /// place ([`Self::sigma_near`]) is worth what it costs.
-    uneven: bool,
 }
-
-/// How far apart the smallest pieces' bounds on the parameter speed must
-/// be for the surface to count as [`PatchTree::uneven`].
-const UNEVEN: f64 = 16.0;
 
 /// The nearest point of the surface to a point.
 #[derive(Clone, Copy, Debug)]
@@ -420,16 +411,20 @@ impl Wedge {
             );
         }
         let (u, v) = surface.domain();
-        let order = |a: Border, b: Border| {
-            poles
-                .iter()
-                .find(|p| p.border == a || p.border == b)
-                .map_or(0, |p| pole_order(surface, p))
-        };
-        let orders = (
+        // The order of the pole on each side, none without one; a pole
+        // whose order cannot be told has no chart.
+        let order =
+            |a: Border, b: Border| match poles.iter().find(|p| p.border == a || p.border == b) {
+                Some(pole) => pole_order(surface, pole),
+                None => Some(0),
+            };
+        let (Some(low), Some(high)) = (
             order(Border::UStart, Border::VStart),
             order(Border::UEnd, Border::VEnd),
-        );
+        ) else {
+            return Some(Err(POLE_SHAPE));
+        };
+        let orders = (low, high);
         Some(Ok(PoleChart::Wedge(Wedge {
             across_v,
             low: orders.0 > 0,
@@ -1130,7 +1125,7 @@ fn pole_axes(surface: &Surface, poles: &[Pole]) -> Vec<Option<Vec3>> {
         .map(|pole| {
             let across_v = pole.across_v();
             let at_start = matches!(pole.border, Border::UStart | Border::VStart);
-            let order = pole_order(surface, pole);
+            let order = pole_order(surface, pole)?;
             let (start, end) = if at_start { (order, 0) } else { (0, order) };
             // The limit normals, and at a cusp the meridians' directions
             // and how the normals lean along them.
@@ -1214,14 +1209,18 @@ fn mean_direction(vectors: &[Vec3]) -> Option<Vec3> {
 
 /// The order in which a surface narrows to a pole: how many times the net
 /// of `w² ∂σ` (the derivative along the pole's border) of every span at
-/// the pole can be divided by the parameter across ([`divided`]), at most
-/// three. One where the surface leaves the pole in a fan (its width grows
-/// as the distance from the pole), two at a cusp (a profile that leaves
-/// the axis along it: the width grows as the square of the distance).
-fn pole_order(surface: &Surface, pole: &Pole) -> i32 {
+/// the pole can be divided by the parameter across ([`divided`]): as
+/// long as its row at the border is zero, up to the net's degree. One
+/// where the surface leaves the pole in a fan (its width grows as the
+/// distance from the pole), two at a cusp (a profile that leaves the axis
+/// along it: the width grows as the square of the distance). `None` where
+/// it cannot be told: a surface without Bézier spans, a net that cannot
+/// be formed, or a border whose net does not divide at all (it is no
+/// point, to the rounding the division allows).
+fn pole_order(surface: &Surface, pole: &Pole) -> Option<i32> {
     let at_start = matches!(pole.border, Border::UStart | Border::VStart);
-    let mut least = 3;
-    for span in spans_of(surface).unwrap_or_default().iter() {
+    let mut least: Option<usize> = None;
+    for span in spans_of(surface)?.iter() {
         if !touches(surface, pole, span) {
             continue;
         }
@@ -1230,24 +1229,23 @@ fn pole_order(surface: &Surface, pole: &Pole) -> i32 {
         } else {
             span.2.transposed()
         };
-        let Some((mut along, _)) = patch.weighted_derivative_nets() else {
-            return 1;
-        };
+        let (mut along, _) = patch.weighted_derivative_nets()?;
         let mut degree = 2 * patch.degrees().1;
-        let mut times = 0;
-        while times < least {
+        let mut times = 0_usize;
+        while degree > 0 {
             match divided(&along, degree, at_start) {
-                Some(next) if degree > 0 => {
+                Some(next) => {
                     along = next;
                     degree -= 1;
                     times += 1;
                 }
-                _ => break,
+                None => break,
             }
         }
-        least = least.min(times);
+        least = Some(least.map_or(times, |l| l.min(times)));
     }
-    least.max(1)
+    let order = i32::try_from(least?).ok()?;
+    (order > 0).then_some(order)
 }
 
 /// For a point of a freeform surface that is a pole of it: the direction
@@ -1582,7 +1580,6 @@ impl PatchTree {
             closes: closure(surface),
             poles: found,
             memo: Mutex::new(BTreeMap::new()),
-            uneven: false,
         };
         let whole = spans
             .iter()
@@ -1594,14 +1591,6 @@ impl PatchTree {
         }
         if !polynomial {
             tree.second = tree.second_of_leaves();
-            let (least, most) = tree
-                .nodes
-                .iter()
-                .filter(|n| n.children.is_none())
-                .fold((f64::INFINITY, 0.0_f64), |(lo, hi), n| {
-                    (lo.min(n.sigma), hi.max(n.sigma))
-                });
-            tree.uneven = least > 0.0 && most > UNEVEN * least;
         }
         Ok(tree)
     }
@@ -1695,23 +1684,14 @@ impl PatchTree {
         (sigma.is_finite() && sigma > 0.0).then_some(sigma)
     }
 
-    /// Whether the surface's parametrisation is far from uniform: see the
-    /// field.
-    pub(super) fn uneven(&self) -> bool {
-        self.uneven
-    }
-
     /// A lower bound on the smallest singular value of the Jacobian over
     /// the pieces of the surface that come within `reach` of `p`: the
     /// least of the bounds of the smallest pieces there. Where the
     /// parametrisation is far from uniform (rational weights far apart)
     /// this is what a curve near `p` needs, not the least over the whole
-    /// surface. `None` on a surface that is not [`Self::uneven`], where no
-    /// piece is that near, or where a piece has no bound.
+    /// surface, and never less than that. `None` where no piece is that
+    /// near, or where a piece has no bound.
     pub(super) fn sigma_near(&self, p: Vec3, reach: f64) -> Option<f64> {
-        if !self.uneven {
-            return None;
-        }
         let mut least = f64::INFINITY;
         let mut stack: Vec<usize> = self.roots.clone();
         let mut visited = 0_usize;

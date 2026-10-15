@@ -1578,14 +1578,15 @@ impl Marcher {
                 // Inside a tacnode's radius its arms are made, not marched
                 // (`tacnode.rs`): every branch heading in ends on it.
                 if s.kind == SingularKind::Tacnode {
-                    snapped = Some(self.tac_arrival(s.p, (su, sv), d).unwrap_or(Pt {
-                        u: su,
-                        v: sv,
-                        p: s.p,
-                        t: d * (1.0 / dist),
-                        du: 0.0,
-                        dv: 0.0,
-                    }));
+                    // Only a branch on its arms (`tac_admits`); one that
+                    // passes near it goes on.
+                    if !self.tac_admits(s.p, cur.u, cur.v) {
+                        continue;
+                    }
+                    // With the direction along: the arms' tangent there.
+                    snapped = Some(self.tac_arrival(s.p, (su, sv), d).ok_or(GeomError::NoConvergence(
+                        "an arm that ends on a point of higher-order contact has no direction there",
+                    ))?);
                     break;
                 }
                 if (d - cur.t * along).length() > 0.1 * dist {

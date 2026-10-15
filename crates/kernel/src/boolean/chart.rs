@@ -803,7 +803,7 @@ impl Chart {
                 tree,
                 layout: Layout::Open,
                 ..
-            } if tree.uneven() && tree.parameter_speed().is_some() => Some(tree),
+            } if tree.parameter_speed().is_some() => Some(tree),
             _ => None,
         };
         let pace_over = |t0: f64, t1: f64| -> f64 {

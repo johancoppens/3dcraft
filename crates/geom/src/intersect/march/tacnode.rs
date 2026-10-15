@@ -22,9 +22,14 @@
 //! arm on either side of it by bracketing from there outwards. The disc is
 //! as small as it can be while the arms at its rim are 64 tolerances apart
 //! and `g` there is clear of zero, and the model is checked on lines across
-//! out to twice that radius: on every line `f` is monotonic away from the
-//! valley (so the line holds the two arms or nothing) and `g` keeps the
-//! sign the rim says. Seeds on the arms at the rim are marched from there;
+//! out to twice that radius, by samples: on 32 lines a side the derivative
+//! across has the sign that takes `f` away from the valley at four places
+//! (so the line holds the two arms or nothing, as far as the samples
+//! tell) and `g` keeps the sign the rim says. The samples are no proof,
+//! the same standing as the rings of [`Marcher::one_sided`] and
+//! [`Marcher::disc`]: a bound would need one on the third derivatives of
+//! `f` (that it stays convex across up to the valley, where its slope
+//! vanishes), which the chart's bounds do not give. Seeds on the arms at the rim are marched from there;
 //! a march that comes back within a quarter more than the radius ends on
 //! the point, and the arms inside are made by the graphs.
 //!
@@ -324,7 +329,7 @@ impl Marcher {
         // The smallest radius at which each side is clear.
         let mut z = 8.0 * finest;
         let sides = loop {
-            if !(z.is_finite() && z <= widest) {
+            if !(z.is_finite() && z > 0.0 && z <= widest) {
                 return None;
             }
             k.radius = z;
@@ -355,7 +360,8 @@ impl Marcher {
             }
             z *= 2.0;
         };
-        // The model, on lines across out to twice the radius.
+        // The model, sampled on lines across out to twice the radius (see
+        // the module documentation: no proof).
         const LINES: u32 = 32;
         for (side, dir) in sides.iter().zip([1.0, -1.0]) {
             for j in 1..=LINES {
@@ -386,8 +392,9 @@ impl Marcher {
                         }
                     }
                 }
-                // Away from the valley `f` heads for the sign of `λ`: the
-                // line holds the two arms or nothing.
+                // Away from the valley `f` heads for the sign of `λ` at the
+                // places sampled: the line holds the two arms or nothing,
+                // as far as they tell.
                 for q in [-1.0, -0.5, 0.5, 1.0] {
                     let (_, slope, _, _) = self.tac_eval(&k, t, valley + q * z)?;
                     if !(slope * sign * q > 0.0) {
@@ -448,6 +455,26 @@ impl Marcher {
             t: dir * (sign / len),
             du: du * sign / len,
             dv: dv * sign / len,
+        })
+    }
+
+    /// True when a branch at `(u, v)` heading for the tacnode at `p` ends
+    /// on it: where the arms were verified (`|t| ≤ 2Z`, `|s| ≤ Z` from the
+    /// point) or on an arm (within the tolerance of where its graph puts
+    /// it at that `t`). A branch that only passes near the point, outside
+    /// the strip and off the arms, is not one of its arms.
+    pub(super) fn tac_admits(&mut self, p: Vec3, u: f64, v: f64) -> bool {
+        let Some(k) = self.tacnodes.iter().find(|k| k.p == p).cloned() else {
+            return false;
+        };
+        let (t, s) = self.tac_coords(&k, u, v);
+        if t.abs() <= 2.0 * k.radius && s.abs() <= k.radius {
+            return true;
+        }
+        let tol = self.tol.linear;
+        [1.0, -1.0].into_iter().any(|side| {
+            self.tac_root(&k, t, side)
+                .is_some_and(|(at, ..)| (at - s).abs() <= tol)
         })
     }
 
@@ -516,5 +543,57 @@ impl Marcher {
                 h
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing
+    )]
+
+    use super::super::super::field::{Chart, Field};
+    use super::*;
+    use crate::{Cylinder, Surface, Torus};
+    use craft3d_math::{Bbox3, Frame, Tolerance};
+
+    /// A branch ends on a tacnode only where its arms were verified or on
+    /// an arm: a place within reach of the point (a quarter more than the
+    /// radius) but across the arms by more than the radius is not one of
+    /// its arms, and a march from there goes on (`run` asks
+    /// `tac_admits` before it ends a branch on the point).
+    #[test]
+    fn a_branch_that_passes_near_a_tacnode_is_not_one_of_its_arms() {
+        let ring = Surface::Torus(Torus::new(Frame::WORLD, 1.5, 0.5).unwrap());
+        let axis = Frame::new(Vec3::new(1.5, 0.0, 0.25), Vec3::Y, Vec3::X).unwrap();
+        let tube = Surface::Cylinder(Cylinder::new(axis, 0.25).unwrap());
+        let within = Bbox3::from_points([Vec3::new(-2.5, -2.5, -2.5), Vec3::new(2.5, 2.5, 2.5)]);
+        let tol = Tolerance::default();
+        let field = Field::new(&ring).unwrap();
+        let chart = Chart::new(&tube, &within, &tol, &field).unwrap().unwrap();
+        let mut marcher = Marcher::new(chart, field, &within, &tol).unwrap();
+        marcher.solve(&within).unwrap();
+        let k = marcher.tacnodes.first().cloned().expect("the tacnode");
+        // On an arm, inside the disc, at its rim and further out:
+        // admitted.
+        for t in [0.5, 1.1, 1.24] {
+            for side in [1.0, -1.0] {
+                let (_, _, u, v) = marcher.tac_root(&k, t * k.radius, side).unwrap();
+                assert!(marcher.tac_admits(k.p, u, v), "an arm at {t}, side {side}");
+            }
+        }
+        // Beside the point, across by more than the radius, within reach.
+        for (t, s) in [(0.3, 1.1), (-0.5, -1.05), (0.0, 1.2)] {
+            let (u, v) = Marcher::tac_place(&k, t * k.radius, s * k.radius);
+            let (p, _, _) = marcher.chart.at(u, v);
+            assert!(
+                p.distance(k.p) <= 1.25 * k.radius,
+                "({t}, {s}) is within reach"
+            );
+            assert!(!marcher.tac_admits(k.p, u, v), "({t}, {s}) is no arm");
+        }
     }
 }
