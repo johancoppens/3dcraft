@@ -1,0 +1,168 @@
+[
+[
+"file.new",
+{
+"units": "mm",
+"tolerance": 0.0001
+}
+],
+[
+"feature.block",
+{
+"size": [
+"40 mm",
+"40 mm",
+"4 mm"
+],
+"position": [
+"-20 mm",
+"-20 mm",
+"0 mm"
+],
+"name": "Plate"
+}
+],
+[
+"feature.block",
+{
+"size": [
+"4 mm",
+"12 mm",
+"14 mm"
+],
+"position": [
+"9 mm",
+"-4 mm",
+"0 mm"
+],
+"name": "Wall"
+}
+],
+[
+"feature.boolean",
+{
+"op": "union",
+"target": "Plate",
+"tool": "Wall",
+"name": "Base"
+}
+],
+[
+"sketch.create",
+{
+"plane": "xy",
+"offset": "2 mm",
+"name": "ExS"
+}
+],
+[
+"sketch.spline",
+{
+"sketch": "ExS",
+"through": [
+[
+-12.1897,
+0.5692
+],
+[
+-6.0986,
+2.0918
+],
+[
+0.0,
+2.6
+],
+[
+6.0986,
+2.0918
+],
+[
+12.1897,
+0.5692
+]
+]
+}
+],
+[
+"sketch.polyline",
+{
+"sketch": "ExS",
+"points": [
+"e5",
+[
+11.8103,
+-0.5692
+]
+]
+}
+],
+[
+"sketch.polyline",
+{
+"sketch": "ExS",
+"points": [
+"e1",
+[
+-11.8103,
+-0.5692
+]
+]
+}
+],
+[
+"sketch.spline",
+{
+"sketch": "ExS",
+"through": [
+"e7",
+[
+5.9014,
+0.9082
+],
+[
+0.0,
+1.4
+],
+[
+-5.9014,
+0.9082
+],
+"e9"
+]
+}
+],
+[
+"feature.extrude",
+{
+"sketch": "ExS",
+"distance": "8 mm",
+"name": "Blade"
+}
+],
+[
+"feature.boolean",
+{
+"op": "union",
+"target": "Base",
+"tool": "Blade",
+"name": "U"
+}
+],
+[
+"feature.fillet",
+{
+"edges": [
+[
+"F6:copy(1)/F5:endCap(e6,e8,e10,e14)",
+"F6:copy(1)/F5:side(e6)"
+]
+],
+"radius": "0.3 mm",
+"name": "Top"
+}
+],
+[
+"document.check",
+{}
+]
+]

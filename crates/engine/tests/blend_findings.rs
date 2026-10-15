@@ -91,3 +91,31 @@ fn the_leading_edges_and_tips_of_the_blades() {
     assert_eq!(blade["status"], "ok", "{blade}");
     deep_ok(&mut s);
 }
+
+/// F2: the top rim of a spline blade whose end is buried in a wall: the
+/// fillet runs into the wall's face (met at concave edges) and is cut
+/// there.
+#[test]
+fn a_blade_rim_that_runs_into_a_wall() {
+    let (mut s, _) = replay(include_str!("blend_findings/edge-into-wall.json"));
+    let top = feature(&mut s, "Top");
+    assert_eq!(top["status"], "ok", "{top}");
+    deep_ok(&mut s);
+}
+
+/// F1: the root of a spline blade on a plate, extruded and lofted: the
+/// root fillet runs out at the blade's end faces, past the corners of
+/// the plate's edges along them (lengthened), and the lofted blade's end
+/// face is grown to take it.
+#[test]
+fn the_root_of_a_blade_on_a_plate() {
+    for steps in [
+        include_str!("blend_findings/root-plate-extruded-spline.json"),
+        include_str!("blend_findings/root-plate-loft.json"),
+    ] {
+        let (mut s, _) = replay(steps);
+        let root = feature(&mut s, "Root");
+        assert_eq!(root["status"], "ok", "{root}");
+        deep_ok(&mut s);
+    }
+}

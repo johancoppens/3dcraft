@@ -1408,8 +1408,8 @@ impl ArchCorner {
     /// it is) to `q`: its parameter, and the signed distance of `q`,
     /// positive below the arch (in the material).
     fn to_arch(&self, q: [f64; 2]) -> (f64, f64) {
-        let mut t = (0..=400)
-            .map(|i| -0.3 + 1.6 * f64::from(i) / 400.0)
+        let mut t = (0..=64)
+            .map(|i| -0.3 + 1.6 * f64::from(i) / 64.0)
             .min_by(|a, b| {
                 let (pa, pb) = (self.eval(*a), self.eval(*b));
                 let da = (pa[0] - q[0]).hypot(pa[1] - q[1]);

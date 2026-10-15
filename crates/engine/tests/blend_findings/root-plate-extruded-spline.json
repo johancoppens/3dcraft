@@ -1,0 +1,143 @@
+[
+[
+"file.new",
+{
+"units": "mm",
+"tolerance": 0.0001
+}
+],
+[
+"feature.block",
+{
+"size": [
+"40 mm",
+"40 mm",
+"4 mm"
+],
+"position": [
+"-20 mm",
+"-20 mm",
+"0 mm"
+],
+"name": "Plate"
+}
+],
+[
+"sketch.create",
+{
+"plane": "xy",
+"offset": "2 mm",
+"name": "ExS"
+}
+],
+[
+"sketch.spline",
+{
+"sketch": "ExS",
+"through": [
+[
+-12.1897,
+0.5692
+],
+[
+-6.0986,
+2.0918
+],
+[
+0.0,
+2.6
+],
+[
+6.0986,
+2.0918
+],
+[
+12.1897,
+0.5692
+]
+]
+}
+],
+[
+"sketch.polyline",
+{
+"sketch": "ExS",
+"points": [
+"e5",
+[
+11.8103,
+-0.5692
+]
+]
+}
+],
+[
+"sketch.polyline",
+{
+"sketch": "ExS",
+"points": [
+"e1",
+[
+-11.8103,
+-0.5692
+]
+]
+}
+],
+[
+"sketch.spline",
+{
+"sketch": "ExS",
+"through": [
+"e7",
+[
+5.9014,
+0.9082
+],
+[
+0.0,
+1.4
+],
+[
+-5.9014,
+0.9082
+],
+"e9"
+]
+}
+],
+[
+"feature.extrude",
+{
+"sketch": "ExS",
+"distance": "12 mm",
+"name": "Blade"
+}
+],
+[
+"feature.boolean",
+{
+"op": "union",
+"target": "Plate",
+"tool": "Blade",
+"name": "U"
+}
+],
+[
+"feature.fillet",
+{
+"edges": [
+[
+"F4:copy(0)/F1:face(1)",
+"F4:copy(1)/F3:side(e6)"
+]
+],
+"radius": "0.6 mm",
+"name": "Root"
+}
+],
+[
+"document.check",
+{}
+]
+]

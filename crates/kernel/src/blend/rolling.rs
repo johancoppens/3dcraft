@@ -1817,19 +1817,54 @@ fn cut_back(
             }
             _ => t,
         };
-        if !(data.curve.eval(t).distance(point) <= tol) {
-            return Err(too_large(face));
-        }
-        let slot = body.edges.get_mut(other.0 as usize).ok_or_else(lost)?;
         let span = hi - lo;
+        let at_start = data.start == end.vertex;
+        // A spline is projected within its domain; a corner past the
+        // vertex is looked for on its end span continued.
+        let t = if data.curve.eval(t).distance(point) <= tol {
+            t
+        } else {
+            beyond_end(&data.curve, point, if at_start { lo } else { hi }).unwrap_or(t)
+        };
+        // Past the vertex (a blend that adds material, at a concave edge,
+        // ending where the faces beside it meet the third face at convex
+        // edges, as a blade's root fillet at the blade's end): the other
+        // edge is lengthened to the corner, along both its faces: as the
+        // curve it is where that stays on them (a line between two
+        // planes), else made again through points of both faces.
+        let on_curve = data.curve.eval(t).distance(point) <= tol;
+        let beyond = if at_start { t <= lo } else { t >= hi };
+        let mut t = t;
+        let mut remade = None;
+        if !on_curve || beyond {
+            let (a, b) = if at_start { (t, lo) } else { (hi, t) };
+            let as_it_is =
+                on_curve && b - a <= span && goes_on(body, &data, (a, b), [face, end.third], tol);
+            if !as_it_is {
+                let (curve, at) = lengthened(body, &data, at_start, point, [face, end.third], tol)
+                    .ok_or_else(|| too_large(face))?;
+                remade = Some(curve);
+                t = at;
+            }
+        }
+        let beyond = beyond || remade.is_some();
+        let slot = body.edges.get_mut(other.0 as usize).ok_or_else(lost)?;
+        let (lo, hi, span) = if let Some(curve) = remade {
+            slot.curve = Curve3::Nurbs(curve);
+            slot.range = (0.0, 1.0);
+            (0.0, 1.0, 1.0)
+        } else {
+            (lo, hi, span)
+        };
+        let slot = body.edges.get_mut(other.0 as usize).ok_or_else(lost)?;
         if slot.start == end.vertex {
-            if !(t > lo && t < hi - 1e-9 * span) {
+            if !(t < hi - 1e-9 * span) || (!beyond && !(t > lo)) {
                 return Err(too_large(face));
             }
             slot.range.0 = t;
             slot.start = target;
         } else if slot.end == end.vertex {
-            if !(t < hi && t > lo + 1e-9 * span) {
+            if !(t > lo + 1e-9 * span) || (!beyond && !(t < hi)) {
                 return Err(too_large(face));
             }
             slot.range.1 = t;
@@ -1837,11 +1872,216 @@ fn cut_back(
         } else {
             return Err(lost());
         }
+        if beyond {
+            // Its faces' surfaces have to reach where it now goes.
+            let lengthened = body.edge(*other).ok_or_else(lost)?.clone();
+            for f in [face, end.third] {
+                widen_to(body, f, &lengthened).ok_or_else(|| too_large(face))?;
+            }
+        }
     }
     if let Some(v) = body.vertices.get_mut(end.vertex.0 as usize) {
         v.point = first_corner;
     }
     Ok(added)
+}
+
+/// The parameter of the point of `curve` nearest `p`, by Newton's steps
+/// from `from` (a curve continued past its domain as it is: a spline's end
+/// span as the polynomial it is).
+fn beyond_end(curve: &Curve3, p: Vec3, from: f64) -> Option<f64> {
+    let mut t = from;
+    for _ in 0..40 {
+        let (c, d) = curve.derivatives(t);
+        let h = 1e-6 * (1.0 + t.abs());
+        let (_, d2) = curve.derivatives(t + h);
+        let dd = (d2 - d) * (1.0 / h);
+        let r = c - p;
+        let f = r.dot(d);
+        let df = d.dot(d) + r.dot(dd);
+        if !(df > 0.0) {
+            return None;
+        }
+        let step = f / df;
+        t -= step;
+        if !t.is_finite() {
+            return None;
+        }
+        if step.abs() <= 1e-15 * (1.0 + t.abs()) {
+            break;
+        }
+    }
+    Some(t)
+}
+
+/// Grows the spline surface of `face` past its domain (continued as the
+/// function it is, so nothing of the face moves) until it takes in the
+/// edge `edge` lies along it: where a blend lengthens an edge beyond the
+/// patch the face was made on. Analytic surfaces have no bounds to grow.
+fn widen_to(body: &mut Body, face: FaceId, edge: &Edge) -> Option<()> {
+    let data = body.face(face)?;
+    let nurbs = match &data.surface {
+        Surface::Nurbs(n) => n.clone(),
+        Surface::Bezier(b) => NurbsSurface::from_bezier(b).ok()?,
+        _ => return Some(()),
+    };
+    let ((u0, u1), (v0, v1)) = nurbs.domain();
+    let (mut lo_u, mut hi_u, mut lo_v, mut hi_v) = (u0, u1, v0, v1);
+    let side = Side {
+        surface: &data.surface,
+        reversed: false,
+    };
+    for j in 0..=32 {
+        let t = edge.range.0 + (edge.range.1 - edge.range.0) * f64::from(j) / 32.0;
+        let p = edge.curve.eval(t);
+        let start = data.surface.project(p).ok()?;
+        let ((u, v), _) = side.foot(p, start)?;
+        lo_u = lo_u.min(u);
+        hi_u = hi_u.max(u);
+        lo_v = lo_v.min(v);
+        hi_v = hi_v.max(v);
+    }
+    if (lo_u, hi_u, lo_v, hi_v) == (u0, u1, v0, v1) {
+        return Some(());
+    }
+    // A little more than is reached, so the edge's ends lie inside.
+    let (mu, mv) = (1e-3 * (u1 - u0), 1e-3 * (v1 - v0));
+    let grown = |lo: f64, hi: f64, a: f64, b: f64, m: f64| {
+        (
+            if lo < a { lo - m } else { a },
+            if hi > b { hi + m } else { b },
+        )
+    };
+    let wider = nurbs
+        .extended(grown(lo_u, hi_u, u0, u1, mu), grown(lo_v, hi_v, v0, v1, mv))
+        .ok()?;
+    body.faces.get_mut(face.0 as usize)?.surface = Surface::Nurbs(wider);
+    Some(())
+}
+
+/// The nearest point to `p` on both `surfaces` (where they cross), by
+/// alternating projections; `None` unless it lies within `limit` of both.
+fn onto_both(surfaces: [&Surface; 2], p: Vec3, limit: f64) -> Option<Vec3> {
+    let mut q = p;
+    for _ in 0..200 {
+        let before = q;
+        for s in surfaces {
+            q = foot_past(s, q)?;
+        }
+        if q.distance(before) <= 1e-3 * limit {
+            break;
+        }
+    }
+    surfaces
+        .iter()
+        .all(|s| foot_past(s, q).is_some_and(|f| f.distance(q) <= limit))
+        .then_some(q)
+}
+
+/// The nearest point to `p` of `surface`, a spline surface continued past
+/// its domain as the polynomials its end spans are (where a face's edge is
+/// lengthened beyond it).
+fn foot_past(surface: &Surface, p: Vec3) -> Option<Vec3> {
+    let start = surface.project(p).ok()?;
+    let side = Side {
+        surface,
+        reversed: false,
+    };
+    side.foot(p, start).map(|(_, f)| f)
+}
+
+/// `data`'s curve made again, lengthened past its end at the start
+/// (`at_start`) or the end to `corner` along where `faces` cross: a cubic
+/// through points of the old curve and points of both faces' surfaces
+/// from its end to the corner, held between them to half the tolerance
+/// against both surfaces. With the corner's parameter (0 or 1).
+fn lengthened(
+    body: &Body,
+    data: &Edge,
+    at_start: bool,
+    corner: Vec3,
+    faces: [FaceId; 2],
+    tol: f64,
+) -> Option<(NurbsCurve, f64)> {
+    let [fa, fb] = faces;
+    let surfaces = [&body.face(fa)?.surface, &body.face(fb)?.surface];
+    let limit = 0.5 * tol;
+    let (lo, hi) = data.range;
+    let end_t = if at_start { lo } else { hi };
+    let (vertex, d) = data.curve.derivatives(end_t);
+    let out = (if at_start { -d } else { d }).normalized()?;
+    // The corner has to lie on past the vertex, not back along the edge.
+    let reach = (corner - vertex).dot(out);
+    if !(reach > 10.0 * tol) || !(reach >= 0.5 * corner.distance(vertex)) {
+        return None;
+    }
+    let mut n = 8_u32;
+    for _ in 0..6 {
+        // From the far end of the old edge to its vertex, then on.
+        let mut points: Vec<Vec3> = (0..=n)
+            .map(|j| {
+                let f = f64::from(j) / f64::from(n);
+                let t = if at_start {
+                    hi + (lo - hi) * f
+                } else {
+                    lo + (hi - lo) * f
+                };
+                data.curve.eval(t)
+            })
+            .collect();
+        for j in 1..=n {
+            let f = f64::from(j) / f64::from(n);
+            let guess = vertex + (corner - vertex) * f;
+            points.push(if j == n {
+                corner
+            } else {
+                onto_both(surfaces, guess, 0.25 * tol)?
+            });
+        }
+        if at_start {
+            points.reverse();
+        }
+        // Chord-length parameters.
+        let mut params = vec![0.0];
+        for pair in points.windows(2) {
+            let [a, b] = pair else { return None };
+            let last = *params.last()?;
+            params.push(last + a.distance(*b));
+        }
+        let total = *params.last()?;
+        if !(total > 0.0) {
+            return None;
+        }
+        for p in &mut params {
+            *p /= total;
+        }
+        let curve = curve_through(&params, &points)?;
+        let good = params.windows(2).all(|pair| {
+            let [a, b] = pair else { return false };
+            let p = curve.eval(0.5 * (a + b));
+            surfaces
+                .iter()
+                .all(|s| foot_past(s, p).is_some_and(|f| f.distance(p) <= limit))
+        });
+        if good {
+            return Some((curve, if at_start { 0.0 } else { 1.0 }));
+        }
+        n *= 2;
+    }
+    None
+}
+
+/// Whether `data`'s curve from `a` to `b` (past its range) lies on the
+/// surfaces of both `faces`: held at nine points to the tolerance.
+fn goes_on(body: &Body, data: &Edge, (a, b): (f64, f64), faces: [FaceId; 2], tol: f64) -> bool {
+    faces.iter().all(|f| {
+        body.face(*f).is_some_and(|face| {
+            (0..=8).all(|j| {
+                let p = data.curve.eval(a + (b - a) * f64::from(j) / 8.0);
+                foot_past(&face.surface, p).is_some_and(|f| f.distance(p) <= tol)
+            })
+        })
+    })
 }
 
 /// Puts the cut `cut` (from the first face's corner, `end.vertex`, to the
