@@ -195,7 +195,10 @@ impl Marcher {
         for _ in 0..200 {
             let mid = 0.5 * (lo + hi);
             let (e, _, u, v) = self.tac_eval(k, t, valley + side * mid)?;
-            if e.f.abs() <= self.on || (hi - lo) <= 1e-3 * self.on {
+            // To the bracket's width, not to `|f| ≤ on`: near the point
+            // the arms are nearly tangent to the line across, and a place
+            // where `f` is that small can be far from the arm.
+            if e.f == 0.0 || (hi - lo) <= 1e-3 * self.on {
                 return Some((valley + side * mid, e, u, v));
             }
             if e.f * sign < 0.0 {
@@ -306,6 +309,13 @@ impl Marcher {
             claim: 0.0,
             seeds: Vec::new(),
         };
+        // The point itself on the valley, so that the arms of `f − δ w`
+        // meet there: `λ` is large where they are close, and a point a
+        // little off the valley would leave them apart by
+        // `sqrt(2 |Δf| / λ)`.
+        let (across0, centre) = self.tac_valley(&k, 0.0)?;
+        (k.u, k.v) = Self::tac_place(&k, 0.0, across0);
+        (k.p, k.lift) = (centre.p, centre.f);
         let sign = lambda.signum();
         let c = &self.chart;
         let widest = 0.25 * ((c.u.1 - c.u.0) * s.lu).min((c.v.1 - c.v.0) * s.lv);
@@ -414,6 +424,31 @@ impl Marcher {
             }
         }
         Some(k)
+    }
+
+    /// The end of a branch on the tacnode at `p`, reached travelling along
+    /// `toward`: with the tangent every arm has there, the direction along
+    /// (an arm's tangent at its end is not left to the fit, which would
+    /// make the arms that leave the point together leave it a little
+    /// apart, in an order of its own).
+    pub(super) fn tac_arrival(&mut self, p: Vec3, (u, v): (f64, f64), toward: Vec3) -> Option<Pt> {
+        let k = self.tacnodes.iter().find(|k| k.p == p)?;
+        let (du, dv) = (k.along.0 / k.lu, k.along.1 / k.lv);
+        let (_, su, sv) = self.chart.at(u, v);
+        let dir = su * du + sv * dv;
+        let len = dir.length();
+        if !(len > 0.0 && len.is_finite()) {
+            return None;
+        }
+        let sign = if dir.dot(toward) >= 0.0 { 1.0 } else { -1.0 };
+        Some(Pt {
+            u,
+            v,
+            p,
+            t: dir * (sign / len),
+            du: du * sign / len,
+            dv: dv * sign / len,
+        })
     }
 
     /// True when a stationary point at `(u, v)` is a tacnode's own: on its

@@ -34,7 +34,10 @@
 //! around it where the surfaces go through each other by no more than the
 //! linear tolerance is indistinguishable from it), a saddle is a point
 //! where two branches cross (every arm gets a seed, and the march stops
-//! there), anything flatter is refused.
+//! there). Where the Hessian has rank one the point is looked for along the
+//! valley of its strong direction, and its arms (a tacnode's four, a
+//! cusp's two) are made as graphs in a disc around it (`tacnode.rs`); a
+//! contact that keeps to one side is a touch; anything else is refused.
 //!
 //! **Discs around critical points.** Around a critical point at distance
 //! `r` the gradient of `f` is about `λ r` (`λ` the smaller eigenvalue of
@@ -950,8 +953,20 @@ impl Marcher {
                 // A contact of higher order along one direction with arms
                 // (a tacnode or a cusp); failing that, one that keeps to
                 // one side (a touch).
+                // (The search for it takes no step where the Hessian is
+                // flat: it goes on along the valley of the strong
+                // direction, and the point it finds there is used for
+                // the arms only.)
                 let arms = match found {
-                    Some(s) if s.flat && self.touches(&s, finest) => self.tacnode(&s, finest),
+                    Some(s) if s.flat => {
+                        let settled = self.settle_flat(&s).unwrap_or(s);
+                        if self.touches(&settled, finest) && !self.tac_claims(settled.u, settled.v)
+                        {
+                            self.tacnode(&settled, finest)
+                        } else {
+                            None
+                        }
+                    }
                     _ => None,
                 };
                 let grazing = match found {
@@ -1036,6 +1051,9 @@ impl Marcher {
                 }
             }
         }
+        // A touch found on the valley of a tacnode before the tacnode
+        // itself was is a place along its arms, not a point of its own.
+        singular.retain(|s| s.kind != SingularKind::Touch || !self.tac_claims(s.u, s.v));
         // Every edge of every leaf, once.
         let mut edges: BTreeSet<(bool, i64, i64, i64)> = BTreeSet::new();
         for &(i, j, size) in &leaves {
@@ -1159,14 +1177,6 @@ impl Marcher {
                     h: (ha, hb, hc),
                     flat,
                 };
-                // Where the Hessian is nearly singular and the gradient is
-                // not zero yet (near a contact of higher order along one
-                // direction), the critical point is looked for along the
-                // valley of the other direction.
-                let tangent = gu.hypot(gv) <= 1e-6_f64.max(4.0 * size * self.tol.linear);
-                if flat && !tangent {
-                    return Some(self.settle_flat(&found).unwrap_or(found));
-                }
                 return Some(found);
             }
             u += step_u / lu;
@@ -1568,14 +1578,14 @@ impl Marcher {
                 // Inside a tacnode's radius its arms are made, not marched
                 // (`tacnode.rs`): every branch heading in ends on it.
                 if s.kind == SingularKind::Tacnode {
-                    snapped = Some(Pt {
+                    snapped = Some(self.tac_arrival(s.p, (su, sv), d).unwrap_or(Pt {
                         u: su,
                         v: sv,
                         p: s.p,
                         t: d * (1.0 / dist),
                         du: 0.0,
                         dv: 0.0,
-                    });
+                    }));
                     break;
                 }
                 if (d - cur.t * along).length() > 0.1 * dist {

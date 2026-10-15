@@ -793,7 +793,14 @@ fn tacnode_reference(k: f64, radius: f64, frame: &Frame) -> Vec<Vec3> {
 #[test]
 fn a_cylinder_touching_the_top_of_a_torus_tube_from_inside_meets_it_in_a_tacnode() {
     for k in SCALES {
-        for (radius, lift) in [(0.5, 0.0), (0.2, 0.0), (0.5, 0.3), (0.5, -0.3)] {
+        for (radius, lift) in [
+            (0.5, 0.0),
+            (0.3, 0.0),
+            (0.2, 0.0),
+            (0.1, 0.0),
+            (0.5, 0.3),
+            (0.5, -0.3),
+        ] {
             let (ring, tube, touch, frame) = tacnode_case(k, radius, lift);
             let t = tol(k);
             let within = cube(frame.origin(), 2.5 * k);

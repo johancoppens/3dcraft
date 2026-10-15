@@ -1,6 +1,6 @@
 # Roadmap
 
-> **Last updated:** 2026-10-15 · **Stage:** M7 (booleans) and M8.5 in progress, M9 started, M4 nearly done; M0–M3, M5, M6 and M8 done · **Change:** minor (boolean checklist: poles at a corner of a patch, coincident freeform faces; fourth-order contact and rational weights far apart diagnosed)
+> **Last updated:** 2026-10-15 · **Stage:** M7 (booleans) and M8.5 in progress, M9 started, M4 nearly done; M0–M3, M5, M6 and M8 done · **Change:** minor (boolean checklist: fourth-order contact built; poles at a corner of a patch, coincident freeform faces; rational weights far apart diagnosed)
 
 Forward-looking plan: the **Current focus** agents pick from, one line per milestone, and per milestone what it is for, what is done, what is open and what "done" means. There is no parity percentage: 3DCraft is AI-first with a minimal UI and has no target app ([`decisions.md`](decisions.md)). Progress is measured by milestones whose acceptance tests pass. How something was built (algorithms, thresholds, measurements, file paths of internals) is in [`architecture.md`](architecture.md), and how it is tested in [`testing.md`](testing.md).
 
@@ -10,7 +10,7 @@ Status legend: ✅ done · 🟡 in progress · ⬜ not started. Put the date nex
 
 ## Current focus
 
-1. **The boolean kernel (M7), the developer's first priority** (2026-10-13): a refusal is work owed. Next: the rest of the [boolean checklist](#the-boolean-checklist) in its order (a cusp, fourth-order contact, rational weights far apart).
+1. **The boolean kernel (M7), the developer's first priority** (2026-10-13): a refusal is work owed. Next: the rest of the [boolean checklist](#the-boolean-checklist) in its order (a cusp, rational weights far apart).
 2. **M9, the rest:** move face, thicken and draft, and what the blends leave open, beside M7 since none of it touches the boolean kernel ([M9](#m9-local-operations-and-sweeps)).
 3. **R1, the first release:** the pinned set of modelling tasks, installers, the format promise, material and colour per body, a user guide ([R1](#r1-first-release)).
 
@@ -61,7 +61,6 @@ The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item i
 **Owed, in order:**
 
 - [ ] A cusp: a spline that leaves the axis along it (no fan of meridians; the wedge's width would have to vanish as `t²`, and the closed layouts with it).
-- [ ] A cylinder inside a torus's tube touching its top with its axis square to the torus' axis (fourth-order contact, a tacnode the marcher passes through; the random runs' seed 2001169; reproducer in `boolean_contact.rs`).
 - [ ] Rational weights far apart: already a hundred apart the winding numbers refuse, and with a local chart speed the measure does not settle (reproducer in `boolean.rs`; [`architecture.md`](architecture.md) §5.3 › *Rational faces*).
 - [ ] The contact a fillet's boolean refused ([`architecture.md`](architecture.md) §5.3 › *Fillets as built*), and whether fillet chains still need `blend::join`.
 - [ ] Sheet bodies, several lumps and cavities (item 5).
@@ -257,6 +256,7 @@ Surface/surface intersection, imprint, classify and sew; union, subtract and int
 - Poles at a corner of a patch's parameters (a lune as the stereographic image of a quadrant): a chart, the side at the pole, the marcher and the tessellator; the eight cuts through a pole the tessellator declined were already meshed (2026-10-15)
 - Coincident freeform faces: a patch on its analytic twin moved along itself, two patches of one surface ([`architecture.md`](architecture.md) §5.3) (2026-10-15)
 - The self-intersection check inside every operation, near what it changed, and a shell that touches itself refused (2026-10-15)
+- Fourth-order contact: a tacnode or cusp of the intersection is a vertex whose tangent arms are made as graphs around it, a cylinder touching the top of a torus' tube from inside held to its closed-form volume ([`architecture.md`](architecture.md) §5.1 › *Tacnodes and cusps*) (2026-10-15)
 
 #### Open
 The [boolean checklist](#the-boolean-checklist) › *Owed*.
