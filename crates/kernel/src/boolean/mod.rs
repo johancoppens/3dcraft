@@ -326,6 +326,18 @@ impl Vertices {
     }
 
     fn find_or_add(&mut self, p: Vec3) -> Result<usize, Stop> {
+        self.find_or_add_with(p, |_, _| false)
+    }
+
+    /// [`Vertices::find_or_add`], where a point further than the merging
+    /// distance from the nearest one, but within the guard, is that point
+    /// too when `same(q, meeting)` says so of it (it is the same meeting of
+    /// the same entities, found by another way).
+    fn find_or_add_with(
+        &mut self,
+        p: Vec3,
+        same: impl Fn(Vec3, &Meeting) -> bool,
+    ) -> Result<usize, Stop> {
         let mut nearest: Option<(f64, usize)> = None;
         let home = self.cell(p);
         let mut consider = |index: usize, q: Vec3| {
@@ -365,7 +377,14 @@ impl Vertices {
         }
         match nearest {
             Some((d, index)) if d <= self.merge => Ok(index),
-            Some(_) => Err(Stop::of(NEAR)),
+            Some((_, index)) => {
+                let known = self.points.get(index).zip(self.meetings.get(index));
+                if known.is_some_and(|(&q, meeting)| same(q, meeting)) {
+                    Ok(index)
+                } else {
+                    Err(Stop::of(NEAR))
+                }
+            }
             None => {
                 if !p.is_finite() {
                     return Err(Stop::of(LOST));
@@ -519,7 +538,7 @@ fn run(
     // The arcs along each face's boundary, to tell a stretch across a face
     // from one along its edge.
     let rims = |solid: &Solid, pieces: &[Vec<Half>]| -> Vec<BTreeSet<usize>> {
-        (0..solid.outlines.len())
+        (0..solid.faces())
             .map(|face| {
                 solid
                     .edges_of(face)

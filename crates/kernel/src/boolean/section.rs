@@ -5,12 +5,12 @@
 use super::freeform::is_freeform;
 use super::hits::{curve_hits, signed_distance};
 use super::outline::{
-    Hull, Outline, Seg, Sheet, Side, boxes_meet, locate, nearest, onto, outward_normal,
+    Hull, Outline, Seg, Sheet, Side, boxes_meet, hull_of, locate, nearest, onto, outward_normal,
     surface_distance,
 };
 use super::{
-    AMBIGUOUS, LOST, Meeting, NEAR, NEARLY_COINCIDENT, NEARLY_TOUCHING, Operand, Stop, Vertices,
-    face_id, geometry,
+    AMBIGUOUS, LOST, Meeting, NEAR, NEARLY_COINCIDENT, NEARLY_TOUCHING, Operand, Reason, Stop,
+    Vertices, face_id, geometry,
 };
 use crate::{KernelError, MAX_REPORTED};
 use craft3d_geom::intersect::CurveIntersection;
@@ -19,13 +19,44 @@ use craft3d_geom::{Curve3, Surface};
 use craft3d_math::{Bbox3, Tolerance, Vec3};
 use craft3d_topo::{Body, BodyKind, EdgeId, FaceId, VertexId};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::OnceLock;
+
+/// The outline of a face, made the first time it is asked for. Making
+/// the outline of a freeform face indexes its surface (a tree of up to
+/// 2^15 pieces, tens of megabytes), and of a body with thousands of faces
+/// most are nowhere near the other operand: their boxes and hulls, which
+/// need no outline, say so. An outline is a function of the face alone,
+/// so when it is made does not change it.
+pub(super) struct Lazy {
+    surface: Surface,
+    reversed: bool,
+    loops: Vec<Vec<Seg>>,
+    margin: f64,
+    made: OnceLock<Result<Outline, Reason>>,
+}
+
+impl Lazy {
+    fn get(&self) -> Result<&Outline, Reason> {
+        self.made
+            .get_or_init(|| {
+                Outline::new(
+                    self.surface.clone(),
+                    self.reversed,
+                    self.loops.clone(),
+                    self.margin,
+                )
+            })
+            .as_ref()
+            .map_err(|reason| *reason)
+    }
+}
 
 /// One operand, prepared.
 pub(super) struct Solid<'a> {
     pub operand: Operand,
     pub body: &'a Body,
-    /// Per face.
-    pub outlines: Vec<Outline>,
+    /// Per face: its outline, made when needed ([`Solid::outline`]).
+    outlines: Vec<Lazy>,
     pub boxes: Vec<Bbox3>,
     pub hulls: Vec<Hull>,
     /// The merged vertex of each of the body's vertices.
@@ -35,6 +66,20 @@ pub(super) struct Solid<'a> {
 impl Solid<'_> {
     pub fn name(&self, face: usize) -> (Operand, FaceId) {
         (self.operand, face_id(face))
+    }
+
+    /// How many faces the solid has.
+    pub fn faces(&self) -> usize {
+        self.outlines.len()
+    }
+
+    /// The outline of a face, or why it has none (with the face named).
+    pub fn outline(&self, face: usize) -> Result<&Outline, Stop> {
+        self.outlines
+            .get(face)
+            .ok_or(Stop::of(LOST))?
+            .get()
+            .map_err(|reason| Stop::of(reason).at(&[self.name(face)]))
     }
 
     /// The edges around a face, each once.
@@ -155,12 +200,23 @@ pub(super) fn prepare<'a>(
             }
             loops.push(segs);
         }
-        let outline = Outline::new(face.surface.clone(), face.reversed, loops, 4.0 * tol)
-            .map_err(|reason| Stop::of(reason).at(&named))?;
-        let hull = outline.hull(tol);
+        let lazy = Lazy {
+            surface: face.surface.clone(),
+            reversed: face.reversed,
+            loops,
+            margin: 4.0 * tol,
+            made: OnceLock::new(),
+        };
+        // Only of a cone does the hull need the outline (whether the face
+        // reaches the apex), and that outline is cheap.
+        let hull = hull_of(&lazy.surface, &lazy.loops, |tip| {
+            lazy.get()
+                .map_err(|reason| Stop::of(reason).at(&named))
+                .map(|outline| !matches!(outline.side(tip, tol), Ok(Side::Out)))
+        })?;
         boxes.push(hull.bbox());
         hulls.push(hull);
-        outlines.push(outline);
+        outlines.push(lazy);
     }
     Ok(Solid {
         operand,
@@ -291,6 +347,29 @@ struct Cut {
     /// Where the curve itself starts or ends, rather than where an edge
     /// meets a surface.
     end: bool,
+}
+
+/// Whether two places, each found where an edge meets a surface, are the
+/// one place where an edge of A meets an edge of B. Such a place is found
+/// twice: as A's edge crossing the surface of a face of B, and as B's
+/// edge crossing the surface of a face of A. Each edge is only within the
+/// tolerance of the curve it stands for, so where the edges run onto the
+/// surfaces at a shallow angle the two places may be further apart than
+/// points that are merged. When each lies within the tolerance of both
+/// edges, they are that one meeting.
+fn one_meeting(
+    (a, b): (&Solid, &Solid),
+    (p, p_edges): (Vec3, (Option<EdgeId>, Option<EdgeId>)),
+    (q, q_edges): (Vec3, (Option<EdgeId>, Option<EdgeId>)),
+    tol: f64,
+) -> bool {
+    let on = |solid: &Solid, edge: Option<EdgeId>, at: Vec3| {
+        edge.and_then(|e| solid.body.edge(e))
+            .is_some_and(|e| locate(&e.curve, e.range, at, tol).is_some())
+    };
+    // p found on an edge of A and q on an edge of B, or the other way
+    // round, and each within the tolerance of the other's edge too.
+    (on(a, p_edges.0, q) && on(b, q_edges.1, p)) || (on(a, q_edges.0, p) && on(b, p_edges.1, q))
 }
 
 /// Adds to `cuts` where the edges of `face` of `own` meet `surface`.
@@ -426,12 +505,8 @@ fn clip(
 ) -> Result<(), Stop> {
     let tol = tolerance.linear;
     let named = [a.name(fa), b.name(fb)];
-    let (Some(oa), Some(ob), Some(box_a), Some(box_b)) = (
-        a.outlines.get(fa),
-        b.outlines.get(fb),
-        a.boxes.get(fa),
-        b.boxes.get(fb),
-    ) else {
+    let (oa, ob) = (a.outline(fa)?, b.outline(fb)?);
+    let (Some(box_a), Some(box_b)) = (a.boxes.get(fa), b.boxes.get(fb)) else {
         return Err(Stop::of(LOST));
     };
     let curve = &meeting.curve;
@@ -525,6 +600,14 @@ fn clip(
         let same = |other: &Cut| -> Result<bool, Stop> {
             let d = other.point.distance(cut.point);
             if d > vertices.merge && d < vertices.guard {
+                if one_meeting(
+                    (a, b),
+                    (cut.point, (cut.a_edge, cut.b_edge)),
+                    (other.point, (other.a_edge, other.b_edge)),
+                    tol,
+                ) {
+                    return Ok(true);
+                }
                 return Err(Stop::of(NEAR).at(&named));
             }
             Ok(d <= vertices.merge)
@@ -674,8 +757,29 @@ fn clip(
                 return Err(Stop::of(NEARLY_TOUCHING).at(&named));
             }
         }
-        let start = vertices.find_or_add(from.point).map_err(|s| s.at(&named))?;
-        let end = vertices.find_or_add(to.point).map_err(|s| s.at(&named))?;
+        // Where an edge of one body meets an edge of the other, the place
+        // is found twice: as the first edge's crossing of the other face's
+        // surface, and as the second's crossing of the first face's. Each
+        // edge is only within the tolerance of the curve it stands for,
+        // so where they run onto a surface at a shallow angle the two
+        // places may be further apart than points that are merged. Each
+        // is within the tolerance of both edges: it is one vertex.
+        let edge_meets_edge = |cut: Cut| {
+            move |q: Vec3, known: &Meeting| {
+                one_meeting(
+                    (a, b),
+                    (cut.point, (cut.a_edge, cut.b_edge)),
+                    (q, (known.a_edge, known.b_edge)),
+                    tol,
+                )
+            }
+        };
+        let start = vertices
+            .find_or_add_with(from.point, edge_meets_edge(from))
+            .map_err(|s| s.at(&named))?;
+        let end = vertices
+            .find_or_add_with(to.point, edge_meets_edge(to))
+            .map_err(|s| s.at(&named))?;
         // A stretch from a vertex back to itself is a loop when it goes
         // somewhere on the way: the whole of a closed curve, or a curve
         // that begins and ends in one place.
@@ -701,7 +805,7 @@ fn clip(
             ] {
                 // (Only the edges near the vertex are looked at: a face may
                 // have a thousand.)
-                let outline = solid.outlines.get(face).ok_or(Stop::of(LOST))?;
+                let outline = solid.outline(face)?;
                 for (l, k) in outline.pieces_near(point, tol) {
                     let id = solid
                         .body
@@ -827,14 +931,15 @@ pub(super) fn section(
     let Some(within) = overlap(&box_a, &box_b, room) else {
         return Ok(sections);
     };
-    for (fa, (oa, box_a)) in a.outlines.iter().zip(&a.boxes).enumerate() {
-        for (fb, (ob, box_b)) in b.outlines.iter().zip(&b.boxes).enumerate() {
+    for (fa, box_a) in a.boxes.iter().enumerate() {
+        for (fb, box_b) in b.boxes.iter().enumerate() {
             if !boxes_meet(box_a, box_b, 2.0 * tol) {
                 continue;
             }
             let (Some(hull_a), Some(hull_b)) = (a.hulls.get(fa), b.hulls.get(fb)) else {
                 return Err(Stop::of(LOST));
             };
+            let (oa, ob) = (a.outline(fa)?, b.outline(fb)?);
             if clear_of(oa.sheet(), hull_b, 2.0 * tol) || clear_of(ob.sheet(), hull_a, 2.0 * tol) {
                 continue;
             }

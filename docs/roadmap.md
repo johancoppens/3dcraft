@@ -53,10 +53,12 @@ The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item i
 4. ⬜ **Tolerant modelling:** approximated intersection curves, bodies with gaps as STEP import will bring them.
 5. ⬜ **Several lumps, cavities, sheet bodies.**
 6. ✅ 2026-10-14 **Entities through booleans:** edges by the faces they lie between (2026-10-13), vertices by the faces they meet in (`document.edges`).
-7. 🟡 **Speed on bodies with thousands of faces** (a spatial index).
+7. 🟡 **Speed on bodies with thousands of faces** (a spatial index). Since 2026-10-15 a face's outline (and the index of a freeform surface) is made only when the boolean needs it: a bead on a shade of 2000 faces 2.2 GB instead of 7.2 GB.
 8. ✅ 2026-10-15 **Never an invalid body:** every operation is checked for crossing, overlapping and self-touching shells near what it changed, or proven unable to make them ([`architecture.md`](architecture.md) §5.5 › *Never through itself*).
 
 **Measured (2026-10-14, morning; the same on 2026-10-15 after the helmet's findings, after poles at a corner and coincident freeform faces, and after fourth-order contact):** 11573 of 11988 corpus outcomes agree, 249 refused (all in the category near, about 250 being the tolerance rule itself: cases built one tolerance apart or into each other), 0 wrong, 0 invalid. Speed (2026-10-13): 1024 holes one by one in 7.1 s, a cylinder through a plate of 1030 faces in 36.5 ms; the corpus test takes about 230 s on 14 threads on an idle machine (640 s at noon on 2026-10-13) and is the gate's longest binary.
+
+**Measured (2026-10-15, after the lamp's and the impeller's findings: the pieces of a curve a box cuts refined; outlines made when needed; two places where the same two edges meet one vertex):** the same counts, digest `19af10963b6f12c2` (the same results bit for bit after all three); of the 249 refusals 21 now refuse one step later, as two faces between half and twice the tolerance apart rather than two points the tolerance cannot tell apart.
 
 **Owed, in order:**
 
@@ -66,6 +68,7 @@ The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item i
 - [ ] Sheet bodies, several lumps and cavities (item 5).
 - [ ] The check of offset face, shell and delete face near what they changed (they check the whole body), and a tessellation of long straight edges that does not fan across a plate (the first cut of 400 holes at once is checked in 140 ms).
 - [ ] Speed: what is left is the booleans with a freeform face (the chart's projections and the marcher) and the measurement of their results.
+- [ ] Each pair of faces intersected in the box of the two faces, not of the two bodies (the impeller's pattern of blades with rounded leading edges, and such a blade on a hub of revolution), after the curves that gives near a pole are measured, meshed and sorted around the pole (branch `boolfind-facebox-wip`: the measure and the mesh done, the octant cut through its pole at scale 1e-3 still refused by `regions::untie`) ([`architecture.md`](architecture.md) §5.3 › *Showcase findings (2026-10-15)*).
 - [ ] Tolerant modelling (item 4), before STEP import.
 
 ## Milestones in detail

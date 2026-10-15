@@ -822,90 +822,104 @@ impl Outline {
     }
 
     /// Points, circles and balls that the face lies within the convex
-    /// hull of. Conservative: an arc counts as its whole circle or
-    /// ellipse, a face on a cylinder or a cone as the whole stretch of
-    /// the surface between the ends of its boundary along the axis (to
-    /// the apex when the face reaches it), a face on a sphere or a torus
-    /// as a ball around the whole surface.
+    /// hull of ([`hull_of`]).
+    #[cfg(test)]
     pub fn hull(&self, tol: f64) -> Hull {
-        let mut hull = Hull::default();
-        for seg in self.loops.iter().flatten() {
-            hull.points.push(seg.a);
-            hull.points.push(seg.b);
-            match &seg.curve {
-                Curve3::Line(_) => {}
-                Curve3::Circle(c) => {
-                    let f = c.frame();
-                    hull.conics
-                        .push((f.origin(), f.x() * c.radius(), f.y() * c.radius()));
-                }
-                Curve3::Ellipse(e) => {
-                    let f = e.frame();
-                    let (a, b) = e.semi_axes();
-                    hull.conics.push((f.origin(), f.x() * a, f.y() * b));
-                }
-                Curve3::Nurbs(c) => hull.points.extend_from_slice(c.control_points()),
-            }
-        }
-        let (frame, radius, slope, apex) = match &self.surface {
-            Surface::Plane(_) => return hull,
-            // A freeform surface lies in the hull of its control points.
-            Surface::Bezier(b) => {
-                hull.points.extend_from_slice(b.control_points());
-                return hull;
-            }
-            Surface::Nurbs(s) => {
-                hull.points.extend_from_slice(s.control_points());
-                return hull;
-            }
-            Surface::Sphere(s) => {
-                hull.balls.push((s.frame().origin(), s.radius()));
-                return hull;
-            }
-            Surface::Torus(s) => {
-                hull.balls
-                    .push((s.frame().origin(), s.radii().0 + s.radii().1));
-                return hull;
-            }
-            Surface::Cylinder(s) => (*s.frame(), s.radius(), 0.0, None),
-            Surface::Cone(s) => (
-                *s.frame(),
-                s.radius(),
-                s.half_angle().tan(),
-                Some(s.apex_v()),
-            ),
-        };
-        // The stretch of the axis that the boundary spans.
-        let (mut low, mut high) = hull.span(frame.z());
-        let base = frame.origin().dot(frame.z());
-        (low, high) = (low - base, high - base);
-        if let Some(apex) = apex {
-            // A face that may contain the apex reaches it.
-            let tip = frame.point(0.0, 0.0, apex);
-            if !matches!(self.side(tip, tol), Ok(Side::Out)) {
-                low = low.min(apex);
-                high = high.max(apex);
-            }
-            // Nothing of a cone lies beyond its apex.
-            if slope > 0.0 {
-                low = low.max(apex);
-            } else {
-                high = high.min(apex);
-            }
-        }
-        for along in [low, high] {
-            if along.is_finite() {
-                // The circle of the surface at that height.
-                let reach = (radius + along * slope).max(0.0);
-                hull.conics.push((
-                    frame.point(0.0, 0.0, along),
-                    frame.x() * reach,
-                    frame.y() * reach,
-                ));
-            }
-        }
-        hull
+        let reaches =
+            |tip: Vec3| -> Result<bool, ()> { Ok(!matches!(self.side(tip, tol), Ok(Side::Out))) };
+        hull_of(&self.surface, &self.loops, reaches).unwrap_or_default()
     }
+}
+
+/// Points, circles and balls that a face on `surface` bounded by `loops`
+/// lies within the convex hull of. Conservative: an arc counts as its
+/// whole circle or ellipse, a face on a cylinder or a cone as the whole
+/// stretch of the surface between the ends of its boundary along the axis
+/// (to the apex when the face reaches it: `reaches`, asked of a cone
+/// only), a face on a sphere or a torus as a ball around the whole
+/// surface.
+pub(super) fn hull_of<E>(
+    surface: &Surface,
+    loops: &[Vec<Seg>],
+    reaches: impl FnOnce(Vec3) -> Result<bool, E>,
+) -> Result<Hull, E> {
+    let mut hull = Hull::default();
+    for seg in loops.iter().flatten() {
+        hull.points.push(seg.a);
+        hull.points.push(seg.b);
+        match &seg.curve {
+            Curve3::Line(_) => {}
+            Curve3::Circle(c) => {
+                let f = c.frame();
+                hull.conics
+                    .push((f.origin(), f.x() * c.radius(), f.y() * c.radius()));
+            }
+            Curve3::Ellipse(e) => {
+                let f = e.frame();
+                let (a, b) = e.semi_axes();
+                hull.conics.push((f.origin(), f.x() * a, f.y() * b));
+            }
+            Curve3::Nurbs(c) => hull.points.extend_from_slice(c.control_points()),
+        }
+    }
+    let (frame, radius, slope, apex) = match surface {
+        Surface::Plane(_) => return Ok(hull),
+        // A freeform surface lies in the hull of its control points.
+        Surface::Bezier(b) => {
+            hull.points.extend_from_slice(b.control_points());
+            return Ok(hull);
+        }
+        Surface::Nurbs(s) => {
+            hull.points.extend_from_slice(s.control_points());
+            return Ok(hull);
+        }
+        Surface::Sphere(s) => {
+            hull.balls.push((s.frame().origin(), s.radius()));
+            return Ok(hull);
+        }
+        Surface::Torus(s) => {
+            hull.balls
+                .push((s.frame().origin(), s.radii().0 + s.radii().1));
+            return Ok(hull);
+        }
+        Surface::Cylinder(s) => (*s.frame(), s.radius(), 0.0, None),
+        Surface::Cone(s) => (
+            *s.frame(),
+            s.radius(),
+            s.half_angle().tan(),
+            Some(s.apex_v()),
+        ),
+    };
+    // The stretch of the axis that the boundary spans.
+    let (mut low, mut high) = hull.span(frame.z());
+    let base = frame.origin().dot(frame.z());
+    (low, high) = (low - base, high - base);
+    if let Some(apex) = apex {
+        // A face that may contain the apex reaches it.
+        let tip = frame.point(0.0, 0.0, apex);
+        if reaches(tip)? {
+            low = low.min(apex);
+            high = high.max(apex);
+        }
+        // Nothing of a cone lies beyond its apex.
+        if slope > 0.0 {
+            low = low.max(apex);
+        } else {
+            high = high.min(apex);
+        }
+    }
+    for along in [low, high] {
+        if along.is_finite() {
+            // The circle of the surface at that height.
+            let reach = (radius + along * slope).max(0.0);
+            hull.conics.push((
+                frame.point(0.0, 0.0, along),
+                frame.x() * reach,
+                frame.y() * reach,
+            ));
+        }
+    }
+    Ok(hull)
 }
 
 /// What a face lies within the convex hull of.
