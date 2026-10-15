@@ -347,8 +347,8 @@ fn what_cannot_be_revolved_fails_with_the_reason() {
     );
     revolve(&mut s, json!({"axis": "e11"}));
     assert_failed(&mut s, &["axis", "Profile", "both sides", "e5"]);
-    // An arc whose circle reaches the axis without being centred on it
-    // would sweep a spindle torus.
+    // An arc clear of the axis by more than its radius sweeps a torus;
+    // about the line through the profile, it is on both sides.
     run(&mut s, "feature.delete", json!({"feature": "Turned"}));
     run(
         &mut s,
@@ -368,7 +368,7 @@ fn what_cannot_be_revolved_fails_with_the_reason() {
     );
     run(&mut s, "feature.delete", json!({"feature": "Turned"}));
     revolve(&mut s, json!({"axis": "e11"}));
-    assert_failed(&mut s, &["Profile"]);
+    assert_failed(&mut s, &["Profile", "both sides"]);
     run(&mut s, "feature.delete", json!({"feature": "Turned"}));
 
     // Malformed requests are refused.
@@ -504,6 +504,131 @@ fn a_revolved_spline_dome_is_shaded_with_the_axis_at_its_pole() {
                 );
             }
             assert!(at_pole > 0, "size {k}: no vertex at the pole");
+        }
+    }
+}
+
+/// Integrals over the region left of a counter-clockwise arc and the y
+/// axis, by Green's theorem along the arc (Simpson, which is exact far
+/// below the test's bound for these smooth integrands): `∫∫ x dA` and
+/// `∫∫ x y dA` are `∮ x²/2 dy` and `∮ x² y/2 dy`, and the parts of the
+/// boundary on the axis or level add nothing.
+fn arc_moments(centre: [f64; 2], radius: f64, from: f64, to: f64) -> (f64, f64) {
+    let steps = 4000;
+    let h = (to - from) / f64::from(steps);
+    let (mut first, mut second) = (0.0, 0.0);
+    for i in 0..=steps {
+        let t = from + h * f64::from(i);
+        let (x, y) = (centre[0] + radius * t.cos(), centre[1] + radius * t.sin());
+        let dy = radius * t.cos();
+        let weight = if i == 0 || i == steps {
+            1.0
+        } else if i % 2 == 1 {
+            4.0
+        } else {
+            2.0
+        };
+        first += weight * x * x / 2.0 * dy;
+        second += weight * x * x * y / 2.0 * dy;
+    }
+    (first * h / 3.0, second * h / 3.0)
+}
+
+/// An ogive (a spinner's nose): an arc about a point of the axis from the
+/// tip, then an arc whose circle reaches across the axis (its torus would
+/// be a spindle torus) while the arc itself keeps clear of it. Its face is
+/// a rational surface of revolution; Pappus by Green's theorem.
+#[test]
+fn an_ogive_whose_arc_lies_on_a_spindle_torus_is_revolved() {
+    // The turbofan's spinner as it was found (2026-10-15): refused with
+    // "its circle reaches the axis without being centred on it".
+    let mut s = Session::new(Workspace::none());
+    run(&mut s, "file.new", json!({}));
+    run(&mut s, "sketch.create", json!({"name": "Profile"}));
+    run(
+        &mut s,
+        "sketch.path",
+        json!({"sketch": "Profile", "start": [0, 0], "segments": [
+            {"arc": [1.4358, 0.4534], "center": [0, 2.5]},
+            {"arc": [22, 40], "center": [-26.3077, 40]},
+            {"line": [0, 40]},
+            {"line": "start"}
+        ]}),
+    );
+    revolve(&mut s, json!({"axis": "y"}));
+    let state = feature(&mut s, "Turned");
+    assert_eq!(state["status"], "ok", "{state}");
+    let check = run(&mut s, "document.check", json!({"deep": true}));
+    assert_eq!(check["ok"], true, "{check}");
+
+    // The same shape with corners exactly on both circles (3² + 4² = 5²,
+    // 20² + 21² = 29²), whole and as a part turn.
+    for (angle, sweep) in [(None, 2.0 * PI), (Some("100 deg"), 100f64.to_radians())] {
+        let mut s = Session::new(Workspace::none());
+        run(&mut s, "file.new", json!({}));
+        run(&mut s, "sketch.create", json!({"name": "Profile"}));
+        run(
+            &mut s,
+            "sketch.path",
+            json!({"sketch": "Profile", "start": [0, 0], "segments": [
+                {"arc": [3, 1], "center": [0, 5]},
+                {"arc": [12, 22], "center": [-17, 22]},
+                {"line": [0, 22]},
+                {"line": "start"}
+            ]}),
+        );
+        let mut params = json!({"axis": "y"});
+        if let Some(angle) = angle {
+            params["angle"] = angle.into();
+        }
+        revolve(&mut s, params);
+        let (a1, b1) = arc_moments([0.0, 5.0], 5.0, -PI / 2.0, (-4.0f64).atan2(3.0));
+        let (a2, b2) = arc_moments([-17.0, 22.0], 29.0, (-21.0f64).atan2(20.0), 0.0);
+        let (moment, cross) = (a1 + a2, b1 + b2);
+        if angle.is_none() {
+            assert_turned(&mut s, sweep * moment, [0.0, cross / moment, 0.0]);
+            // Booleans on the rational faces: a block across the axis
+            // above the corner cuts the spindle arc's face in a circle,
+            // and the part it removes and the part it keeps add up.
+            let mut parts = 0.0;
+            for op in ["subtract", "intersect"] {
+                let mut s = s.clone();
+                run(
+                    &mut s,
+                    "feature.block",
+                    json!({"size": [100, 100, 100], "position": [-50, 15, -50], "name": "Box"}),
+                );
+                run(
+                    &mut s,
+                    "feature.boolean",
+                    json!({"op": op, "target": "Turned", "tool": "Box", "name": "Cut"}),
+                );
+                let document = run(&mut s, "document.inspect", json!({}));
+                let cut = document["bodies"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|b| b["name"] == "Cut")
+                    .unwrap_or_else(|| panic!("{op}: {}", document["features"]))
+                    .clone();
+                let volume = cut["volume"].as_f64().unwrap();
+                assert!(volume > 0.1 * sweep * moment, "{op}: {volume}");
+                parts += volume;
+                let check = run(&mut s, "document.check", json!({"deep": true}));
+                assert_eq!(check["ok"], true, "{op}: {check}");
+            }
+            let whole = sweep * moment;
+            assert!((parts - whole).abs() <= 1e-9 * whole, "{parts} vs {whole}");
+        } else {
+            let found = body(&mut s);
+            let actual = found["volume"].as_f64().unwrap();
+            let volume = sweep * moment;
+            assert!(
+                (actual - volume).abs() <= 1e-9 * volume,
+                "{actual} vs {volume}"
+            );
+            let check = run(&mut s, "document.check", json!({"deep": true}));
+            assert_eq!(check["ok"], true, "{check}");
         }
     }
 }

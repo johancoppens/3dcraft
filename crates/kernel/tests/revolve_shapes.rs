@@ -215,6 +215,125 @@ fn profiles_that_touch_the_axis_match_pappus() {
     println!("{count} revolutions of profiles on the axis");
 }
 
+/// An arc counter-clockwise about `centre` from `a` to `b` as seen in the
+/// axis's own terms (rho across, h along), all three given in those terms.
+fn lathe_arc(
+    id: u64,
+    axis: Axis,
+    side: f64,
+    centre: (f64, f64),
+    a: (f64, f64),
+    b: (f64, f64),
+) -> SketchCurve {
+    let p = |q: (f64, f64)| lathe(axis, side, q.0, q.1);
+    // (rho, h) is turned the sketch's way round to the right of the axis
+    // and mirrored to its left.
+    if side < 0.0 {
+        arc(id, p(centre), p(a), p(b))
+    } else {
+        arc(id, p(centre), p(b), p(a))
+    }
+}
+
+/// Arcs whose circle reaches the axis without being centred on it lie on a
+/// spindle or horn torus; the arc itself is clear of the axis, or reaches
+/// it at an end, and sweeps a rational surface of revolution (Pappus, with
+/// the regions worked out by hand):
+/// - a D: half a disc of radius 2 about (0.5, 0), its arc away from the
+///   axis: area 2π at rho 0.5 + 8/3π
+/// - a lens: the segment of the circle of radius 5 about (−3, 0) beyond
+///   the axis, its ends on it at h = ±4: with sin α = 0.8 (cos α = 0.6),
+///   area 25 (α − 0.48), its centroid 20 · 0.512 / 3 (2α − 0.96) from the
+///   centre
+/// - a horn: the square (0, 0) (2, 2) less the quarter disc of radius 2
+///   about (2, 0), its arc ending on the axis where its circle touches it:
+///   area 4 − π, from the square (4 at (1, 1)) less the quarter disc (π at
+///   (2 − 8/3π, 8/3π))
+#[test]
+fn arcs_whose_circle_reaches_the_axis_match_pappus() {
+    let mut count = 0;
+    let alpha = 0.6_f64.acos();
+    let lens_area = 25.0 * (alpha - 0.48);
+    let lens_rho = 20.0 * 0.512 / (3.0 * (2.0 * alpha - 0.96)) - 3.0;
+    let quarter = 8.0 / (3.0 * PI);
+    let horn_area = 4.0 - PI;
+    let horn_rho = (4.0 - PI * (2.0 - quarter)) / horn_area;
+    let horn_h = (4.0 - PI * quarter) / horn_area;
+    for k in [1e-3, 1.0, 1e6] {
+        let tol = tolerance(k);
+        for plane in frames(k) {
+            let axis = Axis {
+                point: [-2.0 * k, 0.5 * k],
+                direction: [-1.0, 0.4],
+            };
+            for side in [1.0, -1.0] {
+                let p = |rho: f64, h: f64| lathe(axis, side, rho * k, h * k);
+                let q = |rho: f64, h: f64| (rho * k, h * k);
+                let k2 = k * k;
+                let cases: Vec<(&str, Vec<SketchCurve>, (f64, P))> = vec![
+                    (
+                        "D",
+                        vec![
+                            lathe_arc(1, axis, side, q(0.5, 0.0), q(0.5, -2.0), q(0.5, 2.0)),
+                            line(2, p(0.5, 2.0), p(0.5, -2.0)),
+                        ],
+                        (2.0 * PI * k2, p(0.5 + quarter, 0.0)),
+                    ),
+                    (
+                        "lens",
+                        vec![
+                            lathe_arc(1, axis, side, q(-3.0, 0.0), q(0.0, -4.0), q(0.0, 4.0)),
+                            line(2, p(0.0, 4.0), p(0.0, -4.0)),
+                        ],
+                        (lens_area * k2, p(lens_rho, 0.0)),
+                    ),
+                    (
+                        "horn",
+                        vec![
+                            lathe_arc(1, axis, side, q(2.0, 0.0), q(2.0, 2.0), q(0.0, 0.0)),
+                            line(2, p(0.0, 0.0), p(0.0, 2.0)),
+                            line(3, p(0.0, 2.0), p(2.0, 2.0)),
+                        ],
+                        (horn_area * k2, p(horn_rho, horn_h)),
+                    ),
+                ];
+                for (name, curves, region) in cases {
+                    for (from, to) in SWEEPS {
+                        let what = format!("{name} at scale {k}, side {side}, {from}..{to}");
+                        let result = build(&curves, &plane, axis, (from, to), &tol)
+                            .unwrap_or_else(|e| panic!("{what}: {e}"));
+                        assert_pappus(&result, &curves, &[region], axis, to - from, k, &what);
+                        // The arc's face (two halves in a full turn) is a
+                        // rational surface.
+                        let rational = result
+                            .origins
+                            .faces
+                            .iter()
+                            .zip(&result.body.faces)
+                            .filter(|(o, f)| {
+                                o.role == Role::Side
+                                    && o.sources == [1]
+                                    && matches!(
+                                        &f.surface,
+                                        Surface::Nurbs(s) if s.weights().iter().any(|w| *w != 1.0)
+                                    )
+                            })
+                            .count();
+                        let full = to - from == TAU;
+                        assert_eq!(rational, if full { 2 } else { 1 }, "{what}");
+                        assert_eq!(result.body.shells.len(), 1, "{what}");
+                        // A full turn of the D, clear of the axis, is a ring.
+                        let ring = full && name == "D";
+                        assert_eq!(genus(&result.body), Some(u32::from(ring)), "{what}");
+                        count += 1;
+                    }
+                }
+            }
+        }
+    }
+    println!("{count} revolutions of arcs on a spindle or horn torus");
+}
+
 fn origin(role: Role, sources: &[u64]) -> Origin {
     Origin::new(role, sources)
 }
@@ -680,9 +799,8 @@ fn bad_input_is_an_error_with_a_reason() {
         E::CrossesAxis { curves: vec![7] }
     );
 
-    // Arcs whose circle reaches the axis without being centred on it: a
-    // circle that touches the axis (a horn torus), and a D whose arc is
-    // part of a circle that crosses it (a spindle).
+    // A circle that touches the axis (a horn torus) pinches there, and so
+    // does an arc that touches it between its ends.
     let horn = [circle(7, [2.0, 1.0], 2.0)];
     let error = build(&horn, &plane, up, (0.0, TAU), &tol).unwrap_err();
     assert!(
@@ -690,21 +808,34 @@ fn bad_input_is_an_error_with_a_reason() {
         "{error}"
     );
     assert!(error.to_string().contains("curve 7"), "{error}");
+    assert!(error.to_string().contains("touches the axis"), "{error}");
+    let touching = [
+        arc(5, [2.0, 1.0], [2.0, 3.0], [2.0, -1.0]),
+        line(6, [2.0, -1.0], [2.0, 3.0]),
+    ];
+    for sweep in [(0.0, 1.0), (0.0, TAU)] {
+        let error = build(&touching, &plane, up, sweep, &tol).unwrap_err();
+        assert!(
+            matches!(error, E::UnsupportedCurve { id: 5, .. }),
+            "{error}"
+        );
+        assert!(error.to_string().contains("between its ends"), "{error}");
+    }
+    // A D whose arc is part of a circle that crosses the axis (a spindle
+    // torus) is clear of the axis itself: a rational surface, not a torus.
     let spindle = [
         arc(3, [0.5, 0.0], [0.5, -2.0], [0.5, 2.0]),
         line(4, [0.5, 2.0], [0.5, -2.0]),
     ];
-    let error = build(&spindle, &plane, up, (0.0, 1.0), &tol).unwrap_err();
-    assert!(
-        matches!(error, E::UnsupportedCurve { id: 3, .. }),
-        "{error}"
-    );
+    let made = build(&spindle, &plane, up, (0.0, 1.0), &tol).unwrap();
+    assert_eq!(face_kind(&made, Role::Side, &[3]), Some("nurbs surface"));
     // Clear of the axis by more than its radius it is a torus.
     let clear = Axis {
         point: [-2.0, 0.0],
         ..up
     };
-    assert!(build(&spindle, &plane, clear, (0.0, 1.0), &tol).is_ok());
+    let made = build(&spindle, &plane, clear, (0.0, 1.0), &tol).unwrap();
+    assert_eq!(face_kind(&made, Role::Side, &[3]), Some("torus"));
 
     // A profile that `detect_profiles` would not have made.
     let mut twice = profiles.clone();
