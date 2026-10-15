@@ -262,6 +262,7 @@ Surface/surface intersection, imprint, classify and sew; union, subtract and int
 - A cusp as a boolean operand: the wedge and the disc drawn to the pole's order, the pieces at the point put in order further along ([`architecture.md`](architecture.md) §5.3 › *Cusps*) (2026-10-15)
 - Rational faces with weights a hundred apart as operands: the winding numbers take the chart's speed near each stretch, held by point membership against the plain block ([`architecture.md`](architecture.md) §5.3 › *Rational faces*) (2026-10-15)
 - Fourth-order contact: a tacnode or cusp of the intersection is a vertex whose tangent arms are made as graphs around it, a cylinder touching the top of a torus' tube from inside held to its closed-form volume ([`architecture.md`](architecture.md) §5.1 › *Tacnodes and cusps*) (2026-10-15)
+- A row of booleans on a body of many freeform faces indexes each surface once (the impeller: a chamfer of the bore 12 s to 1 s); a material measures nothing, mass and inertia are measured at once ([`architecture.md`](architecture.md) §5.3, §5.5) (2026-10-16)
 
 #### Open
 The [boolean checklist](#the-boolean-checklist) › *Owed*.
