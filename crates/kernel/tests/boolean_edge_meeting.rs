@@ -1,4 +1,4 @@
-//! Where an edge of one body meets an edge of the other (2026-10-16, the
+//! Where an edge of one body meets an edge of the other (2026-10-15, the
 //! impeller's finding F8: a blade's fillet edge onto the rim of a hub).
 //!
 //! An edge is only within the tolerance of the curve it stands for. Where

@@ -214,14 +214,14 @@
 //! A fixed budget does not fit a face of any size: the first sums of a
 //! lampshade with 48 holes take 2.3 budgets alone, and the whole face
 //! 10.7, each part settling at its second sum. So a face refined part by
-//! part takes its first sums whatever they cost (the work of the boundary
-//! at its coarsest: a fixed number of nodes per knot span of each edge,
-//! each with a fixed number of inner panels per knot span of the
-//! surface, so in proportion to the size of the face), and is then given
-//! up once it has taken [`PARTS_WORK`] times what those took, or
-//! [`BUDGET`] where that is more. The bound grows with the face, never
-//! with what its sums do: a part that never settles stops the face at
-//! that cap.
+//! part takes its first sums (the work of the boundary at its coarsest: a
+//! fixed number of nodes per knot span of each edge, each with a fixed
+//! number of inner panels per knot span of the surface, so in proportion
+//! to the size of the face) up to [`FIRST_SUMS_WORK`], sixteen budgets, and is
+//! then given up once it has taken [`PARTS_WORK`] times what those took,
+//! or [`BUDGET`] where that is more. The bound grows with the face up to
+//! a ceiling, never with what its sums do: a part that never settles
+//! stops the face at that cap.
 //!
 //! **Following the boundary.** Every node of a boundary panel is a point
 //! of an edge curve, projected onto the surface for its parameters. On a
@@ -493,6 +493,12 @@ const BUDGET: u64 = 1 << 26;
 /// Measured: the lampshade's faces of 48 and 53 holes take 4.2 to 4.6
 /// times their first sums.
 const PARTS_WORK: u64 = 64;
+/// The most the first sums of a face refined part by part may take
+/// ([`part_by_part`]): sixteen budgets. Measured: the first sums of the
+/// lampshade's faces of 48 and 53 holes take 2.3 and 2.4. Past it the
+/// face is given up as any other whose sums do not settle, and with it
+/// the whole face's work is at most [`PARTS_WORK`] times this.
+const FIRST_SUMS_WORK: u64 = 16 * BUDGET;
 /// What the projection of a boundary point counts for in a face's work,
 /// in evaluations of the integrand.
 const PROJECTION: u64 = 8;
@@ -1571,7 +1577,12 @@ impl Outline<'_> {
     /// the part itself reaches, a fillet's face of six parts did not
     /// settle). The face's sum is the sum of its parts' and carries the
     /// rounding of every one of them: the parts' allowances add up as
-    /// their roundings do. (One allowance for the whole face, shared out
+    /// their roundings do. That is looser than one allowance for the
+    /// face by as many times as it has parts, where the rounding is what
+    /// counts at all: only for parts whose sums are small against the
+    /// rounding of the furthest coordinate times the face's reach (the
+    /// thin strips above); on the rest `CONVERGED` of their own size is
+    /// the allowance, as before. (One allowance for the whole face, shared out
     /// by size, is tighter than the parts' sums can be: a torus at scale
     /// 1e-3 and a solid pinched at a point did not settle.)
     fn noise(&self, area: f64) -> f64 {
@@ -2612,7 +2623,7 @@ struct Part {
 ///
 /// The work is bounded for the face as a whole. Its first sums (every
 /// part at its coarsest) are as much work as its boundary is long, and
-/// are taken whatever they cost; in all the face may take [`PARTS_WORK`]
+/// may take up to [`FIRST_SUMS_WORK`]; in all the face may take [`PARTS_WORK`]
 /// times what they took, or its budget where that is more. A face with
 /// tens of holes takes more than one budget only to sum each of them
 /// twice.
@@ -2627,9 +2638,9 @@ fn part_by_part(
 ) -> Result<Sums, MassError> {
     let start = work.spent;
     let budget = work.limit;
-    // The first sums are not capped: their work is that of the boundary
-    // at its coarsest (see above).
-    work.limit = u64::MAX;
+    // The first sums are as much work as the boundary at its coarsest
+    // (see above), up to a ceiling of their own.
+    work.limit = budget.max(FIRST_SUMS_WORK);
     let mut first = samples(
         outline,
         surface,
@@ -2698,7 +2709,11 @@ fn part_by_part(
         if !capped {
             capped = true;
             let first = work.spent.saturating_sub(start);
-            work.limit = budget.max(PARTS_WORK.saturating_mul(first));
+            work.limit = budget.max(
+                PARTS_WORK
+                    .saturating_mul(first)
+                    .min(PARTS_WORK.saturating_mul(FIRST_SUMS_WORK)),
+            );
         }
         for (at, doublings, total, noise) in sums {
             let Some(part) = parts.get_mut(&at) else {
@@ -2731,6 +2746,8 @@ fn part_by_part(
             && slot.is_none()
             && parts.values().all(|part| part.first.is_some())
         {
+            // (The work the whole surface may add there is counted on the
+            // copy only, as it is for the whole boundary.)
             let mut alone = work.clone();
             alone.second = false;
             let mut total = Total::default();
@@ -3489,5 +3506,45 @@ mod tests {
         assert!((area - expected).abs() <= 1e-11 * expected);
         assert!(spent > needed / 2, "{spent} of {needed}");
         assert_eq!(by_parts(BUDGET).0, Ok(area));
+    }
+
+    /// The first sums of a face refined part by part have a ceiling of
+    /// their own ([`FIRST_SUMS_WORK`]): a face whose first sums would pass it
+    /// is given up there, as any face whose sums do not settle. Here the
+    /// cap's rim in three pieces, with all but a little of the ceiling
+    /// taken before.
+    #[test]
+    fn first_sums_past_their_ceiling_are_refused() {
+        let level = 0.8_f64;
+        let body = cap_in_pieces(level, 3);
+        let surface = turned(0.3);
+        let face = body.faces.first().unwrap();
+        let rule = Rule::new(NODES);
+        let run = |spent: u64| {
+            let mut work = Work::new(&surface);
+            work.spent = spent;
+            let sums = integrals_in(
+                (&body, face, &surface, 0),
+                &rule,
+                body_size(&body),
+                &mut work,
+                None,
+            );
+            (sums.map(|sums| sums.area), work.spent)
+        };
+        let (area, taken) = run(0);
+        let expected = TAU * RADIUS * (RADIUS - level);
+        assert!((area.unwrap() - expected).abs() <= 1e-11 * expected);
+        let (refused, spent) = run(FIRST_SUMS_WORK - 1);
+        match refused {
+            Err(MassError::Unsupported { what, .. }) => {
+                assert!(what.contains("does not settle"), "{what}")
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(
+            spent > FIRST_SUMS_WORK && spent <= FIRST_SUMS_WORK + taken,
+            "{spent}"
+        );
     }
 }

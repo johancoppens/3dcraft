@@ -1,4 +1,4 @@
-//! The mass properties of a freeform face with many holes (2026-10-16,
+//! The mass properties of a freeform face with many holes (2026-10-15,
 //! the lamp's finding M1: a shade of revolution with tens of cells cut
 //! through it could not be measured, "a boundary integral that does not
 //! settle", once one face had some ten holes).

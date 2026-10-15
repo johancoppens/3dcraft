@@ -45,7 +45,7 @@ fn spheres_apart_by_the_tolerance_to_the_last_bit_touch_or_miss_but_do_not_fail(
 }
 
 /// The pieces of a curve that a box cuts are held to the tolerance (the
-/// lamp's finding B1, 2026-10-16). The outer wall of a lampshade turned
+/// lamp's finding B1, 2026-10-15). The outer wall of a lampshade turned
 /// from a spline (a rational surface with a pole at its top) and the end
 /// cap of a lofted cell meet in a closed curve, which the box (the one
 /// the ten cells of the lamp gave this pair, inlined) cuts. The span from

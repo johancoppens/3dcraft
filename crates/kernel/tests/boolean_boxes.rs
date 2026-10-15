@@ -1,5 +1,5 @@
 //! Intersections inside a box: what the box cuts off must not spoil what
-//! it keeps (2026-10-16, the lamp's finding B1).
+//! it keeps (2026-10-15, the lamp's finding B1).
 //!
 //! Two spline roofs that cross (a domed block of the test kit and one
 //! hung upside down over it, tilted) are intersected inside seeded boxes
