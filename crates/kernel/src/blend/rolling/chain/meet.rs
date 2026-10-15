@@ -464,12 +464,13 @@ fn work_out(
             (Some(x), Some(y)) => x.cross(y).length(),
             _ => 0.0,
         };
+        // A border that runs along the third edge does not say where it
+        // reaches it.
+        if !(sine > 0.0) {
+            return Err(not_built());
+        }
         if let Some(slot) = known.get_mut(x) {
-            *slot = if sine > 0.0 {
-                0.5 * tol / sine
-            } else {
-                f64::INFINITY
-            };
+            *slot = 0.5 * tol / sine;
         }
     }
     // Two places closer than both are known are one; and never closer

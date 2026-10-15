@@ -1687,7 +1687,9 @@ fn walk(
                         balls.push(next);
                         return Ok(Walked { balls });
                     }
-                    if travelled - at > most_out {
+                    // No further than the face's approximation can take
+                    // samples (`march_out`).
+                    if travelled - at > most_out || balls.len() >= MAX_SAMPLES {
                         return Err(Stop::TooFar);
                     }
                 }

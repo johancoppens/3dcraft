@@ -70,18 +70,13 @@ fn insert(degree: usize, knots: &mut Vec<f64>, rows: &mut [Vec<W>], u: f64) -> O
     Some(())
 }
 
-/// Continues the splines (the rows) past the high end of their domain to
-/// `to`.
-fn extend_high(degree: usize, knots: &mut Vec<f64>, rows: &mut [Vec<W>], to: f64) -> Option<()> {
+/// Clamps the splines (the rows) at the high end of their domain: the end
+/// knot of full multiplicity, and what lay past it dropped (an unclamped
+/// tail's knots and control points shape nothing of the domain). Returns
+/// the end.
+fn clamp_high(degree: usize, knots: &mut Vec<f64>, rows: &mut [Vec<W>]) -> Option<f64> {
     let n = rows.first()?.len();
     let end = *knots.get(n)?;
-    if !(to > end) {
-        return Some(());
-    }
-    // The end knot of full multiplicity (clamped there), and what lay past
-    // it dropped: an unclamped tail's knots and control points shape
-    // nothing of the domain, and the end span has to be taken from the
-    // domain's own last piece.
     let multiplicity = |knots: &[f64], x: f64| knots.iter().filter(|k| **k == x).count();
     let mut guard = 0;
     while multiplicity(knots, end) < degree + 1 {
@@ -99,6 +94,37 @@ fn extend_high(degree: usize, knots: &mut Vec<f64>, rows: &mut [Vec<W>], to: f64
     for row in rows.iter_mut() {
         row.truncate(count);
     }
+    Some(end)
+}
+
+/// Clamps the splines at both ends of their domain (`clamp_high`, and the
+/// same on the mirrored splines).
+fn clamp(degree: usize, knots: &mut Vec<f64>, rows: &mut [Vec<W>]) -> Option<()> {
+    clamp_high(degree, knots, rows)?;
+    let mut mirrored: Vec<f64> = knots.iter().rev().map(|k| -k).collect();
+    for row in rows.iter_mut() {
+        row.reverse();
+    }
+    clamp_high(degree, &mut mirrored, rows)?;
+    for row in rows.iter_mut() {
+        row.reverse();
+    }
+    *knots = mirrored.iter().rev().map(|k| -k).collect();
+    Some(())
+}
+
+/// Continues the splines (the rows) past the high end of their domain to
+/// `to`.
+fn extend_high(degree: usize, knots: &mut Vec<f64>, rows: &mut [Vec<W>], to: f64) -> Option<()> {
+    let n = rows.first()?.len();
+    let end = *knots.get(n)?;
+    if !(to > end) {
+        return Some(());
+    }
+    // Clamped there, the end span has to be taken from the domain's own
+    // last piece.
+    clamp_high(degree, knots, rows)?;
+    let multiplicity = |knots: &[f64], x: f64| knots.iter().filter(|k| **k == x).count();
     let n = rows.first()?.len();
     // The last inner knot, of multiplicity `degree`.
     let start = knots
@@ -175,17 +201,50 @@ impl NurbsSurface {
     /// two ends in that direction meet within `tol` (checked at nine
     /// places across).
     pub fn closes(&self, along_u: bool, tol: f64) -> bool {
-        let ((u0, u1), (v0, v1)) = self.domain();
-        (0..=8).all(|k| {
-            let f = f64::from(k) / 8.0;
-            let (a, b) = if along_u {
-                let v = v0 + (v1 - v0) * f;
-                (self.eval(u0, v), self.eval(u1, v))
-            } else {
-                let u = u0 + (u1 - u0) * f;
-                (self.eval(u, v0), self.eval(u, v1))
-            };
-            a.distance(b) <= tol
+        // Clamped at both ends in that direction, the surface's two end
+        // curves are the rational curves of its first and last rows of
+        // control points: the same curve when the rows' points meet within
+        // `tol` and their weights agree (up to one factor for the row).
+        let (du, dv) = self.degrees();
+        let (count_u, count_v) = self.counts();
+        let weighted: Vec<W> = self
+            .control_points()
+            .iter()
+            .zip(self.weights())
+            .map(|(p, w)| [p.x * w, p.y * w, p.z * w, *w])
+            .collect();
+        let at = |i: usize, j: usize| weighted.get(i * count_v + j).copied();
+        let (degree, mut knots, mut lines): (usize, Vec<f64>, Vec<Vec<W>>) = if along_u {
+            let lines = (0..count_v)
+                .map(|j| (0..count_u).filter_map(|i| at(i, j)).collect())
+                .collect();
+            (du, self.knots_u().to_vec(), lines)
+        } else {
+            let lines = (0..count_u)
+                .map(|i| (0..count_v).filter_map(|j| at(i, j)).collect())
+                .collect();
+            (dv, self.knots_v().to_vec(), lines)
+        };
+        if clamp(degree, &mut knots, &mut lines).is_none() {
+            return false;
+        }
+        let ends: Option<Vec<(W, W)>> = lines
+            .iter()
+            .map(|l| Some((*l.first()?, *l.last()?)))
+            .collect();
+        let Some(ends) = ends else { return false };
+        let Some(&(a0, b0)) = ends.first() else {
+            return false;
+        };
+        if !(a0[3] > 0.0 && b0[3] > 0.0) {
+            return false;
+        }
+        let factor = b0[3] / a0[3];
+        ends.iter().all(|(a, b)| {
+            let (wa, wb) = (a[3], b[3]);
+            let pa = Vec3::new(a[0] / wa, a[1] / wa, a[2] / wa);
+            let pb = Vec3::new(b[0] / wb, b[1] / wb, b[2] / wb);
+            pa.distance(pb) <= tol && (wb - factor * wa).abs() <= 1e-12 * wb.abs().max(wa.abs())
         })
     }
 

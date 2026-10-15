@@ -1738,3 +1738,42 @@ fn a_rim_across_a_joint_tangent_to_within_the_tolerance() {
         }
     }
 }
+
+/// The same rim with the wall faces creased at the joint by 3e-5 rad:
+/// within what the joint is judged tangent to (ten times the bend bound,
+/// 1e-4 here), but the ball of each piece's own faces lies about 3e-6 off
+/// the shared one, more than three quarters of the tolerance: the joint
+/// is refused with the reason, not built with a gap.
+#[test]
+fn a_rim_across_a_joint_creased_beyond_the_tolerance_is_refused() {
+    let r = 0.1;
+    let crease = 3e-5;
+    let top = Bez([[-1.0, 0.0], [-1.0, 0.8], [1.0, 0.8], [1.0, 0.0]]);
+    let bottom = Bez([
+        [1.0, 0.0],
+        [1.0 + 0.8 * crease, -0.8],
+        [-1.0, -0.8],
+        [-1.0, 0.0],
+    ]);
+    for k in SCALES {
+        let tol = tolerance(k);
+        let frame = Frame::WORLD;
+        let curves = vec![bezier(1, &top.scaled(k)), bezier(2, &bottom.scaled(k))];
+        let body = prism(&curves, &frame, k, k);
+        let chain = rim(&body, &frame, k, &[[0.0, 0.6 * k], [0.0, -0.6 * k]]);
+        let edges: Vec<FilletEdge> = chain
+            .iter()
+            .map(|e| FilletEdge {
+                edge: *e,
+                radius: r * k,
+            })
+            .collect();
+        let refused = fillet(&body, &edges, &tol)
+            .err()
+            .unwrap_or_else(|| panic!("scale {k}: built across a crease"));
+        assert!(
+            refused.to_string().contains("carried on"),
+            "scale {k}: {refused}"
+        );
+    }
+}

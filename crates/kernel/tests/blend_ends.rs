@@ -16,7 +16,7 @@
 
 mod boolean_common;
 
-use boolean_common::{SCALES, tolerance};
+use boolean_common::{SCALES, mass, tolerance};
 use craft3d_kernel::boolean::{BooleanOp, boolean, contains_points};
 use craft3d_kernel::fillet::{FilletEdge, FilletFace, FilletResult, fillet};
 use craft3d_kernel::profile::{Curve2, SketchCurve, Spline2, detect_profiles};
@@ -609,6 +609,108 @@ fn a_small_fillet_along_a_wavy_rim_at_a_fine_tolerance() {
             &want,
             &on_fillet,
             &format!("{samples} samples, scale {k}"),
+        );
+    }
+}
+
+/// A rib standing on a hub whose top is a revolved spline (a surface that
+/// closes on itself round the axis): the root fillets of the rib's two
+/// long sides add material and run out at its ends, past the corners of
+/// the hub's edges along the end faces. A new edge goes on from each of
+/// those along the hub and the end face, the vertex between left where
+/// it was (the rib straddles the hub's seam). The body is valid, does not pass through itself, the
+/// fillets are tangent along their borders, and what they add is the
+/// corner's area times the root's length to within its ends.
+#[test]
+fn root_fillets_on_a_revolved_spline_hub() {
+    use craft3d_kernel::revolve::revolve;
+    let r = 0.1;
+    for k in SCALES {
+        let tol = tolerance(k);
+        let line = |id: u64, a: [f64; 2], b: [f64; 2]| SketchCurve {
+            id,
+            curve: Curve2::Line {
+                start: [a[0] * k, a[1] * k],
+                end: [b[0] * k, b[1] * k],
+            },
+        };
+        let top = Bez([[4.0, 1.0], [2.7, 1.1], [1.3, 1.5], [0.0, 1.6]]);
+        let curves = vec![
+            line(1, [0.0, 0.0], [4.0, 0.0]),
+            line(2, [4.0, 0.0], [4.0, 1.0]),
+            top.sketch(3, k),
+            line(4, [0.0, 1.6], [0.0, 0.0]),
+        ];
+        let profiles = detect_profiles(&curves, &tol).unwrap();
+        let hub = revolve(
+            &profiles,
+            &Frame::WORLD,
+            [0.0, 0.0],
+            [0.0, 1.0],
+            0.0,
+            std::f64::consts::TAU,
+            &tol,
+        )
+        .unwrap()
+        .body;
+        let rib = block(&Frame::WORLD, [1.0, 0.5, -0.2], [3.0, 3.0, 0.2], k);
+        let body = boolean(&hub, &rib, BooleanOp::Union, &tol).unwrap().body;
+        assert_eq!(check(&body, &tol), []);
+        let roots: Vec<EdgeId> = [0.2, -0.2]
+            .iter()
+            .map(|z| {
+                let y = top.eval(0.5)[1];
+                edge_near(&body, Vec3::new(2.0 * k, y * k, z * k))
+            })
+            .collect();
+        let edges: Vec<FilletEdge> = roots
+            .iter()
+            .map(|e| FilletEdge {
+                edge: *e,
+                radius: r * k,
+            })
+            .collect();
+        let made = fillet(&body, &edges, &tol).unwrap_or_else(|e| panic!("scale {k}: {e}"));
+        assert_eq!(check(&made.body, &tol), [], "scale {k}");
+        let deep = body_self_intersections(&made.body, &SelfCheckParams::new(tol.linear)).unwrap();
+        assert_eq!(deep.certain_crossings, 0, "{deep:?}");
+        // Each fillet is tangent to the rib's side and to the hub.
+        let mut seams = 0;
+        for (index, edge) in made.body.edges.iter().enumerate() {
+            let users: Vec<usize> = (0..made.body.faces.len())
+                .filter(|f| {
+                    made.body.faces[*f]
+                        .loops
+                        .iter()
+                        .flat_map(|l| &made.body.loop_(*l).unwrap().coedges)
+                        .any(|c| c.edge == EdgeId(index as u32))
+                })
+                .collect();
+            let [a, b] = users[..] else { continue };
+            if !matches!(made.faces[a], FilletFace::Fillet(_))
+                && !matches!(made.faces[b], FilletFace::Fillet(_))
+            {
+                continue;
+            }
+            let mid = edge.curve.eval(0.5 * (edge.range.0 + edge.range.1));
+            let normal = |f: usize| {
+                let face = &made.body.faces[f];
+                let (u, v) = face.surface.project(mid).unwrap();
+                let n = face.surface.normal(u, v).unwrap();
+                if face.reversed { -n } else { n }
+            };
+            if normal(a).cross(normal(b)).length() <= 10.0 * tol.linear / (r * k) {
+                seams += 1;
+            }
+        }
+        assert_eq!(seams, 4, "scale {k}");
+        // What they add: the corner's area times the root's length, about
+        // (the hub is not square to the rib: within a fifth).
+        let added = mass(&made.body).volume - mass(&body).volume;
+        let estimate = 2.0 * (r * k).powi(2) * (1.0 - std::f64::consts::FRAC_PI_4) * 2.0 * k;
+        assert!(
+            (added - estimate).abs() <= 0.2 * estimate,
+            "scale {k}: added {added}, about {estimate}"
         );
     }
 }
