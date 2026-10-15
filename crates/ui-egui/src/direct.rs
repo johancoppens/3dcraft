@@ -55,7 +55,8 @@ pub enum DirectFailure {
 /// What is on the GPU for one scene revision at one tolerance.
 struct Uploaded {
     revision: Option<u64>,
-    tolerance: Option<f64>,
+    /// How the scene was sampled ([`Scene::sampling`]).
+    tolerance: Option<(f64, Option<f64>)>,
     selected: Option<String>,
     tokens: Tokens,
     scale: f32,
@@ -71,7 +72,8 @@ struct Uploaded {
 #[derive(Clone, PartialEq)]
 struct Shown {
     revision: Option<u64>,
-    tolerance: Option<f64>,
+    /// How the scene was sampled ([`Scene::sampling`]).
+    tolerance: Option<(f64, Option<f64>)>,
     camera: CameraState,
     size: [u32; 2],
     selected: Option<String>,
@@ -448,7 +450,7 @@ impl Direct {
     ) -> Result<Option<DirectFrame>, DirectFailure> {
         let wanted = Shown {
             revision: scene.map(|s| s.revision),
-            tolerance: scene.map(|s| s.tolerance),
+            tolerance: scene.map(Scene::sampling),
             camera: *camera,
             size,
             selected: selected.map(str::to_string),
@@ -543,7 +545,12 @@ impl Direct {
                 self.uploaded = None;
                 let empty = craft3d_tess::Mesh::default();
                 let mesh = scene.map_or(&empty, |s| &s.mesh);
-                let uploaded = self.onscreen.upload(mesh).map_err(classify)?;
+                let no_colors = craft3d_render::FaceColors::new();
+                let colors = scene.map_or(&no_colors, |s| &s.face_colors);
+                let uploaded = self
+                    .onscreen
+                    .upload_colored(mesh, colors)
+                    .map_err(classify)?;
                 self.uploaded = Some(Uploaded {
                     revision: wanted.revision,
                     tolerance: wanted.tolerance,

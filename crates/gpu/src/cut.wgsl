@@ -29,6 +29,7 @@ struct CutOut {
     // The distance from the plane, positive in the half that is cut away
     // (`Cut::side`).
     @location(5) side: f32,
+    @location(6) @interpolate(flat) color: u32,
 }
 
 @vertex
@@ -41,6 +42,7 @@ fn vs_cut(in: VertexIn) -> CutOut {
     out.flat_normal = whole.flat_normal;
     out.face = whole.face;
     out.dist_w = whole.dist_w;
+    out.color = whole.color;
     out.side = dot(in.position, scene.section.xyz) - scene.section.w;
     return out;
 }
@@ -54,6 +56,7 @@ fn whole_of(in: CutOut) -> VertexOut {
     out.flat_normal = in.flat_normal;
     out.face = in.face;
     out.dist_w = in.dist_w;
+    out.color = in.color;
     return out;
 }
 

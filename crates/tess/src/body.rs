@@ -73,7 +73,7 @@
 //! a bounded number of rounds, each the same for any number of threads
 //! (see `tessellate` below).
 
-use crate::edge::{EdgeSamples, edge_points};
+use crate::edge::{EdgeSamples, edge_points_of};
 use crate::face::{Chord, FaceMesh, curved_chords, face_boundary, mesh_face};
 use crate::{Mesh, TessError, TessParams};
 use craft3d_geom::{Curve3, Surface};
@@ -334,6 +334,8 @@ fn closes_along_edges(
 fn triangles_of(result: Option<&FaceResult>) -> usize {
     match result {
         Some(Ok(mesh)) => mesh.triangles.len(),
+        // A face that stopped at the budget: as many as it had then.
+        Some(Err(TessError::OverBudget { triangles, .. })) => *triangles,
         Some(Err(_)) | None => 0,
     }
 }
@@ -397,8 +399,9 @@ impl Budget {
 /// over them.
 ///
 /// The edges are first turned into points on their own. Then every face
-/// says which chords it cannot do with (`Boundary::chords_to_refine`):
-/// those are cut in two, and the faces that use the edges that changed
+/// says which chords it cannot do with (`Boundary::chords_to_refine`, and
+/// when its triangles cannot follow a chord, `mesh_face`): those are cut
+/// in two, and the faces that use the edges that changed
 /// are looked at again, until no face asks for more. A face is
 /// triangulated once it asks for nothing, and again when a neighbour had
 /// one of its edges changed after that: both always use the same points.
@@ -421,8 +424,44 @@ fn tessellate(
     threads: usize,
     mesh: bool,
 ) -> Result<(EdgeSamples, Vec<Option<FaceResult>>), TessError> {
-    let tolerance = params.chordal_tolerance;
-    let mut edges = edge_points(body, params)?;
+    tessellate_some(body, params, threads, mesh, None)
+}
+
+/// [`tessellate`] of the faces `only` marks (all when `None`): the others
+/// are left out, with their edges unless a face that is in uses them.
+/// The points of an edge are cut where the faces that are in ask, so a
+/// face may get fewer points along an edge than when every face is in
+/// (a neighbour left out asked for more); its mesh is as good a mesh of
+/// the face all the same, and neighbours that are both in share their
+/// points as always.
+fn tessellate_some(
+    body: &Body,
+    params: &TessParams,
+    threads: usize,
+    mesh: bool,
+    only: Option<&[bool]>,
+) -> Result<(EdgeSamples, Vec<Option<FaceResult>>), TessError> {
+    let chosen = |index: usize| only.is_none_or(|only| only.get(index).copied().unwrap_or(false));
+    let used = only.map(|_| {
+        let mut used = vec![false; body.edges.len()];
+        for (index, face) in body.faces.iter().enumerate() {
+            if !chosen(index) {
+                continue;
+            }
+            for coedge in face
+                .loops
+                .iter()
+                .filter_map(|id| body.loop_(*id))
+                .flat_map(|loop_| &loop_.coedges)
+            {
+                if let Some(slot) = used.get_mut(coedge.edge.0 as usize) {
+                    *slot = true;
+                }
+            }
+        }
+        used
+    });
+    let mut edges = edge_points_of(body, params, used.as_deref())?;
     let count = body.faces.len();
     let mut results: Vec<Option<FaceResult>> = (0..count).map(|_| None).collect();
     // The faces that still ask for finer chords.
@@ -430,7 +469,9 @@ fn tessellate(
     // Without triangles to make, only the faces that may ask for
     // something are looked at.
     let mut todo: Vec<usize> = (0..count)
-        .filter(|&index| mesh || body.faces.get(index).is_some_and(|f| can_ask(body, f)))
+        .filter(|&index| {
+            chosen(index) && (mesh || body.faces.get(index).is_some_and(|f| can_ask(body, f)))
+        })
         .collect();
     let mut last = false;
     for round in 0..=MAX_ROUNDS {
@@ -461,13 +502,20 @@ fn tessellate(
                     return (wanted, result);
                 }
             };
-            let wanted = boundary.chords_to_refine(body, tolerance);
+            let wanted = boundary.chords_to_refine(body, params);
+            let mut ask = Vec::new();
             let result = (mesh && (last || wanted.is_empty())).then(|| {
-                let mut made = mesh_face(&boundary, face, index, params, &[])?;
+                let mut made = mesh_face(&boundary, face, index, params, &[], &mut ask)?;
                 closes_along_edges(body, points, face, index, &made.border)?;
                 made.border = Vec::new();
                 Ok(made)
             });
+            // Chords the triangles cannot follow: cut them and try again,
+            // as for the chords the boundary asks for; the error stands in
+            // the last round.
+            if !last && !ask.is_empty() && matches!(result, Some(Err(_))) {
+                return (ask, None);
+            }
             (wanted, result)
         };
         // Whether the face was looked at, what it asks for and its mesh.
@@ -531,7 +579,9 @@ fn tessellate(
         let users = faces_using(body, &changed);
         todo = (0..count)
             .filter(|index| {
-                users.binary_search(index).is_ok() || asking.get(*index).copied().unwrap_or(false)
+                chosen(*index)
+                    && (users.binary_search(index).is_ok()
+                        || asking.get(*index).copied().unwrap_or(false))
             })
             .collect();
     }
@@ -631,6 +681,10 @@ fn part_shared_rungs(
             .get(index)
             .is_some_and(|face| !matches!(face.surface, Surface::Plane(_)))
     };
+    let unbounded = TessParams {
+        max_triangles: None,
+        ..*params
+    };
     // Per face, the rungs it must not have, over all rounds.
     let mut splits: Vec<Vec<(Vec3, Vec3)>> = vec![Vec::new(); results.len()];
     for round in 0..=RUNG_ROUNDS {
@@ -672,7 +726,8 @@ fn part_shared_rungs(
             let mut starved = false;
             let made = face_boundary(body, points, face, index, params, &mut starved).and_then(
                 |boundary| {
-                    let made = mesh_face(&boundary, face, index, params, list)?;
+                    let made =
+                        mesh_face(&boundary, face, index, &unbounded, list, &mut Vec::new())?;
                     closes_along_edges(body, points, face, index, &made.border)?;
                     Ok(made)
                 },
@@ -707,6 +762,25 @@ pub fn tessellate_body_with_threads(
     params: &TessParams,
     threads: usize,
 ) -> Result<Mesh, TessError> {
+    params.validate()?;
+    let threads = if threads == 0 {
+        automatic_threads()
+    } else {
+        threads
+    };
+    let (_, patches) = tessellate(body, params, threads, true)?;
+    assemble(patches)
+}
+
+/// The faces of `body` that `only` marks, tessellated as by
+/// [`tessellate_body_with_threads`] (see [`tessellate_some`]); the mesh
+/// has triangles for those faces only, with their face indices.
+pub(crate) fn tessellate_faces(
+    body: &Body,
+    params: &TessParams,
+    threads: usize,
+    only: &[bool],
+) -> Result<Mesh, TessError> {
     let tol = params.chordal_tolerance;
     if !(tol.is_finite() && tol > 0.0) {
         return Err(TessError::InvalidTolerance(tol));
@@ -716,7 +790,16 @@ pub fn tessellate_body_with_threads(
     } else {
         threads
     };
-    let (_, patches) = tessellate(body, params, threads, true)?;
+    let (_, patches) = tessellate_some(body, params, threads, true, Some(only))?;
+    let chosen = |index: usize| only.get(index).copied().unwrap_or(false);
+    let patches = patches
+        .into_iter()
+        .enumerate()
+        .map(|(index, patch)| match patch {
+            None if !chosen(index) => Some(Ok(FaceMesh::default())),
+            other => other,
+        })
+        .collect();
     assemble(patches)
 }
 
@@ -749,13 +832,13 @@ fn assemble(patches: Vec<Option<FaceResult>>) -> Result<Mesh, TessError> {
 /// every face that uses it, so the lines lie exactly on the borders of the
 /// mesh's faces. That takes the boundaries of the faces (not their
 /// triangles): where a face needs an edge finer than its curve does, the
-/// edge is finer here too. A face that cannot be tessellated is no error
-/// here. The result depends on the body and the parameters only.
+/// edge is finer here too. Not seen without the triangles: a face whose
+/// triangles cannot follow a chord, which `tessellate_body` cuts finer
+/// (`mesh_face` in `face.rs`; [`tessellate_body_and_edges`] has those
+/// edges as the mesh has them). A face that cannot be tessellated is no
+/// error here. The result depends on the body and the parameters only.
 pub fn tessellate_edges(body: &Body, params: &TessParams) -> Result<Vec<Vec<Vec3>>, TessError> {
-    let tol = params.chordal_tolerance;
-    if !(tol.is_finite() && tol > 0.0) {
-        return Err(TessError::InvalidTolerance(tol));
-    }
+    params.validate()?;
     let (edges, _) = tessellate(body, params, automatic_threads(), false)?;
     Ok(edges.points)
 }
@@ -777,10 +860,7 @@ pub fn tessellate_body_and_edges(
     body: &Body,
     params: &TessParams,
 ) -> Result<MeshAndEdges, TessError> {
-    let tol = params.chordal_tolerance;
-    if !(tol.is_finite() && tol > 0.0) {
-        return Err(TessError::InvalidTolerance(tol));
-    }
+    params.validate()?;
     let (edges, patches) = tessellate(body, params, automatic_threads(), true)?;
     Ok(MeshAndEdges {
         mesh: assemble(patches),
@@ -788,9 +868,133 @@ pub fn tessellate_body_and_edges(
     })
 }
 
+/// What [`tessellate_within_budget`] returns: the mesh and the edges of
+/// the body at the tolerance it settled on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WithinBudget {
+    pub mesh: Mesh,
+    /// As from [`tessellate_edges`] at `tolerance`.
+    pub edges: Vec<Vec<Vec3>>,
+    /// The chordal tolerance the mesh was made at: the one asked for, or
+    /// a coarser one.
+    pub tolerance: f64,
+    /// How many tessellations it took (the last is the mesh).
+    pub attempts: usize,
+}
+
+/// Most tessellations [`tessellate_within_budget`] tries. Each is at least
+/// twice as coarse as the one before, so this covers a factor of 65,536
+/// at least, from a tolerance far finer than any display asks for to one
+/// beyond the size of the body.
+const MAX_BUDGET_ATTEMPTS: usize = 16;
+
+/// The mesh and the edges of `body` within `params.max_triangles`
+/// triangles: at the chordal tolerance asked for when the mesh has no
+/// more than that (then the very mesh [`tessellate_body_and_edges`]
+/// makes without a budget), and otherwise at the finest of a ladder of
+/// coarser tolerances at which it has. The whole body is coarsened, not a
+/// face of it: its edges are the edges of two faces, and one tolerance
+/// for all of them keeps the mesh closed along every one of them by the
+/// same construction as always.
+///
+/// The ladder: a tessellation over the budget stops at the first faces
+/// that show it (see [`TessError::OverBudget`]), and the next tolerance is
+/// coarser by the estimated excess (the triangles so far over the share
+/// of the body's faces done, against the budget; triangles grow as the
+/// inverse of the tolerance at most), at least twice and at most 64 times;
+/// a body too fine for the tessellator ([`TessError::TooFine`]) is
+/// coarsened by the square of how far over the limit it is. The angle
+/// criterion relaxes with the tolerance by its floor. Every step is a
+/// function of the body and the parameters, so the result is too, on any
+/// number of threads. Without a budget this is the tessellation at the
+/// tolerance asked for. A body that is over the budget even at a
+/// tolerance as large as itself (more faces than the budget has
+/// triangles), or after [`MAX_BUDGET_ATTEMPTS`], is the last
+/// [`TessError::OverBudget`]; a face that cannot be tessellated is its
+/// error, as from [`tessellate_body_and_edges`].
+pub fn tessellate_within_budget(
+    body: &Body,
+    params: &TessParams,
+) -> Result<WithinBudget, TessError> {
+    params.validate()?;
+    let size = body
+        .bbox()
+        .ok()
+        .map(|bbox| bbox.diagonal())
+        .filter(|d| d.is_finite() && *d > 0.0);
+    let total = body.faces.len().max(1);
+    let mut tolerance = params.chordal_tolerance;
+    let mut attempts = 0;
+    loop {
+        attempts += 1;
+        let at = TessParams {
+            chordal_tolerance: tolerance,
+            ..*params
+        };
+        let error = match tessellate(body, &at, automatic_threads(), true) {
+            Ok((edges, patches)) => {
+                let mesh = assemble(patches)?;
+                match params.max_triangles {
+                    // Faces parted after the budget was looked at
+                    // (`part_shared_rungs`) add a handful of triangles.
+                    Some(max) if mesh.triangles.len() > max => TessError::OverBudget {
+                        triangles: mesh.triangles.len(),
+                        faces: body.faces.len(),
+                        max_triangles: max,
+                    },
+                    _ => {
+                        return Ok(WithinBudget {
+                            mesh,
+                            edges: edges.points,
+                            tolerance,
+                            attempts,
+                        });
+                    }
+                }
+            }
+            Err(error) => error,
+        };
+        let factor = match &error {
+            TessError::OverBudget {
+                triangles,
+                faces,
+                max_triangles,
+            } => {
+                let share = (*faces as f64 / total as f64).clamp(1e-3, 1.0);
+                (*triangles as f64 / share) / (*max_triangles).max(1) as f64
+            }
+            TessError::TooFine {
+                needed_segments,
+                max_segments,
+                ..
+            } => (needed_segments / f64::from((*max_segments).max(1)) * 1.1).powi(2),
+            _ => return Err(error),
+        };
+        let factor = if factor.is_finite() {
+            factor.clamp(2.0, 64.0)
+        } else {
+            4.0
+        };
+        // Tried at the body's own size already, or tried enough.
+        let at_size = size.is_none_or(|size| tolerance >= size);
+        if at_size || attempts >= MAX_BUDGET_ATTEMPTS {
+            return Err(error);
+        }
+        let next = tolerance * factor;
+        tolerance = match size {
+            Some(size) => next.min(size),
+            None => next,
+        };
+        if !(tolerance.is_finite() && tolerance > 0.0) {
+            return Err(error);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::edge::edge_points;
     use craft3d_math::Frame;
     use craft3d_testkit::solids;
 

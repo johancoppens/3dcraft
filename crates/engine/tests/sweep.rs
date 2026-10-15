@@ -1153,3 +1153,98 @@ fn a_sweep_along_a_spline_keeps_the_set_identities_with_a_block() {
     close(difference, hose - common, 1e-7);
     assert!(common > 0.0 && common < hose.min(block));
 }
+
+/// Finding F6 of the turbofan, as the turbofan's script drew it: an arc
+/// of the path given by its centre, with its end rounded to four
+/// decimals, then a line. `sketch.path` puts the end on the arc's circle
+/// (2.6e-5 in) and says so, so the solver moves nothing and the first
+/// line stays square to the profile; the line after the arc, to the
+/// rounded far end, then leaves 2.9e-6 radians off the arc's direction,
+/// which turns the profile (radius 5) by no more than 5 (1 - cos) = 2e-11
+/// off the faces, so the sweep is built at the default tolerance, valid,
+/// with the closed-form volume: the circle's area times the length of
+/// the path (Pappus, the profile centred on it).
+#[test]
+fn a_path_whose_arc_end_was_rounded_is_swept_at_the_default_tolerance() {
+    let mut s = new();
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"plane": "zx", "offset": "10 mm", "name": "Prof"}),
+    );
+    run(
+        &mut s,
+        "sketch.circle",
+        json!({"sketch": "Prof", "center": [0, 50], "radius": 5}),
+    );
+    run(
+        &mut s,
+        "sketch.create",
+        json!({"plane": "xy", "name": "Path"}),
+    );
+    let drawn = run(
+        &mut s,
+        "sketch.path",
+        json!({"sketch": "Path", "start": [50, 10], "segments": [
+            {"line": [50, 16]},
+            {"arc": [53.9787, 28.6187], "center": [72, 16], "clockwise": true},
+            {"line": [62.0088, 40.0868]},
+        ]}),
+    );
+    assert!(drawn.get("warnings").is_none(), "{drawn}");
+    let snap = &drawn["snapped"][0];
+    assert_eq!(snap["segment"], 1, "{drawn}");
+    let moved = snap["moved"].as_f64().unwrap();
+    assert!((moved - 2.6287e-5).abs() < 1e-9, "{drawn}");
+    let end = [
+        snap["end"][0].as_f64().unwrap(),
+        snap["end"][1].as_f64().unwrap(),
+    ];
+    sweep(&mut s, "Prof", "Path", "Tube");
+    assert_eq!(feature(&mut s, "Tube")["status"], "ok");
+    deep(&mut s);
+    // Line, clockwise arc of radius 22 from the angle of 180° down to the
+    // end's, line.
+    let turn = PI - (end[1] - 16.0).atan2(end[0] - 72.0);
+    let last = (62.0088 - end[0]).hypot(40.0868 - end[1]);
+    let length = 6.0 + 22.0 * turn + last;
+    close(volume(&mut s, "Tube"), PI * 25.0 * length, 1e-9);
+}
+
+/// A path that leaves the profile a little off square through the
+/// commands: within the tolerance the sweep is built, as long as the
+/// slanted line, with the profile's area; twice as far off it is refused.
+/// The tolerance is coarse (1e-5 of the profile's radius) so that the
+/// lean is larger than the angle within which two directions count as
+/// one.
+#[test]
+fn a_lean_within_the_tolerance_is_swept_at_every_scale() {
+    for k in SCALES {
+        let tolerance = 1e-5 * k;
+        for (slope, built) in [(0.5e-5, true), (2e-5, false)] {
+            let mut s = Session::new(Workspace::none());
+            run(&mut s, "file.new", json!({"tolerance": tolerance}));
+            round(&mut s, "Section", [0.0, 0.0], k);
+            run(
+                &mut s,
+                "sketch.create",
+                json!({"plane": "xy", "name": "Route"}),
+            );
+            run(
+                &mut s,
+                "sketch.polyline",
+                json!({"sketch": "Route", "points": [[0, 0], [slope * 10.0 * k, 10.0 * k]]}),
+            );
+            sweep(&mut s, "Section", "Route", "Rod");
+            if built {
+                assert_eq!(feature(&mut s, "Rod")["status"], "ok", "{k}");
+                let length = 10.0 * k * slope.hypot(1.0);
+                close(volume(&mut s, "Rod"), PI * k * k * length, 1e-12);
+                deep(&mut s);
+            } else {
+                let why = failure(&mut s, "Rod");
+                assert!(why.contains("more than the tolerance"), "{k}: {why}");
+            }
+        }
+    }
+}

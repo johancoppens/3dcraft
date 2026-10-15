@@ -44,6 +44,42 @@ pub struct Document {
     #[serde(default)]
     pub rollback: Option<u64>,
     pub next_feature_id: u64,
+    /// The appearance and the material given to bodies, by the id of the
+    /// feature that makes each, in ascending order of that id. Absent when
+    /// there are none (and in files before version 16).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bodies: Vec<BodyProperties>,
+}
+
+/// What the body of one feature looks like and is made of.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BodyProperties {
+    pub feature: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub appearance: Option<Appearance>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material: Option<Material>,
+}
+
+/// `color` is sRGB, three bytes. `metallic` and `roughness` lie between
+/// 0 and 1.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Appearance {
+    pub color: [u8; 3],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metallic: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roughness: Option<f64>,
+}
+
+/// `density` is in kg/m³, whatever the document's length unit.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Material {
+    pub name: String,
+    pub density: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -310,32 +346,32 @@ pub enum FeatureKind {
     /// rigid motion: turned by `angle` about the line through `pivot`
     /// along `axis`, then shifted by `translate`; the faces next to them
     /// follow. The body is that of the feature the first name starts
-    /// with. A new kind: no format version changed with it.
-    /// A solid of its own: faces of the body of an earlier feature given
-    /// `thickness`, to `side` of them (`outside`, `inside` or `both`;
-    /// written always). A new kind: no format version changed with it.
-    /// Faces of the body of an earlier feature tilted by `angle` about
-    /// the plane `neutral`, the pull along its normal (into the body for
-    /// a face), the other way when `reversed` (written only when set). A
-    /// new kind: no format version changed with it.
-    Draft {
-        faces: Vec<Name>,
-        neutral: PlaneRef,
-        angle: String,
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        reversed: bool,
-    },
-    Thicken {
-        faces: Vec<Name>,
-        thickness: String,
-        side: ThickenSide,
-    },
+    /// with. Format version 16.
     MoveFace {
         faces: Vec<Name>,
         translate: [String; 3],
         pivot: [String; 3],
         axis: [String; 3],
         angle: String,
+    },
+    /// A solid of its own: faces of the body of an earlier feature given
+    /// `thickness`, to `side` of them (`outside`, `inside` or `both`;
+    /// written always). Format version 16.
+    Thicken {
+        faces: Vec<Name>,
+        thickness: String,
+        side: ThickenSide,
+    },
+    /// Faces of the body of an earlier feature tilted by `angle` about
+    /// the plane `neutral`, the pull along its normal (into the body for
+    /// a face), the other way when `reversed` (written only when set).
+    /// Format version 16.
+    Draft {
+        faces: Vec<Name>,
+        neutral: PlaneRef,
+        angle: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        reversed: bool,
     },
     /// Faces of the body of an earlier feature taken out, the body closed
     /// again by the faces round them. The body is that of the feature

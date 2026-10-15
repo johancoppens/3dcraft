@@ -59,7 +59,7 @@ use crate::renderer::{
 };
 use crate::{GpuError, Mesh};
 use craft3d_math::{Bbox3, Vec3};
-use craft3d_render::{Camera, Cut, Frame, NO_FACE, RenderParams};
+use craft3d_render::{Camera, Cut, FaceColors, Frame, NO_FACE, RenderParams};
 use std::cell::Cell;
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -1024,8 +1024,15 @@ impl Onscreen {
 
     /// Puts `mesh` on the GPU.
     pub fn upload(&self, mesh: &Mesh) -> Result<GpuMesh, GpuError> {
+        self.upload_colored(mesh, &FaceColors::new())
+    }
+
+    /// [`Self::upload`] with faces in colours of their own
+    /// (`craft3d_render::render_colored`): the colours go with the mesh, so
+    /// a change of colour is a new upload.
+    pub fn upload_colored(&self, mesh: &Mesh, colors: &FaceColors) -> Result<GpuMesh, GpuError> {
         guarded(&self.device, || {
-            GpuMesh::upload(&self.device, &self.queue, mesh, &self.token)
+            GpuMesh::upload(&self.device, &self.queue, mesh, colors, &self.token)
         })?
     }
 

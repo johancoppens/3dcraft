@@ -91,7 +91,8 @@ pub(crate) fn build(
         other => face_ops::explain(other, "angle", 1.0, "deg", &source),
     })?;
     let names = same_entities(feature, source.names)?;
-    face_ops::not_through_itself(
+    face_ops::not_through_itself_where_changed(
+        source.body,
         &made.body,
         &names.faces,
         "angle",

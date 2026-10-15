@@ -184,16 +184,11 @@ fn tools(k: f64) -> Vec<(&'static str, Body)> {
 }
 
 /// What is still refused of the cuts in this file, by what the name of
-/// the case contains, with the reason given: work owed. The torus that
-/// passes through the pole is taken at the two smaller scales and in the
-/// world's frame at this one; tilted at a million the curve in which it
-/// meets the patch loses a piece at the pole (the marcher stops a quarter
-/// of the tolerance short of a pole and the ends are joined there by the
-/// tolerance, which this case misses). A refusal, never a body.
-const REFUSED: &[(&str, &str)] = &[(
-    "octant, through: ring at 1000000, tilted true",
-    "imprint lost",
-)];
+/// the case contains, with the reason given: work owed. (Empty since
+/// 2026-10-15: the torus through the pole, tilted, at a million, lost the
+/// lobe of the figure eight in which it meets the octant's flat face back
+/// into that face, "imprint lost"; see `architecture.md` §5.3.)
+const REFUSED: &[(&str, &str)] = &[];
 
 /// The three booleans of the twin and a tool, held to the same booleans
 /// of the analytic octant.

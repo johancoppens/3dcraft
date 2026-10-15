@@ -8,9 +8,9 @@ use crate::peel;
 use crate::readback;
 use craft3d_math::Bbox3;
 use craft3d_render::{
-    Camera, Cut, Frame, MAX_SAMPLES, MAX_SIDE, MAX_SSAA, NO_FACE, Projection, RenderError,
-    RenderParams, SHADE_AMBIENT, SHADE_DIFFUSE, SHADE_HIGHLIGHT_AMBIENT, SHADE_HIGHLIGHT_DIFFUSE,
-    SHADE_SHININESS, SHADE_SPECULAR, ViewAxes,
+    Camera, Cut, FaceColors, Frame, MAX_SAMPLES, MAX_SIDE, MAX_SSAA, NO_FACE, Projection,
+    RenderError, RenderParams, SHADE_AMBIENT, SHADE_DIFFUSE, SHADE_HIGHLIGHT_AMBIENT,
+    SHADE_HIGHLIGHT_DIFFUSE, SHADE_SHININESS, SHADE_SPECULAR, ViewAxes,
 };
 use craft3d_tess::Mesh;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -34,7 +34,7 @@ const MAX_HIGHLIGHT_FACE: u32 = 1 << 24;
 
 /// The vertex layout of [`GpuMesh`]: position, normal, the triangle's own
 /// normal, the face id.
-pub(crate) const MESH_ATTRIBUTES: [wgpu::VertexAttribute; 4] = [
+pub(crate) const MESH_ATTRIBUTES: [wgpu::VertexAttribute; 5] = [
     wgpu::VertexAttribute {
         format: wgpu::VertexFormat::Float32x3,
         offset: 0,
@@ -54,6 +54,11 @@ pub(crate) const MESH_ATTRIBUTES: [wgpu::VertexAttribute; 4] = [
         format: wgpu::VertexFormat::Uint32,
         offset: 36,
         shader_location: 3,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Uint32,
+        offset: 40,
+        shader_location: 4,
     },
 ];
 
@@ -780,8 +785,15 @@ impl Renderer {
     /// Puts `mesh` on the GPU. An inconsistent mesh is the CPU renderer's
     /// [`RenderError::InvalidMesh`].
     pub fn upload(&self, mesh: &Mesh) -> Result<GpuMesh, GpuError> {
+        self.upload_colored(mesh, &FaceColors::new())
+    }
+
+    /// [`Self::upload`] with faces in colours of their own
+    /// (`craft3d_render::render_colored`): the colours go with the mesh, so
+    /// a change of colour is a new upload.
+    pub fn upload_colored(&self, mesh: &Mesh, colors: &FaceColors) -> Result<GpuMesh, GpuError> {
         guarded(&self.device, || {
-            GpuMesh::upload(&self.device, &self.queue, mesh, &self.token)
+            GpuMesh::upload(&self.device, &self.queue, mesh, colors, &self.token)
         })?
     }
 

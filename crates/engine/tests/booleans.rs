@@ -257,7 +257,7 @@ fn holes_cut_by_subtraction_follow_the_plate() {
     // A name through two booleans.
     let names = cut["faceNames"].as_array().unwrap();
     assert!(
-        names.contains(&json!("F6:copy(0)/F4:copy(0)/F2:endCap(e5,e6,e7,e8)")),
+        names.contains(&json!("F6:copy(0)/F2:endCap(e5,e6,e7,e8)")),
         "{names:?}"
     );
     assert!(names.contains(&json!("F6:copy(1)/F5:face(0)")), "{names:?}");
@@ -298,7 +298,7 @@ fn a_pattern_of_cutters_cuts_a_row_of_holes() {
         names
             .as_array()
             .unwrap()
-            .contains(&json!("F5:copy(1)/F4:copy(4)/F3:face(0)")),
+            .contains(&json!("F5:copy(1,4)/F3:face(0)")),
         "{names}"
     );
     // A ring of posts joined to the plate.

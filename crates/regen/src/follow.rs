@@ -11,8 +11,9 @@
 //! copies (`F10:copy(0)/F2:face(0)`, a boolean's tool `F3:copy(1)/…`), so
 //! one step is finding the copy of the name in the taker's names. The
 //! feature is then built as if it had been given the names in full
-//! (`F11:copy(0)/F10:copy(0)/F2:face(0)`), and those are what it means:
-//! a short name is an abbreviation of exactly one long one.
+//! (`F11:copy(0)/F2:face(0)`: a run of copies that are each instance 0 is
+//! one link, see [`steps`]), and those are what it means: a short name is
+//! an abbreviation of exactly one full one.
 //!
 //! The names stay in the document as they were given and are followed at
 //! every regeneration (docs/decisions.md): a feature inserted between
@@ -80,14 +81,95 @@ fn has_face(names: &Names, name: &PersistentName) -> bool {
 }
 
 /// The copies the taker `taker` made of the face `name`: the instances
-/// `k` for which a face of `names` answers to `taker:copy(k)/name`.
+/// `k` for which a face of `names` answers to `taker:copy(k)/name` (in
+/// the short form, where a copy of a copy is one link).
 fn copies(names: &Names, taker: FeatureId, name: &PersistentName) -> BTreeSet<u64> {
     names
         .all_face_names()
         .filter(|face| face.feature == taker && face.role == NameRole::Copy)
-        .filter(|face| face.of.as_deref().is_some_and(|of| same_plane(of, name)))
-        .filter_map(|face| face.sources.first().copied())
+        .filter_map(|face| {
+            let k = *face.sources.first()?;
+            same_plane(face, &PersistentName::copy(taker, k, name.clone())).then_some(k)
+        })
         .collect()
+}
+
+/// The feature whose body instance `instance` of `feature` was made from:
+/// for a boolean the target (0) or the tool (1), for every other feature
+/// made from a body that body, whatever the instance. As the feature was
+/// built: names it was given of an earlier body were followed to the
+/// newest one. `None` for a feature not made from a body.
+pub(crate) fn source_of(
+    doc: &Document,
+    earlier: &[FeatureResult],
+    feature: FeatureId,
+    instance: u64,
+) -> Option<FeatureId> {
+    let built = earlier
+        .iter()
+        .find(|r| r.id == feature)
+        .and_then(|r| r.followed.as_deref());
+    let kind = match built {
+        Some(built) => &built.kind,
+        None => &doc.feature(feature)?.kind,
+    };
+    let sources = kind.sources();
+    let from = match kind {
+        FeatureKind::Boolean(_) => sources.get(usize::try_from(instance).ok()?),
+        _ => sources.first(),
+    };
+    from.map(|(id, _)| *id)
+}
+
+/// The way of a copy through the history: for
+/// `F9:copy(0)/F4:copy(1)/F3:side(e1)` each feature it passes, with the
+/// instance the face is in there, from the outside in (`[(F9, 0), (F7, 0),
+/// (F5, 0), (F4, 1)]` when F9, F7 and F5 each took the body before as
+/// their target and F4 took F3's as its tool), and the name it ends at
+/// (`F3:side(e1)`, which is no copy). A link with the one number 0 goes on
+/// through instance 0 until it reaches the feature of the link after it;
+/// a link with other numbers takes them one step each, the last onto
+/// that feature (docs/architecture.md §4.1). `None` for a name that is
+/// not a copy, and for a way that does not lead there in the history as
+/// it is.
+pub(crate) fn steps<'a>(
+    doc: &Document,
+    earlier: &[FeatureResult],
+    name: &'a PersistentName,
+) -> Option<(Vec<(FeatureId, u64)>, &'a PersistentName)> {
+    if name.role != NameRole::Copy {
+        return None;
+    }
+    let mut steps = Vec::new();
+    let mut link = name;
+    // Each body is made from an earlier one, so the way is no longer than
+    // the history; bounded all the same, for a bad file.
+    let mut budget = earlier.len().saturating_add(1);
+    while link.role == NameRole::Copy {
+        let next = link.of.as_deref()?;
+        let mut at = link.feature;
+        if link.sources == [0] {
+            loop {
+                budget = budget.checked_sub(1)?;
+                steps.push((at, 0));
+                at = source_of(doc, earlier, at, 0)?;
+                if at == next.feature {
+                    break;
+                }
+            }
+        } else {
+            for &instance in &link.sources {
+                budget = budget.checked_sub(1)?;
+                steps.push((at, instance));
+                at = source_of(doc, earlier, at, instance)?;
+            }
+            if at != next.feature {
+                return None;
+            }
+        }
+        link = next;
+    }
+    Some((steps, link))
 }
 
 /// The name, in the newest body of its chain, of the face `name` of an
@@ -262,24 +344,21 @@ pub fn short_face_name(
     results: &[FeatureResult],
     name: &PersistentName,
 ) -> PersistentName {
-    // The names inside, from the innermost (the face as it was made) out.
-    let mut inner: Vec<&PersistentName> = Vec::new();
-    let mut link = name;
-    while link.role == NameRole::Copy {
-        let Some(of) = link.of.as_deref() else {
-            break;
-        };
-        if inner.len() >= craft3d_doc::MAX_NAME_DEPTH {
-            return name.clone();
-        }
-        inner.push(of);
-        link = of;
+    // The names inside, from the innermost (the face as it was made) out:
+    // what the face was called in each body on the way of the copy.
+    let Some((steps, end)) = steps(doc, results, name) else {
+        return name.clone();
+    };
+    let mut inner: Vec<PersistentName> = vec![end.clone()];
+    for &(feature, instance) in steps.iter().skip(1).rev() {
+        let next = PersistentName::copy(feature, instance, inner.last().unwrap_or(end).clone());
+        inner.push(next);
     }
-    for candidate in inner.into_iter().rev() {
-        if let Ok(Some(followed)) = face(doc, results, candidate, "")
+    for candidate in inner {
+        if let Ok(Some(followed)) = face(doc, results, &candidate, "")
             && followed == *name
         {
-            return candidate.clone();
+            return candidate;
         }
     }
     name.clone()

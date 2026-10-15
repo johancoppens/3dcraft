@@ -275,6 +275,9 @@ pub(super) struct Marcher {
     /// straight to the point instead of along `f = 0`, which turns away
     /// before it gets there.
     zones: Vec<(Vec3, f64)>,
+    /// The chart of the field's surface when that is freeform: its
+    /// borders are edges, where the field goes on past the surface.
+    field_chart: Option<Chart>,
 }
 
 impl Marcher {
@@ -308,7 +311,15 @@ impl Marcher {
             evals: 0,
             lying: [false; 4],
             zones: Vec::new(),
+            field_chart: None,
         })
+    }
+
+    /// Tells the marcher the chart of the field's surface, when that is a
+    /// freeform surface with borders (see [`Marcher::field_border_seeds`]).
+    pub(super) fn with_field_chart(mut self, chart: Chart) -> Self {
+        self.field_chart = Some(chart);
+        self
     }
 
     fn spent(&self) -> Result<(), GeomError> {
@@ -626,10 +637,15 @@ impl Marcher {
                         degree_v,
                     )
                 };
-            // A border that runs around a closed surface and is one point
-            // (the pole of a ball) lies on the field when the pole does:
-            // no seed is to start there, and there is no curve.
-            let collapsed = around && {
+            // A border that is one point (the pole of a ball, or of a
+            // dome or an octant on an open patch) lies on the field when
+            // the pole does: no seed is to start there, and there is no
+            // curve. (On an open patch it was reported as a curve from the
+            // pole to itself, a few tolerances long in the chart's
+            // parameters and nowhere in space; an octant against a torus
+            // through its pole, tilted, at a million, then lost the arc
+            // that divides the torus's face: "imprint lost".)
+            let collapsed = {
                 let size = Bbox3::from_points(ctrl.iter().copied()).diagonal();
                 points
                     .first()
@@ -732,6 +748,123 @@ impl Marcher {
             }
         }
         Ok(())
+    }
+
+    /// Seeds where a border of the field's surface crosses the chart's
+    /// surface. The field goes on past a border of a freeform surface (the
+    /// distance to its nearest point, on the border), and the cells see
+    /// only that: a piece of the intersection between two borders, or
+    /// between a border of the field and one of the chart, may lie in
+    /// cells that are simple because the zero set they hold goes on past
+    /// the border at both ends, where every seed on their edges is past
+    /// the surface and is dropped (a lofted side cut a corner off the
+    /// half of a helmet next to its vent, between the half's meridian and
+    /// the vent's rim, and the piece was missing). Such a piece ends on a
+    /// border of the field where that border meets the chart's surface:
+    /// those points are found along each border that is an edge (not a
+    /// seam or a pole), by bisection on the parameter where the distance
+    /// to the chart's surface could be zero (it changes no faster than
+    /// the border moves), and each gives a seed.
+    fn field_border_seeds(&mut self) -> Result<Vec<(f64, f64)>, GeomError> {
+        let Some(chart) = self.field_chart.as_ref() else {
+            return Ok(Vec::new());
+        };
+        let Field::Free(own) = &self.own else {
+            return Ok(Vec::new());
+        };
+        let (own, surface) = (std::sync::Arc::clone(own), chart.surface.clone());
+        let own_field = Field::Free(std::sync::Arc::clone(&own));
+        let (cu, cv, b) = (chart.u, chart.v, chart.bounds);
+        let poles = crate::pole::poles(&surface);
+        // (Border, parameter along it, its range, speed along it.)
+        let mut borders: Vec<(bool, f64, (f64, f64), f64)> = Vec::new();
+        if !chart.periodic_u {
+            borders.push((true, cu.0, cv, b.lv));
+            borders.push((true, cu.1, cv, b.lv));
+        }
+        if !chart.periodic_v {
+            borders.push((false, cv.0, cu, b.lu));
+            borders.push((false, cv.1, cu, b.lu));
+        }
+        let place = |fixed_u: bool, at: f64, t: f64| if fixed_u { (at, t) } else { (t, at) };
+        // The walked surface lies in the box of its control points, and a
+        // border of the field in the box of its row of them: where those
+        // boxes are apart, the border crosses nothing.
+        let walked = hull(&self.chart.surface);
+        let mut seeds = Vec::new();
+        for (fixed_u, at, range, speed) in borders {
+            let at_end = if fixed_u { at >= cu.1 } else { at >= cv.1 };
+            if let (Some(walked), Some(border)) = (walked, border_hull(&surface, fixed_u, at_end))
+                && apart(walked, border, self.cut)
+            {
+                continue;
+            }
+            // A border that is one point is no edge.
+            let (pu, pv) = place(fixed_u, at, 0.5 * (range.0 + range.1));
+            if poles.iter().any(|pole| pole.holds(&surface, pu, pv)) {
+                continue;
+            }
+            let length = speed * (range.1 - range.0);
+            if !(length > 0.0 && length.is_finite()) {
+                continue;
+            }
+            // The finest piece looked at: a few tolerances, and no more
+            // than 4096 of them along the border.
+            let finest = (16.0 * self.tol.linear).max(length / 4096.0);
+            let signed = |t: f64| -> Option<(f64, f64, Vec3)> {
+                let (u, v) = place(fixed_u, at, t);
+                let p = surface.eval(u, v);
+                let sample = own_field.sample(p)?;
+                Some((sample.signed, sample.dist, p))
+            };
+            let mut stack = vec![range];
+            while let Some((lo, hi)) = stack.pop() {
+                self.spent()?;
+                self.evals += 1;
+                let half = 0.5 * (hi - lo);
+                let Some((_, dist, _)) = signed(lo + half) else {
+                    continue;
+                };
+                // Nothing of the border here comes near the chart.
+                if dist > speed * half * 1.001 + self.cut {
+                    continue;
+                }
+                if speed * half > finest {
+                    stack.push((lo + half, hi));
+                    stack.push((lo, lo + half));
+                    continue;
+                }
+                let (Some((mut fa, _, _)), Some((fb, _, _))) = (signed(lo), signed(hi)) else {
+                    continue;
+                };
+                if (fa >= 0.0) == (fb >= 0.0) {
+                    continue;
+                }
+                let (mut a, mut c) = (lo, hi);
+                for _ in 0..60 {
+                    let m = 0.5 * (a + c);
+                    if !(m > a && m < c) {
+                        break;
+                    }
+                    let Some((fm, _, _)) = signed(m) else { break };
+                    if (fm >= 0.0) == (fa >= 0.0) {
+                        (a, fa) = (m, fm);
+                    } else {
+                        c = m;
+                    }
+                }
+                let Some((_, dist, p)) = signed(0.5 * (a + c)) else {
+                    continue;
+                };
+                // Past the chart's own edge the crossing is no point of it.
+                if dist > self.cut {
+                    continue;
+                }
+                let (u, v, _) = own.foot(p);
+                seeds.push((u, v));
+            }
+        }
+        Ok(seeds)
     }
 
     /// Divides the chart into cells; returns the seeds on the edges of the
@@ -1858,6 +1991,7 @@ impl Marcher {
         }
         let merge = 8.0 * self.tol.linear;
         let mut seeds = self.seeds(&mut singular)?;
+        seeds.extend(self.field_border_seeds()?);
         seeds.retain(|&(u, v)| !self.on_lying_border(u, v));
         for s in singular.clone() {
             if s.kind == SingularKind::Cross {
@@ -1957,14 +2091,26 @@ impl Marcher {
     ) -> Option<bool> {
         let chart = Chart::new(a, within, tol, field).ok()??;
         let mut same = None;
+        // Against a freeform surface, which ends: a point whose nearest
+        // point of it is on its border is past it (a patch lying on
+        // another that ends sooner), and says nothing. Enough of the
+        // others must be on it.
+        let mut counted = 0_usize;
         for i in 0..9 {
             for j in 0..9 {
                 let u = chart.u.0 + (chart.u.1 - chart.u.0) * (f64::from(i) + 0.5) / 9.0;
                 let v = chart.v.0 + (chart.v.1 - chart.v.0) * (f64::from(j) + 0.5) / 9.0;
-                let sample = field.sample(chart.surface.eval(u, v))?;
+                let p = chart.surface.eval(u, v);
+                if let Field::Free(projector) = field
+                    && projector.on_border(p)
+                {
+                    continue;
+                }
+                let sample = field.sample(p)?;
                 if sample.dist > tol.linear {
                     return None;
                 }
+                counted += 1;
                 if same.is_none()
                     && let Some(n) = chart.surface.normal(u, v)
                 {
@@ -1972,6 +2118,73 @@ impl Marcher {
                 }
             }
         }
-        same
+        // (Every sample of an analytic field counts.)
+        (counted >= LIES_ON_COUNTED).then_some(same).flatten()
     }
+}
+
+/// Of the 81 samples by which a surface is found to lie on another, how
+/// many must be over it (not past a border of a freeform one).
+const LIES_ON_COUNTED: usize = 16;
+
+/// The corners of the box of the control points of a freeform surface,
+/// which holds the surface (its weights are positive); `None` for the
+/// other kinds.
+fn hull(surface: &Surface) -> Option<(Vec3, Vec3)> {
+    let points: Vec<Vec3> = match surface {
+        Surface::Bezier(b) => b.control_points().to_vec(),
+        Surface::Nurbs(s) => s.control_points().to_vec(),
+        _ => return None,
+    };
+    Bbox3::from_points(points).corners()
+}
+
+/// The corners of the box of the row of control points along a border of
+/// a freeform surface (`fixed_u`: the border where u is at its start or
+/// `at_end`), which holds the border where the knots are clamped there;
+/// `None` otherwise.
+fn border_hull(surface: &Surface, fixed_u: bool, at_end: bool) -> Option<(Vec3, Vec3)> {
+    let spline = match surface {
+        Surface::Bezier(b) => NurbsSurface::from_bezier(b).ok()?,
+        Surface::Nurbs(s) => s.clone(),
+        _ => return None,
+    };
+    let (degree_u, degree_v) = spline.degrees();
+    let (count_u, count_v) = spline.counts();
+    let clamped = |knots: &[f64], degree: usize, count: usize| {
+        if at_end {
+            knots.get(count) == knots.get(count + degree)
+        } else {
+            knots.first() == knots.get(degree)
+        }
+    };
+    let ctrl = spline.control_points();
+    let row: Vec<Vec3> = if fixed_u {
+        if !clamped(spline.knots_u(), degree_u, count_u) {
+            return None;
+        }
+        let i = if at_end { count_u.checked_sub(1)? } else { 0 };
+        (0..count_v)
+            .filter_map(|j| ctrl.get(i * count_v + j).copied())
+            .collect()
+    } else {
+        if !clamped(spline.knots_v(), degree_v, count_v) {
+            return None;
+        }
+        let j = if at_end { count_v.checked_sub(1)? } else { 0 };
+        (0..count_u)
+            .filter_map(|i| ctrl.get(i * count_v + j).copied())
+            .collect()
+    };
+    Bbox3::from_points(row).corners()
+}
+
+/// True when two boxes are more than `margin` apart along an axis.
+fn apart((alo, ahi): (Vec3, Vec3), (blo, bhi): (Vec3, Vec3), margin: f64) -> bool {
+    alo.x > bhi.x + margin
+        || blo.x > ahi.x + margin
+        || alo.y > bhi.y + margin
+        || blo.y > ahi.y + margin
+        || alo.z > bhi.z + margin
+        || blo.z > ahi.z + margin
 }

@@ -30,7 +30,6 @@ use crate::{FeatureResult, Names};
 use craft3d_doc::{Document, FeatureId, PersistentName};
 use craft3d_kernel::KernelError;
 use craft3d_math::Tolerance;
-use craft3d_tess::{SelfCheckParams, body_self_intersections};
 use craft3d_topo::{Body, EdgeId, FaceId};
 
 /// The body a face operation works on, with what its entities are called.
@@ -226,29 +225,94 @@ pub(crate) fn not_through_itself(
     why: &str,
     tolerance: &Tolerance,
 ) -> Result<(), String> {
-    let found = body_self_intersections(body, &SelfCheckParams::new(tolerance.linear)).map_err(
-        |error| {
-            format!("{param}: the {noun} cannot be meshed to see whether it passes through itself ({error})")
-        },
-    )?;
-    if found.is_clean() {
-        return Ok(());
-    }
-    let between = found
-        .crossings
+    use crate::selfcheck::crossing;
+    said(crossing(body, faces, tolerance.linear), param, noun, why)
+}
+
+/// [`not_through_itself`] near what an operation that keeps every entity
+/// changed (move face, draft): `made` has the faces, edges and vertices
+/// of `before` under the same numbers, and a face whose surface or one
+/// of whose vertices moved is new; every other face is unchanged, a
+/// piece of `before`, which does not pass through itself
+/// (`selfcheck::crossing_near`).
+pub(crate) fn not_through_itself_where_changed(
+    before: &Body,
+    made: &Body,
+    faces: &[PersistentName],
+    param: &str,
+    noun: &str,
+    why: &str,
+    tolerance: &Tolerance,
+) -> Result<(), String> {
+    use crate::selfcheck::crossing_near;
+    use craft3d_tess::FaceRole;
+    let moved: Vec<bool> = made
+        .vertices
         .iter()
-        .find(|c| c.certain)
-        .map(|c| {
-            let name = |face: u32| {
-                faces
-                    .get(face as usize)
-                    .map_or_else(|| format!("face {face}"), ToString::to_string)
-            };
-            let [a, b] = c.faces;
-            format!(": {} and {} cross", name(a), name(b))
+        .enumerate()
+        .map(|(index, vertex)| {
+            before
+                .vertices
+                .get(index)
+                .is_none_or(|was| was.point != vertex.point)
         })
-        .unwrap_or_default();
-    Err(format!(
-        "{param}: {why}the {noun} passes through itself{between}"
-    ))
+        .collect();
+    let roles: Vec<FaceRole> = made
+        .faces
+        .iter()
+        .enumerate()
+        .map(|(index, face)| {
+            let same_surface = before
+                .faces
+                .get(index)
+                .is_some_and(|was| was.surface == face.surface);
+            let vertex_moved = face
+                .loops
+                .iter()
+                .filter_map(|l| made.loop_(*l))
+                .flat_map(|l| &l.coedges)
+                .filter_map(|c| made.edge(c.edge))
+                .flat_map(|e| [e.start, e.end])
+                .any(|v| moved.get(v.0 as usize).copied().unwrap_or(true));
+            if same_surface && !vertex_moved {
+                FaceRole::Known(0)
+            } else {
+                FaceRole::New
+            }
+        })
+        .collect();
+    said(
+        crossing_near(made, faces, tolerance.linear, &roles),
+        param,
+        noun,
+        why,
+    )
+}
+
+/// What a look for a crossing found, in the words of
+/// [`not_through_itself`].
+fn said(
+    found: crate::selfcheck::Crossing,
+    param: &str,
+    noun: &str,
+    why: &str,
+) -> Result<(), String> {
+    use crate::selfcheck::Crossing;
+    match found {
+        Crossing::None => Ok(()),
+        Crossing::Unknown(error) => Err(format!(
+            "{param}: the {noun} cannot be meshed to see whether it passes through itself ({error})"
+        )),
+        touching @ Crossing::Touching(..) => {
+            touching.refused(param, noun, "make it smaller, or move what it runs into")
+        }
+        Crossing::Found(pair) => {
+            let between = pair
+                .map(|[a, b]| format!(": {a} and {b} cross"))
+                .unwrap_or_default();
+            Err(format!(
+                "{param}: {why}the {noun} passes through itself{between}"
+            ))
+        }
+    }
 }

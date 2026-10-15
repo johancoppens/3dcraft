@@ -15,7 +15,7 @@ mod boolean_common;
 mod common;
 
 use boolean_common::{Rng, SCALES, assert_close, boxed, mass, tolerance};
-use common::{arc, frames, line, polygon, scale_curves};
+use common::{arc, frames, line, polygon, rounded_polygon, scale_curves};
 use craft3d_geom::Surface;
 use craft3d_kernel::KernelError;
 use craft3d_kernel::boolean::{BooleanOp, boolean, contains_points};
@@ -338,9 +338,13 @@ fn an_edge_that_ends_against_a_wall_stops_there() {
     }
 }
 
+/// A ledge's edge that runs into a wall at a slant: the fillet ends in
+/// the plane of that wall (refused as "does not end cleanly" before
+/// 2026-10-15; engine-block findings E3, E4). The removed prism lies
+/// between two planes oblique to the edge, so its volume is the section
+/// times the length of the line through its centroid between them.
 #[test]
-fn an_edge_that_ends_against_a_slanted_wall_is_refused() {
-    let k = 1.0;
+fn an_edge_that_ends_against_a_slanted_wall_ends_in_its_plane() {
     let points = [
         [0.0, 0.0],
         [4.0, 0.0],
@@ -349,14 +353,21 @@ fn an_edge_that_ends_against_a_slanted_wall_is_refused() {
         [1.5, 3.0],
         [0.0, 3.0],
     ];
-    let part = prism(&Frame::WORLD, k, &points, 2.0);
-    let request = round(&part, k, [1.75, 2.25, 2.0], 0.3);
-    match fillet(&part, &[request], &tolerance(k)) {
-        Err(KernelError::Fillet { edge, reason, .. }) => {
-            assert_eq!(edge, Some(request.edge));
-            assert!(reason.contains("does not end cleanly"), "{reason}");
+    let whole = (4.0 * 1.5 + 0.5 * (2.0 + 1.5) * 1.5) * 2.0;
+    let r = 0.3;
+    for k in SCALES {
+        for frame in frames(k) {
+            let part = prism(&frame, k, &points, 2.0);
+            let request = round_in(&part, &frame, k, [1.75, 2.25, 2.0], r);
+            let made = solve(&part, &[request], k);
+            let removed = SPANDREL * r * r * 2.5_f64.sqrt();
+            assert_close(
+                mass(&made.body).volume,
+                (whole - removed) * k * k * k,
+                "volume",
+            );
+            assert_eq!(made.body.faces.len(), part.faces.len() + 1);
         }
-        other => panic!("expected a refusal, got {other:?}"),
     }
 }
 
@@ -1205,10 +1216,29 @@ fn corners_that_are_not_built_are_refused_and_say_why() {
         .unwrap()
         .body;
     // The upright edge of the flat side lies between a plane and a
-    // cylinder: its kind is refused before any corner is looked at.
-    match fillet(&halved, &[round(&halved, k, [1.0, 0.0, 1.5], 0.2)], &tol) {
+    // cylinder (built on its own: `blend_cylinders.rs`); with the rim and
+    // the top edge of the flat side it meets in a corner with a circular
+    // edge.
+    let edges = [
+        round(&halved, k, [1.0, 0.0, 1.5], 0.2),
+        round(&halved, k, [0.0, 1.0, 3.0], 0.2),
+        round(&halved, k, [0.0, 0.0, 3.0], 0.2),
+    ];
+    match fillet(&halved, &edges, &tol) {
         Err(KernelError::Fillet { reason, .. }) => {
-            assert!(reason.contains("not both planes"), "{reason}");
+            assert!(reason.contains("corner that is not built"), "{reason}");
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+    // A straight edge next to a cone that runs into its apex, where only
+    // the cone and the cut meet: half a cone, cut through its axis.
+    let part = primitives::cone(&Frame::WORLD, k, 3.0 * k).unwrap();
+    let halved = boolean(&part, &half, BooleanOp::Intersect, &tol)
+        .unwrap()
+        .body;
+    match fillet(&halved, &[round(&halved, k, [0.5, 0.0, 1.5], 0.2)], &tol) {
+        Err(KernelError::Fillet { reason, .. }) => {
+            assert!(reason.contains("does not end cleanly"), "{reason}");
         }
         other => panic!("expected a refusal, got {other:?}"),
     }
@@ -1275,12 +1305,15 @@ fn bad_requests_are_errors() {
         edge: EdgeId(ellipse as u32),
         radius: 0.1,
     };
-    match fillet(&cut, &[request], &tol) {
-        Err(KernelError::Fillet { reason, .. }) => {
-            assert!(reason.contains("elliptic edge"), "{reason}");
-        }
-        other => panic!("expected a refusal, got {other:?}"),
-    }
+    // Built as a ring of spline surface since 2026-10-14 (its oracle is
+    // in `blend_freeform.rs`); a radius the rod cannot hold is refused.
+    let made = fillet(&cut, &[request], &tol).unwrap();
+    assert_eq!(check(&made.body, &tol), []);
+    let too_large = FilletEdge {
+        radius: 1.5,
+        ..request
+    };
+    assert!(fillet(&cut, &[too_large], &tol).is_err());
 }
 
 /// The contact fillets make where one goes on in the next, kept as the
@@ -1376,5 +1409,391 @@ fn a_cylinder_that_goes_on_in_a_torus_touches_it_along_their_border() {
             boolean(&bar, &tool, BooleanOp::Intersect, &tol),
             Err(KernelError::EmptyResult { .. })
         ));
+    }
+}
+
+/// The rim of a cap whose outline turns round tangent arcs by less than
+/// a right angle (engine-block finding E5): the line where the fillet
+/// touches the cap runs on round each arc, so the arc next to an edge
+/// does not bound the fillet by how far it bends into the cap.
+#[test]
+fn a_rim_chain_round_shallow_tangent_arcs() {
+    // The crankcase bay of the finding at a tenth: corners that turn by
+    // 90, 90, 38.7, 51.3, 51.3 and 38.7 degrees, each rounded by 1.2.
+    let points = [
+        [-8.8, -7.1],
+        [8.8, -7.1],
+        [8.8, 4.0],
+        [4.4, 9.5],
+        [-4.4, 9.5],
+        [-8.8, 4.0],
+    ];
+    let (big, r, height) = (1.2, 0.5, 2.0);
+    let (curves, area, lines, turns) = rounded_polygon(&points, &[big; 6]);
+    // Before 2026-10-15 the fit estimate took the far end of the shallow
+    // arc as the end of the cap: below 0.27.
+    assert!(turns.iter().any(|t| big * (1.0 - t.cos()) < r));
+    // The spandrel's centroid lies this far in from both faces.
+    let inset = r * (10.0 - 3.0 * PI) / (12.0 - 3.0 * PI);
+    let spandrel = SPANDREL * r * r;
+    let removed = spandrel * (lines + turns.iter().map(|t| t * (big - inset)).sum::<f64>());
+    for k in SCALES {
+        for frame in frames(k) {
+            let profiles = detect_profiles(&scale_curves(&curves, k), &tolerance(k)).unwrap();
+            let part = extrude(&profiles, &frame, 0.0, height * k, &tolerance(k))
+                .unwrap()
+                .body;
+            let seed = edge_in(&part, &frame, k, [0.0, -7.1, height]);
+            let top = faces_of(&part, seed)
+                .into_iter()
+                .find(|f| {
+                    part.face(*f).unwrap().surface.kind() == "plane"
+                        && faces_of(&part, edge_in(&part, &frame, k, [0.0, 9.5, height]))
+                            .contains(f)
+                })
+                .unwrap();
+            let chain = tangent_chain(&part, seed, top).unwrap().unwrap();
+            assert_eq!(chain.len(), 12);
+            let edges: Vec<FilletEdge> = chain
+                .iter()
+                .map(|(edge, _)| FilletEdge {
+                    edge: *edge,
+                    radius: r * k,
+                })
+                .collect();
+            let made = solve(&part, &edges, k);
+            let got = mass(&made.body).volume;
+            assert_close(got, (area * height - removed) * k * k * k, "volume");
+        }
+    }
+}
+
+/// The plate of engine-block finding E1 at a tenth (six of its eight side
+/// edges rounded by 1.4, the outline drawn with its arcs or made by
+/// filleting the sharp plate), its cap rim rounded as one chain that ends
+/// in the two sharp corners, at the finding's tolerance. Before
+/// 2026-10-15 the estimate took the far end of the arc next to the edge
+/// as the end of the cap ("below 1.13" at the finding's size).
+#[test]
+fn a_rim_chain_that_ends_in_two_sharp_corners() {
+    let (curves, area, lines, turns, sharp) = common::plate_e1();
+    let (r, height) = (0.15, 1.4);
+    let inset = r * (10.0 - 3.0 * PI) / (12.0 - 3.0 * PI);
+    // The spandrel's centroid runs along the outline moved in by `inset`,
+    // round the arcs, and past each sharp corner to the plane of the
+    // side that is not rounded (`inset / tan(turn)` further).
+    let path = lines - 24.0
+        + (0..8)
+            .filter(|i| !sharp.contains(i))
+            .map(|i| turns[i] * (1.4 - inset))
+            .sum::<f64>()
+        + sharp.iter().map(|i| inset / turns[*i].tan()).sum::<f64>();
+    let removed = SPANDREL * r * r * path;
+    for (k, by_fillet) in SCALES.into_iter().flat_map(|k| [(k, false), (k, true)]) {
+        let fine = craft3d_math::Tolerance::new(1e-7 * k, 1e-9).unwrap();
+        for frame in frames(k) {
+            let part = if by_fillet {
+                let sharp_plate = polygon(1, 1, &common::PLATE_E1);
+                let profiles = detect_profiles(&scale_curves(&sharp_plate, k), &fine).unwrap();
+                let plate = extrude(&profiles, &frame, 0.0, height * k, &fine)
+                    .unwrap()
+                    .body;
+                let rounds: Vec<FilletEdge> = common::PLATE_E1[2..]
+                    .iter()
+                    .map(|p| round_in(&plate, &frame, k, [p[0], p[1], 0.5 * height], 1.4))
+                    .collect();
+                fillet(&plate, &rounds, &fine).unwrap().body
+            } else {
+                let profiles = detect_profiles(&scale_curves(&curves, k), &fine).unwrap();
+                extrude(&profiles, &frame, 0.0, height * k, &fine)
+                    .unwrap()
+                    .body
+            };
+            let seed = edge_in(&part, &frame, k, [15.0, 4.5, height]);
+            let top = faces_of(&part, seed)
+                .into_iter()
+                .find(|f| {
+                    part.face(*f).unwrap().surface.kind() == "plane"
+                        && faces_of(&part, edge_in(&part, &frame, k, [0.0, 17.5, height]))
+                            .contains(f)
+                })
+                .unwrap();
+            let chain = tangent_chain(&part, seed, top).unwrap().unwrap();
+            assert_eq!(chain.len(), 13);
+            let edges: Vec<FilletEdge> = chain
+                .iter()
+                .map(|(edge, _)| FilletEdge {
+                    edge: *edge,
+                    radius: r * k,
+                })
+                .collect();
+            let made = match fillet(&part, &edges, &fine) {
+                Ok(made) => made,
+                Err(e) => panic!("scale {k}, by fillet {by_fillet}: {e}"),
+            };
+            assert_eq!(check(&made.body, &fine), []);
+            assert_tangent(&part, &edges, &made);
+            assert_close(
+                mass(&made.body).volume,
+                (area * height - removed) * k * k * k,
+                "volume",
+            );
+        }
+    }
+}
+
+/// An upright on a plate whose end leans (one way, then the other), its
+/// foot along the plate rounded; at the leaning end the round meets a
+/// convex edge and a concave one, and ends in the plane of the end face
+/// (engine-block findings E3, E4: a flange root that ends on a chamfer or
+/// at a corner of the outline). The added prism lies between the square
+/// end x = 2 and the leaning plane: its volume is the section times the
+/// line through its centroid between them.
+#[test]
+fn a_root_that_ends_on_a_leaning_face() {
+    let r = 0.6;
+    let inset = r * (10.0 - 3.0 * PI) / (12.0 - 3.0 * PI);
+    // The trapezoid in (x, z), its area, and the centroid line's length.
+    let leans: [([[f64; 2]; 4], f64, f64); 2] = [
+        (
+            [[2.0, 0.0], [8.0, 0.0], [6.0, 5.0], [2.0, 5.0]],
+            25.0,
+            6.0 - 0.4 * inset,
+        ),
+        (
+            [[2.0, 0.0], [7.0, 0.0], [8.0, 5.0], [2.0, 5.0]],
+            27.5,
+            5.0 + 0.2 * inset,
+        ),
+    ];
+    for (outline, area, length) in leans {
+        for k in SCALES {
+            for frame in frames(k) {
+                let tol = tolerance(k);
+                let plate_frame = frame.at(frame.point(0.0, 0.0, -k)).unwrap();
+                let plate = primitives::block(&plate_frame, 10.0 * k, 10.0 * k, k).unwrap();
+                let up_frame =
+                    Frame::new(frame.point(0.0, 4.0 * k, 0.0), -frame.y(), frame.x()).unwrap();
+                let curves = scale_curves(&polygon(1, 1, &outline), k);
+                let profiles = detect_profiles(&curves, &tol).unwrap();
+                let upright = extrude(&profiles, &up_frame, 0.0, 4.0 * k, &tol)
+                    .unwrap()
+                    .body;
+                let part = boolean(&plate, &upright, BooleanOp::Union, &tol)
+                    .unwrap()
+                    .body;
+                let middle = 0.5 * (outline[0][0] + outline[1][0]);
+                let request = round_in(&part, &frame, k, [middle, 4.0, 0.0], r);
+                let made = solve(&part, &[request], k);
+                let volume = 100.0 + 4.0 * area + SPANDREL * r * r * length;
+                assert_close(mass(&made.body).volume, volume * k * k * k, "volume");
+            }
+        }
+    }
+}
+
+/// An L-shaped upright on a plate, its inside corner rounded by 0.8 and
+/// the ledge beyond the arc only 0.4 long before the outline turns away:
+/// the root of the upright rounded as one chain (engine-block finding E3,
+/// the bellhousing's rail root). The estimate measured the short ledge as
+/// what bounds the plate beside the arc ("below 0.094"); it lies beyond
+/// the arc's sector and bounds nothing of it. The bead's centroid runs
+/// round the arc at `0.8 - inset` and along both lines to the square ends.
+#[test]
+fn a_root_chain_round_an_inside_arc_with_a_short_ledge() {
+    let outline = [
+        [0.0, 0.0],
+        [2.2, 0.0],
+        [2.2, 1.0],
+        [1.0, 1.0],
+        [1.0, 4.0],
+        [0.0, 4.0],
+    ];
+    let (big, r, height) = (0.8, 0.3, 2.0);
+    let (curves, area, _, turns) =
+        common::rounded_polygon(&outline, &[0.0, 0.0, 0.0, big, 0.0, 0.0]);
+    let inset = r * (10.0 - 3.0 * PI) / (12.0 - 3.0 * PI);
+    let path = 0.4 + 2.2 + turns[3].abs() * (big - inset);
+    let added = SPANDREL * r * r * path;
+    for k in SCALES {
+        for frame in frames(k) {
+            let tol = tolerance(k);
+            let plate_frame = frame.at(frame.point(-k, -k, -k)).unwrap();
+            let plate = primitives::block(&plate_frame, 5.0 * k, 6.0 * k, k).unwrap();
+            let profiles = detect_profiles(&scale_curves(&curves, k), &tol).unwrap();
+            let upright = extrude(&profiles, &frame, 0.0, height * k, &tol)
+                .unwrap()
+                .body;
+            let part = boolean(&plate, &upright, BooleanOp::Union, &tol)
+                .unwrap()
+                .body;
+            let seed = edge_in(&part, &frame, k, [1.0, 2.9, 0.0]);
+            let floor = faces_of(&part, seed)
+                .into_iter()
+                .find(|f| faces_of(&part, edge_in(&part, &frame, k, [2.0, 1.0, 0.0])).contains(f))
+                .unwrap();
+            let chain = tangent_chain(&part, seed, floor).unwrap().unwrap();
+            assert_eq!(chain.len(), 3);
+            let edges: Vec<FilletEdge> = chain
+                .iter()
+                .map(|(edge, _)| FilletEdge {
+                    edge: *edge,
+                    radius: r * k,
+                })
+                .collect();
+            let made = solve(&part, &edges, k);
+            let volume = 5.0 * 6.0 + area * height + added;
+            assert_close(mass(&made.body).volume, volume * k * k * k, "volume");
+        }
+    }
+}
+
+/// Engine-block finding E5b: a corner of the crankcase bay (a hexagon
+/// whose corner at (8.8, 4) turns by 51.3 degrees) with its long edge and
+/// both rims there rounded by one radius: a piece of the ball. At the
+/// finding's tolerance the boolean refused the second rim's tool ("two
+/// points closer together than the tolerance can tell apart"): the end
+/// of an ellipse and of a circle that both run onto the cap there were
+/// found as hits on the cap a little apart, where they share a vertex
+/// that lies on it exactly. Held against the definition of a rolling-ball
+/// fillet near the corner.
+#[test]
+fn a_ball_corner_where_the_outline_turns_by_less_than_a_right_angle() {
+    let points = [
+        [-8.8, -7.1],
+        [8.8, -7.1],
+        [8.8, 4.0],
+        [4.4, 9.5],
+        [-4.4, 9.5],
+        [-8.8, 4.0],
+    ];
+    let (h, r) = (6.6, 0.8);
+    // The prism's planes, outward.
+    let mut planes: Vec<(Vec3, f64)> = (0..6)
+        .map(|i| {
+            let (p, q) = (points[i], points[(i + 1) % 6]);
+            let n = Vec3::new(q[1] - p[1], p[0] - q[0], 0.0)
+                .normalized()
+                .unwrap();
+            (n, n.dot(Vec3::new(p[0], p[1], 0.0)))
+        })
+        .collect();
+    planes.push((-Vec3::Z, 0.0));
+    planes.push((Vec3::Z, h));
+    let at_corner = [planes[1], planes[2], planes[7]];
+    for k in SCALES {
+        let fine = craft3d_math::Tolerance::new(1e-7 * k, 1e-9).unwrap();
+        let part = prism(&Frame::WORLD, k, &points, h);
+        let edges = [
+            round(&part, k, [8.8, 4.0, h / 2.0], r),
+            round(&part, k, [8.8, -1.55, h], r),
+            round(&part, k, [6.6, 6.75, h], r),
+        ];
+        let made = match fillet(&part, &edges, &fine) {
+            Ok(made) => made,
+            Err(e) => panic!("scale {k}: {e}"),
+        };
+        assert_eq!(check(&made.body, &fine), []);
+        assert_tangent(&part, &edges, &made);
+        assert_eq!(made.body.faces.len(), 8 + 3 + 1);
+        assert_matches_definition(
+            &made.body,
+            k,
+            &planes,
+            &at_corner,
+            r,
+            Vec3::new(8.8, 4.0, h),
+            23,
+        );
+    }
+}
+
+/// Engine-block finding E8: a slot-shaped rib on a wall whose lower end
+/// touches exactly the line where the wall goes over into the round of a
+/// rail below it. The root of the rib, rounded as one chain, would have
+/// to run onto that round; and the wall pinches to nothing between the
+/// rib's foot and the round where they touch. The boolean refused it
+/// ("an imprinted curve that does not fit"); it is refused before
+/// anything is built, as too large, with nothing that fits there. Moved
+/// clear by more than the radius, the same chain is built.
+#[test]
+fn a_rib_that_touches_the_round_below_it() {
+    let r = 0.3;
+    for k in SCALES {
+        for frame in frames(k) {
+            let tol = tolerance(k);
+            let block = |lo: [f64; 3], size: [f64; 3]| {
+                let at = frame
+                    .at(frame.point(lo[0] * k, lo[1] * k, lo[2] * k))
+                    .unwrap();
+                primitives::block(&at, size[0] * k, size[1] * k, size[2] * k).unwrap()
+            };
+            let wall = block([-10.0, -9.8, -6.0], [20.0, 4.0, 12.0]);
+            let ledge = block([-10.0, -11.0, -6.0], [20.0, 1.2, 2.0]);
+            let joined = boolean(&wall, &ledge, BooleanOp::Union, &tol).unwrap().body;
+            // The rail's round: the wall goes over into it at z = -3.2.
+            let rail = round_in(&joined, &frame, k, [0.0, -9.8, -4.0], 0.8);
+            let railed = fillet(&joined, &[rail], &tol).unwrap().body;
+            for (lift, builds) in [(0.0, false), (0.5, true)] {
+                // The slot from u = -3.2 + lift to 4.5, u along z, standing
+                // 0.7 out of the wall.
+                let (low, high) = (-2.7 + lift, 4.0);
+                let curves = scale_curves(
+                    &[
+                        line(1, [low, -0.5], [high, -0.5]),
+                        arc(2, [high, 0.0], [high, -0.5], [high, 0.5]),
+                        line(3, [high, 0.5], [low, 0.5]),
+                        arc(4, [low, 0.0], [low, 0.5], [low, -0.5]),
+                    ],
+                    k,
+                );
+                let rib_frame =
+                    Frame::new(frame.point(0.0, -9.6 * k, 0.0), -frame.y(), frame.z()).unwrap();
+                let profiles = detect_profiles(&curves, &tol).unwrap();
+                let rib = extrude(&profiles, &rib_frame, 0.0, 0.9 * k, &tol)
+                    .unwrap()
+                    .body;
+                let part = boolean(&railed, &rib, BooleanOp::Union, &tol).unwrap().body;
+                let seed = edge_in(&part, &frame, k, [0.5, -9.8, 1.0]);
+                let wall_face = faces_of(&part, seed)
+                    .into_iter()
+                    .find(|f| {
+                        part.face(*f).unwrap().surface.kind() == "plane" && {
+                            let n = normal_at(&part, *f, frame.point(0.5 * k, -9.8 * k, k));
+                            n.dot(-frame.y()) > 0.99
+                        }
+                    })
+                    .unwrap();
+                let chain = tangent_chain(&part, seed, wall_face).unwrap().unwrap();
+                let edges: Vec<FilletEdge> = chain
+                    .iter()
+                    .map(|(edge, _)| FilletEdge {
+                        edge: *edge,
+                        radius: r * k,
+                    })
+                    .collect();
+                match fillet(&part, &edges, &tol) {
+                    Ok(made) if builds => {
+                        assert_eq!(check(&made.body, &tol), []);
+                        assert_tangent(&part, &edges, &made);
+                        // Wall, ledge, the rail's bead, the rib's 0.7 out
+                        // of the wall, and the root's bead round the slot
+                        // (its centroid `inset` out from the rib).
+                        let inset = r * (10.0 - 3.0 * PI) / (12.0 - 3.0 * PI);
+                        let long = high - low;
+                        let volume = 20.0 * 4.0 * 12.0
+                            + 20.0 * 1.2 * 2.0
+                            + SPANDREL * 0.8 * 0.8 * 20.0
+                            + (long + PI * 0.25) * 0.7
+                            + SPANDREL * r * r * (2.0 * long + 2.0 * PI * (0.5 + inset));
+                        assert_close(mass(&made.body).volume, volume * k * k * k, "volume");
+                    }
+                    Err(KernelError::FilletTooLarge { largest, .. }) if !builds => {
+                        assert!(largest <= 0.0, "{largest}");
+                    }
+                    other => panic!("lift {lift} at scale {k}: {other:?}"),
+                }
+            }
+        }
     }
 }

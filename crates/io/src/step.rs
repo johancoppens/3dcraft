@@ -32,6 +32,7 @@
 //! | Bézier patch, NURBS surface | `B_SPLINE_SURFACE_WITH_KNOTS`; rational: the complex instance with `RATIONAL_B_SPLINE_SURFACE` |
 //! | line, circle, ellipse | `LINE`, `CIRCLE`, `ELLIPSE` |
 //! | NURBS curve | `B_SPLINE_CURVE_WITH_KNOTS`; rational: the complex instance with `RATIONAL_B_SPLINE_CURVE` |
+//! | colour of a body, of a face | `STYLED_ITEM` of the solid (or the shell model), of the `ADVANCED_FACE`, with `PRESENTATION_STYLE_ASSIGNMENT` → `SURFACE_STYLE_USAGE` (`.BOTH.`) → `SURFACE_SIDE_STYLE` → `SURFACE_STYLE_FILL_AREA` → `FILL_AREA_STYLE` → `FILL_AREA_STYLE_COLOUR` → `COLOUR_RGB` (0 to 1), all items of a body in one `MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION` in the body's context (the AP214/AP242 presentation resources, as other modellers write them) |
 //!
 //! # Conventions
 //!
@@ -177,11 +178,29 @@ pub enum AngleUnit {
     Degree,
 }
 
-/// A body to export, with the name it gets in the file.
+/// A body to export, with the name it gets in the file and its colours.
 #[derive(Clone, Copy, Debug)]
 pub struct StepBody<'a> {
     pub name: &'a str,
     pub body: &'a Body,
+    /// The body's colour (sRGB), written as a style of its solid.
+    pub color: Option<[u8; 3]>,
+    /// Empty, or per face of the body (by index): a colour of the face's
+    /// own, written as a style of the face where it differs from the
+    /// body's.
+    pub face_colors: &'a [Option<[u8; 3]>],
+}
+
+impl<'a> StepBody<'a> {
+    /// A body without colours.
+    pub fn new(name: &'a str, body: &'a Body) -> Self {
+        Self {
+            name,
+            body,
+            color: None,
+            face_colors: &[],
+        }
+    }
 }
 
 /// What a STEP file says besides its bodies.
@@ -688,6 +707,8 @@ struct Writer<'a> {
 struct Written {
     vertices: BTreeMap<u32, u64>,
     edges: BTreeMap<u32, u64>,
+    /// The `ADVANCED_FACE` of each face written, by face index.
+    faces: BTreeMap<u32, u64>,
 }
 
 impl Writer<'_> {
@@ -1125,6 +1146,58 @@ impl Writer<'_> {
         ))
     }
 
+    /// The colours of a body: a `STYLED_ITEM` per solid (or shell model)
+    /// in the body's colour and per face whose colour differs from it, in
+    /// one presentation representation. One style per colour.
+    fn styles(&mut self, item: &StepBody<'_>, solids: &[u64], written: &Written, context: u64) {
+        let mut styles: BTreeMap<[u8; 3], u64> = BTreeMap::new();
+        let mut style = |writer: &mut Self, color: [u8; 3]| -> u64 {
+            if let Some(&id) = styles.get(&color) {
+                return id;
+            }
+            let [r, g, b] = color.map(|c| Param::Real(f64::from(c) / 255.0));
+            let rgb = writer.add("COLOUR_RGB", vec![empty(), r, g, b]);
+            let fill = writer.add("FILL_AREA_STYLE_COLOUR", vec![empty(), Param::Ref(rgb)]);
+            let area = writer.add("FILL_AREA_STYLE", vec![empty(), Param::refs([fill])]);
+            let surface = writer.add("SURFACE_STYLE_FILL_AREA", vec![Param::Ref(area)]);
+            let side = writer.add("SURFACE_SIDE_STYLE", vec![empty(), Param::refs([surface])]);
+            let usage = writer.add(
+                "SURFACE_STYLE_USAGE",
+                vec![Param::enumeration("BOTH"), Param::Ref(side)],
+            );
+            let assignment =
+                writer.add("PRESENTATION_STYLE_ASSIGNMENT", vec![Param::refs([usage])]);
+            styles.insert(color, assignment);
+            assignment
+        };
+        let mut styled = Vec::new();
+        if let Some(color) = item.color {
+            for &solid in solids {
+                let assignment = style(self, color);
+                styled.push(self.add(
+                    "STYLED_ITEM",
+                    vec![text("color"), Param::refs([assignment]), Param::Ref(solid)],
+                ));
+            }
+        }
+        for (&face, &id) in &written.faces {
+            let own = item.face_colors.get(face as usize).copied().flatten();
+            if let Some(color) = own.filter(|&c| Some(c) != item.color) {
+                let assignment = style(self, color);
+                styled.push(self.add(
+                    "STYLED_ITEM",
+                    vec![text("color"), Param::refs([assignment]), Param::Ref(id)],
+                ));
+            }
+        }
+        if !styled.is_empty() {
+            self.add(
+                "MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION",
+                vec![empty(), Param::refs(styled), Param::Ref(context)],
+            );
+        }
+    }
+
     fn shell(
         &mut self,
         body: &Body,
@@ -1141,7 +1214,9 @@ impl Writer<'_> {
             .faces;
         let mut ids = Vec::with_capacity(faces.len());
         for &face in faces {
-            ids.push(self.face(body, face, turned, written, name)?);
+            let id = self.face(body, face, turned, written, name)?;
+            written.faces.insert(face.0, id);
+            ids.push(id);
         }
         self.summary.shells += 1;
         Ok(self.add(keyword, vec![empty(), Param::refs(ids)]))
@@ -1329,6 +1404,7 @@ impl Writer<'_> {
         if items.is_empty() {
             return Err(unsupported(name, "the body has no shells".to_string()));
         }
+        self.styles(item, &items, &written, context);
         let representation = self.add(
             representation,
             vec![text(name), Param::refs(items), Param::Ref(context)],

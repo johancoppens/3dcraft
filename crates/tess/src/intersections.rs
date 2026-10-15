@@ -144,6 +144,7 @@ pub fn self_intersection_report(
         margin: &|_, _| tolerance,
         near: &|_, _| 0.0,
         reach: 0.0,
+        looked_at: None,
     };
     let found = contacts(mesh, &rules, threads, raw_cap(limit))?;
     let threshold = tolerance.max(found.rounding);
@@ -611,6 +612,9 @@ pub(crate) struct Rules<'a> {
     pub near: &'a (dyn Fn(u32, u32) -> f64 + Sync),
     /// The largest value `near` gives.
     pub reach: f64,
+    /// Whether triangles of these two faces (the same face twice for two
+    /// triangles of one) are looked at; `None`: all are.
+    pub looked_at: Option<&'a (dyn Fn(u32, u32) -> bool + Sync)>,
 }
 
 /// Are all corners of each triangle within `near` of the plane of the
@@ -763,6 +767,12 @@ impl<'a> Prepared<'a> {
             let wa = self.names(i);
             let face = self.face(i);
             for &j in &candidates {
+                if rules
+                    .looked_at
+                    .is_some_and(|looked_at| !looked_at(face, self.face(j)))
+                {
+                    continue;
+                }
                 let Some(b) = self.corners(j) else {
                     continue;
                 };
@@ -1481,6 +1491,7 @@ mod tests {
             margin: &|_, _| 0.0,
             near: &|_, _| 0.0,
             reach: 0.0,
+            looked_at: None,
         };
         let (all, more) = prepared.pairs(1, 1_000_000, &rules).unwrap();
         assert!(all.len() > 1000 && !more, "{}", all.len());

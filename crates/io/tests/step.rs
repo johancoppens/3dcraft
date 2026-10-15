@@ -90,7 +90,7 @@ fn test_bodies(scale: f64) -> Vec<(String, Body)> {
 }
 
 fn model(name: &str, body: &Body, options: &StepOptions) -> (StepFile, StepSummary) {
-    step_model(&[StepBody { name, body }], options).unwrap_or_else(|e| panic!("{name}: {e}"))
+    step_model(&[StepBody::new(name, body)], options).unwrap_or_else(|e| panic!("{name}: {e}"))
 }
 
 // ------------------------------------------------- a small interpreter
@@ -423,15 +423,9 @@ fn every_test_body_parses_back_and_is_a_consistent_b_rep() {
             }
             // The export is the same every time.
             assert_eq!(
-                export_step(
-                    &[StepBody {
-                        name: &name,
-                        body: &body
-                    }],
-                    &options
-                )
-                .unwrap()
-                .0,
+                export_step(&[StepBody::new(&name, &body)], &options)
+                    .unwrap()
+                    .0,
                 text.as_bytes()
             );
 
@@ -495,7 +489,12 @@ fn text(name: &str, body: &Body, file_name: &str) -> String {
         file_name: file_name.to_string(),
         ..StepOptions::default()
     };
-    String::from_utf8(export_step(&[StepBody { name, body }], &options).unwrap().0).unwrap()
+    String::from_utf8(
+        export_step(&[StepBody::new(name, body)], &options)
+            .unwrap()
+            .0,
+    )
+    .unwrap()
 }
 
 /// The exact text of two small files, so that a change of the mapping
@@ -689,14 +688,7 @@ fn shells_are_sorted_into_lumps_and_their_cavities() {
     ])
     .unwrap()
     .0;
-    let error = step_model(
-        &[StepBody {
-            name: "stray",
-            body: &stray,
-        }],
-        &StepOptions::default(),
-    )
-    .unwrap_err();
+    let error = step_model(&[StepBody::new("stray", &stray)], &StepOptions::default()).unwrap_err();
     assert!(error.to_string().contains("lies in no part"), "{error}");
     let hollow = craft3d_topo::merge(&[
         &bodies::inside_out(&primitives::sphere(&Frame::WORLD, 1.0).unwrap()),
@@ -706,14 +698,8 @@ fn shells_are_sorted_into_lumps_and_their_cavities() {
     ])
     .unwrap()
     .0;
-    let error = step_model(
-        &[StepBody {
-            name: "hollow",
-            body: &hollow,
-        }],
-        &StepOptions::default(),
-    )
-    .unwrap_err();
+    let error =
+        step_model(&[StepBody::new("hollow", &hollow)], &StepOptions::default()).unwrap_err();
     assert!(error.to_string().contains("lies in no part"), "{error}");
 }
 
@@ -1280,10 +1266,7 @@ fn units_uncertainty_and_names_come_from_the_options() {
     let items: Vec<StepBody> = names
         .iter()
         .enumerate()
-        .map(|(i, name)| StepBody {
-            name,
-            body: if i % 2 == 0 { &block } else { &ball },
-        })
+        .map(|(i, name)| StepBody::new(name, if i % 2 == 0 { &block } else { &ball }))
         .collect();
     let (bytes, summary) = export_step(&items, &StepOptions::default()).unwrap();
     assert_eq!((summary.bodies, summary.solids), (6, 6));
@@ -1371,7 +1354,7 @@ fn units_uncertainty_and_names_come_from_the_options() {
 #[test]
 fn what_cannot_be_exported_is_an_error_that_says_why() {
     let options = StepOptions::default();
-    let export = |body: &Body| step_model(&[StepBody { name: "bad", body }], &options).map(|_| ());
+    let export = |body: &Body| step_model(&[StepBody::new("bad", body)], &options).map(|_| ());
     assert_eq!(
         step_model(&[], &options).map(|_| ()),
         Err(IoError::NoBodies)
@@ -1395,14 +1378,7 @@ fn what_cannot_be_exported_is_an_error_that_says_why() {
             tolerance,
             ..StepOptions::default()
         };
-        let error = step_model(
-            &[StepBody {
-                name: "b",
-                body: &block,
-            }],
-            &options,
-        )
-        .unwrap_err();
+        let error = step_model(&[StepBody::new("b", &block)], &options).unwrap_err();
         assert!(error.to_string().contains("tolerance"), "{error}");
     }
 
@@ -1484,18 +1460,77 @@ fn what_cannot_be_exported_is_an_error_that_says_why() {
     let empty = Body::new(BodyKind::Solid);
     assert!(export(&empty).is_err());
     let error = step_model(
-        &[
-            StepBody {
-                name: "good",
-                body: &block,
-            },
-            StepBody {
-                name: "worse",
-                body: &open,
-            },
-        ],
+        &[StepBody::new("good", &block), StepBody::new("worse", &open)],
         &options,
     )
     .unwrap_err();
     assert!(error.to_string().contains("`worse`"), "{error}");
+}
+
+/// Colours, read back from the written text: every `STYLED_ITEM` leads
+/// through the presentation resources to a `COLOUR_RGB`, and styles the
+/// solid (the body's colour) or a face (a face's own); a body without
+/// colours has none of it.
+#[test]
+fn colours_are_written_as_styled_items_and_read_back() {
+    let block = solids::block(&Frame::WORLD, 2.0, 3.0, 4.0).unwrap().body;
+    let mut faces = vec![None; block.faces.len()];
+    faces[1] = Some([30, 90, 220]);
+    // The same as the body's: no style of its own.
+    faces[2] = Some([200, 16, 46]);
+    let colored = StepBody {
+        color: Some([200, 16, 46]),
+        face_colors: &faces,
+        ..StepBody::new("red block", &block)
+    };
+    let plain = StepBody::new("plain", &block);
+    let options = StepOptions::default();
+    let (bytes, _) = export_step(&[colored, plain], &options).unwrap();
+    let file = craft3d_step::read(&bytes).unwrap();
+    let graph = Graph::new(&file);
+    let mut found: Vec<(&str, [u8; 3])> = Vec::new();
+    for (_, styled) in graph.all("STYLED_ITEM") {
+        let target = Graph::reference(&styled.params[2]);
+        let kind = match &graph.by_id[&target].entity {
+            Entity::Simple(record) => record.keyword.as_str(),
+            Entity::Complex(_) => "complex",
+        };
+        let [assignment] = Graph::references(&styled.params[1])[..] else {
+            panic!("one style per item")
+        };
+        let usage = Graph::references(
+            &graph
+                .record(assignment, "PRESENTATION_STYLE_ASSIGNMENT")
+                .params[0],
+        )[0];
+        let usage = graph.record(usage, "SURFACE_STYLE_USAGE");
+        assert_eq!(usage.params[0].as_enum(), Some("BOTH"));
+        let side = graph.record(Graph::reference(&usage.params[1]), "SURFACE_SIDE_STYLE");
+        let fill = Graph::references(&side.params[1])[0];
+        let fill = graph.record(fill, "SURFACE_STYLE_FILL_AREA");
+        let area = graph.record(Graph::reference(&fill.params[0]), "FILL_AREA_STYLE");
+        let colour = Graph::references(&area.params[1])[0];
+        let colour = graph.record(colour, "FILL_AREA_STYLE_COLOUR");
+        let rgb = graph.record(Graph::reference(&colour.params[1]), "COLOUR_RGB");
+        let channel = |k: usize| (rgb.params[k].as_real().unwrap() * 255.0).round() as u8;
+        found.push((kind, [channel(1), channel(2), channel(3)]));
+    }
+    found.sort();
+    assert_eq!(
+        found,
+        [
+            ("ADVANCED_FACE", [30, 90, 220]),
+            ("MANIFOLD_SOLID_BREP", [200, 16, 46])
+        ]
+    );
+    // All of the red block's in one presentation, in the body's context;
+    // the plain block has none.
+    let presentations: Vec<_> = graph
+        .all("MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION")
+        .collect();
+    assert_eq!(presentations.len(), 1);
+    assert_eq!(Graph::references(&presentations[0].1.params[1]).len(), 2);
+    // Without colours, the file is as before.
+    let (without, _) = export_step(&[StepBody::new("plain", &block)], &options).unwrap();
+    assert!(!String::from_utf8_lossy(&without).contains("STYLED_ITEM"));
 }

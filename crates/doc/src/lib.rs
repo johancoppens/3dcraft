@@ -11,10 +11,12 @@
 //! docs/architecture.md §4 arrive with their milestones; `craft3d-format` fails to compile when a field is added
 //! here without being saved (AGENTS.md §8).
 
+pub mod appearance;
 pub mod datum;
 pub mod name;
 pub mod sketch;
 
+pub use appearance::{Appearance, BodyProperties, Material};
 pub use datum::{
     AxisBy, AxisRef, DatumAxis, DatumHelix, DatumPlane, DatumPoint, HelixExtent, HelixStart,
     PlaneBy, PlaneRef, PointRef, WorldAxis,
@@ -1256,6 +1258,12 @@ pub struct Document {
     pub rollback: Option<FeatureId>,
     /// The id the next feature gets.
     pub next_feature_id: u64,
+    /// The appearance and the material given to bodies, by the feature
+    /// that makes each, in ascending order of feature id
+    /// ([`appearance`]). Not part of the history: regeneration does not
+    /// read it.
+    #[serde(default)]
+    pub bodies: Vec<BodyProperties>,
 }
 
 fn check_feature_name(name: &str) -> Result<(), DocError> {
@@ -1418,6 +1426,7 @@ impl Document {
                 }
             }
         }
+        self.validate_bodies()?;
         match self.rollback {
             Some(id) if !ids.contains(&id) => Err(DocError::UnknownFeature(id)),
             _ => Ok(()),
@@ -1600,6 +1609,7 @@ impl Document {
                 .and_then(|before| self.features.get(before))
                 .map(|f| f.id);
         }
+        self.bodies.retain(|entry| entry.feature != id);
         Ok(self.features.remove(index))
     }
 

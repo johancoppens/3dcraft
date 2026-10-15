@@ -17,14 +17,15 @@ mod selfcheck;
 mod weld;
 
 pub use body::{
-    MeshAndEdges, tessellate_body, tessellate_body_and_edges, tessellate_body_with_threads,
-    tessellate_edges,
+    MeshAndEdges, WithinBudget, tessellate_body, tessellate_body_and_edges,
+    tessellate_body_with_threads, tessellate_edges, tessellate_within_budget,
 };
 pub use intersections::{
     Crossing, CrossingKind, SelfIntersections, self_intersection_report, self_intersections,
 };
 pub use selfcheck::{
-    FaceCrossing, SelfCheck, SelfCheckParams, ShellDefect, ShellFinding, body_self_intersections,
+    FaceCrossing, FaceRole, SelfCheck, SelfCheckParams, ShellDefect, ShellFinding, Touch, Touched,
+    body_self_intersections, body_self_intersections_near, body_touches_itself,
 };
 pub use weld::Welded;
 
@@ -84,7 +85,27 @@ pub struct TessParams {
     /// very mesh made without one. For a viewer that tries a fine
     /// tolerance first and a coarser one when that is too much.
     pub max_triangles: Option<usize>,
+    /// An angle criterion beside the chordal tolerance, in radians, or
+    /// `None` for none (the default: the mesh is then what the chordal
+    /// tolerance alone makes, bit for bit). With it, no chord of an edge
+    /// turns the curve's tangent by more than this between its ends, and
+    /// no triangle of a curved face has corners whose surface normals are
+    /// further apart than this: a small hole stays round at a chordal
+    /// tolerance that alone would make it a polygon of a few sides. A
+    /// chord or a side shorter than the chordal tolerance
+    /// ([`ANGLE_FLOOR`] times it) is not held to the angle, so the angle
+    /// never asks for more than a fine tolerance would, and stays free
+    /// of any length of its own. For display meshes; export keeps the
+    /// chordal tolerance alone unless asked.
+    pub max_angle: Option<f64>,
 }
+
+/// Chords and sides of triangles shorter than this many chordal
+/// tolerances are not held to [`TessParams::max_angle`]: an edge around a
+/// radius below about `ANGLE_FLOOR / max_angle` tolerances is as round as
+/// the tolerance makes it, and refinement for the angle ends where the
+/// tolerance would have ended it.
+pub const ANGLE_FLOOR: f64 = 1.0;
 
 impl Default for TessParams {
     fn default() -> Self {
@@ -92,16 +113,64 @@ impl Default for TessParams {
             chordal_tolerance: 0.01,
             max_segments: 1024,
             max_triangles: None,
+            max_angle: None,
         }
     }
+}
+
+impl TessParams {
+    /// Refuses parameters that are no request: a tolerance that is not a
+    /// positive number, an angle that is not one or is beyond a turn.
+    pub(crate) fn validate(&self) -> Result<(), TessError> {
+        let tol = self.chordal_tolerance;
+        if !(tol.is_finite() && tol > 0.0) {
+            return Err(TessError::InvalidTolerance(tol));
+        }
+        if let Some(angle) = self.max_angle
+            && !(angle.is_finite() && angle > 0.0 && angle <= std::f64::consts::TAU)
+        {
+            return Err(TessError::InvalidAngle(angle));
+        }
+        Ok(())
+    }
+
+    /// The angle a chord of `length` is held to, if any: none below the
+    /// floor.
+    pub(crate) fn angle_for(&self, length: f64) -> Option<f64> {
+        self.max_angle
+            .filter(|_| length >= ANGLE_FLOOR * self.chordal_tolerance)
+    }
+}
+
+/// Whether a turn is beyond the angle criterion. A millionth of the angle
+/// is rounding: an arc cut in chords of exactly the angle turns by it to
+/// the last bits either way, and a face must not ask to cut its edges
+/// again for that.
+pub(crate) fn turns_beyond(turn: f64, angle: f64) -> bool {
+    turn > angle * (1.0 + 1e-6)
+}
+
+/// The angle between two vectors, in radians, or `None` when either has
+/// no direction.
+pub(crate) fn angle_between(a: Vec3, b: Vec3) -> Option<f64> {
+    let cross = a.cross(b).length();
+    let dot = a.dot(b);
+    let angle = cross.atan2(dot);
+    (a.length_squared() > 0.0 && b.length_squared() > 0.0 && angle.is_finite()).then_some(angle)
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum TessError {
     InvalidTolerance(f64),
+    /// `TessParams::max_angle` is not an angle in radians above zero and
+    /// at most a turn.
+    InvalidAngle(f64),
     /// The tolerance asks for more points than `TessParams::max_segments`
     /// allows. `patch` is the index of the patch, the face or (when the
-    /// edges are being turned into points) the edge.
+    /// edges are being turned into points) the edge. `needed_segments` is
+    /// infinite when the tolerance is finer than the face's coordinates
+    /// can resolve (no point fits between the corners of a triangle that
+    /// is still as large as the tolerance): there is no count to give.
     TooFine {
         patch: usize,
         needed_segments: f64,
@@ -144,6 +213,20 @@ impl fmt::Display for TessError {
                     "chordal tolerance must be a positive finite number, got {t}"
                 )
             }
+            TessError::InvalidAngle(a) => write!(
+                f,
+                "the angle criterion must be an angle above 0 and at most a turn (in radians), \
+                 got {a}"
+            ),
+            TessError::TooFine {
+                patch,
+                needed_segments,
+                ..
+            } if !needed_segments.is_finite() => write!(
+                f,
+                "patch {patch} asks for a tolerance finer than its coordinates can resolve; use \
+                 a larger tolerance"
+            ),
             TessError::TooFine {
                 patch,
                 needed_segments,
@@ -273,10 +356,7 @@ fn boundary_edges(patch: &BezierPatch) -> [BoundaryEdge; 4] {
 /// indices. Triangles are wound so their geometric normal agrees with the
 /// patch normal `∂u × ∂v`.
 pub fn tessellate_patches(patches: &[BezierPatch], params: &TessParams) -> Result<Mesh, TessError> {
-    let tol = params.chordal_tolerance;
-    if !(tol.is_finite() && tol > 0.0) {
-        return Err(TessError::InvalidTolerance(tol));
-    }
+    params.validate()?;
     // One segment count for all patches, the finest any of them needs, and
     // boundary vertices computed from the edge alone (`BoundaryEdge`):
     // patches that share a whole edge then get the same vertices along it,

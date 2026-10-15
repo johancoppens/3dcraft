@@ -449,6 +449,100 @@ fn loop_points(
     Ok(loops)
 }
 
+/// A pole of a spline surface at a corner of its parameters: a border
+/// across `a` and a border across `b` that are both the one point. The
+/// meridians leave it from both borders, along the L that the two make in
+/// the parameters; a boundary that comes into the pole goes along the L
+/// from the meridian of the point before to that of the point after
+/// ([`CornerPole::foot`]), round the corner if they are on different
+/// borders.
+#[derive(Clone, Copy, Debug)]
+struct CornerPole {
+    /// The corner, in the face's order of parameters.
+    corner: Uv,
+    /// The range of each parameter, signed so that it runs from the corner
+    /// into the domain.
+    span: [f64; 2],
+    /// The two poles.
+    poles: [craft3d_geom::pole::Pole; 2],
+    /// Points this near the pole are the pole: a billionth of the size of
+    /// the surface.
+    near: f64,
+}
+
+impl CornerPole {
+    fn of(param: &Param) -> Option<CornerPole> {
+        let found = craft3d_geom::pole::poles(param.surface);
+        let [x, y] = found.as_slice() else {
+            return None;
+        };
+        if x.across_v() == y.across_v() {
+            return None;
+        }
+        let ((u0, u1), (v0, v1)) = param.surface.domain();
+        let (mut cu, mut cv, mut su, mut sv) = (u0, v0, u1 - u0, v1 - v0);
+        for pole in [x, y] {
+            match pole.border {
+                craft3d_geom::pole::Border::UEnd => (cu, su) = (u1, u0 - u1),
+                craft3d_geom::pole::Border::VEnd => (cv, sv) = (v1, v0 - v1),
+                _ => {}
+            }
+        }
+        if ![cu, cv, su, sv].iter().all(|x| x.is_finite()) || su == 0.0 || sv == 0.0 {
+            return None;
+        }
+        let size = [(u0, v0), (u0, v1), (u1, v0), (u1, v1)]
+            .iter()
+            .map(|&(u, v)| param.surface.eval(u, v).distance(x.point))
+            .fold(0.0, f64::max);
+        Some(CornerPole {
+            corner: param.order(cu, cv),
+            span: param.order(su, sv),
+            poles: [*x, *y],
+            near: 1e-9 * size,
+        })
+    }
+
+    /// The shares of the range from the corner.
+    fn shares(&self, uv: Uv) -> [f64; 2] {
+        let [a, b] = uv;
+        let [ca, cb] = self.corner;
+        let [sa, sb] = self.span;
+        [(a - ca) / sa, (b - cb) / sb]
+    }
+
+    /// Whether the point at `pos`, projected to `uv`, is the pole: `uv`
+    /// on the L, or `pos` the pole's point (to rounding: the projection of
+    /// the pole may come back a little off the L).
+    fn holds(&self, uv: Uv, pos: Vec3) -> bool {
+        let [x, y] = self.shares(uv);
+        !exceeds(x.abs(), 1e-9)
+            || !exceeds(y.abs(), 1e-9)
+            || self
+                .poles
+                .iter()
+                .any(|p| !exceeds(p.point.distance(pos), self.near))
+    }
+
+    /// Where the meridian through `uv` leaves the L, and the parameter
+    /// that is free there. Next to a border of the pole the surface is `P
+    /// + s t R(s, t)` with `s` and `t` the shares from the corner, and near
+    /// `t = 0` the line of constant `s` leaves the pole in the direction
+    /// `R(s, 0)`: it is the meridian of the place `(s, 0)` of the L. So
+    /// the foot is `uv` with its smaller share dropped, as at a pole on one
+    /// border the free parameter is kept (`build_ring`).
+    fn foot(&self, uv: Uv) -> (Uv, usize) {
+        let [x, y] = self.shares(uv);
+        let [a, b] = uv;
+        let [ca, cb] = self.corner;
+        if x.abs() <= y.abs() {
+            ([ca, b], 1)
+        } else {
+            ([a, cb], 0)
+        }
+    }
+}
+
 /// Follows one loop through parameter space.
 ///
 /// `sense` is +1 when the loops of this face run counter-clockwise in
@@ -543,7 +637,16 @@ fn build_ring(
             }
         }
     }
-    let Some(start) = (0..n).find(|&i| free_at(i).is_none()) else {
+    let corner = if param.is_freeform() {
+        CornerPole::of(param)
+    } else {
+        None
+    };
+    let at_corner = |i: usize| match (corner, raw.get(i), points.get(i)) {
+        (Some(corner), Some(&uv), Some(&(pos, _))) => corner.holds(uv, pos),
+        _ => false,
+    };
+    let Some(start) = (0..n).find(|&i| free_at(i).is_none() && !at_corner(i)) else {
         return fail(
             face,
             format!("every point of its loop {number} is a singular point of the surface"),
@@ -564,6 +667,46 @@ fn build_ring(
     for step in 1..n {
         let i = (start + step) % n;
         let Some((cur, pos)) = at(i) else { continue };
+        if let Some(corner) = corner.filter(|c| c.holds(cur, pos) || free_at(i).is_some()) {
+            // At a pole at a corner of the parameters: arrive on the L
+            // along the meridian of the point before, and leave it along
+            // that of the point after, round the corner if they are on
+            // different borders of it. Points of the loop next to each
+            // other at the pole make one stretch of the L.
+            let (arrive, free) = corner.foot(prev);
+            if !verts.last().is_some_and(|v| v.pos == pos && v.uv == arrive) {
+                verts.push(Bv {
+                    uv: arrive,
+                    pos,
+                    free: Some(free),
+                    chord: chord_at(i),
+                });
+            }
+            prev = arrive;
+            let j = (i + 1) % n;
+            let next = at(j).filter(|&(uv, p)| !corner.holds(uv, p) && free_at(j).is_none());
+            if let Some((next, _)) = next {
+                let (leave, free_out) = corner.foot(next);
+                if free_out != free {
+                    verts.push(Bv {
+                        uv: corner.corner,
+                        pos,
+                        free: Some(free),
+                        chord: chord_at(i),
+                    });
+                }
+                if leave != arrive {
+                    verts.push(Bv {
+                        uv: leave,
+                        pos,
+                        free: Some(free_out),
+                        chord: chord_at(i),
+                    });
+                }
+                prev = leave;
+            }
+            continue;
+        }
         match free_at(i) {
             None => {
                 let uv = [
@@ -956,6 +1099,53 @@ fn seam_blocked(a: Uv, b: Uv, c: Uv, d: Uv) -> bool {
         || (side_b == 0.0 && within(tb, tc, td))
 }
 
+/// True when an end of the boundary segment (c, d) that is not an end of
+/// the seam from `a` to `b` lies on the seam but for rounding, strictly
+/// between its ends, or an end of the seam on the segment. A seam along
+/// a straight edge of the loop it starts on (a line of the surface, as a
+/// bore with a stepped bottom has at `a = ±π`) runs through the vertex
+/// where that edge ends; computed a period further, the seam can lean a
+/// last bit away from it, so that [`seam_blocked`]'s exact test sees
+/// neither a crossing nor a touch, and the seam swallowed the edge: the
+/// face's mesh had no side on its chord (the engine block's bored
+/// mounts, 2026-10-15).
+fn seam_grazes(a: Uv, b: Uv, c: Uv, d: Uv, period: f64) -> bool {
+    const ROUNDING: f64 = 1e-12;
+    // Rounding per parameter: of the angle around (and its period), and
+    // of the other parameter, which may be a length of any size. Each is
+    // measured in its own rounding, so that the test is the same for a
+    // body at any scale.
+    let reach = |k: usize, start: f64| {
+        [a, b, c, d]
+            .iter()
+            .fold(start, |m, p| m.max(get2(*p, k).abs()))
+    };
+    let (slack_a, slack_b) = (ROUNDING * reach(0, period.abs()), ROUNDING * reach(1, 0.0));
+    if !(slack_a > 0.0 && slack_b > 0.0) {
+        return false;
+    }
+    let norm = |p: Uv| -> P2 {
+        let [x, y] = p;
+        (x / slack_a, y / slack_b)
+    };
+    let (a, b, c, d) = (norm(a), norm(b), norm(c), norm(d));
+    // `p` within one rounding of the segment (q, r), strictly between its
+    // ends and not at either of them.
+    let on = |p: P2, q: P2, r: P2| -> bool {
+        let (dx, dy) = (r.0 - q.0, r.1 - q.1);
+        let whole = dx * dx + dy * dy;
+        if !(whole > 0.0 && whole.is_finite()) {
+            return false;
+        }
+        let (px, py) = (p.0 - q.0, p.1 - q.1);
+        let along = px * dx + py * dy;
+        let away = (px * dy - py * dx).abs() / whole.sqrt();
+        let near_end = |e: P2| (p.0 - e.0).abs() <= 1.0 && (p.1 - e.1).abs() <= 1.0;
+        away <= 1.0 && along > 0.0 && along < whole && !near_end(q) && !near_end(r)
+    };
+    on(c, a, b) || on(d, a, b) || on(a, c, d) || on(b, c, d)
+}
+
 /// `p`, or the end of a seam it is but for rounding.
 ///
 /// The end of a seam on a loop is that loop's vertex moved by whole
@@ -1259,7 +1449,7 @@ fn band_region(
                     for ta in around - 1..=around + 1 {
                         let p = snapped(shifted(v.uv, [ta, tb], periods), [from, to], period);
                         let q = snapped(shifted(w.uv, [ta, tb], periods), [from, to], period);
-                        if seam_blocked(from, to, p, q) {
+                        if seam_blocked(from, to, p, q) || seam_grazes(from, to, p, q, period) {
                             return true;
                         }
                     }
@@ -2116,6 +2306,71 @@ fn arc_cells(
     Ok(cells.max(least as u32))
 }
 
+/// The cells of a grid over a sphere or a torus, in `u` (around the axis)
+/// and in `v`, from what each direction needs (`cells_u`, `cells_v`,
+/// given the parameters to size by).
+///
+/// With the angle criterion, a cell of the grid is cut in two along a
+/// diagonal, over which the surface's normal turns by both of its sides
+/// at once: about `√(tu² + tv²)` for turns `tu` and `tv` along them (the
+/// normal of either surface turns by at most `du` around the axis, by
+/// `dv` along a meridian, and the two turns are square to each other).
+/// Each side held to the angle, the diagonal was not, and the refinement
+/// cut every diagonal of the grid. So `v` gets what `u` leaves of the
+/// angle: `tv = √(angle² − tu²)`, with `u` held to `angle / √2` where it
+/// needs more (otherwise, as before, its own count: the chordal
+/// tolerance usually asks for more cells around a ring than the angle
+/// does).
+///
+/// A side shorter than the floor (`ANGLE_FLOOR` tolerances) is not held
+/// to the angle, and `cells_v` leaves the angle out where the side across
+/// would be that short (a fillet thinner than the tolerance: two cells
+/// across the tube). But the diagonal is as long as the side around the
+/// axis (`radius_u` times the step in `u`) and, where that is not below
+/// the floor, is held to the angle: it turned by the tube's whole
+/// crossing and the refinement cut it until its length around was below
+/// the floor, a dozen points per cell. There `v` gets the cells the angle
+/// asks for, floor or no floor (`span_v / tv`, as many as the angle
+/// gives a whole turn at most, and no more than the grid's limit): a
+/// count of the angle alone, not of a length.
+fn both_ways(
+    cells_u: impl Fn(&TessParams) -> Result<u32, TessError>,
+    cells_v: impl Fn(&TessParams) -> Result<u32, TessError>,
+    (radius_u, span_u): (f64, f64),
+    span_v: f64,
+    params: &TessParams,
+) -> Result<(u32, u32), TessError> {
+    let Some(angle) = params.max_angle else {
+        return Ok((cells_u(params)?, cells_v(params)?));
+    };
+    let mut nu = cells_u(params)?;
+    let mut turn_u = span_u.abs() / f64::from(nu.max(1));
+    let most = angle * std::f64::consts::FRAC_1_SQRT_2;
+    if turn_u > most {
+        nu = cells_u(&TessParams {
+            max_angle: Some(most),
+            ..*params
+        })?;
+        turn_u = span_u.abs() / f64::from(nu.max(1));
+    }
+    let left = (angle * angle - turn_u * turn_u).max(0.0).sqrt().max(most);
+    let mut nv = cells_v(&TessParams {
+        max_angle: Some(left),
+        ..*params
+    })?;
+    let side_u = radius_u.abs() * turn_u;
+    let by_angle = (span_v.abs() / left - 1e-9).ceil();
+    let limit = f64::from(params.max_segments);
+    if side_u >= crate::ANGLE_FLOOR * params.chordal_tolerance
+        && by_angle > f64::from(nv)
+        && by_angle <= limit
+    {
+        // In range by the check above.
+        nv = by_angle as u32;
+    }
+    Ok((nu, nv))
+}
+
 /// How many grid cells the box `low..high` of the surface's own `(u, v)`
 /// needs in each direction for a cell of the grid, cut in two triangles,
 /// to be within the tolerance of the surface: by the arc for the analytic
@@ -2174,17 +2429,23 @@ fn seed_cells(
             } else {
                 low.1.cos().max(high.1.cos()).max(0.0)
             };
-            Ok((
-                arc_cells(s.radius() * widest, span_u, half, params, face)?,
-                arc_cells(s.radius(), span_v, half, params, face)?,
-            ))
+            both_ways(
+                |p| arc_cells(s.radius() * widest, span_u, half, p, face),
+                |p| arc_cells(s.radius(), span_v, half, p, face),
+                (s.radius() * widest, span_u),
+                span_v,
+                params,
+            )
         }
         Surface::Torus(t) => {
             let (major, minor) = t.radii();
-            Ok((
-                arc_cells(major + minor, span_u, half, params, face)?,
-                arc_cells(minor, span_v, half, params, face)?,
-            ))
+            both_ways(
+                |p| arc_cells(major + minor, span_u, half, p, face),
+                |p| arc_cells(minor, span_v, half, p, face),
+                (major + minor, span_u),
+                span_v,
+                params,
+            )
         }
         Surface::Bezier(b) => {
             let (muu, muv, mvv) = b.second_derivative_bounds();
@@ -2538,6 +2799,11 @@ enum Action {
     Keep,
     SplitEdge(usize),
     SplitTriangle,
+    /// Within the tolerance, but the normals at the ends of this free
+    /// side, not shorter than the floor, are further apart than the angle
+    /// criterion allows: the side to cut. Where no point fits there, the
+    /// triangle is kept as it is.
+    Turn(usize),
 }
 
 /// The triangulation of one face while it is refined.
@@ -2552,6 +2818,11 @@ struct Work<'a> {
     centre: Uv,
     scale: Uv,
     tolerance: f64,
+    /// `TessParams::max_angle`, and the shortest side held to it.
+    angle: Option<f64>,
+    angle_floor: f64,
+    /// Per vertex, the surface's normal there, with the angle criterion.
+    normals: Vec<Option<Vec3>>,
 }
 
 impl Work<'_> {
@@ -2569,10 +2840,20 @@ impl Work<'_> {
         if v.checked_sub(FIRST_VERTEX).map(|i| i as usize) != Some(self.uv.len()) {
             return Err(CdtError::Internal);
         }
+        if self.angle.is_some() {
+            self.normals.push(self.param.normal(uv));
+        }
         self.uv.push(uv);
         self.pos.push(pos);
         self.free.push(free);
         Ok(())
+    }
+
+    /// The surface's normal at vertex `v`, kept from when it was made
+    /// (with the angle criterion only).
+    fn normal_of(&self, v: u32) -> Option<Vec3> {
+        let i = v.checked_sub(FIRST_VERTEX)? as usize;
+        *self.normals.get(i)?
     }
 
     /// The mean parameters of some vertices, leaving out for each
@@ -2719,6 +3000,42 @@ impl Work<'_> {
                 };
             }
         }
+        if let Some(angle) = self.angle {
+            // The free side over which the surface's normal turns most,
+            // of those that turn it further than the angle and are not
+            // below the floor. A side on the boundary is a chord of an
+            // edge, which the edge holds to the angle by its tangent and
+            // which no point of the face can change; a corner without a
+            // normal (an apex) tells nothing.
+            let normals = view.v.map(|v| self.normal_of(v));
+            let mut worst: Option<(f64, usize)> = None;
+            for (i, constrained) in [c0, c1, c2].into_iter().enumerate() {
+                if constrained {
+                    continue;
+                }
+                let (j, k) = match i {
+                    0 => (1, 2),
+                    1 => (2, 0),
+                    _ => (0, 1),
+                };
+                let (Some(Some(x)), Some(Some(y))) = (normals.get(j), normals.get(k)) else {
+                    continue;
+                };
+                let [p, q] = pair(i);
+                let Some(turn) = crate::angle_between(*x, *y) else {
+                    continue;
+                };
+                if crate::turns_beyond(turn, angle)
+                    && p.1.distance(q.1) >= self.angle_floor
+                    && worst.is_none_or(|(w, _)| turn > w)
+                {
+                    worst = Some((turn, i));
+                }
+            }
+            if let Some((_, i)) = worst {
+                return Action::Turn(i);
+            }
+        }
         Action::Keep
     }
 
@@ -2780,6 +3097,12 @@ fn finish_boundary(
             (Some(k), Some(l)) if k == l && p.pos == q.pos => {
                 let length = (get2(q.uv, k) - get2(p.uv, k)).abs();
                 ((length / get2(step, k) - 1e-9).ceil(), true)
+            }
+            // Into or out of the corner of a pole at a corner of the
+            // parameters (`CornerPole`): along whichever parameter moves.
+            (Some(_), Some(_)) if p.pos == q.pos => {
+                let length = |k: usize| (get2(q.uv, k) - get2(p.uv, k)).abs() / get2(step, k);
+                ((length(0).max(length(1)) - 1e-9).ceil(), true)
             }
             _ => (1.0, false),
         };
@@ -2920,6 +3243,10 @@ pub(crate) struct Boundary<'a> {
     cells: [u32; 2],
     step: Uv,
     scale: Uv,
+    /// How much further than lengths in space the plane is scaled, per
+    /// parameter: 1 but where it is the plane of the grid (see
+    /// `face_boundary`).
+    stretch: Uv,
     centre: Uv,
     /// No face may grow beyond this many vertices.
     limit: usize,
@@ -2929,6 +3256,27 @@ pub(crate) struct Boundary<'a> {
 fn to_plane(uv: Uv, centre: Uv, scale: Uv) -> P2 {
     let ([a, b], [ca, cb], [sa, sb]) = (uv, centre, scale);
     ((a - ca) * sa, (b - cb) * sb)
+}
+
+/// The part of its longest side within which a triangle that cannot be
+/// refined lies flat against a chord of the boundary (`mesh_face`).
+const FLAT_AGAINST: f64 = 1e-6;
+
+/// How many of the triangles still failing after the last round of
+/// refinement are looked at for the chords they stand on (`mesh_face`).
+const STUCK_LOOKED_AT: usize = 64;
+
+/// The distance from `p` to the segment from `a` to `b`, in the plane.
+fn plane_distance_to_segment(p: P2, a: P2, b: P2) -> f64 {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let length2 = dx * dx + dy * dy;
+    let t = if length2 > 0.0 {
+        (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / length2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let t = if t.is_nan() { 0.0 } else { t };
+    (p.0 - a.0 - t * dx).hypot(p.1 - a.1 - t * dy)
 }
 
 /// The distance from `p` to the segment from `a` to `b`.
@@ -2946,6 +3294,20 @@ fn nearest_on_chord(p: Vec3, a: Vec3, b: Vec3) -> Vec3 {
         0.0
     };
     a + along * s
+}
+
+/// How far the surface over the middle of the chord from `p` to `q` (in
+/// parameter space) lies beside the chord, along the surface: its bulge,
+/// when it is more than rounding (`chords_to_refine`).
+fn chord_bulge(param: &Param, p: &Bv, q: &Bv) -> Option<f64> {
+    let ([pa, pb], [qa, qb]) = (p.uv, q.uv);
+    let middle = [0.5 * (pa + qa), 0.5 * (pb + qb)];
+    let image = param.eval(middle);
+    let (_, [da, db]) = param.derivatives(middle);
+    let normal = da.cross(db).normalized()?;
+    let beside = image - nearest_on_chord(image, p.pos, q.pos);
+    let aside = (beside - normal * beside.dot(normal)).length();
+    (aside.is_finite() && aside > SIDE_NOISE * p.pos.distance(q.pos)).then_some(aside)
 }
 
 /// How many times its own bulge (how far the surface over the middle of a
@@ -2982,7 +3344,8 @@ impl Boundary<'_> {
     /// Empty for a boundary that is fine, and for what finer chords cannot
     /// cure: straight edges on a surface whose straight lines are
     /// straight in its parameters, seams, poles.
-    pub(crate) fn chords_to_refine(&self, body: &Body, tolerance: f64) -> Vec<Chord> {
+    pub(crate) fn chords_to_refine(&self, body: &Body, params: &TessParams) -> Vec<Chord> {
+        let tolerance = params.chordal_tolerance;
         let region = &self.region;
         let analytic = !self.param.is_freeform();
         // A straight edge on a plane, a cylinder or a cone is its own
@@ -3030,6 +3393,19 @@ impl Boundary<'_> {
                 let off = distance_to_chord(image, p.pos, q.pos);
                 if exceeds(off, 2.0 * tolerance) {
                     wanted.push(chord);
+                } else if let Some(angle) = params.angle_for(p.pos.distance(q.pos)) {
+                    // The angle criterion along the face: the edge holds
+                    // its own tangent to it, but the surface's normal may
+                    // turn further along the chord than the tangent does
+                    // (an ellipse cut obliquely from a cylinder).
+                    let turn = self
+                        .param
+                        .normal(p.uv)
+                        .zip(self.param.normal(q.uv))
+                        .and_then(|(x, y)| crate::angle_between(x, y));
+                    if turn.is_some_and(|turn| crate::turns_beyond(turn, angle)) {
+                        wanted.push(chord);
+                    }
                 }
                 // How far the surface there lies beside the chord, along
                 // the surface: a chord of a rim is off a cylinder by its
@@ -3050,12 +3426,14 @@ impl Boundary<'_> {
             }
             let a = to_plane(p.uv, self.centre, self.scale);
             let b = to_plane(q.uv, self.centre, self.scale);
-            // (The plane is scaled to lengths in space, so the reach of a
-            // bulge there is about its reach in space.)
+            // (The plane is scaled to lengths in space, or `stretch` times
+            // that, so the reach of a bulge there is about its reach in
+            // space, times `stretch`.)
             let reach = bulge.map_or(0.0, |bulge| NEAR_BULGE * bulge.aside);
+            let [ra, rb] = self.stretch.map(|k| k * reach);
             segments.push(Segment {
-                low: (a.0.min(b.0) - reach, a.1.min(b.1) - reach),
-                high: (a.0.max(b.0) + reach, a.1.max(b.1) + reach),
+                low: (a.0.min(b.0) - ra, a.1.min(b.1) - rb),
+                high: (a.0.max(b.0) + ra, a.1.max(b.1) + rb),
                 ends: [a, b],
                 chord,
                 pos: [p.pos, q.pos],
@@ -3321,6 +3699,30 @@ pub(crate) fn face_boundary<'a>(
             scale = [sa, sb * column / tall];
         }
     }
+    // With the angle criterion, a torus or a sphere is triangulated in
+    // the plane of its grid: each parameter scaled so that a cell of the
+    // grid is square. The grid is sized per direction (the chordal
+    // tolerance and the angle, each in its own direction), and on a thin
+    // fillet the two differ by a hundred: around the axis the surface's
+    // normal turns slowly over a long way, across the tube fast over a
+    // short one. Scaled to lengths in space such a cell is a sliver, and
+    // every point the refinement put in one (its diagonal turns the
+    // normal by more than the angle) was joined by Delaunay's rule to
+    // points rows away, whose sides turned too far again: the stripes
+    // and flange roots of the turbofan had a hundred times the triangles
+    // they needed (2026-10-15). In the grid's plane a point added stays
+    // among its neighbours. Without the angle the plane is as it was, so
+    // that export meshes do not change.
+    let mut stretch = [1.0_f64; 2];
+    if params.max_angle.is_some() && matches!(face.surface, Surface::Torus(_) | Surface::Sphere(_))
+    {
+        let ([sa, sb], [da, db]) = (scale, step);
+        let square = sa * da / db;
+        if square.is_finite() && square > 0.0 && sb > 0.0 {
+            stretch = [1.0, square / sb];
+            scale = [sa, square];
+        }
+    }
     let centre = [
         0.5 * (get2(low, 0) + get2(high, 0)),
         0.5 * (get2(low, 1) + get2(high, 1)),
@@ -3333,6 +3735,7 @@ pub(crate) fn face_boundary<'a>(
         cells,
         step,
         scale,
+        stretch,
         centre,
         limit,
     })
@@ -3344,12 +3747,23 @@ pub(crate) fn face_boundary<'a>(
 /// of the boundary that the mesh of another face has as well
 /// (`body.rs`, `shared_rungs`). On a curved face each gets a point of the
 /// surface in its middle; a plane face is left as it is.
+///
+/// `ask` gets the chords of edges that the face cannot be meshed along as
+/// they are, when that is why it fails (the error is then a
+/// [`TessError::Face`]): a triangle that stands on a chord and cannot be
+/// made to face the way the surface does however close to the chord its
+/// third corner comes. That is a chord that lies beside the face more
+/// than beside the surface, as one along a rim curved far more tightly
+/// across the edge than the tolerance (the nose of a slender aerofoil
+/// along a loft): within the tolerance of its curve, and still over the
+/// next face. Cut in two, it lies four times nearer to the surface.
 pub(crate) fn mesh_face(
     boundary: &Boundary,
     face: &Face,
     index: usize,
     params: &TessParams,
     splits: &[(Vec3, Vec3)],
+    ask: &mut Vec<Chord>,
 ) -> Result<FaceMesh, TessError> {
     let (param, region) = (boundary.param, &boundary.region);
     if let Some(doubt) = &region.doubt {
@@ -3447,6 +3861,29 @@ pub(crate) fn mesh_face(
         centre,
         scale,
         tolerance,
+        angle: params.max_angle.filter(|_| !param.is_plane()),
+        angle_floor: crate::ANGLE_FLOOR * tolerance,
+        normals: Vec::new(),
+    };
+    // With a triangle budget, the face stops as soon as it is certain to
+    // have more triangles than that on its own. The count it gives is
+    // then a floor of what it would have had: the region in parameter
+    // space is a polygon with holes, and a triangulation of it with `i`
+    // points inside has `2 i + b + 2 h - 2` triangles (`b` points on the
+    // boundary, `h` holes), of which at most `b` lose their area at a
+    // pole (each has a side of the boundary between two points that are
+    // one point in space, and each such side has one triangle). So the
+    // mesh has at least `2 i - 2` triangles, and every point added
+    // (seeding or refinement) is inside. A function of the face and the
+    // parameters, as the order of the points is.
+    let over_budget = |interior: usize| -> Option<TessError> {
+        let max_triangles = params.max_triangles?;
+        let floor = interior.saturating_mul(2).saturating_sub(2);
+        (floor > max_triangles).then_some(TessError::OverBudget {
+            triangles: floor,
+            faces: 1,
+            max_triangles,
+        })
     };
 
     // Boundary points, in an order that jumps around the boundary (a
@@ -3497,6 +3934,131 @@ pub(crate) fn mesh_face(
         };
         work.cdt.constrain(a, b).map_err(explain)?;
     }
+    // When the refinement cannot go on at the triangles `stuck`: the
+    // chords of edges they stand on, or lie flat against, go to `ask`,
+    // and the error says so; without such chords, `None`. (Cut after cut
+    // towards a chord that the surface turns away from, the third corner
+    // ends within rounding of it, and the triangle may by then be one
+    // row away from the chord: flat against it, not on it.)
+    let along_chords = |work: &Work, stuck: &[usize], ask: &mut Vec<Chord>| -> Option<TessError> {
+        let before = ask.len();
+        for &t in stuck {
+            let Some(view) = work.cdt.triangle(t) else {
+                continue;
+            };
+            let [x, y, z] = view.v;
+            for (constrained, (p, q)) in view.constrained.into_iter().zip([(y, z), (z, x), (x, y)])
+            {
+                if !constrained {
+                    continue;
+                }
+                let found = region
+                    .segs
+                    .iter()
+                    .zip(&region.chords)
+                    .find_map(|(&(i, j), chord)| {
+                        let (a, b) = (vertex_of.get(i).copied()?, vertex_of.get(j).copied()?);
+                        ((a, b) == (p, q) || (a, b) == (q, p)).then_some(*chord)?
+                    });
+                if let Some(chord) = found {
+                    ask.push(chord);
+                }
+            }
+            let [Some(a), Some(b), Some(c)] = view.v.map(|v| work.vertex(v)) else {
+                continue;
+            };
+            let corners = [a.0, b.0, c.0].map(|uv| work.plane(uv));
+            let longest = corners
+                .iter()
+                .zip(corners.iter().cycle().skip(1))
+                .map(|(p, q)| (p.0 - q.0).hypot(p.1 - q.1))
+                .fold(0.0_f64, f64::max);
+            let mut flat_against: Option<(f64, Chord)> = None;
+            // Failing that, the nearest chord whose bulge the triangle
+            // lies within (see below).
+            let mut in_bulge: Option<(f64, Chord)> = None;
+            for (&(i, j), chord) in region.segs.iter().zip(&region.chords) {
+                let (Some(chord), Some(p), Some(q)) =
+                    (chord, region.verts.get(i), region.verts.get(j))
+                else {
+                    continue;
+                };
+                let (from, to) = (work.plane(p.uv), work.plane(q.uv));
+                let off = corners
+                    .iter()
+                    .map(|&corner| plane_distance_to_segment(corner, from, to))
+                    .fold(0.0_f64, f64::max);
+                if off <= FLAT_AGAINST * longest && flat_against.is_none_or(|(o, _)| off < o) {
+                    flat_against = Some((off, *chord));
+                }
+                // A chord whose middle the surface passes beside, along
+                // the surface (a chord of a circle in a tangent plane at
+                // the rim of a fillet, which bulges out of the face by
+                // its sag): a point of the face nearer to it than that
+                // lies beyond it in space, and every triangle between the
+                // two faces backwards. Cut after cut, the refinement
+                // moves towards the chord without end. (The plane is
+                // scaled to lengths in space.)
+                if in_bulge.is_none_or(|(o, _)| off < o)
+                    && chord_bulge(&work.param, p, q).is_some_and(|aside| off <= NEAR_BULGE * aside)
+                {
+                    in_bulge = Some((off, *chord));
+                }
+            }
+            if let Some((_, chord)) = flat_against.or(in_bulge) {
+                ask.push(chord);
+            }
+        }
+        let (edge, _) = *ask.get(before)?;
+        Some(TessError::Face {
+            face: index,
+            reason: format!(
+                "the surface turns away from the chords of edge {edge} faster than triangles \
+                 on them can follow at this tolerance; use a finer tolerance"
+            ),
+        })
+    };
+    // When the refinement cannot go on at the triangles `stuck` and no
+    // chord is to blame: a tolerance finer than the numbers resolve
+    // (the triangle is still as large as the tolerance) is `TooFine`
+    // without a count (`needed_segments` infinite), as a coarser one
+    // cures it; otherwise the triangles are far smaller
+    // than the tolerance and still fail, which no tolerance cures, and
+    // the error says so instead of asking for segments it never counted.
+    let unresolved = |work: &Work, stuck: &[usize], settled: bool| -> TessError {
+        let longest = stuck.first().and_then(|&t| {
+            let view = work.cdt.triangle(t)?;
+            let [Some(a), Some(b), Some(c)] = view.v.map(|v| work.vertex(v)) else {
+                return None;
+            };
+            Some(
+                a.1.distance(b.1)
+                    .max(b.1.distance(c.1))
+                    .max(c.1.distance(a.1)),
+            )
+        });
+        match longest {
+            Some(longest) if longest < work.tolerance => TessError::Face {
+                face: index,
+                reason: format!(
+                    "{}: a triangle {longest:.1e} across, far within the tolerance of \
+                     {:.1e}, is still off the surface or faces against it (the surface folds \
+                     or turns there faster than its parameters resolve)",
+                    if settled {
+                        "its refinement did not settle"
+                    } else {
+                        "its refinement cannot go on"
+                    },
+                    work.tolerance
+                ),
+            },
+            _ => TessError::TooFine {
+                patch: index,
+                needed_segments: f64::INFINITY,
+                max_segments: params.max_segments,
+            },
+        }
+    };
     if work.cdt.classify().map_err(explain)? == 0 {
         return fail(
             index,
@@ -3523,6 +4085,9 @@ pub(crate) fn mesh_face(
             if let Interior::Added(v) = added {
                 let pos = work.param.eval(uv);
                 work.record(v, uv, pos, None).map_err(explain)?;
+                if let Some(over) = over_budget(work.uv.len() - boundary_vertices) {
+                    return Err(over);
+                }
             }
         }
 
@@ -3586,6 +4151,9 @@ pub(crate) fn mesh_face(
                 done = true;
                 break;
             }
+            if let Some(over) = over_budget(work.uv.len() - boundary_vertices) {
+                return Err(over);
+            }
             for (t, generation, action) in failing {
                 // Changed by an earlier split in this round: next round.
                 if work.cdt.triangle(t).map(|view| view.generation) != Some(generation) {
@@ -3596,19 +4164,51 @@ pub(crate) fn mesh_face(
                         Err(CdtError::Degenerate) => work.split_triangle(t),
                         other => other,
                     },
+                    Action::Turn(i) => match work.split_edge(t, i) {
+                        // No room for a point: the angle is a wish, the
+                        // triangle stays as it is.
+                        Err(CdtError::Degenerate) => {
+                            if let Some(slot) = measured.get_mut(t) {
+                                *slot = generation;
+                            }
+                            Ok(())
+                        }
+                        other => other,
+                    },
                     _ => work.split_triangle(t),
                 };
                 match split {
                     Ok(()) => {}
                     // No room left for a point between its corners: the
-                    // tolerance is beyond what the numbers can resolve.
-                    Err(CdtError::Degenerate) => return Err(explain(CdtError::TooMany)),
+                    // tolerance is beyond what the numbers can resolve,
+                    // or the triangle was squeezed against a chord that
+                    // the surface turns away from (`ask`).
+                    Err(CdtError::Degenerate) => {
+                        // This one first, then the others still failing.
+                        let stuck: Vec<usize> = std::iter::once(t)
+                            .chain(
+                                (0..work.cdt.triangle_count())
+                                    .filter(|&s| s != t && !matches!(work.assess(s), Action::Keep)),
+                            )
+                            .take(STUCK_LOOKED_AT)
+                            .collect();
+                        return Err(along_chords(&work, &stuck, ask)
+                            .unwrap_or_else(|| unresolved(&work, &stuck, false)));
+                    }
                     Err(e) => return Err(explain(e)),
                 }
             }
         }
         if !done {
-            return Err(explain(CdtError::TooMany));
+            // (A few are enough to name the chords; each is held against
+            // every segment of the boundary.)
+            let stuck: Vec<usize> = (0..work.cdt.triangle_count())
+                .filter(|&t| !matches!(work.assess(t), Action::Keep))
+                .take(STUCK_LOOKED_AT)
+                .collect();
+            return Err(
+                along_chords(&work, &stuck, ask).unwrap_or_else(|| unresolved(&work, &stuck, true))
+            );
         }
     }
 

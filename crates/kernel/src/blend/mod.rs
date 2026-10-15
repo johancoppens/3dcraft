@@ -36,9 +36,15 @@
 //!   there. That is right when the face the blend runs into lies in that
 //!   plane (an edge of a step that ends against a wall), and when the
 //!   edge continues smoothly in another blended edge (a chain: the two
-//!   tools end against each other). In every other case the end of the
-//!   tool would be left in the result as a face nobody asked for, which
-//!   the check at the end finds and refuses.
+//!   tools end against each other).
+//! - When the one other face at the vertex is a plane at a slant to the
+//!   edge (a root that ends on a chamfer, a ledge that runs into a
+//!   slanted wall), the tool is made long enough to reach that plane and
+//!   cut there ([`end_plane`], [`trim`]): its end lies in the plane of the
+//!   face, which the boolean merges it into.
+//! - In every other case the end of the tool would be left in the result
+//!   as a face nobody asked for, which the check at the end finds and
+//!   refuses.
 //!
 //! **Corners of chamfers.** Where three chamfered edges of one kind (all
 //! convex or all concave) meet in a vertex with nothing else, the corner
@@ -92,6 +98,10 @@ use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{Body, BodyKind, EdgeId, FaceId, VertexId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::{PI, TAU};
+
+mod rolling;
+mod section;
+use section::{Section, Trace};
 
 /// Most edges one blend takes.
 pub(crate) const MAX_EDGES: usize = 4096;
@@ -168,6 +178,17 @@ pub(crate) enum Reason {
     CornerKind,
     NotTangent,
     Lost,
+    FreeEnd,
+    FreeClosed,
+    FreeAngle,
+    FreeSurface,
+    FreeApproximation,
+    FreeTooLarge,
+    FreeMeet,
+    FreeMixed,
+    FreeJoint,
+    FreeChainSize,
+    FreeRunsOver,
 }
 
 impl Reason {
@@ -193,10 +214,10 @@ impl Reason {
                 "the angle has to be more than zero and less than what is left of half a turn by the angle between the faces"
             }
             Reason::Kind | Reason::Spindle => {
-                "this kind of edge is not built yet: a chamfer takes a straight edge between two planes and a circular edge between a plane, a cylinder or a cone about its axis"
+                "this kind of edge is not built yet: a chamfer takes a straight edge between planes and cylinders along it and a circular edge between a plane, a cylinder or a cone about its axis"
             }
             Reason::KindLine => {
-                "a straight edge between faces that are not both planes is not built yet"
+                "a straight edge next to a face that is neither a plane nor a cylinder along the edge (a cone, a freeform face) is not built yet (the chamfer face would not be flat)"
             }
             Reason::KindCircle => {
                 "a circular edge between faces that are not a plane, a cylinder or a cone about the circle's axis is not built yet"
@@ -226,6 +247,39 @@ impl Reason {
             Reason::NoCorner | Reason::CornerRadii | Reason::CornerKind | Reason::NotTangent => {
                 "the corner where three chamfers meet could not be made flat"
             }
+            Reason::FreeEnd => {
+                "the chamfer of a freeform edge does not end cleanly: each end of the edge has to be a corner of exactly three faces whose third face the chamfer runs into across the edge"
+            }
+            Reason::FreeClosed => {
+                "a chamfer along a closed freeform edge whose vertex other edges pass through (a seam) is not built yet"
+            }
+            Reason::FreeAngle => {
+                "a chamfer of a freeform edge by a distance and an angle is not built yet: give two distances"
+            }
+            Reason::FreeSurface => {
+                "the chamfer face along this edge could not be followed: the distance does not fit on a face somewhere along it"
+            }
+            Reason::FreeApproximation => {
+                "the chamfer face along this edge could not be approximated within the tolerance"
+            }
+            Reason::FreeTooLarge => {
+                "the chamfer reaches past an edge at the end of the edge: the distance is too large for that face"
+            }
+            Reason::FreeMeet => {
+                "chamfers of freeform edges that meet in a vertex are not built yet: chamfer them one by one, or leave one out"
+            }
+            Reason::FreeMixed => {
+                "a freeform edge cannot be chamfered together with edges between planes, cylinders and cones yet: chamfer them in two features"
+            }
+            Reason::FreeJoint => {
+                "the chamfer cannot be carried on where this edge goes on smoothly into the next: a chain of freeform chamfers is built where both faces go on across the vertex, both edges convex or both concave, and not yet where one of the faces changes"
+            }
+            Reason::FreeChainSize => {
+                "edges that go on smoothly into each other are chamfered by different distances: a chamfer along such a chain has one size; give them the same, or chamfer them in separate features"
+            }
+            Reason::FreeRunsOver => {
+                "the chamfer's border runs off a face beside the edge across one of its other edges along the way: the distance is too large for that face, or the chamfer would have to carry on onto the next face, which is not built yet"
+            }
             Reason::Lost => "the chamfer lost track of an entity; this is a bug",
         }
     }
@@ -242,10 +296,10 @@ impl Reason {
                 "the two faces are tangent along this edge: there is no corner to round"
             }
             Reason::Kind => {
-                "this kind of edge is not built yet: a fillet takes a straight edge between two planes and a circular edge between a plane, a cylinder or a cone about its axis"
+                "this kind of edge is not built yet: a fillet takes a straight edge between planes and cylinders along it and a circular edge between a plane, a cylinder or a cone about its axis"
             }
             Reason::KindLine => {
-                "a straight edge between faces that are not both planes is not built yet (the fillet face would not be a cylinder)"
+                "a straight edge next to a face that is neither a plane nor a cylinder along the edge (a cone, a freeform face) is not built yet (the fillet face would not be a cylinder)"
             }
             Reason::KindCircle => {
                 "a circular edge between faces that are not a plane, a cylinder or a cone about the circle's axis is not built yet (the fillet face would not be a torus)"
@@ -284,6 +338,37 @@ impl Reason {
             }
             Reason::NotTangent => {
                 "the fillet face came out not tangent to a face it should run into smoothly; this is a bug"
+            }
+            Reason::FreeEnd => {
+                "the fillet of a freeform edge does not end cleanly: each end of the edge has to be a corner of exactly three faces whose third face the fillet runs into across the edge"
+            }
+            Reason::FreeClosed => {
+                "a fillet along a closed freeform edge whose vertex other edges pass through (a seam) is not built yet"
+            }
+            Reason::FreeAngle => "a fillet has no angle",
+            Reason::FreeSurface => {
+                "the rolling ball along this edge could not be followed: the radius does not fit between the faces somewhere along it, or a face turns too sharply under it"
+            }
+            Reason::FreeApproximation => {
+                "the fillet face along this edge could not be approximated within the tolerance"
+            }
+            Reason::FreeTooLarge => {
+                "the fillet reaches past an edge at the end of the edge: the radius is too large for that face"
+            }
+            Reason::FreeMeet => {
+                "fillets of freeform edges that meet in a vertex are not built yet: fillet them one by one, or leave one out"
+            }
+            Reason::FreeMixed => {
+                "a freeform edge cannot be filleted together with edges between planes, cylinders and cones yet: fillet them in two features"
+            }
+            Reason::FreeJoint => {
+                "the fillet cannot be carried on where this edge goes on smoothly into the next: both edges have to be convex or both concave, and across the vertex either both faces go on or one of them goes on in a face tangent to it across a smooth edge, with no other edge there; otherwise the ball that touches both there could not be found"
+            }
+            Reason::FreeChainSize => {
+                "edges that go on smoothly into each other are filleted with different radii: a fillet along such a chain has one radius; give them the same, or fillet them in separate features"
+            }
+            Reason::FreeRunsOver => {
+                "the fillet's border runs off a face beside the edge across one of its other edges along the way (where the ball would roll on over a smooth edge onto the next face, or the face is too narrow for the radius); a fillet that carries on onto the next face in the middle of an edge is not built yet: give a smaller radius"
             }
             Reason::Lost => "the fillet lost track of an entity; this is a bug",
         }
@@ -506,9 +591,6 @@ struct Plan {
     faces: [FaceId; 2],
     /// The radius of a fillet; `None` for a chamfer.
     round: Option<f64>,
-    /// The tangent of half the angle between the directions into the two
-    /// faces: a fillet's radius over its distance.
-    half_tan: f64,
     /// The directions into the first and the second face from the edge,
     /// at the point the section is drawn at.
     into: [Vec3; 2],
@@ -520,6 +602,18 @@ struct Plan {
     /// How far the tool goes on past the start and past the end: a
     /// length along a line, an angle along an arc.
     longer: [f64; 2],
+    /// Where the tool ends at a vertex against a plane that is not square
+    /// to the edge: a point of that plane and its normal away from the
+    /// edge. The tool is cut there, so that its end lies in the plane of
+    /// the face it runs into (see [`end_plane`]).
+    trims: [Option<(Vec3, Vec3)>; 2],
+    /// Along a straight edge next to a cylinder: the blend in the plane
+    /// across the edge ([`section`]). `None` between two planes and along
+    /// a circle.
+    section: Option<Section>,
+    /// What a distance along each face is in the size asked for: one for
+    /// a chamfer, the radius over the distance for a fillet.
+    scale: [f64; 2],
 }
 
 impl Plan {
@@ -537,6 +631,32 @@ impl Plan {
 
     fn largest(&self) -> f64 {
         self.distances[0].max(self.distances[1])
+    }
+
+    /// Where the blend leaves the first and the second face: offsets from
+    /// the edge in the plane across it.
+    fn feet(&self) -> [Vec3; 2] {
+        match &self.section {
+            Some(section) => section.feet,
+            None => [
+                self.into[0] * self.distances[0],
+                self.into[1] * self.distances[1],
+            ],
+        }
+    }
+
+    /// How far into the face on `side` the point `offset` from the edge
+    /// is, measured along the face across the edge.
+    fn coordinate(&self, side: usize, offset: Vec3) -> f64 {
+        match self.section.as_ref().and_then(|s| s.traces.get(side)) {
+            Some(trace) => trace.coordinate(offset),
+            None => self.into.get(side).map_or(0.0, |into| offset.dot(*into)),
+        }
+    }
+
+    /// Between two planes, or along a circle.
+    fn flat(&self) -> bool {
+        self.section.is_none()
     }
 }
 
@@ -649,9 +769,6 @@ fn plan(body: &Body, uses: &[Vec<Use>], request: &Request, tol: f64) -> Result<P
     ];
     let (path, ends) = match &data.curve {
         Curve3::Line(line) => {
-            if !surfaces.iter().all(|s| matches!(s, Surface::Plane(_))) {
-                return Err(refused(edge, Reason::KindLine));
-            }
             let along = line.direction();
             let length = data.range.1 - data.range.0;
             if !(length.is_finite() && length > tol) {
@@ -714,11 +831,54 @@ fn plan(body: &Body, uses: &[Vec<Use>], request: &Request, tol: f64) -> Result<P
     // The tangent of half that angle, from the cosine: exactly 1 for a
     // square corner, which the tangent of a rounded quarter turn is not.
     let half_tan = (1.0 - cosine * cosine).max(0.0).sqrt() / (1.0 + cosine);
-    let distances = distances(edge, request.size, between, half_tan, tol)?;
+    let mut distances = distances(edge, request.size, between, half_tan, tol)?;
     let round = match request.size {
         Size::Radius(radius) => Some(radius),
         Size::Chamfer(_) => None,
     };
+    let mut scale = match round {
+        Some(_) => [half_tan, half_tan],
+        None => [1.0, 1.0],
+    };
+    let mut section = None;
+    if let Path::Line { start, along, .. } = path
+        && !surfaces.iter().all(|s| matches!(s, Surface::Plane(_)))
+    {
+        // A cylinder beside a straight edge: the blend is the same in
+        // every plane across the edge (see `section`).
+        let traced = [
+            section::trace(surfaces[0], start, along, into_first, tol),
+            section::trace(surfaces[1], start, along, into_second, tol),
+        ];
+        let [Some(t1), Some(t2)] = traced else {
+            return Err(refused(edge, Reason::KindLine));
+        };
+        let normals = [
+            outward(body, faces[0], start)?,
+            outward(body, faces[1], start)?,
+        ];
+        let spread = 1.0 + cosine;
+        if spread.is_nan() || spread <= 1e-12 {
+            return Err(refused(edge, Reason::Smooth));
+        }
+        let estimate = (into_first + into_second) * (distances[0] / spread);
+        let made = section::section(
+            edge,
+            faces,
+            [t1, t2],
+            normals,
+            along,
+            convex,
+            request.size,
+            estimate,
+            tol,
+        )?;
+        distances = made.distances;
+        if let Some(radius) = round {
+            scale = [radius / distances[0], radius / distances[1]];
+        }
+        section = Some(made);
+    }
     if let (
         Some(radius),
         Path::Circle {
@@ -742,13 +902,15 @@ fn plan(body: &Body, uses: &[Vec<Use>], request: &Request, tol: f64) -> Result<P
         edge,
         faces,
         round,
-        half_tan,
         into,
         distances,
         convex,
         path,
         ends,
         longer: [0.0, 0.0],
+        trims: [None, None],
+        section,
+        scale,
     })
 }
 
@@ -808,6 +970,11 @@ fn fits(body: &Body, plans: &[Plan], tol: f64) -> Result<(), BlendError> {
                 continue;
             };
             let mut largest = f64::INFINITY;
+            // Whether `largest` is where the boundary that leaves an end
+            // of the edge turns at a corner of the face: a cut line that
+            // runs exactly into that corner still fits (a chamfer next to
+            // an earlier one of the same distance).
+            let mut into_corner = false;
             for other in face_edges(body, face) {
                 if other == plan.edge {
                     continue;
@@ -822,6 +989,16 @@ fn fits(body: &Body, plans: &[Plan], tol: f64) -> Result<(), BlendError> {
                     _ => 0.0,
                 };
                 let points = samples(body, other, matches!(plan.path, Path::Circle { .. }));
+                let mut corner = false;
+                if touches && alongside(body, plan.edge, other) {
+                    // It leaves an end of the edge the way the edge does
+                    // (a rib's foot whose arc touches the boundary of the
+                    // wall it stands on): the face pinches to nothing
+                    // between them there, and no blend fits.
+                    largest = largest.min(0.0);
+                    into_corner = false;
+                    continue;
+                }
                 let reach = match plan.path {
                     Path::Line {
                         start,
@@ -830,15 +1007,40 @@ fn fits(body: &Body, plans: &[Plan], tol: f64) -> Result<(), BlendError> {
                     } => {
                         // How far into the face a point is, and where
                         // along the edge.
-                        let place = |p: Vec3| ((p - start).dot(into), (p - start).dot(along));
+                        let place =
+                            |p: Vec3| (plan.coordinate(side, p - start), (p - start).dot(along));
                         if touches {
                             // An edge that leaves from an end of this one
-                            // bounds the strip up to its own far end.
-                            points
+                            // bounds the strip up to its own far end, and
+                            // on along the edges of the face that continue
+                            // it smoothly (a rim that runs on round a
+                            // tangent arc, a circle split at its seam):
+                            // the face can only turn back at a corner.
+                            let mut far = points
                                 .iter()
                                 .map(|p| place(*p).0)
                                 .fold(0.0_f64, f64::max)
-                                .max(0.0)
+                                .max(0.0);
+                            let run = smooth_run(body, face, plan.edge, other, &ends);
+                            for next in &run {
+                                for p in samples(body, *next, true) {
+                                    far = far.max(place(p).0);
+                                }
+                            }
+                            // The far vertex of the run: the end of its
+                            // last edge that lies furthest into the face.
+                            let tip =
+                                body.edge(run.last().copied().unwrap_or(other))
+                                    .and_then(|e| {
+                                        [e.start, e.end]
+                                            .into_iter()
+                                            .filter(|v| !ends.contains(v))
+                                            .filter_map(|v| body.vertex(v))
+                                            .map(|v| place(v.point).0)
+                                            .reduce(f64::max)
+                                    });
+                            corner = tip.is_some_and(|tip| tip >= far - tol);
+                            far
                         } else {
                             let mut nearest = f64::INFINITY;
                             for pair in points.windows(2) {
@@ -894,6 +1096,13 @@ fn fits(body: &Body, plans: &[Plan], tol: f64) -> Result<(), BlendError> {
                             ((offset - axis * height).length(), height)
                         };
                         let (r0, h0) = level(start);
+                        if touches && continues(body, plan.edge, other) {
+                            // It goes on from an end of the arc along the
+                            // circle's tangent: beyond the arc's sector,
+                            // beside nothing of it (the edges after it are
+                            // measured as all others are).
+                            continue;
+                        }
                         let away = points.iter().filter(|p| touches || beside(**p)).map(|p| {
                             let (r, h) = level(*p);
                             (r - r0).hypot(h - h0)
@@ -907,8 +1116,9 @@ fn fits(body: &Body, plans: &[Plan], tol: f64) -> Result<(), BlendError> {
                         }
                     }
                 };
-                if reach.is_finite() && (reach > tol || !touches) {
-                    largest = largest.min(reach - taken);
+                if reach.is_finite() && (reach > tol || !touches) && reach - taken < largest {
+                    largest = reach - taken;
+                    into_corner = touches && corner && taken == 0.0;
                 }
             }
             // A cut line that runs into the axis leaves nothing of a face
@@ -925,12 +1135,12 @@ fn fits(body: &Body, plans: &[Plan], tol: f64) -> Result<(), BlendError> {
                     largest = largest.min(radius / inward);
                 }
             }
-            if distance >= largest - 2.0 * tol {
+            let exactly_into_corner = into_corner && (distance - largest).abs() <= 2.0 * tol;
+            if distance >= largest - 2.0 * tol && !exactly_into_corner {
                 // A fillet is said by its radius.
-                let per = if plan.round.is_some() && plan.half_tan.is_finite() {
-                    plan.half_tan
-                } else {
-                    1.0
+                let per = match plan.scale.get(side) {
+                    Some(per) if plan.round.is_some() && per.is_finite() => *per,
+                    _ => 1.0,
                 };
                 return Err(BlendError::TooLarge {
                     edge: plan.edge,
@@ -942,6 +1152,107 @@ fn fits(body: &Body, plans: &[Plan], tol: f64) -> Result<(), BlendError> {
         }
     }
     Ok(())
+}
+
+/// The edges of `face` that continue `first` smoothly, one after the
+/// other, away from the end of `first` that is an end of `edge` (`ends`):
+/// at each far vertex the one other edge of the face that leaves it
+/// straight on. Stops at a corner, at `edge`, or when the run closes.
+fn smooth_run(
+    body: &Body,
+    face: FaceId,
+    edge: EdgeId,
+    first: EdgeId,
+    ends: &[VertexId],
+) -> Vec<EdgeId> {
+    let edges = face_edges(body, face);
+    // The direction an edge leaves `vertex` in, if it ends there.
+    let away = |id: EdgeId, vertex: VertexId| -> Option<Vec3> {
+        let data = body.edge(id)?;
+        if data.start == vertex {
+            tangent(&data.curve, data.range.0).ok()
+        } else if data.end == vertex {
+            tangent(&data.curve, data.range.1).ok().map(|t| -t)
+        } else {
+            None
+        }
+    };
+    let mut run = Vec::new();
+    let Some(data) = body.edge(first) else {
+        return run;
+    };
+    let mut current = first;
+    let mut vertex = if ends.contains(&data.start) {
+        data.end
+    } else {
+        data.start
+    };
+    for _ in 0..edges.len() {
+        if ends.contains(&vertex) {
+            break;
+        }
+        let Some(arriving) = away(current, vertex) else {
+            break;
+        };
+        let mut next = edges.iter().copied().filter(|e| {
+            *e != current
+                && *e != edge
+                && away(*e, vertex).is_some_and(|d| d.dot(arriving) < -1.0 + 1e-9)
+        });
+        let (Some(found), None) = (next.next(), next.next()) else {
+            break;
+        };
+        if found == first || run.contains(&found) {
+            break;
+        }
+        run.push(found);
+        let Some(data) = body.edge(found) else {
+            break;
+        };
+        vertex = if data.start == vertex {
+            data.end
+        } else {
+            data.start
+        };
+        current = found;
+    }
+    run
+}
+
+/// True when `other` goes on from an end of `edge` straight on (the two
+/// leave their common vertex in opposite directions).
+fn continues(body: &Body, edge: EdgeId, other: EdgeId) -> bool {
+    leave_together(body, edge, other, -1.0)
+}
+
+/// True when `other` leaves a common vertex with `edge` in the direction
+/// `edge` leaves it in (they touch there).
+fn alongside(body: &Body, edge: EdgeId, other: EdgeId) -> bool {
+    leave_together(body, edge, other, 1.0)
+}
+
+/// True when at a vertex they share the directions in which `edge` and
+/// `other` leave it, the second times `sign`, agree.
+fn leave_together(body: &Body, edge: EdgeId, other: EdgeId, sign: f64) -> bool {
+    let away = |id: EdgeId, vertex: VertexId| -> Option<Vec3> {
+        let data = body.edge(id)?;
+        if data.start == vertex {
+            tangent(&data.curve, data.range.0).ok()
+        } else if data.end == vertex {
+            tangent(&data.curve, data.range.1).ok().map(|t| -t)
+        } else {
+            None
+        }
+    };
+    let Some(data) = body.edge(edge) else {
+        return false;
+    };
+    [data.start, data.end].into_iter().any(|vertex| {
+        match (away(edge, vertex), away(other, vertex)) {
+            (Some(a), Some(b)) => a.dot(b * sign) > 1.0 - 1e-9,
+            _ => false,
+        }
+    })
 }
 
 /// An edge at a vertex: which way it leaves, and how it turns.
@@ -997,20 +1308,32 @@ fn lengthen(
         } else {
             Turn::Concave
         };
-        let [d1, d2] = plan.distances;
-        let [b1, b2] = plan.into;
+        let [f1, f2] = plan.feet();
         let beyond = [
             -tangent(&data.curve, data.range.0)?,
             tangent(&data.curve, data.range.1)?,
         ];
         let mut longer = [0.0, 0.0];
-        for (slot, (vertex, beyond)) in longer.iter_mut().zip(ends.into_iter().zip(beyond)) {
+        let mut trims = [None, None];
+        for ((slot, trim), (vertex, beyond)) in longer
+            .iter_mut()
+            .zip(trims.iter_mut())
+            .zip(ends.into_iter().zip(beyond))
+        {
             let others: Vec<Leaving> = leaving(body, uses, at, vertex)?
                 .into_iter()
                 .filter(|l| l.edge != plan.edge)
                 .collect();
             let goes_on = others.iter().any(|l| l.direction.dot(beyond) > 1.0 - 1e-9);
-            if goes_on || others.iter().any(|l| l.turn != own) {
+            if goes_on {
+                continue;
+            }
+            if others.iter().any(|l| l.turn != own) {
+                if let Some((far, reach)) = end_plane(body, uses, at, plan, vertex, beyond)? {
+                    let corner = body.vertex(vertex).ok_or_else(lost)?.point;
+                    *trim = Some((corner, far));
+                    *slot = reach;
+                }
                 continue;
             }
             match plan.path {
@@ -1018,11 +1341,11 @@ fn lengthen(
                     // The chamfer plane holds the edge's direction and
                     // the line between the two cut lines. How far past
                     // the vertex does it cut the other edges there?
-                    let Some(normal) = along.cross(b1 * d1 - b2 * d2).normalized() else {
+                    let Some(normal) = along.cross(f1 - f2).normalized() else {
                         return Err(lost());
                     };
                     let corner = body.vertex(vertex).ok_or_else(lost)?.point;
-                    let height = normal.dot(corner - (start + b1 * d1));
+                    let height = normal.dot(corner - (start + f1));
                     let mut reach = 0.0_f64;
                     for other in &others {
                         let slope = normal.dot(other.direction);
@@ -1047,8 +1370,114 @@ fn lengthen(
             }
         }
         plan.longer = longer;
+        plan.trims = trims;
     }
     Ok(())
+}
+
+/// Where a straight edge ends at `vertex` against the faces there in a
+/// way none of the rules above covers (not all its edges turn like the
+/// blended one, and the edge does not go on): when exactly one other face
+/// meets there and it is a plane that is not square to the edge, the
+/// blend ends in that plane, as a fillet or chamfer that runs out on a
+/// face it meets at an angle does in other modellers: the tool is made
+/// long enough to reach the plane and cut there, and its end then lies
+/// in the plane of that face, which the boolean merges it into. Gives the
+/// normal of the plane away from the edge and how far the tool has to go
+/// on past the vertex; `None` where this does not apply (the tool ends
+/// at the vertex across the edge, as before).
+fn end_plane(
+    body: &Body,
+    uses: &[Vec<Use>],
+    at: &[Vec<EdgeId>],
+    plan: &Plan,
+    vertex: VertexId,
+    beyond: Vec3,
+) -> Result<Option<(Vec3, f64)>, BlendError> {
+    if !matches!(plan.path, Path::Line { .. }) {
+        return Ok(None);
+    }
+    let mut faces = BTreeSet::new();
+    for edge in at.get(vertex.0 as usize).into_iter().flatten() {
+        for used in uses.get(edge.0 as usize).into_iter().flatten() {
+            faces.insert(used.face);
+        }
+    }
+    for face in plan.faces {
+        faces.remove(&face);
+    }
+    let [end] = faces.into_iter().collect::<Vec<_>>()[..] else {
+        return Ok(None);
+    };
+    let face = body.face(end).ok_or_else(lost)?;
+    let Surface::Plane(plane) = &face.surface else {
+        return Ok(None);
+    };
+    let normal = plane.frame().z();
+    let slope = normal.dot(beyond);
+    // Square to the edge: the tool's own end lies in the plane already.
+    // Along the edge: the plane does not cut it.
+    if slope.abs() >= 1.0 - 1e-9 || slope.abs() <= 1e-6 {
+        return Ok(None);
+    }
+    // The normal away from the edge, which lies behind the vertex.
+    let far = if slope > 0.0 { normal } else { -normal };
+    // How far past the vertex the plane is at the corners of the section
+    // (the edge, the two feet and their sum, which hold a fillet's arc).
+    let [f1, f2] = plan.feet();
+    let mut reach = 0.0_f64;
+    for offset in [f1, f2, f1 + f2] {
+        let s = -far.dot(offset) / far.dot(beyond);
+        if s.is_finite() {
+            reach = reach.max(s);
+        }
+    }
+    let largest = plan.largest();
+    if reach > 64.0 * largest {
+        return Ok(None);
+    }
+    Ok(Some((far, 1.5 * reach + largest)))
+}
+
+/// The tool cut by the plane through `point` square to `far`: what lies
+/// beyond it (along `far`) is taken off. `size` bounds the tool.
+fn trim(
+    tool: Tool,
+    point: Vec3,
+    far: Vec3,
+    size: f64,
+    tolerance: &Tolerance,
+) -> Result<Tool, BlendError> {
+    let frame = Frame::from_z(point, far).ok_or_else(lost)?;
+    let corner = frame.point(-size, -size, 0.0);
+    let frame = frame.at(corner).ok_or_else(lost)?;
+    let block = primitives::block(&frame, 2.0 * size, 2.0 * size, size)?;
+    let options = BooleanOptions {
+        merge: true,
+        trust_operands: true,
+    };
+    let result = boolean_with(&tool.body, &block, BooleanOp::Subtract, tolerance, &options)?;
+    let mut slope = None;
+    let mut caps = Vec::new();
+    for (index, source) in result.faces.iter().enumerate() {
+        if source.operand != Operand::A {
+            continue;
+        }
+        let id = FaceId(index_u32(index));
+        if source.face == tool.slope {
+            if slope.is_some() {
+                return Err(lost());
+            }
+            slope = Some(id);
+        } else if tool.caps.contains(&source.face) {
+            caps.push(id);
+        }
+    }
+    Ok(Tool {
+        body: result.body,
+        slope: slope.ok_or_else(lost)?,
+        caps,
+    })
 }
 
 /// A tool and which of its faces is the chamfer face.
@@ -1089,6 +1518,33 @@ fn slope_of(result: crate::extrude::OpResult) -> Result<Tool, BlendError> {
     })
 }
 
+/// A side of a tool's section that lies in a face: a line in a plane, the
+/// short arc of the circle in a cylinder.
+fn along_trace(
+    id: u64,
+    trace: &Trace,
+    from: [f64; 2],
+    to: [f64; 2],
+    flat: impl Fn(Vec3) -> [f64; 2],
+) -> SketchCurve {
+    match trace.circle() {
+        None => line(id, from, to),
+        Some((centre, _)) => SketchCurve {
+            id,
+            curve: short_arc(flat(centre), from, to),
+        },
+    }
+}
+
+/// The arc about `center` between two points the short way round,
+/// counter-clockwise as a sketch arc runs.
+fn short_arc(center: [f64; 2], p1: [f64; 2], p2: [f64; 2]) -> Curve2 {
+    let turn =
+        (p1[0] - center[0]) * (p2[1] - center[1]) - (p1[1] - center[1]) * (p2[0] - center[0]);
+    let (start, end) = if turn > 0.0 { (p1, p2) } else { (p2, p1) };
+    Curve2::Arc { center, start, end }
+}
+
 /// The curve `1` of a tool's section, from the cut line on the first
 /// face to the one on the second: straight for a chamfer, and for a
 /// fillet the arc of the ball that touches both faces there. `flat`
@@ -1106,21 +1562,23 @@ fn across_curve(
     }
     let [b1, b2] = plan.into;
     let [d1, _] = plan.distances;
-    // The ball's centre lies on the bisector, where the perpendiculars
-    // of the two tangent points meet.
-    let spread = 1.0 + b1.dot(b2);
-    if spread <= 1e-12 {
-        return Err(lost());
-    }
-    let [cx, cy] = flat((b1 + b2) * (d1 / spread));
+    let ball = match plan.section.as_ref().and_then(|s| s.centre) {
+        Some(centre) => centre,
+        None => {
+            // The ball's centre lies on the bisector, where the
+            // perpendiculars of the two tangent points meet.
+            let spread = 1.0 + b1.dot(b2);
+            if spread <= 1e-12 {
+                return Err(lost());
+            }
+            (b1 + b2) * (d1 / spread)
+        }
+    };
+    let [cx, cy] = flat(ball);
     let center = [rim[0] + cx, rim[1] + cy];
-    // The short way round, counter-clockwise.
-    let turn =
-        (p1[0] - center[0]) * (p2[1] - center[1]) - (p1[1] - center[1]) * (p2[0] - center[0]);
-    let (start, end) = if turn > 0.0 { (p1, p2) } else { (p2, p1) };
     Ok(SketchCurve {
         id: 1,
-        curve: Curve2::Arc { center, start, end },
+        curve: short_arc(center, p1, p2),
     })
 }
 
@@ -1135,17 +1593,36 @@ fn tool(plan: &Plan, tolerance: &Tolerance) -> Result<Tool, BlendError> {
         } => {
             let origin = start - along * plan.longer[0];
             let frame = Frame::new(origin, along, b1).ok_or_else(lost)?;
-            let p1 = [d1, 0.0];
-            let p2 = [d2 * b2.dot(frame.x()), d2 * b2.dot(frame.y())];
             let flat = |v: Vec3| [v.dot(frame.x()), v.dot(frame.y())];
-            let curves = [
-                line(0, [0.0, 0.0], p1),
-                across_curve(plan, [0.0, 0.0], p1, p2, flat)?,
-                line(2, p2, [0.0, 0.0]),
-            ];
+            let curves = match &plan.section {
+                None => {
+                    let p1 = [d1, 0.0];
+                    let p2 = [d2 * b2.dot(frame.x()), d2 * b2.dot(frame.y())];
+                    [
+                        line(0, [0.0, 0.0], p1),
+                        across_curve(plan, [0.0, 0.0], p1, p2, flat)?,
+                        line(2, p2, [0.0, 0.0]),
+                    ]
+                }
+                Some(section) => {
+                    let [f1, f2] = section.feet;
+                    let (p1, p2) = (flat(f1), flat(f2));
+                    let [t1, t2] = section.traces;
+                    [
+                        along_trace(0, &t1, [0.0, 0.0], p1, flat),
+                        across_curve(plan, [0.0, 0.0], p1, p2, flat)?,
+                        along_trace(2, &t2, p2, [0.0, 0.0], flat),
+                    ]
+                }
+            };
             let profiles = detect_profiles(&curves, tolerance)?;
             let total = length + plan.longer[0] + plan.longer[1];
-            slope_of(extrude(&profiles, &frame, 0.0, total, tolerance)?)
+            let mut made = slope_of(extrude(&profiles, &frame, 0.0, total, tolerance)?)?;
+            for (point, far) in plan.trims.into_iter().flatten() {
+                let size = 4.0 * (total + plan.largest());
+                made = trim(made, point, far, size, tolerance)?;
+            }
+            Ok(made)
         }
         Path::Circle {
             centre,
@@ -1227,12 +1704,21 @@ fn joints(
         let (Some(a), Some(b)) = (plans.get(*i), plans.get(*j)) else {
             continue;
         };
-        if i != j
-            && a.round.is_some()
-            && b.round.is_some()
-            && a.convex == b.convex
-            && one.dot(*two) < -1.0 + 1e-9
-        {
+        // Two chamfers whose sections are the same triangle at the
+        // vertex: one distance on both sides of both edges.
+        let same_chamfer = || {
+            let d = a.distances[0];
+            [a.distances, b.distances]
+                .iter()
+                .flatten()
+                .all(|x| (x - d).abs() <= 1e-12 * d.abs())
+        };
+        let kinds = match (a.round, b.round) {
+            (Some(_), Some(_)) => true,
+            (None, None) => same_chamfer(),
+            _ => false,
+        };
+        if i != j && kinds && a.convex == b.convex && one.dot(*two) < -1.0 + 1e-9 {
             found.push(Joint {
                 vertex,
                 plans: [*i, *j],
@@ -1476,7 +1962,7 @@ fn join(
     if !defects.is_empty() {
         defects.truncate(crate::MAX_REPORTED);
         return Err(BlendError::Kernel(KernelError::InvalidBody {
-            operation: "joining the tools of a chain of fillets",
+            operation: "joining the tools of a chain of blends",
             defects,
         }));
     }
@@ -1638,7 +2124,7 @@ fn corners(
         let (Some(pa), Some(pb), Some(pc)) = (plans.get(ia), plans.get(ib), plans.get(ic)) else {
             continue;
         };
-        let straight = |p: &Plan| matches!(p.path, Path::Line { .. });
+        let straight = |p: &Plan| matches!(p.path, Path::Line { .. }) && p.flat();
         if !(straight(pa) && straight(pb) && straight(pc))
             || pa.convex != pb.convex
             || pa.convex != pc.convex
@@ -1790,7 +2276,7 @@ fn ball_corners(
         let (Some(pa), Some(pb), Some(pc)) = (plans.get(ia), plans.get(ib), plans.get(ic)) else {
             return Err(lost());
         };
-        let straight = |p: &Plan| matches!(p.path, Path::Line { .. });
+        let straight = |p: &Plan| matches!(p.path, Path::Line { .. }) && p.flat();
         if !(straight(pa) && straight(pb) && straight(pc))
             || pa.convex != pb.convex
             || pa.convex != pc.convex
@@ -2162,14 +2648,14 @@ fn reframe(body: &mut Body, of_plan: &[Vec<usize>], index: usize, plan: &Plan) {
     let normal = plane.frame().z();
     let outward = if face.reversed { -normal } else { normal };
     let [b1, b2] = plan.into;
-    let [d1, _] = plan.distances;
     let forward = b1.cross(b2).dot(along) >= 0.0;
     let (x, from) = if forward {
         (along, start)
     } else {
         (-along, start + along * length)
     };
-    if let Some(frame) = Frame::new(from + b1 * d1, outward, x) {
+    let [f1, _] = plan.feet();
+    if let Some(frame) = Frame::new(from + f1, outward, x) {
         face.surface = Surface::Plane(craft3d_geom::Plane::new(frame));
         face.reversed = false;
     }
@@ -2182,6 +2668,112 @@ pub(crate) fn blend(
     body: &Body,
     edges: &[Request],
     tolerance: &Tolerance,
+) -> Result<Blended, BlendError> {
+    blend_inner(body, edges, tolerance, false)
+}
+
+/// Blends the edges no closed form covers (`free`, with every edge that
+/// shares a vertex with one of them, so a chain that runs on from a
+/// freeform edge into a line or an arc is one chain) in place first, and
+/// then the others (`closed`, whose edges and faces keep their numbers
+/// through that) by the tools; the sources of the second result are
+/// carried back to `body`.
+fn mixed(
+    body: &Body,
+    edges: &[Request],
+    mut free: Vec<usize>,
+    tolerance: &Tolerance,
+) -> Result<Blended, BlendError> {
+    let mut closed: Vec<usize> = (0..edges.len()).filter(|i| !free.contains(i)).collect();
+    // Edges that touch a freeform one go with it.
+    for _ in 0..=edges.len() {
+        let touched: BTreeSet<VertexId> = free
+            .iter()
+            .filter_map(|i| body.edge(edges.get(*i)?.edge))
+            .flat_map(|e| [e.start, e.end])
+            .collect();
+        let (joins, stays): (Vec<usize>, Vec<usize>) = closed.iter().partition(|i| {
+            edges
+                .get(**i)
+                .and_then(|r| body.edge(r.edge))
+                .is_some_and(|e| touched.contains(&e.start) || touched.contains(&e.end))
+        });
+        if joins.is_empty() {
+            break;
+        }
+        free.extend(joins);
+        free.sort_unstable();
+        closed = stays;
+    }
+    let pick = |list: &[usize]| -> Vec<Request> {
+        list.iter().filter_map(|i| edges.get(*i).copied()).collect()
+    };
+    let rolled = rolling::blend(body, &pick(&free), tolerance)?;
+    if closed.is_empty() {
+        // `free` is every request, in order.
+        return Ok(rolled);
+    }
+    let second = blend_inner(&rolled.body, &pick(&closed), tolerance, true)?;
+    let from_free = |i: &usize| free.get(*i).copied().unwrap_or(usize::MAX);
+    let from_closed = |i: &usize| closed.get(*i).copied().unwrap_or(usize::MAX);
+    let faces = second
+        .faces
+        .into_iter()
+        .map(|face| match face {
+            Face::Kept(list) => {
+                let mut kept = BTreeSet::new();
+                let mut blends = BTreeSet::new();
+                for f in list {
+                    match rolled.faces.get(f.0 as usize) {
+                        Some(Face::Kept(origin)) => kept.extend(origin.iter().copied()),
+                        Some(Face::Blend(of)) => blends.extend(of.iter().map(from_free)),
+                        Some(Face::Corner(_)) | None => {}
+                    }
+                }
+                if blends.is_empty() {
+                    Face::Kept(kept.into_iter().collect())
+                } else {
+                    Face::Blend(blends.into_iter().collect())
+                }
+            }
+            Face::Blend(of) => {
+                let mut list: Vec<usize> = of.iter().map(from_closed).collect();
+                list.sort_unstable();
+                Face::Blend(list)
+            }
+            Face::Corner(vertex) => Face::Corner(
+                rolled
+                    .vertices
+                    .get(vertex.0 as usize)
+                    .copied()
+                    .flatten()
+                    .unwrap_or(vertex),
+            ),
+        })
+        .collect();
+    let edges_of = second
+        .edges
+        .into_iter()
+        .map(|e| e.and_then(|e| rolled.edges.get(e.0 as usize).copied().flatten()))
+        .collect();
+    let vertices = second
+        .vertices
+        .into_iter()
+        .map(|v| v.and_then(|v| rolled.vertices.get(v.0 as usize).copied().flatten()))
+        .collect();
+    Ok(Blended {
+        body: second.body,
+        faces,
+        edges: edges_of,
+        vertices,
+    })
+}
+
+fn blend_inner(
+    body: &Body,
+    edges: &[Request],
+    tolerance: &Tolerance,
+    nested: bool,
 ) -> Result<Blended, BlendError> {
     let tol = tolerance.linear;
     if !(tol.is_finite() && tol > 0.0) {
@@ -2209,11 +2801,27 @@ pub(crate) fn blend(
     let at = vertex_edges(body);
     let mut seen = BTreeSet::new();
     let mut plans = Vec::with_capacity(edges.len());
-    for request in edges {
+    // Edges none of the closed forms covers go to `rolling` (see
+    // `mixed`).
+    let mut free = Vec::new();
+    for (index, request) in edges.iter().enumerate() {
         if !seen.insert(request.edge) {
             return Err(refused(request.edge, Reason::Twice));
         }
-        plans.push(plan(body, &uses, request, tol)?);
+        match plan(body, &uses, request, tol) {
+            Ok(made) => plans.push(made),
+            Err(BlendError::Refused { reason, .. }) if rolling::takes(reason) => {
+                free.push(index);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    if let Some(first) = free.first() {
+        if nested {
+            let edge = edges.get(*first).map_or(EdgeId(u32::MAX), |r| r.edge);
+            return Err(refused(edge, Reason::FreeMixed));
+        }
+        return mixed(body, edges, free, tolerance);
     }
     fits(body, &plans, tol)?;
     lengthen(body, &uses, &at, &mut plans)?;
@@ -2238,12 +2846,8 @@ pub(crate) fn blend(
             .map(|i| Some(VertexId(index_u32(i))))
             .collect(),
     };
-    // Fillets that continue each other are one tool (see `joints`).
-    let joined = if plans.iter().any(|p| p.round.is_some()) {
-        joints(body, &uses, &at, &plans)?
-    } else {
-        Vec::new()
-    };
+    // Blends that continue each other are one tool (see `joints`).
+    let joined = joints(body, &uses, &at, &plans)?;
     // Per plan, the least plan it is joined to, through any number of
     // joints.
     let mut group: Vec<usize> = (0..plans.len()).collect();

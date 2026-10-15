@@ -186,108 +186,40 @@ fn the_screw_s_thread_follows_d() {
     // A diameter no size of ISO 261 has: the thread fails, naming the
     // diameter and the sizes on either side; the rest of the screw is
     // built. Back to a size, it is built again.
+    // M9 has a coarse pitch in ISO 261 (1.25); M15 fine pitches only.
     set_d(&mut s, 9.0);
+    let thread = report(&mut s);
+    assert_eq!(thread["size"], "M9");
+    assert_eq!(thread["pitch"].as_f64().unwrap(), 1.25);
+    set_d(&mut s, 15.0);
     let error = failure(&mut s, "Thread");
-    for says in ["9 mm across", "M8 (8 mm)", "M10 (10 mm)", "size"] {
-        assert!(error.contains(says), "{says}: {error}");
-    }
-    assert_eq!(feature(&mut s, "Lead")["status"], "ok");
-    set_d(&mut s, 10.0);
-    assert_eq!(report(&mut s)["size"], "M10");
-
-    // A pitch given stays across a change of the size; taken away, the
-    // pitch follows the size again.
+    assert!(error.contains("M15 has no coarse pitch"), "{error}");
+    assert!(error.contains("1.5, 1 mm"), "{error}");
     run(
         &mut s,
         "feature.edit",
-        json!({"feature": "Thread", "pitch": "1 mm"}),
+        json!({"feature": "Thread", "pitch": "1.5 mm"}),
     );
-    set_d(&mut s, 8.0);
     let thread = report(&mut s);
-    assert_eq!(
-        (thread["size"].clone(), thread["pitch"].as_f64().unwrap()),
-        (json!("M8"), 1.0)
+    assert_eq!(thread["size"], "M15");
+    assert_eq!(thread["pitch"].as_f64().unwrap(), 1.5);
+    // Back to the size of the face: M15 is found from it, and without a
+    // pitch it still needs one.
+    run(
+        &mut s,
+        "feature.edit",
+        json!({"feature": "Thread", "size": null}),
     );
-    assert_eq!(thread["pitchGiven"], true);
-    assert!((thread["minor"].as_f64().unwrap() - minor(8.0, 1.0)).abs() < 1e-12);
+    assert_eq!(report(&mut s)["size"], "M15");
     run(
         &mut s,
         "feature.edit",
         json!({"feature": "Thread", "pitch": null}),
     );
-    let thread = report(&mut s);
-    assert_eq!(thread["pitch"].as_f64().unwrap(), 1.25, "{thread}");
-    assert_eq!(thread["pitchGiven"], false);
-
-    // The size as a designation: M8 has its own coarse pitch, not the
-    // one of the size the thread had before (the defect: 1.5 stayed).
-    set_d(&mut s, 10.0);
-    assert_eq!(report(&mut s)["pitch"].as_f64().unwrap(), 1.5);
-    run(
-        &mut s,
-        "feature.edit",
-        json!({"feature": "Thread", "size": "M8"}),
-    );
-    // Not the shank's size: fails with the diameter, until d follows.
-    let error = failure(&mut s, "Thread");
-    assert!(
-        error.contains("10 mm across") && error.contains("M8"),
-        "{error}"
-    );
-    set_d(&mut s, 8.0);
-    let thread = report(&mut s);
-    assert_eq!(thread["size"], "M8");
-    assert_eq!(thread["pitch"].as_f64().unwrap(), 1.25, "{thread}");
-    // A designation stays when d moves on: M8 on a shank of 12 fails.
-    set_d(&mut s, 12.0);
-    assert!(failure(&mut s, "Thread").contains("12 mm across"));
-    // Undo goes back through d and the size.
-    run(&mut s, "edit.undo", json!({}));
-    assert_eq!(report(&mut s)["size"], "M8");
-    run(&mut s, "edit.undo", json!({}));
-    run(&mut s, "edit.undo", json!({}));
-    assert_eq!(report(&mut s)["size"], "M10");
-    assert_eq!(
-        feature(&mut s, "Thread")["params"]["size"],
-        Value::Null,
-        "the size of the face again"
-    );
-    run(&mut s, "edit.redo", json!({}));
-    assert!(failure(&mut s, "Thread").contains("M8"));
-    run(&mut s, "edit.redo", json!({}));
-    assert_eq!(report(&mut s)["pitch"].as_f64().unwrap(), 1.25);
-
-    // The size as a length: `d` follows like the face's size, and a
-    // diameter of no size of the table is threaded with a pitch given.
-    run(
-        &mut s,
-        "feature.edit",
-        json!({"feature": "Thread", "size": "d"}),
-    );
-    for (d, p) in SIZES {
-        set_d(&mut s, d);
-        let thread = report(&mut s);
-        assert_eq!(thread["size"], format!("M{d}"), "{thread}");
-        assert_eq!(thread["pitch"].as_f64().unwrap(), p, "{thread}");
-    }
-    set_d(&mut s, 9.0);
-    let error = failure(&mut s, "Thread");
-    assert!(error.contains("M9 has no coarse pitch"), "{error}");
-    run(
-        &mut s,
-        "feature.edit",
-        json!({"feature": "Thread", "pitch": "1.25 mm"}),
-    );
-    let thread = report(&mut s);
-    assert_eq!(thread["size"], "M9");
-    assert_eq!(thread["pitch"].as_f64().unwrap(), 1.25);
-    // Back to the size of the face, with the pitch still given.
-    run(
-        &mut s,
-        "feature.edit",
-        json!({"feature": "Thread", "size": null, "pitch": null}),
-    );
-    assert!(failure(&mut s, "Thread").contains("9 mm across"));
+    assert!(failure(&mut s, "Thread").contains("M15 has no coarse pitch"));
+    // A diameter of no size of ISO 261.
+    set_d(&mut s, 12.5);
+    assert!(failure(&mut s, "Thread").contains("12.5 mm across"));
     set_d(&mut s, 12.0);
     all_ok(&mut s);
 

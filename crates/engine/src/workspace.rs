@@ -45,6 +45,27 @@ impl Workspace {
     }
 }
 
+/// The path a document opened from or saved to `path` (found at
+/// `resolved`) keeps, for a later `file.save` without a path and for
+/// `file.list`. With unrestricted access a relative path is relative to
+/// the process's working directory, which the document must not depend
+/// on: the desktop app opens the file named on its command line that way
+/// and then hands requests a write root, beneath which the same relative
+/// path would name another file. So it is kept absolute, with its links
+/// resolved (a root is spelled that way too, and paths are compared with
+/// it as text). Beneath a root the path is kept as given: it is relative
+/// to the root, which does not move.
+pub(crate) fn kept_path(access: &Access, path: &str, resolved: &Path) -> String {
+    if !matches!(access, Access::Unrestricted) || Path::new(path).is_absolute() {
+        return path.to_string();
+    }
+    std::fs::canonicalize(resolved)
+        .or_else(|_| std::path::absolute(resolved))
+        .ok()
+        .and_then(|p| p.to_str().map(str::to_string))
+        .unwrap_or_else(|| path.to_string())
+}
+
 /// Maps a path from a request to a path on disk, or refuses it. Beneath a
 /// root, a path is relative, or absolute and textually under the root; it
 /// has no `..`, and nothing is resolved on the file system, so the check

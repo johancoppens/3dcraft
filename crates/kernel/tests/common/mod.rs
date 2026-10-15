@@ -510,3 +510,84 @@ pub fn catalogue(k: f64) -> Vec<Case> {
         })
         .collect()
 }
+
+/// A polygon (counter-clockwise) whose corner `i` is rounded by a
+/// tangent arc of radius `radii[i]` (0: left sharp): the sketch, its area,
+/// the length of its straight pieces, and the turn of each corner (left
+/// positive).
+pub fn rounded_polygon(
+    points: &[[f64; 2]],
+    radii: &[f64],
+) -> (Vec<SketchCurve>, f64, f64, Vec<f64>) {
+    let n = points.len();
+    let mut corners = Vec::new();
+    let mut polygon_area = 0.0;
+    for i in 0..n {
+        let (p, q) = (points[i], points[(i + 1) % n]);
+        polygon_area += 0.5 * (p[0] * q[1] - p[1] * q[0]);
+    }
+    let unit = |a: [f64; 2], b: [f64; 2]| {
+        let l = (b[0] - a[0]).hypot(b[1] - a[1]);
+        [(b[0] - a[0]) / l, (b[1] - a[1]) / l]
+    };
+    // Per corner: the tangent points on the incoming and outgoing side,
+    // the centre, the turn, the radius.
+    for i in 0..n {
+        let (prev, here, next) = (points[(i + n - 1) % n], points[i], points[(i + 1) % n]);
+        let (a, b) = (unit(prev, here), unit(here, next));
+        let turn = (a[0] * b[1] - a[1] * b[0]).atan2(a[0] * b[0] + a[1] * b[1]);
+        let big = radii[i];
+        // A corner that turns right (an inside corner) is rounded the
+        // other way round: its arc's centre lies to the right.
+        let side = turn.signum();
+        let back = big * (turn.abs() / 2.0).tan();
+        let t_in = [here[0] - a[0] * back, here[1] - a[1] * back];
+        let t_out = [here[0] + b[0] * back, here[1] + b[1] * back];
+        let centre = [t_in[0] - a[1] * big * side, t_in[1] + a[0] * big * side];
+        corners.push((t_in, t_out, centre, turn, big));
+    }
+    let mut curves = Vec::new();
+    let mut id = 1;
+    let mut lines = 0.0;
+    let mut cut = 0.0;
+    for i in 0..n {
+        let (t_in, t_out, centre, turn, big) = corners[i];
+        if big > 0.0 {
+            if turn > 0.0 {
+                curves.push(arc(id, centre, t_in, t_out));
+            } else {
+                curves.push(arc(id, centre, t_out, t_in));
+            }
+            id += 1;
+        }
+        let next_in = corners[(i + 1) % n].0;
+        curves.push(line(id, t_out, next_in));
+        id += 1;
+        lines += (next_in[0] - t_out[0]).hypot(next_in[1] - t_out[1]);
+        // What the arc cuts off an outside corner, or fills in an inside
+        // one.
+        cut += turn.signum() * big * big * ((turn.abs() / 2.0).tan() - turn.abs() / 2.0);
+    }
+    let turns = corners.iter().map(|c| c.3).collect();
+    (curves, polygon_area - cut, lines, turns)
+}
+
+/// The corners of the plate of finding E1 at a tenth.
+pub const PLATE_E1: [[f64; 2]; 8] = [
+    [-12.0, -7.0],
+    [12.0, -7.0],
+    [15.0, 0.0],
+    [15.0, 9.0],
+    [9.5, 17.5],
+    [-9.5, 17.5],
+    [-15.0, 9.0],
+    [-15.0, 0.0],
+];
+
+/// The outline of the plate of finding E1 at a tenth, with its closed
+/// forms, and which corners are sharp.
+pub fn plate_e1() -> (Vec<SketchCurve>, f64, f64, Vec<f64>, [usize; 2]) {
+    let radii = [0.0, 0.0, 1.4, 1.4, 1.4, 1.4, 1.4, 1.4];
+    let (curves, area, lines, turns) = rounded_polygon(&PLATE_E1, &radii);
+    (curves, area, lines, turns, [0, 1])
+}

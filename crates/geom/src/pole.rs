@@ -129,6 +129,14 @@ impl Pole {
         }
     }
 
+    /// How far `(u, v)` is from the pole's border, as a share of the
+    /// parameter range across.
+    pub fn share_off(&self, surface: &Surface, u: f64, v: f64) -> f64 {
+        let (_, at, across) = self.ranges(surface);
+        let here = if self.across_v() { v } else { u };
+        ((here - at) / across).abs()
+    }
+
     /// Whether the point of the surface at `(u, v)` is this pole: on its
     /// border, to rounding.
     pub fn holds(&self, surface: &Surface, u: f64, v: f64) -> bool {
@@ -144,8 +152,32 @@ impl Pole {
     /// Where the surface closes up smoothly it is the same along every
     /// meridian; at a cone-like point it is the normal of the cone along
     /// that ruling. `None` where the surface has no normal nearby either.
+    ///
+    /// At an end of the border that is the border of another pole (a pole
+    /// at a corner of the parameters) every place off this border near
+    /// that end is next to that pole too, and both derivatives are small
+    /// there: the place is kept as far from that end as from this border.
     pub fn normal_along(&self, surface: &Surface, along: f64) -> Option<Vec3> {
+        let ((low, high), _, _) = self.ranges(surface);
+        let (mut low_pole, mut high_pole) = (false, false);
+        for other in poles(surface) {
+            if other.across_v() == self.across_v() {
+                continue;
+            }
+            match other.border {
+                Border::UStart | Border::VStart => low_pole = true,
+                Border::UEnd | Border::VEnd => high_pole = true,
+            }
+        }
         [NUDGE, 1e-4, 1e-2].into_iter().find_map(|off| {
+            let step = off * (high - low);
+            let mut along = along;
+            if low_pole {
+                along = along.max(low + step);
+            }
+            if high_pole {
+                along = along.min(high - step);
+            }
             let (u, v) = self.place(surface, along, off);
             let (_, su, sv) = surface.derivatives(u, v);
             let cross = su.cross(sv);
@@ -171,12 +203,43 @@ impl Pole {
     /// that meridian is the farthest in direction, not the nearest. Where
     /// the surface closes up smoothly every meridian gives the same
     /// normal.
+    ///
+    /// Where the pole is at a corner of the parameters (two adjacent
+    /// borders are this one point), the meridians leave it from both
+    /// borders, and the nearest of all is taken.
     pub fn normal_towards(&self, surface: &Surface, p: Vec3) -> Option<Vec3> {
+        let (along, score) = self.best_meridian(surface, p);
+        let mut pick = (score, *self, along);
+        for other in poles(surface) {
+            // A border across the other parameter that is a pole too
+            // shares a corner with this one, and so is this point.
+            if other.across_v() == self.across_v() {
+                continue;
+            }
+            let (along, score) = other.best_meridian(surface, p);
+            if score > pick.0 {
+                pick = (score, other, along);
+            }
+        }
+        pick.1.normal_along(surface, pick.2)
+    }
+
+    /// The parameter along the border of the meridian that leaves the
+    /// pole nearest to the direction of `p` (the middle of the border for
+    /// `p` at the pole).
+    pub fn meridian_towards(&self, surface: &Surface, p: Vec3) -> f64 {
+        self.best_meridian(surface, p).0
+    }
+
+    /// [`Self::meridian_towards`], and how well that meridian points
+    /// towards `p` (the cosine of the angle between them; minus infinity
+    /// when nothing points anywhere).
+    fn best_meridian(&self, surface: &Surface, p: Vec3) -> (f64, f64) {
         let ((low, high), _, _) = self.ranges(surface);
         let from = p - self.point;
         let middle = 0.5 * (low + high);
         if !(from.length() > 0.0 && from.is_finite()) {
-            return self.normal_along(surface, middle);
+            return (middle, f64::NEG_INFINITY);
         }
         // How well the meridian at `along` points towards `p`.
         let towards = |along: f64| {
@@ -208,12 +271,19 @@ impl Pole {
             }
         }
         let narrowed = 0.5 * (a + b);
-        let along = if towards(narrowed) >= best.0 {
-            narrowed
+        let value = towards(narrowed);
+        let (along, value) = if value >= best.0 {
+            (narrowed, value)
         } else {
-            best.1
+            (best.1, best.0)
         };
-        self.normal_along(surface, along)
+        (along, value / from.length())
+    }
+
+    /// The parameters `(u, v)` of the place on the meridian at `along`
+    /// that is `off` of the parameter range across from the pole.
+    pub fn off_pole(&self, surface: &Surface, along: f64, off: f64) -> (f64, f64) {
+        self.place(surface, along, off)
     }
 }
 

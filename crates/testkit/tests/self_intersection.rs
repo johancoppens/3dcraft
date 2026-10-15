@@ -28,12 +28,14 @@ use boolean_common::{Rng, SCALES, boxed, rod, tolerance};
 use craft3d_geom::{Curve3, Line, Plane, Surface};
 use craft3d_kernel::KernelError;
 use craft3d_kernel::boolean::{BooleanOp, boolean};
+use craft3d_kernel::boolean::{BooleanResult, Operand};
 use craft3d_kernel::extrude::extrude;
 use craft3d_kernel::primitives;
 use craft3d_kernel::profile::{Curve2, SketchCurve, detect_profiles};
 use craft3d_math::{Frame, Transform, Vec3};
 use craft3d_tess::{
-    CrossingKind, SelfCheck, SelfCheckParams, ShellDefect, body_self_intersections,
+    CrossingKind, FaceRole, SelfCheck, SelfCheckParams, ShellDefect, Touched,
+    body_self_intersections, body_self_intersections_near,
 };
 use craft3d_testkit::{solids, trimmed};
 use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, check, merge};
@@ -568,6 +570,243 @@ fn shells_in_the_wrong_place_are_caught() {
     }
 }
 
+// ------------------------------------------ the check near a change
+
+/// Roles for the faces of the bodies `merge` put one after the other:
+/// `groups[i]` for every face of `parts[i]`.
+fn roles_of(parts: &[&Body], groups: &[FaceRole]) -> Vec<FaceRole> {
+    parts
+        .iter()
+        .zip(groups)
+        .flat_map(|(part, role)| std::iter::repeat_n(*role, part.faces.len()))
+        .collect()
+}
+
+fn near(body: &Body, k: f64, roles: &[FaceRole]) -> SelfCheck {
+    body_self_intersections_near(body, &params(k), roles).unwrap()
+}
+
+/// With every face new, the check near a change is the whole check; with
+/// the faces in groups it finds what crosses between groups, and only
+/// that, meshing only what is near.
+#[test]
+fn the_check_near_a_change_finds_what_the_whole_check_finds_there() {
+    use FaceRole::{Known, New};
+    for k in SCALES {
+        let tol = tolerance(k);
+        let frame = tilted(k);
+        let at = |x: f64, y: f64, z: f64| frame.at(frame.point(x * k, y * k, z * k)).unwrap();
+        let big = primitives::block(&frame, 4.0 * k, 4.0 * k, 4.0 * k).unwrap();
+        let ball = primitives::sphere(&at(4.0, 2.0, 2.0), k).unwrap();
+        let both = joined(&[&big, &ball]);
+
+        // All new: the whole check, finding for finding.
+        for body in [&both, &big, &l_shape(&frame, 3.0 * k, 2.0 * k, k, k)] {
+            let all = vec![New; body.faces.len()];
+            let here = near(body, k, &all);
+            assert_eq!(here.faces, body.faces.len());
+            assert_eq!(here, inspect(body, k));
+        }
+
+        // Two groups that cross: found, between the two; one group: not
+        // looked at (the caller says they keep clear of each other).
+        let found = near(&both, k, &roles_of(&[&big, &ball], &[Known(0), Known(1)]));
+        assert!(found.certain_crossings > 0, "{found}");
+        assert!(
+            found
+                .crossings
+                .iter()
+                .filter(|c| c.certain)
+                .all(|c| c.shells == [Some(0), Some(1)]),
+            "{found}"
+        );
+        let trusted = near(&both, k, &roles_of(&[&big, &ball], &[Known(0), Known(0)]));
+        assert_eq!(trusted.certain_crossings + trusted.marginal_crossings, 0);
+        // The ball new, the block known: the same.
+        let found = near(&both, k, &roles_of(&[&big, &ball], &[Known(0), New]));
+        assert!(found.certain_crossings > 0, "{found}");
+
+        // A shell wholly inside another, nothing crossing: found when the
+        // two are in different groups.
+        let inner = primitives::block(&at(1.0, 1.0, 1.0), k, 2.0 * k, k).unwrap();
+        let nested = joined(&[&big, &inner]);
+        assert_eq!(check(&nested, &tol), []);
+        let found = near(
+            &nested,
+            k,
+            &roles_of(&[&big, &inner], &[Known(0), Known(1)]),
+        );
+        assert_eq!(found.shells.len(), 1, "{found}");
+        assert_eq!(
+            (found.shells[0].shell, found.shells[0].defect),
+            (1, ShellDefect::OuterInsideSolid)
+        );
+        assert!(found.shells[0].certain);
+
+        // A row of eight blocks apart, and one more that runs into the
+        // fourth: only what is near the new one is meshed, and the
+        // crossing is found with the faces of the fourth. Along the axes,
+        // where the boxes of faces are tight; turned, they reach over to
+        // the neighbours, and more is meshed.
+        let square = Frame::new(v(0.3 * k, -1.7 * k, 0.9 * k), Vec3::Z, Vec3::X).unwrap();
+        let at = |x: f64, y: f64, z: f64| square.at(square.point(x * k, y * k, z * k)).unwrap();
+        let row: Vec<Body> = (0..8)
+            .map(|i| primitives::block(&at(3.0 * i as f64, 0.0, 0.0), 2.0 * k, k, k).unwrap())
+            .collect();
+        let intruder = primitives::block(&at(10.5, 0.5, 0.5), k, k, k).unwrap();
+        let mut parts: Vec<&Body> = row.iter().collect();
+        parts.push(&intruder);
+        let body = joined(&parts);
+        let mut groups: Vec<FaceRole> = (0..8).map(Known).collect();
+        groups.push(New);
+        let found = near(&body, k, &roles_of(&parts, &groups));
+        assert!(found.certain_crossings > 0, "{found}");
+        assert!(
+            found
+                .crossings
+                .iter()
+                .filter(|c| c.certain)
+                .all(|c| c.shells.contains(&Some(3)) && c.shells.contains(&Some(8))),
+            "{found}"
+        );
+        // The fourth and the new one, whole (they are shells); nothing
+        // else.
+        assert_eq!(found.faces, 12, "{found}");
+        // The row alone, every block its own group: nothing near
+        // anything, nothing meshed.
+        let alone = joined(&row.iter().collect::<Vec<_>>());
+        let groups: Vec<FaceRole> = (0..8).map(Known).collect();
+        let found = near(
+            &alone,
+            k,
+            &roles_of(&row.iter().collect::<Vec<_>>(), &groups),
+        );
+        assert!(found.is_spotless(), "{found}");
+        assert_eq!((found.faces, found.triangles), (0, 0));
+
+        // A boolean: a hole drilled in a plate that has holes already.
+        // Only the faces near the new hole are meshed.
+        let mut plate = primitives::block(&square, 20.0 * k, 2.0 * k, k).unwrap();
+        for i in 0..9 {
+            let cutter =
+                primitives::cylinder(&at(2.0 * i as f64 + 1.0, 1.0, -0.5), 0.4 * k, 2.0 * k)
+                    .unwrap();
+            plate = boolean(&plate, &cutter, Subtract, &tol).unwrap().body;
+        }
+        let cutter = primitives::cylinder(&at(19.0, 1.0, -0.5), 0.4 * k, 2.0 * k).unwrap();
+        let drilled = boolean(&plate, &cutter, Subtract, &tol).unwrap();
+        let found = near(&drilled.body, k, &operand_roles(&drilled));
+        assert!(found.is_clean(), "{found}");
+        // The new hole, the top and the bottom.
+        assert_eq!(found.faces, 3, "{found}");
+    }
+}
+
+/// How long the check near a new hole takes in a plate that has many:
+/// `cargo test --release -p craft3d-testkit --test self_intersection --
+/// --ignored --nocapture near_a_new_hole_in_a_long_plate`.
+#[test]
+#[ignore = "a timing; run in release"]
+fn near_a_new_hole_in_a_long_plate() {
+    let k = 1.0;
+    let tol = tolerance(k);
+    let n = 400;
+    let frame = Frame::WORLD;
+    let at = |x: f64, y: f64, z: f64| frame.at(frame.point(x, y, z)).unwrap();
+    let cutters: Vec<Body> = (0..n)
+        .map(|i| primitives::cylinder(&at(10.0 + 10.0 * i as f64, 10.0, -1.0), 3.0, 7.0).unwrap())
+        .collect();
+    let row = joined(&cutters.iter().collect::<Vec<_>>());
+    let plate = primitives::block(&frame, 10.0 * n as f64 + 10.0, 30.0, 5.0).unwrap();
+    let started = std::time::Instant::now();
+    let first = boolean(&plate, &row, Subtract, &tol).unwrap();
+    let boolean_took = started.elapsed();
+    let started = std::time::Instant::now();
+    let found = near(&first.body, k, &operand_roles(&first));
+    println!(
+        "the row at once: boolean {boolean_took:?}, near {:?}: {found}",
+        started.elapsed()
+    );
+    let plate = first.body;
+    let cutter = primitives::cylinder(&at(500.0, 21.0, -1.0), 3.0, 7.0).unwrap();
+    let started = std::time::Instant::now();
+    let drilled = boolean(&plate, &cutter, Subtract, &tol).unwrap();
+    let boolean_took = started.elapsed();
+    let started = std::time::Instant::now();
+    let found = near(&drilled.body, k, &operand_roles(&drilled));
+    let near_took = started.elapsed();
+    let started = std::time::Instant::now();
+    let whole = inspect(&drilled.body, k);
+    let whole_took = started.elapsed();
+    let started = std::time::Instant::now();
+    let mesh = craft3d_tess::tessellate_body(
+        &drilled.body,
+        &craft3d_tess::TessParams {
+            chordal_tolerance: whole.chordal_tolerance,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    println!(
+        "the mesh alone: {:?}, {} triangles",
+        started.elapsed(),
+        mesh.triangles.len()
+    );
+    println!(
+        "{} faces; boolean {boolean_took:?}; near {near_took:?}: {found}; whole {whole_took:?}: {whole}",
+        drilled.body.faces.len()
+    );
+}
+
+/// A notch whose point reaches the outside of the part exactly: the
+/// walls of the notch touch the outside along a line, in one shell (the
+/// hull of a showcase did this, its inner and outer plan ending in one
+/// point). The checker passes it; no closed mesh can be made of it, and
+/// it is found as touching itself, at three scales, along the axes and
+/// turned. Moved off by a hair either way it is not.
+#[test]
+fn a_shell_that_touches_itself_along_a_line_is_caught() {
+    for k in SCALES {
+        let tol = tolerance(k);
+        for frame in [Frame::WORLD, tilted(k)] {
+            let block = primitives::block(&frame, 4.0 * k, 4.0 * k, k).unwrap();
+            let notch = |tip: f64| {
+                let curves = polygon(&[[2.0 * k, tip * k], [3.0 * k, 2.0 * k], [k, 2.0 * k]]);
+                let profiles = detect_profiles(&curves, &tol).unwrap();
+                let under = frame.at(frame.point(0.0, 0.0, -k)).unwrap();
+                extrude(&profiles, &under, 0.0, 3.0 * k, &tol).unwrap().body
+            };
+            let touching = boolean(&block, &notch(0.0), Subtract, &tol).unwrap().body;
+            assert_eq!(check(&touching, &tol), [], "the checker does not see it");
+            assert_eq!(touching.shells.len(), 1);
+            let found = assert_caught(&touching, k, "a notch touching the outside");
+            assert!(!found.touching.is_empty(), "{found}");
+            for t in &found.touching {
+                // On the line where the notch's walls meet the outside.
+                let (x, y, _) = frame.local(t.at);
+                assert!(
+                    (x - 2.0 * k).abs() < 1e-9 * k && y.abs() < 1e-9 * k,
+                    "{found}"
+                );
+            }
+            // In from the outside, and open to it: both fine.
+            let inside = boolean(&block, &notch(0.25), Subtract, &tol).unwrap().body;
+            assert!(inspect(&inside, k).touching.is_empty());
+            let open = boolean(&block, &notch(-0.25), Subtract, &tol).unwrap().body;
+            assert!(inspect(&open, k).touching.is_empty());
+        }
+    }
+}
+
+/// Roles of the wrong length are an error, not a panic.
+#[test]
+fn the_check_near_a_change_wants_a_role_per_face() {
+    let block = primitives::block(&Frame::WORLD, 1.0, 1.0, 1.0).unwrap();
+    for roles in [vec![], vec![FaceRole::New; 7]] {
+        assert!(body_self_intersections_near(&block, &params(1.0), &roles).is_err());
+    }
+}
+
 /// The box from `lo` to `hi` (times `k`) in `frame`.
 fn boxed_in(frame: &Frame, k: f64, lo: [f64; 3], hi: [f64; 3]) -> Body {
     let corner = frame
@@ -806,6 +1045,28 @@ fn the_margin_separates_touching_from_crossing() {
 
 // --------------------------------------------- what the booleans return
 
+/// The roles of the faces of a boolean's result as regeneration gives
+/// them: a piece of a face of one operand is in that operand's group, a
+/// face merged from pieces of both is new.
+fn operand_roles(result: &BooleanResult) -> Vec<FaceRole> {
+    result
+        .merged
+        .iter()
+        .map(|sources| {
+            let group = |operand: Operand| match operand {
+                Operand::A => 0,
+                Operand::B => 1,
+            };
+            let mut groups = sources.iter().map(|s| group(s.operand));
+            let first = groups.next();
+            match first {
+                Some(g) if groups.all(|other| other == g) => FaceRole::Known(g),
+                _ => FaceRole::New,
+            }
+        })
+        .collect()
+}
+
 #[derive(Default)]
 struct Tally {
     bodies: usize,
@@ -838,6 +1099,19 @@ impl Tally {
                     }
                 };
                 self.bodies += 1;
+                // And as regeneration looks after a boolean: near where
+                // the operands meet, each operand a group.
+                match body_self_intersections_near(
+                    &result.body,
+                    &params(k),
+                    &operand_roles(&result),
+                ) {
+                    Ok(near) if !near.is_clean() => {
+                        self.caught.push(format!("{what}, near: {near}"));
+                    }
+                    Ok(near) => assert!(near.faces <= result.body.faces.len()),
+                    Err(e) => self.unmeshed.push(format!("{what}, near: {e}")),
+                }
                 if !found.is_clean() {
                     self.caught.push(format!("{what}: {found}"));
                 } else if found.is_spotless() {
@@ -1288,10 +1562,14 @@ fn pairs_that_once_fooled_the_detector() {
     // along edge. There four faces meet, two and two in one plane, each
     // in the wall of the column over the next; the detector followed the
     // surface around the end of that edge and called it a crossing, 0.5
-    // deep (the height of the slot). The body is right: it passes the
-    // checker and its volume is that of the two. What is left is the
-    // contact, seen as contact (`crates/tess/tests/self_intersections.rs`
-    // has the configuration built by hand).
+    // deep (the height of the slot). Its volume is that of the two and it
+    // passes the checker, and no face crosses another: what is left on
+    // the mesh is the contact, seen as contact
+    // (`crates/tess/tests/self_intersections.rs` has the configuration
+    // built by hand). But the one shell touches itself along that line:
+    // a vertex of it lies on an edge of it that it is not an end of, no
+    // closed manifold mesh can be made of it, and since 2026-10-15 that
+    // is a finding of its own (`Touch`), which regeneration refuses.
     for k in SCALES {
         let (a, b) = random_pair(1_000_453, Placement::Grid, k);
         let tol = tolerance(k);
@@ -1306,9 +1584,18 @@ fn pairs_that_once_fooled_the_detector() {
                 "{is} against {should}"
             );
             let found = inspect(&union, k);
-            assert!(found.is_clean(), "scale {k}: {found}");
+            assert_eq!(found.certain_crossings, 0, "scale {k}: {found}");
+            assert!(found.shells.iter().all(|s| !s.certain), "{found}");
             assert!(
                 found.crossings.iter().all(|c| c.depth <= 1e-9 * k),
+                "scale {k}: {found}"
+            );
+            assert!(!found.touching.is_empty(), "scale {k}: {found}");
+            assert!(
+                found
+                    .touching
+                    .iter()
+                    .all(|t| t.distance <= 1e-9 * k && matches!(t.touches, Touched::Edge(_))),
                 "scale {k}: {found}"
             );
         }

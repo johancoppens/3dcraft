@@ -26,7 +26,7 @@
 //! (`F7:copy(0)/F1:vertex(3)`), when it is the only one of the result
 //! that came from it.
 
-use craft3d_doc::{FeatureId, MAX_NAME_DEPTH, MAX_NAME_FACES, PersistentName};
+use craft3d_doc::{FeatureId, MAX_NAME_FACES, PersistentName};
 use craft3d_math::Vec3;
 use craft3d_topo::Body;
 use std::collections::{BTreeMap, BTreeSet};
@@ -360,8 +360,8 @@ where
         // in between says nothing its faces here do not say.
         let copies: Vec<PersistentName> = names_there(instance, entity)
             .filter(|name| !name.root().role.is_by_faces())
-            .filter(|name| name.depth() < MAX_NAME_DEPTH)
             .map(|name| PersistentName::copy(feature, instance, name.clone()))
+            .filter(|copy| copy.check().is_ok())
             .collect();
         if !copies.is_empty() {
             aliases.insert(index, copies);

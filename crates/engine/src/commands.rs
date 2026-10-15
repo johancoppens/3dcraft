@@ -90,11 +90,11 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("history.rollback", "Roll Back", r#"{"feature": id or name or null}"#,
         "Regenerates only up to and including this feature; null removes the marker. While the marker is set, a feature added by any command goes in right after it, and the marker moves onto the new feature.", doc: true, history_rollback),
     spec!("document.inspect", "Inspect", "{}",
-        "Returns the whole document state: units, variables with values, features with status (a failed one with the reason under error, which starts with the parameter and names the feature and the name it lost, and, when the reason is that something it is made from failed, under causedBy the feature at the start of that chain: the one to fix; a datum with where it lies, under datum), bodies with counts, mass properties and faceNames (and, per face, faceAliases: the other names a face answers to when a boolean or a pattern merged faces of several operands into it), undo history.", doc: true, document_inspect),
+        "Returns the whole document state: units, variables with values, features with status (a failed one with the reason under error, which starts with the parameter and names the feature and the name it lost, and, when the reason is that something it is made from failed, under causedBy the feature at the start of that chain: the one to fix; a datum with where it lies, under datum), bodies with counts, mass properties (with a material: mass and inertia), appearance and material, and faceNames (and, per face, faceAliases: the other names a face answers to when a boolean or a pattern merged faces of several operands into it), undo history.", doc: true, document_inspect),
     spec!("document.check", "Check", r#"{"deep": boolean = false}"#,
         "Checks every body for validity and lists every problem: failed variables, failed features (with causedBy as in document.inspect), defects of bodies. ok is true when there is none. deep also looks for bodies that pass through themselves (faces crossing, shells overlapping or nested the wrong way), on a fine mesh: slower, and what it reports is certain (deeper than the mesh could be off); doubts are counted under marginal.", doc: true, document_check),
     spec!("document.measure", "Measure", r#"{"feature": id or name = all bodies}"#,
-        "Returns volume, area and centroid, per body and in total, in document units.", doc: true, document_measure),
+        "Returns volume, area and centroid, per body and in total, in document units. A body with a material (body.material) also has its mass (kg) and its inertia tensor about its centroid (kg times the length unit squared, along the model's axes), and its appearance (body.appearance); the total has the mass when every body has one.", doc: true, document_measure),
     spec!("view.render", "Render", r#"{"path": string, "width": integer = 800, "height": integer = 600, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the whole model, "mode": "shaded|ids" = "shaded", "section": {plane, feature, point, normal, offset, flip, cap} = none, "tolerance": number = automatic}"#,
         "Renders the bodies with the CPU renderer. Writes a PNG under the write root when path is given, otherwise returns it as base64. orthographic shows lengths across the view to scale. box frames the region between two opposite corners (document units) instead of the whole model, seen from outside the model. zoom magnifies about the centre of the picture (2 shows half as much, twice as large; from 0.01 to 1000). section cuts the picture open with a plane, to look inside a shell, a pocket or a cavity; the document does not change. It is an object: the plane is plane (xy, yz or zx, a datum plane by id or name, or a flat face by its persistent name, with feature to say which body when several have that face) or point and normal ([x, y, z] each), moved by offset (a number, default 0) along its normal; what lies on the side the normal points to is not drawn (a face's normal points out of its body; flip: true keeps the other half). Where the plane passes through the inside of a body the cut is closed with a flat cap in a colour of its own (cap: false leaves it open). The result then has section: {point, normal, range}, the plane as it was used and the offsets between which it passes through the model.", doc: true, view_render),
 ];
@@ -356,7 +356,7 @@ pub(crate) fn vec3(v: Vec3) -> Value {
     json!([v.x, v.y, v.z])
 }
 
-fn length_unit(doc: &Document) -> &'static str {
+pub(crate) fn length_unit(doc: &Document) -> &'static str {
     doc.units.length.symbol()
 }
 
@@ -397,10 +397,11 @@ fn file_open(session: &mut Session, params: &Value) -> Run {
     let document = craft3d_format::load(&resolved)
         .map_err(|e| CommandError::new(format!("file.open: cannot open `{path}`: {e}")))?;
     let features = document.features.len();
-    let mut open = OpenDocument::new(document, Some(path.to_string()));
+    let kept = crate::workspace::kept_path(&session.workspace.read, path, &resolved);
+    let mut open = OpenDocument::new(document, Some(kept.clone()));
     open.disk = crate::recovery::FileStamp::of(&resolved);
     let index = session.add_document(open)?;
-    Ok(json!({ "document": index, "path": path, "features": features }))
+    Ok(json!({ "document": index, "path": kept, "features": features }))
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -413,13 +414,15 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
         (None, None) => return fail("file.save: this document has no file yet; give a `path`"),
     };
     let resolved = session.workspace.resolve_write(&path)?;
+    let access = session.workspace.write.clone();
     let open = session.document_mut()?;
     // A recovered document is older than its original file when that
     // file was written after the recovery was taken (by another 3DCraft,
     // or by a save the crashed one made after its last autosave).
     if let Some(recovered) = open.recovered
         && !overwrite
-        && open.path.as_deref() == Some(path.as_str())
+        && (open.path.as_deref() == Some(path.as_str())
+            || open.path == Some(crate::workspace::kept_path(&access, &path, &resolved)))
         && let Some(now) = crate::recovery::FileStamp::of(&resolved)
         && recovered.original != Some(now)
     {
@@ -430,10 +433,11 @@ fn file_save(session: &mut Session, params: &Value) -> Run {
     craft3d_format::save(&resolved, open.history.current())
         .map_err(|e| CommandError::new(format!("file.save: cannot save `{path}`: {e}")))?;
     open.saved_revision = Some(open.history.revision());
-    open.path = Some(path.clone());
+    let kept = crate::workspace::kept_path(&access, &path, &resolved);
+    open.path = Some(kept.clone());
     open.disk = crate::recovery::FileStamp::of(&resolved);
     open.recovered = None;
-    Ok(json!({ "path": path }))
+    Ok(json!({ "path": kept }))
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -475,7 +479,11 @@ fn automatic_tolerance(regen: &Regen) -> f64 {
     }
 }
 
-fn tolerance_param(p: &Params, command: &str, regen: &Regen) -> Result<TessParams, CommandError> {
+pub(crate) fn tolerance_param(
+    p: &Params,
+    command: &str,
+    regen: &Regen,
+) -> Result<TessParams, CommandError> {
     let chordal_tolerance = match p.number("tolerance")? {
         Some(t) if t > 0.0 => t,
         Some(_) => return fail(format!("{command}: `tolerance` must be positive")),
@@ -488,11 +496,22 @@ fn tolerance_param(p: &Params, command: &str, regen: &Regen) -> Result<TessParam
 }
 
 /// One mesh per body, with the name of the feature that made it.
+/// One body's mesh, with the appearance of the body and of each of its
+/// faces (`appearance`).
+struct BodyMesh {
+    name: String,
+    mesh: Mesh,
+    /// The body's own (for an export's object; a picture colours faces).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    appearance: Option<craft3d_doc::Appearance>,
+    faces: Vec<Option<craft3d_doc::Appearance>>,
+}
+
 fn meshes(
     open: &mut OpenDocument,
     command: &str,
     tess: &TessParams,
-) -> Result<Vec<(String, Mesh)>, CommandError> {
+) -> Result<Vec<BodyMesh>, CommandError> {
     let regen = open.regen();
     let doc = open.history.current();
     let mut out = Vec::new();
@@ -502,7 +521,12 @@ fn meshes(
             .map_or_else(|| id.to_string(), |f| f.name.clone());
         let mesh = tessellate_body(body, tess)
             .map_err(|e| CommandError::new(format!("{command}: {name}: {e}")))?;
-        out.push((name, mesh));
+        out.push(BodyMesh {
+            name,
+            mesh,
+            appearance: crate::appearance::body_appearance(doc, &regen, id),
+            faces: crate::appearance::face_appearances(doc, &regen, id, body.faces.len()),
+        });
     }
     if out.is_empty() {
         return fail(format!(
@@ -584,12 +608,22 @@ fn file_export(session: &mut Session, params: &Value) -> Run {
     let mut model = craft3d_meshio::Model {
         unit,
         objects: Vec::new(),
+        materials: Vec::new(),
     };
     let mut triangles = 0;
     let mut closed = 0;
-    for (name, mesh) in &meshes {
-        let object = craft3d_io::to_object(mesh, name)
-            .map_err(|e| CommandError::new(format!("file.export: {name}: {e}")))?;
+    for body in &meshes {
+        let name = &body.name;
+        let mut material = |appearance: Option<craft3d_doc::Appearance>| {
+            appearance.map(|a| export_material(&mut model.materials, a.color))
+        };
+        let own = material(body.appearance);
+        let faces: Vec<Option<u32>> = body.faces.iter().map(|a| material(*a)).collect();
+        let mut object = craft3d_io::to_object_with_materials(&body.mesh, name, |face| {
+            faces.get(face as usize).copied().flatten()
+        })
+        .map_err(|e| CommandError::new(format!("file.export: {name}: {e}")))?;
+        object.material = own;
         triangles += object.triangles.len();
         if object.kind == craft3d_meshio::ObjectKind::Solid {
             closed += 1;
@@ -609,6 +643,21 @@ fn file_export(session: &mut Session, params: &Value) -> Run {
         "tolerance": tess.chordal_tolerance,
         "unit": length_unit(open.history.current()),
     }))
+}
+
+/// The index of the material of `color` in an export's `materials`,
+/// added when it is not there yet: one material per colour, named by it.
+#[cfg(not(target_arch = "wasm32"))]
+fn export_material(materials: &mut Vec<craft3d_meshio::Material>, color: [u8; 3]) -> u32 {
+    if let Some(at) = materials.iter().position(|m| m.color == color) {
+        return u32::try_from(at).unwrap_or(u32::MAX);
+    }
+    let material = craft3d_meshio::Material {
+        name: craft3d_doc::Appearance::color(color).hex(),
+        color,
+    };
+    materials.push(material);
+    u32::try_from(materials.len().saturating_sub(1)).unwrap_or(u32::MAX)
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1761,6 +1810,9 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
                 map.insert("area".into(), mass.area.into());
                 map.insert("centroid".into(), mass.centroid.map_or(Value::Null, vec3));
             }
+            if let Some(map) = entry.as_object_mut() {
+                crate::appearance_cmds::physical_fields(map, doc, &regen, feature.id, body, unit);
+            }
             // What each face is called by the features that come after:
             // a name made of where the face came from, not of its index.
             // A face a boolean merged from faces of both operands answers
@@ -1835,6 +1887,8 @@ fn document_measure(session: &mut Session, params: &Value) -> Run {
     let unit = length_unit(doc);
     let mut bodies = Vec::new();
     let (mut volume, mut area, mut moment) = (0.0, 0.0, Vec3::ZERO);
+    // The total mass, while every body has one.
+    let mut total_mass = Some(0.0);
     for (id, body) in regen
         .bodies()
         .filter(|(id, _)| only.is_none_or(|o| o == *id))
@@ -1849,10 +1903,18 @@ fn document_measure(session: &mut Session, params: &Value) -> Run {
         if let Some(c) = mass.centroid {
             moment += c * mass.volume;
         }
-        bodies.push(json!({
+        let mut entry = json!({
             "feature": id.to_string(), "name": name,
             "volume": mass.volume, "area": mass.area, "centroid": mass.centroid.map_or(Value::Null, vec3),
-        }));
+        });
+        if let Some(map) = entry.as_object_mut() {
+            crate::appearance_cmds::physical_fields(map, doc, &regen, id, body, unit);
+            total_mass = match (total_mass, map.get("mass").and_then(Value::as_f64)) {
+                (Some(sum), Some(m)) => Some(sum + m),
+                _ => None,
+            };
+        }
+        bodies.push(entry);
     }
     if let (Some(id), true) = (only, bodies.is_empty()) {
         let status = regen
@@ -1862,7 +1924,7 @@ fn document_measure(session: &mut Session, params: &Value) -> Run {
             "document.measure: feature {id} has no body (its status is {status})"
         ));
     }
-    Ok(json!({
+    let mut result = json!({
         "bodies": bodies,
         "volume": volume,
         "area": area,
@@ -1871,7 +1933,14 @@ fn document_measure(session: &mut Session, params: &Value) -> Run {
         "lengthUnit": unit,
         "areaUnit": format!("{unit}^2"),
         "volumeUnit": format!("{unit}^3"),
-    }))
+    });
+    // The total mass when every body has a material.
+    if let (Some(map), Some(mass), false) = (result.as_object_mut(), total_mass, bodies.is_empty())
+    {
+        map.insert("mass".into(), mass.into());
+        map.insert("massUnit".into(), "kg".into());
+    }
+    Ok(result)
 }
 
 fn document_check(session: &mut Session, params: &Value) -> Run {
@@ -1930,7 +1999,7 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
                         if !found.is_clean() {
                             problems.push(json!({
                                 "feature": outcome.id.to_string(), "name": name,
-                                "problem": format!("the body passes through itself: {found}"),
+                                "problem": format!("the body passes through or touches itself: {found}"),
                             }));
                         }
                     }
@@ -2042,6 +2111,12 @@ impl Framing {
         })
     }
 
+    /// The direction from the model towards the eye, and up.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub fn direction(&self) -> (Vec3, Vec3) {
+        (self.toward_eye, self.up)
+    }
+
     /// The camera for a picture of `aspect` (width over height) of a model
     /// that fills `model`.
     pub fn camera(&self, model: &craft3d_math::Bbox3, aspect: f64) -> Result<Camera, CommandError> {
@@ -2133,10 +2208,19 @@ fn view_render(session: &mut Session, params: &Value) -> Run {
     // One mesh for the renderer; face ids keep counting across bodies.
     let mut all = Mesh::default();
     let mut legend = Vec::new();
-    for (name, mesh) in &meshes {
+    let mut colors = craft3d_render::FaceColors::new();
+    for BodyMesh {
+        name, mesh, faces, ..
+    } in &meshes
+    {
         let vertex_base = u32::try_from(all.positions.len())
             .map_err(|_| CommandError::new("view.render: mesh too large"))?;
         let face_base = all.face_ids.iter().copied().max().map_or(0, |m| m + 1);
+        for (face, appearance) in faces.iter().enumerate() {
+            if let (Some(appearance), Ok(face)) = (appearance, u32::try_from(face)) {
+                colors.set(face_base.saturating_add(face), Some(appearance.color));
+            }
+        }
         all.positions.extend(&mesh.positions);
         all.normals.extend(&mesh.normals);
         all.triangles
@@ -2159,7 +2243,7 @@ fn view_render(session: &mut Session, params: &Value) -> Run {
     let model = all.bbox();
     let framed = look_at.unwrap_or(model);
     let camera = framing.camera(&model, aspect)?;
-    let frame = craft3d_render::render(&all, &camera, &render_params)
+    let frame = craft3d_render::render_colored(&all, &colors, &camera, &render_params)
         .map_err(|e| CommandError::new(format!("view.render: {e}")))?;
     let png = if ids {
         craft3d_render::encode_png(frame.width, frame.height, &frame.false_color())
