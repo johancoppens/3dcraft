@@ -29,6 +29,8 @@ Curves, surfaces and their intersections (`craft3d-geom`, with `craft3d-math` be
 
 #### 5.1 Geometry (`geom`)
 
+*The plan's enums. As built, `Curve3` is `Line`, `Circle`, `Ellipse`, `Nurbs` and `Surface` is `Plane`, `Cylinder`, `Cone`, `Sphere`, `Torus`, `Bezier`, `Nurbs`; `Trimmed`, `Offset`, `SurfaceIso` and `Intersection` curves, `Curve2` parameter-space curves and `Extrusion`, `Revolution` and `Offset` surfaces are (planned).*
+
 ```rust
 pub enum Curve3 { Line(..), Circle(..), Ellipse(..), Nurbs(..), Trimmed(..), Offset(..), SurfaceIso(..), Intersection(..) }
 pub enum Curve2 { Line(..), Circle(..), Ellipse(..), Nurbs(..) }           // parameter-space curves on a surface
