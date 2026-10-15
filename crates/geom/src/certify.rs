@@ -1011,15 +1011,99 @@ impl CurveBound<'_> {
     }
 }
 
+/// The box round a piece's capsule: its chord's ends, widened by its
+/// reach.
+fn capsule_box(span: &Span) -> (Vec3, Vec3) {
+    let [p, q] = span.ends;
+    let r = Vec3::new(span.reach, span.reach, span.reach);
+    (
+        Vec3::new(p.x.min(q.x), p.y.min(q.y), p.z.min(q.z)) - r,
+        Vec3::new(p.x.max(q.x), p.y.max(q.y), p.z.max(q.z)) + r,
+    )
+}
+
+/// The distance between two boxes (0 where they overlap).
+fn box_distance((a0, a1): (Vec3, Vec3), (b0, b1): (Vec3, Vec3)) -> f64 {
+    let gap = |lo_a: f64, hi_a: f64, lo_b: f64, hi_b: f64| (lo_b - hi_a).max(lo_a - hi_b).max(0.0);
+    Vec3::new(
+        gap(a0.x, a1.x, b0.x, b1.x),
+        gap(a0.y, a1.y, b0.y, b1.y),
+        gap(a0.z, a1.z, b0.z, b1.z),
+    )
+    .length()
+}
+
+/// A node of a [`Tree`]: the pieces it holds, its box, its children.
+type TreeNode = (usize, usize, (Vec3, Vec3), Option<[usize; 2]>);
+
+/// A tree of boxes over the pieces of a curve: node `k` holds pieces
+/// `lo..hi` and the box round all their capsules; its children are the
+/// two halves (none for one piece).
+struct Tree {
+    pieces: Vec<Span>,
+    nodes: Vec<TreeNode>,
+}
+
+impl Tree {
+    fn new(pieces: Vec<Span>) -> Option<Tree> {
+        let mut tree = Tree {
+            pieces,
+            nodes: Vec::new(),
+        };
+        let count = tree.pieces.len();
+        if count == 0 {
+            return None;
+        }
+        tree.build(0, count)?;
+        Some(tree)
+    }
+
+    /// Builds the node over `lo..hi` (and those below it); its index.
+    /// The depth is the logarithm of the number of pieces.
+    fn build(&mut self, lo: usize, hi: usize) -> Option<usize> {
+        let index = self.nodes.len();
+        self.nodes.push((lo, hi, (Vec3::ZERO, Vec3::ZERO), None));
+        let (bbox, children) = if hi - lo == 1 {
+            (capsule_box(self.pieces.get(lo)?), None)
+        } else {
+            let middle = lo + (hi - lo) / 2;
+            let left = self.build(lo, middle)?;
+            let right = self.build(middle, hi)?;
+            let (l, r) = (self.nodes.get(left)?.2, self.nodes.get(right)?.2);
+            (
+                (
+                    Vec3::new(l.0.x.min(r.0.x), l.0.y.min(r.0.y), l.0.z.min(r.0.z)),
+                    Vec3::new(l.1.x.max(r.1.x), l.1.y.max(r.1.y), l.1.z.max(r.1.z)),
+                ),
+                Some([left, right]),
+            )
+        };
+        let slot = self.nodes.get_mut(index)?;
+        slot.2 = bbox;
+        slot.3 = children;
+        Some(index)
+    }
+}
+
+/// One side of a pair looked at by [`curves_apart`]: a node of the tree,
+/// or a piece made by halving a piece.
+#[derive(Clone, Copy)]
+enum Part {
+    Node(usize),
+    Piece(Span),
+}
+
 /// Whether the curve `a` over `range_a` and `b` over `range_b` keep more
-/// than `threshold` apart everywhere, proven: each is cut into pieces held
-/// within a capsule round their chords (a radius from the bound on their
-/// second derivatives), and two pieces whose capsules are more than the
-/// threshold apart are apart. Two that are not are halved (the one with
-/// the wider capsule or the longer chord), unless the points of the curves
-/// nearest where the chords meet are themselves within the threshold:
-/// then the curves come that close ([`Apart::No`]). At most `most` pairs
-/// of pieces are looked at; past that the answer is [`Apart::Unknown`].
+/// than `threshold` apart everywhere, proven. Each is cut into pieces at
+/// its knots, held within capsules round their chords (a radius from the
+/// bound on their second derivatives), with a tree of boxes over them.
+/// Pairs are looked at from the roots down: two whose boxes (or, for two
+/// pieces, whose capsules) are more than the threshold apart are apart;
+/// otherwise the larger side is split (a node into its halves, a piece
+/// halved), unless the points of the curves nearest where two pieces'
+/// chords meet are themselves within the threshold: then the curves come
+/// that close ([`Apart::No`]). At most `most` pairs are looked at; past
+/// that the answer is [`Apart::Unknown`].
 pub fn curves_apart(
     a: &CurveBound<'_>,
     range_a: (f64, f64),
@@ -1032,53 +1116,89 @@ pub fn curves_apart(
     if !(valid(range_a) && valid(range_b) && threshold.is_finite()) {
         return Apart::Unknown;
     }
-    let (Some(pa), Some(pb)) = (a.spans(range_a, 8), b.spans(range_b, 8)) else {
+    // Analytic curves have no knots: eight pieces to start from.
+    let cuts = |c: &CurveBound<'_>| if c.pieces.is_empty() { 8 } else { 1 };
+    let (Some(ta), Some(tb)) = (
+        a.spans(range_a, cuts(a)).and_then(Tree::new),
+        b.spans(range_b, cuts(b)).and_then(Tree::new),
+    ) else {
         return Apart::Unknown;
     };
-    let mut stack: Vec<(Span, Span)> = Vec::with_capacity(pa.len() * pb.len());
-    for x in pa.iter().rev() {
-        for y in pb.iter().rev() {
-            stack.push((*x, *y));
+    // A part's box, its size (what is split first), and its children.
+    let bbox = |tree: &Tree, part: &Part| -> Option<(Vec3, Vec3)> {
+        match part {
+            Part::Node(k) => tree.nodes.get(*k).map(|n| n.2),
+            Part::Piece(span) => Some(capsule_box(span)),
         }
-    }
+    };
+    let as_piece = |tree: &Tree, part: &Part| -> Option<Span> {
+        match part {
+            Part::Node(k) => {
+                let (lo, hi, _, children) = tree.nodes.get(*k)?;
+                if children.is_some() || hi - lo != 1 {
+                    return None;
+                }
+                tree.pieces.get(*lo).copied()
+            }
+            Part::Piece(span) => Some(*span),
+        }
+    };
+    let split = |curve: &CurveBound<'_>, tree: &Tree, part: &Part| -> Option<[Part; 2]> {
+        if let Part::Node(k) = part
+            && let Some([l, r]) = tree.nodes.get(*k)?.3
+        {
+            return Some([Part::Node(l), Part::Node(r)]);
+        }
+        let span = as_piece(tree, part)?;
+        let (lo, hi) = span.range;
+        let middle = 0.5 * (lo + hi);
+        if !(middle > lo && middle < hi) {
+            return None;
+        }
+        Some([
+            Part::Piece(curve.span(lo, middle)?),
+            Part::Piece(curve.span(middle, hi)?),
+        ])
+    };
+    let size = |b: (Vec3, Vec3)| (b.1 - b.0).length();
+    let mut stack = vec![(Part::Node(0), Part::Node(0))];
     let mut looked = 0_usize;
     while let Some((x, y)) = stack.pop() {
         looked += 1;
         if looked > most {
             return Apart::Unknown;
         }
-        let [x0, x1] = x.ends;
-        let [y0, y1] = y.ends;
-        let (chords, s, t) = segments(x0, x1, y0, y1);
-        if chords - x.reach - y.reach > threshold {
+        let (Some(bx), Some(by)) = (bbox(&ta, &x), bbox(&tb, &y)) else {
+            return Apart::Unknown;
+        };
+        if box_distance(bx, by) > threshold {
             continue;
         }
-        let at = [
-            x.range.0 + s * (x.range.1 - x.range.0),
-            y.range.0 + t * (y.range.1 - y.range.0),
-        ];
-        let distance = a.eval(at[0]).distance(b.eval(at[1]));
-        if distance <= threshold {
-            return Apart::No { at, distance };
-        }
-        // Halve the one that is coarser.
-        let size = |p: &Span| p.reach.max(p.ends[0].distance(p.ends[1]));
-        let halve = |curve: &CurveBound<'_>, p: &Span| -> Option<[Span; 2]> {
-            let (lo, hi) = p.range;
-            let middle = 0.5 * (lo + hi);
-            if !(middle > lo && middle < hi) {
-                return None;
+        if let (Some(px), Some(py)) = (as_piece(&ta, &x), as_piece(&tb, &y)) {
+            let [x0, x1] = px.ends;
+            let [y0, y1] = py.ends;
+            let (chords, s, t) = segments(x0, x1, y0, y1);
+            if chords - px.reach - py.reach > threshold {
+                continue;
             }
-            Some([curve.span(lo, middle)?, curve.span(middle, hi)?])
-        };
-        if size(&x) >= size(&y) {
-            let Some([l, r]) = halve(a, &x) else {
+            let at = [
+                px.range.0 + s * (px.range.1 - px.range.0),
+                py.range.0 + t * (py.range.1 - py.range.0),
+            ];
+            let distance = a.eval(at[0]).distance(b.eval(at[1]));
+            if distance <= threshold {
+                return Apart::No { at, distance };
+            }
+        }
+        // Split the larger side.
+        if size(bx) >= size(by) {
+            let Some([l, r]) = split(a, &ta, &x) else {
                 return Apart::Unknown;
             };
             stack.push((r, y));
             stack.push((l, y));
         } else {
-            let Some([l, r]) = halve(b, &y) else {
+            let Some([l, r]) = split(b, &tb, &y) else {
                 return Apart::Unknown;
             };
             stack.push((x, r));
@@ -1413,7 +1533,7 @@ mod tests {
             );
         }
         // One pair allowed of the many to look at: unknown.
-        let curve = bow(1e-3, 1.0);
+        let curve = bow(9e-6, 1.0);
         let cb = CurveBound::nurbs(&curve);
         assert_eq!(
             curves_apart(&cb, (0.0, 1.0), &lb, (0.0, 1.0), 1e-5, 1),
