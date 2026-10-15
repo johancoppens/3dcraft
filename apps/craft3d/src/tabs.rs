@@ -426,8 +426,11 @@ mod tests {
             let _ = desk.turn();
             std::thread::sleep(Duration::from_millis(2));
         }
-        settle(&mut desk);
+        // The save's own report, read before settling: a busy machine can
+        // let the shell's next command (a `file.list` for the tabs) report
+        // after it (gate 63).
         let (_, ok, text) = last(&desk);
+        settle(&mut desk);
         assert!(!ok && text.contains("cancelled"), "{text}");
         assert_eq!(desk.host.session.document_statuses().len(), 2);
         assert_eq!(active(&desk), Some(0));
