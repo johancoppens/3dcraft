@@ -104,7 +104,14 @@ fn no_room(error: &BlendError) -> bool {
 fn same_way(a: &BlendError, b: &BlendError) -> bool {
     match (a, b) {
         (BlendError::Refused { reason: x, .. }, BlendError::Refused { reason: y, .. }) => x == y,
-        (BlendError::Boolean { .. }, BlendError::Boolean { .. }) => true,
+        (
+            BlendError::Boolean {
+                edge: x, error: e, ..
+            },
+            BlendError::Boolean {
+                edge: y, error: f, ..
+            },
+        ) => x == y && std::mem::discriminant(e.as_ref()) == std::mem::discriminant(f.as_ref()),
         (BlendError::Kernel(x), BlendError::Kernel(y)) => {
             std::mem::discriminant(x) == std::mem::discriminant(y)
         }
@@ -562,20 +569,23 @@ pub(super) fn explain(
         }
     }
     // No event explains it: bisect on the builds alone.
-    let fails = bisect(fits, fails, 4.0 * tol / smallest, |at| search.attempt(at));
+    let Some(fails) = bisect(fits, fails, 4.0 * tol / smallest, |at| search.attempt(at)) else {
+        return error;
+    };
     let size = own.distances.get(named).copied().unwrap_or(0.0) * per(own, named);
     too_large(own, named, fails * size)
 }
 
 /// Bisects between `fits` (built) and `fails` (failed) with `attempt`
 /// until the two are `resolution` apart, no number lies between them, or
-/// [`MOST_BUILDS`] steps are made; gives the least size seen to fail.
+/// [`MOST_BUILDS`] steps are made; gives the least size seen to fail,
+/// or `None` when the search ran out of builds on the way.
 fn bisect(
     mut fits: f64,
     mut fails: f64,
     resolution: f64,
     mut attempt: impl FnMut(f64) -> Outcome,
-) -> f64 {
+) -> Option<f64> {
     for _ in 0..MOST_BUILDS {
         let middle = 0.5 * (fits + fails);
         if fails - fits <= resolution || middle <= fits || middle >= fails {
@@ -584,10 +594,10 @@ fn bisect(
         match attempt(middle) {
             Outcome::Built => fits = middle,
             Outcome::Failed(_) => fails = middle,
-            Outcome::Spent => break,
+            Outcome::Spent => return None,
         }
     }
-    fails
+    Some(fails)
 }
 
 #[cfg(test)]
@@ -614,18 +624,24 @@ mod tests {
                 })
             }
         });
+        let fails = fails.unwrap();
         assert!(calls <= MOST_BUILDS, "{calls}");
         assert!(fails > limit && fails - limit < 1e-9, "{fails}");
         // An attempt that answers from a cache without building does not
         // stop it either: it is bounded by steps.
         let next = f64::from_bits(0.25_f64.to_bits() + 1);
         let fails = bisect(0.25, next, 0.0, |_| Outcome::Built);
-        assert_eq!(fails, next);
+        assert_eq!(fails, Some(next));
         let mut steps = 0;
         let fails = bisect(0.0, 1.0, 0.0, |_| {
             steps += 1;
             Outcome::Built
         });
-        assert!(steps <= MOST_BUILDS && fails == 1.0, "{steps} {fails}");
+        assert!(
+            steps <= MOST_BUILDS && fails == Some(1.0),
+            "{steps} {fails:?}"
+        );
+        // Out of builds on the way: no size is claimed.
+        assert_eq!(bisect(0.0, 1.0, 0.0, |_| Outcome::Spent), None);
     }
 }

@@ -69,7 +69,7 @@ fn explain(
             "{}: the boolean that cuts this fillet refused it: {error}{}",
             role(edge),
             if smaller_fails {
-                "; smaller radii fail the same way"
+                "; smaller radii tried fail the same way"
             } else {
                 ""
             }

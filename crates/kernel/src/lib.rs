@@ -384,7 +384,7 @@ impl fmt::Display for KernelError {
             } => {
                 write!(f, "chamfer of edge {}: {error}", edge.0)?;
                 if *smaller_fails {
-                    write!(f, "; smaller distances fail the same way")?;
+                    write!(f, "; smaller distances tried fail the same way")?;
                 }
                 Ok(())
             }
@@ -417,7 +417,7 @@ impl fmt::Display for KernelError {
             } => {
                 write!(f, "fillet of edge {}: {error}", edge.0)?;
                 if *smaller_fails {
-                    write!(f, "; smaller radii fail the same way")?;
+                    write!(f, "; smaller radii tried fail the same way")?;
                 }
                 Ok(())
             }

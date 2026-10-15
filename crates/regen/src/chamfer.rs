@@ -76,7 +76,7 @@ fn explain(
             "{}: the boolean that cuts this chamfer refused it: {error}{}",
             role(edge),
             if smaller_fails {
-                "; smaller distances fail the same way"
+                "; smaller distances tried fail the same way"
             } else {
                 ""
             }
