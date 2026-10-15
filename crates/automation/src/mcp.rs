@@ -427,7 +427,7 @@ fn tools() -> Value {
                     },
                     "tolerance": {
                         "type": "number",
-                        "description": "Chordal tolerance of the mesh in document units. Default automatic; give a small one when round faces look polygonal."
+                        "description": "Chordal tolerance of the mesh in document units. Default: about half a pixel of the picture where it shows the model (so a close-up box or a larger picture is finer), never finer than the window's display tolerance, at most 12 degrees per chord. Give one to fix it."
                     },
                     "max_side": {
                         "type": "integer",

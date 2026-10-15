@@ -9,7 +9,7 @@
     clippy::indexing_slicing
 )]
 
-use craft3d_engine::{Access, Session, Workspace};
+use craft3d_engine::{Access, DISPLAY_RELATIVE_TOLERANCE, Session, Workspace};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
@@ -554,35 +554,87 @@ fn the_same_request_gives_the_same_picture() {
     evidence("view-render-iso-ortho-box-zoom.png", &first);
 }
 
-/// Without a tolerance the picture is the window's: the display quality,
-/// with its angle, so a small hole or post is drawn round (impeller T1,
-/// 2026-10-16, when it was the automatic tolerance alone). With a
-/// tolerance the tessellator cannot meet on a body, the body is drawn
-/// coarser and the result says so, rather than the picture failing
-/// (lamp T2, 2026-10-16).
+/// Without a tolerance a picture is meshed at half a pixel where it shows
+/// the model, never finer than the window's display tolerance, with the
+/// display's angle (lamp T2 and impeller T1, 2026-10-16): a larger
+/// picture, a zoom or a close-up box is finer, a whole view costs no more
+/// triangles than the window's scene, and a display scene the window has
+/// already built is drawn when it is as fine. With a tolerance the
+/// tessellator cannot meet on a body, the body is drawn coarser and the
+/// result says so, rather than the picture failing.
 #[test]
-fn a_picture_is_what_the_window_draws_and_never_too_fine() {
+fn a_picture_is_as_fine_as_its_pixels_and_never_too_fine() {
     let mut s = plate_post_and_wall();
-    let small = json!({"width": 64, "height": 48});
-    let drawn = run(&mut s, "view.render", small.clone());
+    // The box around the bodies: the plate 60 x 40 x 8, the post to 14.
+    let floor = DISPLAY_RELATIVE_TOLERANCE * (60.0_f64 * 60.0 + 40.0 * 40.0 + 14.0 * 14.0).sqrt();
+    let tolerance = |s: &mut Session, params: Value| -> (f64, u64) {
+        let drawn = run(s, "view.render", params);
+        assert_eq!(drawn["coarsened"], false, "{drawn}");
+        assert!((drawn["maxAngle"].as_f64().unwrap() - 12.0).abs() < 1e-9);
+        (
+            drawn["tolerance"].as_f64().unwrap(),
+            drawn["triangles"].as_u64().unwrap(),
+        )
+    };
+    let (small, small_triangles) = tolerance(&mut s, json!({"width": 200, "height": 150}));
+    let (large, large_triangles) = tolerance(&mut s, json!({"width": 400, "height": 300}));
+    // Twice the pixels: half the tolerance, while above the floor.
+    assert!(large > 1.5 * floor, "{large} against the floor {floor}");
+    assert!((large / small - 0.5).abs() < 1e-12, "{small} {large}");
+    assert!(large_triangles >= small_triangles);
+    // A zoom and a close-up box are finer, down to the floor.
+    let (zoomed, _) = tolerance(&mut s, json!({"width": 200, "height": 150, "zoom": 2}));
+    assert!(zoomed < small, "{small} {zoomed}");
+    let (close, _) = tolerance(
+        &mut s,
+        json!({"width": 200, "height": 150, "box": [[45, 25, 8], [55, 35, 14]]}),
+    );
+    assert!(close < small, "{close} {small}");
+    let (deep, _) = tolerance(&mut s, json!({"width": 200, "height": 150, "zoom": 1000}));
+    assert!((deep / floor - 1.0).abs() < 1e-6, "{deep} against {floor}");
+
+    // The window's display scene: a picture of the whole model costs no
+    // more triangles; once it is built, a picture it is fine enough for
+    // draws it rather than building another.
     let window = s
         .scene_with(craft3d_engine::SceneQuality::display())
         .unwrap()
         .unwrap();
-    assert_eq!(drawn["tolerance"], window.tolerance);
+    assert!(large_triangles <= window.triangles() as u64);
+    let drawn = run(&mut s, "view.render", json!({"width": 400, "height": 300}));
+    assert_eq!(drawn["tolerance"], window.tolerance, "{drawn}");
     assert_eq!(drawn["triangles"], window.triangles());
-    assert_eq!(drawn["coarsened"], false);
-    assert!((drawn["maxAngle"].as_f64().unwrap() - 12.0).abs() < 1e-9);
-    // The post, radius 3, has at least the 30 chords to a turn that 12
-    // degrees ask for; the automatic tolerance alone gives it fewer.
-    let automatic = s.scene(None).unwrap().unwrap();
-    assert!(window.triangles() > automatic.triangles(), "{drawn}");
 
-    let mut fine = small;
-    fine["tolerance"] = 1e-9.into();
+    let fine = json!({"width": 64, "height": 48, "tolerance": 1e-9});
     let drawn = run(&mut s, "view.render", fine);
     assert_eq!(drawn["coarsened"], true, "{drawn}");
     assert_eq!(drawn["tolerance"], 1e-9);
     assert_eq!(drawn["maxAngle"], Value::Null);
     assert_eq!(drawn["bodies"].as_array().unwrap().len(), 2, "{drawn}");
+}
+
+/// The work of a small picture of a whole model is what its pixels can
+/// show, not what the window's display scene costs (lamp T2, 2026-10-16:
+/// the display scene of the lamp took minutes for one picture). Counted
+/// in triangles, at three scales.
+#[test]
+fn a_small_picture_of_a_whole_model_costs_what_its_pixels_show() {
+    for k in [1e-3, 1.0, 1e3] {
+        let mut s = Session::new(Workspace::none());
+        run(&mut s, "file.new", json!({"tolerance": 1e-6 * k}));
+        run(&mut s, "feature.sphere", json!({"radius": 100.0 * k}));
+        let drawn = run(&mut s, "view.render", json!({"width": 160, "height": 120}));
+        let window = s
+            .scene_with(craft3d_engine::SceneQuality::display())
+            .unwrap()
+            .unwrap();
+        let triangles = drawn["triangles"].as_u64().unwrap();
+        assert!(
+            triangles * 8 <= window.triangles() as u64,
+            "size {k}: {triangles} triangles for the picture, {} for the window",
+            window.triangles()
+        );
+        // And it is still round: the angle holds whatever the tolerance.
+        assert!(triangles >= 2 * 30 * 15, "size {k}: {triangles}");
+    }
 }

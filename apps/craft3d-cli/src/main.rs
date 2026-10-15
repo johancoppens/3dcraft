@@ -115,8 +115,9 @@ Usage: craft3d-cli render FILE --out PNG [--size WxH] [--view V] [--mode M]
 
 Renders the bodies of a .3dcraft file to a PNG with the CPU renderer (no
 window, no GPU) and prints what it drew as one line of JSON. The bodies are
-meshed as the window draws them (the command view.render without a
-tolerance); the JSON says the tolerance used and whether it was coarsened.
+meshed for the picture (the command view.render without a tolerance: about
+half a pixel, never finer than the window's display tolerance); the JSON
+says the tolerance used and whether it was coarsened.
 
 Options:
   --out PNG     The image file to write (required)

@@ -32,13 +32,15 @@ fn scene(session: &mut Session, tolerance: Option<f64>) -> Arc<Scene> {
     session.scene(tolerance).unwrap().expect("a document")
 }
 
-/// The scene `view.render` draws: the display quality without a tolerance
-/// (since 2026-10-16), the scene of the tolerance given with one.
-fn picture(session: &mut Session, tolerance: Option<f64>) -> Arc<Scene> {
-    session
-        .picture_scene(tolerance)
-        .unwrap()
-        .expect("a document")
+/// The scene `view.render` drew for the picture it answered with
+/// `rendered`: the scene of the tolerance given, or without one (since
+/// 2026-10-16) the picture's scene at the tolerance it reports.
+fn picture(session: &mut Session, rendered: &Value, tolerance: Option<f64>) -> Arc<Scene> {
+    let quality = match tolerance {
+        Some(t) => SceneQuality::Tolerance(t),
+        None => SceneQuality::Picture(rendered["tolerance"].as_f64().unwrap()),
+    };
+    session.scene_with(quality).unwrap().expect("a document")
 }
 
 /// A line, a circle, an arc and a construction line, the same on every
@@ -127,7 +129,7 @@ fn the_meshes_are_the_ones_view_render_uses() {
             params["tolerance"] = t.into();
         }
         let rendered = run(&mut s, "view.render", params);
-        let scene = picture(&mut s, tolerance);
+        let scene = picture(&mut s, &rendered, tolerance);
         assert_eq!(rendered["tolerance"], scene.tolerance);
         assert_eq!(rendered["coarsened"], scene.coarsened);
         assert_eq!(
