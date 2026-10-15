@@ -75,6 +75,7 @@
 
 use crate::edge::{EdgeSamples, edge_points_of};
 use crate::face::{Chord, FaceMesh, curved_chords, face_boundary, mesh_face};
+use crate::long::{Cuts, LONG_ROUNDS, long_chords};
 use crate::{Mesh, TessError, TessParams};
 use craft3d_geom::{Curve3, Surface};
 use craft3d_math::Vec3;
@@ -463,6 +464,7 @@ fn tessellate_some(
     });
     let mut edges = edge_points_of(body, params, used.as_deref())?;
     let count = body.faces.len();
+    cut_long_chords(body, params, threads, &chosen, &mut edges)?;
     let mut results: Vec<Option<FaceResult>> = (0..count).map(|_| None).collect();
     // The faces that still ask for finer chords.
     let mut asking = vec![false; count];
@@ -505,7 +507,7 @@ fn tessellate_some(
             let wanted = boundary.chords_to_refine(body, params);
             let mut ask = Vec::new();
             let result = (mesh && (last || wanted.is_empty())).then(|| {
-                let mut made = mesh_face(&boundary, face, index, params, &[], &mut ask)?;
+                let mut made = mesh_face(&boundary, face, index, params, &[], &mut ask, !last)?;
                 closes_along_edges(body, points, face, index, &made.border)?;
                 made.border = Vec::new();
                 Ok(made)
@@ -589,6 +591,49 @@ fn tessellate_some(
         part_shared_rungs(body, params, &edges.points, &mut results)?;
     }
     Ok((edges, results))
+}
+
+/// Cuts the long straight chords of plane faces (`long.rs`) before the
+/// faces are triangulated: each plane face `chosen` keeps says where its
+/// straight chords are cut, and the faces that use an edge cut that way
+/// are asked again, [`LONG_ROUNDS`] times at most. In face order, the
+/// same for any number of threads.
+fn cut_long_chords(
+    body: &Body,
+    params: &TessParams,
+    threads: usize,
+    chosen: &dyn Fn(usize) -> bool,
+    edges: &mut EdgeSamples,
+) -> Result<(), TessError> {
+    let flat = |index: usize| {
+        chosen(index)
+            && body
+                .faces
+                .get(index)
+                .is_some_and(|face| matches!(face.surface, Surface::Plane(_)))
+    };
+    let mut todo: Vec<usize> = (0..body.faces.len()).filter(|&i| flat(i)).collect();
+    for _ in 0..LONG_ROUNDS {
+        if todo.is_empty() {
+            break;
+        }
+        let points = &edges.points;
+        let asked = in_order(&todo, threads, |index| {
+            body.faces.get(index).map_or_else(Vec::new, |face| {
+                long_chords(body, points, face, index, params.chordal_tolerance)
+            })
+        })?;
+        let wanted: Vec<Cuts> = asked.into_iter().flatten().collect();
+        if wanted.is_empty() {
+            break;
+        }
+        let changed = edges.cut_long(body, &wanted, params);
+        todo = faces_using(body, &changed)
+            .into_iter()
+            .filter(|&i| flat(i))
+            .collect();
+    }
+    Ok(())
 }
 
 /// The chords of curved edges that are the chord of another edge as well:
@@ -726,8 +771,15 @@ fn part_shared_rungs(
             let mut starved = false;
             let made = face_boundary(body, points, face, index, params, &mut starved).and_then(
                 |boundary| {
-                    let made =
-                        mesh_face(&boundary, face, index, &unbounded, list, &mut Vec::new())?;
+                    let made = mesh_face(
+                        &boundary,
+                        face,
+                        index,
+                        &unbounded,
+                        list,
+                        &mut Vec::new(),
+                        false,
+                    )?;
                     closes_along_edges(body, points, face, index, &made.border)?;
                     Ok(made)
                 },
