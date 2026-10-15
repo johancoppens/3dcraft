@@ -1,7 +1,7 @@
 //! The local operation the face operations share: faces of a solid are
 //! given new surfaces, and the body is closed again around them.
 //!
-//! **The recipe** (docs/architecture.md §5.3 › *Face operations as
+//! **The recipe** (docs/design/face-operations.md › *Face operations as
 //! built*). Nothing about how the body hangs together changes: every
 //! face, edge and vertex of the result is the face, edge and vertex of
 //! the body with the same number. What changes is where they lie:

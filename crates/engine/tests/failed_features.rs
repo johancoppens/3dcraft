@@ -1467,7 +1467,7 @@ fn a_repaired_reference_gives_the_document_built_that_way_from_the_start() {
 /// gone and something named after `e9` is there instead. The reason says
 /// what the feature no longer has and what it has. A cap is the
 /// exception by design: a reference to a cap survives a change of its
-/// outline (docs/architecture.md §1.1), so those features are built.
+/// outline (docs/design/names.md), so those features are built.
 #[test]
 fn a_name_that_is_no_longer_there_fails_with_what_is_there_instead() {
     let on_the_plate: Vec<Case> = cases()
@@ -2850,7 +2850,7 @@ fn deleting_the_feature_at_the_rollback_marker_keeps_the_rest_rolled_back() {
 }
 
 /// A face given by the name of an earlier body is followed through the
-/// features that took the body (docs/architecture.md §4.1 › *References
+/// features that took the body (docs/design/names.md › *References
 /// that follow a body*). Two ways that can fail are new: a feature on the
 /// way took the face away, or made more than one face of it. Either fails
 /// the feature with the feature that did, the feature made from it waits

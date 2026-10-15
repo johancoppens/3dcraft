@@ -1,0 +1,121 @@
+# 3DCraft design: The document, sketches, datums and appearance
+
+The document as data (`craft3d-doc`), expressions and variables (`craft3d-expr`), sketches and their solver (`craft3d-solve`, mapped in `regen/src/sketch.rs`), datums, and the appearance and material of bodies. The *Data* of the map ([`../architecture.md`](../architecture.md) §3).
+
+## Method
+
+**The document is the recipe.** `Document` holds units, tolerance, variables (in the order they were defined), the features in order of application, a rollback marker, the next feature id (ids are never reused), and beside the history `bodies`: the appearance and material given to the body of a feature. It is pure data with serde; nothing in it is derived, and `validate()` checks it. Every numeric parameter is an expression kept as source text (`"height - 2 * wall"`), evaluated at regeneration in the document's units; a bare number is in the document's unit.
+
+**Expressions** (`expr`): dimensions (length and angle exponents) and units, a parser and evaluator with functions and `pi`, and a `VariableTable` that evaluates in a deterministic order from the dependencies, detects cycles, fails only what depends on a bad variable, and rewrites references on rename. Sizes are capped against hostile input.
+
+**Sketches** are features: a plane (a world plane, a face by name, or a datum plane, with an offset), point, line, circle, arc and spline entities (a polynomial B-spline on clamped uniform knots whose control points are point entities), and constraints in the order they were added. The stored coordinates *are* the last solution, so a reopened sketch does not flip. `solve` takes plain numbers: point coordinates and radii are the unknowns, gradients exact (dual numbers), steps minimum-norm with a line search from the stored solution, so free geometry moves as little as possible. It reports the degrees of freedom and, from the rank of the Jacobian in the order of the constraints, which ones are redundant or conflicting; a point on a spline is one equation with the curve's parameter eliminated at the foot of the point. Every loop is capped; "did not converge" is a normal answer.
+
+**Datums** (`datum.plane`, `axis`, `point`, `helix`) are features without a body. Each is placed by small reference types (`PlaneRef`, `AxisRef`, `PointRef`: base geometry, a face by name, an edge by its two faces, a vertex by name, another datum) and found again at every regeneration; a sketch, a mirror, a revolution or a pattern can be placed by one.
+
+**Appearance and material** are not features: regeneration does not read them. A body has the appearance and material of the feature that makes it, else of the body it was made from as instance 0; a face has the appearance of the nearest feature on the way its name records. Mass and inertia come from the material's density and are measured when asked, once per body.
+
+## Findings and history
+
+> Moved verbatim from `docs/architecture.md` on 2026-10-15. Section numbers (§4.1, §5.3, …) in the text are those of that file before the split; [README.md](README.md) says where each one is now.
+
+### From *Current state (2026-10-12)*
+
+- **Expressions:** `expr` has dimensions (length and angle exponents) and units (`um mm cm m in ft`, `deg rad`), a parser and evaluator for formula text (`+ - * / ^`, functions, `pi`, variables, a unit after a number), and `VariableTable` (deterministic evaluation order, cycle detection, partial failure, rename that rewrites references). Source length, nesting depth and table size are capped. Not built: printing an expression back to text, storing the evaluation order (computed on demand; storing it is `doc`/`format`'s job).
+- **Document:** `doc` has `Document` (units, tolerance, variables, ordered features, rollback marker, next feature id), features `Block`, `Cylinder`, `Sphere`, `Cone`, `Torus` whose parameters are expressions kept as source text, an `Orientation` (axis and angle) on all but the sphere, stable never-reused feature ids, and `validate()`. Sketches are features too (`doc::sketch`): a plane (a world plane with an offset), point, line, circle, arc and (2026-10-13) spline entities with ids that are never reused, sixteen kinds of constraint in the order they were added, and the last solution as the stored coordinates. Not built: the other feature kinds, references between features.
+- **Sketch solver:** `solve` takes a sketch as plain numbers (points, lines, circles, arcs; constraints with evaluated values) and returns solved coordinates, the degrees of freedom left, and per constraint whether it is satisfied, redundant or conflicting (the later constraint is blamed). Newton-type with minimum-norm steps from the given start, so a solved sketch does not move and a free part moves as little as possible; every loop is capped. It knows nothing about the document: `regen` maps one onto the other.
+
+### 4. Document model (`craft3d-doc`)
+
+A document is the recipe. Sketch of the types (final names are settled in M1/M2):
+
+```rust
+pub struct Document {
+    pub id: DocId,
+    pub units: Units,                    // length + angle unit
+    pub tolerance: Tolerance,            // linear + angular modelling tolerance
+    pub variables: VariableTable,        // name -> expression, in stored evaluation order
+    pub features: Vec<Feature>,          // THE history: explicit order of application
+    pub rollback: Option<FeatureId>,     // history marker: regenerate up to here
+    pub metadata: Metadata,
+}
+
+pub struct Feature {
+    pub id: FeatureId,                   // stable, never reused within a document
+    pub name: String,
+    pub suppressed: bool,
+    pub kind: FeatureKind,
+}
+
+pub enum FeatureKind {
+    DatumPlane(DatumPlane), DatumAxis(DatumAxis), DatumPoint(DatumPoint),
+    Sketch(Sketch),
+    Primitive(Primitive),                // box, cylinder, cone, sphere, torus
+    Extrude(Extrude), Revolve(Revolve), Sweep(Sweep), Loft(Loft),
+    Boolean(Boolean),                    // union / subtract / intersect between bodies
+    Fillet(Fillet), Chamfer(Chamfer), Shell(Shell), Draft(Draft),
+    Pattern(Pattern), Mirror(Mirror), Transform(TransformBody),
+    Import(ImportedBody),                // a history-free body from STEP, stored as a blob
+}
+
+pub struct Sketch {                      // as built in M5: crates/doc/src/sketch.rs
+    pub plane: SketchPlane,              // World { plane: Xy|Yz|Zx, offset }, Face { face: PersistentName, offset }, Datum { plane: FeatureId, offset }
+    pub entities: Vec<Entity>,           // id, construction flag, geometry: Point {x, y}, Line, Circle, Arc, Spline on point ids
+    pub constraints: Vec<Constraint>,    // id + kind, in the order they were applied
+    pub next_entity_id: u64,             // ids are never reused within a sketch
+    pub next_constraint_id: u64,
+}                                        // the point coordinates and circle radii ARE the last solution
+
+pub enum Constraint {
+    Coincident(..), Horizontal(..), Vertical(..), Parallel(..), Perpendicular(..), Tangent(..),
+    Equal(..), Concentric(..), Symmetric(..), Midpoint(..), Fixed(..),
+    Distance { a: EntRef, b: EntRef, value: Expr }, Angle { .. , value: Expr },
+    Radius { .. , value: Expr }, Diameter { .. , value: Expr },
+}
+
+pub struct Expr { pub source: String /* "width / 2 + 3 mm" */, /* parsed form cached, not serialised */ }
+
+pub enum Ref {                           // how a feature points at geometry
+    Feature(FeatureId),                  // a datum or a whole body
+    Name(PersistentName),                // a face / edge / vertex
+}
+```
+
+- **Every numeric parameter is an `Expr`,** not a number. `Extrude { distance: Expr }` may be `"25 mm"` or `"height - 2 * wall"`. The expression's source text is what is saved.
+- **Order is explicit.** `features` is the order of application. `variables` keeps a stored topological order; `constraints` keeps the order in which they were added. Saving and reopening must reproduce the same model, so nothing that affects the result may depend on map iteration or solver start-up luck.
+- **Solved sketch state is saved.** Constraint systems have several solutions (mirror branches). The last solution is stored and used as the solver's starting point, so a reopened sketch does not flip.
+- **No bodies in the document.** Bodies live in the regeneration result, keyed by feature id.
+
+**Splines in sketches (2026-10-13, the first step of M9's sweeps).** `Geometry::Spline { degree, control }` is a polynomial B-spline of degree 1 to 7 whose control points are point entities, in order, on clamped uniform knots that are derived from the degree and the count (`doc::clamped_uniform_knots`) and not stored. It starts at its first control point, ends at its last and leaves each along the leg to the next; with the first point also as the last it closes on itself. Why this form: the unknowns of the solver are the points, so the constraints that exist (coincident, fixed, distance, horizontal, ...) shape a spline without the solver knowing the kind at all, it adds no degrees of freedom, and it closes a loop with lines and arcs by sharing its end points. A later rational or non-uniform spline adds `weights` and `knots` as fields that default to what this one means. A spline *through* given points is not a second kind: `sketch.spline` with `through` works the control points out once (the curve takes point i at the Greville abscissa of control point i, a system that is well conditioned whatever the points) and stores an ordinary spline; the first and last points are shared as given, the ones in between become new control points. `regen` does not hand a spline to the solver: its points are there already. A `tangent` constraint between a spline and a line, an arc or another spline holds at an end point the two share (one point entity, or two tied by a coincident constraint) and becomes a condition on the spline's end leg: parallel to the line or to the other spline's leg, tangent to the arc's circle at that point; without a shared end the sketch fails with that reason. A point is held on a spline by `pointOn` (the next paragraph, 2026-10-14). The other constraints (parallel, equal, midpoint, a radius) refuse a spline as not supported yet.
+
+**A point on a spline (2026-10-14).** `pointOn` takes a point and a spline. For the solver a spline is still not an entity and has no unknowns: `solve::Sketch::splines` lists the splines that points are put on (degree, knots, control points as point entities; `regen` adds one the first time a constraint needs it), and `Constraint::PointOnSpline` is **one equation without an extra unknown**. The curve's parameter is eliminated: the residual is the signed distance `g = (P − C(u)) · n(u)` at the *foot* of the point, the nearest point of the curve (the nearest of eight places per knot span, then a bisection on `(C − P) · C′`, every loop bounded). At the foot `P − C` is at right angles to the curve, so `g` does not change to first order with `u` or with the direction of `n`, and its gradient is exact with both held still: `n` for the point and `−N_i(u) n` for control point `i` (`crates/solve/src/spline.rs`; a unit test holds it against central differences of the distance itself, which finds its foot anew, for degrees 1 to 7). So the row has the point and `degree + 1` control points in it, which is why a gradient now has room for 18 unknowns instead of 8 (`dual::SLOTS`; the solver's timings did not move: 87 against 92 ms for 1602 unknowns). Degrees of freedom, redundancy and conflict come from the rank of the Jacobian like every other constraint's: one less per point on a spline; the same constraint twice, or an end control point on its own spline, is redundant; a point held elsewhere against a held spline is conflicting, with the distance as its residual. Two choices the developer may want different: beyond its ends a spline counts as going on straight along its first and last leg (as a point on a line is held on the whole line), and where the nearest point is a corner (a polyline's) the distance is the plain distance to that corner. A spline all on one spot has no direction: the constraint is reported undefined, the rest solves. Tests: `crates/solve/tests/splines.rs` (lands on the curve by an independent measure, 1e-3, 1 and 1e6, degrees 1 to 6; a spline pulled through a fixed point; dragged; redundant, conflicting, beyond the ends, bad input), `crates/engine/tests/sketch_spline.rs` › `a_point_is_held_on_a_spline` (through the commands, a control point moved by a variable, save and reopen).
+
+**Reference geometry (2026-10-13, M8.5).** Datum planes, axes and points are features of the history that make no body (`doc/src/datum.rs`: `FeatureKind::DatumPlane`, `DatumAxis`, `DatumPoint`). Their result is where they lie (`regen::Datum` in `FeatureResult::datum`: a frame, a point with a unit direction, a point), worked out in `regen/src/datum.rs` from the results of the features before them, cached and compared like every other result, and shown by `document.inspect` per feature under `datum`.
+
+- *What a datum is placed by* is one of three small reference types, the same in the document, the file and the commands. A plane (`PlaneRef`): a base plane, a flat face by its persistent name (its frame as a sketch on that face has it, the normal out of the body), or a datum plane by feature id. A line (`AxisRef`): a world axis, a datum axis, or **the straight edge between two faces of one body, by the names of the two faces** (`regen::edges_between`; the pieces a boolean cut an edge into are one line, edges on different lines are refused). A point (`PointRef`): coordinates (three expressions), a datum point, a vertex by its persistent name, or the centre of the circular edge between two faces. No second naming scheme: faces by their names, edges by the faces they lie between, vertices by the names the features give them (primitives, sweeps and their copies by where they came from; after a boolean, and in a pattern whose instances are joined, by the faces that meet in them, `F7:corner[…]`, and by the name an operand gave them, as an alias: *Edges and vertices by their faces* below). `datum.references` lists, for one body, the vertices (with their aliases), the edges with their own names and their two faces, and the faces that have an axis, each with the name to use.
+- *Planes* (`PlaneBy`): `Offset { from, distance }` keeps the origin and axes of `from`, moved along its normal; `Angle { from, about, angle }` is `from` turned about `about` counter-clockwise seen from the tip of the axis, **through the axis**, which has to be parallel to `from` (an edge of the face, or a line beside the plane; anything else is refused with the angle it makes); `ThreePoints` has its origin at the first point, x towards the second and the three counter-clockwise round the normal.
+- *Axes* (`AxisBy`): `TwoPoints` (from the first to the second), `Edge { between }`, `Face` (the axis of a cylinder, cone or torus face, along the surface's own axis), `TwoPlanes` (along the cross product of the normals in the order given, through the point of the line nearest the first plane's origin; parallel planes are refused with how far apart they are). Which way the kernel runs an edge is not something a name says, so between two flat faces an edge axis points along the cross product of their outward normals in the order the faces are given; between other faces it has the direction of the edge's curve.
+- *Where a datum is used.* A sketch lies on one (`SketchPlane::Datum { plane, offset }`: the datum's origin and axes); a mirror reflects in one (`Mirror::plane`); a revolution turns about one (`RevolveAxis::Datum`, which has to lie in the sketch's plane: off it or leaning out of it is refused with by how much); a circular pattern goes round one (`PatternLayout::Circular::about`); a datum plane is turned about one and a plane or axis goes through datum points. The commands take them by feature id or name in the parameter that was there (`plane` of `sketch.create`/`sketch.edit`/`feature.mirror`, `axis` of `feature.revolve`/`feature.pattern`), beside what they took before. A mirror and a pattern keep their own point, normal and axis unused, so that giving them again goes back.
+- *Failure.* Every reference is found again at each regeneration. One that points at nothing fails the datum with the parameter, the feature and the name it lost (``from: `Base` no longer has a face F1:face(9); its faces are: …``); what is placed by a failed, suppressed, rolled back or later datum fails with the datum's name (``plane: `Shelf` failed; fix it first``); nothing else is touched. A datum is repaired by giving it another definition (`datum.plane` … with `replace`), which gives what building it that way from the start gives. Cycles cannot be built: a datum placed by a later feature fails as "comes after this feature".
+- *Not built:* a datum at a vertex of a body a boolean made (vertices need names that survive a boolean, or a reference by the faces that meet there); an axis or centre from an elliptic or freeform edge; a plane tangent to a face, normal to a curve, or midway between two planes; a transform about a datum axis; drawing datums in the viewport.
+- *Tests:* `crates/engine/tests/datums.rs` (boxes, discs and rings on offset, angled and three-point planes at 1e-3, 1 and 1e6 against closed forms, with their boxes and centres; mirrors, revolves and patterns about datums; upstream edits; lost references and repair; save and reopen; everything that is refused), `crates/regen/tests/datums.rs` (documents no command builds: cycles, datums of the wrong kind, the cache), `crates/format/tests/format.rs` (the file).
+
+#### 4.2 Appearance and material per body (2026-10-15)
+
+A colour (`Appearance`: sRGB, and `metallic` and `roughness` from 0 to 1) and a material (`Material`: a name and a density in kg/m³) are given to the body of a feature (`body.appearance`, `body.material`) and kept in `Document::bodies`, a list by feature id beside the history (`crates/doc/src/appearance.rs`). They are not features: regeneration does not read them, an edit of a feature's parameters keeps them (the id stays), deleting the feature drops its entry, undo and redo treat them as any edit. Saved in `.3dcraft` from format 16 ([`file-formats.md`](../file-formats.md)).
+
+**How they follow a body** (`crates/engine/src/appearance.rs`), a rule chosen so that a cutaway stays readable:
+
+- *A body* has the appearance and the material of the feature that makes it, when that feature has one; otherwise those of the body it was made from as instance 0 (a boolean's target, the body a fillet rounds, a shell hollows, a pattern repeats or a transform moves), and so on back. So a cut keeps the colour of the plate it cut, a fillet does not turn a red part grey, and a material given to the first block of a part is the material of the finished part.
+- *A face* has the appearance of the nearest feature on its own way back that has one. The way is the one its persistent name records (§4.1): `F7:copy(1)/F3:side(e2)` came through instance 1 of F7 (the tool) from F3, so the wall a blue drill cut into a red plate stays blue; `F9:copy(0)/F2:face(1)` went through instance 0 of F9 and of every feature before it until F2. A face a feature made itself (a fillet's round, a chamfer's flat) has the body's colour at that feature. A face whose way meets no appearance has the body's; a body without one is drawn in the theme's colour.
+- *Setting a colour on a later feature* colours its whole body, tool faces included: the nearest feature wins.
+- The material is per body only (a mass needs one density): the instance-0 rule, so a union of a steel and a brass part weighs as steel. Per-face materials, and a mass per piece of a body made of several materials, are not modelled.
+
+The colours reach every picture through `craft3d_render::FaceColors` (a colour per face id; §7.2): the scene's (`Scene::face_colors`, built with the meshes), `view.render`'s, `view.replay`'s per step; and the exports: 3MF base materials per object and per triangle, STEP styled items per solid and per face ([`file-formats.md`](../file-formats.md)). `document.inspect` and `document.measure` report each body's appearance and material, and with a material its mass and its inertia tensor about the centroid (`craft3d_topo::inertia`: the second moments by the divergence theorem on the exact B-rep, summed about the middle of the body and moved to the centroid; checked against closed forms for a block, a cylinder, a sphere and a torus, tilted and off the origin, at 1e-3, 1 and 1e3 in `crates/topo/tests/inertia.rs`, and through the commands in `crates/engine/tests/appearance.rs`).
+
+*Setting them costs nothing (2026-10-15).* `body.appearance` and `body.material` change `Document::bodies` and nothing regeneration reads, so the regeneration after them, and after undoing or redoing them, rebuilds no feature and checks none (`colours_and_materials_rebuild_nothing` counts it). `body.material` says which bodies have the material and from where; it measures nothing. It used to report each body's mass and inertia as well, and the exact measure of a body of spline faces takes seconds: on the impeller (99 faces, 62 of them freeform) 35 to 44 s of CPU (4 to 11 s on fourteen threads), for one command that only names a material. The mass and the inertia are measured when `document.inspect`, `document.measure` or `document.check` asks, once per body (`engine/src/mass.rs`), and both at once for a body with a material (`topo::mass_and_inertia`): the faces are integrated once with the second moments, and the area, volume and moments are taken at the doubling where they agree, settled with a copy of the work spent so far, which is what `mass_properties` alone does, bit for bit (`mass_and_inertia_at_once_are_each_bit_for_bit_what_they_are_alone`, on analytic and freeform reference solids at two scales). One measure of both costs about what the inertia alone did: on the impeller about 20 s of CPU (in `document.check`, the first to ask) where the mass and then the inertia took 35 to 44 s. `colours_and_materials_measure_nothing` counts the measures (`mass::fresh_measures`).
+
+#### 5.4 Sketch solver (`solve`)
+
+A 2D geometric constraint solver: entities become unknowns, constraints become equations, solved numerically (Newton-type with a rank-revealing step) from the stored previous solution. It reports degrees of freedom, which constraints are redundant or conflicting, and never loops forever (iteration cap → `DidNotConverge`). Dragging (later, with the UI) is the same solve with a soft target. Decomposition into small sub-problems is an optimisation for later; correctness and diagnostics come first.
+
+As built (M5): the unknowns are point coordinates and circle radii; gradients are exact (forward-mode dual numbers); the Jacobian is factorised row by row in the order the constraints were added, so a row that depends on earlier ones marks its constraint as redundant (it holds) or conflicting (it does not). When the whole system does not converge, constraints are added one at a time from the solution of the earlier ones, and one that cannot be added is blamed. That diagnosis is this solver's verdict, not a proof. About 8% of dense random sketches (up to 40 arbitrary constraints) end as "did not converge" instead of a diagnosis (measured at M5). A constraint that has no value where the others put the sketch (an angle on a line that shrank to a point) is conflicting too, with the reason. `solve` repeats its pass from its own result until nothing changes, so `Ok` means that solving again gives the same coordinates, bit for bit, and the same verdict. `regen::settle_sketches` still does not store a solution with a conflict in it: a collapsed line no longer says which way it pointed, and the stored shape is what brings the sketch back on the same side. Steps are minimum-norm with a line search, so free geometry moves as little as possible and mirror choices (which side of a line, inside or outside a circle) follow the starting point. An angle is signed: counter-clockwise from the first line's direction to the second's.

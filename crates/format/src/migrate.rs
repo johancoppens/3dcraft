@@ -239,7 +239,7 @@ fn v13_to_v14(mut manifest: Value) -> Result<Value, String> {
 /// Version 15 writes a copy of a copy as one link whose numbers are the
 /// instances along the way (`F9:copy(0,1)/F2:side(e7)` for what version 14
 /// wrote `F9:copy(0)/F7:copy(1)/F2:side(e7)`), so that a name does not
-/// grow a link per feature (docs/architecture.md §4.1). The long form
+/// grow a link per feature (docs/design/names.md). The long form
 /// means the same entity and is read into the short one by every version
 /// (`PersistentName::canonical`, in `convert`), so nothing changes here;
 /// the version was raised so that an older build, which takes a copy to

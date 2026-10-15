@@ -249,7 +249,7 @@ fn numeric(
 /// intersections (the hyperbola of a plane and a cone, crossing cylinders)
 /// finite. The result does not depend on the order of `a` and `b`.
 ///
-/// Pairs with a closed form (see `docs/architecture.md` §5.1) give exact
+/// Pairs with a closed form (see docs/design/geometry.md) give exact
 /// curves; every other pair is intersected numerically, and fails with
 /// [`GeomError::NoConvergence`] or [`GeomError::Unsupported`] rather than
 /// return a curve that is incomplete or out of tolerance.

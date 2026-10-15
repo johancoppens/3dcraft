@@ -8,7 +8,7 @@
 //!
 //! So far: variables, primitive features, sketches with their constraints
 //! ([`sketch`]) and extrusions of sketches. The other feature kinds of
-//! docs/architecture.md §4 arrive with their milestones; `craft3d-format` fails to compile when a field is added
+//! docs/design/document.md arrive with their milestones; `craft3d-format` fails to compile when a field is added
 //! here without being saved (AGENTS.md §8).
 
 pub mod appearance;
@@ -118,7 +118,7 @@ pub struct Units {
     pub angle: AngleUnit,
 }
 
-/// Modelling tolerance, as data (docs/architecture.md §1.1).
+/// Modelling tolerance, as data (docs/design/plan.md).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Tolerance {
     /// In the document's length unit.

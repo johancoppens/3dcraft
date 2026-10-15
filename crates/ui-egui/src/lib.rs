@@ -25,7 +25,7 @@
 //! - [`control`]: the `ui.*` methods of the control protocol.
 //!
 //! `ui.screenshot` always renders on the CPU: it is the oracle the GPU
-//! viewport is checked against (docs/architecture.md §7).
+//! viewport is checked against (docs/design/rendering.md).
 
 pub mod backend;
 pub mod camera;

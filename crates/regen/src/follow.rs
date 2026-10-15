@@ -129,7 +129,7 @@ pub(crate) fn source_of(
 /// (`F3:side(e1)`, which is no copy). A link with the one number 0 goes on
 /// through instance 0 until it reaches the feature of the link after it;
 /// a link with other numbers takes them one step each, the last onto
-/// that feature (docs/architecture.md §4.1). `None` for a name that is
+/// that feature (docs/design/names.md). `None` for a name that is
 /// not a copy, and for a way that does not lead there in the history as
 /// it is.
 pub(crate) fn steps<'a>(

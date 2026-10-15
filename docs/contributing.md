@@ -19,7 +19,7 @@
 
 ## Adding a command
 
-1. **Pick the id.** `<family>.<verbNoun>` in the style of the existing ones ([`architecture.md`](architecture.md) §8.2), stable once released. No menu path is needed in phase 1.
+1. **Pick the id.** `<family>.<verbNoun>` in the style of the existing ones ([`design/engine.md`](design/engine.md)), stable once released. No menu path is needed in phase 1.
 2. **Algorithm** goes in the lowest crate that fits (`geom`, `topo`, `solve`, `kernel`, `tess`, `expr`), as a pure function with unit tests. It takes its tolerance as an argument, handles every geometry kind or returns `Unsupported`, and is deterministic.
 3. **Command** goes in an engine module (`crates/engine/src/<area>_cmds.rs`) exposing `specs()`, registered with `v.extend(...)` in `commands.rs`. Fill in:
    - `id`, `label`,
@@ -40,7 +40,7 @@ A feature type is data in the document plus an evaluation in the kernel.
 4. **Regeneration:** evaluate the variant in `crates/regen` (resolve references, evaluate expressions, call the kernel, map errors to a feature status). Add its cache key. Add scenarios to the topological naming suite if the feature creates or consumes named entities.
 5. **Commands:** create/edit commands per the checklist above.
 6. **Export:** check that STEP and mesh export handle any new surface or curve kind the feature can produce.
-7. **Docs:** add the feature to the tables in `architecture.md` and update `roadmap.md`. In the roadmap a table cell holds at most one sentence; what was done goes as one line with its date under **Done** in the milestone's section, what is left as a checkbox under **Open**; how it was built (algorithms, thresholds, measurements, internal paths) goes in `architecture.md`, and the roadmap links to it.
+7. **Docs:** add the feature to its detail document under `design/` (its Method, and a dated entry under Findings and history) and update `roadmap.md`. In the roadmap a table cell holds at most one sentence; what was done goes as one line with its date under **Done** in the milestone's section, what is left as a checkbox under **Open**; how it was built (algorithms, thresholds, measurements, internal paths) goes in its detail document under `design/`, and the roadmap links to it. **The map (docs/architecture.md) changes only when the structure changes; a finding or fix goes into its detail document under docs/design/.**
 
 ## Adding a geometry kind
 

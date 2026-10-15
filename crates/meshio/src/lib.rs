@@ -1,6 +1,6 @@
 //! STL, 3MF and OBJ writers with their own mesh model.
 //!
-//! Standalone: depends on no workspace crate (docs/architecture.md §3)
+//! Standalone: depends on no workspace crate (docs/architecture.md §2)
 //! except the equally standalone `craft3d-zipstore`, the ZIP container of
 //! 3MF. The mapping from 3DCraft meshes lives in `craft3d-io`.
 //!

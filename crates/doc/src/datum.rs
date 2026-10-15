@@ -5,7 +5,7 @@
 //! else, and that something is referred to the way every feature refers
 //! to another: a base plane by its name, a datum by the id of its
 //! feature, a face of a body by its persistent name, an edge by the two
-//! faces it lies between (docs/architecture.md §4.1), a vertex by its
+//! faces it lies between (docs/design/names.md), a vertex by its
 //! persistent name. Where the datum lies is derived by regeneration and
 //! never stored.
 

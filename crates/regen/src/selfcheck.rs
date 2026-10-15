@@ -1,5 +1,5 @@
 //! The check that no body is handed on that passes through itself
-//! (docs/architecture.md §5.5 › *Never through itself*).
+//! (docs/design/regeneration.md › *Never through itself*).
 //!
 //! `craft3d_topo::check` sees how a body hangs together, not whether two
 //! of its faces pass through each other; `tess::body_self_intersections`

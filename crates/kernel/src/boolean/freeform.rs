@@ -32,7 +32,7 @@
 //! point is on, where its nearest point is the pole, comes from the
 //! meridian nearest to it (`craft3d_geom::pole`); and the directions
 //! around the pole are told apart seen along the direction the surface
-//! closes around (`pole_axes`). `docs/architecture.md` §5.3 › *Freeform
+//! closes around (`pole_axes`). docs/design/booleans.md › *Freeform
 //! faces with a pole* has the arguments.
 //!
 //! A rational surface (weights that are not all one) lies in the hull of

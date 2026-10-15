@@ -15,8 +15,7 @@
 //! edge of reference `k` is `F9:chamfer(k)` or `F9:fillet(k)`; when that
 //! reference gave several edges their faces are `F9:fillet(k,0)`,
 //! `F9:fillet(k,1)`, in the order of where the edges lie in space (as
-//! numbered edge names are, with the same limit: docs/architecture.md
-//! §4.1). The face in a corner where three blends meet is
+//! numbered edge names are, with the same limit: docs/design/names.md). The face in a corner where three blends meet is
 //! `F9:chamferCorner(i,j,k)` or `F9:filletCorner(i,j,k)`, by the
 //! references of the three edges. Edges and vertices are named by the
 //! faces they lie on, and one the body already had answers to a copy of

@@ -1,7 +1,7 @@
 //! ISO 10303-21 ("Part 21", the STEP physical file) reader and writer with
 //! its own format-level model.
 //!
-//! Standalone: depends on no workspace crate (docs/architecture.md §3). It
+//! Standalone: depends on no workspace crate (docs/architecture.md §2). It
 //! knows the exchange structure and nothing about CAD: a file is a header
 //! (a list of records) and one data section (a list of entity instances,
 //! each a record or, for a complex instance, several), and a record is a

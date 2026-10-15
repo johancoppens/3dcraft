@@ -7,7 +7,7 @@
 //! sketch entities). It is written `F2:side(e7)`. An upstream edit either
 //! leaves the name pointing at the same thing, or leaves it pointing at
 //! nothing, which regeneration reports; it never makes it point at
-//! something else (docs/architecture.md §4.1).
+//! something else (docs/design/names.md).
 //!
 //! A feature that makes its body out of another body (a transform, a
 //! mirror, a pattern, a boolean, a blend) names what it makes after what it
@@ -29,8 +29,7 @@
 //! between are the ones the history says each instance was made from.
 //! Every name of the old long form (one link per feature) has exactly one
 //! short form and the other way round: [`PersistentName::canonical`] makes
-//! it, and reading a name (text or file) does so (docs/architecture.md
-//! §4.1).
+//! it, and reading a name (text or file) does so (docs/design/names.md).
 
 use crate::FeatureId;
 use serde::{Deserialize, Serialize};

@@ -187,7 +187,7 @@ fn tools(k: f64) -> Vec<(&'static str, Body)> {
 /// the case contains, with the reason given: work owed. (Empty since
 /// 2026-10-15: the torus through the pole, tilted, at a million, lost the
 /// lobe of the figure eight in which it meets the octant's flat face back
-/// into that face, "imprint lost"; see `architecture.md` §5.3.)
+/// into that face, "imprint lost"; see docs/design/booleans.md.)
 const REFUSED: &[(&str, &str)] = &[];
 
 /// The three booleans of the twin and a tool, held to the same booleans
@@ -753,7 +753,7 @@ fn a_drop_cut_by_a_plane_is_what_its_profile_says() {
 /// 2026-10-15 ("a cusp"); now its chart is a wedge (or a disc) whose width
 /// vanishes to the same order, and the pieces that leave the point, all
 /// along the axis, are put in order a little further along
-/// (`architecture.md` §5.3 › *Freeform faces with a pole*). Held to the
+/// (docs/design/booleans.md › *Freeform faces with a pole*). Held to the
 /// closed forms from the profile where the tool cuts across the axis
 /// (`π ∫ ρ² dz` and `2π ∫ ρ ds` up to the cut), to the identities of
 /// sets for every tool (around the point, a leaning block around it, a
