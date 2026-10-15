@@ -43,6 +43,7 @@ mod sketch;
 mod sweep;
 mod thicken;
 mod thread;
+pub mod work;
 
 pub use cache::RegenCache;
 pub use cause::root_cause;

@@ -80,7 +80,7 @@ use crate::{Mesh, TessError, TessParams};
 use craft3d_geom::{Curve3, Surface};
 use craft3d_math::Vec3;
 use craft3d_topo::Body;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 /// No more threads than this by default; faces are small jobs.
 #[cfg(not(target_arch = "wasm32"))]
@@ -857,6 +857,7 @@ pub(crate) fn tessellate_faces(
 
 /// The faces' triangles as one mesh, in face order.
 fn assemble(patches: Vec<Option<FaceResult>>) -> Result<Mesh, TessError> {
+    let faces = patches.len();
     let mut mesh = Mesh::default();
     for (index, patch) in patches.into_iter().enumerate() {
         let patch =
@@ -873,7 +874,30 @@ fn assemble(patches: Vec<Option<FaceResult>>) -> Result<Mesh, TessError> {
         mesh.positions.extend(patch.positions);
         mesh.normals.extend(patch.normals);
     }
+    MESHES.fetch_add(1, Ordering::Relaxed);
+    FACES_MESHED.fetch_add(mesh_len(faces), Ordering::Relaxed);
+    TRIANGLES.fetch_add(mesh_len(mesh.triangles.len()), Ordering::Relaxed);
     Ok(mesh)
+}
+
+static MESHES: AtomicU64 = AtomicU64::new(0);
+static FACES_MESHED: AtomicU64 = AtomicU64::new(0);
+static TRIANGLES: AtomicU64 = AtomicU64::new(0);
+
+fn mesh_len(count: usize) -> u64 {
+    u64::try_from(count).unwrap_or(u64::MAX)
+}
+
+/// The tessellator's work since the process started: bodies meshed, their
+/// faces, and the triangles made. For the performance benchmark of the
+/// gate (`crates/engine/tests/benchmark.rs`): counts, not a clock, and the
+/// same whatever the number of threads, since the mesh is.
+pub fn tess_work() -> (u64, u64, u64) {
+    (
+        MESHES.load(Ordering::Relaxed),
+        FACES_MESHED.load(Ordering::Relaxed),
+        TRIANGLES.load(Ordering::Relaxed),
+    )
 }
 
 /// The edges of `body` as polylines: one per edge, in edge order, from the
@@ -1074,6 +1098,20 @@ mod tests {
             Err(TessError::Face { face: 1, reason }) => reason,
             other => panic!("expected an error at face 1, got {other:?}"),
         }
+    }
+
+    /// Tessellating a body is counted: the body, its faces and the
+    /// triangles of its mesh. (Other tests add to the counts at the same
+    /// time: only growth by at least this much is certain.)
+    #[test]
+    fn a_mesh_is_counted() {
+        let body = solids::cylinder(&Frame::WORLD, 1.0, 2.0).unwrap().body;
+        let (meshes, faces, triangles) = tess_work();
+        let mesh = tessellate_body(&body, &TessParams::default()).unwrap();
+        let after = tess_work();
+        assert!(after.0 > meshes);
+        assert!(after.1 >= faces + body.faces.len() as u64);
+        assert!(after.2 >= triangles + mesh.triangles.len() as u64);
     }
 
     /// The check that holds a face's mesh against its edges says what is

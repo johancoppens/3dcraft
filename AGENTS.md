@@ -47,7 +47,7 @@ apps/
   craft3d                    desktop app (eframe/wgpu): viewer in phase 1, TCP control server
   craft3d-cli                headless CLI (convert/info/run/commands/serve/mcp)
   craft3d-web                the same app in the browser (later milestone)
-xtask/                       cargo xtask layers | wasm | ci | stats | freecad
+xtask/                       cargo xtask layers | wasm | ci | stats | health | freecad
 ```
 
 **Layering is enforced** by `cargo xtask layers`. A crate may depend only on lower layers (the few same-layer exceptions, such as `geom` → `math`, are listed in `xtask/src/layers.rs`). `testkit` may only be a dev-dependency. `step`, `meshio` and `drawing` depend on nothing in the workspace. Nothing below `ui-egui` may use egui, eframe, winit or rfd. A new crate must be registered in `xtask/src/layers.rs`.
@@ -105,7 +105,7 @@ cargo xtask freecad         # if you touched tess, meshio, step, drawing, io or 
 cargo test -p craft3d-engine --test panic_hunt                # if you added/changed commands (seconds; also part of the full test run)
 ```
 
-`cargo xtask ci` runs fmt, clippy, tests, layers and wasm in one go. It is the gate: CI on GitHub (which adds macOS and Windows) runs only weekly and on demand (`gh workflow run CI`), so a commit is never checked there automatically.
+`cargo xtask ci` runs fmt, clippy, tests, layers and wasm in one go; the tests include the performance benchmark, which counts work against `crates/engine/tests/bench_models/baseline.txt` (updating it is an expectation change, `docs/testing.md` › Performance tests). It is the gate: CI on GitHub (which adds macOS and Windows) runs only weekly and on demand (`gh workflow run CI`), so a commit is never checked there automatically.
 
 **Two steps, so the gate is not paid for every commit** (the developer, 2026-10-13):
 

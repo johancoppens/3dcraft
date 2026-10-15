@@ -876,6 +876,7 @@ pub(crate) fn solve_sketch(
     sketch: &Sketch,
     placement: Result<Placement, String>,
 ) -> (Status, Option<SketchResult>) {
+    crate::work::sketch_solve();
     let Placement {
         origin,
         x_axis,

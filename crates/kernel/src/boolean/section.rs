@@ -944,6 +944,7 @@ pub(super) fn section(
                 continue;
             }
             let named = [a.name(fa), b.name(fb)];
+            crate::work::face_pairs(1);
             let met = meet_surfaces(&oa.surface, &ob.surface, &within, tolerance)
                 .map_err(|e| geometry(e, &named))?;
             // Faces on one surface, or on two that never cross: the same
