@@ -557,7 +557,7 @@ fn the_same_request_gives_the_same_picture() {
 /// Without a tolerance a picture is meshed at between a quarter and half
 /// a pixel where it shows the model, never finer than the display rule's
 /// floor (2e-4 of the diagonal of the bodies' box), with the display's
-/// angle (lamp T2 and impeller T1, 2026-10-16): a larger picture, a zoom
+/// angle (lamp T2 and impeller T1, 2026-10-15): a larger picture, a zoom
 /// or a close-up box is finer, and a whole view costs no more triangles
 /// than the window's scene. With a tolerance the tessellator cannot meet
 /// on a body, the body is drawn coarser and the result says so, rather
@@ -671,7 +671,7 @@ fn render_and_pick_agree_on_the_tolerance_of_a_picture() {
 }
 
 /// The work of a small picture of a whole model is what its pixels can
-/// show, not what the window's display scene costs (lamp T2, 2026-10-16:
+/// show, not what the window's display scene costs (lamp T2, 2026-10-15:
 /// the display scene of the lamp took minutes for one picture). Counted
 /// in triangles, at three scales. Where the chordal tolerance and not the
 /// angle decides, a sphere's mesh has triangles in proportion to one over

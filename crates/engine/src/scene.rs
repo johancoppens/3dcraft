@@ -43,7 +43,7 @@ pub const DEFAULT_SCENE_BUDGET: usize = 1536 << 20;
 pub const PREVIEW_RELATIVE_TOLERANCE: f64 = 1e-3;
 
 /// The automatic chordal tolerance, as `file.export` and previews choose
-/// it (pictures since 2026-10-16 choose their own,
+/// it (pictures since 2026-10-15 choose their own,
 /// [`Session::picture_scene`]): this fraction of the model's size (the side of a
 /// square with the bodies' total area; see [`SceneQuality::Automatic`]).
 pub const AUTOMATIC_RELATIVE_TOLERANCE: f64 = 1e-3;
@@ -90,7 +90,7 @@ pub enum SceneQuality {
     /// The chordal tolerance `file.export` and previews use when none is
     /// given: [`AUTOMATIC_RELATIVE_TOLERANCE`] of the model's size. Without
     /// bodies, the same fraction of the size of the sketches. (Pictures
-    /// have their own since 2026-10-16: [`Session::picture_scene`].)
+    /// have their own since 2026-10-15: [`Session::picture_scene`].)
     Automatic,
     /// A chordal tolerance in document units.
     Tolerance(f64),
@@ -1237,7 +1237,7 @@ fn build(
             let meshed = match budget {
                 // Without the scene's budget a body too fine for the
                 // tessellator at this tolerance is coarsened until it is
-                // not, and the scene says so (lamp T2, 2026-10-16: a
+                // not, and the scene says so (lamp T2, 2026-10-15: a
                 // picture refused for it); within `per_body` triangles
                 // too, when that is asked for. A body that needs neither
                 // is the body meshed at the tolerance.
@@ -1788,7 +1788,7 @@ impl Session {
     /// nearest point ([`pixel_footprint`]); `None` leaves the display
     /// tolerance. A function of the document and the picture's parameters
     /// alone: no scene the window keeps is drawn instead (lamp T2,
-    /// 2026-10-16: the display scene of the lamp took minutes for one
+    /// 2026-10-15: the display scene of the lamp took minutes for one
     /// picture). No scene refuses a body that is too fine for the
     /// tessellator: it is coarsened, and the scene says so
     /// ([`Scene::coarsened`]).

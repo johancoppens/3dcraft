@@ -1199,7 +1199,7 @@ fn what_the_tessellator_declines_on_closed_freeform() {
 /// is as smooth as anywhere and its normal is the axis: every vertex of
 /// the mesh there carries that normal, not the rounding of `∂u × ∂v` of
 /// a parametrisation that stalls (the starburst a revolved spline dome
-/// was shaded with at its pole, lamp T1, 2026-10-16). The vertices around
+/// was shaded with at its pole, lamp T1, 2026-10-15). The vertices around
 /// them keep the surface's own normal, so the shading is smooth.
 #[test]
 fn the_normal_at_a_smooth_pole_is_the_axis() {

@@ -454,7 +454,7 @@ fn a_sketch_lies_on_the_cap_of_a_part_turn() {
 
 /// A spline profile that meets the axis at right angles turns into a dome
 /// whose pole is as smooth as a sphere's: the mesh's normals there are
-/// the axis, at any size (lamp T1, 2026-10-16: the vertices at the pole
+/// the axis, at any size (lamp T1, 2026-10-15: the vertices at the pole
 /// had no normal, and the dome was shaded with a starburst there).
 #[test]
 fn a_revolved_spline_dome_is_shaded_with_the_axis_at_its_pole() {

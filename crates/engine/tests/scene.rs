@@ -34,7 +34,7 @@ fn scene(session: &mut Session, tolerance: Option<f64>) -> Arc<Scene> {
 
 /// The scene `view.render` drew for the picture it answered with
 /// `rendered`: the scene of the tolerance given, or without one (since
-/// 2026-10-16) the picture's scene at the tolerance it reports.
+/// 2026-10-15) the picture's scene at the tolerance it reports.
 fn picture(session: &mut Session, rendered: &Value, tolerance: Option<f64>) -> Arc<Scene> {
     let quality = match tolerance {
         Some(t) => SceneQuality::Tolerance(t),
@@ -898,7 +898,7 @@ fn the_triangle_budget_coarsens_the_display_down_to_the_first_pictures_tolerance
 /// A tolerance the tessellator cannot meet on a body (more segments on a
 /// patch than it allows) is coarsened until it can: by the display rule
 /// for the whole scene, and for that body alone in a scene of that
-/// tolerance (which until 2026-10-16 left the body out, and a picture at
+/// tolerance (which until 2026-10-15 left the body out, and a picture at
 /// it failed: lamp T2).
 #[test]
 fn a_display_tolerance_the_tessellator_cannot_meet_is_coarsened_until_it_can() {

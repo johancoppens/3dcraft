@@ -361,7 +361,7 @@ fn spline_slack(body: &Body, k: f64) -> (f64, f64) {
 /// A hash of a result, for the digest of a run: see the corpus test. The
 /// digest is the wrapping sum of the hashes of a run's results, kept in
 /// that run's [`Tally`] (not in a static, which every test of the binary
-/// would add to in whatever order the test threads run: 2026-10-16), so
+/// would add to in whatever order the test threads run: 2026-10-15), so
 /// it is the same whatever runs beside it and on any number of threads.
 fn digest(result: &craft3d_kernel::boolean::BooleanResult) -> u64 {
     use std::hash::{Hash, Hasher};
