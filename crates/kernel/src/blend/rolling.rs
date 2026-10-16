@@ -79,6 +79,7 @@ use craft3d_math::{Tolerance, Vec3};
 use craft3d_topo::{Body, BodyKind, Coedge, Edge, EdgeId, FaceId, Loop, LoopId, Vertex, VertexId};
 
 mod chain;
+mod cross;
 mod exact;
 
 /// How many times a step between two sections may be halved to follow
@@ -571,6 +572,11 @@ struct End {
     /// known to): a blend has to go on past the end the longer the more
     /// nearly it runs along the face.
     slant: f64,
+    /// Per side, a smooth edge of that side's face which the boundary
+    /// with the third face may be followed across, past this end, into
+    /// the face beyond it: where the blend's border crosses that edge
+    /// (see [`cross`]).
+    across: [Option<EdgeId>; 2],
 }
 
 /// Per face, its edges; per edge, its faces.
@@ -652,6 +658,7 @@ fn end_at(
         third: t1,
         facing,
         slant,
+        across: [None, None],
     })
 }
 
@@ -1224,10 +1231,64 @@ fn blend_one(
         );
     }
     let end_bound = tolerance.angular.max(BEND).max(tol / shape.size());
-    let ends = [
+    let mut ends = [
         end_at(body, edge, [first, second], data.start, end_bound)?,
         end_at(body, edge, [first, second], data.end, end_bound)?,
     ];
+    // Smooth edges of the faces beside the edge that the borders cross.
+    let crossings = cross::find(
+        body,
+        &cross::Blend {
+            edge,
+            data: &data,
+            faces: [first, second],
+            sides,
+            shape,
+            ends: &ends,
+            into,
+            tol,
+        },
+        tolerance,
+    )?;
+    if !crossings.is_empty() {
+        for c in &crossings {
+            for (j, end) in ends.iter_mut().enumerate() {
+                if (c.at.is_none() || c.end == j)
+                    && let Some(slot) = end.across.get_mut(c.side)
+                {
+                    *slot = Some(c.smooth);
+                }
+            }
+        }
+        return blend_across(
+            body,
+            edge,
+            [first, second],
+            into,
+            convex,
+            shape,
+            scale,
+            &data,
+            ends,
+            &crossings,
+            tolerance,
+        )
+        .map_err(|error| match error {
+            // A border that cannot be carried across (no ball rolls
+            // against the faces beyond, or none within the tolerance)
+            // runs off its face, as it did before it was carried: which
+            // `fit` reads as no room.
+            BlendError::Refused {
+                reason: Reason::FreeSurface | Reason::FreeApproximation | Reason::NotTangent,
+                ..
+            } => refuse(
+                edge,
+                crossings.first().map(|c| c.before),
+                Reason::FreeRunsOver,
+            ),
+            other => other,
+        });
+    }
     let length = edge_length(&data);
     if !(length > 0.0) {
         return Err(unsolvable());
@@ -1339,6 +1400,309 @@ fn blend_one(
         shape,
         tolerance,
     )
+}
+
+/// [`blend_one`] where a border crosses smooth edges of its face
+/// ([`cross`]): the sections on each side of a switch are found against
+/// the faces there, the pieces refined each on their own faces and joined
+/// across the section at the switch (which both pass through); after the
+/// splice the borders are cut into pieces on the faces they lie on.
+#[allow(clippy::too_many_arguments)]
+fn blend_across(
+    body: &mut Body,
+    edge: EdgeId,
+    faces: [FaceId; 2],
+    into: [Vec3; 2],
+    convex: bool,
+    shape: Shape,
+    scale: f64,
+    data: &Edge,
+    ends: [End; 2],
+    crossings: &[cross::Crossing],
+    tolerance: &Tolerance,
+) -> Result<FaceId, BlendError> {
+    let tol = tolerance.linear;
+    let unsolvable = || refuse(edge, None, Reason::FreeSurface);
+    let [first, _] = faces;
+    let runs_over = || refuse(edge, Some(first), Reason::FreeRunsOver);
+    let breaks = cross::switches(crossings);
+    if breaks.windows(2).any(|w| matches!(w, [a, b] if !(b > a))) {
+        return Err(runs_over());
+    }
+    // The pieces of the blend between the switches, and the faces each
+    // touches.
+    let mut bounds = vec![f64::NEG_INFINITY];
+    bounds.extend(breaks.iter().copied());
+    bounds.push(f64::INFINITY);
+    let mut pieces: Vec<[FaceId; 2]> = Vec::with_capacity(bounds.len());
+    for w in bounds.windows(2) {
+        let [lo, hi] = w else { return Err(lost()) };
+        let middle = match (lo.is_finite(), hi.is_finite()) {
+            (true, true) => 0.5 * (lo + hi),
+            (false, true) => hi - 1.0,
+            (true, false) => lo + 1.0,
+            (false, false) => 0.5,
+        };
+        pieces.push([
+            cross::face_at(faces, crossings, 0, middle),
+            cross::face_at(faces, crossings, 1, middle),
+        ]);
+    }
+    let side_of = |f: FaceId| -> Result<Side<'_>, BlendError> {
+        let face = body.face(f).ok_or_else(lost)?;
+        Ok(Side {
+            surface: &face.surface,
+            reversed: face.reversed,
+        })
+    };
+    let spine = || Spine {
+        curve: &data.curve,
+        range: data.range,
+        closed: false,
+        joints: [None, None],
+        turn: 0.0,
+    };
+    let mut solvers = Vec::with_capacity(pieces.len());
+    for [a, b] in &pieces {
+        solvers.push(Solver {
+            spine: spine(),
+            sides: [side_of(*a)?, side_of(*b)?],
+            shape,
+            scale,
+            moved: None,
+        });
+    }
+    let home = bounds
+        .windows(2)
+        .position(|w| matches!(w, [lo, hi] if *lo <= 0.5 && 0.5 < *hi))
+        .ok_or_else(lost)?;
+    let seed = first_section(solvers.get(home).ok_or_else(lost)?, 0.5, into, edge)?;
+    // One piece (an edge inside all along on a side): the sections may
+    // be the seed moved, as in `blend_one`.
+    if let [only] = solvers.as_mut_slice() {
+        let motion = exact::motion(&only.spine, only.sides);
+        only.moved = motion.and_then(|m| exact::Moved::new(m, &only.spine, seed, 0.5));
+    }
+    let length = edge_length(data);
+    if !(length > 0.0) {
+        return Err(unsolvable());
+    }
+    let size = shape.size();
+    let steps = Steps::of(size, length);
+    let thirds: Vec<Side<'_>> = ends
+        .iter()
+        .map(|end| end.side(body))
+        .collect::<Result<_, _>>()?;
+    // Sections from the middle outwards, each from its neighbour, across
+    // the switches: the section at a switch, found against the faces
+    // before it, is the ball that touches the faces after it too.
+    let mut tagged: Vec<(f64, usize, Section)> = vec![(0.5, home, seed)];
+    let mut reach = [0.0_f64; 2];
+    for (index, end) in [(0_usize, 0.0_f64), (1, 1.0)] {
+        let end_data = ends.get(index).ok_or_else(lost)?;
+        let third = *thirds.get(index).ok_or_else(lost)?;
+        let allowed = end_data.steps(steps);
+        let mut piece = home;
+        let mut at = (0.5, seed);
+        loop {
+            let (next, bound) = if index == 1 {
+                (piece + 1, bounds.get(piece + 1))
+            } else {
+                match piece.checked_sub(1) {
+                    Some(p) => (p, bounds.get(piece)),
+                    None => break,
+                }
+            };
+            let Some(&bound) = bound.filter(|b| b.is_finite()) else {
+                break;
+            };
+            // A switch further past the end than the blend may be followed.
+            let past = (bound - end) * (2.0 * end - 1.0);
+            if past > allowed.most_out {
+                return Err(runs_over());
+            }
+            let solver = solvers.get(piece).ok_or_else(lost)?;
+            let more = march_to(solver, at, bound, steps.inside).ok_or_else(unsolvable)?;
+            let (b, last) = *more.last().ok_or_else(lost)?;
+            tagged.extend(more.into_iter().map(|(s, x)| (s, piece, x)));
+            let beyond = solvers.get(next).ok_or_else(lost)?;
+            let moved = cross::moved_onto(&last, beyond.sides, tol).ok_or_else(runs_over)?;
+            // The ball holds for the faces beyond the switch too.
+            let again = beyond.section(b, &moved).ok_or_else(unsolvable)?;
+            let same = match (again.centre, moved.centre) {
+                (Some(p), Some(q)) => p.distance(q) <= 0.25 * tol,
+                (None, None) => true,
+                _ => false,
+            };
+            let feet = again
+                .feet
+                .iter()
+                .zip(&moved.feet)
+                .all(|(p, q)| p.distance(*q) <= 0.25 * tol);
+            if !(same && feet) {
+                return Err(refuse(edge, None, Reason::NotTangent));
+            }
+            tagged.push((b, next, moved));
+            piece = next;
+            at = (b, moved);
+        }
+        let solver = solvers.get(piece).ok_or_else(lost)?;
+        let (more, past) =
+            march_out(solver, at, end, third, allowed, tol).map_err(|stop| match stop {
+                Stop::Unsolvable => unsolvable(),
+                Stop::TooFar => refuse(edge, Some(end_data.third), Reason::FreeEnd),
+            })?;
+        tagged.extend(more.into_iter().map(|(s, x)| (s, piece, x)));
+        if let Some(slot) = reach.get_mut(index) {
+            *slot = past;
+        }
+    }
+    let limit = 0.25 * tol;
+    let bend = tolerance.angular.max(BEND).max(tol / size);
+    let mut parts = Vec::with_capacity(solvers.len());
+    let mut all: Vec<(f64, Section)> = Vec::new();
+    for (index, solver) in solvers.iter().enumerate() {
+        let mut mine: Vec<(f64, Section)> = tagged
+            .iter()
+            .filter(|(_, p, _)| *p == index)
+            .map(|(s, _, x)| (*s, *x))
+            .collect();
+        mine.sort_by(|a, b| a.0.total_cmp(&b.0));
+        mine.dedup_by(|a, b| a.0 == b.0);
+        if mine.len() < 2 {
+            return Err(runs_over());
+        }
+        // Cubic along the blend, for the pieces to join: at least four
+        // samples.
+        while mine.len() < 4 {
+            let widest = mine
+                .windows(2)
+                .enumerate()
+                .filter_map(|(i, w)| match w {
+                    [a, b] => Some((i, b.0 - a.0)),
+                    _ => None,
+                })
+                .max_by(|a, b| a.1.total_cmp(&b.1));
+            let (at, _) = widest.ok_or_else(lost)?;
+            let (a, near) = *mine.get(at).ok_or_else(lost)?;
+            let b = mine.get(at + 1).ok_or_else(lost)?.0;
+            let middle = 0.5 * (a + b);
+            let found = solver
+                .follow(a, &near, middle, FOLLOW_DEPTH)
+                .ok_or_else(unsolvable)?;
+            mine.insert(at + 1, (middle, found));
+        }
+        let mut params: Vec<f64> = mine.iter().map(|x| x.0).collect();
+        let mut sections: Vec<Section> = mine.iter().map(|x| x.1).collect();
+        let surface = match solver.moved {
+            Some(_) => {
+                let (Some(p0), Some(p1), Some(c0), Some(c1)) = (
+                    params.first(),
+                    params.last(),
+                    sections.first(),
+                    sections.last(),
+                ) else {
+                    return Err(unsolvable());
+                };
+                surface_through(&[*p0, *p1], &[*c0, *c1])
+            }
+            None => refine(solver, &mut params, &mut sections, limit, bend),
+        }
+        .ok_or_else(|| refuse(edge, None, Reason::FreeApproximation))?;
+        parts.push(surface);
+        for (s, x) in params.into_iter().zip(sections) {
+            if all.last().is_none_or(|l| l.0 < s) {
+                all.push((s, x));
+            }
+        }
+    }
+    let surface = match parts.as_slice() {
+        [only] => only.clone(),
+        _ => cross::join(&parts).ok_or_else(|| refuse(edge, None, Reason::FreeApproximation))?,
+    };
+    let mut cuts = Vec::with_capacity(2);
+    for (index, end) in ends.iter().enumerate() {
+        let third = *thirds.get(index).ok_or_else(lost)?;
+        let past = *reach.get(index).ok_or_else(lost)?;
+        let cut = end_cut(
+            &surface,
+            third,
+            index == 1,
+            past,
+            size / length,
+            limit,
+            scale,
+        )
+        .ok_or_else(|| refuse(edge, Some(end.third), Reason::FreeEnd))?;
+        cuts.push(cut);
+    }
+    let [cut0, cut1] = <[(NurbsCurve, [f64; 2]); 2]>::try_from(cuts).map_err(|_| lost())?;
+    let params: Vec<f64> = all.iter().map(|x| x.0).collect();
+    let sections: Vec<Section> = all.iter().map(|x| x.1).collect();
+    let home_solver = solvers.get(home).ok_or_else(lost)?;
+    let outward_hint =
+        outward_from(home_solver, &surface, &params, &sections, convex).ok_or_else(unsolvable)?;
+    let motion = match solvers.as_slice() {
+        [only] => only.moved.map(|m| m.motion),
+        _ => None,
+    };
+    drop(solvers);
+    drop(thirds);
+    let made = Made {
+        surface,
+        cuts: [cut0, cut1],
+    };
+    let (blend_face, second_border) =
+        splice(body, edge, faces, ends, made, outward_hint, tolerance)?;
+    let borders = cross::carry(
+        body,
+        edge,
+        blend_face,
+        [edge, second_border],
+        faces,
+        crossings,
+        tol,
+    )?;
+    for (border, face) in &borders {
+        stays_on(body, edge, *border, *face, tolerance)?;
+    }
+    no_loop_behind(body, blend_face, convex, &data.curve, edge, tolerance)?;
+    if let Some(motion) = motion {
+        let surface = exact::swept(motion, &seed, shape).ok_or_else(unsolvable)?;
+        exact::make_exact(body, blend_face, surface, tolerance)?;
+    }
+    tangent_along(body, edge, &borders, blend_face, shape, tolerance)?;
+    Ok(blend_face)
+}
+
+/// Sections from `from` to `to` in even steps of at most `step`, each
+/// followed from the one before; the last one at `to`.
+fn march_to(
+    solver: &Solver<'_>,
+    from: (f64, Section),
+    to: f64,
+    step: f64,
+) -> Option<Vec<(f64, Section)>> {
+    let (s0, mut last) = from;
+    let count = ((to - s0).abs() / step).ceil();
+    if !(count.is_finite() && count >= 0.0 && count < MAX_SAMPLES as f64) {
+        return None;
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let count = (count as usize).max(1);
+    let mut out = Vec::with_capacity(count);
+    let mut previous = s0;
+    for i in 1..=count {
+        let s = if i == count {
+            to
+        } else {
+            s0 + (to - s0) * (i as f64 / count as f64)
+        };
+        last = solver.follow(previous, &last, s, FOLLOW_DEPTH)?;
+        out.push((s, last));
+        previous = s;
+    }
+    Some(out)
 }
 
 /// The size of the numbers about an edge: what "settled" is measured
@@ -1642,14 +2006,35 @@ fn tangent_or_refused(
     shape: Shape,
     tolerance: &Tolerance,
 ) -> Result<FaceId, BlendError> {
+    tangent_along(
+        body,
+        edge,
+        &[(edge, first), (second_border, second)],
+        blend_face,
+        shape,
+        tolerance,
+    )?;
+    Ok(blend_face)
+}
+
+/// [`tangent_or_refused`] along `borders`, each with the face it lies
+/// on: each stays on its face, and a fillet face is tangent to it.
+fn tangent_along(
+    body: &Body,
+    edge: EdgeId,
+    borders: &[(EdgeId, FaceId)],
+    blend_face: FaceId,
+    shape: Shape,
+    tolerance: &Tolerance,
+) -> Result<(), BlendError> {
     let tol = tolerance.linear;
-    for (border, face) in [(edge, first), (second_border, second)] {
-        stays_on(body, edge, border, face, tolerance)?;
+    for (border, face) in borders {
+        stays_on(body, edge, *border, *face, tolerance)?;
     }
     if let Shape::Ball { radius, .. } = shape {
         // Tangent to both faces along its borders, measured.
         let limit = 10.0 * tolerance.angular.max(BEND).max(tol / radius);
-        for (border, face) in [(edge, first), (second_border, second)] {
+        for &(border, face) in borders {
             let data = body.edge(border).ok_or_else(lost)?;
             let (own, other) = (
                 body.face(blend_face).ok_or_else(lost)?,
@@ -1672,7 +2057,7 @@ fn tangent_or_refused(
             }
         }
     }
-    Ok(blend_face)
+    Ok(())
 }
 
 /// The blend face along a closed edge: sections evenly round it (a
@@ -2175,65 +2560,65 @@ fn cut_back(
         };
         let far_point = body.vertex(far).ok_or_else(lost)?.point;
         if far != end.vertex && far_point.distance(point) <= tol {
-            // Taken whole: out of both its faces' loops.
-            for ring in &mut body.loops {
-                ring.coedges.retain(|c| c.edge != *other);
-            }
-            // Nothing ends at it any more ([`compact`] drops it).
-            if let Some(slot) = body.edges.get_mut(other.0 as usize) {
-                slot.start = VertexId(u32::MAX);
-                slot.end = VertexId(u32::MAX);
-            }
+            take_whole(body, *other);
             if let Some(slot) = found.get_mut(k) {
                 *slot = far;
             }
             continue;
         }
-        let target = if k == 0 {
-            end.vertex
-        } else {
-            let added = VertexId(u32::try_from(body.vertices.len()).map_err(|_| lost())?);
-            body.vertices.push(Vertex {
-                point: second_corner,
-            });
-            added
+        let Ok(on_other) = parameter_on(&data, point, tol) else {
+            return Err(too_large(face));
         };
+        // Not on the edge itself: past the vertices at which the boundary
+        // between this face and the third goes on between the same two
+        // faces (a split of one curve of contact, such as where a
+        // cylinder's parameter closes), the edges passed taken whole.
+        let along = match on_other {
+            Some(_) => None,
+            None => walk_on(
+                body,
+                *other,
+                end.vertex,
+                [face, end.third],
+                end.across.get(k).copied().flatten(),
+                point,
+                tol,
+            ),
+        };
+        if let Some((passed, at)) = along {
+            for e in &passed {
+                take_whole(body, *e);
+            }
+            match at {
+                Along::At(vertex) => {
+                    if let Some(slot) = found.get_mut(k) {
+                        *slot = vertex;
+                    }
+                    continue;
+                }
+                Along::On {
+                    edge: next,
+                    near,
+                    t,
+                } => {
+                    let target = corner_vertex(body, end, k, second_corner)?;
+                    if let Some(slot) = found.get_mut(k) {
+                        *slot = target;
+                    }
+                    shorten(body, next, near, target, t)?;
+                    continue;
+                }
+            }
+        }
+        let target = corner_vertex(body, end, k, second_corner)?;
         if let Some(slot) = found.get_mut(k) {
             *slot = target;
         }
-        let t = data.curve.project(point).map_err(|_| too_large(face))?;
-        let (lo, hi) = data.range;
-        // A periodic curve: the turn that puts `t` in the range.
-        let t = match data.curve.period() {
-            Some(period) if period > 0.0 => {
-                let mut t = t;
-                while t < lo - tol {
-                    t += period;
-                }
-                while t > hi + tol {
-                    t -= period;
-                }
-                t
-            }
-            _ => t,
-        };
-        let span = hi - lo;
-        let on_edge = data.curve.eval(t).distance(point) <= tol
-            && t > lo + 1e-9 * span
-            && t < hi - 1e-9 * span;
-        if on_edge {
-            let slot = body.edges.get_mut(other.0 as usize).ok_or_else(lost)?;
-            if slot.start == end.vertex {
-                slot.range.0 = t;
-                slot.start = target;
-            } else if slot.end == end.vertex {
-                slot.range.1 = t;
-                slot.end = target;
-            } else {
-                return Err(lost());
-            }
+        if let Some(t) = on_other {
+            shorten(body, *other, end.vertex, target, t)?;
             continue;
         }
+        let (lo, hi) = data.range;
         // Past the vertex (a blend that adds material, at a concave edge,
         // ending where the faces beside it meet the third face at convex
         // edges, as a blade's root fillet at the blade's end): the edge
@@ -2279,6 +2664,205 @@ fn cut_back(
         v.point = first_corner;
     }
     Ok(found)
+}
+
+/// Takes `edge` whole out of the body: out of every loop, and nothing
+/// ends at it any more ([`compact`] drops it and the vertices only it
+/// had).
+fn take_whole(body: &mut Body, edge: EdgeId) {
+    for ring in &mut body.loops {
+        ring.coedges.retain(|c| c.edge != edge);
+    }
+    if let Some(slot) = body.edges.get_mut(edge.0 as usize) {
+        slot.start = VertexId(u32::MAX);
+        slot.end = VertexId(u32::MAX);
+    }
+}
+
+/// The parameter of `point` on the edge `data` when it lies on it within
+/// `tol`, strictly between its ends; `Err` when it cannot be projected.
+fn parameter_on(data: &Edge, point: Vec3, tol: f64) -> Result<Option<f64>, ()> {
+    let t = data.curve.project(point).map_err(|_| ())?;
+    let (lo, hi) = data.range;
+    // A periodic curve: the turn that puts `t` in the range.
+    let t = match data.curve.period() {
+        Some(period) if period > 0.0 => {
+            let mut t = t;
+            while t < lo - tol {
+                t += period;
+            }
+            while t > hi + tol {
+                t -= period;
+            }
+            t
+        }
+        _ => t,
+    };
+    let span = hi - lo;
+    let on =
+        data.curve.eval(t).distance(point) <= tol && t > lo + 1e-9 * span && t < hi - 1e-9 * span;
+    Ok(on.then_some(t))
+}
+
+/// The vertex of a corner at one end of a blend: the end's own vertex on
+/// the first side (moved there once both sides are done), a new one at
+/// `point` on the second.
+fn corner_vertex(
+    body: &mut Body,
+    end: &End,
+    side: usize,
+    point: Vec3,
+) -> Result<VertexId, BlendError> {
+    if side == 0 {
+        return Ok(end.vertex);
+    }
+    let added = VertexId(u32::try_from(body.vertices.len()).map_err(|_| lost())?);
+    body.vertices.push(Vertex { point });
+    Ok(added)
+}
+
+/// Shortens `edge` at its end at `near` to the parameter `t`, where it
+/// now ends at `target`.
+fn shorten(
+    body: &mut Body,
+    edge: EdgeId,
+    near: VertexId,
+    target: VertexId,
+    t: f64,
+) -> Result<(), BlendError> {
+    let slot = body.edges.get_mut(edge.0 as usize).ok_or_else(lost)?;
+    if slot.start == near {
+        slot.range.0 = t;
+        slot.start = target;
+    } else if slot.end == near {
+        slot.range.1 = t;
+        slot.end = target;
+    } else {
+        return Err(lost());
+    }
+    Ok(())
+}
+
+/// Where a corner of a blend lies on the boundary between a face and the
+/// third face, past the edge it starts from.
+#[derive(Clone, Copy, Debug)]
+enum Along {
+    /// At this vertex of the boundary.
+    At(VertexId),
+    /// On `edge`, at `t`; `near` is its end towards the blend.
+    On {
+        edge: EdgeId,
+        near: VertexId,
+        t: f64,
+    },
+}
+
+/// The corner `point` on the boundary between `faces` (a face beside the
+/// edge and the third face), followed from `other` (which leaves the
+/// blended edge's vertex `from` along it) across every vertex at which
+/// that boundary goes on between the same two faces and nothing else
+/// meets: a vertex of those two edges only, a split of one curve of
+/// contact (where the parameter of a cylinder or a revolved face closes,
+/// or where an earlier operation cut the curve) that bounds nothing of
+/// either face. And across the vertex where `across` (a smooth edge of the
+/// face, which the blend's border crosses: [`cross`]) leaves the
+/// boundary: from there on the boundary is the one between the face
+/// beyond that edge and the third face. With the edges passed, which the
+/// blend takes whole. `None` where the boundary turns into another face,
+/// or ends, before the corner is reached.
+fn walk_on(
+    body: &Body,
+    other: EdgeId,
+    from: VertexId,
+    [face, third]: [FaceId; 2],
+    across: Option<EdgeId>,
+    point: Vec3,
+    tol: f64,
+) -> Option<(Vec<EdgeId>, Along)> {
+    let pair = |e: EdgeId| {
+        let mut f = faces_of_edge(body, e);
+        f.sort();
+        f
+    };
+    let sorted = |a: FaceId, b: FaceId| if a <= b { vec![a, b] } else { vec![b, a] };
+    let mut want = sorted(face, third);
+    let mut crossed = false;
+    let mut passed = Vec::new();
+    let mut current = other;
+    let mut near = from;
+    // Every edge at most once.
+    for _ in 0..body.edges.len() {
+        let data = body.edge(current)?;
+        let far = if data.start == near {
+            data.end
+        } else if data.end == near {
+            data.start
+        } else {
+            return None;
+        };
+        if far == near || far == from {
+            return None;
+        }
+        let at: Vec<EdgeId> = body
+            .edges
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.start == far || e.end == far)
+            .map(|(i, _)| EdgeId(u32::try_from(i).unwrap_or(u32::MAX)))
+            .collect();
+        let rest: Vec<EdgeId> = at.iter().copied().filter(|e| *e != current).collect();
+        let next = match rest.as_slice() {
+            [next] => *next,
+            // The smooth edge leaves here: the boundary goes on between
+            // the face beyond it and the third face.
+            [a, b] if !crossed && across.is_some_and(|g| g == *a || g == *b) => {
+                let (g, next) = if across == Some(*a) {
+                    (*a, *b)
+                } else {
+                    (*b, *a)
+                };
+                let beyond = match faces_of_edge(body, g).as_slice() {
+                    [x, y] if *x == face && *y != face => *y,
+                    [x, y] if *y == face && *x != face => *x,
+                    _ => return None,
+                };
+                want = sorted(beyond, third);
+                crossed = true;
+                next
+            }
+            _ => return None,
+        };
+        if next == other || passed.contains(&next) || pair(next) != want {
+            return None;
+        }
+        passed.push(current);
+        let next_data = body.edge(next)?;
+        if next_data.start == next_data.end {
+            return None;
+        }
+        let next_far = if next_data.start == far {
+            next_data.end
+        } else {
+            next_data.start
+        };
+        if body.vertex(next_far)?.point.distance(point) <= tol {
+            passed.push(next);
+            return Some((passed, Along::At(next_far)));
+        }
+        if let Ok(Some(t)) = parameter_on(next_data, point, tol) {
+            return Some((
+                passed,
+                Along::On {
+                    edge: next,
+                    near: far,
+                    t,
+                },
+            ));
+        }
+        current = next;
+        near = far;
+    }
+    None
 }
 
 /// The curve from `from` to `to` along where the surfaces of `faces`
@@ -2770,6 +3354,69 @@ fn compact(body: &mut Body) -> (Vec<usize>, Vec<usize>) {
     (edge_was, vertex_was)
 }
 
+/// Drops the faces no shell has (a face a blend took whole, see
+/// [`cross`]) and the loops no face has, keeping the order of the rest;
+/// per face left, the index it had.
+fn compact_faces(body: &mut Body) -> Vec<usize> {
+    let mut kept = vec![false; body.faces.len()];
+    for shell in &body.shells {
+        for face in &shell.faces {
+            if let Some(flag) = kept.get_mut(face.0 as usize) {
+                *flag = true;
+            }
+        }
+    }
+    let face_was: Vec<usize> = (0..body.faces.len())
+        .filter(|i| kept.get(*i).copied().unwrap_or(false))
+        .collect();
+    if face_was.len() == body.faces.len() {
+        return face_was;
+    }
+    let mut face_now = vec![u32::MAX; body.faces.len()];
+    for (now, &was) in face_was.iter().enumerate() {
+        if let Some(slot) = face_now.get_mut(was) {
+            *slot = u32::try_from(now).unwrap_or(u32::MAX);
+        }
+    }
+    body.faces = face_was
+        .iter()
+        .filter_map(|&i| body.faces.get(i).cloned())
+        .collect();
+    for shell in &mut body.shells {
+        for face in &mut shell.faces {
+            *face = FaceId(face_now.get(face.0 as usize).copied().unwrap_or(u32::MAX));
+        }
+    }
+    // The loops the faces left have, in their order.
+    let mut used = vec![false; body.loops.len()];
+    for face in &body.faces {
+        for l in &face.loops {
+            if let Some(flag) = used.get_mut(l.0 as usize) {
+                *flag = true;
+            }
+        }
+    }
+    let loop_was: Vec<usize> = (0..body.loops.len())
+        .filter(|i| used.get(*i).copied().unwrap_or(false))
+        .collect();
+    let mut loop_now = vec![u32::MAX; body.loops.len()];
+    for (now, &was) in loop_was.iter().enumerate() {
+        if let Some(slot) = loop_now.get_mut(was) {
+            *slot = u32::try_from(now).unwrap_or(u32::MAX);
+        }
+    }
+    body.loops = loop_was
+        .iter()
+        .filter_map(|&i| body.loops.get(i).cloned())
+        .collect();
+    for face in &mut body.faces {
+        for l in &mut face.loops {
+            *l = LoopId(loop_now.get(l.0 as usize).copied().unwrap_or(u32::MAX));
+        }
+    }
+    face_was
+}
+
 /// One edge to blend, read from the body: its request, its two faces
 /// (the first one first), the directions into them and whether it is
 /// convex.
@@ -2892,6 +3539,7 @@ pub(super) fn blend(
         }
     }
     let (edge_was, vertex_was) = compact(&mut out);
+    let face_was = compact_faces(&mut out);
     let mut defects = craft3d_topo::check(&out, tolerance);
     if !defects.is_empty() {
         defects.truncate(crate::MAX_REPORTED);
@@ -2904,12 +3552,18 @@ pub(super) fn blend(
     let mut faces: Vec<Face> = (0..body.faces.len())
         .map(|i| Face::Kept(vec![FaceId(u32::try_from(i).unwrap_or(u32::MAX))]))
         .collect();
-    faces.resize(out.faces.len(), Face::Kept(Vec::new()));
+    let made_faces = face_was.iter().copied().max().map_or(0, |m| m + 1);
+    faces.resize(made_faces.max(faces.len()), Face::Kept(Vec::new()));
     for (face, index) in &blends {
         if let Some(slot) = faces.get_mut(face.0 as usize) {
             *slot = Face::Blend(vec![*index]);
         }
     }
+    // A face a border carried across a smooth edge took whole is gone.
+    let faces: Vec<Face> = face_was
+        .iter()
+        .map(|&i| faces.get(i).cloned().unwrap_or(Face::Kept(Vec::new())))
+        .collect();
     let replaced: std::collections::BTreeSet<EdgeId> = requests.iter().map(|r| r.edge).collect();
     let edges = edge_was
         .iter()
