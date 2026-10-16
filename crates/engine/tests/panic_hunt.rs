@@ -54,6 +54,21 @@ fn adversarial() -> Vec<Value> {
         json!("F1:side(e1)"),
         json!("F0:lateralEdge()"),
         json!("F8:side(e18446744073709551615)"),
+        json!("F8:side(e10[1])"),
+        json!("F8:endCap(e5,e10[*])"),
+        json!("F8:side(e10[65534])"),
+        json!("F8:between[F8:side(e10[1]),F8:side(e5)]"),
+        json!("e5[99]"),
+        json!("e5[-1]"),
+        json!("e5[last"),
+        json!("e5[1,2,3]"),
+        json!("e5[last]"),
+        json!("e1[1]"),
+        json!("e2[4294967295]"),
+        json!("[last]"),
+        json!("p1"),
+        json!("p0"),
+        json!(["e1", "e2[last]"]),
         json!("F8:side(".to_string() + &"e1,".repeat(5_000) + "e1)"),
         json!("distance"),
         json!("tangent"),
@@ -261,6 +276,21 @@ fn session(dir: &std::path::Path, state: usize) -> Session {
                 json!({"sketch": "Seat", "center": [3, 2], "radius": 1}),
             );
             run("feature.extrude", json!({"sketch": "Seat", "distance": 2}));
+            // A sketch with a row of discs and a point tied to the last.
+            run("sketch.create", json!({"name": "Rows"}));
+            run(
+                "sketch.circle",
+                json!({"sketch": "Rows", "center": [0, 0], "radius": 1}),
+            );
+            run(
+                "sketch.pattern",
+                json!({"sketch": "Rows", "entities": ["e2"], "count": 3, "step": [3, 0]}),
+            );
+            run("sketch.point", json!({"sketch": "Rows", "at": [6, 0]}));
+            run(
+                "sketch.constrain",
+                json!({"sketch": "Rows", "type": "coincident", "entities": ["e3", "e1[last]"]}),
+            );
         }
         // A document full of things that fail: bad formulas, a cycle, a
         // suppressed and a rolled-back feature, undo and redo stacks.
@@ -305,6 +335,25 @@ fn session(dir: &std::path::Path, state: usize) -> Session {
             run(
                 "sketch.create",
                 json!({"name": "Nowhere", "face": "F99:endCap(e1)", "offset": "broken"}),
+            );
+            // A pattern whose count does not evaluate, and an image point
+            // of an instance it does not have.
+            run("sketch.create", json!({"name": "Holes"}));
+            run(
+                "sketch.circle",
+                json!({"sketch": "Holes", "center": [0, 0], "radius": 1}),
+            );
+            run(
+                "sketch.pattern",
+                json!({"sketch": "Holes", "entities": ["e2"], "count": 4, "step": [3, 0]}),
+            );
+            run(
+                "sketch.constrain",
+                json!({"sketch": "Holes", "type": "fixed", "entities": ["e1[3]"]}),
+            );
+            run(
+                "sketch.pattern",
+                json!({"sketch": "Holes", "replace": "p1", "count": "broken"}),
             );
             run("sketch.create", json!({"name": "Gone"}));
             run("feature.extrude", json!({"sketch": "Gone", "distance": 1}));

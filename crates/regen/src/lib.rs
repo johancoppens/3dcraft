@@ -40,6 +40,7 @@ mod revolve;
 mod selfcheck;
 mod shell;
 mod sketch;
+mod sketch_pattern;
 mod sweep;
 mod thicken;
 mod thread;
@@ -49,6 +50,7 @@ pub use cache::RegenCache;
 pub use cause::root_cause;
 pub use craft3d_kernel::extrude::{Origin, Origins, Role};
 pub use craft3d_kernel::helix::Helix;
+pub use craft3d_kernel::profile::{Curve2, SketchCurve as PatternCurve};
 /// The kernel keeps search trees of freeform surfaces between operations;
 /// the engine lets go of those no open document holds.
 pub use craft3d_kernel::release_unused as release_unused_trees;
@@ -61,6 +63,17 @@ pub use query::{edges_between, faces_named, faces_of_edges};
 pub use sketch::{
     ConstraintResult, ConstraintState, SketchResult, settle_sketches, settle_sketches_cached,
 };
+pub use sketch_pattern::{MAX_PATTERN_CURVES, PatternResult, Placed};
+
+/// The instances of the patterns of a solved sketch, construction curves
+/// included, each with whether it is construction: the curves a picture of
+/// the sketch draws besides its entities.
+pub fn pattern_instances(
+    sketch: &craft3d_doc::Sketch,
+    solved: &SketchResult,
+) -> Result<Vec<(PatternCurve, bool)>, String> {
+    sketch_pattern::instance_curves(sketch, solved, true)
+}
 
 use craft3d_doc::{
     Document, Expr, Feature, FeatureId, FeatureKind, NameRole, Orientation, PersistentName,
@@ -488,6 +501,38 @@ fn length(doc: &Document, variables: &Evaluation, name: &str, expr: &Expr) -> Re
     }
 }
 
+/// Renames the caps among `faces` whose loop holds every instance of a
+/// curve of a pattern of sketch `sketch`: the run is written once,
+/// `e7[*]`, so the name of the cap does not change with the count.
+pub(crate) fn collapse_runs(
+    doc: &Document,
+    earlier: &[FeatureResult],
+    sketch: FeatureId,
+    faces: &mut [PersistentName],
+) {
+    let Some(FeatureKind::Sketch(drawn)) = doc.feature(sketch).map(|f| &f.kind) else {
+        return;
+    };
+    if drawn.patterns.is_empty() {
+        return;
+    }
+    let Some(solved) = earlier
+        .iter()
+        .find(|r| r.id == sketch)
+        .and_then(|r| r.sketch.as_ref())
+    else {
+        return;
+    };
+    let runs = sketch_pattern::full_runs(drawn, solved);
+    for face in faces {
+        if matches!(face.role, NameRole::StartCap | NameRole::EndCap)
+            && let Some(sources) = sketch_pattern::collapse(&face.sources, &runs)
+        {
+            face.sources = sources;
+        }
+    }
+}
+
 /// Evaluates a plain number: a direction component.
 fn number(variables: &Evaluation, name: &str, expr: &Expr) -> Result<f64, String> {
     let quantity = craft3d_expr::evaluate(expr.source(), |variable| variables.value(variable))
@@ -835,7 +880,17 @@ fn build_feature(
         let made = swept
             .and_then(|(body, origins)| checked(doc, body).map(|body| (body, origins)))
             .and_then(|(body, origins)| {
-                let named = Names::of_origins(feature.id, &origins);
+                let mut named = Names::of_origins(feature.id, &origins);
+                // A cap whose loop holds a whole run of a sketch pattern
+                // is named after the run once (`e7[*]`).
+                let sketch = match &feature.kind {
+                    FeatureKind::Revolve(r) => Some(r.sketch),
+                    FeatureKind::Extrude(e) => Some(e.sketch),
+                    _ => None,
+                };
+                if let Some(sketch) = sketch {
+                    collapse_runs(doc, earlier, sketch, &mut named.faces);
+                }
                 if up_to {
                     extrude::not_through_itself(&body, &origins, &named, doc.tolerance.linear)?;
                 }

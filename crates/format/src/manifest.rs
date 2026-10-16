@@ -210,6 +210,17 @@ pub enum FeatureKind {
         constraints: Vec<SketchConstraint>,
         next_entity_id: u64,
         next_constraint_id: u64,
+        /// Patterns of seed entities, in the order they were made (format
+        /// version 18). Absent means none.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        patterns: Vec<SketchPattern>,
+        /// The id the next pattern gets (format version 18). Absent means
+        /// 1, and 1 is not written.
+        #[serde(
+            default = "first_pattern_id",
+            skip_serializing_if = "is_first_pattern_id"
+        )]
+        next_pattern_id: u64,
     },
     /// A solid swept from the closed profiles of a sketch along its
     /// normal. `sketch` is the id of the sketch feature.
@@ -714,6 +725,73 @@ pub struct SketchEntity {
     pub geometry: SketchGeometry,
 }
 
+fn first_pattern_id() -> u64 {
+    1
+}
+
+fn is_first_pattern_id(id: &u64) -> bool {
+    *id == 1
+}
+
+/// A pattern inside a sketch (format version 18): its seed entities, the
+/// number of instances (an expression) and how they lie. The instances
+/// are not stored; they are made from the solved seed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SketchPattern {
+    /// Unique within the sketch, never reused.
+    pub id: u64,
+    pub seed: Vec<u64>,
+    pub count: String,
+    pub layout: SketchPatternLayout,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum SketchPatternLayout {
+    /// Instance `k` moved by `k * step`; a grid adds rows by `second`.
+    Linear {
+        step: [String; 2],
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        second: Option<SecondDirection>,
+    },
+    /// A run of contour from point `from` to point `to`, repeated end to
+    /// start.
+    Chain { from: u64, to: u64 },
+    /// Instance `k` turned by `k * angle` about `center`; with `chain` a
+    /// ring of runs from the first point to the second.
+    Circular {
+        center: CenterRef,
+        angle: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        chain: Option<[u64; 2]>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SecondDirection {
+    pub step: [String; 2],
+    pub count: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum CenterRef {
+    Point { point: u64 },
+    At { at: [String; 2] },
+}
+
+/// Which instance an image point is in: `{"at": 3}`, `{"grid": [2, 4]}`
+/// or `"last"`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub enum InstanceIndex {
+    At(u32),
+    Grid([u32; 2]),
+    Last,
+}
+
 /// Lines, circles, arcs and splines refer to point entities by id.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
@@ -741,6 +819,13 @@ pub enum SketchGeometry {
     Spline {
         degree: u32,
         control: Vec<u64>,
+    },
+    /// The image of seed point `of` in instance `index` of pattern
+    /// `pattern` (format version 18): no coordinates of its own.
+    Image {
+        of: u64,
+        pattern: u64,
+        index: InstanceIndex,
     },
 }
 

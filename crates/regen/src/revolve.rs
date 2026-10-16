@@ -116,14 +116,20 @@ pub(crate) fn build(
         .map_err(|e| match e {
             // Curves are called what the sketch calls them.
             KernelError::CrossesAxis { curves } => {
-                let list: Vec<String> = curves.iter().map(|id| format!("e{id}")).collect();
+                let list: Vec<String> = curves
+                    .iter()
+                    .map(|id| crate::sketch_pattern::curve_name(*id))
+                    .collect();
                 format!(
                     "axis: sketch `{name}` lies on both sides of the axis ({} reach across); a profile may touch the axis but not cross it",
                     list.join(", ")
                 )
             }
             KernelError::UnsupportedCurve { id, reason } => {
-                format!("sketch `{name}`: e{id} cannot be revolved about this axis: {reason}")
+                format!(
+                    "sketch `{name}`: {} cannot be revolved about this axis: {reason}",
+                    crate::sketch_pattern::curve_name(id)
+                )
             }
             other => other.to_string(),
         })?;

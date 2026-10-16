@@ -20,6 +20,15 @@ use std::fmt;
 pub const MAX_SKETCH_ENTITIES: usize = 10_000;
 /// Largest number of constraints in one sketch.
 pub const MAX_SKETCH_CONSTRAINTS: usize = 20_000;
+/// Largest number of patterns in one sketch.
+pub const MAX_SKETCH_PATTERNS: usize = 1_000;
+/// Most instances of one sketch pattern, the seed included and both
+/// directions of a grid together.
+pub const MAX_PATTERN_INSTANCES: usize = 10_000;
+/// Highest entity id a sketch gives out: a persistent name keeps the id of
+/// a curve in 32 bits and the instance of a pattern above it
+/// ([`crate::CurveRef`]).
+pub const MAX_ENTITY_ID: u64 = crate::name::MAX_CURVE_ENTITY;
 /// Highest degree of a spline. A sketch curve gains nothing from more, and
 /// everything downstream (areas, intersections, the surfaces swept from
 /// it) costs with the degree.
@@ -47,6 +56,259 @@ impl fmt::Display for ConstraintId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "c{}", self.0)
     }
+}
+
+/// Identifies a pattern within its sketch. Written `p3`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct PatternId(pub u64);
+
+impl fmt::Display for PatternId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "p{}", self.0)
+    }
+}
+
+/// Which instance of a sketch pattern an image point is in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum InstanceIndex {
+    /// Instance `k` of a pattern in one direction (0 is the seed). Past
+    /// the count it is missing: it never stands for another instance.
+    At(u32),
+    /// Instance `i, j` of a grid.
+    Grid([u32; 2]),
+    /// The last instance, whatever the count: a declared relative address.
+    Last,
+}
+
+impl fmt::Display for InstanceIndex {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            InstanceIndex::At(k) => write!(f, "{k}"),
+            InstanceIndex::Grid([i, j]) => write!(f, "{i},{j}"),
+            InstanceIndex::Last => f.write_str("last"),
+        }
+    }
+}
+
+impl InstanceIndex {
+    /// Reads the part between the brackets of `e5[3]`, `e5[2,4]` or
+    /// `e5[last]`.
+    pub fn parse(text: &str) -> Option<Self> {
+        let number = |t: &str| -> Option<u32> {
+            let t = t.trim();
+            (!t.is_empty() && t.bytes().all(|b| b.is_ascii_digit()))
+                .then(|| t.parse::<u32>().ok())
+                .flatten()
+        };
+        match text.split(',').collect::<Vec<_>>().as_slice() {
+            [one] if one.trim() == "last" => Some(InstanceIndex::Last),
+            [k] => Some(InstanceIndex::At(number(k)?)),
+            [i, j] => Some(InstanceIndex::Grid([number(i)?, number(j)?])),
+            _ => None,
+        }
+    }
+}
+
+/// An image point as text: `e5[3]`, `e5[2,4]`, `e5[last]`. `None` for a
+/// text without brackets; an error for one with brackets that do not read.
+pub fn parse_image_ref(text: &str) -> Option<Result<(EntityId, InstanceIndex), String>> {
+    let (entity, rest) = text.trim().split_once('[')?;
+    let shown: String = text.chars().take(40).collect();
+    let wrong = || {
+        format!(
+            "`{shown}` is not an image point: write the seed point and the instance, as e5[3], e5[2,4] in a grid, or e5[last]"
+        )
+    };
+    let Some(inner) = rest.strip_suffix(']') else {
+        return Some(Err(wrong()));
+    };
+    let entity = entity.trim();
+    let id = entity
+        .strip_prefix('e')
+        .unwrap_or(entity)
+        .parse::<u64>()
+        .ok()
+        .filter(|_| !entity.is_empty());
+    match (id, InstanceIndex::parse(inner)) {
+        (Some(id), Some(index)) => Some(Ok((EntityId(id), index))),
+        _ => Some(Err(wrong())),
+    }
+}
+
+/// The centre of a circular sketch pattern.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum CenterRef {
+    /// A point of the sketch (solved like any other).
+    Point { point: EntityId },
+    /// Fixed coordinates in the sketch's axes.
+    At { at: [Expr; 2] },
+}
+
+/// The second direction of a grid.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SecondDirection {
+    /// The step from one row to the next, in the sketch's axes.
+    pub step: [Expr; 2],
+    /// Rows, the seed's included: a whole number of at least 1.
+    pub count: Expr,
+}
+
+/// How the instances of a sketch pattern lie.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum SketchPatternLayout {
+    /// Instance `k` is the seed moved by `k * step` (plus `j * step` of
+    /// the second direction in a grid).
+    Linear {
+        step: [Expr; 2],
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        second: Option<SecondDirection>,
+    },
+    /// The seed is a run of contour from point `from` to point `to`, and
+    /// instance `k` starts where instance `k - 1` ends: the step is
+    /// `to - from` as solved.
+    Chain { from: EntityId, to: EntityId },
+    /// Instance `k` is the seed turned by `k * angle` (counter-clockwise)
+    /// about `center`. With `chain` the seed runs from the first point to
+    /// the second, and the second is the first turned by `angle`.
+    Circular {
+        center: CenterRef,
+        angle: Expr,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        chain: Option<[EntityId; 2]>,
+    },
+}
+
+impl SketchPatternLayout {
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            SketchPatternLayout::Linear { second: None, .. } => "linear",
+            SketchPatternLayout::Linear {
+                second: Some(_), ..
+            } => "grid",
+            SketchPatternLayout::Chain { .. } => "chain",
+            SketchPatternLayout::Circular { chain: None, .. } => "circular",
+            SketchPatternLayout::Circular { chain: Some(_), .. } => "circularChain",
+        }
+    }
+
+    /// The ends of a chained run, if it is one.
+    pub fn chain(&self) -> Option<(EntityId, EntityId)> {
+        match self {
+            SketchPatternLayout::Chain { from, to } => Some((*from, *to)),
+            SketchPatternLayout::Circular {
+                chain: Some([from, to]),
+                ..
+            } => Some((*from, *to)),
+            _ => None,
+        }
+    }
+
+    /// True for a grid (two directions).
+    pub fn is_grid(&self) -> bool {
+        matches!(
+            self,
+            SketchPatternLayout::Linear {
+                second: Some(_),
+                ..
+            }
+        )
+    }
+}
+
+/// A pattern inside a sketch: the seed entities repeated as rigid images
+/// of their solved shape. The instances are not stored: regeneration
+/// makes them from the solved seed (docs/design/document.md).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SketchPattern {
+    pub id: PatternId,
+    /// The entities repeated; the points of curves come along.
+    pub seed: Vec<EntityId>,
+    /// Instances, the seed included: a whole number of at least 1.
+    pub count: Expr,
+    pub layout: SketchPatternLayout,
+}
+
+impl SketchPattern {
+    /// Every expression of the pattern with a name that says where it is.
+    pub fn exprs(&self) -> Vec<(String, &Expr)> {
+        let id = self.id;
+        let mut out = vec![(format!("{id}.count"), &self.count)];
+        match &self.layout {
+            SketchPatternLayout::Linear { step, second } => {
+                out.push((format!("{id}.step.0"), &step[0]));
+                out.push((format!("{id}.step.1"), &step[1]));
+                if let Some(second) = second {
+                    out.push((format!("{id}.step2.0"), &second.step[0]));
+                    out.push((format!("{id}.step2.1"), &second.step[1]));
+                    out.push((format!("{id}.count2"), &second.count));
+                }
+            }
+            SketchPatternLayout::Chain { .. } => {}
+            SketchPatternLayout::Circular { center, angle, .. } => {
+                out.push((format!("{id}.angle"), angle));
+                if let CenterRef::At { at } = center {
+                    out.push((format!("{id}.center.0"), &at[0]));
+                    out.push((format!("{id}.center.1"), &at[1]));
+                }
+            }
+        }
+        out
+    }
+
+    fn exprs_mut(&mut self) -> Vec<&mut Expr> {
+        let mut out = vec![&mut self.count];
+        match &mut self.layout {
+            SketchPatternLayout::Linear { step, second } => {
+                out.extend(step.iter_mut());
+                if let Some(second) = second {
+                    out.extend(second.step.iter_mut());
+                    out.push(&mut second.count);
+                }
+            }
+            SketchPatternLayout::Chain { .. } => {}
+            SketchPatternLayout::Circular { center, angle, .. } => {
+                out.push(angle);
+                if let CenterRef::At { at } = center {
+                    out.extend(at.iter_mut());
+                }
+            }
+        }
+        out
+    }
+
+    /// The point entities the layout itself refers to: the ends of a
+    /// chain and the centre.
+    pub fn layout_points(&self) -> Vec<EntityId> {
+        let mut out = Vec::new();
+        if let Some((from, to)) = self.layout.chain() {
+            out.extend([from, to]);
+        }
+        if let SketchPatternLayout::Circular {
+            center: CenterRef::Point { point },
+            ..
+        } = &self.layout
+        {
+            out.push(*point);
+        }
+        out
+    }
+}
+
+/// What deleting an entity or a pattern took with it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Removal {
+    /// Constraints deleted, in the order they were in.
+    pub constraints: Vec<ConstraintId>,
+    /// Image points deleted, because their seed point or their pattern
+    /// went.
+    pub images: Vec<EntityId>,
+    /// Patterns deleted, because nothing of their seed was left or a
+    /// point their layout uses went.
+    pub patterns: Vec<PatternId>,
 }
 
 /// One of the three planes through the world origin. The sketch's own axes
@@ -167,6 +429,15 @@ pub enum Geometry {
         degree: u32,
         control: Vec<EntityId>,
     },
+    /// The image of the seed point `of` in instance `index` of the sketch
+    /// pattern `pattern`: a point with no coordinates of its own, which
+    /// follows the solved seed rigidly. For the solver a derived point
+    /// (no unknowns); constraints and lines may use it as a point.
+    Image {
+        of: EntityId,
+        pattern: PatternId,
+        index: InstanceIndex,
+    },
 }
 
 /// The knots of a sketch spline: `degree + 1` zeros, the inner knots evenly
@@ -198,13 +469,14 @@ impl Geometry {
             Geometry::Circle { .. } => "circle",
             Geometry::Arc { .. } => "arc",
             Geometry::Spline { .. } => "spline",
+            Geometry::Image { .. } => "image",
         }
     }
 
     /// The point entities this one is built on.
     pub fn points(&self) -> Vec<EntityId> {
         match self {
-            Geometry::Point { .. } => Vec::new(),
+            Geometry::Point { .. } | Geometry::Image { .. } => Vec::new(),
             Geometry::Line { start, end } => vec![*start, *end],
             Geometry::Circle { center, .. } => vec![*center],
             Geometry::Arc { center, start, end } => vec![*center, *start, *end],
@@ -215,7 +487,7 @@ impl Geometry {
     /// For a curve with two ends, the points it starts and ends at.
     pub fn ends(&self) -> Option<(EntityId, EntityId)> {
         match self {
-            Geometry::Point { .. } | Geometry::Circle { .. } => None,
+            Geometry::Point { .. } | Geometry::Circle { .. } | Geometry::Image { .. } => None,
             Geometry::Line { start, end } | Geometry::Arc { start, end, .. } => {
                 Some((*start, *end))
             }
@@ -388,7 +660,7 @@ pub enum Role {
 impl Role {
     fn of(geometry: &Geometry) -> Role {
         match geometry {
-            Geometry::Point { .. } => Role::Point,
+            Geometry::Point { .. } | Geometry::Image { .. } => Role::Point,
             Geometry::Line { .. } => Role::Line,
             Geometry::Circle { .. } | Geometry::Arc { .. } => Role::Round,
             Geometry::Spline { .. } => Role::Spline,
@@ -682,6 +954,20 @@ pub struct Sketch {
     pub next_entity_id: u64,
     /// The id the next constraint gets.
     pub next_constraint_id: u64,
+    /// Patterns of seed entities, in the order they were made.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub patterns: Vec<SketchPattern>,
+    /// The id the next pattern gets.
+    #[serde(default = "first_id", skip_serializing_if = "is_first_id")]
+    pub next_pattern_id: u64,
+}
+
+fn first_id() -> u64 {
+    1
+}
+
+fn is_first_id(id: &u64) -> bool {
+    *id == 1
 }
 
 impl Default for Sketch {
@@ -698,6 +984,8 @@ impl Sketch {
             constraints: Vec::new(),
             next_entity_id: 1,
             next_constraint_id: 1,
+            patterns: Vec::new(),
+            next_pattern_id: 1,
         }
     }
 
@@ -729,6 +1017,21 @@ impl Sketch {
             .ok_or(SketchError::UnknownConstraint(id))
     }
 
+    /// Checks that `id` is a point: one with coordinates, or an image
+    /// point of a pattern.
+    pub fn point_entity(&self, id: EntityId) -> Result<(), SketchError> {
+        match &self.entity(id)?.geometry {
+            Geometry::Point { .. } | Geometry::Image { .. } => Ok(()),
+            other => invalid(format!("{id} is a {}, not a point", other.type_name())),
+        }
+    }
+
+    /// True for an image point.
+    pub fn is_image(&self, id: EntityId) -> bool {
+        self.entity(id)
+            .is_ok_and(|e| matches!(e.geometry, Geometry::Image { .. }))
+    }
+
     /// The coordinates of a point entity.
     pub fn point(&self, id: EntityId) -> Result<(f64, f64), SketchError> {
         match &self.entity(id)?.geometry {
@@ -744,7 +1047,13 @@ impl Sketch {
             ));
         }
         for point in geometry.points() {
-            self.point(point)?;
+            self.point_entity(point)?;
+        }
+        if let Some(fault) = self.image_fault(&geometry) {
+            return invalid(fault);
+        }
+        if self.next_entity_id > MAX_ENTITY_ID {
+            return invalid("the sketch has run out of entity ids");
         }
         let id = EntityId(self.next_entity_id);
         self.next_entity_id = self
@@ -858,6 +1167,24 @@ impl Sketch {
             ));
         }
 
+        // Images of one pattern are tied to each other by the pattern: a
+        // constraint between them only is redundant or conflicting by
+        // construction.
+        let patterns: BTreeSet<Option<PatternId>> = entities
+            .iter()
+            .map(|id| match self.entity(*id).map(|e| &e.geometry) {
+                Ok(Geometry::Image { pattern, .. }) => Some(*pattern),
+                _ => None,
+            })
+            .collect();
+        if entities.len() > 1
+            && let [Some(pattern)] = patterns.into_iter().collect::<Vec<_>>().as_slice()
+        {
+            return invalid(format!(
+                "a {type_name} constraint between images of one pattern ({pattern}) only is not supported yet: the pattern ties them already; constrain the seed instead"
+            ));
+        }
+
         if let ConstraintKind::Distance {
             b: Some(b),
             direction,
@@ -942,6 +1269,88 @@ impl Sketch {
     /// those constraints. Refused while a line, circle, arc or spline is
     /// built on it.
     pub fn remove_entity(&mut self, id: EntityId) -> Result<Vec<ConstraintId>, SketchError> {
+        self.remove_entity_reporting(id).map(|r| r.constraints)
+    }
+
+    /// Removes an entity and what goes with it: the constraints on it; it
+    /// leaves the seed of its pattern, and a pattern left without seed, or
+    /// without a point its layout uses, goes too; image points whose seed
+    /// point or pattern went go, with their constraints. Refused while a
+    /// line, circle, arc or spline is built on the entity or on an image
+    /// point that would go. Nothing changes when it is refused.
+    pub fn remove_entity_reporting(&mut self, id: EntityId) -> Result<Removal, SketchError> {
+        let mut next = self.clone();
+        let constraints = next.remove_one(id)?;
+        let mut removal = Removal {
+            constraints,
+            ..Removal::default()
+        };
+        for pattern in &mut next.patterns {
+            pattern.seed.retain(|seed| *seed != id);
+        }
+        let mut gone = Vec::new();
+        let mut kept = Vec::new();
+        for pattern in std::mem::take(&mut next.patterns) {
+            let fine = !pattern.seed.is_empty()
+                && !pattern.layout_points().contains(&id)
+                && next.check_pattern(&pattern, Some(pattern.id)).is_ok();
+            if fine {
+                kept.push(pattern);
+            } else {
+                gone.push(pattern.id);
+            }
+        }
+        next.patterns = kept;
+        removal.patterns = gone;
+        next.drop_lost_images(&mut removal)?;
+        *self = next;
+        Ok(removal)
+    }
+
+    /// Removes the pattern and its image points with their constraints.
+    /// Refused while a curve is built on one of its image points.
+    pub fn remove_pattern(&mut self, id: PatternId) -> Result<Removal, SketchError> {
+        let mut next = self.clone();
+        let index = next
+            .patterns
+            .iter()
+            .position(|p| p.id == id)
+            .ok_or_else(|| SketchError::Invalid(format!("the sketch has no pattern {id}")))?;
+        next.patterns.remove(index);
+        let mut removal = Removal {
+            patterns: vec![id],
+            ..Removal::default()
+        };
+        next.drop_lost_images(&mut removal)?;
+        *self = next;
+        Ok(removal)
+    }
+
+    /// Removes the image points whose pattern is gone or whose seed point
+    /// is no longer in its seed, with their constraints.
+    fn drop_lost_images(&mut self, removal: &mut Removal) -> Result<(), SketchError> {
+        let lost: Vec<EntityId> = self
+            .entities
+            .iter()
+            .filter(|e| match &e.geometry {
+                Geometry::Image { of, pattern, .. } => self
+                    .pattern(*pattern)
+                    .is_none_or(|p| !self.seed_points(p).contains(of)),
+                _ => false,
+            })
+            .map(|e| e.id)
+            .collect();
+        for image in lost {
+            let constraints = self.remove_one(image)?;
+            removal.constraints.extend(constraints);
+            removal.images.push(image);
+        }
+        Ok(())
+    }
+
+    /// Removes one entity and the constraints on it; refused while a
+    /// curve is built on it.
+    fn remove_one(&mut self, id: EntityId) -> Result<Vec<ConstraintId>, SketchError> {
         let index = self
             .entities
             .iter()
@@ -972,6 +1381,9 @@ impl Sketch {
                 .iter()
                 .filter_map(|c| Some((format!("{}.value", c.id), c.kind.value()?))),
         );
+        for pattern in &self.patterns {
+            out.extend(pattern.exprs());
+        }
         out
     }
 
@@ -982,7 +1394,287 @@ impl Sketch {
                 .iter_mut()
                 .filter_map(|c| c.kind.value_mut()),
         );
+        for pattern in &mut self.patterns {
+            out.extend(pattern.exprs_mut());
+        }
         out
+    }
+
+    pub fn pattern(&self, id: PatternId) -> Option<&SketchPattern> {
+        self.patterns.iter().find(|p| p.id == id)
+    }
+
+    /// The points a pattern repeats: the seed's points and the points its
+    /// curves are built on.
+    pub fn seed_points(&self, pattern: &SketchPattern) -> BTreeSet<EntityId> {
+        let mut points = BTreeSet::new();
+        for id in &pattern.seed {
+            if let Ok(entity) = self.entity(*id) {
+                match &entity.geometry {
+                    Geometry::Point { .. } => {
+                        points.insert(*id);
+                    }
+                    other => points.extend(other.points()),
+                }
+            }
+        }
+        points
+    }
+
+    /// The pattern whose seed has `entity` (a seed entity, not a point of a
+    /// seed curve).
+    pub fn pattern_of_seed(&self, entity: EntityId) -> Option<&SketchPattern> {
+        self.patterns.iter().find(|p| p.seed.contains(&entity))
+    }
+
+    /// Why a curve cannot be built on the image points it would use.
+    fn image_fault(&self, geometry: &Geometry) -> Option<String> {
+        let images: Vec<EntityId> = geometry
+            .points()
+            .into_iter()
+            .filter(|p| self.is_image(*p))
+            .collect();
+        match (geometry, images.first()) {
+            (_, None) | (Geometry::Line { .. }, _) => None,
+            (other, Some(image)) => Some(format!(
+                "a {} built on the image point {image} is not supported yet: only a line may end on an image point",
+                other.type_name()
+            )),
+        }
+    }
+
+    /// Checks a pattern against the sketch: its seed exists, is not an
+    /// image or built on one and is the seed of no other pattern, and its
+    /// layout uses points of the seed (a chain) or of the sketch (a
+    /// centre). `own` is the pattern it replaces, if any.
+    pub fn check_pattern(
+        &self,
+        pattern: &SketchPattern,
+        own: Option<PatternId>,
+    ) -> Result<(), SketchError> {
+        let id = pattern.id;
+        if pattern.seed.is_empty() {
+            return invalid(format!("{id}: a pattern repeats at least one entity"));
+        }
+        if pattern.seed.len() > MAX_SKETCH_ENTITIES {
+            return invalid(format!(
+                "{id}: a pattern repeats at most {MAX_SKETCH_ENTITIES} entities"
+            ));
+        }
+        let mut seen = BTreeSet::new();
+        for seed in &pattern.seed {
+            if !seen.insert(*seed) {
+                return invalid(format!("{id}: {seed} is in the seed twice"));
+            }
+            let entity = self.entity(*seed)?;
+            if matches!(entity.geometry, Geometry::Image { .. }) {
+                return invalid(format!(
+                    "{id}: {seed} is an image point; a pattern of a pattern's images is not supported yet"
+                ));
+            }
+            if let Some(image) = entity
+                .geometry
+                .points()
+                .into_iter()
+                .find(|p| self.is_image(*p))
+            {
+                return invalid(format!(
+                    "{id}: {seed} is built on the image point {image}; a seed with an image point in it is not supported yet"
+                ));
+            }
+            if let Some(other) = self
+                .patterns
+                .iter()
+                .find(|p| Some(p.id) != own && p.id != id && p.seed.contains(seed))
+            {
+                return invalid(format!(
+                    "{id}: {seed} is in the seed of {} already; an entity is the seed of one pattern",
+                    other.id
+                ));
+            }
+        }
+        let points = self.seed_points(pattern);
+        if let Some((from, to)) = pattern.layout.chain() {
+            if from == to {
+                return invalid(format!(
+                    "{id}: a chain runs from one point to another, got {from} twice"
+                ));
+            }
+            for end in [from, to] {
+                if !points.contains(&end) {
+                    return invalid(format!(
+                        "{id}: the chain end {end} is not a point of the seed ({})",
+                        points
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+            }
+        }
+        if let SketchPatternLayout::Circular {
+            center: CenterRef::Point { point },
+            ..
+        } = &pattern.layout
+        {
+            match &self.entity(*point)?.geometry {
+                Geometry::Point { .. } => {}
+                Geometry::Image { .. } => {
+                    return invalid(format!(
+                        "{id}: the centre {point} is an image point, which is not supported yet"
+                    ));
+                }
+                other => {
+                    return invalid(format!(
+                        "{id}: the centre {point} is a {}, not a point",
+                        other.type_name()
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Adds a pattern of `seed` and returns its id.
+    pub fn add_pattern(
+        &mut self,
+        seed: Vec<EntityId>,
+        count: Expr,
+        layout: SketchPatternLayout,
+    ) -> Result<PatternId, SketchError> {
+        if self.patterns.len() >= MAX_SKETCH_PATTERNS {
+            return invalid(format!(
+                "a sketch holds at most {MAX_SKETCH_PATTERNS} patterns"
+            ));
+        }
+        let id = PatternId(self.next_pattern_id);
+        let pattern = SketchPattern {
+            id,
+            seed,
+            count,
+            layout,
+        };
+        self.check_pattern(&pattern, None)?;
+        self.next_pattern_id = self
+            .next_pattern_id
+            .checked_add(1)
+            .ok_or_else(|| SketchError::Invalid("the sketch has run out of pattern ids".into()))?;
+        self.patterns.push(pattern);
+        Ok(id)
+    }
+
+    /// Gives pattern `id` a new seed, count and layout; image points whose
+    /// seed point is no longer in the seed go, with their constraints,
+    /// and so does one whose index the new layout has no meaning for (a
+    /// grid's `e5[2,3]` in a pattern in one direction).
+    pub fn replace_pattern(
+        &mut self,
+        id: PatternId,
+        seed: Vec<EntityId>,
+        count: Expr,
+        layout: SketchPatternLayout,
+    ) -> Result<Removal, SketchError> {
+        let mut next = self.clone();
+        let pattern = SketchPattern {
+            id,
+            seed,
+            count,
+            layout,
+        };
+        next.check_pattern(&pattern, Some(id))?;
+        let Some(slot) = next.patterns.iter_mut().find(|p| p.id == id) else {
+            return invalid(format!("the sketch has no pattern {id}"));
+        };
+        *slot = pattern;
+        let mut removal = Removal::default();
+        next.drop_lost_images(&mut removal)?;
+        let misfit: Vec<EntityId> = next
+            .entities
+            .iter()
+            .filter(|e| match &e.geometry {
+                Geometry::Image { pattern, index, .. } => {
+                    *pattern == id && next.index_fault(*pattern, *index).is_some()
+                }
+                _ => false,
+            })
+            .map(|e| e.id)
+            .collect();
+        for image in misfit {
+            removal.constraints.extend(next.remove_one(image)?);
+            removal.images.push(image);
+        }
+        *self = next;
+        Ok(removal)
+    }
+
+    /// Why an instance index has no meaning in a pattern: a grid index in
+    /// a pattern in one direction, or the other way round.
+    fn index_fault(&self, pattern: PatternId, index: InstanceIndex) -> Option<String> {
+        let Some(found) = self.pattern(pattern) else {
+            return Some(format!("the sketch has no pattern {pattern}"));
+        };
+        match (index, found.layout.is_grid()) {
+            (InstanceIndex::Last, _)
+            | (InstanceIndex::At(_), false)
+            | (InstanceIndex::Grid(_), true) => None,
+            (InstanceIndex::At(k), true) => Some(format!(
+                "{pattern} is a grid: an instance of it has two numbers, as [{k},0]"
+            )),
+            (InstanceIndex::Grid([i, j]), false) => Some(format!(
+                "{pattern} goes one way: an instance of it has one number, not [{i},{j}]"
+            )),
+        }
+    }
+
+    /// The image point of seed point `of` in instance `index`: the one
+    /// there is, or a new one. `of` has to be a point of the seed of
+    /// exactly one pattern.
+    pub fn image_point(
+        &mut self,
+        of: EntityId,
+        index: InstanceIndex,
+    ) -> Result<EntityId, SketchError> {
+        match &self.entity(of)?.geometry {
+            Geometry::Point { .. } => {}
+            other => {
+                return invalid(format!(
+                    "{of}[{index}]: {of} is a {}; an image point is the image of a point of a pattern's seed",
+                    other.type_name()
+                ));
+            }
+        }
+        let owners: Vec<PatternId> = self
+            .patterns
+            .iter()
+            .filter(|p| self.seed_points(p).contains(&of))
+            .map(|p| p.id)
+            .collect();
+        let pattern = match owners.as_slice() {
+            [one] => *one,
+            [] => {
+                return invalid(format!(
+                    "{of}[{index}]: {of} is not a point of the seed of any pattern"
+                ));
+            }
+            many => {
+                return invalid(format!(
+                    "{of}[{index}]: {of} is a point of the seeds of {}; an image point needs one pattern",
+                    many.iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(" and ")
+                ));
+            }
+        };
+        if let Some(fault) = self.index_fault(pattern, index) {
+            return invalid(format!("{of}[{index}]: {fault}"));
+        }
+        let wanted = Geometry::Image { of, pattern, index };
+        if let Some(there) = self.entities.iter().find(|e| e.geometry == wanted) {
+            return Ok(there.id);
+        }
+        self.push(wanted, false)
     }
 
     /// Checks the rules every sketch built through this API satisfies, for
@@ -998,9 +1690,17 @@ impl Sketch {
                 "a sketch holds at most {MAX_SKETCH_CONSTRAINTS} constraints"
             ));
         }
+        if self.patterns.len() > MAX_SKETCH_PATTERNS {
+            return invalid(format!(
+                "a sketch holds at most {MAX_SKETCH_PATTERNS} patterns"
+            ));
+        }
         let mut ids = BTreeSet::new();
         for entity in &self.entities {
             let id = entity.id;
+            if id.0 > MAX_ENTITY_ID {
+                return invalid(format!("entity id {} is beyond {MAX_ENTITY_ID}", id.0));
+            }
             if id.0 == 0 || id.0 >= self.next_entity_id {
                 return invalid(format!(
                     "entity id {} is not below the next free id {}",
@@ -1032,10 +1732,28 @@ impl Sketch {
                         return invalid(format!("{id}: {fault}"));
                     }
                 }
+                Geometry::Image { of, pattern, index } => {
+                    let Some(found) = self.pattern(*pattern) else {
+                        return invalid(format!("{id}: the sketch has no pattern {pattern}"));
+                    };
+                    if !matches!(self.entity(*of)?.geometry, Geometry::Point { .. })
+                        || !self.seed_points(found).contains(of)
+                    {
+                        return invalid(format!(
+                            "{id}: {of} is not a point of the seed of {pattern}"
+                        ));
+                    }
+                    if let Some(fault) = self.index_fault(*pattern, *index) {
+                        return invalid(format!("{id}: {fault}"));
+                    }
+                }
             }
             let points = entity.geometry.points();
             for point in &points {
-                self.point(*point)?;
+                self.point_entity(*point)?;
+            }
+            if let Some(fault) = self.image_fault(&entity.geometry) {
+                return invalid(format!("{id}: {fault}"));
             }
             let distinct: BTreeSet<_> = points.iter().collect();
             if !spline && distinct.len() != points.len() {
@@ -1056,6 +1774,20 @@ impl Sketch {
             }
             self.check_constraint(&constraint.kind)
                 .map_err(|e| SketchError::Invalid(format!("{id}: {e}")))?;
+        }
+        let mut ids = BTreeSet::new();
+        for pattern in &self.patterns {
+            let id = pattern.id;
+            if id.0 == 0 || id.0 >= self.next_pattern_id {
+                return invalid(format!(
+                    "pattern id {} is not below the next free id {}",
+                    id.0, self.next_pattern_id
+                ));
+            }
+            if !ids.insert(id) {
+                return invalid(format!("two patterns have the id {id}"));
+            }
+            self.check_pattern(pattern, Some(id))?;
         }
         Ok(())
     }
@@ -1555,5 +2287,215 @@ mod tests {
                 serde_json::json!(plane.name())
             );
         }
+    }
+
+    fn row(step: f64) -> SketchPatternLayout {
+        SketchPatternLayout::Linear {
+            step: [Expr::new(step.to_string()), Expr::new("0")],
+            second: None,
+        }
+    }
+
+    #[test]
+    fn a_pattern_repeats_seed_entities_and_its_rules_are_kept() {
+        let mut s = square();
+        // The circle e10 in a row; its centre e9 comes along.
+        let p1 = s
+            .add_pattern(vec![e(10)], Expr::new("n"), row(2.0))
+            .unwrap();
+        assert_eq!((p1, p1.to_string()), (PatternId(1), "p1".to_string()));
+        let pattern = s.pattern(p1).unwrap().clone();
+        assert_eq!(
+            s.seed_points(&pattern).into_iter().collect::<Vec<_>>(),
+            [e(9)]
+        );
+        assert_eq!(
+            s.exprs()
+                .iter()
+                .map(|(n, x)| (n.as_str(), x.source()))
+                .collect::<Vec<_>>(),
+            [
+                ("plane.offset", "0"),
+                ("p1.count", "n"),
+                ("p1.step.0", "2"),
+                ("p1.step.1", "0")
+            ]
+        );
+        // What a pattern cannot be.
+        let refused = |s: &mut Sketch, seed: Vec<u64>, layout: SketchPatternLayout, want: &str| {
+            let before = s.clone();
+            let error = s
+                .add_pattern(seed.into_iter().map(e).collect(), Expr::new("3"), layout)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(want), "{error}");
+            assert_eq!(*s, before, "nothing changes");
+        };
+        refused(&mut s, vec![], row(1.0), "at least one");
+        refused(&mut s, vec![5, 5], row(1.0), "twice");
+        refused(&mut s, vec![10], row(1.0), "seed of p1");
+        refused(&mut s, vec![77], row(1.0), "e77");
+        refused(
+            &mut s,
+            vec![5, 6],
+            SketchPatternLayout::Chain {
+                from: e(1),
+                to: e(1),
+            },
+            "twice",
+        );
+        refused(
+            &mut s,
+            vec![5, 6],
+            SketchPatternLayout::Chain {
+                from: e(1),
+                to: e(4),
+            },
+            "not a point of the seed",
+        );
+        refused(
+            &mut s,
+            vec![5],
+            SketchPatternLayout::Circular {
+                center: CenterRef::Point { point: e(5) },
+                angle: Expr::new("30 deg"),
+                chain: None,
+            },
+            "not a point",
+        );
+        // A chained run of the sides e5 and e6, from e1 to e3.
+        let p2 = s
+            .add_pattern(
+                vec![e(5), e(6)],
+                Expr::new("4"),
+                SketchPatternLayout::Chain {
+                    from: e(1),
+                    to: e(3),
+                },
+            )
+            .unwrap();
+        assert_eq!(s.validate(), Ok(()));
+
+        // Image points: one per seed point and instance, made once.
+        let last = s.image_point(e(3), InstanceIndex::Last).unwrap();
+        assert_eq!(s.image_point(e(3), InstanceIndex::Last), Ok(last));
+        assert!(s.is_image(last));
+        let third = s.image_point(e(9), InstanceIndex::At(3)).unwrap();
+        assert_ne!(third, last);
+        for (of, index, want) in [
+            (e(4), InstanceIndex::At(1), "not a point of the seed"),
+            (e(5), InstanceIndex::At(1), "line"),
+            (e(9), InstanceIndex::Grid([1, 1]), "one number"),
+            (e(77), InstanceIndex::Last, "e77"),
+        ] {
+            let error = s.image_point(of, index).unwrap_err().to_string();
+            assert!(error.contains(want), "{of}[{index}]: {error}");
+        }
+        // A line may end on an image point; nothing else may be built on
+        // one, and no seed may hold one.
+        let far = s.add_point(9.0, 9.0).unwrap();
+        let tail = s.add_line(last, far, false).unwrap();
+        assert!(s.add_circle(last, 1.0, false).is_err());
+        let error = s
+            .add_pattern(vec![tail], Expr::new("2"), row(1.0))
+            .unwrap_err();
+        assert!(error.to_string().contains("image point"), "{error}");
+        let error = s
+            .add_pattern(vec![last], Expr::new("2"), row(1.0))
+            .unwrap_err();
+        assert!(error.to_string().contains("image point"), "{error}");
+        // Constraints on images: with other entities, yes; between images
+        // of one pattern only, no.
+        let tied = ConstraintKind::Coincident { a: far, b: third };
+        assert!(s.add_constraint(tied).is_ok());
+        let other = s.image_point(e(9), InstanceIndex::At(1)).unwrap();
+        let between = ConstraintKind::Coincident { a: other, b: third };
+        let error = s.add_constraint(between).unwrap_err().to_string();
+        assert!(error.contains("not supported yet"), "{error}");
+        assert_eq!(s.validate(), Ok(()));
+
+        // Deleting: the line on the image keeps it; the seed curve leaves
+        // its pattern; a pattern without its chain end goes with its images.
+        assert!(matches!(
+            s.remove_entity_reporting(last),
+            Err(SketchError::InUse { .. })
+        ));
+        s.remove_entity(tail).unwrap();
+        let removal = s.remove_entity_reporting(e(6)).unwrap();
+        // e3 (the chain end) was only in e6: p2 is gone, and e3[last].
+        assert_eq!(removal.patterns, [p2]);
+        assert_eq!(removal.images, [last]);
+        assert!(s.pattern(p2).is_none());
+        // Removing p1 takes its two images and the constraint on one.
+        let removal = s.remove_pattern(p1).unwrap();
+        assert_eq!(removal.images, [third, other]);
+        assert_eq!(removal.constraints.len(), 1);
+        assert!(s.patterns.is_empty());
+        assert_eq!(s.validate(), Ok(()));
+        assert!(s.remove_pattern(p1).is_err());
+        // Ids are not reused.
+        assert_eq!(
+            s.add_pattern(vec![e(10)], Expr::new("2"), row(1.0)),
+            Ok(PatternId(3))
+        );
+    }
+
+    #[test]
+    fn a_sketch_with_patterns_round_trips_and_a_broken_one_is_refused() {
+        let mut s = square();
+        let p = s
+            .add_pattern(
+                vec![e(10)],
+                Expr::new("3"),
+                SketchPatternLayout::Circular {
+                    center: CenterRef::At {
+                        at: [Expr::new("0"), Expr::new("1 mm")],
+                    },
+                    angle: Expr::new("120 deg"),
+                    chain: None,
+                },
+            )
+            .unwrap();
+        s.image_point(e(9), InstanceIndex::Last).unwrap();
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["next_pattern_id"], 2);
+        assert_eq!(
+            json["entities"][10]["geometry"],
+            serde_json::json!({"type": "image", "of": 9, "pattern": 1, "index": "last"})
+        );
+        assert_eq!(serde_json::from_value::<Sketch>(json).unwrap(), s);
+        // Without patterns the JSON is what it was.
+        let plain = serde_json::to_value(square()).unwrap();
+        assert!(plain.get("patterns").is_none() && plain.get("next_pattern_id").is_none());
+
+        type Damage = fn(&mut Sketch);
+        let broken: [(&str, Damage); 5] = [
+            ("pattern id not below next", |s| s.next_pattern_id = 1),
+            ("image of no pattern", |s| {
+                s.entities[10].geometry = Geometry::Image {
+                    of: EntityId(9),
+                    pattern: PatternId(7),
+                    index: InstanceIndex::Last,
+                }
+            }),
+            ("image of a point not in the seed", |s| {
+                s.entities[10].geometry = Geometry::Image {
+                    of: EntityId(1),
+                    pattern: PatternId(1),
+                    index: InstanceIndex::Last,
+                }
+            }),
+            ("seed missing", |s| s.patterns[0].seed = vec![EntityId(99)]),
+            ("entity id beyond 32 bits", |s| {
+                s.entities[0].id = EntityId(MAX_ENTITY_ID + 1);
+                s.next_entity_id = MAX_ENTITY_ID + 2;
+            }),
+        ];
+        for (what, damage) in broken {
+            let mut damaged = s.clone();
+            damage(&mut damaged);
+            assert!(damaged.validate().is_err(), "{what}");
+        }
+        assert_eq!(s.pattern(p).map(|p| p.layout.type_name()), Some("circular"));
     }
 }

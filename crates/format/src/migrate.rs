@@ -28,7 +28,7 @@ type Step = fn(Value) -> Result<Value, String>;
 /// `STEPS[n]` brings a manifest from version `n + 1` to version `n + 2`.
 const STEPS: &[Step] = &[
     v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9, v9_to_v10,
-    v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15, v15_to_v16, v16_to_v17,
+    v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15, v15_to_v16, v16_to_v17, v17_to_v18,
 ];
 
 /// Version 2 adds the `cone` and `torus` feature kinds and an optional
@@ -269,6 +269,17 @@ fn v15_to_v16(manifest: Value) -> Result<Value, String> {
 /// was raised so that an older build says a newer 3DCraft is needed
 /// instead of failing the features whose expressions use the functions.
 fn v16_to_v17(manifest: Value) -> Result<Value, String> {
+    Ok(manifest)
+}
+
+/// Version 18 adds patterns inside a sketch: `patterns` and
+/// `next_pattern_id` on a sketch, image points (geometry `image`), and the
+/// name forms `e7[3]`, `e7[2,5]` and `e7[*]` for the curves a pattern
+/// makes. Nothing a version-17 file contains changes meaning: it has no
+/// patterns, and its names read as they did. The version was raised so
+/// that an older build says a newer 3DCraft is needed instead of failing
+/// on an unknown field.
+fn v17_to_v18(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
 }
 

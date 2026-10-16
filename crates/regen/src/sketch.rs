@@ -8,10 +8,11 @@
 //! the document; the engine does that as part of every edit.
 
 use crate::cause::FIX_IT_FIRST;
+use crate::sketch_pattern::{PatternResult, Placed};
 use crate::{FeatureResult, Status, angle, length};
 use craft3d_doc::{
     ConstraintId, ConstraintKind, DistanceDirection, Document, EntityId, FeatureKind, Geometry,
-    NameRole, PersistentName, Sketch, SketchPlane, WorldPlane,
+    NameRole, PatternId, PersistentName, Sketch, SketchPlane, WorldPlane,
 };
 use craft3d_expr::Evaluation;
 use craft3d_math::{Frame, Tolerance, Vec3};
@@ -29,6 +30,9 @@ pub enum ConstraintState {
     Conflicting,
     /// The sketch could not be solved at all.
     Unsolved,
+    /// It uses an image point of an instance a pattern no longer has: it
+    /// was left out of the solve (and is back when the count is).
+    Missing,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -56,21 +60,26 @@ pub struct SketchResult {
     pub points: Vec<(EntityId, f64, f64)>,
     /// Solved radii of the circles.
     pub radii: Vec<(EntityId, f64)>,
+    /// The patterns of the sketch as evaluated, in the sketch's order.
+    pub patterns: Vec<crate::sketch_pattern::PatternResult>,
 }
 
 impl SketchResult {
+    /// The solved coordinates of a point (or of an image point).
     pub fn point(&self, id: EntityId) -> Option<(f64, f64)> {
-        self.points
-            .iter()
-            .find(|(point, ..)| *point == id)
-            .map(|&(_, x, y)| (x, y))
+        // In the order of the ids, which is the order they were drawn in:
+        // a lookup is a search, not a walk, with thousands of points.
+        match self.points.binary_search_by_key(&id, |(point, ..)| *point) {
+            Ok(at) => self.points.get(at).map(|&(_, x, y)| (x, y)),
+            Err(_) => None,
+        }
     }
 
     pub fn radius(&self, id: EntityId) -> Option<f64> {
-        self.radii
-            .iter()
-            .find(|(circle, _)| *circle == id)
-            .map(|&(_, r)| r)
+        match self.radii.binary_search_by_key(&id, |(circle, _)| *circle) {
+            Ok(at) => self.radii.get(at).map(|&(_, r)| r),
+            Err(_) => None,
+        }
     }
 
     /// A point of the sketch in world coordinates.
@@ -106,11 +115,59 @@ struct Problem {
     /// line that stands for the end of a spline in a tangency the id of
     /// that spline.
     entities: Vec<EntityId>,
-    /// Document id of each solver constraint, by solver index.
+    /// Document id of each solver constraint, by solver index: the
+    /// constraints that were handed to the solver, then one row per ring
+    /// of runs (`chains`).
     constraints: Vec<ConstraintId>,
+    /// The rings of runs whose closing equation follows the constraints,
+    /// in that order.
+    chains: Vec<PatternId>,
+    /// The constraints left out, each with the image point that is not
+    /// there and why.
+    left_out: Vec<(ConstraintId, String)>,
 }
 
-fn problem(doc: &Document, variables: &Evaluation, sketch: &Sketch) -> Result<Problem, String> {
+/// An instance of a pattern: the pattern's place in the sketch's list and
+/// the instance's index.
+type Instance = (usize, (u32, u32));
+
+/// Where each image point of the sketch is: the instance it stands for,
+/// or why there is no such instance.
+fn image_instances(
+    sketch: &Sketch,
+    patterns: &[PatternResult],
+) -> BTreeMap<EntityId, Result<Instance, String>> {
+    let mut out = BTreeMap::new();
+    for entity in &sketch.entities {
+        let Geometry::Image { of, pattern, index } = entity.geometry else {
+            continue;
+        };
+        let found = patterns.iter().position(|p| p.id == pattern);
+        let at = match found.and_then(|n| patterns.get(n).map(|p| (n, p))) {
+            None => Err(format!(
+                "{} = {of}[{index}]: the sketch has no pattern {pattern}",
+                entity.id
+            )),
+            Some((n, p)) => match p.resolve(index) {
+                Some(instance) => Ok((n, instance)),
+                None => Err(format!(
+                    "{} = {of}[{index}] is not there: {}",
+                    entity.id,
+                    p.describe()
+                )),
+            },
+        };
+        out.insert(entity.id, at);
+    }
+    out
+}
+
+fn problem(
+    doc: &Document,
+    variables: &Evaluation,
+    sketch: &Sketch,
+    patterns: &[PatternResult],
+) -> Result<Problem, String> {
     // A spline is not an entity of the solver's: its shape is that of its
     // control points, which are. So it adds no unknowns and no equations,
     // and the degrees of freedom are those of the points.
@@ -134,10 +191,31 @@ fn problem(doc: &Document, variables: &Evaluation, sketch: &Sketch) -> Result<Pr
             .copied()
             .ok_or_else(|| format!("there is no entity {id}"))
     };
+    let images = image_instances(sketch, patterns);
+    // A curve built on an image point that is not there has nowhere to
+    // be: the sketch cannot be solved.
+    for entity in &sketch.entities {
+        for point in entity.geometry.points() {
+            if let Some(Err(why)) = images.get(&point) {
+                return Err(format!("{} ends on {why}", entity.id));
+            }
+        }
+    }
     let mut input = solve::Sketch::new();
     for entity in &sketch.entities {
         input.entities.push(match entity.geometry {
             Geometry::Spline { .. } => continue,
+            Geometry::Image { of, .. } => {
+                let map = match images.get(&entity.id) {
+                    Some(Ok((n, instance))) => match patterns.get(*n) {
+                        Some(pattern) => pattern.map(*instance, find)?,
+                        None => solve::ImageMap::Shift { offset: [0.0; 2] },
+                    },
+                    // Nothing uses it: the constraints on it are left out.
+                    _ => solve::ImageMap::Shift { offset: [0.0; 2] },
+                };
+                solve::Entity::Image { of: find(of)?, map }
+            }
             Geometry::Point { x, y } => solve::Entity::Point { x, y },
             Geometry::Line { start, end } => solve::Entity::Line {
                 start: find(start)?,
@@ -172,7 +250,9 @@ fn problem(doc: &Document, variables: &Evaluation, sketch: &Sketch) -> Result<Pr
         match &sketch.entity(curve).map_err(|e| e.to_string())?.geometry {
             Geometry::Line { .. } => Ok(Along::Line(find(curve)?)),
             Geometry::Circle { .. } | Geometry::Arc { .. } => Ok(Along::Round(find(curve)?)),
-            Geometry::Point { .. } => Err(format!("{curve} is a point, which has no direction")),
+            Geometry::Point { .. } | Geometry::Image { .. } => {
+                Err(format!("{curve} is a point, which has no direction"))
+            }
             Geometry::Spline { control, .. } => {
                 let leg = if control.first() == Some(&at) {
                     control.get(1)
@@ -209,8 +289,23 @@ fn problem(doc: &Document, variables: &Evaluation, sketch: &Sketch) -> Result<Pr
         }
     };
     let mut splines: BTreeMap<EntityId, usize> = BTreeMap::new();
+    let mut handed = Vec::with_capacity(sketch.constraints.len());
+    let mut left_out = Vec::new();
     for constraint in &sketch.constraints {
         let id = constraint.id;
+        let lost = constraint
+            .kind
+            .entities()
+            .into_iter()
+            .find_map(|e| match images.get(&e) {
+                Some(Err(why)) => Some(why.clone()),
+                _ => None,
+            });
+        if let Some(why) = lost {
+            left_out.push((id, why));
+            continue;
+        }
+        handed.push(id);
         let name = format!("{id}.value");
         use solve::Constraint as S;
         let mapped = match &constraint.kind {
@@ -352,21 +447,51 @@ fn problem(doc: &Document, variables: &Evaluation, sketch: &Sketch) -> Result<Pr
         };
         input.constraints.push(mapped);
     }
+    // A ring of runs: the end of the seed is its start turned by the
+    // angle, as the pattern's own equation (an image point of the start
+    // in instance 1, coincident with the end).
+    let mut chains = Vec::new();
+    for pattern in patterns {
+        let Placed::Turn {
+            chain: Some((from, to)),
+            ..
+        } = pattern.placed
+        else {
+            continue;
+        };
+        let turned = position(input.entities.len())?;
+        input.entities.push(solve::Entity::Image {
+            of: find(from)?,
+            map: pattern.map((1, 0), find)?,
+        });
+        entities.push(from);
+        input.constraints.push(solve::Constraint::Coincident {
+            a: find(to)?,
+            b: turned,
+        });
+        chains.push(pattern.id);
+    }
     Ok(Problem {
         input,
         entities,
-        constraints: sketch.constraints.iter().map(|c| c.id).collect(),
+        constraints: handed,
+        chains,
+        left_out,
     })
 }
 
 /// A solver error in the document's own ids.
 fn explain(error: &solve::SolveError, problem: &Problem) -> String {
     use solve::{Site, SolveError as E};
-    let constraint = |i: usize| {
-        problem
-            .constraints
-            .get(i)
-            .map_or_else(|| format!("constraint {i}"), |id| id.to_string())
+    let constraint = |i: usize| match problem.constraints.get(i) {
+        Some(id) => id.to_string(),
+        None => i
+            .checked_sub(problem.constraints.len())
+            .and_then(|n| problem.chains.get(n))
+            .map_or_else(
+                || format!("constraint {i}"),
+                |p| format!("the chain of {p}"),
+            ),
     };
     let entity = |i: usize| {
         problem
@@ -432,10 +557,43 @@ fn stored(sketch: &Sketch) -> (Points, Radii) {
         match entity.geometry {
             Geometry::Point { x, y } => points.push((entity.id, x, y)),
             Geometry::Circle { radius, .. } => radii.push((entity.id, radius)),
-            Geometry::Line { .. } | Geometry::Arc { .. } | Geometry::Spline { .. } => {}
+            Geometry::Line { .. }
+            | Geometry::Arc { .. }
+            | Geometry::Spline { .. }
+            | Geometry::Image { .. } => {}
         }
     }
+    points.sort_by_key(|(id, ..)| *id);
+    radii.sort_by_key(|(id, _)| *id);
     (points, radii)
+}
+
+/// Adds the image points of the sketch to its solved points: where the
+/// instance they stand for puts their seed point (the same numbers as the
+/// curves of that instance).
+fn place_images(sketch: &Sketch, patterns: &[PatternResult], points: &mut Points) {
+    points.sort_by_key(|(id, ..)| *id);
+    let mut placed = Vec::new();
+    {
+        let lookup = |id: EntityId| match points.binary_search_by_key(&id, |(p, ..)| *p) {
+            Ok(at) => points.get(at).map(|&(_, x, y)| [x, y]),
+            Err(_) => None,
+        };
+        for (image, at) in image_instances(sketch, patterns) {
+            let Ok((n, instance)) = at else { continue };
+            let Ok(Geometry::Image { of, .. }) = sketch.entity(image).map(|e| &e.geometry) else {
+                continue;
+            };
+            if let Some([x, y]) = patterns
+                .get(n)
+                .and_then(|p| p.image(&lookup, *of, instance))
+            {
+                placed.push((image, x, y));
+            }
+        }
+    }
+    points.extend(placed);
+    points.sort_by_key(|(id, ..)| *id);
 }
 
 /// Where a sketch lies in space: its origin, its two axes and its normal.
@@ -887,6 +1045,8 @@ pub(crate) fn solve_sketch(
         Err(reason) => return (Status::Failed(reason), None),
     };
     let (points, radii) = stored(sketch);
+    let evaluated = crate::sketch_pattern::evaluate(doc, variables, sketch);
+    let patterns = evaluated.as_ref().map_or_else(|_| Vec::new(), Clone::clone);
     let unsolved = |reason: String| {
         let result = SketchResult {
             origin,
@@ -905,10 +1065,14 @@ pub(crate) fn solve_sketch(
                 .collect(),
             points: points.clone(),
             radii: radii.clone(),
+            patterns: patterns.clone(),
         };
         (Status::Failed(reason), Some(result))
     };
-    let problem = match problem(doc, variables, sketch) {
+    if let Err(reason) = &evaluated {
+        return unsolved(reason.clone());
+    }
+    let problem = match problem(doc, variables, sketch, &patterns) {
         Ok(problem) => problem,
         Err(reason) => return unsolved(reason),
     };
@@ -926,23 +1090,85 @@ pub(crate) fn solve_sketch(
         match *entity {
             solve::Entity::Point { x, y } => points.push((*id, x, y)),
             solve::Entity::Circle { radius, .. } => radii.push((*id, radius)),
-            solve::Entity::Line { .. } | solve::Entity::Arc { .. } => {}
+            solve::Entity::Line { .. }
+            | solve::Entity::Arc { .. }
+            | solve::Entity::Image { .. } => {}
         }
     }
-    let constraints: Vec<ConstraintResult> = problem
+    radii.sort_by_key(|(id, _)| *id);
+    place_images(sketch, &patterns, &mut points);
+    let state = |report: &solve::ConstraintReport| match report.status {
+        solve::ConstraintStatus::Satisfied => ConstraintState::Satisfied,
+        solve::ConstraintStatus::Redundant => ConstraintState::Redundant,
+        solve::ConstraintStatus::Conflicting => ConstraintState::Conflicting,
+    };
+    let handed: BTreeMap<ConstraintId, &solve::ConstraintReport> = problem
         .constraints
         .iter()
+        .copied()
         .zip(&solution.constraints)
-        .map(|(id, report)| ConstraintResult {
-            id: *id,
-            state: match report.status {
-                solve::ConstraintStatus::Satisfied => ConstraintState::Satisfied,
-                solve::ConstraintStatus::Redundant => ConstraintState::Redundant,
-                solve::ConstraintStatus::Conflicting => ConstraintState::Conflicting,
+        .collect();
+    // One per constraint of the sketch, in its order: those left out are
+    // missing.
+    let constraints: Vec<ConstraintResult> = sketch
+        .constraints
+        .iter()
+        .map(|c| match handed.get(&c.id) {
+            Some(report) => ConstraintResult {
+                id: c.id,
+                state: state(report),
+                residual: Some(report.residual),
             },
-            residual: Some(report.residual),
+            None => ConstraintResult {
+                id: c.id,
+                state: ConstraintState::Missing,
+                residual: None,
+            },
         })
         .collect();
+    let mut patterns = patterns;
+    let mut broken_chains = Vec::new();
+    for (pattern, report) in problem
+        .chains
+        .iter()
+        .zip(solution.constraints.iter().skip(problem.constraints.len()))
+    {
+        let chain = state(report);
+        if chain == ConstraintState::Conflicting {
+            broken_chains.push(*pattern);
+        }
+        if let Some(found) = patterns.iter_mut().find(|p| p.id == *pattern) {
+            found.chain = Some(chain);
+        }
+    }
+    // A ring closes when its instances make a whole turn and the last
+    // joint lies on the first within the tolerance.
+    {
+        let lookup = |id: EntityId| match points.binary_search_by_key(&id, |(p, ..)| *p) {
+            Ok(at) => points.get(at).map(|&(_, x, y)| [x, y]),
+            Err(_) => None,
+        };
+        for pattern in &mut patterns {
+            if let Placed::Turn {
+                chain: Some((from, _)),
+                ..
+            } = pattern.placed
+                && pattern.closes
+            {
+                let start = lookup(from);
+                // The last joint as the turns put it, before it is taken
+                // to be the first.
+                pattern.closes = false;
+                let last = pattern.image(&lookup, from, (pattern.counts[0], 0));
+                pattern.closes = match (start, last) {
+                    (Some([ax, ay]), Some([bx, by])) => {
+                        (ax - bx).hypot(ay - by) <= doc.tolerance.linear
+                    }
+                    _ => false,
+                };
+            }
+        }
+    }
     let conflicting: Vec<ConstraintId> = constraints
         .iter()
         .filter(|c| c.state == ConstraintState::Conflicting)
@@ -958,7 +1184,28 @@ pub(crate) fn solve_sketch(
             .find(|(c, _)| *c == id)
             .and_then(|(_, report)| report.undefined)
     };
+    let missing = || {
+        let shown: Vec<String> = problem
+            .left_out
+            .iter()
+            .take(5)
+            .map(|(id, why)| format!("{id} uses {why}"))
+            .collect();
+        format!(
+            "{}; it is left out until the instance is back",
+            shown.join("; ")
+        )
+    };
     let status = match conflicting.as_slice() {
+        [] if !broken_chains.is_empty() => Status::Failed(format!(
+            "the chain of {} does not close: the end of its seed has to be its start turned by the angle about the centre, and the constraints do not let it; change or delete them, or the angle",
+            broken_chains
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(" and ")
+        )),
+        [] if !problem.left_out.is_empty() => Status::Failed(missing()),
         [] => Status::Ok,
         [one] => Status::Failed(match undefined(one) {
             Some(reason) => format!(
@@ -982,6 +1229,7 @@ pub(crate) fn solve_sketch(
         constraints,
         points,
         radii,
+        patterns,
     };
     (status, Some(result))
 }
@@ -1013,10 +1261,13 @@ pub fn settle_sketches_cached(doc: &mut Document, cache: &mut crate::RegenCache)
             // shrunk to a point no longer says which way it pointed). The
             // sketch keeps its last good coordinates until the conflict is
             // gone, and then comes back on the side it was on.
+            && result.constraints.iter().all(|c| {
+                c.state != ConstraintState::Conflicting && c.state != ConstraintState::Missing
+            })
             && result
-                .constraints
+                .patterns
                 .iter()
-                .all(|c| c.state != ConstraintState::Conflicting)
+                .all(|p| p.chain != Some(ConstraintState::Conflicting))
         {
             solved.push((index, result));
         }
@@ -1049,7 +1300,10 @@ pub fn settle_sketches_cached(doc: &mut Document, cache: &mut crate::RegenCache)
                         moved = true;
                     }
                 }
-                Geometry::Line { .. } | Geometry::Arc { .. } | Geometry::Spline { .. } => {}
+                Geometry::Line { .. }
+                | Geometry::Arc { .. }
+                | Geometry::Spline { .. }
+                | Geometry::Image { .. } => {}
             }
         }
     }

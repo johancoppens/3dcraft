@@ -272,7 +272,7 @@ mod tests {
         SplineVars {
             degree,
             knots,
-            control: (0..count).map(|i| Pt(2 * i)).collect(),
+            control: (0..count).map(|i| Pt::Own(2 * i)).collect(),
         }
     }
 

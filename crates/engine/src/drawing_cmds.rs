@@ -177,9 +177,17 @@ fn sketch(session: &mut Session, p: &Params) -> Result<Source, CommandError> {
             "{ID}: the sketch `{name}` is not regenerated (suppressed or rolled back)"
         ));
     };
+    // The instances of the sketch's patterns are curves of the outline
+    // too: drawn as entities of a copy, at the places regeneration made.
+    let (drawn, placed) = with_instances(sketch, solved)
+        .map_err(|e| CommandError::new(format!("{ID}: the sketch `{name}`: {e}")))?;
     let outline = craft3d_io::sketch_outline(
-        sketch,
-        &|entity| solved.point(entity),
+        &drawn,
+        &|entity| {
+            solved
+                .point(entity)
+                .or_else(|| placed.get(&entity).copied())
+        },
         &|entity| solved.radius(entity),
         construction,
         doc.tolerance.linear,
@@ -206,6 +214,58 @@ fn sketch(session: &mut Session, p: &Params) -> Result<Source, CommandError> {
         paths: outline.paths,
         construction: outline.construction,
     })
+}
+
+/// Where the points [`with_instances`] adds lie.
+type Placed = std::collections::BTreeMap<craft3d_doc::EntityId, (f64, f64)>;
+
+/// `sketch` with the curves its patterns make added as entities of their
+/// own (on points of their own, at the places the instances have), and
+/// where those points are. A sketch without patterns is itself.
+fn with_instances(
+    sketch: &craft3d_doc::Sketch,
+    solved: &craft3d_regen::SketchResult,
+) -> Result<(craft3d_doc::Sketch, Placed), String> {
+    use craft3d_regen::Curve2;
+    let mut drawn = sketch.clone();
+    let mut placed = Placed::new();
+    if sketch.patterns.is_empty() {
+        return Ok((drawn, placed));
+    }
+    let instances = craft3d_regen::pattern_instances(sketch, solved)?;
+    let text = |e: craft3d_doc::SketchError| e.to_string();
+    for (made, construction) in instances {
+        let mut at = |[x, y]: [f64; 2]| -> Result<craft3d_doc::EntityId, String> {
+            let id = drawn.add_point(x, y).map_err(text)?;
+            placed.insert(id, (x, y));
+            Ok(id)
+        };
+        match made.curve {
+            Curve2::Line { start, end } => {
+                let (a, b) = (at(start)?, at(end)?);
+                drawn.add_line(a, b, construction).map_err(text)?;
+            }
+            Curve2::Arc { center, start, end } => {
+                let (c, a, b) = (at(center)?, at(start)?, at(end)?);
+                drawn.add_arc(c, a, b, construction).map_err(text)?;
+            }
+            Curve2::Circle { center, radius } => {
+                let c = at(center)?;
+                drawn.add_circle(c, radius, construction).map_err(text)?;
+            }
+            Curve2::Spline(spline) => {
+                let mut control = Vec::with_capacity(spline.control.len());
+                for point in spline.control {
+                    control.push(at(point)?);
+                }
+                let degree = u32::try_from(spline.degree).map_err(|e| e.to_string())?;
+                drawn
+                    .add_spline(degree, control, construction)
+                    .map_err(text)?;
+            }
+        }
+    }
+    Ok((drawn, placed))
 }
 
 fn face(session: &mut Session, p: &Params) -> Result<Source, CommandError> {

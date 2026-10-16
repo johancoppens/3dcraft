@@ -468,11 +468,17 @@ fn draw_segment(
             let center_at = match center {
                 PointArg::New(cx, cy) => Some((cx, cy)),
                 PointArg::Existing(id) => s.point(id).ok(),
+                PointArg::Image(..) => None,
             };
             match center_at.and_then(|c| snap(c, from_at, (x, y), tolerance)) {
                 Some(snap) => (s.add_point(snap.end.0, snap.end.1)?, Some(snap)),
                 None => (s.add_point(x, y)?, None),
             }
+        }
+        (End::Point(PointArg::Image(of, index)), _) => {
+            return invalid(format!(
+                "{of}[{index}]: an image point as the end of a path segment is not supported yet; draw that segment with sketch.line"
+            ));
         }
         (End::Point(point), _) => (point.place(s)?, None),
     };

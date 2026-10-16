@@ -719,7 +719,7 @@ fn model_size(regen: &Regen, doc: &Document) -> f64 {
         };
         for entity in &sketch.entities {
             match entity.geometry {
-                Geometry::Point { .. } => {
+                Geometry::Point { .. } | Geometry::Image { .. } => {
                     if let Some((x, y)) = solved.point(entity.id) {
                         extent.add(solved.to_world(x, y));
                     }
@@ -953,7 +953,7 @@ fn sample_arc(
 
 fn polyline(solved: &SketchResult, entity: &Entity, tolerance: f64) -> Option<ScenePolyline> {
     let (curve, points) = match entity.geometry {
-        Geometry::Point { .. } => return None,
+        Geometry::Point { .. } | Geometry::Image { .. } => return None,
         Geometry::Spline {
             degree,
             ref control,
@@ -1025,17 +1025,86 @@ fn polyline(solved: &SketchResult, entity: &Entity, tolerance: f64) -> Option<Sc
     })
 }
 
+/// An instance of a sketch pattern as a polyline, named as the sketch
+/// calls it (`e7[3]`).
+fn instance_polyline(
+    solved: &SketchResult,
+    made: &craft3d_regen::PatternCurve,
+    construction: bool,
+    tolerance: f64,
+) -> Option<ScenePolyline> {
+    use craft3d_regen::Curve2;
+    let world = |[x, y]: [f64; 2]| solved.to_world(x, y);
+    let (curve, points) = match &made.curve {
+        Curve2::Line { start, end } => (SketchCurve::Line, vec![world(*start), world(*end)]),
+        Curve2::Circle { center, radius } => {
+            let mut points = sample_arc(
+                solved,
+                (center[0], center[1]),
+                *radius,
+                0.0,
+                std::f64::consts::TAU,
+                tolerance,
+            );
+            let first = points.first().copied();
+            if let (Some(first), Some(last)) = (first, points.last_mut()) {
+                *last = first;
+            }
+            (SketchCurve::Circle, points)
+        }
+        Curve2::Arc { center, start, end } => {
+            let (c, a, b) = (center, start, end);
+            let r = (a[0] - c[0]).hypot(a[1] - c[1]);
+            let from = (a[1] - c[1]).atan2(a[0] - c[0]);
+            let to = (b[1] - c[1]).atan2(b[0] - c[0]);
+            let mut sweep = (to - from).rem_euclid(std::f64::consts::TAU);
+            if sweep <= 0.0 {
+                sweep = std::f64::consts::TAU;
+            }
+            let mut points = sample_arc(solved, (c[0], c[1]), r, from, sweep, tolerance);
+            if let Some(last) = points.last_mut() {
+                *last = world(*b);
+            }
+            (SketchCurve::Arc, points)
+        }
+        Curve2::Spline(spline) => {
+            let control: Vec<(f64, f64)> = spline.control.iter().map(|p| (p[0], p[1])).collect();
+            let degree = u32::try_from(spline.degree).ok()?;
+            let curve = crate::sketch_spline_cmds::SplineCurve::new(degree, &control)?;
+            let points = curve
+                .polyline(tolerance)
+                .into_iter()
+                .map(|(x, y)| solved.to_world(x, y))
+                .collect();
+            (SketchCurve::Spline, points)
+        }
+    };
+    points.iter().all(|p| p.is_finite()).then(|| ScenePolyline {
+        entity: craft3d_doc::CurveRef::decode(made.id)
+            .map_or_else(|| format!("e{}", made.id), |c| c.to_string()),
+        curve,
+        construction,
+        points,
+    })
+}
+
 fn scene_sketch(
     feature: &craft3d_doc::Feature,
     sketch: &Sketch,
     solved: &SketchResult,
     tolerance: f64,
 ) -> SceneSketch {
-    let polylines = sketch
+    let mut polylines: Vec<ScenePolyline> = sketch
         .entities
         .iter()
         .filter_map(|entity| polyline(solved, entity, tolerance))
         .collect();
+    // The instances of the sketch's patterns, as the curves they are.
+    if let Ok(instances) = craft3d_regen::pattern_instances(sketch, solved) {
+        polylines.extend(instances.iter().filter_map(|(curve, construction)| {
+            instance_polyline(solved, curve, *construction, tolerance)
+        }));
+    }
     let points = sketch
         .entities
         .iter()

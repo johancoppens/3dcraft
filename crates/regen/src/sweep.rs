@@ -79,7 +79,8 @@ pub(crate) fn build(
             other => format!("path: {other}"),
         })?
     };
-    let faces: Vec<PersistentName> = swept.faces.iter().map(|o| name_of(id, o)).collect();
+    let mut faces: Vec<PersistentName> = swept.faces.iter().map(|o| name_of(id, o)).collect();
+    crate::collapse_runs(doc, earlier, feature.sketch, &mut faces);
 
     // A path that comes back near itself carries the profile through
     // what it swept before: a body that is valid in how it hangs together
