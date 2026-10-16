@@ -411,9 +411,10 @@ fn the_slider_in_the_viewport_sets_the_transparency_and_is_not_the_viewport() {
     let viewport_rect = shell.viewport_rect().unwrap();
     let slider = shell.transparency_rect().unwrap();
     assert!(viewport_rect.contains_rect(slider), "{slider:?}");
-    // In the row under the gizmo, to the left of the buttons.
+    // In the bottom row, with the sketches and datums, left of the view
+    // cube.
     let gizmo = shell.view_cube_rect().unwrap();
-    assert!(slider.top() > gizmo.bottom() && slider.right() < gizmo.right());
+    assert!(slider.top() > gizmo.bottom() && slider.right() < gizmo.left());
     assert_eq!(shell.state.transparency, 0.0);
     let camera = shell.state.camera;
     // A drag from its left end to its right end: opaque to nearly clear,
