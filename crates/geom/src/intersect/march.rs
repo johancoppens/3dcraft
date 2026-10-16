@@ -117,6 +117,13 @@ fn stalled() -> GeomError {
 }
 
 /// Half the step, or the error that marching has stalled.
+///
+/// (Where the march cannot go on outside the box the intersection is asked
+/// in, the branch ends there: nothing is asked there, the box cuts it
+/// anyway, and the cells there were not looked at, so a point of tangency
+/// or a crossing the march meets there is not known. The engine block's
+/// fillet tool and rib, two cylinders that touch just outside the box of
+/// their faces, stalled at the touch.)
 fn halved(h: f64, hmin: f64) -> Result<f64, GeomError> {
     if 0.5 * h < hmin {
         Err(stalled())
@@ -288,6 +295,8 @@ pub(super) struct Marcher {
     /// The chart of the field's surface when that is freeform: its
     /// borders are edges, where the field goes on past the surface.
     field_chart: Option<Chart>,
+    /// The box the intersection is asked in.
+    within: Bbox3,
 }
 
 impl Marcher {
@@ -323,6 +332,7 @@ impl Marcher {
             zones: Vec::new(),
             tacnodes: Vec::new(),
             field_chart: None,
+            within: *within,
         })
     }
 
@@ -878,6 +888,35 @@ impl Marcher {
         Ok(seeds)
     }
 
+    /// The four sides of a cell, as `(along u, fixed index, from, to)`,
+    /// with the fixed index taken around a closed chart.
+    fn sides(
+        chart: &Chart,
+        grid: &Grid,
+        (i, j, size): (i64, i64, i64),
+    ) -> [(bool, i64, i64, i64); 4] {
+        let wrap_u = |k: i64| {
+            if chart.periodic_u {
+                k.rem_euclid(grid.nu)
+            } else {
+                k
+            }
+        };
+        let wrap_v = |k: i64| {
+            if chart.periodic_v {
+                k.rem_euclid(grid.nv)
+            } else {
+                k
+            }
+        };
+        [
+            (true, wrap_v(j), i, i + size),
+            (true, wrap_v(j + size), i, i + size),
+            (false, wrap_u(i), j, j + size),
+            (false, wrap_u(i + size), j, j + size),
+        ]
+    }
+
     /// Divides the chart into cells; returns the seeds on the edges of the
     /// cells that may hold a piece of the intersection, and adds the
     /// points where the surfaces are tangent and touch to `singular`.
@@ -891,6 +930,11 @@ impl Marcher {
             }
         }
         let mut leaves: Vec<(i64, i64, i64)> = Vec::new();
+        // Cells are looked at only where their image can be inside the
+        // box: the chart of a freeform surface, a torus or a sphere is the
+        // whole surface wherever the box is, and a chart cut to the box
+        // (a plane's, a cylinder's, a cone's) reaches out of it at its
+        // corners.
         let mut floor = 0_usize;
         let mut cells = 0_usize;
         let merge = 8.0 * self.tol.linear;
@@ -914,7 +958,20 @@ impl Marcher {
                 continue;
             }
             let reach = b.lu * hu + b.lv * hv;
-            let simple = match self.eval(u, v) {
+            let here = self.eval(u, v);
+            // The image of the cell lies within `reach` of its centre's:
+            // further than that outside the box, none of it is inside.
+            let away = |e: &Eval| !self.within.contains(e.p, reach + self.tol.linear);
+            // (Unproven: a branch that came into a kept cell from one left
+            // out and went back out across the same side between two nodes
+            // would show no change of sign there and be missed. No such
+            // case has been found (a search of those sides as borders
+            // changed nothing on 612 cases tried and was taken out), but it
+            // is not ruled out: geometry.md › *Only the box is walked*.)
+            if here.as_ref().is_some_and(away) {
+                continue;
+            }
+            let simple = match here {
                 Some(e) if e.dist > reach => continue,
                 Some(e) => self.field.bend_at(e.p, reach, e.dist).is_some_and(|k| {
                     let (muu, muv, mvv) = (
@@ -1056,25 +1113,8 @@ impl Marcher {
         singular.retain(|s| s.kind != SingularKind::Touch || !self.tac_claims(s.u, s.v));
         // Every edge of every leaf, once.
         let mut edges: BTreeSet<(bool, i64, i64, i64)> = BTreeSet::new();
-        for &(i, j, size) in &leaves {
-            let wrap_u = |k: i64| {
-                if self.chart.periodic_u {
-                    k.rem_euclid(grid.nu)
-                } else {
-                    k
-                }
-            };
-            let wrap_v = |k: i64| {
-                if self.chart.periodic_v {
-                    k.rem_euclid(grid.nv)
-                } else {
-                    k
-                }
-            };
-            edges.insert((true, wrap_v(j), i, i + size));
-            edges.insert((true, wrap_v(j + size), i, i + size));
-            edges.insert((false, wrap_u(i), j, j + size));
-            edges.insert((false, wrap_u(i + size), j, j + size));
+        for &leaf in &leaves {
+            edges.extend(Self::sides(&self.chart, &grid, leaf));
         }
         let mut cache = BTreeMap::new();
         let mut seeds = Vec::new();
@@ -1629,23 +1669,37 @@ impl Marcher {
                         return Ok((pts, End::Open));
                     }
                 }
-                h = halved(h, hmin)?;
+                h = match halved(h, hmin) {
+                    Ok(h) => h,
+                    Err(_) if !self.within.contains(cur.p, 0.0) => return Ok((pts, End::Open)),
+                    Err(e) => return Err(e),
+                };
                 continue;
             };
             let step = e.p - cur.p;
             let len = step.length();
             let new = Self::point(&e, u, v, sign);
             let turn = new.map_or(-1.0, |n| n.t.dot(cur.t));
-            let Some(new) =
-                new.filter(|_| step.dot(cur.t) > 0.0 && len <= 2.0 * h && turn >= cos_turn)
-            else {
+            // A step goes about as far as it was asked (`h` along the
+            // tangent, to first order): one that ends less than half or
+            // more than twice as far went somewhere the prediction did
+            // not, such as once around a closed curve smaller than the
+            // step, back to just past where it began (the tangent there
+            // is the same, so the turn does not show it).
+            let Some(new) = new.filter(|_| {
+                step.dot(cur.t) > 0.0 && len >= 0.5 * h && len <= 2.0 * h && turn >= cos_turn
+            }) else {
                 // Off the edge of the other surface the field has a crease
                 // and no tangent: that is an end, not a stall.
                 if e.dist > self.cut {
                     pts.extend(self.edge(&cur, h, sign));
                     return Ok((pts, End::Open));
                 }
-                h = halved(h, hmin)?;
+                h = match halved(h, hmin) {
+                    Ok(h) => h,
+                    Err(_) if !self.within.contains(cur.p, 0.0) => return Ok((pts, End::Open)),
+                    Err(e) => return Err(e),
+                };
                 continue;
             };
             if may_close && pts.len() >= 2 {
@@ -1673,7 +1727,11 @@ impl Marcher {
                 if self.on_border(&cur) {
                     return Ok((pts, End::Open)); // It started on the border.
                 }
-                h = halved(h, hmin)?;
+                h = match halved(h, hmin) {
+                    Ok(h) => h,
+                    Err(_) if !self.within.contains(cur.p, 0.0) => return Ok((pts, End::Open)),
+                    Err(e) => return Err(e),
+                };
                 continue;
             }
             pts.push(new);
@@ -1930,6 +1988,11 @@ impl Marcher {
                 return true;
             }
         }
+        Self::on_spans(p, pts, slack)
+    }
+
+    /// True when `p` lies on one of the spans between the points.
+    fn on_spans(p: Vec3, pts: &[Pt], slack: f64) -> bool {
         for (a, b) in pts.iter().zip(pts.iter().skip(1)) {
             let chord = b.p - a.p;
             let len2 = chord.length_squared();
@@ -1959,6 +2022,183 @@ impl Marcher {
             }
         }
         false
+    }
+
+    /// The point a fraction `share` of the way along the spans of `pts`,
+    /// by the lengths of their chords.
+    fn along(pts: &[Pt], share: f64) -> Option<Vec3> {
+        let total: f64 = pts
+            .windows(2)
+            .map(|w| match w {
+                [a, b] => a.p.distance(b.p),
+                _ => 0.0,
+            })
+            .sum();
+        let mut left = share * total;
+        for (a, b) in pts.iter().zip(pts.iter().skip(1)) {
+            let chord = a.p.distance(b.p);
+            if left <= chord && chord > 0.0 {
+                return Some(Self::bezier(&Self::span(a, b), left / chord));
+            }
+            left -= chord;
+        }
+        pts.last().map(|p| p.p)
+    }
+
+    /// The span of `pts` that `p` lies on within `slack`, and where along
+    /// it (`(k, s)`: on the cubic from `pts[k]` to `pts[k + 1]` at `s`). The
+    /// cubic is searched, not its chord: two branches near each other are
+    /// apart by less than the chord strays from them.
+    fn place_on(p: Vec3, pts: &[Pt], slack: f64) -> Option<(usize, f64)> {
+        let mut best: Option<(f64, usize, f64)> = None;
+        for (k, (a, b)) in pts.iter().zip(pts.iter().skip(1)).enumerate() {
+            let len = a.p.distance(b.p);
+            if !(len > 0.0) {
+                continue;
+            }
+            // The span lies within a third of its chord of the chord.
+            let chord = b.p - a.p;
+            let t = ((p - a.p).dot(chord) / (len * len)).clamp(0.0, 1.0);
+            if (a.p + chord * t).distance(p) > 0.5 * len + slack {
+                continue;
+            }
+            let c = Self::span(a, b);
+            let at = |s: f64| Self::bezier(&c, s).distance(p);
+            // The nearest of 32 samples, then golden sections about it.
+            let mut s0 = 0.0;
+            for i in 0..=32 {
+                let s = f64::from(i) / 32.0;
+                if at(s) < at(s0) {
+                    s0 = s;
+                }
+            }
+            let (mut lo, mut hi) = ((s0 - 1.0 / 32.0).max(0.0), (s0 + 1.0 / 32.0).min(1.0));
+            for _ in 0..60 {
+                let (m1, m2) = (lo + (hi - lo) * 0.382, lo + (hi - lo) * 0.618);
+                if at(m1) <= at(m2) {
+                    hi = m2;
+                } else {
+                    lo = m1;
+                }
+            }
+            let s = 0.5 * (lo + hi);
+            let d = at(s);
+            if d <= slack && best.is_none_or(|(least, _, _)| d < least) {
+                best = Some((d, k, s));
+            }
+        }
+        best.map(|(_, k, s)| (k, s))
+    }
+
+    /// One branch of what two traces found, when they are the same branch:
+    /// the second traced from a seed that the first passed by (its end was
+    /// decided where the curve runs within the tolerance of the chart's
+    /// border, of a pole or of the field's edge, so where along that
+    /// stretch it ends is rounding, and a seed further along it is not
+    /// "just past" the end). Two traces of one branch run along each other:
+    /// they are the same when the quarter points of either lie on the
+    /// other within the tolerance. Then the result is the first with what
+    /// the second reaches beyond either of its ends (an end of the first
+    /// that lies on the second is one the second runs past), refined at
+    /// the joints as any span. `None` when they are not one.
+    fn united(&mut self, old: &Branch, new: &Branch) -> Result<Option<Branch>, GeomError> {
+        if old.closed || new.closed {
+            return Ok(None);
+        }
+        let slack = self.tol.linear;
+        // A quarter point of one on the other, with where it is on both.
+        let shared = |a: &[Pt], b: &[Pt]| -> Option<Vec3> {
+            let mut found = None;
+            for share in [0.25, 0.5, 0.75] {
+                let q = Self::along(a, share)?;
+                Self::place_on(q, b, slack)?;
+                found = Some(q);
+            }
+            found
+        };
+        let Some(q) = shared(&new.pts, &old.pts).or_else(|| shared(&old.pts, &new.pts)) else {
+            return Ok(None);
+        };
+        // The second the way the first runs: by their spans through `q`.
+        let (Some((ko, _)), Some((kn, _))) = (
+            Self::place_on(q, &old.pts, slack),
+            Self::place_on(q, &new.pts, slack),
+        ) else {
+            return Ok(None);
+        };
+        let direction = |pts: &[Pt], k: usize| match (pts.get(k), pts.get(k + 1)) {
+            (Some(a), Some(b)) => b.p - a.p,
+            _ => Vec3::ZERO,
+        };
+        let mut pts = new.pts.clone();
+        if direction(&old.pts, ko).dot(direction(&new.pts, kn)) < 0.0 {
+            pts = pts.into_iter().rev().map(Pt::reversed).collect();
+        }
+        let (Some(first), Some(last)) = (old.pts.first().copied(), old.pts.last().copied()) else {
+            return Ok(None);
+        };
+        // What the second reaches beyond the first's ends: its points
+        // before the span the first's start lies on, and after the one its
+        // end lies on.
+        let head: Vec<Pt> = match Self::place_on(first.p, &pts, slack) {
+            Some((k, _)) => pts.get(..=k).unwrap_or(&[]).to_vec(),
+            None => Vec::new(),
+        };
+        let tail: Vec<Pt> = match Self::place_on(last.p, &pts, slack) {
+            Some((k, _)) => pts.get(k + 1..).unwrap_or(&[]).to_vec(),
+            None => Vec::new(),
+        };
+        // (Points of the second at the first's ends are the first's.)
+        let beyond = |list: Vec<Pt>| -> Vec<Pt> {
+            list.into_iter()
+                .filter(|p| Self::place_on(p.p, &old.pts, slack).is_none())
+                .collect()
+        };
+        let (head, tail) = (beyond(head), beyond(tail));
+        if head.is_empty() && tail.is_empty() {
+            // Nothing of the second beyond the first: no second trace of
+            // it. Its seed was not on the first (`on_branch`, a looser
+            // test than this one, would have said so), so it is another
+            // branch that runs within the tolerance of the first all its
+            // short length: an arm that leaves a point of contact along
+            // it, cut short by the box. Kept.
+            return Ok(None);
+        }
+        // Parameters continued from the first's ends (a chart closed on
+        // itself is unwrapped).
+        let shifted = |list: Vec<Pt>, to: &Pt, at: Option<&Pt>, this: &Self| -> Vec<Pt> {
+            let Some(at) = at else { return list };
+            let (u, v) = this.near((at.u, at.v), to);
+            let (du, dv) = (u - at.u, v - at.v);
+            list.into_iter()
+                .map(|p| Pt {
+                    u: p.u + du,
+                    v: p.v + dv,
+                    ..p
+                })
+                .collect()
+        };
+        // An end of the first that the second runs past is no end: where
+        // the march stopped there (on the chart's border, at the field's
+        // edge) the curve was within the tolerance of it and went on, so
+        // that point is the border's, not the curve's, and is left out.
+        let mut middle = old.pts.as_slice();
+        if !head.is_empty() && middle.len() > 2 {
+            middle = middle.get(1..).unwrap_or(middle);
+        }
+        if !tail.is_empty() && middle.len() > 2 {
+            middle = middle.get(..middle.len() - 1).unwrap_or(middle);
+        }
+        let head = shifted(head.clone(), &first, head.last(), self);
+        let tail = shifted(tail.clone(), &last, tail.first(), self);
+        let mut joined = head;
+        joined.extend(middle.iter().copied());
+        joined.extend(tail);
+        self.refine(&mut joined)?;
+        Ok(Some(Branch {
+            pts: joined,
+            closed: false,
+        }))
     }
 
     /// The C¹ cubic through the points, and how far it is from the
@@ -2146,6 +2386,17 @@ impl Marcher {
                 continue;
             }
             if let Some(branch) = self.trace((u, v), &singular)? {
+                let mut joined = false;
+                for old in &mut branches {
+                    if let Some(one) = self.united(old, &branch)? {
+                        *old = one;
+                        joined = true;
+                        break;
+                    }
+                }
+                if joined {
+                    continue;
+                }
                 if branches.len() >= MAX_BRANCHES {
                     return Err(GeomError::NoConvergence(
                         "the intersection has more branches than the cap allows",
@@ -2309,4 +2560,93 @@ fn apart((alo, ahi): (Vec3, Vec3), (blo, bhi): (Vec3, Vec3), margin: f64) -> boo
         || blo.y > ahi.y + margin
         || alo.z > bhi.z + margin
         || blo.z > ahi.z + margin
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::indexing_slicing
+    )]
+
+    use super::*;
+    use crate::{Cylinder, Plane};
+    use craft3d_math::Frame;
+
+    /// A marcher on the plane z = 0 (its chart is x and y) at scale `k`.
+    fn marcher(k: f64) -> Marcher {
+        let plane = Surface::Plane(Plane::new(Frame::WORLD));
+        let axis = Frame::new(Vec3::ZERO, Vec3::X, Vec3::Y).unwrap();
+        let rod = Surface::Cylinder(Cylinder::new(axis, k).unwrap());
+        let within = Bbox3::from_points([
+            Vec3::new(-3.0, -3.0, -3.0) * k,
+            Vec3::new(3.0, 3.0, 3.0) * k,
+        ]);
+        let tol = Tolerance::new(1e-6 * k, 1e-9).unwrap();
+        let field = Field::new(&rod).unwrap();
+        let chart = Chart::new(&plane, &within, &tol, &field).unwrap().unwrap();
+        Marcher::new(chart, field, &within, &tol).unwrap()
+    }
+
+    /// The arc of the circle about `centre` (in the plane) of `radius` over
+    /// the angles `from..to`, as a branch.
+    fn arc(centre: (f64, f64), radius: f64, from: f64, to: f64) -> Branch {
+        let pts = (0..=40)
+            .map(|i| {
+                let a = from + (to - from) * f64::from(i) / 40.0;
+                let (s, c) = a.sin_cos();
+                let (x, y) = (centre.0 + radius * c, centre.1 + radius * s);
+                Pt {
+                    u: x,
+                    v: y,
+                    p: Vec3::new(x, y, 0.0),
+                    t: Vec3::new(-s, c, 0.0),
+                    du: -s,
+                    dv: c,
+                }
+            })
+            .collect();
+        Branch { pts, closed: false }
+    }
+
+    /// Two branches that touch, or run within a few tolerances of each
+    /// other, are not one: circles tangent at a point (as the arms of a
+    /// tacnode leave theirs), arcs of one radius about centres three
+    /// tolerances apart, and a short arc tangent to a long one that lies
+    /// within the tolerance of it all its length (an arm cut short by the
+    /// box) without reaching past either end of it. At three scales.
+    #[test]
+    fn branches_that_only_touch_or_run_close_are_not_one() {
+        for k in [1e-3, 1.0, 1e3] {
+            let mut m = marcher(k);
+            let tol = m.tol.linear;
+            // Tangent at (k, 0), a hundredth of the radius apart across.
+            let inner = arc((0.0, 0.0), k, -0.5, 0.5);
+            let outer = arc((-0.01 * k, 0.0), 1.01 * k, -0.5, 0.5);
+            assert!(
+                m.united(&inner, &outer).unwrap().is_none(),
+                "touching at {k}"
+            );
+            assert!(
+                m.united(&outer, &inner).unwrap().is_none(),
+                "touching at {k}"
+            );
+            // Three tolerances apart all along.
+            let beside = arc((3.0 * tol, 0.0), k, -0.5, 0.5);
+            assert!(
+                m.united(&inner, &beside).unwrap().is_none(),
+                "beside at {k}"
+            );
+            // The tangent circle's arc, short: within 2e-8 of the inner
+            // circle all along (a hundredth of the radius over 2 times its
+            // angle squared), well within the tolerance.
+            let short = arc((-0.01 * k, 0.0), 1.01 * k, -0.002, 0.002);
+            assert!(
+                m.united(&inner, &short).unwrap().is_none(),
+                "short arm at {k}"
+            );
+        }
+    }
 }

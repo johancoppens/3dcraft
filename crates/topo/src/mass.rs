@@ -1682,8 +1682,20 @@ impl Outline<'_> {
     /// the allowance, as before. (One allowance for the whole face, shared out
     /// by size, is tighter than the parts' sums can be: a torus at scale
     /// 1e-3 and a solid pinched at a point did not settle.)
-    fn noise(&self, area: f64) -> f64 {
-        let by_width = self.rounding * self.across / area;
+    ///
+    /// A boundary is known on its surface only as well as its edges lie on
+    /// it: `off`, the furthest a sample of what was summed was found from
+    /// its foot on the surface, counts as the boundary's rounding where it
+    /// is more, up to `touch` ([`ON_SURFACE`] of the body's size, as far as
+    /// a boundary point may be found from the surface and count as on it):
+    /// a sample further off (a foot found on another sheet of the surface,
+    /// an edge that does not lie on its face) earns no more allowance than
+    /// that. (An edge approximated within the tolerance passes a pole of a
+    /// spline surface within that of it, where the parameters of its feet
+    /// turn around the pole: its sums then scatter by what the boundary
+    /// moves, however fine the panels.)
+    fn noise(&self, area: f64, off: f64) -> f64 {
+        let by_width = self.rounding.max(off.min(self.touch)) * self.across / area;
         // Not `<=`: a NaN (nothing summed, nothing across) changes nothing.
         if by_width > CONVERGED {
             by_width.max(self.noise).min(1.0)
@@ -1696,6 +1708,8 @@ impl Outline<'_> {
 /// One boundary sample: surface parameters, and how fast they change along
 /// the edge, times the quadrature weight and the traversal direction.
 struct Sample {
+    /// How far the boundary point is from its foot on the surface.
+    off: f64,
     /// Which loop of the face it belongs to.
     loop_index: usize,
     /// Which piece of that loop, and the parameter of its curve there.
@@ -1739,7 +1753,7 @@ fn samples(
                 }
                 for (t, w) in rule.points(panel.start, panel.end) {
                     let (point, tangent) = piece.curve.derivatives(t);
-                    let ((u, v), (_, su, sv)) = follow
+                    let ((u, v), (foot, su, sv)) = follow
                         .project(point)
                         .map_err(|error| MassError::Geometry { face: index, error })?;
                     // Solve [Sᵤ Sᵥ] (du, dv) = tangent in the least-squares
@@ -1761,6 +1775,7 @@ fn samples(
                         (0.0, 0.0)
                     };
                     samples.push(Sample {
+                        off: point.distance(foot),
                         loop_index,
                         piece: piece_index,
                         t,
@@ -2693,7 +2708,8 @@ fn together(
         else {
             break;
         };
-        let noise = outline.noise(total.size.area);
+        let off = samples.iter().map(|s| s.off).fold(0.0, f64::max);
+        let noise = outline.noise(total.size.area, off);
         if let Some(slot) = first.as_deref_mut()
             && slot.is_none()
             && (exact || coarser.is_some_and(|coarser| coarser.first_agrees_with(&total, noise)))
@@ -2828,7 +2844,8 @@ fn part_by_part(
             else {
                 return Err(unsettled(index));
             };
-            sums.push((at, doublings, total, outline.noise(total.size.area)));
+            let off = own.iter().map(|s| s.off).fold(0.0, f64::max);
+            sums.push((at, doublings, total, outline.noise(total.size.area, off)));
         }
         if !capped {
             capped = true;
@@ -3280,6 +3297,40 @@ mod tests {
         let face = body.add_face(Surface::Sphere(sphere), false, vec![loop_]);
         body.add_shell(vec![face]);
         body
+    }
+
+    /// The cap with its rim moved `out` off the sphere, outward in its
+    /// plane.
+    fn cap_off(level: f64, out: f64) -> Body {
+        let mut body = cap(level);
+        let rim = (RADIUS * RADIUS - level * level).sqrt() + out;
+        let frame = Frame::WORLD
+            .at(CENTRE + Vec3::new(0.0, 0.0, level))
+            .unwrap();
+        body.edges[0].curve = Curve3::Circle(Circle::new(frame, rim).unwrap());
+        body.vertices[0].point = frame.point(rim, 0.0, 0.0);
+        body
+    }
+
+    /// The allowance a boundary earns by lying off its surface is bounded
+    /// by how far a boundary point may be found from the surface and count
+    /// as on it (`touch`): a rim a millionth of the radius off the sphere is
+    /// measured as the cap it nearly bounds, and no distance, however far
+    /// (a wrong foot, an edge off its face), earns more than `touch` does.
+    #[test]
+    fn the_allowance_for_a_boundary_off_its_surface_is_bounded() {
+        let expected = TAU * RADIUS * (RADIUS - 0.5);
+        let near = mass_properties(&cap_off(0.5, 1e-6 * RADIUS)).unwrap();
+        assert!((near.area - expected).abs() <= 1e-5 * expected, "{near:?}");
+        let body = cap(0.5);
+        let face = body.faces.first().unwrap();
+        let outline = outline(&body, face, &face.surface, 0, body_size(&body)).unwrap();
+        let area = 1e-3;
+        let bound = outline.noise(area, outline.touch);
+        assert!(bound > 0.0 && bound < 1.0, "{bound}");
+        for off in [10.0 * outline.touch, 1.0, 1e9, f64::INFINITY] {
+            assert_eq!(outline.noise(area, off), bound, "{off}");
+        }
     }
 
     /// The cap's sphere with its north pole `tilt` away from the cap's

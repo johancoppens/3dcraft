@@ -637,7 +637,8 @@ fn run(
     if options.merge {
         merge::merge(&mut work, &sections.coincident_a, a.body, b.body, tol)?;
     }
-    let result = sew::finish(work)?;
+    let mut result = sew::finish(work)?;
+    pieces_of_splines(&mut result.body);
     let mut defects = checked(&result.body, tolerance);
     if !defects.is_empty() {
         defects.truncate(MAX_REPORTED);
@@ -975,6 +976,48 @@ impl FaceGrid {
         found.sort_unstable();
         found.dedup();
         found
+    }
+}
+
+/// Every edge on a part of a spline curve gets that part as its curve
+/// (exactly, by knot insertion: `geom::refine::piece`), so that what an
+/// edge's curve is and where its control points lie is the edge and no
+/// more. A stretch of a fitted branch, or a piece of an operand's edge
+/// split by the section, kept the whole curve with a range: the hull of
+/// every face it bounds, which counts a spline's control points, then
+/// reached as far as the whole curve (the turbofan's casing kept a hole's
+/// whole loop with each piece of it, and its faces' boxes grew by the
+/// loop). Done when the body is made, after `merge`, which joins two edges
+/// of one curve by its identity. (Where the piece cannot be made, the
+/// edge keeps its curve and range, as before.)
+fn pieces_of_splines(body: &mut Body) {
+    for edge in &mut body.edges {
+        let Curve3::Nurbs(curve) = &edge.curve else {
+            continue;
+        };
+        let (start, end) = curve.domain();
+        let rounding = 64.0 * f64::EPSILON * start.abs().max(end.abs()).max(end - start);
+        // A cut within rounding of a knot (or an end) is at that knot: cut
+        // a rounding away from it, the piece would begin with a span of no
+        // length, and its derivative there would vanish.
+        let snap = |t: f64| {
+            curve
+                .knots()
+                .iter()
+                .copied()
+                .find(|k| (k - t).abs() <= rounding)
+                .unwrap_or(t)
+        };
+        let (from, to) = (snap(edge.range.0), snap(edge.range.1));
+        // Already the whole curve.
+        if from <= start && to >= end {
+            continue;
+        }
+        if let Ok(piece) = craft3d_geom::refine::piece(curve, from, to) {
+            let domain = piece.domain();
+            edge.curve = Curve3::Nurbs(piece);
+            edge.range = domain;
+        }
     }
 }
 
