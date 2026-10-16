@@ -37,6 +37,12 @@
 //!    piece must then run the way it was made (material on its left), or
 //!    the outline is refused rather than handed on.
 //!
+//! There is no mitre limit: a sharp corner of 1° puts its tip far out,
+//! which is the true mitre. Inward past half the diagonal of the
+//! outline's box nothing can be left; outward the size must stay within
+//! what the tolerance holds (`tol / (1024 ε)`): both are refused before
+//! anything is computed, with the largest distance that fits.
+//!
 //! A loop of the input that leaves no piece (a hole that closes, a region
 //! that vanishes) is refused with the largest distance at which every loop
 //! is still there, found by bisection. A result with another number of
@@ -112,17 +118,25 @@ pub enum OffsetSource {
     /// The offset of this curve of the input.
     Curve(u64),
     /// The joint at the corner where the first curve runs into the second
-    /// (in the direction the loop runs).
+    /// (in the direction the loop runs): the arc of a round corner, or the
+    /// straight mitre where neither neighbour is a line.
     Corner(u64, u64),
+    /// The straight piece a sharp corner carries the offset of an arc on
+    /// by, along its tangent, to the mitre with the other curve: the
+    /// offset of the first curve, towards the second.
+    Extension(u64, u64),
 }
 
-/// Where a curve of an offset outline came from: its source, and which
-/// piece of it, counted along the loop from 0 (more than one only where a
-/// region split or two joined, or a mitre between two arcs).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Where a curve of an offset outline came from: its source, and, when
+/// the source left more than one piece (a region split, regions joined),
+/// what tells the pieces apart: the loop each closes, by the curves of the
+/// input whose offsets it holds (ascending; an order along a loop would
+/// change with the distance, these do not). Pieces of one source in loops
+/// of the same curves are not told apart: they have the same origin.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OffsetOrigin {
     pub source: OffsetSource,
-    pub piece: u32,
+    pub within: Option<Vec<u64>>,
 }
 
 /// An offset outline.
@@ -144,6 +158,35 @@ pub struct OffsetOutline {
     /// When the number of loops or of regions changed: the largest
     /// distance at which neither had.
     pub whole_up_to: Option<f64>,
+}
+
+impl OffsetSource {
+    /// The curves of the input it names.
+    pub fn curves(self) -> Vec<u64> {
+        match self {
+            OffsetSource::Curve(c) => vec![c],
+            OffsetSource::Corner(a, b) | OffsetSource::Extension(a, b) => vec![a, b],
+        }
+    }
+}
+
+/// The curves of the input whose offsets a loop of the outline holds,
+/// ascending without repeats; the curves of its joints only when it holds
+/// no offset of a curve (a loop of corner arcs alone).
+pub fn loop_curves<'a>(origins: impl Iterator<Item = &'a OffsetOrigin> + Clone) -> Vec<u64> {
+    let mut out: Vec<u64> = origins
+        .clone()
+        .filter_map(|o| match o.source {
+            OffsetSource::Curve(c) => Some(c),
+            _ => None,
+        })
+        .collect();
+    if out.is_empty() {
+        out = origins.flat_map(|o| o.source.curves()).collect();
+    }
+    out.sort_unstable();
+    out.dedup();
+    out
 }
 
 impl OffsetOutline {
@@ -222,7 +265,7 @@ impl Geo {
                 }
                 let t = dot(sub(p, *a), d) / l2;
                 let l = l2.sqrt();
-                if t * l < -tol || (t - 1.0) * l > tol {
+                if t * l < -tol || (t - 1.0) * l > tol || cross(d, sub(p, *a)).abs() / l > tol {
                     return None;
                 }
                 Some(t.clamp(0.0, 1.0))
@@ -236,7 +279,7 @@ impl Geo {
                 ..
             } => {
                 let span = sweep.abs();
-                if span.is_nan() || span <= 0.0 {
+                if span.is_nan() || span <= 0.0 || (distance(p, *c) - r).abs() > tol {
                     return None;
                 }
                 let along = if *sweep > 0.0 {
@@ -604,7 +647,7 @@ fn raw_loop(
         } else {
             out.push(Candidate {
                 geo: Geo::Line { a: p1, b: m },
-                source,
+                source: OffsetSource::Extension(a.source, b.source),
                 lp,
                 cuts: Vec::new(),
             });
@@ -618,7 +661,7 @@ fn raw_loop(
         } else {
             out.push(Candidate {
                 geo: Geo::Line { a: m, b: p2 },
-                source,
+                source: OffsetSource::Extension(b.source, a.source),
                 lp,
                 cuts: Vec::new(),
             });
@@ -655,6 +698,11 @@ fn meet(a: &Geo, b: &Geo) -> Vec<P2> {
     }
 }
 
+/// How far below zero, relative to the size of its terms, a discriminant
+/// may be and still be a tangency: 64 units in the last place, the rounding
+/// of the few products and sums it is made of, with room to spare.
+const TANGENT_ROUNDING: f64 = 64.0 * f64::EPSILON;
+
 /// The points where the line `p + s d` meets the circle.
 fn line_circle(p: P2, d: P2, c: P2, r: f64) -> Vec<P2> {
     let f = sub(p, c);
@@ -666,8 +714,16 @@ fn line_circle(p: P2, d: P2, c: P2, r: f64) -> Vec<P2> {
     }
     let b = dot(f, d);
     if disc <= 0.0 {
-        // Tangent within rounding: the one point.
-        return vec![add(p, scaled(d, -b / a))];
+        // Tangent within rounding, the one point: `disc` is a difference of
+        // two products of size `a r²`, so rounding leaves it within a few
+        // units in the last place of that, whatever the scale. A line that
+        // misses the circle by more is apart (and `param` checks every
+        // point against both curves besides).
+        return if disc >= -TANGENT_ROUNDING * a * r * r {
+            vec![add(p, scaled(d, -b / a))]
+        } else {
+            Vec::new()
+        };
     }
     let root = disc.sqrt();
     vec![
@@ -693,7 +749,7 @@ fn circle_circle(c1: P2, r1: f64, c2: P2, r2: f64) -> Vec<P2> {
     if h2 <= 0.0 {
         // Touching within rounding, or apart: the one point if touching.
         let gap = (d - (r1 + r2)).abs().min((d - (r1 - r2).abs()).abs());
-        return if gap <= 1e-12 * (r1 + r2) {
+        return if gap <= TANGENT_ROUNDING * (r1 + r2 + d) {
             vec![foot]
         } else {
             Vec::new()
@@ -921,29 +977,23 @@ fn attempt(
     let mut curves = Vec::with_capacity(pieces.len());
     let mut origins = Vec::with_capacity(pieces.len());
     let mut against = Vec::with_capacity(pieces.len());
-    let mut counter: std::collections::BTreeMap<OffsetSource, u32> = Default::default();
     for (id, (geo, source, _)) in pieces.iter().enumerate() {
         let (curve, reversed) = geo.curve();
         curves.push(SketchCurve {
             id: id as u64,
             curve,
         });
-        let piece = counter.entry(*source).or_insert(0);
         origins.push(OffsetOrigin {
             source: *source,
-            piece: *piece,
+            within: None,
         });
-        *piece = piece.saturating_add(1);
         against.push(reversed);
     }
     let sources_of = |ids: &[u64]| -> Vec<u64> {
         let mut out: Vec<u64> = ids
             .iter()
             .filter_map(|id| usize::try_from(*id).ok().and_then(|i| origins.get(i)))
-            .flat_map(|o| match o.source {
-                OffsetSource::Curve(c) => vec![c],
-                OffsetSource::Corner(a, b) => vec![a, b],
-            })
+            .flat_map(|o| o.source.curves())
             .collect();
         out.sort_unstable();
         out.dedup();
@@ -970,7 +1020,9 @@ fn attempt(
             KernelError::ZeroAreaLoop { curves } => {
                 ("has a loop with no area", curves.clone())
             }
-            _ => ("cannot be made into loops", Vec::new()),
+            // Its own reason (a cap, the tolerance), not one of the
+            // outline: passed on as it is.
+            _ => return error,
         };
         KernelError::OffsetProfile {
             reason,
@@ -993,6 +1045,30 @@ fn attempt(
                     curves: sources_of(&[s.source]),
                     largest: None,
                 });
+            }
+        }
+    }
+    // A source that left more than one piece: each piece is told apart by
+    // the loop it closes, named by the input's curves in that loop.
+    let mut count: std::collections::BTreeMap<OffsetSource, usize> = Default::default();
+    for origin in &origins {
+        *count.entry(origin.source).or_insert(0) += 1;
+    }
+    for lp in found
+        .iter()
+        .flat_map(|p| std::iter::once(&p.outer).chain(&p.holes))
+    {
+        let ids: Vec<usize> = lp
+            .segments
+            .iter()
+            .filter_map(|s| usize::try_from(s.source).ok())
+            .collect();
+        let within = loop_curves(ids.iter().filter_map(|&i| origins.get(i)));
+        for i in ids {
+            if let Some(origin) = origins.get_mut(i)
+                && count.get(&origin.source).is_some_and(|&n| n > 1)
+            {
+                origin.within = Some(within.clone());
             }
         }
     }
@@ -1053,7 +1129,7 @@ fn unchanged(profiles: &[Profile]) -> Result<OffsetOutline, KernelError> {
             });
             origins.push(OffsetOrigin {
                 source: OffsetSource::Curve(s.source),
-                piece: 0,
+                within: None,
             });
         }
     }
@@ -1119,6 +1195,47 @@ pub fn offset_profiles(
     }
     if d.abs() <= tol {
         return unchanged(profiles);
+    }
+    // How far the outline reaches: half the diagonal of its box. Inward,
+    // no point of a region lies further than that from its outline, so a
+    // larger distance leaves nothing, whatever the shape.
+    let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+    for b in profiles.iter().map(|p| p.outer.bbox()) {
+        lo = [lo[0].min(b[0]), lo[1].min(b[1])];
+        hi = [hi[0].max(b[2]), hi[1].max(b[3])];
+    }
+    let reach = 0.5 * (hi[0] - lo[0]).hypot(hi[1] - lo[1]);
+    if !reach.is_finite() {
+        return Err(KernelError::InvalidSize {
+            name: "outline",
+            value: reach,
+        });
+    }
+    // Outward the outline grows to `reach + d` about its middle; the
+    // arithmetic has to hold that to within the tolerance, and does while
+    // the size stays below the tolerance over 1024 units in the last
+    // place (a few products and a square root lose that much at most).
+    let precise = tol / (1024.0 * f64::EPSILON);
+    if d > 0.0 && reach + d > precise {
+        return Err(KernelError::OffsetProfile {
+            reason: "is too large for the document's tolerance to be held to it",
+            curves: Vec::new(),
+            largest: Some((precise - reach).max(0.0)),
+        });
+    }
+    if d < -reach {
+        let mut curves: Vec<u64> = profiles
+            .iter()
+            .flat_map(|p| p.outer.segments.iter().map(|s| s.source))
+            .collect();
+        curves.sort_unstable();
+        curves.dedup();
+        curves.truncate(MAX_REPORTED);
+        return Err(KernelError::OffsetProfile {
+            reason: "leaves nothing of a region",
+            curves,
+            largest: Some(largest_whole(profiles, -reach, corners, tolerance)),
+        });
     }
     match attempt(profiles, d, corners, tolerance) {
         Ok(mut outline) => {

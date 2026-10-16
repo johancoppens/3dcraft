@@ -388,3 +388,184 @@ fn bad_input_is_an_error() {
     let err = offset_profiles(&input, 0.5, Corners::Round, &t).unwrap_err();
     assert!(err.to_string().contains("not supported yet"), "{err}");
 }
+
+fn circle(id: u64, c: [f64; 2], r: f64) -> SketchCurve {
+    SketchCurve {
+        id,
+        curve: Curve2::Circle {
+            center: c,
+            radius: r,
+        },
+    }
+}
+
+/// A square of side `s` turned 45°, its near corner... its near edge at
+/// `at` along the diagonal (1, 1)/√2 from the origin.
+fn diamond_edge_at(at: f64, s: f64, first_id: u64) -> Vec<SketchCurve> {
+    let u = [std::f64::consts::FRAC_1_SQRT_2; 2];
+    let v = [-u[0], u[1]];
+    let p = |a: f64, b: f64| [u[0] * a + v[0] * b, u[1] * a + v[1] * b];
+    polygon(
+        &[
+            p(at, -s / 2.0),
+            p(at + s, -s / 2.0),
+            p(at + s, s / 2.0),
+            p(at, s / 2.0),
+        ],
+        first_id,
+    )
+}
+
+/// A line that misses a circle by more than rounding is not cut at the
+/// foot of the perpendicular (review of L2): a D of radius 5 or a disc of
+/// radius 5 beside a square whose near edge is 6.5 out along the diagonal,
+/// grown by 0.5, are two separate offsets with their closed-form areas.
+#[test]
+fn a_line_that_misses_an_offset_circle_does_not_cut_it() {
+    let t = tol(1.0);
+    let (r, s, d) = (5.0, 2.0, 0.5);
+    let square = steiner_area(s * s, 4.0 * s, d);
+    // A: a D, a half circle closed by its diameter.
+    let mut curves = vec![
+        arc(1, [0.0, 0.0], [0.0, -r], [0.0, r]),
+        line(2, [0.0, r], [0.0, -r]),
+    ];
+    curves.extend(diamond_edge_at(6.5, s, 10));
+    let o = offset_profiles(&profiles(&curves, &t), d, Corners::Round, &t).unwrap();
+    close(
+        area(&o),
+        steiner_area(PI * r * r / 2.0, PI * r + 2.0 * r, d) + square,
+        1e-12,
+    );
+    assert!(
+        o.origins.iter().all(|o| o.within.is_none()),
+        "nothing split"
+    );
+    // B: a whole circle.
+    let mut curves = vec![circle(1, [0.0, 0.0], r)];
+    curves.extend(diamond_edge_at(6.5, s, 10));
+    let o = offset_profiles(&profiles(&curves, &t), d, Corners::Round, &t).unwrap();
+    close(area(&o), PI * (r + d) * (r + d) + square, 1e-12);
+    assert_eq!(o.curves.len(), 1 + 8, "the circle and the square, not cut");
+}
+
+/// The pieces of one curve of a region that split are told apart by the
+/// loop they close, never by an order: across distances the same name
+/// stays in the same region (here by the side of its region's centroid),
+/// and a name whose region went fails to be there rather than moving.
+#[test]
+fn pieces_are_named_by_their_loop_not_by_an_order() {
+    let t = tol(1.0);
+    // A plate 10 by 6 with a hole of radius 1.5 in the middle: from 1.5 to
+    // 1.75 in it is a left and a right strip, each closed by pieces of the
+    // top, the bottom and the hole, and its own side.
+    let mut curves = polygon(&[[-5.0, -3.0], [5.0, -3.0], [5.0, 3.0], [-5.0, 3.0]], 1);
+    curves.push(circle(9, [0.0, 0.0], 1.5));
+    let input = profiles(&curves, &t);
+    // A name in one region at one distance is in that region at every
+    // distance where it is in one region; one in several regions at once
+    // (regions of the same curves) is not told apart there, and resolves
+    // to all of them.
+    let mut seen: std::collections::BTreeMap<String, bool> = Default::default();
+    let mut single = 0;
+    for d in [-1.55, -1.6, -1.65, -1.7] {
+        let o = offset_profiles(&input, d, Corners::Round, &t).unwrap();
+        assert_eq!(o.regions_after, 2);
+        let mut here: std::collections::BTreeMap<String, std::collections::BTreeSet<bool>> =
+            Default::default();
+        for profile in &o.profiles {
+            let c = profile.centroid().unwrap();
+            for s in std::iter::once(&profile.outer)
+                .chain(&profile.holes)
+                .flat_map(|l| &l.segments)
+            {
+                let origin = &o.origins[s.source as usize];
+                let key = format!("{:?} in {:?}", origin.source, origin.within);
+                // The side of the region (its centroid is on the x axis).
+                here.entry(key).or_default().insert(c[0] > 0.0);
+            }
+        }
+        for (key, sides) in here {
+            if let [side] = sides.into_iter().collect::<Vec<_>>()[..] {
+                single += 1;
+                if let Some(before) = seen.insert(key.clone(), side) {
+                    assert_eq!(before, side, "{key} moved at d = {d}");
+                }
+            }
+        }
+    }
+    assert!(single > 10);
+    // Two regions of the same curves (a disc with two holes, split in two
+    // by them) are not told apart: their pieces have the same origin, as
+    // their caps have one name.
+    let curves = vec![
+        circle(1, [0.0, 0.0], 10.0),
+        circle(2, [-2.0, 5.5], 3.0),
+        circle(3, [-2.0, -5.5], 3.0),
+    ];
+    let o = offset_profiles(&profiles(&curves, &t), -3.0, Corners::Round, &t).unwrap();
+    assert_eq!(o.regions_after, 2);
+    let outer: Vec<_> = o
+        .origins
+        .iter()
+        .filter(|o| o.source == OffsetSource::Curve(1))
+        .collect();
+    assert_eq!(outer.len(), 2);
+    assert_eq!(outer[0], outer[1]);
+    assert_eq!(outer[0].within.as_deref(), Some(&[1, 2, 3][..]));
+}
+
+/// An outline with more curves than profile detection takes says so,
+/// at once (no search for a distance, which would not help).
+#[test]
+fn too_many_curves_is_passed_on() {
+    let t = tol(1.0);
+    let n = 2100;
+    let points: Vec<[f64; 2]> = (0..n)
+        .map(|i| {
+            let a = std::f64::consts::TAU * i as f64 / n as f64;
+            [1000.0 * a.cos(), 1000.0 * a.sin()]
+        })
+        .collect();
+    let input = profiles(&polygon(&points, 1), &t);
+    let started = std::time::Instant::now();
+    let err = offset_profiles(&input, 0.5, Corners::Round, &t).unwrap_err();
+    assert!(matches!(err, KernelError::TooManyCurves { .. }), "{err:?}");
+    assert!(started.elapsed().as_secs_f64() < 5.0);
+    // Sharp corners add no curve where lines meet: it fits.
+    let o = offset_profiles(&input, 0.5, Corners::Sharp, &t).unwrap();
+    assert_eq!(o.curves.len(), n);
+}
+
+/// A huge distance: inward past half the outline's diagonal nothing is
+/// left; outward past what the tolerance can hold it is refused; both
+/// with the largest distance that fits.
+#[test]
+fn huge_distances_are_bounded_by_the_outline() {
+    let t = tol(1.0);
+    let input = profiles(
+        &polygon(&[[0.0, 0.0], [10.0, 0.0], [10.0, 6.0], [0.0, 6.0]], 1),
+        &t,
+    );
+    for d in [-1e99, -1e10, -50.0] {
+        let err = offset_profiles(&input, d, Corners::Round, &t).unwrap_err();
+        let KernelError::OffsetProfile {
+            reason, largest, ..
+        } = &err
+        else {
+            panic!("{err:?}");
+        };
+        assert!(reason.contains("leaves nothing"), "{err}");
+        assert!((largest.unwrap() + 3.0).abs() <= 2.0 * t.linear, "{err}");
+    }
+    for d in [1e99, 1e40] {
+        let err = offset_profiles(&input, d, Corners::Round, &t).unwrap_err();
+        let KernelError::OffsetProfile { largest, .. } = &err else {
+            panic!("{err:?}");
+        };
+        let largest = largest.unwrap();
+        assert!(largest > 1e3 && largest < 1e12, "{err}");
+        // That distance itself is made.
+        assert!(offset_profiles(&input, largest, Corners::Round, &t).is_ok());
+    }
+}

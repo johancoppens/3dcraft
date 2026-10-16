@@ -176,8 +176,8 @@ impl fmt::Display for CurveRef {
     }
 }
 
-/// What a curve an offset feature made is: the offset of one curve of
-/// its sketch, or a joint the offset put at a corner.
+/// What a curve an offset feature made is, as the head of its group in
+/// the sources of a sweep's name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum OffsetKind {
     /// `F9:offset(e7)`: the offset of curve `e7`; in the name of a cap
@@ -186,6 +186,15 @@ pub enum OffsetKind {
     /// `F9:offsetCorner(e7,e8)`: the arc or mitre the offset put at the
     /// corner where `e7` runs into `e8` (in the direction the loop runs).
     Corner,
+    /// `F9:offsetExtension(e7,e8)`: the straight piece a sharp corner
+    /// carries the offset of the arc `e7` on by, towards its mitre with
+    /// `e8`.
+    Extension,
+    /// `F9:loop(e1,e2,e7)/F9:offset(e7)`: not a curve but what tells
+    /// apart the pieces of one curve of an offset (a region that split):
+    /// the loop the piece closes, by the curves whose offsets it holds. It
+    /// qualifies the group after it.
+    Loop,
 }
 
 impl OffsetKind {
@@ -193,41 +202,40 @@ impl OffsetKind {
         match self {
             OffsetKind::Offset => "offset",
             OffsetKind::Corner => "offsetCorner",
+            OffsetKind::Extension => "offsetExtension",
+            OffsetKind::Loop => "loop",
         }
     }
+
+    const ALL: [OffsetKind; 4] = [
+        OffsetKind::Offset,
+        OffsetKind::Corner,
+        OffsetKind::Extension,
+        OffsetKind::Loop,
+    ];
 }
 
-/// The most pieces one offset curve is numbered up to in a name.
-pub const MAX_OFFSET_PIECE: u32 = 0x7FFE;
-
-/// The head of a curve an offset feature made, as the source of a sweep's
-/// name: `F10:side(F9:offset(e7))`. In `sources` it is one number,
-/// followed by the curves of the sketch it names (one or more for
-/// [`OffsetKind::Offset`], two for [`OffsetKind::Corner`]). The number
-/// has the feature in the low 32 bits, 0 in bits 32 to 47 and a tag from
-/// bit 48 (the kind and the piece), which is a number no [`CurveRef`]
-/// encodes to, so a name without offsets has the numbers it always had
-/// and a head is never read as a curve. A piece other than 0 (an offset
-/// curve that a split of its region cut in two) is written
-/// `F9:piece(1)/F9:offset(e7)`.
+/// The head of a group of an offset in the sources of a sweep's name:
+/// `F10:side(F9:offset(e7))`. In `sources` it is one number, followed by
+/// the curves of the sketch it names (one or more for
+/// [`OffsetKind::Offset`] and [`OffsetKind::Loop`], two for the others).
+/// The number has the feature in the low 32 bits, 0 in bits 32 to 47 and
+/// the kind from bit 48, which is a number no [`CurveRef`] encodes to, so
+/// a name without offsets has the numbers it always had and a head is
+/// never read as a curve.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct OffsetHead {
     pub feature: FeatureId,
     pub kind: OffsetKind,
-    pub piece: u32,
 }
 
 impl OffsetHead {
     /// The number of the head; `None` past what a name holds.
     pub fn encode(self) -> Option<u64> {
-        if self.feature.0 > MAX_CURVE_ENTITY || self.piece > MAX_OFFSET_PIECE {
+        if self.feature.0 > MAX_CURVE_ENTITY {
             return None;
         }
-        let kind = match self.kind {
-            OffsetKind::Offset => 0,
-            OffsetKind::Corner => 1,
-        };
-        let tag = 1 + kind + 2 * u64::from(self.piece);
+        let tag = 1 + OffsetKind::ALL.iter().position(|k| *k == self.kind)? as u64;
         Some(self.feature.0 | (tag << SECOND_SHIFT))
     }
 
@@ -235,35 +243,36 @@ impl OffsetHead {
     pub fn decode(source: u64) -> Option<Self> {
         let first = (source >> INDEX_SHIFT) & FIELD;
         let tag = (source >> SECOND_SHIFT) & FIELD;
-        if first != 0 || tag == 0 || tag == FIELD {
+        if first != 0 || tag == 0 {
             return None;
         }
-        let tag = tag - 1;
+        let kind = *OffsetKind::ALL.get(usize::try_from(tag - 1).ok()?)?;
         Some(Self {
             feature: FeatureId(source & MAX_CURVE_ENTITY),
-            kind: if tag & 1 == 0 {
-                OffsetKind::Offset
-            } else {
-                OffsetKind::Corner
-            },
-            piece: u32::try_from(tag >> 1).ok()?,
+            kind,
         })
     }
 }
 
-/// One curve an offset made, in the sources of a name: its head and the
-/// curves of the sketch it names.
-pub type OffsetGroup<'a> = (OffsetHead, &'a [u64]);
+/// One curve an offset made, in the sources of a name: its head, the
+/// curves of the sketch it names, and the loop that tells it from other
+/// pieces of the same curve, when it has one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OffsetGroup<'a> {
+    pub head: OffsetHead,
+    pub curves: &'a [u64],
+    pub within: Option<&'a [u64]>,
+}
 
 /// The sources of a sweep's name cut into the curves an offset feature
-/// made: each head with the curves after it. `Ok(None)` when there is no
-/// head (the sources are curves of a sketch, as always); an error when
-/// heads and curves do not go together.
+/// made. `Ok(None)` when there is no head (the sources are curves of a
+/// sketch, as always); an error when heads and curves do not go together.
 pub fn offset_groups(sources: &[u64]) -> Result<Option<Vec<OffsetGroup<'_>>>, &'static str> {
     if !sources.iter().any(|&s| OffsetHead::decode(s).is_some()) {
         return Ok(None);
     }
     let mut groups = Vec::new();
+    let mut within: Option<(FeatureId, &[u64])> = None;
     let mut rest = sources;
     while let Some((&first, after)) = rest.split_first() {
         let head = OffsetHead::decode(first)
@@ -277,26 +286,39 @@ pub fn offset_groups(sources: &[u64]) -> Result<Option<Vec<OffsetGroup<'_>>>, &'
             return Err("an offset names curves of a sketch");
         }
         match head.kind {
-            OffsetKind::Offset if curves.is_empty() => {
-                return Err("an offset names at least one curve");
+            OffsetKind::Offset | OffsetKind::Loop if curves.is_empty() => {
+                return Err("an offset or a loop names at least one curve");
             }
-            OffsetKind::Corner if curves.len() != 2 => {
-                return Err("an offset corner names two curves");
+            OffsetKind::Corner | OffsetKind::Extension if curves.len() != 2 => {
+                return Err("an offset corner or extension names two curves");
             }
             _ => {}
         }
-        groups.push((head, curves));
+        if head.kind == OffsetKind::Loop {
+            if within.is_some() {
+                return Err("a loop qualifies one offset curve, not another loop");
+            }
+            within = Some((head.feature, curves));
+        } else {
+            let qualifier = within.take();
+            if qualifier.is_some_and(|(feature, _)| feature != head.feature) {
+                return Err("a loop qualifies an offset curve of its own feature");
+            }
+            groups.push(OffsetGroup {
+                head,
+                curves,
+                within: qualifier.map(|(_, curves)| curves),
+            });
+        }
         rest = next;
+    }
+    if within.is_some() {
+        return Err("a loop qualifies the offset curve after it");
     }
     Ok(Some(groups))
 }
 
-/// Writes one offset curve: `F9:offset(e7)`, `F9:piece(1)/F9:offsetCorner(e7,e8)`.
-fn write_offset(f: &mut fmt::Formatter<'_>, head: OffsetHead, curves: &[u64]) -> fmt::Result {
-    if head.piece > 0 {
-        write!(f, "{}:piece({})/", head.feature, head.piece)?;
-    }
-    write!(f, "{}:{}(", head.feature, head.kind.name())?;
+fn write_curves(f: &mut fmt::Formatter<'_>, curves: &[u64]) -> fmt::Result {
     for (i, &curve) in curves.iter().enumerate() {
         if i > 0 {
             f.write_str(",")?;
@@ -306,61 +328,68 @@ fn write_offset(f: &mut fmt::Formatter<'_>, head: OffsetHead, curves: &[u64]) ->
             None => write!(f, "e{curve}")?,
         }
     }
+    Ok(())
+}
+
+/// Writes one offset curve: `F9:offset(e7)`,
+/// `F9:loop(e1,e2,e7)/F9:offsetCorner(e7,e8)`.
+fn write_offset(f: &mut fmt::Formatter<'_>, group: &OffsetGroup<'_>) -> fmt::Result {
+    let feature = group.head.feature;
+    if let Some(within) = group.within {
+        write!(f, "{feature}:loop(")?;
+        write_curves(f, within)?;
+        f.write_str(")/")?;
+    }
+    write!(f, "{feature}:{}(", group.head.kind.name())?;
+    write_curves(f, group.curves)?;
     f.write_str(")")
 }
 
-/// Reads one offset curve as [`write_offset`] writes it: its head and its
+/// Reads one offset curve as [`write_offset`] writes it: its heads and
 /// curves, as numbers.
 fn parse_offset(text: &str) -> Option<Vec<u64>> {
-    let parts = split_outside(text, '/');
-    let (piece, link) = match parts.as_slice() {
-        [link] => (None, *link),
-        [piece, link] => (Some(*piece), *link),
-        _ => return None,
-    };
-    fn feature_of(t: &str) -> Option<(u64, &str)> {
+    fn link(t: &str) -> Option<(u64, OffsetKind, Vec<u64>)> {
         let (feature, rest) = t.split_once(':')?;
         let digits = feature.strip_prefix('F')?;
         if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
             return None;
         }
-        Some((digits.parse().ok()?, rest))
+        let at = rest.find('(')?;
+        let (role, inner) = rest.split_at(at);
+        let kind = *OffsetKind::ALL.iter().find(|k| k.name() == role)?;
+        let inner = inner.strip_prefix('(')?.strip_suffix(')')?;
+        let curves = split_outside(inner, ',')
+            .into_iter()
+            .map(|part| CurveRef::parse(part.trim()).and_then(CurveRef::encode))
+            .collect::<Option<Vec<u64>>>()?;
+        Some((digits.parse().ok()?, kind, curves))
     }
-    let (feature, rest) = feature_of(link)?;
-    let piece = match piece {
-        None => 0,
-        Some(piece) => {
-            let (other, rest) = feature_of(piece)?;
-            let number = rest.strip_prefix("piece(")?.strip_suffix(')')?;
-            if other != feature || number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit())
-            {
+    let mut out = Vec::new();
+    let parts = split_outside(text, '/');
+    let links = match parts.as_slice() {
+        [one] => vec![link(one)?],
+        [loop_, one] => {
+            let first = link(loop_)?;
+            let second = link(one)?;
+            if first.1 != OffsetKind::Loop || second.1 == OffsetKind::Loop {
                 return None;
             }
-            let piece: u32 = number.parse().ok()?;
-            if piece == 0 {
-                return None;
-            }
-            piece
+            vec![first, second]
         }
+        _ => return None,
     };
-    let (kind, inner) = if let Some(inner) = rest.strip_prefix("offsetCorner(") {
-        (OffsetKind::Corner, inner)
-    } else {
-        (OffsetKind::Offset, rest.strip_prefix("offset(")?)
-    };
-    let inner = inner.strip_suffix(')')?;
-    let head = OffsetHead {
-        feature: FeatureId(feature),
-        kind,
-        piece,
+    for (feature, kind, curves) in links {
+        out.push(
+            OffsetHead {
+                feature: FeatureId(feature),
+                kind,
+            }
+            .encode()?,
+        );
+        out.extend(curves);
     }
-    .encode()?;
-    let mut out = vec![head];
-    for part in split_outside(inner, ',') {
-        out.push(CurveRef::parse(part.trim()).and_then(CurveRef::encode)?);
-    }
-    offset_groups(&out).ok().flatten()?;
-    Some(out)
+    let groups = offset_groups(&out).ok().flatten()?;
+    (groups.len() == 1).then_some(out)
 }
 
 /// The part an entity plays in the feature that made it.
@@ -963,11 +992,11 @@ impl PersistentName {
                     offset_groups(&name.sources).ok().flatten()
                 };
                 if let Some(groups) = groups {
-                    for (i, (head, curves)) in groups.into_iter().enumerate() {
+                    for (i, group) in groups.iter().enumerate() {
                         if i > 0 {
                             f.write_str(",")?;
                         }
-                        write_offset(f, head, curves)?;
+                        write_offset(f, group)?;
                     }
                     f.write_str(")")?;
                     match &name.of {
@@ -1083,7 +1112,7 @@ fn parse_sources(
             offsets += 1;
             let numbers = parse_offset(part).ok_or_else(|| {
                 wrong(
-                    "an offset curve is written F9:offset(e7), F9:offsetCorner(e7,e8) or F9:piece(1)/F9:offset(e7)",
+                    "an offset curve is written F9:offset(e7), F9:offsetCorner(e7,e8), F9:offsetExtension(e7,e8) or F9:loop(e1,e7)/F9:offset(e7)",
                 )
             })?;
             reading.sources = reading
@@ -1889,7 +1918,9 @@ mod tests {
             "F10:side(F9:offset(e7))",
             "F10:side(F9:offset(e7[3]))",
             "F10:side(F9:offsetCorner(e7,e8))",
-            "F10:side(F9:piece(2)/F9:offset(e7[2,5]))",
+            "F10:side(F9:loop(e1,e2,e7[2,5])/F9:offset(e7[2,5]))",
+            "F10:side(F9:offsetExtension(e7,e8))",
+            "F10:lateralEdge(F9:loop(e1,e7)/F9:offset(e7),F9:loop(e1,e7)/F9:offsetCorner(e7,e1))",
             "F10:endCap(F9:offset(e1,e2,e7[*]))",
             "F10:lateralEdge(F9:offset(e7),F9:offsetCorner(e7,e8[4]))",
             "F10:piece(1)/F10:side(F9:offset(e7))",
@@ -1902,8 +1933,8 @@ mod tests {
         let name: PersistentName = "F10:side(F9:offset(e7))".parse().unwrap();
         let head = OffsetHead::decode(name.sources[0]).unwrap();
         assert_eq!(
-            (head.feature, head.kind, head.piece),
-            (FeatureId(9), OffsetKind::Offset, 0)
+            (head.feature, head.kind),
+            (FeatureId(9), OffsetKind::Offset)
         );
         // A head is no curve, and no curve is a head.
         assert_eq!(CurveRef::decode(name.sources[0]), None);
@@ -1920,11 +1951,14 @@ mod tests {
             "F10:side(F9:offsetCorner(e7,e8,e9))",
             "F10:side(F9:offset())",
             "F10:side(F9:offset(e7),e8)",
-            "F10:side(F9:piece(0)/F9:offset(e7))",
-            "F10:side(F8:piece(1)/F9:offset(e7))",
+            "F10:side(F9:piece(1)/F9:offset(e7))",
+            "F10:side(F8:loop(e7)/F9:offset(e7))",
+            "F10:side(F9:loop(e7))",
+            "F10:side(F9:loop(e7)/F9:loop(e7))",
+            "F10:side(F9:loop()/F9:offset(e7))",
+            "F10:side(F9:offsetExtension(e7))",
             "F10:side(F9:side(e7))",
             "F10:side(F4294967296:offset(e7))",
-            "F10:side(F9:piece(40000)/F9:offset(e7))",
             "F10:side(F9:offset(e7)",
             "F10:side(F9:offset(F8:offset(e7)))",
         ] {
@@ -1934,7 +1968,6 @@ mod tests {
         let head = OffsetHead {
             feature: FeatureId(9),
             kind: OffsetKind::Offset,
-            piece: 0,
         }
         .encode()
         .unwrap();

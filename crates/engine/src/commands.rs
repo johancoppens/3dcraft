@@ -340,7 +340,7 @@ pub(crate) fn feature_result(session: &mut Session, id: FeatureId) -> Run {
             map.insert("thread".into(), crate::helix_cmds::thread_json(report));
         }
         if let Some(made) = &outcome.offset {
-            map.insert("offset".into(), crate::offset_cmds::offset_json(made, id));
+            map.insert("offset".into(), crate::offset_cmds::offset_json(made));
         }
     }
     Ok(result)
@@ -1821,10 +1821,7 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
         if let (Some(map), Some(outcome)) = (entry.as_object_mut(), outcome)
             && let Some(made) = &outcome.offset
         {
-            map.insert(
-                "offset".into(),
-                crate::offset_cmds::offset_json(made, outcome.id),
-            );
+            map.insert("offset".into(), crate::offset_cmds::offset_json(made));
         }
         // Faces or edges given by the names of an earlier body, followed
         // to the newest one: the parameters as the feature was built.

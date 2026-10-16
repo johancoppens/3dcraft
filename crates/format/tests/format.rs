@@ -2673,7 +2673,9 @@ fn an_offset_profile_is_written_like_this_and_round_trips() {
         }),
     )
     .unwrap();
-    let side: PersistentName = "F10:side(F9:offset(e7[3]))".parse().unwrap();
+    let side: PersistentName = "F10:side(F9:loop(e1,e7[3])/F9:offset(e7[3]))"
+        .parse()
+        .unwrap();
     let corner: PersistentName = "F10:piece(1)/F10:side(F9:offsetCorner(e7,e8))"
         .parse()
         .unwrap();

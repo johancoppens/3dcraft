@@ -843,7 +843,7 @@ fn build_feature(
             }
         }
     } else if let FeatureKind::OffsetProfile(offset) = &feature.kind {
-        match offset_profile::build(doc, variables, offset, earlier) {
+        match offset_profile::build(doc, variables, feature.id, offset, earlier) {
             Ok(made) => {
                 outline = Some(Arc::new(made));
                 (Status::Ok, None)

@@ -508,3 +508,82 @@ fn a_revolution_takes_an_offset() {
         "{names:?}"
     );
 }
+
+/// A reference to a piece of a region that split follows that region
+/// (named by the curves of its loop), fails when the region is not split
+/// (the name is not there), never lands on another region, and is back
+/// when the split is.
+#[test]
+fn a_reference_to_a_piece_follows_its_region_or_fails() {
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "d", "expr": "-1.6 mm"}),
+    );
+    run(&mut s, "sketch.create", json!({"name": "Plate"}));
+    run(
+        &mut s,
+        "sketch.polyline",
+        json!({"sketch": "Plate", "points": [[-5, -3], [5, -3], [5, 3], [-5, 3]], "closed": true}),
+    );
+    run(
+        &mut s,
+        "sketch.circle",
+        json!({"sketch": "Plate", "center": [0, 0], "radius": 1.5}),
+    );
+    run(
+        &mut s,
+        "feature.offsetProfile",
+        json!({"sketch": "Plate", "distance": "d", "name": "Inset"}),
+    );
+    run(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "Inset", "distance": 1, "name": "Strips"}),
+    );
+    let names = face_names(&body(&mut s, "Strips"));
+    // The bottom line's two pieces (and the top's, and the hole's) are told
+    // apart by the curves of the loop each closes.
+    let pieces: Vec<&String> = names.iter().filter(|n| n.contains(":loop(")).collect();
+    assert!(pieces.len() >= 6, "{names:?}");
+    let piece = pieces[0].clone();
+    let curve = piece.rsplit(":offset(").next().unwrap().to_string();
+    let twins = pieces.iter().filter(|n| n.ends_with(&curve)).count();
+    assert_eq!(twins, 2, "{curve} in {pieces:?}");
+    run(
+        &mut s,
+        "feature.offsetFace",
+        json!({"faces": [piece], "distance": "0.05 mm", "name": "Moved"}),
+    );
+    let moved = body(&mut s, "Moved")["volume"].as_f64().unwrap();
+    // Further in, the same region: still there.
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "d", "expr": "-1.65 mm"}),
+    );
+    assert_eq!(status(&mut s, "Moved"), "ok");
+    // Not split: the name is not there, and the reference fails.
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "d", "expr": "-0.5 mm"}),
+    );
+    let failed = status(&mut s, "Moved");
+    assert!(failed.starts_with("failed"), "{failed}");
+    assert!(failed.contains(&piece), "{failed}");
+    // Back: repaired, the same body.
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "d", "expr": "-1.6 mm"}),
+    );
+    assert_eq!(status(&mut s, "Moved"), "ok");
+    assert_close(
+        body(&mut s, "Moved")["volume"].as_f64().unwrap(),
+        moved,
+        "repaired",
+    );
+}

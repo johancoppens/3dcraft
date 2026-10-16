@@ -16,7 +16,7 @@ use craft3d_doc::{
 use craft3d_expr::Evaluation;
 use craft3d_kernel::KernelError;
 use craft3d_kernel::offset_profile::{
-    Corners, OffsetOrigin, OffsetOutline, OffsetSource, offset_profiles,
+    Corners, OffsetOrigin, OffsetOutline, OffsetSource, loop_curves, offset_profiles,
 };
 
 /// What an offset feature made.
@@ -27,11 +27,15 @@ pub struct OffsetResult {
     /// The distance, in document units.
     pub distance: f64,
     pub outline: OffsetOutline,
+    /// The name of each curve of the outline, as the names of what a sweep
+    /// makes of it have it inside (`F9:offset(e7[3])`), by id.
+    pub names: Vec<String>,
 }
 
 pub(crate) fn build(
     doc: &Document,
     variables: &Evaluation,
+    id: FeatureId,
     offset: &OffsetProfile,
     earlier: &[FeatureResult],
 ) -> Result<OffsetResult, String> {
@@ -71,13 +75,33 @@ pub(crate) fn build(
                     }
                     text
                 }
+                KernelError::TooManyCurves { count, limit } => format!(
+                    "distance: the offset of sketch `{}` has {count} curves, more than profile detection takes ({limit}); corners: sharp adds none where lines meet",
+                    made.name
+                ),
                 other => format!("distance: {other}"),
             }
         })?;
+    let runs = full_runs(made.sketch, made.solved);
+    let names = outline
+        .origins
+        .iter()
+        .map(|origin| {
+            let sources = sources_of(id, origin, &runs)?;
+            // Written as the source of a face, then taken out of it.
+            let text = PersistentName::new(id, NameRole::Side, sources).to_string();
+            Ok(text
+                .split_once('(')
+                .and_then(|(_, rest)| rest.strip_suffix(')'))
+                .unwrap_or(&text)
+                .to_string())
+        })
+        .collect::<Result<Vec<String>, String>>()?;
     Ok(OffsetResult {
         sketch: offset.sketch,
         distance,
         outline,
+        names,
     })
 }
 
@@ -99,23 +123,31 @@ pub(crate) fn made<'a>(
         .and_then(|r| r.offset.as_deref())
 }
 
-/// The head and curves of one curve of an offset.
-fn sources_of(feature: FeatureId, origin: &OffsetOrigin) -> Result<Vec<u64>, String> {
-    let (kind, curves) = match origin.source {
-        OffsetSource::Curve(c) => (OffsetKind::Offset, vec![c]),
-        OffsetSource::Corner(a, b) => (OffsetKind::Corner, vec![a, b]),
+/// The heads and curves of one curve of an offset: its loop first, when
+/// that is what tells it from other pieces of the same curve, with whole
+/// runs of a pattern written once (`e7[*]`), so the loop is named the same
+/// whatever the count.
+fn sources_of(
+    feature: FeatureId,
+    origin: &OffsetOrigin,
+    runs: &std::collections::BTreeMap<u64, usize>,
+) -> Result<Vec<u64>, String> {
+    let head = |kind| {
+        OffsetHead { feature, kind }
+            .encode()
+            .ok_or_else(|| crate::too_long("an offset's feature id is beyond what a name holds"))
     };
-    let head = OffsetHead {
-        feature,
-        kind,
-        piece: origin.piece,
+    let mut out = Vec::new();
+    if let Some(within) = &origin.within {
+        out.push(head(OffsetKind::Loop)?);
+        out.extend(collapse(within, runs).unwrap_or_else(|| within.clone()));
     }
-    .encode()
-    .ok_or_else(|| {
-        crate::too_long("an offset curve's feature id or piece number is beyond what a name holds")
-    })?;
-    let mut out = vec![head];
-    out.extend(curves);
+    out.push(head(match origin.source {
+        OffsetSource::Curve(_) => OffsetKind::Offset,
+        OffsetSource::Corner(..) => OffsetKind::Corner,
+        OffsetSource::Extension(..) => OffsetKind::Extension,
+    })?);
+    out.extend(origin.source.curves());
     Ok(out)
 }
 
@@ -163,24 +195,16 @@ pub(crate) fn rename(
         }
         let mut sources = Vec::new();
         if caps.contains(&link.role) {
-            let mut curves = Vec::new();
-            let mut corners = Vec::new();
-            for &id in &link.sources {
-                match origin(id)?.source {
-                    OffsetSource::Curve(c) => curves.push(c),
-                    OffsetSource::Corner(a, b) => corners.extend([a, b]),
-                }
-            }
-            if curves.is_empty() {
-                curves = corners;
-            }
-            curves.sort_unstable();
-            curves.dedup();
+            let found = link
+                .sources
+                .iter()
+                .map(|&id| origin(id))
+                .collect::<Result<Vec<_>, _>>()?;
+            let curves = loop_curves(found.into_iter());
             let curves = collapse(&curves, &runs).unwrap_or(curves);
             let head = OffsetHead {
                 feature: input,
                 kind: OffsetKind::Offset,
-                piece: 0,
             }
             .encode()
             .ok_or_else(|| crate::too_long("an offset's feature id is beyond what a name holds"))?;
@@ -188,7 +212,7 @@ pub(crate) fn rename(
             sources.extend(curves);
         } else {
             for &id in &link.sources {
-                sources.extend(sources_of(input, origin(id)?)?);
+                sources.extend(sources_of(input, origin(id)?, &runs)?);
             }
         }
         link.sources = sources;

@@ -23,7 +23,7 @@ pub use datum::{
 };
 pub use name::{
     CurveIndex, CurveRef, FaceLists, MAX_CURVE_ENTITY, MAX_CURVE_INDEX, MAX_NAME_DEPTH,
-    MAX_NAME_FACES, MAX_NAME_SOURCES, MAX_OFFSET_PIECE, NameRole, OffsetHead, OffsetKind,
+    MAX_NAME_FACES, MAX_NAME_SOURCES, NameRole, OffsetGroup, OffsetHead, OffsetKind,
     PersistentName, offset_groups,
 };
 
