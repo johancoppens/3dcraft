@@ -960,6 +960,21 @@ pub struct Sketch {
     /// The id the next pattern gets.
     #[serde(default = "first_id", skip_serializing_if = "is_first_id")]
     pub next_pattern_id: u64,
+    /// Where the image points lay in the stored solution, as the points'
+    /// coordinates are the stored solution of the points: when an edit
+    /// moves an image (a count, step or angle of its pattern), the solver
+    /// carries the sketch along from there, so what hangs on the image
+    /// follows it. Written by the solve with the coordinates; an image
+    /// that is not listed has nothing to be carried from.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub image_places: Vec<ImagePlace>,
+}
+
+/// Where an image point lay in the stored solution of its sketch.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ImagePlace {
+    pub entity: EntityId,
+    pub at: [f64; 2],
 }
 
 fn first_id() -> u64 {
@@ -986,6 +1001,7 @@ impl Sketch {
             next_constraint_id: 1,
             patterns: Vec::new(),
             next_pattern_id: 1,
+            image_places: Vec::new(),
         }
     }
 

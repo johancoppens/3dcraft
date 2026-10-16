@@ -204,6 +204,7 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 next_constraint_id,
                 patterns,
                 next_pattern_id,
+                image_places,
             }) => manifest::FeatureKind::Sketch {
                 plane: match plane {
                     doc::SketchPlane::World { plane, offset } => manifest::SketchPlane::World {
@@ -232,6 +233,13 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 next_constraint_id: *next_constraint_id,
                 patterns: patterns.iter().map(pattern_to_manifest).collect(),
                 next_pattern_id: *next_pattern_id,
+                image_places: image_places
+                    .iter()
+                    .map(|p| manifest::ImagePlace {
+                        entity: p.entity.0,
+                        at: p.at,
+                    })
+                    .collect(),
             },
             doc::FeatureKind::Extrude(doc::Extrude {
                 sketch: doc::FeatureId(sketch),
@@ -1326,6 +1334,7 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
                 next_constraint_id,
                 patterns,
                 next_pattern_id,
+                image_places,
             } => doc::FeatureKind::Sketch(doc::Sketch {
                 plane: match plane {
                     manifest::SketchPlane::World { plane, offset } => doc::SketchPlane::World {
@@ -1351,6 +1360,13 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
                 next_constraint_id,
                 patterns: patterns.into_iter().map(pattern_to_doc).collect(),
                 next_pattern_id,
+                image_places: image_places
+                    .into_iter()
+                    .map(|p| doc::ImagePlace {
+                        entity: doc::EntityId(p.entity),
+                        at: p.at,
+                    })
+                    .collect(),
             }),
             manifest::FeatureKind::Extrude {
                 sketch,

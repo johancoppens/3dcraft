@@ -211,12 +211,12 @@ Sketch entities and constraints as commands; `solve` (Newton-type, DOF analysis,
 - A terse result mode for batches (`terse`), and `sketch.path`: a chain of lines and arcs through shared corners in one undo step, from coordinates alone (2026-10-13)
 - A pattern inside a sketch whose count is a formula (`sketch.pattern`: rows, grids, chained runs and rings as rigid images of the solved seed, image points `e5[last]` for the solver, names `e7[3]` and caps `e7[*]`, format 18; [`design/document.md`](design/document.md), *Patterns inside a sketch*) (2026-10-16)
 - The offset of a sketch's closed profiles (`feature.offsetProfile`: exact for lines and arcs, round or sharp corners, splits reported and vanishing loops refused with the largest distance that fits, names `F9:offset(e7[3])`, format 19; kerf as one feature; [`design/document.md`](design/document.md), *Offsets of profiles*) (2026-10-16)
+- One result whatever the edits before it: image points' places stored with the solution and a sketch carried along by continuation when an edit moves them (a line after a run's end no longer flips when the count jumps; format 20; [`design/document.md`](design/document.md), *Carrying a sketch along when its images jump*) (2026-10-16)
 
 #### Open
 - [ ] Which constraint is blamed in a nonlinear conflict is the solver's heuristic, not a proof, and about 8% of dense random sketches end as "did not converge" instead of a diagnosis; to be judged again on real models
 - [ ] A sketch that refers to geometry of other features (projected edges, coincident with a body vertex; from the field test)
 - [ ] A picture of a sketch: `view.render` draws bodies only
-- [ ] A sketch's solution depends on the path of edits: a line measured from the end of a chained run flips when the count jumps (3 → 10), and returning to the starting variables can leave a sketch failing ("conflicts"); a document must give one result whatever the edits before it (the welding table, 2026-10-16, `target/work/weldtable/findings/`). Owed: free geometry carried along with a run's end before solving, or signed distances
 - [ ] Nested sketch patterns (a pattern inside another pattern's period; today "an entity is the seed of one pattern")
 - [ ] Profile detection takes at most 4096 curves (`kernel/src/profile.rs`, `MAX_CURVES`; its touch test is quadratic) while sketch patterns may make 100 000: a 70 × 70 perforated sheet fails cleanly with the cap; owed: a spatial sort, measured before the cap is raised
 - [ ] An offset of profiles: splines (refused, "not supported yet"; owed: a fit within tol/4 refused where the curvature radius is below the distance, as `geom::offset` proves for faces), an offset as a loft section or a sweep's path, an offset of an offset, a choice of regions

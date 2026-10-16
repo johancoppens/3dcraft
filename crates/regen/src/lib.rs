@@ -64,7 +64,8 @@ pub use follow::{newest_body, short_face_name};
 pub use offset_profile::OffsetResult;
 pub use query::{edges_between, faces_named, faces_of_edges};
 pub use sketch::{
-    ConstraintResult, ConstraintState, SketchResult, settle_sketches, settle_sketches_cached,
+    ConstraintResult, ConstraintState, SketchResult, record_image_places_cached, settle_sketches,
+    settle_sketches_cached,
 };
 pub use sketch_pattern::{MAX_PATTERN_CURVES, PatternResult, Placed};
 

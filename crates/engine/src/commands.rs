@@ -141,6 +141,10 @@ pub(crate) fn edit<T>(
     let cache = &mut open.cache;
     open.history
         .apply(label, |doc| {
+            // A file from before image places were stored: where the
+            // images are now, so the solve after the change can carry
+            // the sketches along from there.
+            craft3d_regen::record_image_places_cached(doc, cache);
             let out = change(doc)?;
             craft3d_regen::settle_sketches_cached(doc, cache);
             Ok(out)

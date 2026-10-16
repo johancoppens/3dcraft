@@ -29,7 +29,7 @@ pub use name::{
 
 pub use sketch::{
     CenterRef, Constraint, ConstraintId, ConstraintKind, DistanceDirection, Entity, EntityId,
-    Geometry, InstanceIndex, MAX_ENTITY_ID, MAX_PATTERN_INSTANCES, MAX_SKETCH_PATTERNS,
+    Geometry, ImagePlace, InstanceIndex, MAX_ENTITY_ID, MAX_PATTERN_INSTANCES, MAX_SKETCH_PATTERNS,
     MAX_SPLINE_DEGREE, MAX_SPLINE_POINTS, PatternId, Removal, SecondDirection, Sketch, SketchError,
     SketchPattern, SketchPatternLayout, SketchPlane, WorldPlane, clamped_uniform_knots,
     parse_image_ref,

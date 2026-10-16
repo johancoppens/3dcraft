@@ -168,7 +168,7 @@ fn saving_twice_gives_the_same_bytes() {
 fn the_manifest_of_a_small_document_is_exactly_this() {
     let expected = r#"{
   "format": "3dcraft",
-  "format_version": 19,
+  "format_version": 20,
   "document": {
     "units": {
       "length": "mm",
@@ -340,17 +340,17 @@ fn fix_trailing_commas(json: &str) -> String {
 
 #[test]
 fn a_newer_format_version_says_a_newer_3dcraft_is_needed() {
-    let error = load_error(&edited(&version_field(), "\"format_version\": 20"));
+    let error = load_error(&edited(&version_field(), "\"format_version\": 21"));
     assert!(matches!(
         error,
         FormatError::NewerVersion {
-            file: 20,
+            file: 21,
             supported: FORMAT_VERSION
         }
     ));
     let text = error.to_string();
     assert!(
-        text.contains("version 20")
+        text.contains("version 21")
             && text.contains(&format!("version {FORMAT_VERSION}"))
             && text.contains("newer 3DCraft is needed"),
         "{text}"
@@ -1637,7 +1637,7 @@ fn a_sketch_pattern_is_written_like_this_and_round_trips() {
     doc.validate().unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 19);
+    assert_eq!(value["format_version"], 20);
     let kind = &value["document"]["features"][1]["kind"];
     assert_eq!(kind["next_pattern_id"], 4);
     assert_eq!(
@@ -1689,6 +1689,50 @@ fn a_sketch_pattern_is_written_like_this_and_round_trips() {
     }
     // A version-17 file has no patterns; it reads as it is.
     let older = edited(&version_field(), "\"format_version\": 17");
+    assert_eq!(from_manifest_json(older.as_bytes()).unwrap(), small());
+}
+
+/// Where image points lay in the stored solution (version 20): a list of
+/// entity and coordinates on the sketch, written only when there is one.
+#[test]
+fn image_places_are_written_like_this_and_round_trip() {
+    use craft3d_doc::{ImagePlace, InstanceIndex, SketchPatternLayout};
+    let mut doc = small();
+    let mut sketch = Sketch::new(SketchPlane::default());
+    let a = sketch.add_point(0.0, 0.0).unwrap();
+    let b = sketch.add_point(1.0, 0.0).unwrap();
+    let run = sketch.add_line(a, b, false).unwrap();
+    sketch
+        .add_pattern(
+            vec![run],
+            Expr::new("3"),
+            SketchPatternLayout::Chain { from: a, to: b },
+        )
+        .unwrap();
+    let last = sketch.image_point(b, InstanceIndex::Last).unwrap();
+    sketch.image_places = vec![ImagePlace {
+        entity: last,
+        at: [3.0, -0.25],
+    }];
+    doc.add_feature(Some("Run"), FeatureKind::Sketch(sketch))
+        .unwrap();
+    doc.validate().unwrap();
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["format_version"], 20);
+    assert_eq!(
+        value["document"]["features"][1]["kind"]["image_places"],
+        serde_json::json!([{"entity": last.0, "at": [3.0, -0.25]}])
+    );
+    assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+    assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
+    // Not written when there are none.
+    assert!(!to_manifest_json(&small()).unwrap().contains("image_places"));
+    // A field it does not know is an error, not a place.
+    let odd = json.replacen("\"image_places\"", "\"image_spots\"", 1);
+    assert!(from_manifest_json(odd.as_bytes()).is_err());
+    // A version-19 file has none; it reads as it is.
+    let older = edited(&version_field(), "\"format_version\": 19");
     assert_eq!(from_manifest_json(older.as_bytes()).unwrap(), small());
 }
 
@@ -2690,7 +2734,7 @@ fn an_offset_profile_is_written_like_this_and_round_trips() {
     .unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 19);
+    assert_eq!(value["format_version"], 20);
     let features = value["document"]["features"].as_array().unwrap();
     let n = features.len();
     assert_eq!(

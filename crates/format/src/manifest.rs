@@ -221,6 +221,11 @@ pub enum FeatureKind {
             skip_serializing_if = "is_first_pattern_id"
         )]
         next_pattern_id: u64,
+        /// Where the image points lay in the stored solution (format
+        /// version 20): the solver carries the sketch along from there
+        /// when an edit moves an image. Absent means none.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        image_places: Vec<ImagePlace>,
     },
     /// A solid swept from the closed profiles of a sketch along its
     /// normal. `sketch` is the id of the sketch feature.
@@ -736,6 +741,14 @@ pub enum WorldPlane {
     Xy,
     Yz,
     Zx,
+}
+
+/// Where an image point lay in the stored solution of its sketch.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImagePlace {
+    pub entity: u64,
+    pub at: [f64; 2],
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -357,6 +357,7 @@ fn run(seed: u64, count: usize, hostile: bool, most_constraints: usize) -> Tally
                     entities: solution.entities.clone(),
                     constraints: sketch.constraints.clone(),
                     splines: sketch.splines.clone(),
+                    image_starts: Vec::new(),
                 };
                 // The property a caller that stores solutions relies on:
                 // the same verdict, and nothing moved beyond tolerance.

@@ -292,6 +292,14 @@ pub struct Sketch {
     pub constraints: Vec<Constraint>,
     /// The splines points are constrained onto.
     pub splines: Vec<Spline>,
+    /// Where image points lay when the starting guess was a solution: the
+    /// image point and its coordinates then. When the map of an image now
+    /// puts it elsewhere (a count, step or angle of its pattern changed),
+    /// [`crate::solve`] first carries the sketch along from there to the new
+    /// place by continuation, so that geometry hanging on the image moves
+    /// with it rather than landing on another root. Empty, or an image
+    /// within the linear tolerance of its place, means no carrying.
+    pub image_starts: Vec<(EntityId, [f64; 2])>,
 }
 
 impl Sketch {

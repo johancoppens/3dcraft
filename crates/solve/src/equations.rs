@@ -52,10 +52,46 @@ pub(crate) enum Centre {
     At([f64; 2]),
 }
 
+/// An image point: how it is made from unknowns, and while the sketch is
+/// carried along by continuation (`crate::carry`), how far it still is
+/// from where its map puts it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ImageVars {
+    pub map: MapVars,
+    pub carry: Option<Carry>,
+}
+
+/// The part of an image's move still to come: the image lies at its map
+/// plus `(1 - x[t]) * by`, where the unknown `x[t]` is the continuation
+/// parameter (0 at the stored place, 1 at the map).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Carry {
+    pub t: usize,
+    pub by: [f64; 2],
+}
+
+impl ImageVars {
+    pub(crate) fn new(map: MapVars) -> Self {
+        ImageVars { map, carry: None }
+    }
+
+    /// The coordinates at `x`.
+    pub(crate) fn at(&self, x: &[f64]) -> Option<[f64; 2]> {
+        let [px, py] = self.map.at(x)?;
+        Some(match self.carry {
+            None => [px, py],
+            Some(Carry { t, by: [bx, by] }) => {
+                let rest = 1.0 - *x.get(t)?;
+                [px + rest * bx, py + rest * by]
+            }
+        })
+    }
+}
+
 /// How an image point is made from unknowns ([`crate::ImageMap`] with the
 /// points resolved to the indices of their x unknowns).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum ImageVars {
+pub(crate) enum MapVars {
     Shift {
         of: usize,
         offset: [f64; 2],
@@ -79,24 +115,24 @@ fn pair(x: &[f64], i: usize) -> Option<[f64; 2]> {
     Some([*x.get(i)?, *x.get(i.checked_add(1)?)?])
 }
 
-impl ImageVars {
+impl MapVars {
     /// The coordinates at `x`, as [`crate::ImageMap::apply`] gives them.
     fn at(&self, x: &[f64]) -> Option<[f64; 2]> {
         Some(match *self {
-            ImageVars::Shift {
+            MapVars::Shift {
                 of,
                 offset: [dx, dy],
             } => {
                 let [px, py] = pair(x, of)?;
                 [px + dx, py + dy]
             }
-            ImageVars::Chain { of, from, to, k } => {
+            MapVars::Chain { of, from, to, k } => {
                 let [px, py] = pair(x, of)?;
                 let [ax, ay] = pair(x, from)?;
                 let [bx, by] = pair(x, to)?;
                 [px + (bx - ax) * k, py + (by - ay) * k]
             }
-            ImageVars::Turn {
+            MapVars::Turn {
                 of,
                 centre,
                 sin,
@@ -280,22 +316,33 @@ impl<'a> Ctx<'a> {
             Pt::Own(i) => return self.own(i),
             Pt::Image(i) => *images.get(i).ok_or(Fail::NonFinite)?,
         };
-        // The same expressions as `ImageVars::at`, in duals.
-        Ok(match image {
-            ImageVars::Shift {
+        let [px, py] = self.map(image.map)?;
+        Ok(match image.carry {
+            None => [px, py],
+            Some(Carry { t, by: [bx, by] }) => {
+                let rest = Dual::constant(1.0) - self.var(t)?;
+                [px + rest * bx, py + rest * by]
+            }
+        })
+    }
+
+    fn map(&mut self, map: MapVars) -> Result<Vec2, Fail> {
+        // The same expressions as `MapVars::at`, in duals.
+        Ok(match map {
+            MapVars::Shift {
                 of,
                 offset: [dx, dy],
             } => {
                 let [px, py] = self.own(of)?;
                 [px + Dual::constant(dx), py + Dual::constant(dy)]
             }
-            ImageVars::Chain { of, from, to, k } => {
+            MapVars::Chain { of, from, to, k } => {
                 let [px, py] = self.own(of)?;
                 let [ax, ay] = self.own(from)?;
                 let [bx, by] = self.own(to)?;
                 [px + (bx - ax) * k, py + (by - ay) * k]
             }
-            ImageVars::Turn {
+            MapVars::Turn {
                 of,
                 centre,
                 sin,
@@ -1123,11 +1170,11 @@ pub(crate) fn prepare(sketch: &Sketch, min_len: f64) -> Result<Prepared, SolveEr
         let vars = match map {
             crate::ImageMap::Shift { offset } => {
                 finite(&offset)?;
-                ImageVars::Shift { of, offset }
+                MapVars::Shift { of, offset }
             }
             crate::ImageMap::Chain { from, to, k } => {
                 finite(&[k])?;
-                ImageVars::Chain {
+                MapVars::Chain {
                     of,
                     from: own(from)?,
                     to: own(to)?,
@@ -1141,7 +1188,7 @@ pub(crate) fn prepare(sketch: &Sketch, min_len: f64) -> Result<Prepared, SolveEr
                     Some(id) => Centre::Own(own(id)?),
                     None => Centre::At(at),
                 };
-                ImageVars::Turn {
+                MapVars::Turn {
                     of,
                     centre,
                     sin,
@@ -1150,7 +1197,7 @@ pub(crate) fn prepare(sketch: &Sketch, min_len: f64) -> Result<Prepared, SolveEr
             }
         };
         image_of.push(Some(images.len()));
-        images.push(vars);
+        images.push(ImageVars::new(vars));
     }
 
     let (class, on) = incidences(sketch);
@@ -1311,35 +1358,36 @@ mod tests {
         // Points 0..4 at x[0..8]: of, from, to, centre.
         let x = [0.7, -0.4, 0.1, 0.2, 1.3, 0.9, -0.6, 0.35];
         let images = [
-            ImageVars::Shift {
+            MapVars::Shift {
                 of: 0,
                 offset: [3.0, -1.5],
             },
-            ImageVars::Chain {
+            MapVars::Chain {
                 of: 0,
                 from: 2,
                 to: 4,
                 k: 3.0,
             },
-            ImageVars::Chain {
+            MapVars::Chain {
                 of: 4,
                 from: 2,
                 to: 4,
                 k: 2.0,
             },
-            ImageVars::Turn {
+            MapVars::Turn {
                 of: 0,
                 centre: Centre::Own(6),
                 sin: 0.8_f64.sin(),
                 cos: 0.8_f64.cos(),
             },
-            ImageVars::Turn {
+            MapVars::Turn {
                 of: 4,
                 centre: Centre::At([0.25, -0.5]),
                 sin: (-2.1_f64).sin(),
                 cos: (-2.1_f64).cos(),
             },
-        ];
+        ]
+        .map(ImageVars::new);
         // The place: the same numbers as the map the caller applies.
         let point = |i: u32| {
             let i = i as usize * 2;
