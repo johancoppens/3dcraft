@@ -100,6 +100,12 @@ pub enum ErrorKind {
         function: &'static str,
         value: f64,
     },
+    /// The step of a whole-number function (`floor(x, step)`) is zero or
+    /// negative: there is no multiple of it to go to.
+    InvalidStep {
+        function: &'static str,
+        value: f64,
+    },
     /// The result (or a variable's value) is NaN or infinite.
     /// `operation` is the operator, function or "variable".
     NonFinite {
@@ -152,7 +158,7 @@ impl fmt::Display for ErrorKind {
             ErrorKind::UnknownFunction { name } => write!(
                 f,
                 "unknown function `{name}`; the functions are sin, cos, tan, asin, acos, \
-                 atan, atan2, sqrt, abs, min and max"
+                 atan, atan2, sqrt, abs, min, max, floor, ceil, round, trunc and mod"
             ),
             ErrorKind::UnitWithoutNumber { unit } => write!(
                 f,
@@ -205,6 +211,10 @@ impl fmt::Display for ErrorKind {
             ErrorKind::OutOfDomain { function, value } => {
                 write!(f, "`{function}` is not defined for {value}")
             }
+            ErrorKind::InvalidStep { function, value } => write!(
+                f,
+                "the step of `{function}` (its second argument) has to be positive, got {value}"
+            ),
             ErrorKind::NonFinite { operation } => write!(
                 f,
                 "the result of `{operation}` is not a finite number (overflow)"

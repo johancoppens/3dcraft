@@ -57,10 +57,15 @@ pub enum Function {
     Abs,
     Min,
     Max,
+    Floor,
+    Ceil,
+    Round,
+    Trunc,
+    Mod,
 }
 
 impl Function {
-    pub const ALL: [Function; 11] = [
+    pub const ALL: [Function; 16] = [
         Function::Sin,
         Function::Cos,
         Function::Tan,
@@ -72,6 +77,11 @@ impl Function {
         Function::Abs,
         Function::Min,
         Function::Max,
+        Function::Floor,
+        Function::Ceil,
+        Function::Round,
+        Function::Trunc,
+        Function::Mod,
     ];
 
     pub fn name(self) -> &'static str {
@@ -87,6 +97,11 @@ impl Function {
             Function::Abs => "abs",
             Function::Min => "min",
             Function::Max => "max",
+            Function::Floor => "floor",
+            Function::Ceil => "ceil",
+            Function::Round => "round",
+            Function::Trunc => "trunc",
+            Function::Mod => "mod",
         }
     }
 
@@ -99,8 +114,16 @@ impl Function {
     /// prose for the error message.
     fn check_argument_count(self, count: usize) -> Result<(), &'static str> {
         match self {
-            Function::Atan2 if count != 2 => Err("2"),
-            Function::Atan2 => Ok(()),
+            Function::Atan2 | Function::Mod if count != 2 => Err("2"),
+            Function::Atan2 | Function::Mod => Ok(()),
+            // `floor(x)` of a plain number, `floor(x, step)` to a multiple
+            // of a step of any dimension.
+            Function::Floor | Function::Ceil | Function::Round | Function::Trunc
+                if count == 1 || count == 2 =>
+            {
+                Ok(())
+            }
+            Function::Floor | Function::Ceil | Function::Round | Function::Trunc => Err("1 or 2"),
             Function::Min | Function::Max if count == 0 => Err("at least 1"),
             Function::Min | Function::Max => Ok(()),
             _ if count != 1 => Err("1"),
@@ -583,6 +606,19 @@ mod tests {
     }
 
     #[test]
+    fn the_unknown_function_message_lists_every_function() {
+        let message = err("sinh(2)").to_string();
+        for function in Function::ALL {
+            assert!(
+                message.contains(&format!(" {},", function.name()))
+                    || message.contains(&format!(" {} ", function.name()))
+                    || message.ends_with(&format!(" {}", function.name())),
+                "{function:?} missing in: {message}"
+            );
+        }
+    }
+
+    #[test]
     fn unknown_function() {
         assert_eq!(
             err("1 + sinh(2)"),
@@ -627,7 +663,8 @@ mod tests {
         assert_eq!(count("max()"), (0, "max", "at least 1", 0));
         for function in Function::ALL {
             let one = Expr::parse(&format!("{}(1)", function.name()));
-            assert_eq!(one.is_ok(), function != Function::Atan2, "{function:?}");
+            let two_only = matches!(function, Function::Atan2 | Function::Mod);
+            assert_eq!(one.is_ok(), !two_only, "{function:?}");
         }
         assert!(Expr::parse("min(1, 2, 3, 4)").is_ok());
     }

@@ -238,7 +238,137 @@ fn call(function: Function, args: &[Quantity]) -> Result<Quantity, ErrorKind> {
             }
             Ok(best)
         }
+        Function::Floor | Function::Ceil | Function::Round | Function::Trunc => {
+            whole(function, args)
+        }
+        Function::Mod => {
+            let [a, b] = args else {
+                return Err(ErrorKind::Internal);
+            };
+            modulo(*a, *b)
+        }
     }
+}
+
+/// How far, relative to the point, an argument may lie from a point where
+/// a whole-number function jumps and still be taken to lie on it: four
+/// units in the last place. A ratio of two quantities typed as decimals
+/// (`0.3 / 0.1`, `1 in / 0.1 in`) carries the rounding of each literal,
+/// of a unit conversion and of the division, half a unit in the last
+/// place each; so a whole number meant by the person typing it comes out
+/// as 2.9999999999999996, and `floor` of it would be 2. The bound is
+/// relative, so it means the same at every scale (rule 5); an argument
+/// farther away is taken as it is.
+const JUMP_SNAP_ULPS: f64 = 4.0;
+
+/// `x`, or the point `at` when `x` lies within [`JUMP_SNAP_ULPS`] of it.
+fn snapped(x: f64, at: f64) -> f64 {
+    if (x - at).abs() <= JUMP_SNAP_ULPS * f64::EPSILON * at.abs().max(1.0) {
+        at
+    } else {
+        x
+    }
+}
+
+/// The whole number a whole-number function gives for the plain number
+/// `x`, after `x` has been taken onto a point where the function jumps
+/// when it is within rounding of one (the whole numbers, and for `round`
+/// the halves between them). Ties of `round` go to the even whole number
+/// (2.5 to 2, 3.5 to 4, -2.5 to -2): the developer's decision of
+/// 2026-10-16 (docs/decisions.md), so that a row of ties does not drift
+/// one way.
+fn whole_of(function: Function, x: f64) -> f64 {
+    // From 2^52 on every `f64` is a whole number, and doubling it could
+    // overflow.
+    if x.abs() >= 4_503_599_627_370_496.0 {
+        return x;
+    }
+    match function {
+        Function::Round => {
+            // `round` jumps at the halves: 2.4999999999999996 is 2.5.
+            let half = snapped(x, (x * 2.0).round() / 2.0);
+            half.round_ties_even()
+        }
+        _ => {
+            let x = snapped(x, x.round());
+            match function {
+                Function::Floor => x.floor(),
+                Function::Ceil => x.ceil(),
+                _ => x.trunc(),
+            }
+        }
+    }
+}
+
+/// `floor`, `ceil`, `round` and `trunc`: of a plain number, or to a
+/// multiple of a step of the same dimension as the argument. A length
+/// alone is refused, since its whole number would depend on the unit the
+/// value is held in (millimetres) and not on the one the document shows.
+fn whole(function: Function, args: &[Quantity]) -> Result<Quantity, ErrorKind> {
+    let name = function.name();
+    match args {
+        [x] => {
+            if !x.dimension.is_dimensionless() {
+                return Err(ErrorKind::ArgumentDimension {
+                    function: name,
+                    expected: "a dimensionless number (divide by a unit, as in \
+                               `floor(length / 1 mm)`, or give a step, as in \
+                               `floor(length, 0.5 mm)`)",
+                    found: x.dimension,
+                });
+            }
+            Ok(Quantity::dimensionless(whole_of(function, x.value)))
+        }
+        [x, step] => {
+            let dimension = same_dimension(name, *x, *step)?;
+            if step.value <= 0.0 {
+                return Err(ErrorKind::InvalidStep {
+                    function: name,
+                    value: step.value,
+                });
+            }
+            let ratio = x.value / step.value;
+            if !ratio.is_finite() {
+                return Err(ErrorKind::NonFinite { operation: name });
+            }
+            Ok(Quantity::new(
+                whole_of(function, ratio) * step.value,
+                dimension,
+            ))
+        }
+        _ => Err(ErrorKind::Internal),
+    }
+}
+
+/// `mod(a, b)`: what is left of `a` after taking out a whole number of
+/// `b`, `a - b * floor(a / b)` with the `floor` of [`whole_of`]. Any
+/// dimension, the same for both; the result has the sign of `b` (lies in
+/// `[0, b)` for a positive `b`, in `(b, 0]` for a negative one). A zero
+/// `b` is a division by zero.
+fn modulo(a: Quantity, b: Quantity) -> Result<Quantity, ErrorKind> {
+    let dimension = same_dimension("mod", a, b)?;
+    if b.value == 0.0 {
+        return Err(ErrorKind::DivisionByZero);
+    }
+    let ratio = a.value / b.value;
+    if !ratio.is_finite() {
+        return Err(ErrorKind::NonFinite { operation: "mod" });
+    }
+    if snapped(ratio, ratio.round()) != ratio || ratio == ratio.round() {
+        // A whole number of `b`, or within rounding of one.
+        return Ok(Quantity::new(0.0, dimension));
+    }
+    // `%` is exact for floating-point numbers; it has the sign of `a`.
+    let mut rest = a.value % b.value;
+    if rest != 0.0 && (rest < 0.0) != (b.value < 0.0) {
+        rest += b.value;
+    }
+    // The shift can round onto `b` itself when the exact rest lies within
+    // half a unit in the last place of it: that is a whole number of `b`.
+    if rest == b.value {
+        rest = 0.0;
+    }
+    Ok(Quantity::new(rest, dimension))
 }
 
 #[cfg(test)]
@@ -429,6 +559,217 @@ mod tests {
         check("max(1, 5, 3, -2)", 5.0, NONE);
         check("min(1, 5, 3, -2)", -2.0, NONE);
         check("max(a, b) - min(a, b)", 1.0, LENGTH);
+    }
+
+    #[test]
+    fn whole_number_functions() {
+        check("floor(2.7)", 2.0, NONE);
+        check("floor(-2.2)", -3.0, NONE);
+        check("ceil(2.2)", 3.0, NONE);
+        check("ceil(-2.7)", -2.0, NONE);
+        check("trunc(2.7)", 2.0, NONE);
+        check("trunc(-2.7)", -2.0, NONE);
+        check("round(2.4)", 2.0, NONE);
+        check("round(2.6)", 3.0, NONE);
+        check("round(-2.6)", -3.0, NONE);
+        check("floor(3)", 3.0, NONE);
+        check("ceil(-3)", -3.0, NONE);
+        check("floor(0)", 0.0, NONE);
+        // Lengths through a ratio: the unit cancels, so the document's
+        // unit does not matter.
+        check("floor(width / 12 mm)", 3.0, NONE);
+        check("ceil(width / 12 mm)", 4.0, NONE);
+        check("floor(1 in / 1 mm)", 25.0, NONE);
+        check("round(n / 4)", 2.0, NONE);
+        check("floor(90 deg / 1 deg)", 90.0, NONE);
+        // Huge values are whole numbers already.
+        check("floor(1e300)", 1e300, NONE);
+        check("round(-1e300)", -1e300, NONE);
+        check("trunc(4503599627370497)", 4_503_599_627_370_497.0, NONE);
+    }
+
+    #[test]
+    fn round_ties_go_to_even() {
+        check("round(0.5)", 0.0, NONE);
+        check("round(1.5)", 2.0, NONE);
+        check("round(2.5)", 2.0, NONE);
+        check("round(3.5)", 4.0, NONE);
+        check("round(-0.5)", 0.0, NONE);
+        check("round(-2.5)", -2.0, NONE);
+        check("round(-3.5)", -4.0, NONE);
+        check("round(2.5 mm, 1 mm)", 2.0, LENGTH);
+        check("round(7.5 mm, 5 mm)", 10.0, LENGTH);
+        // The finding of the laser box (L1): the old workaround gave 1 for
+        // 1.5 and 2 for 2.5, ties going neither one way nor to even. A tie
+        // is a tie whichever side of it the arithmetic landed:
+        // 0.35 / 0.1 is 3.4999999999999996 in `f64`, 0.15 / 0.1 is
+        // 1.4999999999999998.
+        check("round(0.35 / 0.1)", 4.0, NONE);
+        check("round(-0.35 / 0.1)", -4.0, NONE);
+        check("round(0.15 / 0.1)", 2.0, NONE);
+        // Not a tie: far from the half in units in the last place.
+        check("round(2.4999999)", 2.0, NONE);
+        check("round(2.5000001)", 3.0, NONE);
+    }
+
+    #[test]
+    fn rounding_error_at_a_jump_is_not_a_whole_number_off() {
+        // 0.3 / 0.1 is 2.9999999999999996 in `f64`; the person meant 3.
+        assert!(eval("0.3 / 0.1").value < 3.0);
+        assert!(eval("0.35 / 0.1").value < 3.5);
+        check("floor(0.3 / 0.1)", 3.0, NONE);
+        check("trunc(0.3 / 0.1)", 3.0, NONE);
+        check("floor(0.7 / 0.1)", 7.0, NONE);
+        check("floor(-0.3 / 0.1)", -3.0, NONE);
+        check("floor(0.3 mm, 0.1 mm)", 0.30000000000000004, LENGTH);
+        check("mod(0.3, 0.1)", 0.0, NONE);
+        check("mod(1 in, 0.1 in)", 0.0, LENGTH);
+        // At every scale: the bound is relative.
+        check("floor(3e-9 / 1e-9)", 3.0, NONE);
+        check("floor(0.3e12 / 0.1e12)", 3.0, NONE);
+        // Farther away than rounding: taken as it is.
+        check("floor(2.9999999999)", 2.0, NONE);
+        check("ceil(3.0000000001)", 4.0, NONE);
+    }
+
+    #[test]
+    fn rounding_to_a_step() {
+        check("floor(width, 12 mm)", 36.0, LENGTH);
+        check("ceil(width, 12 mm)", 48.0, LENGTH);
+        check("round(width, 12 mm)", 36.0, LENGTH);
+        check("round(43 mm, 1 cm)", 40.0, LENGTH);
+        check("round(1 in, 1 mm)", 25.0, LENGTH);
+        check("trunc(-7 mm, 2 mm)", -6.0, LENGTH);
+        check("floor(-7 mm, 2 mm)", -8.0, LENGTH);
+        check("round(100 deg, 15 deg)", 105.0 * PI / 180.0, ANGLE);
+        check("floor(7.5, 2)", 6.0, NONE);
+        check("round(width * wall, 1 mm * 1 mm)", 80.0, AREA);
+    }
+
+    #[test]
+    fn modulo() {
+        check("mod(7, 3)", 1.0, NONE);
+        check("mod(-7, 3)", 2.0, NONE);
+        check("mod(7, -3)", -2.0, NONE);
+        check("mod(-7, -3)", -1.0, NONE);
+        check("mod(6, 3)", 0.0, NONE);
+        check("mod(width, 12 mm)", 4.0, LENGTH);
+        check("mod(1 in, 1 cm)", 5.4, LENGTH);
+        check("mod(-1 mm, 3 mm)", 2.0, LENGTH);
+        check("mod(370 deg, 360 deg)", 10.0 * PI / 180.0, ANGLE);
+        check("mod(2.5, 1)", 0.5, NONE);
+        // The identity it is defined by, and where the rest lies.
+        for (a, b) in [
+            (7.25, 2.0),
+            (-7.25, 2.0),
+            (7.25, -2.0),
+            (1e6, 7.0),
+            (-1e-3, 3e-4),
+        ] {
+            let r = eval(&format!("mod({a}, {b})")).value;
+            let q = eval(&format!("floor({a} / {b})")).value;
+            assert!((a - b * q - r).abs() <= 1e-12 * a.abs().max(1.0), "{a} {b}");
+            assert!(r == 0.0 || (r > 0.0) == (b > 0.0), "{a} {b}: {r}");
+            assert!(r.abs() < b.abs(), "{a} {b}: {r}");
+        }
+        // A rest within rounding of the divisor is no rest.
+        check("mod(-1e-20, 1)", 0.0, NONE);
+    }
+
+    #[test]
+    fn whole_number_functions_refuse_what_has_no_answer() {
+        let wrong = |source: &str| match err(source) {
+            ExprError {
+                pos,
+                kind:
+                    ErrorKind::ArgumentDimension {
+                        function, found, ..
+                    },
+            } => (pos, function, found),
+            other => panic!("`{source}`: {other:?}"),
+        };
+        // A length alone has a whole number only in a unit.
+        assert_eq!(wrong("floor(width)"), (0, "floor", LENGTH));
+        assert_eq!(wrong("1 + ceil(2.5 mm)"), (4, "ceil", LENGTH));
+        assert_eq!(wrong("round(tilt)"), (0, "round", ANGLE));
+        assert_eq!(wrong("trunc(width * wall)"), (0, "trunc", AREA));
+        assert!(
+            err("floor(width)")
+                .to_string()
+                .contains("floor(length / 1 mm)")
+        );
+        assert_eq!(err("floor(width, 2)"), mismatch(0, "floor", LENGTH, NONE));
+        assert_eq!(err("round(2, 1 mm)"), mismatch(0, "round", NONE, LENGTH));
+        assert_eq!(err("mod(width, 2)"), mismatch(0, "mod", LENGTH, NONE));
+        assert_eq!(err("mod(1 mm, 1 deg)"), mismatch(0, "mod", LENGTH, ANGLE));
+        let step = |source: &str| match err(source) {
+            ExprError {
+                kind: ErrorKind::InvalidStep { function, value },
+                ..
+            } => (function, value),
+            other => panic!("`{source}`: {other:?}"),
+        };
+        assert_eq!(step("floor(width, 0 mm)"), ("floor", 0.0));
+        assert_eq!(step("round(3, -1)"), ("round", -1.0));
+        assert_eq!(step("ceil(3, zero)"), ("ceil", 0.0));
+        assert!(
+            err("trunc(3, -0.5)")
+                .to_string()
+                .contains("has to be positive")
+        );
+        assert_eq!(
+            err("mod(3, 0)"),
+            ExprError::new(0, ErrorKind::DivisionByZero)
+        );
+        assert_eq!(
+            err("mod(width, 0 mm)"),
+            ExprError::new(0, ErrorKind::DivisionByZero)
+        );
+        // Overflow of the ratio or of the result is an error, never
+        // infinity; so is a value that is not a number.
+        for source in [
+            "floor(1e300, 1e-300)",
+            "mod(1e300, 1e-300)",
+            "floor(nan)",
+            "mod(1, nan)",
+        ] {
+            assert!(
+                matches!(err(source).kind, ErrorKind::NonFinite { .. }),
+                "`{source}`"
+            );
+        }
+    }
+
+    /// The laser box (target/work/laserbox, finding L1): the odd finger
+    /// count nearest to span / fingerW, at least 3, written plainly; it
+    /// was `q - atan(tan(q * 180 deg)) / (180 deg)` with a bias against
+    /// ties before there was a `round`.
+    #[test]
+    fn odd_finger_count_of_the_laser_box() {
+        let count = |span: f64, finger: f64| {
+            let source = format!("max(3, 2 * round(({span} mm / {finger} mm - 1) / 2) + 1)");
+            eval(&source).value
+        };
+        // spanW = 160 - 2 * 3 = 154 at fingerW 12: 12.83, nearest odd 13.
+        assert_eq!(count(154.0, 12.0), 13.0);
+        assert_eq!(count(104.0, 12.0), 9.0);
+        assert_eq!(count(77.0, 12.0), 7.0);
+        assert_eq!(count(10.0, 12.0), 3.0);
+        // A tie between two odd counts (an even ratio) goes to the even
+        // half, (14 - 1) / 2 = 6.5 to 6, so to 13, whichever way the
+        // division rounded: 168 / 12 is 14, 0.14 / 0.01 is
+        // 14.000000000000002 in `f64`.
+        assert_eq!(count(168.0, 12.0), 13.0);
+        assert_eq!(count(0.14, 0.01), 13.0);
+        assert_eq!(count(192.0, 12.0), 17.0);
+        // With floor: the odd count at or below.
+        let below = |q: &str| eval(&format!("2 * floor((({q}) - 1) / 2) + 1")).value;
+        assert_eq!(below("12.83"), 11.0);
+        assert_eq!(below("13"), 13.0);
+        assert_eq!(below("1.3 / 0.1"), 13.0);
+        // Odd or even, by mod.
+        check("mod(13, 2)", 1.0, NONE);
+        check("mod(2 * round(6.4) + 1, 2)", 1.0, NONE);
     }
 
     fn mismatch(

@@ -125,6 +125,7 @@ Nothing.
 - The four crates, held to closed forms (2026-10-12)
 - A seeded random robustness test, standing in for a cargo-fuzz target (2026-10-12)
 - The inertia tensor from the exact B-rep (`craft3d_topo::inertia`), for R1's material per body (2026-10-15)
+- Whole-number functions in expressions: `floor`, `ceil`, `round`, `trunc` (of a plain number, or to a step) and `mod`, from the laser box's finding L1; format version 17 ([`design/document.md`](design/document.md)) (2026-10-16)
 
 #### Open
 - [ ] Robust predicates (moved to M7, where they are first needed)
@@ -487,6 +488,7 @@ Applications built on 3DCraft, not part of it (the rule in `docs/decisions.md`, 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-16 | minor | M1: `floor`, `ceil`, `round`, `trunc` and `mod` in expressions; format version 17 renames old variables with those names |
 | 2026-10-16 | minor | M9: offset face, shell and thicken of freeform faces |
 | 2026-10-15 | minor | M9: move face, thicken and draft done (`feature.moveFace`, `feature.thicken`, `feature.draft`); new feature kinds in format version 16 |
 | 2026-10-14 | minor | Restructured: current focus on top, one line per milestone, a section per milestone (Goal, Done, Open, Acceptance), the boolean checklist on its own, ideas apart; how things were built left to `architecture.md` |

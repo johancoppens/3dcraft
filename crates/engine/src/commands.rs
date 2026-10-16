@@ -60,7 +60,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("edit.undo", "Undo", "{}", "Undoes the last change to the document.", doc: true, edit_undo),
     spec!("edit.redo", "Redo", "{}", "Redoes the change last undone.", doc: true, edit_redo),
     spec!("variable.set", "Set Variable", r#"{"name": string, "expr": expression}"#,
-        "Defines a variable or replaces its expression, e.g. {\"name\": \"width\", \"expr\": \"40 mm\"}.", doc: true, variable_set),
+        "Defines a variable or replaces its expression, e.g. {\"name\": \"width\", \"expr\": \"40 mm\"}. An expression has numbers with units (um mm cm m in ft, deg rad), variables, pi, + - * / ^ and the functions sin, cos, tan, asin, acos, atan, atan2, sqrt, abs, min, max, floor, ceil, round, trunc and mod. floor, ceil, round and trunc take a plain number (floor(span / fingerW)) or a value and a positive step of its dimension (round(width, 0.5 mm)); a length alone is refused, as its whole number would depend on the unit. round takes ties to the even whole number (2.5 to 2, 3.5 to 4); mod(a, b) is a - b * floor(a / b), with the sign of b, and b = 0 is an error.", doc: true, variable_set),
     spec!("variable.delete", "Delete Variable", r#"{"name": string}"#,
         "Deletes a variable. Expressions that still use it fail at regeneration.", doc: true, variable_delete),
     spec!("variable.rename", "Rename Variable", r#"{"name": string, "to": string}"#,

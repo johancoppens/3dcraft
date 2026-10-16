@@ -28,7 +28,7 @@ type Step = fn(Value) -> Result<Value, String>;
 /// `STEPS[n]` brings a manifest from version `n + 1` to version `n + 2`.
 const STEPS: &[Step] = &[
     v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9, v9_to_v10,
-    v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15, v15_to_v16,
+    v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15, v15_to_v16, v16_to_v17,
 ];
 
 /// Version 2 adds the `cone` and `torus` feature kinds and an optional
@@ -255,6 +255,20 @@ fn v14_to_v15(manifest: Value) -> Result<Value, String> {
 /// nothing changes; the version was raised so that an older build says a
 /// newer 3DCraft is needed instead of refusing an unknown field.
 fn v15_to_v16(manifest: Value) -> Result<Value, String> {
+    Ok(manifest)
+}
+
+/// Version 17 adds the functions `floor`, `ceil`, `round`, `trunc` and
+/// `mod` to expressions, which makes those names reserved. A variable an
+/// older file gave one of them is renamed `floor_1` (the first free
+/// name), and every expression that refers to it with it, after the
+/// manifest is read into a document (`Document::rename_reserved_variables`,
+/// called by `from_manifest_json_noted` for a file older than 17, with a
+/// warning per rename): which strings are expressions is known to the
+/// document's types, not to the JSON. So nothing changes here; the version
+/// was raised so that an older build says a newer 3DCraft is needed
+/// instead of failing the features whose expressions use the functions.
+fn v16_to_v17(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
 }
 

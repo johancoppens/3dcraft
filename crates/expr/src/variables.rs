@@ -63,6 +63,26 @@ pub fn rename_variable(source: &str, old: &str, new: &str) -> Result<String, Var
     Ok(rename_in(source, old, new).unwrap_or_else(|| source.to_string()))
 }
 
+/// As [`rename_variable`], for a variable whose name `old` has since
+/// become reserved (a function added to the language, such as `floor`):
+/// every name token `old` in `source` is replaced by `new`, also where
+/// it is now followed by `(`. Only for reading files written before the
+/// name was reserved, where every such token was the variable. `new` must
+/// be a valid variable name; `old` must be a reserved one.
+pub fn rename_reserved_variable(
+    source: &str,
+    old: &str,
+    new: &str,
+) -> Result<String, VariableError> {
+    check_variable_name(new)?;
+    if !is_reserved_name(old) {
+        return Err(VariableError::UnknownVariable {
+            name: old.to_string(),
+        });
+    }
+    Ok(rename_in(source, old, new).unwrap_or_else(|| source.to_string()))
+}
+
 /// The renamed text, or `None` when `source` does not mention `old`.
 /// `old` must be a valid variable name: then every identifier token equal
 /// to it is a reference to that variable.
@@ -663,7 +683,7 @@ mod tests {
         let mut reserved = vec!["pi"];
         reserved.extend(Unit::ALL.iter().map(|u| u.symbol()));
         reserved.extend(Function::ALL.iter().map(|f| f.name()));
-        assert_eq!(reserved.len(), 1 + 8 + 11);
+        assert_eq!(reserved.len(), 1 + 8 + 16);
         for name in reserved {
             assert!(is_reserved_name(name));
             assert_eq!(

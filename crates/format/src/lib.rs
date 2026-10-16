@@ -50,7 +50,12 @@ use std::fmt;
 use std::path::PathBuf;
 
 /// The format version this build writes, and the newest it reads.
-pub const FORMAT_VERSION: u32 = 16;
+pub const FORMAT_VERSION: u32 = 17;
+
+/// The version that made `floor`, `ceil`, `round`, `trunc` and `mod`
+/// function names: a variable of an older file with such a name is
+/// renamed on reading (`migrate::v16_to_v17`).
+const FORMAT_VERSION_OF_WHOLE_NUMBER_FUNCTIONS: u32 = 17;
 
 /// The file extension, without the dot.
 pub const EXTENSION: &str = "3dcraft";
@@ -299,10 +304,12 @@ pub fn from_manifest_json(json: &[u8]) -> Result<Document, FormatError> {
 }
 
 /// As [`from_manifest_json`], with a warning for each thing that was
-/// changed on reading. The one such thing: a positive, finite linear
+/// changed on reading. Two such things: a positive, finite linear
 /// tolerance outside the range a document may have (which a build before
 /// 2026-10-15 could save) is read as the nearer end of the range
-/// (`doc::Tolerance::in_range`).
+/// (`doc::Tolerance::in_range`); and a variable of a file older than
+/// version 17 whose name is now a function (`floor`) is renamed with
+/// every reference to it (`migrate::v16_to_v17`).
 pub fn from_manifest_json_noted(json: &[u8]) -> Result<(Document, Vec<String>), FormatError> {
     if json.len() > MAX_MANIFEST_BYTES {
         return Err(too_large(
@@ -369,6 +376,16 @@ pub fn from_manifest_json_noted(json: &[u8]) -> Result<(Document, Vec<String>), 
             craft3d_doc::Tolerance::GREATEST_LINEAR
         ));
         document.tolerance = read;
+    }
+    if version < FORMAT_VERSION_OF_WHOLE_NUMBER_FUNCTIONS {
+        for (old, new) in document
+            .rename_reserved_variables()
+            .map_err(FormatError::InvalidDocument)?
+        {
+            warnings.push(format!(
+                "variable `{old}` renamed `{new}`: `{old}` is a function in expressions since format version {FORMAT_VERSION_OF_WHOLE_NUMBER_FUNCTIONS}"
+            ));
+        }
     }
     document.validate().map_err(FormatError::InvalidDocument)?;
     Ok((document, warnings))
