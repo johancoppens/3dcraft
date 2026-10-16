@@ -456,7 +456,7 @@ pub struct Shell {
     transparency_rect: Option<egui::Rect>,
     /// A drag on a number field under way, and the field being typed
     /// into.
-    field_drag: Option<number_field::FieldDrag>,
+    fields: number_field::FieldMemory,
     typing: Option<number_field::Typing>,
     /// The active document's length unit, for the Offset field.
     length_unit: &'static str,
@@ -583,7 +583,7 @@ impl Shell {
             view_cube_rect: None,
             turn: None,
             transparency_rect: None,
-            field_drag: None,
+            fields: number_field::FieldMemory::default(),
             typing: None,
             length_unit: "",
             section_hits: Vec::new(),
@@ -2068,11 +2068,16 @@ impl Shell {
         }
         if response.contains_pointer() {
             // Keys typed into a field are not shortcuts, and the wheel over
-            // a number field steps the field rather than zooming.
+            // the focused number field steps it rather than zooming; over
+            // any other field it zooms.
             let typing = ui.ctx().egui_wants_keyboard_input();
             let fields = self
                 .controls_layout
-                .map(|l| [l.see_through, l.offset])
+                .map(|l| match self.fields.focus {
+                    Some("see-through") => [l.see_through, None],
+                    Some("offset") => [l.offset, None],
+                    _ => [None, None],
+                })
                 .unwrap_or_default();
             let (scroll, pinch, fit, pointer) = ui.input(|i| {
                 let pointer = i.pointer.hover_pos();

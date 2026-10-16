@@ -137,23 +137,54 @@ pub struct FieldOutcome {
     pub typing: bool,
 }
 
-/// The state of a drag on a field: where it began, at what value.
+/// The state of a drag on a field: the value and the pointer's travel
+/// it is measured from, and whether Shift was down. Pressing or letting go
+/// of Shift starts it afresh from the value reached, so the value does not
+/// jump.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FieldDrag {
     pub field: &'static str,
     pub start: f64,
+    pub from: f32,
+    pub fine: bool,
+}
+
+/// What the shell remembers of its number fields between frames: a drag
+/// under way and the field that has the focus (the one last clicked or
+/// dragged; the wheel steps it). A press anywhere else takes the focus
+/// away.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FieldMemory {
+    pub drag: Option<FieldDrag>,
+    pub focus: Option<&'static str>,
+}
+
+/// The longest text a field takes, in characters: a pasted page is cut
+/// there rather than laid out every frame.
+pub const MAX_TYPED: usize = 200;
+
+/// `text` cut to at most `max` characters, with an ellipsis when it was
+/// longer.
+pub fn shortened(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        text.to_string()
+    } else {
+        let mut out: String = text.chars().take(max.saturating_sub(1)).collect();
+        out.push('…');
+        out
+    }
 }
 
 impl NumberField<'_> {
-    /// Draws the field in `rect` and handles its mouse and keys. `drag` is
-    /// the shell's memory of a drag under way, `typing` of the field being
-    /// typed into.
+    /// Draws the field in `rect` and handles its mouse and keys. `memory`
+    /// is the shell's memory of a drag under way and of the focused field,
+    /// `typing` of the field being typed into.
     pub fn show(
         &self,
         ui: &mut egui::Ui,
         rect: Rect,
         tokens: &Tokens,
-        drag: &mut Option<FieldDrag>,
+        memory: &mut FieldMemory,
         typing: &mut Option<Typing>,
     ) -> FieldOutcome {
         let mut outcome = FieldOutcome::default();
@@ -193,17 +224,34 @@ impl NumberField<'_> {
         // The bar shows where the value lies in a range it has; an inert
         // field (a section that is off) still shows it, dimmed.
         if frac > 0.0 && frac.is_finite() && (self.enabled || self.range_known) {
+            let edge = tokens.field_bar_inset;
             let bar = Rect::from_min_max(
-                pos2(rect.left() + 4.0, rect.bottom() - 4.0),
+                pos2(rect.left() + edge, rect.bottom() - edge),
                 pos2(
-                    rect.left() + 4.0 + (rect.width() - 8.0) * frac as f32,
-                    rect.bottom() - 2.0,
+                    rect.left() + edge + (rect.width() - 2.0 * edge) * frac as f32,
+                    rect.bottom() - edge + tokens.field_bar_height,
                 ),
             );
-            painter.rect_filled(bar, egui::CornerRadius::same(1), fade(color(tokens.accent)));
+            painter.rect_filled(
+                bar,
+                egui::CornerRadius::same(tokens.field_bar_radius),
+                fade(color(tokens.accent)),
+            );
         }
-        let hovered = self.enabled && (response.hovered() || response.dragged());
-        let inset = if hovered { 22.0 } else { 10.0 };
+        // A press anywhere else takes the focus away.
+        if memory.focus == Some(self.id)
+            && !response.hovered()
+            && ui.input(|i| i.pointer.any_pressed())
+        {
+            memory.focus = None;
+        }
+        let focused = self.enabled && memory.focus == Some(self.id);
+        let hovered = self.enabled && (response.hovered() || response.dragged() || focused);
+        let inset = if hovered {
+            tokens.field_arrow_inset
+        } else {
+            tokens.field_inset
+        };
         let middle = rect.center().y - 1.0;
         if hovered {
             painter.rect_stroke(
@@ -213,8 +261,16 @@ impl NumberField<'_> {
                 egui::StrokeKind::Inside,
             );
             for (x, arrow, align) in [
-                (rect.left() + 9.0, "‹", egui::Align2::LEFT_CENTER),
-                (rect.right() - 9.0, "›", egui::Align2::RIGHT_CENTER),
+                (
+                    rect.left() + tokens.field_arrow_edge,
+                    "‹",
+                    egui::Align2::LEFT_CENTER,
+                ),
+                (
+                    rect.right() - tokens.field_arrow_edge,
+                    "›",
+                    egui::Align2::RIGHT_CENTER,
+                ),
             ] {
                 painter.text(
                     pos2(x, middle),
@@ -244,24 +300,39 @@ impl NumberField<'_> {
         }
         let modifiers = ui.input(|i| i.modifiers);
         if response.drag_started() {
-            *drag = Some(FieldDrag {
+            memory.drag = Some(FieldDrag {
                 field: self.id,
                 start: self.value,
+                from: 0.0,
+                fine: modifiers.shift,
             });
         }
+        if response.drag_started() || response.clicked() {
+            memory.focus = Some(self.id);
+        }
         if response.dragged()
-            && let (Some(from), Some(total)) = (
-                drag.filter(|d| d.field == self.id),
+            && let (Some(mut from), Some(total)) = (
+                memory.drag.filter(|d| d.field == self.id),
                 response.total_drag_delta(),
             )
         {
+            if from.fine != modifiers.shift {
+                // Shift pressed or let go: on from here, at the new rate.
+                from = FieldDrag {
+                    field: self.id,
+                    start: self.value,
+                    from: total.x,
+                    fine: modifiers.shift,
+                };
+                memory.drag = Some(from);
+            }
             let value = dragged(
                 from.start,
-                f64::from(total.x),
+                f64::from(total.x - from.from),
                 f64::from(rect.width()),
                 self.range,
                 self.step,
-                modifiers.shift,
+                from.fine,
                 modifiers.ctrl || modifiers.command,
             );
             if value != self.value {
@@ -269,7 +340,7 @@ impl NumberField<'_> {
             }
         }
         if response.drag_stopped() {
-            *drag = None;
+            memory.drag = None;
         }
         if response.double_clicked()
             || (response.hovered() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
@@ -288,9 +359,9 @@ impl NumberField<'_> {
         if response.clicked()
             && let Some(at) = response.interact_pointer_pos()
         {
-            let steps = if at.x < rect.left() + 18.0 {
+            let steps = if at.x < rect.left() + tokens.field_arrow_inset {
                 -1
-            } else if at.x > rect.right() - 18.0 {
+            } else if at.x > rect.right() - tokens.field_arrow_inset {
                 1
             } else {
                 0
@@ -299,7 +370,9 @@ impl NumberField<'_> {
                 outcome.value = Some(stepped(self.value, steps, self.step, self.range));
             }
         }
-        if response.hovered() {
+        // The wheel steps the focused field only; over any other field it
+        // zooms the viewport, as everywhere else.
+        if focused && response.hovered() {
             let scroll: f32 = ui.input(|i| {
                 i.raw
                     .events
@@ -345,7 +418,7 @@ impl NumberField<'_> {
             egui::Stroke::new(1.0, color(outline)),
             egui::StrokeKind::Inside,
         );
-        let inner = rect.shrink2(vec2(8.0, 2.0));
+        let inner = rect.shrink2(vec2(tokens.field_text_pad, 2.0));
         let id = ui.id().with(("number-text", self.id));
         let edit = ui.put(
             inner,
@@ -353,6 +426,7 @@ impl NumberField<'_> {
                 .id(id)
                 .frame(egui::Frame::NONE)
                 .font(egui::FontId::proportional(tokens.control_font))
+                .char_limit(MAX_TYPED)
                 .text_color(color(tokens.text))
                 .vertical_align(egui::Align::Center),
         );
@@ -389,7 +463,7 @@ impl NumberField<'_> {
         }
         if let Some(error) = &state.error {
             let font = egui::FontId::proportional(tokens.control_font - 1.0);
-            let galley = painter.layout_no_wrap(error.clone(), font, color(tokens.failed));
+            let galley = painter.layout_no_wrap(shortened(error, 120), font, color(tokens.failed));
             let at = pos2(rect.left(), rect.top() - 4.0 - galley.size().y);
             let back = Rect::from_min_size(at, galley.size()).expand2(vec2(6.0, 3.0));
             painter.rect_filled(

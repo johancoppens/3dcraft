@@ -169,14 +169,28 @@ pub struct Tokens {
     pub control_font: f32,
     pub bar_height: f32,
     pub disabled_opacity: f32,
-    /// A switch's track when off, and its knob.
+    /// A switch's track when off, and its knob; the size of its track (the
+    /// knob is a circle a point inside its height), in points.
     pub switch_off: Rgb,
     pub knob: Rgb,
+    pub switch_size: egui::Vec2,
     /// A number field: its least width, its corner radius, and its fill
     /// while it is typed into, in points.
     pub field_width: f32,
     pub field_radius: u8,
     pub field_typing: Rgb,
+    /// A number field's paddings, in points: from its sides to its label
+    /// and value, and to them when the ‹ › show (also how wide the arrows'
+    /// targets are); from its sides to the arrows; from its sides to the
+    /// typed text; and its accent bar: from the field's edges, its height
+    /// and its corner radius.
+    pub field_inset: f32,
+    pub field_arrow_inset: f32,
+    pub field_arrow_edge: f32,
+    pub field_text_pad: f32,
+    pub field_bar_inset: f32,
+    pub field_bar_height: f32,
+    pub field_bar_radius: u8,
     /// The space between two rows of things over the viewport, in points.
     pub bar_gap: f32,
     /// The least width of the progress bar over the viewport, in points.
@@ -277,7 +291,7 @@ impl Tokens {
             view_cube_shadow: [0, 0, 0],
             view_cube_shadow_opacity: 60,
             view_cube_shadow_size: [0.93, 0.72, 0.09],
-            triad_size: 72.0,
+            triad_size: 84.0,
             triad_width: 2.0,
             plate_opacity: 200,
             plate_glass_opacity: 22,
@@ -297,9 +311,17 @@ impl Tokens {
             disabled_opacity: 0.35,
             switch_off: [96, 104, 122],
             knob: [245, 248, 255],
+            switch_size: egui::vec2(18.0, 10.0),
             field_width: 160.0,
             field_radius: 6,
             field_typing: [20, 22, 28],
+            field_inset: 10.0,
+            field_arrow_inset: 22.0,
+            field_arrow_edge: 9.0,
+            field_text_pad: 8.0,
+            field_bar_inset: 4.0,
+            field_bar_height: 2.0,
+            field_bar_radius: 1,
             bar_gap: 6.0,
             slider_width: 90.0,
             inset: 10.0,

@@ -666,16 +666,24 @@ fn switch(ui: &mut egui::Ui, rect: Rect, id: &str, label: &str, on: bool, tokens
     );
     let pill = Rect::from_min_size(
         pos2(rect.left() + 8.0, rect.center().y - 5.0),
-        vec2(18.0, 10.0),
+        tokens.switch_size,
     );
     let track = if on {
         color(tokens.accent)
     } else {
         color(tokens.switch_off)
     };
-    painter.rect_filled(pill, egui::CornerRadius::same(5), track);
-    let knob = pos2(pill.left() + if on { 13.0 } else { 5.0 }, pill.center().y);
-    painter.circle_filled(knob, 4.0, color(tokens.knob));
+    let radius = tokens.switch_size.y * 0.5;
+    painter.rect_filled(pill, egui::CornerRadius::same(radius as u8), track);
+    let knob = pos2(
+        if on {
+            pill.right() - radius
+        } else {
+            pill.left() + radius
+        },
+        pill.center().y,
+    );
+    painter.circle_filled(knob, radius - 1.0, color(tokens.knob));
     painter.text(
         pos2(rect.left() + SWITCH_TEXT, rect.center().y - 1.0),
         egui::Align2::LEFT_CENTER,
@@ -920,7 +928,7 @@ impl Shell {
             enabled: true,
             range_known: true,
         }
-        .show(ui, field, &tokens, &mut self.field_drag, &mut self.typing);
+        .show(ui, field, &tokens, &mut self.fields, &mut self.typing);
         if let Some(value) = outcome.value.filter(|v| v.is_finite()) {
             self.state.transparency = value.clamp(range[0], range[1]);
             ui.ctx().request_repaint();
@@ -1009,7 +1017,7 @@ impl Shell {
             enabled: on && field_range.is_some(),
             range_known: field_range.is_some(),
         }
-        .show(ui, offset, &tokens, &mut self.field_drag, &mut self.typing);
+        .show(ui, offset, &tokens, &mut self.fields, &mut self.typing);
         if on {
             hits.push(("offset", offset));
         }
@@ -1068,8 +1076,15 @@ impl Shell {
                     _ => {
                         let mut section = self.state.section.clone();
                         section.offset = value;
-                        if let Ok(section) = section.validated() {
-                            self.state.section = section;
+                        match section.validated() {
+                            Ok(section) => self.state.section = section,
+                            Err(error) => {
+                                // The number is one, but not a plane the
+                                // section can take: say why, keep typing.
+                                typing.error = Some(error.to_string());
+                                typing.focused = false;
+                                return;
+                            }
                         }
                     }
                 }
@@ -1218,7 +1233,7 @@ impl Shell {
             return;
         };
         let origin = place.center();
-        let font = egui::FontId::proportional((place.height() * 0.17).max(8.0));
+        let font = egui::FontId::proportional((place.height() * 0.17).clamp(8.0, 12.0));
         // The letters sit just past the tips, inside the place.
         let reach = place.height() * 0.5 - font.size * 0.7;
         painter.circle_filled(origin, tokens.triad_width * 1.4, color(tokens.text));

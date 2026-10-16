@@ -278,3 +278,102 @@ fn the_section_controls_are_dimmed_and_inert_while_it_is_off() {
     assert_eq!(shell.state.section, before.section);
     assert_eq!(shell.state.picked, None);
 }
+
+/// Shift pressed in the middle of a drag goes on from the value reached
+/// at the finer rate: no jump.
+#[test]
+fn shift_during_a_drag_does_not_make_the_value_jump() {
+    let (mut session, mut shell, mut window) = started();
+    let rect = field(&shell, "see-through");
+    let from = rect.center();
+    let w = rect.width();
+    window.frame(&mut shell, &mut session, vec![Event::PointerMoved(from)]);
+    window.button(&mut shell, &mut session, from, true);
+    for step in 1..=4 {
+        let at = from + vec2(w * 0.05 * step as f32, 0.0);
+        window.frame(&mut shell, &mut session, vec![Event::PointerMoved(at)]);
+    }
+    let reached = shell.state.transparency;
+    assert!((reached - 0.18).abs() < 1e-2, "{reached}");
+    // Shift down, the pointer not moved: the value stays.
+    window.modifiers = Modifiers::SHIFT;
+    window.frame(&mut shell, &mut session, Vec::new());
+    assert!((shell.state.transparency - reached).abs() < 1e-9);
+    // A further fifth of the width at a tenth of the rate.
+    let at = from + vec2(w * 0.4, 0.0);
+    window.frame(&mut shell, &mut session, vec![Event::PointerMoved(at)]);
+    let finer = shell.state.transparency - reached;
+    assert!((finer - 0.018).abs() < 1e-3, "{finer}");
+    // Shift up again: still no jump.
+    let held = shell.state.transparency;
+    window.modifiers = Modifiers::NONE;
+    window.frame(&mut shell, &mut session, Vec::new());
+    assert!((shell.state.transparency - held).abs() < 1e-9);
+    window.button(&mut shell, &mut session, at, false);
+}
+
+/// The wheel over a field that does not have the focus zooms as anywhere
+/// in the viewport and leaves the field; once the field was clicked it
+/// steps it instead, until a press elsewhere.
+#[test]
+fn the_wheel_steps_only_the_focused_field() {
+    let (mut session, mut shell, mut window) = started();
+    let rect = field(&shell, "see-through");
+    let at = rect.center();
+    let wheel = |window: &mut Window, shell: &mut Shell, session: &mut Session| {
+        window.frame(shell, session, vec![Event::PointerMoved(at)]);
+        window.frame(
+            shell,
+            session,
+            vec![Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Line,
+                delta: vec2(0.0, 1.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: Modifiers::NONE,
+            }],
+        );
+        for _ in 0..30 {
+            window.frame(shell, session, Vec::new());
+        }
+    };
+    let distance = shell.state.camera.distance;
+    wheel(&mut window, &mut shell, &mut session);
+    assert_eq!(shell.state.transparency, 0.0, "not focused: no step");
+    assert!(shell.state.camera.distance < distance, "the wheel zoomed");
+    // Clicked (in the middle: no arrow), then the wheel steps it.
+    window.click(&mut shell, &mut session, at);
+    let distance = shell.state.camera.distance;
+    wheel(&mut window, &mut shell, &mut session);
+    assert!((shell.state.transparency - 0.05).abs() < 1e-9);
+    assert_eq!(shell.state.camera.distance, distance, "no zoom");
+    // A press elsewhere (the viewport) takes the focus away.
+    let viewport = shell.viewport_rect().unwrap();
+    window.click(
+        &mut shell,
+        &mut session,
+        viewport.left_top() + vec2(30.0, 30.0),
+    );
+    wheel(&mut window, &mut shell, &mut session);
+    assert!((shell.state.transparency - 0.05).abs() < 1e-9);
+    assert!(shell.state.camera.distance < distance);
+}
+
+/// A pasted page is cut at the field's limit and its error repeats only
+/// the start of it: nothing grows without bound.
+#[test]
+fn a_pasted_page_is_cut_and_its_error_is_short() {
+    let (mut session, mut shell, mut window) = started();
+    let rect = field(&shell, "see-through");
+    window.double_click(&mut shell, &mut session, rect.center());
+    let page = "x".repeat(100_000);
+    window.type_text(&mut shell, &mut session, &page);
+    let typed = shell.typing().unwrap().text.chars().count();
+    assert!(
+        typed <= craft3d_ui_egui::shell::number_field::MAX_TYPED,
+        "{typed}"
+    );
+    window.key(&mut shell, &mut session, Key::Enter);
+    let error = shell.typing().unwrap().error.clone().unwrap();
+    assert!(error.chars().count() <= 160, "{error}");
+    assert_eq!(shell.state.transparency, 0.0);
+}
