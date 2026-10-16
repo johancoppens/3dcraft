@@ -796,8 +796,15 @@ fn bounds(profiles: &[Profile]) -> Vec<Bound> {
     out
 }
 
+/// The most pieces an offset outline may have. The raw offset is cut and
+/// its pieces are kept by comparing pairs of curves whose boxes overlap in
+/// x, which is quadratic in the worst case; this is what profile detection
+/// took when the offset was built (its own cap was raised on 2026-10-17,
+/// with a broad phase that the offset does not have yet).
+const MAX_PIECES: usize = 4096;
+
 /// The most curves the raw offset may have.
-const MAX_RAW: usize = 4 * crate::profile::MAX_CURVES;
+const MAX_RAW: usize = 4 * MAX_PIECES;
 
 /// One try at distance `d`: the outline, or why there is none.
 fn attempt(
@@ -1000,6 +1007,12 @@ fn attempt(
         out.truncate(MAX_REPORTED);
         out
     };
+    if curves.len() > MAX_PIECES {
+        return Err(KernelError::TooManyCurves {
+            count: curves.len(),
+            limit: MAX_PIECES,
+        });
+    }
     let found = detect_profiles(&curves, tolerance).map_err(|error| {
         let (reason, ids) = match &error {
             KernelError::BranchingProfile { curves } => (

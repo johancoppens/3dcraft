@@ -212,6 +212,7 @@ Sketch entities and constraints as commands; `solve` (Newton-type, DOF analysis,
 - A terse result mode for batches (`terse`), and `sketch.path`: a chain of lines and arcs through shared corners in one undo step, from coordinates alone (2026-10-13)
 - A pattern inside a sketch whose count is a formula (`sketch.pattern`: rows, grids, chained runs and rings as rigid images of the solved seed, image points `e5[last]` for the solver, names `e7[3]` and caps `e7[*]`, format 18; [`design/document.md`](design/document.md), *Patterns inside a sketch*) (2026-10-16)
 - The offset of a sketch's closed profiles (`feature.offsetProfile`: exact for lines and arcs, round or sharp corners, splits reported and vanishing loops refused with the largest distance that fits, names `F9:offset(e7[3])`, format 19; kerf as one feature; [`design/document.md`](design/document.md), *Offsets of profiles*) (2026-10-16)
+- Profile detection scales: pairs that may meet come from trees of boxes, judged in the order the old all-pairs sweep judged them (same result, oracle kept in the tests); the cap rises from 4096 to 262 144 curves, a 70 × 70 perforated sheet extrudes ([`design/sweeps.md`](design/sweeps.md), *Profile detection at scale*) (2026-10-17)
 
 #### Open
 - [ ] Which constraint is blamed in a nonlinear conflict is the solver's heuristic, not a proof, and about 8% of dense random sketches end as "did not converge" instead of a diagnosis; to be judged again on real models
@@ -219,8 +220,8 @@ Sketch entities and constraints as commands; `solve` (Newton-type, DOF analysis,
 - [ ] A picture of a sketch: `view.render` draws bodies only
 - [ ] A sketch's solution depends on the path of edits: a line measured from the end of a chained run flips when the count jumps (3 → 10), and returning to the starting variables can leave a sketch failing ("conflicts"); a document must give one result whatever the edits before it (the welding table, 2026-10-16, `target/work/weldtable/findings/`). Owed: free geometry carried along with a run's end before solving, or signed distances
 - [ ] Nested sketch patterns (a pattern inside another pattern's period; today "an entity is the seed of one pattern")
-- [ ] Profile detection takes at most 4096 curves (`kernel/src/profile.rs`, `MAX_CURVES`; its touch test is quadratic) while sketch patterns may make 100 000: a 70 × 70 perforated sheet fails cleanly with the cap; owed: a spatial sort, measured before the cap is raised
 - [ ] An offset of profiles: splines (refused, "not supported yet"; owed: a fit within tol/4 refused where the curvature radius is below the distance, as `geom::offset` proves for faces), an offset as a loft section or a sweep's path, an offset of an offset, a choice of regions
+- [ ] An offset of profiles takes at most 4096 pieces (`kernel/src/offset_profile.rs`, `MAX_PIECES`; its cut and keep steps compare pairs swept in x, as profile detection did before 2026-10-17): owed, the same broad phase
 - [ ] A sketch pattern's later steps: skipping instances, a pattern along a curve, a pattern of a pattern, instance curves in line or round slots, image points in `sketch.path` and splines ([`design/document.md`](design/document.md), *Patterns inside a sketch*)
 - [ ] `panic_hunt` takes 2.5 minutes
 - [ ] Two seeded breakages of the solver's rank test are caught only by unit tests or the random run, not by a small natural sketch

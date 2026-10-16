@@ -9,7 +9,9 @@
 //!   each is nested, is decided with integers; the regions and their total
 //!   area (even-odd) must agree.
 //! - Garbage, and good profiles with one thing spoiled.
-//! - Sizes up to the cap, with timings.
+//! - Sizes up to the cap, with timings: every layout up to the old cap
+//!   of 4096 curves (where all pairs were compared), and layouts that
+//!   drawn and patterned sketches make up to the cap itself.
 
 #![allow(
     clippy::unwrap_used,
@@ -23,7 +25,9 @@ mod common;
 use common::{P, Rng, arc, catalogue, circle, line, polygon};
 use craft3d_kernel::KernelError;
 use craft3d_kernel::extrude::extrude;
-use craft3d_kernel::profile::{Curve2, MAX_CURVES, SketchCurve, detect_profiles};
+use craft3d_kernel::profile::{
+    Curve2, MAX_CURVES, MAX_PAIRS, OLD_MAX_CURVES, SketchCurve, detect_profiles,
+};
 use craft3d_math::{Frame, Tolerance};
 use craft3d_topo::{check, mass_properties};
 use std::f64::consts::PI;
@@ -466,14 +470,14 @@ fn large_and_adversarial_inputs_finish() {
         Some(area),
     );
     timed(
-        "the cap as one polygon",
-        &ngon(MAX_CURVES, 1000.0, 0),
-        Some(ngon_area(MAX_CURVES, 1000.0)),
+        "the old cap as one polygon",
+        &ngon(OLD_MAX_CURVES, 1000.0, 0),
+        Some(ngon_area(OLD_MAX_CURVES, 1000.0)),
     );
 
-    // The cap as discs in a grid, every one with a hole.
+    // The old cap as discs in a grid, every one with a hole.
     let mut curves = Vec::new();
-    for i in 0..MAX_CURVES / 2 {
+    for i in 0..OLD_MAX_CURVES / 2 {
         let c = [(i % 64) as f64 * 5.0, (i / 64) as f64 * 5.0];
         curves.push(circle(2 * i as u64, c, 2.0));
         curves.push(circle(2 * i as u64 + 1, c, 1.0));
@@ -482,20 +486,20 @@ fn large_and_adversarial_inputs_finish() {
     timed(
         "rings in a grid",
         &curves,
-        Some(MAX_CURVES as f64 / 2.0 * 3.0 * PI),
+        Some(OLD_MAX_CURVES as f64 / 2.0 * 3.0 * PI),
     );
 
-    // The cap as concentric circles of radius 1, 2, …: every box overlaps
+    // The old cap as concentric circles of radius 1, 2, …: every box overlaps
     // every other. Even-odd: rings between radius 2k−1 and 2k, each of
     // area π (4k − 1), k = 1 … n/2; summed, π (n/2) (n + 1).
-    let n = MAX_CURVES;
+    let n = OLD_MAX_CURVES;
     let curves: Vec<SketchCurve> = (0..n)
         .map(|i| circle(i as u64, [0.0, 0.0], (i + 1) as f64))
         .collect();
     let area = PI * (n / 2) as f64 * (n + 1) as f64;
     timed("concentric circles", &curves, Some(area));
 
-    // The cap as the same line over and over, as lines fanning out of one
+    // The old cap as the same line over and over, as lines fanning out of one
     // point, as crossing lines, and as tiny loops on top of each other.
     let same: Vec<SketchCurve> = (0..n as u64)
         .map(|i| line(i, [0.0, 0.0], [1.0, 1.0]))
@@ -526,4 +530,55 @@ fn large_and_adversarial_inputs_finish() {
         .map(|i| line(i, [0.0, i as f64], [0.0, i as f64 + 0.5]))
         .collect();
     timed("ends in a column", &column, None);
+}
+
+/// At the cap: layouts that sketches make are accepted, and layouts whose
+/// curves are all near one another are refused by the bound on pairs,
+/// quickly, instead of being compared pair by pair.
+#[test]
+fn the_cap_finishes() {
+    let ngon_area = |n: usize, r: f64| n as f64 * r * r * (2.0 * PI / n as f64).sin() / 2.0;
+    timed(
+        "the cap as one polygon",
+        &ngon(MAX_CURVES, 1e5, 0),
+        Some(ngon_area(MAX_CURVES, 1e5)),
+    );
+    let mut rings = Vec::new();
+    for i in 0..MAX_CURVES / 2 {
+        let c = [(i % 512) as f64 * 5.0, (i / 512) as f64 * 5.0];
+        rings.push(circle(2 * i as u64, c, 2.0));
+        rings.push(circle(2 * i as u64 + 1, c, 1.0));
+    }
+    timed(
+        "rings in a grid",
+        &rings,
+        Some(MAX_CURVES as f64 / 2.0 * 3.0 * PI),
+    );
+    let tol = Tolerance::default();
+    let concentric: Vec<SketchCurve> = (0..MAX_CURVES)
+        .map(|i| circle(i as u64, [0.0, 0.0], (i + 1) as f64))
+        .collect();
+    let started = Instant::now();
+    assert_eq!(
+        detect_profiles(&concentric, &tol),
+        Err(KernelError::CrowdedCurves { limit: MAX_PAIRS })
+    );
+    println!(
+        "concentric circles at the cap: refused in {:.2?}",
+        started.elapsed()
+    );
+    let same: Vec<SketchCurve> = (0..MAX_CURVES as u64)
+        .map(|i| line(i, [0.0, 0.0], [1.0, 1.0]))
+        .collect();
+    let started = Instant::now();
+    assert_eq!(
+        detect_profiles(&same, &tol),
+        Err(KernelError::CrowdedCurves {
+            limit: 4 * MAX_PAIRS
+        })
+    );
+    println!(
+        "one line many times at the cap: refused in {:.2?}",
+        started.elapsed()
+    );
 }

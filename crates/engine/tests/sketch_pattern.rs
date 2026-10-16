@@ -200,6 +200,46 @@ fn a_row_and_a_grid_of_holes_are_their_closed_forms_at_three_scales() {
     }
 }
 
+/// A 70 × 70 perforated sheet made by one pattern: 4900 holes and the
+/// outline, more curves than profile detection took before it had a broad
+/// phase (4096; roadmap M5). The volume is the closed form.
+#[test]
+fn a_sheet_of_70_by_70_patterned_holes_extrudes() {
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    let (pitch, r, t) = (10.0, 3.0, 2.0);
+    let side = 71.0 * pitch;
+    run(&mut s, "sketch.create", json!({"name": "Plate"}));
+    run(
+        &mut s,
+        "sketch.polyline",
+        json!({"sketch": "Plate", "points": [[0, 0], [side, 0], [side, side], [0, side]], "closed": true}),
+    );
+    let circle = run(
+        &mut s,
+        "sketch.circle",
+        json!({"sketch": "Plate", "center": [pitch, pitch], "radius": r}),
+    );
+    let circle = str_of(&circle["entity"]);
+    run(
+        &mut s,
+        "sketch.pattern",
+        json!({"sketch": "Plate", "entities": [circle], "count": 70, "step": [pitch, 0], "count2": 70, "step2": [0, pitch]}),
+    );
+    run(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "Plate", "distance": t, "name": "Body"}),
+    );
+    let plate = body(&mut s, "Body");
+    assert_close(
+        plate["volume"].as_f64().unwrap(),
+        (side * side - 4900.0 * PI * r * r) * t,
+        "70 × 70 holes",
+    );
+    assert_eq!(plate["faces"], 4 + 2 + 4900);
+}
+
 /// A plate `length` wide and `height` high whose bottom edge is a chained
 /// run of `n` periods of fingers `depth` deep, half a period wide: the
 /// seed is one period from A (fixed at the origin) to B, and the far corner

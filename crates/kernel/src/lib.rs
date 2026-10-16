@@ -11,6 +11,7 @@
 
 mod blend;
 pub mod boolean;
+mod boxtree;
 pub use boolean::{release_unused, shelf_size};
 pub mod chamfer;
 pub mod delete_face;
@@ -55,6 +56,12 @@ pub enum KernelError {
     /// More curves than profile detection accepts.
     TooManyCurves {
         count: usize,
+        limit: usize,
+    },
+    /// More pairs of curves, curve ends or loops lie near one another than
+    /// profile detection compares (a bound on its work, far above what
+    /// drawn or patterned sketches need).
+    CrowdedCurves {
         limit: usize,
     },
     /// Two curves were given the same id.
@@ -290,6 +297,10 @@ impl fmt::Display for KernelError {
             KernelError::TooManyCurves { count, limit } => write!(
                 f,
                 "{count} curves are more than profile detection accepts ({limit})"
+            ),
+            KernelError::CrowdedCurves { limit } => write!(
+                f,
+                "the curves lie too close together for profile detection: more than {limit} pairs of curves, curve ends or loops are near one another"
             ),
             KernelError::DuplicateCurveId { id } => {
                 write!(f, "two curves have the same id {id}")

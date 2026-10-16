@@ -762,6 +762,10 @@ fn every_error_says_what_to_look_at() {
             &["5000", "4096"],
         ),
         (
+            KernelError::CrowdedCurves { limit: 16777216 },
+            &["16777216", "too close together"],
+        ),
+        (
             KernelError::InvalidOffsets { from: 2.0, to: 1.0 },
             &["from 2 to 1"],
         ),
