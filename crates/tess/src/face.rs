@@ -1699,10 +1699,6 @@ fn band_region(
 /// for a seam in pieces lays out on either side of the one in the middle.
 const ROUTE_TURNS: i32 = 1;
 
-/// How many pieces may be tried and found to cross a loop before the
-/// search for a seam in pieces gives up.
-const ROUTE_REJECTS: usize = 256;
-
 /// Whether `p` lies above (towards `+b` of) a loop that winds around `a`
 /// and is moved by `tb` periods of `b`.
 fn above(ring: &Ring, tb: i32, p: Uv, periods: [Option<f64>; 2]) -> bool {
@@ -2156,7 +2152,6 @@ impl Routes<'_> {
             false
         };
         let mut queue = std::collections::VecDeque::from([source]);
-        let mut rejects = 0_usize;
         while let Some(node) = queue.pop_front() {
             if node == target {
                 break;
@@ -2176,11 +2171,16 @@ impl Routes<'_> {
                     continue;
                 };
                 let [p, q] = ends;
+                // (No cap on the pieces found to cross: a station is
+                // queued once (it must be unreached), so each bridge is
+                // tried at most once, and the bridges are the sides of a
+                // triangulation of the stations' vertices (`bridges`: a
+                // `Cdt` of `count` points, `count` the vertices times the
+                // turns tried), at most three per point: the work is
+                // proportional to the stations' vertices. A cap of 256
+                // refused a pipe with ten holes at a fine chord, which has
+                // more.)
                 if crosses_the_seam(ends, node, &reached) || (self.crosses_a_loop)(p, q) {
-                    rejects += 1;
-                    if rejects > ROUTE_REJECTS {
-                        return None;
-                    }
                     continue;
                 }
                 if let Some(slot) = reached.get_mut(bridge.to) {
