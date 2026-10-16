@@ -2505,10 +2505,9 @@ fn carry_back(rolled: Blended, second: Blended, free: &[usize], closed: &[usize]
 
 /// The requests built in place although a closed form covers them: the
 /// classes routed so far in the migration to one blend construction
-/// (`docs/design/blends.md` › *One blend construction*). Step 1: a
-/// straight edge between two planes, filleted or chamfered by two
-/// distances, each of whose ends is a vertex of three edges at which no
-/// other requested edge ends.
+/// (`docs/design/blends.md` › *One blend construction*). A straight edge
+/// between two planes, filleted or chamfered, each of whose ends is a
+/// vertex of three edges at which no other requested edge ends.
 fn in_place(body: &Body, at: &[Vec<EdgeId>], requests: &[Request], plans: &[Plan]) -> Vec<usize> {
     let mut ends: BTreeMap<VertexId, usize> = BTreeMap::new();
     for request in requests {
@@ -2525,13 +2524,9 @@ fn in_place(body: &Body, at: &[Vec<EdgeId>], requests: &[Request], plans: &[Plan
         .iter()
         .zip(requests)
         .enumerate()
-        .filter(|(_, (plan, request))| {
+        .filter(|(_, (plan, _))| {
             matches!(plan.path, Path::Line { .. })
                 && plan.flat()
-                && matches!(
-                    request.size,
-                    Size::Radius(_) | Size::Chamfer(ChamferSize::Distances { .. })
-                )
                 && plan.ends.is_some_and(|[a, b]| a != b && lone(a) && lone(b))
         })
         .map(|(index, _)| index)
@@ -2553,9 +2548,23 @@ fn construct(
     if routed.is_empty() {
         return build(body, uses, at, plans, tolerance);
     }
+    // A chamfer by its two distances along the faces: the plan's section
+    // is the exact one between two planes, also for a distance and an
+    // angle (the sine rule in the triangle of the section).
     let picked: Vec<Request> = routed
         .iter()
-        .filter_map(|i| requests.get(*i).copied())
+        .filter_map(|i| {
+            let request = requests.get(*i)?;
+            let plan = plans.get(*i)?;
+            let size = match plan.round {
+                Some(_) => request.size,
+                None => Size::Chamfer(ChamferSize::Distances {
+                    first: plan.distances[0],
+                    second: plan.distances[1],
+                }),
+            };
+            Some(Request { size, ..*request })
+        })
         .collect();
     let mut rolled = rolling::blend(body, &picked, tolerance)?;
     // A chamfer face gets the frame the tools give it.
