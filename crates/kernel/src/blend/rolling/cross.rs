@@ -549,6 +549,7 @@ pub(super) fn carry(
         let (lo, hi) = data.range;
         let mut mine_pieces: Vec<(EdgeId, FaceId)> = Vec::new();
         let (mut from, mut start) = (lo, data.start);
+        let mut switched: Vec<(VertexId, EdgeId)> = Vec::new();
         for (s, c) in &cuts {
             let Some(at) = c.at else { continue };
             if !(*s > from && *s < hi) {
@@ -566,6 +567,7 @@ pub(super) fn carry(
             let x = VertexId(u32::try_from(body.vertices.len()).map_err(|_| lost())?);
             body.vertices.push(Vertex { point });
             super::shorten(body, c.smooth, c.inside, x, at.t)?;
+            switched.push((x, c.smooth));
             let id = if mine_pieces.is_empty() {
                 border
             } else {
@@ -598,6 +600,20 @@ pub(super) fn carry(
             },
         )?;
         mine_pieces.push((id, face_at(faces, crossings, k, 0.5 * (from + hi))));
+        // Each piece and the edge it was cut against meet only at the
+        // switch: proven apart away from it (`stays_on` leaves out every
+        // edge that shares a vertex with the border, and the edge was
+        // sampled, so a re-entry between two samples would go unseen).
+        for (x, smooth) in &switched {
+            for (piece, _) in &mine_pieces {
+                let touches = body
+                    .edge(*piece)
+                    .is_some_and(|e| e.start == *x || e.end == *x);
+                if touches && !apart_beyond(body, *piece, *smooth, *x, tol).unwrap_or(false) {
+                    return Err(runs_over());
+                }
+            }
+        }
         // An edge inside all along goes, with the face before it if that
         // has nothing left.
         for c in mine.iter().filter(|c| c.at.is_none()) {
@@ -646,6 +662,70 @@ pub(super) fn carry(
         pieces.extend(mine_pieces);
     }
     Ok(pieces)
+}
+
+/// How close to the switch two curves that cross there may come to each
+/// other apart from it: what `stays_on` holds borders to.
+const APART: f64 = 10.0;
+
+/// Whether the edges `a` and `b`, which cross at their common vertex
+/// `at`, come within [`APART`] tolerances of each other nowhere else:
+/// proven (`geom::certify::curves_apart`) on their ranges less the
+/// stretch within `rho` of the vertex. Two curves that cross at the angle
+/// θ are, to first order, `s · sin θ` apart at the distance `s` from the
+/// crossing, so `rho = 2 · APART · tol / sin θ` keeps out only the stretch
+/// where they are that close by crossing (twice: room for their bending);
+/// a second meeting inside it would need either curve to turn by θ
+/// within `rho`. `None` (not shown apart) where the crossing is tangent,
+/// or `rho` takes more than half of either edge.
+fn apart_beyond(body: &Body, a: EdgeId, b: EdgeId, at: VertexId, tol: f64) -> Option<bool> {
+    use craft3d_geom::certify::{Apart, CurveBound, curves_apart};
+    let x = body.vertex(at)?.point;
+    let (ea, eb) = (body.edge(a)?, body.edge(b)?);
+    // The unit tangent of each at the vertex, and which end it is.
+    let leaving = |e: &Edge| -> Option<(Vec3, bool)> {
+        let at_start = e.start == at;
+        let t = if at_start { e.range.0 } else { e.range.1 };
+        let (_, d) = e.curve.derivatives(t);
+        Some((d.normalized()?, at_start))
+    };
+    let ((ta, sa), (tb, sb)) = (leaving(ea)?, leaving(eb)?);
+    let sine = ta.cross(tb).length();
+    if !(sine > 0.0) {
+        return None;
+    }
+    let rho = 2.0 * APART * tol / sine;
+    // The range of `e` less the stretch from its end at the vertex out to
+    // where it first lies `rho` from it (64 steps, then bisection).
+    let trimmed = |e: &Edge, at_start: bool| -> Option<(f64, f64)> {
+        let (lo, hi) = e.range;
+        let param = |f: f64| {
+            if at_start {
+                lo + (hi - lo) * f
+            } else {
+                hi - (hi - lo) * f
+            }
+        };
+        let far = |f: f64| e.curve.eval(param(f)).distance(x) >= rho;
+        let first = (1..=64).map(|i| f64::from(i) / 64.0).find(|f| far(*f))?;
+        let (mut inner, mut outer) = (first - 1.0 / 64.0, first);
+        for _ in 0..60 {
+            let m = 0.5 * (inner + outer);
+            if far(m) {
+                outer = m;
+            } else {
+                inner = m;
+            }
+        }
+        if outer > 0.5 {
+            return None;
+        }
+        let cut = param(outer);
+        Some(if at_start { (cut, hi) } else { (lo, cut) })
+    };
+    let (ra, rb) = (trimmed(ea, sa)?, trimmed(eb, sb)?);
+    let (ca, cb) = (CurveBound::new(&ea.curve), CurveBound::new(&eb.curve));
+    Some(curves_apart(&ca, ra, &cb, rb, APART * tol, super::PROOF_PIECES) == Apart::Yes)
 }
 
 /// Whether an edge other than `edge` still ends at `vertex` (one taken
@@ -832,4 +912,69 @@ pub(super) fn moved_onto(section: &Section, sides: [Side<'_>; 2], tol: f64) -> O
         *out.params.get_mut(k)? = uv;
     }
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+    use craft3d_geom::{Curve3, Line};
+    use craft3d_topo::BodyKind;
+
+    /// A line along x from the origin and a curve that leaves the origin
+    /// at about 27° and comes back down to `gap` above the line at x = 0.7
+    /// (a grazing dip past the crossing), as two edges of one vertex.
+    fn dipping(gap: f64) -> Body {
+        let params: Vec<f64> = (0..=40).map(|i| f64::from(i) / 40.0).collect();
+        let points: Vec<Vec3> = params
+            .iter()
+            .map(|t| {
+                let y = 0.5 * t * (t - 0.7).powi(2) / 0.49 + gap * t / 0.7;
+                Vec3::new(*t, y, 0.0)
+            })
+            .collect();
+        let curve = super::super::curve_through(&params, &points).unwrap();
+        let mut body = Body::new(BodyKind::Sheet);
+        for p in [
+            Vec3::ZERO,
+            *points.last().unwrap(),
+            Vec3::new(1.2, 0.0, 0.0),
+        ] {
+            body.vertices.push(Vertex { point: p });
+        }
+        body.edges.push(Edge {
+            curve: Curve3::Nurbs(curve),
+            range: (0.0, 1.0),
+            start: VertexId(0),
+            end: VertexId(1),
+        });
+        body.edges.push(Edge {
+            curve: Curve3::Line(Line::new(Vec3::ZERO, Vec3::X).unwrap()),
+            range: (0.0, 1.2),
+            start: VertexId(0),
+            end: VertexId(2),
+        });
+        body
+    }
+
+    /// Two edges that cross at their shared vertex are shown apart only
+    /// when they do not come back near each other elsewhere: a dip to
+    /// within ten tolerances is not apart, one well clear of it is; edges
+    /// tangent at the vertex are not shown apart.
+    #[test]
+    fn edges_crossing_at_a_switch_are_proven_apart_away_from_it() {
+        let tol = 1e-6;
+        for (gap, apart) in [(2e-6, false), (8e-6, false), (1e-4, true), (1e-2, true)] {
+            let body = dipping(gap);
+            let found = apart_beyond(&body, EdgeId(0), EdgeId(1), VertexId(0), tol);
+            assert_eq!(found, Some(apart), "a dip to {gap}");
+        }
+        let mut body = dipping(1e-2);
+        let along = body.edges[0].curve.derivatives(0.0).1;
+        body.edges[1].curve = Curve3::Line(Line::new(Vec3::ZERO, along).unwrap());
+        assert_eq!(
+            apart_beyond(&body, EdgeId(0), EdgeId(1), VertexId(0), tol),
+            None
+        );
+    }
 }
