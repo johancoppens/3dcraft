@@ -315,6 +315,127 @@ impl NurbsSurface {
         }
         NurbsSurface::new(du, dv, knots_u, knots_v, new_u, new_v, ctrl, weights)
     }
+
+    /// The same surface over the smaller domain `u` × `v` (within the
+    /// domain, each with a start below its end): the knots at the new ends
+    /// made of full multiplicity (Boehm's knot insertion, which does not
+    /// change the surface) and what lies past them dropped, so every point
+    /// inside keeps its place, parameters and derivatives, and past the
+    /// new ends the spans there go on as the functions they are.
+    pub fn restricted(&self, u: (f64, f64), v: (f64, f64)) -> Result<NurbsSurface, GeomError> {
+        let refused =
+            || GeomError::InvalidParameter("the surface cannot be cut down to that domain");
+        let (du, dv) = self.degrees();
+        let (count_u, count_v) = self.counts();
+        let ((u0, u1), (v0, v1)) = self.domain();
+        let inside = |(a, b): (f64, f64), (lo, hi): (f64, f64)| {
+            a.is_finite() && b.is_finite() && lo <= a && a < b && b <= hi
+        };
+        if !(inside(u, (u0, u1)) && inside(v, (v0, v1))) {
+            return Err(refused());
+        }
+        let weighted: Vec<W> = self
+            .control_points()
+            .iter()
+            .zip(self.weights())
+            .map(|(p, w)| [p.x * w, p.y * w, p.z * w, *w])
+            .collect();
+        let mut columns: Vec<Vec<W>> = (0..count_v)
+            .map(|j| {
+                (0..count_u)
+                    .map(|i| weighted.get(i * count_v + j).copied().unwrap_or([0.0; 4]))
+                    .collect()
+            })
+            .collect();
+        let mut knots_u = self.knots_u().to_vec();
+        cut(du, &mut knots_u, &mut columns, u).ok_or_else(refused)?;
+        let new_u = columns.first().map_or(0, Vec::len);
+        let mut rows: Vec<Vec<W>> = (0..new_u)
+            .map(|i| {
+                columns
+                    .iter()
+                    .map(|c| c.get(i).copied().unwrap_or([0.0; 4]))
+                    .collect()
+            })
+            .collect();
+        let mut knots_v = self.knots_v().to_vec();
+        cut(dv, &mut knots_v, &mut rows, v).ok_or_else(refused)?;
+        let new_v = rows.first().map_or(0, Vec::len);
+        let mut ctrl = Vec::with_capacity(new_u * new_v);
+        let mut weights = Vec::with_capacity(new_u * new_v);
+        for row in &rows {
+            for p in row {
+                let w = p[3];
+                if !(w > 0.0 && w.is_finite()) {
+                    return Err(refused());
+                }
+                ctrl.push(Vec3::new(p[0] / w, p[1] / w, p[2] / w));
+                weights.push(w);
+            }
+        }
+        NurbsSurface::new(du, dv, knots_u, knots_v, new_u, new_v, ctrl, weights)
+    }
+}
+
+/// Cuts the splines (the rows) down to `to` at the high end of their
+/// domain: `to` inserted until it is a knot of full multiplicity, and
+/// what lies past it dropped.
+fn cut_high(degree: usize, knots: &mut Vec<f64>, rows: &mut [Vec<W>], to: f64) -> Option<()> {
+    let n = rows.first()?.len();
+    let end = *knots.get(n)?;
+    if !(to < end) {
+        return Some(());
+    }
+    // A knot that is `to` but for rounding (an average of parameters
+    // around it, say) is taken as `to`: cutting just beside it would leave
+    // a span as wide as the rounding, along which the surface stalls.
+    // Moving a knot by rounding moves the spline by rounding.
+    let start = *knots.first()?;
+    let near = 16.0 * f64::EPSILON * (to.abs() + (end - start).abs());
+    for k in knots.iter_mut() {
+        if *k != to && (*k - to).abs() <= near {
+            *k = to;
+        }
+    }
+    let multiplicity = |knots: &[f64], x: f64| knots.iter().filter(|k| **k == x).count();
+    let mut guard = 0;
+    while multiplicity(knots, to) < degree + 1 {
+        insert(degree, knots, rows, to)?;
+        guard += 1;
+        if guard > degree + 1 {
+            return None;
+        }
+    }
+    let count = knots.iter().position(|k| *k == to)?;
+    if count < degree + 1 {
+        return None;
+    }
+    knots.truncate(count + degree + 1);
+    for row in rows.iter_mut() {
+        row.truncate(count);
+    }
+    Some(())
+}
+
+/// Cuts the splines down to `(lo, hi)` at both ends (`cut_high`, and the
+/// same on the mirrored splines).
+fn cut(
+    degree: usize,
+    knots: &mut Vec<f64>,
+    rows: &mut [Vec<W>],
+    (lo, hi): (f64, f64),
+) -> Option<()> {
+    cut_high(degree, knots, rows, hi)?;
+    let mut mirrored: Vec<f64> = knots.iter().rev().map(|k| -k).collect();
+    for row in rows.iter_mut() {
+        row.reverse();
+    }
+    cut_high(degree, &mut mirrored, rows, -lo)?;
+    for row in rows.iter_mut() {
+        row.reverse();
+    }
+    *knots = mirrored.iter().rev().map(|k| -k).collect();
+    Some(())
 }
 
 #[cfg(test)]
@@ -349,6 +470,45 @@ mod tests {
             weights,
         )
         .unwrap()
+    }
+
+    /// Cut down to a box inside its domain (ends on a knot and between
+    /// knots, rational weights): the same points and derivatives inside,
+    /// the box as its domain, its spans going on past the box as they
+    /// were; boxes not inside the domain refused.
+    #[test]
+    fn a_surface_cut_down_to_a_box_is_the_same_function_inside_it() {
+        let s = patch();
+        let (u, v) = ((0.13, 0.4), (0.3, 0.85));
+        let c = s.restricted(u, v).unwrap();
+        assert_eq!(c.domain(), (u, v));
+        let mut worst = 0.0_f64;
+        for i in 0..=20 {
+            for j in 0..=20 {
+                // Inside the box, and past its ends that lie inside a
+                // span of the surface (0.13 and 0.85): the same span.
+                let a = 0.1 + 0.3 * f64::from(i) / 20.0;
+                let b = 0.3 + 0.59 * f64::from(j) / 20.0;
+                let (p, pu, pv) = s.derivatives(a, b);
+                let (q, qu, qv) = c.derivatives(a, b);
+                worst = worst
+                    .max(p.distance(q))
+                    .max(pu.distance(qu) * 1e-2)
+                    .max(pv.distance(qv) * 1e-2);
+            }
+        }
+        assert!(worst < 1e-12, "{worst}");
+        // The whole domain is the surface itself.
+        let whole = s.restricted((0.0, 1.0), (0.0, 1.0)).unwrap();
+        assert!(s.eval(0.37, 0.61).distance(whole.eval(0.37, 0.61)) < 1e-12);
+        for (u, v) in [
+            ((-0.1, 0.5), (0.0, 1.0)),
+            ((0.5, 0.5), (0.0, 1.0)),
+            ((0.2, 0.1), (0.0, 1.0)),
+            ((0.0, 1.0), (0.2, f64::NAN)),
+        ] {
+            assert!(s.restricted(u, v).is_err(), "{u:?} {v:?}");
+        }
     }
 
     #[test]

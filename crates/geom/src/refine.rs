@@ -884,6 +884,75 @@ pub fn interpolate(
         knots.push(sum / degree as f64);
     }
     knots.extend(std::iter::repeat_n(last, degree + 1));
+    let out = solve_banded(params, degree, &knots, values)?;
+    Ok((knots, out))
+}
+
+/// [`interpolate`] on a knot vector of the caller's (clamped at the first
+/// and the last parameter, `params.len() + degree + 1` knots, never
+/// decreasing): the values of the B-spline of `degree` on `knots` through
+/// `values` at `params`. An error where a parameter does not lie in the
+/// support of its own basis function within the band (the
+/// Schoenberg-Whitney condition, as the averaged knots of [`interpolate`]
+/// keep it), so the system has no unique solution solved this way.
+pub fn interpolate_on(
+    params: &[f64],
+    degree: usize,
+    knots: &[f64],
+    values: &[Vec<f64>],
+) -> Result<Vec<Vec<f64>>, GeomError> {
+    let count = params.len();
+    if !(2..=MAX_INTERPOLATED_BANDED).contains(&count) || values.len() != count {
+        return Err(GeomError::InvalidParameter(
+            "interpolation needs at least two points, a value for each (and no more than the supported maximum)",
+        ));
+    }
+    if params.iter().any(|v| !v.is_finite())
+        || params.windows(2).any(|w| !matches!(w, [a, b] if a < b))
+    {
+        return Err(GeomError::InvalidParameter(
+            "the parameters of interpolated points must be finite and increasing",
+        ));
+    }
+    if degree == 0 || degree >= count || degree > MAX_DEGREE {
+        return Err(GeomError::InvalidParameter(
+            "the degree of an interpolating spline is at least 1 and below the number of points",
+        ));
+    }
+    let width = values.first().map_or(0, Vec::len);
+    if values.iter().any(|v| v.len() != width) {
+        return Err(GeomError::InvalidParameter(
+            "the interpolated values must all have the same length",
+        ));
+    }
+    let clamped = |at: f64, run: &[f64]| run.len() == degree + 1 && run.iter().all(|k| *k == at);
+    if knots.len() != count + degree + 1
+        || knots.iter().any(|k| !k.is_finite())
+        || knots.windows(2).any(|w| !matches!(w, [a, b] if a <= b))
+        || !params
+            .first()
+            .is_some_and(|f| knots.get(..=degree).is_some_and(|r| clamped(*f, r)))
+        || !params
+            .last()
+            .is_some_and(|l| knots.get(count..).is_some_and(|r| clamped(*l, r)))
+    {
+        return Err(GeomError::InvalidParameter(
+            "the knots of an interpolating spline are clamped at the first and the last parameter, never decreasing, as many as the points and the degree ask",
+        ));
+    }
+    solve_banded(params, degree, knots, values)
+}
+
+/// The banded solve of [`interpolate`] and [`interpolate_on`], on checked
+/// input.
+fn solve_banded(
+    params: &[f64],
+    degree: usize,
+    knots: &[f64],
+    values: &[Vec<f64>],
+) -> Result<Vec<Vec<f64>>, GeomError> {
+    let count = params.len();
+    let width = values.first().map_or(0, Vec::len);
     // Row i holds columns i - degree ..= i + degree.
     let band = 2 * degree + 1;
     let mut rows = vec![vec![0.0; band]; count];
@@ -894,7 +963,7 @@ pub fn interpolate(
         while span + 1 < count && knots.get(span + 1).is_some_and(|x| *x <= t) {
             span += 1;
         }
-        let local = basis_local(&knots, degree, span, t)?;
+        let local = basis_local(knots, degree, span, t)?;
         for (offset, value) in local.into_iter().enumerate() {
             let column = span - degree + offset;
             // Within the band (Schoenberg-Whitney: the averaged knots
@@ -961,7 +1030,7 @@ pub fn interpolate(
     if out.iter().flatten().any(|v| !v.is_finite()) {
         return Err(singular());
     }
-    Ok((knots, out))
+    Ok(out)
 }
 
 /// The `degree + 1` nonzero B-spline basis values at `t` in `span`.
@@ -1273,6 +1342,56 @@ mod tests {
         )
         .unwrap();
         [arc, spline]
+    }
+
+    /// On the knots `interpolate` lays, the same spline; on a knot vector
+    /// with a knot of the degree less one, a spline through the points
+    /// that is once continuously differentiable there; knots that are not
+    /// clamped, too few or decreasing refused.
+    #[test]
+    fn an_interpolation_on_given_knots() {
+        let params: Vec<f64> = (0..9).map(|i| f64::from(i) * 0.125).collect();
+        let values: Vec<Vec<f64>> = params
+            .iter()
+            .map(|t| vec![(3.0 * t).sin(), t * t, 1.0 / (1.0 + t)])
+            .collect();
+        let (knots, ctrl) = interpolate(&params, 3, &values).unwrap();
+        let again = interpolate_on(&params, 3, &knots, &values).unwrap();
+        for (a, b) in ctrl.iter().zip(&again) {
+            for (x, y) in a.iter().zip(b) {
+                assert!((x - y).abs() < 1e-14);
+            }
+        }
+        // A double knot of a cubic at 0.5, one point fewer's averages on
+        // the right: square again.
+        let soft = vec![
+            0.0, 0.0, 0.0, 0.0, 0.25, 0.5, 0.5, 0.6875, 0.8125, 1.0, 1.0, 1.0, 1.0,
+        ];
+        let c = interpolate_on(&params, 3, &soft, &values).unwrap();
+        let points: Vec<Vec3> = c.iter().map(|r| Vec3::new(r[0], r[1], r[2])).collect();
+        let curve = NurbsCurve::polynomial(3, soft.clone(), points).unwrap();
+        for (t, v) in params.iter().zip(&values) {
+            let p = curve.eval(*t);
+            assert!(p.distance(Vec3::new(v[0], v[1], v[2])) < 1e-12, "{t}");
+        }
+        let (_, left) = curve.derivatives(0.5 - 1e-12);
+        let (_, right) = curve.derivatives(0.5 + 1e-12);
+        assert!(left.distance(right) < 1e-9, "{left:?} {right:?}");
+        for bad in [
+            vec![0.0; 13],
+            soft[1..].to_vec(),
+            vec![
+                0.0, 0.0, 0.0, 0.0, 0.5, 0.25, 0.5, 0.6875, 0.8125, 1.0, 1.0, 1.0, 1.0,
+            ],
+            vec![
+                0.0, 0.0, 0.0, 0.1, 0.25, 0.5, 0.5, 0.6875, 0.8125, 1.0, 1.0, 1.0, 1.0,
+            ],
+        ] {
+            assert!(
+                interpolate_on(&params, 3, &bad, &values).is_err(),
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]
