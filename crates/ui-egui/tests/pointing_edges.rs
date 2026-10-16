@@ -302,6 +302,19 @@ fn edges_in_sight(
         .collect()
 }
 
+/// Whether a point of the viewport's picture (one pixel per point) is
+/// under the controls over the viewport, or near them: a click there is
+/// theirs. (Added 2026-10-16, when the view cube grew and the controls
+/// went on glass plates: some edges and corners the tests clicked are
+/// under them in a 1000 × 700 window.)
+fn under_controls(shell: &Shell, at: [f64; 2]) -> bool {
+    let rect = shell.viewport_rect().unwrap();
+    let p = egui::pos2(rect.left() + at[0] as f32, rect.top() + at[1] as f32);
+    shell
+        .controls_layout()
+        .is_some_and(|l| l.parts().iter().any(|(_, r)| r.expand(8.0).contains(p)))
+}
+
 fn evidence(name: &str) -> PathBuf {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/evidence/ui");
     std::fs::create_dir_all(&dir).unwrap();
@@ -433,6 +446,10 @@ fn a_click_on_an_edge_picks_it_and_shows_it_highlighted() {
     let edges = listed_edges(&mut session, &scene);
     let (_, _, plain) = shot(&mut shell, &mut session);
     let seen = edges_in_sight(&scene, &camera, &edges, size, 0.37);
+    let seen: Vec<_> = seen
+        .into_iter()
+        .filter(|s| !under_controls(&shell, s.2))
+        .collect();
     assert!(seen.len() >= 20, "{} edges are in sight", seen.len());
     let mut serial = 0;
     let (mut clicked, mut crossings) = (0, 0);
@@ -975,6 +992,10 @@ fn a_highlighted_edge_is_the_same_on_the_gpus_direct_path_as_in_the_oracle() {
     let slack = viewport::depth_slack(Backend::Gpu, Some(&scene), &camera);
     let everything = viewport::overlay(Some(&scene), &camera, w, h, None);
     let seen = edges_in_sight(&scene, &camera, &edges, size, 0.43);
+    let seen: Vec<_> = seen
+        .into_iter()
+        .filter(|s| !under_controls(&shell, s.2))
+        .collect();
     assert!(seen.len() >= 20, "{}", seen.len());
     let (mut samples, mut agree, mut inked_n, mut dimmed) = (0, 0, 0, 0);
     let mut renders = shell.render_count();
@@ -1236,6 +1257,10 @@ fn a_click_on_a_vertex_picks_it_and_ui_highlight_shows_one() {
     assert_eq!(corners.len(), 10 + 2 + 24);
     let (_, _, plain) = shot(&mut shell, &mut session);
     let seen = vertices_in_sight(&scene, &camera, &corners, size);
+    let seen: Vec<_> = seen
+        .into_iter()
+        .filter(|s| !under_controls(&shell, s.1))
+        .collect();
     assert!(seen.len() >= 15, "{} vertices are in sight", seen.len());
     let mut bodies = BTreeSet::new();
     for (round, (corner, [x, y])) in seen.iter().enumerate() {
@@ -1527,6 +1552,10 @@ fn a_highlighted_vertex_is_the_same_on_the_gpus_direct_path_as_in_the_oracle() {
     .unwrap();
     let slack = viewport::depth_slack(Backend::Gpu, Some(&scene), &camera);
     let seen = vertices_in_sight(&scene, &camera, &corners, size);
+    let seen: Vec<_> = seen
+        .into_iter()
+        .filter(|s| !under_controls(&shell, s.1))
+        .collect();
     assert!(seen.len() >= 15, "{}", seen.len());
     let (mut samples, mut agree) = (0, 0);
     for (round, (corner, [x, y])) in seen.iter().enumerate() {

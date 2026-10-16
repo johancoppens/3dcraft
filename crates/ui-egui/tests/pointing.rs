@@ -331,6 +331,19 @@ fn a_click_in_the_viewport_picks_the_face_under_it_and_shows_it_highlighted() {
         // narrow to have one cannot be clicked without clicking an edge,
         // and is left out (how many are left is counted below).
         let clear = clear_of_edges(&frame, pixels);
+        // Changed 2026-10-16 (the larger view cube and the glass bar): and
+        // not under the controls over the viewport, whose click is theirs.
+        let layout = shell.controls_layout().unwrap();
+        let clear: Vec<_> = clear
+            .into_iter()
+            .filter(|&(x, y)| {
+                let at = pos2(rect.left() + x as f32 + 0.5, rect.top() + y as f32 + 0.5);
+                !layout
+                    .parts()
+                    .iter()
+                    .any(|(_, part)| part.expand(2.0).contains(at))
+            })
+            .collect();
         let Some(&(x, y)) = clear.get(clear.len() / 2) else {
             continue;
         };
@@ -432,16 +445,20 @@ fn a_click_in_the_viewport_picks_the_face_under_it_and_shows_it_highlighted() {
 
     // A click on a view button turns the camera and picks nothing.
     let before = shell.state.camera;
-    let mut turned = false;
-    for dx in (10..500).step_by(12) {
-        let at = pos2(rect.right() - dx as f32, rect.bottom() - 20.0);
-        window.click(&mut shell, &mut session, at);
-        if shell.state.camera != before {
-            turned = true;
-            break;
-        }
-    }
-    assert!(turned, "no view button was found");
+    // (Changed 2026-10-16: the button is found where the shell says it
+    // drew it; the controls' plates moved.)
+    let iso = shell
+        .camera_hits()
+        .iter()
+        .find(|(name, _)| *name == "iso")
+        .expect("the iso button")
+        .1
+        .center();
+    window.click(&mut shell, &mut session, iso);
+    assert_ne!(
+        shell.state.camera, before,
+        "the iso button turned the camera"
+    );
     assert_eq!(shell.state.picked.as_ref().unwrap().serial, serial);
 
     // A click outside the viewport (the tree) picks nothing either.
