@@ -554,31 +554,105 @@ fn the_cap_finishes() {
         &rings,
         Some(MAX_CURVES as f64 / 2.0 * 3.0 * PI),
     );
-    let tol = Tolerance::default();
-    let concentric: Vec<SketchCurve> = (0..MAX_CURVES)
+    // Every adversarial layout of the old cap, at the cap. Those whose
+    // curves are all near one another are refused by the bound on pairs,
+    // naming curves, after the bounded work and no more.
+    let n = MAX_CURVES;
+    let theta = 2.0 * PI / n as f64;
+    timed(
+        "scalloped",
+        &scalloped(n / 2, 1e5),
+        Some((n / 2) as f64 * 1e10 * (theta + theta.sin()) / 2.0),
+    );
+    let concentric: Vec<SketchCurve> = (0..n)
         .map(|i| circle(i as u64, [0.0, 0.0], (i + 1) as f64))
         .collect();
-    let started = Instant::now();
-    assert_eq!(
-        detect_profiles(&concentric, &tol),
-        Err(KernelError::CrowdedCurves { limit: MAX_PAIRS })
-    );
-    println!(
-        "concentric circles at the cap: refused in {:.2?}",
-        started.elapsed()
-    );
-    let same: Vec<SketchCurve> = (0..MAX_CURVES as u64)
+    crowded("concentric circles", &concentric, MAX_PAIRS);
+    let same: Vec<SketchCurve> = (0..n as u64)
         .map(|i| line(i, [0.0, 0.0], [1.0, 1.0]))
         .collect();
+    crowded("one line many times", &same, 4 * MAX_PAIRS);
+    let fan: Vec<SketchCurve> = (0..n as u64)
+        .map(|i| line(i, [0.0, 0.0], [(i as f64).cos(), (i as f64).sin()]))
+        .collect();
+    crowded("a fan of lines", &fan, 4 * MAX_PAIRS);
+    let stacked: Vec<SketchCurve> = (0..n as u64 / 2)
+        .map(|i| circle(i, [0.0, 0.0], 1.0 + i as f64 * 3e-6))
+        .collect();
+    crowded("circles a hair apart", &stacked, MAX_PAIRS);
+    let mut nested = Vec::new();
+    for i in 0..n / 4 {
+        let d = i as f64;
+        nested.extend(common::rectangle(
+            i as u64 * 4,
+            1,
+            (-1.0 - d, 1.0 + d),
+            (-1.0 - d, 1.0 + d),
+        ));
+    }
+    crowded("nested squares", &nested, MAX_PAIRS);
+    let mut mesh = Vec::new();
+    for i in 0..n / 8 {
+        let o = i as f64 * 1e-3;
+        mesh.extend(common::rectangle(
+            i as u64 * 4,
+            1,
+            (o, o + 10.0),
+            (-o, 10.0 - o),
+        ));
+    }
+    timed("crossing squares", &mesh, None);
+    // Under the bound but quadratic in nesting: every loop holds the
+    // point of every smaller one. Accepted, with the even-odd area.
+    let mut nested = Vec::new();
+    let mut area = 0.0;
+    for i in 0..5000_usize {
+        let d = i as f64;
+        nested.extend(common::rectangle(
+            i as u64 * 4,
+            1,
+            (-1.0 - d, 1.0 + d),
+            (-1.0 - d, 1.0 + d),
+        ));
+        // Square i is at depth 4999 - i: even depths add, odd take away.
+        let side = 2.0 + 2.0 * d;
+        area += if (4999 - i) % 2 == 0 {
+            side * side
+        } else {
+            -side * side
+        };
+    }
+    timed("5000 nested squares", &nested, Some(area));
+    // Loops of many segments round each other: winding numbers through
+    // the tree of stretches.
+    let mut gons = Vec::new();
+    let mut area = 0.0;
+    for i in 0..200_u64 {
+        let r = 10.0 + i as f64;
+        gons.extend(ngon(1000, r, i * 1000));
+        let a = ngon_area(1000, r);
+        area += if (199 - i) % 2 == 0 { a } else { -a };
+    }
+    timed("200 nested 1000-gons", &gons, Some(area));
+    let column: Vec<SketchCurve> = (0..n as u64)
+        .map(|i| line(i, [0.0, i as f64], [0.0, i as f64 + 0.5]))
+        .collect();
+    timed("ends in a column", &column, None);
+}
+
+/// `curves` are refused by the bound on pairs (`limit`), naming curves,
+/// within the time `timed` allows.
+fn crowded(name: &str, curves: &[SketchCurve], limit: usize) {
     let started = Instant::now();
-    assert_eq!(
-        detect_profiles(&same, &tol),
-        Err(KernelError::CrowdedCurves {
-            limit: 4 * MAX_PAIRS
-        })
-    );
-    println!(
-        "one line many times at the cap: refused in {:.2?}",
-        started.elapsed()
-    );
+    let result = detect_profiles(curves, &Tolerance::default());
+    let took = started.elapsed();
+    println!("{name}: {} curves, refused in {took:.2?}", curves.len());
+    match result {
+        Err(KernelError::CrowdedCurves { curves, limit: l }) => {
+            assert_eq!(l, limit, "{name}");
+            assert!(!curves.is_empty(), "{name}");
+        }
+        other => panic!("{name}: {other:?}"),
+    }
+    assert!(took.as_secs() < 60, "{name}");
 }

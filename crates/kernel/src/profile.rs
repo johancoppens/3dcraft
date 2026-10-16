@@ -586,27 +586,73 @@ struct End {
 /// need a few per curve.
 pub const MAX_PAIRS: usize = OLD_MAX_CURVES * OLD_MAX_CURVES;
 
+/// The most control points the splines of one call to [`detect_profiles`]
+/// may have in all. Deciding where a spline keeps clear of itself and of
+/// the curves near it takes time in proportion to its control points
+/// (25 to 90 µs each in a release build, measured on closed cubic splines
+/// of 8 to 4095 points), so this bounds that work to a few seconds; one
+/// spline may have [`MAX_SPLINE_POINTS`].
+pub const MAX_SPLINE_POINTS_IN_ALL: usize = 1 << 16;
+
+/// Refuses splines with more control points in all than
+/// [`MAX_SPLINE_POINTS_IN_ALL`], naming those with the most.
+fn spline_work(curves: &[SketchCurve]) -> Result<(), KernelError> {
+    let points = |c: &SketchCurve| match &c.curve {
+        Curve2::Spline(spline) => spline.control.len(),
+        _ => 0,
+    };
+    let count = curves
+        .iter()
+        .map(points)
+        .fold(0_usize, usize::saturating_add);
+    if count <= MAX_SPLINE_POINTS_IN_ALL {
+        return Ok(());
+    }
+    let mut largest: Vec<(usize, u64)> = curves
+        .iter()
+        .filter(|c| points(c) > 0)
+        .map(|c| (points(c), c.id))
+        .collect();
+    largest.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    let mut ids: Vec<u64> = largest
+        .iter()
+        .take(MAX_REPORTED)
+        .map(|&(_, id)| id)
+        .collect();
+    ids.sort_unstable();
+    Err(KernelError::TooManySplinePoints {
+        count,
+        limit: MAX_SPLINE_POINTS_IN_ALL,
+        curves: ids,
+    })
+}
+
 /// The cap on curves before the broad phase (until 2026-10-17), when every
 /// step compared pairs swept in x: [`MAX_PAIRS`] is set from it.
 pub const OLD_MAX_CURVES: usize = 4096;
 
-/// Counts the pairs a step of detection looks at, against a limit.
+/// The pairs a step of detection may still look at, of a limit.
 struct Work {
-    pairs: usize,
+    left: usize,
     limit: usize,
 }
 
 impl Work {
     fn new(limit: usize) -> Work {
-        Work { pairs: 0, limit }
+        Work { left: limit, limit }
     }
 
-    fn add(&mut self, pairs: usize) -> Result<(), KernelError> {
-        self.pairs = self.pairs.saturating_add(pairs);
-        if self.pairs > self.limit {
-            return Err(KernelError::CrowdedCurves { limit: self.limit });
+    /// The error when the search near the curves `ids` (the one searched
+    /// about first, then those found near it) ran out of pairs.
+    fn crowded(&self, ids: impl IntoIterator<Item = u64>) -> KernelError {
+        let mut curves: Vec<u64> = ids.into_iter().collect();
+        curves.sort_unstable();
+        curves.dedup();
+        curves.truncate(MAX_REPORTED);
+        KernelError::CrowdedCurves {
+            curves,
+            limit: self.limit,
         }
-        Ok(())
     }
 }
 
@@ -643,12 +689,16 @@ fn join_ends(curves: &[SketchCurve], ends: &[End], tol: f64) -> Result<Vec<usize
     let reach = 2.0 * tol;
     let mut work = Work::new(4 * MAX_PAIRS);
     let mut found = Vec::new();
-    let mut mates = Vec::new();
-    // The first few ends near each end, in x order, and how many there are.
+    let id_of = |end: usize| {
+        ends.get(end)
+            .and_then(|e| curves.get(e.curve))
+            .map(|c| c.id)
+    };
+    // The first two ends near each end, in x order, and how many there are.
     let mut near: Vec<(usize, [usize; 2])> = Vec::with_capacity(ends.len());
     for (i, a) in ends.iter().enumerate() {
         let p = a.point;
-        tree.search(
+        let within = tree.search(
             |b| {
                 !(b[0] - p[0] > reach
                     || p[0] - b[2] > reach
@@ -656,10 +706,19 @@ fn join_ends(curves: &[SketchCurve], ends: &[End], tol: f64) -> Result<Vec<usize
                     || p[1] - b[3] > reach)
             },
             &mut found,
+            &mut work.left,
         );
-        work.add(found.len())?;
+        if !within {
+            return Err(work.crowded(
+                std::iter::once(i)
+                    .chain(found.iter().copied())
+                    .filter_map(id_of),
+            ));
+        }
         let at = position.get(i).copied().ok_or_else(internal)?;
-        mates.clear();
+        let mut count = 0_usize;
+        // The two nearest the start of the x order, as (place, end).
+        let mut first_two = [(usize::MAX, usize::MAX); 2];
         for &j in &found {
             let (Some(b), Some(&bt)) = (ends.get(j), position.get(j)) else {
                 return Err(internal());
@@ -672,21 +731,16 @@ fn join_ends(curves: &[SketchCurve], ends: &[End], tol: f64) -> Result<Vec<usize
             // (The sweep stopped at an end more than `tol` further on in x.)
             let beyond = second.point[0] - first.point[0] > tol;
             if !beyond && distance(first.point, second.point) <= tol {
-                mates.push((bt, j));
+                count += 1;
+                if bt < first_two[0].0 {
+                    first_two = [(bt, j), first_two[0]];
+                } else if bt < first_two[1].0 {
+                    first_two[1] = (bt, j);
+                }
             }
         }
-        mates.sort_unstable();
-        let mut list = [usize::MAX; 2];
-        for (slot, &(_, j)) in list.iter_mut().zip(&mates) {
-            *slot = j;
-        }
-        near.push((mates.len(), list));
+        near.push((count, first_two.map(|(_, j)| j)));
     }
-    let id_of = |end: usize| {
-        ends.get(end)
-            .and_then(|e| curves.get(e.curve))
-            .map(|c| c.id)
-    };
     let report = |mut ids: Vec<u64>| {
         ids.sort_unstable();
         ids.dedup();
@@ -956,11 +1010,17 @@ fn check_clear(
         else {
             return Err(internal());
         };
-        tree.search(
+        let within = tree.search(
             |b| !(b[0] > box_a[2] || box_a[0] > b[2] || b[1] > box_a[3] || box_a[1] > b[3]),
             &mut found,
+            &mut work.left,
         );
-        work.add(found.len())?;
+        if !within {
+            let source = |j: &usize| own.get(*j).map(|s| s.source);
+            return Err(
+                work.crowded(std::iter::once(a.source).chain(found.iter().filter_map(source)))
+            );
+        }
         later.clear();
         for &j in &found {
             let &bt = position.get(j).ok_or_else(internal)?;
@@ -1098,11 +1158,28 @@ fn nest(rings: &[Ring]) -> Result<Vec<(usize, Option<usize>)>, KernelError> {
     let mut nesting = Vec::with_capacity(rings.len());
     for (i, ring) in rings.iter().enumerate() {
         let p = ring.path.origin();
-        tree.search(
+        let within = tree.search(
             |b| !(p[0] < b[0] || p[1] < b[1] || p[0] > b[2] || p[1] > b[3]),
             &mut found,
+            &mut work.left,
         );
-        work.add(found.len())?;
+        if !within {
+            // The loop searched about, and the first curve of each loop found.
+            let first = |j: &usize| {
+                rings
+                    .get(*j)
+                    .and_then(|r| r.path.sources(1).first().copied())
+            };
+            return Err(work.crowded(
+                ring.path
+                    .sources(MAX_REPORTED)
+                    .into_iter()
+                    .chain(found.iter().filter_map(first)),
+            ));
+        }
+        // The found loops come in no particular order: the parent is the
+        // smallest loop round the point, the first in index order of
+        // equal ones, as a scan in index order keeps.
         let (mut depth, mut parent): (usize, Option<(f64, usize)>) = (0, None);
         for &j in &found {
             let (Some(around), Some(turns)) = (rings.get(j), turns.get(j)) else {
@@ -1112,7 +1189,7 @@ fn nest(rings: &[Ring]) -> Result<Vec<(usize, Option<usize>)>, KernelError> {
                 continue;
             }
             depth += 1;
-            if parent.is_none_or(|(area, _)| around.area < area) {
+            if parent.is_none_or(|(area, k)| around.area < area || (around.area == area && j < k)) {
                 parent = Some((around.area, j));
             }
         }
@@ -1187,6 +1264,7 @@ fn detect(
     for curve in &sorted {
         validate(curve, tol)?;
     }
+    spline_work(&sorted)?;
     // A spline is cut where its sweep would not be one smooth face that
     // ends: at its corners, and in two when it closes on itself. The
     // pieces are curves of their own from here on, with the spline's id; a

@@ -8,8 +8,9 @@
 //! maxima, so no rounding). A search hands every node's box to a test and
 //! goes below only where it passes, so any test that passes for a box
 //! whenever it passes for a box inside it finds exactly the boxes it would
-//! find by testing every one. What it finds is returned in ascending index
-//! order, whatever the shape of the tree.
+//! find by testing every one. A search draws on a budget, one per box
+//! found, and stops when it runs out: the bound on the work of profile
+//! detection.
 
 /// How many boxes a leaf holds at most.
 const LEAF: usize = 8;
@@ -117,9 +118,18 @@ impl BoxTree {
     }
 
     /// Puts into `out` (cleared first) every item whose box passes `test`,
-    /// ascending. `test` must pass for a box whenever it passes for a box
-    /// inside it.
-    pub(crate) fn search(&self, test: impl Fn(&Box2) -> bool, out: &mut Vec<usize>) {
+    /// in no particular order (the callers order what they keep). `test`
+    /// must pass for a box whenever it passes for a box inside it.
+    ///
+    /// Every item found is taken from `budget`; when there is none left
+    /// the search stops at once and returns false (`out` then holds the
+    /// items found until then).
+    pub(crate) fn search(
+        &self,
+        test: impl Fn(&Box2) -> bool,
+        out: &mut Vec<usize>,
+        budget: &mut usize,
+    ) -> bool {
         out.clear();
         let mut stack = vec![0_usize];
         while let Some(at) = stack.pop() {
@@ -133,16 +143,19 @@ impl BoxTree {
                 Some(below) => stack.extend(below),
                 None => {
                     let items = self.items.get(node.first..node.end).unwrap_or(&[]);
-                    out.extend(
-                        items
-                            .iter()
-                            .copied()
-                            .filter(|&i| self.boxes.get(i).is_some_and(&test)),
-                    );
+                    for &i in items {
+                        if self.boxes.get(i).is_some_and(&test) {
+                            let Some(left) = budget.checked_sub(1) else {
+                                return false;
+                            };
+                            *budget = left;
+                            out.push(i);
+                        }
+                    }
                 }
             }
         }
-        out.sort_unstable();
+        true
     }
 }
 
@@ -185,12 +198,28 @@ mod tests {
             let tree = BoxTree::new(boxes.clone());
             let mut out = Vec::new();
             for q in &boxes {
-                tree.search(|b| overlap(q, b), &mut out);
+                let mut budget = usize::MAX;
+                assert!(tree.search(|b| overlap(q, b), &mut out, &mut budget));
+                out.sort_unstable();
+                assert_eq!(usize::MAX - budget, out.len());
                 let all: Vec<usize> = (0..boxes.len())
                     .filter(|&i| overlap(q, &boxes[i]))
                     .collect();
                 assert_eq!(out, all);
             }
         }
+    }
+
+    #[test]
+    fn a_search_stops_when_its_budget_runs_out() {
+        let boxes = vec![[0.0, 0.0, 1.0, 1.0]; 100];
+        let tree = BoxTree::new(boxes);
+        let mut out = Vec::new();
+        let mut budget = 30;
+        assert!(!tree.search(|_| true, &mut out, &mut budget));
+        assert_eq!((out.len(), budget), (30, 0));
+        let mut budget = 100;
+        assert!(tree.search(|_| true, &mut out, &mut budget));
+        assert_eq!((out.len(), budget), (100, 0));
     }
 }

@@ -556,4 +556,56 @@ mod tests {
             }
         }
     }
+    /// Big star outlines (many segments, so winding numbers go through the
+    /// tree of stretches) with circles and squares scattered in and out of
+    /// them and sometimes a smaller star inside: the same as the reference.
+    #[test]
+    fn indexed_search_agrees_with_all_pairs_on_big_loops_with_holes() {
+        let mut rng = Rng(99);
+        let mut seen: BTreeMap<&str, usize> = BTreeMap::new();
+        for round in 0..400 {
+            let n = 2 * (5 + rng.below(60) as usize);
+            let (r0, r1) = (50.0, 55.0 + rng.grid(40));
+            let star = |n: usize, r0: f64, r1: f64, turn: f64| -> Vec<P2> {
+                (0..n)
+                    .map(|i| {
+                        let a = TAU * i as f64 / n as f64 + turn;
+                        let r = if i % 2 == 0 { r0 } else { r1 };
+                        [r * a.cos(), r * a.sin()]
+                    })
+                    .collect()
+            };
+            let mut curves = polygon(&star(n, r0, r1, 0.01 * round as f64));
+            for _ in 0..rng.below(40) {
+                curves.push(Curve2::Circle {
+                    center: [rng.grid(200) - 100.0, rng.grid(200) - 100.0],
+                    radius: 0.5 + rng.grid(2),
+                });
+            }
+            for _ in 0..rng.below(10) {
+                let c = [rng.grid(200) - 100.0, rng.grid(200) - 100.0];
+                curves.extend(rectangle((c[0], c[0] + 1.0), (c[1], c[1] + 1.0)));
+            }
+            if rng.below(2) == 0 {
+                let m = 2 * (5 + rng.below(30) as usize);
+                curves.extend(polygon(&star(m, 20.0, 35.0, 0.0)));
+            }
+            let k = [1e-3, 1.0, 1e3, 1e6][round % 4];
+            let mut scaled: Vec<SketchCurve> = curves
+                .iter()
+                .enumerate()
+                .map(|(i, c)| SketchCurve {
+                    id: i as u64,
+                    curve: scaled_curve(c, k),
+                })
+                .collect();
+            rng.shuffle(&mut scaled);
+            let tol = Tolerance {
+                linear: 1e-6 * k,
+                ..Tolerance::default()
+            };
+            *seen.entry(kind(&agree(&scaled, &tol))).or_default() += 1;
+        }
+        assert!(seen.get("ok").copied().unwrap_or(0) > 50, "{seen:?}");
+    }
 }

@@ -75,8 +75,8 @@ pub(crate) fn build(
                     }
                     text
                 }
-                KernelError::TooManyCurves { count, limit } => format!(
-                    "distance: the offset of sketch `{}` has {count} curves, more than profile detection takes ({limit}); corners: sharp adds none where lines meet",
+                KernelError::TooManyOffsetCurves { count, limit } => format!(
+                    "distance: the offset of sketch `{}` has {count} curves, more than an offset of profiles takes ({limit}); corners: sharp adds none where lines meet",
                     made.name
                 ),
                 other => format!("distance: {other}"),

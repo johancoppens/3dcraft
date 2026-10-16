@@ -61,7 +61,24 @@ pub enum KernelError {
     /// More pairs of curves, curve ends or loops lie near one another than
     /// profile detection compares (a bound on its work, far above what
     /// drawn or patterned sketches need).
+    /// `curves` are where the bound was crossed (at most [`MAX_REPORTED`],
+    /// ascending): the curve, end or loop searched about and curves found
+    /// near it.
     CrowdedCurves {
+        curves: Vec<u64>,
+        limit: usize,
+    },
+    /// The splines of a profile have more control points in all than
+    /// profile detection compares (a bound on its work); `curves` are the
+    /// splines with the most (at most [`MAX_REPORTED`], ascending).
+    TooManySplinePoints {
+        count: usize,
+        limit: usize,
+        curves: Vec<u64>,
+    },
+    /// An offset of profiles would have more curves than it takes.
+    TooManyOffsetCurves {
+        count: usize,
         limit: usize,
     },
     /// Two curves were given the same id.
@@ -298,9 +315,25 @@ impl fmt::Display for KernelError {
                 f,
                 "{count} curves are more than profile detection accepts ({limit})"
             ),
-            KernelError::CrowdedCurves { limit } => write!(
+            KernelError::CrowdedCurves { curves, limit } => write!(
                 f,
-                "the curves lie too close together for profile detection: more than {limit} pairs of curves, curve ends or loops are near one another"
+                "the curves lie too close together for profile detection: more than {limit} pairs of curves, curve ends or loops are near one another (about curves {}); \
+                 remove curves drawn on top of each other or loops stacked inside each other",
+                id_list(curves)
+            ),
+            KernelError::TooManySplinePoints {
+                count,
+                limit,
+                curves,
+            } => write!(
+                f,
+                "the splines have {count} control points in all, more than profile detection compares ({limit}); \
+                 the largest are curves {}: use fewer control points",
+                id_list(curves)
+            ),
+            KernelError::TooManyOffsetCurves { count, limit } => write!(
+                f,
+                "the offset outline would have {count} curves, more than an offset of profiles takes ({limit})"
             ),
             KernelError::DuplicateCurveId { id } => {
                 write!(f, "two curves have the same id {id}")

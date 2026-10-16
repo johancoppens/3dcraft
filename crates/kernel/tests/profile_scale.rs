@@ -220,3 +220,94 @@ fn a_weld_table_plate_of_holes_and_slots_extrudes() {
         &Tolerance::default(),
     );
 }
+
+/// A closed cubic spline of `m` control points about `c`, wavy (radius `r`
+/// and `0.9 r` in turn).
+fn wavy_spline(id: u64, c: [f64; 2], r: f64, m: usize) -> SketchCurve {
+    let mut control: Vec<[f64; 2]> = (0..m)
+        .map(|i| {
+            let a = 2.0 * PI * i as f64 / m as f64;
+            let s = if i % 2 == 0 { r } else { 0.9 * r };
+            [c[0] + s * a.cos(), c[1] + s * a.sin()]
+        })
+        .collect();
+    control.push(control[0]);
+    let n = control.len();
+    let mut knots = vec![0.0; 4];
+    knots.extend((1..n - 3).map(|k| k as f64));
+    knots.extend([(n - 3) as f64; 4]);
+    SketchCurve {
+        id,
+        curve: craft3d_kernel::profile::Curve2::Spline(craft3d_kernel::profile::Spline2 {
+            degree: 3,
+            knots,
+            control,
+        }),
+    }
+}
+
+/// Time of detection per control point of splines, by the size of each.
+#[test]
+#[ignore = "timings; run in release with --ignored --nocapture"]
+fn spline_work_timings() {
+    for m in [8, 32, 128, 512, 4095] {
+        for total in [16_384, 65_536] {
+            let count = (total / m).max(1);
+            let side = (count as f64).sqrt().ceil() as usize;
+            let curves: Vec<SketchCurve> = (0..count)
+                .map(|k| {
+                    let c = [(k % side) as f64 * 30.0, (k / side) as f64 * 30.0];
+                    wavy_spline(k as u64, c, 10.0, m)
+                })
+                .collect();
+            let started = Instant::now();
+            let result = detect_profiles(&curves, &Tolerance::default());
+            println!(
+                "{count} splines of {m} points ({} in all): {:.2?} ({})",
+                count * (m + 1),
+                started.elapsed(),
+                match &result {
+                    Ok(p) => format!("{} profiles", p.len()),
+                    Err(e) => format!("{e}"),
+                }
+            );
+        }
+    }
+}
+
+/// Splines whose control points in all pass the bound are refused at
+/// once, naming the largest; up to the bound they are accepted.
+#[test]
+fn splines_with_too_many_points_in_all_are_refused() {
+    use craft3d_kernel::KernelError;
+    use craft3d_kernel::profile::MAX_SPLINE_POINTS_IN_ALL;
+    let spread = |count: usize, m: usize| -> Vec<SketchCurve> {
+        (0..count)
+            .map(|k| {
+                let c = [(k % 8) as f64 * 30.0, (k / 8) as f64 * 30.0];
+                wavy_spline(k as u64, c, 10.0, m)
+            })
+            .collect()
+    };
+    // 64 splines of 4096 control points (the last on the first).
+    let mut many = spread(64, 4095);
+    // One small spline among them, not named.
+    many.push(wavy_spline(1000, [500.0, 500.0], 10.0, 8));
+    let started = Instant::now();
+    let err = detect_profiles(&many, &Tolerance::default()).unwrap_err();
+    assert!(started.elapsed().as_secs_f64() < 1.0);
+    assert_eq!(
+        err,
+        KernelError::TooManySplinePoints {
+            count: 64 * 4096 + 9,
+            limit: MAX_SPLINE_POINTS_IN_ALL,
+            curves: (0..8).collect(),
+        }
+    );
+    // Exactly the bound: accepted. 512 splines of 128 points.
+    let fits = spread(MAX_SPLINE_POINTS_IN_ALL / 128, 127);
+    assert_eq!(
+        detect_profiles(&fits, &Tolerance::default()).unwrap().len(),
+        MAX_SPLINE_POINTS_IN_ALL / 128
+    );
+}

@@ -823,7 +823,7 @@ fn attempt(
     for (lp, l) in loops.iter().enumerate() {
         raw_loop(&l.segments, lp, d, corners, tol, &mut made)?;
         if made.candidates.len() > MAX_RAW {
-            return Err(KernelError::TooManyCurves {
+            return Err(KernelError::TooManyOffsetCurves {
                 count: made.candidates.len(),
                 limit: MAX_RAW,
             });
@@ -1008,7 +1008,7 @@ fn attempt(
         out
     };
     if curves.len() > MAX_PIECES {
-        return Err(KernelError::TooManyCurves {
+        return Err(KernelError::TooManyOffsetCurves {
             count: curves.len(),
             limit: MAX_PIECES,
         });
@@ -1162,10 +1162,29 @@ fn unchanged(profiles: &[Profile]) -> Result<OffsetOutline, KernelError> {
 /// The largest distance between 0 and `d` (same sign) at which the
 /// offset has every loop and region the input has, and no more: by bisection, to a
 /// thousandth of the tolerance.
-fn largest_whole(profiles: &[Profile], d: f64, corners: Corners, tolerance: &Tolerance) -> f64 {
+///
+/// A try that fails for a reason that is not the outline's (a cap on the
+/// work, which a smaller distance does not lift) ends the search with that
+/// error: no distance is found rather than a wrong one.
+fn largest_whole(
+    profiles: &[Profile],
+    d: f64,
+    corners: Corners,
+    tolerance: &Tolerance,
+) -> Result<f64, KernelError> {
     let whole = |t: f64| {
-        t.abs() <= tolerance.linear
-            || attempt(profiles, t, corners, tolerance).is_ok_and(|o| o.is_whole())
+        if t.abs() <= tolerance.linear {
+            return Ok(true);
+        }
+        match attempt(profiles, t, corners, tolerance) {
+            Ok(o) => Ok(o.is_whole()),
+            Err(
+                e @ (KernelError::TooManyOffsetCurves { .. }
+                | KernelError::TooManyCurves { .. }
+                | KernelError::CrowdedCurves { .. }),
+            ) => Err(e),
+            Err(_) => Ok(false),
+        }
     };
     let (mut lo, mut hi) = (0.0_f64, d.abs());
     let sign = d.signum();
@@ -1174,13 +1193,13 @@ fn largest_whole(profiles: &[Profile], d: f64, corners: Corners, tolerance: &Tol
             break;
         }
         let mid = 0.5 * (lo + hi);
-        if whole(sign * mid) {
+        if whole(sign * mid)? {
             lo = mid;
         } else {
             hi = mid;
         }
     }
-    sign * lo
+    Ok(sign * lo)
 }
 
 /// The closed profiles offset by `d`: positive grows the material.
@@ -1247,13 +1266,13 @@ pub fn offset_profiles(
         return Err(KernelError::OffsetProfile {
             reason: "leaves nothing of a region",
             curves,
-            largest: Some(largest_whole(profiles, -reach, corners, tolerance)),
+            largest: Some(largest_whole(profiles, -reach, corners, tolerance)?),
         });
     }
     match attempt(profiles, d, corners, tolerance) {
         Ok(mut outline) => {
             if !outline.is_whole() {
-                outline.whole_up_to = Some(largest_whole(profiles, d, corners, tolerance));
+                outline.whole_up_to = largest_whole(profiles, d, corners, tolerance).ok();
             }
             Ok(outline)
         }
@@ -1265,7 +1284,7 @@ pub fn offset_profiles(
             Err(KernelError::OffsetProfile {
                 reason,
                 curves,
-                largest: Some(largest_whole(profiles, d, corners, tolerance)),
+                largest: largest_whole(profiles, d, corners, tolerance).ok(),
             })
         }
         Err(other) => Err(other),
