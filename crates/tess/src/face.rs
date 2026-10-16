@@ -2171,11 +2171,15 @@ impl Routes<'_> {
                     continue;
                 };
                 let [p, q] = ends;
-                // (No cap on the pieces found to cross: each station is
-                // taken from the queue once, so each bridge is tried at
-                // most once, and the bridges are bounded by the
-                // triangulation they come from. A cap of 256 refused a
-                // pipe with ten holes at a fine chord, which has more.)
+                // (No cap on the pieces found to cross: a station is
+                // queued once (it must be unreached), so each bridge is
+                // tried at most once, and the bridges are the sides of a
+                // triangulation of the stations' vertices (`bridges`: a
+                // `Cdt` of `count` points, `count` the vertices times the
+                // turns tried), at most three per point: the work is
+                // proportional to the stations' vertices. A cap of 256
+                // refused a pipe with ten holes at a fine chord, which has
+                // more.)
                 if crosses_the_seam(ends, node, &reached) || (self.crosses_a_loop)(p, q) {
                     continue;
                 }
