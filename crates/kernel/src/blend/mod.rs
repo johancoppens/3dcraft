@@ -103,6 +103,8 @@ use std::f64::consts::{PI, TAU};
 mod fit;
 mod rolling;
 mod section;
+#[cfg(test)]
+mod tests;
 use section::{Section, Trace};
 
 /// Most edges one blend takes.
@@ -2506,7 +2508,9 @@ fn carry_back(rolled: Blended, second: Blended, free: &[usize], closed: &[usize]
 /// The requests built in place although a closed form covers them: the
 /// classes routed so far in the migration to one blend construction
 /// (`docs/design/blends.md` › *One blend construction*). A straight edge
-/// between two planes, filleted or chamfered, each of whose ends is a
+/// between two planes or cylinders along it (the motion that carries the
+/// edge and both faces into themselves is a translation), filleted or
+/// chamfered, each of whose ends is a
 /// vertex of three edges at which no other requested edge ends, and every
 /// face at whose ends (the two beside it and the third faces) has one
 /// loop: a hole or a boss in what the blend takes is taken whole by the
@@ -2546,7 +2550,6 @@ fn in_place(
         .enumerate()
         .filter(|(_, (plan, _))| {
             matches!(plan.path, Path::Line { .. })
-                && plan.flat()
                 && plan.ends.is_some_and(|[a, b]| a != b && lone(a) && lone(b))
         })
         .map(|(index, _)| index)
@@ -2568,9 +2571,11 @@ fn construct(
     if routed.is_empty() {
         return build(body, uses, at, plans, tolerance);
     }
-    // A chamfer by its two distances along the faces: the plan's section
-    // is the exact one between two planes, also for a distance and an
-    // angle (the sine rule in the triangle of the section).
+    // A chamfer by the straight distances in the plane across the edge
+    // from the edge to its feet, which is what the construction in place
+    // measures: the plan's section is the exact one, also for a distance
+    // and an angle (between two planes the sine rule in the triangle of
+    // the section; next to a cylinder the chord of the arc along it).
     let picked: Vec<Request> = routed
         .iter()
         .filter_map(|i| {
@@ -2578,10 +2583,13 @@ fn construct(
             let plan = plans.get(*i)?;
             let size = match plan.round {
                 Some(_) => request.size,
-                None => Size::Chamfer(ChamferSize::Distances {
-                    first: plan.distances[0],
-                    second: plan.distances[1],
-                }),
+                None => {
+                    let [first, second] = match &plan.section {
+                        Some(section) => section.feet.map(Vec3::length),
+                        None => plan.distances,
+                    };
+                    Size::Chamfer(ChamferSize::Distances { first, second })
+                }
             };
             Some(Request { size, ..*request })
         })
