@@ -285,7 +285,7 @@ impl Reason {
                 "two chamfers meet in a vertex whose third edge turns the other way (concave between convex chamfers, or convex between concave ones); that is not built yet: leave one of them out"
             }
             Reason::FreeGoesOn => {
-                "the chamfer cannot stop where the edge goes on smoothly into the next edge: chamfer the edges it continues in as well (with chain), or leave this one out"
+                "the chamfer does not end cleanly: it cannot stop where the edge goes on smoothly into the next edge; chamfer the edges it continues in as well (with chain), or leave this one out"
             }
             Reason::FreeRunsOver => {
                 "the chamfer's border runs off a face beside the edge across one of its other edges along the way: the distance is too large for that face, or the chamfer would have to carry on onto the next face, which is not built yet"
@@ -381,7 +381,7 @@ impl Reason {
                 "two fillets meet in a vertex whose third edge turns the other way (concave between convex fillets, or convex between concave ones): the ball would have to roll over that edge from one fillet into the other, a patch of its own that is not built yet; leave one of them out"
             }
             Reason::FreeGoesOn => {
-                "the fillet cannot stop where the edge goes on smoothly into the next edge: fillet the edges it continues in as well (with chain), or leave this one out"
+                "the fillet does not end cleanly: it cannot stop where the edge goes on smoothly into the next edge; fillet the edges it continues in as well (with chain), or leave this one out"
             }
             Reason::FreeRunsOver => {
                 "the fillet's border runs off a face beside the edge across one of its other edges along the way (where the ball would roll on over a smooth edge onto the next face, or the face is too narrow for the radius); a fillet that carries on onto the next face in the middle of an edge is not built yet: give a smaller radius"
@@ -2441,6 +2441,13 @@ fn mixed(
         return Ok(rolled);
     }
     let second = blend_inner(&rolled.body, &pick(&closed), tolerance, true)?;
+    Ok(carry_back(rolled, second, &free, &closed))
+}
+
+/// The sources of `second` (the blends `closed` of a feature, made on the
+/// body `rolled` left after the blends `free` were built in place),
+/// carried back to the body both started from.
+fn carry_back(rolled: Blended, second: Blended, free: &[usize], closed: &[usize]) -> Blended {
     let from_free = |i: &usize| free.get(*i).copied().unwrap_or(usize::MAX);
     let from_closed = |i: &usize| closed.get(*i).copied().unwrap_or(usize::MAX);
     let faces = second
@@ -2488,12 +2495,101 @@ fn mixed(
         .into_iter()
         .map(|v| v.and_then(|v| rolled.vertices.get(v.0 as usize).copied().flatten()))
         .collect();
-    Ok(Blended {
+    Blended {
         body: second.body,
         faces,
         edges: edges_of,
         vertices,
-    })
+    }
+}
+
+/// The requests built in place although a closed form covers them: the
+/// classes routed so far in the migration to one blend construction
+/// (`docs/design/blends.md` › *One blend construction*). Step 1: a
+/// straight edge between two planes, filleted or chamfered by two
+/// distances, each of whose ends is a vertex of three edges at which no
+/// other requested edge ends.
+fn in_place(body: &Body, at: &[Vec<EdgeId>], requests: &[Request], plans: &[Plan]) -> Vec<usize> {
+    let mut ends: BTreeMap<VertexId, usize> = BTreeMap::new();
+    for request in requests {
+        if let Some(data) = body.edge(request.edge) {
+            for vertex in BTreeSet::from([data.start, data.end]) {
+                *ends.entry(vertex).or_default() += 1;
+            }
+        }
+    }
+    let lone = |vertex: VertexId| {
+        ends.get(&vertex) == Some(&1) && at.get(vertex.0 as usize).is_some_and(|e| e.len() == 3)
+    };
+    plans
+        .iter()
+        .zip(requests)
+        .enumerate()
+        .filter(|(_, (plan, request))| {
+            matches!(plan.path, Path::Line { .. })
+                && plan.flat()
+                && matches!(
+                    request.size,
+                    Size::Radius(_) | Size::Chamfer(ChamferSize::Distances { .. })
+                )
+                && plan.ends.is_some_and(|[a, b]| a != b && lone(a) && lone(b))
+        })
+        .map(|(index, _)| index)
+        .collect()
+}
+
+/// Builds `plans` (one per request): those `routed` in place
+/// ([`in_place`]) first, the others by the tools on the body that leaves;
+/// the sources carried back.
+fn construct(
+    body: &Body,
+    uses: &[Vec<Use>],
+    at: &[Vec<EdgeId>],
+    requests: &[Request],
+    plans: Vec<Plan>,
+    routed: &[usize],
+    tolerance: &Tolerance,
+) -> Result<Blended, Failure> {
+    if routed.is_empty() {
+        return build(body, uses, at, plans, tolerance);
+    }
+    let picked: Vec<Request> = routed
+        .iter()
+        .filter_map(|i| requests.get(*i).copied())
+        .collect();
+    let mut rolled = rolling::blend(body, &picked, tolerance)?;
+    // A chamfer face gets the frame the tools give it.
+    let mut of_plan: Vec<Vec<usize>> = vec![Vec::new(); routed.len()];
+    for (face, made) in rolled.faces.iter().enumerate() {
+        if let Face::Blend(of) = made {
+            for local in of {
+                if let Some(list) = of_plan.get_mut(*local) {
+                    list.push(face);
+                }
+            }
+        }
+    }
+    for (local, index) in routed.iter().enumerate() {
+        if let Some(plan) = plans.get(*index) {
+            reframe(&mut rolled.body, &of_plan, local, plan);
+        }
+    }
+    let rest: Vec<usize> = (0..requests.len())
+        .filter(|i| !routed.contains(i))
+        .collect();
+    if rest.is_empty() {
+        // `routed` is every request, in order.
+        return Ok(rolled);
+    }
+    let now_uses = edge_uses(&rolled.body);
+    let now_at = vertex_edges(&rolled.body);
+    let mut second_plans = Vec::with_capacity(rest.len());
+    for index in &rest {
+        let request = requests.get(*index).ok_or_else(lost)?;
+        second_plans.push(plan(&rolled.body, &now_uses, request, tolerance.linear)?);
+    }
+    let second = build(&rolled.body, &now_uses, &now_at, second_plans, tolerance)?;
+    Ok(carry_back(rolled, second, routed, &rest))
 }
 
 fn blend_inner(
@@ -2550,10 +2646,11 @@ fn blend_inner(
         }
         return mixed(body, edges, free, tolerance);
     }
-    match build(body, &uses, &at, plans.clone(), tolerance) {
+    let routed = in_place(body, &at, edges, &plans);
+    match construct(body, &uses, &at, edges, plans.clone(), &routed, tolerance) {
         Ok(made) => Ok(made),
         Err(failure) => Err(fit::explain(
-            body, &uses, &at, edges, &plans, failure, tolerance,
+            body, &uses, &at, edges, &plans, &routed, failure, tolerance,
         )),
     }
 }

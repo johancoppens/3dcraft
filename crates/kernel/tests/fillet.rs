@@ -1864,3 +1864,94 @@ fn a_radius_too_large_at_the_finest_tolerance_is_refused() {
     let request = round(&block, 1.0, [0.0, 0.0, 1.0], 3.5);
     assert!(fillet(&block, &[request], &tol).is_err());
 }
+
+/// A straight edge between two planes, alone at both its ends, is built
+/// in place (one blend construction, `docs/design/blends.md`): its face
+/// is the exact cylinder the translation along the edge sweeps the ball's
+/// arc into, and every edge of that face is the line or circle in which
+/// its two surfaces meet, not a fitted curve.
+#[test]
+fn an_edge_built_in_place_has_an_exact_face_and_exact_edges() {
+    for k in SCALES {
+        for frame in frames(k) {
+            let part = prism(
+                &frame,
+                k,
+                &[[0.0, 0.0], [4.0, 0.0], [4.0, 3.0], [0.0, 3.0]],
+                2.0,
+            );
+            let r = 0.5;
+            let made = solve(&part, &[round_in(&part, &frame, k, [2.0, 0.0, 2.0], r)], k);
+            let area = 52.0 - 2.0 * r * 4.0 - 2.0 * SPANDREL * r * r + PI / 2.0 * r * 4.0;
+            assert_mass(&made, 24.0 - SPANDREL * r * r * 4.0, area, k);
+            let [face] = fillet_faces(&made)[..] else {
+                panic!("one fillet face");
+            };
+            let data = &made.body.faces[face];
+            assert!(
+                matches!(data.surface, Surface::Cylinder(_)),
+                "{:?}",
+                data.surface
+            );
+            for l in &data.loops {
+                for coedge in &made.body.loop_(*l).unwrap().coedges {
+                    let curve = &made.body.edge(coedge.edge).unwrap().curve;
+                    assert!(
+                        matches!(
+                            curve,
+                            craft3d_geom::Curve3::Line(_) | craft3d_geom::Curve3::Circle(_)
+                        ),
+                        "an edge of the fillet face is a {}",
+                        curve.kind()
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// A hole that lies wholly in the strip a fillet would take of the face
+/// beside its edge is not crossed by the fillet's border, and is refused
+/// all the same: the fillet would have to run through it. What fits is
+/// the radius at which the border reaches the hole (its nearest point is
+/// 0.3 from the edge, and the tangent line of a square corner lies r from
+/// the edge); just below it builds, against the closed form (the block
+/// less the hole less the corner).
+#[test]
+fn a_hole_wholly_inside_the_strip_a_fillet_takes_is_refused() {
+    for k in SCALES {
+        let block = boxed(k, [0.0, 0.0, 0.0], [4.0, 3.0, 2.0]);
+        let (rh, at) = (0.3, 0.6);
+        let drill = rod(
+            &Frame::WORLD.at(Vec3::new(2.0 * k, at * k, -k)).unwrap(),
+            k,
+            rh,
+            4.0,
+        );
+        let holed = boolean(&block, &drill, BooleanOp::Subtract, &tolerance(k))
+            .unwrap()
+            .body;
+        // The top front edge (its middle is nearer this point than the
+        // middle of the hole's mouth is).
+        match fillet(
+            &holed,
+            &[round(&holed, k, [2.0, -1.0, 2.5], 1.0)],
+            &tolerance(k),
+        ) {
+            Err(KernelError::FilletTooLarge { largest, .. }) => {
+                assert!(
+                    (largest - (at - rh) * k).abs() <= 1e-3 * k,
+                    "largest {largest}"
+                );
+            }
+            other => panic!("expected too large, got {other:?}"),
+        }
+        let r = 0.25;
+        let made = solve(&holed, &[round(&holed, k, [2.0, -1.0, 2.5], r)], k);
+        assert_close(
+            mass(&made.body).volume,
+            (24.0 - PI * rh * rh * 2.0 - SPANDREL * r * r * 4.0) * k * k * k,
+            "volume",
+        );
+    }
+}

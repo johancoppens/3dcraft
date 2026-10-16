@@ -24,7 +24,9 @@
 //! the same at every smaller size is reported as it is. Every search is
 //! bounded ([`MOST_BUILDS`]), and a spent budget proves nothing.
 
-use super::{BlendError, Failure, Path, Plan, Reason, Request, Size, Use, build, face_edges, plan};
+use super::{
+    BlendError, Failure, Path, Plan, Reason, Request, Size, Use, construct, face_edges, plan,
+};
 use crate::KernelError;
 use crate::chamfer::ChamferSize;
 use craft3d_geom::Curve3;
@@ -80,6 +82,8 @@ fn sized(error: &BlendError) -> bool {
                 | Reason::InPieces
                 | Reason::EndsBadly
                 | Reason::NotTangent
+                | Reason::FreeTooLarge
+                | Reason::FreeRunsOver
         ),
     }
 }
@@ -93,7 +97,11 @@ fn no_room(error: &BlendError) -> bool {
     matches!(
         error,
         BlendError::Refused {
-            reason: Reason::Reaches | Reason::LostNeighbour | Reason::InPieces,
+            reason: Reason::Reaches
+                | Reason::LostNeighbour
+                | Reason::InPieces
+                | Reason::FreeTooLarge
+                | Reason::FreeRunsOver,
             ..
         }
     )
@@ -182,6 +190,8 @@ struct Search<'a> {
     uses: &'a [Vec<Use>],
     at: &'a [Vec<EdgeId>],
     requests: &'a [Request],
+    /// The requests built in place (`super::in_place`).
+    routed: &'a [usize],
     group: &'a BTreeSet<usize>,
     tolerance: &'a Tolerance,
     builds: usize,
@@ -204,6 +214,7 @@ impl Search<'_> {
         self.builds += 1;
         let tol = self.tolerance.linear;
         let mut plans = Vec::with_capacity(self.requests.len());
+        let mut requests = Vec::with_capacity(self.requests.len());
         let mut failed = None;
         for (i, request) in self.requests.iter().enumerate() {
             let request = if self.group.contains(&i) {
@@ -214,6 +225,7 @@ impl Search<'_> {
             } else {
                 *request
             };
+            requests.push(request);
             match plan(self.body, self.uses, &request, tol) {
                 Ok(made) => plans.push(made),
                 Err(error) => {
@@ -224,9 +236,17 @@ impl Search<'_> {
         }
         let failed = match failed {
             Some(error) => Some(error),
-            None => build(self.body, self.uses, self.at, plans, self.tolerance)
-                .err()
-                .map(|f| f.error),
+            None => construct(
+                self.body,
+                self.uses,
+                self.at,
+                &requests,
+                plans,
+                self.routed,
+                self.tolerance,
+            )
+            .err()
+            .map(|f| f.error),
         };
         let outcome = failed.map_or(Outcome::Built, Outcome::Failed);
         self.seen.insert(scale.to_bits(), outcome.clone());
@@ -442,12 +462,14 @@ fn events(body: &Body, plans: &[Plan], group: &BTreeSet<usize>, tol: f64) -> Vec
 /// What a blend that did not build is refused with: the error, or, when
 /// a smaller size builds, [`BlendError::TooLarge`] with the largest that
 /// fits (see the module documentation).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn explain(
     body: &Body,
     uses: &[Vec<Use>],
     at: &[Vec<EdgeId>],
     requests: &[Request],
     plans: &[Plan],
+    routed: &[usize],
     failure: Failure,
     tolerance: &Tolerance,
 ) -> BlendError {
@@ -488,6 +510,7 @@ pub(super) fn explain(
         uses,
         at,
         requests,
+        routed,
         group: &group,
         tolerance,
         builds: 0,
