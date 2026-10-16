@@ -54,7 +54,7 @@
 // `!(x > 0.0)` is deliberate: unlike `x <= 0.0` it is also true for NaN.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
-use crate::refine::interpolate;
+use crate::refine::{interpolate, interpolate_on};
 use crate::{GeomError, MAX_CONTROL_POINTS, NurbsSurface, Surface, pole};
 use craft3d_math::Vec3;
 
@@ -129,7 +129,9 @@ pub fn offset_over(
 /// surface which way it points (along an edge where a face is tangent to
 /// its neighbour only to within what fitting left, the normal both
 /// offsets share). The turn is meant to be small: the regularity is
-/// proven for the surface's own normal.
+/// proven for the surface's own normal. It has to be twice continuously
+/// differentiable, past the domain as well when `over` reaches past it:
+/// the fit is made in one piece across the domain's ends.
 pub fn offset_along(
     surface: &Surface,
     distance: f64,
@@ -145,7 +147,57 @@ pub fn offset_along(
     }
     let over = wide(&nurbs, over)?;
     regular_over(surface, distance, over)?;
+    // Fitted a step past every end that is not a seam, and cut back to
+    // `over`: the borders of the face then lie inside the fit, where its
+    // derivatives (the normal, which a face tangent to it across a border
+    // has to share) are as good as anywhere, not at the ends of an
+    // interpolation, where they are worst. Without the step where the
+    // surface continued that far is not proven regular.
+    let past = margins(&nurbs, over, limit);
+    if past != over && regular_over(surface, distance, past).is_ok() {
+        let fitted = fit(surface, &nurbs, distance, limit, past, turn)?;
+        return fitted
+            .restricted(over.0, over.1)
+            .map_err(|_| OffsetError::NoFit);
+    }
     fit(surface, &nurbs, distance, limit, over, turn)
+}
+
+/// `over` with a step of the fit's first samples added past each end in a
+/// direction in which the surface does not close on itself (its ends meet
+/// within `tol`): the first or the last knot span of the surface in its
+/// domain over [`START`].
+fn margins(nurbs: &NurbsSurface, over: Domain, tol: f64) -> Domain {
+    let ((u0, u1), (v0, v1)) = nurbs.domain();
+    let step = |knots: &[f64], (lo, hi): (f64, f64)| -> (f64, f64) {
+        let inner: Vec<f64> = knots
+            .iter()
+            .copied()
+            .filter(|k| *k > lo && *k < hi)
+            .collect();
+        let first = inner.first().copied().unwrap_or(hi) - lo;
+        let last = hi - inner.last().copied().unwrap_or(lo);
+        (first / START as f64, last / START as f64)
+    };
+    let widen = |(a, b): (f64, f64), (before, after): (f64, f64), closes: bool| {
+        if closes || !(before > 0.0 && after > 0.0 && before.is_finite() && after.is_finite()) {
+            (a, b)
+        } else {
+            (a - before, b + after)
+        }
+    };
+    (
+        widen(
+            over.0,
+            step(nurbs.knots_u(), (u0, u1)),
+            nurbs.closes(true, tol),
+        ),
+        widen(
+            over.1,
+            step(nurbs.knots_v(), (v0, v1)),
+            nurbs.closes(false, tol),
+        ),
+    )
 }
 
 /// `over` widened to take in the domain of `nurbs`, or an error when it
@@ -1104,17 +1156,27 @@ const START: usize = FIT_DEGREE;
 /// large face takes few samples.
 const FIT_DEGREE: usize = 5;
 
+/// A break of the fit: where, and whether the offset is once
+/// continuously differentiable across it (the fit then joins with its
+/// first derivative too).
+type Break = (f64, bool);
+
 /// The knots of a B-spline of `degree` in its domain at which its offset
 /// is less smooth than twice continuously differentiable (the normal
 /// costs one derivative: at a simple knot of a cubic the offset's
 /// curvature jumps), with the ends of the domain: the breaks of the fit in
-/// that direction, across which the fit only joins. Between two breaks
-/// the offset is analytic and the fit converges at its full order; across
-/// a knot where the offset's curvature jumps a fit that goes on smoothly
-/// converges at second order only, and refining there inserts whole rows
-/// of samples across the surface.
-fn breaks(knots: &[f64], degree: usize, (lo, hi): (f64, f64)) -> Vec<f64> {
-    let mut out = vec![lo];
+/// that direction. Between two breaks the offset is analytic and the fit
+/// converges at its full order; across a knot where the offset's
+/// curvature jumps a fit that goes on smoothly converges at second order
+/// only, and refining there inserts whole rows of samples across the
+/// surface. Where the surface is twice continuously differentiable (a
+/// simple knot of a cubic) its normal and so its offset are once: the fit
+/// joins there with its first derivative, so the offset's normal does not
+/// jump by what two fits on either side leave (a ball rolling along the
+/// face would see that as a crease); where the surface is less smooth the
+/// fit only joins.
+fn breaks(knots: &[f64], degree: usize, (lo, hi): (f64, f64)) -> Vec<Break> {
+    let mut out = vec![(lo, false)];
     let mut index = 0;
     while let Some(&k) = knots.get(index) {
         let multiplicity = knots
@@ -1125,17 +1187,20 @@ fn breaks(knots: &[f64], degree: usize, (lo, hi): (f64, f64)) -> Vec<f64> {
             .max(1);
         // Continuity C^(degree − multiplicity); the offset's one less.
         if k > lo && k < hi && degree < multiplicity + 3 {
-            out.push(k);
+            out.push((k, degree >= multiplicity + 2));
         }
         index += multiplicity;
     }
-    out.push(hi);
+    out.push((hi, false));
     out
 }
 
 /// The parameters to begin with in one direction: every knot span of the
-/// surface in its domain `(lo, hi)`, and what `over` reaches past it on
-/// either side, cut into [`START`] steps.
+/// surface in its domain `(lo, hi)` cut into [`START`] steps, and what
+/// `over` reaches past it on either side in steps as long as those of the
+/// span next to it (at least one): the fit goes on across the domain's
+/// ends, and an interpolating spline through steps that change in length
+/// by a large factor at once swings between them.
 fn start(knots: &[f64], (lo, hi): (f64, f64), over: (f64, f64)) -> Vec<f64> {
     let mut distinct: Vec<f64> = Vec::new();
     if over.0 < lo {
@@ -1153,10 +1218,31 @@ fn start(knots: &[f64], (lo, hi): (f64, f64), over: (f64, f64)) -> Vec<f64> {
         distinct = vec![over.0, over.1];
     }
     let mut out = Vec::with_capacity(distinct.len() * START);
-    for pair in distinct.windows(2) {
+    let last_pair = distinct.len().saturating_sub(2);
+    for (index, pair) in distinct.windows(2).enumerate() {
         let [a, b] = pair else { continue };
-        for k in 0..START {
-            out.push(a + (b - a) * k as f64 / START as f64);
+        // A part past the domain: as many steps as the span next to it
+        // would have over that length.
+        let next = if index == 0 && over.0 < lo {
+            distinct.get(1..3)
+        } else if index == last_pair && over.1 > hi && index > 0 {
+            distinct.get(index - 1..index + 1)
+        } else {
+            None
+        };
+        let steps = match next {
+            Some([c, d]) if d > c => {
+                let count = (START as f64 * (b - a) / (d - c)).ceil();
+                if count.is_finite() && count >= 1.0 {
+                    (count as usize).min(START)
+                } else {
+                    1
+                }
+            }
+            _ => START,
+        };
+        for k in 0..steps {
+            out.push(a + (b - a) * k as f64 / steps as f64);
         }
     }
     if let Some(last) = distinct.last() {
@@ -1165,21 +1251,25 @@ fn start(knots: &[f64], (lo, hi): (f64, f64), over: (f64, f64)) -> Vec<f64> {
     out
 }
 
-/// The cubic B-spline (lower with fewer than four points in a piece)
+/// The B-spline of [`FIT_DEGREE`] (lower with fewer points in a piece)
 /// through `values` at `params`, laid piece by piece between the
 /// `breaks` (parameters among `params`, the first and the last of them
-/// included) and joined there: knots of full multiplicity, the pieces
-/// sharing the control point at each break, which is the value there.
+/// included) and joined there: where the break is smooth ([`breaks`]) by
+/// a knot of the degree less one, so the spline is once continuously
+/// differentiable across it ([`joined`]), else by a knot of full
+/// multiplicity, the pieces sharing the control point at the break, which
+/// is the value there.
 fn pieces(
     params: &[f64],
-    breaks: &[f64],
+    breaks: &[Break],
     values: &[Vec<f64>],
 ) -> Option<(usize, Vec<f64>, Vec<Vec<f64>>)> {
-    let mut bounds: Vec<usize> = breaks
+    let mut found: Vec<(usize, bool)> = breaks
         .iter()
-        .filter_map(|b| params.iter().position(|p| p == b))
+        .filter_map(|(b, smooth)| params.iter().position(|p| p == b).map(|i| (i, *smooth)))
         .collect();
-    bounds.dedup();
+    found.dedup_by_key(|(i, _)| *i);
+    let bounds: Vec<usize> = found.iter().map(|(i, _)| *i).collect();
     if bounds.first() != Some(&0) || bounds.last() != Some(&(params.len().checked_sub(1)?)) {
         return None;
     }
@@ -1190,6 +1280,19 @@ fn pieces(
     let degree = shortest.min()?.min(FIT_DEGREE);
     if degree == 0 {
         return None;
+    }
+    // The inner breaks that are smooth.
+    let smooth: Vec<bool> = found
+        .iter()
+        .skip(1)
+        .take(bounds.len().saturating_sub(2))
+        .map(|(_, s)| *s)
+        .collect();
+    if degree >= 2
+        && smooth.iter().any(|s| *s)
+        && let Some(fit) = joined(params, &bounds, &smooth, degree, values)
+    {
+        return Some(fit);
     }
     let count = bounds.len() - 1;
     let mut knots = Vec::new();
@@ -1212,12 +1315,53 @@ fn pieces(
     Some((degree, knots, ctrl))
 }
 
+/// [`pieces`] in one interpolation across the inner breaks: per piece its
+/// own averaged knots (as [`interpolate`] lays them), a knot of the degree
+/// less one at a smooth break and of the degree at another; a smooth
+/// break takes one control point less than a piece joined at a shared
+/// point would, so the piece after it is given one knot more (its knots
+/// the averages of one parameter fewer). `None` where that knot vector
+/// does not give one solution (the Schoenberg–Whitney condition).
+fn joined(
+    params: &[f64],
+    bounds: &[usize],
+    smooth: &[bool],
+    degree: usize,
+    values: &[Vec<f64>],
+) -> Option<(usize, Vec<f64>, Vec<Vec<f64>>)> {
+    let (first, last) = (*params.first()?, *params.last()?);
+    let mut knots = vec![first; degree + 1];
+    let mut extra = false;
+    for (k, pair) in bounds.windows(2).enumerate() {
+        let [a, b] = pair else { return None };
+        let piece = params.get(*a..=*b)?;
+        let window = if extra { degree - 1 } else { degree };
+        let n = piece.len();
+        for j in 1..n.checked_sub(window)? {
+            let sum: f64 = piece.iter().skip(j).take(window).sum();
+            knots.push(sum / window as f64);
+        }
+        if k + 2 < bounds.len() {
+            let at = *piece.last()?;
+            let soft = smooth.get(k).copied().unwrap_or(false);
+            knots.extend(std::iter::repeat_n(
+                at,
+                if soft { degree - 1 } else { degree },
+            ));
+            extra = soft;
+        }
+    }
+    knots.extend(std::iter::repeat_n(last, degree + 1));
+    let ctrl = interpolate_on(params, degree, &knots, values).ok()?;
+    Some((degree, knots, ctrl))
+}
+
 /// The B-spline through the grid `rows[i][j]` at `(us[i], vs[j])`, cubic
 /// between the breaks of each direction.
 fn tensor(
     us: &[f64],
     vs: &[f64],
-    (breaks_u, breaks_v): (&[f64], &[f64]),
+    (breaks_u, breaks_v): (&[Break], &[Break]),
     rows: &[Vec<Vec3>],
 ) -> Option<NurbsSurface> {
     let mut knots_v = Vec::new();
@@ -1325,16 +1469,23 @@ fn fit(
 ) -> Result<NurbsSurface, OffsetError> {
     let (du, dv) = nurbs.domain();
     let (degree_u, degree_v) = nurbs.degrees();
-    // Past the domain the box's ends are breaks too, and so stay the
-    // domain's ends: the surface goes on smoothly there, but what the
-    // offset is made along need not (a turned normal is held past the
-    // domain), and a fit across a kink converges at second order only.
-    let widened = |mut found: Vec<f64>, (lo, hi): (f64, f64)| {
-        if found.first().is_some_and(|first| lo < *first) {
-            found.insert(0, lo);
+    // Past the domain the box's ends are the ends of the fit, in place of
+    // the domain's: the surface goes on there as its end spans are, and
+    // what the offset is made along has to go on smoothly too (the turn,
+    // see [`offset_along`]), so the fit goes on across the domain's ends
+    // as one piece. A break there would make the surface only continuous
+    // along the border of a face that grows past it, where a blend that
+    // rolls along the face asks for its normal.
+    let widened = |mut found: Vec<Break>, (lo, hi): (f64, f64)| {
+        if let Some((first, _)) = found.first_mut()
+            && lo < *first
+        {
+            *first = lo;
         }
-        if found.last().is_some_and(|last| hi > *last) {
-            found.push(hi);
+        if let Some((last, _)) = found.last_mut()
+            && hi > *last
+        {
+            *last = hi;
         }
         found
     };
@@ -1473,6 +1624,36 @@ fn fit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A simple knot of a cubic is a smooth break (its offset is once
+    /// differentiable there), a double one is not; the pieces through
+    /// samples of a function that is once differentiable at a smooth
+    /// break join with their first derivative, through every sample.
+    #[test]
+    fn pieces_join_with_their_slope_at_a_smooth_break() {
+        let knots = [0.0, 0.0, 0.0, 0.0, 0.5, 0.75, 0.75, 1.0, 1.0, 1.0, 1.0];
+        assert_eq!(
+            breaks(&knots, 3, (0.0, 1.0)),
+            vec![(0.0, false), (0.5, true), (0.75, false), (1.0, false)]
+        );
+        // |t − 0.5|³ + t: once differentiable at 0.5 (twice, in fact, but
+        // not three times), analytic on either side.
+        let f = |t: f64| (t - 0.5).abs().powi(3) + t;
+        let params: Vec<f64> = (0..=20).map(|i| f64::from(i) / 20.0).collect();
+        let values: Vec<Vec<f64>> = params.iter().map(|t| vec![f(*t), 0.0, 0.0]).collect();
+        let (degree, knots, ctrl) =
+            pieces(&params, &[(0.0, false), (0.5, true), (1.0, false)], &values).unwrap();
+        assert_eq!(degree, FIT_DEGREE);
+        assert_eq!(knots.iter().filter(|k| **k == 0.5).count(), FIT_DEGREE - 1);
+        let points: Vec<Vec3> = ctrl.iter().map(|r| Vec3::new(r[0], r[1], r[2])).collect();
+        let curve = crate::NurbsCurve::polynomial(degree, knots, points).unwrap();
+        for (t, v) in params.iter().zip(&values) {
+            assert!((curve.eval(*t).x - v[0]).abs() < 1e-13, "{t}");
+        }
+        let (_, left) = curve.derivatives(0.5 - 1e-12);
+        let (_, right) = curve.derivatives(0.5 + 1e-12);
+        assert!((left.x - right.x).abs() < 1e-9, "{left:?} {right:?}");
+    }
 
     #[test]
     fn products_and_splits_of_bernstein_forms_are_the_polynomials() {

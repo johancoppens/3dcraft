@@ -119,8 +119,9 @@ impl Border {
 }
 
 /// The turn of one border: a curve of the turn over the free parameter
-/// (held at its ends past them), and whether the neighbour holds its own
-/// normal there (it is not turned along this edge).
+/// (continued past its ends as its end spans are), and whether the
+/// neighbour holds its own normal there (it is not turned along this
+/// edge).
 #[derive(Clone, Debug)]
 struct Side {
     turn: NurbsCurve,
@@ -133,26 +134,38 @@ struct Side {
 
 impl Side {
     /// The turn at `q`: measured where the edge covers the border, falling
-    /// linearly to nothing at the border's ends past that.
+    /// to nothing at the border's ends past that ([`fall`]), and going on
+    /// as it is past an end of the border the edge reaches (a face that
+    /// grows past that border has the edge go on along it).
     fn at(&self, q: f64) -> Vec3 {
         let ((lo, hi), (f0, f1)) = (self.range, self.border);
         let share = if q < lo {
             if lo > f0 {
-                ((q - f0) / (lo - f0)).clamp(0.0, 1.0)
+                fall((q - f0) / (lo - f0))
             } else {
-                0.0
+                1.0
             }
         } else if q > hi {
             if f1 > hi {
-                ((f1 - q) / (f1 - hi)).clamp(0.0, 1.0)
+                fall((f1 - q) / (f1 - hi))
             } else {
-                0.0
+                1.0
             }
         } else {
             1.0
         };
-        self.turn.eval(q.clamp(lo, hi)) * share
+        self.turn.eval(q) * share
     }
+}
+
+/// The share of a border's turn at `x` of the way from where it falls to
+/// nothing (0) to where its edge begins (1): the quintic smoothstep,
+/// whose first and second derivatives vanish at both ends, so the turn
+/// and the offset made along it are twice continuously differentiable
+/// (what the fit of the offset asks between its breaks, `geom::offset`).
+fn fall(x: f64) -> f64 {
+    let x = x.clamp(0.0, 1.0);
+    x * x * x * (10.0 + x * (-15.0 + 6.0 * x))
 }
 
 /// How the normal of one face is turned (see the module documentation):
@@ -164,10 +177,26 @@ pub(crate) struct Turn {
 }
 
 impl Turn {
+    /// Whether the turn moves an offset by `distance` by at most `bound`
+    /// over the box of parameters `over` (the domain and what the face
+    /// grows into past it), measured on a grid across it.
+    pub(crate) fn within(&self, over: Domain, distance: f64, bound: f64) -> bool {
+        let ((u0, u1), (v0, v1)) = over;
+        (0..=ACROSS).all(|i| {
+            (0..=ACROSS).all(|j| {
+                let (a, b) = (i as f64 / ACROSS as f64, j as f64 / ACROSS as f64);
+                let moved = self.at(u0 + (u1 - u0) * a, v0 + (v1 - v0) * b).length();
+                distance * moved <= bound
+            })
+        })
+    }
+
+    /// The turn at `(u, v)`, past the domain too: the blend goes on as the
+    /// bilinear function it is, so the turn is as smooth there as inside.
     pub(crate) fn at(&self, u: f64, v: f64) -> Vec3 {
         let ((u0, u1), (v0, v1)) = self.domain;
-        let s = ((u - u0) / (u1 - u0)).clamp(0.0, 1.0);
-        let t = ((v - v0) / (v1 - v0)).clamp(0.0, 1.0);
+        let s = (u - u0) / (u1 - u0);
+        let t = (v - v0) / (v1 - v0);
         let value = |k: usize, q: f64| {
             self.sides
                 .get(k)

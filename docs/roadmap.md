@@ -364,6 +364,7 @@ The blends first (chamfer and fillet, the first consumers of edge references), t
 - Offset of freeform faces: offset face, shell and thicken take Bézier and NURBS faces, offset into splines within a quarter of the tolerance after proving they do not fold ([`design/face-operations.md`](design/face-operations.md) › *Offset of freeform faces*) (2026-10-16)
 - The bike's and the turbofan's blend findings: welds of a tube into a tube (a ring's balls in planes square to their centres' path), a refinement that no longer creeps, a border that crosses an edge on a curved face refused, lofts tangent where their sections are ([`design/blends.md`](design/blends.md) › *Blend findings of the bike and the turbofan*) (2026-10-15)
 - One blend construction, steps 1 to 3: a straight edge between planes, or next to a cylinder along it, built in place with an exact face; a border carried across a smooth edge of its face, the face it leaves gone when it lies wholly in the blend ([`design/blends.md`](design/blends.md) › *One blend construction*, *Borders carried across a smooth edge*) (2026-10-16)
+- Rolling-ball fillets along the rims of faces an offset or a shell made (the bike's saddle shelled first, all four rims): the fitted offsets' normals continuous at their borders and knots ([`design/face-operations.md`](design/face-operations.md) › *Fillets along the rims of offset faces*) (2026-10-16)
 
 #### Open
 - [ ] Replace face
@@ -493,6 +494,7 @@ Applications built on 3DCraft, not part of it (the rule in `docs/decisions.md`, 
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-16 | minor | M1: `floor`, `ceil`, `round`, `trunc` and `mod` in expressions; format version 17 renames old variables with those names |
+| 2026-10-16 | minor | M9: fillets along the rims of offset and shelled freeform faces |
 | 2026-10-16 | minor | M9: offset face, shell and thicken of freeform faces |
 | 2026-10-15 | minor | M9: move face, thicken and draft done (`feature.moveFace`, `feature.thicken`, `feature.draft`); new feature kinds in format version 16 |
 | 2026-10-14 | minor | Restructured: current focus on top, one line per milestone, a section per milestone (Goal, Done, Open, Acceptance), the boolean checklist on its own, ideas apart; how things were built left to `architecture.md` |
