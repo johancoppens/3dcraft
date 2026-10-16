@@ -229,3 +229,43 @@ fn a_surface_with_a_pole_has_no_offset_there() {
         ));
     }
 }
+
+/// A rational span whose weight, continued a step past the domain, comes
+/// near nothing (the middle weight 3.08333 of a quadratic: the weight at a
+/// fifth of the span before its start is 1.6e-6, still proven regular),
+/// so its points there run far off: the offset fitted a step past the
+/// domain does not hold, and
+/// the fit ends at the domain instead, within the limit of the exact
+/// offset all over it.
+#[test]
+fn a_surface_that_cannot_be_fitted_past_its_domain_is_fitted_up_to_it() {
+    let w = 3.08333;
+    let mut ctrl = Vec::new();
+    let mut weights = Vec::new();
+    for (x, z, weight) in [(0.0, 0.0, 1.0), (1.0, 1.0, w), (2.0, 0.0, 1.0)] {
+        for y in [0.0, 1.0] {
+            ctrl.push(Vec3::new(x, y, z));
+            weights.push(weight);
+        }
+    }
+    let surface = Surface::Nurbs(
+        NurbsSurface::new(
+            2,
+            1,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            3,
+            2,
+            ctrl,
+            weights,
+        )
+        .unwrap(),
+    );
+    let (d, limit) = (0.01, 1e-7);
+    let fitted = offset(&surface, d, limit).unwrap();
+    assert_eq!(fitted.domain(), surface.domain());
+    let off = worst(&fitted, |u, v| {
+        craft3d_geom::offset::exact(&surface, d, u, v).unwrap()
+    });
+    assert!(off <= limit, "{off:e}");
+}

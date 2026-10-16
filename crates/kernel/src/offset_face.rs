@@ -35,7 +35,7 @@
 //! instead.
 
 use crate::KernelError;
-use crate::offset_normal::{TURN_SHARE, Turn};
+use crate::offset_normal::Turn;
 use crate::tweak::{self, TweakError};
 use craft3d_geom::offset::OffsetError;
 use craft3d_geom::{Cone, Cylinder, NurbsSurface, Plane, Sphere, Surface, Torus};
@@ -79,9 +79,6 @@ pub(crate) enum NoOffset {
     NoFit,
     /// Refused by the offset with this reason.
     Refused(&'static str),
-    /// The turn of the normal moves the offset by more than its share of
-    /// the tolerance somewhere over the parameters the face grows into.
-    TurnTooFar,
 }
 
 /// How far a freeform face's offset may be from the exact one, as a share
@@ -155,13 +152,6 @@ pub(crate) fn offset_surface(
             let over = reached(&face.surface, reach, growth, tolerance)
                 .map(|(_, over)| over)
                 .ok_or(NoOffset::NoFit)?;
-            // The turn goes on past the domain as the function it is: held
-            // to its share of the tolerance over all the face may grow into.
-            if let Some(turn) = turn
-                && !turn.within(over, along.abs(), TURN_SHARE * tolerance.linear)
-            {
-                return Err(NoOffset::TurnTooFar);
-            }
             let turned = |u: f64, v: f64| turn.map_or(craft3d_math::Vec3::ZERO, |t| t.at(u, v));
             craft3d_geom::offset::offset_along(
                 &face.surface,
@@ -556,11 +546,6 @@ fn surfaced(
                     faces,
                     edge: None,
                     reason: why,
-                },
-                NoOffset::TurnTooFar => TweakError::Vanishes {
-                    faces,
-                    edge: None,
-                    reason: TURN_TOO_FAR,
                 },
             }
         })?;

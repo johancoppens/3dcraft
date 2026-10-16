@@ -152,21 +152,27 @@ pub fn offset_along(
     // derivatives (the normal, which a face tangent to it across a border
     // has to share) are as good as anywhere, not at the ends of an
     // interpolation, where they are worst. Without the step where the
-    // surface continued that far is not proven regular.
+    // surface continued that far is not proven regular, or its offset there
+    // cannot be fitted (a rational span continued past its domain may run
+    // towards a weight of nothing): the fit then ends at `over`, as it did
+    // before the step was taken.
     let past = margins(&nurbs, over, limit);
-    if past != over && regular_over(surface, distance, past).is_ok() {
-        let fitted = fit(surface, &nurbs, distance, limit, past, turn)?;
-        return fitted
-            .restricted(over.0, over.1)
-            .map_err(|_| OffsetError::NoFit);
+    if past != over
+        && regular_over(surface, distance, past).is_ok()
+        && let Ok(fitted) = fit(surface, &nurbs, distance, limit, past, turn)
+        && let Ok(cut) = fitted.restricted(over.0, over.1)
+    {
+        return Ok(cut);
     }
     fit(surface, &nurbs, distance, limit, over, turn)
 }
 
 /// `over` with a step of the fit's first samples added past each end in a
 /// direction in which the surface does not close on itself (its ends meet
-/// within `tol`): the first or the last knot span of the surface in its
-/// domain over [`START`].
+/// within `tol`): the first or the last knot span of the surface's own
+/// domain over [`START`], also where `over` reaches past the domain (the
+/// steps past the domain are as long as those of that span, [`start`], so
+/// the margin is one such step whatever `over` is).
 fn margins(nurbs: &NurbsSurface, over: Domain, tol: f64) -> Domain {
     let ((u0, u1), (v0, v1)) = nurbs.domain();
     let step = |knots: &[f64], (lo, hi): (f64, f64)| -> (f64, f64) {

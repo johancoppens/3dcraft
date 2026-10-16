@@ -37,7 +37,7 @@
 //! the document's tolerance does not allow.
 //!
 //! **Where.** The turn of a border is measured where the edge covers it;
-//! past the ends of that part it falls linearly to nothing at the
+//! past the ends of that part it falls smoothly to nothing at the
 //! border's ends, so that a part of the border along no edge (a blend's
 //! surface continued past its face) or near other edges is moved by less
 //! than the bound, not by the turn at the edge's end.
@@ -119,9 +119,8 @@ impl Border {
 }
 
 /// The turn of one border: a curve of the turn over the free parameter
-/// (continued past its ends as its end spans are), and whether the
-/// neighbour holds its own normal there (it is not turned along this
-/// edge).
+/// (held at its ends past them), and whether the neighbour holds its own
+/// normal there (it is not turned along this edge).
 #[derive(Clone, Debug)]
 struct Side {
     turn: NurbsCurve,
@@ -134,9 +133,11 @@ struct Side {
 
 impl Side {
     /// The turn at `q`: measured where the edge covers the border, falling
-    /// to nothing at the border's ends past that ([`fall`]), and going on
-    /// as it is past an end of the border the edge reaches (a face that
-    /// grows past that border has the edge go on along it).
+    /// to nothing at the border's ends past that ([`fall`]), and held at
+    /// what it is at an end of the border the edge reaches, past it (a
+    /// face that grows past that border has the edge go on along it). The
+    /// curve is never continued past the part the edge covers, so the turn
+    /// is nowhere longer than it is there.
     fn at(&self, q: f64) -> Vec3 {
         let ((lo, hi), (f0, f1)) = (self.range, self.border);
         let share = if q < lo {
@@ -154,7 +155,7 @@ impl Side {
         } else {
             1.0
         };
-        self.turn.eval(q) * share
+        self.turn.eval(q.clamp(lo, hi)) * share
     }
 }
 
@@ -177,26 +178,18 @@ pub(crate) struct Turn {
 }
 
 impl Turn {
-    /// Whether the turn moves an offset by `distance` by at most `bound`
-    /// over the box of parameters `over` (the domain and what the face
-    /// grows into past it), measured on a grid across it.
-    pub(crate) fn within(&self, over: Domain, distance: f64, bound: f64) -> bool {
-        let ((u0, u1), (v0, v1)) = over;
-        (0..=ACROSS).all(|i| {
-            (0..=ACROSS).all(|j| {
-                let (a, b) = (i as f64 / ACROSS as f64, j as f64 / ACROSS as f64);
-                let moved = self.at(u0 + (u1 - u0) * a, v0 + (v1 - v0) * b).length();
-                distance * moved <= bound
-            })
-        })
-    }
-
-    /// The turn at `(u, v)`, past the domain too: the blend goes on as the
-    /// bilinear function it is, so the turn is as smooth there as inside.
+    /// The turn at `(u, v)`; past the domain, what it is at the nearest
+    /// point of the domain's border: the face's offset past its border is
+    /// turned by no more than it is on the domain, where the turn is held
+    /// to its share of the tolerance (`turns`). The offset made along it
+    /// is only once differentiable across the domain's ends, by the turn's
+    /// slope times the distance (the turn is of the size of what fitting
+    /// left, the slope's jump far below a tolerance over a step of the
+    /// fit, which goes on across them).
     pub(crate) fn at(&self, u: f64, v: f64) -> Vec3 {
         let ((u0, u1), (v0, v1)) = self.domain;
-        let s = (u - u0) / (u1 - u0);
-        let t = (v - v0) / (v1 - v0);
+        let s = ((u - u0) / (u1 - u0)).clamp(0.0, 1.0);
+        let t = ((v - v0) / (v1 - v0)).clamp(0.0, 1.0);
         let value = |k: usize, q: f64| {
             self.sides
                 .get(k)
@@ -472,9 +465,64 @@ pub(crate) fn turns(
 mod tests {
     use super::*;
 
+    /// A turn that is not constant along its borders (a border's turn
+    /// rising along it, another's falling, one covering part of its
+    /// border): past the domain, and past the part an edge covers, the
+    /// turn is never longer than its longest on the domain, so the bound
+    /// `turns` holds it to there holds wherever the face grows.
+    #[test]
+    fn past_the_domain_a_turn_is_no_longer_than_on_it() {
+        let line = |a: Vec3, b: Vec3, lo: f64, hi: f64| {
+            NurbsCurve::polynomial(1, vec![lo, lo, hi, hi], vec![a, b]).unwrap()
+        };
+        let rising = Side {
+            turn: line(
+                Vec3::new(0.0, 0.0, 1e-7),
+                Vec3::new(0.0, 3e-7, 2e-7),
+                0.0,
+                2.0,
+            ),
+            range: (0.0, 2.0),
+            border: (0.0, 2.0),
+            fixed: false,
+        };
+        let partial = Side {
+            turn: line(
+                Vec3::new(4e-7, 0.0, 0.0),
+                Vec3::new(1e-7, 1e-7, 0.0),
+                0.5,
+                1.5,
+            ),
+            range: (0.5, 1.5),
+            border: (0.0, 2.0),
+            fixed: true,
+        };
+        let turn = Turn {
+            domain: ((0.0, 1.0), (0.0, 2.0)),
+            sides: [None, Some(rising), Some(partial), None],
+        };
+        let largest = |(a0, a1): (f64, f64), (b0, b1): (f64, f64)| {
+            let mut most = 0.0_f64;
+            for i in 0..=60 {
+                for j in 0..=60 {
+                    let u = a0 + (a1 - a0) * f64::from(i) / 60.0;
+                    let v = b0 + (b1 - b0) * f64::from(j) / 60.0;
+                    most = most.max(turn.at(u, v).length());
+                }
+            }
+            most
+        };
+        let inside = largest((0.0, 1.0), (0.0, 2.0));
+        let around = largest((-0.5, 1.5), (-1.0, 3.0));
+        assert!(inside > 0.0);
+        assert!(around <= inside * (1.0 + 1e-12), "{around:e} > {inside:e}");
+        // Held, not continued: at a corner and far past it the same.
+        assert_eq!(turn.at(1.0, 2.0), turn.at(9.0, 40.0));
+    }
+
     /// A turn measured where an edge covers the middle half of a border
     /// (the rest of the border along other edges, or along none): the
-    /// turn holds there, and past the ends of that part falls linearly to
+    /// turn holds there, and past the ends of that part falls smoothly to
     /// nothing at the border's ends; it is never more than at the edge.
     #[test]
     fn a_turn_past_the_part_of_a_border_its_edge_covers_falls_to_nothing() {
