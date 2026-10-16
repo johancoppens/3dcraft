@@ -408,7 +408,14 @@ fn dragging_with_the_right_button_pans_and_the_wheel_zooms() {
         "{}",
         zoomed.distance
     );
-    assert_eq!(zoomed.target, panned.target);
+    // The zoom is at the pointer (2026-10-16): in the middle of the
+    // viewport the point under it is on the line of sight, so the target
+    // moves along that line only, towards the model under the pointer.
+    assert_eq!((zoomed.yaw, zoomed.pitch), (panned.yaw, panned.pitch));
+    let moved = zoomed.target() - panned.target();
+    let sideways = moved - panned.toward_eye() * moved.dot(panned.toward_eye());
+    assert!(sideways.length() < 1e-6 * panned.distance, "{moved:?}");
+    assert!(!zoomed.auto_fit);
 
     // F frames everything again, the far block included, and the camera
     // follows the model again.

@@ -518,6 +518,7 @@ Applications built on 3DCraft, not part of it (the rule in `docs/decisions.md`, 
 | 2026-10-13 | minor | Splines in sketches, the first step of M9's sweeps: drawn, constrained by their points, extruded; loft and sweep are not started |
 | 2026-10-13 | minor | The viewport has a see-through slider (the developer's request): done in the CPU renderer and the shell |
 | 2026-10-14 | minor | The viewport has a view cube in place of the orbit gizmo (the developer's request): faces, edge and corner facets as views, the projection on its ring |
+| 2026-10-16 | minor | The viewport's controls in three groups, the cube in patches with an axis triad, a Persp/Ortho toggle and zoom at the pointer (the developer's request) |
 | 2026-10-14 | minor | See-through bodies are drawn by the wgpu renderer (two depth layers and a blend, both the readback renderer and the viewport's, within the tolerances of [`design/rendering.md`](design/rendering.md)): the window no longer hands those frames to the CPU |
 | 2026-10-13 | minor | The viewport has an orbit gizmo instead of the view buttons (the developer's request) |
 | 2026-10-13 | minor | M8.5: pointing at vertices done; the section plane open |

@@ -193,8 +193,8 @@ fn the_sketches_toggle_in_the_window_flips_the_state() {
     };
     frame(&mut shell, &mut session, Vec::new());
     let names: Vec<&str> = shell.show_hits().iter().map(|(name, _)| *name).collect();
-    assert_eq!(names, ["datums", "sketches"]);
-    let at = shell.show_hits()[1].1.center();
+    assert_eq!(names, ["sketches", "datums"]);
+    let at = shell.show_hits()[0].1.center();
     let press = |pressed| Event::PointerButton {
         pos: at,
         button: PointerButton::Primary,
