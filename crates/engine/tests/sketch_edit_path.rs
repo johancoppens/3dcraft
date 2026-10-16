@@ -90,7 +90,56 @@ fn equals_a_fresh_open(s: &mut Session, dir: &Path, file: &str) -> Value {
         here == there,
         "{file}: the edited session and a fresh open differ"
     );
+    // The bodies themselves, exactly: STEP writes every point, curve and
+    // surface of the B-rep with all its digits (the same file name, so the
+    // header is the same too).
+    assert_eq!(
+        step(s, dir),
+        step(&mut fresh, dir),
+        "{file}: the STEP of the edited session and of a fresh open differ"
+    );
     here
+}
+
+fn step(s: &mut Session, dir: &Path) -> Vec<u8> {
+    run(s, "file.export", json!({"path": "bodies.step"}));
+    std::fs::read(dir.join("bodies.step")).unwrap()
+}
+
+/// The largest difference between the coordinates of the same point in
+/// two states, relative to the size of the sketches (the largest
+/// coordinate, at least 1).
+fn largest_move(a: &Value, b: &Value) -> f64 {
+    let points = |s: &Value| -> Vec<(String, f64, f64)> {
+        s["sketches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|sk| {
+                let name = sk["name"].as_str().unwrap().to_string();
+                sk["entities"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter_map(move |e| {
+                        let (x, y) = (e["x"].as_f64()?, e["y"].as_f64()?);
+                        Some((format!("{name}/{}", e["id"]), x, y))
+                    })
+            })
+            .collect()
+    };
+    let (pa, pb) = (points(a), points(b));
+    assert_eq!(
+        pa.iter().map(|p| &p.0).collect::<Vec<_>>(),
+        pb.iter().map(|p| &p.0).collect::<Vec<_>>(),
+        "the same points"
+    );
+    let size = pa
+        .iter()
+        .fold(1.0f64, |m, p| m.max(p.1.abs()).max(p.2.abs()));
+    pa.iter().zip(&pb).fold(0.0f64, |m, (p, q)| {
+        m.max((p.1 - q.1).abs()).max((p.2 - q.2).abs())
+    }) / size
 }
 
 /// A width, a depth and the volumes of the table's bodies there.
@@ -178,6 +227,9 @@ fn geometry_after_a_run_follows_its_end_through_count_changes() {
         1e-12,
         "back at 3",
     );
+    let moved = largest_move(&start, &back);
+    eprintln!("w1: back at 3, the points moved by {moved:e} of the sketch's size");
+    assert!(moved <= 1e-12, "back at 3: the points moved by {moved:e}");
 }
 
 /// The welding table's first model: ribs whose runs end in a line from
@@ -231,6 +283,12 @@ fn the_welding_table_goes_through_sizes_and_comes_back() {
     }
     let back = state(&mut s);
     close(&volumes(&back), &volumes(&start), 1e-12, "back at 48 x 36");
+    let moved = largest_move(&start, &back);
+    eprintln!("weldtable: back at 48 x 36, the points moved by {moved:e} of the sketches' size");
+    assert!(
+        moved <= 1e-12,
+        "back at 48 x 36: the points moved by {moved:e}"
+    );
 }
 
 /// The laser box with kerf as an offset of each panel's nominal outline
@@ -284,4 +342,46 @@ fn the_laser_box_goes_through_count_changes() {
         1e-12,
         "back at the small box",
     );
+    let moved = largest_move(&start, &back);
+    eprintln!(
+        "laser box: back at the small box, the points moved by {moved:e} of the sketches' size"
+    );
+    assert!(
+        moved <= 1e-12,
+        "back at the small box: the points moved by {moved:e}"
+    );
+}
+
+/// A file from before image places were stored (format 19: no
+/// `image_places`) is given them from its solution before its first edit,
+/// so the count's first jump after the open follows the run's end as well.
+#[test]
+fn a_file_without_image_places_is_carried_from_its_first_edit() {
+    let dir = dir("w1-old");
+    let mut s = replay(&dir, include_str!("edit_path/w1-run-end.steps.json"));
+    run(&mut s, "file.save", json!({"path": "w1-new.3dcraft"}));
+    // As a version-19 file has it: the same JSON without the places.
+    let doc = craft3d_format::load(&dir.join("w1-new.3dcraft")).unwrap();
+    let json = craft3d_format::to_manifest_json(&doc).unwrap();
+    assert!(json.contains("image_places"), "the session stores them");
+    let mut value: Value = serde_json::from_str(&json).unwrap();
+    value["format_version"] = json!(19);
+    for feature in value["document"]["features"].as_array_mut().unwrap() {
+        if let Some(kind) = feature["kind"].as_object_mut() {
+            kind.remove("image_places");
+        }
+    }
+    let old = craft3d_format::from_manifest_json(value.to_string().as_bytes()).unwrap();
+    craft3d_format::save(&dir.join("w1-old.3dcraft"), &old).unwrap();
+
+    let mut s = session(&dir);
+    run(&mut s, "file.open", json!({"path": "w1-old.3dcraft"}));
+    for n in [10u32, 3] {
+        set(&mut s, &[("n", &n.to_string())]);
+        let now = equals_a_fresh_open(&mut s, &dir, &format!("w1-old-{n}.3dcraft"));
+        assert!(failed(&now).is_empty(), "n = {n}: {:?}", failed(&now));
+        let x = f64::from(10 * n + 1);
+        let [px, _] = point(&now, "Edge", "e11");
+        assert!((px - x).abs() <= 1e-9 * x, "n = {n}: e11 at {px}, want {x}");
+    }
 }

@@ -315,3 +315,42 @@ fn a_carried_solve_is_a_solve() {
     assert_eq!(last.status, ConstraintStatus::Conflicting, "{solved:?}");
     assert!(solve(&earlier, &options(1.0)).unwrap().is_consistent());
 }
+
+/// What the carrying costs: the run's count jumps 3 -> 400 and goes
+/// 400 -> 401, solved with and without the image's old place (without it
+/// the jump up lands on the other root, so only the time compares). Run
+/// with `--ignored --nocapture` in an optimised build; the numbers are in
+/// the dev log.
+#[test]
+#[ignore = "a timing, for optimised builds"]
+fn carrying_a_jump_of_400_is_quick() {
+    use std::time::Instant;
+    let o = options(1.0);
+    let w = wave(1.0, 3);
+    let first = solve(&w.sketch, &o).unwrap();
+    for carry in [false, true] {
+        let up = recount(&w, &first, 400, carry);
+        let t = Instant::now();
+        let mut solved = solve(&up, &o).unwrap();
+        for _ in 1..100 {
+            solved = solve(&up, &o).unwrap();
+        }
+        let jump = t.elapsed() / 100;
+        let next = recount(&w, &solved, 401, carry);
+        let t = Instant::now();
+        for _ in 0..100 {
+            solved = solve(&next, &o).unwrap();
+        }
+        let step = t.elapsed() / 100;
+        let still = recount(&w, &solved, 401, carry);
+        let t = Instant::now();
+        for _ in 0..100 {
+            solve(&still, &o).unwrap();
+        }
+        let none = t.elapsed() / 100;
+        println!(
+            "carry {carry}: 3 -> 400 {jump:?}, 400 -> 401 {step:?}, unmoved {none:?}, q at {:?}",
+            solved.point(w.q)
+        );
+    }
+}
