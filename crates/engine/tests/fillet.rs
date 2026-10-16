@@ -1385,3 +1385,84 @@ fn saved_and_reopened_the_bodies_are_the_same() {
     let check = run(&mut s, "document.check", json!({"deep": true}));
     assert_eq!(check["ok"], true, "{check}");
 }
+
+/// The back top edge of a block rounded by 1.8, then the front top edge by
+/// 1.4: the top's flat strip left between the front and the round's
+/// tangent line (1.2 deep) is narrower than the radius, so the second
+/// fillet's border is carried across that line onto the round, the top
+/// goes, and the fillet rolls against the front and the round. The
+/// volume against the section's area (Green's theorem over the front, the
+/// top, the round and the ball); the names of what is left follow the
+/// faces, every edge between two faces of the body.
+#[test]
+fn a_fillet_whose_border_crosses_onto_an_earlier_round() {
+    let (depth, height, length, big, r) = (3.0_f64, 2.0_f64, 4.0_f64, 1.8_f64, 1.4_f64);
+    let (cy, cz) = (depth - big, height - big);
+    let mz = cz + ((big - r).powi(2) - (r - cy).powi(2)).sqrt();
+    let (dy, dz) = (r - cy, mz - cz);
+    let len = dy.hypot(dz);
+    let touch = [cy + dy / len * big, cz + dz / len * big];
+    let angle = |c: [f64; 2], p: [f64; 2]| (p[1] - c[1]).atan2(p[0] - c[0]);
+    let line = |p: [f64; 2], q: [f64; 2]| p[0] * q[1] - p[1] * q[0];
+    let arc = |c: [f64; 2], rad: f64, a: f64, b: f64| {
+        rad * rad * (b - a) + rad * (c[0] * (b.sin() - a.sin()) - c[1] * (b.cos() - a.cos()))
+    };
+    let twice = line([0.0, mz], [0.0, height])
+        + line([0.0, height], [cy, height])
+        + arc([cy, cz], big, PI / 2.0, angle([cy, cz], touch))
+        + arc([r, mz], r, angle([r, mz], touch), PI);
+    let taken = (0.5 * twice).abs();
+    // What the first round takes: the block's corner less the quarter
+    // disc, along the length.
+    let rounded = depth * height * length - (1.0 - PI / 4.0) * big * big * length;
+    for k in SCALES {
+        let mut s = session();
+        new_document(&mut s, k);
+        block(&mut s, k);
+        built(
+            &mut s,
+            "feature.fillet",
+            json!({"edges": [[TOP, BACK]], "radius": big * k, "name": "Round"}),
+        );
+        built(
+            &mut s,
+            "feature.fillet",
+            json!({"edges": [[TOP, FRONT]], "radius": r * k, "name": "Over"}),
+        );
+        let solid = assert_solid(&mut s, "Over", rounded - taken * length, None, k);
+        // The top is gone: the round's face, the new fillet and four
+        // faces of the block are left beside the bottom.
+        let names = names_sorted(&solid);
+        assert_eq!(
+            names,
+            [
+                "F3:copy(0)/F1:face(0)",
+                "F3:copy(0)/F1:face(2)",
+                "F3:copy(0)/F1:face(3)",
+                "F3:copy(0)/F1:face(4)",
+                "F3:copy(0)/F1:face(5)",
+                "F3:copy(0)/F2:fillet(0)",
+                "F3:fillet(0)",
+            ]
+        );
+        let listed = run(&mut s, "document.edges", json!({"feature": "Over"}));
+        let edges = listed["edges"].as_array().unwrap();
+        let mut seen = std::collections::BTreeSet::new();
+        for edge in edges {
+            assert!(seen.insert(edge["name"].to_string()), "{edge}");
+            for face in edge["faces"].as_array().unwrap() {
+                assert!(
+                    names.contains(&face.as_str().unwrap().to_string()),
+                    "{edge}"
+                );
+            }
+        }
+        // The new fillet meets the front and the round, not the top.
+        let between = run(
+            &mut s,
+            "document.edges",
+            json!({"feature": "Over", "between": ["F3:fillet(0)", "F3:copy(0)/F2:fillet(0)"]}),
+        );
+        assert_eq!(between["edges"].as_array().unwrap().len(), 1, "{between}");
+    }
+}
