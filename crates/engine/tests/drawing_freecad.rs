@@ -155,6 +155,22 @@ fn freecad_reads_the_outline_of_a_sketch_and_of_faces() {
                 cases.push((file, result, area, to_mm));
             }
         }
+        // The top and the bottom side by side on one sheet, each on a
+        // layer of its own. FreeCAD's area is the largest closed wire less
+        // all others: one plate's outline less the other's and both
+        // plates' holes.
+        let outline = 80.0 * 50.0 - (4.0 - PI) * 64.0;
+        let holes = outline - area;
+        for format in ["dxf", "svg"] {
+            let file = format!("sheet-{units}.{format}");
+            let result = run(
+                &mut s,
+                "file.export",
+                json!({"path": file, "faces": [face("endCap"), face("startCap")], "gap": 5}),
+            );
+            assert_eq!(result["rows"], 1, "{result}");
+            cases.push((file, result, -2.0 * holes, to_mm));
+        }
     }
     // A cylinder of radius 5 cut on a slant of 30°: an ellipse with
     // semi-axes 5 / cos 30° and 5, whole.
@@ -207,7 +223,7 @@ fn freecad_reads_the_outline_of_a_sketch_and_of_faces() {
             report["wires"]
         );
         assert!(near(number("length"), length, 1e-9), "{file}");
-        assert!(near(number("area"), area, 1e-9), "{file}");
+        assert!(near(number("area"), area, 1e-9), "{file}: {area}");
         // As many closed wires as we have closed paths, and nothing left
         // open.
         assert_eq!(report["closed"], ours["closed"].to_string(), "{file}");
@@ -226,6 +242,8 @@ fn freecad_reads_the_outline_of_a_sketch_and_of_faces() {
             let kinds = &report["kinds"];
             let expected = if file.starts_with("slant") {
                 "Ellipse:1".to_string()
+            } else if file.starts_with("sheet") {
+                "Circle:16,Line:20".to_string()
             } else {
                 "Circle:8,Line:10".to_string()
             };

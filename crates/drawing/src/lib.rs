@@ -202,7 +202,143 @@ pub enum Path {
     },
 }
 
+impl Segment {
+    /// The same segment moved by `d`.
+    pub fn translated(&self, d: Point) -> Self {
+        match self {
+            Segment::Line { to } => Segment::Line { to: add(*to, d) },
+            Segment::Arc {
+                to,
+                center,
+                radius,
+                ccw,
+            } => Segment::Arc {
+                to: add(*to, d),
+                center: add(*center, d),
+                radius: *radius,
+                ccw: *ccw,
+            },
+            Segment::EllipticArc {
+                to,
+                center,
+                major,
+                ratio,
+                ccw,
+            } => Segment::EllipticArc {
+                to: add(*to, d),
+                center: add(*center, d),
+                major: *major,
+                ratio: *ratio,
+                ccw: *ccw,
+            },
+            Segment::Spline(spline) => Segment::Spline(spline.translated(d)),
+        }
+    }
+}
+
 impl Path {
+    /// The same path moved by `d`.
+    pub fn translated(&self, d: Point) -> Self {
+        match self {
+            Path::Chain {
+                start,
+                segments,
+                closed,
+            } => Path::Chain {
+                start: add(*start, d),
+                segments: segments.iter().map(|s| s.translated(d)).collect(),
+                closed: *closed,
+            },
+            Path::Circle { center, radius } => Path::Circle {
+                center: add(*center, d),
+                radius: *radius,
+            },
+            Path::Ellipse {
+                center,
+                major,
+                ratio,
+            } => Path::Ellipse {
+                center: add(*center, d),
+                major: *major,
+                ratio: *ratio,
+            },
+        }
+    }
+
+    /// The signed area a closed path encloses: positive when it runs
+    /// counter-clockwise, negative when clockwise (Green's theorem, the
+    /// integral of (x dy − y dx) / 2 along it). Exact for lines, arcs,
+    /// circles and ellipses; a spline piece is integrated numerically
+    /// (exactly, to rounding, for a polynomial one of degree up to 5).
+    /// For an open chain it is the area of the chain closed by a line
+    /// from its end to its start.
+    pub fn area(&self) -> f64 {
+        let cross = |a: Point, b: Point| a[0] * b[1] - a[1] * b[0];
+        let mut twice = 0.0;
+        let mut last = None;
+        let mut first = None;
+        for piece in self.pieces() {
+            twice += match piece {
+                Piece::Line { from, to } => {
+                    first.get_or_insert(from);
+                    last = Some(to);
+                    cross(from, to)
+                }
+                Piece::Arc {
+                    from,
+                    to,
+                    center,
+                    radius,
+                    sweep,
+                    ..
+                } => {
+                    first.get_or_insert(from);
+                    last = Some(to);
+                    // Along c + r (cos t, sin t): x dy − y dx is
+                    // c × dP + r² dt.
+                    cross(center, sub(to, from)) + radius * radius * sweep
+                }
+                Piece::Ellipse {
+                    from,
+                    to,
+                    center,
+                    major,
+                    ratio,
+                    sweep,
+                    ..
+                } => {
+                    first.get_or_insert(from);
+                    last = Some(to);
+                    // Along c + M cos t + N sin t: c × dP + (M × N) dt.
+                    cross(center, sub(to, from)) + cross(major, minor_axis(major, ratio)) * sweep
+                }
+                Piece::Spline { spline } => {
+                    first.get_or_insert(spline.start());
+                    last = Some(spline.end());
+                    spline.beziers().map_or(0.0, |pieces| {
+                        pieces
+                            .iter()
+                            .map(|piece| {
+                                let parts = if piece.weights.is_some() { 64 } else { 1 };
+                                integrate(0.0, 1.0, parts, |t| {
+                                    let (p, d) = piece.derivatives(t);
+                                    cross(p, d)
+                                })
+                            })
+                            .sum()
+                    })
+                }
+            };
+        }
+        // An open chain is closed by a straight line back.
+        if let (Some(from), Some(to)) = (last, first)
+            && !self.is_closed()
+        {
+            twice += cross(from, to);
+        }
+        twice / 2.0
+    }
+
     /// True for a circle, an ellipse and a closed chain.
     pub fn is_closed(&self) -> bool {
         match self {

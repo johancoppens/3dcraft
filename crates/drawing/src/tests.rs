@@ -1744,3 +1744,104 @@ fn a_spline_that_does_not_hold_together_is_refused() {
     let plain = Spline::new(3, clamped, control, Some(vec![1.0; 4])).unwrap();
     assert!(!plain.is_rational());
 }
+
+// ------------------------------------------------- area and translation
+
+#[test]
+fn the_signed_area_of_a_path_is_its_closed_form_and_says_which_way_it_runs() {
+    let r: f64 = 5.0;
+    let rectangle = 60.0 * 40.0 - (4.0 - PI) * r * r;
+    let slot = 20.0 * 6.0 + PI * 9.0;
+    // The D: the circle less the segment the chord at 3 cuts off.
+    let half = (3.0_f64 / 5.0).acos();
+    let d = 25.0 / 2.0 * ((TAU - 2.0 * half) + (2.0 * half).sin());
+    let cases = [
+        (rounded_rectangle(60.0, 40.0, r), rectangle),
+        (slot_path(), -slot),
+        (d_hole([45.0, 28.0], 5.0, 3.0), d),
+        (
+            Path::Circle {
+                center: [15.0, 28.0],
+                radius: 4.0,
+            },
+            PI * 16.0,
+        ),
+        (
+            Path::Ellipse {
+                center: [3.0, -2.0],
+                major: [3.0, 4.0],
+                ratio: 0.5,
+            },
+            PI * 5.0 * 2.5,
+        ),
+        // A quarter disc closed by its two radii, as a rational spline.
+        (
+            closed(
+                [0.0, 0.0],
+                vec![
+                    line([1.0, 0.0]),
+                    Segment::Spline(quarter_circle()),
+                    line([0.0, 0.0]),
+                ],
+            ),
+            PI / 4.0,
+        ),
+    ];
+    for (path, expected) in cases {
+        for d in [[0.0, 0.0], [1e3, -7.5], [-0.25, 1e-3]] {
+            let moved = path.translated(d);
+            let area = moved.area();
+            println!("{area} (expected {expected}) moved by {d:?}");
+            assert!(
+                (area - expected).abs() <= 1e-10 * expected.abs().max(1.0),
+                "{area} {expected}"
+            );
+        }
+    }
+    // A polynomial spline closed by a line: the shoelace formula of its
+    // Bézier control polygon does not hold, but a straight cubic does.
+    let straight = Spline::new(
+        3,
+        vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+        vec![[4.0, 0.0], [4.0, 1.0], [4.0, 2.0], [4.0, 3.0]],
+        None,
+    )
+    .unwrap();
+    let triangle = closed(
+        [0.0, 0.0],
+        vec![line([4.0, 0.0]), Segment::Spline(straight)],
+    );
+    assert!((triangle.area() - 6.0).abs() < 1e-12, "{}", triangle.area());
+    let open_chain = open([0.0, 0.0], vec![line([4.0, 0.0]), line([4.0, 3.0])]);
+    assert!((open_chain.area() - 6.0).abs() < 1e-12);
+}
+
+fn slot_path() -> Path {
+    slot(15.0, 35.0, 10.0, 3.0)
+}
+
+#[test]
+fn a_translated_drawing_is_the_same_drawing_moved() {
+    let plate = plate();
+    let d = [12.5, -3.25];
+    let mut moved = plate.clone();
+    for layer in &mut moved.layers {
+        for path in &mut layer.paths {
+            *path = path.translated(d);
+        }
+    }
+    let (a, b) = (plate.bbox().unwrap(), moved.bbox().unwrap());
+    for (i, (a, b)) in a.iter().zip(b).enumerate() {
+        assert!((a + d[i % 2] - b).abs() < 1e-12, "{a} {b}");
+    }
+    assert!((plate.length() - moved.length()).abs() < 1e-9);
+    let spline = closed([0.0, 0.0], vec![Segment::Spline(wavy()), line([0.0, 0.0])]);
+    let Path::Chain { segments, .. } = spline.translated(d) else {
+        panic!()
+    };
+    let Segment::Spline(s) = &segments[0] else {
+        panic!()
+    };
+    assert_eq!(s.knots(), wavy().knots());
+    assert_eq!(s.start(), [d[0], d[1]]);
+}

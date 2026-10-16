@@ -241,6 +241,21 @@ pub(crate) fn face(
     Ok(Some(current))
 }
 
+/// [`face`] for a reader of the finished regeneration (an export, a
+/// query): the full name, in the newest body of its chain at the end of
+/// `results`, of the face `name` of an earlier body, by exactly the rule
+/// features follow names by. `None` when that body is its own still;
+/// an error, starting with `role`, says why the name cannot be followed
+/// (gone, or several copies, which it lists).
+pub fn follow_face(
+    doc: &Document,
+    results: &[FeatureResult],
+    name: &PersistentName,
+    role: &str,
+) -> Result<Option<PersistentName>, String> {
+    face(doc, results, name, role)
+}
+
 /// Follows every name in `list`, each as `{param}.{i}`; `true` when one
 /// changed.
 fn faces(
