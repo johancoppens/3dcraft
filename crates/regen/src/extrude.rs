@@ -4,6 +4,7 @@
 use crate::cause::FIX_IT_FIRST;
 use crate::query::faces_named;
 use crate::sketch::same_plane;
+use crate::sketch_pattern::{curve_name, instance_curves};
 use crate::{FeatureResult, Status, length};
 use craft3d_doc::{
     Document, Extrude, ExtrudeEnd, FeatureId, FeatureKind, Geometry, NameRole, PersistentName,
@@ -51,7 +52,7 @@ pub(crate) fn profile_error(error: &KernelError) -> String {
     let list = |curves: &[u64]| {
         curves
             .iter()
-            .map(|id| format!("e{id}"))
+            .map(|id| curve_name(*id))
             .collect::<Vec<_>>()
             .join(", ")
     };
@@ -66,7 +67,8 @@ pub(crate) fn profile_error(error: &KernelError) -> String {
             list(curves)
         ),
         KernelError::CrossingCurves { curves: [a, b] } if a == b => format!(
-            "e{a} crosses or touches itself, or has a cusp; the boundary of a profile is a simple curve"
+            "{} crosses or touches itself, or has a cusp; the boundary of a profile is a simple curve",
+            curve_name(*a)
         ),
         KernelError::CrossingCurves { curves } => format!(
             "{} cross or touch each other; the loops of a profile must stay apart",
@@ -75,7 +77,7 @@ pub(crate) fn profile_error(error: &KernelError) -> String {
         KernelError::ZeroAreaLoop { curves } => {
             format!("the loop of {} encloses no area", list(curves))
         }
-        KernelError::DegenerateCurve { id, reason } => format!("e{id}: {reason}"),
+        KernelError::DegenerateCurve { id, reason } => format!("{}: {reason}", curve_name(*id)),
         other => other.to_string(),
     }
 }
@@ -184,7 +186,7 @@ pub(crate) fn drawn<'a>(
     let mut curves = Vec::new();
     for entity in sketch.entities.iter().filter(|e| !e.construction) {
         let curve = match &entity.geometry {
-            Geometry::Point { .. } => continue,
+            Geometry::Point { .. } | Geometry::Image { .. } => continue,
             &Geometry::Line { start, end } => Curve2::Line {
                 start: point(start)?,
                 end: point(end)?,
@@ -221,6 +223,10 @@ pub(crate) fn drawn<'a>(
             curve,
         });
     }
+    // The instances of the sketch's patterns, after the curves drawn.
+    let instances = instance_curves(sketch, solved, false)
+        .map_err(|reason| format!("sketch `{name}`: {reason}"))?;
+    curves.extend(instances.into_iter().map(|(curve, _)| curve));
     let tolerance = Tolerance::new(doc.tolerance.linear, doc.tolerance.angular)
         .ok_or("the document's tolerance is not positive and finite".to_string())?;
     let plane = Frame::new(solved.origin, solved.normal, solved.x_axis)

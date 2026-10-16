@@ -283,6 +283,9 @@ fn position(sketch: &Sketch, point: PointArg) -> Result<(f64, f64), SketchError>
     match point {
         PointArg::Existing(id) => sketch.point(id),
         PointArg::New(x, y) => Ok((x, y)),
+        PointArg::Image(of, index) => invalid(format!(
+            "{of}[{index}]: a spline on an image point is not supported yet"
+        )),
     }
 }
 

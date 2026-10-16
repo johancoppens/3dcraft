@@ -94,7 +94,20 @@ pub(crate) fn build(
         closed: feature.closed,
     };
     let made = loft(&sections, &options, &tolerance).map_err(|e| format!("sections: {e}"))?;
-    let faces: Vec<PersistentName> = made.faces.iter().map(|o| name_of(id, o)).collect();
+    let mut faces: Vec<PersistentName> = made.faces.iter().map(|o| name_of(id, o)).collect();
+    // A cap whose loop holds a whole run of a sketch pattern names it once
+    // (`e7[*]`): the start cap after the first section, the end cap after
+    // the last.
+    if let (Some(first), Some(last)) = (feature.sections.first(), feature.sections.last()) {
+        crate::collapse_runs(
+            doc,
+            earlier,
+            first.sketch,
+            &mut faces,
+            &[NameRole::StartCap],
+        );
+        crate::collapse_runs(doc, earlier, last.sketch, &mut faces, &[NameRole::EndCap]);
+    }
 
     // A loft whose sections are matched with too much twist, or that
     // bends back into itself, is a valid body in how it hangs together

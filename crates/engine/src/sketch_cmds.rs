@@ -13,7 +13,8 @@ use crate::params::Params;
 use crate::{CommandError, CommandSpec, Session};
 use craft3d_doc::{
     ConstraintId, ConstraintKind, DistanceDirection, Document, EntityId, Expr, FeatureId,
-    FeatureKind, Geometry, PersistentName, Sketch, SketchError, SketchPlane, WorldPlane,
+    FeatureKind, Geometry, InstanceIndex, PersistentName, Removal, Sketch, SketchError,
+    SketchPlane, WorldPlane, parse_image_ref,
 };
 use craft3d_regen::{ConstraintState, SketchResult};
 use serde_json::{Map, Value, json};
@@ -38,10 +39,10 @@ pub(crate) static SPECS: &[CommandSpec] = &[
         "Adds a constraint between entities. distance, angle, radius and diameter take a value; a distance takes one line (its length), two points, or a point and a line. symmetric takes two points and the mirror line. A spline is shaped by constraints on its control points; itself it takes pointOn (a point held on the curve: one degree of freedom less; beyond its ends the curve counts as going on straight) and tangent, to a line, an arc or another spline that it shares an end point with (the same point, or two made coincident): the spline then leaves that point along the other curve. An angle is measured counter-clockwise from the first line to the second, each taken from its start to its end. Returns the constraint id and how the sketch solved.", doc: true, sketch_constrain),
     spec!("sketch.edit", "Edit Sketch", r#"{"sketch": id or name, "constraint": constraint id, "value": expr, "entity": entity id, "construction": boolean, "at": [number, number], "plane": "xy|yz|zx" or datum plane, "face": face name, "offset": expr}"#,
         "Changes a sketch: the value of a dimension (constraint and value), an entity's construction flag or a point's position before solving (entity with construction or at), or what it lies on (plane or face) and the offset.", doc: true, sketch_edit),
-    spec!("sketch.delete", "Delete From Sketch", r#"{"sketch": id or name, "entity": entity id, "constraint": constraint id}"#,
-        "Deletes a constraint, or an entity with the constraints on it. A point that lines, circles, arcs or splines are built on cannot be deleted before them.", doc: true, sketch_delete),
+    spec!("sketch.delete", "Delete From Sketch", r#"{"sketch": id or name, "entity": entity id, "constraint": constraint id, "pattern": pattern id}"#,
+        "Deletes a constraint, a pattern (\"p1\": with its image points and the constraints on them), or an entity with the constraints on it. A point that lines, circles, arcs or splines are built on cannot be deleted before them. An entity of a pattern's seed leaves the seed; a pattern left without seed, or without a point its chain or centre uses, is deleted too, and image points of what went go with their constraints; the result lists all of it.", doc: true, sketch_delete),
     spec!("sketch.inspect", "Inspect Sketch", r#"{"sketch": id or name}"#,
-        "Returns a sketch in full: plane, entities with solved coordinates, constraints with their state, and the degrees of freedom left.", doc: true, sketch_inspect),
+        "Returns a sketch in full: plane, entities with solved coordinates (an image point with the seed point, pattern and instance it stands for: \"e5[last]\" with the instance it is now), constraints with their state (missing: it uses an image point of an instance its pattern no longer has), the degrees of freedom left, and the patterns: seed, count and instances as evaluated, layout, whether a ring closes and how its chain solved, and the names of the curves it makes (e7[3], e7[2,4]; a cap whose loop holds a whole run is named with e7[*]).", doc: true, sketch_inspect),
 ];
 
 // ---------------------------------------------------------------- helpers
@@ -59,7 +60,12 @@ pub(crate) fn sketch_ref(
 }
 
 /// An id written as a number or with its letter: `3`, `"e3"`.
-fn local_id(command: &str, key: &str, prefix: char, value: &Value) -> Result<u64, CommandError> {
+pub(crate) fn local_id(
+    command: &str,
+    key: &str,
+    prefix: char,
+    value: &Value,
+) -> Result<u64, CommandError> {
     let id = match value {
         Value::Number(n) => n.as_u64(),
         Value::String(text) => text
@@ -77,7 +83,7 @@ fn local_id(command: &str, key: &str, prefix: char, value: &Value) -> Result<u64
     })
 }
 
-fn entity_id(command: &str, key: &str, value: &Value) -> Result<EntityId, CommandError> {
+pub(crate) fn entity_id(command: &str, key: &str, value: &Value) -> Result<EntityId, CommandError> {
     local_id(command, key, 'e', value).map(EntityId)
 }
 
@@ -100,6 +106,81 @@ pub(crate) fn coordinates(value: &Value) -> Option<(f64, f64)> {
 pub(crate) enum PointArg {
     Existing(EntityId),
     New(f64, f64),
+    /// The image of a seed point in an instance of its pattern: `"e5[3]"`,
+    /// `"e5[last]"`.
+    Image(EntityId, InstanceIndex),
+}
+
+/// An entity as a command names it: an id, or an image point of a pattern
+/// (`"e5[3]"`, `"e5[2,4]"`, `"e5[last]"`), made when it is not there yet.
+#[derive(Clone, Copy)]
+pub(crate) enum EntityArg {
+    Id(EntityId),
+    Image(EntityId, InstanceIndex),
+}
+
+impl EntityArg {
+    pub(crate) fn parse(command: &str, key: &str, value: &Value) -> Result<Self, CommandError> {
+        if let Value::String(text) = value
+            && let Some(image) = parse_image_ref(text)
+        {
+            let (of, index) = image
+                .map_err(|reason| CommandError::new(format!("{command}: `{key}`: {reason}")))?;
+            return Ok(EntityArg::Image(of, index));
+        }
+        entity_id(command, key, value).map(EntityArg::Id)
+    }
+
+    /// The entity's id, adding the image point when it is new.
+    pub(crate) fn place(self, sketch: &mut Sketch) -> Result<EntityId, SketchError> {
+        match self {
+            EntityArg::Id(id) => Ok(id),
+            EntityArg::Image(of, index) => sketch.image_point(of, index),
+        }
+    }
+
+    /// For an image point `e5[k]` with a fixed `k`: refused when the
+    /// pattern of `e5`, as the last regeneration evaluated it, has no
+    /// instance `k`. An image past the count would only fail the sketch.
+    pub(crate) fn check_instance(
+        self,
+        session: &mut Session,
+        sketch: FeatureId,
+        command: &str,
+    ) -> Result<(), CommandError> {
+        let EntityArg::Image(of, index) = self else {
+            return Ok(());
+        };
+        if index == InstanceIndex::Last {
+            return Ok(());
+        }
+        let open = session.document_mut()?;
+        let regen = open.regen();
+        let doc = open.history.current();
+        let Ok(drawn) = doc.sketch(sketch) else {
+            return Ok(());
+        };
+        let Some(solved) = regen.feature(sketch).and_then(|f| f.sketch.as_ref()) else {
+            return Ok(());
+        };
+        for pattern in &drawn.patterns {
+            // An index of the wrong kind (two numbers in a row) is
+            // refused by the sketch, with that reason.
+            let fits = matches!(index, InstanceIndex::Grid(_)) == pattern.layout.is_grid();
+            if !fits || !drawn.seed_points(pattern).contains(&of) {
+                continue;
+            }
+            if let Some(result) = solved.patterns.iter().find(|r| r.id == pattern.id)
+                && result.resolve(index).is_none()
+            {
+                return fail(format!(
+                    "{command}: {of}[{index}] is not there: {}",
+                    result.describe()
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 impl PointArg {
@@ -111,9 +192,10 @@ impl PointArg {
                     "{command}: `{key}` must be a point id or two finite numbers [x, y]"
                 )),
             },
-            Value::Number(_) | Value::String(_) => {
-                entity_id(command, key, value).map(PointArg::Existing)
-            }
+            Value::Number(_) | Value::String(_) => match EntityArg::parse(command, key, value)? {
+                EntityArg::Id(id) => Ok(PointArg::Existing(id)),
+                EntityArg::Image(of, index) => Ok(PointArg::Image(of, index)),
+            },
             _ => fail(format!(
                 "{command}: `{key}` must be a point id such as \"e1\" or coordinates [x, y]"
             )),
@@ -127,8 +209,9 @@ impl PointArg {
     /// The point's id, adding it to the sketch when it is new.
     pub(crate) fn place(self, sketch: &mut Sketch) -> Result<EntityId, SketchError> {
         match self {
-            PointArg::Existing(id) => sketch.point(id).map(|_| id),
+            PointArg::Existing(id) => sketch.point_entity(id).map(|_| id),
             PointArg::New(x, y) => sketch.add_point(x, y),
+            PointArg::Image(of, index) => sketch.image_point(of, index),
         }
     }
 }
@@ -203,6 +286,7 @@ fn state_name(state: &ConstraintState) -> &'static str {
         ConstraintState::Redundant => "redundant",
         ConstraintState::Conflicting => "conflicting",
         ConstraintState::Unsolved => "unsolved",
+        ConstraintState::Missing => "missing",
     }
 }
 
@@ -445,9 +529,11 @@ fn sketch_constrain(session: &mut Session, params: &Value) -> Run {
             items.len()
         ));
     }
-    let mut entities = Vec::with_capacity(items.len());
+    let mut given = Vec::with_capacity(items.len());
     for item in items {
-        entities.push(entity_id(COMMAND, "entities", item)?);
+        let entity = EntityArg::parse(COMMAND, "entities", item)?;
+        entity.check_instance(session, id, COMMAND)?;
+        given.push(entity);
     }
     let direction = match p.str("direction")? {
         None | Some("direct") => DistanceDirection::Direct,
@@ -461,13 +547,30 @@ fn sketch_constrain(session: &mut Session, params: &Value) -> Run {
         }
     };
     let value = p.expr("value")?.map(Expr::new);
-    let kind =
-        ConstraintKind::from_parts(type_name, &entities, value, direction).map_err(|reason| {
+    // The kind is checked before anything is added; image points are made
+    // in the same edit as the constraint.
+    let placeholders: Vec<EntityId> = given
+        .iter()
+        .map(|g| match g {
+            EntityArg::Id(id) => *id,
+            EntityArg::Image(of, _) => *of,
+        })
+        .collect();
+    let kind = ConstraintKind::from_parts(type_name, &placeholders, value.clone(), direction)
+        .map_err(|reason| {
             let shown: String = reason.chars().take(400).collect();
             CommandError::new(format!("{COMMAND}: {shown}"))
         })?;
     let label = format!("Constrain {}", kind.type_name());
-    let constraint = change(session, COMMAND, &label, id, |s| s.add_constraint(kind))?;
+    let constraint = change(session, COMMAND, &label, id, |s| {
+        let mut entities = Vec::with_capacity(given.len());
+        for entity in &given {
+            entities.push(entity.place(s)?);
+        }
+        let kind = ConstraintKind::from_parts(type_name, &entities, value, direction)
+            .map_err(SketchError::Invalid)?;
+        s.add_constraint(kind)
+    })?;
     sketch_result(session, id, json!({ "constraint": constraint.to_string() }))
 }
 
@@ -587,8 +690,25 @@ fn sketch_edit(session: &mut Session, params: &Value) -> Run {
 
 fn sketch_delete(session: &mut Session, params: &Value) -> Run {
     const COMMAND: &str = "sketch.delete";
-    let p = Params::new(COMMAND, params, &["sketch", "entity", "constraint"])?;
+    let p = Params::new(
+        COMMAND,
+        params,
+        &["sketch", "entity", "constraint", "pattern"],
+    )?;
     let id = sketch_ref(session, &p, COMMAND)?;
+    if let Some(value) = p.get("pattern") {
+        if p.get("entity").is_some() || p.get("constraint").is_some() {
+            return fail(format!(
+                "{COMMAND}: give one of `entity`, `constraint` or `pattern` to delete"
+            ));
+        }
+        let pattern = crate::sketch_pattern_cmds::pattern_id(COMMAND, "pattern", value)?;
+        let removal = change(session, COMMAND, "Delete pattern", id, |s| {
+            s.remove_pattern(pattern)
+        })?;
+        let own = removal_json(&removal, json!({ "deleted": pattern.to_string() }));
+        return sketch_result(session, id, own);
+    }
     let entity = p
         .get("entity")
         .map(|v| entity_id(COMMAND, "entity", v))
@@ -599,11 +719,10 @@ fn sketch_delete(session: &mut Session, params: &Value) -> Run {
         .transpose()?;
     let own = match (entity, constraint) {
         (Some(entity), None) => {
-            let gone = change(session, COMMAND, "Delete entity", id, |s| {
-                s.remove_entity(entity)
+            let removal = change(session, COMMAND, "Delete entity", id, |s| {
+                s.remove_entity_reporting(entity)
             })?;
-            let gone: Vec<String> = gone.iter().map(|c| c.to_string()).collect();
-            json!({ "deleted": entity.to_string(), "constraintsDeleted": gone })
+            removal_json(&removal, json!({ "deleted": entity.to_string() }))
         }
         (None, Some(constraint)) => {
             change(session, COMMAND, "Delete constraint", id, |s| {
@@ -618,6 +737,34 @@ fn sketch_delete(session: &mut Session, params: &Value) -> Run {
         }
     };
     sketch_result(session, id, own)
+}
+
+/// What a deletion took with it, added to `own`: the constraints always,
+/// image points and patterns when there were any.
+fn removal_json(removal: &Removal, mut own: Value) -> Value {
+    let names = |list: Vec<String>| Value::from(list);
+    if let Some(map) = own.as_object_mut() {
+        map.insert(
+            "constraintsDeleted".into(),
+            names(
+                removal
+                    .constraints
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect(),
+            ),
+        );
+        if !removal.images.is_empty() {
+            map.insert("imagesDeleted".into(), names(ids(&removal.images)));
+        }
+        if !removal.patterns.is_empty() {
+            map.insert(
+                "patternsDeleted".into(),
+                names(removal.patterns.iter().map(ToString::to_string).collect()),
+            );
+        }
+    }
+    own
 }
 
 fn sketch_inspect(session: &mut Session, params: &Value) -> Run {
@@ -652,6 +799,32 @@ fn sketch_inspect(session: &mut Session, params: &Value) -> Run {
                             "closed".into(),
                             (control.len() > 1 && control.first() == control.last()).into(),
                         );
+                    }
+                    Geometry::Image { of, pattern, index } => {
+                        map.insert("of".into(), of.to_string().into());
+                        map.insert("pattern".into(), pattern.to_string().into());
+                        map.insert("index".into(), index.to_string().into());
+                        map.insert("ref".into(), format!("{of}[{index}]").into());
+                        let result =
+                            solved.and_then(|s| s.patterns.iter().find(|r| r.id == pattern));
+                        match result.map(|r| (r, r.resolve(index))) {
+                            Some((_, Some((i, j)))) => {
+                                let at = if result.is_some_and(|r| r.grid) {
+                                    json!([i, j])
+                                } else {
+                                    json!(i)
+                                };
+                                map.insert("instance".into(), at);
+                            }
+                            Some((r, None)) => {
+                                map.insert("missing".into(), r.describe().into());
+                            }
+                            None => {}
+                        }
+                        if let Some((x, y)) = solved.and_then(|s| s.point(entity.id)) {
+                            map.insert("x".into(), x.into());
+                            map.insert("y".into(), y.into());
+                        }
                     }
                     Geometry::Point { x, y } => {
                         // The solution of this regeneration when there is
@@ -733,6 +906,12 @@ fn sketch_inspect(session: &mut Session, params: &Value) -> Run {
         );
         map.insert("entities".into(), entities.into());
         map.insert("constraints".into(), constraints.into());
+        if !sketch.patterns.is_empty() {
+            map.insert(
+                "patterns".into(),
+                crate::sketch_pattern_cmds::patterns_json(sketch, solved.map(AsRef::as_ref)).into(),
+            );
+        }
         map.insert("lengthUnit".into(), doc.units.length.symbol().into());
     }
     Ok(result)

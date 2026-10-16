@@ -168,7 +168,7 @@ fn saving_twice_gives_the_same_bytes() {
 fn the_manifest_of_a_small_document_is_exactly_this() {
     let expected = r#"{
   "format": "3dcraft",
-  "format_version": 17,
+  "format_version": 18,
   "document": {
     "units": {
       "length": "mm",
@@ -340,17 +340,17 @@ fn fix_trailing_commas(json: &str) -> String {
 
 #[test]
 fn a_newer_format_version_says_a_newer_3dcraft_is_needed() {
-    let error = load_error(&edited(&version_field(), "\"format_version\": 18"));
+    let error = load_error(&edited(&version_field(), "\"format_version\": 19"));
     assert!(matches!(
         error,
         FormatError::NewerVersion {
-            file: 18,
+            file: 19,
             supported: FORMAT_VERSION
         }
     ));
     let text = error.to_string();
     assert!(
-        text.contains("version 18")
+        text.contains("version 19")
             && text.contains(&format!("version {FORMAT_VERSION}"))
             && text.contains("newer 3DCraft is needed"),
         "{text}"
@@ -1575,6 +1575,123 @@ fn a_version_4_file_opens_unchanged_and_is_saved_as_the_current_version() {
 }
 
 /// Version 6: a spline in a sketch, as it is written.
+/// Patterns inside a sketch (format 18): a row, a grid, a chained run and
+/// a ring about fixed coordinates, and image points of each kind of index.
+#[test]
+fn a_sketch_pattern_is_written_like_this_and_round_trips() {
+    use craft3d_doc::{CenterRef, InstanceIndex, SecondDirection, SketchPatternLayout};
+    let mut doc = small();
+    let mut sketch = Sketch::new(SketchPlane::default());
+    let p: Vec<EntityId> = [(0.0, 0.0), (1.0, 0.0), (2.0, 1.0), (5.0, 5.0)]
+        .into_iter()
+        .map(|(x, y)| sketch.add_point(x, y).unwrap())
+        .collect();
+    let run = sketch.add_line(p[0], p[1], false).unwrap();
+    let disc = sketch.add_circle(p[2], 0.25, false).unwrap();
+    let ring = sketch.add_circle(p[3], 0.5, true).unwrap();
+    let pair = |a: &str, b: &str| [Expr::new(a), Expr::new(b)];
+    sketch
+        .add_pattern(
+            vec![run],
+            Expr::new("n"),
+            SketchPatternLayout::Chain {
+                from: p[0],
+                to: p[1],
+            },
+        )
+        .unwrap();
+    let grid = sketch
+        .add_pattern(
+            vec![disc],
+            Expr::new("3"),
+            SketchPatternLayout::Linear {
+                step: pair("2 mm", "0"),
+                second: Some(SecondDirection {
+                    step: pair("0", "pitch"),
+                    count: Expr::new("rows"),
+                }),
+            },
+        )
+        .unwrap();
+    sketch
+        .add_pattern(
+            vec![ring],
+            Expr::new("6"),
+            SketchPatternLayout::Circular {
+                center: CenterRef::At {
+                    at: pair("0", "1 mm"),
+                },
+                angle: Expr::new("60 deg"),
+                chain: None,
+            },
+        )
+        .unwrap();
+    let last = sketch.image_point(p[1], InstanceIndex::Last).unwrap();
+    sketch
+        .image_point(p[2], InstanceIndex::Grid([2, 1]))
+        .unwrap();
+    sketch.image_point(p[3], InstanceIndex::At(4)).unwrap();
+    sketch.add_line(last, p[3], false).unwrap();
+    doc.add_feature(Some("Rows"), FeatureKind::Sketch(sketch))
+        .unwrap();
+    doc.validate().unwrap();
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["format_version"], 18);
+    let kind = &value["document"]["features"][1]["kind"];
+    assert_eq!(kind["next_pattern_id"], 4);
+    assert_eq!(
+        kind["patterns"][0],
+        serde_json::json!({"id": 1, "seed": [5], "count": "n",
+            "layout": {"type": "chain", "from": 1, "to": 2}})
+    );
+    assert_eq!(
+        kind["patterns"][1],
+        serde_json::json!({"id": grid.0, "seed": [6], "count": "3",
+            "layout": {"type": "linear", "step": ["2 mm", "0"],
+                "second": {"step": ["0", "pitch"], "count": "rows"}}})
+    );
+    assert_eq!(
+        kind["patterns"][2]["layout"],
+        serde_json::json!({"type": "circular", "center": {"type": "at", "at": ["0", "1 mm"]},
+            "angle": "60 deg"})
+    );
+    let entities = &kind["entities"];
+    assert_eq!(
+        entities[7]["geometry"],
+        serde_json::json!({"type": "image", "of": 2, "pattern": 1, "index": "last"})
+    );
+    assert_eq!(
+        entities[8]["geometry"],
+        serde_json::json!({"type": "image", "of": 3, "pattern": 2, "index": {"grid": [2, 1]}})
+    );
+    assert_eq!(
+        entities[9]["geometry"],
+        serde_json::json!({"type": "image", "of": 4, "pattern": 3, "index": {"at": 4}})
+    );
+    assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+    assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
+
+    // What a file may not hold is an error, not a panic or a document.
+    let with = |from: &str, to: &str| {
+        assert!(json.contains(from), "`{from}` is not in the manifest");
+        from_manifest_json(json.replacen(from, to, 1).as_bytes())
+    };
+    for (from, to) in [
+        ("\"pattern\": 1", "\"pattern\": 9"),
+        ("\"of\": 2", "\"of\": 5"),
+        ("\"index\": \"last\"", "\"index\": \"first\""),
+        ("\"next_pattern_id\": 4", "\"next_pattern_id\": 2"),
+        ("\"type\": \"chain\"", "\"type\": \"spiral\""),
+        ("\"from\": 1", "\"from\": 4"),
+    ] {
+        assert!(with(from, to).is_err(), "{from} -> {to}");
+    }
+    // A version-17 file has no patterns; it reads as it is.
+    let older = edited(&version_field(), "\"format_version\": 17");
+    assert_eq!(from_manifest_json(older.as_bytes()).unwrap(), small());
+}
+
 #[test]
 fn a_spline_is_written_like_this_and_round_trips() {
     let mut doc = small();

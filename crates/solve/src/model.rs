@@ -40,6 +40,67 @@ pub enum Entity {
         start: EntityId,
         end: EntityId,
     },
+    /// A derived point: the image of the point `of` under `map`. It has no
+    /// unknowns of its own; its coordinates are an affine function of the
+    /// unknowns of the points the map uses, so equations on it get exact
+    /// gradients and it adds no degrees of freedom. The points it uses are
+    /// points with coordinates, not images.
+    Image {
+        of: EntityId,
+        map: ImageMap,
+    },
+}
+
+/// How an image point follows the points it is made from: one instance of
+/// a pattern inside a sketch.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ImageMap {
+    /// `of + offset`.
+    Shift { offset: [f64; 2] },
+    /// `of + k * (to - from)`: instance `k` of a chained run from `from`
+    /// to `to`.
+    Chain {
+        from: EntityId,
+        to: EntityId,
+        k: f64,
+    },
+    /// `c + R(angle) (of - c)`, counter-clockwise, about the point
+    /// `center`, or about `at` when there is none.
+    Turn {
+        center: Option<EntityId>,
+        at: [f64; 2],
+        angle: f64,
+    },
+}
+
+impl ImageMap {
+    /// Where the image of `of` lies, given where the points the map uses
+    /// lie (`point` finds them). The solver evaluates the same expressions
+    /// in the same order. `None` when a point is not found.
+    pub fn apply(
+        &self,
+        of: [f64; 2],
+        point: impl Fn(EntityId) -> Option<[f64; 2]>,
+    ) -> Option<[f64; 2]> {
+        let [px, py] = of;
+        Some(match *self {
+            ImageMap::Shift { offset: [dx, dy] } => [px + dx, py + dy],
+            ImageMap::Chain { from, to, k } => {
+                let [ax, ay] = point(from)?;
+                let [bx, by] = point(to)?;
+                [px + (bx - ax) * k, py + (by - ay) * k]
+            }
+            ImageMap::Turn { center, at, angle } => {
+                let [cx, cy] = match center {
+                    Some(id) => point(id)?,
+                    None => at,
+                };
+                let (sin, cos) = angle.sin_cos();
+                let (ux, uy) = (px - cx, py - cy);
+                [cx + (ux * cos - uy * sin), cy + (ux * sin + uy * cos)]
+            }
+        })
+    }
 }
 
 /// What an [`Entity`] is, for error messages.
@@ -49,6 +110,7 @@ pub enum EntityKind {
     Line,
     Circle,
     Arc,
+    Image,
 }
 
 impl Entity {
@@ -58,6 +120,7 @@ impl Entity {
             Entity::Line { .. } => EntityKind::Line,
             Entity::Circle { .. } => EntityKind::Circle,
             Entity::Arc { .. } => EntityKind::Arc,
+            Entity::Image { .. } => EntityKind::Image,
         }
     }
 }
@@ -69,6 +132,7 @@ impl std::fmt::Display for EntityKind {
             EntityKind::Line => "line",
             EntityKind::Circle => "circle",
             EntityKind::Arc => "arc",
+            EntityKind::Image => "image point",
         })
     }
 }

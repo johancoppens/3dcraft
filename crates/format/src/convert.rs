@@ -202,6 +202,8 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 constraints,
                 next_entity_id,
                 next_constraint_id,
+                patterns,
+                next_pattern_id,
             }) => manifest::FeatureKind::Sketch {
                 plane: match plane {
                     doc::SketchPlane::World { plane, offset } => manifest::SketchPlane::World {
@@ -228,6 +230,8 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 constraints: constraints.iter().map(constraint_to_manifest).collect(),
                 next_entity_id: *next_entity_id,
                 next_constraint_id: *next_constraint_id,
+                patterns: patterns.iter().map(pattern_to_manifest).collect(),
+                next_pattern_id: *next_pattern_id,
             },
             doc::FeatureKind::Extrude(doc::Extrude {
                 sketch: doc::FeatureId(sketch),
@@ -893,6 +897,113 @@ fn entity_to_manifest(entity: &doc::Entity) -> manifest::SketchEntity {
                 degree: *degree,
                 control: control.iter().map(raw).collect(),
             },
+            doc::Geometry::Image {
+                of,
+                pattern: doc::PatternId(pattern),
+                index,
+            } => manifest::SketchGeometry::Image {
+                of: raw(of),
+                pattern: *pattern,
+                index: match index {
+                    doc::InstanceIndex::At(k) => manifest::InstanceIndex::At(*k),
+                    doc::InstanceIndex::Grid(ij) => manifest::InstanceIndex::Grid(*ij),
+                    doc::InstanceIndex::Last => manifest::InstanceIndex::Last,
+                },
+            },
+        },
+    }
+}
+
+fn pattern_to_manifest(pattern: &doc::SketchPattern) -> manifest::SketchPattern {
+    let doc::SketchPattern {
+        id: doc::PatternId(id),
+        seed,
+        count,
+        layout,
+    } = pattern;
+    let raw = |doc::EntityId(id): &doc::EntityId| *id;
+    let pair = |[a, b]: &[doc::Expr; 2]| [expr_to_manifest(a), expr_to_manifest(b)];
+    manifest::SketchPattern {
+        id: *id,
+        seed: seed.iter().map(raw).collect(),
+        count: expr_to_manifest(count),
+        layout: match layout {
+            doc::SketchPatternLayout::Linear { step, second } => {
+                manifest::SketchPatternLayout::Linear {
+                    step: pair(step),
+                    second: second.as_ref().map(|doc::SecondDirection { step, count }| {
+                        manifest::SecondDirection {
+                            step: pair(step),
+                            count: expr_to_manifest(count),
+                        }
+                    }),
+                }
+            }
+            doc::SketchPatternLayout::Chain { from, to } => manifest::SketchPatternLayout::Chain {
+                from: raw(from),
+                to: raw(to),
+            },
+            doc::SketchPatternLayout::Circular {
+                center,
+                angle,
+                chain,
+            } => manifest::SketchPatternLayout::Circular {
+                center: match center {
+                    doc::CenterRef::Point { point } => {
+                        manifest::CenterRef::Point { point: raw(point) }
+                    }
+                    doc::CenterRef::At { at } => manifest::CenterRef::At { at: pair(at) },
+                },
+                angle: expr_to_manifest(angle),
+                chain: chain.as_ref().map(|[a, b]| [raw(a), raw(b)]),
+            },
+        },
+    }
+}
+
+fn pattern_to_doc(pattern: manifest::SketchPattern) -> doc::SketchPattern {
+    use doc::EntityId as Id;
+    let manifest::SketchPattern {
+        id,
+        seed,
+        count,
+        layout,
+    } = pattern;
+    let pair = |[a, b]: [String; 2]| [doc::Expr(a), doc::Expr(b)];
+    doc::SketchPattern {
+        id: doc::PatternId(id),
+        seed: seed.into_iter().map(Id).collect(),
+        count: doc::Expr(count),
+        layout: match layout {
+            manifest::SketchPatternLayout::Linear { step, second } => {
+                doc::SketchPatternLayout::Linear {
+                    step: pair(step),
+                    second: second.map(|manifest::SecondDirection { step, count }| {
+                        doc::SecondDirection {
+                            step: pair(step),
+                            count: doc::Expr(count),
+                        }
+                    }),
+                }
+            }
+            manifest::SketchPatternLayout::Chain { from, to } => doc::SketchPatternLayout::Chain {
+                from: Id(from),
+                to: Id(to),
+            },
+            manifest::SketchPatternLayout::Circular {
+                center,
+                angle,
+                chain,
+            } => doc::SketchPatternLayout::Circular {
+                center: match center {
+                    manifest::CenterRef::Point { point } => {
+                        doc::CenterRef::Point { point: Id(point) }
+                    }
+                    manifest::CenterRef::At { at } => doc::CenterRef::At { at: pair(at) },
+                },
+                angle: doc::Expr(angle),
+                chain: chain.map(|[a, b]| [Id(a), Id(b)]),
+            },
         },
     }
 }
@@ -992,6 +1103,15 @@ fn entity_to_doc(entity: manifest::SketchEntity) -> doc::Entity {
             manifest::SketchGeometry::Spline { degree, control } => doc::Geometry::Spline {
                 degree,
                 control: control.into_iter().map(Id).collect(),
+            },
+            manifest::SketchGeometry::Image { of, pattern, index } => doc::Geometry::Image {
+                of: Id(of),
+                pattern: doc::PatternId(pattern),
+                index: match index {
+                    manifest::InstanceIndex::At(k) => doc::InstanceIndex::At(k),
+                    manifest::InstanceIndex::Grid(ij) => doc::InstanceIndex::Grid(ij),
+                    manifest::InstanceIndex::Last => doc::InstanceIndex::Last,
+                },
             },
         },
     }
@@ -1192,6 +1312,8 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
                 constraints,
                 next_entity_id,
                 next_constraint_id,
+                patterns,
+                next_pattern_id,
             } => doc::FeatureKind::Sketch(doc::Sketch {
                 plane: match plane {
                     manifest::SketchPlane::World { plane, offset } => doc::SketchPlane::World {
@@ -1215,6 +1337,8 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
                 constraints: constraints.into_iter().map(constraint_to_doc).collect(),
                 next_entity_id,
                 next_constraint_id,
+                patterns: patterns.into_iter().map(pattern_to_doc).collect(),
+                next_pattern_id,
             }),
             manifest::FeatureKind::Extrude {
                 sketch,

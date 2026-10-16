@@ -50,6 +50,132 @@ pub const MAX_NAME_FACES: usize = 256;
 /// a name read from text or a file, in its long form or hostile.
 pub const MAX_NAME_DEPTH: usize = 32;
 
+/// The largest sketch entity id a name can carry: ids are below 2^32, so
+/// that the bits above can say which instance of a sketch pattern a curve
+/// is ([`CurveRef`]).
+pub const MAX_CURVE_ENTITY: u64 = u32::MAX as u64;
+
+/// The largest instance index a name can carry in `e7[k]`.
+pub const MAX_CURVE_INDEX: u32 = 0xFFFD;
+
+/// A curve of a sketch as the source of a name: the seed entity itself
+/// (`e7`), an instance of a sketch pattern of it (`e7[3]`, `e7[2,5]` in
+/// a grid), or every instance of it at once (`e7[*]`, in the name of a cap
+/// whose loop holds a whole run). Kept in a name as one number
+/// ([`CurveRef::encode`]): the entity id in the low 32 bits and the
+/// instance above it, so a name without patterns has the number it always
+/// had, and the kernel, which takes curve ids as numbers, carries
+/// instances without knowing about them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CurveRef {
+    pub entity: u64,
+    pub index: CurveIndex,
+}
+
+/// Which instance of its seed a curve is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CurveIndex {
+    /// The seed entity itself (instance 0, or 0,0 in a grid): `e7`.
+    Seed,
+    /// Instance `k` of a pattern in one direction: `e7[3]`.
+    At(u32),
+    /// Instance `i, j` of a grid: `e7[2,5]`.
+    Grid(u32, u32),
+    /// Every instance: `e7[*]`.
+    All,
+}
+
+const INDEX_SHIFT: u32 = 32;
+const SECOND_SHIFT: u32 = 48;
+const FIELD: u64 = 0xFFFF;
+
+impl CurveRef {
+    /// The seed entity `entity`.
+    pub const fn seed(entity: u64) -> Self {
+        Self {
+            entity,
+            index: CurveIndex::Seed,
+        }
+    }
+
+    /// The number a name keeps: `entity`, plus `i + 1` from bit 32 and
+    /// `j + 1` from bit 48 (`0xFFFF` from bit 32 for every instance).
+    /// `None` when the entity or an index is beyond what a name holds.
+    pub fn encode(self) -> Option<u64> {
+        if self.entity > MAX_CURVE_ENTITY {
+            return None;
+        }
+        let field = |i: u32| (i <= MAX_CURVE_INDEX).then(|| u64::from(i) + 1);
+        let (first, second) = match self.index {
+            CurveIndex::Seed => (0, 0),
+            CurveIndex::At(i) => (field(i)?, 0),
+            CurveIndex::Grid(i, j) => (field(i)?, field(j)?),
+            CurveIndex::All => (FIELD, 0),
+        };
+        Some(self.entity | (first << INDEX_SHIFT) | (second << SECOND_SHIFT))
+    }
+
+    /// The curve a number of a name stands for; `None` for a number no
+    /// curve encodes to.
+    pub fn decode(source: u64) -> Option<Self> {
+        let entity = source & MAX_CURVE_ENTITY;
+        let first = (source >> INDEX_SHIFT) & FIELD;
+        let second = (source >> SECOND_SHIFT) & FIELD;
+        let index = |field: u64| u32::try_from(field.checked_sub(1)?).ok();
+        let index = match (first, second) {
+            (0, 0) => CurveIndex::Seed,
+            (FIELD, 0) => CurveIndex::All,
+            (0 | FIELD, _) => return None,
+            (i, 0) => CurveIndex::At(index(i)?),
+            (i, j) if j != FIELD => CurveIndex::Grid(index(i)?, index(j)?),
+            _ => return None,
+        };
+        Some(Self { entity, index })
+    }
+
+    /// Reads `e7`, `e7[3]`, `e7[2,5]` or `e7[*]`.
+    pub fn parse(text: &str) -> Option<Self> {
+        let digits = |t: &str| -> Option<u64> {
+            (!t.is_empty() && t.bytes().all(|b| b.is_ascii_digit()))
+                .then(|| t.parse::<u64>().ok())
+                .flatten()
+        };
+        let index = |t: &str| -> Option<u32> {
+            digits(t.trim())
+                .and_then(|n| u32::try_from(n).ok())
+                .filter(|&n| n <= MAX_CURVE_INDEX)
+        };
+        let rest = text.strip_prefix('e')?;
+        let (entity, index) = match rest.split_once('[') {
+            None => (rest, CurveIndex::Seed),
+            Some((entity, inner)) => {
+                let inner = inner.strip_suffix(']')?;
+                let index = match inner.split(',').collect::<Vec<_>>().as_slice() {
+                    ["*"] => CurveIndex::All,
+                    [k] => CurveIndex::At(index(k)?),
+                    [i, j] => CurveIndex::Grid(index(i)?, index(j)?),
+                    _ => return None,
+                };
+                (entity, index)
+            }
+        };
+        let entity = digits(entity).filter(|&e| e <= MAX_CURVE_ENTITY)?;
+        Some(Self { entity, index })
+    }
+}
+
+impl fmt::Display for CurveRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "e{}", self.entity)?;
+        match self.index {
+            CurveIndex::Seed => Ok(()),
+            CurveIndex::At(k) => write!(f, "[{k}]"),
+            CurveIndex::Grid(i, j) => write!(f, "[{i},{j}]"),
+            CurveIndex::All => f.write_str("[*]"),
+        }
+    }
+}
+
 /// The part an entity plays in the feature that made it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -645,7 +771,13 @@ impl PersistentName {
                     if i > 0 {
                         f.write_str(",")?;
                     }
-                    write!(f, "{prefix}{source}")?;
+                    // A curve of a sketch, possibly an instance of a
+                    // pattern of it; a number no curve encodes to (only a
+                    // name built by hand has one) as it is.
+                    match CurveRef::decode(*source).filter(|_| !prefix.is_empty()) {
+                        Some(curve) => write!(f, "{curve}")?,
+                        None => write!(f, "{prefix}{source}")?,
+                    }
                 }
                 f.write_str(")")?;
             }
@@ -691,6 +823,26 @@ fn split_outside(text: &str, separator: char) -> Vec<&str> {
     parts
 }
 
+/// `text` cut at the first `close` outside brackets: what is before it,
+/// and what is after it.
+fn closing(text: &str, close: char) -> Option<(&str, &str)> {
+    let mut depth = 0usize;
+    for (at, c) in text.char_indices() {
+        match c {
+            c if c == close && depth == 0 => {
+                return Some((
+                    text.get(..at)?,
+                    text.get(at.saturating_add(c.len_utf8())..)?,
+                ));
+            }
+            '(' | '[' => depth = depth.saturating_add(1),
+            ')' | ']' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    None
+}
+
 /// What a name is read with: how to word an error, and how many sources
 /// and listed faces the whole name may still have.
 struct Reading<'a> {
@@ -710,7 +862,7 @@ fn parse_sources(
     if inner.is_empty() {
         return Ok(sources);
     }
-    for part in inner.split(',') {
+    for part in split_outside(inner, ',') {
         if reading.sources == 0 {
             return Err(wrong("it has too many sources"));
         }
@@ -722,9 +874,13 @@ fn parse_sources(
                 .filter(|_| part.bytes().all(|b| b.is_ascii_digit()))
                 .ok_or_else(|| wrong("this role takes a plain number, as in copy(0)"))?
         } else {
-            part.strip_prefix('e')
-                .and_then(|digits| digits.parse::<u64>().ok())
-                .ok_or_else(|| wrong("a source must be written e and a number"))?
+            CurveRef::parse(part)
+                .and_then(CurveRef::encode)
+                .ok_or_else(|| {
+                    wrong(
+                        "a source must be written e and a number below 4294967296, with an instance of a pattern after it as in e7[3], e7[2,5] or e7[*]",
+                    )
+                })?
         };
         sources.push(id);
     }
@@ -786,10 +942,10 @@ fn parse_link(
         let inner = rest
             .strip_prefix('[')
             .ok_or_else(|| wrong("a between or a corner is followed by `[` and its faces"))?;
-        // The faces have no `]` in them.
-        let (inner, rest) = inner
-            .split_once(']')
-            .ok_or_else(|| wrong("there is no `]` after the faces"))?;
+        // The `]` that closes the list: the faces may have brackets of
+        // their own (`side(e7[3])`).
+        let (inner, rest) =
+            closing(inner, ']').ok_or_else(|| wrong("there is no `]` after the faces"))?;
         let (on, near) = match split_outside(inner, '|').as_slice() {
             [on] => (*on, ""),
             [on, near] => (*on, *near),
@@ -1407,5 +1563,93 @@ mod tests {
         );
         // Written, a name never goes deeper than one list, whatever it is.
         assert_eq!(nested.to_string(), "F7:corner[F7:corner[]]");
+    }
+
+    #[test]
+    fn an_instance_of_a_sketch_pattern_is_a_source_of_its_own() {
+        // The curve and its number, both ways.
+        for (text, curve) in [
+            ("e7", CurveRef::seed(7)),
+            (
+                "e7[3]",
+                CurveRef {
+                    entity: 7,
+                    index: CurveIndex::At(3),
+                },
+            ),
+            (
+                "e7[2,5]",
+                CurveRef {
+                    entity: 7,
+                    index: CurveIndex::Grid(2, 5),
+                },
+            ),
+            (
+                "e7[*]",
+                CurveRef {
+                    entity: 7,
+                    index: CurveIndex::All,
+                },
+            ),
+            (
+                "e4294967295[65533,0]",
+                CurveRef {
+                    entity: MAX_CURVE_ENTITY,
+                    index: CurveIndex::Grid(MAX_CURVE_INDEX, 0),
+                },
+            ),
+        ] {
+            assert_eq!(CurveRef::parse(text), Some(curve), "{text}");
+            assert_eq!(curve.to_string(), text);
+            let number = curve.encode().unwrap();
+            assert_eq!(CurveRef::decode(number), Some(curve), "{text}");
+        }
+        // A seed's number is its id: names without patterns are unchanged.
+        assert_eq!(CurveRef::seed(7).encode(), Some(7));
+        for bad in [
+            "e7[",
+            "e7[]",
+            "e7[-1]",
+            "e7[1,2,3]",
+            "e7[last]",
+            "e7[65534]",
+            "e4294967296",
+            "7",
+            "e",
+            "e7[*,1]",
+            "e7[1]x",
+        ] {
+            assert_eq!(CurveRef::parse(bad), None, "{bad}");
+        }
+        // Numbers no curve encodes to are shown as they are.
+        assert_eq!(CurveRef::decode((1 << 48) | 7), None);
+
+        // In names: a side, a cap with a whole run, an edge between faces
+        // that have brackets of their own.
+        for text in [
+            "F2:side(e7[3])",
+            "F2:lateralEdge(e7[3],e8[3])",
+            "F2:endCap(e1,e2,e7[*])",
+            "F2:side(e7[2,5])",
+            "F9:copy(1)/F2:side(e7[4])",
+            "F7:between[F7:copy(0)/F2:side(e7[3]),F7:copy(1)/F3:face(1)|F7:copy(0)/F2:side(e8[3])]",
+        ] {
+            let name: PersistentName = text.parse().unwrap_or_else(|e| panic!("{text}: {e}"));
+            assert_eq!(name.to_string(), text);
+            assert_eq!(name.check(), Ok(()));
+        }
+        let side = |text: &str| text.parse::<PersistentName>().unwrap();
+        assert!(side("F2:side(e7)") < side("F2:side(e7[1])"));
+        // An id beyond 32 bits is not a sketch entity's.
+        let error = "F8:side(e18446744073709551615)"
+            .parse::<PersistentName>()
+            .unwrap_err();
+        assert!(error.contains("below 4294967296"), "{error}");
+        assert!("F8:side(e7[1)".parse::<PersistentName>().is_err());
+        assert!(
+            "F8:between[F8:side(e7[1]"
+                .parse::<PersistentName>()
+                .is_err()
+        );
     }
 }

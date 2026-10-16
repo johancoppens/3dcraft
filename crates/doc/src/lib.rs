@@ -22,13 +22,16 @@ pub use datum::{
     PlaneBy, PlaneRef, PointRef, WorldAxis,
 };
 pub use name::{
-    FaceLists, MAX_NAME_DEPTH, MAX_NAME_FACES, MAX_NAME_SOURCES, NameRole, PersistentName,
+    CurveIndex, CurveRef, FaceLists, MAX_CURVE_ENTITY, MAX_CURVE_INDEX, MAX_NAME_DEPTH,
+    MAX_NAME_FACES, MAX_NAME_SOURCES, NameRole, PersistentName,
 };
 
 pub use sketch::{
-    Constraint, ConstraintId, ConstraintKind, DistanceDirection, Entity, EntityId, Geometry,
-    MAX_SPLINE_DEGREE, MAX_SPLINE_POINTS, Sketch, SketchError, SketchPlane, WorldPlane,
-    clamped_uniform_knots,
+    CenterRef, Constraint, ConstraintId, ConstraintKind, DistanceDirection, Entity, EntityId,
+    Geometry, InstanceIndex, MAX_ENTITY_ID, MAX_PATTERN_INSTANCES, MAX_SKETCH_PATTERNS,
+    MAX_SPLINE_DEGREE, MAX_SPLINE_POINTS, PatternId, Removal, SecondDirection, Sketch, SketchError,
+    SketchPattern, SketchPatternLayout, SketchPlane, WorldPlane, clamped_uniform_knots,
+    parse_image_ref,
 };
 
 use craft3d_expr::{VariableError, VariableTable};

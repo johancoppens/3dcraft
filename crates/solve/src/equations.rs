@@ -19,6 +19,7 @@ const NEGATIVE_RADIUS: &str = "a circle with a negative radius";
 const SMALL_ARC: &str = "an arc smaller than the linear tolerance has no tangent";
 const STALLED_SPLINE: &str =
     "a spline that stands still where the point is nearest to it has no direction there";
+const CROWDED: &str = "it ties together the images of more points than one equation can hold; split it into simpler constraints";
 
 /// Why an equation has no value at some point.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -36,9 +37,90 @@ fn stalled(fail: Fail) -> Fail {
     }
 }
 
-/// A point: the index of its x unknown; y follows it.
+/// A point: one with unknowns of its own (the index of its x unknown; y
+/// follows it), or an image point (its index in [`Prepared::images`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct Pt(pub(crate) usize);
+pub(crate) enum Pt {
+    Own(usize),
+    Image(usize),
+}
+
+/// The centre of a turn: a point with unknowns, or fixed coordinates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Centre {
+    Own(usize),
+    At([f64; 2]),
+}
+
+/// How an image point is made from unknowns ([`crate::ImageMap`] with the
+/// points resolved to the indices of their x unknowns).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum ImageVars {
+    Shift {
+        of: usize,
+        offset: [f64; 2],
+    },
+    Chain {
+        of: usize,
+        from: usize,
+        to: usize,
+        k: f64,
+    },
+    Turn {
+        of: usize,
+        centre: Centre,
+        sin: f64,
+        cos: f64,
+    },
+}
+
+/// The two numbers at `i` and `i + 1`.
+fn pair(x: &[f64], i: usize) -> Option<[f64; 2]> {
+    Some([*x.get(i)?, *x.get(i.checked_add(1)?)?])
+}
+
+impl ImageVars {
+    /// The coordinates at `x`, as [`crate::ImageMap::apply`] gives them.
+    fn at(&self, x: &[f64]) -> Option<[f64; 2]> {
+        Some(match *self {
+            ImageVars::Shift {
+                of,
+                offset: [dx, dy],
+            } => {
+                let [px, py] = pair(x, of)?;
+                [px + dx, py + dy]
+            }
+            ImageVars::Chain { of, from, to, k } => {
+                let [px, py] = pair(x, of)?;
+                let [ax, ay] = pair(x, from)?;
+                let [bx, by] = pair(x, to)?;
+                [px + (bx - ax) * k, py + (by - ay) * k]
+            }
+            ImageVars::Turn {
+                of,
+                centre,
+                sin,
+                cos,
+            } => {
+                let [px, py] = pair(x, of)?;
+                let [cx, cy] = match centre {
+                    Centre::Own(c) => pair(x, c)?,
+                    Centre::At(at) => at,
+                };
+                let (ux, uy) = (px - cx, py - cy);
+                [cx + (ux * cos - uy * sin), cy + (ux * sin + uy * cos)]
+            }
+        })
+    }
+}
+
+/// The coordinates of a point at `x`.
+pub(crate) fn coords(x: &[f64], images: &[ImageVars], p: Pt) -> Option<[f64; 2]> {
+    match p {
+        Pt::Own(i) => pair(x, i),
+        Pt::Image(i) => images.get(i)?.at(x),
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Ln {
@@ -150,6 +232,7 @@ struct Ctx<'a> {
     x: &'a [f64],
     min_len: f64,
     splines: &'a [SplineVars],
+    images: &'a [ImageVars],
     slots: [usize; SLOTS],
     used: usize,
 }
@@ -157,11 +240,12 @@ struct Ctx<'a> {
 type Vec2 = [Dual; 2];
 
 impl<'a> Ctx<'a> {
-    fn new(x: &'a [f64], min_len: f64, splines: &'a [SplineVars]) -> Self {
+    fn new(x: &'a [f64], min_len: f64, splines: &'a [SplineVars], images: &'a [ImageVars]) -> Self {
         Ctx {
             x,
             min_len,
             splines,
+            images,
             slots: [0; SLOTS],
             used: 0,
         }
@@ -175,7 +259,7 @@ impl<'a> Ctx<'a> {
             Some(slot) => slot,
             None => {
                 let slot = self.used;
-                *self.slots.get_mut(slot).ok_or(Fail::NonFinite)? = ix;
+                *self.slots.get_mut(slot).ok_or(Fail::Degenerate(CROWDED))? = ix;
                 self.used += 1;
                 slot
             }
@@ -183,8 +267,49 @@ impl<'a> Ctx<'a> {
         Dual::variable(value, slot).ok_or(Fail::NonFinite)
     }
 
+    fn own(&mut self, i: usize) -> Result<Vec2, Fail> {
+        Ok([
+            self.var(i)?,
+            self.var(i.checked_add(1).ok_or(Fail::NonFinite)?)?,
+        ])
+    }
+
     fn pt(&mut self, p: Pt) -> Result<Vec2, Fail> {
-        Ok([self.var(p.0)?, self.var(p.0 + 1)?])
+        let images = self.images;
+        let image = match p {
+            Pt::Own(i) => return self.own(i),
+            Pt::Image(i) => *images.get(i).ok_or(Fail::NonFinite)?,
+        };
+        // The same expressions as `ImageVars::at`, in duals.
+        Ok(match image {
+            ImageVars::Shift {
+                of,
+                offset: [dx, dy],
+            } => {
+                let [px, py] = self.own(of)?;
+                [px + Dual::constant(dx), py + Dual::constant(dy)]
+            }
+            ImageVars::Chain { of, from, to, k } => {
+                let [px, py] = self.own(of)?;
+                let [ax, ay] = self.own(from)?;
+                let [bx, by] = self.own(to)?;
+                [px + (bx - ax) * k, py + (by - ay) * k]
+            }
+            ImageVars::Turn {
+                of,
+                centre,
+                sin,
+                cos,
+            } => {
+                let [px, py] = self.own(of)?;
+                let [cx, cy] = match centre {
+                    Centre::Own(c) => self.own(c)?,
+                    Centre::At([x, y]) => [Dual::constant(x), Dual::constant(y)],
+                };
+                let (ux, uy) = (px - cx, py - cy);
+                [cx + (ux * cos - uy * sin), cy + (ux * sin + uy * cos)]
+            }
+        })
     }
 
     /// Start point, direction and length of a line that has a direction.
@@ -219,11 +344,9 @@ impl<'a> Ctx<'a> {
     fn spline_distance(&mut self, p: Pt, spline: usize) -> Result<Dual, Fail> {
         let splines = self.splines;
         let s = splines.get(spline).ok_or(Fail::NonFinite)?;
+        let images = self.images;
         let place = |x: &[f64], pt: Pt| -> Result<[f64; 2], Fail> {
-            match (x.get(pt.0), pt.0.checked_add(1).and_then(|i| x.get(i))) {
-                (Some(a), Some(b)) => Ok([*a, *b]),
-                _ => Err(Fail::NonFinite),
-            }
+            coords(x, images, pt).ok_or(Fail::NonFinite)
         };
         let target = place(self.x, p)?;
         let mut points = Vec::with_capacity(s.control.len());
@@ -454,7 +577,7 @@ impl Equation {
     /// be longer than `min_len`.
     #[cfg(test)]
     pub(crate) fn eval(&self, x: &[f64], min_len: f64) -> Result<Evaluated, Fail> {
-        self.eval_with(x, min_len, &[])
+        self.eval_with(x, min_len, &[], &[])
     }
 
     /// As [`Equation::eval`], for a sketch with `splines` in it.
@@ -463,8 +586,9 @@ impl Equation {
         x: &[f64],
         min_len: f64,
         splines: &[SplineVars],
+        images: &[ImageVars],
     ) -> Result<Evaluated, Fail> {
-        let mut ctx = Ctx::new(x, min_len, splines);
+        let mut ctx = Ctx::new(x, min_len, splines, images);
         let (count, rows) = ctx.eval(self)?;
         if rows.iter().take(count).any(|r| !r.is_finite()) {
             return Err(Fail::NonFinite);
@@ -487,6 +611,8 @@ pub(crate) struct Prepared {
     pub entity_var: Vec<Option<usize>>,
     /// The splines of the sketch, by their index in it.
     pub splines: Vec<SplineVars>,
+    /// The image points of the sketch, by [`Pt::Image`].
+    pub images: Vec<ImageVars>,
     /// Arc equations first, then the constraints in input order.
     pub equations: Vec<Equation>,
     /// Per equation: the constraint, or the arc entity, it came from.
@@ -501,6 +627,9 @@ pub(crate) struct Prepared {
 struct Builder<'a> {
     sketch: &'a Sketch,
     splines: Vec<SplineVars>,
+    images: Vec<ImageVars>,
+    /// Per entity: its index in `images`, for an image point.
+    image_of: Vec<Option<usize>>,
     entity_var: Vec<Option<usize>>,
     x0: Vec<f64>,
     min_len: f64,
@@ -533,8 +662,12 @@ fn find(parent: &mut [usize], mut i: usize) -> usize {
 /// they are reported when their turn comes.
 fn incidences(sketch: &Sketch) -> (Vec<usize>, Vec<Vec<EntityId>>) {
     let count = sketch.entities.len();
-    let is_point =
-        |id: EntityId| matches!(sketch.entities.get(id.index()), Some(Entity::Point { .. }));
+    let is_point = |id: EntityId| {
+        matches!(
+            sketch.entities.get(id.index()),
+            Some(Entity::Point { .. } | Entity::Image { .. })
+        )
+    };
     let mut parent: Vec<usize> = (0..count).collect();
     let mut on: Vec<Vec<EntityId>> = vec![Vec::new(); count];
     for constraint in &sketch.constraints {
@@ -595,7 +728,14 @@ impl Builder<'_> {
 
     fn pt(&self, at: Site, id: EntityId) -> Result<Pt, SolveError> {
         match self.entity(at, id)? {
-            Entity::Point { .. } => Ok(Pt(self.var(at, id)?)),
+            Entity::Point { .. } => Ok(Pt::Own(self.var(at, id)?)),
+            Entity::Image { .. } => self
+                .image_of
+                .get(id.index())
+                .copied()
+                .flatten()
+                .map(Pt::Image)
+                .ok_or(SolveError::UnknownEntity { at, id }),
             _ => Err(self.wrong(at, id, "point")),
         }
     }
@@ -663,7 +803,7 @@ impl Builder<'_> {
 
     /// The value of a one-row equation at the starting guess.
     fn probe(&self, index: usize, eq: &Equation) -> Result<f64, SolveError> {
-        match eq.eval_with(&self.x0, self.min_len, &self.splines) {
+        match eq.eval_with(&self.x0, self.min_len, &self.splines, &self.images) {
             Ok(e) => Ok(e.rows.first().map_or(0.0, |r| r.v)),
             Err(fail) => Err(start_failure(Site::Constraint(index), fail)),
         }
@@ -821,10 +961,7 @@ impl Builder<'_> {
                 let p = self.pt(at, point)?;
                 let target = match target {
                     Some([x, y]) => [finite(x)?, finite(y)?],
-                    None => [
-                        self.x0.get(p.0).copied().unwrap_or(0.0),
-                        self.x0.get(p.0 + 1).copied().unwrap_or(0.0),
-                    ],
+                    None => coords(&self.x0, &self.images, p).unwrap_or([0.0, 0.0]),
                 };
                 Equation::Fixed(p, target)
             }
@@ -942,15 +1079,86 @@ pub(crate) fn prepare(sketch: &Sketch, min_len: f64) -> Result<Prepared, SolveEr
                 entity_var.push(Some(x0.len()));
                 x0.push(radius);
             }
-            Entity::Line { .. } | Entity::Arc { .. } => entity_var.push(None),
+            Entity::Line { .. } | Entity::Arc { .. } | Entity::Image { .. } => {
+                entity_var.push(None);
+            }
         }
     }
     too_large("unknowns", x0.len(), MAX_UNKNOWNS)?;
+
+    // Image points: the indices of the unknowns of the points they are
+    // made from, which have to be points with coordinates.
+    let mut images = Vec::new();
+    let mut image_of = Vec::with_capacity(sketch.entities.len());
+    for (index, entity) in sketch.entities.iter().enumerate() {
+        let Entity::Image { of, map } = *entity else {
+            image_of.push(None);
+            continue;
+        };
+        let at = Site::Entity(index);
+        let own = |id: EntityId| -> Result<usize, SolveError> {
+            match sketch.entities.get(id.index()) {
+                Some(Entity::Point { .. }) => entity_var
+                    .get(id.index())
+                    .copied()
+                    .flatten()
+                    .ok_or(SolveError::UnknownEntity { at, id }),
+                Some(other) => Err(SolveError::WrongKind {
+                    at,
+                    id,
+                    expected: "point with coordinates",
+                    found: other.kind(),
+                }),
+                None => Err(SolveError::UnknownEntity { at, id }),
+            }
+        };
+        let finite = |values: &[f64]| {
+            if values.iter().all(|v| v.is_finite()) {
+                Ok(())
+            } else {
+                Err(SolveError::NonFinite { at })
+            }
+        };
+        let of = own(of)?;
+        let vars = match map {
+            crate::ImageMap::Shift { offset } => {
+                finite(&offset)?;
+                ImageVars::Shift { of, offset }
+            }
+            crate::ImageMap::Chain { from, to, k } => {
+                finite(&[k])?;
+                ImageVars::Chain {
+                    of,
+                    from: own(from)?,
+                    to: own(to)?,
+                    k,
+                }
+            }
+            crate::ImageMap::Turn { center, at, angle } => {
+                finite(&[at[0], at[1], angle])?;
+                let (sin, cos) = angle.sin_cos();
+                let centre = match center {
+                    Some(id) => Centre::Own(own(id)?),
+                    None => Centre::At(at),
+                };
+                ImageVars::Turn {
+                    of,
+                    centre,
+                    sin,
+                    cos,
+                }
+            }
+        };
+        image_of.push(Some(images.len()));
+        images.push(vars);
+    }
 
     let (class, on) = incidences(sketch);
     let mut builder = Builder {
         sketch,
         splines: Vec::new(),
+        images,
+        image_of,
         entity_var,
         x0,
         min_len,
@@ -990,7 +1198,7 @@ pub(crate) fn prepare(sketch: &Sketch, min_len: f64) -> Result<Prepared, SolveEr
     for (index, entity) in sketch.entities.iter().enumerate() {
         let at = Site::Entity(index);
         match *entity {
-            Entity::Point { .. } => {}
+            Entity::Point { .. } | Entity::Image { .. } => {}
             Entity::Line { start, end } => {
                 builder.pt(at, start)?;
                 builder.pt(at, end)?;
@@ -1038,6 +1246,15 @@ pub(crate) fn prepare(sketch: &Sketch, min_len: f64) -> Result<Prepared, SolveEr
                 extent = extent.max(radius);
             }
             Entity::Line { .. } | Entity::Arc { .. } => {}
+            Entity::Image { .. } => {}
+        }
+    }
+    // An image may lie far from the points it is made from (the end of a
+    // long row).
+    for image in &builder.images {
+        if let Some([x, y]) = image.at(&builder.x0) {
+            magnitude = magnitude.max(x.abs()).max(y.abs());
+            place([x, y]);
         }
     }
     for eq in &equations {
@@ -1070,6 +1287,7 @@ pub(crate) fn prepare(sketch: &Sketch, min_len: f64) -> Result<Prepared, SolveEr
 
     Ok(Prepared {
         splines: builder.splines,
+        images: builder.images,
         x0: builder.x0,
         entity_var: builder.entity_var,
         equations,
@@ -1083,13 +1301,144 @@ pub(crate) fn prepare(sketch: &Sketch, min_len: f64) -> Result<Prepared, SolveEr
 mod tests {
     use super::*;
 
+    /// Image points of every kind (a shift, a chained run, a turn about a
+    /// point and about fixed coordinates) in equations: the gradient with
+    /// respect to the unknowns of the points they are made from equals
+    /// central differences, and their place is what `ImageMap::apply`
+    /// gives.
+    #[test]
+    fn image_points_have_exact_gradients() {
+        // Points 0..4 at x[0..8]: of, from, to, centre.
+        let x = [0.7, -0.4, 0.1, 0.2, 1.3, 0.9, -0.6, 0.35];
+        let images = [
+            ImageVars::Shift {
+                of: 0,
+                offset: [3.0, -1.5],
+            },
+            ImageVars::Chain {
+                of: 0,
+                from: 2,
+                to: 4,
+                k: 3.0,
+            },
+            ImageVars::Chain {
+                of: 4,
+                from: 2,
+                to: 4,
+                k: 2.0,
+            },
+            ImageVars::Turn {
+                of: 0,
+                centre: Centre::Own(6),
+                sin: 0.8_f64.sin(),
+                cos: 0.8_f64.cos(),
+            },
+            ImageVars::Turn {
+                of: 4,
+                centre: Centre::At([0.25, -0.5]),
+                sin: (-2.1_f64).sin(),
+                cos: (-2.1_f64).cos(),
+            },
+        ];
+        // The place: the same numbers as the map the caller applies.
+        let point = |i: u32| {
+            let i = i as usize * 2;
+            Some([x[i], x[i + 1]])
+        };
+        let maps = [
+            crate::ImageMap::Shift {
+                offset: [3.0, -1.5],
+            },
+            crate::ImageMap::Chain {
+                from: EntityId(1),
+                to: EntityId(2),
+                k: 3.0,
+            },
+            crate::ImageMap::Chain {
+                from: EntityId(1),
+                to: EntityId(2),
+                k: 2.0,
+            },
+            crate::ImageMap::Turn {
+                center: Some(EntityId(3)),
+                at: [0.0, 0.0],
+                angle: 0.8,
+            },
+            crate::ImageMap::Turn {
+                center: None,
+                at: [0.25, -0.5],
+                angle: -2.1,
+            },
+        ];
+        let of = [0, 0, 2, 0, 2];
+        for ((image, map), of) in images.iter().zip(&maps).zip(of) {
+            let at = image.at(&x).unwrap();
+            let want = map.apply(point(of).unwrap(), |id| point(id.0)).unwrap();
+            assert_eq!(at, want, "{map:?}");
+        }
+        let img = |i: usize| Pt::Image(i);
+        let own = |i: usize| Pt::Own(2 * i);
+        let line = Ln {
+            a: own(1),
+            b: img(4),
+        };
+        let equations = [
+            Equation::Same(img(0), own(3)),
+            Equation::Same(img(1), img(3)),
+            Equation::Distance(img(2), own(0), 2.0),
+            Equation::PointOnLine(
+                img(3),
+                Ln {
+                    a: own(1),
+                    b: img(1),
+                },
+            ),
+            Equation::Midpoint(
+                img(4),
+                Ln {
+                    a: own(0),
+                    b: img(0),
+                },
+            ),
+            Equation::Fixed(img(1), [1.0, 2.0]),
+            Equation::Parallel(
+                line,
+                Ln {
+                    a: img(2),
+                    b: img(3),
+                },
+            ),
+        ];
+        let h = 1e-6;
+        let eval = |eq: &Equation, x: &[f64]| eq.eval_with(x, 1e-9, &[], &images).unwrap();
+        for eq in &equations {
+            let e = eval(eq, &x);
+            for row in 0..e.count {
+                let mut gradient = [0.0; 8];
+                for slot in 0..e.used {
+                    gradient[e.slots[slot]] += e.rows[row].d[slot];
+                }
+                for (j, got) in gradient.iter().enumerate() {
+                    let (mut hi, mut lo) = (x, x);
+                    hi[j] += h;
+                    lo[j] -= h;
+                    let want = (eval(eq, &hi).rows[row].v - eval(eq, &lo).rows[row].v) / (2.0 * h);
+                    assert!(
+                        (got - want).abs() <= 1e-7,
+                        "{eq:?} row {row} d/dx{j}: {got} vs {want}"
+                    );
+                }
+            }
+        }
+    }
+
     /// Every equation kind over four points and two radii, at a generic
     /// position: the automatic gradient equals central differences.
     #[test]
     fn gradients_match_finite_differences() {
         // Points P0..P3 at x[0..8], radii at x[8], x[9].
         let x = [0.3, -0.2, 2.1, 0.9, 1.7, 2.6, -0.8, 1.9, 0.75, 1.4];
-        let p = |i: usize| Pt(2 * i);
+        let p = |i: usize| Pt::Own(2 * i);
         let l01 = Ln { a: p(0), b: p(1) };
         let l23 = Ln { a: p(2), b: p(3) };
         let c0 = Round::Circle { c: p(0), r: 8 };
@@ -1231,7 +1580,7 @@ mod tests {
             let splines = [SplineVars {
                 degree,
                 knots,
-                control: (0..count).map(|i| Pt(2 * i)).collect(),
+                control: (0..count).map(|i| Pt::Own(2 * i)).collect(),
             }];
             // On either side of the curve, near and far, and beyond both
             // ends (where the distance is from the line of the end leg).
@@ -1253,10 +1602,10 @@ mod tests {
                 let mut x: Vec<f64> = control.iter().flatten().copied().collect();
                 x.extend(target);
                 let eq = Equation::PointOnSpline {
-                    p: Pt(2 * count),
+                    p: Pt::Own(2 * count),
                     spline: 0,
                 };
-                let e = eq.eval_with(&x, 1e-9, &splines).unwrap();
+                let e = eq.eval_with(&x, 1e-9, &splines, &[]).unwrap();
                 assert_eq!(e.count, 1);
                 assert!(e.used <= SLOTS);
                 let mut gradient = vec![0.0; x.len()];
@@ -1268,8 +1617,8 @@ mod tests {
                     let (mut lo, mut hi) = (x.clone(), x.clone());
                     lo[i] -= h;
                     hi[i] += h;
-                    let want = (eq.eval_with(&hi, 1e-9, &splines).unwrap().rows[0].v
-                        - eq.eval_with(&lo, 1e-9, &splines).unwrap().rows[0].v)
+                    let want = (eq.eval_with(&hi, 1e-9, &splines, &[]).unwrap().rows[0].v
+                        - eq.eval_with(&lo, 1e-9, &splines, &[]).unwrap().rows[0].v)
                         / (2.0 * h);
                     assert!(
                         (gradient[i] - want).abs() < 1e-6,
@@ -1293,8 +1642,11 @@ mod tests {
     #[test]
     fn short_lines_have_no_direction() {
         let x = [0.0, 0.0, 1e-7, 0.0, 1.0, 1.0];
-        let short = Ln { a: Pt(0), b: Pt(2) };
-        let eq = Equation::PointOnLine(Pt(4), short);
+        let short = Ln {
+            a: Pt::Own(0),
+            b: Pt::Own(2),
+        };
+        let eq = Equation::PointOnLine(Pt::Own(4), short);
         assert_eq!(eq.eval(&x, 1e-6).err(), Some(Fail::Degenerate(SHORT_LINE)));
         assert!(eq.eval(&x, 1e-8).is_ok());
         let far = [0.0, 0.0, 1e200, 1e200, 1.0, 1.0];

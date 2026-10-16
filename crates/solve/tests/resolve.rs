@@ -24,7 +24,7 @@ fn bits(entities: &[Entity]) -> Vec<u64> {
         match e {
             Entity::Point { x, y } => out.extend([x.to_bits(), y.to_bits()]),
             Entity::Circle { radius, .. } => out.push(radius.to_bits()),
-            Entity::Line { .. } | Entity::Arc { .. } => {}
+            Entity::Line { .. } | Entity::Arc { .. } | Entity::Image { .. } => {}
         }
     }
     out

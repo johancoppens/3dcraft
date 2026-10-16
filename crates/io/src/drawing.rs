@@ -153,7 +153,7 @@ pub fn sketch_outline(
             // Every kind of entity is named here: a new one does not
             // compile until it is mapped.
             match &entity.geometry {
-                Geometry::Point { .. } => {}
+                Geometry::Point { .. } | Geometry::Image { .. } => {}
                 &Geometry::Line { start, end } => {
                     let (from, to) = (
                         nodes.at(start, position(start)?),

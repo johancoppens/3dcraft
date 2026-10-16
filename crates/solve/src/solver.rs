@@ -19,7 +19,6 @@ use crate::equations::{Equation, Fail, Prepared, start_failure};
 use crate::error::{Site, SolveError};
 use crate::factor::{Factor, Jacobian, Work};
 use crate::model::{ConstraintReport, ConstraintStatus, Entity, Sketch, Solution, SolveOptions};
-use crate::spline::SplineVars;
 use crate::{MAX_BLAMED, RUNS_PER_SOLVE};
 
 /// Polishing target: an equation is done when its residual, relative to the
@@ -146,7 +145,12 @@ impl<'a> System<'a> {
                 continue;
             }
             let e = eq
-                .eval_with(x, self.options.tolerance.linear, &self.prep.splines)
+                .eval_with(
+                    x,
+                    self.options.tolerance.linear,
+                    &self.prep.splines,
+                    &self.prep.images,
+                )
                 .map_err(|f| (index, f))?;
             for row in e.rows.iter().take(e.count) {
                 r.push(row.v);
@@ -346,8 +350,12 @@ impl<'a> System<'a> {
             }
             // Every unknown of the equation, also those its gradient is
             // zero in at this point: they are the ones that matter.
-            let Ok(e) = eq.eval_with(&run.x, self.options.tolerance.linear, &self.prep.splines)
-            else {
+            let Ok(e) = eq.eval_with(
+                &run.x,
+                self.options.tolerance.linear,
+                &self.prep.splines,
+                &self.prep.images,
+            ) else {
                 continue;
             };
             for col in e.slots.iter().take(e.used) {
@@ -474,7 +482,12 @@ fn solve_once(sketch: &Sketch, options: &SolveOptions) -> Result<Solution, Solve
     let mut blamed = vec![false; count];
     for (eq, site) in prep.equations.iter().zip(&prep.source) {
         match (
-            eq.eval_with(&prep.x0, options.tolerance.linear, &prep.splines),
+            eq.eval_with(
+                &prep.x0,
+                options.tolerance.linear,
+                &prep.splines,
+                &prep.images,
+            ),
             site,
         ) {
             (Err(Fail::Degenerate(_)), Site::Constraint(i)) => {
@@ -572,7 +585,7 @@ fn solve_once(sketch: &Sketch, options: &SolveOptions) -> Result<Solution, Solve
                     *radius = *r;
                 }
             }
-            Entity::Line { .. } | Entity::Arc { .. } => {}
+            Entity::Line { .. } | Entity::Arc { .. } | Entity::Image { .. } => {}
         }
     }
 
@@ -612,13 +625,18 @@ fn solve_once(sketch: &Sketch, options: &SolveOptions) -> Result<Solution, Solve
             ConstraintStatus::Satisfied
         };
         if let Some(report) = reports.get_mut(*i) {
-            let undefined = match eq.eval_with(&run.x, options.tolerance.linear, &prep.splines) {
+            let undefined = match eq.eval_with(
+                &run.x,
+                options.tolerance.linear,
+                &prep.splines,
+                &prep.images,
+            ) {
                 Err(Fail::Degenerate(reason)) => Some(reason),
                 _ => None,
             };
             *report = ConstraintReport {
                 status,
-                residual: residual(eq, &run.x, options.tolerance.linear, &prep.splines),
+                residual: residual(eq, &run.x, options.tolerance.linear, &prep),
                 undefined,
             };
         }
@@ -637,8 +655,8 @@ fn solve_once(sketch: &Sketch, options: &SolveOptions) -> Result<Solution, Solve
 
 /// How far an equation is from holding at `x`: the norm of its rows, or
 /// infinity where it has no value.
-fn residual(eq: &Equation, x: &[f64], min_len: f64, splines: &[SplineVars]) -> f64 {
-    match eq.eval_with(x, min_len, splines) {
+fn residual(eq: &Equation, x: &[f64], min_len: f64, prep: &crate::equations::Prepared) -> f64 {
+    match eq.eval_with(x, min_len, &prep.splines, &prep.images) {
         Ok(e) => e
             .rows
             .iter()
