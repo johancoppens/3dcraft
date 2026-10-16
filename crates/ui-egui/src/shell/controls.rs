@@ -138,6 +138,50 @@ fn mix(rgb: [u8; 3], to: [u8; 3], t: f64) -> [u8; 3] {
     out
 }
 
+/// The patches of the view cube that `camera` sees, as they are painted
+/// in a place whose middle is `center` with a picture radius of `arm`
+/// points: the facets with `gap` between them, each with its corners in
+/// the window. A patch thinner than [`MIN_PATCH`] (a facet seen nearly
+/// edge-on) is left out: it shows nothing, and egui's anti-aliasing of a
+/// sliver that thin draws spikes far outside it.
+pub fn cube_patches(
+    camera: &crate::state::CameraState,
+    gap: f64,
+    center: egui::Pos2,
+    arm: f32,
+) -> Vec<(view_cube::Facet, Vec<egui::Pos2>)> {
+    view_cube::facets_gapped(camera, gap)
+        .into_iter()
+        .filter_map(|facet| {
+            let points: Vec<egui::Pos2> = facet
+                .patch
+                .iter()
+                .map(|&p| center + vec2(p[0] as f32, p[1] as f32) * arm)
+                .collect();
+            (thickness(&points) >= MIN_PATCH).then_some((facet, points))
+        })
+        .collect()
+}
+
+/// The thinnest a painted patch of the view cube is, in points.
+pub const MIN_PATCH: f32 = 3.0;
+
+/// How thick a convex polygon is: twice its area over its perimeter
+/// (its inradius for a regular one), in its own units.
+fn thickness(points: &[egui::Pos2]) -> f32 {
+    let n = points.len();
+    let (mut area, mut perimeter) = (0.0_f32, 0.0_f32);
+    for k in 0..n {
+        let (Some(a), Some(b)) = (points.get(k), points.get((k + 1) % n)) else {
+            continue;
+        };
+        area += a.x * b.y - b.x * a.y;
+        perimeter += a.distance(*b);
+    }
+    let t = area.abs() / perimeter.max(f32::MIN_POSITIVE);
+    if t.is_finite() { t } else { 0.0 }
+}
+
 impl Shell {
     /// The controls over the viewport `rect`, inside `inner` (see the top
     /// of this module).
@@ -544,8 +588,7 @@ impl Shell {
         let painter = ui.painter_at(area.expand(2.0));
         let at = |p: [f64; 2]| center + vec2(p[0] as f32, p[1] as f32) * arm;
         let gap = f64::from(tokens.view_cube_gap);
-        for facet in view_cube::facets_gapped(&self.state.camera, gap) {
-            let points: Vec<egui::Pos2> = facet.patch.iter().map(|&p| at(p)).collect();
+        for (facet, points) in cube_patches(&self.state.camera, gap, center, arm) {
             // A face carries the colour of the axis it is across; the cut
             // facets are the gem's own, darker, and all are lit by how
             // much they face the viewer.
@@ -690,6 +733,64 @@ impl Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What egui paints of the cube stays on the cube: every patch, as
+    /// egui tessellates it with its anti-aliasing at one and two pixels
+    /// per point, lies within the cube's picture (the circle of radius
+    /// `arm` around its middle, give or take three points of feathering at an acute corner), from
+    /// cameras all round the cube in both projections. A facet seen
+    /// nearly edge-on once drew a spike well outside the cube.
+    #[test]
+    fn no_patch_of_the_cube_is_painted_outside_it() {
+        use crate::state::{CameraState, ProjectionKind};
+        use egui::epaint::{Mesh, Shape, Stroke, TessellationOptions, Tessellator};
+        let tokens = Tokens::dark();
+        let (center, arm) = (pos2(500.0, 400.0), 62.0_f32);
+        let mut worst = f32::MIN;
+        let mut cameras = 0;
+        for projection in [ProjectionKind::Perspective, ProjectionKind::Orthographic] {
+            for yaw in (-180..180).step_by(5) {
+                for pitch in (-90..=90).step_by(5) {
+                    cameras += 1;
+                    let camera = CameraState {
+                        yaw: f64::from(yaw) + 0.3,
+                        pitch: f64::from(pitch),
+                        projection,
+                        ..CameraState::default()
+                    };
+                    for pixels_per_point in [1.0, 2.0] {
+                        let mut tessellator = Tessellator::new(
+                            pixels_per_point,
+                            TessellationOptions::default(),
+                            [1, 1],
+                            Vec::new(),
+                        );
+                        let gap = f64::from(tokens.view_cube_gap);
+                        for (facet, points) in cube_patches(&camera, gap, center, arm) {
+                            let mut mesh = Mesh::default();
+                            tessellator.tessellate_shape(
+                                Shape::convex_polygon(points, egui::Color32::WHITE, Stroke::NONE),
+                                &mut mesh,
+                            );
+                            for v in &mesh.vertices {
+                                let out = v.pos.distance(center) - arm;
+                                worst = worst.max(out);
+                                assert!(
+                                    out <= 3.0,
+                                    "{projection:?} yaw {yaw} pitch {pitch} at {pixels_per_point}: \
+                                     {:?} is painted {out} points outside the cube",
+                                    facet.side
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(cameras > 1000, "{cameras}");
+        eprintln!("furthest outside: {worst} points");
+        assert!(worst > -5.0, "the patches reach the cube's edge: {worst}");
+    }
 
     /// At every size, from a phone-sized viewport to a large one, with
     /// the default widths and wider ones: what is shown is inside the
