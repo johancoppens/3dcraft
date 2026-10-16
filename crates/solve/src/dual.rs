@@ -52,6 +52,21 @@ impl Dual {
         self.v.is_finite() && self.d.iter().all(|x| x.is_finite())
     }
 
+    /// The sine and the cosine.
+    pub(crate) fn sin_cos(self) -> (Dual, Dual) {
+        let (sin, cos) = self.v.sin_cos();
+        (
+            Dual {
+                v: sin,
+                d: map(&self.d, |a| a * cos),
+            },
+            Dual {
+                v: cos,
+                d: map(&self.d, |a| -a * sin),
+            },
+        )
+    }
+
     /// Same derivatives, another value (used to wrap an angle).
     pub(crate) fn with_value(self, v: f64) -> Dual {
         Dual { v, d: self.d }

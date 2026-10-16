@@ -96,8 +96,8 @@ mod spline;
 
 pub use error::{Site, SolveError};
 pub use model::{
-    Constraint, ConstraintReport, ConstraintStatus, Entity, EntityId, EntityKind, ImageMap, Sketch,
-    Solution, SolveOptions, Spline,
+    Carried, Constraint, ConstraintReport, ConstraintStatus, Entity, EntityId, EntityKind,
+    ImageMap, ImageStart, Sketch, Solution, SolveOptions, Spline,
 };
 
 /// The highest degree of a spline a point can be constrained onto.

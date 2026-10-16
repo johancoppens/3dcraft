@@ -471,14 +471,18 @@ fn same_verdict(a: &Solution, b: &Solution) -> bool {
 pub(crate) fn solve(sketch: &Sketch, options: &SolveOptions) -> Result<Solution, SolveError> {
     validate(options)?;
     // Image points that jumped since the starting guess was solved carry
-    // the sketch along first; the solve then starts from there.
-    let carried = crate::carry::carry(sketch, options).map(|entities| Sketch {
+    // the sketch along first, from the first pass's budget; the solve then
+    // starts from where the path ended.
+    let mut work = Work::new(options.work_limit);
+    let carrying = crate::carry::carry(sketch, options, &mut work);
+    let carried = carrying.entities.map(|entities| Sketch {
         entities,
         constraints: sketch.constraints.clone(),
         splines: sketch.splines.clone(),
         image_starts: Vec::new(),
     });
-    let mut current = solve_once(carried.as_ref().unwrap_or(sketch), options)?;
+    let mut current = solve_once(carried.as_ref().unwrap_or(sketch), options, work)?;
+    current.carry = carrying.outcome.clone();
     let mut iterations = current.iterations;
     let mut close = false;
     for _ in 0..SETTLE_PASSES {
@@ -488,9 +492,10 @@ pub(crate) fn solve(sketch: &Sketch, options: &SolveOptions) -> Result<Solution,
             splines: sketch.splines.clone(),
             image_starts: Vec::new(),
         };
-        let mut next = solve_once(&guess, options)?;
+        let mut next = solve_once(&guess, options, Work::new(options.work_limit))?;
         iterations = iterations.saturating_add(next.iterations);
         next.iterations = iterations;
+        next.carry = carrying.outcome.clone();
         // From the same coordinates the next pass would return exactly
         // what this one did, verdict included.
         let settled = same_place(&current.entities, &next.entities, 0.0);
@@ -510,13 +515,13 @@ pub(crate) fn solve(sketch: &Sketch, options: &SolveOptions) -> Result<Solution,
     }
 }
 
-fn solve_once(sketch: &Sketch, options: &SolveOptions) -> Result<Solution, SolveError> {
+fn solve_once(sketch: &Sketch, options: &SolveOptions, work: Work) -> Result<Solution, SolveError> {
     let prep = crate::equations::prepare(sketch, options.tolerance.linear)?;
     let system = System::new(&prep, options);
     let mut budget = Budget {
         steps_left: options.max_iterations.saturating_mul(RUNS_PER_SOLVE),
         steps_taken: 0,
-        work: Work::new(options.work_limit),
+        work,
     };
     let count = sketch.constraints.len();
     // A constraint that has no value at the starting guess (the direction
@@ -693,6 +698,7 @@ fn solve_once(sketch: &Sketch, options: &SolveOptions) -> Result<Solution, Solve
         dof: unknowns.saturating_sub(run.rank),
         constraints: reports,
         iterations: budget.steps_taken,
+        carry: None,
     })
 }
 

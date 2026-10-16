@@ -387,6 +387,21 @@ pub fn from_manifest_json_noted(json: &[u8]) -> Result<(Document, Vec<String>), 
             ));
         }
     }
+    // Where image points lay is where the next solve starts carrying them
+    // from, not part of the design: a stale or malformed place is dropped
+    // (that image is then not carried), not a reason to refuse the file.
+    for feature in &mut document.features {
+        if let craft3d_doc::FeatureKind::Sketch(sketch) = &mut feature.kind {
+            let dropped = sketch.tidy_image_places();
+            if dropped > 0 {
+                warnings.push(format!(
+                    "{}: {dropped} image place{} dropped (not an image point, repeated or not finite)",
+                    feature.id,
+                    if dropped == 1 { "" } else { "s" }
+                ));
+            }
+        }
+    }
     document.validate().map_err(FormatError::InvalidDocument)?;
     Ok((document, warnings))
 }

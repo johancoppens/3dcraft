@@ -13,8 +13,8 @@
 
 use craft3d_math::Tolerance;
 use craft3d_solve::{
-    Constraint as C, ConstraintStatus, Entity, EntityId, ImageMap, Sketch, Solution, SolveOptions,
-    solve,
+    Carried, Constraint as C, ConstraintStatus, Entity, EntityId, ImageMap, ImageStart, Sketch,
+    Solution, SolveOptions, solve,
 };
 
 fn options(scale: f64) -> SolveOptions {
@@ -82,13 +82,43 @@ fn wave(scale: f64, n: u32) -> Wave {
     }
 }
 
+/// How the next solve is told where the images were.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Start {
+    /// Not at all: the solve as it was before carrying.
+    None,
+    /// The place only: carried in a straight line.
+    Place,
+    /// The place and the map: carried through the pattern's family.
+    Map,
+}
+
+fn start(s: &Sketch, image: EntityId, how: Start) -> Vec<ImageStart> {
+    let Some(Entity::Image { map, .. }) = s.entities.get(image.0 as usize) else {
+        panic!("not an image");
+    };
+    match how {
+        Start::None => Vec::new(),
+        Start::Place => vec![ImageStart {
+            image,
+            at: image_at(s, image),
+            map: None,
+        }],
+        Start::Map => vec![ImageStart {
+            image,
+            at: image_at(s, image),
+            map: Some(*map),
+        }],
+    }
+}
+
 /// `solved` with the count of the run set to `n`, as the next starting
 /// guess: the stored coordinates, and where the image was when they were a
-/// solution (`carry`), or nothing (the solve as it was before).
-fn recount(w: &Wave, solved: &Solution, n: u32, carry: bool) -> Sketch {
+/// solution, as `how` says.
+fn recount(w: &Wave, solved: &Solution, n: u32, how: Start) -> Sketch {
     let mut s = w.sketch.clone();
     s.entities = solved.entities.clone();
-    let was = image_at(&s, w.image);
+    let starts = start(&s, w.image, how);
     if let Some(Entity::Image {
         map: ImageMap::Chain { k, .. },
         ..
@@ -96,11 +126,7 @@ fn recount(w: &Wave, solved: &Solution, n: u32, carry: bool) -> Sketch {
     {
         *k = f64::from(n - 1);
     }
-    s.image_starts = if carry {
-        vec![(w.image, was)]
-    } else {
-        Vec::new()
-    };
+    s.image_starts = starts;
     s
 }
 
@@ -129,7 +155,10 @@ fn ok(solution: &Solution) {
 /// profile folded back.
 #[test]
 fn geometry_after_a_run_follows_its_end_when_the_count_jumps() {
-    for scale in [1e-3, 1.0, 1e3] {
+    for (scale, how) in [1e-3, 1.0, 1e3]
+        .into_iter()
+        .flat_map(|s| [(s, Start::Map), (s, Start::Place)])
+    {
         for (from, to) in [(3, 10), (10, 3), (1, 400), (400, 2), (3, 4)] {
             let w = wave(scale, from);
             let first = solve(&w.sketch, &options(scale)).unwrap();
@@ -138,15 +167,16 @@ fn geometry_after_a_run_follows_its_end_when_the_count_jumps() {
             let want = scale * (10.0 * f64::from(from) + 1.0);
             assert!((qx - want).abs() <= 1e-9 * want, "{qx} vs {want}");
 
-            let next = solve(&recount(&w, &first, to, true), &options(scale)).unwrap();
+            let next = solve(&recount(&w, &first, to, how), &options(scale)).unwrap();
             ok(&next);
             let want = scale * (10.0 * f64::from(to) + 1.0);
             let [qx, qy] = next.point(w.q).unwrap();
             let [rx, ry] = next.point(w.r).unwrap();
             assert!(
                 (qx - want).abs() <= 1e-9 * want && qy.abs() <= 1e-9 * scale,
-                "{from} -> {to} at {scale}: q at {qx}, {qy}, want {want}"
+                "{from} -> {to} at {scale} ({how:?}): q at {qx}, {qy}, want {want}"
             );
+            assert_eq!(next.carry, Some(Carried::Whole), "{from} -> {to}");
             assert!(
                 (rx - want).abs() <= 1e-9 * want && (ry + 5.0 * scale).abs() <= 1e-9 * scale,
                 "{from} -> {to} at {scale}: r at {rx}, {ry}"
@@ -157,19 +187,26 @@ fn geometry_after_a_run_follows_its_end_when_the_count_jumps() {
     // up lands on the other root.
     let w = wave(1.0, 3);
     let first = solve(&w.sketch, &options(1.0)).unwrap();
-    let flipped = solve(&recount(&w, &first, 10, false), &options(1.0)).unwrap();
+    let flipped = solve(&recount(&w, &first, 10, Start::None), &options(1.0)).unwrap();
     let [qx, _] = flipped.point(w.q).unwrap();
     assert!((qx - 99.0).abs() < 1e-6, "{qx}");
 }
 
-/// 3 -> 10 -> 3 comes back to the root it started on, within rounding.
+/// 3 -> 10 -> 3 comes back to the root it started on, within rounding,
+/// by way of the right root at 10 (without the carrying the way up lands
+/// on the other root, and this fails there).
 #[test]
 fn a_count_that_goes_and_comes_back_returns_to_the_same_root() {
     for scale in [1e-3, 1.0, 1e3] {
         let w = wave(scale, 3);
         let first = solve(&w.sketch, &options(scale)).unwrap();
-        let up = solve(&recount(&w, &first, 10, true), &options(scale)).unwrap();
-        let back = solve(&recount(&w, &up, 3, true), &options(scale)).unwrap();
+        let up = solve(&recount(&w, &first, 10, Start::Map), &options(scale)).unwrap();
+        let [qx, _] = up.point(w.q).unwrap();
+        assert!(
+            (qx - 101.0 * scale).abs() <= 1e-9 * scale * 101.0,
+            "up at {scale}: q at {qx}"
+        );
+        let back = solve(&recount(&w, &up, 3, Start::Map), &options(scale)).unwrap();
         for (a, b) in first.entities.iter().zip(&back.entities) {
             if let (Entity::Point { x, y }, Entity::Point { x: x2, y: y2 }) = (a, b) {
                 assert!(
@@ -236,7 +273,11 @@ fn a_turn_whose_angle_changes_carries_what_hangs_on_its_image() {
         {
             *angle = 170f64.to_radians();
         }
-        next.image_starts = vec![(image, was)];
+        next.image_starts = vec![ImageStart {
+            image,
+            at: was,
+            map: None,
+        }];
         let solved = solve(&next, &options(scale)).unwrap();
         ok(&solved);
         let [x, y] = solved.point(q).unwrap();
@@ -251,27 +292,51 @@ fn a_turn_whose_angle_changes_carries_what_hangs_on_its_image() {
 
 /// Where the image is now, or within the tolerance of it: the solve is the
 /// one without `image_starts`, bit for bit. Hostile entries (not an image,
-/// no such entity, not finite) are left alone.
+/// no such entity, not finite, a map of another family that puts it where
+/// it is) are left alone.
 #[test]
 fn an_image_that_did_not_move_changes_nothing() {
     let w = wave(1.0, 3);
     let first = solve(&w.sketch, &options(1.0)).unwrap();
-    let plain = solve(&recount(&w, &first, 10, false), &options(1.0)).unwrap();
-    let mut s = recount(&w, &first, 10, false);
+    let plain = solve(&recount(&w, &first, 10, Start::None), &options(1.0)).unwrap();
+    assert_eq!(plain.carry, None);
+    let mut s = recount(&w, &first, 10, Start::None);
     let here = image_at(&s, w.image);
+    let Some(Entity::Image { map: now, .. }) = s.entities.get(w.image.0 as usize).copied() else {
+        panic!()
+    };
+    let place = |image, at| ImageStart {
+        image,
+        at,
+        map: None,
+    };
     for starts in [
-        vec![(w.image, here)],
-        vec![(w.image, [here[0] + 1e-10, here[1]])],
-        vec![(EntityId(0), [55.0, 1.0])],
-        vec![(EntityId(9999), [55.0, 1.0])],
-        vec![(w.image, [f64::NAN, 0.0])],
-        vec![(w.image, [f64::INFINITY, 0.0])],
+        vec![place(w.image, here)],
+        vec![place(w.image, [here[0] + 1e-10, here[1]])],
+        vec![ImageStart {
+            image: w.image,
+            at: [0.0, 0.0],
+            map: Some(now),
+        }],
+        vec![place(EntityId(0), [55.0, 1.0])],
+        vec![place(EntityId(9999), [55.0, 1.0])],
+        vec![place(w.image, [f64::NAN, 0.0])],
+        vec![place(w.image, [f64::INFINITY, 0.0])],
+        vec![ImageStart {
+            image: w.image,
+            at: here,
+            map: Some(ImageMap::Turn {
+                center: None,
+                at: [0.0, 0.0],
+                angle: f64::NAN,
+            }),
+        }],
     ] {
         s.image_starts = starts.clone();
         assert_eq!(solve(&s, &options(1.0)), Ok(plain.clone()), "{starts:?}");
     }
     // Carrying is deterministic too.
-    let carried = recount(&w, &first, 10, true);
+    let carried = recount(&w, &first, 10, Start::Map);
     assert_eq!(
         solve(&carried, &options(1.0)),
         solve(&carried, &options(1.0))
@@ -286,7 +351,7 @@ fn an_image_that_did_not_move_changes_nothing() {
 fn a_carried_solve_is_a_solve() {
     let w = wave(1.0, 3);
     let first = solve(&w.sketch, &options(1.0)).unwrap();
-    let carried = solve(&recount(&w, &first, 10, true), &options(1.0)).unwrap();
+    let carried = solve(&recount(&w, &first, 10, Start::Map), &options(1.0)).unwrap();
     let mut again = w.sketch.clone();
     again.entities = carried.entities.clone();
     if let Some(Entity::Image {
@@ -300,7 +365,7 @@ fn a_carried_solve_is_a_solve() {
     assert_eq!(second.entities, carried.entities);
     assert_eq!(second.constraints, carried.constraints);
 
-    let mut pinned = recount(&w, &first, 10, true);
+    let mut pinned = recount(&w, &first, 10, Start::Map);
     pinned.add_constraint(C::Fixed {
         point: w.q,
         at: Some([31.0, 0.0]),
@@ -316,6 +381,179 @@ fn a_carried_solve_is_a_solve() {
     assert!(solve(&earlier, &options(1.0)).unwrap().is_consistent());
 }
 
+/// A turn about a fixed centre point: a seed point at radius 3, its image
+/// in instance `k` turned by `k * step`, and a point `q` on the ray from
+/// the centre through the image, one unit beyond it. Returns the sketch,
+/// the image and `q`.
+fn turn(scale: f64, angle: f64, q_at: [f64; 2]) -> (Sketch, EntityId, EntityId) {
+    let mut s = Sketch::new();
+    let centre = s.add_point(0.0, 0.0);
+    let seed = s.add_point(3.0 * scale, 0.0);
+    let image = EntityId(u32::try_from(s.entities.len()).unwrap());
+    s.entities.push(Entity::Image {
+        of: seed,
+        map: ImageMap::Turn {
+            center: Some(centre),
+            at: [0.0, 0.0],
+            angle,
+        },
+    });
+    let q = s.add_point(q_at[0], q_at[1]);
+    let ray = s.add_line(centre, image);
+    s.add_constraint(C::Fixed {
+        point: centre,
+        at: None,
+    });
+    s.add_constraint(C::Fixed {
+        point: seed,
+        at: None,
+    });
+    s.add_constraint(C::PointOnLine {
+        point: q,
+        line: ray,
+    });
+    s.add_constraint(C::Distance {
+        a: image,
+        b: q,
+        value: scale,
+    });
+    (s, image, q)
+}
+
+/// From the solution at angle `from`, the turn set to `to` and solved
+/// with the image's start told as `how` says.
+fn returned(scale: f64, from: f64, to: f64, how: Start) -> (Solution, EntityId) {
+    let (s, image, q) = turn(
+        scale,
+        from,
+        [4.0 * scale * from.cos(), 4.0 * scale * from.sin()],
+    );
+    let first = solve(&s, &options(scale)).unwrap();
+    ok(&first);
+    let mut next = s.clone();
+    next.entities = first.entities.clone();
+    next.image_starts = start(&next, image, how);
+    if let Some(Entity::Image {
+        map: ImageMap::Turn { angle, .. },
+        ..
+    }) = next.entities.get_mut(image.0 as usize)
+    {
+        *angle = to;
+    }
+    (solve(&next, &options(scale)).unwrap(), q)
+}
+
+/// The image of a ring with a step of 30 degrees whose count goes from 3
+/// to 10 swings from 60 to 270 degrees, and a turn from 1 to 179 degrees:
+/// carried through the turn (its angle going from the old value to the new
+/// one), the point one unit beyond the image stays beyond it, at three
+/// scales. A straight path from the old place to the new one passes near
+/// the centre, where the ray has nearly no direction.
+#[test]
+fn a_ring_whose_count_jumps_carries_what_hangs_on_its_image() {
+    for scale in [1e-3, 1.0, 1e3] {
+        for (from, to) in [
+            (60.0f64, 270.0f64),
+            (1.0, 179.0),
+            (270.0, 60.0),
+            (0.0, 180.0),
+        ] {
+            let (from, to) = (from.to_radians(), to.to_radians());
+            let (solved, q) = returned(scale, from, to, Start::Map);
+            ok(&solved);
+            assert_eq!(solved.carry, Some(Carried::Whole));
+            let [x, y] = solved.point(q).unwrap();
+            let (wx, wy) = (4.0 * scale * to.cos(), 4.0 * scale * to.sin());
+            assert!(
+                (x - wx).abs() <= 1e-9 * scale && (y - wy).abs() <= 1e-9 * scale,
+                "{} -> {} deg at {scale}: q at {x}, {y}, want {wx}, {wy}",
+                from.to_degrees(),
+                to.to_degrees()
+            );
+        }
+    }
+}
+
+/// When the path cannot be followed to its end the solution says how far
+/// it got: `q` pinned at 31 cannot stay one unit after an image that goes
+/// from 30 to 90 (the run's count 3 -> 10) past the moment it is at 32.
+#[test]
+fn a_path_that_stops_says_how_far_it_got() {
+    let w = wave(1.0, 3);
+    let first = solve(&w.sketch, &options(1.0)).unwrap();
+    let mut pinned = recount(&w, &first, 10, Start::Map);
+    pinned.add_constraint(C::Fixed {
+        point: w.q,
+        at: Some([31.0, 0.0]),
+    });
+    let solved = solve(&pinned, &options(1.0)).unwrap();
+    match solved.carry {
+        Some(Carried::Stopped { reached }) => {
+            assert!((0.0..1.0).contains(&reached), "{reached}")
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// An equation that holds as many unknowns as one can (18: four image
+/// points made from nine points) cannot take the path parameter as well:
+/// nothing is carried, the solution says so, and the solve is the one
+/// from the stored coordinates.
+#[test]
+fn an_equation_too_full_for_the_path_is_not_carried() {
+    let mut s = Sketch::new();
+    let point = |s: &mut Sketch, x: f64, y: f64| s.add_point(x, y);
+    let (a1, a2) = (point(&mut s, 0.0, 0.0), point(&mut s, 1.0, 0.0));
+    let (b1, b2) = (point(&mut s, 0.0, 5.0), point(&mut s, 0.0, 6.0));
+    let c = point(&mut s, 9.0, 9.0);
+    let p: Vec<EntityId> = (0..4)
+        .map(|i| point(&mut s, f64::from(i), 2.0 + f64::from(i * i)))
+        .collect();
+    let image = |s: &mut Sketch, of, map| {
+        let id = EntityId(u32::try_from(s.entities.len()).unwrap());
+        s.entities.push(Entity::Image { of, map });
+        id
+    };
+    let chain = |from, to, k| ImageMap::Chain { from, to, k };
+    let i1 = image(&mut s, p[0], chain(a1, a2, 2.0));
+    let i2 = image(&mut s, p[1], chain(a1, a2, 2.0));
+    let i3 = image(&mut s, p[2], chain(b1, b2, 1.0));
+    let i4 = image(
+        &mut s,
+        p[3],
+        ImageMap::Turn {
+            center: Some(c),
+            at: [0.0, 0.0],
+            angle: 0.3,
+        },
+    );
+    let l1 = s.add_line(i1, i2);
+    let l2 = s.add_line(i3, i4);
+    s.add_constraint(C::Parallel { a: l1, b: l2 });
+    let first = solve(&s, &options(1.0)).unwrap();
+    let mut next = s.clone();
+    next.entities = first.entities.clone();
+    next.image_starts = start(&next, i1, Start::Map);
+    if let Some(Entity::Image {
+        map: ImageMap::Chain { k, .. },
+        ..
+    }) = next.entities.get_mut(i1.0 as usize)
+    {
+        *k = 7.0;
+    }
+    let carried = solve(&next, &options(1.0)).unwrap();
+    assert!(
+        matches!(carried.carry, Some(Carried::Skipped { .. })),
+        "{:?}",
+        carried.carry
+    );
+    let mut plain = next.clone();
+    plain.image_starts.clear();
+    let plain = solve(&plain, &options(1.0)).unwrap();
+    assert_eq!(carried.entities, plain.entities);
+    assert_eq!(carried.constraints, plain.constraints);
+}
+
 /// What the carrying costs: the run's count jumps 3 -> 400 and goes
 /// 400 -> 401, solved with and without the image's old place (without it
 /// the jump up lands on the other root, so only the time compares). Run
@@ -328,7 +566,7 @@ fn carrying_a_jump_of_400_is_quick() {
     let o = options(1.0);
     let w = wave(1.0, 3);
     let first = solve(&w.sketch, &o).unwrap();
-    for carry in [false, true] {
+    for carry in [Start::None, Start::Map] {
         let up = recount(&w, &first, 400, carry);
         let t = Instant::now();
         let mut solved = solve(&up, &o).unwrap();
@@ -349,7 +587,7 @@ fn carrying_a_jump_of_400_is_quick() {
         }
         let none = t.elapsed() / 100;
         println!(
-            "carry {carry}: 3 -> 400 {jump:?}, 400 -> 401 {step:?}, unmoved {none:?}, q at {:?}",
+            "{carry:?}: 3 -> 400 {jump:?}, 400 -> 401 {step:?}, unmoved {none:?}, q at {:?}",
             solved.point(w.q)
         );
     }

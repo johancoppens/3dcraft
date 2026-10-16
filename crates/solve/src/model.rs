@@ -292,14 +292,43 @@ pub struct Sketch {
     pub constraints: Vec<Constraint>,
     /// The splines points are constrained onto.
     pub splines: Vec<Spline>,
-    /// Where image points lay when the starting guess was a solution: the
-    /// image point and its coordinates then. When the map of an image now
-    /// puts it elsewhere (a count, step or angle of its pattern changed),
-    /// [`crate::solve`] first carries the sketch along from there to the new
-    /// place by continuation, so that geometry hanging on the image moves
-    /// with it rather than landing on another root. Empty, or an image
-    /// within the linear tolerance of its place, means no carrying.
-    pub image_starts: Vec<(EntityId, [f64; 2])>,
+    /// Where image points lay when the starting guess was a solution, and
+    /// by what map. When the map of an image now puts it elsewhere (a
+    /// count, step or angle of its pattern changed), [`crate::solve`] first
+    /// carries the sketch along from there by continuation, so that
+    /// geometry hanging on the image moves with it rather than landing on
+    /// another root. Empty, or an image within the linear tolerance of
+    /// where it was, means no carrying.
+    pub image_starts: Vec<ImageStart>,
+}
+
+/// Where an image point lay when the starting guess was a solution.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ImageStart {
+    pub image: EntityId,
+    /// Its coordinates then.
+    pub at: [f64; 2],
+    /// Its map then, when known. When it is of the same family as the map
+    /// now (the same kind, about the same points), the image is carried
+    /// through the family: the map's numbers go from their old values to
+    /// their new ones (an image of a ring swings round its centre). Else it
+    /// goes in a straight line from `at`.
+    pub map: Option<ImageMap>,
+}
+
+/// What carrying the sketch along did ([`Solution::carry`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Carried {
+    /// All the way: the solve started where the path ends.
+    Whole,
+    /// The path could not be followed past `reached` (0 to 1: how far the
+    /// images got from their old places to their new ones); the solve
+    /// started there, and may have found another root than the one the
+    /// sketch was on.
+    Stopped { reached: f64 },
+    /// Not carried at all, for `reason`; the solve started from the
+    /// stored coordinates.
+    Skipped { reason: String },
 }
 
 impl Sketch {
@@ -464,6 +493,9 @@ pub struct Solution {
     /// Newton steps taken, over all runs and passes of this solve. Zero for
     /// a sketch that was already solved and has no conflict.
     pub iterations: usize,
+    /// What carrying the sketch along from [`Sketch::image_starts`] did;
+    /// `None` when no image had moved.
+    pub carry: Option<Carried>,
 }
 
 impl Solution {

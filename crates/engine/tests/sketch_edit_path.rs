@@ -83,6 +83,18 @@ fn state(s: &mut Session) -> Value {
 fn equals_a_fresh_open(s: &mut Session, dir: &Path, file: &str) -> Value {
     let here = state(s);
     run(s, "file.save", json!({"path": file, "overwrite": true}));
+    // What the session stores is in the form a file must have: no image
+    // place had to be dropped on reading it.
+    let (_, notes) = craft3d_format::load_noted(&dir.join(file)).unwrap();
+    assert!(notes.is_empty(), "{file}: {notes:?}");
+    // Nor was any sketch carried only part of the way.
+    for sketch in here["sketches"].as_array().unwrap() {
+        assert!(
+            sketch.get("warnings").is_none(),
+            "{file}: {}",
+            sketch["warnings"]
+        );
+    }
     let mut fresh = session(dir);
     run(&mut fresh, "file.open", json!({"path": file}));
     let there = state(&mut fresh);
@@ -93,17 +105,18 @@ fn equals_a_fresh_open(s: &mut Session, dir: &Path, file: &str) -> Value {
     // The bodies themselves, exactly: STEP writes every point, curve and
     // surface of the B-rep with all its digits (the same file name, so the
     // header is the same too).
-    assert_eq!(
-        step(s, dir),
-        step(&mut fresh, dir),
+    assert!(
+        step(s, dir) == step(&mut fresh, dir),
         "{file}: the STEP of the edited session and of a fresh open differ"
     );
     here
 }
 
-fn step(s: &mut Session, dir: &Path) -> Vec<u8> {
-    run(s, "file.export", json!({"path": "bodies.step"}));
-    std::fs::read(dir.join("bodies.step")).unwrap()
+/// The STEP file of every body, or the error when there are none.
+fn step(s: &mut Session, dir: &Path) -> Result<Vec<u8>, String> {
+    s.execute("file.export", &json!({"path": "bodies.step"}))
+        .map_err(|e| e.to_string())?;
+    Ok(std::fs::read(dir.join("bodies.step")).unwrap())
 }
 
 /// The largest difference between the coordinates of the same point in
@@ -384,4 +397,142 @@ fn a_file_without_image_places_is_carried_from_its_first_edit() {
         let [px, _] = point(&now, "Edge", "e11");
         assert!((px - x).abs() <= 1e-9 * x, "n = {n}: e11 at {px}, want {x}");
     }
+}
+
+/// Undo and redo of a count that jumped, and an edit of the sketch while
+/// image places are stored: every state equals a fresh open of its file,
+/// and the point after the run is where the count says.
+#[test]
+fn undo_redo_and_deletions_keep_the_session_equal_to_its_file() {
+    let dir = dir("w1-undo");
+    let mut s = replay(&dir, include_str!("edit_path/w1-run-end.steps.json"));
+    let at = |state: &Value| point(state, "Edge", "e11")[0];
+    set(&mut s, &[("n", "10")]);
+    let up = equals_a_fresh_open(&mut s, &dir, "undo-10.3dcraft");
+    assert_eq!(at(&up), 101.0);
+    run(&mut s, "edit.undo", json!({}));
+    let undone = equals_a_fresh_open(&mut s, &dir, "undo-3.3dcraft");
+    assert_eq!(at(&undone), 31.0);
+    run(&mut s, "edit.redo", json!({}));
+    let redone = equals_a_fresh_open(&mut s, &dir, "redo-10.3dcraft");
+    assert!(up == redone, "redo gives the state the edit gave");
+    // From the undone state the same edit lands where it did.
+    run(&mut s, "edit.undo", json!({}));
+    set(&mut s, &[("n", "10")]);
+    let again = equals_a_fresh_open(&mut s, &dir, "again-10.3dcraft");
+    assert_eq!(at(&again), 101.0);
+
+    // The line on the run's end deleted (its image point stays, with its
+    // place), then a line of the seed: whatever that leaves of the run and
+    // its image points, the places in the session are those a file holds.
+    // Then the count changed, and all of it undone.
+    for (entity, file) in [("e12", "no-e12"), ("e3", "seed-less")] {
+        run(
+            &mut s,
+            "sketch.delete",
+            json!({"sketch": "Edge", "entity": entity}),
+        );
+        equals_a_fresh_open(&mut s, &dir, &format!("{file}.3dcraft"));
+    }
+    set(&mut s, &[("n", "4")]);
+    equals_a_fresh_open(&mut s, &dir, "seed-less-4.3dcraft");
+    for _ in 0..3 {
+        run(&mut s, "edit.undo", json!({}));
+    }
+    let back = equals_a_fresh_open(&mut s, &dir, "seed-back.3dcraft");
+    assert!(
+        back == again,
+        "three undos give the state before the deletions"
+    );
+
+    // The pattern deleted with its image points: their places go with
+    // them.
+    run(
+        &mut s,
+        "sketch.delete",
+        json!({"sketch": "Edge", "entity": "e12"}),
+    );
+    run(
+        &mut s,
+        "sketch.delete",
+        json!({"sketch": "Edge", "pattern": "p1"}),
+    );
+    equals_a_fresh_open(&mut s, &dir, "no-pattern.3dcraft");
+    set(&mut s, &[("n", "3")]);
+    equals_a_fresh_open(&mut s, &dir, "no-pattern-3.3dcraft");
+}
+
+/// A version-19 file's first edit that changes nothing stays one that
+/// changes nothing: no undo step, the document unchanged.
+#[test]
+fn a_no_op_edit_of_an_old_file_changes_nothing() {
+    let dir = dir("w1-noop");
+    let mut s = replay(&dir, include_str!("edit_path/w1-run-end.steps.json"));
+    run(&mut s, "file.save", json!({"path": "noop.3dcraft"}));
+    let mut doc = craft3d_format::load(&dir.join("noop.3dcraft")).unwrap();
+    for feature in &mut doc.features {
+        if let craft3d_doc::FeatureKind::Sketch(sketch) = &mut feature.kind {
+            sketch.image_places.clear();
+        }
+    }
+    craft3d_format::save(&dir.join("noop-old.3dcraft"), &doc).unwrap();
+    let mut s = session(&dir);
+    run(&mut s, "file.open", json!({"path": "noop-old.3dcraft"}));
+    let before = run(&mut s, "document.inspect", json!({}));
+    // The same value again: nothing changes.
+    set(&mut s, &[("n", "3")]);
+    assert!(
+        s.execute("edit.undo", &json!({})).is_err(),
+        "a no-op edit made an undo step"
+    );
+    assert_eq!(run(&mut s, "document.inspect", json!({})), before);
+    run(&mut s, "file.save", json!({"path": "noop-again.3dcraft"}));
+    let again = craft3d_format::load(&dir.join("noop-again.3dcraft")).unwrap();
+    assert_eq!(again, doc, "the no-op edit changed the document");
+}
+
+/// A sketch that can be carried only part of the way says so: the point
+/// after the run pinned where it is cannot follow the run's end from 3 to
+/// 10 periods. `sketch.inspect` warns with how far it got, the sketch keeps
+/// its stored coordinates and places (so a fresh open of its file carries
+/// and warns the same), and back at 3 it is as it was.
+#[test]
+fn a_sketch_carried_part_of_the_way_warns() {
+    let dir = dir("w1-stop");
+    let mut s = replay(&dir, include_str!("edit_path/w1-run-end.steps.json"));
+    run(
+        &mut s,
+        "sketch.constrain",
+        json!({"sketch": "Edge", "type": "fixed", "entities": ["e11"]}),
+    );
+    let start = equals_a_fresh_open(&mut s, &dir, "stop-3.3dcraft");
+    set(&mut s, &[("n", "10")]);
+    let here = state(&mut s);
+    let warned = |state: &Value| -> Vec<Value> {
+        state["sketches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|sk| sk.get("warnings").cloned())
+            .collect()
+    };
+    let warnings = warned(&here);
+    assert_eq!(warnings.len(), 1, "{here}");
+    assert!(
+        warnings[0][0]
+            .as_str()
+            .unwrap()
+            .contains("of the way from where its image points were"),
+        "{warnings:?}"
+    );
+    run(&mut s, "file.save", json!({"path": "stop-10.3dcraft"}));
+    let mut fresh = session(&dir);
+    run(&mut fresh, "file.open", json!({"path": "stop-10.3dcraft"}));
+    assert!(
+        here == state(&mut fresh),
+        "the session and a fresh open differ"
+    );
+    set(&mut s, &[("n", "3")]);
+    let back = equals_a_fresh_open(&mut s, &dir, "stop-back.3dcraft");
+    assert!(back == start, "back at 3 it is as it was");
 }

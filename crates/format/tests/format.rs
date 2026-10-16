@@ -1692,11 +1692,97 @@ fn a_sketch_pattern_is_written_like_this_and_round_trips() {
     assert_eq!(from_manifest_json(older.as_bytes()).unwrap(), small());
 }
 
+/// Places of image points in a file that are not in the form a document
+/// keeps them (of an entity that is no image point, of no entity, twice
+/// for one image, out of order) are dropped on reading with a
+/// warning, not a reason to refuse the file: a place is where the next
+/// solve starts carrying an image from, not part of the design. A million
+/// of them read in about a second, not quadratic.
+#[test]
+fn stale_image_places_are_dropped_on_reading() {
+    use craft3d_doc::{ImagePlace, InstanceIndex, PlaceMap, SketchPatternLayout};
+    let mut doc = small();
+    let mut sketch = Sketch::new(SketchPlane::default());
+    let a = sketch.add_point(0.0, 0.0).unwrap();
+    let b = sketch.add_point(1.0, 0.0).unwrap();
+    let run = sketch.add_line(a, b, false).unwrap();
+    sketch
+        .add_pattern(
+            vec![run],
+            Expr::new("3"),
+            SketchPatternLayout::Chain { from: a, to: b },
+        )
+        .unwrap();
+    let last = sketch.image_point(b, InstanceIndex::Last).unwrap();
+    let second = sketch.image_point(b, InstanceIndex::At(1)).unwrap();
+    let good = |entity, x: f64| ImagePlace {
+        entity,
+        at: [x, 0.0],
+        map: Some(PlaceMap::Chain { k: x }),
+    };
+    // `last` was made first: the lower id.
+    sketch.image_places = vec![good(last, 3.0), good(second, 2.0)];
+    doc.add_feature(Some("Run"), FeatureKind::Sketch(sketch.clone()))
+        .unwrap();
+    doc.validate().unwrap();
+    let json = to_manifest_json(&doc).unwrap();
+    let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let places = &mut value["document"]["features"][1]["kind"]["image_places"];
+    let mut hostile = vec![
+        // Out of order, and the second one again.
+        serde_json::json!({"entity": second.0, "at": [2.0, 0.0], "map": {"type": "chain", "k": 2.0}}),
+        serde_json::json!({"entity": last.0, "at": [3.0, 0.0], "map": {"type": "chain", "k": 3.0}}),
+        serde_json::json!({"entity": second.0, "at": [9.0, 9.0]}),
+        // A point, a line, no entity, one beyond every id.
+        serde_json::json!({"entity": a.0, "at": [0.0, 0.0]}),
+        serde_json::json!({"entity": run.0, "at": [0.0, 0.0]}),
+        serde_json::json!({"entity": 0, "at": [0.0, 0.0]}),
+        serde_json::json!({"entity": u64::MAX, "at": [0.0, 0.0]}),
+    ];
+    for i in 0..1_000_000u64 {
+        hostile.push(serde_json::json!({"entity": 1000 + i % 977, "at": [0.0, 0.0]}));
+    }
+    *places = serde_json::Value::Array(hostile);
+    let text = value.to_string();
+    let start = std::time::Instant::now();
+    let (read, notes) = craft3d_format::from_manifest_json_noted(text.as_bytes()).unwrap();
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(20),
+        "{:?}",
+        start.elapsed()
+    );
+    let Some(FeatureKind::Sketch(read)) = read.features.get(1).map(|f| &f.kind) else {
+        panic!("no sketch");
+    };
+    assert_eq!(read.image_places, sketch.image_places);
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(
+        notes[0].contains("1000005 image places dropped"),
+        "{notes:?}"
+    );
+    // A document keeps them in that form: validate holds it to it.
+    let mut bad = sketch.clone();
+    bad.image_places.reverse();
+    assert!(bad.validate().is_err());
+    let mut bad = sketch.clone();
+    bad.image_places.push(good(a, 0.0));
+    assert!(bad.validate().is_err());
+    let mut bad = sketch.clone();
+    bad.image_places[0].at[0] = f64::NAN;
+    assert!(bad.validate().is_err());
+    let mut bad = sketch;
+    bad.image_places[1].map = Some(PlaceMap::Turn {
+        angle: f64::INFINITY,
+        at: [0.0, 0.0],
+    });
+    assert!(bad.validate().is_err());
+}
+
 /// Where image points lay in the stored solution (version 20): a list of
 /// entity and coordinates on the sketch, written only when there is one.
 #[test]
 fn image_places_are_written_like_this_and_round_trip() {
-    use craft3d_doc::{ImagePlace, InstanceIndex, SketchPatternLayout};
+    use craft3d_doc::{ImagePlace, InstanceIndex, PlaceMap, SketchPatternLayout};
     let mut doc = small();
     let mut sketch = Sketch::new(SketchPlane::default());
     let a = sketch.add_point(0.0, 0.0).unwrap();
@@ -1713,6 +1799,7 @@ fn image_places_are_written_like_this_and_round_trip() {
     sketch.image_places = vec![ImagePlace {
         entity: last,
         at: [3.0, -0.25],
+        map: Some(PlaceMap::Chain { k: 2.0 }),
     }];
     doc.add_feature(Some("Run"), FeatureKind::Sketch(sketch))
         .unwrap();
@@ -1722,7 +1809,7 @@ fn image_places_are_written_like_this_and_round_trip() {
     assert_eq!(value["format_version"], 20);
     assert_eq!(
         value["document"]["features"][1]["kind"]["image_places"],
-        serde_json::json!([{"entity": last.0, "at": [3.0, -0.25]}])
+        serde_json::json!([{"entity": last.0, "at": [3.0, -0.25], "map": {"type": "chain", "k": 2.0}}])
     );
     assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
     assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);

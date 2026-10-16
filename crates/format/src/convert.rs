@@ -238,6 +238,13 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                     .map(|p| manifest::ImagePlace {
                         entity: p.entity.0,
                         at: p.at,
+                        map: p.map.map(|m| match m {
+                            doc::PlaceMap::Shift { offset } => manifest::PlaceMap::Shift { offset },
+                            doc::PlaceMap::Chain { k } => manifest::PlaceMap::Chain { k },
+                            doc::PlaceMap::Turn { angle, at } => {
+                                manifest::PlaceMap::Turn { angle, at }
+                            }
+                        }),
                     })
                     .collect(),
             },
@@ -1365,6 +1372,13 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
                     .map(|p| doc::ImagePlace {
                         entity: doc::EntityId(p.entity),
                         at: p.at,
+                        map: p.map.map(|m| match m {
+                            manifest::PlaceMap::Shift { offset } => doc::PlaceMap::Shift { offset },
+                            manifest::PlaceMap::Chain { k } => doc::PlaceMap::Chain { k },
+                            manifest::PlaceMap::Turn { angle, at } => {
+                                doc::PlaceMap::Turn { angle, at }
+                            }
+                        }),
                     })
                     .collect(),
             }),

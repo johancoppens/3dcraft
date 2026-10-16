@@ -142,10 +142,21 @@ pub(crate) fn edit<T>(
     open.history
         .apply(label, |doc| {
             // A file from before image places were stored: where the
-            // images are now, so the solve after the change can carry
-            // the sketches along from there.
-            craft3d_regen::record_image_places_cached(doc, cache);
+            // images are now, taken before the change, so the solve after
+            // it can carry the sketches along from there. Added only when
+            // the change changed something: an edit that does nothing
+            // stays one that does nothing (no undo step, nothing to save),
+            // so neither the places nor the settle that would write them
+            // are added then (the coordinates are the file's solution).
+            let pending = craft3d_regen::image_places_to_record(doc, cache);
+            let before = (!pending.is_empty()).then(|| doc.clone());
             let out = change(doc)?;
+            if let Some(before) = before {
+                if *doc == before {
+                    return Ok(out);
+                }
+                craft3d_regen::record_image_places(doc, pending);
+            }
             craft3d_regen::settle_sketches_cached(doc, cache);
             Ok(out)
         })

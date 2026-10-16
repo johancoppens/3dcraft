@@ -743,12 +743,25 @@ pub enum WorldPlane {
     Zx,
 }
 
-/// Where an image point lay in the stored solution of its sketch.
+/// Where an image point lay in the stored solution of its sketch, and the
+/// numbers of the map that put it there.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ImagePlace {
     pub entity: u64,
     pub at: [f64; 2],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub map: Option<PlaceMap>,
+}
+
+/// `{"type": "shift", "offset": [x, y]}`, `{"type": "chain", "k": 2}` or
+/// `{"type": "turn", "angle": 1.047, "at": [x, y]}` (radians).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
+pub enum PlaceMap {
+    Shift { offset: [f64; 2] },
+    Chain { k: f64 },
+    Turn { angle: f64, at: [f64; 2] },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
