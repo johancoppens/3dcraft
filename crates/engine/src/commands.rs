@@ -339,6 +339,9 @@ pub(crate) fn feature_result(session: &mut Session, id: FeatureId) -> Run {
         if let Some(report) = &outcome.thread {
             map.insert("thread".into(), crate::helix_cmds::thread_json(report));
         }
+        if let Some(made) = &outcome.offset {
+            map.insert("offset".into(), crate::offset_cmds::offset_json(made));
+        }
     }
     Ok(result)
 }
@@ -858,7 +861,8 @@ fn feature_extrude(session: &mut Session, params: &Value) -> Run {
     )?;
     let doc = session.document()?.history.current();
     let sketch = feature_ref(doc, &p, "feature.extrude", "sketch")?;
-    doc.sketch(sketch).map_err(doc_error("feature.extrude"))?;
+    doc.profile_source(sketch)
+        .map_err(doc_error("feature.extrude"))?;
     let combine = combine_param(doc, &p, "feature.extrude")?;
     let Some(end) = extrude_end(&p, "feature.extrude")? else {
         return fail(
@@ -925,7 +929,7 @@ fn symmetric_fits(end: &ExtrudeEnd, symmetric: bool, command: &str) -> Result<()
 /// The parameters of a thread that `feature.edit` takes as null.
 const THREAD_NULLS: [&str; 2] = ["size", "pitch"];
 
-const EDITABLE: [&str; 45] = [
+const EDITABLE: [&str; 46] = [
     "sketch",
     "sections",
     "ruled",
@@ -971,6 +975,7 @@ const EDITABLE: [&str; 45] = [
     "length",
     "cosmetic",
     "modeled",
+    "corners",
 ];
 
 fn feature_edit(session: &mut Session, params: &Value) -> Run {
@@ -1069,7 +1074,18 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
                 ));
             }
             if *key == "sketch" {
-                doc.sketch(other).map_err(doc_error("feature.edit"))?;
+                // An offset is made from a sketch; everything else that
+                // takes one also takes an offset of one.
+                let offset = matches!(
+                    doc.feature(id).map(|f| &f.kind),
+                    Some(FeatureKind::OffsetProfile(_))
+                );
+                if offset {
+                    doc.sketch(other).map_err(doc_error("feature.edit"))?;
+                } else {
+                    doc.profile_source(other)
+                        .map_err(doc_error("feature.edit"))?;
+                }
             }
             if *key == "path" {
                 crate::sweep_path_cmds::path_ref(doc, other, "feature.edit")?;
@@ -1261,6 +1277,14 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
         FeatureKind::Sweep(_) => (
             "sweep",
             vec![("sketch", Slot::Elsewhere), ("path", Slot::Elsewhere)],
+        ),
+        FeatureKind::OffsetProfile(o) => (
+            "offset profile",
+            vec![
+                ("sketch", Slot::Elsewhere),
+                ("distance", Slot::One(&mut o.distance)),
+                ("corners", Slot::Elsewhere),
+            ],
         ),
         FeatureKind::Transform(t) => (
             "transform",
@@ -1566,6 +1590,12 @@ fn feature_edit(session: &mut Session, params: &Value) -> Run {
                 return fail("feature.edit: a closed loft passes through at least 3 sketches");
             }
         }
+        FeatureKind::OffsetProfile(offset) => {
+            offset.sketch = new_sketch.unwrap_or(offset.sketch);
+            if let Some(corners) = crate::offset_cmds::corners_param(&p, "feature.edit")? {
+                offset.corners = corners;
+            }
+        }
         FeatureKind::Sweep(sweep) => {
             sweep.sketch = new_sketch.unwrap_or(sweep.sketch);
             sweep.path = new_path.unwrap_or(sweep.path);
@@ -1786,6 +1816,12 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
             outcome.and_then(|o| o.thread.as_ref()),
         ) {
             map.insert("thread".into(), crate::helix_cmds::thread_json(report));
+        }
+        // An offset of the profiles of a sketch: its outline.
+        if let (Some(map), Some(outcome)) = (entry.as_object_mut(), outcome)
+            && let Some(made) = &outcome.offset
+        {
+            map.insert("offset".into(), crate::offset_cmds::offset_json(made));
         }
         // Faces or edges given by the names of an earlier body, followed
         // to the newest one: the parameters as the feature was built.

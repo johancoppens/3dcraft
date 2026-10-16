@@ -56,6 +56,14 @@ pub(crate) fn build(
                 again + 1
             ));
         }
+        if doc
+            .feature(section.sketch)
+            .is_some_and(|f| matches!(f.kind, craft3d_doc::FeatureKind::OffsetProfile(_)))
+        {
+            return Err(format!(
+                "sections: section {number}: an offset as a section of a loft is not supported yet; loft the sketch"
+            ));
+        }
         // What `swept` says of a sketch, as what it says of this section.
         let made = swept(doc, earlier, section.sketch, "loft").map_err(|reason| {
             let reason = reason.strip_prefix("sketch: ").unwrap_or(&reason);

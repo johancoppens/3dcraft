@@ -279,6 +279,18 @@ fn feature_to_manifest(feature: &doc::Feature) -> manifest::Feature {
                 sketch: *sketch,
                 path: *path,
             },
+            doc::FeatureKind::OffsetProfile(doc::OffsetProfile {
+                sketch: doc::FeatureId(sketch),
+                distance,
+                corners,
+            }) => manifest::FeatureKind::OffsetProfile {
+                sketch: *sketch,
+                distance: expr_to_manifest(distance),
+                corners: match corners {
+                    doc::OffsetCorners::Round => manifest::OffsetCorners::Round,
+                    doc::OffsetCorners::Sharp => manifest::OffsetCorners::Sharp,
+                },
+            },
             doc::FeatureKind::Revolve(doc::Revolve {
                 sketch: doc::FeatureId(sketch),
                 axis,
@@ -1377,6 +1389,18 @@ fn feature_to_doc(feature: manifest::Feature) -> doc::Feature {
             manifest::FeatureKind::Sweep { sketch, path } => doc::FeatureKind::Sweep(doc::Sweep {
                 sketch: doc::FeatureId(sketch),
                 path: doc::FeatureId(path),
+            }),
+            manifest::FeatureKind::OffsetProfile {
+                sketch,
+                distance,
+                corners,
+            } => doc::FeatureKind::OffsetProfile(doc::OffsetProfile {
+                sketch: doc::FeatureId(sketch),
+                distance: doc::Expr(distance),
+                corners: match corners {
+                    manifest::OffsetCorners::Round => doc::OffsetCorners::Round,
+                    manifest::OffsetCorners::Sharp => doc::OffsetCorners::Sharp,
+                },
             }),
             manifest::FeatureKind::Revolve {
                 sketch,

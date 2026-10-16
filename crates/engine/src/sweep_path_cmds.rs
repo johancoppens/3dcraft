@@ -34,7 +34,7 @@ fn feature_sweep(session: &mut Session, params: &Value) -> Run {
     )?;
     let doc = session.document()?.history.current();
     let sketch = feature_ref(doc, &p, ID, "sketch")?;
-    doc.sketch(sketch).map_err(doc_error(ID))?;
+    doc.profile_source(sketch).map_err(doc_error(ID))?;
     let path = feature_ref(doc, &p, ID, "path")?;
     path_ref(doc, path, ID)?;
     if sketch == path {

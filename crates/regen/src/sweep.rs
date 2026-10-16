@@ -35,6 +35,16 @@ pub(crate) fn build(
             made.profiles.len()
         ));
     };
+    if crate::offset_profile::made(doc, earlier, feature.path).is_some()
+        || doc
+            .feature(feature.path)
+            .is_some_and(|f| matches!(f.kind, FeatureKind::OffsetProfile(_)))
+    {
+        return Err(
+            "path: an offset as the path of a sweep is not supported yet; sweep along the sketch"
+                .to_string(),
+        );
+    }
     let helical = doc
         .feature(feature.path)
         .is_some_and(|f| matches!(f.kind, FeatureKind::DatumHelix(_)));
@@ -87,6 +97,13 @@ pub(crate) fn build(
         &mut faces,
         &[NameRole::StartCap, NameRole::EndCap],
     );
+    crate::offset_profile::rename(
+        doc,
+        earlier,
+        feature.sketch,
+        &mut faces,
+        &[NameRole::StartCap, NameRole::EndCap],
+    )?;
 
     // A path that comes back near itself carries the profile through
     // what it swept before: a body that is valid in how it hangs together
