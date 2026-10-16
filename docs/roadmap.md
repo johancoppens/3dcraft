@@ -418,10 +418,10 @@ Every task of the set is built by an agent over MCP and `document.inspect` repor
 An agent checks a design by asking it questions, not by looking at a picture: the design intent written down as assertions checked at every regeneration, the way the kernel is tested by oracles. After R1 (decided by the developer on 2026-10-14). The agent writes the assertions first and builds the model to meet them; the developer reads the assertions instead of measuring every detail.
 
 #### Done
-Nothing yet.
+- Interference between bodies (`document.interference`): clear, touch (on a face, an edge or a point) or overlap with its volume, read-only, boxes first ([`design/booleans.md`](design/booleans.md) › *Interference*) (2026-10-16)
 
 #### Open
-- [ ] Queries: the distance and the least clearance between two faces or bodies; interference between bodies, with the volume of the overlap; a section as geometry with its measures (area, outline, the widths across it); a ray cast through the model (the faces it meets and where); symmetry about a plane; wall thickness (the thinnest place and where); the least inside radius
+- [ ] Queries: the distance and the least clearance between two faces or bodies; a section as geometry with its measures (area, outline, the widths across it); a ray cast through the model (the faces it meets and where); symmetry about a plane; wall thickness (the thinnest place and where); the least inside radius
 - [ ] `document.assert`: an assertion kept in the document (a measure against a value with a tolerance, a clearance at least, no interference, symmetric about, thickness at least), checked after every regeneration; a broken one shows like a failed feature, with the measure it found, in `document.check`, the tree and over MCP
 
 #### Acceptance
