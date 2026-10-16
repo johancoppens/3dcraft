@@ -85,14 +85,56 @@ pub struct Tokens {
     /// The smallest side the view cube is drawn at, in points: a viewport
     /// with less room has no cube (its buttons stay).
     pub view_cube_min: f32,
-    /// The gap between two patches of the view cube, in units of the
-    /// cube's half side, so that it scales with the cube.
+    /// The view cube's proportions, in units of its half side so that
+    /// they scale with it: how deep its edges are cut (a capsule and a
+    /// corner's circle are as wide as the cut less the gap), the one gap
+    /// between any two patches, and the corner radius of a face as a
+    /// fraction of the cut.
+    pub view_cube_chamfer: f32,
     pub view_cube_gap: f32,
-    /// The smallest size a label on a face of the view cube is drawn at,
-    /// in points: a face seen too nearly edge-on has none.
+    pub view_cube_face_rounding: f32,
+    /// A patch of the view cube that faces the viewer less than this (0
+    /// edge-on, 1 straight on) is not drawn: no slivers on the silhouette.
+    pub view_cube_fade: f32,
+    /// The glass of the view cube: the colour of its faces and of its
+    /// capsules and circles, drawn over the picture without outlines.
+    pub view_cube_glass: Rgb,
+    pub view_cube_glass_dim: Rgb,
+    /// The opacity of a face (0 to 255) turned away from the light and
+    /// of one facing it; the light comes from `view_cube_light`, a
+    /// direction in the world (the top is lit most).
+    pub view_cube_face_opacity: [u8; 2],
+    pub view_cube_light: [f32; 3],
+    /// The opacity of a capsule and of a corner's circle seen straight on;
+    /// less as they turn away.
+    pub view_cube_edge_opacity: u8,
+    pub view_cube_corner_opacity: u8,
+    /// The patch under the pointer: its fill, the fill's opacity, and its
+    /// thin bright outline with the outline's width in points.
+    pub view_cube_hover: Rgb,
+    pub view_cube_hover_opacity: u8,
+    pub view_cube_hover_outline: Rgb,
+    pub view_cube_hover_width: f32,
+    /// The names on the faces: their colour, their height in units of the
+    /// cube's half side, the widest they may be as a fraction of a face's
+    /// flat side, and how much a face must face the viewer to show its
+    /// name (as `view_cube_fade`).
+    pub view_cube_label: Rgb,
+    pub view_cube_label_size: f32,
+    pub view_cube_label_width: f32,
+    pub view_cube_label_hide: f32,
+    /// The smallest size a name on a face of the view cube is drawn at,
+    /// in points.
     pub view_cube_label_min: f32,
-    /// The side of the place of the axis triad above the view cube, and
-    /// the width of its arms, in points.
+    /// The soft shadow under the view cube: its colour, its opacity in the
+    /// middle (it fades to nothing at its rim), and how far below the
+    /// cube's middle it is, its half width and its half height, in units
+    /// of the radius of the cube's picture.
+    pub view_cube_shadow: Rgb,
+    pub view_cube_shadow_opacity: u8,
+    pub view_cube_shadow_size: [f32; 3],
+    /// The side of the place of the axis triad beside the view cube, at
+    /// its lower left, and the width of its arms, in points.
     pub triad_size: f32,
     pub triad_width: f32,
     /// The plates behind the groups of controls over the viewport: their
@@ -182,8 +224,28 @@ impl Tokens {
             pick_radius: 4.0,
             view_cube_size: 128.0,
             view_cube_min: 48.0,
-            view_cube_gap: 0.08,
+            view_cube_chamfer: 0.22,
+            view_cube_gap: 0.062,
+            view_cube_face_rounding: 0.9,
+            view_cube_fade: 0.25,
+            view_cube_glass: [170, 190, 230],
+            view_cube_glass_dim: [150, 168, 205],
+            view_cube_face_opacity: [59, 74],
+            view_cube_light: [0.3, -0.5, 0.8],
+            view_cube_edge_opacity: 26,
+            view_cube_corner_opacity: 30,
+            view_cube_hover: [92, 140, 230],
+            view_cube_hover_opacity: 170,
+            view_cube_hover_outline: [170, 200, 255],
+            view_cube_hover_width: 1.2,
+            view_cube_label: [225, 233, 250],
+            view_cube_label_size: 0.4,
+            view_cube_label_width: 0.66,
+            view_cube_label_hide: 0.18,
             view_cube_label_min: 7.0,
+            view_cube_shadow: [0, 0, 0],
+            view_cube_shadow_opacity: 60,
+            view_cube_shadow_size: [0.93, 0.72, 0.09],
             triad_size: 64.0,
             triad_width: 2.0,
             plate_opacity: 170,

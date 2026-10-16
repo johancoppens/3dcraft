@@ -7,7 +7,7 @@
 //!
 //! ```sh
 //! cargo run --release -p craft3d-ui-egui --example window_picture -- \
-//!     [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] [--size WxH] [--hover X,Y,Z] model.3dcraft [more.3dcraft | untitled ...] out.png
+//!     [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] [--size WxH] [--scale S] [--hover X,Y,Z] model.3dcraft [more.3dcraft | untitled ...] out.png
 //! ```
 //!
 //! The documents are opened in order (`untitled` is a new document with a
@@ -20,7 +20,8 @@
 //! display quality: `{"quality": {"chordal": 1e-4}}`). `--first` shows
 //! the quick first picture, as the window does while the display scene is
 //! refined beside it. `--size` is the window in points (1280x800 by
-//! default); `--hover X,Y,Z` puts the pointer on the middle of the view
+//! default; with `--scale S` the picture has S pixels per point, so it is
+//! S times as many pixels each way); `--hover X,Y,Z` puts the pointer on the middle of the view
 //! cube's facet for that side (`1,-1,0`: the edge between front and
 //! right), as it is drawn under the pointer. Then,
 //! unless `--idle`, the shell is drawn as it is while a command runs
@@ -35,7 +36,7 @@ use serde_json::json;
 
 const DEFAULT_SIZE: [u32; 2] = [1280, 800];
 
-const USAGE: &str = "usage: window_picture [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] [--size WxH] [--hover X,Y,Z] FILE.3dcraft [FILE.3dcraft | untitled ...] OUT.png";
+const USAGE: &str = "usage: window_picture [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] [--size WxH] [--scale S] [--hover X,Y,Z] FILE.3dcraft [FILE.3dcraft | untitled ...] OUT.png";
 
 fn main() -> Result<(), String> {
     let mut idle = false;
@@ -46,6 +47,7 @@ fn main() -> Result<(), String> {
     let mut set: Option<serde_json::Value> = None;
     let mut size = DEFAULT_SIZE;
     let mut hover: Option<[i8; 3]> = None;
+    let mut scale = 1.0_f32;
     let mut paths = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -75,6 +77,15 @@ fn main() -> Result<(), String> {
                 ];
                 if size.iter().any(|&n| !(64..=8192).contains(&n)) {
                     return Err(format!("--size {text}: 64 to 8192 per side"));
+                }
+            }
+            "--scale" => {
+                let text = args
+                    .next()
+                    .ok_or(format!("--scale takes a number; {USAGE}"))?;
+                scale = text.parse().map_err(|_| format!("--scale: {text}"))?;
+                if !(1.0..=4.0).contains(&scale) {
+                    return Err(format!("--scale {text}: 1 to 4"));
                 }
             }
             "--hover" => {
@@ -125,6 +136,8 @@ fn main() -> Result<(), String> {
     let mut shell = Shell::new();
     shell.attach_gpu(&state)?;
     let ctx = egui::Context::default();
+    ctx.set_pixels_per_point(scale);
+    let pixels = size.map(|n| (n as f32 * scale).round() as u32);
     let input = |time: f64, events: Vec<egui::Event>| egui::RawInput {
         screen_rect: Some(egui::Rect::from_min_size(
             Pos2::ZERO,
@@ -198,14 +211,14 @@ fn main() -> Result<(), String> {
     }
     let mut renderer = state.renderer.write();
     let screen = egui_wgpu::ScreenDescriptor {
-        size_in_pixels: size,
-        pixels_per_point: 1.0,
+        size_in_pixels: pixels,
+        pixels_per_point: scale,
     };
     let target = state.device.create_texture(&wgpu::TextureDescriptor {
         label: None,
         size: wgpu::Extent3d {
-            width: size[0],
-            height: size[1],
+            width: pixels[0],
+            height: pixels[1],
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
@@ -242,11 +255,11 @@ fn main() -> Result<(), String> {
             .forget_lifetime();
         renderer.render(&mut pass, &jobs, &screen);
     }
-    let row = size[0] * 4;
+    let row = pixels[0] * 4;
     let padded = row.div_ceil(256) * 256;
     let buffer = state.device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
-        size: u64::from(padded * size[1]),
+        size: u64::from(padded * pixels[1]),
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
@@ -257,12 +270,12 @@ fn main() -> Result<(), String> {
             layout: wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(padded),
-                rows_per_image: Some(size[1]),
+                rows_per_image: Some(pixels[1]),
             },
         },
         wgpu::Extent3d {
-            width: size[0],
-            height: size[1],
+            width: pixels[0],
+            height: pixels[1],
             depth_or_array_layers: 1,
         },
     );
@@ -275,8 +288,8 @@ fn main() -> Result<(), String> {
         .poll(wgpu::PollType::wait_indefinitely())
         .map_err(|e| e.to_string())?;
     let data = slice.get_mapped_range().map_err(|e| e.to_string())?;
-    let mut rgb = Vec::with_capacity((size[0] * size[1] * 3) as usize);
-    for y in 0..size[1] {
+    let mut rgb = Vec::with_capacity((pixels[0] * pixels[1] * 3) as usize);
+    for y in 0..pixels[1] {
         let start = (y * padded) as usize;
         let line = data
             .get(start..start + row as usize)
@@ -285,7 +298,7 @@ fn main() -> Result<(), String> {
             rgb.extend(pixel.iter().take(3));
         }
     }
-    let png = craft3d_render::encode_png(size[0], size[1], &rgb).map_err(|e| e.to_string())?;
+    let png = craft3d_render::encode_png(pixels[0], pixels[1], &rgb).map_err(|e| e.to_string())?;
     std::fs::write(&out, png).map_err(|e| e.to_string())?;
     println!("wrote {out} ({:?})", state.target_format);
     Ok(())

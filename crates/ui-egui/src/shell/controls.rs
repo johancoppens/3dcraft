@@ -1,8 +1,8 @@
 //! The controls over the viewport, in its bottom-right corner, in three
 //! groups, each on a plate of its own:
 //!
-//! - **Camera**, in the corner: the axis triad, under it the view cube,
-//!   under that *Fit*, *iso* and the projection, *Persp* | *Ortho*.
+//! - **Camera**, in the corner: the view cube with the axis triad beside
+//!   it at its lower left, under the cube *Fit*, *iso* and the projection, *Persp* | *Ortho*.
 //! - **Display**, to its left on the bottom row: *Sketches*, *Datums* and
 //!   the *See-through* slider.
 //! - **Section**, above Display: the *Section* toggle and, while it is on,
@@ -46,7 +46,7 @@ pub struct ControlsLayout {
     pub display_row: Option<Rect>,
     /// The section's toggle and, while it is on, its other controls.
     pub section_row: Option<Rect>,
-    /// The view cube's square place and the triad's above it.
+    /// The view cube's square place and the triad's beside it.
     pub cube: Option<Rect>,
     pub triad: Option<Rect>,
 }
@@ -102,63 +102,77 @@ pub fn controls_layout(inner: Rect, tokens: &Tokens, widths: &RowWidths) -> Cont
         vec2(widths.camera, row),
     );
     let camera_row = Some(camera_row).filter(|&r| fits(r) && widths.camera <= inner.width());
-    // The cube over the camera's row (or where it would be), the triad
-    // over the cube when there is room for both.
+    // The cube over the camera's row (or where it would be).
     let floor = camera_row.map_or(camera_bottom - row, |r| r.top()) - tokens.bar_gap;
     let height = floor - inner.top();
     let wide = camera_width.min(inner.width());
-    let with_triad = height - tokens.triad_size >= tokens.view_cube_min.max(tokens.view_cube_size);
-    let room = height - if with_triad { tokens.triad_size } else { 0.0 };
-    let side = tokens.view_cube_size.min(wide).min(room);
+    let side = tokens.view_cube_size.min(wide).min(height);
     let cube = (side >= tokens.view_cube_min && side.is_finite())
         .then(|| Rect::from_min_size(pos2(middle - side * 0.5, floor - side), vec2(side, side)));
-    let triad = cube.filter(|_| with_triad).map(|cube| {
-        Rect::from_center_size(
-            pos2(cube.center().x, cube.top() - tokens.triad_size * 0.5),
-            vec2(tokens.triad_size, tokens.triad_size),
-        )
+    let display_row = Some(display_row).filter(|&r| groups_fit && fits(r));
+    let section_row = Some(section_row).filter(|&r| groups_fit && fits(r));
+    // The triad beside the cube at its lower left, raised above a row of
+    // controls it would meet; left out where it has no room beside the
+    // cube.
+    let triad = cube.and_then(|cube| {
+        let size = tokens.triad_size;
+        let mut place = Rect::from_min_size(
+            pos2(cube.left() - size, cube.bottom() - size),
+            vec2(size, size),
+        );
+        for row in [display_row, section_row].into_iter().flatten() {
+            let plate = row.expand2(vec2(tokens.plate_padding, tokens.bar_gap * 0.5));
+            if place.intersects(plate) {
+                place = place.translate(vec2(0.0, plate.top() - place.bottom()));
+            }
+        }
+        (place.left() >= inner.left() - 0.5
+            && place.top() >= cube.top() - 0.5
+            && place.top() >= inner.top()
+            && place.min.is_finite()
+            && place.max.is_finite())
+        .then_some(place)
     });
     ControlsLayout {
         camera_row,
-        display_row: Some(display_row).filter(|&r| groups_fit && fits(r)),
-        section_row: Some(section_row).filter(|&r| groups_fit && fits(r)),
+        display_row,
+        section_row,
         cube,
         triad,
     }
 }
 
-/// `rgb` a fraction `t` of the way to `to`.
-fn mix(rgb: [u8; 3], to: [u8; 3], t: f64) -> [u8; 3] {
-    let t = t.clamp(0.0, 1.0);
-    let mut out = [0; 3];
-    for ((slot, x), y) in out.iter_mut().zip(rgb).zip(to) {
-        // Between two bytes.
-        *slot = (f64::from(x) + (f64::from(y) - f64::from(x)) * t).round() as u8;
-    }
-    out
-}
-
 /// The patches of the view cube that `camera` sees, as they are painted
 /// in a place whose middle is `center` with a picture radius of `arm`
-/// points: the facets with `gap` between them, each with its corners in
-/// the window. A patch thinner than [`MIN_PATCH`] (a facet seen nearly
-/// edge-on) is left out: it shows nothing, and egui's anti-aliasing of a
-/// sliver that thin draws spikes far outside it.
+/// points, with the proportions of `style`: each with its corners in the
+/// window, the same corner never twice in a row. A patch thinner than
+/// [`MIN_PATCH`] is left out: it shows nothing, and egui's anti-aliasing
+/// of a sliver that thin draws spikes far outside it.
 pub fn cube_patches(
     camera: &crate::state::CameraState,
-    gap: f64,
+    style: &view_cube::CubeStyle,
     center: egui::Pos2,
     arm: f32,
 ) -> Vec<(view_cube::Facet, Vec<egui::Pos2>)> {
-    view_cube::facets_gapped(camera, gap)
+    view_cube::facets_styled(camera, style)
         .into_iter()
         .filter_map(|facet| {
-            let points: Vec<egui::Pos2> = facet
-                .patch
-                .iter()
-                .map(|&p| center + vec2(p[0] as f32, p[1] as f32) * arm)
-                .collect();
-            (thickness(&points) >= MIN_PATCH).then_some((facet, points))
+            let mut points: Vec<egui::Pos2> = Vec::with_capacity(facet.patch.len());
+            for &p in &facet.patch {
+                let q = center + vec2(p[0] as f32, p[1] as f32) * arm;
+                if points.last().is_none_or(|last| last.distance(q) > 1e-3) {
+                    points.push(q);
+                }
+            }
+            while points.len() > 1
+                && points
+                    .first()
+                    .zip(points.last())
+                    .is_some_and(|(a, b)| a.distance(*b) <= 1e-3)
+            {
+                points.pop();
+            }
+            (points.len() >= 3 && thickness(&points) >= MIN_PATCH).then_some((facet, points))
         })
         .collect()
 }
@@ -180,6 +194,163 @@ fn thickness(points: &[egui::Pos2]) -> f32 {
     }
     let t = area.abs() / perimeter.max(f32::MIN_POSITIVE);
     if t.is_finite() { t } else { 0.0 }
+}
+
+/// How a patch of the view cube is filled at rest: glass, a face lit by
+/// how it is turned to the theme's light, a capsule or a circle quieter
+/// and fainter as it turns away.
+pub fn cube_fill(tokens: &Tokens, facet: &view_cube::Facet) -> egui::Color32 {
+    match facet.kind() {
+        view_cube::FacetKind::Face => {
+            let [x, y, z] = tokens.view_cube_light.map(f64::from);
+            let length = (x * x + y * y + z * z).sqrt();
+            let n = facet.normal();
+            let lit = if length > 0.0 && length.is_finite() {
+                ((n[0] * x + n[1] * y + n[2] * z) / length).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let [lo, hi] = tokens.view_cube_face_opacity.map(f64::from);
+            // Between two opacities.
+            let alpha = (lo + (hi - lo) * lit).round().clamp(0.0, 255.0) as u8;
+            color_alpha(tokens.view_cube_glass, alpha)
+        }
+        kind => {
+            let full = if kind == view_cube::FacetKind::Edge {
+                tokens.view_cube_edge_opacity
+            } else {
+                tokens.view_cube_corner_opacity
+            };
+            let t = (facet.toward * 1.6).clamp(0.0, 1.0);
+            // A fraction of an opacity.
+            let alpha = (f64::from(full) * t).round().clamp(0.0, 255.0) as u8;
+            color_alpha(tokens.view_cube_glass_dim, alpha)
+        }
+    }
+}
+
+/// The name of a face of the view cube as a mesh lying in the face's
+/// plane: the text laid out by egui at the size it has on the face seen
+/// straight on, its glyphs moved by the face's affine map, so that it is
+/// foreshortened and sheared with the face and drawn from the same glyph
+/// images as any text (crisp at any pixels per point). `center` and `arm`
+/// place the picture of the cube. Nothing for a face seen too nearly
+/// edge-on, or a name too small to read.
+pub fn cube_label(
+    painter: &egui::Painter,
+    tokens: &Tokens,
+    facet: &view_cube::Facet,
+    center: egui::Pos2,
+    arm: f32,
+) -> Option<egui::Mesh> {
+    let frame = facet.label_frame?;
+    let name = facet.label()?.to_uppercase();
+    let opacity = view_cube::label_opacity(facet.toward, f64::from(tokens.view_cube_label_hide));
+    if opacity <= 0.0 || !(frame.half_side > 0.0) {
+        return None;
+    }
+    // Points per half side of the cube.
+    let unit = f64::from(arm) * frame.half_side;
+    let style = view_cube::style(tokens);
+    let flat = 2.0 * (1.0 - style.chamfer.clamp(0.0, 0.9));
+    let ink = color_alpha(tokens.view_cube_label, (255.0 * opacity).round() as u8);
+    let layout = |size: f64| {
+        painter.layout_no_wrap(name.clone(), egui::FontId::proportional(size as f32), ink)
+    };
+    let mut size = f64::from(tokens.view_cube_label_size) * unit;
+    let mut galley = layout(size);
+    let widest = f64::from(tokens.view_cube_label_width) * flat * unit;
+    let width = f64::from(galley.size().x);
+    if width > widest && width > 0.0 {
+        size *= widest / width;
+        galley = layout(size);
+    }
+    if !(size.is_finite() && size >= f64::from(tokens.view_cube_label_min)) {
+        return None;
+    }
+    // The ink of the glyphs, to centre on the face's middle.
+    let ink_box = galley
+        .rows
+        .iter()
+        .map(|row| row.visuals.mesh_bounds.translate(row.pos.to_vec2()))
+        .reduce(|a, b| a.union(b))?;
+    let [tw, th] = painter.fonts(|f| f.font_image_size()).map(|n| n as f32);
+    if !(tw > 0.0 && th > 0.0) {
+        return None;
+    }
+    // From a point of the text (in points, from the middle of its ink) to
+    // the window: along the face, as the picture shows it.
+    let per = 1.0 / frame.half_side;
+    let (right, down) = (
+        vec2((frame.right[0] * per) as f32, (frame.right[1] * per) as f32),
+        vec2((frame.down[0] * per) as f32, (frame.down[1] * per) as f32),
+    );
+    let mut origin = center + vec2(frame.center[0] as f32, frame.center[1] as f32) * arm;
+    // Seen straight on the name is drawn pixel for pixel: snapped to the
+    // pixel grid, as egui's own text is.
+    let ppp = painter.pixels_per_point();
+    if (right.x - 1.0).abs() < 1e-3 && (down.y - 1.0).abs() < 1e-3 && ppp > 0.0 {
+        let shift = ink_box.center().to_vec2();
+        let corner = origin - shift;
+        let snapped = egui::pos2(
+            (corner.x * ppp).round() / ppp,
+            (corner.y * ppp).round() / ppp,
+        );
+        origin = snapped + shift;
+    }
+    let mid = ink_box.center();
+    let mut mesh = egui::Mesh::with_texture(egui::TextureId::default());
+    for row in &galley.rows {
+        let base = mesh.vertices.len() as u32;
+        let offset = row.pos.to_vec2();
+        for v in &row.visuals.mesh.vertices {
+            let local = v.pos + offset - mid;
+            let at = origin + right * local.x + down * local.y;
+            if !(at.x.is_finite() && at.y.is_finite()) {
+                return None;
+            }
+            mesh.vertices.push(egui::epaint::Vertex {
+                pos: at,
+                uv: egui::pos2(v.uv.x / tw, v.uv.y / th),
+                color: ink,
+            });
+        }
+        mesh.indices
+            .extend(row.visuals.mesh.indices.iter().map(|i| i + base));
+    }
+    (!mesh.is_empty()).then_some(mesh)
+}
+
+/// The soft shadow under the view cube, whose picture has its middle at
+/// `center` and a radius of `arm` points: an ellipse that fades from the
+/// middle to nothing at its rim.
+fn cube_shadow(tokens: &Tokens, center: egui::Pos2, arm: f32) -> egui::Mesh {
+    let [drop, half_width, half_height] = tokens.view_cube_shadow_size;
+    let middle = center + vec2(0.0, drop * arm);
+    let (rx, ry) = (half_width * arm, half_height * arm);
+    let full = tokens.view_cube_shadow_opacity;
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(middle, color_alpha(tokens.view_cube_shadow, full));
+    const AROUND: u32 = 48;
+    // Two rings: half way out at half the opacity, the rim at none.
+    for (reach, alpha) in [(0.5_f32, full / 2), (1.0, 0)] {
+        for j in 0..AROUND {
+            let angle = std::f32::consts::TAU * j as f32 / AROUND as f32;
+            mesh.colored_vertex(
+                middle + vec2(rx * reach * angle.cos(), ry * reach * angle.sin()),
+                color_alpha(tokens.view_cube_shadow, alpha),
+            );
+        }
+    }
+    for j in 0..AROUND {
+        let next = (j + 1) % AROUND;
+        let (a, b) = (1 + j, 1 + next);
+        mesh.add_triangle(0, a, b);
+        let (c, d) = (1 + AROUND + j, 1 + AROUND + next);
+        mesh.add_triangle(a, c, d);
+        mesh.add_triangle(a, d, b);
+    }
+    mesh
 }
 
 impl Shell {
@@ -541,6 +712,7 @@ impl Shell {
         );
         let arm = Self::cube_arm(place);
         let center = place.center();
+        let style = view_cube::style(&tokens);
         let unit = |at: egui::Pos2| {
             [
                 f64::from(at.x - center.x) / f64::from(arm),
@@ -565,7 +737,7 @@ impl Shell {
         }
         if response.clicked()
             && let Some(at) = response.interact_pointer_pos()
-            && let Some(facet) = view_cube::facet_at(&self.state.camera, unit(at))
+            && let Some(facet) = view_cube::facet_at_styled(&self.state.camera, &style, unit(at))
         {
             let side = view_cube::clicked(&self.state.camera, &facet);
             let mut to = view_cube::turned(&self.state.camera, side);
@@ -584,78 +756,40 @@ impl Shell {
         }
         let hovered = response
             .hover_pos()
-            .and_then(|at| view_cube::facet_at(&self.state.camera, unit(at)));
+            .and_then(|at| view_cube::facet_at_styled(&self.state.camera, &style, unit(at)));
         let painter = ui.painter_at(area.expand(2.0));
-        let at = |p: [f64; 2]| center + vec2(p[0] as f32, p[1] as f32) * arm;
-        let gap = f64::from(tokens.view_cube_gap);
-        for (facet, points) in cube_patches(&self.state.camera, gap, center, arm) {
-            // A face carries the colour of the axis it is across; the cut
-            // facets are the gem's own, darker, and all are lit by how
-            // much they face the viewer.
-            let base = match facet.axis() {
-                Some(axis) => mix(
-                    tokens.body,
-                    tokens.axes.get(axis).copied().unwrap_or(tokens.body),
-                    0.38,
-                ),
-                None => mix(tokens.panel_fill, tokens.body, 0.45),
-            };
-            let lit = mix(tokens.notice_fill, base, 0.45 + 0.55 * facet.toward);
+        // The shadow first, under everything.
+        painter.add(cube_shadow(&tokens, center, arm));
+        let patches = cube_patches(&self.state.camera, &style, center, arm);
+        for (facet, points) in &patches {
             let over = hovered.as_ref().is_some_and(|h| h.side == facet.side);
-            let fill = if over {
-                mix(lit, tokens.face_highlight, 0.75)
+            let shape = if over {
+                egui::Shape::convex_polygon(
+                    points.clone(),
+                    color_alpha(tokens.view_cube_hover, tokens.view_cube_hover_opacity),
+                    egui::Stroke::new(
+                        tokens.view_cube_hover_width,
+                        color(tokens.view_cube_hover_outline),
+                    ),
+                )
             } else {
-                lit
+                egui::Shape::convex_polygon(
+                    points.clone(),
+                    cube_fill(&tokens, facet),
+                    egui::Stroke::NONE,
+                )
             };
-            painter.add(egui::Shape::convex_polygon(
-                points,
-                color(fill),
-                egui::Stroke::NONE,
-            ));
-            if let Some(label) = facet.label() {
-                self.cube_label(&painter, &facet, label, at(facet.center()), arm);
+            painter.add(shape);
+        }
+        // The names over the faces, in the faces' planes.
+        for (facet, _) in &patches {
+            if let Some(mesh) = cube_label(&painter, &tokens, facet, center, arm) {
+                painter.add(mesh);
             }
         }
         if let Some(triad) = triad {
             self.paint_triad(&painter, triad);
         }
-    }
-
-    /// The name of a face of the cube in its middle: as large as the face
-    /// has room for, up to its usual size, and left out when that is too
-    /// small to read (a face seen nearly edge-on).
-    fn cube_label(
-        &self,
-        painter: &egui::Painter,
-        facet: &view_cube::Facet,
-        label: &str,
-        middle: egui::Pos2,
-        arm: f32,
-    ) {
-        let tokens = self.tokens;
-        let full = arm * 0.24;
-        let ink = color_alpha(
-            tokens.notice_fill,
-            (255.0 * (0.35 + 0.65 * facet.toward).clamp(0.0, 1.0)) as u8,
-        );
-        let galley =
-            painter.layout_no_wrap(label.to_string(), egui::FontId::proportional(full), ink);
-        let [w, h] = facet.room();
-        let size = galley.size();
-        let fit = (0.82 * w as f32 * arm / size.x.max(1e-3))
-            .min(0.9 * h as f32 * arm / size.y.max(1e-3))
-            .min(1.0);
-        let font = full * fit;
-        if font.is_nan() || font < tokens.view_cube_label_min {
-            return;
-        }
-        let galley = if fit < 1.0 {
-            painter.layout_no_wrap(label.to_string(), egui::FontId::proportional(font), ink)
-        } else {
-            galley
-        };
-        let size = galley.size();
-        painter.galley(middle - size * 0.5, galley, ink);
     }
 
     /// The axis triad in `place`: X, Y and Z from a common origin, in
@@ -670,7 +804,7 @@ impl Shell {
         let font = egui::FontId::proportional((place.height() * 0.17).max(8.0));
         // The letters sit just past the tips, inside the place.
         let reach = place.height() * 0.5 - font.size * 0.7;
-        painter.circle_filled(origin, tokens.triad_width * 1.2, color(tokens.text_dim));
+        painter.circle_filled(origin, tokens.triad_width * 1.4, color(tokens.text));
         for arm in arms {
             let ink = tokens.axes.get(arm.axis).copied().unwrap_or(tokens.text);
             let alpha = if arm.toward < -0.05 { 150 } else { 255 };
@@ -736,15 +870,20 @@ mod tests {
 
     /// What egui paints of the cube stays on the cube: every patch, as
     /// egui tessellates it with its anti-aliasing at one and two pixels
-    /// per point, lies within the cube's picture (the circle of radius
-    /// `arm` around its middle, give or take three points of feathering at an acute corner), from
-    /// cameras all round the cube in both projections. A facet seen
-    /// nearly edge-on once drew a spike well outside the cube.
+    /// per point, at rest and under the pointer (fill and outline), lies
+    /// within the cube's silhouette, from cameras all round the cube in
+    /// both projections. The allowance: egui's feathering (one pixel),
+    /// half the hover outline's width, and how far a corner's circle,
+    /// which lies in the corner's plane, reaches past the cut corner
+    /// (measured: under a point at the default size). A facet seen nearly
+    /// edge-on once drew a spike well outside the cube; such a patch is
+    /// now not drawn at all.
     #[test]
-    fn no_patch_of_the_cube_is_painted_outside_it() {
+    fn no_patch_of_the_cube_is_painted_outside_its_silhouette() {
         use crate::state::{CameraState, ProjectionKind};
         use egui::epaint::{Mesh, Shape, Stroke, TessellationOptions, Tessellator};
         let tokens = Tokens::dark();
+        let style = view_cube::style(&tokens);
         let (center, arm) = (pos2(500.0, 400.0), 62.0_f32);
         let mut worst = f32::MIN;
         let mut cameras = 0;
@@ -758,6 +897,10 @@ mod tests {
                         projection,
                         ..CameraState::default()
                     };
+                    let outline: Vec<[f64; 2]> = view_cube::silhouette(&camera, &style)
+                        .into_iter()
+                        .map(|p| [500.0 + p[0] * 62.0, 400.0 + p[1] * 62.0])
+                        .collect();
                     for pixels_per_point in [1.0, 2.0] {
                         let mut tessellator = Tessellator::new(
                             pixels_per_point,
@@ -765,22 +908,31 @@ mod tests {
                             [1, 1],
                             Vec::new(),
                         );
-                        let gap = f64::from(tokens.view_cube_gap);
-                        for (facet, points) in cube_patches(&camera, gap, center, arm) {
-                            let mut mesh = Mesh::default();
-                            tessellator.tessellate_shape(
-                                Shape::convex_polygon(points, egui::Color32::WHITE, Stroke::NONE),
-                                &mut mesh,
-                            );
-                            for v in &mesh.vertices {
-                                let out = v.pos.distance(center) - arm;
-                                worst = worst.max(out);
-                                assert!(
-                                    out <= 3.0,
-                                    "{projection:?} yaw {yaw} pitch {pitch} at {pixels_per_point}: \
-                                     {:?} is painted {out} points outside the cube",
-                                    facet.side
+                        for (facet, points) in cube_patches(&camera, &style, center, arm) {
+                            for (fill, stroke) in [
+                                (cube_fill(&tokens, &facet), Stroke::NONE),
+                                (
+                                    egui::Color32::WHITE,
+                                    Stroke::new(tokens.view_cube_hover_width, egui::Color32::WHITE),
+                                ),
+                            ] {
+                                let mut mesh = Mesh::default();
+                                tessellator.tessellate_shape(
+                                    Shape::convex_polygon(points.clone(), fill, stroke),
+                                    &mut mesh,
                                 );
+                                let allowed = 1.0 / pixels_per_point + stroke.width * 0.5 + 1.0;
+                                for v in &mesh.vertices {
+                                    let at = [f64::from(v.pos.x), f64::from(v.pos.y)];
+                                    let out = -view_cube::inside_by(&outline, at).unwrap() as f32;
+                                    worst = worst
+                                        .max(out - stroke.width * 0.5 - 1.0 / pixels_per_point);
+                                    assert!(
+                                        out <= allowed,
+                                        "{projection:?} yaw {yaw} pitch {pitch} at {pixels_per_point}: {:?} is painted {out} points outside the cube",
+                                        facet.side
+                                    );
+                                }
                             }
                         }
                     }
@@ -788,13 +940,71 @@ mod tests {
             }
         }
         assert!(cameras > 1000, "{cameras}");
-        eprintln!("furthest outside: {worst} points");
-        assert!(worst > -5.0, "the patches reach the cube's edge: {worst}");
+        eprintln!("furthest outside, less feathering and outline: {worst} points");
+        assert!(worst > -3.0, "the patches reach the cube's edge: {worst}");
+    }
+
+    /// The names on the faces lie in the faces: every corner of a name's
+    /// glyphs is on its face's patch, at one and two pixels per point and
+    /// from cameras all round; a face seen nearly edge-on has none.
+    #[test]
+    fn the_names_lie_on_their_faces() {
+        use crate::state::CameraState;
+        let tokens = Tokens::dark();
+        let style = view_cube::style(&tokens);
+        let (center, arm) = (pos2(300.0, 200.0), 62.0_f32);
+        let mut drawn = 0;
+        for pixels_per_point in [1.0, 2.0] {
+            let ctx = egui::Context::default();
+            ctx.set_pixels_per_point(pixels_per_point);
+            let mut painted = 0;
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let painter = ui.painter().clone();
+                for yaw in (-180..180).step_by(15) {
+                    for pitch in (-75..=75).step_by(15) {
+                        let camera = CameraState {
+                            yaw: f64::from(yaw) + 0.3,
+                            pitch: f64::from(pitch),
+                            ..CameraState::default()
+                        };
+                        for (facet, points) in cube_patches(&camera, &style, center, arm) {
+                            let mesh = cube_label(&painter, &tokens, &facet, center, arm);
+                            let hidden = facet.toward < f64::from(tokens.view_cube_label_hide);
+                            if facet.kind() != view_cube::FacetKind::Face || hidden {
+                                assert!(mesh.is_none(), "{:?}", facet.side);
+                                continue;
+                            }
+                            let Some(mesh) = mesh else { continue };
+                            painted += 1;
+                            let patch: Vec<[f64; 2]> = points
+                                .iter()
+                                .map(|p| [f64::from(p.x), f64::from(p.y)])
+                                .collect();
+                            for v in &mesh.vertices {
+                                let at = [f64::from(v.pos.x), f64::from(v.pos.y)];
+                                assert!(
+                                    view_cube::inside_by(&patch, at).unwrap() > -0.5,
+                                    "{yaw} {pitch} {:?}",
+                                    facet.side
+                                );
+                                assert!(
+                                    (0.0..=1.0).contains(&v.uv.x) && (0.0..=1.0).contains(&v.uv.y)
+                                );
+                            }
+                        }
+                    }
+                }
+            });
+            output.textures_delta.clear();
+            assert!(painted > 100, "{painted}");
+            drawn += painted;
+        }
+        assert!(drawn > 200);
     }
 
     /// At every size, from a phone-sized viewport to a large one, with
     /// the default widths and wider ones: what is shown is inside the
-    /// viewport, nothing overlaps, the triad is above the cube and the
+    /// viewport, nothing overlaps, the triad is beside the cube and the
     /// cube above its buttons.
     #[test]
     fn the_controls_never_overlap_and_stay_inside() {
@@ -829,9 +1039,11 @@ mod tests {
                             );
                         }
                     }
+                    // The triad beside the cube, at its lower left.
                     if let (Some(cube), Some(triad)) = (layout.cube, layout.triad) {
-                        assert!(triad.bottom() <= cube.top() + 0.01);
-                        assert!((triad.center().x - cube.center().x).abs() < 0.01);
+                        assert!(triad.right() <= cube.left() + 0.01);
+                        assert!(triad.top() >= cube.top() - 0.51);
+                        assert!(triad.bottom() <= cube.bottom() + 0.01);
                     }
                     if let (Some(cube), Some(row)) = (layout.cube, layout.camera_row) {
                         assert!(cube.bottom() < row.top());

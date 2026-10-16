@@ -136,7 +136,7 @@ fn the_cube_is_in_the_corner_of_the_viewport() {
     assert_eq!(rect.width(), shell.tokens.view_cube_size);
     assert_eq!(rect.height(), shell.tokens.view_cube_size);
     // Bottom right, clear of the edge, with the row of buttons under it
-    // and centred on it, and the triad above it.
+    // and centred on it, and the triad beside it.
     let right = viewport.right() - rect.right() - shell.tokens.inset;
     assert!((-0.5..40.0).contains(&right), "{right}");
     let below = viewport.bottom() - rect.bottom();
@@ -145,9 +145,10 @@ fn the_cube_is_in_the_corner_of_the_viewport() {
     let row = layout.camera_row.unwrap();
     assert!(row.top() > rect.bottom());
     assert!((row.center().x - rect.center().x).abs() < 0.5);
+    // The triad beside the cube, at its lower left.
     let triad = layout.triad.unwrap();
-    assert!(triad.bottom() <= rect.top() + 0.5);
-    assert!((triad.center().x - rect.center().x).abs() < 0.5);
+    assert!(triad.right() <= rect.left() + 0.5);
+    assert!(triad.top() >= rect.top() - 0.5 && triad.bottom() <= rect.bottom() + 0.5);
     let names: Vec<&str> = shell.camera_hits().iter().map(|(n, _)| *n).collect();
     assert_eq!(names, ["fit", "iso", "perspective", "orthographic"]);
     for (_, hit) in shell.camera_hits() {
@@ -342,8 +343,9 @@ fn the_projection_buttons_under_the_cube_switch_the_projection() {
         }
     );
     assert_eq!(shell.state.picked, None);
-    // The cube is drawn the way the viewport is: its picture changed.
-    assert_ne!(
+    // The cube is always drawn without perspective: its picture is the
+    // same.
+    assert_eq!(
         view_cube::facets(&shell.state.camera),
         view_cube::facets(&camera)
     );
@@ -512,9 +514,8 @@ fn a_drawing_of_the_cube_as_it_is_laid_out() {
                 draw_line(&mut rgb, width, height, a, b, 1.5, ink, 255);
             }
         }
-        // The patches as they are painted, inside the outlines.
-        for facet in view_cube::facets_gapped(&shell.state.camera, f64::from(tokens.view_cube_gap))
-        {
+        // The patches as they are painted, on the outlines.
+        for facet in &facets {
             let n = facet.patch.len();
             for k in 0..n {
                 let (a, b) = (at(facet.patch[k]), at(facet.patch[(k + 1) % n]));
