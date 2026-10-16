@@ -83,6 +83,33 @@ pub fn rename_reserved_variable(
     Ok(rename_in(source, old, new).unwrap_or_else(|| source.to_string()))
 }
 
+/// Every name token in `source`, in order, repeats included: variables,
+/// functions, units, `pi`. Works on source that does not parse. For
+/// finding a name that no expression uses yet.
+pub fn names_in(source: &str) -> Vec<&str> {
+    let mut names = Vec::new();
+    let mut at = 0;
+    loop {
+        let token = match scan(source, at) {
+            Ok(token) => token,
+            Err(error) => {
+                at = error.resume;
+                continue;
+            }
+        };
+        if token.kind == TokenKind::End {
+            break;
+        }
+        at = token.end;
+        if token.kind == TokenKind::Ident
+            && let Some(name) = source.get(token.pos..token.end)
+        {
+            names.push(name);
+        }
+    }
+    names
+}
+
 /// The renamed text, or `None` when `source` does not mention `old`.
 /// `old` must be a valid variable name: then every identifier token equal
 /// to it is a reference to that variable.

@@ -59,7 +59,7 @@ pub use parser::{BinaryOp, Expr, Function, Node, NodeId, NodeKind};
 pub use units::{Dimension, Quantity, Unit};
 pub use variables::{
     EvaluatedVariable, Evaluation, Variable, VariableTable, check_variable_name, is_reserved_name,
-    rename_reserved_variable, rename_variable,
+    names_in, rename_reserved_variable, rename_variable,
 };
 
 /// Longest expression source accepted, in bytes. Real expressions are a few

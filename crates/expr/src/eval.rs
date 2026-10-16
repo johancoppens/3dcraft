@@ -250,20 +250,38 @@ fn call(function: Function, args: &[Quantity]) -> Result<Quantity, ErrorKind> {
     }
 }
 
-/// How far, relative to the point, an argument may lie from a point where
-/// a whole-number function jumps and still be taken to lie on it: four
-/// units in the last place. A ratio of two quantities typed as decimals
+/// How far an argument may lie from a point where a whole-number function
+/// jumps and still be taken to lie on it, in units in the last place of
+/// that point: four. A ratio of two quantities typed as decimals
 /// (`0.3 / 0.1`, `1 in / 0.1 in`) carries the rounding of each literal,
 /// of a unit conversion and of the division, half a unit in the last
 /// place each; so a whole number meant by the person typing it comes out
-/// as 2.9999999999999996, and `floor` of it would be 2. The bound is
-/// relative, so it means the same at every scale (rule 5); an argument
-/// farther away is taken as it is.
+/// as 2.9999999999999996, and `floor` of it would be 2. Every argument is
+/// treated so, a typed literal as well as a computed one:
+/// `floor(2.9999999999999996)` is 3. In units in the last place the bound
+/// is relative, except at the jump at zero, where it is four times the
+/// machine epsilon, absolute (a value of -1e-16 there is taken as 0).
 const JUMP_SNAP_ULPS: f64 = 4.0;
 
-/// `x`, or the point `at` when `x` lies within [`JUMP_SNAP_ULPS`] of it.
-fn snapped(x: f64, at: f64) -> f64 {
-    if (x - at).abs() <= JUMP_SNAP_ULPS * f64::EPSILON * at.abs().max(1.0) {
+/// The gap from `at` (finite) to the next `f64` larger in magnitude; the
+/// machine epsilon at zero.
+fn ulp(at: f64) -> f64 {
+    let magnitude = at.abs();
+    if magnitude == 0.0 {
+        return f64::EPSILON;
+    }
+    f64::from_bits(magnitude.to_bits().saturating_add(1)) - magnitude
+}
+
+/// `x`, or the jump point `at` when `x` lies within [`JUMP_SNAP_ULPS`]
+/// units in the last place of it. `spacing` is the distance between
+/// neighbouring jump points (1 for the whole numbers, 1/2 for the halves
+/// `round` jumps at): where four units in the last place reach half of it
+/// (from 2^49 for the whole numbers, 2^48 for the halves) a snap could
+/// carry `x` past a jump that was meant, so there is none.
+fn snapped(x: f64, at: f64, spacing: f64) -> f64 {
+    let bound = JUMP_SNAP_ULPS * ulp(at);
+    if bound < spacing / 2.0 && (x - at).abs() <= bound {
         at
     } else {
         x
@@ -286,16 +304,18 @@ fn whole_of(function: Function, x: f64) -> f64 {
     match function {
         Function::Round => {
             // `round` jumps at the halves: 2.4999999999999996 is 2.5.
-            let half = snapped(x, (x * 2.0).round() / 2.0);
-            half.round_ties_even()
+            let half = snapped(x, (x * 2.0).round() / 2.0, 0.5);
+            // `+ 0.0` turns a negative zero (round(-0.4)) into zero.
+            half.round_ties_even() + 0.0
         }
         _ => {
-            let x = snapped(x, x.round());
-            match function {
+            let x = snapped(x, x.round(), 1.0);
+            let whole = match function {
                 Function::Floor => x.floor(),
                 Function::Ceil => x.ceil(),
                 _ => x.trunc(),
-            }
+            };
+            whole + 0.0
         }
     }
 }
@@ -332,7 +352,7 @@ fn whole(function: Function, args: &[Quantity]) -> Result<Quantity, ErrorKind> {
                 return Err(ErrorKind::NonFinite { operation: name });
             }
             Ok(Quantity::new(
-                whole_of(function, ratio) * step.value,
+                whole_of(function, ratio) * step.value + 0.0,
                 dimension,
             ))
         }
@@ -344,7 +364,9 @@ fn whole(function: Function, args: &[Quantity]) -> Result<Quantity, ErrorKind> {
 /// `b`, `a - b * floor(a / b)` with the `floor` of [`whole_of`]. Any
 /// dimension, the same for both; the result has the sign of `b` (lies in
 /// `[0, b)` for a positive `b`, in `(b, 0]` for a negative one). A zero
-/// `b` is a division by zero.
+/// `b` is a division by zero. From |a / b| = 2^52 on the quotient is a
+/// whole number in `f64`, so the result is 0: `a` is a whole number of
+/// `b` as far as the arithmetic can tell.
 fn modulo(a: Quantity, b: Quantity) -> Result<Quantity, ErrorKind> {
     let dimension = same_dimension("mod", a, b)?;
     if b.value == 0.0 {
@@ -354,7 +376,7 @@ fn modulo(a: Quantity, b: Quantity) -> Result<Quantity, ErrorKind> {
     if !ratio.is_finite() {
         return Err(ErrorKind::NonFinite { operation: "mod" });
     }
-    if snapped(ratio, ratio.round()) != ratio || ratio == ratio.round() {
+    if snapped(ratio, ratio.round(), 1.0) != ratio || ratio == ratio.round() {
         // A whole number of `b`, or within rounding of one.
         return Ok(Quantity::new(0.0, dimension));
     }
@@ -368,7 +390,7 @@ fn modulo(a: Quantity, b: Quantity) -> Result<Quantity, ErrorKind> {
     if rest == b.value {
         rest = 0.0;
     }
-    Ok(Quantity::new(rest, dimension))
+    Ok(Quantity::new(rest + 0.0, dimension))
 }
 
 #[cfg(test)]
@@ -630,6 +652,67 @@ mod tests {
         // Farther away than rounding: taken as it is.
         check("floor(2.9999999999)", 2.0, NONE);
         check("ceil(3.0000000001)", 4.0, NONE);
+    }
+
+    /// Where four units in the last place reach half the gap between two
+    /// jumps (from 2^49 for the whole numbers, 2^48 for the halves), there
+    /// is no snap: it could cross a jump that was meant.
+    #[test]
+    fn no_snap_across_a_jump_near_two_to_the_fifty_two() {
+        check("floor(1e15 + 0.5)", 1e15, NONE);
+        check("ceil(1e15 + 0.5)", 1e15 + 1.0, NONE);
+        check("mod(1e15 + 0.5, 1)", 0.5, NONE);
+        // 2^49 + 0.25, 2^50 + 0.25, 2^52 - 0.5: each exact in `f64`.
+        check("floor(562949953421312 + 0.25)", 562_949_953_421_312.0, NONE);
+        check(
+            "ceil(1125899906842624 + 0.25)",
+            1_125_899_906_842_625.0,
+            NONE,
+        );
+        check(
+            "floor(4503599627370496 - 0.5)",
+            4_503_599_627_370_495.0,
+            NONE,
+        );
+        check(
+            "trunc(4503599627370496 - 0.5)",
+            4_503_599_627_370_495.0,
+            NONE,
+        );
+        // round jumps at the halves: 2^48 + 0.25 is a quarter from both.
+        check("round(281474976710656 + 0.25)", 281_474_976_710_656.0, NONE);
+        check("round(281474976710656 + 0.5)", 281_474_976_710_656.0, NONE);
+        check("round(281474976710656 + 0.75)", 281_474_976_710_657.0, NONE);
+        // Below that the snap still works: 2^40 less one unit in the last
+        // place is 2^40.
+        check(
+            "floor(1099511627776 - 0.0001220703125)",
+            1_099_511_627_776.0,
+            NONE,
+        );
+        // From 2^52 on a quotient is a whole number: mod gives 0.
+        check("mod(4503599627370496, 1)", 0.0, NONE);
+        check("mod(1e300, 3)", 0.0, NONE);
+    }
+
+    #[test]
+    fn no_negative_zero() {
+        for source in [
+            "round(-0.4)",
+            "trunc(-0.5)",
+            "ceil(-0.5)",
+            "round(-0)",
+            "floor(-1e-17)",
+            "round(-0.4 mm, 1 mm)",
+            "mod(-0, 3)",
+            "mod(-6, 3)",
+        ] {
+            let q = eval(source);
+            assert!(
+                q.value == 0.0 && q.value.is_sign_positive(),
+                "`{source}`: {q:?}"
+            );
+        }
     }
 
     #[test]
