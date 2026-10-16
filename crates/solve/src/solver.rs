@@ -471,17 +471,31 @@ fn same_verdict(a: &Solution, b: &Solution) -> bool {
 pub(crate) fn solve(sketch: &Sketch, options: &SolveOptions) -> Result<Solution, SolveError> {
     validate(options)?;
     // Image points that jumped since the starting guess was solved carry
-    // the sketch along first, from the first pass's budget; the solve then
-    // starts from where the path ended.
-    let mut work = Work::new(options.work_limit);
-    let carrying = crate::carry::carry(sketch, options, &mut work);
-    let carried = carrying.entities.map(|entities| Sketch {
+    // the sketch along first, with half the work budget of its own; the
+    // solve then starts from where the path ended, with the whole budget,
+    // as it had before carrying existed. Should it fail from there, it
+    // solves from the stored coordinates as it did then: carrying never
+    // makes a sketch fail that solved without it.
+    let mut work = Work::new(options.work_limit / 2);
+    let mut carrying = crate::carry::carry(sketch, options, &mut work);
+    let carried = carrying.entities.take().map(|entities| Sketch {
         entities,
         constraints: sketch.constraints.clone(),
         splines: sketch.splines.clone(),
         image_starts: Vec::new(),
     });
-    let mut current = solve_once(carried.as_ref().unwrap_or(sketch), options, work)?;
+    let mut current = match carried {
+        Some(carried) => match solve_once(&carried, options, Work::new(options.work_limit)) {
+            Ok(solved) => solved,
+            Err(why) => {
+                carrying.outcome = Some(crate::model::Carried::Skipped {
+                    reason: format!("solving from where the path ended failed ({why})"),
+                });
+                solve_once(sketch, options, Work::new(options.work_limit))?
+            }
+        },
+        None => solve_once(sketch, options, Work::new(options.work_limit))?,
+    };
     current.carry = carrying.outcome.clone();
     let mut iterations = current.iterations;
     let mut close = false;

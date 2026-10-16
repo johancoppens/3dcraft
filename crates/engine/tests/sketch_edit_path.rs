@@ -105,8 +105,12 @@ fn equals_a_fresh_open(s: &mut Session, dir: &Path, file: &str) -> Value {
     // The bodies themselves, exactly: STEP writes every point, curve and
     // surface of the B-rep with all its digits (the same file name, so the
     // header is the same too).
+    let (mine, theirs) = (step(s, dir), step(&mut fresh, dir));
+    if !here["bodies"].as_array().unwrap().is_empty() {
+        assert!(mine.is_ok(), "{file}: {mine:?}");
+    }
     assert!(
-        step(s, dir) == step(&mut fresh, dir),
+        mine == theirs,
         "{file}: the STEP of the edited session and of a fresh open differ"
     );
     here
@@ -492,10 +496,17 @@ fn a_no_op_edit_of_an_old_file_changes_nothing() {
 }
 
 /// A sketch that can be carried only part of the way says so: the point
-/// after the run pinned where it is cannot follow the run's end from 3 to
-/// 10 periods. `sketch.inspect` warns with how far it got, the sketch keeps
-/// its stored coordinates and places (so a fresh open of its file carries
-/// and warns the same), and back at 3 it is as it was.
+/// after the run, fixed where it is, cannot follow the run's end from 3 to
+/// 10 periods. The edit's result warns with how far the carrying got; the
+/// solve from there is the one from the stored coordinates, as without
+/// carrying: "fixed where it is" holds the point where the pass before put
+/// it, so the solver lets the point go and the run's last line folds back
+/// (redundant, not conflicting). That solve is clean, so the result is
+/// stored (the coordinator's decision of 2026-10-17, for the developer to
+/// confirm) and equals a fresh open of its file. Back at 3 the sketch is
+/// carried from the folded state and does not come back to where it was:
+/// with a stopped path, the edit path matters again (recorded in
+/// docs/design/document.md for that decision).
 #[test]
 fn a_sketch_carried_part_of_the_way_warns() {
     let dir = dir("w1-stop");
@@ -506,33 +517,95 @@ fn a_sketch_carried_part_of_the_way_warns() {
         json!({"sketch": "Edge", "type": "fixed", "entities": ["e11"]}),
     );
     let start = equals_a_fresh_open(&mut s, &dir, "stop-3.3dcraft");
-    set(&mut s, &[("n", "10")]);
-    let here = state(&mut s);
-    let warned = |state: &Value| -> Vec<Value> {
-        state["sketches"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|sk| sk.get("warnings").cloned())
-            .collect()
-    };
-    let warnings = warned(&here);
-    assert_eq!(warnings.len(), 1, "{here}");
+    let reply = run(&mut s, "variable.set", json!({"name": "n", "expr": "10"}));
+    let warnings = reply["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1, "{reply}");
     assert!(
-        warnings[0][0]
+        warnings[0]
             .as_str()
             .unwrap()
             .contains("of the way from where its image points were"),
-        "{warnings:?}"
+        "{reply}"
     );
-    run(&mut s, "file.save", json!({"path": "stop-10.3dcraft"}));
-    let mut fresh = session(&dir);
-    run(&mut fresh, "file.open", json!({"path": "stop-10.3dcraft"}));
-    assert!(
-        here == state(&mut fresh),
-        "the session and a fresh open differ"
-    );
+    let folded = equals_a_fresh_open(&mut s, &dir, "stop-10.3dcraft");
+    assert_eq!(point(&folded, "Edge", "e11"), [99.0, 0.0]);
     set(&mut s, &[("n", "3")]);
     let back = equals_a_fresh_open(&mut s, &dir, "stop-back.3dcraft");
-    assert!(back == start, "back at 3 it is as it was");
+    assert!(
+        back != start,
+        "the stopped path is stored, so 3 is not 3 again"
+    );
+}
+
+/// A path that passes where the sketch has no solution: the image of a
+/// turn about the origin at radius 5 swings from 2 to 178 degrees and `q`,
+/// on a fixed horizontal line through the origin, must stay one unit from
+/// it, which it cannot while the image is more than a unit above the line.
+/// The carrying stops early, the solve from there is clean (`q` one unit
+/// from the image at 178 degrees), and the result is stored (the
+/// coordinator's decision of 2026-10-17, for the developer to confirm):
+/// the edit reports the warning, the stored state does not repeat it, an
+/// unrelated dimension edit after it solves without it, and each state
+/// equals a fresh open.
+#[test]
+fn a_path_that_stops_part_way_is_stored_when_the_solve_is_clean() {
+    let dir = dir("w1-pass");
+    let mut s = session(&dir);
+    let steps = json!([
+        ["file.new", {"units": "mm"}],
+        ["variable.set", {"name": "ang", "expr": "2 deg"}],
+        ["sketch.create", {"name": "Turn", "plane": "xy"}],
+        ["sketch.point", {"sketch": "Turn", "at": [0, 0]}],
+        ["sketch.constrain", {"sketch": "Turn", "type": "fixed", "entities": ["e1"]}],
+        ["sketch.circle", {"sketch": "Turn", "center": [5, 0], "radius": 0.5}],
+        ["sketch.constrain", {"sketch": "Turn", "type": "fixed", "entities": ["e2"]}],
+        ["sketch.constrain", {"sketch": "Turn", "type": "radius", "entities": ["e3"], "value": "0.5 mm"}],
+        ["sketch.pattern", {"sketch": "Turn", "entities": ["e3"], "count": "2", "angle": "ang", "center": "e1"}],
+        ["sketch.line", {"sketch": "Turn", "from": [-100, 0], "to": [100, 0]}],
+        ["sketch.constrain", {"sketch": "Turn", "type": "fixed", "entities": ["e4"]}],
+        ["sketch.constrain", {"sketch": "Turn", "type": "fixed", "entities": ["e5"]}],
+        ["sketch.point", {"sketch": "Turn", "at": [5.9, 0]}],
+        ["sketch.constrain", {"sketch": "Turn", "type": "pointOn", "entities": ["e7", "e6"]}],
+        ["sketch.constrain", {"sketch": "Turn", "type": "distance", "entities": ["e2[1]", "e7"], "value": "1 mm"}]
+    ]);
+    for step in steps.as_array().unwrap() {
+        run(&mut s, step[0].as_str().unwrap(), step[1].clone());
+    }
+    equals_a_fresh_open(&mut s, &dir, "pass-2.3dcraft");
+    let reply = run(
+        &mut s,
+        "variable.set",
+        json!({"name": "ang", "expr": "178 deg"}),
+    );
+    let warnings = reply["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1, "{reply}");
+    assert!(
+        warnings[0]
+            .as_str()
+            .unwrap()
+            .contains("of the way from where its image points were"),
+        "{reply}"
+    );
+    // Stored: the session shows no warning and is its file.
+    let swung = equals_a_fresh_open(&mut s, &dir, "pass-178.3dcraft");
+    assert!(failed(&swung).is_empty(), "{:?}", failed(&swung));
+    let image = point(&swung, "Turn", "e8");
+    let q = point(&swung, "Turn", "e7");
+    let a = 178f64.to_radians();
+    assert!((image[0] - 5.0 * a.cos()).abs() < 1e-9 && (image[1] - 5.0 * a.sin()).abs() < 1e-9);
+    assert!(q[1].abs() < 1e-9 && ((q[0] - image[0]).hypot(image[1]) - 1.0).abs() < 1e-9);
+    // An unrelated dimension: no carrying, no warning.
+    let reply = run(
+        &mut s,
+        "sketch.constrain",
+        json!({"sketch": "Turn", "type": "distance", "entities": ["e4", "e1"], "value": "100 mm"}),
+    );
+    assert!(reply.get("warnings").is_none(), "{reply}");
+    let reply = run(
+        &mut s,
+        "variable.set",
+        json!({"name": "ang", "expr": "178 deg"}),
+    );
+    assert!(reply.get("warnings").is_none(), "{reply}");
+    equals_a_fresh_open(&mut s, &dir, "pass-after.3dcraft");
 }

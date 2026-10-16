@@ -96,8 +96,8 @@ fn finite(p: [f64; 2]) -> bool {
 }
 
 /// Carries the sketch along from where `sketch.image_starts` says the
-/// images were to where their maps put them now, spending from `work`, the
-/// solve's own budget.
+/// images were to where their maps put them now, spending from `work` (a
+/// share of the solve's budget, `crate::solver::solve`).
 pub(crate) fn carry(sketch: &Sketch, options: &SolveOptions, work: &mut Work) -> Carrying {
     if sketch.image_starts.is_empty() {
         return NOTHING;
@@ -135,15 +135,28 @@ pub(crate) fn carry(sketch: &Sketch, options: &SolveOptions, work: &mut Work) ->
         let Some(now) = map.apply(of, point) else {
             continue;
         };
+        let straight = (
+            start.at,
+            Way::Straight([start.at[0] - now[0], start.at[1] - now[1]]),
+        );
         let (was, way) = match start.map {
+            // Through the family only from where the image was: the old
+            // numbers on today's points put it at its old place. When they
+            // do not (the edit moved the ends of the run or the centre),
+            // the family would start the image where it never was.
             Some(old) if same_family(&old, map) => match old.apply(of, point) {
-                Some(was) => (was, Way::Through(old)),
-                None => continue,
+                Some(was)
+                    if finite(was)
+                        && (was[0] - start.at[0])
+                            .abs()
+                            .max((was[1] - start.at[1]).abs())
+                            <= linear =>
+                {
+                    (was, Way::Through(old))
+                }
+                _ => straight,
             },
-            _ => (
-                start.at,
-                Way::Straight([start.at[0] - now[0], start.at[1] - now[1]]),
-            ),
+            _ => straight,
         };
         if !(finite(was) && finite(now)) {
             continue;

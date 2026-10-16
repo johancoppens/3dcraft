@@ -313,9 +313,10 @@ fn an_image_that_did_not_move_changes_nothing() {
     for starts in [
         vec![place(w.image, here)],
         vec![place(w.image, [here[0] + 1e-10, here[1]])],
+        // Its map now, and where that puts it.
         vec![ImageStart {
             image: w.image,
-            at: [0.0, 0.0],
+            at: here,
             map: Some(now),
         }],
         vec![place(EntityId(0), [55.0, 1.0])],
@@ -552,6 +553,91 @@ fn an_equation_too_full_for_the_path_is_not_carried() {
     let plain = solve(&plain, &options(1.0)).unwrap();
     assert_eq!(carried.entities, plain.entities);
     assert_eq!(carried.constraints, plain.constraints);
+}
+
+/// Carrying never makes a sketch fail for want of work that solved
+/// without it: at the smallest work limit at which the sketch solves from
+/// its stored coordinates, it solves with the carrying too (which takes
+/// half of that budget of its own and leaves the solve all of it).
+#[test]
+fn carrying_never_takes_the_work_the_solve_needs() {
+    let w = wave(1.0, 3);
+    let first = solve(&w.sketch, &options(1.0)).unwrap();
+    // A path that halves its steps until it stops costs the most: `q`
+    // pinned where it was cannot follow the run's end (as in
+    // `a_path_that_stops_says_how_far_it_got`).
+    let pin = |mut s: Sketch| {
+        s.add_constraint(C::Fixed {
+            point: w.q,
+            at: Some([31.0, 0.0]),
+        });
+        s
+    };
+    for (to, pinned) in [(10, false), (400, false), (10, true), (400, true)] {
+        let mut plain = recount(&w, &first, to, Start::None);
+        let mut carried = recount(&w, &first, to, Start::Map);
+        if pinned {
+            plain = pin(plain);
+            carried = pin(carried);
+        }
+        let with = |limit: u64| {
+            let mut o = options(1.0);
+            o.work_limit = limit;
+            o
+        };
+        // The smallest limit at which the plain solve succeeds.
+        let (mut lo, mut hi) = (0u64, 1u64 << 40);
+        assert!(solve(&plain, &with(hi)).is_ok());
+        while hi - lo > 1 {
+            let mid = lo + (hi - lo) / 2;
+            if solve(&plain, &with(mid)).is_ok() {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+        assert!(solve(&plain, &with(lo)).is_err());
+        // Every limit from there to eight times it at which the plain
+        // solve succeeds.
+        for step in 0..=280u64 {
+            let limit = hi + hi * step / 40;
+            if solve(&plain, &with(limit)).is_err() {
+                continue;
+            }
+            let solved = solve(&carried, &with(limit));
+            assert!(
+                solved.is_ok(),
+                "3 -> {to} (pinned {pinned}) at limit {limit}: {solved:?}"
+            );
+        }
+        // With room for the carrying it lands on the right root.
+        if !pinned {
+            let roomy = solve(&carried, &with(4 * hi + 1_000_000)).unwrap();
+            assert_eq!(roomy.carry, Some(Carried::Whole), "3 -> {to}");
+        }
+    }
+}
+
+/// A stored map whose numbers on today's points do not put the image
+/// where it was (an edit moved the ends of the run as well) is not a path
+/// from there: the image is carried in a straight line from its place,
+/// exactly as with the place alone.
+#[test]
+fn a_map_that_does_not_fit_the_place_is_not_followed() {
+    let w = wave(1.0, 3);
+    let first = solve(&w.sketch, &options(1.0)).unwrap();
+    let straight = recount(&w, &first, 10, Start::Place);
+    let mut wrong = recount(&w, &first, 10, Start::Map);
+    for start in &mut wrong.image_starts {
+        // As if the run had had instance 5 there: 50 from the start.
+        if let Some(ImageMap::Chain { k, .. }) = &mut start.map {
+            *k = 5.0;
+        }
+    }
+    assert_eq!(
+        solve(&wrong, &options(1.0)),
+        solve(&straight, &options(1.0))
+    );
 }
 
 /// What the carrying costs: the run's count jumps 3 -> 400 and goes

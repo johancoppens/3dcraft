@@ -70,7 +70,9 @@ pub struct SketchResult {
     pub image_places: Vec<ImagePlace>,
     /// What the user should know about how the sketch solved although it
     /// solved (today: that it could be carried along only part of the way
-    /// from where its image points were to where they are now).
+    /// from where its image points were to where they are now). It belongs
+    /// to this solve: once the result is stored, the next solve starts
+    /// from it and does not repeat it.
     pub warnings: Vec<String>,
 }
 
@@ -1321,11 +1323,11 @@ pub(crate) fn solve_sketch(
     let warnings = match &solution.carry {
         None | Some(solve::Carried::Whole) => Vec::new(),
         Some(solve::Carried::Stopped { reached }) => vec![format!(
-            "the sketch could be carried along only {:.1}% of the way from where its image points were to where they are now; it was solved from there and may have found another solution than the one it was on; its stored coordinates are kept",
+            "the sketch could be carried along only {:.1}% of the way from where its image points were to where they are now; it was solved from there and may have found another solution than the one it was on",
             reached * 100.0
         )],
         Some(solve::Carried::Skipped { reason }) => vec![format!(
-            "the sketch was not carried along to where its image points are now: {reason}; its stored coordinates are kept"
+            "the sketch was not carried along to where its image points are now: {reason}"
         )],
     };
     let result = SketchResult {
@@ -1430,12 +1432,14 @@ fn clean(result: &SketchResult) -> bool {
             .patterns
             .iter()
             .all(|p| p.chain != Some(ConstraintState::Conflicting))
-        // Nor is one the sketch was carried to only part of the way: it
-        // keeps the coordinates and image places it had, so every solve
-        // until an edit takes it out carries it from there again (with the
-        // same warning), in the session and from its file alike.
-        && result.warnings.is_empty()
 }
+// A solution the sketch was carried to only part of the way (a warning) is
+// stored when it is otherwise clean: the path may have met a passing
+// singularity (a line through zero length half way), and keeping the old
+// state would carry every later edit from it again and warn again. The
+// warning belongs to the solve that carried; the next one starts from the
+// stored state, where no image has moved. (Decided by the coordinator on
+// 2026-10-17, for the developer to confirm.)
 
 /// Solves every sketch and stores the solution in the document, so the
 /// next solve starts from it. A sketch that cannot be solved, or only with
@@ -1448,19 +1452,35 @@ pub fn settle_sketches(doc: &mut Document) -> bool {
 /// [`settle_sketches`], solving only the sketches that have changed since
 /// `cache` last saw them solved. The outcome is the same.
 pub fn settle_sketches_cached(doc: &mut Document, cache: &mut crate::RegenCache) -> bool {
+    settle_sketches_noted(doc, cache).0
+}
+
+/// [`settle_sketches_cached`], with the warnings of the solves it made, each
+/// after the sketch it is about (`F3: ...`): what the edit that called it
+/// should report, since the next solve of a stored sketch starts from the
+/// stored state and does not repeat them.
+pub fn settle_sketches_noted(
+    doc: &mut Document,
+    cache: &mut crate::RegenCache,
+) -> (bool, Vec<String>) {
     let Ok(table) = doc.variable_table() else {
-        return false;
+        return (false, Vec::new());
     };
     let variables = table.evaluate();
     let mut solved = Vec::new();
+    let mut warnings = Vec::new();
     for (index, feature) in doc.features.iter().enumerate() {
         if let FeatureKind::Sketch(sketch) = &feature.kind
             && !feature.suppressed
             // Where the sketch lies does not change how it solves.
             && let (_, Some(result)) = cache.solve(feature.id, doc, &variables, sketch)
-            && clean(&result)
         {
-            solved.push((index, result));
+            for warning in &result.warnings {
+                warnings.push(format!("{}: {warning}", feature.id));
+            }
+            if clean(&result) {
+                solved.push((index, result));
+            }
         }
     }
     let mut moved = false;
@@ -1505,5 +1525,5 @@ pub fn settle_sketches_cached(doc: &mut Document, cache: &mut crate::RegenCache)
             }
         }
     }
-    moved
+    (moved, warnings)
 }
