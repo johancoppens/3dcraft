@@ -1,10 +1,15 @@
 # Decisions
 
-> **Last updated:** 2026-10-15
+> **Last updated:** 2026-10-16
 
 Decisions that shape the project, newest first, each with its reason. An agent that needs something listed under *Open decisions* asks the developer; it does not pick silently. When one is settled, move it up with the date.
 
 ## Taken
+
+### 2026-10-16: An offset across faces that are tangent only within the tolerance (decided by the developer)
+
+- **An offset, shell or thicken keeps every face within the tolerance of its exact offset, or is refused.** Where two moving faces are tangent only within the tolerance (a fitted rolling-ball blend beside its wall), turning one's normal onto the other's moves the offset by distance × mismatch; that turn is held to a share of the tolerance and refused past it. A deviation of "distance × mismatch" is not accepted as the meaning of a tangent offset.
+- **The general method owed:** the offset of a blend face is the blend rebuilt between the offset faces (radius r ± d), exact and tangent by construction. The bike's saddle, whose fitted fillets meet their walls within 6.6e-5, does not shell until then.
 
 ### 2026-10-15: Colours of cut faces, bodies of zero thickness, the trees shelf (decided by the developer)
 
