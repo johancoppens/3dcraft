@@ -68,9 +68,11 @@ pub enum Defect {
         face: FaceId,
         edge: EdgeId,
     },
-    /// A loop of a face lies outside the region its other loops bound, or
-    /// crosses one of them (a hole left outside the face's outer loop).
-    /// Held for faces on a plane (`crate::stranded_loops`).
+    /// A loop of a face lies outside the region its other loops bound (a
+    /// hole left outside the face's outer loop, a loop inside a hole).
+    /// Held for faces on a plane (`crate::stranded_loops`); one point of
+    /// each loop is tested, so two loops that cross are found only where
+    /// that point lies on the wrong side.
     StrandedLoop {
         face: FaceId,
         loop_: LoopId,
@@ -153,7 +155,7 @@ impl fmt::Display for Defect {
             ),
             Defect::StrandedLoop { face, loop_ } => write!(
                 f,
-                "loop {} of face {} does not lie where the face's other loops leave it room: it is outside the region they bound, or crosses one of them",
+                "loop {} of face {} does not lie where the face's other loops leave it room: it is outside the region they bound",
                 loop_.0, face.0
             ),
             Defect::Euler {

@@ -1207,6 +1207,12 @@ fn blend_one(
             outward_from(&solver, &surface, &params, &sections, convex).ok_or_else(unsolvable)?;
         let (blend_face, second_border) =
             splice_ring(body, edge, [first, second], surface, outward)?;
+        // A border that runs off its face first (the more telling reason),
+        // then a loop left behind.
+        for (border, face) in [(edge, first), (second_border, second)] {
+            stays_on(body, edge, border, face, tolerance)?;
+        }
+        no_loop_behind(body, blend_face, convex, edge, tolerance)?;
         return tangent_or_refused(
             body,
             edge,
@@ -1314,6 +1320,12 @@ fn blend_one(
         outward_hint,
         tolerance,
     )?;
+    // A border that runs off its face first (the more telling reason),
+    // then a loop left behind.
+    for (border, face) in [(edge, first), (second_border, second)] {
+        stays_on(body, edge, border, face, tolerance)?;
+    }
+    no_loop_behind(body, blend_face, convex, edge, tolerance)?;
     if let Some(motion) = motion {
         let surface = exact::swept(motion, &seed, shape).ok_or_else(unsolvable)?;
         exact::make_exact(body, blend_face, surface, tolerance)?;
@@ -2523,6 +2535,124 @@ fn no_stranded_loop(body: &Body, edge: EdgeId, tolerance: &Tolerance) -> Result<
     }
 }
 
+/// No loop of a face next to the blend face `blend` (the faces beside its
+/// edge, the third faces at its ends) lies in what the blend took: on the
+/// side of the blend's surface that was removed (outside it at a convex
+/// edge) or filled (inside it at a concave one), where the surface's
+/// nearest point lies inside its sections (`v` strictly between its two
+/// borders) and no further from it than the section is wide. Points of
+/// every loop that shares no edge and no vertex with the blend face are
+/// looked at: its vertices and the middles of its edges. This holds for
+/// faces of any surface, as [`no_stranded_loop`] does only on planes so
+/// far; a hole drilled into a cone beside the edge was left behind in
+/// what a fillet removed without it. Refused as reaching that face.
+fn no_loop_behind(
+    body: &Body,
+    blend: FaceId,
+    convex: bool,
+    edge: EdgeId,
+    tolerance: &Tolerance,
+) -> Result<(), BlendError> {
+    const EDGE_V: f64 = 1e-6;
+    const MOST_POINTS: usize = 64;
+    let tol = tolerance.linear;
+    let face = body.face(blend).ok_or_else(lost)?;
+    let Surface::Nurbs(surface) = &face.surface else {
+        return Ok(());
+    };
+    let mut own_edges = std::collections::BTreeSet::new();
+    let mut own_vertices = std::collections::BTreeSet::new();
+    for l in &face.loops {
+        for coedge in &body.loop_(*l).ok_or_else(lost)?.coedges {
+            own_edges.insert(coedge.edge);
+            if let Some(data) = body.edge(coedge.edge) {
+                own_vertices.insert(data.start);
+                own_vertices.insert(data.end);
+            }
+        }
+    }
+    // The surface's box, a little larger.
+    let mut low = Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY);
+    let mut high = -low;
+    for p in surface.control_points() {
+        low = Vec3::new(low.x.min(p.x), low.y.min(p.y), low.z.min(p.z));
+        high = Vec3::new(high.x.max(p.x), high.y.max(p.y), high.z.max(p.z));
+    }
+    let slack = Vec3::new(10.0 * tol, 10.0 * tol, 10.0 * tol);
+    let (low, high) = (low - slack, high + slack);
+    let in_box = |p: Vec3| {
+        p.x >= low.x
+            && p.x <= high.x
+            && p.y >= low.y
+            && p.y <= high.y
+            && p.z >= low.z
+            && p.z <= high.z
+    };
+    let ((u0, u1), _) = surface.domain();
+    let whole = Surface::Nurbs(surface.clone());
+    for (index, other) in body.faces.iter().enumerate() {
+        let id = FaceId(u32::try_from(index).map_err(|_| lost())?);
+        if id == blend {
+            continue;
+        }
+        let rings: Vec<&Loop> = other.loops.iter().filter_map(|l| body.loop_(*l)).collect();
+        let beside = rings
+            .iter()
+            .any(|r| r.coedges.iter().any(|c| own_edges.contains(&c.edge)));
+        if !beside {
+            continue;
+        }
+        for ring in rings {
+            let mut points = Vec::new();
+            let mut touches = false;
+            for coedge in &ring.coedges {
+                let data = body.edge(coedge.edge).ok_or_else(lost)?;
+                if own_edges.contains(&coedge.edge)
+                    || own_vertices.contains(&data.start)
+                    || own_vertices.contains(&data.end)
+                {
+                    touches = true;
+                    break;
+                }
+                if points.len() < MOST_POINTS {
+                    points.push(body.vertex(data.start).ok_or_else(lost)?.point);
+                    points.push(data.curve.eval(0.5 * (data.range.0 + data.range.1)));
+                }
+            }
+            if touches {
+                continue;
+            }
+            for p in points.into_iter().filter(|p| in_box(*p)) {
+                let Ok((u, v)) = whole.project(p) else {
+                    continue;
+                };
+                let span = u1 - u0;
+                if !(v > EDGE_V
+                    && v < 1.0 - EDGE_V
+                    && u > u0 + EDGE_V * span
+                    && u < u1 - EDGE_V * span)
+                {
+                    continue;
+                }
+                let (q, du, dv) = surface.derivatives(u, v);
+                let Some(n) = du.cross(dv).normalized() else {
+                    continue;
+                };
+                let n = if face.reversed { -n } else { n };
+                let wide = surface.eval(u, 0.0).distance(surface.eval(u, 1.0));
+                if p.distance(q) > wide {
+                    continue;
+                }
+                let side = (p - q).dot(n);
+                if (convex && side > tol) || (!convex && side < -tol) {
+                    return Err(refuse(edge, Some(id), Reason::Reaches));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Drops the edges no loop uses and the vertices no edge has (what a
 /// blend took whole, see [`cut_back`]), keeping the order of the rest;
 /// per edge and per vertex left, the index it had.
@@ -2671,6 +2801,8 @@ pub(super) fn blend(
     let (chains, meets) = chain::group(body, &uses, &items, tolerance)?;
     let mut out = body.clone();
     let mut blends = Vec::with_capacity(requests.len());
+    // How many of `blends` have been held to `no_loop_behind`.
+    let mut done = 0;
     let mut with_meets = Vec::new();
     for (index, found) in chains.iter().enumerate() {
         if found.meets.iter().any(Option::is_some) {
@@ -2692,6 +2824,11 @@ pub(super) fn blend(
             blends.extend(chain::build(&mut out, found, &items, tolerance)?);
         }
         let first = found.pieces.first().map_or(EdgeId(u32::MAX), |p| p.edge);
+        for (face, item) in blends.iter().skip(done) {
+            let convex = items.get(*item).is_some_and(|i| i.convex);
+            no_loop_behind(&out, *face, convex, first, tolerance)?;
+        }
+        done = blends.len();
         no_stranded_loop(&out, first, tolerance)?;
     }
     if !with_meets.is_empty() {
@@ -2708,6 +2845,10 @@ pub(super) fn blend(
             .and_then(|c| chains.get(*c))
             .and_then(|c| c.pieces.first())
             .map_or(EdgeId(u32::MAX), |p| p.edge);
+        for (face, item) in blends.iter().skip(done) {
+            let convex = items.get(*item).is_some_and(|i| i.convex);
+            no_loop_behind(&out, *face, convex, first, tolerance)?;
+        }
         no_stranded_loop(&out, first, tolerance)?;
     }
     let mut seen = std::collections::BTreeSet::new();

@@ -204,6 +204,38 @@ fn a_hole_in_a_face_beside_a_freeform_edge_inside_the_strip() {
 }
 
 #[test]
+fn a_hole_in_the_cone_beside_a_freeform_edge_inside_the_strip() {
+    // A shallow hole drilled radially into the cone face, 0.06, 0.1 and
+    // 0.14 along it from the edge where it meets the cut plane (radius
+    // 0.03, 0.02 deep): wholly inside what a blend of 0.3 takes. A curved
+    // face, which `topo::check` does not chart yet: the blend's own check
+    // of the loops behind it holds it.
+    for k in SCALES {
+        let body = half_frustum(k);
+        let on_edge = Vec3::new(5.0 / 6.0, 0.0, 0.5);
+        for along in [0.06, 0.1, 0.14] {
+            let turn: f64 = along / (5.0 / 6.0);
+            let out = Vec3::new(turn.cos(), turn.sin(), 0.0);
+            let p = out * (5.0 / 6.0) + Vec3::Z * 0.5;
+            let holed = drill(&body, k, p + out * 0.5, -out, 0.03, 0.52);
+            for how in [Blend::Fillet(0.3), Blend::Chamfer(0.3)] {
+                let whole =
+                    mass(&blend(&body, edge_near(&body, on_edge * k), how, k).unwrap()).volume;
+                right_or_refused(
+                    "cone",
+                    &holed,
+                    edge_near(&holed, on_edge * k),
+                    how,
+                    whole,
+                    k,
+                    false,
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn a_hole_in_the_end_face_of_a_freeform_edge_at_its_corner() {
     // Case B: a shallow hole in the end face z = 1 next to the corner.
     for k in SCALES {
