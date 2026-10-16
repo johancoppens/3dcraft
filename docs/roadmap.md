@@ -213,6 +213,7 @@ Sketch entities and constraints as commands; `solve` (Newton-type, DOF analysis,
 - [ ] Which constraint is blamed in a nonlinear conflict is the solver's heuristic, not a proof, and about 8% of dense random sketches end as "did not converge" instead of a diagnosis; to be judged again on real models
 - [ ] A sketch that refers to geometry of other features (projected edges, coincident with a body vertex; from the field test)
 - [ ] A picture of a sketch: `view.render` draws bodies only
+- [ ] A pattern inside a sketch whose count is a formula (a run of contour repeated N times, N following a variable): without it a finger-jointed outline cannot follow the panel's size, and the laser box (2026-10-16, `plan/laserbox.md`) cut its fingers as 3D patterns of blocks instead of one contour
 - [ ] `panic_hunt` takes 2.5 minutes
 - [ ] Two seeded breakages of the solver's rank test are caught only by unit tests or the random run, not by a small natural sketch
 
