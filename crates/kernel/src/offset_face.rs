@@ -4,11 +4,13 @@
 //! A flat face moves to the parallel plane at the distance; a cylinder, a
 //! sphere and a torus's tube grow or shrink by it, and a cone keeps its
 //! angle and moves its apex along its axis; a freeform face becomes a
-//! spline surface within a quarter of the tolerance of its exact offset,
-//! in the same parameters, once that is proven not to fold
-//! ([`craft3d_geom::offset`]), continued past its borders where the face
-//! grows past them, and turned along borders where it is tangent to a
-//! neighbour ([`crate::offset_normal`]). Positive is outward, away
+//! spline surface in the same parameters, held to a quarter of the
+//! tolerance of its exact offset at the middles and quarters of its
+//! sample steps (measured there, not bounded between), once the exact
+//! offset is proven not to fold ([`craft3d_geom::offset`]); continued
+//! past its borders where the face grows past them, and turned, by no
+//! more than another quarter of the tolerance, along borders where it is
+//! tangent to a neighbour ([`crate::offset_normal`]). Positive is outward, away
 //! from the material: a boss grows and a hole narrows; negative is into
 //! the material. The neighbours are not moved: their boundaries are, to
 //! where their surfaces meet the moved one ([`crate::tweak`], which says
@@ -75,6 +77,8 @@ pub(crate) enum NoOffset {
     NoNormal,
     /// A freeform face's offset could not be approximated.
     NoFit,
+    /// Refused by the offset with this reason.
+    Refused(&'static str),
 }
 
 /// How far a freeform face's offset may be from the exact one, as a share
@@ -83,6 +87,7 @@ const OFFSET_SHARE: f64 = 0.25;
 
 pub(crate) const FOLDS: &str = "the offset of the freeform face would fold over: the distance reaches a radius of curvature of the face on the side it moves to (or comes so near one that it cannot be shown not to)";
 pub(crate) const NO_NORMAL: &str = "the freeform face has a pole or a border or corner drawn into a point, where its normal and so its offset are not defined";
+pub(crate) const TURN_TOO_FAR: &str = "the faces are tangent here only to within an angle that, at this distance, parts their offsets by more than a quarter of the tolerance: they do not meet as tangent faces within it";
 pub(crate) const NO_FIT: &str =
     "the offset of the freeform face could not be approximated within the tolerance";
 
@@ -159,6 +164,9 @@ pub(crate) fn offset_surface(
             .map_err(|error| match error {
                 OffsetError::Folds { .. } | OffsetError::Unproven { .. } => NoOffset::Folds,
                 OffsetError::NoNormal { .. } => NoOffset::NoNormal,
+                OffsetError::Invalid(craft3d_geom::GeomError::Unsupported(why)) => {
+                    NoOffset::Refused(why)
+                }
                 OffsetError::NoFit | OffsetError::Invalid(_) => NoOffset::NoFit,
             })
         }
@@ -488,7 +496,13 @@ fn surfaced(
         .iter()
         .map(|o| (o.face, o.distance * fraction))
         .collect();
-    let turns = crate::offset_normal::turns(body, &moving, tolerance);
+    let turns = crate::offset_normal::turns(body, &moving, tolerance).map_err(|far| {
+        TweakError::Vanishes {
+            faces: far.faces,
+            edge: None,
+            reason: TURN_TOO_FAR,
+        }
+    })?;
     for offset in offsets {
         let Some(face) = body.face(offset.face) else {
             return Err(TweakError::Unsupported {
@@ -527,6 +541,11 @@ fn surfaced(
                     faces,
                     edge: None,
                     reason: NO_FIT,
+                },
+                NoOffset::Refused(why) => TweakError::Unsupported {
+                    faces,
+                    edge: None,
+                    reason: why,
                 },
             }
         })?;

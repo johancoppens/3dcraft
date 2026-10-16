@@ -431,3 +431,106 @@ fn an_offset_that_would_fold_a_freeform_face_is_refused_with_the_largest_that_fi
         "thinner rod",
     );
 }
+
+/// A prism 4 wide and 3 long whose roof is two flat faces meeting at a
+/// ridge `rise` above their eaves at height 1 (the ridge 2 from each
+/// eave: their normals part by about `rise`), both roof faces given as
+/// bilinear NURBS patches whose borders are their edges. The prism with
+/// flat faces, the one with the patches, and the faces of its roof.
+fn ridged(rise: f64, tol: &craft3d_math::Tolerance) -> (Body, Body, [FaceId; 2]) {
+    use craft3d_kernel::extrude::extrude;
+    use craft3d_kernel::profile::{Curve2, SketchCurve, detect_profiles};
+    let points = [
+        [0.0, 0.0],
+        [4.0, 0.0],
+        [4.0, 1.0],
+        [2.0, 1.0 + rise],
+        [0.0, 1.0],
+    ];
+    let curves: Vec<SketchCurve> = (0..points.len())
+        .map(|i| SketchCurve {
+            id: i as u64 + 1,
+            curve: Curve2::Line {
+                start: points[i],
+                end: points[(i + 1) % points.len()],
+            },
+        })
+        .collect();
+    let profiles = detect_profiles(&curves, tol).unwrap();
+    let plain = extrude(&profiles, &craft3d_math::Frame::WORLD, 0.0, 3.0, tol)
+        .unwrap()
+        .body;
+    let mut body = plain.clone();
+    let mut roof = Vec::new();
+    for (index, face) in plain.faces.iter().enumerate() {
+        let Surface::Plane(plane) = &face.surface else {
+            continue;
+        };
+        let normal = plane.frame().z() * if face.reversed { -1.0 } else { 1.0 };
+        if normal.y < 0.5 {
+            continue;
+        }
+        // The corners in loop order, each coedge from its start.
+        let corners: Vec<Vec3> = plain
+            .loop_(face.loops[0])
+            .unwrap()
+            .coedges
+            .iter()
+            .map(|c| {
+                let e = plain.edge(c.edge).unwrap();
+                plain
+                    .vertex(if c.reversed { e.end } else { e.start })
+                    .unwrap()
+                    .point
+            })
+            .collect();
+        assert_eq!(corners.len(), 4);
+        let patch = NurbsSurface::new(
+            1,
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            2,
+            2,
+            vec![corners[0], corners[1], corners[3], corners[2]],
+            vec![1.0; 4],
+        )
+        .unwrap();
+        let surface = Surface::Nurbs(patch);
+        let own = surface.normal(0.5, 0.5).unwrap();
+        body.faces[index].surface = surface;
+        body.faces[index].reversed = own.dot(normal) < 0.0;
+        roof.push(FaceId(index as u32));
+    }
+    assert_eq!(roof.len(), 2);
+    assert_eq!(check(&body, tol), []);
+    (plain, body, [roof[0], roof[1]])
+}
+
+#[test]
+fn a_crease_too_shallow_to_be_a_crease_is_built_within_the_tolerance_or_refused_as_too_far() {
+    // A ridge whose faces' normals part by 2e-5 (between what fitting
+    // leaves of a tangency and a crease a design means): offset along the
+    // normal they share, each face moves by its distance times 1e-5;
+    // within a quarter of the tolerance (1e-6) that is a distance of
+    // 0.025 at most.
+    let tol = tolerance(1.0);
+    let (plain, body, roof) = ridged(2e-5, &tol);
+    let moves = |d: f64| roof.map(|face| FaceOffset { face, distance: d });
+    match offset_faces(&body, &moves(0.2), &tol) {
+        Err(KernelError::FaceOpTooFar {
+            reason, largest, ..
+        }) => {
+            assert!(reason.contains("tangent here only"), "{reason}");
+            assert!(largest > 0.02 && largest <= 0.025, "{largest}");
+        }
+        other => panic!("{other:?}"),
+    }
+    // Short of it, built, and within the tolerance of the same prism with
+    // its roof flat faces (offset in closed form, the crease kept).
+    let made = offset_faces(&body, &moves(0.02), &tol).unwrap();
+    assert_eq!(check(&made.body, &tol), []);
+    let exact = offset_faces(&plain, &moves(0.02), &tol).unwrap();
+    let (m, e) = (mass(&made.body), mass(&exact.body));
+    within(m.volume, e.volume, e.area * tol.linear, "the ridged prism");
+}

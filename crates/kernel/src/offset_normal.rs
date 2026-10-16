@@ -25,6 +25,22 @@
 //! vertex of the unturned neighbour). The turn is of the size of the
 //! mismatch, so the offset moves by `d` times that: the faces then meet
 //! within the tolerance along the edge.
+//!
+//! **Bounded.** The turn moves the face's offset away from its exact
+//! offset by `|d|` times the sine it turns by. That is held to
+//! [`TURN_SHARE`] of the tolerance (at the border samples and on a grid
+//! across the face, measured there), so that with the fit's own share the
+//! face stays within half the tolerance of its exact offset; a turn that
+//! would take more is refused as too far ([`TooFar`]): faces whose normals
+//! part by more than that at this distance do not meet as tangent faces
+//! within the tolerance, and calling them tangent would be a deviation
+//! the document's tolerance does not allow.
+//!
+//! **Where.** The turn of a border is measured where the edge covers it;
+//! past the ends of that part it falls linearly to nothing at the
+//! border's ends, so that a part of the border along no edge (a blend's
+//! surface continued past its face) or near other edges is moved by less
+//! than the bound, not by the turn at the edge's end.
 
 use craft3d_geom::{NurbsCurve, Surface, refine::interpolate};
 use craft3d_math::{Tolerance, Vec3};
@@ -35,6 +51,22 @@ use crate::tweak::TANGENT;
 
 /// Samples along a border for the turn, and to hold the faces tangent.
 const ALONG: usize = 32;
+
+/// The share of the tolerance a turn may move a face's offset by (the fit
+/// takes another quarter: the face stays within half the tolerance of its
+/// exact offset, two faces that meet within the tolerance of each other).
+pub(crate) const TURN_SHARE: f64 = 0.25;
+
+/// Points per direction of the grid across a face on which the blended
+/// turn is measured against the bound.
+const ACROSS: usize = 16;
+
+/// A turn that would move these faces' offsets by more than
+/// [`TURN_SHARE`] of the tolerance.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct TooFar {
+    pub faces: Vec<FaceId>,
+}
 
 /// A border of a parameter range: `u` (true) or `v` fixed, at its start
 /// (false) or end.
@@ -92,13 +124,34 @@ impl Border {
 #[derive(Clone, Debug)]
 struct Side {
     turn: NurbsCurve,
+    /// The part of the border the edge covers.
     range: (f64, f64),
+    /// The whole border.
+    border: (f64, f64),
     fixed: bool,
 }
 
 impl Side {
+    /// The turn at `q`: measured where the edge covers the border, falling
+    /// linearly to nothing at the border's ends past that.
     fn at(&self, q: f64) -> Vec3 {
-        self.turn.eval(q.clamp(self.range.0, self.range.1))
+        let ((lo, hi), (f0, f1)) = (self.range, self.border);
+        let share = if q < lo {
+            if lo > f0 {
+                ((q - f0) / (lo - f0)).clamp(0.0, 1.0)
+            } else {
+                0.0
+            }
+        } else if q > hi {
+            if f1 > hi {
+                ((f1 - q) / (f1 - hi)).clamp(0.0, 1.0)
+            } else {
+                0.0
+            }
+        } else {
+            1.0
+        };
+        self.turn.eval(q.clamp(lo, hi)) * share
     }
 }
 
@@ -248,7 +301,8 @@ pub(crate) fn turns(
     body: &Body,
     moving: &BTreeMap<FaceId, f64>,
     tolerance: &Tolerance,
-) -> BTreeMap<FaceId, Turn> {
+) -> Result<BTreeMap<FaceId, Turn>, TooFar> {
+    let bound = TURN_SHARE * tolerance.linear;
     let tol = tolerance.linear;
     let uses = crate::tweak::edge_faces(body);
     // Per freeform face that moves, the edges along its borders.
@@ -310,6 +364,7 @@ pub(crate) fn turns(
             let mut params = Vec::with_capacity(ALONG + 1);
             let mut values = Vec::with_capacity(ALONG + 1);
             let mut tangent = true;
+            let mut largest = 0.0_f64;
             for k in 0..=ALONG {
                 let q = lo + (hi - lo) * k as f64 / ALONG as f64;
                 let (u, v) = border.at(domain, q);
@@ -331,13 +386,17 @@ pub(crate) fn turns(
                     theirs
                 };
                 params.push(q);
-                values.push({
-                    let turn = (target - own) * sign;
-                    vec![turn.x, turn.y, turn.z]
-                });
+                let turn = (target - own) * sign;
+                largest = largest.max(turn.length());
+                values.push(vec![turn.x, turn.y, turn.z]);
             }
             if !tangent {
                 continue;
+            }
+            if distance.abs() * largest > bound {
+                return Err(TooFar {
+                    faces: vec![*face, neighbour],
+                });
             }
             let Ok((knots, ctrl)) = interpolate(&params, 3.min(ALONG), &values) else {
                 continue;
@@ -356,13 +415,68 @@ pub(crate) fn turns(
                 *slot = Some(Side {
                     turn,
                     range: (lo, hi),
+                    border: (f0, f1),
                     fixed: !mutual,
                 });
             }
         }
         if sides.iter().any(Option::is_some) {
-            out.insert(*face, Turn { domain, sides });
+            let turn = Turn { domain, sides };
+            // The blend across the face, measured on a grid.
+            let ((u0, u1), (v0, v1)) = domain;
+            for i in 0..=ACROSS {
+                for j in 0..=ACROSS {
+                    let (a, b) = (i as f64 / ACROSS as f64, j as f64 / ACROSS as f64);
+                    let moved = turn.at(u0 + (u1 - u0) * a, v0 + (v1 - v0) * b).length();
+                    if distance.abs() * moved > bound {
+                        return Err(TooFar { faces: vec![*face] });
+                    }
+                }
+            }
+            out.insert(*face, turn);
         }
     }
-    out
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A turn measured where an edge covers the middle half of a border
+    /// (the rest of the border along other edges, or along none): the
+    /// turn holds there, and past the ends of that part falls linearly to
+    /// nothing at the border's ends; it is never more than at the edge.
+    #[test]
+    fn a_turn_past_the_part_of_a_border_its_edge_covers_falls_to_nothing() {
+        let constant = Vec3::new(0.0, 0.0, 1e-6);
+        let turn =
+            NurbsCurve::polynomial(1, vec![0.25, 0.25, 0.75, 0.75], vec![constant, constant])
+                .unwrap();
+        let side = Side {
+            turn,
+            range: (0.25, 0.75),
+            border: (0.0, 1.0),
+            fixed: true,
+        };
+        for (q, share) in [
+            (0.0, 0.0),
+            (0.125, 0.5),
+            (0.25, 1.0),
+            (0.5, 1.0),
+            (0.75, 1.0),
+            (0.875, 0.5),
+            (1.0, 0.0),
+            (1.5, 0.0),
+        ] {
+            let got = side.at(q);
+            assert!((got - constant * share).length() <= 1e-18, "{q}: {got:?}");
+        }
+        // An edge that covers the whole border: no falling off.
+        let whole = Side {
+            range: (0.0, 1.0),
+            ..side
+        };
+        assert!((whole.at(0.0) - constant).length() <= 1e-18);
+    }
 }

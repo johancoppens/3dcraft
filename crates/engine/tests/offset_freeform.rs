@@ -200,15 +200,22 @@ fn a_lofted_tube_made_hollow_has_the_volume_its_wall_areas_give() {
     shelled_to_its_wall_areas(&|s: &mut Session| tube(s, &circles, 1e-4), 1e-4, 2.0);
 }
 
-/// The bike's saddle, rims rounded, at the default tolerance: minutes
-/// (the rolling-ball fillets' offsets have thousands of control points,
-/// and the check that faces next to moved edges are still skin classifies
-/// points against them, docs/design/face-operations.md). Run with
-/// `cargo test --release -p craft3d-engine --test offset_freeform --
-/// --ignored`.
+/// The bike's saddle, rims rounded, at the default tolerance, shelled
+/// 2 mm: refused, with the faces, as too far. Its rolling-ball fillets are
+/// tangent to the faces beside them and to each other only to what
+/// fitting left (about 1.2e-6 in the normal at this tolerance, growing
+/// with the tolerance), and offsets of tangent faces along the normal
+/// they share may move by no more than a quarter of the tolerance
+/// (docs/design/face-operations.md); what fits is below about 0.37 mm at
+/// 1e-5 and 1e-4 mm, and at 0.3 mm the boolean that takes the hollow out
+/// refuses the skin and the hollow as nearly coincident. Building it
+/// anyway would mean taking a deviation of the distance times the
+/// mismatch as what a tangent offset is: a decision for the developer.
+/// Minutes in release: `cargo test --release -p craft3d-engine --test
+/// offset_freeform -- --ignored`.
 #[test]
 #[ignore = "minutes: the bike's saddle with its rolling-ball fillets; run with --ignored"]
-fn the_bike_saddle_made_hollow_has_the_volume_its_wall_areas_give() {
+fn the_bike_saddle_shelled_2_mm_is_refused_as_tangent_only_to_within_too_much() {
     let sections = [
         (-125.0, 70.0, 40.0, 12.0),
         (-95.0, 76.0, 46.0, 4.0),
@@ -217,9 +224,15 @@ fn the_bike_saddle_made_hollow_has_the_volume_its_wall_areas_give() {
         (85.0, 24.0, 36.0, 2.0),
         (140.0, 18.0, 30.0, 8.0),
     ];
-    shelled_to_its_wall_areas(
-        &|s: &mut Session| saddle(s, &sections, true, 1e-6),
-        1e-6,
-        2.0,
+    let mut s = session();
+    saddle(&mut s, &sections, true, 1e-6);
+    let result = run(
+        &mut s,
+        "feature.shell",
+        json!({"source": "Saddle", "thickness": "2 mm", "name": "Shell"}),
     );
+    assert_eq!(result["status"], "failed", "{result}");
+    let reason = result["error"].as_str().unwrap();
+    assert!(reason.contains("tangent here only"), "{reason}");
+    assert!(reason.contains(":fillet("), "{reason}");
 }

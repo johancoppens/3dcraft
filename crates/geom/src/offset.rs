@@ -39,7 +39,17 @@
 //! of curvature there. A piece that is neither when the pieces run out is
 //! reported as not proven: the distance comes within a hair of a radius
 //! of curvature. A surface whose normal vanishes somewhere (a pole, a
-//! border drawn into a point) has no offset there and is refused.
+//! border drawn into a point) has no offset there and is refused; one of
+//! degrees too high for the forms (about sixteen times its degrees) is
+//! refused as such.
+//!
+//! **What is proven and what is measured.** The regularity is proven for
+//! the surface's own normal ([`offset_along`] may turn it a little; the
+//! turn is the caller's to bound). The fit is held against the exact
+//! offset at the middles and then the quarters of its steps: measured
+//! there, not bounded between them (in fuzzing, one fit in a hundred
+//! exceeded its limit between samples by 0.3 %; the callers' limit is a
+//! quarter of the tolerance, so that leaves the body within it).
 
 // `!(x > 0.0)` is deliberate: unlike `x <= 0.0` it is also true for NaN.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
@@ -197,6 +207,14 @@ pub fn regular_over(surface: &Surface, distance: f64, over: Domain) -> Result<()
         let points = span.patch.control_points();
         let weights = span.patch.weights();
         let (m, n) = span.patch.degrees();
+        // The determinant's forms have about sixteen times the degrees of
+        // the span in each direction (homogeneous products); past the
+        // coefficients a form may have, nothing can be proven.
+        if (16 * m + 1).saturating_mul(16 * n + 1) > MAX_COEFFICIENTS {
+            return Err(OffsetError::Invalid(GeomError::Unsupported(
+                "the degrees of the freeform face are too high for its offset to be proven free of folds",
+            )));
+        }
         // The span's own parameters of the box it stands for: past its
         // border where it is a border span and the box reaches further.
         let local = |(lo, hi): (f64, f64), (start, end): (f64, f64), (from, to): (f64, f64)| {
@@ -1307,14 +1325,16 @@ fn fit(
 ) -> Result<NurbsSurface, OffsetError> {
     let (du, dv) = nurbs.domain();
     let (degree_u, degree_v) = nurbs.degrees();
-    // Past the domain the end spans go on smoothly: the ends of the box
-    // are the breaks there.
+    // Past the domain the box's ends are breaks too, and so stay the
+    // domain's ends: the surface goes on smoothly there, but what the
+    // offset is made along need not (a turned normal is held past the
+    // domain), and a fit across a kink converges at second order only.
     let widened = |mut found: Vec<f64>, (lo, hi): (f64, f64)| {
-        if let Some(first) = found.first_mut() {
-            *first = lo;
+        if found.first().is_some_and(|first| lo < *first) {
+            found.insert(0, lo);
         }
-        if let Some(last) = found.last_mut() {
-            *last = hi;
+        if found.last().is_some_and(|last| hi > *last) {
+            found.push(hi);
         }
         found
     };
