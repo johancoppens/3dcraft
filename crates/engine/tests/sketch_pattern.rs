@@ -379,6 +379,165 @@ fn a_patterned_outline_is_exported_with_its_instances() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Separate instances (a row of discs) are each their own profile: the
+/// seed's cap is named after the seed at every count, 1 included.
+#[test]
+fn the_cap_of_a_separate_seed_keeps_its_name_at_every_count() {
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(&mut s, "variable.set", json!({"name": "n", "expr": "1"}));
+    run(&mut s, "sketch.create", json!({"name": "Discs"}));
+    let disc = run(
+        &mut s,
+        "sketch.circle",
+        json!({"sketch": "Discs", "center": [0, 0], "radius": 1}),
+    );
+    let disc = str_of(&disc["entity"]);
+    run(
+        &mut s,
+        "sketch.pattern",
+        json!({"sketch": "Discs", "entities": [disc], "count": "n", "step": [5, 0]}),
+    );
+    run(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "Discs", "distance": 2, "name": "Pins"}),
+    );
+    let cap = format!("F2:endCap({disc})");
+    for n in [1, 2, 1, 3, 1] {
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "n", "expr": n.to_string()}),
+        );
+        let names = face_names(&body(&mut s, "Pins"));
+        assert!(names.contains(&cap), "n = {n}: {names:?}");
+        if n > 1 {
+            assert!(
+                names.contains(&format!("F2:endCap({disc}[1])")),
+                "{names:?}"
+            );
+        }
+        assert!(!names.iter().any(|n| n.contains("[*]")), "{names:?}");
+    }
+}
+
+/// A ring of runs (`tooth` from `a` to `b` about the origin, fixed `a` at
+/// radius `r`, the tip fixed) on a plane `offset` up. Returns the ids of
+/// `a` and `b`.
+fn ring(s: &mut Session, name: &str, offset: f64, r: f64, angle: &str) -> (String, String) {
+    run(s, "sketch.create", json!({"name": name, "offset": offset}));
+    let o = str_of(&run(s, "sketch.point", json!({"sketch": name, "at": [0, 0]}))["entity"]);
+    let tooth = run(
+        s,
+        "sketch.polyline",
+        json!({"sketch": name, "points": [[r, 0], [1.1 * r, 0.2 * r], [0.85 * r, 0.5 * r]]}),
+    );
+    let points: Vec<String> = tooth["points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(str_of)
+        .collect();
+    let lines: Vec<String> = tooth["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(str_of)
+        .collect();
+    for point in [&o, &points[0], &points[1]] {
+        run(
+            s,
+            "sketch.constrain",
+            json!({"sketch": name, "type": "fixed", "entities": [point]}),
+        );
+    }
+    run(
+        s,
+        "sketch.pattern",
+        json!({"sketch": name, "entities": lines, "count": "teeth", "angle": angle, "center": o, "chain": [points[0], points[2]]}),
+    );
+    (points[0].clone(), points[2].clone())
+}
+
+/// A ring whose turns make a whole turn within the angular tolerance but
+/// whose last joint misses the first by more than the linear tolerance
+/// does not close, and its image points are where its curves are: the
+/// last joint as the turns put it.
+#[test]
+fn a_ring_that_misses_its_start_does_not_close_and_its_images_say_so() {
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "teeth", "expr": "12"}),
+    );
+    let r = 1e4;
+    // 5e-11 rad too much per tooth: 6e-10 rad in all, within the angular
+    // tolerance (1e-9); 6e-6 mm at the rim, beyond the linear one (1e-6).
+    let extra = 5e-11_f64.to_degrees();
+    let (a, b) = ring(&mut s, "Ring", 0.0, r, &format!("30 deg + {extra:e} deg"));
+    run(
+        &mut s,
+        "sketch.constrain",
+        json!({"sketch": "Ring", "type": "fixed", "entities": [format!("{b}[last]")]}),
+    );
+    let inspected = run(&mut s, "sketch.inspect", json!({"sketch": "Ring"}));
+    assert_eq!(inspected["patterns"][0]["closes"], false, "{inspected}");
+    let image = inspected["entities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["ref"] == format!("{b}[last]"))
+        .unwrap()
+        .clone();
+    let (x, y) = (image["x"].as_f64().unwrap(), image["y"].as_f64().unwrap());
+    let turn = 12.0 * (30.0_f64.to_radians() + 5e-11);
+    let (wx, wy) = (r * turn.cos(), r * turn.sin());
+    assert!((x - wx).hypot(y - wy) < 1e-9 * r, "{x} {y} vs {wx} {wy}");
+    assert!((x - r).hypot(y) > 1e-6, "not taken to be the start {a}");
+}
+
+/// The caps of a loft through two rings of runs name each run once, at
+/// every count.
+#[test]
+fn the_caps_of_a_loft_through_patterned_sections_name_the_run_once() {
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "teeth", "expr": "6"}),
+    );
+    ring(&mut s, "Low", 0.0, 10.0, "360 deg / teeth");
+    ring(&mut s, "High", 8.0, 10.0, "360 deg / teeth");
+    run(
+        &mut s,
+        "feature.loft",
+        json!({"sections": ["Low", "High"], "name": "Crown"}),
+    );
+    let mut caps = None;
+    for n in [6, 9, 3, 6] {
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "teeth", "expr": n.to_string()}),
+        );
+        assert_eq!(feature_status(&mut s, "Crown"), "ok", "{n}");
+        let names: Vec<String> = face_names(&body(&mut s, "Crown"))
+            .into_iter()
+            .filter(|n| n.contains("Cap"))
+            .collect();
+        assert_eq!(names.len(), 2, "{names:?}");
+        assert!(names.iter().all(|n| n.contains("[*]")), "{names:?}");
+        match &caps {
+            None => caps = Some(names),
+            Some(caps) => assert_eq!(caps, &names, "{n}"),
+        }
+    }
+}
+
 #[test]
 fn a_ring_of_teeth_closes_and_is_its_closed_form() {
     for k in [1e-3, 1.0, 1e3] {

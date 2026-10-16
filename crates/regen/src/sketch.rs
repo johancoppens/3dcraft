@@ -1096,7 +1096,7 @@ pub(crate) fn solve_sketch(
         }
     }
     radii.sort_by_key(|(id, _)| *id);
-    place_images(sketch, &patterns, &mut points);
+    points.sort_by_key(|(id, ..)| *id);
     let state = |report: &solve::ConstraintReport| match report.status {
         solve::ConstraintStatus::Satisfied => ConstraintState::Satisfied,
         solve::ConstraintStatus::Redundant => ConstraintState::Redundant,
@@ -1169,6 +1169,10 @@ pub(crate) fn solve_sketch(
             }
         }
     }
+    // The image points last: a ring's last joint is its first only once
+    // `closes` is final, and the image points take the same numbers as
+    // the instance curves.
+    place_images(sketch, &patterns, &mut points);
     let conflicting: Vec<ConstraintId> = constraints
         .iter()
         .filter(|c| c.state == ConstraintState::Conflicting)

@@ -215,6 +215,7 @@ Sketch entities and constraints as commands; `solve` (Newton-type, DOF analysis,
 - [ ] Which constraint is blamed in a nonlinear conflict is the solver's heuristic, not a proof, and about 8% of dense random sketches end as "did not converge" instead of a diagnosis; to be judged again on real models
 - [ ] A sketch that refers to geometry of other features (projected edges, coincident with a body vertex; from the field test)
 - [ ] A picture of a sketch: `view.render` draws bodies only
+- [ ] Profile detection takes at most 4096 curves (`kernel/src/profile.rs`, `MAX_CURVES`; its touch test is quadratic) while sketch patterns may make 100 000: a 70 × 70 perforated sheet fails cleanly with the cap; owed: a spatial sort, measured before the cap is raised
 - [ ] A sketch pattern's later steps: skipping instances, a pattern along a curve, a pattern of a pattern, instance curves in line or round slots, image points in `sketch.path` and splines ([`design/document.md`](design/document.md), *Patterns inside a sketch*)
 - [ ] `panic_hunt` takes 2.5 minutes
 - [ ] Two seeded breakages of the solver's rank test are caught only by unit tests or the random run, not by a small natural sketch

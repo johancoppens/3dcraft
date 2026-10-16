@@ -7,7 +7,7 @@ use crate::datum::datum_helix;
 use crate::extrude::{drawn, name_of, profile_error, swept};
 use crate::selfcheck::{Crossing, crossing};
 use crate::{FeatureResult, Names, SweepReport, entity};
-use craft3d_doc::{Document, FeatureId, FeatureKind, PersistentName, Sweep};
+use craft3d_doc::{Document, FeatureId, FeatureKind, NameRole, PersistentName, Sweep};
 use craft3d_kernel::KernelError;
 use craft3d_kernel::helix::sweep_helix;
 use craft3d_kernel::sweep::sweep;
@@ -80,7 +80,13 @@ pub(crate) fn build(
         })?
     };
     let mut faces: Vec<PersistentName> = swept.faces.iter().map(|o| name_of(id, o)).collect();
-    crate::collapse_runs(doc, earlier, feature.sketch, &mut faces);
+    crate::collapse_runs(
+        doc,
+        earlier,
+        feature.sketch,
+        &mut faces,
+        &[NameRole::StartCap, NameRole::EndCap],
+    );
 
     // A path that comes back near itself carries the profile through
     // what it swept before: a body that is valid in how it hangs together

@@ -503,12 +503,14 @@ fn length(doc: &Document, variables: &Evaluation, name: &str, expr: &Expr) -> Re
 
 /// Renames the caps among `faces` whose loop holds every instance of a
 /// curve of a pattern of sketch `sketch`: the run is written once,
-/// `e7[*]`, so the name of the cap does not change with the count.
+/// `e7[*]`, so the name of the cap does not change with the count. Only
+/// the caps of `roles` are of that sketch.
 pub(crate) fn collapse_runs(
     doc: &Document,
     earlier: &[FeatureResult],
     sketch: FeatureId,
     faces: &mut [PersistentName],
+    roles: &[NameRole],
 ) {
     let Some(FeatureKind::Sketch(drawn)) = doc.feature(sketch).map(|f| &f.kind) else {
         return;
@@ -525,7 +527,7 @@ pub(crate) fn collapse_runs(
     };
     let runs = sketch_pattern::full_runs(drawn, solved);
     for face in faces {
-        if matches!(face.role, NameRole::StartCap | NameRole::EndCap)
+        if roles.contains(&face.role)
             && let Some(sources) = sketch_pattern::collapse(&face.sources, &runs)
         {
             face.sources = sources;
@@ -889,7 +891,13 @@ fn build_feature(
                     _ => None,
                 };
                 if let Some(sketch) = sketch {
-                    collapse_runs(doc, earlier, sketch, &mut named.faces);
+                    collapse_runs(
+                        doc,
+                        earlier,
+                        sketch,
+                        &mut named.faces,
+                        &[NameRole::StartCap, NameRole::EndCap],
+                    );
                 }
                 if up_to {
                     extrude::not_through_itself(&body, &origins, &named, doc.tolerance.linear)?;

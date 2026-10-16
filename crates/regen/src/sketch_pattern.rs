@@ -472,9 +472,19 @@ pub(crate) fn curve_name(id: u64) -> String {
 /// every one of them is named after the seed once, as `e7[*]`.
 pub(crate) fn full_runs(sketch: &Sketch, solved: &crate::SketchResult) -> BTreeMap<u64, usize> {
     let mut out = BTreeMap::new();
-    // A pattern of one instance is a whole run too: the cap keeps its name
-    // when a count goes down to 1.
     for result in &solved.patterns {
+        // A chained run of one instance is a whole run too: the loop it is
+        // part of keeps its cap name when the count goes down to 1.
+        // Separate instances (a row of discs) are each their own profile:
+        // at one instance the seed's cap is named after the seed, as it is
+        // at every count.
+        let chained = matches!(
+            result.placed,
+            Placed::Chain { .. } | Placed::Turn { chain: Some(_), .. }
+        );
+        if result.instances() < 2 && !chained {
+            continue;
+        }
         if let Some(pattern) = sketch.pattern(result.id) {
             for entity in curve_seeds(sketch, pattern) {
                 out.insert(entity.id.0, result.instances());
