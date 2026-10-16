@@ -12,10 +12,15 @@
 //!    planes);
 //! 2. every edge that ends in such a vertex is made again on the surfaces
 //!    of its two faces: a straight edge through its two vertices, a
-//!    circular edge about the axis its faces share. That is "extend the
-//!    neighbours and intersect again" for the curves two such surfaces
-//!    meet in: a neighbour is not cut or lengthened as a separate step,
-//!    its boundary simply moves;
+//!    circular edge about the axis its faces share, and any other edge
+//!    (an ellipse, a spline, a line or circle on a freeform face that is
+//!    one no longer) as a cubic through points found where its faces
+//!    meet, held to a share of the tolerance ([`fitted`]); an edge along
+//!    a border of the parameters of a new freeform surface that keeps the
+//!    old one's parameters (an offset) as that border of it ([`Iso`]).
+//!    That is "extend the neighbours and intersect again" for the curves
+//!    two such surfaces meet in: a neighbour is not cut or lengthened as
+//!    a separate step, its boundary simply moves;
 //! 3. the result is held against what a body is.
 //!
 //! **Never a wrong solid.** A vertex whose faces no longer meet in a
@@ -30,7 +35,8 @@
 
 use crate::KernelError;
 use crate::profile::{Curve2, SketchCurve, detect_profiles};
-use craft3d_geom::{Circle, Curve3, Line, Surface};
+use craft3d_geom::refine::interpolate;
+use craft3d_geom::{Circle, Curve3, Line, NurbsCurve, Plane, Surface};
 use craft3d_math::{Frame, Tolerance, Transform, Vec3};
 use craft3d_topo::{Body, EdgeId, FaceId, VertexId};
 use std::collections::{BTreeMap, BTreeSet};
@@ -66,7 +72,7 @@ pub(crate) const EDGE_GONE: &str =
 pub(crate) const NO_MEETING: &str =
     "the faces that meet in a vertex there no longer meet in one point";
 pub(crate) const OFF_SURFACE: &str = "the edge would no longer be a line or a circle on both its faces: continuing these two surfaces until they meet again is not built";
-pub(crate) const CURVE_KIND: &str = "an elliptic or freeform edge next to a face that moves is not built: these two surfaces would have to be intersected again";
+pub(crate) const LOST: &str = "the edge could not be found again where its faces meet: they no longer meet along it as they did";
 pub(crate) const FREEFORM: &str = "a freeform face next to a face that moves cannot be continued past its edge, and the faces no longer meet in the vertex there";
 pub(crate) const OUTLINE: &str =
     "the outline of the face would cross itself, or a hole in it would leave it";
@@ -101,7 +107,38 @@ pub(crate) fn edge_faces(body: &Body) -> Vec<Vec<FaceId>> {
 /// grows in. `None` where the surface has no nearest point with a normal
 /// (a cone's apex, the axis of a cylinder).
 fn distance(surface: &Surface, point: Vec3) -> Option<(f64, Vec3)> {
-    let (u, v) = surface.project(point).ok()?;
+    distance_near(surface, point, &mut None)
+}
+
+/// Normals and offsets nearer to square than this sine are square: the
+/// foot a local walk found is a nearest point.
+pub(crate) const SQUARE: f64 = 1e-9;
+
+/// [`distance`], for a Bézier or NURBS surface found by a walk from the
+/// parameters in `guess` when there are some (the foot of a point
+/// nearby), and by the search over the whole surface when there are none
+/// or the walk did not end square to the surface; `guess` is left at the
+/// foot found.
+fn distance_near(
+    surface: &Surface,
+    point: Vec3,
+    guess: &mut Option<(f64, f64)>,
+) -> Option<(f64, Vec3)> {
+    let local = guess.and_then(|start| {
+        let (u, v) = surface.project_from(point, start).ok()?;
+        let foot = surface.eval(u, v);
+        let normal = surface.normal(u, v)?;
+        let offset = point - foot;
+        let aside = (offset - normal * offset.dot(normal)).length();
+        (aside <= SQUARE * offset.length() + 1e-15 * (1.0 + point.length())).then_some((u, v))
+    });
+    let (u, v) = match local {
+        Some(found) => found,
+        None => surface.project(point).ok()?,
+    };
+    if matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_)) {
+        *guess = Some((u, v));
+    }
     let foot = surface.eval(u, v);
     let normal = surface.normal(u, v)?;
     let offset = point - foot;
@@ -123,52 +160,70 @@ fn distance(surface: &Surface, point: Vec3) -> Option<(f64, Vec3)> {
 /// not.
 const SAME_DIRECTION: f64 = 1e-6;
 
+/// Normals nearer to each other than this sine are nearly one direction:
+/// the faces are tangent by construction (a blend and the faces it rolls
+/// along, the pieces of one surface), to within what fitting them left;
+/// a crease any design means is far steeper.
+pub(crate) const TANGENT: f64 = 1e-4;
+
+/// A nearly tangent surface the point lies on within the tolerance (this
+/// share of it, all of it: what the check at the end of [`meet`] asks)
+/// asks no further step. Two fitted offsets that share a border are each
+/// within a quarter of the tolerance of it, so within half of it of each
+/// other: a smaller share would take the other as a second direction, and
+/// its step, the residual over the sine, sends the point away.
+const HELD: f64 = 1.0;
+
 /// Most steps of the iteration for one vertex.
 const MEET_STEPS: usize = 64;
 
 /// The point nearest `start` where `surfaces` meet, within `tol` of each.
 fn meet(surfaces: &[&Surface], start: Vec3, tol: f64) -> Option<Vec3> {
+    meet_near(surfaces, start, tol, &mut vec![None; surfaces.len()])
+}
+
+/// [`meet`], with the feet on the freeform surfaces found from `guesses`
+/// (one per surface; see [`distance_near`]) and left there.
+fn meet_near(
+    surfaces: &[&Surface],
+    start: Vec3,
+    tol: f64,
+    guesses: &mut [Option<(f64, f64)>],
+) -> Option<Vec3> {
     let mut point = start;
     for _ in 0..MEET_STEPS {
-        // An orthonormal basis of the normals, and for each one that adds
-        // a direction, its distance and its components along the basis.
+        // An orthonormal basis of the normals, and for each surface that
+        // adds a direction the step along it that brings the point onto
+        // it after the steps along the directions before it (forward
+        // substitution: the rows are triangular). A surface whose normal
+        // is all but that of one before it adds nothing (tangent faces);
+        // one that is only nearly so ([`TANGENT`]) and that the point lies
+        // on already, after those steps, within [`HELD`] of the tolerance
+        // adds nothing either: the step it would ask for runs along the
+        // tangent plane by the residual over the sine, far off for
+        // residuals of rounding.
         let mut basis: Vec<Vec3> = Vec::with_capacity(3);
-        let mut rows: Vec<(f64, Vec<f64>)> = Vec::with_capacity(3);
-        for surface in surfaces {
-            let (value, normal) = distance(surface, point)?;
+        let mut solved: Vec<f64> = Vec::with_capacity(3);
+        for (surface, guess) in surfaces.iter().zip(guesses.iter_mut()) {
+            let (value, normal) = distance_near(surface, point, guess)?;
             let mut rest = normal;
-            let mut components = Vec::with_capacity(3);
-            for axis in &basis {
+            let mut right = -value;
+            for (axis, c) in basis.iter().zip(&solved) {
                 let along = normal.dot(*axis);
-                components.push(along);
+                right -= along * c;
                 rest = rest - *axis * along;
             }
             let own = rest.length();
-            if own <= SAME_DIRECTION || basis.len() >= 3 {
+            if own <= SAME_DIRECTION
+                || basis.len() >= 3
+                || (own <= TANGENT && right.abs() <= HELD * tol)
+            {
                 continue;
             }
-            components.push(own);
             basis.push(rest * (1.0 / own));
-            rows.push((value, components));
-        }
-        // The smallest step that brings the point onto every surface that
-        // adds a direction: forward substitution, the rows are triangular.
-        let mut step = Vec3::ZERO;
-        let mut solved: Vec<f64> = Vec::with_capacity(3);
-        for (value, components) in &rows {
-            let mut right = -*value;
-            let mut own = 0.0;
-            for (k, component) in components.iter().enumerate() {
-                match solved.get(k) {
-                    Some(c) => right -= component * c,
-                    None => own = *component,
-                }
-            }
-            if own == 0.0 {
-                return None;
-            }
             solved.push(right / own);
         }
+        let mut step = Vec3::ZERO;
         for (c, axis) in solved.iter().zip(&basis) {
             step += *axis * *c;
         }
@@ -182,7 +237,10 @@ fn meet(surfaces: &[&Surface], start: Vec3, tol: f64) -> Option<Vec3> {
     }
     let on_all = surfaces
         .iter()
-        .all(|surface| distance(surface, point).is_some_and(|(value, _)| value.abs() <= tol));
+        .zip(guesses.iter_mut())
+        .all(|(surface, guess)| {
+            distance_near(surface, point, guess).is_some_and(|(value, _)| value.abs() <= tol)
+        });
     (point.is_finite() && on_all).then_some(point)
 }
 
@@ -227,7 +285,9 @@ enum Remade {
     Edge(Curve3, (f64, f64)),
     Gone,
     OffSurface,
-    Kind,
+    /// Found again as no closed form, and the faces do not meet all along
+    /// it as it ran.
+    Lost,
 }
 
 /// True when `a` is more than `b`, and both are numbers.
@@ -237,7 +297,8 @@ fn more(a: f64, b: f64) -> bool {
 
 /// The edge with curve `old` over `range` made again from `start` to
 /// `end` on `surfaces`, the surfaces of its faces; `moved` says whether
-/// one of them is new.
+/// one of them is new, `tangent` whether its faces were tangent along it
+/// ([`tangent_along`]).
 #[allow(clippy::too_many_arguments)]
 fn remake(
     old: &Curve3,
@@ -247,11 +308,23 @@ fn remake(
     closed: bool,
     surfaces: &[&Surface],
     moved: bool,
+    tangent: bool,
     tolerance: &Tolerance,
 ) -> Remade {
     let tol = tolerance.linear;
     let middle = 0.5 * (range.0 + range.1);
-    match old {
+    let freeform = surfaces
+        .iter()
+        .any(|s| matches!(s, Surface::Bezier(_) | Surface::Nurbs(_)));
+    // A line or a circle that is not one any more on a freeform face, or a
+    // curve of another kind: found again where the surfaces meet.
+    let general = |closed_form: Remade| match closed_form {
+        Remade::OffSurface if freeform || !matches!(old, Curve3::Line(_) | Curve3::Circle(_)) => {
+            fitted(old, range, start, end, surfaces, tangent, tolerance)
+        }
+        other => other,
+    };
+    general(match old {
         Curve3::Line(_) => {
             let (_, was) = old.derivatives(middle);
             let length = start.distance(end);
@@ -320,11 +393,11 @@ fn remake(
         }
         Curve3::Ellipse(_) | Curve3::Nurbs(_) => {
             if moved {
-                return Remade::Kind;
+                return fitted(old, range, start, end, surfaces, tangent, tolerance);
             }
             // The same curve, between the places its ends moved to.
             let (Ok(at_start), Ok(at_end)) = (old.project(start), old.project(end)) else {
-                return Remade::Kind;
+                return fitted(old, range, start, end, surfaces, tangent, tolerance);
             };
             let (from, to) = match old.period() {
                 Some(_) if closed => {
@@ -335,14 +408,245 @@ fn remake(
                 None => (at_start, at_end),
             };
             if old.eval(from).distance(start) > tol || old.eval(to).distance(end) > tol {
-                return Remade::Kind;
+                return fitted(old, range, start, end, surfaces, tangent, tolerance);
             }
             if !more(to, from) {
                 return Remade::Gone;
             }
             Remade::Edge(old.clone(), (from, to))
         }
+    })
+}
+
+/// Samples an edge made again by [`fitted`] starts with, and most it may
+/// have; passes of its refinement.
+const EDGE_START: usize = 8;
+const EDGE_SAMPLES: usize = 4096;
+const EDGE_PASSES: usize = 24;
+
+/// How far an edge found again may be from where its surfaces meet, as a
+/// share of the tolerance (as the offset of a freeform face is held).
+const EDGE_SHARE: f64 = 0.25;
+
+/// A point of an edge found again: its parameter, where it is, and the
+/// feet on its surfaces it was found from.
+type Sample = (f64, Vec3, Vec<Option<(f64, f64)>>);
+
+/// A cubic (or lower) through `points` at `params`.
+fn curve_through(params: &[f64], points: &[Vec3]) -> Option<NurbsCurve> {
+    let degree = params.len().checked_sub(1)?.min(3);
+    let values: Vec<Vec<f64>> = points.iter().map(|p| vec![p.x, p.y, p.z]).collect();
+    let (knots, rows) = interpolate(params, degree, &values).ok()?;
+    let ctrl: Vec<Vec3> = rows
+        .iter()
+        .map(|r| match r.as_slice() {
+            [x, y, z] => Some(Vec3::new(*x, *y, *z)),
+            _ => None,
+        })
+        .collect::<Option<_>>()?;
+    NurbsCurve::polynomial(degree, knots, ctrl).ok()
+}
+
+/// The edge with curve `old` over `range` found again from `start` to
+/// `end` where `surfaces` meet, when it is no longer a curve of a kind
+/// made in closed form: every point of the old curve, moved as the ends
+/// of the edge moved (in proportion along it), is taken to the nearest
+/// point where the surfaces meet ([`meet_near`], each from where the one
+/// before it landed), and a cubic is laid through those points at
+/// the old curve's parameters, held against them at the middle of every
+/// step (and at the quarters at the end) and refined where it does not
+/// hold to a share of the tolerance, as a freeform offset is. The ends are
+/// the vertices. An edge whose points do not keep their order along it
+/// (it turns round or shrinks to nothing) is gone; one whose points do
+/// not meet on all its surfaces, or whose fit does not come within the
+/// tolerance, is no longer there in the form it had.
+#[allow(clippy::too_many_arguments)]
+fn fitted(
+    old: &Curve3,
+    range: (f64, f64),
+    start: Vec3,
+    end: Vec3,
+    surfaces: &[&Surface],
+    tangent: bool,
+    tolerance: &Tolerance,
+) -> Remade {
+    let tol = tolerance.linear;
+    let limit = EDGE_SHARE * tol;
+    if !more(range.1, range.0) {
+        return Remade::Gone;
     }
+    // The exact point at `t`: where the surfaces meet nearest the old
+    // curve's point there moved as its ends moved (in proportion along
+    // the parameter), so that the points run from the new start to the
+    // new end as the old ones ran between the old; found from the guesses
+    // of a sample nearby. A closed edge has no ends to run between: its
+    // points start where they were (the one vertex's move, carried round
+    // a narrow loop, would push the far side the wrong way).
+    let closed = start == end && old.eval(range.0).distance(old.eval(range.1)) <= tol;
+    let (from, to) = if closed {
+        (Vec3::ZERO, Vec3::ZERO)
+    } else {
+        (start - old.eval(range.0), end - old.eval(range.1))
+    };
+    let moved = |t: f64| {
+        let share = (t - range.0) / (range.1 - range.0);
+        old.eval(t) + from * (1.0 - share) + to * share
+    };
+    // Faces tangent all along the edge (their normals one direction but
+    // for what fitting left, [`TANGENT`]) meet in it as one surface: the
+    // points are found on the first, the others held to it at the end
+    // ([`lies_on`]); deciding that point by point would make the points
+    // jump where a residual of rounding crosses the line.
+    let meeting = if tangent {
+        surfaces.get(..1).unwrap_or(surfaces)
+    } else {
+        surfaces
+    };
+    // Each point is held to the plane through its start square to the old
+    // curve there: where the surfaces meet is a curve, along which a point
+    // that lies on them both could be anywhere; the plane makes it one
+    // point, so the points are a smooth function of the parameter.
+    let exact = |t: f64, guesses: &mut Vec<Option<(f64, f64)>>| {
+        let count = meeting.len();
+        let from = moved(t);
+        let (_, along) = old.derivatives(t);
+        let across = Surface::Plane(Plane::new(Frame::from_z(from, along)?));
+        let mut held: Vec<&Surface> = meeting.to_vec();
+        held.push(&across);
+        let mut feet: Vec<Option<(f64, f64)>> = guesses.get(..count)?.to_vec();
+        feet.push(None);
+        let point = meet_near(&held, from, tol, &mut feet)?;
+        for (slot, foot) in guesses.iter_mut().zip(feet) {
+            *slot = foot;
+        }
+        Some(point)
+    };
+    let mut params: Vec<f64> = (0..=EDGE_START)
+        .map(|k| range.0 + (range.1 - range.0) * k as f64 / EDGE_START as f64)
+        .collect();
+    if let Some(last) = params.last_mut() {
+        *last = range.1;
+    }
+    let mut guesses: Vec<Vec<Option<(f64, f64)>>> = Vec::with_capacity(params.len());
+    let mut points: Vec<Vec3> = Vec::with_capacity(params.len());
+    let mut running = vec![None; surfaces.len()];
+    for (k, &t) in params.iter().enumerate() {
+        let point = if k == 0 {
+            // Where the walk starts: the feet of the first vertex.
+            let _ = meet_near(surfaces, start, tol, &mut running);
+            Some(start)
+        } else if k == EDGE_START {
+            Some(end)
+        } else {
+            exact(t, &mut running)
+        };
+        let Some(point) = point else {
+            return Remade::Lost;
+        };
+        points.push(point);
+        guesses.push(running.clone());
+    }
+    let mut verify = false;
+    for _ in 0..EDGE_PASSES {
+        // In order along the old curve, and not shrunk to nothing.
+        let length: f64 = points
+            .windows(2)
+            .map(|w| match w {
+                [a, b] => a.distance(*b),
+                _ => 0.0,
+            })
+            .sum();
+        if !more(length, tol) {
+            return Remade::Gone;
+        }
+        for (pair, t) in points.windows(2).zip(&params) {
+            let [a, b] = pair else { continue };
+            let (_, along) = old.derivatives(*t);
+            if (*b - *a).dot(along) < -tol * along.length() {
+                return Remade::Gone;
+            }
+        }
+        let Some(curve) = curve_through(&params, &points) else {
+            return Remade::Lost;
+        };
+        let fractions: &[f64] = if verify { &[0.25, 0.5, 0.75] } else { &[0.5] };
+        let mut over: Vec<f64> = Vec::with_capacity(params.len());
+        let mut found: Vec<Vec<Sample>> = Vec::new();
+        for (index, pair) in params.windows(2).enumerate() {
+            let [a, b] = pair else { continue };
+            let mut worst = 0.0_f64;
+            let mut here = Vec::new();
+            for f in fractions {
+                let t = a + (b - a) * f;
+                let mut near = guesses.get(index).cloned().unwrap_or_default();
+                let Some(point) = exact(t, &mut near) else {
+                    return Remade::Lost;
+                };
+                let off = curve.eval(t).distance(point) / limit;
+                worst = worst.max(if off.is_nan() { f64::INFINITY } else { off });
+                here.push((t, point, near));
+            }
+            over.push(worst);
+            found.push(here);
+        }
+        if over.iter().all(|o| *o <= 1.0) {
+            if verify {
+                let curve = Curve3::Nurbs(curve);
+                return if lies_on(&curve, range, surfaces, tol) {
+                    Remade::Edge(curve, range)
+                } else {
+                    Remade::Lost
+                };
+            }
+            verify = true;
+            continue;
+        }
+        let split = craft3d_geom::offset::steps_to_halve(&over, craft3d_geom::offset::CUBIC_DECAY);
+        let mut added: Vec<Sample> = Vec::new();
+        for (here, halve) in found.into_iter().zip(split) {
+            if !halve {
+                continue;
+            }
+            // The middle of the step, found already.
+            if let Some(middle) = here.into_iter().nth(fractions.len() / 2) {
+                added.push(middle);
+            }
+        }
+        if params.len() + added.len() > EDGE_SAMPLES {
+            return Remade::Lost;
+        }
+        for (t, point, near) in added {
+            let at = params.partition_point(|p| *p < t);
+            params.insert(at, t);
+            points.insert(at, point);
+            guesses.insert(at, near);
+        }
+    }
+    Remade::Lost
+}
+
+/// Whether the two faces of an edge of `body` (`faces`) are tangent all
+/// along it, their outward normals one direction to [`TANGENT`]: at five
+/// points of the edge's curve over `range`.
+fn tangent_along(body: &Body, faces: &[FaceId], curve: &Curve3, range: (f64, f64)) -> bool {
+    let [a, b] = faces else {
+        return false;
+    };
+    let (Some(a), Some(b)) = (body.face(*a), body.face(*b)) else {
+        return false;
+    };
+    let outward = |face: &craft3d_topo::Face, p: Vec3| {
+        let (u, v) = face.surface.project(p).ok()?;
+        let n = face.surface.normal(u, v)?;
+        Some(if face.reversed { -n } else { n })
+    };
+    (0..=4).all(|k| {
+        let p = curve.eval(range.0 + (range.1 - range.0) * f64::from(k) / 4.0);
+        match (outward(a, p), outward(b, p)) {
+            (Some(m), Some(n)) => m.dot(n) > 0.0 && m.cross(n).length() <= TANGENT,
+            _ => false,
+        }
+    })
 }
 
 /// Points along an edge, in the direction of its curve: enough to tell
@@ -514,6 +818,189 @@ pub(crate) fn resurface(
     resurface_at(body, surfaces, &BTreeSet::new(), operation, tolerance)
 }
 
+/// An edge that lies along a border of the parameter range of one of its
+/// faces (as the borders of a rolling-ball blend do): the face, and the
+/// parameter held along it, u (`u_fixed`) or v, at `value`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Iso {
+    pub face: FaceId,
+    pub u_fixed: bool,
+    pub value: f64,
+}
+
+/// [`resurface`] for new surfaces that keep the parameters of the old
+/// ones (offsets): an edge of `iso` whose face has a new freeform surface
+/// is made again as the same iso-curve of the new surface, between the
+/// new vertices, when that lies on its other faces; it lies exactly on
+/// the new surface, which a curve found where tangent surfaces meet
+/// cannot be told to.
+pub(crate) fn resurface_along(
+    body: &Body,
+    surfaces: &BTreeMap<FaceId, Surface>,
+    iso: &BTreeMap<EdgeId, Iso>,
+    operation: &'static str,
+    tolerance: &Tolerance,
+) -> Result<Body, TweakError> {
+    resurface_with(
+        body,
+        surfaces,
+        &BTreeSet::new(),
+        None,
+        iso,
+        operation,
+        tolerance,
+    )
+}
+
+/// Steps of the search along a border for where a face crosses it.
+const BORDER_STEPS: usize = 32;
+
+/// The point of the border `along` of `surface` nearest `near` where the
+/// surface among `others` that crosses it most steeply (its normal is
+/// furthest from the surface's there, beyond [`TANGENT`]) crosses it, when
+/// every one of `others` passes within `tol` of it; `None` when none
+/// crosses it.
+fn onto_border(
+    surface: &craft3d_geom::NurbsSurface,
+    along: &Iso,
+    near: Vec3,
+    others: &[&Surface],
+    tol: f64,
+) -> Option<Vec3> {
+    let (curve, _) = whole_iso(surface, along)?;
+    let mut t = curve.project(near).ok()?;
+    let own = |t: f64| {
+        let (u, v) = if along.u_fixed {
+            (along.value, t)
+        } else {
+            (t, along.value)
+        };
+        Surface::Nurbs(surface.clone()).normal(u, v)
+    };
+    let here = own(t)?;
+    let steepest = others
+        .iter()
+        .filter_map(|s| distance(s, near).map(|(_, n)| (s, n.cross(here).length())))
+        .filter(|(_, sine)| *sine > TANGENT)
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(s, _)| *s)?;
+    for _ in 0..BORDER_STEPS {
+        let (point, tangent) = curve.derivatives(t);
+        let (value, normal) = distance(steepest, point)?;
+        let rate = normal.dot(tangent);
+        if rate == 0.0 || !rate.is_finite() {
+            return None;
+        }
+        let step = value / rate;
+        t -= step;
+        if !t.is_finite() {
+            return None;
+        }
+        if (step * tangent.length()).abs() <= 1e-3 * tol {
+            break;
+        }
+    }
+    let point = curve.eval(t);
+    others
+        .iter()
+        .all(|s| distance(s, point).is_some_and(|(value, _)| value.abs() <= tol))
+        .then_some(point)
+}
+
+/// The whole iso-curve of `surface` at `along` and its domain.
+fn whole_iso(surface: &craft3d_geom::NurbsSurface, along: &Iso) -> Option<(Curve3, (f64, f64))> {
+    let (degree_u, degree_v) = surface.degrees();
+    let (count_u, count_v) = surface.counts();
+    let points = surface.control_points();
+    let weights = surface.weights();
+    let at = |i: usize, j: usize| {
+        let k = i.checked_mul(count_v)?.checked_add(j)?;
+        Some((*points.get(k)?, *weights.get(k)?))
+    };
+    // Per control point of the iso-curve, the homogeneous sum over the
+    // other direction at `value`: two polynomial curves, of the weighted
+    // points and of the weights.
+    let (lines, inner, knots_inner, degree_inner, knots_outer, degree_outer) = if along.u_fixed {
+        (
+            count_v,
+            count_u,
+            surface.knots_u(),
+            degree_u,
+            surface.knots_v(),
+            degree_v,
+        )
+    } else {
+        (
+            count_u,
+            count_v,
+            surface.knots_v(),
+            degree_v,
+            surface.knots_u(),
+            degree_u,
+        )
+    };
+    let mut ctrl = Vec::with_capacity(lines);
+    let mut ws = Vec::with_capacity(lines);
+    for line in 0..lines {
+        let mut weighted = Vec::with_capacity(inner);
+        let mut plain = Vec::with_capacity(inner);
+        for k in 0..inner {
+            let (p, w) = if along.u_fixed {
+                at(k, line)?
+            } else {
+                at(line, k)?
+            };
+            weighted.push(p * w);
+            plain.push(Vec3::new(w, 0.0, 0.0));
+        }
+        let sum = NurbsCurve::polynomial(degree_inner, knots_inner.to_vec(), weighted).ok()?;
+        let weight = NurbsCurve::polynomial(degree_inner, knots_inner.to_vec(), plain).ok()?;
+        let w = weight.eval(along.value).x;
+        if !(w > 0.0 && w.is_finite()) {
+            return None;
+        }
+        ctrl.push(sum.eval(along.value) * (1.0 / w));
+        ws.push(w);
+    }
+    let curve = Curve3::Nurbs(NurbsCurve::new(degree_outer, knots_outer.to_vec(), ctrl, ws).ok()?);
+    let domain = curve.domain();
+    Some((curve, domain))
+}
+
+/// The iso-curve of `surface` at `along`, as a curve over the range from
+/// `start` to `end` (the whole curve, when `closed`), turned round when
+/// the parameter runs the other way. `None` when it does not reach them
+/// within `tol`.
+fn iso_curve(
+    surface: &craft3d_geom::NurbsSurface,
+    along: &Iso,
+    start: Vec3,
+    end: Vec3,
+    closed: bool,
+    tol: f64,
+) -> Option<(Curve3, (f64, f64))> {
+    let (curve, _) = whole_iso(surface, along)?;
+    let (a, b) = curve.domain();
+    let (from, to) = if closed {
+        (a, b)
+    } else {
+        (curve.project(start).ok()?, curve.project(end).ok()?)
+    };
+    let (curve, from, to) = if to < from {
+        let Curve3::Nurbs(n) = &curve else {
+            return None;
+        };
+        let turned = Curve3::Nurbs(craft3d_geom::refine::reversed(n).ok()?);
+        let (c, d) = turned.domain();
+        // Reversal maps t to c + d − t over the same span.
+        (turned, c + d - from, c + d - to)
+    } else {
+        (curve, from, to)
+    };
+    let holds = curve.eval(from).distance(start) <= tol && curve.eval(to).distance(end) <= tol;
+    (holds && more(to, from)).then_some((curve, (from, to)))
+}
+
 /// [`resurface`], with the vertices of `also` found again too, although
 /// none of their faces has a new surface: the vertices a change of
 /// topology put where they do not lie yet (delete face merges the two
@@ -526,7 +1013,15 @@ pub(crate) fn resurface_at(
     operation: &'static str,
     tolerance: &Tolerance,
 ) -> Result<Body, TweakError> {
-    resurface_with(body, surfaces, also, None, operation, tolerance)
+    resurface_with(
+        body,
+        surfaces,
+        also,
+        None,
+        &BTreeMap::new(),
+        operation,
+        tolerance,
+    )
 }
 
 /// [`resurface`] for faces that all move by one rigid motion `rigid`
@@ -546,6 +1041,7 @@ pub(crate) fn resurface_rigid(
         surfaces,
         &BTreeSet::new(),
         Some(rigid),
+        &BTreeMap::new(),
         operation,
         tolerance,
     )
@@ -556,6 +1052,7 @@ fn resurface_with(
     surfaces: &BTreeMap<FaceId, Surface>,
     also: &BTreeSet<VertexId>,
     rigid: Option<&Transform>,
+    iso: &BTreeMap<EdgeId, Iso>,
     operation: &'static str,
     tolerance: &Tolerance,
 ) -> Result<Body, TweakError> {
@@ -639,6 +1136,40 @@ fn resurface_with(
         moved_vertices.insert(vertex);
     }
 
+    // A vertex at the end of an edge along a border of a new freeform
+    // surface (`iso`), where a face crosses that surface: on that border.
+    // Found where the surfaces meet, it is as good as the tangent faces
+    // let it be along the border, which is not good enough for the border.
+    for (id, along) in iso {
+        let Some(Surface::Nurbs(new)) = surfaces.get(&along.face) else {
+            continue;
+        };
+        let Some(edge) = body.edge(*id) else {
+            continue;
+        };
+        for vertex in [edge.start, edge.end] {
+            if !moved_vertices.contains(&vertex) {
+                continue;
+            }
+            let Some(faces) = around.get(vertex.0 as usize) else {
+                continue;
+            };
+            let Some(point) = made.vertex(vertex).map(|v| v.point) else {
+                continue;
+            };
+            let crossing: Vec<&Surface> = faces
+                .iter()
+                .filter(|f| **f != along.face)
+                .filter_map(|f| made.face(*f).map(|d| &d.surface))
+                .collect();
+            if let Some(on) = onto_border(new, along, point, &crossing, tol)
+                && let Some(slot) = made.vertices.get_mut(vertex.0 as usize)
+            {
+                slot.point = on;
+            }
+        }
+    }
+
     // Every edge that ends in a vertex that moved, on its two surfaces.
     let mut remade: BTreeSet<EdgeId> = BTreeSet::new();
     for (index, edge) in body.edges.iter().enumerate() {
@@ -686,6 +1217,19 @@ fn resurface_with(
                 }
             }
         };
+        if let Some(along) = iso.get(&id)
+            && let Some(Surface::Nurbs(new)) = surfaces.get(&along.face)
+            && let Some((curve, range)) = iso_curve(new, along, start, end, closed, tol)
+            && lies_on(&curve, range, &on, tol)
+        {
+            if let Some(slot) = made.edges.get_mut(index) {
+                slot.curve = curve;
+                slot.range = range;
+            }
+            remade.insert(id);
+            continue;
+        }
+        let tangent = tangent_along(body, &faces, &edge.curve, edge.range);
         match remake(
             &edge.curve,
             edge.range,
@@ -694,6 +1238,7 @@ fn resurface_with(
             closed,
             &on,
             moved,
+            tangent,
             tolerance,
         ) {
             Remade::Edge(curve, range) => {
@@ -708,7 +1253,7 @@ fn resurface_with(
             // when the kind is one this builds. The caller tells the two
             // apart by trying a smaller move.
             Remade::OffSurface => return Err(fail(true, OFF_SURFACE)),
-            Remade::Kind => return Err(fail(false, CURVE_KIND)),
+            Remade::Lost => return Err(fail(true, LOST)),
         }
         remade.insert(id);
     }
