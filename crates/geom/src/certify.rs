@@ -44,8 +44,22 @@
 //!   number of pieces allowed is spent and the answer is "not proven"
 //!   (with the place), never a guess.
 //!
+//! **The surface continued.** Distances are to the surface as it
+//! evaluates, continued past its domain: the analytic kinds are unbounded,
+//! and a spline's end patches go on as the polynomials they are (as
+//! `eval` does, so a blend continued past a lofted face's edge is held to
+//! the face it would be). A proof says the curve is near that surface, not
+//! that it stays within a face's bounds or the spline's domain: a line
+//! five units outside a Bézier square, in the plane the square continues
+//! into, is proven on it.
+//!
 //! Rounding: the distances at the ends are measured in floating point; an
-//! allowance of a few units in the last place of the coordinates is added.
+//! allowance of [`ROUNDING_ULPS`] units in the last place of what enters
+//! the evaluations (the control net times the spread of its weights; the
+//! frame's origin, the radii and the parameters of an analytic kind) is
+//! added. For two curves, the closest points of nearly parallel chords are
+//! found through a difference that cancels, and up to `√ε` of their
+//! lengths is allowed.
 
 // `!(x > 0.0)` is deliberate: unlike `x <= 0.0` it is also true for NaN.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
@@ -66,6 +80,8 @@ type Hom = [f64; 4];
 
 /// Gauss-Newton steps for a foot point.
 const FOOT_STEPS: usize = 32;
+/// Steps by which the foot of one starting point is followed to the next.
+const FOLLOW: usize = 8;
 /// The narrowest box a patch is cut to, as a part of its span: a box of no
 /// width (a path along an iso-line) is widened to this, which only makes
 /// the bound hold over more of the patch.
@@ -420,12 +436,37 @@ enum Form {
 pub struct SurfaceBound<'a> {
     surface: &'a Surface,
     form: Form,
+    /// For a spline surface, the size of what enters its evaluation: the
+    /// largest control point times the spread of the weights.
+    size: f64,
 }
 
 /// A curve made ready for proofs: its Bézier pieces, or its kind.
 pub struct CurveBound<'a> {
     curve: CurveRef<'a>,
     pieces: Vec<CurvePiece>,
+    /// For a spline curve, the size of what enters its evaluation (see
+    /// [`SurfaceBound`]).
+    size: f64,
+}
+
+/// Units in the last place allowed for the rounding of one evaluation, of
+/// the size of what enters it: de Boor's and de Casteljau's algorithms
+/// are convex combinations (each step loses at most an ulp or two of the
+/// largest point), the analytic kinds a few products and a sine.
+const ROUNDING_ULPS: f64 = 64.0;
+
+/// The size of what enters the evaluation of a spline: the largest
+/// control point times the heaviest over the lightest weight.
+fn net_size(points: &[Vec3], weights: &[f64]) -> f64 {
+    let largest = points.iter().map(|p| p.length()).fold(0.0, f64::max);
+    let heaviest = weights.iter().copied().fold(0.0, f64::max);
+    let lightest = weights.iter().copied().fold(f64::INFINITY, f64::min);
+    if lightest > 0.0 {
+        largest * heaviest / lightest
+    } else {
+        f64::INFINITY
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -457,9 +498,14 @@ impl<'a> CurveBound<'a> {
             Curve3::Nurbs(c) => c.bezier_pieces(),
             Curve3::Line(_) | Curve3::Circle(_) | Curve3::Ellipse(_) => Vec::new(),
         };
+        let size = match curve {
+            Curve3::Nurbs(c) => net_size(c.control_points(), c.weights()),
+            Curve3::Line(_) | Curve3::Circle(_) | Curve3::Ellipse(_) => 0.0,
+        };
         CurveBound {
             curve: CurveRef::Curve(curve),
             pieces,
+            size,
         }
     }
 
@@ -467,6 +513,7 @@ impl<'a> CurveBound<'a> {
         CurveBound {
             curve: CurveRef::Nurbs(curve),
             pieces: curve.bezier_pieces(),
+            size: net_size(curve.control_points(), curve.weights()),
         }
     }
 
@@ -479,6 +526,22 @@ impl<'a> CurveBound<'a> {
 
     fn eval(&self, t: f64) -> Vec3 {
         self.derivatives(t).0
+    }
+
+    /// How far a point of the curve near `t` may be off by rounding.
+    fn rounding(&self, t: f64) -> f64 {
+        let size = match self.curve {
+            CurveRef::Curve(Curve3::Line(l)) => {
+                l.origin().length() + t.abs() * l.direction().length()
+            }
+            CurveRef::Curve(Curve3::Circle(c)) => c.frame().origin().length() + c.radius(),
+            CurveRef::Curve(Curve3::Ellipse(e)) => {
+                let (x, y) = e.semi_axes();
+                e.frame().origin().length() + x.abs().max(y.abs())
+            }
+            CurveRef::Curve(Curve3::Nurbs(_)) | CurveRef::Nurbs(_) => self.size,
+        };
+        ROUNDING_ULPS * f64::EPSILON * size
     }
 
     /// The parameters where the curve's derivatives may jump (its knots),
@@ -678,7 +741,38 @@ impl<'a> SurfaceBound<'a> {
                 }
             }
         };
-        Some(SurfaceBound { surface, form })
+        let size = match surface {
+            Surface::Bezier(b) => {
+                net_size(b.control_points(), &vec![1.0; b.control_points().len()])
+            }
+            Surface::Nurbs(n) => net_size(n.control_points(), n.weights()),
+            Surface::Plane(_)
+            | Surface::Cylinder(_)
+            | Surface::Cone(_)
+            | Surface::Sphere(_)
+            | Surface::Torus(_) => 0.0,
+        };
+        Some(SurfaceBound {
+            surface,
+            form,
+            size,
+        })
+    }
+
+    /// How far a point of the surface near `(u, v)` may be off by rounding.
+    fn rounding(&self, (u, v): (f64, f64)) -> f64 {
+        let size = match self.surface {
+            Surface::Plane(p) => p.frame().origin().length() + u.abs() + v.abs(),
+            Surface::Cylinder(c) => c.frame().origin().length() + c.radius() + v.abs(),
+            Surface::Cone(c) => c.frame().origin().length() + c.radius_at(v).abs() + v.abs(),
+            Surface::Sphere(s) => s.frame().origin().length() + s.radius(),
+            Surface::Torus(t) => {
+                let (major, minor) = t.radii();
+                t.frame().origin().length() + major.abs() + minor
+            }
+            Surface::Bezier(_) | Surface::Nurbs(_) => self.size,
+        };
+        ROUNDING_ULPS * f64::EPSILON * size
     }
 
     /// The parameters of the foot of `p` on the surface: Gauss-Newton
@@ -841,8 +935,9 @@ impl<'a> SurfaceBound<'a> {
         let path = Path::new(fa, fb, ta, tb);
         let cj = curve.jets(a, b, ca)?;
         let (sj, smooth) = self.jets(&path, ca)?;
+        // Each distance at an end is off by the rounding of both points.
         let rounding =
-            32.0 * f64::EPSILON * (ca.length() + sa.length() + cb.length() + sb.length());
+            (curve.rounding(a) + self.rounding(fa)).max(curve.rounding(b) + self.rounding(fb));
         let (na, nb) = (ea.length(), eb.length());
         // Lipschitz: holds for any continuous surface.
         let mut bound = 0.5 * (na + nb + get(&cj, 1) + get(&sj, 1));
@@ -881,14 +976,28 @@ impl<'a> SurfaceBound<'a> {
         }
         let mut points: Vec<f64> = vec![lo, hi];
         points.extend(curve.breaks(lo, hi));
+        // Analytic curves have no knots: eight pieces to start from, so
+        // that no foot is far from the one it starts from.
+        if curve.pieces.is_empty() {
+            points.extend((1..8).map(|k| lo + (hi - lo) * f64::from(k) / 8.0));
+        }
         points.extend(breaks.iter().copied().filter(|t| *t > lo && *t < hi));
         points.sort_by(f64::total_cmp);
         points.dedup();
+        // The feet, each followed from the one before through points in
+        // between (a foot found from far away may be another one: on a
+        // torus, the inside of the tube).
         let mut feet = Vec::with_capacity(points.len());
         let mut hint = start;
+        let mut last = lo;
         for t in &points {
+            for k in 1..FOLLOW {
+                let between = last + (t - last) * k as f64 / FOLLOW as f64;
+                hint = self.foot(curve.eval(between), hint);
+            }
             hint = self.foot(curve.eval(*t), hint);
             feet.push(hint);
+            last = *t;
         }
         let mut stack: Vec<Piece> = points
             .windows(2)
@@ -916,8 +1025,15 @@ impl<'a> SurfaceBound<'a> {
             if proven.pieces + stack.len() + 2 > most || !(middle > a && middle < b) {
                 return Err(NotProven { at: middle });
             }
-            let hint = (0.5 * (fa.0 + fb.0), 0.5 * (fa.1 + fb.1));
-            let fm = self.foot(curve.eval(middle), hint);
+            // From both ends' feet: one poor foot would spoil every
+            // halving below it.
+            let p = curve.eval(middle);
+            let fm = [fa, fb]
+                .map(|f| self.foot(p, f))
+                .into_iter()
+                .map(|f| (self.surface.eval(f.0, f.1).distance(p), f))
+                .min_by(|x, y| x.0.total_cmp(&y.0))
+                .map_or(fa, |(_, f)| f);
             stack.push((middle, b, fm, fb));
             stack.push((a, middle, fa, fm));
         }
@@ -984,7 +1100,7 @@ impl CurveBound<'_> {
         let ends = [self.eval(a), self.eval(b)];
         let jet = self.jets(a, b, ends[0])?;
         let reach = (get(&jet, 2) / 8.0).min(get(&jet, 1));
-        let rounding = 32.0 * f64::EPSILON * (ends[0].length() + ends[1].length());
+        let rounding = self.rounding(a).max(self.rounding(b));
         let reach = reach + rounding;
         reach.is_finite().then_some(Span {
             range: (a, b),
@@ -1178,7 +1294,11 @@ pub fn curves_apart(
             let [x0, x1] = px.ends;
             let [y0, y1] = py.ends;
             let (chords, s, t) = segments(x0, x1, y0, y1);
-            if chords - px.reach - py.reach > threshold {
+            // For nearly parallel chords the closest points are found
+            // through `a e − b²`, which cancels: the distance is taken as
+            // up to √ε of the chords' lengths less than computed.
+            let cancel = f64::EPSILON.sqrt() * (x0.distance(x1) + y0.distance(y1));
+            if chords - cancel - px.reach - py.reach > threshold {
                 continue;
             }
             let at = [
@@ -1539,5 +1659,114 @@ mod tests {
             curves_apart(&cb, (0.0, 1.0), &lb, (0.0, 1.0), 1e-5, 1),
             Apart::Unknown
         );
+    }
+
+    /// Curves a known distance `d` from a surface everywhere: lines,
+    /// circles, an ellipse and rational spline circles, on every analytic
+    /// kind.
+    fn at_distance(d: f64) -> Vec<(&'static str, Surface, Curve3, (f64, f64))> {
+        let f = frame(1.0);
+        let around = |height: f64| Frame::new(f.point(0.0, 0.0, height), f.z(), f.x()).unwrap();
+        let circle = |height: f64, radius: f64| {
+            Curve3::Circle(crate::Circle::new(around(height), radius).unwrap())
+        };
+        let spline = |height: f64, radius: f64| {
+            let c = NurbsCurve::circle(&around(height), radius).unwrap();
+            let range = c.domain();
+            (Curve3::Nurbs(c), range)
+        };
+        let full = (0.0, std::f64::consts::TAU);
+        let (slope, cone_v) = (0.4_f64, 1.0);
+        let cone_r = 2.0 + cone_v * slope.tan();
+        let lat = 0.4_f64;
+        let (rs, rs_range) = spline(0.0, 2.0 + d);
+        let (rt, rt_range) = spline(1.0 + d, 4.0);
+        vec![
+            (
+                "line over a plane",
+                Surface::Plane(Plane::new(f)),
+                Curve3::Line(crate::Line::new(f.point(-1.0, 0.5, d), f.x()).unwrap()),
+                (0.0, 3.0),
+            ),
+            (
+                "circle over a plane",
+                Surface::Plane(Plane::new(f)),
+                circle(d, 2.0),
+                full,
+            ),
+            (
+                "ellipse over a plane",
+                Surface::Plane(Plane::new(f)),
+                Curve3::Ellipse(crate::Ellipse::new(around(d), 3.0, 1.0).unwrap()),
+                full,
+            ),
+            (
+                "circle round a cylinder",
+                Surface::Cylinder(Cylinder::new(f, 2.0).unwrap()),
+                circle(1.0, 2.0 + d),
+                full,
+            ),
+            (
+                "line along a cylinder",
+                Surface::Cylinder(Cylinder::new(f, 2.0).unwrap()),
+                Curve3::Line(crate::Line::new(f.point(2.0 + d, 0.0, -1.0), f.z()).unwrap()),
+                (0.0, 3.0),
+            ),
+            (
+                "spline circle round a cylinder",
+                Surface::Cylinder(Cylinder::new(f, 2.0).unwrap()),
+                rs,
+                rs_range,
+            ),
+            (
+                "circle round a cone",
+                Surface::Cone(Cone::new(f, 2.0, slope).unwrap()),
+                circle(cone_v, cone_r + d / slope.cos()),
+                full,
+            ),
+            (
+                "circle at a latitude of a sphere",
+                Surface::Sphere(Sphere::new(f, 3.0).unwrap()),
+                circle((3.0 + d) * lat.sin(), (3.0 + d) * lat.cos()),
+                (0.3, 2.9),
+            ),
+            (
+                "circle round a torus",
+                Surface::Torus(Torus::new(f, 4.0, 1.0).unwrap()),
+                circle(0.0, 5.0 + d),
+                full,
+            ),
+            (
+                "spline circle over a torus",
+                Surface::Torus(Torus::new(f, 4.0, 1.0).unwrap()),
+                rt,
+                rt_range,
+            ),
+        ]
+    }
+
+    /// Every bound is at least the exact distance, and a target just
+    /// under it (0.95 of it) is never proven.
+    #[test]
+    fn bounds_are_never_below_the_exact_distance() {
+        for d in [1e-2, 1e-5] {
+            for (name, surface, curve, range) in at_distance(d) {
+                let sb = SurfaceBound::new(&surface).unwrap();
+                let cb = CurveBound::new(&curve);
+                let start = surface.project(curve.eval(range.0)).unwrap();
+                let proven = sb
+                    .curve_within(&cb, range, start, &[], 1.5 * d, 1 << 16)
+                    .unwrap_or_else(|e| panic!("{name} at {d}: {e:?}"));
+                assert!(
+                    proven.bound >= d * (1.0 - 1e-9),
+                    "{name}: {proven:?} below {d}"
+                );
+                assert!(
+                    sb.curve_within(&cb, range, start, &[], 0.95 * d, 1 << 16)
+                        .is_err(),
+                    "{name}: 0.95 of {d} proven"
+                );
+            }
+        }
     }
 }
