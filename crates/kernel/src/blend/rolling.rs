@@ -1132,53 +1132,6 @@ fn proven_on(
         .map_err(|stop| stop.at)
 }
 
-/// No other boundary of a face beside the edge lies wholly in the strip
-/// the blend takes of it. A loop of the face that the blend's border
-/// crosses is refused by [`stays_on`]; one that lies wholly between the
-/// edge and the border (a hole, a boss next to the edge) is not crossed,
-/// and is refused here: a point of it is checked in the plane across the
-/// edge through it, nearer the edge than the border is on that side.
-fn within_strip(
-    body: &Body,
-    solver: &Solver<'_>,
-    surface: &NurbsSurface,
-    edge: EdgeId,
-    faces: [FaceId; 2],
-) -> Result<(), BlendError> {
-    let spine = &solver.spine;
-    let (t0, t1) = spine.range;
-    for (k, face) in faces.into_iter().enumerate() {
-        let data = body.face(face).ok_or_else(lost)?;
-        for l in &data.loops {
-            let ring = body.loop_(*l).ok_or_else(lost)?;
-            if ring.coedges.iter().any(|c| c.edge == edge) {
-                continue;
-            }
-            let Some(first) = ring.coedges.first() else {
-                continue;
-            };
-            let start = body.edge(first.edge).ok_or_else(lost)?.start;
-            let p = body.vertex(start).ok_or_else(lost)?.point;
-            let Ok(t) = spine.curve.project(p) else {
-                continue;
-            };
-            let s = (t - t0) / (t1 - t0);
-            if !(0.0..=1.0).contains(&s) {
-                continue;
-            }
-            let Some(across) = spine.plain(s) else {
-                continue;
-            };
-            let foot = surface.eval(s, if k == 0 { 0.0 } else { 1.0 });
-            let (to_point, to_foot) = (p - across.point, foot - across.point);
-            if to_point.dot(to_foot) > 0.0 && to_point.length() < to_foot.length() {
-                return Err(refuse(edge, Some(face), Reason::Reaches));
-            }
-        }
-    }
-    Ok(())
-}
-
 /// Blends `request` of `body` (an edge none of the closed forms covers)
 /// in place: see the module documentation.
 fn blend_one(
@@ -1327,7 +1280,6 @@ fn blend_one(
         None => refine(&solver, &mut params, &mut sections, limit, bend),
     }
     .ok_or_else(|| refuse(edge, None, Reason::FreeApproximation))?;
-    within_strip(body, &solver, &surface, edge, [first, second])?;
     // The cuts at the ends.
     let mut cuts = Vec::with_capacity(2);
     for (index, end) in ends.iter().enumerate() {
@@ -2558,6 +2510,19 @@ fn insert_cut(
     if done { Ok(()) } else { Err(lost()) }
 }
 
+/// Every loop of every face still lies where it bounds its face
+/// (`craft3d_topo::stranded`): a blend built in place cuts its faces back
+/// (the two beside the edge, the third faces at its ends) and knows only
+/// the loops it changes, so a hole or a boss wholly inside what it takes
+/// is left outside its face, a body every other check passes. Refused as
+/// reaching that face, which `fit` reads as no room.
+fn no_stranded_loop(body: &Body, edge: EdgeId, tolerance: &Tolerance) -> Result<(), BlendError> {
+    match craft3d_topo::stranded(body, tolerance).first() {
+        Some((face, _)) => Err(refuse(edge, Some(*face), Reason::Reaches)),
+        None => Ok(()),
+    }
+}
+
 /// Drops the edges no loop uses and the vertices no edge has (what a
 /// blend took whole, see [`cut_back`]), keeping the order of the rest;
 /// per edge and per vertex left, the index it had.
@@ -2726,6 +2691,8 @@ pub(super) fn blend(
         } else {
             blends.extend(chain::build(&mut out, found, &items, tolerance)?);
         }
+        let first = found.pieces.first().map_or(EdgeId(u32::MAX), |p| p.edge);
+        no_stranded_loop(&out, first, tolerance)?;
     }
     if !with_meets.is_empty() {
         blends.extend(chain::build_meets(
@@ -2736,6 +2703,12 @@ pub(super) fn blend(
             &items,
             tolerance,
         )?);
+        let first = with_meets
+            .first()
+            .and_then(|c| chains.get(*c))
+            .and_then(|c| c.pieces.first())
+            .map_or(EdgeId(u32::MAX), |p| p.edge);
+        no_stranded_loop(&out, first, tolerance)?;
     }
     let mut seen = std::collections::BTreeSet::new();
     for request in requests {

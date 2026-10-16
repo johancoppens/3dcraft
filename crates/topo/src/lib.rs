@@ -19,11 +19,13 @@
 
 mod bits;
 mod check;
+mod inside;
 mod mass;
 mod touch;
 mod transform;
 
 pub use check::{Defect, check, genus};
+pub use inside::{stranded, stranded_loops};
 pub use mass::{
     Inertia, MassError, MassProperties, inertia, mass_and_inertia, mass_properties, mass_work,
 };

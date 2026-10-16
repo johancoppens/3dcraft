@@ -2507,8 +2507,18 @@ fn carry_back(rolled: Blended, second: Blended, free: &[usize], closed: &[usize]
 /// classes routed so far in the migration to one blend construction
 /// (`docs/design/blends.md` › *One blend construction*). A straight edge
 /// between two planes, filleted or chamfered, each of whose ends is a
-/// vertex of three edges at which no other requested edge ends.
-fn in_place(body: &Body, at: &[Vec<EdgeId>], requests: &[Request], plans: &[Plan]) -> Vec<usize> {
+/// vertex of three edges at which no other requested edge ends, and every
+/// face at whose ends (the two beside it and the third faces) has one
+/// loop: a hole or a boss in what the blend takes is taken whole by the
+/// boolean of a tool, and only refused in place (`rolling`'s check that no
+/// loop is left outside its face).
+fn in_place(
+    body: &Body,
+    uses: &[Vec<Use>],
+    at: &[Vec<EdgeId>],
+    requests: &[Request],
+    plans: &[Plan],
+) -> Vec<usize> {
     let mut ends: BTreeMap<VertexId, usize> = BTreeMap::new();
     for request in requests {
         if let Some(data) = body.edge(request.edge) {
@@ -2517,8 +2527,18 @@ fn in_place(body: &Body, at: &[Vec<EdgeId>], requests: &[Request], plans: &[Plan
             }
         }
     }
+    let one_loop = |vertex: VertexId| {
+        at.get(vertex.0 as usize)
+            .into_iter()
+            .flatten()
+            .filter_map(|e| uses.get(e.0 as usize))
+            .flatten()
+            .all(|u| body.face(u.face).is_some_and(|f| f.loops.len() == 1))
+    };
     let lone = |vertex: VertexId| {
-        ends.get(&vertex) == Some(&1) && at.get(vertex.0 as usize).is_some_and(|e| e.len() == 3)
+        ends.get(&vertex) == Some(&1)
+            && at.get(vertex.0 as usize).is_some_and(|e| e.len() == 3)
+            && one_loop(vertex)
     };
     plans
         .iter()
@@ -2655,7 +2675,7 @@ fn blend_inner(
         }
         return mixed(body, edges, free, tolerance);
     }
-    let routed = in_place(body, &at, edges, &plans);
+    let routed = in_place(body, &uses, &at, edges, &plans);
     match construct(body, &uses, &at, edges, plans.clone(), &routed, tolerance) {
         Ok(made) => Ok(made),
         Err(failure) => Err(fit::explain(
