@@ -1544,6 +1544,79 @@ impl Document {
         Ok(())
     }
 
+    /// Renames every variable whose name has become reserved since the
+    /// document was written (a function added to the expression language,
+    /// such as `floor` in format version 17) to the first free name
+    /// `{name}_1`, `{name}_2`, …, everywhere it is referred to, as
+    /// [`Document::rename_variable`] does. Returns the renames made, old
+    /// name first, in the order of the variables. For reading old files
+    /// only: in such a file every token with that name is the variable.
+    pub fn rename_reserved_variables(&mut self) -> Result<Vec<(String, String)>, DocError> {
+        let mut renames: Vec<(String, String)> = Vec::new();
+        let mut used: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for variable in &self.variables {
+            used.insert(variable.name.clone());
+            used.extend(
+                craft3d_expr::names_in(variable.expr.source())
+                    .into_iter()
+                    .map(str::to_string),
+            );
+        }
+        for feature in &mut self.features {
+            for expr in feature.kind.exprs_mut() {
+                used.extend(
+                    craft3d_expr::names_in(expr.source())
+                        .into_iter()
+                        .map(str::to_string),
+                );
+            }
+        }
+        for index in 0..self.variables.len() {
+            let Some(old) = self.variables.get(index).map(|v| v.name.clone()) else {
+                break;
+            };
+            if !craft3d_expr::is_reserved_name(&old) {
+                continue;
+            }
+            // A name in use is a variable's or any name an expression
+            // mentions (a reference to a variable that is not there yet
+            // would otherwise bind to the renamed one). Each candidate is
+            // a distinct name, so the search ends within as many tries as
+            // there are names in use, plus one.
+            let taken = |name: &str| used.contains(name) || craft3d_expr::is_reserved_name(name);
+            let Some(new) = (1..=used.len().saturating_add(1))
+                .map(|k| format!("{old}_{k}"))
+                .find(|name| !taken(name))
+            else {
+                return Err(DocError::Invalid(format!(
+                    "the variable `{old}` has a name that is now reserved, and no free name was found for it"
+                )));
+            };
+            let rename = |expr: &mut Expr| -> Result<(), DocError> {
+                *expr = Expr::new(craft3d_expr::rename_reserved_variable(
+                    expr.source(),
+                    &old,
+                    &new,
+                )?);
+                Ok(())
+            };
+            for variable in &mut self.variables {
+                rename(&mut variable.expr)?;
+            }
+            for feature in &mut self.features {
+                for expr in feature.kind.exprs_mut() {
+                    rename(expr)?;
+                }
+            }
+            if let Some(variable) = self.variables.get_mut(index) {
+                variable.name.clone_from(&new);
+            }
+            used.insert(new.clone());
+            renames.push((old, new));
+        }
+        Ok(renames)
+    }
+
     pub fn feature(&self, id: FeatureId) -> Option<&Feature> {
         self.features.iter().find(|f| f.id == id)
     }
@@ -1716,6 +1789,81 @@ mod tests {
         )
         .unwrap();
         doc
+    }
+
+    #[test]
+    fn variables_whose_names_became_functions_are_renamed() {
+        let mut doc = Document::new(Units::default());
+        // As an old file has them: `floor` and `mod` were free names.
+        for (name, expr) in [
+            ("floor", "3 mm"),
+            ("floor_1", "1 mm"),
+            ("mod", "floor * 2"),
+            ("total", "floor + mod + floor_1"),
+        ] {
+            doc.variables.push(Variable {
+                name: name.to_string(),
+                expr: Expr::new(expr),
+            });
+        }
+        doc.add_feature(None, block(["floor", "mod*floor", "floor_1"]))
+            .unwrap();
+        assert!(doc.validate().is_err());
+        let renames = doc.rename_reserved_variables().unwrap();
+        assert_eq!(
+            renames,
+            [
+                ("floor".to_string(), "floor_2".to_string()),
+                ("mod".to_string(), "mod_1".to_string())
+            ]
+        );
+        let sources: Vec<(&str, &str)> = doc
+            .variables
+            .iter()
+            .map(|v| (v.name.as_str(), v.expr.source()))
+            .collect();
+        assert_eq!(
+            sources,
+            [
+                ("floor_2", "3 mm"),
+                ("floor_1", "1 mm"),
+                ("mod_1", "floor_2 * 2"),
+                ("total", "floor_2 + mod_1 + floor_1"),
+            ]
+        );
+        let FeatureKind::Block(b) = &doc.features[0].kind else {
+            panic!("not a block")
+        };
+        assert_eq!(b.size[1].source(), "mod_1*floor_2");
+        doc.validate().unwrap();
+        // Nothing to do the second time.
+        assert!(doc.rename_reserved_variables().unwrap().is_empty());
+    }
+
+    /// A name an expression mentions without a variable behind it (it
+    /// fails as "unknown variable") is not free: renaming `floor` to it
+    /// would make that reference bind silently.
+    #[test]
+    fn a_renamed_variable_does_not_take_a_name_an_expression_mentions() {
+        let mut doc = Document::new(Units::default());
+        doc.variables.push(Variable {
+            name: "floor".to_string(),
+            expr: Expr::new("3 mm"),
+        });
+        doc.variables.push(Variable {
+            name: "a".to_string(),
+            expr: Expr::new("floor_1 + 1 mm"),
+        });
+        doc.add_feature(None, block(["floor", "floor_2", "1 mm"]))
+            .unwrap();
+        let renames = doc.rename_reserved_variables().unwrap();
+        assert_eq!(renames, [("floor".to_string(), "floor_3".to_string())]);
+        assert_eq!(doc.variables[1].expr.source(), "floor_1 + 1 mm");
+        let FeatureKind::Block(b) = &doc.features[0].kind else {
+            panic!("not a block")
+        };
+        assert_eq!(b.size[0].source(), "floor_3");
+        assert_eq!(b.size[1].source(), "floor_2");
     }
 
     #[test]

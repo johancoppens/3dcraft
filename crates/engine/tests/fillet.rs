@@ -966,7 +966,7 @@ fn the_fillet_follows_an_edge_that_moves_and_fails_by_name_when_it_goes() {
     for k in SCALES {
         let mut s = session();
         new_document(&mut s, k);
-        for (name, value) in [("width", 4.0), ("round", 0.5), ("reach", 1.0)] {
+        for (name, value) in [("width", 4.0), ("rounding", 0.5), ("reach", 1.0)] {
             run(
                 &mut s,
                 "variable.set",
@@ -999,7 +999,7 @@ fn the_fillet_follows_an_edge_that_moves_and_fails_by_name_when_it_goes() {
         built(
             &mut s,
             "feature.fillet",
-            json!({"edges": [[top, wall]], "radius": "round", "name": "Round"}),
+            json!({"edges": [[top, wall]], "radius": "rounding", "name": "Round"}),
         );
         // A sketch on the top, the face next to the fillet, and a boss
         // from it: something made from a face the fillet trimmed.
@@ -1021,7 +1021,7 @@ fn the_fillet_follows_an_edge_that_moves_and_fails_by_name_when_it_goes() {
         );
         // Upstream edits that move the edge: the block grows, the notch
         // deepens, the radius follows a variable.
-        for (name, value) in [("width", 6.0), ("reach", 1.5), ("round", 0.25)] {
+        for (name, value) in [("width", 6.0), ("reach", 1.5), ("rounding", 0.25)] {
             run(
                 &mut s,
                 "variable.set",
@@ -1098,7 +1098,7 @@ fn the_fillet_follows_an_edge_that_moves_and_fails_by_name_when_it_goes() {
         let repaired = inspect(&mut s)["bodies"].clone();
         let mut fresh = session();
         new_document(&mut fresh, k);
-        for (name, value) in [("width", 6.0), ("round", 0.25), ("reach", 4.0)] {
+        for (name, value) in [("width", 6.0), ("rounding", 0.25), ("reach", 4.0)] {
             run(
                 &mut fresh,
                 "variable.set",
@@ -1124,7 +1124,7 @@ fn the_fillet_follows_an_edge_that_moves_and_fails_by_name_when_it_goes() {
         built(
             &mut fresh,
             "feature.fillet",
-            json!({"edges": [[top, "F3:copy(1)/F2:face(4)"]], "radius": "round", "name": "Round"}),
+            json!({"edges": [[top, "F3:copy(1)/F2:face(4)"]], "radius": "rounding", "name": "Round"}),
         );
         built(
             &mut fresh,

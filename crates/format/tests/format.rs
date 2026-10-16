@@ -168,7 +168,7 @@ fn saving_twice_gives_the_same_bytes() {
 fn the_manifest_of_a_small_document_is_exactly_this() {
     let expected = r#"{
   "format": "3dcraft",
-  "format_version": 16,
+  "format_version": 17,
   "document": {
     "units": {
       "length": "mm",
@@ -340,17 +340,17 @@ fn fix_trailing_commas(json: &str) -> String {
 
 #[test]
 fn a_newer_format_version_says_a_newer_3dcraft_is_needed() {
-    let error = load_error(&edited(&version_field(), "\"format_version\": 17"));
+    let error = load_error(&edited(&version_field(), "\"format_version\": 18"));
     assert!(matches!(
         error,
         FormatError::NewerVersion {
-            file: 17,
+            file: 18,
             supported: FORMAT_VERSION
         }
     ));
     let text = error.to_string();
     assert!(
-        text.contains("version 17")
+        text.contains("version 18")
             && text.contains(&format!("version {FORMAT_VERSION}"))
             && text.contains("newer 3DCraft is needed"),
         "{text}"
@@ -3179,4 +3179,64 @@ fn a_version_15_file_opens_without_appearances_and_is_saved_as_the_current_versi
         &format!("\"format_version\": {}", FORMAT_VERSION + 1),
     );
     assert!(from_manifest_json(newer.as_bytes()).is_err());
+}
+
+/// Version 17 made `floor`, `ceil`, `round`, `trunc` and `mod` function
+/// names. A version-16 file that gave a variable such a name opens with
+/// the variable renamed everywhere, and says so. Never edit this
+/// fixture: it stands for the files people have on disk.
+#[test]
+fn a_version_16_file_with_a_variable_named_like_a_new_function_opens_renamed() {
+    let v16 = r#"{"format": "3dcraft", "format_version": 16, "document": {
+        "units": {"length": "mm", "angle": "deg"},
+        "tolerance": {"linear": 1e-6, "angular": 1e-9},
+        "variables": [
+          {"name": "floor", "expr": "4 mm"},
+          {"name": "round", "expr": "floor * 2"},
+          {"name": "width", "expr": "40 mm"}],
+        "features": [
+          {"id": 1, "name": "Base", "suppressed": false, "kind": {"type": "block",
+            "position": ["0", "0", "-floor"], "size": ["width", "round + 1 mm", "floor"]}}],
+        "rollback": null, "next_feature_id": 2}}"#;
+    let (doc, warnings) = match craft3d_format::from_manifest_json_noted(v16.as_bytes()) {
+        Ok(read) => read,
+        Err(error) => panic!("{error}"),
+    };
+    let variables: Vec<(&str, &str)> = doc
+        .variables
+        .iter()
+        .map(|v| (v.name.as_str(), v.expr.source()))
+        .collect();
+    assert_eq!(
+        variables,
+        [
+            ("floor_1", "4 mm"),
+            ("round_1", "floor_1 * 2"),
+            ("width", "40 mm")
+        ]
+    );
+    let FeatureKind::Block(block) = &doc.features[0].kind else {
+        panic!("not a block")
+    };
+    assert_eq!(block.position[2].source(), "-floor_1");
+    assert_eq!(block.size[1].source(), "round_1 + 1 mm");
+    assert_eq!(block.size[2].source(), "floor_1");
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    assert!(
+        warnings[0].contains("`floor` renamed `floor_1`"),
+        "{warnings:?}"
+    );
+    // Saved as the current version, it reads back as it is.
+    let saved = to_manifest_json(&doc).unwrap();
+    assert!(saved.contains(&version_field()), "{saved}");
+    let (again, none) = craft3d_format::from_manifest_json_noted(saved.as_bytes()).unwrap();
+    assert_eq!(again, doc);
+    assert!(none.is_empty());
+    // A file of the current version with such a name is invalid: the name
+    // is reserved there.
+    let current = v16.replace(
+        "\"format_version\": 16",
+        &format!("\"format_version\": {FORMAT_VERSION}"),
+    );
+    assert!(from_manifest_json(current.as_bytes()).is_err());
 }

@@ -6,6 +6,10 @@ Decisions that shape the project, newest first, each with its reason. An agent t
 
 ## Taken
 
+### 2026-10-16: How `round` breaks a tie (decided by the developer)
+
+- **`round` in expressions takes a tie to the even whole number:** `round(2.5)` = 2, `round(3.5)` = 4, `round(-2.5)` = -2, and the same for the quotient in `round(x, step)`. Round half to even does not drift one way over a row of ties, and it is the rounding of IEEE 754. A value within rounding error of a half counts as the half (`round(0.35 / 0.1)` = 4), as the other whole-number functions do at their jumps ([`design/document.md`](design/document.md)).
+
 ### 2026-10-16: An offset across faces that are tangent only within the tolerance (decided by the developer)
 
 - **An offset, shell or thicken keeps every face within the tolerance of its exact offset, or is refused.** Where two moving faces are tangent only within the tolerance (a fitted rolling-ball blend beside its wall), turning one's normal onto the other's moves the offset by distance × mismatch; that turn is held to a share of the tolerance and refused past it. A deviation of "distance × mismatch" is not accepted as the meaning of a tangent offset.
