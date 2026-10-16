@@ -1,65 +1,207 @@
-//! The controls over the viewport, in its bottom-right corner, in three
-//! groups, each on a plate of its own:
+//! The controls over the viewport, in its bottom-right corner, in the
+//! cube's glass style:
 //!
-//! - **Camera**, in the corner: the view cube with the axis triad beside
-//!   it at its lower left, under the cube *Fit*, *iso* and the projection, *Persp* | *Ortho*.
-//! - **Display**, to its left on the bottom row: *Sketches*, *Datums* and
-//!   the *See-through* slider.
-//! - **Section**, above Display: the *Section* toggle and, while it is on,
-//!   *X*, *Y*, *Z* (the axis the plane is across), the slider that moves
-//!   the plane and *Flip*.
+//! - **The bottom bar**, one rounded glass plate: the display part,
+//!   *Sketches* and *Datums* (switches) and the *See-through* number
+//!   field, then a thin divider, then the camera part, *Fit* and *Iso*
+//!   (actions) and *Persp* | *Ortho* (a choice).
+//! - **The section plate** above the display part, on the same column
+//!   grid: the *Section* switch, *X* | *Y* | *Z*, the *Offset* number field
+//!   and *Front* | *Back* (which half is kept). While the section is off
+//!   the plate stays and its controls but the switch are dimmed and inert.
+//! - **The view cube** low over the camera part, centred on it, and the
+//!   axis triad between the end of the section plate and the cube.
 //!
-//! In a viewport too narrow for the groups beside the camera they go under
-//! it, and in one too small for the cube the cube is left out (its buttons
-//! stay). Everything here is view state that `ui.set` sets too
-//! (`camera`, `view`, `show`, `transparency`, `section`); the widgets only
-//! read and write [`crate::state::UiState`]. They are widgets of their own
-//! over the viewport, so a click on them is not a click in the viewport
-//! and picks nothing. Sizes, spacing and colours come from the tokens.
+//! In a viewport too narrow for the bar the camera part gets a plate of
+//! its own over the section plate, with the display plate at the bottom;
+//! in one narrower still only the camera part stays, and in one too low
+//! for the cube the cube and the triad are left out. Everything here is
+//! view state that `ui.set` sets too (`camera`, `view`, `show`,
+//! `transparency`, `section`); the widgets only read and write
+//! [`crate::state::UiState`]. They are widgets over the viewport, so a
+//! click on them is not a click in the viewport and picks nothing. Sizes,
+//! spacing and colours come from the tokens.
 
+use super::number_field::{self, FieldOutcome, NumberField, Typing};
 use super::{Shell, Turn};
 use crate::state::ProjectionKind;
 use crate::theme::{Tokens, color, color_alpha};
 use crate::view_cube;
 use craft3d_engine::Scene;
-use egui::{Rect, pos2, vec2};
+use egui::{Pos2, Rect, pos2, vec2};
 
-/// How wide each row of controls is, in points: measured every frame by
-/// laying the row out once unseen (egui's sizing pass), so the layout is
-/// right in the frame it is drawn in, whatever the fonts.
+/// The widths of the controls, in points, measured from their texts each
+/// frame ([`ControlWidths::measure`]) so the grid fits any font.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct RowWidths {
-    pub camera: f32,
-    pub display: f32,
-    pub section: f32,
+pub struct ControlWidths {
+    /// The first column: the Sketches and Section switches.
+    pub first: f32,
+    /// The second column: the Datums switch and X | Y | Z.
+    pub second: f32,
+    /// The Offset field; the See-through field spans it and the fourth
+    /// column.
+    pub field: f32,
+    /// The fourth column: Front | Back.
+    pub fourth: f32,
+    /// Fit, Iso, and one half of Persp | Ortho.
+    pub fit: f32,
+    pub iso: f32,
+    pub projection: f32,
 }
 
+impl ControlWidths {
+    /// The widths as the texts need them in `font` points, never narrower
+    /// than the theme's minimums.
+    pub fn measure(painter: &egui::Painter, tokens: &Tokens) -> Self {
+        let font = egui::FontId::proportional(tokens.control_font);
+        let text = |s: &str| {
+            painter
+                .layout_no_wrap(s.to_string(), font.clone(), egui::Color32::WHITE)
+                .size()
+                .x
+        };
+        Self::from_text(tokens, &text)
+    }
+
+    /// The widths from how wide `text` says each text is.
+    pub fn from_text(tokens: &Tokens, text: &dyn Fn(&str) -> f32) -> Self {
+        let switch = |s: &str| SWITCH_TEXT + text(s) + 12.0;
+        let segment = |s: &str, least: f32| (text(s) + 20.0).max(least);
+        let xyz = ["X", "Y", "Z"]
+            .iter()
+            .map(|s| segment(s, 30.0))
+            .fold(0.0, f32::max);
+        let front_back = ["Front", "Back"]
+            .iter()
+            .map(|s| segment(s, 50.0))
+            .fold(0.0, f32::max);
+        let projection = ["Persp", "Ortho"]
+            .iter()
+            .map(|s| segment(s, 54.0))
+            .fold(0.0, f32::max);
+        let field = (text("Offset") + text("-000.00 mm") + 44.0).max(tokens.field_width);
+        let out = Self {
+            first: switch("Sketches").max(switch("Section")),
+            second: switch("Datums").max(3.0 * xyz),
+            field,
+            fourth: 2.0 * front_back,
+            fit: segment("Fit", 46.0),
+            iso: segment("Iso", 46.0),
+            projection,
+        };
+        if out.all_finite() {
+            out
+        } else {
+            Self::fallback(tokens)
+        }
+    }
+
+    fn all_finite(&self) -> bool {
+        [
+            self.first,
+            self.second,
+            self.field,
+            self.fourth,
+            self.fit,
+            self.iso,
+            self.projection,
+        ]
+        .iter()
+        .all(|w| w.is_finite() && *w >= 0.0)
+    }
+
+    /// Widths when the texts could not be measured.
+    pub fn fallback(tokens: &Tokens) -> Self {
+        Self {
+            first: 98.0,
+            second: 94.0,
+            field: tokens.field_width,
+            fourth: 100.0,
+            fit: 46.0,
+            iso: 46.0,
+            projection: 58.0,
+        }
+    }
+
+    /// The display part (and the section plate): the four columns between
+    /// the plate's padding.
+    fn display(&self, tokens: &Tokens) -> f32 {
+        2.0 * tokens.plate_padding
+            + self.first
+            + self.second
+            + self.field
+            + self.fourth
+            + 3.0 * tokens.group_gap
+    }
+
+    /// The camera part's controls, without padding.
+    fn camera(&self, tokens: &Tokens) -> f32 {
+        self.fit + self.iso + 2.0 * self.projection + 2.0 * tokens.control_spacing
+    }
+}
+
+/// Where the switch's text starts, from the switch's left: room for the
+/// small pill with its knob.
+const SWITCH_TEXT: f32 = 34.0;
+
 /// Where the controls go in a viewport whose usable area (inside the
-/// inset) is `inner`. The rows are the rectangles the controls are laid
-/// out in, from their left end, as wide as `widths` says; a part that
-/// does not fit is `None`.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// inset) is `inner`: the plates, every control's rectangle, the cube and
+/// the triad. A part that does not fit is `None`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ControlsLayout {
-    /// Fit, iso and the projection.
-    pub camera_row: Option<Rect>,
-    /// Sketches, Datums, See-through.
-    pub display_row: Option<Rect>,
-    /// The section's toggle and, while it is on, its other controls.
-    pub section_row: Option<Rect>,
-    /// The view cube's square place and the triad's beside it.
+    /// The bottom bar (display and camera parts), or in a narrow viewport
+    /// the display plate.
+    pub bar: Option<Rect>,
+    /// In a narrow viewport, the camera part's own plate.
+    pub camera_plate: Option<Rect>,
+    pub section_plate: Option<Rect>,
+    /// The divider between the bar's two parts: its x and its top and
+    /// bottom.
+    pub divider: Option<[Pos2; 2]>,
+    pub sketches: Option<Rect>,
+    pub datums: Option<Rect>,
+    pub see_through: Option<Rect>,
+    pub section_toggle: Option<Rect>,
+    pub axes: Option<Rect>,
+    pub offset: Option<Rect>,
+    pub side: Option<Rect>,
+    pub fit: Option<Rect>,
+    pub iso: Option<Rect>,
+    pub projection: Option<Rect>,
+    /// The view cube's square place and the triad's.
     pub cube: Option<Rect>,
     pub triad: Option<Rect>,
 }
 
 impl ControlsLayout {
-    /// Every part that is shown.
+    /// The plates, the cube and the triad that are shown: nothing of
+    /// them overlaps.
     pub fn parts(&self) -> Vec<(&'static str, Rect)> {
         [
-            ("camera", self.camera_row),
-            ("display", self.display_row),
-            ("section", self.section_row),
+            ("bar", self.bar),
+            ("camera", self.camera_plate),
+            ("section", self.section_plate),
             ("cube", self.cube),
             ("triad", self.triad),
+        ]
+        .into_iter()
+        .filter_map(|(name, rect)| Some((name, rect?)))
+        .collect()
+    }
+
+    /// Every control that is shown, by name.
+    pub fn controls(&self) -> Vec<(&'static str, Rect)> {
+        [
+            ("sketches", self.sketches),
+            ("datums", self.datums),
+            ("see-through", self.see_through),
+            ("section", self.section_toggle),
+            ("axes", self.axes),
+            ("offset", self.offset),
+            ("side", self.side),
+            ("fit", self.fit),
+            ("iso", self.iso),
+            ("projection", self.projection),
         ]
         .into_iter()
         .filter_map(|(name, rect)| Some((name, rect?)))
@@ -68,78 +210,185 @@ impl ControlsLayout {
 }
 
 /// The layout of the controls in `inner` (see the top of this module).
-/// The rows of Display and Section start at the same left edge, so the
-/// Section toggle stays where it is when the controls it shows when on
-/// appear to its right.
-pub fn controls_layout(inner: Rect, tokens: &Tokens, widths: &RowWidths) -> ControlsLayout {
-    let row = tokens.bar_height;
-    let pitch = row + tokens.bar_gap;
-    let groups = widths.display.max(widths.section);
-    let camera_width = widths.camera.max(tokens.view_cube_size);
-    let bottom = inner.bottom();
-    // Beside the camera group when there is room; under it otherwise,
-    // and left out when they do not fit the width at all.
-    let groups_fit = groups <= inner.width();
-    let beside = inner.width() >= groups + tokens.group_gap + camera_width;
-    let (left, camera_bottom) = if beside || !groups_fit {
-        (
-            inner.right() - camera_width - tokens.group_gap - groups,
-            bottom,
-        )
+pub fn controls_layout(inner: Rect, tokens: &Tokens, widths: &ControlWidths) -> ControlsLayout {
+    let mut out = ControlsLayout::default();
+    if !(inner.is_finite() && inner.width() > 0.0 && inner.height() > 0.0) {
+        return out;
+    }
+    let widths = if widths.all_finite() {
+        *widths
     } else {
-        (
-            (inner.right() - groups).max(inner.left()),
-            bottom - 2.0 * pitch,
-        )
+        ControlWidths::fallback(tokens)
     };
-    let fits = |rect: Rect| rect.top() >= inner.top() && rect.left() >= inner.left() - 0.5;
-    let display_row = Rect::from_min_size(pos2(left, bottom - row), vec2(widths.display, row));
-    let section_row =
-        Rect::from_min_size(pos2(left, bottom - row - pitch), vec2(widths.section, row));
-    let middle = inner.right() - camera_width.min(inner.width()) * 0.5;
-    let camera_row = Rect::from_min_size(
-        pos2(middle - widths.camera * 0.5, camera_bottom - row),
-        vec2(widths.camera, row),
-    );
-    let camera_row = Some(camera_row).filter(|&r| fits(r) && widths.camera <= inner.width());
-    // The cube over the camera's row (or where it would be).
-    let floor = camera_row.map_or(camera_bottom - row, |r| r.top()) - tokens.bar_gap;
-    let height = floor - inner.top();
-    let wide = camera_width.min(inner.width());
-    let side = tokens.view_cube_size.min(wide).min(height);
-    let cube = (side >= tokens.view_cube_min && side.is_finite())
-        .then(|| Rect::from_min_size(pos2(middle - side * 0.5, floor - side), vec2(side, side)));
-    let display_row = Some(display_row).filter(|&r| groups_fit && fits(r));
-    let section_row = Some(section_row).filter(|&r| groups_fit && fits(r));
-    // The triad beside the cube at its lower left, raised above a row of
-    // controls it would meet; left out where it has no room beside the
-    // cube.
-    let triad = cube.and_then(|cube| {
-        let size = tokens.triad_size;
-        let mut place = Rect::from_min_size(
-            pos2(cube.left() - size, cube.bottom() - size),
-            vec2(size, size),
+    let pad = tokens.plate_padding;
+    let h = tokens.bar_height;
+    let plate_h = h + 2.0 * pad;
+    let display_w = widths.display(tokens);
+    let camera_w = widths.camera(tokens) + 2.0 * pad;
+    let divider = tokens.divider_gap;
+    let bar_w = display_w + 2.0 * divider + camera_w - pad;
+    let (right, bottom) = (inner.right(), inner.bottom());
+    let fits = |r: Rect| r.top() >= inner.top() - 0.01 && r.left() >= inner.left() - 0.01;
+    // The display plate's left, the camera part's left (its first control)
+    // and the bottom of the camera part's plate.
+    let display_left;
+    let camera_left;
+    let camera_bottom;
+    let mut display_plate = None;
+    if inner.width() >= bar_w {
+        // Wide: one bar.
+        let bar = Rect::from_min_max(pos2(right - bar_w, bottom - plate_h), pos2(right, bottom));
+        if !fits(bar) {
+            return out;
+        }
+        out.bar = Some(bar);
+        display_left = bar.left();
+        let x = display_left + display_w + divider;
+        out.divider = Some([
+            pos2(x, bar.top() + pad + 2.0),
+            pos2(x, bar.bottom() - pad - 2.0),
+        ]);
+        camera_left = x + divider;
+        camera_bottom = bottom;
+        display_plate = Some(bar);
+    } else {
+        // Narrow: the camera part on a plate of its own, over the section
+        // and display plates when they fit the width.
+        let groups = inner.width() >= display_w;
+        let stacked = if groups {
+            2.0 * (plate_h + tokens.group_gap)
+        } else {
+            0.0
+        };
+        camera_bottom = bottom - stacked;
+        let plate = Rect::from_min_max(
+            pos2(right - camera_w, camera_bottom - plate_h),
+            pos2(right, camera_bottom),
         );
-        for row in [display_row, section_row].into_iter().flatten() {
-            let plate = row.expand2(vec2(tokens.plate_padding, tokens.bar_gap * 0.5));
-            if place.intersects(plate) {
-                place = place.translate(vec2(0.0, plate.top() - place.bottom()));
+        display_left = right - display_w;
+        if groups {
+            let display =
+                Rect::from_min_max(pos2(display_left, bottom - plate_h), pos2(right, bottom));
+            if fits(display) {
+                out.bar = Some(display);
+                display_plate = Some(display);
             }
         }
-        (place.left() >= inner.left() - 0.5
-            && place.top() >= cube.top() - 0.5
-            && place.top() >= inner.top()
-            && place.min.is_finite()
-            && place.max.is_finite())
-        .then_some(place)
-    });
-    ControlsLayout {
-        camera_row,
-        display_row,
-        section_row,
-        cube,
-        triad,
+        if !(fits(plate) && camera_w <= inner.width()) {
+            // Not even the camera part: the display plate alone, if any.
+            out.camera_plate = None;
+            return finish_display(out, display_plate, display_left, tokens, &widths, inner);
+        }
+        out.camera_plate = Some(plate);
+        camera_left = plate.left() + pad;
     }
+    // The camera part's controls.
+    let row_top = camera_bottom - pad - h;
+    let mut x = camera_left;
+    out.fit = Some(Rect::from_min_size(pos2(x, row_top), vec2(widths.fit, h)));
+    x += widths.fit + tokens.control_spacing;
+    out.iso = Some(Rect::from_min_size(pos2(x, row_top), vec2(widths.iso, h)));
+    x += widths.iso + tokens.control_spacing;
+    out.projection = Some(Rect::from_min_size(
+        pos2(x, row_top),
+        vec2(2.0 * widths.projection, h),
+    ));
+    let camera_middle = camera_left + widths.camera(tokens) * 0.5;
+    out = finish_display(out, display_plate, display_left, tokens, &widths, inner);
+    // The cube low over the camera part, centred on it.
+    let floor = camera_bottom - plate_h;
+    let side = tokens
+        .view_cube_size
+        .min(floor - inner.top())
+        .min(inner.width());
+    if side >= tokens.view_cube_min && side.is_finite() {
+        let left = (camera_middle - side * 0.5).min(right - side);
+        let cube = Rect::from_min_size(pos2(left, floor - side), vec2(side, side));
+        let clear = out
+            .section_plate
+            .is_none_or(|s| !s.intersects(cube.shrink(0.01)));
+        if clear {
+            out.cube = Some(cube);
+            out.triad = triad_place(&out, cube, tokens, inner);
+        }
+    }
+    out
+}
+
+/// The display plate's and the section plate's controls, on one grid
+/// from `left`.
+fn finish_display(
+    mut out: ControlsLayout,
+    display: Option<Rect>,
+    left: f32,
+    tokens: &Tokens,
+    widths: &ControlWidths,
+    inner: Rect,
+) -> ControlsLayout {
+    let Some(display) = display else {
+        return out;
+    };
+    let pad = tokens.plate_padding;
+    let gap = tokens.group_gap;
+    let h = tokens.bar_height;
+    let columns = [
+        left + pad,
+        left + pad + widths.first + gap,
+        left + pad + widths.first + widths.second + 2.0 * gap,
+        left + pad + widths.first + widths.second + widths.field + 3.0 * gap,
+    ];
+    let [c1, c2, c3, c4] = columns;
+    let row = |plate: Rect, x: f32, w: f32| {
+        Rect::from_min_size(pos2(x, plate.bottom() - pad - h), vec2(w, h))
+    };
+    out.sketches = Some(row(display, c1, widths.first));
+    out.datums = Some(row(display, c2, widths.second));
+    out.see_through = Some(row(display, c3, widths.field + gap + widths.fourth));
+    let display_w = widths.display(tokens);
+    let section = Rect::from_min_size(
+        pos2(left, display.top() - gap - h - 2.0 * pad),
+        vec2(display_w, h + 2.0 * pad),
+    );
+    if section.top() >= inner.top() - 0.01 {
+        out.section_plate = Some(section);
+        out.section_toggle = Some(row(section, c1, widths.first));
+        out.axes = Some(row(section, c2, widths.second));
+        out.offset = Some(row(section, c3, widths.field));
+        out.side = Some(row(section, c4, widths.fourth));
+    }
+    out
+}
+
+/// The triad's place: between the end of the section plate and the cube,
+/// clear of both, as large as the theme says or as there is room for;
+/// over the section plate's end when there is no room beside it.
+fn triad_place(out: &ControlsLayout, cube: Rect, tokens: &Tokens, inner: Rect) -> Option<Rect> {
+    let size = tokens.triad_size;
+    let right = cube.left() - tokens.control_spacing;
+    let place = match (out.camera_plate, out.section_plate) {
+        // On the bar: over the end of the section plate, left of the cube.
+        (None, Some(section)) => Rect::from_min_size(
+            pos2(right - size, section.top() - tokens.control_spacing - size),
+            vec2(size, size),
+        ),
+        // In a narrow viewport the camera's plate is over the section
+        // plate, and the room left of the cube is free: beside the cube's
+        // lower part.
+        _ => {
+            let floor = out
+                .camera_plate
+                .or(out.bar)
+                .map_or(cube.bottom(), |b| b.top())
+                - tokens.group_gap;
+            Rect::from_min_size(pos2(right - size, floor - size), vec2(size, size))
+        }
+    };
+    let clear = out
+        .parts()
+        .iter()
+        .filter(|(name, _)| *name != "triad")
+        .all(|(_, r)| !r.intersects(place.shrink(0.01)));
+    (clear && inner.contains_rect(place)).then_some(place)
 }
 
 /// The patches of the view cube that `camera` sees, as they are painted
@@ -246,7 +495,7 @@ pub fn cube_label(
     let frame = facet.label_frame?;
     let name = facet.label()?.to_uppercase();
     let opacity = view_cube::label_opacity(facet.toward, f64::from(tokens.view_cube_label_hide));
-    if opacity <= 0.0 || !(frame.half_side > 0.0) {
+    if opacity <= 0.0 || frame.half_side.is_nan() || frame.half_side <= 0.0 {
         return None;
     }
     // Points per half side of the cube.
@@ -268,6 +517,28 @@ pub fn cube_label(
     if !(size.is_finite() && size >= f64::from(tokens.view_cube_label_min)) {
         return None;
     }
+    // From a point of the text (in points, from the middle of its ink) to
+    // the window: along the face, as the picture shows it.
+    let per = 1.0 / frame.half_side;
+    let (mut right, mut down) = (
+        vec2((frame.right[0] * per) as f32, (frame.right[1] * per) as f32),
+        vec2((frame.down[0] * per) as f32, (frame.down[1] * per) as f32),
+    );
+    // The glyphs are drawn at the size the face shows them at on
+    // average (the square root of how much the map shrinks an area), not
+    // straight on: a face seen at a slant then does not sample its glyph
+    // images too sparsely, which looks thin and ragged.
+    let shrink = (right.x * down.y - right.y * down.x).abs().sqrt();
+    let shrink = if shrink.is_finite() {
+        shrink.clamp(0.5, 1.0)
+    } else {
+        1.0
+    };
+    if shrink < 1.0 {
+        galley = layout(size * f64::from(shrink));
+        right /= shrink;
+        down /= shrink;
+    }
     // The ink of the glyphs, to centre on the face's middle.
     let ink_box = galley
         .rows
@@ -278,13 +549,6 @@ pub fn cube_label(
     if !(tw > 0.0 && th > 0.0) {
         return None;
     }
-    // From a point of the text (in points, from the middle of its ink) to
-    // the window: along the face, as the picture shows it.
-    let per = 1.0 / frame.half_side;
-    let (right, down) = (
-        vec2((frame.right[0] * per) as f32, (frame.right[1] * per) as f32),
-        vec2((frame.down[0] * per) as f32, (frame.down[1] * per) as f32),
-    );
     let mut origin = center + vec2(frame.center[0] as f32, frame.center[1] as f32) * arm;
     // Seen straight on the name is drawn pixel for pixel: snapped to the
     // pixel grid, as egui's own text is.
@@ -353,6 +617,161 @@ fn cube_shadow(tokens: &Tokens, center: egui::Pos2, arm: f32) -> egui::Mesh {
     mesh
 }
 
+/// A colour faded as an inert control is.
+fn faded(c: egui::Color32, enabled: bool, tokens: &Tokens) -> egui::Color32 {
+    if enabled {
+        c
+    } else {
+        c.gamma_multiply(tokens.disabled_opacity)
+    }
+}
+
+/// A glass plate behind controls: a dark base so the controls read over a
+/// light model too, the glass tint over it and a faint rim.
+fn plate(painter: &egui::Painter, rect: Rect, tokens: &Tokens) {
+    let radius = egui::CornerRadius::same(tokens.plate_radius);
+    painter.rect_filled(
+        rect,
+        radius,
+        color_alpha(tokens.panel_fill, tokens.plate_opacity),
+    );
+    painter.rect_filled(
+        rect,
+        radius,
+        color_alpha(tokens.glass, tokens.plate_glass_opacity),
+    );
+    painter.rect_stroke(
+        rect,
+        radius,
+        egui::Stroke::new(1.0, color_alpha(tokens.plate_rim, tokens.plate_rim_opacity)),
+        egui::StrokeKind::Inside,
+    );
+}
+
+/// A switch: a small pill with a knob (accent when on) and its label; the
+/// whole row is the target. Returns whether it was clicked.
+fn switch(ui: &mut egui::Ui, rect: Rect, id: &str, label: &str, on: bool, tokens: &Tokens) -> bool {
+    let response = ui.interact(rect, ui.id().with(("switch", id)), egui::Sense::click());
+    let painter = ui.painter();
+    let h = rect.height();
+    let soft = if response.hovered() {
+        tokens.control_opacity
+    } else {
+        tokens.control_opacity / 2
+    };
+    painter.rect_filled(
+        rect,
+        egui::CornerRadius::same((h * 0.5) as u8),
+        color_alpha(tokens.glass, soft),
+    );
+    let pill = Rect::from_min_size(
+        pos2(rect.left() + 8.0, rect.center().y - 5.0),
+        vec2(18.0, 10.0),
+    );
+    let track = if on {
+        color(tokens.accent)
+    } else {
+        color(tokens.switch_off)
+    };
+    painter.rect_filled(pill, egui::CornerRadius::same(5), track);
+    let knob = pos2(pill.left() + if on { 13.0 } else { 5.0 }, pill.center().y);
+    painter.circle_filled(knob, 4.0, color(tokens.knob));
+    painter.text(
+        pos2(rect.left() + SWITCH_TEXT, rect.center().y - 1.0),
+        egui::Align2::LEFT_CENTER,
+        label,
+        egui::FontId::proportional(tokens.control_font),
+        color(if on { tokens.text } else { tokens.text_dim }),
+    );
+    response.clicked()
+}
+
+/// An action: a plain pill. Returns whether it was clicked.
+fn action(ui: &mut egui::Ui, rect: Rect, id: &str, label: &str, tokens: &Tokens) -> egui::Response {
+    let response = ui.interact(rect, ui.id().with(("action", id)), egui::Sense::click());
+    let painter = ui.painter();
+    let alpha = if response.hovered() {
+        tokens.control_opacity.saturating_mul(2)
+    } else {
+        tokens.control_opacity
+    };
+    painter.rect_filled(
+        rect,
+        egui::CornerRadius::same((rect.height() * 0.5) as u8),
+        color_alpha(tokens.glass, alpha),
+    );
+    painter.text(
+        pos2(rect.center().x, rect.center().y - 1.0),
+        egui::Align2::CENTER_CENTER,
+        label,
+        egui::FontId::proportional(tokens.control_font),
+        color(tokens.text),
+    );
+    response
+}
+
+/// A choice: a segmented pill, the active segment filled with the accent.
+/// Returns the segments' rectangles and the one clicked, if any; an inert
+/// one (dimmed) is never clicked.
+fn segmented(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    id: &str,
+    items: &[&str],
+    active: Option<usize>,
+    enabled: bool,
+    tokens: &Tokens,
+) -> (Vec<Rect>, Option<usize>) {
+    let painter = ui.painter().clone();
+    let h = rect.height();
+    painter.rect_filled(
+        rect,
+        egui::CornerRadius::same((h * 0.5) as u8),
+        faded(
+            color_alpha(tokens.glass, tokens.control_opacity),
+            enabled,
+            tokens,
+        ),
+    );
+    let n = items.len().max(1) as f32;
+    let w = rect.width() / n;
+    let mut rects = Vec::new();
+    let mut clicked = None;
+    for (k, item) in items.iter().enumerate() {
+        let cell = Rect::from_min_size(pos2(rect.left() + w * k as f32, rect.top()), vec2(w, h));
+        rects.push(cell);
+        // Inert, it still takes the click, so that is not a click on the
+        // model behind it.
+        let response = ui.interact(cell, ui.id().with(("segment", id, k)), egui::Sense::click());
+        let on = active == Some(k);
+        if on {
+            painter.rect_filled(
+                cell.shrink(2.0),
+                egui::CornerRadius::same(((h - 4.0) * 0.5) as u8),
+                faded(color(tokens.accent), enabled, tokens),
+            );
+        } else if enabled && response.hovered() {
+            painter.rect_filled(
+                cell.shrink(2.0),
+                egui::CornerRadius::same(((h - 4.0) * 0.5) as u8),
+                color_alpha(tokens.glass, tokens.control_opacity),
+            );
+        }
+        let ink = if on { tokens.knob } else { tokens.text };
+        painter.text(
+            pos2(cell.center().x, cell.center().y - 1.0),
+            egui::Align2::CENTER_CENTER,
+            *item,
+            egui::FontId::proportional(tokens.control_font),
+            faded(color(ink), enabled, tokens),
+        );
+        if enabled && response.clicked() {
+            clicked = Some(k);
+        }
+    }
+    (rects, clicked)
+}
+
 impl Shell {
     /// The controls over the viewport `rect`, inside `inner` (see the top
     /// of this module).
@@ -364,68 +783,37 @@ impl Shell {
         scene: Option<&Scene>,
     ) {
         let tokens = self.tokens;
-        // Each row laid out once where nothing shows and nothing can be
-        // clicked, to measure it; its hits are overwritten below.
-        let unseen = Rect::from_min_size(inner.min, vec2(1e6, tokens.bar_height));
-        let measure =
-            |ui: &mut egui::Ui, salt: &str, row: &mut dyn FnMut(&mut egui::Ui, Rect) -> f32| {
-                ui.scope_builder(
-                    egui::UiBuilder::new()
-                        .max_rect(unseen)
-                        .id_salt(("measure", salt))
-                        .sizing_pass()
-                        .invisible(),
-                    |ui| row(ui, unseen),
-                )
-                .inner
-            };
-        let camera = measure(ui, "camera", &mut |ui, row| {
-            self.camera_control(ui, row, scene)
-        });
-        let display = measure(ui, "display", &mut |ui, row| self.show_control(ui, row));
-        let section = measure(ui, "section", &mut |ui, row| {
-            self.section_control(ui, row, scene).0
-        });
-        let widths = RowWidths {
-            camera,
-            display,
-            section,
-        };
+        let painter = ui.painter_at(rect);
+        let widths = ControlWidths::measure(&painter, &tokens);
         let layout = controls_layout(inner, &tokens, &widths);
         self.controls_layout = Some(layout);
-        let painter = ui.painter_at(rect);
-        // The plates first, so the widgets are drawn on them.
-        for row in [layout.camera_row, layout.display_row, layout.section_row]
+        // The plates first, so the controls are drawn on them.
+        for plate_rect in [layout.bar, layout.camera_plate, layout.section_plate]
             .into_iter()
             .flatten()
         {
-            painter.rect_filled(
-                row.expand2(vec2(tokens.plate_padding, 1.0)),
-                egui::CornerRadius::same(tokens.radius.saturating_add(1)),
-                color_alpha(tokens.panel_fill, tokens.plate_opacity),
+            plate(&painter, plate_rect, &tokens);
+            // The plate takes the mouse where no control is: a click
+            // between two controls is not a pick in the viewport.
+            ui.interact(
+                plate_rect,
+                ui.id().with((
+                    "plate",
+                    plate_rect.min.x.to_bits(),
+                    plate_rect.min.y.to_bits(),
+                )),
+                egui::Sense::click_and_drag(),
             );
         }
-        match layout.camera_row {
-            Some(row) => {
-                self.camera_control(ui, row, scene);
-            }
-            None => self.camera_hits.clear(),
+        if let Some([top, bottom]) = layout.divider {
+            painter.line_segment(
+                [top, bottom],
+                egui::Stroke::new(1.0, color_alpha(tokens.plate_rim, tokens.divider_opacity)),
+            );
         }
-        match layout.display_row {
-            Some(row) => {
-                self.show_control(ui, row);
-            }
-            None => {
-                self.show_hits.clear();
-                self.transparency_rect = None;
-            }
-        }
-        match layout.section_row {
-            Some(row) => {
-                self.section_control(ui, row, scene);
-            }
-            None => self.section_hits.clear(),
-        }
+        self.camera_control(ui, &layout, scene);
+        self.show_control(ui, &layout);
+        self.section_control(ui, &layout, scene);
         match layout.cube {
             Some(place) => {
                 self.view_cube_rect = Some(place);
@@ -438,160 +826,132 @@ impl Shell {
         }
     }
 
-    /// Fit, iso and the projection, left to right in `row`. Returns the
-    /// row's width.
-    fn camera_control(&mut self, ui: &mut egui::Ui, row: Rect, scene: Option<&Scene>) -> f32 {
+    /// Fit, Iso and the projection.
+    fn camera_control(
+        &mut self,
+        ui: &mut egui::Ui,
+        layout: &ControlsLayout,
+        scene: Option<&Scene>,
+    ) {
         let tokens = self.tokens;
         let mut hits: Vec<(&'static str, Rect)> = Vec::new();
-        let mut view = None;
-        let mut fit = false;
-        let mut projection = self.state.camera.projection;
-        let width = ui
-            .scope_builder(egui::UiBuilder::new().max_rect(row), |ui| {
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    let button = ui
-                        .add(egui::Button::new("Fit").small())
-                        .on_hover_text("Frame the whole model (F)");
-                    hits.push(("fit", button.rect));
-                    fit = button.clicked();
-                    let button = ui
-                        .add(egui::Button::new("iso").small())
-                        .on_hover_text("Look from the front-right corner, framed");
-                    hits.push(("iso", button.rect));
-                    if button.clicked() {
-                        view = Some("iso");
-                    }
-                    ui.add_space(tokens.plate_padding);
-                    // One control of two halves, side by side: the one
-                    // that is on is filled, as a toggle is.
-                    ui.spacing_mut().item_spacing.x = 1.0;
-                    for (label, kind, name, hint) in [
-                        (
-                            "Persp",
-                            ProjectionKind::Perspective,
-                            "perspective",
-                            "Perspective: what is further away is smaller",
-                        ),
-                        (
-                            "Ortho",
-                            ProjectionKind::Orthographic,
-                            "orthographic",
-                            "Orthographic: parallel lines stay parallel, sizes are true",
-                        ),
-                    ] {
-                        let button = ui
-                            .add(
-                                egui::Button::new(label)
-                                    .small()
-                                    .selected(projection == kind),
-                            )
-                            .on_hover_text(hint);
-                        hits.push((name, button.rect));
-                        if button.clicked() {
-                            projection = kind;
-                        }
-                    }
-                    ui.min_rect().width()
-                })
-                .inner
-            })
-            .inner;
+        let (Some(fit_rect), Some(iso_rect), Some(projection_rect)) =
+            (layout.fit, layout.iso, layout.projection)
+        else {
+            self.camera_hits.clear();
+            return;
+        };
+        let fit = action(ui, fit_rect, "fit", "Fit", &tokens)
+            .on_hover_text("Frame the whole model (F)")
+            .clicked();
+        hits.push(("fit", fit_rect));
+        let iso = action(ui, iso_rect, "iso", "Iso", &tokens)
+            .on_hover_text("Look from the front-right corner, framed")
+            .clicked();
+        hits.push(("iso", iso_rect));
+        let active = match self.state.camera.projection {
+            ProjectionKind::Perspective => 0,
+            ProjectionKind::Orthographic => 1,
+        };
+        let (cells, clicked) = segmented(
+            ui,
+            projection_rect,
+            "projection",
+            &["Persp", "Ortho"],
+            Some(active),
+            true,
+            &tokens,
+        );
+        for (name, cell) in ["perspective", "orthographic"].into_iter().zip(cells) {
+            hits.push((name, cell));
+        }
         self.camera_hits = hits;
-        if projection != self.state.camera.projection {
+        let projection = match clicked {
+            Some(0) => Some(ProjectionKind::Perspective),
+            Some(_) => Some(ProjectionKind::Orthographic),
+            None => None,
+        };
+        if let Some(projection) = projection.filter(|p| *p != self.state.camera.projection) {
             self.turn = None;
             self.state.camera.projection = projection;
             ui.ctx().request_repaint();
         }
-        if let Some(name) = view {
+        if iso {
             self.turn = None;
-            // The names come from the table, so this cannot fail.
-            let _ = self.state.camera.set_view(name);
-            ui.ctx().request_repaint();
+            // The name comes from the table, so this cannot fail.
+            let _ = self.state.camera.set_view("iso");
         }
-        if fit || view.is_some() {
+        if fit || iso {
             self.fit_to(scene);
             ui.ctx().request_repaint();
         }
-        width
     }
 
-    /// What the viewport draws besides the bodies, left to right in
-    /// `row`: Sketches and Datums ([`crate::state::UiState::show`]) and
-    /// how see-through the bodies are
-    /// ([`crate::state::UiState::transparency`]). Returns the row's width.
-    fn show_control(&mut self, ui: &mut egui::Ui, row: Rect) -> f32 {
+    /// Sketches and Datums ([`crate::state::UiState::show`]) and how
+    /// see-through the bodies are ([`crate::state::UiState::transparency`]).
+    fn show_control(&mut self, ui: &mut egui::Ui, layout: &ControlsLayout) {
         let tokens = self.tokens;
+        let (Some(sketches), Some(datums), Some(field)) =
+            (layout.sketches, layout.datums, layout.see_through)
+        else {
+            self.show_hits.clear();
+            self.transparency_rect = None;
+            return;
+        };
         let mut show = self.state.show;
-        let mut transparency = self.state.transparency;
-        let mut hits: Vec<(&'static str, Rect)> = Vec::new();
-        let mut slider_rect = None;
-        let mut slid = false;
-        let width = ui
-            .scope_builder(egui::UiBuilder::new().max_rect(row), |ui| {
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    let sketches = ui
-                        .add(
-                            egui::Button::new("Sketches")
-                                .small()
-                                .selected(show.sketches),
-                        )
-                        .on_hover_text("Show or hide the sketches");
-                    hits.push(("sketches", sketches.rect));
-                    if sketches.clicked() {
-                        show.sketches = !show.sketches;
-                    }
-                    let datums = ui
-                        .add(egui::Button::new("Datums").small().selected(show.datums))
-                        .on_hover_text("Show or hide the datum planes, axes and points");
-                    hits.push(("datums", datums.rect));
-                    if datums.clicked() {
-                        show.datums = !show.datums;
-                    }
-                    ui.add_space(tokens.plate_padding);
-                    ui.label(egui::RichText::new("See-through").color(color(tokens.text_dim)));
-                    ui.spacing_mut().slider_width = tokens.slider_width;
-                    let slider = ui
-                        .add(
-                            egui::Slider::new(
-                                &mut transparency,
-                                0.0..=crate::state::MAX_TRANSPARENCY,
-                            )
-                            .show_value(false),
-                        )
-                        .on_hover_text("How much of what is behind a surface shows");
-                    slider_rect = Some(slider.rect);
-                    slid = slider.changed();
-                    ui.min_rect().width()
-                })
-                .inner
-            })
-            .inner;
-        self.show_hits = hits;
-        self.transparency_rect = slider_rect;
-        if slid && transparency.is_finite() {
-            self.state.transparency = transparency.clamp(0.0, crate::state::MAX_TRANSPARENCY);
+        if switch(ui, sketches, "sketches", "Sketches", show.sketches, &tokens) {
+            show.sketches = !show.sketches;
+        }
+        if switch(ui, datums, "datums", "Datums", show.datums, &tokens) {
+            show.datums = !show.datums;
+        }
+        self.show_hits = vec![("sketches", sketches), ("datums", datums)];
+        self.transparency_rect = Some(field);
+        let range = [0.0, crate::state::MAX_TRANSPARENCY];
+        let outcome = NumberField {
+            id: "see-through",
+            label: "See-through",
+            value: self.state.transparency,
+            range,
+            step: 0.05,
+            scale: 100.0,
+            decimals: 0,
+            unit: "%",
+            enabled: true,
+            range_known: true,
+        }
+        .show(ui, field, &tokens, &mut self.field_drag, &mut self.typing);
+        if let Some(value) = outcome.value.filter(|v| v.is_finite()) {
+            self.state.transparency = value.clamp(range[0], range[1]);
             ui.ctx().request_repaint();
         }
         if show != self.state.show {
             self.state.show = show;
             ui.ctx().request_repaint();
         }
-        width
     }
 
-    /// The section's controls, left to right in `row`: the toggle and,
-    /// while the section is on, the axis the plane is across (X, Y, Z),
-    /// a slider that moves the plane across the model's extent, and Flip,
-    /// which keeps the other half. They set
-    /// [`crate::state::UiState::section`]. Returns the row's width and
-    /// whether it was drawn with the section on.
+    /// The section's controls: the switch and, active while the section
+    /// is on, the axis the plane is across (X, Y, Z), the Offset field
+    /// across the model's extent, and which half is kept (Front, the half
+    /// the plane's normal points away from, or Back). They set
+    /// [`crate::state::UiState::section`].
     fn section_control(
         &mut self,
         ui: &mut egui::Ui,
-        row: Rect,
+        layout: &ControlsLayout,
         scene: Option<&Scene>,
-    ) -> (f32, bool) {
+    ) {
         let tokens = self.tokens;
+        let (Some(toggle), Some(axes), Some(offset), Some(side)) = (
+            layout.section_toggle,
+            layout.axes,
+            layout.offset,
+            layout.side,
+        ) else {
+            self.section_hits.clear();
+            return;
+        };
         let mut section = self.state.section.clone();
         let range = self.section_cache.as_ref().and_then(|cache| cache.range);
         // The middle of the model along a base plane's normal: where a
@@ -607,64 +967,72 @@ impl Shell {
                     }
                 })
         };
-        let mut hits: Vec<(&'static str, Rect)> = Vec::new();
-        let width = ui
-            .scope_builder(egui::UiBuilder::new().max_rect(row), |ui| {
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    let toggle = ui
-                        .add(egui::Button::new("Section").small().selected(section.on))
-                        .on_hover_text("Cut the picture open with a plane, to look inside");
-                    hits.push(("toggle", toggle.rect));
-                    if toggle.clicked() {
-                        section.on = !section.on;
-                        if section.on && section.plane.is_none() && section.normal.is_none() {
-                            section.plane = Some("xy".to_string());
-                            section.offset = middle(2);
-                        }
-                    }
-                    if section.on {
-                        ui.add_space(tokens.plate_padding);
-                        for (label, name, plane, axis) in [
-                            ("X", "x", "yz", 0),
-                            ("Y", "y", "zx", 1),
-                            ("Z", "z", "xy", 2),
-                        ] {
-                            let chosen = section.plane.as_deref() == Some(plane);
-                            let button = ui
-                                .add(egui::Button::new(label).small().selected(chosen))
-                                .on_hover_text(format!("Cut across {label}"));
-                            hits.push((name, button.rect));
-                            if button.clicked() && !chosen {
-                                section.plane = Some(plane.to_string());
-                                section.feature = None;
-                                section.point = None;
-                                section.normal = None;
-                                section.offset = middle(axis);
-                            }
-                        }
-                        if let Some([lo, hi]) = range.filter(|[lo, hi]| lo < hi) {
-                            let mut offset = section.offset.clamp(lo, hi);
-                            ui.spacing_mut().slider_width = tokens.slider_width;
-                            let slider = ui
-                                .add(egui::Slider::new(&mut offset, lo..=hi).show_value(false))
-                                .on_hover_text("Where the plane cuts: across the model");
-                            hits.push(("offset", slider.rect));
-                            if slider.changed() && offset.is_finite() {
-                                section.offset = offset;
-                            }
-                        }
-                        let flip = ui.small_button("Flip").on_hover_text("Keep the other half");
-                        hits.push(("flip", flip.rect));
-                        if flip.clicked() {
-                            section.flip = !section.flip;
-                        }
-                    }
-                    ui.min_rect().width()
-                })
-                .inner
-            })
-            .inner;
-        let on = section.on;
+        let mut hits: Vec<(&'static str, Rect)> = vec![("toggle", toggle)];
+        if switch(ui, toggle, "section", "Section", section.on, &tokens) {
+            section.on = !section.on;
+            if section.on && section.plane.is_none() && section.normal.is_none() {
+                section.plane = Some("xy".to_string());
+                section.offset = middle(2);
+            }
+        }
+        let on = self.state.section.on;
+        let planes = [("x", "yz"), ("y", "zx"), ("z", "xy")];
+        let chosen = planes
+            .iter()
+            .position(|(_, plane)| section.plane.as_deref() == Some(*plane));
+        let (cells, clicked) = segmented(ui, axes, "axes", &["X", "Y", "Z"], chosen, on, &tokens);
+        if on {
+            for ((name, _), cell) in planes.iter().zip(&cells) {
+                hits.push((name, *cell));
+            }
+        }
+        if let Some(axis) = clicked.filter(|&k| Some(k) != chosen)
+            && let Some((_, plane)) = planes.get(axis)
+        {
+            section.plane = Some((*plane).to_string());
+            section.feature = None;
+            section.point = None;
+            section.normal = None;
+            section.offset = middle(axis);
+        }
+        let field_range = range.filter(|[lo, hi]| lo < hi);
+        let unit = self.length_unit;
+        let outcome: FieldOutcome = NumberField {
+            id: "offset",
+            label: "Offset",
+            value: section.offset,
+            range: field_range.unwrap_or([section.offset - 1.0, section.offset + 1.0]),
+            step: field_range.map_or(1.0, number_field::nice_step),
+            scale: 1.0,
+            decimals: 2,
+            unit,
+            enabled: on && field_range.is_some(),
+            range_known: field_range.is_some(),
+        }
+        .show(ui, offset, &tokens, &mut self.field_drag, &mut self.typing);
+        if on {
+            hits.push(("offset", offset));
+        }
+        if let Some(value) = outcome.value.filter(|v| v.is_finite()) {
+            section.offset = value;
+        }
+        let (cells, clicked) = segmented(
+            ui,
+            side,
+            "side",
+            &["Front", "Back"],
+            Some(usize::from(section.flip)),
+            on,
+            &tokens,
+        );
+        if on {
+            for (name, cell) in ["front", "back"].into_iter().zip(cells) {
+                hits.push((name, cell));
+            }
+        }
+        if let Some(k) = clicked {
+            section.flip = k == 1;
+        }
         self.section_hits = hits;
         if section != self.state.section
             && let Ok(section) = section.validated()
@@ -673,7 +1041,51 @@ impl Shell {
             self.section_lost = None;
             ui.ctx().request_repaint();
         }
-        (width, on)
+    }
+
+    /// The text typed into a number field, once Enter was pressed:
+    /// evaluated as the document's expressions are, and set; or the reason
+    /// it is not a number, shown at the field, with nothing changed.
+    pub(super) fn resolve_typing(&mut self, session: &craft3d_engine::Session) {
+        let Some(typing) = self.typing.as_mut().filter(|t| t.entered) else {
+            return;
+        };
+        typing.entered = false;
+        let text = typing.text.trim().to_string();
+        let result = match typing.field {
+            "see-through" => {
+                let text = text.strip_suffix('%').unwrap_or(&text).trim();
+                session
+                    .evaluate_typed(text, craft3d_engine::TypedKind::Number)
+                    .map(|v| (v / 100.0).clamp(0.0, crate::state::MAX_TRANSPARENCY))
+            }
+            _ => session.evaluate_typed(&text, craft3d_engine::TypedKind::Length),
+        };
+        match result {
+            Ok(value) => {
+                match typing.field {
+                    "see-through" => self.state.transparency = value,
+                    _ => {
+                        let mut section = self.state.section.clone();
+                        section.offset = value;
+                        if let Ok(section) = section.validated() {
+                            self.state.section = section;
+                        }
+                    }
+                }
+                self.typing = None;
+            }
+            Err(error) => {
+                typing.error = Some(error.message().to_string());
+                typing.focused = false;
+            }
+        }
+    }
+
+    /// The field being typed into and what is typed, if any: `field` is
+    /// `see-through` or `offset`.
+    pub fn typing(&self) -> Option<&Typing> {
+        self.typing.as_ref()
     }
 
     /// The radius of the cube's picture in `place`, in points.
@@ -763,6 +1175,11 @@ impl Shell {
         let patches = cube_patches(&self.state.camera, &style, center, arm);
         for (facet, points) in &patches {
             let over = hovered.as_ref().is_some_and(|h| h.side == facet.side);
+            painter.add(egui::Shape::convex_polygon(
+                points.clone(),
+                color_alpha(tokens.panel_fill, tokens.view_cube_base_opacity),
+                egui::Stroke::NONE,
+            ));
             let shape = if over {
                 egui::Shape::convex_polygon(
                     points.clone(),
@@ -1003,24 +1420,26 @@ mod tests {
     }
 
     /// At every size, from a phone-sized viewport to a large one, with
-    /// the default widths and wider ones: what is shown is inside the
-    /// viewport, nothing overlaps, the triad is beside the cube and the
-    /// cube above its buttons.
+    /// the theme's widths and wider ones: what is shown is inside the
+    /// viewport, no plate overlaps another, the cube or the triad, every
+    /// control is on a plate and clear of the others, the section's
+    /// controls are on the display part's grid, the cube is low over the
+    /// camera part and the triad is left of it.
     #[test]
     fn the_controls_never_overlap_and_stay_inside() {
         let tokens = Tokens::dark();
-        let estimate = RowWidths {
-            camera: 150.0,
-            display: 270.0,
-            section: 52.0,
-        };
-        let wide = RowWidths {
-            camera: 190.0,
-            display: 330.0,
-            section: 340.0,
+        let plain = ControlWidths::fallback(&tokens);
+        let wide = ControlWidths {
+            first: 130.0,
+            second: 120.0,
+            field: 210.0,
+            fourth: 130.0,
+            fit: 60.0,
+            iso: 60.0,
+            projection: 70.0,
         };
         let mut shown = [0; 5];
-        for widths in [estimate, wide] {
+        for widths in [plain, wide] {
             for w in (40..1600).step_by(37) {
                 for h in (30..1000).step_by(29) {
                     let inner = Rect::from_min_size(pos2(5.0, 7.0), vec2(w as f32, h as f32));
@@ -1034,27 +1453,48 @@ mod tests {
                         for (other, second) in parts.iter().skip(k + 1) {
                             let overlap = rect.intersect(*second);
                             assert!(
-                                overlap.width() <= 0.0 || overlap.height() <= 0.0,
+                                overlap.width() <= 0.01 || overlap.height() <= 0.01,
                                 "{name} {rect:?} and {other} {second:?} in {inner:?}"
                             );
                         }
                     }
-                    // The triad beside the cube, at its lower left.
-                    if let (Some(cube), Some(triad)) = (layout.cube, layout.triad) {
-                        assert!(triad.right() <= cube.left() + 0.01);
-                        assert!(triad.top() >= cube.top() - 0.51);
-                        assert!(triad.bottom() <= cube.bottom() + 0.01);
+                    let plates: Vec<Rect> = [layout.bar, layout.camera_plate, layout.section_plate]
+                        .into_iter()
+                        .flatten()
+                        .collect();
+                    let controls = layout.controls();
+                    for (k, (name, rect)) in controls.iter().enumerate() {
+                        assert!(
+                            plates.iter().any(|p| p.expand(0.01).contains_rect(*rect)),
+                            "{name} {rect:?} on no plate in {inner:?}"
+                        );
+                        for (other, second) in controls.iter().skip(k + 1) {
+                            assert!(
+                                !rect.shrink(0.01).intersects(*second),
+                                "{name} and {other} in {inner:?}"
+                            );
+                        }
                     }
-                    if let (Some(cube), Some(row)) = (layout.cube, layout.camera_row) {
-                        assert!(cube.bottom() < row.top());
-                        assert!((row.center().x - cube.center().x).abs() < 0.01);
-                    }
-                    // The two groups of toggles are left-aligned.
-                    if let (Some(a), Some(b)) = (layout.display_row, layout.section_row) {
+                    if let (Some(a), Some(b)) = (layout.sketches, layout.section_toggle) {
                         assert_eq!(a.left(), b.left());
                         assert!(b.bottom() < a.top());
+                        let (see, offset) = (layout.see_through.unwrap(), layout.offset.unwrap());
+                        assert_eq!(see.left(), offset.left());
                     }
-                    let names = ["camera", "display", "section", "cube", "triad"];
+                    if let (Some(cube), Some(fit), Some(projection)) =
+                        (layout.cube, layout.fit, layout.projection)
+                    {
+                        assert!(cube.bottom() <= fit.top() - tokens.plate_padding + 0.01);
+                        let middle = (fit.left() + projection.right()) * 0.5;
+                        assert!(
+                            (cube.center().x - middle).abs() < 0.01
+                                || cube.right() >= inner.right() - 0.01
+                        );
+                    }
+                    if let (Some(cube), Some(triad)) = (layout.cube, layout.triad) {
+                        assert!(triad.right() <= cube.left() + 0.01);
+                    }
+                    let names = ["bar", "camera", "section", "cube", "triad"];
                     for (slot, name) in shown.iter_mut().zip(names) {
                         if parts.iter().any(|(n, _)| *n == name) {
                             *slot += 1;
@@ -1064,23 +1504,31 @@ mod tests {
             }
         }
         assert!(shown.iter().all(|&n| n > 100), "{shown:?}");
-        // At the default window's viewport everything shows, beside each
-        // other, the cube in full size.
+        // At the default window's viewport everything shows, on one bar,
+        // the cube in full size and the triad over the end of the section
+        // plate, left of the cube.
         let inner = Rect::from_min_size(pos2(270.0, 60.0), vec2(1000.0, 700.0));
-        let layout = controls_layout(inner, &tokens, &estimate);
-        assert_eq!(layout.parts().len(), 5);
+        let layout = controls_layout(inner, &tokens, &plain);
+        assert_eq!(layout.parts().len(), 4, "{layout:?}");
+        assert!(layout.camera_plate.is_none() && layout.divider.is_some());
         let cube = layout.cube.unwrap();
         assert_eq!(cube.width(), tokens.view_cube_size);
-        assert_eq!(layout.display_row.unwrap().bottom(), inner.bottom());
-        assert_eq!(layout.camera_row.unwrap().bottom(), inner.bottom());
+        assert_eq!(layout.bar.unwrap().bottom(), inner.bottom());
+        assert_eq!(cube.bottom(), layout.bar.unwrap().top());
+        let triad = layout.triad.unwrap();
+        let section = layout.section_plate.unwrap();
+        assert!(triad.bottom() < section.top() && triad.right() > section.right());
+        assert!(triad.right() <= cube.left());
         // Numbers that are not numbers give nothing that is not either.
-        let broken = RowWidths {
-            camera: f32::NAN,
-            ..estimate
+        let broken = ControlWidths {
+            first: f32::NAN,
+            ..plain
         };
         let layout = controls_layout(inner, &tokens, &broken);
-        for (_, rect) in layout.parts() {
+        for (_, rect) in layout.parts().into_iter().chain(layout.controls()) {
             assert!(rect.min.x.is_finite() && rect.max.y.is_finite());
         }
+        let nowhere = Rect::from_min_size(pos2(f32::NAN, 0.0), vec2(10.0, 10.0));
+        assert!(controls_layout(nowhere, &tokens, &plain).parts().is_empty());
     }
 }

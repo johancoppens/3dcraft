@@ -180,6 +180,7 @@ Oracles 1 and 4 for all primitives at three scales; exported meshes closed and o
 - The viewport draws without readback on eframe's own device, 4× MSAA, the overlay on the GPU; parity on Intel Vulkan, lavapipe and Intel GL (`crates/gpu/tests/onscreen.rs`, `crates/ui-egui/tests/gpu_viewport.rs`) (2026-10-13)
 - The viewport tessellates at its own display quality (`ui.set quality`): a 4 mm hole is round instead of a twelve-gon; `view.render`, previews and export keep the automatic tolerance (2026-10-13)
 - An orbit gizmo (2026-10-13), replaced by a view cube (2026-10-14); a see-through slider (2026-10-13), drawn by the wgpu renderer too (2026-10-14)
+- The view cube and the controls in the approved glass style: rounded faces, capsules, corner circles, names in the faces' planes; one glass bar and a section plate with switches, choices and Blender-like number fields that take expressions with units (2026-10-16)
 - Tabs of the open documents: switch with a click, Ctrl+Tab and Ctrl+Shift+Tab, close with `file.close` after Save / Don't Save / Cancel, Ctrl+W; the open documents in the File menu; `ui.get` › `tabs` and `closing` ([`development.md`](development.md) › *Tabs of the open documents*) (2026-10-14)
 - Every open document's scene kept within a memory budget, a quick first picture refined beside the engine thread (2026-10-14)
 - An angle criterion and a triangle budget inside a face in the tessellator, a body coarsened to its budget; the display quality at 2e-4 of the size and 12 degrees, a fifth to a sixth of the triangles (2026-10-14)
@@ -520,6 +521,7 @@ Applications built on 3DCraft, not part of it (the rule in `docs/decisions.md`, 
 | 2026-10-13 | minor | The viewport has a see-through slider (the developer's request): done in the CPU renderer and the shell |
 | 2026-10-14 | minor | The viewport has a view cube in place of the orbit gizmo (the developer's request): faces, edge and corner facets as views, the projection on its ring |
 | 2026-10-16 | minor | The viewport's controls in three groups, the cube in patches with an axis triad, a Persp/Ortho toggle and zoom at the pointer (the developer's request) |
+| 2026-10-16 | minor | The view cube and the controls restyled as the developer approved: glass cube of rounded faces, capsules and corner circles, a glass bar and section plate, number fields that take expressions (the developer's request) |
 | 2026-10-14 | minor | See-through bodies are drawn by the wgpu renderer (two depth layers and a blend, both the readback renderer and the viewport's, within the tolerances of [`design/rendering.md`](design/rendering.md)): the window no longer hands those frames to the CPU |
 | 2026-10-13 | minor | The viewport has an orbit gizmo instead of the view buttons (the developer's request) |
 | 2026-10-13 | minor | M8.5: pointing at vertices done; the section plane open |

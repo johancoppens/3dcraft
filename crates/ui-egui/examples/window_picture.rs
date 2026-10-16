@@ -7,7 +7,7 @@
 //!
 //! ```sh
 //! cargo run --release -p craft3d-ui-egui --example window_picture -- \
-//!     [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] [--size WxH] [--scale S] [--hover X,Y,Z] model.3dcraft [more.3dcraft | untitled ...] out.png
+//!     [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] [--size WxH] [--scale S] [--hover X,Y,Z] [--point NAME] [--type NAME=TEXT] model.3dcraft [more.3dcraft | untitled ...] out.png
 //! ```
 //!
 //! The documents are opened in order (`untitled` is a new document with a
@@ -23,7 +23,10 @@
 //! default; with `--scale S` the picture has S pixels per point, so it is
 //! S times as many pixels each way); `--hover X,Y,Z` puts the pointer on the middle of the view
 //! cube's facet for that side (`1,-1,0`: the edge between front and
-//! right), as it is drawn under the pointer. Then,
+//! right), as it is drawn under the pointer; `--point NAME` puts it on the
+//! middle of that control (`see-through`, `offset`, `fit`, ...: the names
+//! of `ControlsLayout::controls`), and `--type NAME=TEXT` double-clicks
+//! that number field and types TEXT into it, without Enter. Then,
 //! unless `--idle`, the shell is drawn as it is while a command runs
 //! elsewhere (`Shell::ui_away`), with a step of regeneration as the work.
 
@@ -36,7 +39,7 @@ use serde_json::json;
 
 const DEFAULT_SIZE: [u32; 2] = [1280, 800];
 
-const USAGE: &str = "usage: window_picture [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] [--size WxH] [--scale S] [--hover X,Y,Z] FILE.3dcraft [FILE.3dcraft | untitled ...] OUT.png";
+const USAGE: &str = "usage: window_picture [--idle] [--first] [--active N] [--edit N] [--ask N] [--set JSON] [--size WxH] [--scale S] [--hover X,Y,Z] [--point NAME] [--type NAME=TEXT] FILE.3dcraft [FILE.3dcraft | untitled ...] OUT.png";
 
 fn main() -> Result<(), String> {
     let mut idle = false;
@@ -48,6 +51,8 @@ fn main() -> Result<(), String> {
     let mut size = DEFAULT_SIZE;
     let mut hover: Option<[i8; 3]> = None;
     let mut scale = 1.0_f32;
+    let mut point: Option<String> = None;
+    let mut typed: Option<(String, String)> = None;
     let mut paths = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -87,6 +92,21 @@ fn main() -> Result<(), String> {
                 if !(1.0..=4.0).contains(&scale) {
                     return Err(format!("--scale {text}: 1 to 4"));
                 }
+            }
+            "--point" => {
+                point = Some(
+                    args.next()
+                        .ok_or(format!("--point takes a name; {USAGE}"))?,
+                )
+            }
+            "--type" => {
+                let text = args
+                    .next()
+                    .ok_or(format!("--type takes NAME=TEXT; {USAGE}"))?;
+                let (name, value) = text
+                    .split_once('=')
+                    .ok_or(format!("--type takes NAME=TEXT; {USAGE}"))?;
+                typed = Some((name.to_string(), value.to_string()));
             }
             "--hover" => {
                 let text = args.next().ok_or(format!("--hover takes X,Y,Z; {USAGE}"))?;
@@ -165,7 +185,18 @@ fn main() -> Result<(), String> {
     };
     // The window as it shows the document, then as it is while work runs.
     let mut jobs = Vec::new();
-    for (frame, time) in [0.0, 0.1, 0.2, 0.3].into_iter().enumerate() {
+    let frames: usize = if typed.is_some() { 9 } else { 4 };
+    let control = |shell: &Shell, name: &str| {
+        shell.controls_layout().and_then(|layout| {
+            layout
+                .controls()
+                .into_iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, rect)| rect.center())
+        })
+    };
+    for frame in 0..frames {
+        let time = frame as f64 * 0.1;
         if frame == 1
             && let Some(patch) = &set
         {
@@ -178,7 +209,7 @@ fn main() -> Result<(), String> {
         {
             shell.request_close(document);
         }
-        if frame == 2 && !idle {
+        if frame == frames - 2 && !idle {
             shell.set_work(Some(Work {
                 label: "file.open".to_string(),
                 phase: "regenerating".to_string(),
@@ -200,8 +231,30 @@ fn main() -> Result<(), String> {
                 .unwrap_or_default(),
             _ => Vec::new(),
         };
+        let mut events = events;
+        if frame >= 1
+            && let Some(at) = point.as_deref().and_then(|name| control(&shell, name))
+        {
+            events.push(egui::Event::PointerMoved(at));
+        }
+        if let Some((name, text)) = &typed
+            && let Some(at) = control(&shell, name)
+        {
+            let button = |pressed| egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            match frame {
+                1 => events.push(egui::Event::PointerMoved(at)),
+                2 | 3 => events.extend([button(true), button(false)]),
+                5 => events.push(egui::Event::Text(text.clone())),
+                _ => {}
+            }
+        }
         let output = ctx.run_ui(input(time, events), |ui| {
-            if frame < 2 || idle {
+            if frame < frames - 2 || idle {
                 shell.ui(ui, &mut session);
             } else {
                 shell.ui_away(ui);

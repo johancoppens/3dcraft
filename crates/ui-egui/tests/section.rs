@@ -592,8 +592,8 @@ fn the_controls_beside_the_view_cube_set_the_section_and_are_not_the_viewport() 
     let viewport_rect = shell.viewport_rect().unwrap();
     let toggle = hit(&shell, "toggle");
     assert!(viewport_rect.contains_rect(toggle), "{toggle:?}");
-    // Beside the view cube, above the row with the see-through slider,
-    // left-aligned with that row.
+    // Left of the view cube, above the row with the see-through field,
+    // on its grid.
     let cube = shell.view_cube_rect().unwrap();
     let slider = shell.transparency_rect().unwrap();
     assert!(toggle.right() < cube.left() && toggle.bottom() < slider.top());
@@ -609,7 +609,7 @@ fn the_controls_beside_the_view_cube_set_the_section_and_are_not_the_viewport() 
     assert_eq!(shell.state.section.offset, 10.0);
     assert!(shell.section().is_some());
     let names: Vec<&str> = shell.section_hits().iter().map(|(name, _)| *name).collect();
-    assert_eq!(names, ["toggle", "x", "y", "z", "offset", "flip"]);
+    assert_eq!(names, ["toggle", "x", "y", "z", "offset", "front", "back"]);
     // Turning it on did not move the toggle.
     assert!((hit(&shell, "toggle").left() - toggle.left()).abs() < 0.5);
     // They read X, Y, Z from the left.
@@ -648,9 +648,9 @@ fn the_controls_beside_the_view_cube_set_the_section_and_are_not_the_viewport() 
     assert!(seen.iter().any(|&o| o > 10.0 && o < 50.0), "{seen:?}");
     assert_eq!(shell.state.section.offset, 60.0, "{seen:?}");
 
-    // Flip keeps the other half.
+    // Back keeps the other half.
     assert!(!shell.state.section.flip);
-    let flip = hit(&shell, "flip").center();
+    let flip = hit(&shell, "back").center();
     window.click(&mut shell, &mut session, flip);
     assert!(shell.state.section.flip);
     let got = call(&mut shell, &mut session, "ui.get", json!({}));
