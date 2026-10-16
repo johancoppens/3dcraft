@@ -82,10 +82,26 @@ pub struct Tokens {
     pub pick_radius: f32,
     /// The side of the view cube's place in the viewport, in points.
     pub view_cube_size: f32,
-    /// The diameter of the dot at the end of an axis stick of the view cube, in points.
-    pub view_cube_dot: f32,
-    /// Opacity of the ring behind the view cube, 0 to 255.
-    pub view_cube_opacity: u8,
+    /// The smallest side the view cube is drawn at, in points: a viewport
+    /// with less room has no cube (its buttons stay).
+    pub view_cube_min: f32,
+    /// The gap between two patches of the view cube, in units of the
+    /// cube's half side, so that it scales with the cube.
+    pub view_cube_gap: f32,
+    /// The smallest size a label on a face of the view cube is drawn at,
+    /// in points: a face seen too nearly edge-on has none.
+    pub view_cube_label_min: f32,
+    /// The side of the place of the axis triad above the view cube, and
+    /// the width of its arms, in points.
+    pub triad_size: f32,
+    pub triad_width: f32,
+    /// The plates behind the groups of controls over the viewport: their
+    /// opacity (0 to 255; the colour is `panel_fill`), the space between
+    /// a plate's edge and what is on it, and the space between two groups,
+    /// in points.
+    pub plate_opacity: u8,
+    pub plate_padding: f32,
+    pub group_gap: f32,
     /// The length of the see-through slider and of the section's offset
     /// slider, in points.
     pub slider_width: f32,
@@ -165,8 +181,14 @@ impl Tokens {
             highlight_radius: 4.0,
             pick_radius: 4.0,
             view_cube_size: 128.0,
-            view_cube_dot: 9.0,
-            view_cube_opacity: 110,
+            view_cube_min: 48.0,
+            view_cube_gap: 0.08,
+            view_cube_label_min: 7.0,
+            triad_size: 64.0,
+            triad_width: 2.0,
+            plate_opacity: 170,
+            plate_padding: 4.0,
+            group_gap: 10.0,
             slider_width: 90.0,
             bar_height: 22.0,
             bar_gap: 6.0,

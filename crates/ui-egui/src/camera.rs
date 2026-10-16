@@ -140,6 +140,54 @@ impl CameraState {
         self.auto_fit = false;
     }
 
+    /// Zooms as [`Self::zoom`] does, but about `point` instead of the
+    /// target: the whole camera (eye and target) is scaled about `point`
+    /// by the factor the distance changes by, so `point` stays on the
+    /// same pixel, in perspective (the direction from the eye to it and
+    /// the field of view do not change) and orthographic (its offset from
+    /// the eye and the visible height scale alike). The eye moves along
+    /// the line towards `point` and never reaches or passes it; the
+    /// distance keeps the limits of [`Self::zoom`]. A point that is not
+    /// finite zooms about the target.
+    pub fn zoom_about(&mut self, scroll: f64, point: Vec3) {
+        if !scroll.is_finite() || scroll == 0.0 {
+            return;
+        }
+        if !point.is_finite() {
+            self.zoom(scroll);
+            return;
+        }
+        let before = self.distance;
+        self.zoom(scroll);
+        if !(before > 0.0 && before.is_finite()) {
+            return;
+        }
+        // The factor actually applied, after the limits.
+        let factor = self.distance / before;
+        if !factor.is_finite() {
+            return;
+        }
+        self.set_target(point + (self.target() - point) * factor);
+    }
+
+    /// The point of the plane through the target, square to the view,
+    /// that shows at pixel (`x`, `y`) of a viewport `width` × `height`
+    /// pixels: what a zoom at that pixel keeps in place when there is no
+    /// model under it. `None` for a camera that looks nowhere or a pixel
+    /// that is not a number.
+    pub fn target_plane_point(&self, x: f64, y: f64, width: f64, height: f64) -> Option<Vec3> {
+        if !(x.is_finite() && y.is_finite()) {
+            return None;
+        }
+        let projector = Projector::new(&self.to_render(), width, height)?;
+        let (start, direction) = projector.ray(x, y);
+        // The direction's step along the view is 1, and the target is
+        // `distance` beyond the eye plane: for a perspective camera from
+        // the eye, for an orthographic one from the start on the eye plane.
+        let point = start + direction * self.distance;
+        point.is_finite().then_some(point)
+    }
+
     /// Frames `bbox` from the direction the camera already looks from: the
     /// target becomes the centre of the box and the distance the smallest
     /// at which every corner is in view, times [`FIT_MARGIN`]. `aspect` is
@@ -527,6 +575,91 @@ mod tests {
         camera.zoom(f64::NAN);
         camera.zoom(0.0);
         assert_eq!(camera, before);
+    }
+
+    /// Zooming at the pointer: the point under it before is under it
+    /// after, in both projections, about a point of the model (a hit, in
+    /// front of or behind the target) and about the target plane (no
+    /// hit), in and out, and at the limits nothing breaks.
+    #[test]
+    fn zooming_at_the_pointer_keeps_the_point_under_it() {
+        let (w, h) = (800.0, 500.0);
+        for projection in [ProjectionKind::Perspective, ProjectionKind::Orthographic] {
+            let start = CameraState {
+                projection,
+                distance: 200.0,
+                target: [10.0, -5.0, 3.0],
+                yaw: -30.0,
+                pitch: 25.0,
+                ..CameraState::default()
+            };
+            for (px, py) in [(100.0, 80.0), (400.0, 250.0), (790.0, 490.0)] {
+                let plane = start.target_plane_point(px, py, w, h).unwrap();
+                // On the plane through the target, square to the view.
+                assert!((plane - start.target()).dot(start.toward_eye()).abs() < 1e-9);
+                let projector = Projector::new(&start.to_render(), w, h).unwrap();
+                let (from, dir) = projector.ray(px, py);
+                // A hit nearer than the target and one beyond it.
+                let hits = [plane, from + dir * 120.0, from + dir * 350.0];
+                for point in hits {
+                    let shown = projector.project(point).unwrap();
+                    assert!((shown.x - px).abs() < 1e-6 && (shown.y - py).abs() < 1e-6);
+                    for scroll in [120.0, -120.0, 40.0, 1500.0, -1500.0] {
+                        let mut camera = start;
+                        camera.zoom_about(scroll, point);
+                        let want = start.distance * (-ZOOM_PER_POINT * scroll).exp();
+                        assert!((camera.distance - want).abs() < 1e-9 * want);
+                        assert!(!camera.auto_fit, "a zoom by hand stops the automatic fit");
+                        let after = Projector::new(&camera.to_render(), w, h)
+                            .unwrap()
+                            .project(point)
+                            .unwrap();
+                        let context = format!("{projection:?} {px},{py} {scroll} {point:?}");
+                        assert!((after.x - px).abs() < 1e-6, "{context}: {after:?}");
+                        assert!((after.y - py).abs() < 1e-6, "{context}: {after:?}");
+                        // The eye never reaches the point: it stays in
+                        // front of it, on the same side.
+                        if projection == ProjectionKind::Perspective {
+                            assert!(after.depth > 0.0, "{context}");
+                        }
+                        // Turned as before.
+                        assert_eq!((camera.yaw, camera.pitch), (start.yaw, start.pitch));
+                    }
+                }
+            }
+            // At the limits: as close as it goes and back out, never a
+            // number that is not one, never through the point.
+            let point = start.target_plane_point(200.0, 100.0, w, h).unwrap();
+            let mut camera = start;
+            for _ in 0..200 {
+                camera.zoom_about(1e6, point);
+            }
+            assert!(camera.distance >= MIN_DISTANCE);
+            assert!(camera.target.iter().all(|c| c.is_finite()));
+            for _ in 0..200 {
+                camera.zoom_about(-1e6, point);
+            }
+            assert!(camera.distance <= MAX_EXTENT && camera.distance.is_finite());
+            assert!(
+                camera
+                    .target
+                    .iter()
+                    .all(|c| c.is_finite() && c.abs() <= MAX_EXTENT)
+            );
+            // Nothing that is not a number moves it, and a point that is
+            // not one zooms about the target.
+            let before = camera;
+            camera.zoom_about(f64::NAN, point);
+            camera.zoom_about(0.0, point);
+            assert_eq!(camera, before);
+            let mut plain = start;
+            plain.zoom(50.0);
+            let mut about = start;
+            about.zoom_about(50.0, Vec3::new(f64::NAN, 0.0, 0.0));
+            assert_eq!(about, plain);
+            assert_eq!(start.target_plane_point(f64::NAN, 1.0, w, h), None);
+            assert_eq!(start.target_plane_point(1.0, 1.0, 0.0, h), None);
+        }
     }
 
     fn corners(lo: Vec3, hi: Vec3) -> Vec<Vec3> {

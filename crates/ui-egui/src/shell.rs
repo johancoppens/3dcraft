@@ -9,8 +9,7 @@ use crate::direct::{Direct, DirectFailure};
 use crate::frames::{Mode, Scheduler, Ticket};
 use crate::state::VertexRef;
 use crate::state::{
-    CameraState, EdgeRef, FaceRef, Picked, PickedEntity, PickedKind, ProjectionKind, SectionState,
-    UiState, Work,
+    CameraState, EdgeRef, FaceRef, Picked, PickedEntity, PickedKind, SectionState, UiState, Work,
 };
 use crate::theme::{Tokens, color, color_alpha};
 use crate::view_cube;
@@ -23,7 +22,9 @@ use craft3d_math::Bbox3;
 use craft3d_render::{Highlight, Section};
 use std::sync::Arc;
 
+mod controls;
 mod tabs;
+pub use controls::{ControlsLayout, RowWidths, controls_layout};
 pub use tabs::{
     CLOSE_MARK, CloseAnswer, DocAction, TabPart, UNSAVED_MARK, close_shortcut, doc_tabs,
     next_shortcut, previous_shortcut, tab_name,
@@ -216,6 +217,16 @@ struct Turn {
     started: f64,
     /// The camera it set last: another one means something else moved it.
     last: CameraState,
+}
+
+/// Where a zoom at the pointer was made: the pointer (in points), the
+/// camera it left and the point of the model (or of the target plane) it
+/// kept under the pointer.
+#[derive(Clone, Copy, Debug)]
+struct ZoomAnchor {
+    pointer: egui::Pos2,
+    camera: CameraState,
+    point: craft3d_math::Vec3,
 }
 
 /// What the image in the viewport is made from: another image is made
@@ -447,6 +458,15 @@ pub struct Shell {
     section_hits: Vec<(&'static str, egui::Rect)>,
     /// Where the Sketches and Datums toggles were drawn.
     show_hits: Vec<(&'static str, egui::Rect)>,
+    /// Where Fit, iso and the projection's two halves were drawn.
+    camera_hits: Vec<(&'static str, egui::Rect)>,
+    /// Where the controls over the viewport were laid out in the last
+    /// frame.
+    controls_layout: Option<ControlsLayout>,
+    /// The point a zoom at the pointer keeps in place, while the pointer
+    /// and the camera stay as that zoom left them: one look at the model
+    /// per turn of the wheel, not one per frame of it.
+    zoom_anchor: Option<ZoomAnchor>,
     /// Where the last frame drew each "caused by" link of the tree: the
     /// row's feature id, the id of the feature it names, and the link.
     cause_hits: Vec<(String, String, egui::Rect)>,
@@ -558,6 +578,9 @@ impl Shell {
             transparency_rect: None,
             section_hits: Vec::new(),
             show_hits: Vec::new(),
+            camera_hits: Vec::new(),
+            controls_layout: None,
+            zoom_anchor: None,
             cause_hits: Vec::new(),
             section_cache: None,
             section_lost: None,
@@ -1930,392 +1953,8 @@ impl Shell {
             self.work_plate(ui, &painter, inner, work);
         }
 
-        // The view cube and, under it, the controls the view buttons
-        // had that it does not replace: fit, the corner view, the
-        // projection. Bottom-right, camera only, so not commands. They are
-        // widgets of their own over the viewport: a click on them is not
-        // a click in the viewport, and picks nothing.
-        let mut view = None;
-        let mut fit = false;
-        let bar = egui::Rect::from_min_max(
-            egui::pos2(inner.left(), inner.bottom() - tokens.bar_height),
-            inner.right_bottom(),
-        );
-        ui.scope_builder(egui::UiBuilder::new().max_rect(bar), |ui| {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button("iso").clicked() {
-                    view = Some("iso");
-                }
-                fit = ui.small_button("Fit").clicked();
-                // How see-through the bodies are: view state, like the
-                // camera. Its own widget, so a drag on it is not a drag
-                // in the viewport.
-                ui.add_space(8.0);
-                let mut transparency = self.state.transparency;
-                ui.spacing_mut().slider_width = tokens.slider_width;
-                let slider = ui
-                    .add(
-                        egui::Slider::new(&mut transparency, 0.0..=crate::state::MAX_TRANSPARENCY)
-                            .show_value(false),
-                    )
-                    .on_hover_text("See-through: how much of what is behind a surface shows");
-                self.transparency_rect = Some(slider.rect);
-                if slider.changed() && transparency.is_finite() {
-                    self.state.transparency =
-                        transparency.clamp(0.0, crate::state::MAX_TRANSPARENCY);
-                    ui.ctx().request_repaint();
-                }
-                ui.label(
-                    egui::RichText::new("See-through")
-                        .color(color(tokens.text_dim))
-                        .small(),
-                );
-            });
-        });
-        let side = tokens
-            .view_cube_size
-            .min(inner.width())
-            .min(inner.height() - tokens.bar_height - tokens.bar_gap);
-        let cube_shown = side >= 4.0 * tokens.view_cube_dot;
-        if cube_shown {
-            let place = egui::Rect::from_min_size(
-                egui::pos2(inner.right() - side, bar.top() - tokens.bar_gap - side),
-                egui::vec2(side, side),
-            );
-            self.view_cube_rect = Some(place);
-            self.view_cube(ui, place, scene);
-        } else {
-            self.view_cube_rect = None;
-            self.cube_drag_from = None;
-        }
-        // The section, in a row above the bar, beside the view cube.
-        let cube_left = if cube_shown {
-            inner.right() - side - tokens.bar_gap
-        } else {
-            inner.right()
-        };
-        let strip = egui::Rect::from_min_max(
-            egui::pos2(inner.left(), bar.top() - tokens.bar_gap - tokens.bar_height),
-            egui::pos2(cube_left, bar.top() - tokens.bar_gap),
-        );
-        if strip.width() > tokens.slider_width && strip.top() > inner.top() {
-            self.section_control(ui, strip, scene);
-        } else {
-            self.section_hits.clear();
-        }
-        // What is drawn besides the bodies, in the row above.
-        let above = strip.translate(egui::vec2(0.0, -(tokens.bar_height + tokens.bar_gap)));
-        if above.width() > tokens.slider_width && above.top() > inner.top() {
-            self.show_control(ui, above);
-        } else {
-            self.show_hits.clear();
-        }
-        if let Some(name) = view {
-            self.turn = None;
-            // The names come from the table, so this cannot fail.
-            let _ = self.state.camera.set_view(name);
-            ui.ctx().request_repaint();
-        }
-        if fit || view.is_some() {
-            self.fit_to(scene);
-            ui.ctx().request_repaint();
-        }
-    }
-
-    /// The toggles of what the viewport draws besides the bodies, in
-    /// `strip` from the right: Sketches and Datums ([`UiState::show`],
-    /// which `ui.set` sets too). Widgets over the viewport, like the
-    /// section's: a click on them picks nothing.
-    fn show_control(&mut self, ui: &mut egui::Ui, strip: egui::Rect) {
-        let mut show = self.state.show;
-        let mut hits: Vec<(&'static str, egui::Rect)> = Vec::new();
-        ui.scope_builder(egui::UiBuilder::new().max_rect(strip), |ui| {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let datums = ui
-                    .add(egui::Button::new("Datums").small().selected(show.datums))
-                    .on_hover_text("Show or hide the datum planes, axes and points");
-                hits.push(("datums", datums.rect));
-                if datums.clicked() {
-                    show.datums = !show.datums;
-                }
-                let sketches = ui
-                    .add(
-                        egui::Button::new("Sketches")
-                            .small()
-                            .selected(show.sketches),
-                    )
-                    .on_hover_text("Show or hide the sketches");
-                hits.push(("sketches", sketches.rect));
-                if sketches.clicked() {
-                    show.sketches = !show.sketches;
-                }
-            });
-        });
-        self.show_hits = hits;
-        if show != self.state.show {
-            self.state.show = show;
-            ui.ctx().request_repaint();
-        }
-    }
-
-    /// The section's controls in `strip`, from the right: the toggle and,
-    /// while the section is on, the axis the plane is across (X, Y, Z),
-    /// a slider that moves the plane across the model's extent, and Flip,
-    /// which keeps the other half. View state, like the camera: they set
-    /// [`UiState::section`], which `ui.set` sets too. They are widgets of
-    /// their own over the viewport: a click on them picks nothing.
-    fn section_control(&mut self, ui: &mut egui::Ui, strip: egui::Rect, scene: Option<&Scene>) {
-        let tokens = self.tokens;
-        let mut section = self.state.section.clone();
-        let range = self.section_cache.as_ref().and_then(|cache| cache.range);
-        // The middle of the model along a base plane's normal: where a
-        // plane that is chosen here starts.
-        let middle = |axis: usize| {
-            scene
-                .and_then(|scene| scene.bbox.corners())
-                .map_or(0.0, |(lo, hi)| {
-                    let (lo, hi) = ([lo.x, lo.y, lo.z], [hi.x, hi.y, hi.z]);
-                    match (lo.get(axis), hi.get(axis)) {
-                        (Some(lo), Some(hi)) => (lo + hi) * 0.5,
-                        _ => 0.0,
-                    }
-                })
-        };
-        let mut hits: Vec<(&'static str, egui::Rect)> = Vec::new();
-        ui.scope_builder(egui::UiBuilder::new().max_rect(strip), |ui| {
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let toggle = ui
-                    .add(egui::Button::new("Section").small().selected(section.on))
-                    .on_hover_text("Cut the picture open with a plane, to look inside");
-                hits.push(("toggle", toggle.rect));
-                if toggle.clicked() {
-                    section.on = !section.on;
-                    if section.on && section.plane.is_none() && section.normal.is_none() {
-                        section.plane = Some("xy".to_string());
-                        section.offset = middle(2);
-                    }
-                }
-                if !section.on {
-                    return;
-                }
-                // Right to left, so that they read X, Y, Z.
-                for (label, name, plane, axis) in [
-                    ("Z", "z", "xy", 2),
-                    ("Y", "y", "zx", 1),
-                    ("X", "x", "yz", 0),
-                ] {
-                    let chosen = section.plane.as_deref() == Some(plane);
-                    let button = ui
-                        .add(egui::Button::new(label).small().selected(chosen))
-                        .on_hover_text(format!("Cut across {label}"));
-                    hits.push((name, button.rect));
-                    if button.clicked() && !chosen {
-                        section.plane = Some(plane.to_string());
-                        section.feature = None;
-                        section.point = None;
-                        section.normal = None;
-                        section.offset = middle(axis);
-                    }
-                }
-                if let Some([lo, hi]) = range.filter(|[lo, hi]| lo < hi) {
-                    let mut offset = section.offset.clamp(lo, hi);
-                    ui.spacing_mut().slider_width = tokens.slider_width;
-                    let slider = ui
-                        .add(egui::Slider::new(&mut offset, lo..=hi).show_value(false))
-                        .on_hover_text("Where the plane cuts: across the model");
-                    hits.push(("offset", slider.rect));
-                    if slider.changed() && offset.is_finite() {
-                        section.offset = offset;
-                    }
-                }
-                let flip = ui.small_button("Flip").on_hover_text("Keep the other half");
-                hits.push(("flip", flip.rect));
-                if flip.clicked() {
-                    section.flip = !section.flip;
-                }
-            });
-        });
-        self.section_hits = hits;
-        if section != self.state.section
-            && let Ok(section) = section.validated()
-        {
-            self.state.section = section;
-            self.section_lost = None;
-            ui.ctx().request_repaint();
-        }
-    }
-
-    /// The view cube in `place`: paints it and handles its mouse. A click
-    /// on a facet starts a turn of the camera to that side (see
-    /// [`Self::advance_turn`]), a click on the ring around the cube
-    /// switches between perspective and orthographic, and a drag orbits
-    /// the camera.
-    fn view_cube(&mut self, ui: &mut egui::Ui, place: egui::Rect, scene: Option<&Scene>) {
-        let tokens = self.tokens;
-        let response = ui.interact(
-            place,
-            ui.id().with("view-cube"),
-            egui::Sense::click_and_drag(),
-        );
-        // The radius of the cube's picture, in points: the ring and the
-        // ends of the axis sticks are outside it.
-        let arm = (place.width() * 0.5 / 1.3).max(1.0);
-        let center = place.center();
-        let unit = |at: egui::Pos2| {
-            [
-                f64::from(at.x - center.x) / f64::from(arm),
-                f64::from(at.y - center.y) / f64::from(arm),
-            ]
-        };
-        if response.drag_started() {
-            self.cube_drag_from = Some(self.state.camera);
-            self.turn = None;
-        }
-        if response.dragged() {
-            // As a drag in the viewport: from where it began, by how far
-            // the pointer is from there now.
-            if let (Some(from), Some(total)) = (self.cube_drag_from, response.total_drag_delta()) {
-                let mut camera = from;
-                camera.orbit(f64::from(total.x), f64::from(total.y));
-                self.state.camera = camera;
-            }
-            ui.ctx().request_repaint();
-        } else {
-            self.cube_drag_from = None;
-        }
-        if response.clicked()
-            && let Some(at) = response.interact_pointer_pos()
-        {
-            match view_cube::facet_at(&self.state.camera, unit(at)) {
-                Some(facet) => {
-                    let side = view_cube::clicked(&self.state.camera, &facet);
-                    let mut to = view_cube::turned(&self.state.camera, side);
-                    // Framed there, as the view buttons framed.
-                    if let Some(scene) = scene.filter(|scene| !scene.bbox.is_empty()) {
-                        to.fit(&scene.bbox, self.aspect());
-                        to.auto_fit = true;
-                    }
-                    self.turn = Some(Turn {
-                        from: self.state.camera,
-                        to,
-                        started: ui.input(|i| i.time),
-                        last: self.state.camera,
-                    });
-                }
-                // Beside the cube, on the ring: the other projection.
-                None => {
-                    self.turn = None;
-                    self.state.camera.projection = match self.state.camera.projection {
-                        ProjectionKind::Perspective => ProjectionKind::Orthographic,
-                        ProjectionKind::Orthographic => ProjectionKind::Perspective,
-                    };
-                }
-            }
-            ui.ctx().request_repaint();
-        }
-        let hover = response.hover_pos().map(unit);
-        let hovered = hover.and_then(|at| view_cube::facet_at(&self.state.camera, at));
-        let on_ring = hover.is_some() && hovered.is_none();
-        let painter = ui.painter_at(place.expand(1.0));
-        let at = |p: [f64; 2]| center + egui::vec2(p[0] as f32, p[1] as f32) * arm;
-        let mix = |a: [u8; 3], b: [u8; 3], t: f64| -> [u8; 3] {
-            let t = t.clamp(0.0, 1.0);
-            let mut out = [0; 3];
-            for ((slot, x), y) in out.iter_mut().zip(a).zip(b) {
-                // Between two bytes.
-                *slot = (f64::from(x) + (f64::from(y) - f64::from(x)) * t).round() as u8;
-            }
-            out
-        };
-        // The ring: the projection's switch, with its name along the
-        // bottom. Brighter under the pointer.
-        let ring = place.width() * 0.5;
-        painter.circle(
-            center,
-            ring - 1.0,
-            color_alpha(tokens.panel_fill, tokens.view_cube_opacity),
-            egui::Stroke::new(
-                if on_ring { 2.0 } else { 1.0 },
-                color(if on_ring {
-                    tokens.text
-                } else {
-                    tokens.text_dim
-                }),
-            ),
-        );
-        let projection = match self.state.camera.projection {
-            ProjectionKind::Perspective => "perspective",
-            ProjectionKind::Orthographic => "orthographic",
-        };
-        painter.text(
-            egui::pos2(center.x, place.bottom() - 3.0),
-            egui::Align2::CENTER_BOTTOM,
-            projection,
-            egui::FontId::proportional(9.5),
-            color(if on_ring {
-                tokens.text
-            } else {
-                tokens.text_dim
-            }),
-        );
-        let stick = |axis: usize, front: bool| {
-            if let Some((from, to, toward)) = view_cube::axis_stick(&self.state.camera, axis)
-                && toward == front
-            {
-                let ink = tokens.axes.get(axis).copied().unwrap_or(tokens.text_dim);
-                painter.line_segment(
-                    [at(from), at(to)],
-                    egui::Stroke::new(tokens.axis_width * 1.6, color(ink)),
-                );
-                painter.circle_filled(at(to), tokens.view_cube_dot * 0.45, color(ink));
-            }
-        };
-        // The sticks that point away first, then the gem, then the ones
-        // that point at the viewer.
-        for axis in 0..3 {
-            stick(axis, false);
-        }
-        for facet in view_cube::facets(&self.state.camera) {
-            let points: Vec<egui::Pos2> = facet.outline.iter().map(|&p| at(p)).collect();
-            // A face carries the colour of the axis it is across; the cut
-            // facets are the gem's own, darker, and all are lit by how
-            // much they face the viewer.
-            let base = match facet.axis() {
-                Some(axis) => mix(
-                    tokens.body,
-                    tokens.axes.get(axis).copied().unwrap_or(tokens.body),
-                    0.38,
-                ),
-                None => mix(tokens.panel_fill, tokens.body, 0.45),
-            };
-            let lit = mix(tokens.notice_fill, base, 0.45 + 0.55 * facet.toward);
-            let over = hovered.as_ref().is_some_and(|h| h.side == facet.side);
-            let fill = if over {
-                mix(lit, tokens.face_highlight, 0.75)
-            } else {
-                lit
-            };
-            painter.add(egui::Shape::convex_polygon(
-                points,
-                color(fill),
-                egui::Stroke::new(1.0, color(tokens.edge)),
-            ));
-            if let Some(label) = facet.label().filter(|_| facet.toward > 0.55) {
-                painter.text(
-                    at(facet.center()),
-                    egui::Align2::CENTER_CENTER,
-                    label,
-                    egui::FontId::proportional(arm * 0.21),
-                    color_alpha(
-                        tokens.notice_fill,
-                        (255.0 * facet.toward.clamp(0.0, 1.0)) as u8,
-                    ),
-                );
-            }
-        }
-        for axis in 0..3 {
-            stick(axis, true);
-        }
+        // The view cube and the controls around it, bottom right.
+        self.viewport_controls(ui, rect, inner, scene);
     }
 
     /// Moves the camera along the turn a click on the view cube started:
@@ -2405,14 +2044,34 @@ impl Shell {
             self.drag_from = None;
         }
         if response.contains_pointer() {
-            let (scroll, fit) = ui.input(|i| {
+            let (scroll, pinch, fit, pointer) = ui.input(|i| {
                 (
                     f64::from(i.smooth_scroll_delta().y),
+                    f64::from(i.zoom_delta()),
                     i.key_pressed(egui::Key::F),
+                    i.pointer.hover_pos(),
                 )
             });
-            if scroll != 0.0 {
-                self.state.camera.zoom(scroll);
+            // A pinch (or Ctrl and the wheel) as the turn of the wheel
+            // that scales the distance alike.
+            let pinch = if pinch > 0.0 && pinch.is_finite() && pinch != 1.0 {
+                pinch.ln() / crate::camera::ZOOM_PER_POINT
+            } else {
+                0.0
+            };
+            let scroll = scroll + pinch;
+            if scroll != 0.0 && scroll.is_finite() {
+                match pointer.and_then(|at| self.zoom_point(at, rect, scene)) {
+                    Some(point) => {
+                        self.state.camera.zoom_about(scroll, point);
+                        self.zoom_anchor = pointer.map(|pointer| ZoomAnchor {
+                            pointer,
+                            camera: self.state.camera,
+                            point,
+                        });
+                    }
+                    None => self.state.camera.zoom(scroll),
+                }
                 moving = true;
             }
             if fit {
@@ -2420,6 +2079,45 @@ impl Shell {
             }
         }
         moving
+    }
+
+    /// The point a zoom at `pointer` (in points, in the viewport `rect`)
+    /// keeps in place: the point of the model the viewport shows there
+    /// (the same answer a click gets, cut open by the section when it is
+    /// on), or else the point of the plane through the target square to
+    /// the view. The same as the last zoom's while neither the pointer nor
+    /// the camera moved since.
+    fn zoom_point(
+        &self,
+        pointer: egui::Pos2,
+        rect: egui::Rect,
+        scene: Option<&Scene>,
+    ) -> Option<craft3d_math::Vec3> {
+        if let Some(anchor) = self.zoom_anchor
+            && anchor.pointer == pointer
+            && anchor.camera == self.state.camera
+        {
+            return Some(anchor.point);
+        }
+        if !rect.contains(pointer) {
+            return None;
+        }
+        let [width, height] = self.size;
+        let across = |from: f32, to: f32, at: f32, pixels: u32| {
+            f64::from(at - from) / f64::from((to - from).max(f32::MIN_POSITIVE)) * f64::from(pixels)
+        };
+        let x = across(rect.left(), rect.right(), pointer.x, width);
+        let y = across(rect.top(), rect.bottom(), pointer.y, height);
+        let camera = self.state.camera;
+        let section = self.section();
+        let hit = scene.and_then(|scene| {
+            let (face, cap) = scene
+                .pick_cut(&camera.to_render(), width, height, x, y, section.as_ref())
+                .ok()?;
+            face.map(|face| face.point).or(cap.map(|cap| cap.point))
+        });
+        hit.filter(|p| p.is_finite())
+            .or_else(|| camera.target_plane_point(x, y, f64::from(width), f64::from(height)))
     }
 
     /// The direct path's texture, when the picture on screen is its.

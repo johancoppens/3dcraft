@@ -2,8 +2,9 @@
 //! drags on it, and the camera after each. Its six faces are compared
 //! with `CameraState::set_view` (the table `ui.set` uses), the facets of
 //! its edges and corners with the direction they stand for, a drag with
-//! `CameraState::orbit` (what a drag in the viewport does), the ring
-//! around it with the projection, and nothing done on it is a pick.
+//! `CameraState::orbit` (what a drag in the viewport does), the
+//! projection's two buttons under it with the projection, and nothing
+//! done on any of it is a pick.
 
 #![allow(
     clippy::unwrap_used,
@@ -102,12 +103,21 @@ fn started() -> (Session, Shell, Window) {
     (session, shell, window)
 }
 
-/// Where a point of the cube's picture is in the window: the shell's own
-/// layout (the picture's radius is the place's half side over 1.3).
+/// Where a point of the cube's picture is in the window, by the shell's
+/// own layout.
 fn place(shell: &Shell, at: [f64; 2]) -> Pos2 {
-    let rect = shell.view_cube_rect().unwrap();
-    let arm = rect.width() * 0.5 / 1.3;
-    rect.center() + vec2(at[0] as f32, at[1] as f32) * arm
+    shell.view_cube_point(at).unwrap()
+}
+
+/// Where the camera's button `name` was drawn.
+fn camera_button(shell: &Shell, name: &str) -> Pos2 {
+    shell
+        .camera_hits()
+        .iter()
+        .find(|(n, _)| *n == name)
+        .unwrap_or_else(|| panic!("no button `{name}`: {:?}", shell.camera_hits()))
+        .1
+        .center()
 }
 
 fn set(shell: &mut Shell, session: &mut Session, patch: Value) {
@@ -125,10 +135,24 @@ fn the_cube_is_in_the_corner_of_the_viewport() {
     assert!(viewport.contains_rect(rect), "{rect:?} in {viewport:?}");
     assert_eq!(rect.width(), shell.tokens.view_cube_size);
     assert_eq!(rect.height(), shell.tokens.view_cube_size);
-    // Bottom right, clear of the edge, with the row of buttons under it.
-    assert!((viewport.right() - rect.right() - shell.tokens.inset).abs() < 0.5);
+    // Bottom right, clear of the edge, with the row of buttons under it
+    // and centred on it, and the triad above it.
+    let right = viewport.right() - rect.right() - shell.tokens.inset;
+    assert!((-0.5..40.0).contains(&right), "{right}");
     let below = viewport.bottom() - rect.bottom();
     assert!((30.0..50.0).contains(&below), "{below}");
+    let layout = shell.controls_layout().unwrap();
+    let row = layout.camera_row.unwrap();
+    assert!(row.top() > rect.bottom());
+    assert!((row.center().x - rect.center().x).abs() < 0.5);
+    let triad = layout.triad.unwrap();
+    assert!(triad.bottom() <= rect.top() + 0.5);
+    assert!((triad.center().x - rect.center().x).abs() < 0.5);
+    let names: Vec<&str> = shell.camera_hits().iter().map(|(n, _)| *n).collect();
+    assert_eq!(names, ["fit", "iso", "perspective", "orthographic"]);
+    for (_, hit) in shell.camera_hits() {
+        assert!(row.expand(1.0).contains_rect(*hit), "{hit:?} in {row:?}");
+    }
 }
 
 /// Every one of the 26 facets, in both projections: from a camera that
@@ -302,15 +326,11 @@ fn a_drag_on_the_cube_orbits_as_a_drag_in_the_viewport_does() {
 }
 
 #[test]
-fn a_click_on_the_ring_around_the_cube_switches_the_projection() {
+fn the_projection_buttons_under_the_cube_switch_the_projection() {
     let (mut session, mut shell, mut window) = started();
     assert_eq!(shell.state.camera.projection, ProjectionKind::Perspective);
     let camera = shell.state.camera;
-    // On the ring: within the place, beside every facet.
-    let ring = [0.0, 1.2];
-    assert_eq!(view_cube::facet_at(&camera, ring), None);
-    let at = place(&shell, ring);
-    assert!(shell.view_cube_rect().unwrap().contains(at));
+    let at = camera_button(&shell, "orthographic");
     window.click(&mut shell, &mut session, at);
     assert_eq!(shell.state.camera.projection, ProjectionKind::Orthographic);
     // Nothing else of the camera moved, and nothing was picked.
@@ -327,23 +347,29 @@ fn a_click_on_the_ring_around_the_cube_switches_the_projection() {
         view_cube::facets(&shell.state.camera),
         view_cube::facets(&camera)
     );
+    // A second click on the half that is on keeps it on.
+    window.click(&mut shell, &mut session, at);
+    assert_eq!(shell.state.camera.projection, ProjectionKind::Orthographic);
+    let at = camera_button(&shell, "perspective");
     window.click(&mut shell, &mut session, at);
     assert_eq!(shell.state.camera, camera);
+    // A click in the cube's place beside every facet changes nothing and
+    // picks nothing.
+    let beside = [0.0, 1.02];
+    assert_eq!(view_cube::facet_at(&camera, beside), None);
+    let at = place(&shell, beside);
+    assert!(shell.view_cube_rect().unwrap().expand(0.5).contains(at));
+    window.click(&mut shell, &mut session, at);
+    assert_eq!(shell.state.camera, camera);
+    assert_eq!(shell.state.picked, None);
 }
 
 #[test]
 fn fit_and_the_corner_view_are_still_a_click_away() {
     let (mut session, mut shell, mut window) = started();
-    let viewport = shell.viewport_rect().unwrap();
-    // The row under the cube, from the right: every 6 points.
-    let spots: Vec<Pos2> = (4..120)
-        .step_by(6)
-        .map(|dx| {
-            pos2(
-                viewport.right() - shell.tokens.inset - dx as f32,
-                viewport.bottom() - 20.0,
-            )
-        })
+    let spots: Vec<Pos2> = ["fit", "iso"]
+        .iter()
+        .map(|name| camera_button(&shell, name))
         .collect();
     // A click on `at`; whether `done` holds afterwards. A click that did
     // it was on a button, and so no pick.
@@ -486,23 +512,109 @@ fn a_drawing_of_the_cube_as_it_is_laid_out() {
                 draw_line(&mut rgb, width, height, a, b, 1.5, ink, 255);
             }
         }
-        for axis in 0..3 {
-            let (from, to, _) = view_cube::axis_stick(&shell.state.camera, axis).unwrap();
-            draw_line(
-                &mut rgb,
-                width,
-                height,
-                at(from),
-                at(to),
-                2.5,
-                tokens.axes[axis],
-                255,
-            );
+        // The patches as they are painted, inside the outlines.
+        for facet in view_cube::facets_gapped(&shell.state.camera, f64::from(tokens.view_cube_gap))
+        {
+            let n = facet.patch.len();
+            for k in 0..n {
+                let (a, b) = (at(facet.patch[k]), at(facet.patch[(k + 1) % n]));
+                draw_line(&mut rgb, width, height, a, b, 1.0, tokens.text, 255);
+            }
         }
         let dir =
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/evidence/ui");
         std::fs::create_dir_all(&dir).unwrap();
         let png = craft3d_render::encode_png(width, height, &rgb).unwrap();
         std::fs::write(dir.join(format!("view-cube-drawing-{name}.png")), png).unwrap();
+    }
+}
+
+/// The wheel and a pinch zoom at the pointer: the point of the model under
+/// it (as a click finds it) stays under it, in both projections; off the
+/// model the point of the target plane does. A zoom by hand ends the
+/// automatic fit, as a pan does.
+#[test]
+fn the_wheel_and_a_pinch_zoom_at_the_pointer() {
+    use craft3d_ui_egui::camera::Projector;
+    let (mut session, mut shell, mut window) = started();
+    for projection in ["perspective", "orthographic"] {
+        for (fx, fy, on_model) in [(0.47, 0.55, true), (0.08, 0.1, false)] {
+            set(
+                &mut shell,
+                &mut session,
+                json!({"view": "iso", "camera": {"projection": projection}}),
+            );
+            shell
+                .handle_method(&mut session, "ui.fit", Some(&json!({})))
+                .unwrap()
+                .unwrap();
+            window.frame(&mut shell, &mut session, Vec::new());
+            assert!(shell.state.camera.auto_fit);
+            let rect = shell.viewport_rect().unwrap();
+            let [w, h] = shell.viewport_size();
+            let at = pos2(
+                rect.left() + rect.width() * fx,
+                rect.top() + rect.height() * fy,
+            );
+            let x = f64::from(at.x - rect.left()) / f64::from(rect.width()) * f64::from(w);
+            let y = f64::from(at.y - rect.top()) / f64::from(rect.height()) * f64::from(h);
+            let scene = session.scene_with(shell.scene_quality()).unwrap();
+            let found = shell
+                .pick(scene.as_deref(), x, y, None, Some(0.0), false)
+                .unwrap();
+            let before = shell.state.camera;
+            let point = match &found.face {
+                Some(face) => face.point,
+                None => before
+                    .target_plane_point(x, y, f64::from(w), f64::from(h))
+                    .unwrap(),
+            };
+            let context = format!("{projection} {fx},{fy}");
+            assert_eq!(found.face.is_some(), on_model, "{context}");
+            let check = |shell: &Shell, what: &str| {
+                let camera = shell.state.camera;
+                let shown = Projector::new(&camera.to_render(), f64::from(w), f64::from(h))
+                    .unwrap()
+                    .project(point)
+                    .unwrap();
+                assert!(
+                    (shown.x - x).abs() < 0.05 && (shown.y - y).abs() < 0.05,
+                    "{context} {what}: {shown:?} against {x},{y}"
+                );
+                assert!(!camera.auto_fit, "{context} {what}");
+            };
+            window.frame(&mut shell, &mut session, vec![Event::PointerMoved(at)]);
+            window.frame(
+                &mut shell,
+                &mut session,
+                vec![Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: vec2(0.0, 150.0),
+                    phase: egui::TouchPhase::Move,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+            for _ in 0..40 {
+                window.frame(&mut shell, &mut session, Vec::new());
+            }
+            assert!(
+                shell.state.camera.distance < before.distance * 0.9,
+                "{context}"
+            );
+            check(&shell, "wheel");
+            let wheeled = shell.state.camera.distance;
+            window.frame(&mut shell, &mut session, vec![Event::Zoom(0.5)]);
+            for _ in 0..4 {
+                window.frame(&mut shell, &mut session, Vec::new());
+            }
+            let ratio = shell.state.camera.distance / wheeled;
+            assert!(
+                (ratio - 2.0).abs() < 1e-6,
+                "{context}: a pinch out doubles the distance, {ratio}"
+            );
+            check(&shell, "pinch");
+            // Nothing of it was a pick.
+            assert_eq!(shell.state.picked, None);
+        }
     }
 }

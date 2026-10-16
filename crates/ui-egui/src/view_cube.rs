@@ -1,16 +1,16 @@
 //! The view cube: a small cut gem in a corner of the viewport that turns
 //! with the camera. It is a cube with its edges and corners cut off, so it
 //! has 26 facets: six faces (top, front, right, ...), twelve facets where
-//! an edge was and eight where a corner was. A click on a facet turns the
-//! camera to look at the model from that side: a face gives a standard
-//! view, an edge facet the view half-way between two of them, a corner
-//! facet the view from a corner. A click on the facet already faced gives
-//! the view from the other side, and a drag on the cube orbits the camera
-//! as a drag in the viewport does. The three axes stick out of the faces
-//! they point through, in their colours. The gem is drawn the way the
-//! viewport is: with a perspective camera its far side is smaller, with an
-//! orthographic one it is not, and a click on the ring around it switches
-//! between the two.
+//! an edge was and eight where a corner was. They are drawn as separate
+//! patches with a thin gap between them ([`facets_gapped`]). A click on a
+//! facet turns the camera to look at the model from that side: a face
+//! gives a standard view, an edge facet the view half-way between two of
+//! them, a corner facet the view from a corner. A click on the facet
+//! already faced gives the view from the other side, and a drag on the
+//! cube orbits the camera as a drag in the viewport does. The gem is drawn
+//! the way the viewport is: with a perspective camera its far side is
+//! smaller, with an orthographic one it is not. Above it a small triad
+//! ([`triad`]) shows where the world's X, Y and Z point.
 //!
 //! No egui here: where the facets are and which one a position is on are
 //! plain numbers, so the shell paints them and tests ask for them. Nothing
@@ -44,8 +44,14 @@ pub struct Facet {
     pub side: [i8; 3],
     /// Its outline in the picture of the cube, from the cube's centre: x
     /// to the right, y down, in units of the picture's radius (every
-    /// corner is within the unit circle).
+    /// corner is within the unit circle). The facets' outlines tile the
+    /// picture without gaps: a position is on the facet whose outline it
+    /// is in ([`facet_at`]).
     pub outline: Vec<[f64; 2]>,
+    /// The patch that is painted: the outline with every side moved
+    /// inwards by half the gap, on the cube, so that two neighbouring
+    /// patches are a gap apart. The outline itself without a gap.
+    pub patch: Vec<[f64; 2]>,
     /// How much it faces the viewer, 0 (edge-on) to 1.
     pub toward: f64,
 }
@@ -77,6 +83,50 @@ impl Facet {
             .fold([0.0, 0.0], |acc, p| [acc[0] + p[0], acc[1] + p[1]]);
         [sum[0] / n, sum[1] / n]
     }
+
+    /// The room a label in the middle of the patch has: the lengths of
+    /// the horizontal and the vertical chord of the patch through its
+    /// middle, in the units of the outline. A face seen nearly edge-on has
+    /// little room one way or the other, and its label is made smaller or
+    /// left out.
+    pub fn room(&self) -> [f64; 2] {
+        let c = self.center();
+        [chord(&self.patch, c, 0), chord(&self.patch, c, 1)]
+    }
+}
+
+/// The length of the chord of the convex polygon `outline` through `at`
+/// along axis `along` (0: horizontal, 1: vertical).
+fn chord(outline: &[[f64; 2]], at: [f64; 2], along: usize) -> f64 {
+    let along = along.min(1);
+    let across = 1 - along;
+    let (Some(&level), n) = (at.get(across), outline.len()) else {
+        return 0.0;
+    };
+    let mut lo = f64::INFINITY;
+    let mut hi = f64::NEG_INFINITY;
+    for k in 0..n {
+        let (Some(a), Some(b)) = (outline.get(k), outline.get((k + 1) % n)) else {
+            continue;
+        };
+        let (Some(&a_across), Some(&b_across), Some(&a_along), Some(&b_along)) =
+            (a.get(across), b.get(across), a.get(along), b.get(along))
+        else {
+            continue;
+        };
+        // Where the side crosses the line through `at`, if it does.
+        let span = b_across - a_across;
+        if span == 0.0 || !span.is_finite() {
+            continue;
+        }
+        let t = (level - a_across) / span;
+        if (0.0..=1.0).contains(&t) {
+            let x = a_along + (b_along - a_along) * t;
+            lo = lo.min(x);
+            hi = hi.max(x);
+        }
+    }
+    if hi > lo { hi - lo } else { 0.0 }
 }
 
 pub fn kind_of(side: [i8; 3]) -> FacetKind {
@@ -136,6 +186,47 @@ fn corners(side: [i8; 3]) -> Vec<Vec3> {
             .into_iter()
             .map(|(u, v, w)| point([(0, of(0) * u), (1, of(1) * v), (2, of(2) * w)]))
             .collect(),
+    }
+}
+
+/// `points`, the corners of a flat convex facet with outward `normal`,
+/// with every side moved inwards by `by` within the facet's plane. A
+/// facet too small for that, or numbers that are not, keep their corners.
+fn inset(points: &[Vec3], normal: Vec3, by: f64) -> Vec<Vec3> {
+    let n = points.len();
+    if !(by > 0.0 && by.is_finite()) || n < 3 {
+        return points.to_vec();
+    }
+    let middle = points.iter().fold(Vec3::ZERO, |acc, &p| acc + p) * (1.0 / n as f64);
+    let moved: Option<Vec<Vec3>> = (0..n)
+        .map(|k| {
+            let prev = *points.get((k + n - 1) % n)?;
+            let here = *points.get(k)?;
+            let next = *points.get((k + 1) % n)?;
+            // The inward normals of the two sides at this corner, in the
+            // facet's plane.
+            let inward = |a: Vec3, b: Vec3| {
+                let side = (b - a).normalized()?;
+                let m = normal.cross(side).normalized()?;
+                Some(if m.dot(middle - a) < 0.0 { -m } else { m })
+            };
+            let (m1, m2) = (inward(prev, here)?, inward(here, next)?);
+            let cos = m1.dot(m2);
+            // The corner moves along the bisector, by / cos(half the angle).
+            (cos > -0.9).then(|| here + (m1 + m2) * (by / (1.0 + cos)))
+        })
+        .collect();
+    match moved {
+        // Still the same way round: the inset did not fold the facet over.
+        Some(moved)
+            if moved
+                .iter()
+                .zip(points)
+                .all(|(m, p)| (*m - middle).dot(*p - middle) > 0.0) =>
+        {
+            moved
+        }
+        _ => points.to_vec(),
     }
 }
 
@@ -205,8 +296,21 @@ impl Picture {
 }
 
 /// The facets `camera` sees (the ones that face it), the least facing
-/// first. Nothing for a camera that looks nowhere.
+/// first, without gaps between their patches. Nothing for a camera that
+/// looks nowhere.
 pub fn facets(camera: &CameraState) -> Vec<Facet> {
+    facets_gapped(camera, 0.0)
+}
+
+/// [`facets`] with a gap of `gap` between neighbouring patches, in units
+/// of the cube's half side (the theme's `view_cube_gap`): it scales with
+/// the cube, and is foreshortened with the facets.
+pub fn facets_gapped(camera: &CameraState, gap: f64) -> Vec<Facet> {
+    let half = if gap.is_finite() {
+        (gap * 0.5).clamp(0.0, 0.1)
+    } else {
+        0.0
+    };
     let Some(picture) = Picture::new(camera) else {
         return Vec::new();
     };
@@ -224,11 +328,21 @@ pub fn facets(camera: &CameraState) -> Vec<Facet> {
         if toward <= 1e-9 || toward.is_nan() {
             continue;
         }
+        let patch: Vec<[f64; 2]> = inset(&points, normal, half)
+            .into_iter()
+            .map(|p| picture.place(p))
+            .collect();
         let outline: Vec<[f64; 2]> = points.into_iter().map(|p| picture.place(p)).collect();
-        if outline.iter().flatten().all(|c| c.is_finite()) {
+        if outline
+            .iter()
+            .chain(&patch)
+            .flatten()
+            .all(|c| c.is_finite())
+        {
             out.push(Facet {
                 side,
                 outline,
+                patch,
                 toward,
             });
         }
@@ -237,15 +351,39 @@ pub fn facets(camera: &CameraState) -> Vec<Facet> {
     out
 }
 
-/// The stick of axis `axis` (0 X, 1 Y, 2 Z) in the picture of the cube:
-/// from the middle of its face to its end, in the units of
-/// [`Facet::outline`], and whether it points towards the viewer.
-pub fn axis_stick(camera: &CameraState, axis: usize) -> Option<([f64; 2], [f64; 2], bool)> {
-    let picture = Picture::new(camera)?;
-    let d = *[Vec3::X, Vec3::Y, Vec3::Z].get(axis)?;
-    let ends = (picture.place(d), picture.place(d * (radius() * 1.12)));
-    let finite = ends.0.iter().chain(&ends.1).all(|c| c.is_finite());
-    finite.then_some((ends.0, ends.1, picture.toward(d, d) > 0.0))
+/// One arm of the axis triad ([`triad`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TriadArm {
+    /// The world axis: 0 X, 1 Y, 2 Z.
+    pub axis: usize,
+    /// Where the arm's tip is, from the triad's origin: x to the right,
+    /// y down, the arm's full length 1 (an arm seen end-on is shorter).
+    pub tip: [f64; 2],
+    /// How much it points at the viewer, -1 (away) to 1 (towards).
+    pub toward: f64,
+}
+
+/// The world axes as `camera` sees them, for the triad above the cube:
+/// the three arms from a common origin, drawn orthographically (only the
+/// directions matter), the one that points most away first so that the
+/// nearer ones are painted over it. Nothing for a camera that looks
+/// nowhere.
+pub fn triad(camera: &CameraState) -> Option<[TriadArm; 3]> {
+    let axes = camera.to_render().axes().ok()?;
+    let arm = |axis: usize, d: Vec3| TriadArm {
+        axis,
+        tip: [d.dot(axes.right), -d.dot(axes.up)],
+        toward: -d.dot(axes.forward),
+    };
+    let mut arms = [arm(0, Vec3::X), arm(1, Vec3::Y), arm(2, Vec3::Z)];
+    if !arms
+        .iter()
+        .all(|a| a.tip.iter().all(|c| c.is_finite()) && a.toward.is_finite())
+    {
+        return None;
+    }
+    arms.sort_by(|a, b| a.toward.total_cmp(&b.toward).then(a.axis.cmp(&b.axis)));
+    Some(arms)
 }
 
 /// The facet under `at` (in the units of [`Facet::outline`]).
@@ -410,9 +548,10 @@ mod tests {
             }
             assert_eq!(facet_at(&front, [3.0, 0.0]), None);
             assert_eq!(facet_at(&front, [f64::NAN, 0.0]), None);
-            // The X stick points right, away from the middle.
-            let (from, to, _) = axis_stick(&front, 0).unwrap();
-            assert!(to[0] > from[0] && from[0] > 0.3 && to[1].abs() < 1e-9);
+            // Without a gap the patch is the outline.
+            for facet in facets(&front) {
+                assert_eq!(facet.patch, facet.outline);
+            }
         }
         // In perspective the face in front is larger than the same face in
         // an orthographic picture is, relative to the cube's outline: the
@@ -432,7 +571,184 @@ mod tests {
             ..CameraState::default()
         };
         assert!(facets(&broken).is_empty() && facet_at(&broken, [0.0, 0.0]).is_none());
-        assert!(axis_stick(&broken, 0).is_none() && axis_stick(&perspective, 7).is_none());
+        assert!(triad(&broken).is_none() && facets_gapped(&broken, 0.05).is_empty());
+    }
+
+    /// Twice the distance from `at` to the nearest side of the convex
+    /// `outline`, negative outside.
+    fn inside_by(outline: &[[f64; 2]], at: [f64; 2]) -> f64 {
+        let n = outline.len();
+        let area: f64 = (0..n)
+            .map(|k| {
+                let (a, b) = (outline[k], outline[(k + 1) % n]);
+                a[0] * b[1] - b[0] * a[1]
+            })
+            .sum();
+        (0..n)
+            .map(|k| {
+                let (a, b) = (outline[k], outline[(k + 1) % n]);
+                let cross = (b[0] - a[0]) * (at[1] - a[1]) - (b[1] - a[1]) * (at[0] - a[0]);
+                cross.signum() * area.signum() * cross.abs() / (b[0] - a[0]).hypot(b[1] - a[1])
+            })
+            .fold(f64::INFINITY, f64::min)
+    }
+
+    /// The patches are the facets shrunk by half the gap on every side:
+    /// each is inside its own outline, no two overlap, the gap between two
+    /// neighbours is the gap asked for (seen straight on), and the
+    /// position in a gap still belongs to a facet, so nothing between the
+    /// patches is dead to a click.
+    #[test]
+    fn the_patches_have_a_gap_between_them_and_the_gaps_are_not_dead() {
+        let gap = 0.06;
+        for camera in cameras() {
+            for view in ["iso", "front", "top"] {
+                let mut camera = camera;
+                camera.set_view(view).unwrap();
+                let seen = facets_gapped(&camera, gap);
+                let plain = facets(&camera);
+                assert_eq!(seen.len(), plain.len(), "{view}");
+                for (facet, whole) in seen.iter().zip(&plain) {
+                    assert_eq!(facet.side, whole.side);
+                    assert_eq!(facet.outline, whole.outline);
+                    assert_eq!(facet.patch.len(), facet.outline.len());
+                    // Every corner of the patch is strictly inside the
+                    // outline.
+                    for &p in &facet.patch {
+                        assert!(
+                            inside_by(&facet.outline, p) > 1e-6,
+                            "{view} {:?}",
+                            facet.side
+                        );
+                    }
+                    // And outside every other patch.
+                    for other in seen.iter().filter(|o| o.side != facet.side) {
+                        for &p in &facet.patch {
+                            assert!(inside_by(&other.patch, p) < 0.0, "{view}");
+                        }
+                    }
+                }
+                // A position on the outline between two patches is on a
+                // facet: the one whose outline holds it.
+                for facet in &plain {
+                    let (a, b) = (facet.outline[0], facet.outline[1]);
+                    let c = facet.center();
+                    let near_side = [
+                        (a[0] + b[0]) * 0.5 * 0.995 + c[0] * 0.005,
+                        (a[1] + b[1]) * 0.5 * 0.995 + c[1] * 0.005,
+                    ];
+                    if facet.toward > 0.2 {
+                        assert!(facet_at(&camera, near_side).is_some(), "{view}");
+                    }
+                }
+            }
+        }
+        // Straight on, in an orthographic picture, the gap between the
+        // front face and the edge facet to its right is the gap asked for,
+        // in the picture's units (the cube's half side is 1 / radius).
+        let mut front = cameras()[1];
+        front.set_view("front").unwrap();
+        let seen = facets_gapped(&front, gap);
+        let face = seen.iter().find(|f| f.side == [0, -1, 0]).unwrap();
+        let strip = seen.iter().find(|f| f.side == [1, -1, 0]).unwrap();
+        let right_of_face = face.patch.iter().map(|p| p[0]).fold(f64::MIN, f64::max);
+        let left_of_strip = strip.patch.iter().map(|p| p[0]).fold(f64::MAX, f64::min);
+        let unit = 1.0 / (1.0 + 2.0 * CUT * CUT).sqrt();
+        // The face's side moves in by half the gap; the strip's, seen at
+        // 45°, by half the gap times cos 45°.
+        let want = gap * 0.5 * (1.0 + std::f64::consts::FRAC_1_SQRT_2) * unit;
+        assert!(
+            ((left_of_strip - right_of_face) - want).abs() < 1e-9,
+            "{} against {want}",
+            left_of_strip - right_of_face
+        );
+        // A gap that is not a number, or one too large, is no gap or the
+        // largest there is; never a broken patch.
+        for odd in [f64::NAN, f64::INFINITY, -1.0, 5.0] {
+            for facet in facets_gapped(&front, odd) {
+                assert!(facet.patch.iter().flatten().all(|c| c.is_finite()));
+                for &p in &facet.patch {
+                    assert!(inside_by(&facet.outline, p) >= -1e-12);
+                }
+            }
+        }
+        // The room for a label: the front face seen straight on has room
+        // both ways; seen nearly edge-on it has little room across.
+        let face = facet_at(&front, [0.0, 0.0]).unwrap();
+        let [w, h] = face.room();
+        assert!((w - h).abs() < 1e-9 && w > 0.5, "{w} {h}");
+        let mut grazing = front;
+        grazing.yaw += 80.0;
+        let face = facets(&grazing)
+            .into_iter()
+            .find(|f| f.side == [0, -1, 0])
+            .unwrap();
+        let [w, h] = face.room();
+        assert!(w < 0.2 && h > 0.5, "{w} {h}");
+    }
+
+    /// The triad shows the world axes the way the viewport does: from
+    /// the front X points right and Z up with Y going into the screen,
+    /// from the top X right and Y up, from the right Y right, and from
+    /// the iso corner all three show, X to the lower right, Y to the
+    /// upper right... as the named views have them.
+    #[test]
+    fn the_triad_points_the_world_axes_as_the_standard_views_show_them() {
+        let arm = |camera: &CameraState, axis: usize| {
+            triad(camera)
+                .unwrap()
+                .into_iter()
+                .find(|a| a.axis == axis)
+                .unwrap()
+        };
+        let near =
+            |p: [f64; 2], q: [f64; 2]| (p[0] - q[0]).abs() < 1e-9 && (p[1] - q[1]).abs() < 1e-9;
+        for camera in cameras() {
+            let look = |view: &str| {
+                let mut c = camera;
+                c.set_view(view).unwrap();
+                c
+            };
+            let front = look("front");
+            assert!(near(arm(&front, 0).tip, [1.0, 0.0]));
+            assert!(near(arm(&front, 2).tip, [0.0, -1.0]));
+            assert!(near(arm(&front, 1).tip, [0.0, 0.0]));
+            assert!((arm(&front, 1).toward + 1.0).abs() < 1e-9, "Y points away");
+            let top = look("top");
+            assert!(near(arm(&top, 0).tip, [1.0, 0.0]));
+            assert!(near(arm(&top, 1).tip, [0.0, -1.0]));
+            assert!(
+                (arm(&top, 2).toward - 1.0).abs() < 1e-9,
+                "Z points at the viewer"
+            );
+            let right = look("right");
+            assert!(near(arm(&right, 1).tip, [1.0, 0.0]));
+            assert!(near(arm(&right, 2).tip, [0.0, -1.0]));
+            let back = look("back");
+            assert!(near(arm(&back, 0).tip, [-1.0, 0.0]));
+            let iso = look("iso");
+            let (x, y, z) = (arm(&iso, 0), arm(&iso, 1), arm(&iso, 2));
+            assert!(x.tip[0] > 0.3 && x.tip[1] > 0.1, "{x:?}");
+            assert!(y.tip[0] > 0.3 && y.tip[1] < -0.1, "{y:?}");
+            assert!(z.tip[0].abs() < 1e-9 && z.tip[1] < -0.5, "{z:?}");
+            // Painted far to near: the order is by how much they point at
+            // the viewer.
+            let arms = triad(&iso).unwrap();
+            assert!(arms.windows(2).all(|w| w[0].toward <= w[1].toward));
+            // The same for a camera that is not at a standard view: the
+            // tips are the camera's own axes.
+            let turned = CameraState {
+                yaw: 117.0,
+                pitch: -33.0,
+                ..camera
+            };
+            let axes = turned.to_render().axes().unwrap();
+            for (k, d) in [Vec3::X, Vec3::Y, Vec3::Z].into_iter().enumerate() {
+                let a = arm(&turned, k);
+                assert!(near(a.tip, [d.dot(axes.right), -d.dot(axes.up)]));
+                assert!((a.tip[0].hypot(a.tip[1]).powi(2) + a.toward.powi(2) - 1.0).abs() < 1e-9);
+            }
+        }
     }
 
     #[test]

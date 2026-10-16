@@ -592,10 +592,13 @@ fn the_controls_beside_the_view_cube_set_the_section_and_are_not_the_viewport() 
     let viewport_rect = shell.viewport_rect().unwrap();
     let toggle = hit(&shell, "toggle");
     assert!(viewport_rect.contains_rect(toggle), "{toggle:?}");
-    // Beside the view cube, above the row with the see-through slider.
+    // Beside the view cube, above the row with the see-through slider,
+    // left-aligned with that row.
     let cube = shell.view_cube_rect().unwrap();
     let slider = shell.transparency_rect().unwrap();
     assert!(toggle.right() < cube.left() && toggle.bottom() < slider.top());
+    let sketches = shell.show_hits()[0].1;
+    assert!((toggle.left() - sketches.left()).abs() < 0.5);
     assert_eq!(shell.section_hits().len(), 1, "off: only the toggle");
     let camera = shell.state.camera;
 
@@ -606,7 +609,9 @@ fn the_controls_beside_the_view_cube_set_the_section_and_are_not_the_viewport() 
     assert_eq!(shell.state.section.offset, 10.0);
     assert!(shell.section().is_some());
     let names: Vec<&str> = shell.section_hits().iter().map(|(name, _)| *name).collect();
-    assert_eq!(names, ["toggle", "z", "y", "x", "offset", "flip"]);
+    assert_eq!(names, ["toggle", "x", "y", "z", "offset", "flip"]);
+    // Turning it on did not move the toggle.
+    assert!((hit(&shell, "toggle").left() - toggle.left()).abs() < 0.5);
     // They read X, Y, Z from the left.
     assert!(hit(&shell, "x").left() < hit(&shell, "y").left());
     assert!(hit(&shell, "y").left() < hit(&shell, "z").left());
