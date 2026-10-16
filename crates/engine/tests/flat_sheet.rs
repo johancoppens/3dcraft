@@ -459,6 +459,12 @@ fn panel_cut(s: &mut Session, target: &str, name: &str) {
 /// points out of the body), right-handed, y up the face or x along the
 /// model's x on a face that lies flat; the outline counter-clockwise.
 fn check_frame(result: &Value, loops: &[Loop], centre: [f64; 3], area: f64) {
+    // No negative zero in the result.
+    for key in ["origin", "xAxis", "yAxis"] {
+        for v in numbers(&result[key]) {
+            assert!(!(v == 0.0 && v.is_sign_negative()), "-0 in {key}: {result}");
+        }
+    }
     let (x, y) = (arr3(&result["xAxis"]), arr3(&result["yAxis"]));
     let origin = arr3(&result["origin"]);
     let z = cross3(x, y);
@@ -980,5 +986,50 @@ fn a_sheet_that_cannot_be_drawn_is_refused_with_the_reason() {
         &["`faces`"],
     );
     assert!(!dir.join("bad.svg").exists() && !dir.join("bad.dxf").exists());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_face_tilted_just_past_the_angular_tolerance_is_drawn_by_the_slope_rule() {
+    // The document's angular tolerance is 1e-9 rad by default: a block
+    // whose axis leans by half of it lies flat, one leaning by ten times
+    // it has a slope, and xAxis pins either.
+    let (mut s, dir) = session("threshold");
+    for (name, tilt) in [("Flat", 0.5e-9), ("Sloped", 1e-8)] {
+        run(
+            &mut s,
+            "feature.block",
+            json!({"name": name, "size": [30, 20, 3], "axis": [0, -tilt, 1]}),
+        );
+    }
+    let flat = run(
+        &mut s,
+        "file.export",
+        json!({"path": "f.svg", "face": "F1:face(1)"}),
+    );
+    let sloped = run(
+        &mut s,
+        "file.export",
+        json!({"path": "s.svg", "face": "F2:face(1)"}),
+    );
+    println!("{flat}\n{sloped}");
+    let (fx, sx) = (arr3(&flat["xAxis"]), arr3(&sloped["xAxis"]));
+    assert!(near(fx[0], 1.0, 1.0), "flat: x along x: {flat}");
+    // The sloped one: y runs up its slope, along ±y, and x is level
+    // across it, not the model's x.
+    let sy = arr3(&sloped["yAxis"]);
+    assert!(
+        near(sy[1].abs(), 1.0, 1.0) && near(sx[1], 0.0, 1.0),
+        "sloped: y up the slope: {sloped}"
+    );
+    for (file, face) in [("fp.svg", "F1:face(1)"), ("sp.svg", "F2:face(1)")] {
+        let pinned = run(
+            &mut s,
+            "file.export",
+            json!({"path": file, "face": face, "xAxis": [1, 0, 0]}),
+        );
+        let x = arr3(&pinned["xAxis"]);
+        assert!(near(x[0], 1.0, 1.0) && near(x[1], 0.0, 1.0), "{pinned}");
+    }
     std::fs::remove_dir_all(&dir).unwrap();
 }
