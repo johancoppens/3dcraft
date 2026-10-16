@@ -34,6 +34,7 @@ mod follow;
 mod loft;
 mod move_face;
 mod offset_face;
+mod offset_profile;
 pub mod progress;
 mod query;
 mod revolve;
@@ -50,6 +51,7 @@ pub use cache::RegenCache;
 pub use cause::root_cause;
 pub use craft3d_kernel::extrude::{Origin, Origins, Role};
 pub use craft3d_kernel::helix::Helix;
+pub use craft3d_kernel::offset_profile::{OffsetOrigin, OffsetOutline, OffsetSource};
 pub use craft3d_kernel::profile::{Curve2, SketchCurve as PatternCurve};
 /// The kernel keeps search trees of freeform surfaces between operations;
 /// the engine lets go of those no open document holds.
@@ -59,6 +61,7 @@ pub use datum::{Datum, EdgeReference, References, references};
 pub use derive::{MAX_PATTERN_FACES, MAX_PATTERN_INSTANCES};
 pub use extrude::name_of;
 pub use follow::{newest_body, short_face_name};
+pub use offset_profile::OffsetResult;
 pub use query::{edges_between, faces_named, faces_of_edges};
 pub use sketch::{
     ConstraintResult, ConstraintState, SketchResult, settle_sketches, settle_sketches_cached,
@@ -416,6 +419,9 @@ pub struct FeatureResult {
     pub sweep: Option<SweepReport>,
     /// For a thread that was built: what it is.
     pub thread: Option<ThreadReport>,
+    /// For an offset of the profiles of a sketch that was built: its
+    /// outline.
+    pub offset: Option<Arc<OffsetResult>>,
     /// The later feature this feature's body went into. The body is then
     /// no longer one of the document's bodies; it stays here because names
     /// are resolved against it.
@@ -650,6 +656,7 @@ fn build(doc: &Document, variables: &Evaluation, feature: &Feature) -> Result<Bo
         }
         // Solved in `features`; a sketch is not a body.
         FeatureKind::Sketch(_) => return Err("a sketch has no body".to_string()),
+        FeatureKind::OffsetProfile(_) => return Err("an offset has no body".to_string()),
         // Built in `features`, which knows the sketch's result.
         FeatureKind::Extrude(_) => return Err("an extrusion needs its sketch".to_string()),
         FeatureKind::Revolve(_) => return Err("a revolution needs its sketch".to_string()),
@@ -811,6 +818,7 @@ fn build_feature(
     let mut placed = None;
     let mut followed = None;
     let mut threaded = None;
+    let mut outline = None;
     let (status, body) = if rolled_back {
         (Status::RolledBack, None)
     } else if feature.suppressed {
@@ -833,6 +841,14 @@ fn build_feature(
                 });
                 (status, None)
             }
+        }
+    } else if let FeatureKind::OffsetProfile(offset) = &feature.kind {
+        match offset_profile::build(doc, variables, offset, earlier) {
+            Ok(made) => {
+                outline = Some(Arc::new(made));
+                (Status::Ok, None)
+            }
+            Err(reason) => (Status::Failed(reason), None),
         }
     } else if let FeatureKind::DatumPlane(plane) = &feature.kind {
         match datum::plane(doc, variables, plane, earlier) {
@@ -898,6 +914,11 @@ fn build_feature(
                         &mut named.faces,
                         &[NameRole::StartCap, NameRole::EndCap],
                     );
+                    // Swept from an offset: named after its curves.
+                    let caps = [NameRole::StartCap, NameRole::EndCap];
+                    offset_profile::rename(doc, earlier, sketch, &mut named.faces, &caps)?;
+                    offset_profile::rename(doc, earlier, sketch, &mut named.edges, &caps)?;
+                    offset_profile::rename(doc, earlier, sketch, &mut named.vertices, &caps)?;
                 }
                 if up_to {
                     extrude::not_through_itself(&body, &origins, &named, doc.tolerance.linear)?;
@@ -1098,6 +1119,7 @@ fn build_feature(
             instances,
             sweep: followed,
             thread: threaded,
+            offset: outline,
             consumed_by: None,
             followed: None,
         },

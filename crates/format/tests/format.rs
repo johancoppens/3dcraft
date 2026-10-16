@@ -168,7 +168,7 @@ fn saving_twice_gives_the_same_bytes() {
 fn the_manifest_of_a_small_document_is_exactly_this() {
     let expected = r#"{
   "format": "3dcraft",
-  "format_version": 18,
+  "format_version": 19,
   "document": {
     "units": {
       "length": "mm",
@@ -340,17 +340,17 @@ fn fix_trailing_commas(json: &str) -> String {
 
 #[test]
 fn a_newer_format_version_says_a_newer_3dcraft_is_needed() {
-    let error = load_error(&edited(&version_field(), "\"format_version\": 19"));
+    let error = load_error(&edited(&version_field(), "\"format_version\": 20"));
     assert!(matches!(
         error,
         FormatError::NewerVersion {
-            file: 19,
+            file: 20,
             supported: FORMAT_VERSION
         }
     ));
     let text = error.to_string();
     assert!(
-        text.contains("version 19")
+        text.contains("version 20")
             && text.contains(&format!("version {FORMAT_VERSION}"))
             && text.contains("newer 3DCraft is needed"),
         "{text}"
@@ -1637,7 +1637,7 @@ fn a_sketch_pattern_is_written_like_this_and_round_trips() {
     doc.validate().unwrap();
     let json = to_manifest_json(&doc).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["format_version"], 18);
+    assert_eq!(value["format_version"], 19);
     let kind = &value["document"]["features"][1]["kind"];
     assert_eq!(kind["next_pattern_id"], 4);
     assert_eq!(
@@ -2645,6 +2645,72 @@ fn a_sweep_is_written_like_this_and_round_trips() {
     let extra = json.replace(r#""path": 9"#, r#""path": 9, "twist": "30 deg""#);
     assert_ne!(extra, json);
     assert!(from_manifest_json(extra.as_bytes()).is_err());
+}
+
+/// An offset of the profiles of a sketch (format 19), and a name of what
+/// a sweep made of it: the offset's curves are numbers in `sources` (a
+/// head with the feature, then the curves), and read back to the same
+/// name.
+#[test]
+fn an_offset_profile_is_written_like_this_and_round_trips() {
+    use craft3d_doc::{Expr, FeatureId, Fillet, OffsetCorners, OffsetProfile, PersistentName};
+    let mut doc = small();
+    doc.add_feature(
+        Some("Kerf"),
+        FeatureKind::OffsetProfile(OffsetProfile {
+            sketch: FeatureId(7),
+            distance: Expr::new("kerf / 2"),
+            corners: OffsetCorners::Round,
+        }),
+    )
+    .unwrap();
+    doc.add_feature(
+        Some("Sharp"),
+        FeatureKind::OffsetProfile(OffsetProfile {
+            sketch: FeatureId(7),
+            distance: Expr::new("-1 mm"),
+            corners: OffsetCorners::Sharp,
+        }),
+    )
+    .unwrap();
+    let side: PersistentName = "F10:side(F9:offset(e7[3]))".parse().unwrap();
+    let corner: PersistentName = "F10:piece(1)/F10:side(F9:offsetCorner(e7,e8))"
+        .parse()
+        .unwrap();
+    doc.add_feature(
+        Some("Round"),
+        FeatureKind::Fillet(Fillet {
+            edges: vec![[side.clone(), corner.clone()]],
+            radius: Expr::new("1 mm"),
+            chain: false,
+        }),
+    )
+    .unwrap();
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["format_version"], 19);
+    let features = value["document"]["features"].as_array().unwrap();
+    let n = features.len();
+    assert_eq!(
+        features[n - 3]["kind"],
+        serde_json::json!({"type": "offsetProfile", "sketch": 7, "distance": "kerf / 2"})
+    );
+    assert_eq!(
+        features[n - 2]["kind"],
+        serde_json::json!({"type": "offsetProfile", "sketch": 7, "distance": "-1 mm", "corners": "sharp"})
+    );
+    let read = from_manifest_json(json.as_bytes()).unwrap();
+    assert_eq!(read, doc);
+    assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
+    let FeatureKind::Fillet(fillet) = &read.features[n - 1].kind else {
+        panic!("not a fillet");
+    };
+    assert_eq!(fillet.edges[0][0].to_string(), side.to_string());
+    assert_eq!(fillet.edges[0][1].to_string(), corner.to_string());
+    // An unknown corner rule is refused.
+    let bad = json.replace(r#""corners": "sharp""#, r#""corners": "square""#);
+    assert_ne!(bad, json);
+    assert!(from_manifest_json(bad.as_bytes()).is_err());
 }
 
 /// A version-9 file, as written before sweeps existed: a fillet and a

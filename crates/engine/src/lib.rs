@@ -26,6 +26,7 @@ mod file_cmds;
 mod helix_cmds;
 mod loft_cmds;
 mod mass;
+mod offset_cmds;
 mod params;
 mod pick_cmds;
 mod query_cmds;
@@ -279,6 +280,7 @@ impl Session {
                 face_cmds::SPECS,
                 datum_cmds::SPECS,
                 helix_cmds::SPECS,
+                offset_cmds::SPECS,
                 query_cmds::SPECS,
                 pick_cmds::SPECS,
                 recovery_cmds::SPECS,

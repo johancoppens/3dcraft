@@ -153,6 +153,9 @@ pub(crate) fn drawn<'a>(
         ));
     };
     let name = &source.name;
+    if let FeatureKind::OffsetProfile(offset) = &source.kind {
+        return offset_drawn(doc, earlier, id, name, offset.sketch);
+    }
     let FeatureKind::Sketch(sketch) = &source.kind else {
         return Err(format!(
             "sketch: `{name}` is a {}, not a sketch",
@@ -236,6 +239,53 @@ pub(crate) fn drawn<'a>(
         sketch,
         solved,
         curves,
+        plane,
+        tolerance,
+    })
+}
+
+/// What an offset of the profiles of a sketch gives a feature made from
+/// its curves: the offset outline (the kernel's curves are numbered from 0;
+/// `offset_profile::rename` names what is made of them), and the plane
+/// and solution of its sketch.
+fn offset_drawn<'a>(
+    doc: &'a Document,
+    earlier: &'a [FeatureResult],
+    id: FeatureId,
+    name: &'a str,
+    sketch_id: FeatureId,
+) -> Result<Drawn<'a>, String> {
+    let Some(outcome) = earlier.iter().find(|r| r.id == id) else {
+        return Err(format!(
+            "sketch: `{name}` {}",
+            crate::comes_after(doc, earlier, id)
+        ));
+    };
+    match &outcome.status {
+        Status::Ok => {}
+        Status::Suppressed => return Err(format!("sketch: `{name}` is suppressed")),
+        Status::RolledBack => return Err(format!("sketch: `{name}` is rolled back")),
+        Status::Failed(_) => return Err(format!("sketch: `{name}` {FIX_IT_FIRST}")),
+    }
+    let (Some(made), Ok(sketch)) = (&outcome.offset, doc.sketch(sketch_id)) else {
+        return Err(format!("sketch: `{name}` has no outline"));
+    };
+    let Some(solved) = earlier
+        .iter()
+        .find(|r| r.id == sketch_id)
+        .and_then(|r| r.sketch.as_deref())
+    else {
+        return Err(format!("sketch: the sketch of `{name}` has no solution"));
+    };
+    let tolerance = Tolerance::new(doc.tolerance.linear, doc.tolerance.angular)
+        .ok_or("the document's tolerance is not positive and finite".to_string())?;
+    let plane = Frame::new(solved.origin, solved.normal, solved.x_axis)
+        .ok_or_else(|| format!("sketch `{name}`: its plane is not finite"))?;
+    Ok(Drawn {
+        name,
+        sketch,
+        solved,
+        curves: made.outline.curves.clone(),
         plane,
         tolerance,
     })

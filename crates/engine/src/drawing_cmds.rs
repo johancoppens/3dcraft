@@ -153,6 +153,16 @@ pub(crate) fn export(
 }
 
 fn sketch(session: &mut Session, p: &Params) -> Result<Source, CommandError> {
+    {
+        let doc = session.document()?.history.current();
+        let id = feature_ref(doc, p, ID, "sketch")?;
+        if matches!(
+            doc.feature(id).map(|f| &f.kind),
+            Some(craft3d_doc::FeatureKind::OffsetProfile(_))
+        ) {
+            return offset(session, id);
+        }
+    }
     let id = crate::sketch_cmds::sketch_ref(session, p, ID)?;
     let construction = p.bool("construction")?.unwrap_or(false);
     let open = session.document_mut()?;
@@ -226,21 +236,38 @@ fn with_instances(
     sketch: &craft3d_doc::Sketch,
     solved: &craft3d_regen::SketchResult,
 ) -> Result<(craft3d_doc::Sketch, Placed), String> {
-    use craft3d_regen::Curve2;
     let mut drawn = sketch.clone();
     let mut placed = Placed::new();
     if sketch.patterns.is_empty() {
         return Ok((drawn, placed));
     }
     let instances = craft3d_regen::pattern_instances(sketch, solved)?;
+    add_curves(
+        &mut drawn,
+        &mut placed,
+        instances
+            .into_iter()
+            .map(|(made, construction)| (made.curve, construction)),
+    )?;
+    Ok((drawn, placed))
+}
+
+/// Adds `curves` to `drawn` as entities on points of their own, and
+/// records where those points are.
+fn add_curves(
+    drawn: &mut craft3d_doc::Sketch,
+    placed: &mut Placed,
+    curves: impl Iterator<Item = (craft3d_regen::Curve2, bool)>,
+) -> Result<(), String> {
+    use craft3d_regen::Curve2;
     let text = |e: craft3d_doc::SketchError| e.to_string();
-    for (made, construction) in instances {
+    for (curve, construction) in curves {
         let mut at = |[x, y]: [f64; 2]| -> Result<craft3d_doc::EntityId, String> {
             let id = drawn.add_point(x, y).map_err(text)?;
             placed.insert(id, (x, y));
             Ok(id)
         };
-        match made.curve {
+        match curve {
             Curve2::Line { start, end } => {
                 let (a, b) = (at(start)?, at(end)?);
                 drawn.add_line(a, b, construction).map_err(text)?;
@@ -265,7 +292,62 @@ fn with_instances(
             }
         }
     }
-    Ok((drawn, placed))
+    Ok(())
+}
+
+/// The outline an offset of the profiles of a sketch made: the beam path
+/// of a laser, with its kerf.
+fn offset(session: &mut Session, id: craft3d_doc::FeatureId) -> Result<Source, CommandError> {
+    let open = session.document_mut()?;
+    let regen = open.regen();
+    let doc = open.history.current();
+    let Some(feature) = doc.feature(id) else {
+        return fail(format!("{ID}: there is no feature {id}"));
+    };
+    let name = &feature.name;
+    let outcome = regen.feature(id);
+    if let Some(Status::Failed(reason)) = outcome.map(|o| &o.status) {
+        return fail(format!(
+            "{ID}: the offset `{name}` failed: {reason}; fix it first"
+        ));
+    }
+    let Some(made) = outcome.and_then(|o| o.offset.as_ref()) else {
+        return fail(format!(
+            "{ID}: the offset `{name}` is not regenerated (suppressed or rolled back)"
+        ));
+    };
+    let plane = doc
+        .sketch(made.sketch)
+        .map_err(|e| CommandError::new(format!("{ID}: {e}")))?
+        .plane
+        .clone();
+    let mut drawn = craft3d_doc::Sketch::new(plane);
+    let mut placed = Placed::new();
+    add_curves(
+        &mut drawn,
+        &mut placed,
+        made.outline.curves.iter().map(|c| (c.curve.clone(), false)),
+    )
+    .map_err(|e| CommandError::new(format!("{ID}: the offset `{name}`: {e}")))?;
+    let outline = craft3d_io::sketch_outline(
+        &drawn,
+        &|entity| placed.get(&entity).copied(),
+        // A circle has its radius in the sketch.
+        &|_| None,
+        false,
+        doc.tolerance.linear,
+    )
+    .map_err(|e| CommandError::new(format!("{ID}: the offset `{name}`: {e}")))?;
+    let skipped: Vec<String> = outline.degenerate.iter().map(ToString::to_string).collect();
+    Ok(Source {
+        json: json!({
+            "offset": id.to_string(),
+            "name": name,
+            "skipped": skipped,
+        }),
+        paths: outline.paths,
+        construction: outline.construction,
+    })
 }
 
 fn face(session: &mut Session, p: &Params) -> Result<Source, CommandError> {

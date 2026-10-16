@@ -78,7 +78,7 @@ fn feature_revolve(session: &mut Session, params: &Value) -> Run {
     )?;
     let doc = session.document()?.history.current();
     let sketch = feature_ref(doc, &p, ID, "sketch")?;
-    doc.sketch(sketch).map_err(doc_error(ID))?;
+    doc.profile_source(sketch).map_err(doc_error(ID))?;
     let axis = revolve_axis(doc, ID, p.get("axis").ok_or_else(|| p.missing("axis"))?)?;
     let combine = combine_param(doc, &p, ID)?;
     let kind = FeatureKind::Revolve(Revolve {

@@ -23,7 +23,8 @@ pub use datum::{
 };
 pub use name::{
     CurveIndex, CurveRef, FaceLists, MAX_CURVE_ENTITY, MAX_CURVE_INDEX, MAX_NAME_DEPTH,
-    MAX_NAME_FACES, MAX_NAME_SOURCES, NameRole, PersistentName,
+    MAX_NAME_FACES, MAX_NAME_SOURCES, MAX_OFFSET_PIECE, NameRole, OffsetHead, OffsetKind,
+    PersistentName, offset_groups,
 };
 
 pub use sketch::{
@@ -376,6 +377,46 @@ pub struct Loft {
     /// The last section joins the first: a ring without ends.
     #[serde(default)]
     pub closed: bool,
+}
+
+/// How an offset outline goes round a corner where the offset curves of
+/// its two neighbours part.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OffsetCorners {
+    /// An arc of the offset distance about the corner: the true offset
+    /// (every point at the distance from the outline), the path a round
+    /// beam or cutter takes.
+    #[default]
+    Round,
+    /// The two neighbours carried on along their tangents to where they
+    /// meet: a mitre.
+    Sharp,
+}
+
+impl OffsetCorners {
+    /// The name, as in command parameters and files.
+    pub fn name(self) -> &'static str {
+        match self {
+            OffsetCorners::Round => "round",
+            OffsetCorners::Sharp => "sharp",
+        }
+    }
+}
+
+/// The closed profiles of a sketch, every one of them, offset by a
+/// distance: positive grows the material (outer loops out, holes in),
+/// negative shrinks it. It makes no body; a feature that takes the
+/// profiles of a sketch (an extrusion, a revolution, a sweep, a loft)
+/// takes this feature in its place. It is made at regeneration from the
+/// solved sketch with its patterns, so it follows every edit of it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OffsetProfile {
+    /// The sketch feature whose profiles are offset.
+    pub sketch: FeatureId,
+    pub distance: Expr,
+    #[serde(default)]
+    pub corners: OffsetCorners,
 }
 
 /// The solid one closed profile sweeps out as it is carried along a path
@@ -837,6 +878,7 @@ pub enum FeatureKind {
     Shell(Shell),
     DeleteFace(DeleteFace),
     Thread(Thread),
+    OffsetProfile(OffsetProfile),
 }
 
 impl FeatureKind {
@@ -870,6 +912,7 @@ impl FeatureKind {
             FeatureKind::Shell(_) => "shell",
             FeatureKind::DeleteFace(_) => "deleteFace",
             FeatureKind::Thread(_) => "thread",
+            FeatureKind::OffsetProfile(_) => "offsetProfile",
         }
     }
 
@@ -947,7 +990,8 @@ impl FeatureKind {
             | FeatureKind::DatumPlane(_)
             | FeatureKind::DatumAxis(_)
             | FeatureKind::DatumPoint(_)
-            | FeatureKind::DatumHelix(_) => None,
+            | FeatureKind::DatumHelix(_)
+            | FeatureKind::OffsetProfile(_) => None,
         }
     }
 
@@ -966,6 +1010,7 @@ impl FeatureKind {
             },
             FeatureKind::Loft(l) => l.sections.iter().map(|s| s.sketch).collect(),
             FeatureKind::Sweep(s) => vec![s.sketch, s.path],
+            FeatureKind::OffsetProfile(o) => vec![o.sketch],
             FeatureKind::Sketch(sketch) => match &sketch.plane {
                 SketchPlane::Face { face, .. } => vec![face.feature],
                 SketchPlane::Datum { plane, .. } => vec![*plane],
@@ -1044,6 +1089,7 @@ impl FeatureKind {
             }
             FeatureKind::Sketch(s) => out = s.exprs(),
             FeatureKind::Extrude(e) => out = vec![named("distance", &e.distance)],
+            FeatureKind::OffsetProfile(o) => out = vec![named("distance", &o.distance)],
             FeatureKind::Revolve(r) => out = vec![named("angle", &r.angle)],
             FeatureKind::Transform(t) => {
                 out = triple("translate", &t.translate);
@@ -1149,6 +1195,7 @@ impl FeatureKind {
                 .collect(),
             FeatureKind::Sketch(s) => s.exprs_mut(),
             FeatureKind::Extrude(e) => vec![&mut e.distance],
+            FeatureKind::OffsetProfile(o) => vec![&mut o.distance],
             FeatureKind::Revolve(r) => vec![&mut r.angle],
             FeatureKind::Transform(t) => t
                 .translate
@@ -1633,6 +1680,16 @@ impl Document {
 
     pub fn feature_by_name(&self, name: &str) -> Option<&Feature> {
         self.features.iter().find(|f| f.name == name)
+    }
+
+    /// The sketch a feature that takes closed profiles reads them from:
+    /// a sketch, or an offset of the profiles of one (whose sketch is
+    /// returned).
+    pub fn profile_source(&self, id: FeatureId) -> Result<&Sketch, DocError> {
+        match self.feature(id).map(|f| &f.kind) {
+            Some(FeatureKind::OffsetProfile(offset)) => self.sketch(offset.sketch),
+            _ => self.sketch(id),
+        }
     }
 
     /// The sketch of a sketch feature.

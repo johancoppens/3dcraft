@@ -210,12 +210,14 @@ Sketch entities and constraints as commands; `solve` (Newton-type, DOF analysis,
 - Deviations: profile detection moved to M6 by the developer; sketches lay on world planes with an offset until datum planes (M8.5, 2026-10-13); splines moved to M9 (2026-10-12)
 - A terse result mode for batches (`terse`), and `sketch.path`: a chain of lines and arcs through shared corners in one undo step, from coordinates alone (2026-10-13)
 - A pattern inside a sketch whose count is a formula (`sketch.pattern`: rows, grids, chained runs and rings as rigid images of the solved seed, image points `e5[last]` for the solver, names `e7[3]` and caps `e7[*]`, format 18; [`design/document.md`](design/document.md), *Patterns inside a sketch*) (2026-10-16)
+- The offset of a sketch's closed profiles (`feature.offsetProfile`: exact for lines and arcs, round or sharp corners, splits reported and vanishing loops refused with the largest distance that fits, names `F9:offset(e7[3])`, format 19; kerf as one feature; [`design/document.md`](design/document.md), *Offsets of profiles*) (2026-10-16)
 
 #### Open
 - [ ] Which constraint is blamed in a nonlinear conflict is the solver's heuristic, not a proof, and about 8% of dense random sketches end as "did not converge" instead of a diagnosis; to be judged again on real models
 - [ ] A sketch that refers to geometry of other features (projected edges, coincident with a body vertex; from the field test)
 - [ ] A picture of a sketch: `view.render` draws bodies only
 - [ ] Profile detection takes at most 4096 curves (`kernel/src/profile.rs`, `MAX_CURVES`; its touch test is quadratic) while sketch patterns may make 100 000: a 70 × 70 perforated sheet fails cleanly with the cap; owed: a spatial sort, measured before the cap is raised
+- [ ] An offset of profiles: splines (refused, "not supported yet"; owed: a fit within tol/4 refused where the curvature radius is below the distance, as `geom::offset` proves for faces), an offset as a loft section or a sweep's path, an offset of an offset, a choice of regions
 - [ ] A sketch pattern's later steps: skipping instances, a pattern along a curve, a pattern of a pattern, instance curves in line or round slots, image points in `sketch.path` and splines ([`design/document.md`](design/document.md), *Patterns inside a sketch*)
 - [ ] `panic_hunt` takes 2.5 minutes
 - [ ] Two seeded breakages of the solver's rank test are caught only by unit tests or the random run, not by a small natural sketch
