@@ -51,6 +51,8 @@ pub enum Interference {
     /// contact is on, ascending.
     Touch {
         kind: ContactKind,
+        /// For [`ContactKind::Face`], the area shared; 0 otherwise.
+        area: f64,
         at: Vec<Vec3>,
         faces_a: Vec<FaceId>,
         faces_b: Vec<FaceId>,
@@ -69,8 +71,10 @@ pub enum Interference {
 /// points in which their faces meet, a corner of one standing on a face of
 /// the other, faces on one surface) says whether and how they touch; where
 /// faces of both lie on one surface facing each other, their union decides
-/// whether they share an area (the two solids become one shell) or only an
-/// edge of it. Every refusal of the boolean (contact at the edge of
+/// whether they share an area (the boundary of the union is smaller than
+/// both boundaries by twice that area) or only an edge of it; a face's
+/// orientation counts, so a pin in a hole and a body in a cavity face
+/// the walls they lie against. Every refusal of the boolean (contact at the edge of
 /// tolerance, geometry not handled) is an error, never "clear".
 pub fn interference(
     a: &Body,
@@ -111,17 +115,36 @@ pub fn interference(
     let Some(mut kind) = found.kind else {
         return Ok(Interference::Clear);
     };
+    let mut area = 0.0;
     if found.facing {
-        // Faces of both on one surface, facing each other: an area in
-        // common joins the two into one shell of their union; an edge or a
-        // corner in common leaves them two shells.
+        // Faces of both on one surface, facing each other. Where they share
+        // an area, that area is inside the union: its boundary is smaller
+        // than both boundaries together by twice the area. That holds for a
+        // block against a block, a pin that fills a hole and a body that
+        // fills a cavity alike; an edge or a corner in common takes no
+        // area away.
         let union = boolean_with(a, b, BooleanOp::Union, tolerance, &options)?;
-        if joined(&union) {
+        let measure = |body: &Body| {
+            craft3d_topo::mass_properties(body)
+                .map(|m| m.area)
+                .ok()
+                .filter(|area| area.is_finite())
+                .ok_or(KernelError::Unsupported {
+                    operation: "interference",
+                    reason: "the boundary of a body or of the union could not be measured",
+                    faces: Vec::new(),
+                })
+        };
+        let both = measure(a)? + measure(b)?;
+        let shared = 0.5 * (both - measure(&union.body)?);
+        if shared > (tol * both.sqrt()).max(1e-9 * both) {
             kind = ContactKind::Face;
+            area = shared;
         }
     }
     Ok(Interference::Touch {
         kind,
+        area,
         at: found.at,
         faces_a: found.faces_a.into_iter().collect(),
         faces_b: found.faces_b.into_iter().collect(),
@@ -142,22 +165,6 @@ fn boxes_meet(a: &Body, b: &Body, margin: f64) -> bool {
         && blo.y <= ahi.y + margin
         && alo.z <= bhi.z + margin
         && blo.z <= ahi.z + margin
-}
-
-/// Some shell of the result has faces of both operands.
-fn joined(result: &BooleanResult) -> bool {
-    result.body.shells.iter().any(|shell| {
-        let (mut from_a, mut from_b) = (false, false);
-        for face in &shell.faces {
-            for source in result.merged.get(face.0 as usize).into_iter().flatten() {
-                match source.operand {
-                    Operand::A => from_a = true,
-                    Operand::B => from_b = true,
-                }
-            }
-        }
-        from_a && from_b
-    })
 }
 
 /// Where two solids that have no volume in common meet.
@@ -218,8 +225,12 @@ fn evidence(a: &Body, b: &Body, tolerance: &Tolerance) -> Result<Evidence, Stop>
         }
     }
     for (fa, list) in &sections.coincident_a {
-        for &(fb, agree) in list {
-            if !agree {
+        for &(fb, same_normal) in list {
+            // Their outward normals, not their surfaces', point opposite
+            // ways (a reversed face is a hole's wall or a cavity's).
+            let reversed =
+                |solid: &Solid, f: usize| solid.body.faces.get(f).is_some_and(|face| face.reversed);
+            if same_normal != (reversed(&sa, *fa) == reversed(&sb, fb)) {
                 found.facing = true;
                 found.faces_a.insert(sa.name(*fa).1);
                 found.faces_b.insert(sb.name(fb).1);
@@ -323,6 +334,10 @@ mod tests {
             let face = block(v(2.0, 0.5, 0.5), 1.0 * s, 1.0 * s, 1.0 * s);
             let found = interference(&a, &face, &tolerance).unwrap();
             assert_eq!(touch_kind(&found), ContactKind::Face, "scale {s}");
+            let Interference::Touch { area, .. } = &found else {
+                unreachable!()
+            };
+            assert!((area - s * s).abs() <= 1e-9 * s * s, "scale {s}: {area}");
             // An edge on an edge.
             let edge = block(v(2.0, 2.0, 0.0), 1.0 * s, 1.0 * s, 2.0 * s);
             let found = interference(&a, &edge, &tolerance).unwrap();
@@ -399,6 +414,69 @@ mod tests {
             };
             assert_eq!(faces_a.len(), 1, "only the top of the plate");
             assert!(at.iter().any(|p| p.distance(v(2.0, 2.0, 0.5)) <= 1e-9 * s));
+        }
+    }
+
+    fn cut(a: &Body, b: &Body) -> Body {
+        boolean_with(
+            a,
+            b,
+            BooleanOp::Subtract,
+            &Tolerance::default(),
+            &BooleanOptions::default(),
+        )
+        .unwrap()
+        .body
+    }
+
+    /// Contact with reversed faces: a pin that fits a hole exactly, a block
+    /// flush against an inner wall of an open box, and a body that fills a
+    /// closed cavity, each sharing an area of known size.
+    #[test]
+    fn walls_of_holes_and_cavities_are_faced() {
+        for s in [1e-3, 1.0, 1e4] {
+            let tolerance = Tolerance {
+                linear: 1e-7 * s,
+                ..Tolerance::default()
+            };
+            let v = |x: f64, y: f64, z: f64| Vec3::new(x * s, y * s, z * s);
+            let face_area = |found: &Interference| match found {
+                Interference::Touch {
+                    kind: ContactKind::Face,
+                    area,
+                    ..
+                } => *area,
+                other => panic!("scale {s}: not a face contact: {other:?}"),
+            };
+            let at = |p: Vec3| Frame::WORLD.at(p).unwrap();
+            // A plate 1 thick with a hole of radius 2, and a pin of radius 2
+            // through it: the hole's wall, 2 pi r t.
+            let plate = block(Vec3::ZERO, 10.0 * s, 10.0 * s, s);
+            let drill = primitives::cylinder(&at(v(5.0, 5.0, -1.0)), 2.0 * s, 3.0 * s).unwrap();
+            let holed = cut(&plate, &drill);
+            let pin = primitives::cylinder(&at(v(5.0, 5.0, -2.0)), 2.0 * s, 5.0 * s).unwrap();
+            let found = interference(&holed, &pin, &tolerance).unwrap();
+            let want = 2.0 * std::f64::consts::PI * 2.0 * s * s;
+            let area = face_area(&found);
+            assert!((area - want).abs() <= 1e-6 * want, "scale {s}: {area}");
+            // An open box, walls 1 thick, and a block against an inner wall.
+            let outer = block(Vec3::ZERO, 10.0 * s, 10.0 * s, 6.0 * s);
+            let inside = block(v(1.0, 1.0, 1.0), 8.0 * s, 8.0 * s, 6.0 * s);
+            let open = cut(&outer, &inside);
+            let flush = block(v(1.0, 2.0, 2.0), 2.0 * s, 2.0 * s, 2.0 * s);
+            let area = face_area(&interference(&open, &flush, &tolerance).unwrap());
+            assert!(
+                (area - 4.0 * s * s).abs() <= 1e-9 * s * s,
+                "scale {s}: {area}"
+            );
+            // A closed cavity and the body that fills it: all six walls.
+            let cavity = block(v(2.0, 2.0, 2.0), 6.0 * s, 6.0 * s, 6.0 * s);
+            let hollow = cut(&block(Vec3::ZERO, 10.0 * s, 10.0 * s, 10.0 * s), &cavity);
+            let area = face_area(&interference(&hollow, &cavity, &tolerance).unwrap());
+            assert!(
+                (area - 216.0 * s * s).abs() <= 1e-9 * 216.0 * s * s,
+                "scale {s}: {area}"
+            );
         }
     }
 }

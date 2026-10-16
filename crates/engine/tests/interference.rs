@@ -288,3 +288,55 @@ fn laser_box_at_kerf_zero_and_kerf_015() {
         }
     }
 }
+
+/// A pin that fits a drilled hole exactly shares the hole's wall: a face
+/// contact (the wall is a reversed face), with the area 2 pi r t.
+#[test]
+fn a_pin_in_its_hole_touches_on_a_face() {
+    let mut s = new_session();
+    block(&mut s, "Plate", [0.0; 3], [10.0, 10.0, 1.0]);
+    run(
+        &mut s,
+        "feature.cylinder",
+        &json!({"name": "Drill", "radius": "2 mm", "height": "3 mm", "position": ["5 mm", "5 mm", "-1 mm"]}),
+    );
+    run(
+        &mut s,
+        "feature.boolean",
+        &json!({"op": "subtract", "target": "Plate", "tool": "Drill", "name": "Holed"}),
+    );
+    run(
+        &mut s,
+        "feature.cylinder",
+        &json!({"name": "Pin", "radius": "2 mm", "height": "5 mm", "position": ["5 mm", "5 mm", "-2 mm"]}),
+    );
+    let answer = run(&mut s, ID, &json!({}));
+    let p = pair(&answer, "Holed", "Pin");
+    assert_eq!(p["status"], "touch", "{p}");
+    assert_eq!(p["contact"], "face", "{p}");
+    let want = 2.0 * std::f64::consts::PI * 2.0;
+    assert!(close(p["area"].as_f64().unwrap(), want, 1e-6), "{p}");
+}
+
+/// More pairs past the box test than one question checks is an error that
+/// names the count, before any boolean.
+#[test]
+fn too_many_pairs_to_check_is_an_error() {
+    let mut s = new_session();
+    for n in 0..65 {
+        block(
+            &mut s,
+            &format!("B{n}"),
+            [0.01 * f64::from(n), 0.0, 0.0],
+            [1.0; 3],
+        );
+    }
+    let error = s.execute(ID, &json!({})).unwrap_err().to_string();
+    assert!(error.contains("2080 pairs"), "{error}");
+    let some = run(
+        &mut s,
+        ID,
+        &json!({"bodies": ["B0", "B1", "B2"], "details": false}),
+    );
+    assert_eq!(some["summary"]["overlap"], 3, "{some}");
+}

@@ -13,7 +13,7 @@ use crate::commands::{Run, fail, feature_ref, length_unit, vec3};
 use crate::params::Params;
 use crate::{CommandError, CommandSpec, Session, commands::spec};
 use craft3d_doc::{Document, FeatureId};
-use craft3d_kernel::boolean::{Interference, Operand, interference};
+use craft3d_kernel::boolean::{ContactKind, Interference, Operand, interference};
 use craft3d_math::{Bbox3, Tolerance};
 use craft3d_regen::Regen;
 use craft3d_topo::{Body, FaceId};
@@ -28,7 +28,11 @@ const ID: &str = "document.interference";
 const MAX_BODIES: usize = 2_000;
 /// Most pairs one question may name.
 const MAX_PAIRS: usize = 10_000;
-/// Most pairs one answer lists; beyond it, clear pairs are only counted.
+/// Most pairs whose boxes meet one question sends to the kernel (each
+/// costs one or two booleans).
+const MAX_CHECKED: usize = 2_000;
+/// With more pairs than this, clear pairs are only counted, not listed
+/// (the others are at most [`MAX_CHECKED`], so all of them are listed).
 const MAX_LISTED: usize = 5_000;
 /// Most face names listed per body of a pair.
 const MAX_FACES: usize = 200;
@@ -38,7 +42,7 @@ const MAX_THREADS: usize = 8;
 
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("document.interference", "Interference", r#"{"bodies": [feature id or name, ...] = all bodies, "pairs": [[a, b], ...], "details": boolean = true}"#,
-        "Checks bodies for clashes without changing the document (no feature, no undo step, not dirty). For every pair of the bodies (or only the pairs given; not both), in order, status is clear (no point in common), touch (contact without common volume; contact: face for a shared area, edge for contact along a curve such as an edge on a face or a cylinder lying on a plane, point for isolated points), overlap (volume: the common volume) or unknown (reason: the boolean refused the pair, e.g. contact at the edge of tolerance; never reported as clear). With details: for touch the contact points (at) and the faces of each body the contact is on, for overlap the common volume's bbox and centroid and the faces of each body that bound it, by persistent name. Pairs whose boxes do not meet cost no boolean (work: pairs, and checked: the pairs past that box test, each one boolean, two when faces of both lie on one surface facing each other). Summary counts per status and the total overlap volume; listed pairs are capped at 5000 (clear ones are then only counted).", doc: true, document_interference),
+        "Checks bodies for clashes without changing the document (no feature, no undo step, not dirty). For every pair of the bodies (or only the pairs given; not both), in order, status is clear (no point in common), touch (contact without common volume; contact: face for a shared area, with its area, edge for contact along a curve such as an edge on a face or a cylinder lying on a plane, point for isolated points), overlap (volume: the common volume) or unknown (reason: the boolean refused the pair, e.g. contact at the edge of tolerance; never reported as clear). With details: for touch the contact points (at) and the faces of each body the contact is on, for overlap the common volume's bbox and centroid and the faces of each body that bound it, by persistent name. Pairs whose boxes do not meet cost no boolean (work: pairs, and checked: the pairs past that box test, each one boolean, two when faces of both lie on one surface facing each other). At most 2000 pairs whose boxes meet per question (more is an error: name fewer with bodies or pairs). Summary counts per status and the total overlap volume; with more than 5000 pairs, clear pairs are only counted, every other pair is listed.", doc: true, document_interference),
 ];
 
 /// One body taking part: the feature that made it, its name and box.
@@ -153,6 +157,12 @@ fn document_interference(session: &mut Session, params: &Value) -> Run {
         })
         .map(|(n, _)| n)
         .collect();
+    if candidates.len() > MAX_CHECKED {
+        return fail(format!(
+            "{ID}: {} pairs of bodies have boxes that meet, more than the {MAX_CHECKED} one question checks; name fewer with `bodies` or `pairs`",
+            candidates.len()
+        ));
+    }
     let found = in_order(&candidates, |n| {
         let (a, b) = pairs.get(n).copied()?;
         let (a, b) = (parts.get(a)?, parts.get(b)?);
@@ -191,6 +201,7 @@ fn document_interference(session: &mut Session, params: &Value) -> Run {
             }
             Some(Ok(Interference::Touch {
                 kind,
+                area,
                 at,
                 faces_a,
                 faces_b,
@@ -198,6 +209,9 @@ fn document_interference(session: &mut Session, params: &Value) -> Run {
                 touch = touch.saturating_add(1);
                 entry.insert("status".into(), "touch".into());
                 entry.insert("contact".into(), kind.as_str().into());
+                if kind == ContactKind::Face {
+                    entry.insert("area".into(), area.into());
+                }
                 if details {
                     entry.insert("at".into(), at.into_iter().map(vec3).collect());
                     entry.insert(
@@ -265,7 +279,7 @@ fn document_interference(session: &mut Session, params: &Value) -> Run {
                 false
             }
         };
-        if (list_clear || !is_clear) && listed.len() < MAX_LISTED {
+        if list_clear || !is_clear {
             listed.push(Value::Object(entry));
         }
     }
