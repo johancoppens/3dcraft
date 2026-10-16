@@ -63,21 +63,31 @@ enum Stop {
     Error(SolveError),
 }
 
-struct System<'a> {
-    prep: &'a Prepared,
+pub(crate) struct System<'a> {
+    pub(crate) prep: &'a Prepared,
     options: &'a SolveOptions,
     /// Per equation: its first row. One more entry than equations.
     row_start: Vec<usize>,
     /// Per row: the residual below which the row holds.
-    tolerance: Vec<f64>,
+    pub(crate) tolerance: Vec<f64>,
     /// Per row: the unit its residual is measured in for the merit function.
     weight: Vec<f64>,
     /// Per row: the gradient length at or below which there is no gradient.
-    negligible: Vec<f64>,
+    pub(crate) negligible: Vec<f64>,
+    /// While the sketch is carried along (`crate::carry`): every row is
+    /// `F(x) - (1 - x[t]) r0`, so that the starting guess, where the rows
+    /// are `r0`, is a solution at `t = 0`.
+    pub(crate) homotopy: Option<Homotopy>,
+}
+
+/// The continuation parameter's unknown, and the rows at its start.
+pub(crate) struct Homotopy {
+    pub(crate) t: usize,
+    pub(crate) r0: Vec<f64>,
 }
 
 impl<'a> System<'a> {
-    fn new(prep: &'a Prepared, options: &'a SolveOptions) -> Self {
+    pub(crate) fn new(prep: &'a Prepared, options: &'a SolveOptions) -> Self {
         let mut row_start = Vec::with_capacity(prep.equations.len() + 1);
         let mut tolerance = Vec::new();
         let mut weight = Vec::new();
@@ -114,6 +124,7 @@ impl<'a> System<'a> {
             tolerance,
             weight,
             negligible,
+            homotopy: None,
         }
     }
 
@@ -129,7 +140,7 @@ impl<'a> System<'a> {
 
     /// Residuals of the active equations at `x` (zero for the others), and
     /// the Jacobian when asked for. Fails with the offending equation.
-    fn evaluate(
+    pub(crate) fn evaluate(
         &self,
         x: &[f64],
         active: &[bool],
@@ -153,10 +164,33 @@ impl<'a> System<'a> {
                 )
                 .map_err(|f| (index, f))?;
             for row in e.rows.iter().take(e.count) {
-                r.push(row.v);
+                // The start's residual, taken off in the measure that is
+                // still to come: d/dt of the row gains `r0`.
+                let (shift, t) = match &self.homotopy {
+                    Some(h) => {
+                        let r0 = h.r0.get(r.len()).copied().unwrap_or(0.0);
+                        let rest = 1.0 - x.get(h.t).copied().unwrap_or(1.0);
+                        (r0, Some((h.t, rest)))
+                    }
+                    None => (0.0, None),
+                };
+                r.push(match t {
+                    Some((_, rest)) => row.v - rest * shift,
+                    None => row.v,
+                });
                 if let Some(j) = jac.as_deref_mut() {
+                    let mut pending = t.map(|(col, _)| (col, shift));
                     for (col, d) in e.slots.iter().zip(row.d).take(e.used) {
-                        j.push(*col, d);
+                        match pending {
+                            Some((t, extra)) if t == *col => {
+                                j.push(*col, d + extra);
+                                pending = None;
+                            }
+                            _ => j.push(*col, d),
+                        }
+                    }
+                    if let Some((t, extra)) = pending {
+                        j.push(t, extra);
                     }
                     j.end_row();
                 }
@@ -165,7 +199,7 @@ impl<'a> System<'a> {
         Ok(r)
     }
 
-    fn skip_rows(&self, active: &[bool]) -> Vec<bool> {
+    pub(crate) fn skip_rows(&self, active: &[bool]) -> Vec<bool> {
         let mut skip = vec![false; self.tolerance.len()];
         for (index, on) in active.iter().enumerate() {
             if !on {
@@ -436,7 +470,33 @@ fn same_verdict(a: &Solution, b: &Solution) -> bool {
 /// stores the result and solves again later, gets the same answer.
 pub(crate) fn solve(sketch: &Sketch, options: &SolveOptions) -> Result<Solution, SolveError> {
     validate(options)?;
-    let mut current = solve_once(sketch, options)?;
+    // Image points that jumped since the starting guess was solved carry
+    // the sketch along first, with half the work budget of its own; the
+    // solve then starts from where the path ended, with the whole budget,
+    // as it had before carrying existed. Should it fail from there, it
+    // solves from the stored coordinates as it did then: carrying never
+    // makes a sketch fail that solved without it.
+    let mut work = Work::new(options.work_limit / 2);
+    let mut carrying = crate::carry::carry(sketch, options, &mut work);
+    let carried = carrying.entities.take().map(|entities| Sketch {
+        entities,
+        constraints: sketch.constraints.clone(),
+        splines: sketch.splines.clone(),
+        image_starts: Vec::new(),
+    });
+    let mut current = match carried {
+        Some(carried) => match solve_once(&carried, options, Work::new(options.work_limit)) {
+            Ok(solved) => solved,
+            Err(why) => {
+                carrying.outcome = Some(crate::model::Carried::Skipped {
+                    reason: format!("solving from where the path ended failed ({why})"),
+                });
+                solve_once(sketch, options, Work::new(options.work_limit))?
+            }
+        },
+        None => solve_once(sketch, options, Work::new(options.work_limit))?,
+    };
+    current.carry = carrying.outcome.clone();
     let mut iterations = current.iterations;
     let mut close = false;
     for _ in 0..SETTLE_PASSES {
@@ -444,10 +504,12 @@ pub(crate) fn solve(sketch: &Sketch, options: &SolveOptions) -> Result<Solution,
             entities: current.entities.clone(),
             constraints: sketch.constraints.clone(),
             splines: sketch.splines.clone(),
+            image_starts: Vec::new(),
         };
-        let mut next = solve_once(&guess, options)?;
+        let mut next = solve_once(&guess, options, Work::new(options.work_limit))?;
         iterations = iterations.saturating_add(next.iterations);
         next.iterations = iterations;
+        next.carry = carrying.outcome.clone();
         // From the same coordinates the next pass would return exactly
         // what this one did, verdict included.
         let settled = same_place(&current.entities, &next.entities, 0.0);
@@ -467,13 +529,13 @@ pub(crate) fn solve(sketch: &Sketch, options: &SolveOptions) -> Result<Solution,
     }
 }
 
-fn solve_once(sketch: &Sketch, options: &SolveOptions) -> Result<Solution, SolveError> {
+fn solve_once(sketch: &Sketch, options: &SolveOptions, work: Work) -> Result<Solution, SolveError> {
     let prep = crate::equations::prepare(sketch, options.tolerance.linear)?;
     let system = System::new(&prep, options);
     let mut budget = Budget {
         steps_left: options.max_iterations.saturating_mul(RUNS_PER_SOLVE),
         steps_taken: 0,
-        work: Work::new(options.work_limit),
+        work,
     };
     let count = sketch.constraints.len();
     // A constraint that has no value at the starting guess (the direction
@@ -650,6 +712,7 @@ fn solve_once(sketch: &Sketch, options: &SolveOptions) -> Result<Solution, Solve
         dof: unknowns.saturating_sub(run.rank),
         constraints: reports,
         iterations: budget.steps_taken,
+        carry: None,
     })
 }
 

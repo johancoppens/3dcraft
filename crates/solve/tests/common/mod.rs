@@ -32,6 +32,7 @@ pub fn resolved(sketch: &Sketch, solution: &Solution) -> Sketch {
         entities: solution.entities.clone(),
         constraints: sketch.constraints.clone(),
         splines: sketch.splines.clone(),
+        image_starts: Vec::new(),
     }
 }
 

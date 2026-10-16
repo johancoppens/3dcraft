@@ -62,6 +62,13 @@
 //! its result is a better guess: a constraint blamed too early, or
 //! undefined where the sketch was drawn, gets its turn in the next pass.
 //!
+//! Before the first pass, image points that have moved since the starting
+//! guess was a solution ([`Sketch::image_starts`]: a count, step or angle
+//! of their pattern changed) carry the sketch along by continuation from
+//! their old places to their new ones, and the passes start from where
+//! that path ends: what hangs on an image follows it instead of landing on
+//! another root of its equations.
+//!
 //! # Guarantees
 //!
 //! * Never panics, for any input; every loop is bounded ([`MAX_UNKNOWNS`],
@@ -78,6 +85,7 @@
 //! * Mirror solutions are told apart by the starting guess, so a sketch
 //!   re-solved from its stored solution stays on its branch.
 
+mod carry;
 mod dual;
 mod equations;
 mod error;
@@ -88,8 +96,8 @@ mod spline;
 
 pub use error::{Site, SolveError};
 pub use model::{
-    Constraint, ConstraintReport, ConstraintStatus, Entity, EntityId, EntityKind, ImageMap, Sketch,
-    Solution, SolveOptions, Spline,
+    Carried, Constraint, ConstraintReport, ConstraintStatus, Entity, EntityId, EntityKind,
+    ImageMap, ImageStart, Sketch, Solution, SolveOptions, Spline,
 };
 
 /// The highest degree of a spline a point can be constrained onto.

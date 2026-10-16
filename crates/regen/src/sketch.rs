@@ -11,8 +11,9 @@ use crate::cause::FIX_IT_FIRST;
 use crate::sketch_pattern::{PatternResult, Placed};
 use crate::{FeatureResult, Status, angle, length};
 use craft3d_doc::{
-    ConstraintId, ConstraintKind, DistanceDirection, Document, EntityId, FeatureKind, Geometry,
-    NameRole, PatternId, PersistentName, Sketch, SketchPlane, WorldPlane,
+    ConstraintId, ConstraintKind, DistanceDirection, Document, EntityId, FeatureId, FeatureKind,
+    Geometry, ImagePlace, NameRole, PatternId, PersistentName, PlaceMap, Sketch, SketchPlane,
+    WorldPlane,
 };
 use craft3d_expr::Evaluation;
 use craft3d_math::{Frame, Tolerance, Vec3};
@@ -62,6 +63,17 @@ pub struct SketchResult {
     pub radii: Vec<(EntityId, f64)>,
     /// The patterns of the sketch as evaluated, in the sketch's order.
     pub patterns: Vec<crate::sketch_pattern::PatternResult>,
+    /// Where each image point that stands for an instance lies, and the
+    /// numbers of the map that put it there, in the order of the ids: what
+    /// the document stores with the coordinates
+    /// ([`craft3d_doc::Sketch::image_places`]).
+    pub image_places: Vec<ImagePlace>,
+    /// What the user should know about how the sketch solved although it
+    /// solved (today: that it could be carried along only part of the way
+    /// from where its image points were to where they are now). It belongs
+    /// to this solve: once the result is stored, the next solve starts
+    /// from it and does not repeat it.
+    pub warnings: Vec<String>,
 }
 
 impl SketchResult {
@@ -125,6 +137,8 @@ struct Problem {
     /// The constraints left out, each with the image point that is not
     /// there and why.
     left_out: Vec<(ConstraintId, String)>,
+    /// The map of each image point that stands for an instance.
+    image_maps: Vec<(EntityId, solve::ImageMap)>,
 }
 
 /// An instance of a pattern: the pattern's place in the sketch's list and
@@ -202,13 +216,18 @@ fn problem(
         }
     }
     let mut input = solve::Sketch::new();
+    let mut image_maps = Vec::new();
     for entity in &sketch.entities {
         input.entities.push(match entity.geometry {
             Geometry::Spline { .. } => continue,
             Geometry::Image { of, .. } => {
                 let map = match images.get(&entity.id) {
                     Some(Ok((n, instance))) => match patterns.get(*n) {
-                        Some(pattern) => pattern.map(*instance, find)?,
+                        Some(pattern) => {
+                            let map = pattern.map(*instance, find)?;
+                            image_maps.push((entity.id, map));
+                            map
+                        }
                         None => solve::ImageMap::Shift { offset: [0.0; 2] },
                     },
                     // Nothing uses it: the constraints on it are left out.
@@ -231,6 +250,23 @@ fn problem(
                 end: find(end)?,
             },
         });
+    }
+    image_maps.sort_by_key(|(id, _)| *id);
+    // Where the image points lay in the stored solution: the solver carries
+    // the sketch along from there when they have moved. Only images that
+    // stand for an instance (the others are placeholders nothing uses).
+    for place in &sketch.image_places {
+        if let Ok(at) = image_maps.binary_search_by_key(&place.entity, |(id, _)| *id)
+            && let Some((_, now)) = image_maps.get(at)
+            && let Ok(id) = find(place.entity)
+            && place.at.iter().all(|v| v.is_finite())
+        {
+            input.image_starts.push(solve::ImageStart {
+                image: id,
+                at: place.at,
+                map: place.map.and_then(|was| map_then(was, now)),
+            });
+        }
     }
     // What a curve gives a tangency that involves a spline: a line to be
     // parallel to, or a circle or arc to touch.
@@ -477,7 +513,36 @@ fn problem(
         constraints: handed,
         chains,
         left_out,
+        image_maps,
     })
+}
+
+/// The map an image had, in the solver's terms: the numbers stored with
+/// its place on the points of the map it has now, when both are of one
+/// kind; `None` (carried in a straight line) when the pattern's kind
+/// changed.
+fn map_then(was: PlaceMap, now: &solve::ImageMap) -> Option<solve::ImageMap> {
+    match (was, *now) {
+        (PlaceMap::Shift { offset }, solve::ImageMap::Shift { .. }) => {
+            Some(solve::ImageMap::Shift { offset })
+        }
+        (PlaceMap::Chain { k }, solve::ImageMap::Chain { from, to, .. }) => {
+            Some(solve::ImageMap::Chain { from, to, k })
+        }
+        (PlaceMap::Turn { angle, at }, solve::ImageMap::Turn { center, .. }) => {
+            Some(solve::ImageMap::Turn { center, at, angle })
+        }
+        _ => None,
+    }
+}
+
+/// The numbers of a map, as the document stores them with a place.
+fn place_map(map: &solve::ImageMap) -> PlaceMap {
+    match *map {
+        solve::ImageMap::Shift { offset } => PlaceMap::Shift { offset },
+        solve::ImageMap::Chain { k, .. } => PlaceMap::Chain { k },
+        solve::ImageMap::Turn { at, angle, .. } => PlaceMap::Turn { angle, at },
+    }
 }
 
 /// A solver error in the document's own ids.
@@ -1066,6 +1131,8 @@ pub(crate) fn solve_sketch(
             points: points.clone(),
             radii: radii.clone(),
             patterns: patterns.clone(),
+            image_places: Vec::new(),
+            warnings: Vec::new(),
         };
         (Status::Failed(reason), Some(result))
     };
@@ -1224,6 +1291,45 @@ pub(crate) fn solve_sketch(
             list(many)
         )),
     };
+    // The places of the image points with the numbers of their maps: the
+    // next solve carries the sketch along from them when an edit moves
+    // them.
+    let found = |id: EntityId| match points.binary_search_by_key(&id, |(point, ..)| *point) {
+        Ok(at) => points.get(at).map(|&(_, x, y)| [x, y]),
+        Err(_) => None,
+    };
+    let image_places = problem
+        .image_maps
+        .iter()
+        .filter_map(|(id, map)| {
+            let at = found(*id)?;
+            let place = ImagePlace {
+                entity: *id,
+                at,
+                map: Some(place_map(map)),
+            };
+            let finite = at.iter().all(|v| v.is_finite())
+                && match place.map {
+                    Some(PlaceMap::Shift { offset }) => offset.iter().all(|v| v.is_finite()),
+                    Some(PlaceMap::Chain { k }) => k.is_finite(),
+                    Some(PlaceMap::Turn { angle, at }) => {
+                        angle.is_finite() && at.iter().all(|v| v.is_finite())
+                    }
+                    None => true,
+                };
+            finite.then_some(place)
+        })
+        .collect();
+    let warnings = match &solution.carry {
+        None | Some(solve::Carried::Whole) => Vec::new(),
+        Some(solve::Carried::Stopped { reached }) => vec![format!(
+            "the sketch could be carried along only {:.1}% of the way from where its image points were to where they are now; it was solved from there and may have found another solution than the one it was on",
+            reached * 100.0
+        )],
+        Some(solve::Carried::Skipped { reason }) => vec![format!(
+            "the sketch was not carried along to where its image points are now: {reason}"
+        )],
+    };
     let result = SketchResult {
         origin,
         x_axis,
@@ -1234,9 +1340,106 @@ pub(crate) fn solve_sketch(
         points,
         radii,
         patterns,
+        image_places,
+        warnings,
     };
     (status, Some(result))
 }
+
+/// The places of image points a document lacks (a file written before
+/// places were stored), from the solution of the document as it is, per
+/// sketch: taken before an edit, so that the solve after it can carry the
+/// sketch along from there ([`record_image_places`]). A sketch that does
+/// not solve cleanly gives none. Reads the document only.
+pub fn image_places_to_record(
+    doc: &Document,
+    cache: &mut crate::RegenCache,
+) -> Vec<(FeatureId, Vec<ImagePlace>)> {
+    let Ok(table) = doc.variable_table() else {
+        return Vec::new();
+    };
+    let variables = table.evaluate();
+    let mut found = Vec::new();
+    for feature in &doc.features {
+        let FeatureKind::Sketch(sketch) = &feature.kind else {
+            continue;
+        };
+        // The places are kept in ascending order of entity (`validate`).
+        let has = |id: EntityId| {
+            sketch
+                .image_places
+                .binary_search_by_key(&id, |p| p.entity)
+                .is_ok()
+        };
+        let lacking = sketch
+            .entities
+            .iter()
+            .any(|e| matches!(e.geometry, Geometry::Image { .. }) && !has(e.id));
+        if feature.suppressed || !lacking {
+            continue;
+        }
+        let (_, Some(result)) = cache.solve(feature.id, doc, &variables, sketch) else {
+            continue;
+        };
+        if !clean(&result) {
+            continue;
+        }
+        let places: Vec<ImagePlace> = result
+            .image_places
+            .iter()
+            .filter(|p| !has(p.entity))
+            .copied()
+            .collect();
+        if !places.is_empty() {
+            found.push((feature.id, places));
+        }
+    }
+    found
+}
+
+/// Adds the places [`image_places_to_record`] found to the sketches that
+/// still have those image points without a place.
+pub fn record_image_places(doc: &mut Document, places: Vec<(FeatureId, Vec<ImagePlace>)>) {
+    for (id, places) in places {
+        let Some(FeatureKind::Sketch(sketch)) = doc
+            .features
+            .iter_mut()
+            .find(|f| f.id == id)
+            .map(|f| &mut f.kind)
+        else {
+            continue;
+        };
+        sketch.image_places.extend(places);
+        // Keeps the first of each (the one already there) and drops those
+        // whose image went in the edit.
+        sketch.tidy_image_places();
+    }
+}
+
+/// A solution to start from: solved, with no constraint conflicting or
+/// missing and every ring closed.
+fn clean(result: &SketchResult) -> bool {
+    result.dof.is_some()
+        // A solution with a conflict in it is not a place to start from:
+        // it may have lost what the sketch looked like (a line shrunk to
+        // a point no longer says which way it pointed). The sketch keeps
+        // its last good coordinates until the conflict is gone, and then
+        // comes back on the side it was on.
+        && result.constraints.iter().all(|c| {
+            c.state != ConstraintState::Conflicting && c.state != ConstraintState::Missing
+        })
+        && result
+            .patterns
+            .iter()
+            .all(|p| p.chain != Some(ConstraintState::Conflicting))
+}
+// A solution the sketch was carried to only part of the way (a warning) is
+// stored when it is otherwise clean: the path may have met a passing
+// singularity (a line through zero length half way), and keeping the old
+// state would carry every later edit from it again and warn again. The
+// warning belongs to the solve that carried; the next one starts from the
+// stored state, where no image has moved. (Decided by the coordinator on
+// 2026-10-17, for the developer to confirm.)
 
 /// Solves every sketch and stores the solution in the document, so the
 /// next solve starts from it. A sketch that cannot be solved, or only with
@@ -1249,31 +1452,35 @@ pub fn settle_sketches(doc: &mut Document) -> bool {
 /// [`settle_sketches`], solving only the sketches that have changed since
 /// `cache` last saw them solved. The outcome is the same.
 pub fn settle_sketches_cached(doc: &mut Document, cache: &mut crate::RegenCache) -> bool {
+    settle_sketches_noted(doc, cache).0
+}
+
+/// [`settle_sketches_cached`], with the warnings of the solves it made, each
+/// after the sketch it is about (`F3: ...`): what the edit that called it
+/// should report, since the next solve of a stored sketch starts from the
+/// stored state and does not repeat them.
+pub fn settle_sketches_noted(
+    doc: &mut Document,
+    cache: &mut crate::RegenCache,
+) -> (bool, Vec<String>) {
     let Ok(table) = doc.variable_table() else {
-        return false;
+        return (false, Vec::new());
     };
     let variables = table.evaluate();
     let mut solved = Vec::new();
+    let mut warnings = Vec::new();
     for (index, feature) in doc.features.iter().enumerate() {
         if let FeatureKind::Sketch(sketch) = &feature.kind
             && !feature.suppressed
             // Where the sketch lies does not change how it solves.
             && let (_, Some(result)) = cache.solve(feature.id, doc, &variables, sketch)
-            && result.dof.is_some()
-            // A solution with a conflict in it is not a place to start
-            // from: it may have lost what the sketch looked like (a line
-            // shrunk to a point no longer says which way it pointed). The
-            // sketch keeps its last good coordinates until the conflict is
-            // gone, and then comes back on the side it was on.
-            && result.constraints.iter().all(|c| {
-                c.state != ConstraintState::Conflicting && c.state != ConstraintState::Missing
-            })
-            && result
-                .patterns
-                .iter()
-                .all(|p| p.chain != Some(ConstraintState::Conflicting))
         {
-            solved.push((index, result));
+            for warning in &result.warnings {
+                warnings.push(format!("{}: {warning}", feature.id));
+            }
+            if clean(&result) {
+                solved.push((index, result));
+            }
         }
     }
     let mut moved = false;
@@ -1282,6 +1489,13 @@ pub fn settle_sketches_cached(doc: &mut Document, cache: &mut crate::RegenCache)
         else {
             continue;
         };
+        // The image points with the points: the next solve carries the
+        // sketch along from them when an edit moves them.
+        let places = result.image_places.clone();
+        if sketch.image_places != places {
+            sketch.image_places = places;
+            moved = true;
+        }
         for entity in &mut sketch.entities {
             match &mut entity.geometry {
                 Geometry::Point { x, y } => {
@@ -1311,5 +1525,5 @@ pub fn settle_sketches_cached(doc: &mut Document, cache: &mut crate::RegenCache)
             }
         }
     }
-    moved
+    (moved, warnings)
 }
