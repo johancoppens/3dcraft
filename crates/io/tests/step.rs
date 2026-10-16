@@ -1447,15 +1447,23 @@ fn what_cannot_be_exported_is_an_error_that_says_why() {
             "{error}"
         );
     }
-    // A planar face with two outer boundaries, or with none.
+    // A planar face with two outer boundaries, or with none. Either way a
+    // loop lies outside the region the others leave it, which
+    // `topo::check` finds before the exporter counts loops (gate 67,
+    // 2026-10-16); the exporter's own count stays as a second guard.
     let mut two = bodies::washer(&Frame::WORLD, 3.0, 1.0);
     two.loops[0].coedges[0].reversed = false;
-    let error = export(&two).unwrap_err().to_string();
-    assert!(error.contains("2 counter-clockwise loops"), "{error}");
     let mut none = bodies::washer(&Frame::WORLD, 3.0, 1.0);
     none.loops[1].coedges[0].reversed = true;
-    let error = export(&none).unwrap_err().to_string();
-    assert!(error.contains("0 counter-clockwise loops"), "{error}");
+    for body in [&two, &none] {
+        let error = export(body).unwrap_err().to_string();
+        assert!(
+            error.contains("is not valid")
+                && error.contains("of face 0")
+                && error.contains("outside the region they bound"),
+            "{error}"
+        );
+    }
     // A solid without shells; a second body that is bad names itself.
     let empty = Body::new(BodyKind::Solid);
     assert!(export(&empty).is_err());
