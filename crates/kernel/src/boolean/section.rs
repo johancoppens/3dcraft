@@ -238,8 +238,10 @@ pub(super) fn prepare<'a>(
             margin: 4.0 * tol,
             made: OnceLock::new(),
         };
-        // Only of a cone does the hull need the outline (whether the face
-        // reaches the apex), and that outline is cheap.
+        // The hull asks the outline of a cone (whether the face reaches
+        // the apex) and of a torus (whether the face holds a circle of the
+        // tube between the turns its boundary takes); those outlines are
+        // cheap, and a torus whose outline fails keeps the whole-torus ball.
         let hull = hull_of(&lazy.surface, &lazy.loops, |tip| {
             lazy.get()
                 .map_err(|reason| Stop::of(reason).at(&named))
@@ -706,8 +708,14 @@ fn clip(
         // boundary must be on it at its quarter points as well.
         let at = |k: f64| curve.eval(t0 + (t1 - t0) * k);
         let middle = at(0.5);
-        // Outside a face's box is outside the face.
-        if !(box_a.contains(middle, 2.0 * tol) && box_b.contains(middle, 2.0 * tol)) {
+        // Outside a face's box is outside the face. Between its ends a
+        // stretch crosses the boundary of neither face (where it would,
+        // an edge meets the other surface, and that is a cut), so it is
+        // out of a face wherever any point of it is: its middle, or an
+        // end beyond a face's box (where the box the surfaces were asked
+        // in cut the curve, that end is clear of one of the two boxes).
+        let clear = |p: Vec3| !(box_a.contains(p, 2.0 * tol) && box_b.contains(p, 2.0 * tol));
+        if clear(middle) || clear(from.point) || clear(to.point) {
             continue;
         }
         // Out of either face at the middle is no part of the imprint,
@@ -952,21 +960,24 @@ pub(super) fn section(
     let tol = tolerance.linear;
     let mut sections = Sections::default();
     // Only where both bodies are can their faces meet.
-    // (With room to spare, so that where a curve is cut off is not where
-    // anything else is.)
-    let (box_a, box_b) = (a.bbox(), b.bbox());
-    let Some(snug) = overlap(&box_a, &box_b, 2.0 * tol) else {
+    if overlap(&a.bbox(), &b.bbox(), 2.0 * tol).is_none() {
         return Ok(sections);
-    };
-    let room = 16.0 * tol + 0.013 * snug.diagonal();
-    let Some(within) = overlap(&box_a, &box_b, room) else {
-        return Ok(sections);
-    };
+    }
     for (fa, box_a) in a.boxes.iter().enumerate() {
         for (fb, box_b) in b.boxes.iter().enumerate() {
+            // Only where both faces are can they meet: their surfaces are
+            // intersected there and nowhere else, so that what the surfaces
+            // do far from the faces (cross, touch, run tangent) does not
+            // depend on what else either body holds. (With room to spare,
+            // so that where a curve is cut off is not where anything of
+            // either face is.)
             if !boxes_meet(box_a, box_b, 2.0 * tol) {
                 continue;
             }
+            let room = 16.0 * tol + 0.013 * box_a.diagonal().max(box_b.diagonal());
+            let Some(within) = overlap(box_a, box_b, room) else {
+                continue;
+            };
             let (Some(hull_a), Some(hull_b)) = (a.hulls.get(fa), b.hulls.get(fb)) else {
                 return Err(Stop::of(LOST));
             };

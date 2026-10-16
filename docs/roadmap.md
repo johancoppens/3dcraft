@@ -68,7 +68,6 @@ The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item i
 - [ ] Sheet bodies, several lumps and cavities (item 5).
 - [ ] The check of offset face, shell and delete face near what they changed (they check the whole body), and a tessellation of long straight edges that does not fan across a plate (the first cut of 400 holes at once is checked in 140 ms).
 - [ ] Speed: what is left is the booleans with a freeform face (the chart's projections and the marcher) and the measurement of their results.
-- [ ] Each pair of faces intersected in the box of the two faces, not of the two bodies (the impeller's pattern of blades with rounded leading edges, and such a blade on a hub of revolution), after the curves that gives near a pole are measured, meshed and sorted around the pole (branch `boolfind-facebox-wip`: the measure and the mesh done, the octant cut through its pole at scale 1e-3 still refused by `regions::untie`) ([`design/booleans.md`](design/booleans.md) › *Showcase findings (2026-10-15)*).
 - [ ] Tolerant modelling (item 4), before STEP import.
 
 ## Milestones in detail
@@ -270,6 +269,8 @@ Surface/surface intersection, imprint, classify and sew; union, subtract and int
 - A row of booleans on a body of many freeform faces indexes each surface once (the impeller: a chamfer of the bore 12 s to 1 s); a material measures nothing, mass and inertia are measured at once ([`design/booleans.md`](design/booleans.md), [`design/regeneration.md`](design/regeneration.md)) (2026-10-15)
 - Zero thickness refused: a result whose parts touch along an edge, a line or in a point (`KernelError::ZeroThickness`, the developer's decision); the trees of freeform surfaces no open document holds let go (2026-10-15)
 
+- Each pair of faces intersected in the box of the two faces (the impeller's blades with rounded leading edges, in a pattern and on a hub); two traces of one branch are one ([`design/booleans.md`](design/booleans.md) › *The box of the two faces*) (2026-10-15)
+- Only the part of a chart that can be inside the box is walked; a march step goes as far as it was asked; a face on a torus has a box of its own size (the bike's inset core and mirrored stays, the turbofan's 0.1 mm rounds on discs; [`design/geometry.md`](design/geometry.md), [`design/booleans.md`](design/booleans.md)) (2026-10-15)
 #### Open
 The [boolean checklist](#the-boolean-checklist) › *Owed*.
 

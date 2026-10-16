@@ -13,8 +13,8 @@ use super::chart::{About, Chart, TOO_CLOSE};
 use super::freeform::{PatchTree, is_freeform};
 use super::hits::speed_bound;
 use craft3d_geom::{Curve3, Ellipse, Surface};
-use craft3d_math::{Bbox3, Vec3};
-use std::f64::consts::{FRAC_PI_2, PI, TAU};
+use craft3d_math::{Bbox3, Frame, Vec3};
+use std::f64::consts::{FRAC_PI_2, FRAC_PI_8, PI, TAU};
 use std::sync::Arc;
 
 /// A piece of a curve in a loop.
@@ -835,32 +835,51 @@ impl Outline {
 /// lies within the convex hull of. Conservative: an arc counts as its
 /// whole circle or ellipse, a face on a cylinder or a cone as the whole
 /// stretch of the surface between the ends of its boundary along the axis
-/// (to the apex when the face reaches it: `reaches`, asked of a cone
-/// only), a face on a sphere or a torus as a ball around the whole
-/// surface.
+/// (to the apex when the face reaches it), a face on a torus as the tube
+/// around the stretch of its central circle that the face turns through
+/// about the axis (or, when that is the whole turn or cannot be told,
+/// the ball around the whole torus), a face on a sphere as the ball.
+/// `reaches(p)` says whether the face holds the point `p` of its surface
+/// (or comes to it): asked of a cone at its apex, and of a torus once per
+/// stretch of turn that its boundary leaves out.
 pub(super) fn hull_of<E>(
     surface: &Surface,
     loops: &[Vec<Seg>],
-    reaches: impl FnOnce(Vec3) -> Result<bool, E>,
+    mut reaches: impl FnMut(Vec3) -> Result<bool, E>,
 ) -> Result<Hull, E> {
     let mut hull = Hull::default();
+    // The points each piece lies within the hull of (an arc as the polygon
+    // of its pieces of at most a quarter turn and the corners where their
+    // end tangents meet), for the turn of a face on a torus.
+    let mut pieces: Vec<Vec<Vec3>> = Vec::new();
     for seg in loops.iter().flatten() {
         hull.points.push(seg.a);
         hull.points.push(seg.b);
-        match &seg.curve {
-            Curve3::Line(_) => {}
+        let mut points = vec![seg.a, seg.b];
+        let conic = match &seg.curve {
+            Curve3::Line(_) => None,
             Curve3::Circle(c) => {
                 let f = c.frame();
-                hull.conics
-                    .push((f.origin(), f.x() * c.radius(), f.y() * c.radius()));
+                Some((f.origin(), f.x() * c.radius(), f.y() * c.radius()))
             }
             Curve3::Ellipse(e) => {
                 let f = e.frame();
                 let (a, b) = e.semi_axes();
-                hull.conics.push((f.origin(), f.x() * a, f.y() * b));
+                Some((f.origin(), f.x() * a, f.y() * b))
             }
-            Curve3::Nurbs(c) => hull.points.extend_from_slice(c.control_points()),
+            Curve3::Nurbs(c) => {
+                hull.points.extend_from_slice(c.control_points());
+                points.extend_from_slice(c.control_points());
+                None
+            }
+        };
+        if let Some((center, x, y)) = conic {
+            hull.conics.push((center, x, y));
+            if !arc_polygon(center, x, y, seg.range, FRAC_PI_2, &mut points) {
+                points.extend(square(center, x, y));
+            }
         }
+        pieces.push(points);
     }
     let (frame, radius, slope, apex) = match surface {
         Surface::Plane(_) => return Ok(hull),
@@ -878,9 +897,40 @@ pub(super) fn hull_of<E>(
             return Ok(hull);
         }
         Surface::Torus(s) => {
-            hull.balls
-                .push((s.frame().origin(), s.radii().0 + s.radii().1));
-            return Ok(hull);
+            let frame = *s.frame();
+            let (major, minor) = s.radii();
+            let whole = (frame.origin(), major + minor);
+            // (A face whose outline cannot be made, or whose turn cannot
+            // be told, keeps the ball: it is as true as before, only
+            // larger.)
+            let turns = torus_turns(&frame, major, minor, &pieces, &mut reaches)
+                .ok()
+                .flatten();
+            let Some(turns) = turns else {
+                hull.balls.push(whole);
+                return Ok(hull);
+            };
+            // The tube around each stretch of the central circle: within
+            // the balls of the tube's radius about the polygon the stretch
+            // lies within (pieces of at most an eighth of a turn, whose
+            // corners stand out by under 2 % of the radius), and within the
+            // ball around the whole torus as well, which bounds every span
+            // where the polygon reaches further. The face, its boundary
+            // included, lies in both.
+            let mut tube = Hull {
+                bound: Some(whole),
+                ..Hull::default()
+            };
+            for (from, to) in turns {
+                let mut spine = Vec::new();
+                let (x, y) = (frame.x() * major, frame.y() * major);
+                if !arc_polygon(frame.origin(), x, y, (from, to), FRAC_PI_8, &mut spine) {
+                    hull.balls.push(whole);
+                    return Ok(hull);
+                }
+                tube.balls.extend(spine.into_iter().map(|p| (p, minor)));
+            }
+            return Ok(tube);
         }
         Surface::Cylinder(s) => (*s.frame(), s.radius(), 0.0, None),
         Surface::Cone(s) => (
@@ -922,6 +972,188 @@ pub(super) fn hull_of<E>(
     Ok(hull)
 }
 
+/// Adds to `points` the polygon that the arc `center + x cos t + y sin t`
+/// for `t` over `range` lies within: its ends and, cut into pieces of at
+/// most `piece` (at most a quarter turn), the ends of the pieces and the corners where the
+/// tangents at the ends of each piece meet (`1 / cos(half the piece)` out
+/// along its middle direction). `false`, and nothing added, for an arc of
+/// a whole turn or more or a range that is not finite.
+fn arc_polygon(
+    center: Vec3,
+    x: Vec3,
+    y: Vec3,
+    range: (f64, f64),
+    piece: f64,
+    points: &mut Vec<Vec3>,
+) -> bool {
+    let (from, to) = (range.0.min(range.1), range.0.max(range.1));
+    let sweep = to - from;
+    if !(sweep.is_finite() && sweep < TAU) {
+        return false;
+    }
+    let at = |t: f64, out: f64| {
+        let (s, c) = t.sin_cos();
+        center + (x * c + y * s) * out
+    };
+    // At most `piece` (itself at most a quarter turn) each, and at least
+    // one piece.
+    let piece = piece.clamp(1e-3, FRAC_PI_2);
+    let count = (sweep / piece).ceil().clamp(1.0, (TAU / piece).ceil());
+    let step = sweep / count;
+    let out = 1.0 / (0.5 * step).cos();
+    let mut t = from;
+    points.push(at(from, 1.0));
+    for _ in 0..(count as u32) {
+        points.push(at(t + 0.5 * step, out));
+        t += step;
+        points.push(at(t, 1.0));
+    }
+    true
+}
+
+/// The corners of the parallelogram around the whole conic
+/// `center + x cos t + y sin t`.
+fn square(center: Vec3, x: Vec3, y: Vec3) -> Vec<Vec3> {
+    vec![
+        center + x + y,
+        center + x - y,
+        center - x + y,
+        center - x - y,
+    ]
+}
+
+/// The stretches of turn about the axis of a torus (as angles of its
+/// frame, each from the first to the second) that a face on it bounded
+/// by `pieces` lies within, or `None` when that is the whole turn or
+/// cannot be told. Each piece of the boundary lies within the hull of its
+/// points, and when those points stay within less than half a turn of
+/// each other about the axis, so does the piece: the turns the boundary
+/// takes are the union of those stretches. Between them the face has no
+/// boundary, so a whole circle of the tube at a turn there is all in the
+/// face or all out of it, and one point of it says which (`reaches`).
+fn torus_turns<E>(
+    frame: &Frame,
+    major: f64,
+    minor: f64,
+    pieces: &[Vec<Vec3>],
+    reaches: &mut impl FnMut(Vec3) -> Result<bool, E>,
+) -> Result<Option<Vec<(f64, f64)>>, E> {
+    // Each piece's stretch of turn, as (start, length) with the length
+    // below half a turn.
+    let mut stretches: Vec<(f64, f64)> = Vec::new();
+    for points in pieces {
+        let angles: Option<Vec<f64>> = points
+            .iter()
+            .map(|&p| {
+                let (x, y, _) = frame.local(p);
+                // (A point on the axis is of every turn.)
+                (x.hypot(y) > 0.0).then(|| y.atan2(x))
+            })
+            .collect();
+        let Some(mut angles) = angles.filter(|a| !a.is_empty()) else {
+            return Ok(None);
+        };
+        angles.sort_by(f64::total_cmp);
+        // The largest gap between neighbours (round the circle) is what
+        // the piece leaves out; it must be more than half a turn.
+        let mut widest = (0.0, 0_usize);
+        for (k, pair) in angles.windows(2).enumerate() {
+            if let [a, b] = pair
+                && b - a > widest.0
+            {
+                widest = (b - a, k + 1);
+            }
+        }
+        let (Some(&first), Some(&last)) = (angles.first(), angles.last()) else {
+            return Ok(None);
+        };
+        let around = first + TAU - last;
+        let (start, length) = if around >= widest.0 {
+            (first, last - first)
+        } else {
+            let Some(&start) = angles.get(widest.1) else {
+                return Ok(None);
+            };
+            (start, TAU - widest.0)
+        };
+        if length.is_nan() || length >= PI {
+            return Ok(None);
+        }
+        stretches.push((start.rem_euclid(TAU), length));
+    }
+    if stretches.is_empty() {
+        return Ok(None);
+    }
+    let boundary = union_round(&stretches);
+    if boundary.is_empty() {
+        return Ok(None);
+    }
+    // The gaps between them, from the end of one to the start of the
+    // next (the last round to the first): left out of the face unless it
+    // holds the tube's circle in the middle of the gap.
+    let mut covered = stretches;
+    for (k, &(_, end)) in boundary.iter().enumerate() {
+        let Some(&(next, _)) = boundary.get((k + 1) % boundary.len()) else {
+            return Ok(None);
+        };
+        let next = if next <= end { next + TAU } else { next };
+        let (s, c) = (0.5 * (end + next)).sin_cos();
+        if reaches(frame.point((major + minor) * c, (major + minor) * s, 0.0))? {
+            covered.push((end.rem_euclid(TAU), next - end));
+        }
+    }
+    let turns = union_round(&covered);
+    if turns.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(turns))
+}
+
+/// The union of stretches of turn `(start, length)` (start in `[0, 2π)`,
+/// length below a whole turn), as `(from, to)` with `from` in `[0, 2π)`
+/// and `to` past it, in order round the circle, one that runs past a
+/// whole turn joined to the first; empty when they cover the whole turn.
+fn union_round(stretches: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    // Stretches that meet to rounding are one: the ends of a gap and of
+    // the stretches beside it are the same angles, taken round by a turn.
+    let rounding = 8.0 * f64::EPSILON * TAU;
+    // On [0, 2π], those that run past it cut in two.
+    let mut flat: Vec<(f64, f64)> = Vec::new();
+    for &(start, length) in stretches {
+        let end = start + length;
+        if end > TAU {
+            flat.push((start, TAU));
+            flat.push((0.0, end - TAU));
+        } else {
+            flat.push((start, end));
+        }
+    }
+    flat.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    let mut merged: Vec<(f64, f64)> = Vec::new();
+    for (a, b) in flat {
+        match merged.last_mut() {
+            Some(last) if a <= last.1 + rounding => last.1 = last.1.max(b),
+            _ => merged.push((a, b)),
+        }
+    }
+    if let [(a, b)] = merged.as_slice()
+        && *a <= rounding
+        && *b >= TAU - rounding
+    {
+        return Vec::new();
+    }
+    // One that ends at a whole turn goes on in one that starts at none.
+    if merged.len() > 1
+        && merged.first().is_some_and(|first| first.0 <= rounding)
+        && merged.last().is_some_and(|last| last.1 >= TAU - rounding)
+        && let (Some(first), Some(last)) = (merged.first().copied(), merged.pop())
+        && let Some(head) = merged.first_mut()
+    {
+        *head = (last.0, first.1 + TAU);
+    }
+    merged
+}
+
 /// What a face lies within the convex hull of.
 #[derive(Clone, Debug, Default)]
 pub(super) struct Hull {
@@ -930,6 +1162,8 @@ pub(super) struct Hull {
     conics: Vec<(Vec3, Vec3, Vec3)>,
     /// Centre and radius.
     balls: Vec<(Vec3, f64)>,
+    /// A ball the face lies within as well: every span is cut to it.
+    bound: Option<(Vec3, f64)>,
 }
 
 impl Hull {
@@ -952,6 +1186,11 @@ impl Hull {
         }
         for &(center, radius) in &self.balls {
             add(center.dot(direction), radius * direction.length());
+        }
+        if let Some((center, radius)) = self.bound {
+            let (middle, reach) = (center.dot(direction), radius * direction.length());
+            low = low.max(middle - reach);
+            high = high.min(middle + reach);
         }
         (low, high)
     }
@@ -1512,5 +1751,161 @@ mod tests {
             locate(&circle, (0.5, 1.0), Vec3::new(1.0, 0.0, 0.0), 1e-6),
             None
         );
+    }
+
+    /// The union of stretches of turn: apart, overlapping, across the
+    /// start of the turn (joined there), the whole turn (empty), none.
+    #[test]
+    fn stretches_of_turn_are_united_round_the_circle() {
+        let close = |a: &[(f64, f64)], b: &[(f64, f64)]| {
+            a.len() == b.len()
+                && a.iter()
+                    .zip(b)
+                    .all(|(p, q)| (p.0 - q.0).abs() < 1e-12 && (p.1 - q.1).abs() < 1e-12)
+        };
+        let got = union_round(&[(1.0, 0.5), (0.2, 0.3)]);
+        assert!(close(&got, &[(0.2, 0.5), (1.0, 1.5)]), "{got:?}");
+        let got = union_round(&[(1.0, 0.5), (1.2, 1.0)]);
+        assert!(close(&got, &[(1.0, 2.2)]), "{got:?}");
+        // Across the start: one stretch from 6.0 to 0.5 past a whole turn.
+        let got = union_round(&[(6.0, 0.6), (0.1, 0.4)]);
+        assert!(close(&got, &[(6.0, TAU + 0.5)]), "{got:?}");
+        let got = union_round(&[(6.0, 0.6), (3.0, 0.4)]);
+        assert!(close(&got, &[(6.0, 6.6), (3.0, 3.4)]), "{got:?}");
+        assert!(union_round(&[(0.0, 3.2), (3.1, 3.2)]).is_empty());
+        assert!(union_round(&[(5.0, 3.0), (1.5, 3.6)]).is_empty());
+        assert!(union_round(&[]).is_empty());
+    }
+
+    /// The turns of a face on a torus from the turns of its boundary's
+    /// pieces and whether it holds a circle of the tube in each gap.
+    #[test]
+    fn the_turn_of_a_face_on_a_torus() {
+        let frame = Frame::WORLD;
+        let (major, minor) = (3.0, 1.0);
+        let at = |a: f64| frame.point(major * a.cos(), major * a.sin(), 0.5);
+        let piece = |a: f64, b: f64| vec![at(a), at(0.5 * (a + b)), at(b)];
+        let pieces = vec![piece(0.1, 0.3), piece(1.0, 1.2)];
+        let turn_of = |p: Vec3| {
+            let (x, y, _) = frame.local(p);
+            y.atan2(x).rem_euclid(TAU)
+        };
+        // The face holds the circles between the pieces the short way.
+        let mut short = |p: Vec3| -> Result<bool, ()> {
+            let a = turn_of(p);
+            Ok(a > 0.3 && a < 1.0)
+        };
+        let turns = torus_turns(&frame, major, minor, &pieces, &mut short)
+            .unwrap()
+            .unwrap();
+        assert_eq!(turns.len(), 1, "{turns:?}");
+        assert!(
+            (turns[0].0 - 0.1).abs() < 1e-12 && (turns[0].1 - 1.2).abs() < 1e-12,
+            "{turns:?}"
+        );
+        // The long way round.
+        let mut long = |p: Vec3| -> Result<bool, ()> {
+            let a = turn_of(p);
+            Ok(!(a > 0.3 && a < 1.0))
+        };
+        let turns = torus_turns(&frame, major, minor, &pieces, &mut long)
+            .unwrap()
+            .unwrap();
+        assert_eq!(turns.len(), 1, "{turns:?}");
+        assert!((turns[0].0 - 1.0).abs() < 1e-12, "{turns:?}");
+        assert!((turns[0].1 - (TAU + 0.3)).abs() < 1e-12, "{turns:?}");
+        // Neither gap: two faces' worth, each piece's own stretch.
+        let mut neither = |_: Vec3| -> Result<bool, ()> { Ok(false) };
+        let turns = torus_turns(&frame, major, minor, &pieces, &mut neither)
+            .unwrap()
+            .unwrap();
+        assert_eq!(turns.len(), 2, "{turns:?}");
+        // Both: the whole turn, which is no stretch.
+        let mut both = |_: Vec3| -> Result<bool, ()> { Ok(true) };
+        assert!(
+            torus_turns(&frame, major, minor, &pieces, &mut both)
+                .unwrap()
+                .is_none()
+        );
+        // A piece through the axis, or reaching half a turn: not told.
+        let through = vec![vec![frame.point(0.0, 0.0, 0.5), at(0.2)]];
+        assert!(
+            torus_turns(&frame, major, minor, &through, &mut both)
+                .unwrap()
+                .is_none()
+        );
+        let half = vec![vec![at(0.0), at(1.6), at(3.2)]];
+        assert!(
+            torus_turns(&frame, major, minor, &half, &mut both)
+                .unwrap()
+                .is_none()
+        );
+        // An error asking: passed on (the caller keeps the ball).
+        let mut fails = |_: Vec3| -> Result<bool, ()> { Err(()) };
+        assert!(torus_turns(&frame, major, minor, &pieces, &mut fails).is_err());
+    }
+
+    /// Every point of an arc of a circle or an ellipse lies within the
+    /// polygon `arc_polygon` gives, for pieces of a quarter and of an
+    /// eighth of a turn: 400 seeded arcs, 200 points each, tested in the
+    /// arc's own plane, where the polygon is convex.
+    #[test]
+    fn an_arc_lies_within_its_polygon() {
+        let mut state = 0x5eed_a5c5_u64;
+        let mut unit = || {
+            state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = state;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            (z ^ (z >> 31)) as f64 / u64::MAX as f64
+        };
+        for case in 0..400 {
+            let k = [1e-3, 1.0, 1e6][case % 3];
+            let centre = Vec3::new(unit() - 0.5, unit() - 0.5, unit() - 0.5) * (10.0 * k);
+            let normal = Vec3::new(unit() - 0.5, unit() - 0.5, unit() - 0.5 + 1e-3);
+            let frame = Frame::from_z(centre, normal).unwrap();
+            let (a, b) = ((0.1 + unit()) * k, (0.1 + unit()) * k);
+            let (x, y) = (frame.x() * a, frame.y() * b);
+            let from = TAU * (unit() - 0.5) * 2.0;
+            let sweep = TAU * unit() * 0.999;
+            for piece in [FRAC_PI_2, FRAC_PI_8] {
+                let mut polygon = Vec::new();
+                assert!(arc_polygon(
+                    centre,
+                    x,
+                    y,
+                    (from, from + sweep),
+                    piece,
+                    &mut polygon
+                ));
+                // In the arc's coordinates: the unit circle.
+                let flat = |p: Vec3| {
+                    let d = p - centre;
+                    (d.dot(x) / (a * a), d.dot(y) / (b * b))
+                };
+                let corners: Vec<(f64, f64)> = polygon.iter().map(|&p| flat(p)).collect();
+                for i in 0..=200 {
+                    let t = from + sweep * f64::from(i) / 200.0;
+                    let q = flat(centre + x * t.cos() + y * t.sin());
+                    let n = corners.len();
+                    for j in 0..n {
+                        let (p0, p1) = (corners[j], corners[(j + 1) % n]);
+                        let cross = (p1.0 - p0.0) * (q.1 - p0.1) - (p1.1 - p0.1) * (q.0 - p0.0);
+                        assert!(cross >= -1e-9, "case {case}: {q:?} outside at side {j}");
+                    }
+                }
+            }
+        }
+        // A whole turn or more is no arc: the caller keeps the conic.
+        let mut none = Vec::new();
+        assert!(!arc_polygon(
+            Vec3::ZERO,
+            Vec3::X,
+            Vec3::Y,
+            (0.0, TAU),
+            FRAC_PI_2,
+            &mut none
+        ));
+        assert!(none.is_empty());
     }
 }
