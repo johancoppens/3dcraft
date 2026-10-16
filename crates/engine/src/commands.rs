@@ -139,13 +139,32 @@ pub(crate) fn edit<T>(
     // use it, and the next solve starts from where they are now.
     let open = session.document_mut()?;
     let cache = &mut open.cache;
-    open.history
+    let mut noted = Vec::new();
+    let out = open
+        .history
         .apply(label, |doc| {
+            // A file from before image places were stored: where the
+            // images are now, taken before the change, so the solve after
+            // it can carry the sketches along from there. Added only when
+            // the change changed something: an edit that does nothing
+            // stays one that does nothing (no undo step, nothing to save),
+            // so neither the places nor the settle that would write them
+            // are added then (the coordinates are the file's solution).
+            let pending = craft3d_regen::image_places_to_record(doc, cache);
+            let before = (!pending.is_empty()).then(|| doc.clone());
             let out = change(doc)?;
-            craft3d_regen::settle_sketches_cached(doc, cache);
+            if let Some(before) = before {
+                if *doc == before {
+                    return Ok(out);
+                }
+                craft3d_regen::record_image_places(doc, pending);
+            }
+            noted = craft3d_regen::settle_sketches_noted(doc, cache).1;
             Ok(out)
         })
-        .map_err(doc_error(command))
+        .map_err(doc_error(command))?;
+    session.edit_warnings.extend(noted);
+    Ok(out)
 }
 
 /// Finds a feature by id (`3` or `"F3"`) or by name.

@@ -294,6 +294,9 @@ fn state_name(state: &ConstraintState) -> &'static str {
 /// freedom left and the constraints that are in the way.
 fn solve_summary(map: &mut Map<String, Value>, result: &SketchResult) {
     map.insert("dof".into(), result.dof.map_or(Value::Null, Value::from));
+    if !result.warnings.is_empty() {
+        map.insert("warnings".into(), result.warnings.clone().into());
+    }
     let listed = |wanted: ConstraintState| -> Vec<String> {
         result
             .constraints
