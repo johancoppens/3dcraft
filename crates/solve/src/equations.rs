@@ -19,7 +19,7 @@ const NEGATIVE_RADIUS: &str = "a circle with a negative radius";
 const SMALL_ARC: &str = "an arc smaller than the linear tolerance has no tangent";
 const STALLED_SPLINE: &str =
     "a spline that stands still where the point is nearest to it has no direction there";
-const CROWDED: &str = "it ties together the images of more points than one equation can hold; split it into simpler constraints";
+pub(crate) const CROWDED: &str = "it ties together the images of more points than one equation can hold; split it into simpler constraints";
 
 /// Why an equation has no value at some point.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -52,10 +52,111 @@ pub(crate) enum Centre {
     At([f64; 2]),
 }
 
+/// An image point: how it is made from unknowns, and while the sketch is
+/// carried along by continuation (`crate::carry`), how it gets from where
+/// it was to where its map puts it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ImageVars {
+    pub map: MapVars,
+    pub carry: Option<Carry>,
+}
+
+/// How a carried image moves with the continuation parameter, the unknown
+/// `x[t]` (0 where the image was, 1 where its map puts it now). When the
+/// map it had then is of the same family as its map now (the same kind,
+/// about the same points), the image moves through the family: the map's
+/// own numbers (an offset, the instance number of a chained run, an angle
+/// and a fixed centre) go from their old values to their new ones, so the
+/// image of a ring swings round its centre and that of a run slides along
+/// it. Otherwise it moves in a straight line from its old place.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Carry {
+    /// The map plus `(1 - x[t]) * by`.
+    Straight { t: usize, by: [f64; 2] },
+    /// A shift whose offset goes from `from` to the map's.
+    Shift { t: usize, from: [f64; 2] },
+    /// A chained run whose instance number goes from `from` to the map's.
+    Chain { t: usize, from: f64 },
+    /// A turn whose angle goes from `from` to `to` (the map's, which keeps
+    /// only its sine and cosine) and whose fixed centre, if it has one,
+    /// from `at` to the map's.
+    Turn {
+        t: usize,
+        from: f64,
+        to: f64,
+        at: [f64; 2],
+    },
+}
+
+impl Carry {
+    pub(crate) fn t(&self) -> usize {
+        match *self {
+            Carry::Straight { t, .. }
+            | Carry::Shift { t, .. }
+            | Carry::Chain { t, .. }
+            | Carry::Turn { t, .. } => t,
+        }
+    }
+}
+
+fn lerp(a: f64, b: f64, t: f64) -> f64 {
+    a + t * (b - a)
+}
+
+impl ImageVars {
+    pub(crate) fn new(map: MapVars) -> Self {
+        ImageVars { map, carry: None }
+    }
+
+    /// The coordinates at `x`.
+    pub(crate) fn at(&self, x: &[f64]) -> Option<[f64; 2]> {
+        let Some(carry) = self.carry else {
+            return self.map.at(x);
+        };
+        let t = *x.get(carry.t())?;
+        match (carry, self.map) {
+            (Carry::Straight { by: [bx, by], .. }, map) => {
+                let [px, py] = map.at(x)?;
+                let rest = 1.0 - t;
+                Some([px + rest * bx, py + rest * by])
+            }
+            (Carry::Shift { from, .. }, MapVars::Shift { of, offset }) => MapVars::Shift {
+                of,
+                offset: [lerp(from[0], offset[0], t), lerp(from[1], offset[1], t)],
+            }
+            .at(x),
+            (Carry::Chain { from, .. }, MapVars::Chain { of, from: a, to, k }) => MapVars::Chain {
+                of,
+                from: a,
+                to,
+                k: lerp(from, k, t),
+            }
+            .at(x),
+            (Carry::Turn { from, to, at, .. }, MapVars::Turn { of, centre, .. }) => {
+                let (sin, cos) = lerp(from, to, t).sin_cos();
+                let centre = match centre {
+                    Centre::Own(c) => Centre::Own(c),
+                    Centre::At(c) => Centre::At([lerp(at[0], c[0], t), lerp(at[1], c[1], t)]),
+                };
+                MapVars::Turn {
+                    of,
+                    centre,
+                    sin,
+                    cos,
+                }
+                .at(x)
+            }
+            // A family that does not match its map is never made
+            // (`crate::carry`); no place rather than a wrong one.
+            _ => None,
+        }
+    }
+}
+
 /// How an image point is made from unknowns ([`crate::ImageMap`] with the
 /// points resolved to the indices of their x unknowns).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum ImageVars {
+pub(crate) enum MapVars {
     Shift {
         of: usize,
         offset: [f64; 2],
@@ -79,24 +180,24 @@ fn pair(x: &[f64], i: usize) -> Option<[f64; 2]> {
     Some([*x.get(i)?, *x.get(i.checked_add(1)?)?])
 }
 
-impl ImageVars {
+impl MapVars {
     /// The coordinates at `x`, as [`crate::ImageMap::apply`] gives them.
     fn at(&self, x: &[f64]) -> Option<[f64; 2]> {
         Some(match *self {
-            ImageVars::Shift {
+            MapVars::Shift {
                 of,
                 offset: [dx, dy],
             } => {
                 let [px, py] = pair(x, of)?;
                 [px + dx, py + dy]
             }
-            ImageVars::Chain { of, from, to, k } => {
+            MapVars::Chain { of, from, to, k } => {
                 let [px, py] = pair(x, of)?;
                 let [ax, ay] = pair(x, from)?;
                 let [bx, by] = pair(x, to)?;
                 [px + (bx - ax) * k, py + (by - ay) * k]
             }
-            ImageVars::Turn {
+            MapVars::Turn {
                 of,
                 centre,
                 sin,
@@ -280,22 +381,64 @@ impl<'a> Ctx<'a> {
             Pt::Own(i) => return self.own(i),
             Pt::Image(i) => *images.get(i).ok_or(Fail::NonFinite)?,
         };
-        // The same expressions as `ImageVars::at`, in duals.
-        Ok(match image {
-            ImageVars::Shift {
+        let Some(carry) = image.carry else {
+            return self.map(image.map);
+        };
+        let t = self.var(carry.t())?;
+        match (carry, image.map) {
+            (Carry::Straight { by: [bx, by], .. }, map) => {
+                let [px, py] = self.map(map)?;
+                let rest = Dual::constant(1.0) - t;
+                Ok([px + rest * bx, py + rest * by])
+            }
+            (Carry::Shift { from, .. }, MapVars::Shift { of, offset }) => {
+                let [px, py] = self.own(of)?;
+                // The offset first, as `ImageVars::at` adds it.
+                let dx = t * (offset[0] - from[0]) + Dual::constant(from[0]);
+                let dy = t * (offset[1] - from[1]) + Dual::constant(from[1]);
+                Ok([px + dx, py + dy])
+            }
+            (Carry::Chain { from, .. }, MapVars::Chain { of, from: a, to, k }) => {
+                let [px, py] = self.own(of)?;
+                let [ax, ay] = self.own(a)?;
+                let [bx, by] = self.own(to)?;
+                let k = t * (k - from) + Dual::constant(from);
+                Ok([px + (bx - ax) * k, py + (by - ay) * k])
+            }
+            (Carry::Turn { from, to, at, .. }, MapVars::Turn { of, centre, .. }) => {
+                let [px, py] = self.own(of)?;
+                let [cx, cy] = match centre {
+                    Centre::Own(c) => self.own(c)?,
+                    Centre::At([x, y]) => [
+                        t * (x - at[0]) + Dual::constant(at[0]),
+                        t * (y - at[1]) + Dual::constant(at[1]),
+                    ],
+                };
+                let (sin, cos) = (t * (to - from) + Dual::constant(from)).sin_cos();
+                let (ux, uy) = (px - cx, py - cy);
+                Ok([cx + (ux * cos - uy * sin), cy + (ux * sin + uy * cos)])
+            }
+            _ => Err(Fail::NonFinite),
+        }
+    }
+
+    fn map(&mut self, map: MapVars) -> Result<Vec2, Fail> {
+        // The same expressions as `MapVars::at`, in duals.
+        Ok(match map {
+            MapVars::Shift {
                 of,
                 offset: [dx, dy],
             } => {
                 let [px, py] = self.own(of)?;
                 [px + Dual::constant(dx), py + Dual::constant(dy)]
             }
-            ImageVars::Chain { of, from, to, k } => {
+            MapVars::Chain { of, from, to, k } => {
                 let [px, py] = self.own(of)?;
                 let [ax, ay] = self.own(from)?;
                 let [bx, by] = self.own(to)?;
                 [px + (bx - ax) * k, py + (by - ay) * k]
             }
-            ImageVars::Turn {
+            MapVars::Turn {
                 of,
                 centre,
                 sin,
@@ -1123,11 +1266,11 @@ pub(crate) fn prepare(sketch: &Sketch, min_len: f64) -> Result<Prepared, SolveEr
         let vars = match map {
             crate::ImageMap::Shift { offset } => {
                 finite(&offset)?;
-                ImageVars::Shift { of, offset }
+                MapVars::Shift { of, offset }
             }
             crate::ImageMap::Chain { from, to, k } => {
                 finite(&[k])?;
-                ImageVars::Chain {
+                MapVars::Chain {
                     of,
                     from: own(from)?,
                     to: own(to)?,
@@ -1141,7 +1284,7 @@ pub(crate) fn prepare(sketch: &Sketch, min_len: f64) -> Result<Prepared, SolveEr
                     Some(id) => Centre::Own(own(id)?),
                     None => Centre::At(at),
                 };
-                ImageVars::Turn {
+                MapVars::Turn {
                     of,
                     centre,
                     sin,
@@ -1150,7 +1293,7 @@ pub(crate) fn prepare(sketch: &Sketch, min_len: f64) -> Result<Prepared, SolveEr
             }
         };
         image_of.push(Some(images.len()));
-        images.push(vars);
+        images.push(ImageVars::new(vars));
     }
 
     let (class, on) = incidences(sketch);
@@ -1311,35 +1454,36 @@ mod tests {
         // Points 0..4 at x[0..8]: of, from, to, centre.
         let x = [0.7, -0.4, 0.1, 0.2, 1.3, 0.9, -0.6, 0.35];
         let images = [
-            ImageVars::Shift {
+            MapVars::Shift {
                 of: 0,
                 offset: [3.0, -1.5],
             },
-            ImageVars::Chain {
+            MapVars::Chain {
                 of: 0,
                 from: 2,
                 to: 4,
                 k: 3.0,
             },
-            ImageVars::Chain {
+            MapVars::Chain {
                 of: 4,
                 from: 2,
                 to: 4,
                 k: 2.0,
             },
-            ImageVars::Turn {
+            MapVars::Turn {
                 of: 0,
                 centre: Centre::Own(6),
                 sin: 0.8_f64.sin(),
                 cos: 0.8_f64.cos(),
             },
-            ImageVars::Turn {
+            MapVars::Turn {
                 of: 4,
                 centre: Centre::At([0.25, -0.5]),
                 sin: (-2.1_f64).sin(),
                 cos: (-2.1_f64).cos(),
             },
-        ];
+        ]
+        .map(ImageVars::new);
         // The place: the same numbers as the map the caller applies.
         let point = |i: u32| {
             let i = i as usize * 2;
@@ -1415,6 +1559,118 @@ mod tests {
             let e = eval(eq, &x);
             for row in 0..e.count {
                 let mut gradient = [0.0; 8];
+                for slot in 0..e.used {
+                    gradient[e.slots[slot]] += e.rows[row].d[slot];
+                }
+                for (j, got) in gradient.iter().enumerate() {
+                    let (mut hi, mut lo) = (x, x);
+                    hi[j] += h;
+                    lo[j] -= h;
+                    let want = (eval(eq, &hi).rows[row].v - eval(eq, &lo).rows[row].v) / (2.0 * h);
+                    assert!(
+                        (got - want).abs() <= 1e-7,
+                        "{eq:?} row {row} d/dx{j}: {got} vs {want}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Carried images (`Carry`): their place is the same in numbers and in
+    /// duals, and their gradient, the path parameter's column included,
+    /// equals central differences.
+    #[test]
+    fn carried_images_have_exact_gradients() {
+        // Points 0..4 at x[0..8], the path parameter at x[8].
+        let x = [0.7, -0.4, 0.1, 0.2, 1.3, 0.9, -0.6, 0.35, 0.37];
+        let t = 8;
+        let images = [
+            ImageVars {
+                map: MapVars::Shift {
+                    of: 0,
+                    offset: [3.0, -1.5],
+                },
+                carry: Some(Carry::Shift {
+                    t,
+                    from: [-1.0, 0.5],
+                }),
+            },
+            ImageVars {
+                map: MapVars::Chain {
+                    of: 0,
+                    from: 2,
+                    to: 4,
+                    k: 9.0,
+                },
+                carry: Some(Carry::Chain { t, from: 2.0 }),
+            },
+            ImageVars {
+                map: MapVars::Turn {
+                    of: 0,
+                    centre: Centre::Own(6),
+                    sin: 4.7_f64.sin(),
+                    cos: 4.7_f64.cos(),
+                },
+                carry: Some(Carry::Turn {
+                    t,
+                    from: 1.0,
+                    to: 4.7,
+                    at: [0.0, 0.0],
+                }),
+            },
+            ImageVars {
+                map: MapVars::Turn {
+                    of: 4,
+                    centre: Centre::At([0.25, -0.5]),
+                    sin: (-2.1_f64).sin(),
+                    cos: (-2.1_f64).cos(),
+                },
+                carry: Some(Carry::Turn {
+                    t,
+                    from: 0.4,
+                    to: -2.1,
+                    at: [1.0, 1.5],
+                }),
+            },
+            ImageVars {
+                map: MapVars::Chain {
+                    of: 4,
+                    from: 2,
+                    to: 4,
+                    k: 2.0,
+                },
+                carry: Some(Carry::Straight { t, by: [0.8, -2.5] }),
+            },
+        ];
+        // At t = 1 every carried image is where its map puts it.
+        let mut end = x;
+        end[t] = 1.0;
+        for image in &images {
+            let plain = ImageVars::new(image.map);
+            let (a, b) = (image.at(&end).unwrap(), plain.at(&end).unwrap());
+            assert!(
+                (a[0] - b[0]).abs() < 1e-12 && (a[1] - b[1]).abs() < 1e-12,
+                "{image:?}"
+            );
+        }
+        let img = Pt::Image;
+        let own = |i: usize| Pt::Own(2 * i);
+        let mut equations = Vec::new();
+        for i in 0..images.len() {
+            equations.push(Equation::Fixed(img(i), [0.3, 0.2]));
+            equations.push(Equation::Distance(img(i), own(1), 0.5));
+        }
+        let h = 1e-6;
+        let eval = |eq: &Equation, x: &[f64]| eq.eval_with(x, 1e-9, &[], &images).unwrap();
+        for eq in &equations {
+            let e = eval(eq, &x);
+            if let Equation::Fixed(Pt::Image(i), [fx, fy]) = eq {
+                let at = images[*i].at(&x).unwrap();
+                assert_eq!(e.rows[0].v, at[0] - fx, "{eq:?}");
+                assert_eq!(e.rows[1].v, at[1] - fy, "{eq:?}");
+            }
+            for row in 0..e.count {
+                let mut gradient = [0.0; 9];
                 for slot in 0..e.used {
                     gradient[e.slots[slot]] += e.rows[row].d[slot];
                 }

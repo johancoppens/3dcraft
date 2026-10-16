@@ -960,6 +960,59 @@ pub struct Sketch {
     /// The id the next pattern gets.
     #[serde(default = "first_id", skip_serializing_if = "is_first_id")]
     pub next_pattern_id: u64,
+    /// Where the image points lay in the stored solution, as the points'
+    /// coordinates are the stored solution of the points: when an edit
+    /// moves an image (a count, step or angle of its pattern), the solver
+    /// carries the sketch along from there, so what hangs on the image
+    /// follows it. Written by the solve with the coordinates; an image
+    /// that is not listed has nothing to be carried from.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub image_places: Vec<ImagePlace>,
+}
+
+/// Where an image point lay in the stored solution of its sketch, and by
+/// what map.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ImagePlace {
+    pub entity: EntityId,
+    pub at: [f64; 2],
+    /// The numbers of the map that put it there, when known: the solver
+    /// carries the image through its pattern's own family from them (the
+    /// angle of a ring goes from its old value to its new one), and in a
+    /// straight line from `at` without them or when the pattern's kind
+    /// changed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub map: Option<PlaceMap>,
+}
+
+/// The numbers of the map an image point was placed by: what changes when
+/// a count, step or angle of its pattern does. The points the map uses
+/// (the ends of a chained run, a centre point) are the pattern's.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum PlaceMap {
+    /// A row or a grid: the seed point moved by `offset`.
+    Shift { offset: [f64; 2] },
+    /// A chained run: instance `k`.
+    Chain { k: f64 },
+    /// A turn by `angle` (radians) about the pattern's centre point, or
+    /// about `at` when it has none.
+    Turn { angle: f64, at: [f64; 2] },
+}
+
+impl PlaceMap {
+    fn is_finite(&self) -> bool {
+        match *self {
+            PlaceMap::Shift { offset } => offset.iter().all(|v| v.is_finite()),
+            PlaceMap::Chain { k } => k.is_finite(),
+            PlaceMap::Turn { angle, at } => angle.is_finite() && at.iter().all(|v| v.is_finite()),
+        }
+    }
+}
+
+impl ImagePlace {
+    fn is_finite(&self) -> bool {
+        self.at.iter().all(|v| v.is_finite()) && self.map.is_none_or(|m| m.is_finite())
+    }
 }
 
 fn first_id() -> u64 {
@@ -986,6 +1039,7 @@ impl Sketch {
             next_constraint_id: 1,
             patterns: Vec::new(),
             next_pattern_id: 1,
+            image_places: Vec::new(),
         }
     }
 
@@ -1366,6 +1420,9 @@ impl Sketch {
             return Err(SketchError::InUse { entity: id, by });
         }
         self.entities.remove(index);
+        if let Ok(at) = self.image_places.binary_search_by_key(&id, |p| p.entity) {
+            self.image_places.remove(at);
+        }
         let (gone, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.constraints)
             .into_iter()
             .partition(|c| c.kind.entities().contains(&id));
@@ -1789,7 +1846,54 @@ impl Sketch {
             }
             self.check_pattern(pattern, Some(id))?;
         }
+        // The places of image points: one per image point at most, in
+        // ascending order of id, with finite numbers.
+        let images = self.image_ids();
+        let mut last = None;
+        for place in &self.image_places {
+            let id = place.entity;
+            if last.is_some_and(|last| last >= id) {
+                return invalid(format!(
+                    "the image places are not in ascending order of entity, one each ({id})"
+                ));
+            }
+            last = Some(id);
+            if !images.contains(&id) {
+                return invalid(format!(
+                    "an image place is of {id}, which is no image point"
+                ));
+            }
+            if !place.is_finite() {
+                return invalid(format!("the image place of {id} is not finite"));
+            }
+        }
         Ok(())
+    }
+
+    fn image_ids(&self) -> BTreeSet<EntityId> {
+        self.entities
+            .iter()
+            .filter(|e| matches!(e.geometry, Geometry::Image { .. }))
+            .map(|e| e.id)
+            .collect()
+    }
+
+    /// Puts the places of image points in the form [`Sketch::validate`]
+    /// asks for, for a sketch read from a file: drops the places of
+    /// entities that are not image points, those that are not finite and
+    /// all but the first for an image point, and sorts the rest by entity.
+    /// A place is where the next solve starts carrying an image from, not
+    /// part of the design: without one the image is not carried, as before
+    /// places were stored. Returns how many were dropped. `n log n` in the
+    /// number of places and entities.
+    pub fn tidy_image_places(&mut self) -> usize {
+        let images = self.image_ids();
+        let before = self.image_places.len();
+        let mut seen = BTreeSet::new();
+        self.image_places
+            .retain(|p| images.contains(&p.entity) && p.is_finite() && seen.insert(p.entity));
+        self.image_places.sort_by_key(|p| p.entity);
+        before - self.image_places.len()
     }
 }
 
