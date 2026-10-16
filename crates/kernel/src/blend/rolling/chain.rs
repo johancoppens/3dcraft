@@ -971,6 +971,7 @@ fn compute(
                 sides: *sides.get(i).ok_or_else(lost)?,
                 shape: p.shape,
                 scale,
+                moved: None,
             })
         })
         .collect::<Result<_, _>>()?;
@@ -1379,15 +1380,14 @@ fn splice_chain(
                     let faces = pieces.get(piece).ok_or_else(lost)?.faces;
                     let [b1, b2] = borders.get(piece).ok_or_else(lost)?;
                     let [s1, s2] = em.at;
-                    let added = cut_back(
+                    end_vertices.push(cut_back(
                         body,
                         &em.end,
                         faces,
                         [b1.eval(s1), b2.eval(s2)],
                         tol,
                         &too_large,
-                    )?;
-                    end_vertices.push([em.end.vertex, added]);
+                    )?);
                 }
                 EndKind::Meet { .. } => {
                     let given = meet_ends
@@ -1467,7 +1467,7 @@ fn splice_chain(
                             end: *v1,
                         },
                     )?;
-                    insert_cut(body, &em.end, id, *v1)?;
+                    insert_cut(body, &em.end, id, [*v0, *v1])?;
                     cut_edges.push(vec![(id, false)]);
                 }
                 EndKind::Meet { .. } => {
@@ -1939,6 +1939,7 @@ fn along_spine(
                 sides: *sides.get(i).ok_or_else(lost)?,
                 shape,
                 scale,
+                moved: None,
             })
         })
         .collect::<Result<_, _>>()?;
@@ -2235,6 +2236,7 @@ fn along_spine(
             sides: *sides.get(i).ok_or_else(lost)?,
             shape,
             scale,
+            moved: None,
         };
         // The surface starts from some of the balls, evenly along the
         // path; it is refined from there.

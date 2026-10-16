@@ -264,3 +264,68 @@ fn euler_counts_catch_a_stray_vertex() {
         Defect::Euler { vertices: 9, .. }
     )));
 }
+
+/// A plate 4 × 3 × 1 with a hole of radius 0.5 through its middle, the
+/// hole (its wall, its two circles and their vertices) moved by `by`
+/// within the plate's planes: every other check still holds.
+fn plate_with_hole_moved(by: Vec3) -> Body {
+    let mut body =
+        craft3d_testkit::trimmed::plate_with_round_hole(&Frame::WORLD, 4.0, 3.0, 1.0, 0.5)
+            .unwrap()
+            .body;
+    let wall = body
+        .faces
+        .iter()
+        .position(|f| matches!(f.surface, Surface::Cylinder(_)))
+        .unwrap();
+    let Surface::Cylinder(c) = body.faces[wall].surface else {
+        panic!("a cylinder")
+    };
+    body.faces[wall].surface = Surface::Cylinder(
+        craft3d_geom::Cylinder::new(c.frame().at(c.frame().origin() + by).unwrap(), c.radius())
+            .unwrap(),
+    );
+    let mut moved = std::collections::BTreeSet::new();
+    for l in body.faces[wall].loops.clone() {
+        for coedge in body.loops[l.0 as usize].coedges.clone() {
+            let edge = &mut body.edges[coedge.edge.0 as usize];
+            if let craft3d_geom::Curve3::Circle(circle) = edge.curve {
+                edge.curve = craft3d_geom::Curve3::Circle(
+                    craft3d_geom::Circle::new(
+                        circle.frame().at(circle.frame().origin() + by).unwrap(),
+                        circle.radius(),
+                    )
+                    .unwrap(),
+                );
+                moved.insert(edge.start);
+                moved.insert(edge.end);
+            }
+        }
+    }
+    for v in moved {
+        body.vertices[v.0 as usize].point += by;
+    }
+    body
+}
+
+#[test]
+fn a_hole_left_outside_its_face_or_across_its_border_is_found() {
+    // Moved within the plate: clean.
+    assert_eq!(
+        defects(&plate_with_hole_moved(Vec3::new(1.0, 0.5, 0.0))),
+        vec![]
+    );
+    // Wholly outside the plate: the hole's loops on the top and on the
+    // bottom are stranded, and nothing else is wrong (the hole is a valid
+    // cylinder, its circles lie on the planes).
+    let found = defects(&plate_with_hole_moved(Vec3::new(3.0, 0.0, 0.0)));
+    assert_eq!(found.len(), 2, "{found:?}");
+    assert!(
+        found
+            .iter()
+            .all(|d| matches!(d, Defect::StrandedLoop { .. }))
+    );
+    // Across the plate's border: the loops cross.
+    let across = plate_with_hole_moved(Vec3::new(2.0, 0.0, 0.0));
+    assert!(has(&across, |d| matches!(d, Defect::StrandedLoop { .. })));
+}

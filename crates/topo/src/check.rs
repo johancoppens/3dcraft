@@ -68,6 +68,15 @@ pub enum Defect {
         face: FaceId,
         edge: EdgeId,
     },
+    /// A loop of a face lies outside the region its other loops bound (a
+    /// hole left outside the face's outer loop, a loop inside a hole).
+    /// Held for faces on a plane (`crate::stranded_loops`); one point of
+    /// each loop is tested, so two loops that cross are found only where
+    /// that point lies on the wrong side.
+    StrandedLoop {
+        face: FaceId,
+        loop_: LoopId,
+    },
     /// V − E + F − R, less 2 for every face that is a torus or a torus
     /// with holes in it, is not 2 (shells − genus) for any whole genus ≥ 0.
     Euler {
@@ -143,6 +152,11 @@ impl fmt::Display for Defect {
                 f,
                 "edge {} is in two different loops of face {}, which leaves the face no width there",
                 edge.0, face.0
+            ),
+            Defect::StrandedLoop { face, loop_ } => write!(
+                f,
+                "loop {} of face {} does not lie where the face's other loops leave it room: it is outside the region they bound",
+                loop_.0, face.0
             ),
             Defect::Euler {
                 vertices,
@@ -296,8 +310,10 @@ fn distance_to(surface: &Surface, p: craft3d_math::Vec3) -> Option<f64> {
 /// edges, closed loops, each loop in one face and each face in one shell,
 /// boundary edges on their face's surface, and for solids that every edge
 /// is used once in each direction and that the counts satisfy
-/// Euler–Poincaré. Not checked yet: self-intersection, that loops lie on
-/// the right side of each other, and that each face is bounded by its
+/// Euler–Poincaré. Also that a face's loops lie inside each
+/// other as a face's do, for faces on a plane (`stranded_loops`). Not
+/// checked yet: self-intersection, the same for loops on curved faces,
+/// and that each face is bounded by its
 /// loops (`mass_properties` reports an unbounded face as an error).
 ///
 /// **Allowed: a skin that touches itself in a point.** A solid whose
@@ -460,6 +476,14 @@ pub fn check(body: &Body, tol: &Tolerance) -> Vec<Defect> {
                 face: FaceId(i as u32),
                 uses,
             });
+        }
+    }
+
+    // Loops inside each other, where the face can be charted (planes).
+    // Only where the references hold: a dangling one is reported above.
+    if defects.is_empty() {
+        for (face, loop_) in crate::stranded(body, tol) {
+            defects.push(Defect::StrandedLoop { face, loop_ });
         }
     }
 
