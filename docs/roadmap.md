@@ -68,7 +68,6 @@ The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item i
 - [ ] Sheet bodies, several lumps and cavities (item 5).
 - [ ] The check of offset face, shell and delete face near what they changed (they check the whole body), and a tessellation of long straight edges that does not fan across a plate (the first cut of 400 holes at once is checked in 140 ms).
 - [ ] Speed: what is left is the booleans with a freeform face (the chart's projections and the marcher) and the measurement of their results.
-- [ ] Each pair of faces intersected in the box of the two faces, not of the two bodies (the impeller's pattern of blades with rounded leading edges, and such a blade on a hub of revolution), after the curves that gives near a pole are measured, meshed and sorted around the pole (branch `boolfind-facebox-wip`: the measure and the mesh done, the octant cut through its pole at scale 1e-3 still refused by `regions::untie`) ([`design/booleans.md`](design/booleans.md) › *Showcase findings (2026-10-15)*).
 - [ ] Tolerant modelling (item 4), before STEP import.
 
 ## Milestones in detail
@@ -270,6 +269,8 @@ Surface/surface intersection, imprint, classify and sew; union, subtract and int
 - A row of booleans on a body of many freeform faces indexes each surface once (the impeller: a chamfer of the bore 12 s to 1 s); a material measures nothing, mass and inertia are measured at once ([`design/booleans.md`](design/booleans.md), [`design/regeneration.md`](design/regeneration.md)) (2026-10-15)
 - Zero thickness refused: a result whose parts touch along an edge, a line or in a point (`KernelError::ZeroThickness`, the developer's decision); the trees of freeform surfaces no open document holds let go (2026-10-15)
 
+- Each pair of faces intersected in the box of the two faces (the impeller's blades with rounded leading edges, in a pattern and on a hub); two traces of one branch are one ([`design/booleans.md`](design/booleans.md) › *The box of the two faces*) (2026-10-15)
+- Only the part of a chart that can be inside the box is walked; a march step goes as far as it was asked; a face on a torus has a box of its own size (the bike's inset core and mirrored stays, the turbofan's 0.1 mm rounds on discs; [`design/geometry.md`](design/geometry.md), [`design/booleans.md`](design/booleans.md)) (2026-10-15)
 #### Open
 The [boolean checklist](#the-boolean-checklist) › *Owed*.
 
@@ -356,6 +357,7 @@ The blends first (chamfer and fillet, the first consumers of edge references), t
 - Two freeform fillets that meet at a vertex whose third edge stays sharp, convex or concave (the tip of a lofted blade rounded all round) (§5.3 › *Chains and meets of freeform blends*) (2026-10-15)
 - The impeller's and the lamp's blend findings: freeform meets found where the borders cross, blends that run into a wall or end past a corner (edges lengthened, spline faces grown), up to 4096 samples by a banded solve, face changes at joints judged at the vertex (§5.3 › *Blend findings of the impeller and the lamp*) (2026-10-15)
 - What fits is decided by building the blend and checking it, not by an estimate; the largest size that fits is found by more builds ([`design/blends.md`](design/blends.md) › *What fits, decided by building*) (2026-10-15)
+- Offset of freeform faces: offset face, shell and thicken take Bézier and NURBS faces, offset into splines within a quarter of the tolerance after proving they do not fold ([`design/face-operations.md`](design/face-operations.md) › *Offset of freeform faces*) (2026-10-16)
 - The bike's and the turbofan's blend findings: welds of a tube into a tube (a ring's balls in planes square to their centres' path), a refinement that no longer creeps, a border that crosses an edge on a curved face refused, lofts tangent where their sections are ([`design/blends.md`](design/blends.md) › *Blend findings of the bike and the turbofan*) (2026-10-15)
 - One blend construction, steps 1 to 3: a straight edge between planes, or next to a cylinder along it, built in place with an exact face; a border carried across a smooth edge of its face, the face it leaves gone when it lies wholly in the blend ([`design/blends.md`](design/blends.md) › *One blend construction*, *Borders carried across a smooth edge*) (2026-10-16)
 
@@ -370,7 +372,7 @@ The blends first (chamfer and fillet, the first consumers of edge references), t
 - [ ] Chamfers: a reference to one of several edges between the same two faces
 - [ ] Fillets: an outside and an inside fillet that meet; a fillet on a circular rim past half its radius (a spindle torus face: R/2 is the kernel's limit, which the hint for what fits reports, not the geometric one); a rim fillet along an earlier round of the same radius or more (the torus would reach its axis: all edges of a prism in two steps); variable radius (later)
 - [ ] Blends whose touch line runs over a tangent edge onto the next face (a rib's root that reaches the round of a rail below it), and a blend ending on a face that is not a plane
-- [ ] Offset face: a neighbour tangent to the moved face, a vertex of four or more faces that would become an edge, an elliptic or freeform edge next to a moved face
+- [ ] Offset face: a neighbour tangent to the moved face that does not move with it, a vertex of four or more faces that would become an edge, a line or circle between analytic faces that would become another curve; freeform faces with a pole, the band just short of a radius of curvature the bounds cannot prove, and tangent faces whose fitted tangency, times the distance, exceeds a quarter of the tolerance (the bike's saddle; decided 2026-10-16 in [`decisions.md`](decisions.md): no deviation accepted; owed: a blend face's offset as the blend rebuilt between the offset faces, radius r ± d)
 - [ ] Shell: a thickness at a rounded edge's radius or more
 - [ ] Delete face, refused with the faces today: the corner where blends meet, a blend whose end runs into another blend or into a vertex of more than three faces (chains, mitres), several blend faces at once, neighbours that do not meet in a line or a circle
 - [ ] Threads as the other modellers treat them (agreed with the developer on 2026-10-14): a cosmetic thread shown in the viewport (a texture or fine rings, both renderers), its data (designation, pitch, class, length) listed by `document.inspect`, carried to drawings and hole tables and checkable by V1's assertions
@@ -486,6 +488,7 @@ Applications built on 3DCraft, not part of it (the rule in `docs/decisions.md`, 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-16 | minor | M9: offset face, shell and thicken of freeform faces |
 | 2026-10-15 | minor | M9: move face, thicken and draft done (`feature.moveFace`, `feature.thicken`, `feature.draft`); new feature kinds in format version 16 |
 | 2026-10-14 | minor | Restructured: current focus on top, one line per milestone, a section per milestone (Goal, Done, Open, Acceptance), the boolean checklist on its own, ideas apart; how things were built left to `architecture.md` |
 | 2026-10-15 | minor | M9: the engine block's blend findings E1–E8 (estimate of what fits, blends ending on a slanted face, chamfer chains joined, a boolean hit snapped to an edge's end) |

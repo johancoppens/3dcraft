@@ -303,6 +303,94 @@ fn a_patch_with_a_pole_is_cut_through_the_pole() {
     octant_against("through");
 }
 
+/// A plane through the pole that holds the tangent of the patch's border
+/// there (the face of the block whose edge goes through the pole) meets
+/// the patch in an arc of a circle that leaves the pole along that
+/// border, within `x = y² / 10R` of it (`x` across the border's plane,
+/// `y` from the pole along it, `R` the ball's radius): within the
+/// tolerance of the border over thousands of tolerances. Where along that
+/// stretch the march stops on the border is rounding, and a seed further
+/// along it once started a second trace of the same arc, which the
+/// boolean took for two curves (`regions::untie`: "two curves leave a
+/// point in the same direction", the octant cut through its pole by the
+/// block's edge at 1e-3 when each pair of faces was intersected in the
+/// box of the two faces). In 40 boxes about the pole, upright and tilted,
+/// at three scales: one curve, from the pole or from where it is still
+/// within the tolerance of the border, on the circle the plane cuts from
+/// the ball (closed form) to the tolerance.
+#[test]
+fn a_plane_along_the_border_at_the_pole_meets_the_patch_once() {
+    use craft3d_geom::Plane;
+    use craft3d_geom::intersect::{SurfaceMeeting, meet_surfaces};
+    use craft3d_math::Bbox3;
+    for k in SCALES {
+        let tol = tolerance(k);
+        for tilted in [false, true] {
+            let place = if tilted { tilt(k) } else { Transform::IDENTITY };
+            let patch = twin(k).transformed(&place).unwrap();
+            let patch = &patch
+                .faces
+                .iter()
+                .find(|f| matches!(f.surface, Surface::Nurbs(_)))
+                .unwrap()
+                .surface;
+            let pole = place.point(POLE * k);
+            let centre = place.point(Vec3::ZERO);
+            let normal = place.vector(Vec3::new(1.0, 0.0, 0.2)).normalized().unwrap();
+            let plane = Surface::Plane(Plane::new(Frame::from_z(pole, normal).unwrap()));
+            // The normal of the plane of the patch's border x = 0.
+            let border = place.vector(Vec3::X);
+            // The circle the plane cuts from the ball.
+            let lift = normal.dot(pole - centre);
+            let middle = centre + normal * lift;
+            let radius = ((2.0 * k).powi(2) - lift * lift).sqrt();
+            let mut rng = Rng(0x0b0e_5eed ^ k.to_bits() ^ u64::from(tilted));
+            for _ in 0..40 {
+                let mut reach = || {
+                    let r = rng.between(0.02, 2.5) * k;
+                    Vec3::new(
+                        r * rng.between(0.2, 1.0),
+                        r * rng.between(0.2, 1.0),
+                        r * rng.between(0.2, 1.0),
+                    )
+                };
+                let (below, above) = (reach(), reach());
+                let within = Bbox3::from_points([pole - below, pole + above]);
+                let what = format!("at {k}, tilted {tilted}, in {within:?}");
+                let met = meet_surfaces(patch, &plane, &within, &tol)
+                    .unwrap_or_else(|e| panic!("{what}: {e}"));
+                let SurfaceMeeting::Meets(meeting) = met else {
+                    panic!("{what}: no curve");
+                };
+                assert_eq!(meeting.curves.len(), 1, "{what}: the arc more than once");
+                let curve = &meeting.curves[0];
+                let (t0, t1) = curve.range;
+                // It ends at the pole, or on the border where the arc is
+                // within the tolerance of it: `y² / 10R` of the plane
+                // x = 0 for y up to √(10 R tol), R = 2k.
+                let ends = [curve.curve.eval(t0), curve.curve.eval(t1)];
+                let stretch = (20.0 * k * tol.linear).sqrt();
+                assert!(
+                    ends.iter().any(|&end| {
+                        end.distance(pole) <= stretch && border.dot(end - pole).abs() <= tol.linear
+                    }),
+                    "{what}: the arc does not leave the pole: {ends:?}"
+                );
+                for i in 0..=400 {
+                    let p = curve.curve.eval(t0 + (t1 - t0) * f64::from(i) / 400.0);
+                    let across = normal.dot(p - middle);
+                    let around = ((p - middle) - normal * across).length() - radius;
+                    assert!(
+                        across.hypot(around) <= tol.linear,
+                        "{what}: {:e} off the circle",
+                        across.hypot(around)
+                    );
+                }
+            }
+        }
+    }
+}
+
 // ------------------------------------------------- the dome and the drop
 
 type P = [f64; 2];

@@ -551,46 +551,66 @@ fn what_is_not_built_is_refused_with_the_faces() {
     assert!(reason.starts_with("faces: "), "{reason}");
     assert!(reason.contains("F2:fillet(0)"), "{reason}");
     assert!(!reason.contains("too far"), "{reason}");
-    // A flat cap next to a freeform wall: its edge is a spline.
-    let mut s = session();
-    new_document(&mut s, k);
-    run(&mut s, "sketch.create", json!({"name": "Leaf"}));
+}
+
+/// A blade: a leaf (a spline over a line) extruded 2 high.
+fn blade(s: &mut Session) {
+    run(s, "sketch.create", json!({"name": "Leaf"}));
     run(
-        &mut s,
+        s,
         "sketch.spline",
         json!({"sketch": "Leaf", "through": [[0.0, 0.0], [2.0, 1.5], [4.0, 1.0], [5.0, 0.0]]}),
     );
     run(
-        &mut s,
+        s,
         "sketch.line",
         json!({"sketch": "Leaf", "from": [5.0, 0.0], "to": [0.0, 0.0]}),
     );
-    let made = run(
-        &mut s,
+    built(
+        s,
         "feature.extrude",
         json!({"sketch": "Leaf", "distance": 2.0, "name": "Blade"}),
     );
-    assert_eq!(made["status"], "ok", "{made}");
-    let cap = names_of(&body(&mut s, "Blade"))
-        .into_iter()
-        .find(|n| n.contains("endCap"))
-        .unwrap();
-    // Outward the freeform wall would have to be continued past its
-    // edge; inward the cap's edge on it would have to be found again.
-    let reason = failed(
-        &mut s,
-        "feature.offsetFace",
-        json!({"faces": [cap], "distance": 1.0, "name": "Longer"}),
-    );
-    assert!(reason.contains("a freeform face next to"), "{reason}");
-    assert!(reason.contains("F2:side("), "{reason}");
-    let reason = failed(
-        &mut s,
-        "feature.offsetFace",
-        json!({"faces": [cap], "distance": -1.0, "name": "Shorter"}),
-    );
-    assert!(reason.contains("elliptic or freeform edge"), "{reason}");
-    assert!(reason.contains("the edge between F2:"), "{reason}");
+}
+
+#[test]
+fn the_cap_of_a_freeform_wall_moves_out_and_in() {
+    // A flat cap next to a freeform wall, its edge a spline: moved out,
+    // the wall is continued past its border; moved in, the edge is found
+    // again on the wall. Both were refused before the offset of freeform
+    // faces was built (2026-10-16), as "a freeform face next to a face
+    // that moves cannot be continued past its edge" and "an elliptic or
+    // freeform edge next to a face that moves is not built".
+    let k = 1.0;
+    for (distance, height) in [(1.0, 3.0), (-1.0, 1.0)] {
+        let mut s = session();
+        new_document(&mut s, k);
+        blade(&mut s);
+        let before = body(&mut s, "Blade");
+        let leaf = before["volume"].as_f64().unwrap() / 2.0;
+        let cap = names_of(&before)
+            .into_iter()
+            .find(|n| n.contains("endCap"))
+            .unwrap();
+        built(
+            &mut s,
+            "feature.offsetFace",
+            json!({"faces": [cap], "distance": distance, "name": "Moved"}),
+        );
+        let moved = body(&mut s, "Moved");
+        assert_eq!(moved["faces"], before["faces"], "{moved}");
+        // The wall continued and the edge found again within a quarter of
+        // the tolerance: the volume within that over the area.
+        let volume = moved["volume"].as_f64().unwrap();
+        let slack = 0.25e-6 * moved["area"].as_f64().unwrap();
+        assert!(
+            (volume - leaf * height).abs() <= slack,
+            "{distance}: {volume} is not {}",
+            leaf * height
+        );
+        let check = run(&mut s, "document.check", json!({"deep": true}));
+        assert_eq!(check["ok"], true, "{check}");
+    }
 }
 
 #[test]

@@ -10,6 +10,7 @@ mod curve;
 mod extend;
 pub mod intersect;
 mod nurbs;
+pub mod offset;
 pub mod pole;
 pub mod refine;
 mod surface;

@@ -92,8 +92,10 @@ use std::path::PathBuf;
 /// closed form: tangent/cone-cone/002), and to 11564 the same day (an arm
 /// of a crossing the surfaces are a tenth of a tolerance apart at is no
 /// longer drawn twice: four `near` cases of a block or a dome against a
-/// roof).
-const AGREEING_FLOOR: usize = 11573;
+/// roof). Raised to 11582 on 2026-10-15 (each pair of faces intersected
+/// in the box of the two faces, only that box walked: three `near` cases
+/// each of cylinder-spline, spline-spline and torus-dome).
+const AGREEING_FLOOR: usize = 11582;
 
 /// Mismatches the kernel is known to have: `(case id, operation, why)`.
 /// They are bugs, listed so that the test is green while they are open and
