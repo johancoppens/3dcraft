@@ -1,0 +1,1011 @@
+[
+[
+"variable.set",
+{
+"name": "width",
+"expr": "160 mm"
+}
+],
+[
+"variable.set",
+{
+"name": "depth",
+"expr": "110 mm"
+}
+],
+[
+"variable.set",
+{
+"name": "height",
+"expr": "80 mm"
+}
+],
+[
+"variable.set",
+{
+"name": "thick",
+"expr": "3 mm"
+}
+],
+[
+"variable.set",
+{
+"name": "fingerW",
+"expr": "12 mm"
+}
+],
+[
+"variable.set",
+{
+"name": "kerf",
+"expr": "0.15 mm"
+}
+],
+[
+"variable.set",
+{
+"name": "clearance",
+"expr": "0 mm"
+}
+],
+[
+"variable.set",
+{
+"name": "thumbR",
+"expr": "11 mm"
+}
+],
+[
+"variable.set",
+{
+"name": "holeR",
+"expr": "9 mm"
+}
+],
+[
+"variable.set",
+{
+"name": "wallH",
+"expr": "height - thick"
+}
+],
+[
+"variable.set",
+{
+"name": "spanW",
+"expr": "width - 2 * thick"
+}
+],
+[
+"variable.set",
+{
+"name": "spanD",
+"expr": "depth - 2 * thick"
+}
+],
+[
+"variable.set",
+{
+"name": "spanV",
+"expr": "wallH - thick"
+}
+],
+[
+"variable.set",
+{
+"name": "qW",
+"expr": "(spanW / fingerW - 1) / 2 + 0.000001"
+}
+],
+[
+"variable.set",
+{
+"name": "nW",
+"expr": "max(3, 2 * (qW - atan(tan(qW * 180 deg)) / (180 deg)) + 1)"
+}
+],
+[
+"variable.set",
+{
+"name": "qD",
+"expr": "(spanD / fingerW - 1) / 2 + 0.000001"
+}
+],
+[
+"variable.set",
+{
+"name": "nD",
+"expr": "max(3, 2 * (qD - atan(tan(qD * 180 deg)) / (180 deg)) + 1)"
+}
+],
+[
+"variable.set",
+{
+"name": "qV",
+"expr": "(spanV / fingerW - 1) / 2 + 0.000001"
+}
+],
+[
+"variable.set",
+{
+"name": "nV",
+"expr": "max(3, 2 * (qV - atan(tan(qV * 180 deg)) / (180 deg)) + 1)"
+}
+],
+[
+"variable.set",
+{
+"name": "fW",
+"expr": "spanW / nW"
+}
+],
+[
+"variable.set",
+{
+"name": "fD",
+"expr": "spanD / nD"
+}
+],
+[
+"variable.set",
+{
+"name": "fV",
+"expr": "spanV / nV"
+}
+],
+[
+"variable.set",
+{
+"name": "hk",
+"expr": "kerf / 2"
+}
+],
+[
+"variable.set",
+{
+"name": "flank",
+"expr": "(clearance - kerf) / 2"
+}
+],
+[
+"feature.block",
+{
+"name": "FrontBlank",
+"size": [
+"(width + hk) - (-hk)",
+"(0 mm + thick) - (0 mm)",
+"(wallH + hk) - (-hk)"
+],
+"position": [
+"-hk",
+"0 mm",
+"-hk"
+]
+}
+],
+[
+"feature.block",
+{
+"name": "FrontCut1",
+"size": [
+"(thick + fW + flank) - (thick - flank)",
+"(0 mm + 2 * thick) - (0 mm - thick)",
+"(thick - hk) - (-thick)"
+],
+"position": [
+"thick - flank",
+"0 mm - thick",
+"-thick"
+]
+}
+],
+[
+"feature.pattern",
+{
+"name": "FrontCut1P",
+"source": "FrontCut1",
+"count": "(nW + 1) / 2",
+"step": [
+"2 * fW",
+"0 mm",
+"0 mm"
+]
+}
+],
+[
+"feature.boolean",
+{
+"op": "subtract",
+"target": "FrontBlank",
+"tool": "FrontCut1P",
+"name": "FrontS1"
+}
+],
+[
+"feature.block",
+{
+"name": "FrontCut2",
+"size": [
+"(thick - hk) - (-thick)",
+"(0 mm + 2 * thick) - (0 mm - thick)",
+"(thick + 2 * fV + flank) - (thick + fV - flank)"
+],
+"position": [
+"-thick",
+"0 mm - thick",
+"thick + fV - flank"
+]
+}
+],
+[
+"feature.pattern",
+{
+"name": "FrontCut2P",
+"source": "FrontCut2",
+"count": "(nV - 1) / 2",
+"step": [
+"0 mm",
+"0 mm",
+"2 * fV"
+]
+}
+],
+[
+"feature.boolean",
+{
+"op": "subtract",
+"target": "FrontS1",
+"tool": "FrontCut2P",
+"name": "FrontS2"
+}
+],
+[
+"feature.block",
+{
+"name": "FrontCut3",
+"size": [
+"(width + thick) - (width - thick + hk)",
+"(0 mm + 2 * thick) - (0 mm - thick)",
+"(thick + 2 * fV + flank) - (thick + fV - flank)"
+],
+"position": [
+"width - thick + hk",
+"0 mm - thick",
+"thick + fV - flank"
+]
+}
+],
+[
+"feature.pattern",
+{
+"name": "FrontCut3P",
+"source": "FrontCut3",
+"count": "(nV - 1) / 2",
+"step": [
+"0 mm",
+"0 mm",
+"2 * fV"
+]
+}
+],
+[
+"feature.boolean",
+{
+"op": "subtract",
+"target": "FrontS2",
+"tool": "FrontCut3P",
+"name": "FrontS3"
+}
+],
+[
+"feature.mirror",
+{
+"source": "FrontS3",
+"normal": [
+0,
+1,
+0
+],
+"point": [
+"0 mm",
+"depth / 2",
+"0 mm"
+],
+"keep": true,
+"name": "Back"
+}
+],
+[
+"feature.cylinder",
+{
+"name": "Thumb",
+"radius": "thumbR - hk",
+"height": "3 * thick",
+"position": [
+"width / 2",
+"-thick",
+"wallH"
+],
+"axis": [
+0,
+1,
+0
+]
+}
+],
+[
+"feature.boolean",
+{
+"op": "subtract",
+"target": "FrontS3",
+"tool": "Thumb",
+"name": "Front"
+}
+],
+[
+"feature.block",
+{
+"name": "LeftBlank",
+"size": [
+"(0 mm + thick) - (0 mm)",
+"(depth + hk) - (-hk)",
+"(wallH + hk) - (-hk)"
+],
+"position": [
+"0 mm",
+"-hk",
+"-hk"
+]
+}
+],
+[
+"feature.block",
+{
+"name": "LeftCut1",
+"size": [
+"(0 mm + 2 * thick) - (0 mm - thick)",
+"(thick - hk) - (-thick)",
+"(thick + fV + flank) - (thick - flank)"
+],
+"position": [
+"0 mm - thick",
+"-thick",
+"thick - flank"
+]
+}
+],
+[
+"feature.pattern",
+{
+"name": "LeftCut1P",
+"source": "LeftCut1",
+"count": "(nV + 1) / 2",
+"step": [
+"0 mm",
+"0 mm",
+"2 * fV"
+]
+}
+],
+[
+"feature.boolean",
+{
+"op": "subtract",
+"target": "LeftBlank",
+"tool": "LeftCut1P",
+"name": "LeftS1"
+}
+],
+[
+"feature.block",
+{
+"name": "LeftCut2",
+"size": [
+"(0 mm + 2 * thick) - (0 mm - thick)",
+"(thick - hk) - (-thick)",
+"(thick + fV + flank) - (-thick)"
+],
+"position": [
+"0 mm - thick",
+"-thick",
+"-thick"
+]
+}
+],
+[
+"feature.boolean",
+{
+"op": "subtract",
+"target": "LeftS1",
+"tool": "LeftCut2",
+"name": "LeftS2"
+}
+],
+[
+"feature.block",
+{
+"name": "LeftCut3",
+"size": [
+"(0 mm + 2 * thick) - (0 mm - thick)",
+"(thick - hk) - (-thick)",
+"(wallH + thick) - (wallH - fV - flank)"
+],
+"position": [
+"0 mm - thick",
+"-thick",
+"wallH - fV - flank"
+]
+}
+],
+[
+"feature.boolean",
+{
+"op": "subtract",
+"target": "LeftS2",
+"tool": "LeftCut3",
+"name": "LeftS3"
+}
+],
+[
+"feature.block",
+{
+"name": "LeftCut4",
+"size": [
+"(0 mm + 2 * thick) - (0 mm - thick)",
+"(depth + thick) - (depth - thick + hk)",
+"(thick + fV + flank) - (thick - flank)"
+],
+"position": [
+"0 mm - thick",
+"depth - thick + hk",
+"thick - flank"
+]
+}
+],
+[
+"feature.pattern",
+{
+"name": "LeftCut4P",
+"source": "LeftCut4",
+"count": "(nV + 1) / 2",
+"step": [
+"0 mm",
+"0 mm",
+"2 * fV"
+]
+}
+],
+[
+"feature.boolean",
+{
+"op": "subtract",
+"target": "LeftS3",
+"tool": "LeftCut4P",
+"name": "LeftS4"
+}
+],
+[
+"feature.block",
+{
+"name": "LeftCut5",
+"size": [
+"(0 mm + 2 * thick) - (0 mm - thick)",
+"(depth + thick) - (depth - thick + hk)",
+"(thick + fV + flank) - (-thick)"
+],
+"position": [
+"0 mm - thick",
+"depth - thick + hk",
+"-thick"
+]
+}
+],
+[
+"feature.boolean",
+{
+"op": "subtract",
+"target": "LeftS4",
+"tool": "LeftCut5",
+"name": "LeftS5"
+}
+],
+[
+"feature.block",
+{
+"name": "LeftCut6",
+"size": [
+"(0 mm + 2 * thick) - (0 mm - thick)",
+"(depth + thick) - (depth - thick + hk)",
+"(wallH + thick) - (wallH - fV - flank)"
+],
+"position": [
+"0 mm - thick",
+"depth - thick + hk",
+"wallH - fV - flank"
+]
+}
+],
+[
+"feature.boolean",
+{
+"op": "subtract",
+"target": "LeftS5",
+"tool": "LeftCut6",
+"name": "LeftS6"
+}
+],
+[
+"feature.block",
+{
+"name": "LeftCut7",
+"size": [
+"(0 mm + 2 * thick) - (0 mm - thick)",
+"(thick + fD + flank) - (thick - flank)",
+"(thick - hk) - (-thick)"
+],
+"position": [
+"0 mm - thick",
+"thick - flank",
+"-thick"
+]
+}
+],
+[
+"feature.pattern",
+{
+"name": "LeftCut7P",
+"source": "LeftCut7",
+"count": "(nD + 1) / 2",
+"step": [
+"0 mm",
+"2 * fD",
+"0 mm"
+]
+}
+],
+[
+"feature.boolean",
+{
+"op": "subtract",
+"target": "LeftS6",
+"tool": "LeftCut7P",
+"name": "LeftS7"
+}
+],
+[
+"feature.block",
+{
+"name": "LeftCut8",
+"size": [
+"(0 mm + 2 * thick) - (0 mm - thick)",
+"(thick + fD + flank) - (-thick)",
+"(thick - hk) - (-thick)"
+],
+"position": [
+"0 mm - thick",
+"-thick",
+"-thick"
+]
+}
+],
+[
+"feature.boolean",
+{
+"op": "subtract",
+"target": "LeftS7",
+"tool": "LeftCut8",
+"name": "LeftS8"
+}
+],
+[
+"feature.block",
+{
+"name": "LeftCut9",
+"size": [
+"(0 mm + 2 * thick) - (0 mm - thick)",
+"(depth + thick) - (depth - thick - fD - flank)",
+"(thick - hk) - (-thick)"
+],
+"position": [
+"0 mm - thick",
+"depth - thick - fD - flank",
+"-thick"
+]
+}
+],
+[
+"feature.boolean",
+{
+"op": "subtract",
+"target": "LeftS8",
+"tool": "LeftCut9",
+"name": "LeftS9"
+}
+],
+[
+"feature.rename",
+{
+"feature": "LeftS9",
+"name": "Left"
+}
+],
+[
+"feature.mirror",
+{
+"source": "Left",
+"normal": [
+1,
+0,
+0
+],
+"point": [
+"width / 2",
+"0 mm",
+"0 mm"
+],
+"keep": true,
+"name": "Right"
+}
+],
+[
+"feature.block",
+{
+"name": "BottomBlank",
+"size": [
+"(width + hk) - (-hk)",
+"(depth + hk) - (-hk)",
+"(0 mm + thick) - (0 mm)"
+],
+"position": [
+"-hk",
+"-hk",
+"0 mm"
+]
+}
+],
+[
+"feature.block",
+{
+"name": "BottomCut1",
+"size": [
+"(thick + flank) - (-thick)",
+"(thick + flank) - (-thick)",
+"(0 mm + 2 * thick) - (0 mm - thick)"
+],
+"position": [
+"-thick",
+"-thick",
+"0 mm - thick"
+]
+}
+],
+[
+"feature.boolean",
+{
+"op": "subtract",
+"target": "BottomBlank",
+"tool": "BottomCut1",
+"name": "BottomS1"
+}
+],
+[
+"feature.block",
+{
+"name": "BottomCut2",
+"size": [
+"(thick + flank) - (-thick)",
+"(depth + thick) - (depth - thick - flank)",
+"(0 mm + 2 * thick) - (0 mm - thick)"
+],
+"position": [
+"-thick",
+"depth - thick - flank",
+"0 mm - thick"
+]
+}
+],
+[
+"feature.boolean",
+{
+"op": "subtract",
+"target": "BottomS1",
+"tool": "BottomCut2",
+"name": "BottomS2"
+}
+],
+[
+"feature.block",
+{
+"name": "BottomCut3",
+"size": [
+"(width + thick) - (width - thick - flank)",
+"(thick + flank) - (-thick)",
+"(0 mm + 2 * thick) - (0 mm - thick)"
+],
+"position": [
+"width - thick - flank",
+"-thick",
+"0 mm - thick"
+]
+}
+],
+[
+"feature.boolean",
+{
+"op": "subtract",
+"target": "BottomS2",
+"tool": "BottomCut3",
+"name": "BottomS3"
+}
+],
+[
+"feature.block",
+{
+"name": "BottomCut4",
+"size": [
+"(width + thick) - (width - thick - flank)",
+"(depth + thick) - (depth - thick - flank)",
+"(0 mm + 2 * thick) - (0 mm - thick)"
+],
+"position": [
+"width - thick - flank",
+"depth - thick - flank",
+"0 mm - thick"
+]
+}
+],
+[
+"feature.boolean",
+{
+"op": "subtract",
+"target": "BottomS3",
+"tool": "BottomCut4",
+"name": "BottomS4"
+}
+],
+[
+"feature.block",
+{
+"name": "BottomCut5",
+"size": [
+"(thick + 2 * fW + flank) - (thick + fW - flank)",
+"(thick - hk) - (-thick)",
+"(0 mm + 2 * thick) - (0 mm - thick)"
+],
+"position": [
+"thick + fW - flank",
+"-thick",
+"0 mm - thick"
+]
+}
+],
+[
+"feature.pattern",
+{
+"name": "BottomCut5P",
+"source": "BottomCut5",
+"count": "(nW - 1) / 2",
+"step": [
+"2 * fW",
+"0 mm",
+"0 mm"
+]
+}
+],
+[
+"feature.boolean",
+{
+"op": "subtract",
+"target": "BottomS4",
+"tool": "BottomCut5P",
+"name": "BottomS5"
+}
+],
+[
+"feature.block",
+{
+"name": "BottomCut6",
+"size": [
+"(thick + 2 * fW + flank) - (thick + fW - flank)",
+"(depth + thick) - (depth - thick + hk)",
+"(0 mm + 2 * thick) - (0 mm - thick)"
+],
+"position": [
+"thick + fW - flank",
+"depth - thick + hk",
+"0 mm - thick"
+]
+}
+],
+[
+"feature.pattern",
+{
+"name": "BottomCut6P",
+"source": "BottomCut6",
+"count": "(nW - 1) / 2",
+"step": [
+"2 * fW",
+"0 mm",
+"0 mm"
+]
+}
+],
+[
+"feature.boolean",
+{
+"op": "subtract",
+"target": "BottomS5",
+"tool": "BottomCut6P",
+"name": "BottomS6"
+}
+],
+[
+"feature.block",
+{
+"name": "BottomCut7",
+"size": [
+"(thick - hk) - (-thick)",
+"(thick + 2 * fD + flank) - (thick + fD - flank)",
+"(0 mm + 2 * thick) - (0 mm - thick)"
+],
+"position": [
+"-thick",
+"thick + fD - flank",
+"0 mm - thick"
+]
+}
+],
+[
+"feature.pattern",
+{
+"name": "BottomCut7P",
+"source": "BottomCut7",
+"count": "(nD - 1) / 2",
+"step": [
+"0 mm",
+"2 * fD",
+"0 mm"
+]
+}
+],
+[
+"feature.boolean",
+{
+"op": "subtract",
+"target": "BottomS6",
+"tool": "BottomCut7P",
+"name": "BottomS7"
+}
+],
+[
+"feature.block",
+{
+"name": "BottomCut8",
+"size": [
+"(width + thick) - (width - thick + hk)",
+"(thick + 2 * fD + flank) - (thick + fD - flank)",
+"(0 mm + 2 * thick) - (0 mm - thick)"
+],
+"position": [
+"width - thick + hk",
+"thick + fD - flank",
+"0 mm - thick"
+]
+}
+],
+[
+"feature.pattern",
+{
+"name": "BottomCut8P",
+"source": "BottomCut8",
+"count": "(nD - 1) / 2",
+"step": [
+"0 mm",
+"2 * fD",
+"0 mm"
+]
+}
+],
+[
+"feature.boolean",
+{
+"op": "subtract",
+"target": "BottomS7",
+"tool": "BottomCut8P",
+"name": "BottomS8"
+}
+],
+[
+"feature.rename",
+{
+"feature": "BottomS8",
+"name": "Bottom"
+}
+],
+[
+"feature.block",
+{
+"name": "LidBlank",
+"size": [
+"(width + hk) - (-hk)",
+"(depth + hk) - (-hk)",
+"(wallH + thick) - (wallH)"
+],
+"position": [
+"-hk",
+"-hk",
+"wallH"
+]
+}
+],
+[
+"feature.cylinder",
+{
+"name": "FingerHole",
+"radius": "holeR - hk",
+"height": "3 * thick",
+"position": [
+"width / 2",
+"depth / 2",
+"wallH - thick"
+]
+}
+],
+[
+"feature.boolean",
+{
+"op": "subtract",
+"target": "LidBlank",
+"tool": "FingerHole",
+"name": "Lid"
+}
+],
+[
+"body.appearance",
+{
+"body": "Front",
+"color": "#d9b27c",
+"roughness": 0.8
+}
+],
+[
+"body.appearance",
+{
+"body": "Back",
+"color": "#d9b27c",
+"roughness": 0.8
+}
+],
+[
+"body.appearance",
+{
+"body": "Left",
+"color": "#b9874f",
+"roughness": 0.8
+}
+],
+[
+"body.appearance",
+{
+"body": "Right",
+"color": "#b9874f",
+"roughness": 0.8
+}
+],
+[
+"body.appearance",
+{
+"body": "Bottom",
+"color": "#e6c999",
+"roughness": 0.8
+}
+],
+[
+"body.appearance",
+{
+"body": "Lid",
+"color": "#c99a5f",
+"roughness": 0.8
+}
+]
+]

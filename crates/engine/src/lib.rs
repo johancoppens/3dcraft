@@ -24,6 +24,7 @@ mod drawing_cmds;
 mod face_cmds;
 mod file_cmds;
 mod helix_cmds;
+mod interference_cmds;
 mod loft_cmds;
 mod mass;
 mod params;
@@ -280,6 +281,7 @@ impl Session {
                 datum_cmds::SPECS,
                 helix_cmds::SPECS,
                 query_cmds::SPECS,
+                interference_cmds::SPECS,
                 pick_cmds::SPECS,
                 recovery_cmds::SPECS,
                 replay_cmds::SPECS,
