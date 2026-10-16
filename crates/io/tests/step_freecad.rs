@@ -30,7 +30,7 @@ mod harness;
 use craft3d_geom::Surface;
 use craft3d_io::{AngleUnit, StepBody, StepOptions, export_step};
 use craft3d_kernel::boolean::{BooleanOp, boolean};
-use craft3d_kernel::primitives;
+use craft3d_kernel::{KernelError, primitives};
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_meshio::Unit;
 use craft3d_testkit::{solids, trimmed};
@@ -295,9 +295,11 @@ fn under_the_roof(dx: f64, dy: f64, height: f64, x: (f64, f64), y: (f64, f64)) -
 /// as a Bézier patch and as a NURBS surface), which no command builds
 /// yet: a block through the roof, and the corpus case
 /// `contact/dome-dome/003` of `crates/kernel/tests/boolean_freeform.rs`, a
-/// corner of one roof resting on another roof, where the two together are
-/// two lumps that touch in a point and the difference is the lower one as
-/// it was.
+/// corner of one roof resting on another roof, where the two touch in a
+/// point: their union is refused as zero thickness (the developer's
+/// decision of 2026-10-15; `a_corner_of_a_roof_resting_on_another_roof`
+/// in the kernel's tests holds it at three scales without FreeCAD) and is
+/// not exported, and the difference is the lower one as it was.
 ///
 /// The bound is `APPROXIMATED`: the cut through the roof is a curve that
 /// is no line in the roof's parameter plane, and FreeCAD's area of a
@@ -423,19 +425,21 @@ fn freecad_reads_booleans_of_domed_blocks() {
             )
             .unwrap();
             add(
-                "roof-corner-union",
-                &lower.body,
-                &upper.body,
-                BooleanOp::Union,
-                2,
-            );
-            add(
                 "roof-corner-subtract",
                 &lower.body,
                 &upper.body,
                 BooleanOp::Subtract,
                 1,
             );
+            // Two parts of one body touching in a point: refused, and
+            // anything else (a body, or another refusal) is a problem.
+            match boolean(&lower.body, &upper.body, BooleanOp::Union, &tolerance) {
+                Err(KernelError::ZeroThickness { .. }) => {}
+                Err(e) => refused.push(format!("{tag}-{kind}-roof-corner-union: {e}")),
+                Ok(_) => refused.push(format!(
+                    "{tag}-{kind}-roof-corner-union: made, where the parts touch in a point (zero thickness, to be refused)"
+                )),
+            }
             cases.append(&mut operands);
         }
     }
