@@ -1540,8 +1540,12 @@ fn edge_into_a_face(op: &'static str) -> impl Fn(&mut Session, f64) -> Forms {
 }
 
 /// A rod standing on an edge of a bar that passes under the middle of its
-/// base: they touch along a stretch of that edge and nowhere else, so
-/// together they are two lumps, as given.
+/// base: they touch along a stretch of that edge and nowhere else. Their
+/// union would be two parts of one body touching along a line, which is
+/// refused as zero thickness (the developer's decision of 2026-10-15;
+/// `zero_thickness.rs` holds that at three scales without FreeCAD): for
+/// "union" the refusal is required, undone, and the two bodies, which may
+/// touch, are what is exported. The rod less the bar is the rod.
 fn rod_on_an_edge(op: &'static str) -> impl Fn(&mut Session, f64) -> Forms {
     move |s, k| {
         step(
@@ -1550,12 +1554,25 @@ fn rod_on_an_edge(op: &'static str) -> impl Fn(&mut Session, f64) -> Forms {
             json!({"radius": k, "height": 2.0 * k, "name": "Rod"}),
         )?;
         bar_on_its_edge(s, k, -2.0 * FRAC_1_SQRT_2, "Wedge")?;
-        combine(s, op, "Rod", "Wedge")?;
-        let (volume, area) = match op {
-            "union" => (2.0 * PI + 1.0, 6.0 * PI + 6.0),
-            _ => (2.0 * PI, 6.0 * PI),
-        };
-        Ok(vec![closed("Result", volume, area)])
+        if op != "union" {
+            combine(s, op, "Rod", "Wedge")?;
+            return Ok(vec![closed("Result", 2.0 * PI, 6.0 * PI)]);
+        }
+        let params = json!({"op": op, "target": "Rod", "tool": "Wedge", "name": "Result"});
+        let made = s
+            .execute("feature.boolean", &params)
+            .map_err(|e| format!("feature.boolean {params}: {e}"))?;
+        let why = made["error"].as_str().unwrap_or("");
+        if made["status"] != "failed" || !why.contains("zero thickness") {
+            return Err(format!(
+                "feature.boolean {params}: the parts touch along a line, to be refused as zero thickness, but: {made}"
+            ));
+        }
+        step(s, "edit.undo", json!({}))?;
+        Ok(vec![
+            closed("Rod", 2.0 * PI, 6.0 * PI),
+            closed("Wedge", 1.0, 6.0),
+        ])
     }
 }
 
@@ -1921,7 +1938,7 @@ fn freecad_reads_extrusion_ends_datums_splines_and_slivers() {
             Box::new(edge_into_a_face("intersect")),
         ),
         (
-            "rod-on-edge-union",
+            "rod-on-edge-union-refused",
             EXACT,
             Box::new(rod_on_an_edge("union")),
         ),
