@@ -403,6 +403,7 @@ The first version for people outside the project; it follows M9 and does not wai
 #### Done
 - Autosave and crash recovery in the app and in `craft3d-cli serve`/`mcp` (`recovery.list`, `recovery.open`, `recovery.discard`; `crates/engine/src/recovery.rs`) (2026-10-13)
 - DXF and SVG export of a sketch or a flat face, for laser cutting (`file.export` to `.dxf` and `.svg`, `crates/drawing`, [`file-formats.md`](file-formats.md) › *Flat outlines*) (2026-10-13)
+- Flat faces exported by followed names, in a documented upright frame that is never mirrored, and several faces laid out on one sheet (`file.export {faces, gap, width, xAxis, origin}`, [`file-formats.md`](file-formats.md) › *Flat outlines*) (2026-10-17)
 - A colour and a material per body (`body.appearance`, `body.material`; format 16), following a body through booleans and moves with tool faces keeping their own colour, drawn by both renderers and in 3MF and STEP exports ([`design/document.md`](design/document.md)) (2026-10-15)
 - Mass and the inertia tensor about the centroid from the exact B-rep for a body with a density, in `document.inspect` and `document.measure` (2026-10-15)
 

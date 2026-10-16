@@ -462,27 +462,108 @@ fn segment(
 
 // ------------------------------------------------------------------- face
 
-/// The loops of flat faces as paths, in the axes of the first face seen
-/// from outside the body.
+/// The loops of flat faces as paths, in a frame of the first face's
+/// plane seen from outside the body.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FaceOutline {
     /// The plane the paths are drawn in: x to the right, y up, z towards
     /// the viewer, out of the body.
     pub frame: Frame,
     /// One closed path per loop: outer boundaries counter-clockwise,
-    /// holes clockwise.
+    /// holes clockwise (a loop that is one whole circle or ellipse is a
+    /// [`Path::Circle`] or [`Path::Ellipse`], which has no direction).
     pub paths: Vec<Path>,
+}
+
+/// How the drawing of a flat face is laid in the face's plane. The
+/// drawing is always seen from outside the body (z is the outward normal
+/// and the axes are right-handed), so it is never a mirror image; this
+/// only says which way x runs and where the origin is.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum FaceAxes {
+    /// The axes and origin of the face's own plane, as the operation
+    /// that made the face built it.
+    Own,
+    /// The drawing frame of `file.export` (docs/file-formats.md): y runs
+    /// up the face (the model's +z projected onto the plane), and on a
+    /// face that lies flat, where up has no direction, x is the model's
+    /// +x. The origin is the model's origin dropped onto the plane.
+    #[default]
+    Upright,
+    /// x along this direction projected onto the plane; the origin as for
+    /// [`FaceAxes::Upright`].
+    Along(Vec3),
+}
+
+/// The frame a face whose outward plane is `outward` is drawn in, by
+/// `axes`. An error for an `Along` direction that is not finite or lies
+/// along the face's normal.
+pub fn face_frame(outward: &Frame, axes: FaceAxes, tolerance: Tolerance) -> Result<Frame, IoError> {
+    let normal = outward.z();
+    // The model's origin dropped onto the plane.
+    let origin = normal * outward.origin().dot(normal);
+    let up = Vec3::new(0.0, 0.0, 1.0);
+    let hint = match axes {
+        FaceAxes::Own => return Ok(*outward),
+        FaceAxes::Upright => {
+            // Lying flat: the normal is along z within the angular
+            // tolerance, the test for parallel everywhere in the kernel.
+            if normal.cross(up).length() <= tolerance.angular.max(1e-12) {
+                Vec3::new(1.0, 0.0, 0.0)
+            } else {
+                // x × y = z, so x = y × z with y up the face.
+                let uphill = up - normal * up.dot(normal);
+                uphill.cross(normal)
+            }
+        }
+        FaceAxes::Along(x) => {
+            // Scaled to its largest component first, so that no length
+            // of it overflows.
+            let largest = x.x.abs().max(x.y.abs()).max(x.z.abs());
+            if !(largest.is_finite() && largest > 0.0) {
+                return Err(unsupported(
+                    "the x axis has no direction: it is zero or not finite",
+                ));
+            }
+            let x = x * (1.0 / largest);
+            let across = x - normal * x.dot(normal);
+            if across.length() <= tolerance.angular.max(1e-12) * x.length() {
+                return Err(unsupported(format!(
+                    "the x axis [{}, {}, {}] lies along the face's normal [{}, {}, {}]: it has no direction in the face's plane",
+                    x.x, x.y, x.z, normal.x, normal.y, normal.z
+                )));
+            }
+            across
+        }
+    };
+    Frame::new(origin, normal, hint)
+        .ok_or_else(|| unsupported("the face's plane has no frame to draw it in"))
+}
+
+/// The outline of the faces `faces` of `body` in the axes of the first
+/// face's own plane, seen from outside the body: [`face_outline_in`] with
+/// [`FaceAxes::Own`].
+pub fn face_outline(
+    body: &Body,
+    faces: &[FaceId],
+    tolerance: Tolerance,
+) -> Result<FaceOutline, IoError> {
+    face_outline_in(body, faces, FaceAxes::Own, tolerance)
 }
 
 /// The outline of the faces `faces` of `body`: every loop a closed path.
 ///
 /// The faces must be flat and lie in one plane, facing the same way
-/// (the pieces a boolean cut one face into do). The axes are those of the
-/// first face's plane, seen from outside the body, so the outline is what
-/// one sees looking at the face and not its mirror image.
-pub fn face_outline(
+/// (the pieces a boolean cut one face into do). The drawing is seen from
+/// outside the body, in the frame `axes` gives in the first face's plane,
+/// so the outline is what one sees looking at the face and not its mirror
+/// image: outer boundaries run counter-clockwise, holes clockwise.
+/// `axes` other than [`FaceAxes::Own`] only turn and move the drawing in
+/// its plane.
+pub fn face_outline_in(
     body: &Body,
     faces: &[FaceId],
+    axes: FaceAxes,
     tolerance: Tolerance,
 ) -> Result<FaceOutline, IoError> {
     let mut frame: Option<Frame> = None;
@@ -503,7 +584,10 @@ pub fn face_outline(
             Some(*plane.frame())
         }
         .ok_or_else(|| unsupported("the face has a degenerate plane"))?;
-        let frame = *frame.get_or_insert(own);
+        let frame = match frame {
+            Some(frame) => frame,
+            None => *frame.insert(face_frame(&own, axes, tolerance)?),
+        };
         // Another face has to lie in the plane of the first.
         let off = frame.local(own.origin()).2.abs();
         let tilt = frame.z().cross(own.z()).length();

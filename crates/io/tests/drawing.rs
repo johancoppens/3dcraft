@@ -13,7 +13,10 @@
 use craft3d_doc::{Entity, EntityId, Geometry, Sketch, SketchPlane};
 use craft3d_drawing::{Color, Drawing, Layer, Path, Segment, Unit};
 use craft3d_geom::{Circle, Curve3, Cylinder, Line, NurbsCurve, Plane, Surface};
-use craft3d_io::{DrawingFormat, encode_drawing, face_outline, sketch_outline};
+use craft3d_io::{
+    DrawingFormat, FaceAxes, encode_drawing, face_frame, face_outline, face_outline_in,
+    sketch_outline,
+};
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_topo::{Body, BodyKind, Coedge, FaceId};
 use std::f64::consts::TAU;
@@ -372,4 +375,70 @@ fn a_sketch_that_is_not_solved_or_not_whole_is_refused() {
     for tolerance in [0.0, -1.0, f64::NAN, f64::INFINITY] {
         assert!(sketch_outline(&sketch, &solved, &radius, false, tolerance).is_err());
     }
+}
+
+#[test]
+fn the_drawing_frame_of_a_face_is_upright_and_seen_from_outside() {
+    let tol = Tolerance::default();
+    let (x, y, z) = (
+        Vec3::new(1.0, 0.0, 0.0),
+        Vec3::new(0.0, 1.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+    );
+    // (outward normal, x, y) for the six faces of a box: flat faces have
+    // x along x, standing ones y up.
+    for (normal, ex, ey) in [
+        (z, x, y),
+        (-z, x, -y),
+        (-y, x, z),
+        (y, -x, z),
+        (x, y, z),
+        (-x, -y, z),
+    ] {
+        // Whatever the plane's own axes and origin were.
+        let own = Frame::new(
+            Vec3::new(4.0, -3.0, 2.0),
+            normal,
+            normal.cross(ex) + ex * 0.3,
+        )
+        .unwrap();
+        let frame = face_frame(&own, FaceAxes::Upright, tol).unwrap();
+        assert_eq!(
+            (frame.x(), frame.y(), frame.z()),
+            (ex, ey, normal),
+            "{normal:?}"
+        );
+        // The model's origin dropped onto the plane.
+        let o = frame.origin();
+        assert_eq!(o, normal * Vec3::new(4.0, -3.0, 2.0).dot(normal));
+        assert_eq!(face_frame(&own, FaceAxes::Own, tol).unwrap(), own);
+    }
+    // A tilted plane: y up the slope, x level, z the normal.
+    let own = tilted();
+    let frame = face_frame(&own, FaceAxes::Upright, tol).unwrap();
+    assert!(frame.x().z.abs() < 1e-15 && frame.y().z > 0.0);
+    assert!((frame.z() - own.z()).length() < 1e-15);
+    assert!((frame.x().cross(frame.y()) - frame.z()).length() < 1e-15);
+    // A given x is projected onto the plane; one along the normal is
+    // refused, as are zero and infinity.
+    let along = face_frame(&own, FaceAxes::Along(Vec3::new(0.0, 5.0, 0.0)), tol).unwrap();
+    assert!(along.x().dot(own.z()).abs() < 1e-15 && along.x().y > 0.0);
+    for bad in [
+        own.z() * 3.0,
+        Vec3::new(0.0, 0.0, 0.0),
+        Vec3::new(f64::INFINITY, 0.0, 0.0),
+        Vec3::new(f64::NAN, 0.0, 1.0),
+    ] {
+        assert!(
+            face_frame(&own, FaceAxes::Along(bad), tol).is_err(),
+            "{bad:?}"
+        );
+    }
+    // The outline in that frame has the same area and runs the same way
+    // as in the face's own axes: turned, never mirrored.
+    let (body, face, ..) = bump(false, true);
+    let mine = face_outline(&body, &[face], tol).unwrap();
+    let upright = face_outline_in(&body, &[face], FaceAxes::Upright, tol).unwrap();
+    let (a, b) = (mine.paths[0].area(), upright.paths[0].area());
+    assert!(a > 0.0 && (a - b).abs() < 1e-9 * a, "{a} {b}");
 }

@@ -138,6 +138,19 @@ impl Spline {
         self.degree
     }
 
+    /// The same curve moved by `d`: every control point moved, knots and
+    /// weights as they are.
+    pub fn translated(&self, d: Point) -> Self {
+        Self {
+            control: self
+                .control
+                .iter()
+                .map(|p| [p[0] + d[0], p[1] + d[1]])
+                .collect(),
+            ..self.clone()
+        }
+    }
+
     pub fn knots(&self) -> &[f64] {
         &self.knots
     }
