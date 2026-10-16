@@ -537,6 +537,37 @@ fn reach(bbox: &Bbox3, p: Vec3) -> f64 {
 const CURVE_BOUND_HALVINGS: usize = 3;
 
 impl NurbsCurve {
+    /// The curve as rational Bézier pieces, one per knot span of its
+    /// domain (*The NURBS Book* A5.6 by repeated knot insertion): each
+    /// span with its control points and weights. The first and the last
+    /// piece go on past the domain as [`NurbsCurve::eval`] does.
+    pub fn bezier_pieces(&self) -> Vec<CurvePiece> {
+        let mut knots = self.knots.clone();
+        let mut rows = vec![self.homogeneous.clone()];
+        make_bezier(&mut knots, self.degree, &mut rows);
+        let Some(row) = rows.first() else {
+            return Vec::new();
+        };
+        let (start, end) = domain_of(&knots, self.degree);
+        let mut pieces = Vec::new();
+        for k in self.degree..row.len() {
+            let (Some(&lo), Some(&hi)) = (knots.get(k), knots.get(k + 1)) else {
+                continue;
+            };
+            if !(hi > lo && lo >= start && hi <= end) {
+                continue;
+            }
+            let Some(span) = row.get(k - self.degree..=k) else {
+                continue;
+            };
+            pieces.push((
+                (lo, hi),
+                span.iter().map(|h| (h.p * (1.0 / h.w), h.w)).collect(),
+            ));
+        }
+        pieces
+    }
+
     /// Upper bounds on the lengths of the first and the second derivative
     /// over the whole domain, in the curve's own parameter: proven from
     /// the control points and weights of its Bézier pieces (see
@@ -582,6 +613,10 @@ impl NurbsCurve {
         (found && first.is_finite() && second.is_finite()).then_some((first, second))
     }
 }
+
+/// One Bézier piece of a curve: its span of the curve's parameter, and its
+/// control points with their weights.
+pub type CurvePiece = ((f64, f64), Vec<(Vec3, f64)>);
 
 /// A non-uniform rational B-spline surface. Control points are row-major:
 /// point `(i, j)` (`i` along u) is at index `i * count_v + j`.

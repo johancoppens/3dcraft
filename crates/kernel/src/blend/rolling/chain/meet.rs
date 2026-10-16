@@ -38,7 +38,7 @@
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
 use super::super::super::{BlendError, Reason, lost, refused};
-use super::super::{Item, MAX_SAMPLES, Side, curve_through, refuse};
+use super::super::{Item, MAX_SAMPLES, Side, curve_through, proven_on, refuse};
 use super::{Chain, Computed, EndKind, Meet, MeetEnd, PieceMade, measure, prepare, splice_chain};
 use craft3d_geom::{Curve3, NurbsCurve, NurbsSurface, Surface};
 use craft3d_math::{Tolerance, Vec3};
@@ -300,6 +300,23 @@ fn trim(
             };
             if !(d <= limit || on_both() == Some(true)) {
                 added.push(t);
+            }
+        }
+        // Between the middles: proven on the surface it trims (an edge of
+        // its face); where not, the step the proof stopped in is halved
+        // too.
+        if added.is_empty() {
+            let (Some(&s0), Some(&t0)) = (ss.first(), ts.first()) else {
+                return None;
+            };
+            let on = Surface::Nurbs(surface.clone());
+            if let Err(at) = proven_on(&curve, (0.0, 1.0), &on, (s0, v_at(t0)), &ts, limit) {
+                let k = ts.partition_point(|t| *t <= at);
+                let (Some(a), Some(b)) = (k.checked_sub(1).and_then(|i| ts.get(i)), ts.get(k))
+                else {
+                    return None;
+                };
+                added.push(0.5 * (a + b));
             }
         }
         if added.is_empty() {
@@ -895,4 +912,70 @@ fn insert_between(
         }
     }
     Err(lost())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+    use super::*;
+    use craft3d_geom::refine::interpolate;
+
+    /// A fillet face that waves across a trim between the places the trim
+    /// is fitted through and held at: `z = amplitude sin(16 π v)`, zero at
+    /// every sixteenth of `v`.
+    fn waving(amplitude: f64, k: f64) -> NurbsSurface {
+        let params: Vec<f64> = (0..=128).map(|i| f64::from(i) / 128.0).collect();
+        let values: Vec<Vec<f64>> = params
+            .iter()
+            .map(|v| {
+                vec![
+                    v * k,
+                    amplitude * k * (16.0 * std::f64::consts::PI * v).sin(),
+                ]
+            })
+            .collect();
+        let (knots, rows) = interpolate(&params, 3, &values).unwrap();
+        let count = rows.len();
+        let mut ctrl = Vec::new();
+        for s in [0.0, k] {
+            for r in &rows {
+                ctrl.push(Vec3::new(s, r[0], r[1]));
+            }
+        }
+        NurbsSurface::new(
+            1,
+            3,
+            vec![0.0, 0.0, 1.0, 1.0],
+            knots,
+            2,
+            count,
+            ctrl,
+            vec![1.0; 2 * count],
+        )
+        .unwrap()
+    }
+
+    /// A trim is fitted to points found exactly on the fillet face and
+    /// held at the middles between them; on a face that waves between
+    /// those middles (a hundred quarter-tolerances off the straight line
+    /// through them) it is now refined until it is proven on the face.
+    #[test]
+    fn a_trim_that_would_leave_its_fillet_face_between_its_middles_is_refined() {
+        for k in [1e-3, 1.0, 1e3] {
+            let limit = 0.25e-6 * k;
+            let surface = waving(1e-4, k);
+            let g = |p: Vec3| Some(p.x - 0.5 * k);
+            let (curve, _) =
+                trim(&surface, (0.0, 1.0), (0.1, 0.9), &g, (limit, k), None).expect("a trim");
+            let on = Surface::Nurbs(surface.clone());
+            let mut hint = (0.5, 0.0);
+            for i in 0..=2000 {
+                let t = f64::from(i) / 2000.0;
+                let p = curve.eval(t);
+                hint = on.project_from(p, hint).unwrap();
+                let d = on.eval(hint.0, hint.1).distance(p);
+                assert!(d <= limit, "{k}: {d:e} off the face at {t}");
+            }
+        }
+    }
 }
