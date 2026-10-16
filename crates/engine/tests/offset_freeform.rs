@@ -210,7 +210,9 @@ fn a_lofted_tube_made_hollow_has_the_volume_its_wall_areas_give() {
 /// 1e-5 and 1e-4 mm, and at 0.3 mm the boolean that takes the hollow out
 /// refuses the skin and the hollow as nearly coincident. Building it
 /// anyway would mean taking a deviation of the distance times the
-/// mismatch as what a tangent offset is: a decision for the developer.
+/// mismatch as what a tangent offset is was declined by the developer
+/// (docs/decisions.md, 2026-10-16); owed: the blend rebuilt between the
+/// offset faces (radius r ± d).
 /// Minutes in release: `cargo test --release -p craft3d-engine --test
 /// offset_freeform -- --ignored`.
 #[test]
