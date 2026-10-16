@@ -1611,6 +1611,12 @@ fn a_click_in_the_direct_viewport_picks_and_highlights_what_the_oracle_shows() {
         let (body, index) = scene.face_of(id).unwrap();
         let name = body.face_names[index].clone();
         let at = pos2(rect.left() + x as f32 + 0.5, rect.top() + y as f32 + 0.5);
+        // A face whose middle is under the controls over the viewport (the
+        // view cube, a plate) is not clicked: that click is the control's.
+        let layout = shell.controls_layout().unwrap();
+        if layout.parts().iter().any(|(_, part)| part.contains(at)) {
+            continue;
+        }
         window.frame(&mut shell, &mut session, vec![Event::PointerMoved(at)]);
         for pressed in [true, false] {
             window.frame(

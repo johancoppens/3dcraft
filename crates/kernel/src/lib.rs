@@ -23,6 +23,7 @@ pub mod loft;
 pub mod move_face;
 pub mod offset_face;
 mod offset_normal;
+pub mod offset_profile;
 pub mod primitives;
 pub mod profile;
 pub mod revolve;
@@ -241,6 +242,16 @@ pub enum KernelError {
         curves: Vec<u64>,
         reason: String,
     },
+    /// The closed profiles cannot be offset by this distance: `curves`
+    /// are the curves of the profiles it is about (at most
+    /// [`MAX_REPORTED`]), `largest` the largest distance of the same sign
+    /// at which the offset still has every loop it had, when one was
+    /// found.
+    OffsetProfile {
+        reason: &'static str,
+        curves: Vec<u64>,
+        largest: Option<f64>,
+    },
 }
 
 fn id_list(ids: &[u64]) -> String {
@@ -336,6 +347,20 @@ impl fmt::Display for KernelError {
                  keep the profile on one side (it may touch the axis)",
                 id_list(curves)
             ),
+            KernelError::OffsetProfile {
+                reason,
+                curves,
+                largest,
+            } => {
+                write!(f, "the offset {reason}")?;
+                if !curves.is_empty() {
+                    write!(f, " (curves {})", id_list(curves))?;
+                }
+                if let Some(largest) = largest {
+                    write!(f, "; the largest distance that fits is {largest}")?;
+                }
+                Ok(())
+            }
             KernelError::UnsupportedCurve { id, reason } => {
                 write!(f, "curve {id} cannot be revolved yet: {reason}")
             }

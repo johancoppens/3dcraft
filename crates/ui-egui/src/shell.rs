@@ -23,8 +23,9 @@ use craft3d_render::{Highlight, Section};
 use std::sync::Arc;
 
 mod controls;
+pub mod number_field;
 mod tabs;
-pub use controls::{ControlsLayout, RowWidths, controls_layout};
+pub use controls::{ControlWidths, ControlsLayout, controls_layout};
 pub use tabs::{
     CLOSE_MARK, CloseAnswer, DocAction, TabPart, UNSAVED_MARK, close_shortcut, doc_tabs,
     next_shortcut, previous_shortcut, tab_name,
@@ -451,10 +452,16 @@ pub struct Shell {
     view_cube_rect: Option<egui::Rect>,
     /// The turn a click on the view cube started, while it lasts.
     turn: Option<Turn>,
-    /// Where the see-through slider was drawn.
+    /// Where the see-through field was drawn.
     transparency_rect: Option<egui::Rect>,
+    /// A drag on a number field under way, and the field being typed
+    /// into.
+    fields: number_field::FieldMemory,
+    typing: Option<number_field::Typing>,
+    /// The active document's length unit, for the Offset field.
+    length_unit: &'static str,
     /// Where the section's controls were drawn: `toggle` and, while the
-    /// section is on, `x`, `y`, `z`, `offset` and `flip`.
+    /// section is on, `x`, `y`, `z`, `offset`, `front` and `back`.
     section_hits: Vec<(&'static str, egui::Rect)>,
     /// Where the Sketches and Datums toggles were drawn.
     show_hits: Vec<(&'static str, egui::Rect)>,
@@ -576,6 +583,9 @@ impl Shell {
             view_cube_rect: None,
             turn: None,
             transparency_rect: None,
+            fields: number_field::FieldMemory::default(),
+            typing: None,
+            length_unit: "",
             section_hits: Vec::new(),
             show_hits: Vec::new(),
             camera_hits: Vec::new(),
@@ -1333,7 +1343,10 @@ impl Shell {
             self.themed = true;
         }
         let (scene, status) = match session.as_deref_mut() {
-            Some(session) => (self.sync(session), session.document_status()),
+            Some(session) => {
+                self.length_unit = session.length_unit().unwrap_or("");
+                (self.sync(session), session.document_status())
+            }
             None => (self.shown_scene.clone(), self.shown_status.clone()),
         };
         self.file_shortcuts(ui, status.is_some());
@@ -1350,7 +1363,7 @@ impl Shell {
                 .resizable(false)
                 .show(ui, |ui| self.recovery_bar(ui))
                 .inner;
-            if let (Some(action), Some(session)) = (clicked, session) {
+            if let (Some(action), Some(session)) = (clicked, session.as_deref_mut()) {
                 self.recovery_act(session, action);
                 ui.ctx().request_repaint();
             }
@@ -1390,6 +1403,16 @@ impl Shell {
                 .show(ui, |ui| self.tree(ui, status.is_some()));
         }
         egui::CentralPanel::no_frame().show(ui, |ui| self.viewport(ui, scene.as_ref()));
+        // A number typed into a field of the viewport, once Enter was
+        // pressed: evaluated with the document's variables, shown next
+        // frame (or its error is).
+        if let Some(session) = session.as_deref() {
+            let before = self.typing.clone();
+            self.resolve_typing(session);
+            if self.typing != before {
+                ui.ctx().request_repaint();
+            }
+        }
         self.closing_dialog(ui);
     }
 
@@ -2044,12 +2067,31 @@ impl Shell {
             self.drag_from = None;
         }
         if response.contains_pointer() {
+            // Keys typed into a field are not shortcuts, and the wheel over
+            // the focused number field steps it rather than zooming; over
+            // any other field it zooms.
+            let typing = ui.ctx().egui_wants_keyboard_input();
+            let fields = self
+                .controls_layout
+                .map(|l| match self.fields.focus {
+                    Some("see-through") => [l.see_through, None],
+                    Some("offset") => [l.offset, None],
+                    _ => [None, None],
+                })
+                .unwrap_or_default();
             let (scroll, pinch, fit, pointer) = ui.input(|i| {
+                let pointer = i.pointer.hover_pos();
+                let on_field =
+                    pointer.is_some_and(|at| fields.iter().flatten().any(|f| f.contains(at)));
                 (
-                    f64::from(i.smooth_scroll_delta().y),
+                    if on_field {
+                        0.0
+                    } else {
+                        f64::from(i.smooth_scroll_delta().y)
+                    },
                     f64::from(i.zoom_delta()),
-                    i.key_pressed(egui::Key::F),
-                    i.pointer.hover_pos(),
+                    i.key_pressed(egui::Key::F) && !typing,
+                    pointer,
                 )
             });
             // A pinch (or Ctrl and the wheel) as the turn of the wheel

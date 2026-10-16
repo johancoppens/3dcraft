@@ -135,23 +135,26 @@ fn the_cube_is_in_the_corner_of_the_viewport() {
     assert!(viewport.contains_rect(rect), "{rect:?} in {viewport:?}");
     assert_eq!(rect.width(), shell.tokens.view_cube_size);
     assert_eq!(rect.height(), shell.tokens.view_cube_size);
-    // Bottom right, clear of the edge, with the row of buttons under it
-    // and centred on it, and the triad above it.
+    // Bottom right, low over the camera's controls and centred on them,
+    // the triad to its left.
     let right = viewport.right() - rect.right() - shell.tokens.inset;
-    assert!((-0.5..40.0).contains(&right), "{right}");
-    let below = viewport.bottom() - rect.bottom();
-    assert!((30.0..50.0).contains(&below), "{below}");
+    assert!((-0.5..60.0).contains(&right), "{right}");
     let layout = shell.controls_layout().unwrap();
-    let row = layout.camera_row.unwrap();
-    assert!(row.top() > rect.bottom());
-    assert!((row.center().x - rect.center().x).abs() < 0.5);
+    let (fit, projection) = (layout.fit.unwrap(), layout.projection.unwrap());
+    let plate = layout.camera_plate.or(layout.bar).unwrap();
+    assert!(
+        (plate.top() - rect.bottom()).abs() < 0.5,
+        "{plate:?} {rect:?}"
+    );
+    let middle = (fit.left() + projection.right()) * 0.5;
+    assert!((middle - rect.center().x).abs() < 0.5);
     let triad = layout.triad.unwrap();
-    assert!(triad.bottom() <= rect.top() + 0.5);
-    assert!((triad.center().x - rect.center().x).abs() < 0.5);
+    assert!(triad.right() <= rect.left() + 0.5);
     let names: Vec<&str> = shell.camera_hits().iter().map(|(n, _)| *n).collect();
     assert_eq!(names, ["fit", "iso", "perspective", "orthographic"]);
     for (_, hit) in shell.camera_hits() {
-        assert!(row.expand(1.0).contains_rect(*hit), "{hit:?} in {row:?}");
+        assert!(plate.contains_rect(*hit), "{hit:?} in {plate:?}");
+        assert!(hit.top() > rect.bottom());
     }
 }
 
@@ -342,8 +345,9 @@ fn the_projection_buttons_under_the_cube_switch_the_projection() {
         }
     );
     assert_eq!(shell.state.picked, None);
-    // The cube is drawn the way the viewport is: its picture changed.
-    assert_ne!(
+    // The cube is always drawn without perspective: its picture is the
+    // same.
+    assert_eq!(
         view_cube::facets(&shell.state.camera),
         view_cube::facets(&camera)
     );
@@ -512,9 +516,8 @@ fn a_drawing_of_the_cube_as_it_is_laid_out() {
                 draw_line(&mut rgb, width, height, a, b, 1.5, ink, 255);
             }
         }
-        // The patches as they are painted, inside the outlines.
-        for facet in view_cube::facets_gapped(&shell.state.camera, f64::from(tokens.view_cube_gap))
-        {
+        // The patches as they are painted, on the outlines.
+        for facet in &facets {
             let n = facet.patch.len();
             for k in 0..n {
                 let (a, b) = (at(facet.patch[k]), at(facet.patch[(k + 1) % n]));

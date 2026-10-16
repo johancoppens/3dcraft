@@ -24,8 +24,10 @@ mod drawing_cmds;
 mod face_cmds;
 mod file_cmds;
 mod helix_cmds;
+mod interference_cmds;
 mod loft_cmds;
 mod mass;
+mod offset_cmds;
 mod params;
 mod pick_cmds;
 mod query_cmds;
@@ -44,6 +46,7 @@ mod sketch_spline_cmds;
 mod step_cmds;
 mod sweep_cmds;
 mod sweep_path_cmds;
+mod typed;
 mod workspace;
 
 pub use pick_cmds::{
@@ -66,6 +69,7 @@ pub use scene::{
     SketchCurve, arc_segments, base64 as encode_base64,
 };
 pub use section::{MAX_SECTION_EXTENT, SECTION_CAP_COLOR, SectionPlane, SectionSpec};
+pub use typed::TypedKind;
 pub use workspace::{Access, Workspace};
 
 use craft3d_doc::Document;
@@ -279,7 +283,9 @@ impl Session {
                 face_cmds::SPECS,
                 datum_cmds::SPECS,
                 helix_cmds::SPECS,
+                offset_cmds::SPECS,
                 query_cmds::SPECS,
+                interference_cmds::SPECS,
                 pick_cmds::SPECS,
                 recovery_cmds::SPECS,
                 replay_cmds::SPECS,

@@ -430,6 +430,7 @@ version = "0.0.1"
 dependencies = [
  "craft3d-doc",
  "craft3d-drawing",
+ "craft3d-expr",
  "craft3d-format",
  "craft3d-geom",
  "craft3d-io",

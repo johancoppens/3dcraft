@@ -49,6 +49,7 @@
 
 mod chart;
 mod classify;
+mod contact;
 mod freeform;
 mod hits;
 mod merge;
@@ -57,6 +58,7 @@ mod regions;
 mod section;
 mod sew;
 
+pub use contact::{ContactKind, Interference, MAX_CONTACT_POINTS, interference};
 pub use freeform::{release_unused, shelf_size};
 
 use crate::{KernelError, MAX_REPORTED};
