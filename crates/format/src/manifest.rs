@@ -418,6 +418,30 @@ pub enum FeatureKind {
         #[serde(default)]
         open: Vec<Name>,
     },
+    /// The closed profiles of the sketch `sketch` offset by `distance`
+    /// (format version 19): positive grows the material. `corners` is
+    /// `round` (the default, left out when written) or `sharp`.
+    OffsetProfile {
+        sketch: u64,
+        distance: String,
+        #[serde(default, skip_serializing_if = "OffsetCorners::is_round")]
+        corners: OffsetCorners,
+    },
+}
+
+/// How an offset profile goes round a corner where its curves part.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OffsetCorners {
+    #[default]
+    Round,
+    Sharp,
+}
+
+impl OffsetCorners {
+    fn is_round(&self) -> bool {
+        *self == OffsetCorners::Round
+    }
 }
 
 /// Where the layer of a `thicken` lies against its faces.

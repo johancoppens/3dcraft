@@ -176,6 +176,222 @@ impl fmt::Display for CurveRef {
     }
 }
 
+/// What a curve an offset feature made is, as the head of its group in
+/// the sources of a sweep's name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum OffsetKind {
+    /// `F9:offset(e7)`: the offset of curve `e7`; in the name of a cap
+    /// the curves of the loop, `F9:offset(e1,e2,e7[*])`.
+    Offset,
+    /// `F9:offsetCorner(e7,e8)`: the arc or mitre the offset put at the
+    /// corner where `e7` runs into `e8` (in the direction the loop runs).
+    Corner,
+    /// `F9:offsetExtension(e7,e8)`: the straight piece a sharp corner
+    /// carries the offset of the arc `e7` on by, towards its mitre with
+    /// `e8`.
+    Extension,
+    /// `F9:loop(e1,e2,e7)/F9:offset(e7)`: not a curve but what tells
+    /// apart the pieces of one curve of an offset (a region that split):
+    /// the loop the piece closes, by the curves whose offsets it holds. It
+    /// qualifies the group after it.
+    Loop,
+}
+
+impl OffsetKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            OffsetKind::Offset => "offset",
+            OffsetKind::Corner => "offsetCorner",
+            OffsetKind::Extension => "offsetExtension",
+            OffsetKind::Loop => "loop",
+        }
+    }
+
+    const ALL: [OffsetKind; 4] = [
+        OffsetKind::Offset,
+        OffsetKind::Corner,
+        OffsetKind::Extension,
+        OffsetKind::Loop,
+    ];
+}
+
+/// The head of a group of an offset in the sources of a sweep's name:
+/// `F10:side(F9:offset(e7))`. In `sources` it is one number, followed by
+/// the curves of the sketch it names (one or more for
+/// [`OffsetKind::Offset`] and [`OffsetKind::Loop`], two for the others).
+/// The number has the feature in the low 32 bits, 0 in bits 32 to 47 and
+/// the kind from bit 48, which is a number no [`CurveRef`] encodes to, so
+/// a name without offsets has the numbers it always had and a head is
+/// never read as a curve.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct OffsetHead {
+    pub feature: FeatureId,
+    pub kind: OffsetKind,
+}
+
+impl OffsetHead {
+    /// The number of the head; `None` past what a name holds.
+    pub fn encode(self) -> Option<u64> {
+        if self.feature.0 > MAX_CURVE_ENTITY {
+            return None;
+        }
+        let tag = 1 + OffsetKind::ALL.iter().position(|k| *k == self.kind)? as u64;
+        Some(self.feature.0 | (tag << SECOND_SHIFT))
+    }
+
+    /// The head a number stands for; `None` for every other number.
+    pub fn decode(source: u64) -> Option<Self> {
+        let first = (source >> INDEX_SHIFT) & FIELD;
+        let tag = (source >> SECOND_SHIFT) & FIELD;
+        if first != 0 || tag == 0 {
+            return None;
+        }
+        let kind = *OffsetKind::ALL.get(usize::try_from(tag - 1).ok()?)?;
+        Some(Self {
+            feature: FeatureId(source & MAX_CURVE_ENTITY),
+            kind,
+        })
+    }
+}
+
+/// One curve an offset made, in the sources of a name: its head, the
+/// curves of the sketch it names, and the loop that tells it from other
+/// pieces of the same curve, when it has one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OffsetGroup<'a> {
+    pub head: OffsetHead,
+    pub curves: &'a [u64],
+    pub within: Option<&'a [u64]>,
+}
+
+/// The sources of a sweep's name cut into the curves an offset feature
+/// made. `Ok(None)` when there is no head (the sources are curves of a
+/// sketch, as always); an error when heads and curves do not go together.
+pub fn offset_groups(sources: &[u64]) -> Result<Option<Vec<OffsetGroup<'_>>>, &'static str> {
+    if !sources.iter().any(|&s| OffsetHead::decode(s).is_some()) {
+        return Ok(None);
+    }
+    let mut groups = Vec::new();
+    let mut within: Option<(FeatureId, &[u64])> = None;
+    let mut rest = sources;
+    while let Some((&first, after)) = rest.split_first() {
+        let head = OffsetHead::decode(first)
+            .ok_or("a name with offset curves has an offset head before every curve")?;
+        let count = after
+            .iter()
+            .position(|&s| OffsetHead::decode(s).is_some())
+            .unwrap_or(after.len());
+        let (curves, next) = after.split_at(count);
+        if curves.iter().any(|&c| CurveRef::decode(c).is_none()) {
+            return Err("an offset names curves of a sketch");
+        }
+        match head.kind {
+            OffsetKind::Offset | OffsetKind::Loop if curves.is_empty() => {
+                return Err("an offset or a loop names at least one curve");
+            }
+            OffsetKind::Corner | OffsetKind::Extension if curves.len() != 2 => {
+                return Err("an offset corner or extension names two curves");
+            }
+            _ => {}
+        }
+        if head.kind == OffsetKind::Loop {
+            if within.is_some() {
+                return Err("a loop qualifies one offset curve, not another loop");
+            }
+            within = Some((head.feature, curves));
+        } else {
+            let qualifier = within.take();
+            if qualifier.is_some_and(|(feature, _)| feature != head.feature) {
+                return Err("a loop qualifies an offset curve of its own feature");
+            }
+            groups.push(OffsetGroup {
+                head,
+                curves,
+                within: qualifier.map(|(_, curves)| curves),
+            });
+        }
+        rest = next;
+    }
+    if within.is_some() {
+        return Err("a loop qualifies the offset curve after it");
+    }
+    Ok(Some(groups))
+}
+
+fn write_curves(f: &mut fmt::Formatter<'_>, curves: &[u64]) -> fmt::Result {
+    for (i, &curve) in curves.iter().enumerate() {
+        if i > 0 {
+            f.write_str(",")?;
+        }
+        match CurveRef::decode(curve) {
+            Some(curve) => write!(f, "{curve}")?,
+            None => write!(f, "e{curve}")?,
+        }
+    }
+    Ok(())
+}
+
+/// Writes one offset curve: `F9:offset(e7)`,
+/// `F9:loop(e1,e2,e7)/F9:offsetCorner(e7,e8)`.
+fn write_offset(f: &mut fmt::Formatter<'_>, group: &OffsetGroup<'_>) -> fmt::Result {
+    let feature = group.head.feature;
+    if let Some(within) = group.within {
+        write!(f, "{feature}:loop(")?;
+        write_curves(f, within)?;
+        f.write_str(")/")?;
+    }
+    write!(f, "{feature}:{}(", group.head.kind.name())?;
+    write_curves(f, group.curves)?;
+    f.write_str(")")
+}
+
+/// Reads one offset curve as [`write_offset`] writes it: its heads and
+/// curves, as numbers.
+fn parse_offset(text: &str) -> Option<Vec<u64>> {
+    fn link(t: &str) -> Option<(u64, OffsetKind, Vec<u64>)> {
+        let (feature, rest) = t.split_once(':')?;
+        let digits = feature.strip_prefix('F')?;
+        if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let at = rest.find('(')?;
+        let (role, inner) = rest.split_at(at);
+        let kind = *OffsetKind::ALL.iter().find(|k| k.name() == role)?;
+        let inner = inner.strip_prefix('(')?.strip_suffix(')')?;
+        let curves = split_outside(inner, ',')
+            .into_iter()
+            .map(|part| CurveRef::parse(part.trim()).and_then(CurveRef::encode))
+            .collect::<Option<Vec<u64>>>()?;
+        Some((digits.parse().ok()?, kind, curves))
+    }
+    let mut out = Vec::new();
+    let parts = split_outside(text, '/');
+    let links = match parts.as_slice() {
+        [one] => vec![link(one)?],
+        [loop_, one] => {
+            let first = link(loop_)?;
+            let second = link(one)?;
+            if first.1 != OffsetKind::Loop || second.1 == OffsetKind::Loop {
+                return None;
+            }
+            vec![first, second]
+        }
+        _ => return None,
+    };
+    for (feature, kind, curves) in links {
+        out.push(
+            OffsetHead {
+                feature: FeatureId(feature),
+                kind,
+            }
+            .encode()?,
+        );
+        out.extend(curves);
+    }
+    let groups = offset_groups(&out).ok().flatten()?;
+    (groups.len() == 1).then_some(out)
+}
+
 /// The part an entity plays in the feature that made it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -721,6 +937,9 @@ impl PersistentName {
                 if name.role.is_counted() && name.sources.is_empty() {
                     return Err("a copy, a chamfer or a fillet face has at least one number");
                 }
+                if !(name.role.is_counted() || name.role.is_numbered()) {
+                    offset_groups(&name.sources)?;
+                }
             }
             match (name.role.is_derived(), &name.of) {
                 (true, Some(next)) => name = next,
@@ -767,6 +986,25 @@ impl PersistentName {
                     } else {
                         "e"
                     };
+                let groups = if prefix.is_empty() {
+                    None
+                } else {
+                    offset_groups(&name.sources).ok().flatten()
+                };
+                if let Some(groups) = groups {
+                    for (i, group) in groups.iter().enumerate() {
+                        if i > 0 {
+                            f.write_str(",")?;
+                        }
+                        write_offset(f, group)?;
+                    }
+                    f.write_str(")")?;
+                    match &name.of {
+                        Some(next) => name = next,
+                        None => break,
+                    }
+                    continue;
+                }
                 for (i, source) in name.sources.iter().enumerate() {
                     if i > 0 {
                         f.write_str(",")?;
@@ -862,12 +1100,28 @@ fn parse_sources(
     if inner.is_empty() {
         return Ok(sources);
     }
+    let (mut offsets, mut parts) = (0usize, 0usize);
     for part in split_outside(inner, ',') {
         if reading.sources == 0 {
             return Err(wrong("it has too many sources"));
         }
         reading.sources -= 1;
+        parts += 1;
         let part = part.trim();
+        if !numbered && part.starts_with('F') {
+            offsets += 1;
+            let numbers = parse_offset(part).ok_or_else(|| {
+                wrong(
+                    "an offset curve is written F9:offset(e7), F9:offsetCorner(e7,e8), F9:offsetExtension(e7,e8) or F9:loop(e1,e7)/F9:offset(e7)",
+                )
+            })?;
+            reading.sources = reading
+                .sources
+                .checked_sub(numbers.len().saturating_sub(1))
+                .ok_or_else(|| wrong("it has too many sources"))?;
+            sources.extend(numbers);
+            continue;
+        }
         let id = if numbered {
             part.parse::<u64>()
                 .ok()
@@ -883,6 +1137,11 @@ fn parse_sources(
                 })?
         };
         sources.push(id);
+    }
+    if !numbered && offsets > 0 && (offsets < parts || offset_groups(&sources).is_err()) {
+        return Err(wrong(
+            "the sources are all curves of a sketch or all offset curves, not both",
+        ));
     }
     Ok(sources)
 }
@@ -1651,5 +1910,73 @@ mod tests {
                 .parse::<PersistentName>()
                 .is_err()
         );
+    }
+
+    #[test]
+    fn offset_curves_are_written_and_read_back() {
+        for text in [
+            "F10:side(F9:offset(e7))",
+            "F10:side(F9:offset(e7[3]))",
+            "F10:side(F9:offsetCorner(e7,e8))",
+            "F10:side(F9:loop(e1,e2,e7[2,5])/F9:offset(e7[2,5]))",
+            "F10:side(F9:offsetExtension(e7,e8))",
+            "F10:lateralEdge(F9:loop(e1,e7)/F9:offset(e7),F9:loop(e1,e7)/F9:offsetCorner(e7,e1))",
+            "F10:endCap(F9:offset(e1,e2,e7[*]))",
+            "F10:lateralEdge(F9:offset(e7),F9:offsetCorner(e7,e8[4]))",
+            "F10:piece(1)/F10:side(F9:offset(e7))",
+            "F12:between[F10:side(F9:offset(e7)),F11:face(1)]",
+        ] {
+            let name: PersistentName = text.parse().unwrap();
+            assert_eq!(name.to_string(), text);
+            assert_eq!(name.check(), Ok(()));
+        }
+        let name: PersistentName = "F10:side(F9:offset(e7))".parse().unwrap();
+        let head = OffsetHead::decode(name.sources[0]).unwrap();
+        assert_eq!(
+            (head.feature, head.kind),
+            (FeatureId(9), OffsetKind::Offset)
+        );
+        // A head is no curve, and no curve is a head.
+        assert_eq!(CurveRef::decode(name.sources[0]), None);
+        for curve in ["e7", "e7[3]", "e7[2,5]", "e7[*]", "e4294967295[65533]"] {
+            let number = CurveRef::parse(curve).unwrap().encode().unwrap();
+            assert_eq!(OffsetHead::decode(number), None, "{curve}");
+        }
+    }
+
+    #[test]
+    fn malformed_offset_curves_are_refused() {
+        for text in [
+            "F10:side(F9:offsetCorner(e7))",
+            "F10:side(F9:offsetCorner(e7,e8,e9))",
+            "F10:side(F9:offset())",
+            "F10:side(F9:offset(e7),e8)",
+            "F10:side(F9:piece(1)/F9:offset(e7))",
+            "F10:side(F8:loop(e7)/F9:offset(e7))",
+            "F10:side(F9:loop(e7))",
+            "F10:side(F9:loop(e7)/F9:loop(e7))",
+            "F10:side(F9:loop()/F9:offset(e7))",
+            "F10:side(F9:offsetExtension(e7))",
+            "F10:side(F9:side(e7))",
+            "F10:side(F4294967296:offset(e7))",
+            "F10:side(F9:offset(e7)",
+            "F10:side(F9:offset(F8:offset(e7)))",
+        ] {
+            assert!(text.parse::<PersistentName>().is_err(), "{text}");
+        }
+        // Built by hand: a curve before any head, a head alone.
+        let head = OffsetHead {
+            feature: FeatureId(9),
+            kind: OffsetKind::Offset,
+        }
+        .encode()
+        .unwrap();
+        for sources in [vec![7, head, 8], vec![head]] {
+            assert!(
+                PersistentName::new(FeatureId(10), NameRole::Side, sources)
+                    .check()
+                    .is_err()
+            );
+        }
     }
 }

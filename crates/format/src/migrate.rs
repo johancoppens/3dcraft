@@ -29,6 +29,7 @@ type Step = fn(Value) -> Result<Value, String>;
 const STEPS: &[Step] = &[
     v1_to_v2, v2_to_v3, v3_to_v4, v4_to_v5, v5_to_v6, v6_to_v7, v7_to_v8, v8_to_v9, v9_to_v10,
     v10_to_v11, v11_to_v12, v12_to_v13, v13_to_v14, v14_to_v15, v15_to_v16, v16_to_v17, v17_to_v18,
+    v18_to_v19,
 ];
 
 /// Version 2 adds the `cone` and `torus` feature kinds and an optional
@@ -280,6 +281,17 @@ fn v16_to_v17(manifest: Value) -> Result<Value, String> {
 /// that an older build says a newer 3DCraft is needed instead of failing
 /// on an unknown field.
 fn v17_to_v18(manifest: Value) -> Result<Value, String> {
+    Ok(manifest)
+}
+
+/// Version 19 adds the `offsetProfile` feature kind (the closed profiles
+/// of a sketch offset by a distance) and the name forms
+/// `F9:offset(e7)`, `F9:offsetCorner(e7,e8)` and
+/// `F9:piece(1)/F9:offset(e7)` for the curves it makes, inside the name
+/// of what a sweep made from them. Nothing a version-18 file contains
+/// changes meaning; the version was raised so that an older build says a
+/// newer 3DCraft is needed instead of failing on an unknown kind.
+fn v18_to_v19(manifest: Value) -> Result<Value, String> {
     Ok(manifest)
 }
 
