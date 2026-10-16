@@ -297,3 +297,56 @@ fn a_hole_in_the_cap_inside_a_ring_blend() {
         }
     }
 }
+
+/// A sharp edge: the cone (radius 1, apex 3 up) cut by the slab y >= y0
+/// and z from 0.1 to 0.6. Where the plane y = y0 meets the cone the faces
+/// make an angle of about 50°, 35° and 20° (y0 0.55, 0.7, 0.79 at z =
+/// 0.45). At a sharp convex edge what a blend removes reaches
+/// `r (1 / sin(θ/2) - 1)` from its surface, more than the chord between
+/// its borders (`2 r cos(θ/2)`) below about 41°: a hole there was built
+/// through when the chord bounded the search (merge review). Small holes
+/// (a tenth of the blend's size, half a tenth deep) drilled radially into
+/// the cone at 0.15 to 2.5 sizes from the edge: the blend is that of the body without
+/// the hole, less the hole where it stays (both built by the boolean: the
+/// reference), or refused; never short by a hole.
+#[test]
+fn holes_beside_a_sharp_edge() {
+    for k in SCALES {
+        for y0 in [0.55, 0.7, 0.79] {
+            let cone = primitives::cone(&Frame::WORLD, k, 3.0 * k).unwrap();
+            let slab = boxed(k, [-2.0, y0, 0.1], [2.0, 2.0, 0.6]);
+            let body = boolean(&cone, &slab, BooleanOp::Intersect, &tolerance(k))
+                .unwrap()
+                .body;
+            let z: f64 = 0.45;
+            let rho = 1.0 - z / 3.0;
+            let x = (rho * rho - y0 * y0).sqrt();
+            let on_edge = Vec3::new(x, y0, z);
+            let phi = y0.atan2(x);
+            let r = 0.04;
+            for how in [Blend::Fillet(r), Blend::Chamfer(r)] {
+                let Ok(blended) = blend(&body, edge_near(&body, on_edge * k), how, k) else {
+                    continue;
+                };
+                for off in [0.15, 0.3, 0.6, 1.0, 1.5, 2.5] {
+                    let hr = 0.1 * r;
+                    let turn = phi + off * r / rho;
+                    let out = Vec3::new(turn.cos(), turn.sin(), 0.0);
+                    let c = out * rho + Vec3::Z * z;
+                    let hole = |b: &Body| drill(b, k, c + out * 0.1, -out, hr, 0.1 + 0.05 * r);
+                    let holed = hole(&body);
+                    let reference = mass(&hole(&blended)).volume;
+                    let hole_volume = PI * hr * hr * 0.05 * r * k * k * k;
+                    if let Ok(made) = blend(&holed, edge_near(&holed, on_edge * k), how, k) {
+                        assert_eq!(check(&made, &tolerance(k)), [], "y0 {y0} off {off} at {k}");
+                        let v = mass(&made).volume;
+                        assert!(
+                            (v - reference).abs() <= 0.1 * hole_volume,
+                            "y0 {y0} off {off} at {k}: volume {v}, reference {reference}, a hole {hole_volume}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}

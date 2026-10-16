@@ -198,12 +198,20 @@ fn follow(
     let mut error = 0.0_f64;
     for (coedge, edge, steps, own) in plan {
         let (t0, t1) = edge.range;
-        let steps = if coarser > 1.0 {
-            ((steps as f64 / coarser).floor() as usize).max(1)
+        // Coarser by the factor this edge actually gets (the rounding
+        // down can make it up to twice `coarser`); a curve keeps at least
+        // two steps, so a closed one does not shrink to a point. Its error
+        // grows by the square of that factor (the sagitta of a step).
+        let fewer = if coarser > 1.0 && steps > 1 {
+            ((steps as f64 / coarser).floor() as usize)
+                .max(2)
+                .min(steps)
         } else {
             steps
         };
-        error = error.max(own * coarser * coarser);
+        let factor = steps as f64 / fewer as f64;
+        error = error.max(own * factor * factor);
+        let steps = fewer;
         // Each edge from its start, without its end (the next one's start).
         for k in 0..steps {
             let f = k as f64 / steps as f64;
