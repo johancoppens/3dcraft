@@ -46,6 +46,7 @@ mod sketch_spline_cmds;
 mod step_cmds;
 mod sweep_cmds;
 mod sweep_path_cmds;
+mod typed;
 mod workspace;
 
 pub use pick_cmds::{
@@ -68,6 +69,7 @@ pub use scene::{
     SketchCurve, arc_segments, base64 as encode_base64,
 };
 pub use section::{MAX_SECTION_EXTENT, SECTION_CAP_COLOR, SectionPlane, SectionSpec};
+pub use typed::TypedKind;
 pub use workspace::{Access, Workspace};
 
 use craft3d_doc::Document;
