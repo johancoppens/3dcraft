@@ -22,6 +22,7 @@ pub mod helix;
 pub mod loft;
 pub mod move_face;
 pub mod offset_face;
+mod offset_normal;
 pub mod primitives;
 pub mod profile;
 pub mod revolve;

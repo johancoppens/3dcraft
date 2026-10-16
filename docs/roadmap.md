@@ -357,6 +357,7 @@ The blends first (chamfer and fillet, the first consumers of edge references), t
 - Two freeform fillets that meet at a vertex whose third edge stays sharp, convex or concave (the tip of a lofted blade rounded all round) (§5.3 › *Chains and meets of freeform blends*) (2026-10-15)
 - The impeller's and the lamp's blend findings: freeform meets found where the borders cross, blends that run into a wall or end past a corner (edges lengthened, spline faces grown), up to 4096 samples by a banded solve, face changes at joints judged at the vertex (§5.3 › *Blend findings of the impeller and the lamp*) (2026-10-15)
 - What fits is decided by building the blend and checking it, not by an estimate; the largest size that fits is found by more builds ([`design/blends.md`](design/blends.md) › *What fits, decided by building*) (2026-10-15)
+- Offset of freeform faces: offset face, shell and thicken take Bézier and NURBS faces, offset into splines within a quarter of the tolerance after proving they do not fold ([`design/face-operations.md`](design/face-operations.md) › *Offset of freeform faces*) (2026-10-16)
 - The bike's and the turbofan's blend findings: welds of a tube into a tube (a ring's balls in planes square to their centres' path), a refinement that no longer creeps, a border that crosses an edge on a curved face refused, lofts tangent where their sections are ([`design/blends.md`](design/blends.md) › *Blend findings of the bike and the turbofan*) (2026-10-15)
 
 #### Open
@@ -370,7 +371,7 @@ The blends first (chamfer and fillet, the first consumers of edge references), t
 - [ ] Chamfers: a reference to one of several edges between the same two faces
 - [ ] Fillets: an outside and an inside fillet that meet; a fillet on a circular rim past half its radius (a spindle torus face: R/2 is the kernel's limit, which the hint for what fits reports, not the geometric one); a rim fillet along an earlier round of the same radius or more (the torus would reach its axis: all edges of a prism in two steps); variable radius (later)
 - [ ] Blends whose touch line runs over a tangent edge onto the next face (a rib's root that reaches the round of a rail below it), and a blend ending on a face that is not a plane
-- [ ] Offset face: a neighbour tangent to the moved face, a vertex of four or more faces that would become an edge, an elliptic or freeform edge next to a moved face
+- [ ] Offset face: a neighbour tangent to the moved face that does not move with it, a vertex of four or more faces that would become an edge, a line or circle between analytic faces that would become another curve; freeform faces with a pole, the band just short of a radius of curvature the bounds cannot prove, and tangent faces whose fitted tangency, times the distance, exceeds a quarter of the tolerance (the bike's saddle; decided 2026-10-16 in [`decisions.md`](decisions.md): no deviation accepted; owed: a blend face's offset as the blend rebuilt between the offset faces, radius r ± d)
 - [ ] Shell: a thickness at a rounded edge's radius or more
 - [ ] Delete face, refused with the faces today: the corner where blends meet, a blend whose end runs into another blend or into a vertex of more than three faces (chains, mitres), several blend faces at once, neighbours that do not meet in a line or a circle
 - [ ] Threads as the other modellers treat them (agreed with the developer on 2026-10-14): a cosmetic thread shown in the viewport (a texture or fine rings, both renderers), its data (designation, pitch, class, length) listed by `document.inspect`, carried to drawings and hole tables and checkable by V1's assertions
@@ -486,6 +487,7 @@ Applications built on 3DCraft, not part of it (the rule in `docs/decisions.md`, 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-16 | minor | M9: offset face, shell and thicken of freeform faces |
 | 2026-10-15 | minor | M9: move face, thicken and draft done (`feature.moveFace`, `feature.thicken`, `feature.draft`); new feature kinds in format version 16 |
 | 2026-10-14 | minor | Restructured: current focus on top, one line per milestone, a section per milestone (Goal, Done, Open, Acceptance), the boolean checklist on its own, ideas apart; how things were built left to `architecture.md` |
 | 2026-10-15 | minor | M9: the engine block's blend findings E1–E8 (estimate of what fits, blends ending on a slanted face, chamfer chains joined, a boolean hit snapped to an edge's end) |
