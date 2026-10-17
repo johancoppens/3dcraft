@@ -8,6 +8,9 @@
     clippy::indexing_slicing
 )]
 
+mod common;
+
+use common::plain::run;
 use craft3d_engine::{
     AUTOMATIC_RELATIVE_TOLERANCE, Access, DISPLAY_RELATIVE_TOLERANCE, FeatureState, Scene,
     ScenePolyline, SceneQuality, SceneSketch, Session, SketchCurve, Workspace,
@@ -20,12 +23,6 @@ use std::sync::Arc;
 
 fn session() -> Session {
     Session::new(Workspace::none())
-}
-
-fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    session
-        .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"))
 }
 
 fn scene(session: &mut Session, tolerance: Option<f64>) -> Arc<Scene> {

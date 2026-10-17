@@ -8,21 +8,12 @@
     clippy::indexing_slicing
 )]
 
+mod common;
+
+use common::checked::{feature_brief as feature, run};
 use craft3d_engine::{Session, Workspace};
 use serde_json::{Value, json};
 use std::f64::consts::PI;
-
-fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    let result = session
-        .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"));
-    assert_ne!(
-        session.regeneration_matches_a_full_one(),
-        Some(false),
-        "after {id} {params}"
-    );
-    result
-}
 
 /// A document with sketch `Profile` (F1) on the xy plane holding a closed
 /// polygon through `points`: points e1..en, sides e(n+1)..e(2n).
@@ -48,17 +39,6 @@ fn revolve(session: &mut Session, params: Value) -> Value {
     params["sketch"] = "Profile".into();
     params["name"] = "Turned".into();
     run(session, "feature.revolve", params)
-}
-
-fn feature(session: &mut Session, name: &str) -> Value {
-    let document = run(session, "document.inspect", json!({}));
-    document["features"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|f| f["name"] == name)
-        .unwrap_or_else(|| panic!("no feature {name}"))
-        .clone()
 }
 
 fn body(session: &mut Session) -> Value {

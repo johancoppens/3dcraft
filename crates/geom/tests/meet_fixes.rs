@@ -694,3 +694,74 @@ fn a_curve_that_leaves_the_box_and_comes_back_is_found_both_times() {
         }
     }
 }
+
+/// A plane drawn as a quadratic NURBS surface of two spans along u whose
+/// weights go up by `skew` from one control point to the next: each span a
+/// Möbius reparametrisation of itself, so that where they meet (u = 1, the
+/// line x = 2) the surface moves `skew²` times faster just after the knot
+/// than just before it.
+fn skewed_plane(skew: f64) -> Surface {
+    let mut ctrl = Vec::new();
+    let mut weights = Vec::new();
+    for i in 0..5 {
+        for y in [-2.0, 2.0] {
+            ctrl.push(Vec3::new(i as f64, y, 0.0));
+            weights.push(skew.powi(i));
+        }
+    }
+    Surface::Nurbs(
+        NurbsSurface::new(
+            2,
+            1,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 2.0],
+            vec![0.0, 0.0, 1.0, 1.0],
+            5,
+            2,
+            ctrl,
+            weights,
+        )
+        .unwrap(),
+    )
+}
+
+#[test]
+fn a_circle_across_a_knot_where_the_speed_jumps_is_marched_once() {
+    // Review of 2026-10-17: where the step across such a knot is scaled to
+    // the length it went (`Marcher::rescaled`), a loop that closes during
+    // that step must close there, not be marched around a second time,
+    // and the step must stay on its own branch. A ball on the knot line
+    // meets the plane in one circle, crossing the knot twice.
+    let tol = Tolerance::default();
+    for skew in [1.0, 10.0, 31.6] {
+        for centre in [Vec3::new(2.0, 0.0, 0.0), Vec3::new(2.3, 0.4, 0.2)] {
+            let radius = 0.5_f64;
+            let ball =
+                Surface::Sphere(Sphere::new(Frame::WORLD.at(centre).unwrap(), radius).unwrap());
+            let what = format!("skew {skew}, ball at {centre:?}");
+            let Ok(SurfaceMeeting::Meets(meeting)) =
+                meet_surfaces(&skewed_plane(skew), &ball, &everywhere(), &tol)
+            else {
+                panic!("{what}: no meeting");
+            };
+            assert_eq!(meeting.curves.len(), 1, "{what}");
+            let curve = &meeting.curves[0];
+            assert!(curve.closed, "{what}");
+            // Its length is the circle's, once around.
+            let (t0, t1) = curve.range;
+            let mut length = 0.0;
+            let mut last = curve.curve.eval(t0);
+            for k in 1..=4000 {
+                let p = curve.curve.eval(t0 + (t1 - t0) * f64::from(k) / 4000.0);
+                length += p.distance(last);
+                last = p;
+                let off_ball = p.distance(centre) - radius;
+                assert!(off_ball.abs() <= 1e-5 && p.z.abs() <= 1e-5, "{what}: {p:?}");
+            }
+            let circle = std::f64::consts::TAU * (radius * radius - centre.z * centre.z).sqrt();
+            assert!(
+                (length - circle).abs() <= 1e-4 * circle,
+                "{what}: {length} for {circle}"
+            );
+        }
+    }
+}

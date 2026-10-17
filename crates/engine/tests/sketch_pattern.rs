@@ -13,61 +13,16 @@
     clippy::indexing_slicing
 )]
 
-use craft3d_engine::{Access, Session, Workspace};
+mod common;
+
+use common::checked::{error, run, session, session_in, str_of};
+use craft3d_engine::Session;
 use serde_json::{Value, json};
 use std::f64::consts::{PI, TAU};
 use std::path::PathBuf;
 
 fn workdir(name: &str) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("sketch-pattern-{name}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn session_in(dir: &std::path::Path) -> Session {
-    Session::new(Workspace {
-        read: Access::Root(dir.to_path_buf()),
-        write: Access::Root(dir.to_path_buf()),
-    })
-}
-
-fn session() -> Session {
-    Session::new(Workspace {
-        read: Access::None,
-        write: Access::None,
-    })
-}
-
-fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    let result = session
-        .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"));
-    // Built up edit by edit, the document is what regenerating it from
-    // nothing gives (docs/testing.md: incremental = full regeneration).
-    assert_ne!(
-        session.regeneration_matches_a_full_one(),
-        Some(false),
-        "after {id} {params}"
-    );
-    result
-}
-
-fn error(session: &mut Session, id: &str, params: Value) -> String {
-    match session.execute(id, &params) {
-        Ok(value) => panic!("{id} {params} should fail, returned {value}"),
-        Err(e) => {
-            assert!(!e.message().contains("internal error"), "{id}: {e}");
-            e.to_string()
-        }
-    }
-}
-
-fn str_of(value: &Value) -> String {
-    value
-        .as_str()
-        .unwrap_or_else(|| panic!("not a string: {value}"))
-        .to_string()
+    common::workdir("sketch-pattern", name)
 }
 
 fn document(session: &mut Session) -> Value {

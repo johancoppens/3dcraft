@@ -13,67 +13,19 @@
     clippy::indexing_slicing
 )]
 
+mod common;
+
+use common::checked::{built, failed, feature, inspect, run, session};
 use craft3d_engine::{Access, Session, Workspace};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
 fn workdir(name: &str) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("follow-{name}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn session() -> Session {
-    Session::new(Workspace {
-        read: Access::None,
-        write: Access::None,
-    })
-}
-
-fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    let result = session
-        .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"));
-    // Built up edit by edit, the document is what regenerating it from
-    // nothing gives: the cache knows what a followed name depends on.
-    assert_ne!(
-        session.regeneration_matches_a_full_one(),
-        Some(false),
-        "after {id} {params}"
-    );
-    result
-}
-
-fn built(session: &mut Session, id: &str, params: Value) -> Value {
-    let result = run(session, id, params.clone());
-    assert_eq!(result["status"], "ok", "{id} {params}: {result}");
-    result
-}
-
-fn failed(session: &mut Session, id: &str, params: Value) -> String {
-    let result = run(session, id, params.clone());
-    assert_eq!(result["status"], "failed", "{id} {params}: {result}");
-    result["error"].as_str().unwrap().to_string()
-}
-
-fn inspect(session: &mut Session) -> Value {
-    run(session, "document.inspect", json!({}))
+    common::workdir("follow", name)
 }
 
 fn bodies(session: &mut Session) -> Value {
     inspect(session)["bodies"].clone()
-}
-
-fn feature(session: &mut Session, name: &str) -> Value {
-    let document = inspect(session);
-    document["features"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|f| f["name"] == name)
-        .unwrap_or_else(|| panic!("no feature {name} in {document}"))
-        .clone()
 }
 
 fn steps(session: &mut Session, steps: &[(&str, Value)]) {

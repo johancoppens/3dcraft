@@ -29,9 +29,9 @@ use craft3d_kernel::profile::{
     Curve2, MAX_CURVES, MAX_PAIRS, OLD_MAX_CURVES, SketchCurve, detect_profiles,
 };
 use craft3d_math::{Frame, Tolerance};
+use craft3d_testkit::cost::WorkClock;
 use craft3d_topo::{check, mass_properties};
 use std::f64::consts::PI;
-use std::time::Instant;
 
 type I = [i64; 2];
 
@@ -424,10 +424,11 @@ fn scalloped(teeth: usize, r: f64) -> Vec<SketchCurve> {
 
 fn timed(name: &str, curves: &[SketchCurve], expect_area: Option<f64>) {
     let tol = Tolerance::default();
-    let start = Instant::now();
+    // On the work of this thread, which a busy machine does not stretch.
+    let start = WorkClock::start();
     let result = detect_profiles(curves, &tol);
     let detect = start.elapsed();
-    let start = Instant::now();
+    let start = WorkClock::start();
     let extruded = result
         .as_ref()
         .ok()
@@ -673,7 +674,7 @@ fn the_cap_finishes_with_every_layout() {
 /// `curves` are refused by the bound on pairs (`limit`), naming curves,
 /// within the time `timed` allows.
 fn crowded(name: &str, curves: &[SketchCurve], limit: usize) {
-    let started = Instant::now();
+    let started = WorkClock::start();
     let result = detect_profiles(curves, &Tolerance::default());
     let took = started.elapsed();
     println!("{name}: {} curves, refused in {took:.2?}", curves.len());

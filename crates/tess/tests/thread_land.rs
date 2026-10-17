@@ -29,9 +29,9 @@
 use craft3d_geom::{Circle, Curve3, Cylinder, Line, NurbsCurve, Surface};
 use craft3d_math::{Frame, Vec3};
 use craft3d_tess::{TessParams, tessellate_body};
+use craft3d_testkit::cost::WorkClock;
 use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, VertexId};
 use std::f64::consts::TAU;
-use std::time::Instant;
 
 const RADIUS: f64 = 5.0;
 const PITCH: f64 = 1.5;
@@ -161,7 +161,9 @@ fn the_land_of_a_long_thread_meshes_quickly_at_a_fine_tolerance() {
             chordal_tolerance: tolerance,
             ..TessParams::default()
         };
-        let start = Instant::now();
+        // One face, meshed on this thread: its work, which a busy machine
+        // does not stretch.
+        let start = WorkClock::start();
         let mesh =
             tessellate_body(&body, &params).unwrap_or_else(|e| panic!("at {tolerance}: {e}"));
         let seconds = start.elapsed().as_secs_f64();

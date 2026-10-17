@@ -14,30 +14,12 @@
     clippy::indexing_slicing
 )]
 
-use craft3d_engine::{Access, Session, Workspace};
+mod common;
+
+use common::checked::{feature_brief as feature, run, session};
+use craft3d_engine::Session;
 use serde_json::{Value, json};
 use std::f64::consts::PI;
-
-fn session() -> Session {
-    Session::new(Workspace {
-        read: Access::None,
-        write: Access::None,
-    })
-}
-
-fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    let result = session
-        .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"));
-    // Built up edit by edit, the document is what regenerating it from
-    // nothing gives (docs/testing.md: incremental = full regeneration).
-    assert_ne!(
-        session.regeneration_matches_a_full_one(),
-        Some(false),
-        "after {id} {params}"
-    );
-    result
-}
 
 fn constrain(session: &mut Session, kind: &str, entities: Value, value: Option<&str>) {
     let mut params = json!({"sketch": "Profile", "type": kind, "entities": entities});
@@ -122,17 +104,6 @@ fn boss(session: &mut Session, face: &str, offset: f64, x: f64, y: f64) {
         json!({"sketch": "Seat", "distance": 4, "name": "Boss"}),
     );
     assert_eq!(made["status"], "ok", "{made}");
-}
-
-fn feature(session: &mut Session, name: &str) -> Value {
-    let document = run(session, "document.inspect", json!({}));
-    document["features"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|f| f["name"] == name)
-        .unwrap_or_else(|| panic!("no feature {name}"))
-        .clone()
 }
 
 /// The boss is a cylinder of radius 1 and height 4 with its centroid at

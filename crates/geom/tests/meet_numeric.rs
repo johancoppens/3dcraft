@@ -15,6 +15,9 @@ use common::*;
 use craft3d_geom::intersect::{Meeting, meet_surfaces, meet_surfaces_numeric};
 use craft3d_geom::{Curve3, Surface};
 use craft3d_math::{Bbox3, Frame, Tolerance, Vec3};
+// The time bounds are on the work of this thread, which a busy machine
+// does not stretch.
+use craft3d_testkit::cost::WorkClock;
 
 /// The length of a meeting curve (a polyline of 2000 chords).
 fn length(curve: &craft3d_geom::intersect::MeetingCurve) -> f64 {
@@ -243,7 +246,7 @@ fn a_plane_through_the_border_of_a_patch_meets_it_along_the_border() {
                 ),
             ] {
                 let wall = plane(Frame::new(origin * k, normal, Vec3::Z).unwrap());
-                let clock = std::time::Instant::now();
+                let clock = WorkClock::start();
                 let m = meeting(meet_surfaces(&roof, &wall, &within, &t).unwrap());
                 let took = clock.elapsed();
                 assert_eq!(
@@ -382,7 +385,7 @@ fn roofs_that_touch_at_a_point_and_cross_elsewhere_meet_in_both() {
         );
         let t = tol(1.0);
         let within = cube(Vec3::new(0.0, -0.75, 2.2), 3.0);
-        let clock = std::time::Instant::now();
+        let clock = WorkClock::start();
         let m = meeting(meet_surfaces(&lower, &upper, &within, &t).unwrap());
         let took = clock.elapsed();
         check_meeting(&m, &lower, &upper, &within, &t);
@@ -420,7 +423,7 @@ fn freeform_patches_that_touch_at_a_point_meet_in_that_point() {
             let t = tol(k);
             let touch = frame.point(k * at.0, k * at.1, 0.0);
             let within = cube(touch, 2.0 * k);
-            let clock = std::time::Instant::now();
+            let clock = WorkClock::start();
             let m = meeting(meet_surfaces(&bowl, &cap, &within, &t).unwrap());
             let took = clock.elapsed();
             assert!(m.curves.is_empty(), "scale {k} nurbs {nurbs}: {m:?}");
@@ -453,7 +456,7 @@ fn freeform_patches_that_cross_through_a_touch_meet_in_four_arms() {
             let t = tol(k);
             let touch = frame.point(k * at.0, k * at.1, 0.0);
             let within = cube(touch, 2.0 * k);
-            let clock = std::time::Instant::now();
+            let clock = WorkClock::start();
             let m = meeting(meet_surfaces(&upper, &lower, &within, &t).unwrap());
             let took = clock.elapsed();
             check_meeting(&m, &upper, &lower, &within, &t);
@@ -508,7 +511,7 @@ fn freeform_patches_that_nearly_touch_do_not_meet() {
             let cap = quadric_patch(&frame, k, at, (-0.6, 0.2, -0.1), 0.0, nurbs);
             let t = tol(k);
             let within = cube(frame.point(k * at.0, k * at.1, 0.0), 2.0 * k);
-            let clock = std::time::Instant::now();
+            let clock = WorkClock::start();
             let met = meet_surfaces(&bowl, &cap, &within, &t).unwrap();
             let took = clock.elapsed();
             assert!(

@@ -12,6 +12,9 @@
     clippy::indexing_slicing
 )]
 
+mod common;
+
+use common::plain::run;
 use craft3d_engine::{Access, Session, Workspace};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -28,12 +31,6 @@ fn session(tag: &str) -> (Session, PathBuf) {
     });
     run(&mut session, "file.new", json!({}));
     (session, dir)
-}
-
-fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    session
-        .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"))
 }
 
 fn refused(session: &mut Session, params: Value, words: &[&str]) {

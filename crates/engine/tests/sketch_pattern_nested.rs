@@ -15,46 +15,13 @@
     clippy::indexing_slicing
 )]
 
-use craft3d_engine::{Access, Session, Workspace};
+mod common;
+
+use common::checked::{error, run, session, str_of};
+use craft3d_engine::Session;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::f64::consts::PI;
-
-fn session() -> Session {
-    Session::new(Workspace {
-        read: Access::None,
-        write: Access::None,
-    })
-}
-
-fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    let result = session
-        .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"));
-    assert_ne!(
-        session.regeneration_matches_a_full_one(),
-        Some(false),
-        "after {id} {params}"
-    );
-    result
-}
-
-fn error(session: &mut Session, id: &str, params: Value) -> String {
-    match session.execute(id, &params) {
-        Ok(value) => panic!("{id} {params} should fail, returned {value}"),
-        Err(e) => {
-            assert!(!e.message().contains("internal error"), "{id}: {e}");
-            e.to_string()
-        }
-    }
-}
-
-fn str_of(value: &Value) -> String {
-    value
-        .as_str()
-        .unwrap_or_else(|| panic!("not a string: {value}"))
-        .to_string()
-}
 
 fn strings(value: &Value) -> Vec<String> {
     value.as_array().unwrap().iter().map(str_of).collect()
@@ -1257,7 +1224,9 @@ fn a_revolution_and_an_offset_of_a_nested_rib_are_named_and_measured() {
 }
 
 /// Patterns of points only, three levels of 10 000: refused at once for
-/// the product of their counts, not visited one by one.
+/// the product of their counts, not visited one by one (bounded on the
+/// work of this thread, `craft3d_testkit::cost::WorkClock`, which a busy
+/// machine does not stretch).
 #[test]
 fn a_tree_of_points_only_is_bounded_by_the_product_of_its_counts() {
     let mut s = session();
@@ -1286,7 +1255,7 @@ fn a_tree_of_points_only_is_bounded_by_the_product_of_its_counts() {
         json!({"sketch": "Dots", "patterns": ["p2"], "count": "k", "step": [0, 0.5]}),
     );
     assert_eq!(status(&mut s, "Dots"), "ok");
-    let started = std::time::Instant::now();
+    let started = craft3d_testkit::cost::WorkClock::start();
     run(
         &mut s,
         "variable.set",

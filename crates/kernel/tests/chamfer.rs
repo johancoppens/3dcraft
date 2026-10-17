@@ -1316,3 +1316,72 @@ fn a_root_that_ends_on_a_leaning_face() {
         }
     }
 }
+
+/// E7 in a feature with edges the tools build: the top edge across the
+/// end of a block whose two long top edges an earlier chamfer took (built
+/// in place, it takes the earlier chamfer's end edges whole, so the body
+/// it leaves numbers its edges anew), together with the vertical edge at
+/// the far corner and the end edge of the earlier chamfer above it (two
+/// edges that meet, built by the tools on that body). Each request has to
+/// be built where it was asked for, whatever its number was: the solid is
+/// the convex one of all the planes, and every chamfer face lies in the
+/// plane of the edge it names.
+#[test]
+fn edges_after_one_a_chamfer_takes_whole_keep_their_requests() {
+    for k in SCALES {
+        let block = boxed(k, [0.0, 0.0, 0.0], [4.0, 3.0, 2.0]);
+        let d = 0.5;
+        let e = 0.2;
+        let first = solve(
+            &block,
+            &[
+                equal(&block, k, [2.0, 0.0, 2.0], d),
+                equal(&block, k, [2.0, 3.0, 2.0], d),
+            ],
+            k,
+        );
+        let requests = [
+            equal(&first.body, k, [0.0, 1.5, 2.0], d),
+            equal(&first.body, k, [4.0, 2.75, 1.75], e),
+            equal(&first.body, k, [4.0, 3.0, 0.75], e),
+        ];
+        // The point of the test: an edge the tools build comes after one
+        // the in-place chamfer takes whole.
+        let taken = edge_at(&first.body, k, [0.0, 2.75, 1.75]);
+        assert!(requests[1].edge > taken);
+        let made = solve(&first.body, &requests, k);
+        let root2 = 2f64.sqrt();
+        let mut planes = box_planes([4.0, 3.0, 2.0]);
+        planes.push(([0.0, -1.0, 1.0], 2.0 - d));
+        planes.push(([0.0, 1.0, 1.0], 5.0 - d));
+        planes.push(([-1.0, 0.0, 1.0], 2.0 - d));
+        let slanted = ([root2, 1.0, 1.0], root2 * (4.0 - e) + 4.5);
+        let upright = ([1.0, 1.0, 0.0], 7.0 - e);
+        planes.push(slanted);
+        planes.push(upright);
+        let m = mass(&made.body);
+        assert_close(m.volume, convex_volume(&planes) * k * k * k, "volume");
+        for (index, (n, c)) in [([-1.0, 0.0, 1.0], 2.0 - d), slanted, upright]
+            .into_iter()
+            .enumerate()
+        {
+            let n = Vec3::new(n[0], n[1], n[2]);
+            let (n, c) = (n * (1.0 / n.length()), c / n.length() * k);
+            let faces: Vec<FaceId> = made
+                .faces
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| matches!(f, ChamferFace::Chamfer(of) if of.contains(&index)))
+                .map(|(i, _)| FaceId(i as u32))
+                .collect();
+            assert!(!faces.is_empty(), "scale {k}: no face for request {index}");
+            for face in faces {
+                let (normal, offset) = plane_of(&made.body, face);
+                assert!(
+                    normal.dot(n) > 1.0 - 1e-9 && (offset - c).abs() < 1e-6 * k,
+                    "scale {k}: the face of request {index} is not in its plane"
+                );
+            }
+        }
+    }
+}

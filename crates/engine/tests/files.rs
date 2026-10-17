@@ -9,21 +9,11 @@
     clippy::indexing_slicing
 )]
 
+mod common;
+
+use common::plain::{run, session};
 use craft3d_engine::{Access, Session, Workspace};
 use serde_json::{Value, json};
-
-fn session() -> Session {
-    Session::new(Workspace {
-        read: Access::None,
-        write: Access::None,
-    })
-}
-
-fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    session
-        .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"))
-}
 
 fn error(session: &mut Session, id: &str, params: Value) -> String {
     session.execute(id, &params).unwrap_err().to_string()

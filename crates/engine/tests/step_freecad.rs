@@ -53,16 +53,13 @@ mod lofts;
 #[path = "step_freecad/sweeps.rs"]
 mod sweeps;
 
+mod common;
+
+use common::plain::run;
 use craft3d_engine::{Access, Session, Workspace};
 use harness::{APPROXIMATED, Case, Extent, RELATIVE};
 use serde_json::{Value, json};
 use std::path::PathBuf;
-
-fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    session
-        .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"))
-}
 
 /// The documents built so far, and the booleans the kernel refused.
 struct Set {
@@ -143,6 +140,39 @@ const SPLINE_QUADRATURE: f64 = 1e-9;
 /// valid, and the volume is right to 1e-5: enough to know the bounds mean
 /// what we think.
 const ZONE: Expect = APPROX;
+
+/// A command that must work; a feature that fails is the reason returned
+/// (a refusal is a finding, listed in the report, not a panic).
+fn step(s: &mut Session, id: &str, params: Value) -> Result<Value, String> {
+    let result = s
+        .execute(id, &params)
+        .map_err(|e| format!("{id} {params}: {e}"))?;
+    if result["status"] == "failed" {
+        return Err(format!(
+            "{id} {params}: {}",
+            result["error"].as_str().unwrap_or("failed")
+        ));
+    }
+    Ok(result)
+}
+
+/// The names of the two faces of the edge of `feature` whose ends are at
+/// `a` and `b` (for scale 1), as `document.edges` lists them.
+fn edge(s: &mut Session, feature: &str, k: f64, a: [f64; 3], b: [f64; 3]) -> Result<Value, String> {
+    let listed = step(s, "document.edges", json!({"feature": feature}))?;
+    let at = |value: &Value, want: [f64; 3]| {
+        (0..3).all(|i| (value[i].as_f64().unwrap_or(f64::NAN) - want[i] * k).abs() <= 1e-6 * k)
+    };
+    listed["edges"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|e| {
+            (at(&e["start"], a) && at(&e["end"], b)) || (at(&e["start"], b) && at(&e["end"], a))
+        })
+        .map(|e| e["faces"].clone())
+        .ok_or_else(|| format!("{feature} has no edge from {a:?} to {b:?}"))
+}
 
 fn unit_in_mm(unit: &str) -> f64 {
     match unit {

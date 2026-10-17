@@ -20,18 +20,15 @@
     clippy::indexing_slicing
 )]
 
+mod common;
+
+use common::plain::run;
 use craft3d_engine::{Access, Session, Workspace};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::f64::consts::PI;
 use std::path::PathBuf;
 use std::process::Command;
-
-fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    session
-        .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"))
-}
 
 /// FreeCAD's report per file of `dir`: key → value.
 fn freecad_reads(dir: &std::path::Path) -> BTreeMap<String, BTreeMap<String, String>> {
