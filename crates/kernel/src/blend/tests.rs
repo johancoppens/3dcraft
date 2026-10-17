@@ -168,3 +168,67 @@ fn a_boss_root_in_place_is_the_tools_result_at_every_seam_angle() {
         }
     }
 }
+
+/// What a blend in place took whole is gone from the body it leaves, and
+/// the edges and faces after it are numbered anew: requests built on that
+/// body are renamed through where its entities came from, a request of an
+/// edge or a face it took whole is refused naming it, and a refusal met
+/// on that body names the entities of the body the blend started from.
+#[test]
+fn requests_after_a_blend_in_place_follow_the_renumbering() {
+    let body = crate::primitives::block(&craft3d_math::Frame::WORLD, 1.0, 1.0, 1.0).unwrap();
+    // Edge 1 and face 1 were taken whole; face 2 now is a blend face.
+    let rolled = Blended {
+        body,
+        faces: vec![
+            Face::Kept(vec![FaceId(0)]),
+            Face::Kept(vec![FaceId(2)]),
+            Face::Blend(vec![0]),
+        ],
+        edges: vec![Some(EdgeId(0)), Some(EdgeId(2)), Some(EdgeId(3)), None],
+        vertices: Vec::new(),
+    };
+    let request = |edge: u32, first: Option<u32>| Request {
+        edge: EdgeId(edge),
+        first: first.map(FaceId),
+        size: Size::Radius(0.1),
+    };
+    let now = renamed(&rolled, &[request(3, Some(2)), request(0, None)]).unwrap();
+    assert_eq!(now, [request(2, Some(1)), request(0, None)]);
+    assert!(matches!(
+        renamed(&rolled, &[request(1, None)]),
+        Err(BlendError::Refused {
+            edge: Some(EdgeId(1)),
+            face: None,
+            reason: Reason::TakenWhole
+        })
+    ));
+    assert!(matches!(
+        renamed(&rolled, &[request(2, Some(1))]),
+        Err(BlendError::Refused {
+            edge: Some(EdgeId(2)),
+            face: Some(FaceId(1)),
+            reason: Reason::TakenWhole
+        })
+    ));
+    let named = named_before(
+        &rolled,
+        BlendError::TooLarge {
+            edge: EdgeId(2),
+            face: FaceId(1),
+            size: 1.0,
+            largest: 0.5,
+        },
+    );
+    assert!(matches!(
+        named,
+        BlendError::TooLarge {
+            edge: EdgeId(3),
+            face: FaceId(2),
+            ..
+        }
+    ));
+    // An edge the blend made has no name before it.
+    let named = named_before(&rolled, refused(EdgeId(3), Reason::Reaches));
+    assert!(matches!(named, BlendError::Refused { edge: None, .. }));
+}

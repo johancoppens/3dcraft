@@ -195,6 +195,7 @@ pub(crate) enum Reason {
     FreeRunsOver,
     FreeGoesOn,
     FreeRollOver,
+    TakenWhole,
 }
 
 impl Reason {
@@ -282,6 +283,9 @@ impl Reason {
             }
             Reason::FreeChainSize => {
                 "edges that go on smoothly into each other are chamfered by different distances: a chamfer along such a chain has one size; give them the same, or chamfer them in separate features"
+            }
+            Reason::TakenWhole => {
+                "another edge of this chamfer, built first, takes this edge whole: leave one of the two out of the chamfer"
             }
             Reason::FreeRollOver => {
                 "two chamfers meet in a vertex whose third edge turns the other way (concave between convex chamfers, or convex between concave ones); that is not built yet: leave one of them out"
@@ -378,6 +382,9 @@ impl Reason {
             }
             Reason::FreeChainSize => {
                 "edges that go on smoothly into each other are filleted with different radii: a fillet along such a chain has one radius; give them the same, or fillet them in separate features"
+            }
+            Reason::TakenWhole => {
+                "another edge of this fillet, built first, takes this edge whole: leave one of the two out of the fillet"
             }
             Reason::FreeRollOver => {
                 "two fillets meet in a vertex whose third edge turns the other way (concave between convex fillets, or convex between concave ones): the ball would have to roll over that edge from one fillet into the other, a patch of its own that is not built yet; leave one of them out"
@@ -2404,9 +2411,10 @@ pub(crate) fn blend(
 /// Blends the edges no closed form covers (`free`, with every edge that
 /// shares a vertex with one of them, so a chain that runs on from a
 /// freeform edge into a line or an arc is one chain) in place first, and
-/// then the others (`closed`, whose edges and faces keep their numbers
-/// through that) by the tools; the sources of the second result are
-/// carried back to `body`.
+/// then the others (`closed`, renamed to the numbers their edges and
+/// faces have after that, see [`renamed`]) by the tools; the sources of
+/// the second result, and the entities a refusal names, are carried back
+/// to `body`.
 fn mixed(
     body: &Body,
     edges: &[Request],
@@ -2442,8 +2450,109 @@ fn mixed(
         // `free` is every request, in order.
         return Ok(rolled);
     }
-    let second = blend_inner(&rolled.body, &pick(&closed), tolerance, true)?;
+    let second = blend_inner(
+        &rolled.body,
+        &renamed(&rolled, &pick(&closed))?,
+        tolerance,
+        true,
+    )
+    .map_err(|error| named_before(&rolled, error))?;
     Ok(carry_back(rolled, second, &free, &closed))
+}
+
+/// `requests` of the body a blend in place started from, with the
+/// numbers their edges and first faces have in the body it left
+/// (`rolled`): what it takes whole goes, and the edges and faces after it
+/// are numbered anew (`rolling::compact`). A requested edge or face it
+/// took whole is refused, naming it: the blend that took it is not built
+/// together with its own.
+fn renamed(rolled: &Blended, requests: &[Request]) -> Result<Vec<Request>, BlendError> {
+    let id = |i: usize| u32::try_from(i).unwrap_or(u32::MAX);
+    let mut edge_now = BTreeMap::new();
+    for (now, was) in rolled.edges.iter().enumerate() {
+        if let Some(was) = was {
+            edge_now.insert(*was, EdgeId(id(now)));
+        }
+    }
+    let mut face_now = BTreeMap::new();
+    for (now, made) in rolled.faces.iter().enumerate() {
+        if let Face::Kept(list) = made {
+            for was in list {
+                face_now.insert(*was, FaceId(id(now)));
+            }
+        }
+    }
+    requests
+        .iter()
+        .map(|request| {
+            let edge = *edge_now
+                .get(&request.edge)
+                .ok_or_else(|| refused(request.edge, Reason::TakenWhole))?;
+            let first = match request.first {
+                None => None,
+                Some(face) => Some(*face_now.get(&face).ok_or(BlendError::Refused {
+                    edge: Some(request.edge),
+                    face: Some(face),
+                    reason: Reason::TakenWhole,
+                })?),
+            };
+            Ok(Request {
+                edge,
+                first,
+                ..*request
+            })
+        })
+        .collect()
+}
+
+/// `error`, met on the body a blend in place left (`rolled`), naming the
+/// edges and faces it had in the body that blend started from where they
+/// have one (an edge or a face the blend made has none, and keeps its
+/// number; an edge only named for what it says goes).
+fn named_before(rolled: &Blended, error: BlendError) -> BlendError {
+    let edge_was = |e: EdgeId| rolled.edges.get(e.0 as usize).copied().flatten();
+    let face_was = |f: FaceId| match rolled.faces.get(f.0 as usize) {
+        Some(Face::Kept(list)) => list.first().copied(),
+        _ => None,
+    };
+    match error {
+        BlendError::Kernel(_) => error,
+        BlendError::TooLarge {
+            edge,
+            face,
+            size,
+            largest,
+        } => BlendError::TooLarge {
+            edge: edge_was(edge).unwrap_or(edge),
+            face: face_was(face).unwrap_or(face),
+            size,
+            largest,
+        },
+        BlendError::Refused { edge, face, reason } => BlendError::Refused {
+            edge: edge.and_then(edge_was),
+            face: face.map(|f| face_was(f).unwrap_or(f)),
+            reason,
+        },
+        BlendError::Boolean {
+            edge,
+            error,
+            smaller_fails,
+        } => BlendError::Boolean {
+            edge: edge_was(edge).unwrap_or(edge),
+            error,
+            smaller_fails,
+        },
+    }
+}
+
+/// [`named_before`] for a failed build.
+fn failed_before(rolled: &Blended, failure: Failure) -> Failure {
+    Failure {
+        edge: failure
+            .edge
+            .and_then(|e| rolled.edges.get(e.0 as usize).copied().flatten()),
+        error: named_before(rolled, failure.error),
+    }
 }
 
 /// The sources of `second` (the blends `closed` of a feature, made on the
@@ -2620,12 +2729,19 @@ fn construct(
     }
     let now_uses = edge_uses(&rolled.body);
     let now_at = vertex_edges(&rolled.body);
+    let picked: Vec<Request> = rest
+        .iter()
+        .filter_map(|i| requests.get(*i).copied())
+        .collect();
     let mut second_plans = Vec::with_capacity(rest.len());
-    for index in &rest {
-        let request = requests.get(*index).ok_or_else(lost)?;
-        second_plans.push(plan(&rolled.body, &now_uses, request, tolerance.linear)?);
+    for request in &renamed(&rolled, &picked)? {
+        second_plans.push(
+            plan(&rolled.body, &now_uses, request, tolerance.linear)
+                .map_err(|error| named_before(&rolled, error))?,
+        );
     }
-    let second = build(&rolled.body, &now_uses, &now_at, second_plans, tolerance)?;
+    let second = build(&rolled.body, &now_uses, &now_at, second_plans, tolerance)
+        .map_err(|failure| failed_before(&rolled, failure))?;
     Ok(carry_back(rolled, second, routed, &rest))
 }
 
