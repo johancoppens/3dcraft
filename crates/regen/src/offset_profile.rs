@@ -55,33 +55,8 @@ pub(crate) fn build(
         OffsetCorners::Sharp => Corners::Sharp,
     };
     let unit = doc.units.length.symbol();
-    let outline =
-        offset_profiles(&made.profiles, distance, corners, &made.tolerance).map_err(|error| {
-            match error {
-                KernelError::OffsetProfile {
-                    reason,
-                    curves,
-                    largest,
-                } => {
-                    let mut text = format!("distance: the offset of sketch `{}` {reason}", made.name);
-                    if !curves.is_empty() {
-                        let names: Vec<String> = curves.iter().map(|c| curve_name(*c)).collect();
-                        text.push_str(&format!(" (at {})", names.join(", ")));
-                    }
-                    if let Some(largest) = largest {
-                        text.push_str(&format!(
-                            "; the largest distance at which every loop is still there is {largest} {unit}"
-                        ));
-                    }
-                    text
-                }
-                KernelError::TooManyOffsetCurves { count, limit } => format!(
-                    "distance: the offset of sketch `{}` has {count} curves, more than an offset of profiles takes ({limit}); corners: sharp adds none where lines meet",
-                    made.name
-                ),
-                other => format!("distance: {other}"),
-            }
-        })?;
+    let outline = offset_profiles(&made.profiles, distance, corners, &made.tolerance)
+        .map_err(|error| describe(error, made.name, unit))?;
     let runs = full_runs(made.sketch, made.solved);
     let names = outline
         .origins
@@ -218,4 +193,96 @@ pub(crate) fn rename(
         link.sources = sources;
     }
     Ok(())
+}
+
+/// What a refused offset says, with the curves named as the sketch names
+/// them (`e7[3]`).
+fn describe(error: KernelError, sketch: &str, unit: &str) -> String {
+    match error {
+        KernelError::OffsetProfile {
+            reason,
+            curves,
+            largest,
+        } => {
+            let mut text = format!("distance: the offset of sketch `{}` {reason}", sketch);
+            if !curves.is_empty() {
+                let names: Vec<String> = curves.iter().map(|c| curve_name(*c)).collect();
+                text.push_str(&format!(" (at {})", names.join(", ")));
+            }
+            if let Some(largest) = largest {
+                text.push_str(&format!(
+                    "; the largest distance at which every loop is still there is {largest} {unit}"
+                ));
+            }
+            text
+        }
+        KernelError::TooManyOffsetCurves { count, limit } => format!(
+            "distance: the offset of sketch `{}` has {count} curves, more than an offset of profiles takes ({limit}); corners: sharp adds none where lines meet",
+            sketch
+        ),
+        KernelError::CrowdedOffset {
+            what,
+            curves,
+            limit,
+        } => {
+            let names: Vec<String> = curves.iter().map(|c| curve_name(*c)).collect();
+            format!(
+                "distance: the curves of the offset of sketch `{}` lie too close together: it would have more than {limit} {what} (at {}); use a smaller distance, or fewer curves near these",
+                sketch,
+                names.join(", ")
+            )
+        }
+        other => format!("distance: {other}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+    use craft3d_doc::{CurveIndex, CurveRef};
+
+    /// A bound on the offset's work names the curves as the sketch does,
+    /// never by the numbers the kernel is handed.
+    #[test]
+    fn a_crowded_offset_names_its_curves_in_sketch_terms() {
+        let instance = CurveRef {
+            entity: 7,
+            index: CurveIndex::At(3),
+        }
+        .encode()
+        .unwrap();
+        let cell = CurveRef {
+            entity: 9,
+            index: CurveIndex::Grid(2, 5),
+        }
+        .encode()
+        .unwrap();
+        let text = describe(
+            KernelError::CrowdedOffset {
+                what: "points where its curves cross",
+                curves: vec![4, instance, cell],
+                limit: 4_194_304,
+            },
+            "Plate",
+            "mm",
+        );
+        for part in [
+            "`Plate`",
+            "e4",
+            "e7[3]",
+            "e9[2,5]",
+            "4194304",
+            "points where its curves cross",
+        ] {
+            assert!(text.contains(part), "{part} in {text}");
+        }
+        assert!(
+            !text
+                .split(|c: char| !c.is_ascii_digit())
+                .any(|digits| digits.len() > 9),
+            "{text}"
+        );
+    }
 }
