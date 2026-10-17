@@ -623,6 +623,40 @@ fn carrying_never_takes_the_work_the_solve_needs() {
     }
 }
 
+/// A carrying that runs out of its share of the work says so: at a work
+/// limit just above what the plain solve needs, the carrying's half of it
+/// does not reach the end of the jump 3 -> 400, while the solve after it
+/// succeeds.
+#[test]
+fn a_path_that_runs_out_of_work_says_so() {
+    let w = wave(1.0, 3);
+    let first = solve(&w.sketch, &options(1.0)).unwrap();
+    let carried = recount(&w, &first, 400, Start::Map);
+    let with = |limit: u64| {
+        let mut o = options(1.0);
+        o.work_limit = limit;
+        o
+    };
+    let found = (0..120u32)
+        .map(|i| 2f64.powf(f64::from(i) / 3.0) as u64)
+        .any(|limit| {
+            matches!(
+                solve(&carried, &with(limit)),
+                Ok(Solution {
+                    carry: Some(Carried::Stopped {
+                        out_of_work: true,
+                        ..
+                    }),
+                    ..
+                })
+            )
+        });
+    assert!(
+        found,
+        "no work limit at which the carrying runs out and the solve succeeds"
+    );
+}
+
 /// A stored map whose numbers on today's points do not put the image
 /// where it was (an edit moved the ends of the run as well) is not a path
 /// from there: the image is carried in a straight line from its place,

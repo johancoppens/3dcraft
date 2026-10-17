@@ -1146,10 +1146,11 @@ pub(crate) fn solve_sketch(
     // A solution the sketch was not carried to all the way may lie on
     // another root than the one it was on (folded over), and which one it
     // found would depend on the path of edits: the sketch fails and nothing
-    // of the solve is kept (the developer's decision of 2026-10-17).
-    if let Some(reason) = carry_failure(solution.carry.as_ref(), &problem, sketch) {
-        return unsolved(reason);
-    }
+    // of the solve is kept (the developer's decision of 2026-10-17). The
+    // solve's own verdict comes first (below): a conflict is not fixed by
+    // a smaller step.
+    // (Made here, while the stored coordinates are at hand.)
+    let carry_failed = carry_failure(solution.carry.as_ref(), &problem, sketch).map(unsolved);
 
     let mut points = Vec::new();
     let mut radii = Vec::new();
@@ -1290,6 +1291,16 @@ pub(crate) fn solve_sketch(
             "constraints {} conflict with the constraints before them; change or delete them",
             list(many)
         )),
+    };
+    let status = match (status, carry_failed) {
+        (status, None) => status,
+        (Status::Ok, Some(failed)) => return failed,
+        // The sketch fails for a reason of its own; that is the one to
+        // fix, and nothing is stored either way (`clean`).
+        (Status::Failed(reason), Some(_)) => Status::Failed(format!(
+            "{reason} (nor could the sketch be carried along all the way to where its image points are now)"
+        )),
+        (status, Some(_)) => status,
     };
     // The places of the image points with the numbers of their maps: the
     // next solve carries the sketch along from them when an edit moves

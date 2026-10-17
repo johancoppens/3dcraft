@@ -79,8 +79,22 @@ fn state(s: &mut Session) -> Value {
 }
 
 /// Saves the session's document, opens it in a new session and compares:
-/// the same state, bit for bit.
+/// the same state, bit for bit. No sketch failed for want of carrying.
 fn equals_a_fresh_open(s: &mut Session, dir: &Path, file: &str) -> Value {
+    let here = fresh_open(s, dir, file);
+    for feature in here["features"].as_array().unwrap() {
+        let error = feature[2].as_str().unwrap_or_default();
+        assert!(
+            !error.contains("carried along") && !error.contains("could not be carried"),
+            "{file}: {error}"
+        );
+    }
+    here
+}
+
+/// [`equals_a_fresh_open`] for a state in which a sketch may fail for
+/// want of carrying.
+fn fresh_open(s: &mut Session, dir: &Path, file: &str) -> Value {
     let here = state(s);
     run(s, "file.save", json!({"path": file, "overwrite": true}));
     // What the session stores is in the form a file must have: no image
@@ -539,7 +553,7 @@ fn a_sketch_carried_part_of_the_way_fails() {
     assert!(failed(&start).is_empty(), "{:?}", failed(&start));
     let stored = stored_sketches(&dir, "stop-3.3dcraft");
     set(&mut s, &[("n", "10")]);
-    let stopped = equals_a_fresh_open(&mut s, &dir, "stop-10.3dcraft");
+    let stopped = fresh_open(&mut s, &dir, "stop-10.3dcraft");
     let (state, error) = status(&stopped, "Edge");
     assert_eq!(state, "failed", "{stopped}");
     for part in [
@@ -564,7 +578,7 @@ fn a_sketch_carried_part_of_the_way_fails() {
         "variable.set",
         json!({"name": "unrelated", "expr": "1 mm"}),
     );
-    let still = equals_a_fresh_open(&mut s, &dir, "stop-10-again.3dcraft");
+    let still = fresh_open(&mut s, &dir, "stop-10-again.3dcraft");
     assert_eq!(status(&still, "Edge"), status(&stopped, "Edge"));
     kept = stored_sketches(&dir, "stop-10-again.3dcraft");
     assert_eq!(kept, stored);
@@ -575,7 +589,7 @@ fn a_sketch_carried_part_of_the_way_fails() {
     assert!(undone == start, "undo gives the start");
     assert_eq!(stored_sketches(&dir, "stop-undone.3dcraft"), stored);
     run(&mut s, "edit.redo", json!({}));
-    let redone = equals_a_fresh_open(&mut s, &dir, "stop-redone.3dcraft");
+    let redone = fresh_open(&mut s, &dir, "stop-redone.3dcraft");
     assert!(redone == stopped, "redo fails as the edit did");
     // The count back at 3: the start, bit for bit.
     set(&mut s, &[("n", "3")]);
@@ -624,7 +638,7 @@ fn a_path_that_stops_part_way_fails_although_the_solve_is_clean() {
     assert!(failed(&start).is_empty(), "{:?}", failed(&start));
     let stored = stored_sketches(&dir, "pass-2.3dcraft");
     set(&mut s, &[("ang", "178 deg")]);
-    let swung = equals_a_fresh_open(&mut s, &dir, "pass-178.3dcraft");
+    let swung = fresh_open(&mut s, &dir, "pass-178.3dcraft");
     let (state, error) = status(&swung, "Turn");
     assert_eq!(state, "failed", "{swung}");
     for part in [
@@ -642,7 +656,7 @@ fn a_path_that_stops_part_way_fails_although_the_solve_is_clean() {
         "sketch.constrain",
         json!({"sketch": "Turn", "type": "distance", "entities": ["e4", "e1"], "value": "100 mm"}),
     );
-    let after = equals_a_fresh_open(&mut s, &dir, "pass-after.3dcraft");
+    let after = fresh_open(&mut s, &dir, "pass-after.3dcraft");
     assert_eq!(status(&after, "Turn"), status(&swung, "Turn"));
     // Back at 2 degrees, the dimension undone: the start, bit for bit.
     run(&mut s, "edit.undo", json!({}));
@@ -700,7 +714,7 @@ fn a_sketch_that_cannot_be_carried_fails() {
     assert!(failed(&start).is_empty(), "{:?}", failed(&start));
     let stored = stored_sketches(&dir, "skip-2.3dcraft");
     set(&mut s, &[("n", "3")]);
-    let jumped = equals_a_fresh_open(&mut s, &dir, "skip-3.3dcraft");
+    let jumped = fresh_open(&mut s, &dir, "skip-3.3dcraft");
     let (state, error) = status(&jumped, "Runs");
     assert_eq!(state, "failed", "{jumped}");
     for part in [
@@ -715,4 +729,42 @@ fn a_sketch_that_cannot_be_carried_fails() {
     set(&mut s, &[("n", "2")]);
     let back = equals_a_fresh_open(&mut s, &dir, "skip-back.3dcraft");
     assert!(back == start, "back at 2 is the start");
+}
+
+/// The sketch's own verdict comes before the carrying's: a sketch with a
+/// conflicting dimension whose count then jumps fails with the conflict
+/// and its remedy, not with advice about smaller steps that would not fix
+/// it.
+#[test]
+fn a_conflict_is_reported_before_a_carry_that_stops() {
+    let dir = dir("w1-conflict");
+    let mut s = replay(&dir, include_str!("edit_path/w1-run-end.steps.json"));
+    run(
+        &mut s,
+        "sketch.constrain",
+        json!({"sketch": "Edge", "type": "fixed", "entities": ["e11"]}),
+    );
+    run(
+        &mut s,
+        "sketch.constrain",
+        json!({"sketch": "Edge", "type": "distance", "entities": ["e14"], "value": "6 mm"}),
+    );
+    let conflict = fresh_open(&mut s, &dir, "conflict-3.3dcraft");
+    let (state, before) = status(&conflict, "Edge");
+    assert_eq!(state, "failed");
+    assert!(before.contains("conflicts"), "{before}");
+    let stored = stored_sketches(&dir, "conflict-3.3dcraft");
+    set(&mut s, &[("n", "10")]);
+    let jumped = fresh_open(&mut s, &dir, "conflict-10.3dcraft");
+    let (state, error) = status(&jumped, "Edge");
+    assert_eq!(state, "failed");
+    assert!(error.starts_with(before), "{error} vs {before}");
+    assert!(error.contains("change or delete it"), "{error}");
+    assert!(!error.contains("smaller steps"), "{error}");
+    // The carrying did stop: the reason says so after the conflict.
+    assert!(
+        error.contains("nor could the sketch be carried along all the way"),
+        "{error}"
+    );
+    assert_eq!(stored_sketches(&dir, "conflict-10.3dcraft"), stored);
 }

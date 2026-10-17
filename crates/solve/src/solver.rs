@@ -453,6 +453,26 @@ fn same_place(a: &[Entity], b: &[Entity], within: f64) -> bool {
     })
 }
 
+/// What the carrying did, once the solve from where its path ended has
+/// failed with `why` (the solve then starts from the stored coordinates):
+/// a path that stopped stays the reason; one that was followed to its end
+/// did not give a start the solve could use, which is a skip.
+fn unusable_end(
+    outcome: Option<crate::model::Carried>,
+    moved: &[crate::model::EntityId],
+    why: &SolveError,
+) -> Option<crate::model::Carried> {
+    match outcome {
+        Some(crate::model::Carried::Whole) => Some(crate::model::Carried::Skipped {
+            reason: format!(
+                "the sketch was carried all the way, but solving from there failed ({why})"
+            ),
+            moved: moved.to_vec(),
+        }),
+        other => other,
+    }
+}
+
 fn same_verdict(a: &Solution, b: &Solution) -> bool {
     a.constraints
         .iter()
@@ -490,17 +510,7 @@ pub(crate) fn solve(sketch: &Sketch, options: &SolveOptions) -> Result<Solution,
         Some(carried) => match solve_once(&carried, options, Work::new(options.work_limit)) {
             Ok(solved) => solved,
             Err(why) => {
-                // A path that stopped stays the reason; one that was
-                // followed to its end did not give a start the solve could
-                // use.
-                if let Some(crate::model::Carried::Whole) = carrying.outcome {
-                    carrying.outcome = Some(crate::model::Carried::Skipped {
-                        reason: format!(
-                            "the sketch was carried all the way, but solving from there failed ({why})"
-                        ),
-                        moved: carrying.moved.clone(),
-                    });
-                }
+                carrying.outcome = unusable_end(carrying.outcome.take(), &carrying.moved, &why);
                 solve_once(sketch, options, Work::new(options.work_limit))?
             }
         },
@@ -736,5 +746,38 @@ fn residual(eq: &Equation, x: &[f64], min_len: f64, prep: &crate::equations::Pre
             .take(e.count)
             .fold(0.0f64, |norm, row| norm.hypot(row.v)),
         Err(_) => f64::INFINITY,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Carried, EntityId};
+
+    /// A whole path whose end the solve could not start from is a skip,
+    /// naming the images and the solve's error; a stopped path stays
+    /// stopped, and no carrying stays none.
+    #[test]
+    fn a_whole_path_the_solve_cannot_use_is_a_skip() {
+        let why = SolveError::DidNotConverge { iterations: 7 };
+        let moved = [EntityId(4)];
+        match unusable_end(Some(Carried::Whole), &moved, &why) {
+            Some(Carried::Skipped { reason, moved }) => {
+                assert!(reason.contains("carried all the way"), "{reason}");
+                assert!(reason.contains(&why.to_string()), "{reason}");
+                assert_eq!(moved, vec![EntityId(4)]);
+            }
+            other => panic!("{other:?}"),
+        }
+        let stopped = Carried::Stopped {
+            reached: 0.25,
+            moved: moved.to_vec(),
+            out_of_work: false,
+        };
+        assert_eq!(
+            unusable_end(Some(stopped.clone()), &moved, &why),
+            Some(stopped)
+        );
+        assert_eq!(unusable_end(None, &moved, &why), None);
     }
 }
