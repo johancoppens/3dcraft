@@ -210,28 +210,6 @@ pub struct Session {
     /// the kernel last let go of the trees of surfaces no body holds
     /// ([`Session::release_unused_trees`]).
     trees_held_for: Vec<(u64, Option<u64>)>,
-    /// What the edits of the running command have to say although they
-    /// succeeded (a sketch carried only part of the way): added to its
-    /// result as `warnings` ([`Session::execute`]).
-    pub(crate) edit_warnings: Vec<String>,
-}
-
-/// A command's result with the warnings of its edits added under
-/// `warnings` (after those it has, if it has some); a result that is not
-/// an object is left as it is.
-fn with_warnings(mut value: serde_json::Value, warnings: Vec<String>) -> serde_json::Value {
-    if warnings.is_empty() {
-        return value;
-    }
-    if let Some(map) = value.as_object_mut() {
-        match map.get_mut("warnings").and_then(|w| w.as_array_mut()) {
-            Some(list) => list.extend(warnings.into_iter().map(serde_json::Value::from)),
-            None => {
-                map.insert("warnings".into(), warnings.into());
-            }
-        }
-    }
-    value
 }
 
 /// Most documents open at once.
@@ -246,7 +224,6 @@ impl Session {
             scene: scene::SceneCache::default(),
             recovery: recovery::RecoveryHandle::default(),
             trees_held_for: Vec::new(),
-            edit_warnings: Vec::new(),
         }
     }
 
@@ -377,13 +354,11 @@ impl Session {
             return Err(CommandError::new(format!("{id}: {reason}")));
         }
         let run = spec.run;
-        self.edit_warnings.clear();
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(self, params))) {
             Ok(result) => {
                 self.recovery_sync(false);
                 self.release_unused_trees();
-                let warnings = std::mem::take(&mut self.edit_warnings);
-                result.map(|value| with_warnings(value, warnings))
+                result
             }
             Err(payload) => {
                 self.recovery_sync(true);

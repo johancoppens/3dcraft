@@ -34,7 +34,7 @@
 
 use crate::equations::{CROWDED, Carry, Fail, prepare};
 use crate::factor::{Factor, Jacobian, Work};
-use crate::model::{Carried, Entity, ImageMap, Sketch, SolveOptions};
+use crate::model::{Carried, Entity, EntityId, ImageMap, Sketch, SolveOptions};
 use crate::solver::{Homotopy, System};
 
 /// Most steps tried along the path, kept or halved.
@@ -51,15 +51,17 @@ const CONTRACTION: f64 = 0.5;
 
 /// What [`carry`] gives the solve: the starting guess where the path
 /// ended (`None`: start from the stored coordinates) and what it did
-/// (`None`: no image had moved).
+/// (`None`: no image had moved), with the images that had moved.
 pub(crate) struct Carrying {
     pub entities: Option<Vec<Entity>>,
     pub outcome: Option<Carried>,
+    pub moved: Vec<EntityId>,
 }
 
 const NOTHING: Carrying = Carrying {
     entities: None,
     outcome: None,
+    moved: Vec::new(),
 };
 
 /// How one moved image is to be carried, before the unknowns are numbered.
@@ -109,7 +111,7 @@ pub(crate) fn carry(sketch: &Sketch, options: &SolveOptions, work: &mut Work) ->
     // numbered for a sketch whose images are where they were.
     let mut ways: Vec<Option<Way>> = Vec::new();
     let mut seen = vec![false; sketch.entities.len()];
-    let mut moved = false;
+    let mut moved = Vec::new();
     let mut image_count = 0usize;
     let mut slot_of = vec![None; sketch.entities.len()];
     for (slot, entity) in slot_of.iter_mut().zip(&sketch.entities) {
@@ -167,18 +169,21 @@ pub(crate) fn carry(sketch: &Sketch, options: &SolveOptions, work: &mut Work) ->
         }
         if let Some(w) = ways.get_mut(*slot) {
             *w = Some(way);
-            moved = true;
+            moved.push(start.image);
         }
     }
-    if !moved {
+    if moved.is_empty() {
         return NOTHING;
     }
+    moved.sort_unstable();
 
     let skipped = |reason: &str| Carrying {
         entities: None,
         outcome: Some(Carried::Skipped {
             reason: reason.to_string(),
+            moved: moved.clone(),
         }),
+        moved: moved.clone(),
     };
     let Ok(mut prep) = prepare(sketch, linear) else {
         // The solve reports what is wrong with the sketch.
@@ -235,7 +240,7 @@ pub(crate) fn carry(sketch: &Sketch, options: &SolveOptions, work: &mut Work) ->
                     active.push(false);
                 } else {
                     return skipped(
-                        "an equation on a moved image point would depend on more unknowns than one equation holds once the path is added; solved from the stored coordinates",
+                        "an equation on a moved image point would depend on more unknowns than one equation holds once the path is added",
                     );
                 }
             }
@@ -252,6 +257,7 @@ pub(crate) fn carry(sketch: &Sketch, options: &SolveOptions, work: &mut Work) ->
     let mut x = prep.x0.clone();
     let mut at = 0.0;
     let mut h = 1.0;
+    let mut out_of_work = false;
     for _ in 0..MAX_STEPS {
         if at >= 1.0 {
             break;
@@ -273,18 +279,26 @@ pub(crate) fn carry(sketch: &Sketch, options: &SolveOptions, work: &mut Work) ->
                 }
             }
             // The budget is the solve's: it reports running out.
-            Step::OutOfWork => break,
+            Step::OutOfWork => {
+                out_of_work = true;
+                break;
+            }
         }
     }
     let outcome = if at >= 1.0 {
         Carried::Whole
     } else {
-        Carried::Stopped { reached: at }
+        Carried::Stopped {
+            reached: at,
+            moved: moved.clone(),
+            out_of_work,
+        }
     };
     if at <= 0.0 {
         return Carrying {
             entities: None,
             outcome: Some(outcome),
+            moved,
         };
     }
 
@@ -309,6 +323,7 @@ pub(crate) fn carry(sketch: &Sketch, options: &SolveOptions, work: &mut Work) ->
     Carrying {
         entities: Some(entities),
         outcome: Some(outcome),
+        moved,
     }
 }
 

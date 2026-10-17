@@ -489,8 +489,14 @@ fn a_path_that_stops_says_how_far_it_got() {
     });
     let solved = solve(&pinned, &options(1.0)).unwrap();
     match solved.carry {
-        Some(Carried::Stopped { reached }) => {
-            assert!((0.0..1.0).contains(&reached), "{reached}")
+        Some(Carried::Stopped {
+            reached,
+            moved,
+            out_of_work,
+        }) => {
+            assert!((0.0..1.0).contains(&reached), "{reached}");
+            assert_eq!(moved, vec![w.image]);
+            assert!(!out_of_work);
         }
         other => panic!("{other:?}"),
     }
@@ -543,11 +549,10 @@ fn an_equation_too_full_for_the_path_is_not_carried() {
         *k = 7.0;
     }
     let carried = solve(&next, &options(1.0)).unwrap();
-    assert!(
-        matches!(carried.carry, Some(Carried::Skipped { .. })),
-        "{:?}",
-        carried.carry
-    );
+    match &carried.carry {
+        Some(Carried::Skipped { moved, .. }) => assert_eq!(moved, &vec![i1]),
+        other => panic!("{other:?}"),
+    }
     let mut plain = next.clone();
     plain.image_starts.clear();
     let plain = solve(&plain, &options(1.0)).unwrap();

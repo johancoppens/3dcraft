@@ -474,8 +474,10 @@ pub(crate) fn solve(sketch: &Sketch, options: &SolveOptions) -> Result<Solution,
     // the sketch along first, with half the work budget of its own; the
     // solve then starts from where the path ended, with the whole budget,
     // as it had before carrying existed. Should it fail from there, it
-    // solves from the stored coordinates as it did then: carrying never
-    // makes a sketch fail that solved without it.
+    // solves from the stored coordinates as it did then, and says so
+    // (`Carried::Skipped`): carrying never makes the solve fail that
+    // succeeded without it; whether a solution that was not carried may
+    // be used is the caller's to decide.
     let mut work = Work::new(options.work_limit / 2);
     let mut carrying = crate::carry::carry(sketch, options, &mut work);
     let carried = carrying.entities.take().map(|entities| Sketch {
@@ -488,9 +490,17 @@ pub(crate) fn solve(sketch: &Sketch, options: &SolveOptions) -> Result<Solution,
         Some(carried) => match solve_once(&carried, options, Work::new(options.work_limit)) {
             Ok(solved) => solved,
             Err(why) => {
-                carrying.outcome = Some(crate::model::Carried::Skipped {
-                    reason: format!("solving from where the path ended failed ({why})"),
-                });
+                // A path that stopped stays the reason; one that was
+                // followed to its end did not give a start the solve could
+                // use.
+                if let Some(crate::model::Carried::Whole) = carrying.outcome {
+                    carrying.outcome = Some(crate::model::Carried::Skipped {
+                        reason: format!(
+                            "the sketch was carried all the way, but solving from there failed ({why})"
+                        ),
+                        moved: carrying.moved.clone(),
+                    });
+                }
                 solve_once(sketch, options, Work::new(options.work_limit))?
             }
         },
