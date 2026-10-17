@@ -108,6 +108,64 @@ pub fn cone(frame: &Frame, radius: f64, height: f64) -> Result<Reference, GeomEr
     })
 }
 
+/// The cone a straight cubic spline sweeps from the axis, turned about
+/// the frame's y axis: its apex at the frame's origin (a pole of the
+/// first order of its spline surface, where every ruling is straight),
+/// its base a disc of `radius` at `height` up the y axis.
+pub fn spline_cone(frame: &Frame, radius: f64, height: f64) -> Result<Reference, GeomError> {
+    use craft3d_kernel::profile::{Curve2, SketchCurve, Spline2, detect_profiles};
+    let tolerance = craft3d_math::Tolerance::new(1e-7 * radius.max(height), 1e-9)
+        .ok_or(invalid("sizes must be positive and finite"))?;
+    let at = |s: f64| [radius * s, height * s];
+    let curves = vec![
+        SketchCurve {
+            id: 3,
+            curve: Curve2::Spline(Spline2 {
+                degree: 3,
+                knots: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+                control: vec![at(0.0), at(1.0 / 3.0), at(2.0 / 3.0), at(1.0)],
+            }),
+        },
+        SketchCurve {
+            id: 5,
+            curve: Curve2::Line {
+                start: at(1.0),
+                end: [0.0, height],
+            },
+        },
+        SketchCurve {
+            id: 7,
+            curve: Curve2::Line {
+                start: [0.0, height],
+                end: at(0.0),
+            },
+        },
+    ];
+    let profiles = detect_profiles(&curves, &tolerance).map_err(geometry)?;
+    let body = craft3d_kernel::revolve::revolve(
+        &profiles,
+        frame,
+        [0.0, 0.0],
+        [0.0, 1.0],
+        0.0,
+        TAU,
+        &tolerance,
+    )
+    .map_err(geometry)?
+    .body;
+    // (Its counts as the revolve makes them: no closed form to hold.)
+    let counts = (body.vertices.len(), body.edges.len(), body.faces.len());
+    Ok(Reference {
+        name: "spline cone",
+        body,
+        volume: PI * radius * radius * height / 3.0,
+        area: PI * radius * (radius + radius.hypot(height)),
+        centroid: frame.point(0.0, 0.75 * height, 0.0),
+        counts,
+        genus: 0,
+    })
+}
+
 /// A sphere about the frame's origin: one face, no edges.
 pub fn sphere(frame: &Frame, radius: f64) -> Result<Reference, GeomError> {
     let body = primitives::sphere(frame, radius).map_err(geometry)?;

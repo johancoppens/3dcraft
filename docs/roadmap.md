@@ -10,7 +10,7 @@ Status legend: ✅ done · 🟡 in progress · ⬜ not started. Put the date nex
 
 ## Current focus
 
-1. **The boolean kernel (M7), the developer's first priority** (2026-10-13): a refusal is work owed. Next: the rest of the [boolean checklist](#the-boolean-checklist) in its order (the meshes of cuts along a cusp's axis, then of faces drawn unevenly).
+1. **The boolean kernel (M7), the developer's first priority** (2026-10-13): a refusal is work owed. Next: the rest of the [boolean checklist](#the-boolean-checklist) in its order (the speed of a cusp's axis on a block edge, the meshes of rational faces with weights a thousand apart).
 2. **M9, the rest:** replace face, and what the blends and the face operations leave open, beside M7 since none of it touches the boolean kernel ([M9](#m9-local-operations-and-sweeps)).
 3. **R1, the first release:** the pinned set of modelling tasks, installers, the format promise, material and colour per body, a user guide ([R1](#r1-first-release)).
 
@@ -62,15 +62,22 @@ The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item i
 
 **Owed, in order:**
 
-- [ ] A cusp against a face that holds its axis through the point: built 2026-10-17, not meshed (the tessellator leaves the needle's face open where the cut's edges end on the point), and a block edge along the axis takes 20 to 30 s ([`design/booleans.md`](design/booleans.md) › *A cusp against a face that holds its axis*).
+- [x] A cusp against a face that holds its axis through the point: built and meshed (2026-10-17).
+- [ ] A cusp's axis on a block edge takes 20 to 30 s per boolean in nearest-point searches that tie around the axis, and a tolerance ten times tighter for the size refuses the half ([`design/booleans.md`](design/booleans.md) › *A cusp against a face that holds its axis*).
 - [x] Rational weights far apart measured: `topo::mass_properties` settles on weights ten thousand apart a reparametrisation evens out, and a thousand apart one cannot (2026-10-17).
-- [x] Rational weights a thousand apart in booleans: bounds taken piece by piece, the winding numbers in an evenly drawn chart (2026-10-17).
-- [ ] Rational faces drawn very unevenly: meshes (the tessellator does not mesh every face skewed a hundredfold and more), ten thousand apart along a degree-one direction, the plate at ten thousand ([`design/booleans.md`](design/booleans.md) › *A thousand apart in booleans*).
+- [ ] Rational weights a thousand apart in booleans: built 2026-10-17, not meshed (the tessellator does not mesh every face skewed a hundredfold and more); ten thousand apart along a degree-one direction and the plate at ten thousand still refused ([`design/booleans.md`](design/booleans.md) › *A thousand apart in booleans*).
 - [ ] The contact a fillet's boolean refused ([`design/blends.md`](design/blends.md) › *Fillets as built*), and whether fillet chains still need `blend::join`.
 - [ ] Sheet bodies, several lumps and cavities (item 5).
 - [ ] The check of offset face, shell and delete face near what they changed (they check the whole body), and a tessellation of long straight edges that does not fan across a plate (the first cut of 400 holes at once is checked in 140 ms).
 - [ ] Speed: what is left is the booleans with a freeform face (the chart's projections and the marcher) and the measurement of their results.
 - [ ] Tolerant modelling (item 4), before STEP import.
+
+**Oracles owed** (the developer, 2026-10-17; approaches seen in another project's test setup, built our own way):
+
+- [ ] Random multi-step designs: a seeded generator of feature sequences that places operands on a grid and on the body's own faces, so coincidence and tangency are common; each seed in its own process with a timeout, shrunk automatically to the fewest steps that still fail; a refusal counts apart from a wrong result, and the rate of each goes into the morning health report.
+- [ ] An action matrix as a ratchet: every local operation (fillet, chamfer, shell, offset, delete face, mirror, …) tried on every face and edge of the showcase models; an action that succeeded before and fails now is a regression, one that fails before and succeeds now raises the floor.
+- [ ] A cheap check after every boolean, beside `topo::check`: outside the tool's reach the result equals the target, a subtract never adds volume and a union never loses any.
+- [ ] A second reference kernel, after the two above: NVIDIA's SMLib (`usd-brep`, Apache-2.0) as a black box beside FreeCAD, never a dependency or a source; `cargo xtask smlib` runs it in a container outside the workspace and pins its outcomes in a fixture, so tests and the gate never need it; it votes only on gross differences (shell counts, empty or not, volume off by more than a few percent), because its own measures are not exact; it scores cases where FreeCAD's reference is unreliable. A trial of 288 corpus cases (2026-10-17): all three kernels agree on 839 of 864 outcomes, SMLib is clearly wrong on 7, and 3DCraft disagrees with neither.
 
 ## Milestones in detail
 
@@ -215,16 +222,18 @@ Sketch entities and constraints as commands; `solve` (Newton-type, DOF analysis,
 - A pattern inside a sketch whose count is a formula (`sketch.pattern`: rows, grids, chained runs and rings as rigid images of the solved seed, image points `e5[last]` for the solver, names `e7[3]` and caps `e7[*]`, format 18; [`design/document.md`](design/document.md), *Patterns inside a sketch*) (2026-10-16)
 - The offset of a sketch's closed profiles (`feature.offsetProfile`: exact for lines and arcs, round or sharp corners, splits reported and vanishing loops refused with the largest distance that fits, names `F9:offset(e7[3])`, format 19; kerf as one feature; [`design/document.md`](design/document.md), *Offsets of profiles*) (2026-10-16)
 - One result whatever the edits before it: image points' places stored with the solution and a sketch carried along by continuation when an edit moves them (a line after a run's end no longer flips when the count jumps; format 20; [`design/document.md`](design/document.md), *Carrying a sketch along when its images jump*) (2026-10-16)
+- A sketch whose carry stops part of the way, or cannot be carried, fails with the reason and stores nothing, so undo or returning the variables gives the start bit for bit (the developer's decision; [`design/document.md`](design/document.md), *Carrying a sketch along when its images jump*) (2026-10-17)
 - Profile detection scales: pairs that may meet come from trees of boxes, judged in the order the old all-pairs sweep judged them (same result, oracle kept in the tests); the cap rises from 4096 to 262 144 curves, a 70 × 70 perforated sheet extrudes ([`design/sweeps.md`](design/sweeps.md), *Profile detection at scale*) (2026-10-17)
 - The offset of profiles scales the same way: its cut and keep steps search trees of boxes, judged as the old sweeps judged them (same outline, bit for bit; oracle kept in the tests); the cap rises from 4096 to 262 144 pieces and a 70 × 70 sheet offset by its kerf extrudes ([`design/sweeps.md`](design/sweeps.md), *Offset of profiles at scale*) (2026-10-17)
+- Nested sketch patterns: a pattern may repeat whole patterns (a tree, three levels at most), names `e3[2][1]` innermost first so wrapping renames nothing, caps `e3[*]` and `e3[*][1]`, carrying through every level; the welding table's tabs per cell is a variable (finding W3, format 21; [`design/document.md`](design/document.md), *Patterns inside a sketch*) (2026-10-17)
+- Skipping instances of a sketch pattern on its own level (never instance 0; `last` is the highest instance there is; skips past the count kept and inactive; not yet in chained runs and rings) (2026-10-17)
 
 #### Open
 - [ ] Which constraint is blamed in a nonlinear conflict is the solver's heuristic, not a proof, and about 8% of dense random sketches end as "did not converge" instead of a diagnosis; to be judged again on real models
 - [ ] A sketch that refers to geometry of other features (projected edges, coincident with a body vertex; from the field test)
 - [ ] A picture of a sketch: `view.render` draws bodies only
-- [ ] Nested sketch patterns (a pattern inside another pattern's period; today "an entity is the seed of one pattern")
 - [ ] An offset of profiles: splines (refused, "not supported yet"; owed: a fit within tol/4 refused where the curvature radius is below the distance, as `geom::offset` proves for faces), an offset as a loft section or a sweep's path, an offset of an offset, a choice of regions
-- [ ] A sketch pattern's later steps: skipping instances, a pattern along a curve, a pattern of a pattern, instance curves in line or round slots, image points in `sketch.path` and splines ([`design/document.md`](design/document.md), *Patterns inside a sketch*)
+- [ ] A sketch pattern's later steps: a pattern along a curve, instance curves in line or round slots, image points in `sketch.path` and splines, skips in chained runs and rings, a skip by formula and of one cell's instance (full-path skips), a level inserted into the middle of a tree, a loft section made by nested patterns ([`design/document.md`](design/document.md), *Patterns inside a sketch*)
 - [ ] `panic_hunt` takes 2.5 minutes
 - [ ] Two seeded breakages of the solver's rank test are caught only by unit tests or the random run, not by a small natural sketch
 
@@ -277,9 +286,10 @@ Surface/surface intersection, imprint, classify and sew; union, subtract and int
 - The self-intersection check inside every operation, near what it changed, and a shell that touches itself refused (2026-10-15)
 - A cusp as a boolean operand: the wedge and the disc drawn to the pole's order, the pieces at the point put in order further along ([`design/booleans.md`](design/booleans.md) › *Cusps*) (2026-10-15)
 - A cusp against faces that hold its axis (planes, a block edge, a cylinder) cut and measured, not yet meshed: the chart stops where the needle is wide, bounds to the cusp's order, curves drawn on to the point ([`design/booleans.md`](design/booleans.md) › *A cusp against a face that holds its axis*) (2026-10-17)
+- The cuts along a cusp's axis and a spline cone's meshed: a parameter free only at the pole, triangles without area cut ([`design/tessellator.md`](design/tessellator.md)) (2026-10-17)
 - Rational faces with weights a hundred apart as operands: the winding numbers take the chart's speed near each stretch, held by point membership against the plain block ([`design/booleans.md`](design/booleans.md) › *Rational faces*) (2026-10-15)
 - Faces with rational weights far apart measured: inner integrals in the Möbius parameter that evens their weights, boundary panels halved only where they disagree ([`design/topology.md`](design/topology.md) › *Rational weights far apart*) (2026-10-17)
-- Rational faces with weights a thousand apart as operands: the marcher's cells and the winding numbers take bounds of the pieces under them, a step across a knot where the speed jumps, a chart drawn evenly by Möbius maps; held against the analytic twins at three scales and the plain block ([`design/booleans.md`](design/booleans.md) › *A thousand apart in booleans*) (2026-10-17)
+- Rational faces with weights a thousand apart as operands, built, not meshed: the marcher's cells and the winding numbers take bounds of the pieces under them, a step across a knot where the speed jumps, a chart drawn evenly by Möbius maps; held against the analytic twins at three scales and the plain block ([`design/booleans.md`](design/booleans.md) › *A thousand apart in booleans*) (2026-10-17)
 - Fourth-order contact: a tacnode or cusp of the intersection is a vertex whose tangent arms are made as graphs around it, a cylinder touching the top of a torus' tube from inside held to its closed-form volume ([`design/geometry.md`](design/geometry.md) › *Tacnodes and cusps*) (2026-10-15)
 - A row of booleans on a body of many freeform faces indexes each surface once (the impeller: a chamfer of the bore 12 s to 1 s); a material measures nothing, mass and inertia are measured at once ([`design/booleans.md`](design/booleans.md), [`design/regeneration.md`](design/regeneration.md)) (2026-10-15)
 - Zero thickness refused: a result whose parts touch along an edge, a line or in a point (`KernelError::ZeroThickness`, the developer's decision); the trees of freeform surfaces no open document holds let go (2026-10-15)

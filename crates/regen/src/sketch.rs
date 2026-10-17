@@ -68,12 +68,9 @@ pub struct SketchResult {
     /// the document stores with the coordinates
     /// ([`craft3d_doc::Sketch::image_places`]).
     pub image_places: Vec<ImagePlace>,
-    /// What the user should know about how the sketch solved although it
-    /// solved (today: that it could be carried along only part of the way
-    /// from where its image points were to where they are now). It belongs
-    /// to this solve: once the result is stored, the next solve starts
-    /// from it and does not repeat it.
-    pub warnings: Vec<String>,
+    /// The kernel's numbers for the curves of nested patterns
+    /// ([`crate::sketch_pattern::CurveIds`]).
+    pub curve_ids: crate::sketch_pattern::CurveIds,
 }
 
 impl SketchResult {
@@ -85,6 +82,12 @@ impl SketchResult {
             Ok(at) => self.points.get(at).map(|&(_, x, y)| (x, y)),
             Err(_) => None,
         }
+    }
+
+    /// A curve as the sketch calls it, from the number the kernel has for
+    /// it: `e7`, `e7[3]`, `e3[2][1]`.
+    pub fn curve_name(&self, id: u64) -> String {
+        self.curve_ids.name(id)
     }
 
     pub fn radius(&self, id: EntityId) -> Option<f64> {
@@ -146,31 +149,64 @@ struct Problem {
 type Instance = (usize, (u32, u32));
 
 /// Where each image point of the sketch is: the instance it stands for,
-/// or why there is no such instance.
+/// or why there is no such instance. An image of an image (nested
+/// patterns) is not there when the one it is made from is not, nor when
+/// an end of its pattern's run is an image point that is not there.
 fn image_instances(
     sketch: &Sketch,
     patterns: &[PatternResult],
 ) -> BTreeMap<EntityId, Result<Instance, String>> {
-    let mut out = BTreeMap::new();
-    for entity in &sketch.entities {
-        let Geometry::Image { of, pattern, index } = entity.geometry else {
-            continue;
+    fn own(
+        sketch: &Sketch,
+        patterns: &[PatternResult],
+        id: EntityId,
+    ) -> Option<Result<Instance, String>> {
+        let Ok(Geometry::Image { of, pattern, index }) = sketch.entity(id).map(|e| &e.geometry)
+        else {
+            return None;
         };
-        let found = patterns.iter().position(|p| p.id == pattern);
-        let at = match found.and_then(|n| patterns.get(n).map(|p| (n, p))) {
+        let found = patterns.iter().position(|p| p.id == *pattern);
+        Some(match found.and_then(|n| patterns.get(n).map(|p| (n, p))) {
             None => Err(format!(
-                "{} = {of}[{index}]: the sketch has no pattern {pattern}",
-                entity.id
+                "{id} = {of}[{index}]: the sketch has no pattern {pattern}"
             )),
-            Some((n, p)) => match p.resolve(index) {
+            Some((n, p)) => match p.resolve(*index) {
                 Some(instance) => Ok((n, instance)),
                 None => Err(format!(
-                    "{} = {of}[{index}] is not there: {}",
-                    entity.id,
+                    "{id} = {of}[{index}] is not there: {}",
                     p.describe()
                 )),
             },
+        })
+    }
+    let mut out = BTreeMap::new();
+    for entity in &sketch.entities {
+        let Some(mut at) = own(sketch, patterns, entity.id) else {
+            continue;
         };
+        // What it is made from, level by level inwards (bounded: a valid
+        // sketch nests three levels deep).
+        let mut next = vec![entity.id];
+        for _ in 0..=4 * craft3d_doc::MAX_PATTERN_DEPTH {
+            let Some(id) = next.pop() else { break };
+            let Ok(Geometry::Image { of, pattern, .. }) = sketch.entity(id).map(|e| &e.geometry)
+            else {
+                continue;
+            };
+            let mut from = vec![*of];
+            if let Some(found) = sketch.pattern(*pattern)
+                && let Some((a, b)) = found.layout.chain()
+            {
+                from.extend([a, b]);
+            }
+            for point in from {
+                match own(sketch, patterns, point) {
+                    Some(Err(why)) if at.is_ok() => at = Err(why),
+                    Some(_) => next.push(point),
+                    None => {}
+                }
+            }
+        }
         out.insert(entity.id, at);
     }
     out
@@ -596,6 +632,12 @@ fn explain(error: &solve::SolveError, problem: &Problem) -> String {
         E::Degenerate {
             constraint: i,
             reason,
+        } if *reason == solve::CROWDED => {
+            format!("{} is not supported yet: {reason}", constraint(*i))
+        }
+        E::Degenerate {
+            constraint: i,
+            reason,
         } => {
             format!("{} has no meaning here: {reason}", constraint(*i))
         }
@@ -638,25 +680,13 @@ fn stored(sketch: &Sketch) -> (Points, Radii) {
 /// curves of that instance).
 fn place_images(sketch: &Sketch, patterns: &[PatternResult], points: &mut Points) {
     points.sort_by_key(|(id, ..)| *id);
-    let mut placed = Vec::new();
-    {
+    let placed = {
         let lookup = |id: EntityId| match points.binary_search_by_key(&id, |(p, ..)| *p) {
             Ok(at) => points.get(at).map(|&(_, x, y)| [x, y]),
             Err(_) => None,
         };
-        for (image, at) in image_instances(sketch, patterns) {
-            let Ok((n, instance)) = at else { continue };
-            let Ok(Geometry::Image { of, .. }) = sketch.entity(image).map(|e| &e.geometry) else {
-                continue;
-            };
-            if let Some([x, y]) = patterns
-                .get(n)
-                .and_then(|p| p.image(&lookup, *of, instance))
-            {
-                placed.push((image, x, y));
-            }
-        }
-    }
+        crate::sketch_pattern::image_places(sketch, patterns, lookup)
+    };
     points.extend(placed);
     points.sort_by_key(|(id, ..)| *id);
 }
@@ -1112,6 +1142,9 @@ pub(crate) fn solve_sketch(
     let (points, radii) = stored(sketch);
     let evaluated = crate::sketch_pattern::evaluate(doc, variables, sketch);
     let patterns = evaluated.as_ref().map_or_else(|_| Vec::new(), Clone::clone);
+    // The kernel's numbers for curves of nested patterns: from the counts
+    // alone, before anything is solved.
+    let curve_ids = crate::sketch_pattern::CurveIds::of(sketch, &patterns);
     let unsolved = |reason: String| {
         let result = SketchResult {
             origin,
@@ -1132,13 +1165,17 @@ pub(crate) fn solve_sketch(
             radii: radii.clone(),
             patterns: patterns.clone(),
             image_places: Vec::new(),
-            warnings: Vec::new(),
+            curve_ids: curve_ids.clone().unwrap_or_default(),
         };
         (Status::Failed(reason), Some(result))
     };
     if let Err(reason) = &evaluated {
         return unsolved(reason.clone());
     }
+    let curve_ids = match &curve_ids {
+        Ok(ids) => ids.clone(),
+        Err(reason) => return unsolved(reason.clone()),
+    };
     let problem = match problem(doc, variables, sketch, &patterns) {
         Ok(problem) => problem,
         Err(reason) => return unsolved(reason),
@@ -1150,6 +1187,14 @@ pub(crate) fn solve_sketch(
         Ok(solution) => solution,
         Err(error) => return unsolved(explain(&error, &problem)),
     };
+    // A solution the sketch was not carried to all the way may lie on
+    // another root than the one it was on (folded over), and which one it
+    // found would depend on the path of edits: the sketch fails and nothing
+    // of the solve is kept (the developer's decision of 2026-10-17). The
+    // solve's own verdict comes first (below): a conflict is not fixed by
+    // a smaller step.
+    // (Made here, while the stored coordinates are at hand.)
+    let carry_failed = carry_failure(solution.carry.as_ref(), &problem, sketch).map(unsolved);
 
     let mut points = Vec::new();
     let mut radii = Vec::new();
@@ -1209,30 +1254,28 @@ pub(crate) fn solve_sketch(
         }
     }
     // A ring closes when its instances make a whole turn and the last
-    // joint lies on the first within the tolerance.
+    // joint, as the turns put it, lies on the first within the tolerance.
     {
         let lookup = |id: EntityId| match points.binary_search_by_key(&id, |(p, ..)| *p) {
             Ok(at) => points.get(at).map(|&(_, x, y)| [x, y]),
             Err(_) => None,
         };
-        for pattern in &mut patterns {
-            if let Placed::Turn {
-                chain: Some((from, _)),
-                ..
-            } = pattern.placed
-                && pattern.closes
-            {
-                let start = lookup(from);
-                // The last joint as the turns put it, before it is taken
-                // to be the first.
-                pattern.closes = false;
-                let last = pattern.image(&lookup, from, (pattern.counts[0], 0));
-                pattern.closes = match (start, last) {
-                    (Some([ax, ay]), Some([bx, by])) => {
-                        (ax - bx).hypot(ay - by) <= doc.tolerance.linear
-                    }
-                    _ => false,
-                };
+        let rings: Vec<usize> = patterns
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| matches!(p.placed, Placed::Turn { chain: Some(_), .. }) && p.closes)
+            .map(|(n, _)| n)
+            .collect();
+        let closing: Vec<(usize, bool)> = {
+            let mut placer = crate::sketch_pattern::Placer::new(sketch, &patterns, lookup);
+            rings
+                .iter()
+                .map(|n| (*n, placer.ring_closes(*n, doc.tolerance.linear)))
+                .collect()
+        };
+        for (n, closes) in closing {
+            if let Some(pattern) = patterns.get_mut(n) {
+                pattern.closes = closes;
             }
         }
     }
@@ -1291,6 +1334,16 @@ pub(crate) fn solve_sketch(
             list(many)
         )),
     };
+    let status = match (status, carry_failed) {
+        (status, None) => status,
+        (Status::Ok, Some(failed)) => return failed,
+        // The sketch fails for a reason of its own; that is the one to
+        // fix, and nothing is stored either way (`clean`).
+        (Status::Failed(reason), Some(_)) => Status::Failed(format!(
+            "{reason} (nor could the sketch be carried along all the way to where its image points are now)"
+        )),
+        (status, Some(_)) => status,
+    };
     // The places of the image points with the numbers of their maps: the
     // next solve carries the sketch along from them when an edit moves
     // them.
@@ -1320,16 +1373,6 @@ pub(crate) fn solve_sketch(
             finite.then_some(place)
         })
         .collect();
-    let warnings = match &solution.carry {
-        None | Some(solve::Carried::Whole) => Vec::new(),
-        Some(solve::Carried::Stopped { reached }) => vec![format!(
-            "the sketch could be carried along only {:.1}% of the way from where its image points were to where they are now; it was solved from there and may have found another solution than the one it was on",
-            reached * 100.0
-        )],
-        Some(solve::Carried::Skipped { reason }) => vec![format!(
-            "the sketch was not carried along to where its image points are now: {reason}"
-        )],
-    };
     let result = SketchResult {
         origin,
         x_axis,
@@ -1341,9 +1384,75 @@ pub(crate) fn solve_sketch(
         radii,
         patterns,
         image_places,
-        warnings,
+        curve_ids,
     };
     (status, Some(result))
+}
+
+/// Why a solve the sketch was not carried to all the way cannot be used,
+/// or `None` when it was carried all the way or nothing had to be.
+fn carry_failure(
+    carry: Option<&solve::Carried>,
+    problem: &Problem,
+    sketch: &Sketch,
+) -> Option<String> {
+    let images = |moved: &[solve::EntityId]| {
+        let named: Vec<String> = moved
+            .iter()
+            .filter_map(|id| problem.entities.get(id.index()))
+            .take(3)
+            .map(|id| {
+                match sketch
+                    .entities
+                    .iter()
+                    .find(|e| e.id == *id)
+                    .map(|e| &e.geometry)
+                {
+                    Some(Geometry::Image { of, index, .. }) => format!("{id} = {of}[{index}]"),
+                    _ => id.to_string(),
+                }
+            })
+            .collect();
+        let more = moved.len().saturating_sub(named.len());
+        let listed = if more > 0 {
+            format!("{} and {more} more", named.join(", "))
+        } else {
+            named.join(", ")
+        };
+        if moved.len() == 1 {
+            format!("image point {listed} went from where it was to where its pattern puts it now")
+        } else {
+            format!(
+                "image points {listed} went from where they were to where their patterns put them now"
+            )
+        }
+    };
+    const FOLDED: &str = "solving from anywhere else could find another solution than the one the sketch was on (folded over it), so the sketch is not solved and keeps its coordinates";
+    match carry? {
+        solve::Carried::Whole => None,
+        solve::Carried::Stopped {
+            reached,
+            moved,
+            out_of_work: false,
+        } => Some(format!(
+            "the sketch could be carried along only {:.1}% of the way as {}: past there its constraints have no solution that moves with the images; {FOLDED}; make the change in smaller steps, or change the constraints on the geometry that hangs on the images",
+            reached * 100.0,
+            images(moved)
+        )),
+        solve::Carried::Stopped {
+            reached,
+            moved,
+            out_of_work: true,
+        } => Some(format!(
+            "carrying the sketch along as {} ran out of work {:.1}% of the way; {FOLDED}; make the change in smaller steps",
+            images(moved),
+            reached * 100.0
+        )),
+        solve::Carried::Skipped { reason, moved } => Some(format!(
+            "the sketch could not be carried along as {}: {reason}; {FOLDED}; make the change in smaller steps, or use other constraints on the images (each on fewer image points)",
+            images(moved)
+        )),
+    }
 }
 
 /// The places of image points a document lacks (a file written before
@@ -1433,17 +1542,12 @@ fn clean(result: &SketchResult) -> bool {
             .iter()
             .all(|p| p.chain != Some(ConstraintState::Conflicting))
 }
-// A solution the sketch was carried to only part of the way (a warning) is
-// stored when it is otherwise clean: the path may have met a passing
-// singularity (a line through zero length half way), and keeping the old
-// state would carry every later edit from it again and warn again. The
-// warning belongs to the solve that carried; the next one starts from the
-// stored state, where no image has moved. (Decided by the coordinator on
-// 2026-10-17, for the developer to confirm.)
 
 /// Solves every sketch and stores the solution in the document, so the
 /// next solve starts from it. A sketch that cannot be solved, or only with
-/// a constraint left out as conflicting, keeps its coordinates. Returns
+/// a constraint left out as conflicting, or that could not be carried
+/// along all the way to where its image points are now, keeps its
+/// coordinates and image places. Returns
 /// true when anything moved.
 pub fn settle_sketches(doc: &mut Document) -> bool {
     settle_sketches_cached(doc, &mut crate::RegenCache::default())
@@ -1452,35 +1556,19 @@ pub fn settle_sketches(doc: &mut Document) -> bool {
 /// [`settle_sketches`], solving only the sketches that have changed since
 /// `cache` last saw them solved. The outcome is the same.
 pub fn settle_sketches_cached(doc: &mut Document, cache: &mut crate::RegenCache) -> bool {
-    settle_sketches_noted(doc, cache).0
-}
-
-/// [`settle_sketches_cached`], with the warnings of the solves it made, each
-/// after the sketch it is about (`F3: ...`): what the edit that called it
-/// should report, since the next solve of a stored sketch starts from the
-/// stored state and does not repeat them.
-pub fn settle_sketches_noted(
-    doc: &mut Document,
-    cache: &mut crate::RegenCache,
-) -> (bool, Vec<String>) {
     let Ok(table) = doc.variable_table() else {
-        return (false, Vec::new());
+        return false;
     };
     let variables = table.evaluate();
     let mut solved = Vec::new();
-    let mut warnings = Vec::new();
     for (index, feature) in doc.features.iter().enumerate() {
         if let FeatureKind::Sketch(sketch) = &feature.kind
             && !feature.suppressed
             // Where the sketch lies does not change how it solves.
             && let (_, Some(result)) = cache.solve(feature.id, doc, &variables, sketch)
+            && clean(&result)
         {
-            for warning in &result.warnings {
-                warnings.push(format!("{}: {warning}", feature.id));
-            }
-            if clean(&result) {
-                solved.push((index, result));
-            }
+            solved.push((index, result));
         }
     }
     let mut moved = false;
@@ -1525,5 +1613,5 @@ pub fn settle_sketches_noted(
             }
         }
     }
-    (moved, warnings)
+    moved
 }

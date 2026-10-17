@@ -941,18 +941,38 @@ fn entity_to_manifest(entity: &doc::Entity) -> manifest::SketchEntity {
     }
 }
 
+fn index_to_manifest(index: &doc::InstanceIndex) -> manifest::InstanceIndex {
+    match index {
+        doc::InstanceIndex::At(k) => manifest::InstanceIndex::At(*k),
+        doc::InstanceIndex::Grid(ij) => manifest::InstanceIndex::Grid(*ij),
+        doc::InstanceIndex::Last => manifest::InstanceIndex::Last,
+    }
+}
+
+fn index_to_doc(index: manifest::InstanceIndex) -> doc::InstanceIndex {
+    match index {
+        manifest::InstanceIndex::At(k) => doc::InstanceIndex::At(k),
+        manifest::InstanceIndex::Grid(ij) => doc::InstanceIndex::Grid(ij),
+        manifest::InstanceIndex::Last => doc::InstanceIndex::Last,
+    }
+}
+
 fn pattern_to_manifest(pattern: &doc::SketchPattern) -> manifest::SketchPattern {
     let doc::SketchPattern {
         id: doc::PatternId(id),
         seed,
         count,
         layout,
+        patterns,
+        skip,
     } = pattern;
     let raw = |doc::EntityId(id): &doc::EntityId| *id;
     let pair = |[a, b]: &[doc::Expr; 2]| [expr_to_manifest(a), expr_to_manifest(b)];
     manifest::SketchPattern {
         id: *id,
         seed: seed.iter().map(raw).collect(),
+        patterns: patterns.iter().map(|doc::PatternId(id)| *id).collect(),
+        skip: skip.iter().map(index_to_manifest).collect(),
         count: expr_to_manifest(count),
         layout: match layout {
             doc::SketchPatternLayout::Linear { step, second } => {
@@ -995,11 +1015,15 @@ fn pattern_to_doc(pattern: manifest::SketchPattern) -> doc::SketchPattern {
         seed,
         count,
         layout,
+        patterns,
+        skip,
     } = pattern;
     let pair = |[a, b]: [String; 2]| [doc::Expr(a), doc::Expr(b)];
     doc::SketchPattern {
         id: doc::PatternId(id),
         seed: seed.into_iter().map(Id).collect(),
+        patterns: patterns.into_iter().map(doc::PatternId).collect(),
+        skip: skip.into_iter().map(index_to_doc).collect(),
         count: doc::Expr(count),
         layout: match layout {
             manifest::SketchPatternLayout::Linear { step, second } => {

@@ -79,22 +79,28 @@ fn state(s: &mut Session) -> Value {
 }
 
 /// Saves the session's document, opens it in a new session and compares:
-/// the same state, bit for bit.
+/// the same state, bit for bit. No sketch failed for want of carrying.
 fn equals_a_fresh_open(s: &mut Session, dir: &Path, file: &str) -> Value {
+    let here = fresh_open(s, dir, file);
+    for feature in here["features"].as_array().unwrap() {
+        let error = feature[2].as_str().unwrap_or_default();
+        assert!(
+            !error.contains("carried along") && !error.contains("could not be carried"),
+            "{file}: {error}"
+        );
+    }
+    here
+}
+
+/// [`equals_a_fresh_open`] for a state in which a sketch may fail for
+/// want of carrying.
+fn fresh_open(s: &mut Session, dir: &Path, file: &str) -> Value {
     let here = state(s);
     run(s, "file.save", json!({"path": file, "overwrite": true}));
     // What the session stores is in the form a file must have: no image
     // place had to be dropped on reading it.
     let (_, notes) = craft3d_format::load_noted(&dir.join(file)).unwrap();
     assert!(notes.is_empty(), "{file}: {notes:?}");
-    // Nor was any sketch carried only part of the way.
-    for sketch in here["sketches"].as_array().unwrap() {
-        assert!(
-            sketch.get("warnings").is_none(),
-            "{file}: {}",
-            sketch["warnings"]
-        );
-    }
     let mut fresh = session(dir);
     run(&mut fresh, "file.open", json!({"path": file}));
     let there = state(&mut fresh);
@@ -411,9 +417,12 @@ fn undo_redo_and_deletions_keep_the_session_equal_to_its_file() {
     let dir = dir("w1-undo");
     let mut s = replay(&dir, include_str!("edit_path/w1-run-end.steps.json"));
     let at = |state: &Value| point(state, "Edge", "e11")[0];
+    // The carried point lands on its root to rounding (the last bits are
+    // the path's); undone, it is back on the stored numbers exactly.
+    let near = |got: f64, want: f64| (got - want).abs() <= 1e-12 * want;
     set(&mut s, &[("n", "10")]);
     let up = equals_a_fresh_open(&mut s, &dir, "undo-10.3dcraft");
-    assert_eq!(at(&up), 101.0);
+    assert!(near(at(&up), 101.0), "{}", at(&up));
     run(&mut s, "edit.undo", json!({}));
     let undone = equals_a_fresh_open(&mut s, &dir, "undo-3.3dcraft");
     assert_eq!(at(&undone), 31.0);
@@ -424,7 +433,7 @@ fn undo_redo_and_deletions_keep_the_session_equal_to_its_file() {
     run(&mut s, "edit.undo", json!({}));
     set(&mut s, &[("n", "10")]);
     let again = equals_a_fresh_open(&mut s, &dir, "again-10.3dcraft");
-    assert_eq!(at(&again), 101.0);
+    assert!(near(at(&again), 101.0), "{}", at(&again));
 
     // The line on the run's end deleted (its image point stays, with its
     // place), then a line of the seed: whatever that leaves of the run and
@@ -495,20 +504,47 @@ fn a_no_op_edit_of_an_old_file_changes_nothing() {
     assert_eq!(again, doc, "the no-op edit changed the document");
 }
 
-/// A sketch that can be carried only part of the way says so: the point
-/// after the run, fixed where it is, cannot follow the run's end from 3 to
-/// 10 periods. The edit's result warns with how far the carrying got; the
-/// solve from there is the one from the stored coordinates, as without
-/// carrying: "fixed where it is" holds the point where the pass before put
-/// it, so the solver lets the point go and the run's last line folds back
-/// (redundant, not conflicting). That solve is clean, so the result is
-/// stored (the coordinator's decision of 2026-10-17, for the developer to
-/// confirm) and equals a fresh open of its file. Back at 3 the sketch is
-/// carried from the folded state and does not come back to where it was:
-/// with a stopped path, the edit path matters again (recorded in
-/// docs/design/document.md for that decision).
+/// The sketches of a saved document, as stored: their coordinates and
+/// image places, all of them, bit for bit.
+fn stored_sketches(dir: &Path, file: &str) -> Vec<craft3d_doc::Sketch> {
+    craft3d_format::load(&dir.join(file))
+        .unwrap()
+        .features
+        .into_iter()
+        .filter_map(|f| match f.kind {
+            craft3d_doc::FeatureKind::Sketch(sketch) => Some(sketch),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The feature's status and error in a state.
+fn status<'a>(state: &'a Value, feature: &str) -> (&'a str, &'a str) {
+    let found = state["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f[0] == feature)
+        .unwrap();
+    (
+        found[1].as_str().unwrap(),
+        found[2].as_str().unwrap_or_default(),
+    )
+}
+
+/// A sketch that can be carried only part of the way fails (the
+/// developer's decision of 2026-10-17): the point after the run, fixed
+/// where it is, cannot follow the run's end from 3 to 10 periods. The
+/// sketch fails with how far the carrying got, which image point it
+/// followed and what to do; the extrusion made from it fails naming it;
+/// nothing is stored (the coordinates and image places are those of the
+/// start), the session equals a fresh open of its file, and undo or the
+/// count back at 3 give the start again, bit for bit. (Until that decision
+/// the solve from where the path stopped was stored with a warning, and
+/// back at 3 the sketch did not come back: the expectation this test
+/// replaces.)
 #[test]
-fn a_sketch_carried_part_of_the_way_warns() {
+fn a_sketch_carried_part_of_the_way_fails() {
     let dir = dir("w1-stop");
     let mut s = replay(&dir, include_str!("edit_path/w1-run-end.steps.json"));
     run(
@@ -517,38 +553,68 @@ fn a_sketch_carried_part_of_the_way_warns() {
         json!({"sketch": "Edge", "type": "fixed", "entities": ["e11"]}),
     );
     let start = equals_a_fresh_open(&mut s, &dir, "stop-3.3dcraft");
-    let reply = run(&mut s, "variable.set", json!({"name": "n", "expr": "10"}));
-    let warnings = reply["warnings"].as_array().unwrap();
-    assert_eq!(warnings.len(), 1, "{reply}");
-    assert!(
-        warnings[0]
-            .as_str()
-            .unwrap()
-            .contains("of the way from where its image points were"),
-        "{reply}"
+    assert!(failed(&start).is_empty(), "{:?}", failed(&start));
+    let stored = stored_sketches(&dir, "stop-3.3dcraft");
+    set(&mut s, &[("n", "10")]);
+    let stopped = fresh_open(&mut s, &dir, "stop-10.3dcraft");
+    let (state, error) = status(&stopped, "Edge");
+    assert_eq!(state, "failed", "{stopped}");
+    for part in [
+        "could be carried along only",
+        "0.0% of the way as image point e10 = e8[last] went from where it was",
+        "make the change in smaller steps, or change the constraints",
+    ] {
+        assert!(error.contains(part), "{part:?} not in {error:?}");
+    }
+    let (state, error) = status(&stopped, "Body");
+    assert_eq!(state, "failed");
+    assert!(error.contains("`Edge` failed; fix it first"), "{error}");
+    assert!(stopped["bodies"].as_array().unwrap().is_empty());
+    // Nothing of the solve is stored: the sketch is as it was.
+    let mut kept = stored_sketches(&dir, "stop-10.3dcraft");
+    assert_eq!(kept, stored, "the failed sketch changed what is stored");
+    assert_eq!(point(&stopped, "Edge", "e11"), [31.0, 0.0]);
+    // An unrelated edit does not take the failure away: the sketch is
+    // carried from the same start again, and fails the same way.
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "unrelated", "expr": "1 mm"}),
     );
-    let folded = equals_a_fresh_open(&mut s, &dir, "stop-10.3dcraft");
-    assert_eq!(point(&folded, "Edge", "e11"), [99.0, 0.0]);
+    let still = fresh_open(&mut s, &dir, "stop-10-again.3dcraft");
+    assert_eq!(status(&still, "Edge"), status(&stopped, "Edge"));
+    kept = stored_sketches(&dir, "stop-10-again.3dcraft");
+    assert_eq!(kept, stored);
+    // Undo, twice: the start, bit for bit.
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "edit.undo", json!({}));
+    let undone = equals_a_fresh_open(&mut s, &dir, "stop-undone.3dcraft");
+    assert!(undone == start, "undo gives the start");
+    assert_eq!(stored_sketches(&dir, "stop-undone.3dcraft"), stored);
+    run(&mut s, "edit.redo", json!({}));
+    let redone = fresh_open(&mut s, &dir, "stop-redone.3dcraft");
+    assert!(redone == stopped, "redo fails as the edit did");
+    // The count back at 3: the start, bit for bit.
     set(&mut s, &[("n", "3")]);
     let back = equals_a_fresh_open(&mut s, &dir, "stop-back.3dcraft");
-    assert!(
-        back != start,
-        "the stopped path is stored, so 3 is not 3 again"
-    );
+    assert!(back == start, "back at 3 is the start");
+    assert_eq!(stored_sketches(&dir, "stop-back.3dcraft"), stored);
 }
 
 /// A path that passes where the sketch has no solution: the image of a
 /// turn about the origin at radius 5 swings from 2 to 178 degrees and `q`,
 /// on a fixed horizontal line through the origin, must stay one unit from
 /// it, which it cannot while the image is more than a unit above the line.
-/// The carrying stops early, the solve from there is clean (`q` one unit
-/// from the image at 178 degrees), and the result is stored (the
-/// coordinator's decision of 2026-10-17, for the developer to confirm):
-/// the edit reports the warning, the stored state does not repeat it, an
-/// unrelated dimension edit after it solves without it, and each state
-/// equals a fresh open.
+/// The carrying stops early and the sketch fails, although a solve from
+/// where it stopped would be clean (`q` one unit from the image at 178
+/// degrees): which of the two such points it lands on would depend on the
+/// edit. Nothing is stored, an unrelated dimension edit after it fails the
+/// same way, the angle back at 2 degrees gives the start bit for bit, and
+/// each state equals a fresh open. (Until the developer's decision of
+/// 2026-10-17 the solve from where the path stopped was stored with a
+/// warning: the expectation this test replaces.)
 #[test]
-fn a_path_that_stops_part_way_is_stored_when_the_solve_is_clean() {
+fn a_path_that_stops_part_way_fails_although_the_solve_is_clean() {
     let dir = dir("w1-pass");
     let mut s = session(&dir);
     let steps = json!([
@@ -571,41 +637,257 @@ fn a_path_that_stops_part_way_is_stored_when_the_solve_is_clean() {
     for step in steps.as_array().unwrap() {
         run(&mut s, step[0].as_str().unwrap(), step[1].clone());
     }
-    equals_a_fresh_open(&mut s, &dir, "pass-2.3dcraft");
-    let reply = run(
-        &mut s,
-        "variable.set",
-        json!({"name": "ang", "expr": "178 deg"}),
-    );
-    let warnings = reply["warnings"].as_array().unwrap();
-    assert_eq!(warnings.len(), 1, "{reply}");
-    assert!(
-        warnings[0]
-            .as_str()
-            .unwrap()
-            .contains("of the way from where its image points were"),
-        "{reply}"
-    );
-    // Stored: the session shows no warning and is its file.
-    let swung = equals_a_fresh_open(&mut s, &dir, "pass-178.3dcraft");
-    assert!(failed(&swung).is_empty(), "{:?}", failed(&swung));
-    let image = point(&swung, "Turn", "e8");
-    let q = point(&swung, "Turn", "e7");
-    let a = 178f64.to_radians();
-    assert!((image[0] - 5.0 * a.cos()).abs() < 1e-9 && (image[1] - 5.0 * a.sin()).abs() < 1e-9);
-    assert!(q[1].abs() < 1e-9 && ((q[0] - image[0]).hypot(image[1]) - 1.0).abs() < 1e-9);
-    // An unrelated dimension: no carrying, no warning.
-    let reply = run(
+    let start = equals_a_fresh_open(&mut s, &dir, "pass-2.3dcraft");
+    assert!(failed(&start).is_empty(), "{:?}", failed(&start));
+    let stored = stored_sketches(&dir, "pass-2.3dcraft");
+    set(&mut s, &[("ang", "178 deg")]);
+    let swung = fresh_open(&mut s, &dir, "pass-178.3dcraft");
+    let (state, error) = status(&swung, "Turn");
+    assert_eq!(state, "failed", "{swung}");
+    for part in [
+        "could be carried along only",
+        "% of the way as image point e8 = e2[1]",
+        "keeps its coordinates",
+    ] {
+        assert!(error.contains(part), "{part:?} not in {error:?}");
+    }
+    assert_eq!(stored_sketches(&dir, "pass-178.3dcraft"), stored);
+    // An unrelated dimension: the sketch is carried from the same start
+    // and fails again; nothing is stored.
+    run(
         &mut s,
         "sketch.constrain",
         json!({"sketch": "Turn", "type": "distance", "entities": ["e4", "e1"], "value": "100 mm"}),
     );
-    assert!(reply.get("warnings").is_none(), "{reply}");
-    let reply = run(
+    let after = fresh_open(&mut s, &dir, "pass-after.3dcraft");
+    assert_eq!(status(&after, "Turn"), status(&swung, "Turn"));
+    // Back at 2 degrees, the dimension undone: the start, bit for bit.
+    run(&mut s, "edit.undo", json!({}));
+    set(&mut s, &[("ang", "2 deg")]);
+    let back = equals_a_fresh_open(&mut s, &dir, "pass-back.3dcraft");
+    assert!(back == start, "back at 2 degrees is the start");
+    assert_eq!(stored_sketches(&dir, "pass-back.3dcraft"), stored);
+}
+
+/// A sketch that cannot be carried at all fails too: an equal-length
+/// constraint between two lines on the images of three chained runs ties
+/// together as many unknowns as one equation holds (18: three runs of
+/// three points each), so the path parameter cannot be added to it when
+/// the count of the first run changes and its last instance jumps. The
+/// solve from the stored coordinates may have folded over, so the sketch
+/// fails, saying so and what to do, and nothing is stored.
+#[test]
+fn a_sketch_that_cannot_be_carried_fails() {
+    let dir = dir("w1-skip");
+    let mut s = session(&dir);
+    let mut steps = vec![
+        json!(["file.new", {"units": "mm"}]),
+        json!(["variable.set", {"name": "n", "expr": "2"}]),
+        json!(["sketch.create", {"name": "Runs", "plane": "xy"}]),
+    ];
+    // Three runs, each of two lines o -> a -> d chained from o to d: e1 to
+    // e5 (count n), e6 to e10 and e11 to e15 (count 2).
+    for (i, y) in [(0u32, 0.0), (1, 10.0), (2, 20.0)] {
+        let o = 5 * i + 1;
+        steps.push(json!(["sketch.point", {"sketch": "Runs", "at": [0, y]}]));
+        steps.push(json!(["sketch.line", {"sketch": "Runs", "from": format!("e{o}"), "to": [1.0, y + 1.0]}]));
+        steps.push(json!(["sketch.line", {"sketch": "Runs", "from": format!("e{}", o + 1), "to": [2.0, y]}]));
+        let count = if i == 0 { "n" } else { "2" };
+        steps.push(json!(["sketch.pattern", {"sketch": "Runs", "entities": [format!("e{}", o + 2), format!("e{}", o + 4)], "count": count, "chain": [format!("e{o}"), format!("e{}", o + 3)]}]));
+    }
+    for step in &steps {
+        run(&mut s, step[0].as_str().unwrap(), step[1].clone());
+    }
+    let first = run(
         &mut s,
-        "variable.set",
-        json!({"name": "ang", "expr": "178 deg"}),
+        "sketch.line",
+        json!({"sketch": "Runs", "from": "e2[last]", "to": "e7[1]"}),
     );
-    assert!(reply.get("warnings").is_none(), "{reply}");
-    equals_a_fresh_open(&mut s, &dir, "pass-after.3dcraft");
+    let second = run(
+        &mut s,
+        "sketch.line",
+        json!({"sketch": "Runs", "from": "e12[1]", "to": "e2[1]"}),
+    );
+    run(
+        &mut s,
+        "sketch.constrain",
+        json!({"sketch": "Runs", "type": "equal", "entities": [first["entity"], second["entity"]]}),
+    );
+    let start = equals_a_fresh_open(&mut s, &dir, "skip-2.3dcraft");
+    assert!(failed(&start).is_empty(), "{:?}", failed(&start));
+    let stored = stored_sketches(&dir, "skip-2.3dcraft");
+    set(&mut s, &[("n", "3")]);
+    let jumped = fresh_open(&mut s, &dir, "skip-3.3dcraft");
+    let (state, error) = status(&jumped, "Runs");
+    assert_eq!(state, "failed", "{jumped}");
+    for part in [
+        "the sketch could not be carried along as image point",
+        "more unknowns than one equation holds",
+        "keeps its coordinates",
+        "use other constraints on the images",
+    ] {
+        assert!(error.contains(part), "{part:?} not in {error:?}");
+    }
+    assert_eq!(stored_sketches(&dir, "skip-3.3dcraft"), stored);
+    set(&mut s, &[("n", "2")]);
+    let back = equals_a_fresh_open(&mut s, &dir, "skip-back.3dcraft");
+    assert!(back == start, "back at 2 is the start");
+}
+
+/// The sketch's own verdict comes before the carrying's: a sketch with a
+/// conflicting dimension whose count then jumps fails with the conflict
+/// and its remedy, not with advice about smaller steps that would not fix
+/// it.
+#[test]
+fn a_conflict_is_reported_before_a_carry_that_stops() {
+    let dir = dir("w1-conflict");
+    let mut s = replay(&dir, include_str!("edit_path/w1-run-end.steps.json"));
+    run(
+        &mut s,
+        "sketch.constrain",
+        json!({"sketch": "Edge", "type": "fixed", "entities": ["e11"]}),
+    );
+    run(
+        &mut s,
+        "sketch.constrain",
+        json!({"sketch": "Edge", "type": "distance", "entities": ["e14"], "value": "6 mm"}),
+    );
+    let conflict = fresh_open(&mut s, &dir, "conflict-3.3dcraft");
+    let (state, before) = status(&conflict, "Edge");
+    assert_eq!(state, "failed");
+    assert!(before.contains("conflicts"), "{before}");
+    let stored = stored_sketches(&dir, "conflict-3.3dcraft");
+    set(&mut s, &[("n", "10")]);
+    let jumped = fresh_open(&mut s, &dir, "conflict-10.3dcraft");
+    let (state, error) = status(&jumped, "Edge");
+    assert_eq!(state, "failed");
+    assert!(error.starts_with(before), "{error} vs {before}");
+    assert!(error.contains("change or delete it"), "{error}");
+    assert!(!error.contains("smaller steps"), "{error}");
+    // The carrying did stop: the reason says so after the conflict.
+    assert!(
+        error.contains("nor could the sketch be carried along all the way"),
+        "{error}"
+    );
+    assert_eq!(stored_sketches(&dir, "conflict-10.3dcraft"), stored);
+}
+
+/// W1 with nested patterns: a rib edge of `n` cells of `k` tabs (a chained
+/// run of the tab run and a spacer) and, after the end of the tabs of the
+/// last cell (`e5[last][last]`, an image of an image), a construction
+/// line one unit long to a point `q`. Both counts jump and come back: `q`
+/// follows its image without folding every time, returns to its start,
+/// and every state is what a fresh open of its file gives.
+#[test]
+fn geometry_after_a_run_of_runs_follows_both_counts() {
+    let dir = dir("w1-nested");
+    let mut s = session(&dir);
+    let (w, c, p, g, h) = (1.0, 0.25, 3.0, 2.0, 6.0);
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    set(&mut s, &[("k", "2"), ("n", "3")]);
+    run(&mut s, "sketch.create", json!({"name": "Edge"}));
+    let made = run(
+        &mut s,
+        "sketch.polyline",
+        json!({"sketch": "Edge", "points": [[0, 0], [0, c], [w, c], [w, 0], [p, 0]]}),
+    );
+    let ids = |v: &Value| -> Vec<String> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e.as_str().unwrap().to_string())
+            .collect()
+    };
+    let points = ids(&made["points"]);
+    let lines = ids(&made["lines"]);
+    let (a, b) = (points[0].clone(), points[4].clone());
+    let constrain = |s: &mut Session, kind: &str, entities: Value, value: Option<f64>| {
+        let mut params = json!({"sketch": "Edge", "type": kind, "entities": entities});
+        if let Some(value) = value {
+            params["value"] = json!(value);
+        }
+        run(s, "sketch.constrain", params)
+    };
+    constrain(&mut s, "fixed", json!([a]), None);
+    constrain(&mut s, "vertical", json!([lines[0]]), None);
+    constrain(&mut s, "distance", json!([lines[0]]), Some(c));
+    constrain(&mut s, "horizontal", json!([lines[1]]), None);
+    constrain(&mut s, "distance", json!([lines[1]]), Some(w));
+    constrain(&mut s, "vertical", json!([lines[2]]), None);
+    constrain(&mut s, "horizontal", json!([lines[3]]), None);
+    constrain(&mut s, "distance", json!([lines[3]]), Some(p - w));
+    constrain(&mut s, "horizontal", json!([a, b]), None);
+    run(
+        &mut s,
+        "sketch.pattern",
+        json!({"sketch": "Edge", "entities": lines, "count": "k", "chain": [a, b]}),
+    );
+    let made = run(
+        &mut s,
+        "sketch.polyline",
+        json!({"sketch": "Edge", "points": [format!("{b}[last]"), [2.0 * p + g, 0]]}),
+    );
+    let spacer = ids(&made["lines"])[0].clone();
+    let end = ids(&made["points"])[1].clone();
+    constrain(&mut s, "horizontal", json!([spacer]), None);
+    constrain(&mut s, "distance", json!([spacer]), Some(g));
+    run(
+        &mut s,
+        "sketch.pattern",
+        json!({"sketch": "Edge", "entities": [spacer], "patterns": ["p1"], "count": "n", "chain": [a, end]}),
+    );
+    let length = 3.0 * (2.0 * p + g);
+    let made = run(
+        &mut s,
+        "sketch.polyline",
+        json!({"sketch": "Edge", "points": [format!("{end}[last]"), [length, -h], [0, -h], a]}),
+    );
+    let closing = ids(&made["lines"]);
+    constrain(&mut s, "vertical", json!([closing[0]]), None);
+    constrain(&mut s, "horizontal", json!([closing[1]]), None);
+    constrain(&mut s, "vertical", json!([closing[2]]), None);
+    constrain(&mut s, "distance", json!([closing[2]]), Some(h));
+    // One unit after the end of the tabs of the last cell.
+    let tabs_end = 2.0 * (2.0 * p + g) + 2.0 * p;
+    let made = run(
+        &mut s,
+        "sketch.line",
+        json!({"sketch": "Edge", "from": format!("{b}[last][last]"), "to": [tabs_end + 1.0, 0], "construction": true}),
+    );
+    let tail = made["entity"].as_str().unwrap().to_string();
+    let q = made["end"].as_str().unwrap().to_string();
+    constrain(&mut s, "horizontal", json!([tail]), None);
+    constrain(&mut s, "distance", json!([tail]), Some(1.0));
+    run(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "Edge", "distance": 0.5, "name": "Rib"}),
+    );
+    let start = equals_a_fresh_open(&mut s, &dir, "nested-start.3dcraft");
+    assert!(failed(&start).is_empty(), "{:?}", failed(&start));
+    let [x0, _] = point(&start, "Edge", &q);
+    assert!((x0 - (tabs_end + 1.0)).abs() <= 1e-12 * x0, "{x0}");
+    for (k, n) in [(6_u32, 3_u32), (2, 3), (2, 10), (2, 3), (6, 10), (2, 3)] {
+        set(&mut s, &[("k", &k.to_string()), ("n", &n.to_string())]);
+        let now = equals_a_fresh_open(&mut s, &dir, &format!("nested-{k}-{n}.3dcraft"));
+        assert!(failed(&now).is_empty(), "k {k} n {n}: {:?}", failed(&now));
+        let cell = f64::from(k) * p + g;
+        let want = f64::from(n - 1) * cell + f64::from(k) * p + 1.0;
+        let [x, _] = point(&now, "Edge", &q);
+        assert!(
+            (x - want).abs() <= 1e-9 * want,
+            "k {k} n {n}: q at {x}, want {want}"
+        );
+        let area = f64::from(n) * cell * h + f64::from(n * k) * w * c;
+        let volume = volumes(&now)[0].1;
+        assert!(
+            (volume - area * 0.5).abs() <= 1e-9 * volume,
+            "k {k} n {n}: {volume}"
+        );
+    }
+    let back = state(&mut s);
+    let [x, _] = point(&back, "Edge", &q);
+    assert!((x - x0).abs() <= 1e-12 * x0, "back at {x}, started at {x0}");
+    assert!(largest_move(&start, &back) <= 1e-12, "back to the start");
+    let _ = std::fs::remove_dir_all(&dir);
 }

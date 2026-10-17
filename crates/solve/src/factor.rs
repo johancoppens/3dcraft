@@ -69,6 +69,15 @@ impl Jacobian {
         }
     }
 
+    /// Multiplies every entry of column `col` by `factor`.
+    pub(crate) fn scale_column(&mut self, col: usize, factor: f64) {
+        for (j, v) in self.idx.iter().zip(self.val.iter_mut()) {
+            if *j == col {
+                *v *= factor;
+            }
+        }
+    }
+
     pub(crate) fn end_row(&mut self) {
         self.row_start.push(self.idx.len());
     }

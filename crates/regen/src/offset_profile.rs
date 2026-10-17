@@ -7,7 +7,7 @@
 //! (docs/design/names.md).
 
 use crate::extrude::swept;
-use crate::sketch_pattern::{collapse, curve_name, full_runs};
+use crate::sketch_pattern::{CurveIds, Runs, collapse, curve_name, full_runs};
 use crate::{FeatureResult, length};
 use craft3d_doc::{
     Document, FeatureId, FeatureKind, NameRole, OffsetCorners, OffsetHead, OffsetKind,
@@ -55,14 +55,15 @@ pub(crate) fn build(
         OffsetCorners::Sharp => Corners::Sharp,
     };
     let unit = doc.units.length.symbol();
+    let ids = &made.solved.curve_ids;
     let outline = offset_profiles(&made.profiles, distance, corners, &made.tolerance)
-        .map_err(|error| describe(error, made.name, unit))?;
+        .map_err(|error| describe(error, made.name, unit, ids))?;
     let runs = full_runs(made.sketch, made.solved);
     let names = outline
         .origins
         .iter()
         .map(|origin| {
-            let sources = sources_of(id, origin, &runs)?;
+            let sources = sources_of(id, origin, &runs, ids)?;
             // Written as the source of a face, then taken out of it.
             let text = PersistentName::new(id, NameRole::Side, sources).to_string();
             Ok(text
@@ -105,7 +106,8 @@ pub(crate) fn made<'a>(
 fn sources_of(
     feature: FeatureId,
     origin: &OffsetOrigin,
-    runs: &std::collections::BTreeMap<u64, usize>,
+    runs: &Runs,
+    ids: &CurveIds,
 ) -> Result<Vec<u64>, String> {
     let head = |kind| {
         OffsetHead { feature, kind }
@@ -115,14 +117,15 @@ fn sources_of(
     let mut out = Vec::new();
     if let Some(within) = &origin.within {
         out.push(head(OffsetKind::Loop)?);
-        out.extend(collapse(within, runs).unwrap_or_else(|| within.clone()));
+        let within = ids.expand(within);
+        out.extend(collapse(&within, runs).unwrap_or(within));
     }
     out.push(head(match origin.source {
         OffsetSource::Curve(_) => OffsetKind::Offset,
         OffsetSource::Corner(..) => OffsetKind::Corner,
         OffsetSource::Extension(..) => OffsetKind::Extension,
     })?);
-    out.extend(origin.source.curves());
+    out.extend(ids.expand(&origin.source.curves()));
     Ok(out)
 }
 
@@ -143,16 +146,16 @@ pub(crate) fn rename(
         return Ok(());
     };
     let origins = &made.outline.origins;
-    let runs = match (
-        doc.feature(made.sketch).map(|f| &f.kind),
-        earlier
-            .iter()
-            .find(|r| r.id == made.sketch)
-            .and_then(|r| r.sketch.as_ref()),
-    ) {
+    let solved = earlier
+        .iter()
+        .find(|r| r.id == made.sketch)
+        .and_then(|r| r.sketch.as_ref());
+    let runs = match (doc.feature(made.sketch).map(|f| &f.kind), solved) {
         (Some(FeatureKind::Sketch(sketch)), Some(solved)) => full_runs(sketch, solved),
         _ => Default::default(),
     };
+    let none = CurveIds::default();
+    let ids = solved.map_or(&none, |s| &s.curve_ids);
     let origin = |id: u64| {
         usize::try_from(id)
             .ok()
@@ -175,7 +178,7 @@ pub(crate) fn rename(
                 .iter()
                 .map(|&id| origin(id))
                 .collect::<Result<Vec<_>, _>>()?;
-            let curves = loop_curves(found.into_iter());
+            let curves = ids.expand(&loop_curves(found.into_iter()));
             let curves = collapse(&curves, &runs).unwrap_or(curves);
             let head = OffsetHead {
                 feature: input,
@@ -187,7 +190,7 @@ pub(crate) fn rename(
             sources.extend(curves);
         } else {
             for &id in &link.sources {
-                sources.extend(sources_of(input, origin(id)?, &runs)?);
+                sources.extend(sources_of(input, origin(id)?, &runs, ids)?);
             }
         }
         link.sources = sources;
@@ -197,7 +200,8 @@ pub(crate) fn rename(
 
 /// What a refused offset says, with the curves named as the sketch names
 /// them (`e7[3]`).
-fn describe(error: KernelError, sketch: &str, unit: &str) -> String {
+fn describe(error: KernelError, sketch: &str, unit: &str, ids: &CurveIds) -> String {
+    let curve_name = |c: u64| curve_name(c, ids);
     match error {
         KernelError::OffsetProfile {
             reason,
@@ -267,6 +271,7 @@ mod tests {
             },
             "Plate",
             "mm",
+            &CurveIds::default(),
         );
         for part in [
             "`Plate`",

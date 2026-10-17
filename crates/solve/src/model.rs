@@ -323,12 +323,25 @@ pub enum Carried {
     Whole,
     /// The path could not be followed past `reached` (0 to 1: how far the
     /// images got from their old places to their new ones); the solve
-    /// started there, and may have found another root than the one the
-    /// sketch was on.
-    Stopped { reached: f64 },
-    /// Not carried at all, for `reason`; the solve started from the
-    /// stored coordinates.
-    Skipped { reason: String },
+    /// started there, or from the stored coordinates when it got nowhere,
+    /// and may have found another root than the one the sketch was on.
+    Stopped {
+        reached: f64,
+        /// The image points that had moved, in the order of the entities.
+        moved: Vec<EntityId>,
+        /// The path stopped because the carrying's share of the work
+        /// budget ran out, not because a step could not be taken.
+        out_of_work: bool,
+    },
+    /// Images had moved but the sketch was not carried, or not to a start
+    /// the solve could use, for `reason`; the solve started from the
+    /// stored coordinates and may have found another root than the one
+    /// the sketch was on.
+    Skipped {
+        reason: String,
+        /// The image points that had moved, in the order of the entities.
+        moved: Vec<EntityId>,
+    },
 }
 
 impl Sketch {

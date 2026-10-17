@@ -32,9 +32,9 @@
 //! its own diagnosis, so the verdicts and guarantees are those of the
 //! solve. How far the path was followed is reported ([`Carried`]).
 
-use crate::equations::{CROWDED, Carry, Fail, prepare};
+use crate::equations::{CROWDED, Carry, Fail, Stage, prepare};
 use crate::factor::{Factor, Jacobian, Work};
-use crate::model::{Carried, Entity, ImageMap, Sketch, SolveOptions};
+use crate::model::{Carried, Entity, EntityId, ImageMap, Sketch, SolveOptions};
 use crate::solver::{Homotopy, System};
 
 /// Most steps tried along the path, kept or halved.
@@ -51,15 +51,17 @@ const CONTRACTION: f64 = 0.5;
 
 /// What [`carry`] gives the solve: the starting guess where the path
 /// ended (`None`: start from the stored coordinates) and what it did
-/// (`None`: no image had moved).
+/// (`None`: no image had moved), with the images that had moved.
 pub(crate) struct Carrying {
     pub entities: Option<Vec<Entity>>,
     pub outcome: Option<Carried>,
+    pub moved: Vec<EntityId>,
 }
 
 const NOTHING: Carrying = Carrying {
     entities: None,
     outcome: None,
+    moved: Vec::new(),
 };
 
 /// How one moved image is to be carried, before the unknowns are numbered.
@@ -103,82 +105,140 @@ pub(crate) fn carry(sketch: &Sketch, options: &SolveOptions, work: &mut Work) ->
         return NOTHING;
     }
     let linear = options.tolerance.linear;
-    let point = |id| sketch.point(id);
+    let count = sketch.entities.len();
+
+    // The first start of each image.
+    let mut start_of: Vec<Option<&crate::model::ImageStart>> = vec![None; count];
+    for start in &sketch.image_starts {
+        if let Some(slot) = start_of.get_mut(start.image.index())
+            && slot.is_none()
+        {
+            *slot = Some(start);
+        }
+    }
 
     // Which images moved, from the sketch as given: no unknowns are
-    // numbered for a sketch whose images are where they were.
+    // numbered for a sketch whose images are where they were. In the order
+    // of the entities, so that an image of an image (nested patterns)
+    // comes after the one it is made from: `now` is where each point is
+    // put now, `then` where it is when the path starts (a moved image at
+    // its stored place, everything else where it is now). An outer image
+    // whose own map did not change still moves when its inner one did.
+    let mut now: Vec<Option<[f64; 2]>> = vec![None; count];
+    let mut then: Vec<Option<[f64; 2]>> = vec![None; count];
     let mut ways: Vec<Option<Way>> = Vec::new();
-    let mut seen = vec![false; sketch.entities.len()];
-    let mut moved = false;
-    let mut image_count = 0usize;
-    let mut slot_of = vec![None; sketch.entities.len()];
-    for (slot, entity) in slot_of.iter_mut().zip(&sketch.entities) {
-        if matches!(entity, Entity::Image { .. }) {
-            *slot = Some(image_count);
-            image_count += 1;
-        }
-    }
-    ways.resize_with(image_count, || None);
-    for start in &sketch.image_starts {
-        let index = start.image.index();
-        // One start per image: the first.
-        match seen.get_mut(index) {
-            Some(seen) if !*seen => *seen = true,
-            _ => continue,
-        }
-        let (Some(Entity::Image { of, map }), Some(Some(slot))) =
-            (sketch.entities.get(index), slot_of.get(index))
+    let mut moved = Vec::new();
+    // The stage of each moved image: one after the latest stage of the
+    // moved images it is made from (see `Stage`); 0 for the rest.
+    let mut stage_of: Vec<usize> = vec![0; count];
+    let mut stages: Vec<usize> = Vec::new();
+    for (index, entity) in sketch.entities.iter().enumerate() {
+        let (Entity::Point { x, y }, Some(n), Some(t)) =
+            (entity, now.get_mut(index), then.get_mut(index))
         else {
-            continue;
-        };
-        let Some(of) = point(*of) else { continue };
-        let Some(now) = map.apply(of, point) else {
-            continue;
-        };
-        let straight = (
-            start.at,
-            Way::Straight([start.at[0] - now[0], start.at[1] - now[1]]),
-        );
-        let (was, way) = match start.map {
-            // Through the family only from where the image was: the old
-            // numbers on today's points put it at its old place. When they
-            // do not (the edit moved the ends of the run or the centre),
-            // the family would start the image where it never was.
-            Some(old) if same_family(&old, map) => match old.apply(of, point) {
-                Some(was)
-                    if finite(was)
-                        && (was[0] - start.at[0])
-                            .abs()
-                            .max((was[1] - start.at[1]).abs())
-                            <= linear =>
+            let Entity::Image { of, map } = entity else {
+                continue;
+            };
+            // Only what comes before it: an image is made from those.
+            let earlier = |places: &[Option<[f64; 2]>], id: EntityId| {
+                places
+                    .get(..index)
+                    .and_then(|p| p.get(id.index()).copied().flatten())
+            };
+            let here = earlier(&now, *of).and_then(|p| map.apply(p, |id| earlier(&now, id)));
+            let mut way = None;
+            let mut start_place = None;
+            if let (Some(start), Some(here)) = (start_of.get(index).copied().flatten(), here) {
+                let from = earlier(&then, *of);
+                let straight = || {
+                    // At the start of the path the map is applied to where
+                    // the points it uses are then.
+                    let base = from.and_then(|p| map.apply(p, |id| earlier(&then, id)))?;
+                    Some((
+                        start.at,
+                        Way::Straight([start.at[0] - base[0], start.at[1] - base[1]]),
+                    ))
+                };
+                let chosen = match start.map {
+                    // Through the family only from where the image was: the
+                    // old numbers on the points as they are when the path
+                    // starts put it at its old place. When they do not (the
+                    // edit moved the ends of the run or the centre), the
+                    // family would start the image where it never was.
+                    Some(old) if same_family(&old, map) => {
+                        match from.and_then(|p| old.apply(p, |id| earlier(&then, id))) {
+                            Some(was)
+                                if finite(was)
+                                    && (was[0] - start.at[0])
+                                        .abs()
+                                        .max((was[1] - start.at[1]).abs())
+                                        <= linear =>
+                            {
+                                Some((was, Way::Through(old)))
+                            }
+                            _ => straight(),
+                        }
+                    }
+                    _ => straight(),
+                };
+                // Within the tolerance it is the same place: nothing to
+                // carry.
+                if let Some((was, chosen)) = chosen
+                    && finite(was)
+                    && finite(here)
+                    && (was[0] - here[0]).abs().max((was[1] - here[1]).abs()) > linear
                 {
-                    (was, Way::Through(old))
+                    way = Some(chosen);
+                    start_place = Some(start.at);
+                    moved.push(start.image);
                 }
-                _ => straight,
-            },
-            _ => straight,
+            }
+            let mut sources = vec![*of];
+            match map {
+                ImageMap::Chain { from, to, .. } => sources.extend([*from, *to]),
+                ImageMap::Turn {
+                    center: Some(c), ..
+                } => sources.push(*c),
+                _ => {}
+            }
+            let stage = if way.is_some() {
+                1 + sources
+                    .iter()
+                    .filter(|s| s.index() < index)
+                    .filter_map(|s| stage_of.get(s.index()).copied())
+                    .max()
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            if let Some(slot) = stage_of.get_mut(index) {
+                *slot = stage;
+            }
+            stages.push(stage);
+            if let Some(slot) = now.get_mut(index) {
+                *slot = here;
+            }
+            if let Some(slot) = then.get_mut(index) {
+                *slot = start_place.or(here);
+            }
+            ways.push(way);
+            continue;
         };
-        if !(finite(was) && finite(now)) {
-            continue;
-        }
-        // Within the tolerance it is the same place: nothing to carry.
-        if (was[0] - now[0]).abs().max((was[1] - now[1]).abs()) <= linear {
-            continue;
-        }
-        if let Some(w) = ways.get_mut(*slot) {
-            *w = Some(way);
-            moved = true;
-        }
+        *n = Some([*x, *y]);
+        *t = Some([*x, *y]);
     }
-    if !moved {
+    if moved.is_empty() {
         return NOTHING;
     }
+    moved.sort_unstable();
 
     let skipped = |reason: &str| Carrying {
         entities: None,
         outcome: Some(Carried::Skipped {
             reason: reason.to_string(),
+            moved: moved.clone(),
         }),
+        moved: moved.clone(),
     };
     let Ok(mut prep) = prepare(sketch, linear) else {
         // The solve reports what is wrong with the sketch.
@@ -217,6 +277,20 @@ pub(crate) fn carry(sketch: &Sketch, options: &SolveOptions, work: &mut Work) ->
         };
     }
     prep.x0.push(0.0);
+    // One stage per level of moved images made from moved images.
+    let levels = stages.iter().copied().max().unwrap_or(1).max(1);
+    #[allow(clippy::cast_precision_loss)]
+    let level = |s: usize| s as f64 / levels as f64;
+    if levels > 1 {
+        for (image, stage) in prep.images.iter_mut().zip(&stages) {
+            let s = (*stage).max(1);
+            image.stage = Stage {
+                lo: level(s - 1),
+                hi: level(s),
+            };
+        }
+    }
+    let breaks: Vec<f64> = (1..=levels).map(level).collect();
 
     // As a solve: an equation without a value at the start (the direction
     // of a line without length) sits out. One that the path parameter
@@ -235,7 +309,7 @@ pub(crate) fn carry(sketch: &Sketch, options: &SolveOptions, work: &mut Work) ->
                     active.push(false);
                 } else {
                     return skipped(
-                        "an equation on a moved image point would depend on more unknowns than one equation holds once the path is added; solved from the stored coordinates",
+                        "an equation on a moved image point would depend on more unknowns than one equation holds once the path is added",
                     );
                 }
             }
@@ -252,12 +326,19 @@ pub(crate) fn carry(sketch: &Sketch, options: &SolveOptions, work: &mut Work) ->
     let mut x = prep.x0.clone();
     let mut at = 0.0;
     let mut h = 1.0;
+    let mut out_of_work = false;
     for _ in 0..MAX_STEPS {
         if at >= 1.0 {
             break;
         }
         let to = if at + h >= 1.0 { 1.0 } else { at + h };
-        match step(&system, options, &x, t, to, &active, work) {
+        // Never across the end of a stage: the path bends there.
+        let to = breaks
+            .iter()
+            .copied()
+            .find(|b| *b > at)
+            .map_or(to, |b| to.min(b));
+        match step(&system, options, &x, t, to, &active, prep.magnitude, work) {
             Step::Kept(mut next) => {
                 if let Some(v) = next.get_mut(t) {
                     *v = to;
@@ -273,18 +354,26 @@ pub(crate) fn carry(sketch: &Sketch, options: &SolveOptions, work: &mut Work) ->
                 }
             }
             // The budget is the solve's: it reports running out.
-            Step::OutOfWork => break,
+            Step::OutOfWork => {
+                out_of_work = true;
+                break;
+            }
         }
     }
     let outcome = if at >= 1.0 {
         Carried::Whole
     } else {
-        Carried::Stopped { reached: at }
+        Carried::Stopped {
+            reached: at,
+            moved: moved.clone(),
+            out_of_work,
+        }
     };
     if at <= 0.0 {
         return Carrying {
             entities: None,
             outcome: Some(outcome),
+            moved,
         };
     }
 
@@ -309,6 +398,7 @@ pub(crate) fn carry(sketch: &Sketch, options: &SolveOptions, work: &mut Work) ->
     Carrying {
         entities: Some(entities),
         outcome: Some(outcome),
+        moved,
     }
 }
 
@@ -321,6 +411,7 @@ enum Step {
 /// One step along the path from `x` (a solution at `x[t]`) to `t = to`:
 /// the solution there, or a shorter step when the Newton iteration does
 /// not contract to it.
+#[allow(clippy::too_many_arguments)]
 fn step(
     system: &System,
     options: &SolveOptions,
@@ -328,8 +419,19 @@ fn step(
     t: usize,
     to: f64,
     active: &[bool],
+    magnitude: f64,
     work: &mut Work,
 ) -> Step {
+    // The path parameter is a number, the other unknowns lengths: its
+    // column is taken in units of the sketch's size, so that the factor
+    // weighs it against them as it weighs one length against another (at
+    // 1e6 an image moves by millions per unit of `t`, and the rows of the
+    // geometry that follows it would otherwise look dependent).
+    let size_of_t = if magnitude.is_finite() && magnitude > 0.0 {
+        1.0 / magnitude
+    } else {
+        1.0
+    };
     let skip: Vec<bool> = std::iter::once(false)
         .chain(system.skip_rows(active))
         .collect();
@@ -347,6 +449,7 @@ fn step(
         let Ok(r) = system.evaluate(&y, active, Some(&mut jac)) else {
             return Step::Halve;
         };
+        jac.scale_column(t, size_of_t);
         let Some(pin) = y.get(t).map(|v| v - to) else {
             return Step::Halve;
         };
@@ -372,7 +475,10 @@ fn step(
             return Step::Halve;
         }
         let rhs: Vec<f64> = std::iter::once(-pin).chain(r.iter().map(|v| -v)).collect();
-        let dx = factor.min_norm(&rhs);
+        let mut dx = factor.min_norm(&rhs);
+        if let Some(dt) = dx.get_mut(t) {
+            *dt *= size_of_t;
+        }
         // The size of a move of the sketch, `t` left out (it is no length).
         let size = dx
             .iter()

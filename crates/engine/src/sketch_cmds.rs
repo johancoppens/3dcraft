@@ -13,8 +13,8 @@ use crate::params::Params;
 use crate::{CommandError, CommandSpec, Session};
 use craft3d_doc::{
     ConstraintId, ConstraintKind, DistanceDirection, Document, EntityId, Expr, FeatureId,
-    FeatureKind, Geometry, InstanceIndex, PersistentName, Removal, Sketch, SketchError,
-    SketchPlane, WorldPlane, parse_image_ref,
+    FeatureKind, Geometry, InstanceIndex, MAX_PATTERN_DEPTH, PersistentName, Removal, Sketch,
+    SketchError, SketchPlane, WorldPlane, parse_image_path,
 };
 use craft3d_regen::{ConstraintState, SketchResult};
 use serde_json::{Map, Value, json};
@@ -100,6 +100,47 @@ pub(crate) fn coordinates(value: &Value) -> Option<(f64, f64)> {
     Some((finite(x)?, finite(y)?))
 }
 
+/// The instances of an image point, one per level of its patterns, the
+/// innermost first (`e8[last][2]`): at most `MAX_PATTERN_DEPTH`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ImagePath {
+    levels: [InstanceIndex; MAX_PATTERN_DEPTH],
+    len: usize,
+}
+
+impl ImagePath {
+    fn new(levels: &[InstanceIndex]) -> Option<Self> {
+        let mut out = ImagePath {
+            levels: [InstanceIndex::At(0); MAX_PATTERN_DEPTH],
+            len: 0,
+        };
+        for (slot, level) in out.levels.iter_mut().zip(levels) {
+            *slot = *level;
+        }
+        out.len = levels.len();
+        (1..=MAX_PATTERN_DEPTH)
+            .contains(&levels.len())
+            .then_some(out)
+    }
+
+    pub(crate) fn levels(&self) -> &[InstanceIndex] {
+        self.levels.get(..self.len).unwrap_or_default()
+    }
+}
+
+impl std::fmt::Display for ImagePath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (i, level) in self.levels().iter().enumerate() {
+            if i == 0 {
+                write!(f, "{level}")?;
+            } else {
+                write!(f, "][{level}")?;
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Where a line, circle or arc is attached: a point that exists, or the
 /// place for a new one.
 #[derive(Clone, Copy)]
@@ -107,53 +148,57 @@ pub(crate) enum PointArg {
     Existing(EntityId),
     New(f64, f64),
     /// The image of a seed point in an instance of its pattern: `"e5[3]"`,
-    /// `"e5[last]"`.
-    Image(EntityId, InstanceIndex),
+    /// `"e5[last]"`, and with nested patterns `"e5[last][2]"`.
+    Image(EntityId, ImagePath),
 }
 
 /// An entity as a command names it: an id, or an image point of a pattern
-/// (`"e5[3]"`, `"e5[2,4]"`, `"e5[last]"`), made when it is not there yet.
+/// (`"e5[3]"`, `"e5[2,4]"`, `"e5[last]"`, `"e5[last][2]"` for nested
+/// patterns), made when it is not there yet.
 #[derive(Clone, Copy)]
 pub(crate) enum EntityArg {
     Id(EntityId),
-    Image(EntityId, InstanceIndex),
+    Image(EntityId, ImagePath),
 }
 
 impl EntityArg {
     pub(crate) fn parse(command: &str, key: &str, value: &Value) -> Result<Self, CommandError> {
         if let Value::String(text) = value
-            && let Some(image) = parse_image_ref(text)
+            && let Some(image) = parse_image_path(text)
         {
-            let (of, index) = image
+            let (of, levels) = image
                 .map_err(|reason| CommandError::new(format!("{command}: `{key}`: {reason}")))?;
-            return Ok(EntityArg::Image(of, index));
+            let path = ImagePath::new(&levels).ok_or_else(|| {
+                CommandError::new(format!(
+                    "{command}: `{key}`: an image point has an instance for each of 1 to {MAX_PATTERN_DEPTH} levels of patterns"
+                ))
+            })?;
+            return Ok(EntityArg::Image(of, path));
         }
         entity_id(command, key, value).map(EntityArg::Id)
     }
 
-    /// The entity's id, adding the image point when it is new.
+    /// The entity's id, adding the image points when they are new.
     pub(crate) fn place(self, sketch: &mut Sketch) -> Result<EntityId, SketchError> {
         match self {
             EntityArg::Id(id) => Ok(id),
-            EntityArg::Image(of, index) => sketch.image_point(of, index),
+            EntityArg::Image(of, path) => sketch.image_path(of, path.levels()),
         }
     }
 
-    /// For an image point `e5[k]` with a fixed `k`: refused when the
-    /// pattern of `e5`, as the last regeneration evaluated it, has no
-    /// instance `k`. An image past the count would only fail the sketch.
+    /// For an image point with a fixed instance on a level (`e5[3]`,
+    /// `e5[last][2]`): refused when that level's pattern, as the last
+    /// regeneration evaluated it, has no such instance (past the count or
+    /// skipped). An image that is not there would only fail the sketch.
     pub(crate) fn check_instance(
         self,
         session: &mut Session,
         sketch: FeatureId,
         command: &str,
     ) -> Result<(), CommandError> {
-        let EntityArg::Image(of, index) = self else {
+        let EntityArg::Image(of, path) = self else {
             return Ok(());
         };
-        if index == InstanceIndex::Last {
-            return Ok(());
-        }
         let open = session.document_mut()?;
         let regen = open.regen();
         let doc = open.history.current();
@@ -163,18 +208,27 @@ impl EntityArg {
         let Some(solved) = regen.feature(sketch).and_then(|f| f.sketch.as_ref()) else {
             return Ok(());
         };
-        for pattern in &drawn.patterns {
-            // An index of the wrong kind (two numbers in a row) is
-            // refused by the sketch, with that reason.
-            let fits = matches!(index, InstanceIndex::Grid(_)) == pattern.layout.is_grid();
-            if !fits || !drawn.seed_points(pattern).contains(&of) {
+        // The levels the path walks; one the sketch refuses (an unknown
+        // point, an index of the wrong kind) is refused there with its
+        // reason.
+        let Some(owner) = drawn.image_owner(of) else {
+            return Ok(());
+        };
+        for (index, pattern) in path.levels().iter().zip(drawn.pattern_levels(owner)) {
+            if *index == InstanceIndex::Last {
                 continue;
             }
-            if let Some(result) = solved.patterns.iter().find(|r| r.id == pattern.id)
-                && result.resolve(index).is_none()
+            let fits = drawn
+                .pattern(pattern)
+                .is_some_and(|p| matches!(index, InstanceIndex::Grid(_)) == p.layout.is_grid());
+            if !fits {
+                continue;
+            }
+            if let Some(result) = solved.patterns.iter().find(|r| r.id == pattern)
+                && result.resolve(*index).is_none()
             {
                 return fail(format!(
-                    "{command}: {of}[{index}] is not there: {}",
+                    "{command}: {of}[{path}] is not there: {}",
                     result.describe()
                 ));
             }
@@ -194,7 +248,7 @@ impl PointArg {
             },
             Value::Number(_) | Value::String(_) => match EntityArg::parse(command, key, value)? {
                 EntityArg::Id(id) => Ok(PointArg::Existing(id)),
-                EntityArg::Image(of, index) => Ok(PointArg::Image(of, index)),
+                EntityArg::Image(of, path) => Ok(PointArg::Image(of, path)),
             },
             _ => fail(format!(
                 "{command}: `{key}` must be a point id such as \"e1\" or coordinates [x, y]"
@@ -211,7 +265,7 @@ impl PointArg {
         match self {
             PointArg::Existing(id) => sketch.point_entity(id).map(|_| id),
             PointArg::New(x, y) => sketch.add_point(x, y),
-            PointArg::Image(of, index) => sketch.image_point(of, index),
+            PointArg::Image(of, path) => sketch.image_path(of, path.levels()),
         }
     }
 }
@@ -294,9 +348,6 @@ fn state_name(state: &ConstraintState) -> &'static str {
 /// freedom left and the constraints that are in the way.
 fn solve_summary(map: &mut Map<String, Value>, result: &SketchResult) {
     map.insert("dof".into(), result.dof.map_or(Value::Null, Value::from));
-    if !result.warnings.is_empty() {
-        map.insert("warnings".into(), result.warnings.clone().into());
-    }
     let listed = |wanted: ConstraintState| -> Vec<String> {
         result
             .constraints
@@ -765,6 +816,14 @@ fn removal_json(removal: &Removal, mut own: Value) -> Value {
                 "patternsDeleted".into(),
                 names(removal.patterns.iter().map(ToString::to_string).collect()),
             );
+        }
+        if !removal.unwrapped.is_empty() {
+            let taken: Vec<Value> = removal
+                .unwrapped
+                .iter()
+                .map(|(inner, outer)| json!({"pattern": inner.to_string(), "from": outer.to_string()}))
+                .collect();
+            map.insert("takenOutOfSeeds".into(), taken.into());
         }
     }
     own

@@ -6,6 +6,7 @@
 use crate::datum::datum_helix;
 use crate::extrude::{drawn, name_of, profile_error, swept};
 use crate::selfcheck::{Crossing, crossing};
+use crate::sketch_pattern::CurveIds;
 use crate::{FeatureResult, Names, SweepReport, entity};
 use craft3d_doc::{Document, FeatureId, FeatureKind, NameRole, PersistentName, Sweep};
 use craft3d_kernel::KernelError;
@@ -45,6 +46,8 @@ pub(crate) fn build(
                 .to_string(),
         );
     }
+    // The table that names the kernel's numbers of the curves swept.
+    let mut ids: Option<CurveIds> = None;
     let helical = doc
         .feature(feature.path)
         .is_some_and(|f| matches!(f.kind, FeatureKind::DatumHelix(_)));
@@ -55,11 +58,17 @@ pub(crate) fn build(
             .map_or_else(|| feature.path.to_string(), |f| f.name.clone());
         sweep_helix(profile, &made.plane, &helix, None, &made.tolerance).map_err(|error| {
             match &error {
-                KernelError::Sweep { reason, .. } => format!("path: helix `{along}`: {reason}"),
+                KernelError::Sweep { reason, .. } => format!(
+                    "path: helix `{along}`: {}",
+                    made.solved.curve_ids.rename_in(reason)
+                ),
                 KernelError::DegenerateCurve { .. }
                 | KernelError::DuplicateCurveId { .. }
                 | KernelError::TooManyCurves { .. } => {
-                    format!("path: helix `{along}`: {}", profile_error(&error))
+                    format!(
+                        "path: helix `{along}`: {}",
+                        profile_error(&error, &made.solved.curve_ids)
+                    )
                 }
                 other => format!("path: helix `{along}`: {other}"),
             }
@@ -71,25 +80,46 @@ pub(crate) fn build(
             format!("path: {reason}")
         })?;
         let along = path.name;
-        sweep(
-            profile,
-            &made.plane,
-            &path.curves,
-            &path.plane,
-            &made.tolerance,
-        )
-        .map_err(|error| match &error {
-            // The kernel names the curves of the path as the sketch does.
-            KernelError::Sweep { reason, .. } => format!("path: sketch `{along}`: {reason}"),
-            KernelError::DegenerateCurve { .. }
-            | KernelError::DuplicateCurveId { .. }
-            | KernelError::TooManyCurves { .. } => {
-                format!("path: sketch `{along}`: {}", profile_error(&error))
+        // The kernel takes the numbers of both sketches' curves; those of
+        // nested patterns are sketch-local, so the path's are moved past
+        // the profile's, and both are named from one table.
+        let (joint, by) = made.solved.curve_ids.joined(&path.solved.curve_ids);
+        let mut curves = path.curves.clone();
+        for curve in &mut curves {
+            curve.id = CurveIds::moved(curve.id, by);
+        }
+        ids = Some(joint);
+        let joint = ids.as_ref().unwrap_or(&made.solved.curve_ids);
+        sweep(profile, &made.plane, &curves, &path.plane, &made.tolerance).map_err(|error| {
+            match &error {
+                // The kernel names the curves of the path as the sketch does.
+                KernelError::Sweep { reason, .. } => {
+                    format!("path: sketch `{along}`: {}", joint.rename_in(reason))
+                }
+                KernelError::DegenerateCurve { .. }
+                | KernelError::DuplicateCurveId { .. }
+                | KernelError::TooManyCurves { .. } => {
+                    format!("path: sketch `{along}`: {}", profile_error(&error, joint))
+                }
+                other => format!("path: {other}"),
             }
-            other => format!("path: {other}"),
         })?
     };
     let mut faces: Vec<PersistentName> = swept.faces.iter().map(|o| name_of(id, o)).collect();
+    // A side is named after a curve of the profile and one of the path:
+    // both into their names' words, from the table of the two.
+    if let Some(joint) = ids.as_ref().filter(|j| !j.is_empty()) {
+        for face in &mut faces {
+            let mut link = face;
+            while link.role == NameRole::Piece {
+                let Some(next) = link.of.as_deref_mut() else {
+                    break;
+                };
+                link = next;
+            }
+            link.sources = joint.expand(&link.sources);
+        }
+    }
     crate::collapse_runs(
         doc,
         earlier,
