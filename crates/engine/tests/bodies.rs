@@ -9,23 +9,12 @@
     clippy::indexing_slicing
 )]
 
+mod common;
+
+use common::checked::{feature_brief as feature, run};
 use craft3d_engine::{Access, Session, Workspace};
 use serde_json::{Value, json};
 use std::f64::consts::PI;
-
-fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    let result = session
-        .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"));
-    // Built up edit by edit, the document is what regenerating it from
-    // nothing gives (docs/testing.md: incremental = full regeneration).
-    assert_ne!(
-        session.regeneration_matches_a_full_one(),
-        Some(false),
-        "after {id} {params}"
-    );
-    result
-}
 
 fn error(session: &mut Session, id: &str, params: Value) -> String {
     session.execute(id, &params).unwrap_err().to_string()
@@ -53,17 +42,6 @@ fn bar(x0: f64, y0: f64) -> Session {
     );
     assert_eq!((&made["id"], &made["status"]), (&json!("F2"), &json!("ok")));
     s
-}
-
-fn feature(session: &mut Session, name: &str) -> Value {
-    let document = run(session, "document.inspect", json!({}));
-    document["features"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|f| f["name"] == name)
-        .unwrap_or_else(|| panic!("no feature {name}"))
-        .clone()
 }
 
 fn body(session: &mut Session, name: &str) -> Option<Value> {

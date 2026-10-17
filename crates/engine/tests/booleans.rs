@@ -9,21 +9,12 @@
     clippy::indexing_slicing
 )]
 
+mod common;
+
+use common::checked::{feature_brief as feature, run};
 use craft3d_engine::{Access, Session, Workspace};
 use serde_json::{Value, json};
 use std::f64::consts::PI;
-
-fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    let result = session
-        .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"));
-    assert_ne!(
-        session.regeneration_matches_a_full_one(),
-        Some(false),
-        "after {id} {params}"
-    );
-    result
-}
 
 /// A plate of `length` x 40 x 8 extruded from sketch `Outline` (F1; sides
 /// e5..e8) as `Plate` (F2), with its low corner at the origin.
@@ -67,17 +58,6 @@ fn plate() -> Session {
     );
     assert_eq!((&made["id"], &made["status"]), (&json!("F2"), &json!("ok")));
     s
-}
-
-fn feature(session: &mut Session, name: &str) -> Value {
-    let document = run(session, "document.inspect", json!({}));
-    document["features"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|f| f["name"] == name)
-        .unwrap_or_else(|| panic!("no feature {name}"))
-        .clone()
 }
 
 fn body(session: &mut Session, name: &str) -> Value {

@@ -24,25 +24,15 @@
     clippy::indexing_slicing
 )]
 
-use craft3d_engine::{Access, DEFAULT_PICK_RADIUS, Scene, Session, Workspace};
+mod common;
+
+use common::plain::{run, session};
+use craft3d_engine::{DEFAULT_PICK_RADIUS, Scene, Session};
 use craft3d_math::Vec3;
 use craft3d_render::{Camera, Projection, ViewAxes};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-
-fn session() -> Session {
-    Session::new(Workspace {
-        read: Access::None,
-        write: Access::None,
-    })
-}
-
-fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    session
-        .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"))
-}
 
 /// The document of `pointing.rs`: a box, a cylinder, a block with a hole
 /// drilled by a boolean, a row of four separate copies and a row of three

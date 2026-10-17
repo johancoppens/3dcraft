@@ -12,20 +12,11 @@
     clippy::indexing_slicing
 )]
 
+mod common;
+
+use common::checked::run;
 use craft3d_engine::{Session, Workspace};
 use serde_json::{Value, json};
-
-fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    let result = session
-        .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"));
-    assert_ne!(
-        session.regeneration_matches_a_full_one(),
-        Some(false),
-        "after {id} {params}"
-    );
-    result
-}
 
 /// Runs a command and returns how many features regeneration then rebuilt.
 fn rebuilt(session: &mut Session, id: &str, params: Value) -> usize {

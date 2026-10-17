@@ -9,6 +9,9 @@
     clippy::indexing_slicing
 )]
 
+mod common;
+
+use common::plain::run;
 use craft3d_engine::{Access, Session, Workspace};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -16,17 +19,8 @@ use std::path::{Path, PathBuf};
 /// The renderer's default background.
 const BACKGROUND: [u8; 3] = [30, 33, 40];
 
-fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    session
-        .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"))
-}
-
 fn workdir(name: &str) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("replay-{name}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    common::workdir("replay", name)
 }
 
 fn session(dir: &Path) -> Session {

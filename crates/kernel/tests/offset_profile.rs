@@ -534,7 +534,8 @@ fn a_polygon_of_2100_round_corners_fits() {
         })
         .collect();
     let input = profiles(&polygon(&points, 1), &t);
-    let started = std::time::Instant::now();
+    // On the work of this thread, which a busy machine does not stretch.
+    let started = craft3d_testkit::cost::WorkClock::start();
     let o = offset_profiles(&input, 0.5, Corners::Round, &t).unwrap();
     assert!(started.elapsed().as_secs_f64() < 5.0);
     assert_eq!(o.curves.len(), 2 * n);

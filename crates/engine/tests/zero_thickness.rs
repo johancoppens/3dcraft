@@ -11,25 +11,11 @@
     clippy::indexing_slicing
 )]
 
+mod common;
+
+use common::plain::{feature_brief as feature, run};
 use craft3d_engine::{Session, Workspace};
-use serde_json::{Value, json};
-
-fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    session
-        .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"))
-}
-
-fn feature(session: &mut Session, name: &str) -> Value {
-    let document = run(session, "document.inspect", json!({}));
-    document["features"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|f| f["name"] == name)
-        .unwrap_or_else(|| panic!("no feature {name}"))
-        .clone()
-}
+use serde_json::json;
 
 fn bodies(session: &mut Session) -> Vec<(String, f64)> {
     let document = run(session, "document.inspect", json!({}));

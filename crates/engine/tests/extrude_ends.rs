@@ -11,6 +11,9 @@
     clippy::indexing_slicing
 )]
 
+mod common;
+
+use common::checked::{body, built, failed, new_document, refused, run, session};
 use craft3d_engine::{Access, Session, Workspace};
 use serde_json::{Value, json};
 use std::f64::consts::PI;
@@ -19,64 +22,7 @@ use std::path::PathBuf;
 const SCALES: [f64; 3] = [1e-3, 1.0, 1e6];
 
 fn workdir(name: &str) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("extrude-ends-{name}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn session() -> Session {
-    Session::new(Workspace {
-        read: Access::None,
-        write: Access::None,
-    })
-}
-
-fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    let result = session
-        .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"));
-    // Built up edit by edit, the document is what regenerating it from
-    // nothing gives (docs/testing.md: incremental = full regeneration).
-    assert_ne!(
-        session.regeneration_matches_a_full_one(),
-        Some(false),
-        "after {id} {params}"
-    );
-    result
-}
-
-/// A command that adds or edits a feature, which has to regenerate.
-fn built(session: &mut Session, id: &str, params: Value) -> Value {
-    let result = run(session, id, params.clone());
-    assert_eq!(result["status"], "ok", "{id} {params}: {result}");
-    result
-}
-
-/// A command that is accepted but whose feature fails: the reason.
-fn failed(session: &mut Session, id: &str, params: Value) -> String {
-    let result = run(session, id, params.clone());
-    assert_eq!(result["status"], "failed", "{id} {params}: {result}");
-    result["error"].as_str().unwrap().to_string()
-}
-
-fn refused(session: &mut Session, id: &str, params: Value) -> String {
-    match session.execute(id, &params) {
-        Ok(value) => panic!("{id} {params} should be refused, returned {value}"),
-        Err(e) => {
-            assert!(!e.message().contains("internal error"), "{id}: {e}");
-            e.to_string()
-        }
-    }
-}
-
-/// A new document in millimetres whose tolerance fits parts of size `k`.
-fn new_document(session: &mut Session, k: f64) {
-    run(
-        session,
-        "file.new",
-        json!({"units": "mm", "tolerance": 1e-6 * k}),
-    );
+    common::workdir("extrude-ends", name)
 }
 
 fn sketch(session: &mut Session, name: &str, plane: &str, offset: f64) {
@@ -102,17 +48,6 @@ fn circle(session: &mut Session, sketch: &str, center: [f64; 2], radius: f64) {
         "sketch.circle",
         json!({"sketch": sketch, "center": center, "radius": radius}),
     );
-}
-
-fn body(session: &mut Session, name: &str) -> Value {
-    let document = run(session, "document.inspect", json!({}));
-    document["bodies"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|b| b["name"] == name)
-        .unwrap_or_else(|| panic!("no body {name} in {document}"))
-        .clone()
 }
 
 fn face_names(body: &Value) -> Vec<String> {

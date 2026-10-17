@@ -17,30 +17,14 @@
     clippy::indexing_slicing
 )]
 
+mod common;
+
+use common::plain::{built, names_of, run, session};
 use craft3d_engine::{Access, Session, Workspace};
 use serde_json::{Value, json};
 use std::f64::consts::PI;
 use std::path::PathBuf;
 use std::time::Instant;
-
-fn session() -> Session {
-    Session::new(Workspace {
-        read: Access::None,
-        write: Access::None,
-    })
-}
-
-fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    session
-        .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"))
-}
-
-fn built(session: &mut Session, id: &str, params: Value) -> Value {
-    let result = run(session, id, params.clone());
-    assert_eq!(result["status"], "ok", "{id} {params}: {result}");
-    result
-}
 
 fn body(session: &mut Session, name: &str) -> Value {
     let document = run(session, "document.inspect", json!({}));
@@ -51,15 +35,6 @@ fn body(session: &mut Session, name: &str) -> Value {
         .find(|b| b["name"] == name)
         .unwrap_or_else(|| panic!("no body {name} in {}", document["bodies"]))
         .clone()
-}
-
-fn names_of(body: &Value) -> Vec<String> {
-    body["faceNames"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|n| n.as_str().unwrap().to_string())
-        .collect()
 }
 
 fn assert_close(found: f64, expected: f64, what: &str) {

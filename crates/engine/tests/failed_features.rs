@@ -25,25 +25,14 @@
     clippy::indexing_slicing
 )]
 
+mod common;
+
+use common::checked::{built, inspect, refused, run};
 use craft3d_engine::{Access, Session, Workspace};
 use craft3d_testkit::parallel::map_parallel;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-
-fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    let result = session
-        .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"));
-    // Built up edit by edit, the document is what regenerating it from
-    // nothing gives (docs/testing.md: incremental = full regeneration).
-    assert_ne!(
-        session.regeneration_matches_a_full_one(),
-        Some(false),
-        "after {id} {params}"
-    );
-    result
-}
 
 /// A command on a copy that is made to compare with: it has to run, and
 /// is not itself held to a full regeneration.
@@ -51,27 +40,6 @@ fn only(session: &mut Session, id: &str, params: Value) {
     session
         .execute(id, &params)
         .unwrap_or_else(|e| panic!("{id} {params}: {e}"));
-}
-
-/// A command that adds or edits a feature, which has to regenerate.
-fn built(session: &mut Session, id: &str, params: Value) -> Value {
-    let result = run(session, id, params.clone());
-    assert_eq!(result["status"], "ok", "{id} {params}: {result}");
-    result
-}
-
-fn refused(session: &mut Session, id: &str, params: Value) -> String {
-    match session.execute(id, &params) {
-        Ok(value) => panic!("{id} {params} should be refused, returned {value}"),
-        Err(e) => {
-            assert!(!e.message().contains("internal error"), "{id}: {e}");
-            e.to_string()
-        }
-    }
-}
-
-fn inspect(session: &mut Session) -> Value {
-    run(session, "document.inspect", json!({}))
 }
 
 /// What a document is, without what only says how it got there (the undo
@@ -2295,10 +2263,7 @@ fn rolled_back_to_any_feature_the_document_is_the_one_that_ends_there() {
 }
 
 fn workdir(name: &str) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("failed-features-{name}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    common::workdir("failed-features", name)
 }
 
 fn on_disk(dir: &Path) -> Workspace {
