@@ -52,7 +52,12 @@ pub(super) fn inside(solid: &Solid, p: Vec3, tolerance: &Tolerance) -> Result<bo
     let tol = tolerance.linear;
     // A point within reach of a face of the solid is neither inside nor
     // outside it by any margin that means something.
-    for (face, box_) in solid.boxes.iter().enumerate() {
+    let mut tested = crate::work::Tally::faces();
+    for face in solid.candidates(|b| b.contains(p, 2.0 * tol)) {
+        tested.one();
+        let Some(box_) = solid.boxes.get(face) else {
+            return Err(Stop::of(LOST));
+        };
         if !box_.contains(p, 2.0 * tol) {
             continue;
         }
@@ -82,17 +87,29 @@ pub(super) fn inside(solid: &Solid, p: Vec3, tolerance: &Tolerance) -> Result<bo
         };
         let ray = Curve3::Line(line);
         let mut crossings = 0_usize;
-        for (face, box_) in solid.boxes.iter().enumerate() {
+        // Behind the point there is nothing to count. The stretch
+        // looked at starts at the point and ends well beyond the
+        // face, so that neither end of it is a place where the ray
+        // is found near the surface without having crossed it.
+        let from = -2.0 * tol;
+        // The faces whose boxes the ray may meet ahead of the point, in
+        // the order of the faces (a node passes unless the ray misses it
+        // or leaves it behind the point).
+        let (origin, direction) = (line.origin(), line.direction());
+        let reach = solid.candidates(|b| {
+            line_in_box(origin, direction, b, 2.0 * tol)
+                .is_some_and(|(_, leave)| leave.is_nan() || leave > from)
+        });
+        for face in reach {
+            tested.one();
+            let Some(box_) = solid.boxes.get(face) else {
+                return Err(Stop::of(LOST));
+            };
             let Some((enter, leave)) =
                 line_in_box(line.origin(), line.direction(), box_, 2.0 * tol)
             else {
                 continue;
             };
-            // Behind the point there is nothing to count. The stretch
-            // looked at starts at the point and ends well beyond the
-            // face, so that neither end of it is a place where the ray
-            // is found near the surface without having crossed it.
-            let from = -2.0 * tol;
             if !(leave.is_finite() && leave > from) {
                 continue;
             }

@@ -2,6 +2,8 @@
 # Written by CRAFT3D_BENCH_UPDATE=1 cargo test -p craft3d-engine --test benchmark;
 # every change is an expectation change, logged in the dev log.
 turbofan blend_sections 0
+turbofan boolean_edge_candidates 281984
+turbofan boolean_face_candidates 331507
 turbofan boolean_face_pairs 42372
 turbofan booleans 367
 turbofan check_problems 0
@@ -19,6 +21,8 @@ turbofan regenerations 242
 turbofan sketch_solves 101
 turbofan triangles 95898
 engine-block blend_sections 28
+engine-block boolean_edge_candidates 22690
+engine-block boolean_face_candidates 507040
 engine-block boolean_face_pairs 5588
 engine-block booleans 314
 engine-block check_problems 0
@@ -36,6 +40,8 @@ engine-block regenerations 331
 engine-block sketch_solves 166
 engine-block triangles 161930
 impeller blend_sections 3564
+impeller boolean_edge_candidates 2477
+impeller boolean_face_candidates 3576
 impeller boolean_face_pairs 427
 impeller booleans 13
 impeller check_problems 0
@@ -53,6 +59,8 @@ impeller regenerations 82
 impeller sketch_solves 63
 impeller triangles 184824
 rotor blend_sections 0
+rotor boolean_edge_candidates 0
+rotor boolean_face_candidates 108
 rotor boolean_face_pairs 0
 rotor booleans 1
 rotor check_problems 0
@@ -70,6 +78,8 @@ rotor regenerations 33
 rotor sketch_solves 28
 rotor triangles 502
 holes blend_sections 0
+holes boolean_edge_candidates 2460
+holes boolean_face_candidates 211242
 holes boolean_face_pairs 1002
 holes booleans 501
 holes check_problems 0

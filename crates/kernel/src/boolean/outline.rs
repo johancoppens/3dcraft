@@ -354,35 +354,43 @@ pub(super) struct Boxes {
     around: Vec<Bbox3>,
 }
 
+/// A box around a piece of `curve` from `a` to `b`: the ends, a piece of
+/// a circle or an ellipse counted as the whole of it, and a spline's
+/// control points (which its curve stays within).
+pub(super) fn piece_box(curve: &Curve3, a: Vec3, b: Vec3) -> Bbox3 {
+    let mut bx = Bbox3::from_points([a, b]);
+    // A piece of a circle or an ellipse counts as the whole of it.
+    let conic = match &curve {
+        Curve3::Line(_) => None,
+        Curve3::Circle(c) => {
+            let f = c.frame();
+            Some((f.origin(), f.x() * c.radius(), f.y() * c.radius()))
+        }
+        Curve3::Ellipse(e) => {
+            let (f, (major, minor)) = (e.frame(), e.semi_axes());
+            Some((f.origin(), f.x() * major, f.y() * minor))
+        }
+        Curve3::Nurbs(c) => {
+            for &p in c.control_points() {
+                bx.add(p);
+            }
+            None
+        }
+    };
+    if let Some((center, x, y)) = conic {
+        let reach = Vec3::new(x.x.hypot(y.x), x.y.hypot(y.y), x.z.hypot(y.z));
+        bx.add(center - reach);
+        bx.add(center + reach);
+    }
+    bx
+}
+
 pub(super) fn boxes(loops: &[Vec<Seg>]) -> Boxes {
     let mut all = Vec::new();
     let mut around = vec![Bbox3::EMPTY; loops.len()];
     for (l, loop_) in loops.iter().enumerate() {
         for (k, seg) in loop_.iter().enumerate() {
-            let mut b = Bbox3::from_points([seg.a, seg.b]);
-            // A piece of a circle or an ellipse counts as the whole of it.
-            let conic = match &seg.curve {
-                Curve3::Line(_) => None,
-                Curve3::Circle(c) => {
-                    let f = c.frame();
-                    Some((f.origin(), f.x() * c.radius(), f.y() * c.radius()))
-                }
-                Curve3::Ellipse(e) => {
-                    let (f, (major, minor)) = (e.frame(), e.semi_axes());
-                    Some((f.origin(), f.x() * major, f.y() * minor))
-                }
-                Curve3::Nurbs(c) => {
-                    for &p in c.control_points() {
-                        b.add(p);
-                    }
-                    None
-                }
-            };
-            if let Some((center, x, y)) = conic {
-                let reach = Vec3::new(x.x.hypot(y.x), x.y.hypot(y.y), x.z.hypot(y.z));
-                b.add(center - reach);
-                b.add(center + reach);
-            }
+            let b = piece_box(&seg.curve, seg.a, seg.b);
             if let Some((lo, hi)) = b.corners() {
                 if let Some(whole) = around.get_mut(l) {
                     whole.add(lo);

@@ -11,7 +11,9 @@
 //!   and reused, entries of what features are made from compared, sketches
 //!   solved;
 //! - the kernel (`craft3d_kernel::work`): booleans, pairs of faces a
-//!   boolean intersected, patch trees of freeform surfaces built, blend
+//!   boolean intersected, the faces and edges its broad phase handed on to
+//!   an exact test (which grow with the product of two counts where a
+//!   broad phase is lost), patch trees of freeform surfaces built, blend
 //!   cross-sections solved;
 //! - mass properties (`craft3d_topo::mass_work`): faces integrated and the
 //!   evaluations of the integrand that took;
@@ -94,6 +96,8 @@ fn snapshot() -> Counts {
         ("sketch_solves", regen.sketch_solves),
         ("booleans", kernel.booleans),
         ("boolean_face_pairs", kernel.face_pairs),
+        ("boolean_face_candidates", kernel.face_candidates),
+        ("boolean_edge_candidates", kernel.edge_candidates),
         ("patch_trees", kernel.patch_trees),
         ("blend_sections", kernel.blend_sections),
         ("mass_faces", faces_integrated),
