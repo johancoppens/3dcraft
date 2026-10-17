@@ -8,6 +8,9 @@
     clippy::indexing_slicing
 )]
 
+mod common;
+
+use common::plain::run;
 use craft3d_engine::{Access, Session, Workspace};
 use craft3d_step::{Entity, Param, StepFile};
 use serde_json::{Value, json};
@@ -22,12 +25,6 @@ fn session(tag: &str) -> (Session, PathBuf) {
         write: Access::Root(dir.clone()),
     });
     (session, dir)
-}
-
-fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    session
-        .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"))
 }
 
 fn read(dir: &std::path::Path, file: &str) -> StepFile {

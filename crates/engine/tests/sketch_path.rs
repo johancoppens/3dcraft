@@ -10,65 +10,16 @@
     clippy::indexing_slicing
 )]
 
-use craft3d_engine::{Access, Session, Workspace};
+mod common;
+
+use common::checked::{body, error, run, session, session_in};
+use craft3d_engine::Session;
 use serde_json::{Value, json};
 use std::f64::consts::PI;
 use std::path::PathBuf;
 
 fn workdir(name: &str) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("sketch-path-{name}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn session_in(dir: &std::path::Path) -> Session {
-    Session::new(Workspace {
-        read: Access::Root(dir.to_path_buf()),
-        write: Access::Root(dir.to_path_buf()),
-    })
-}
-
-fn session() -> Session {
-    Session::new(Workspace {
-        read: Access::None,
-        write: Access::None,
-    })
-}
-
-fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    let result = session
-        .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"));
-    // Built up edit by edit, the document is what regenerating it from
-    // nothing gives (docs/testing.md: incremental = full regeneration).
-    assert_ne!(
-        session.regeneration_matches_a_full_one(),
-        Some(false),
-        "after {id} {params}"
-    );
-    result
-}
-
-fn error(session: &mut Session, id: &str, params: Value) -> String {
-    match session.execute(id, &params) {
-        Ok(value) => panic!("{id} {params} should fail, returned {value}"),
-        Err(e) => {
-            assert!(!e.message().contains("internal error"), "{id}: {e}");
-            e.to_string()
-        }
-    }
-}
-
-fn body(session: &mut Session, name: &str) -> Value {
-    let document = run(session, "document.inspect", json!({}));
-    document["bodies"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|b| b["name"] == name)
-        .unwrap_or_else(|| panic!("no body {name} in {document}"))
-        .clone()
+    common::workdir("sketch-path", name)
 }
 
 fn entity(inspected: &Value, id: &str) -> Value {

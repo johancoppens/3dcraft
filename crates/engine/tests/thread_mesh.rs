@@ -21,15 +21,13 @@
     clippy::indexing_slicing
 )]
 
-use craft3d_engine::{DISPLAY_MAX_TRIANGLES, SceneQuality, Session, Workspace};
-use serde_json::{Value, json};
-use std::time::Instant;
+mod common;
 
-fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    session
-        .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"))
-}
+use common::plain::run;
+use craft3d_engine::{DISPLAY_MAX_TRIANGLES, SceneQuality, Session, Workspace};
+use craft3d_testkit::cost::ProcessClock;
+use serde_json::json;
+use std::time::Instant;
 
 #[test]
 fn a_cut_thread_meshes_at_the_display_tolerance_in_seconds() {
@@ -58,7 +56,9 @@ fn a_cut_thread_meshes_at_the_display_tolerance_in_seconds() {
         max_angle: None,
     };
     for quality in [SceneQuality::Tolerance(0.0015), fine] {
-        let start = Instant::now();
+        // The work of every thread (the faces are meshed in parallel; this
+        // binary runs nothing else), which a busy machine does not stretch.
+        let start = ProcessClock::start();
         let scene = s.scene_with(quality).unwrap().unwrap();
         let seconds = start.elapsed().as_secs_f64();
         let what = format!(

@@ -10,21 +10,12 @@
     clippy::needless_range_loop
 )]
 
+mod common;
+
+use common::checked::run;
 use craft3d_engine::{Access, Session, Workspace};
 use serde_json::{Value, json};
 use std::f64::consts::PI;
-
-fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    let result = session
-        .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"));
-    assert_ne!(
-        session.regeneration_matches_a_full_one(),
-        Some(false),
-        "after {id} {params}"
-    );
-    result
-}
 
 fn error(session: &mut Session, id: &str, params: Value) -> String {
     session.execute(id, &params).unwrap_err().to_string()

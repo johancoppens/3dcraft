@@ -15,44 +15,13 @@
 
 use super::harness;
 use super::{EXACT, Expect, FLAT, Set};
+use super::{edge, step};
 use craft3d_engine::Session;
 use serde_json::{Value, json};
 use std::f64::consts::PI;
 use std::path::PathBuf;
 
 type Forms = Result<Vec<(&'static str, f64)>, String>;
-
-/// A command that must work; a feature that fails is the reason returned.
-fn step(s: &mut Session, id: &str, params: Value) -> Result<Value, String> {
-    let result = s
-        .execute(id, &params)
-        .map_err(|e| format!("{id} {params}: {e}"))?;
-    if result["status"] == "failed" {
-        return Err(format!(
-            "{id} {params}: {}",
-            result["error"].as_str().unwrap_or("failed")
-        ));
-    }
-    Ok(result)
-}
-
-/// The names of the two faces of the edge of `feature` whose ends are at
-/// `a` and `b` (for scale 1), as `document.edges` lists them.
-fn edge(s: &mut Session, feature: &str, k: f64, a: [f64; 3], b: [f64; 3]) -> Result<Value, String> {
-    let listed = step(s, "document.edges", json!({"feature": feature}))?;
-    let at = |value: &Value, want: [f64; 3]| {
-        (0..3).all(|i| (value[i].as_f64().unwrap_or(f64::NAN) - want[i] * k).abs() <= 1e-6 * k)
-    };
-    listed["edges"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|e| {
-            (at(&e["start"], a) && at(&e["end"], b)) || (at(&e["start"], b) && at(&e["end"], a))
-        })
-        .map(|e| e["faces"].clone())
-        .ok_or_else(|| format!("{feature} has no edge from {a:?} to {b:?}"))
-}
 
 /// The volume a triangle in the half-plane (r, z) sweeps in a full turn
 /// about the axis (Pappus).

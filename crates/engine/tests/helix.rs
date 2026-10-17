@@ -21,6 +21,11 @@
     clippy::indexing_slicing
 )]
 
+mod common;
+
+use common::checked::{
+    deep, failure, feature_brief as feature, inspect, refused_with as refused, run,
+};
 use craft3d_engine::{Access, Session, Workspace};
 use serde_json::{Value, json};
 use std::f64::consts::{PI, TAU};
@@ -29,29 +34,7 @@ use std::path::PathBuf;
 const SCALES: [f64; 3] = [1e-3, 1.0, 1e6];
 
 fn workdir(name: &str) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("helix-{name}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    let result = session
-        .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"));
-    assert_ne!(
-        session.regeneration_matches_a_full_one(),
-        Some(false),
-        "after {id} {params}"
-    );
-    result
-}
-
-fn refused(session: &mut Session, id: &str, params: Value) -> String {
-    match session.execute(id, &params) {
-        Ok(result) => panic!("{id} {params} should have been refused: {result}"),
-        Err(error) => error.to_string(),
-    }
+    common::workdir("helix", name)
 }
 
 /// A new document whose tolerance follows the size at 1e6.
@@ -59,20 +42,6 @@ fn new(k: f64) -> Session {
     let mut s = Session::new(Workspace::none());
     run(&mut s, "file.new", json!({"tolerance": 1e-6 * k.max(1.0)}));
     s
-}
-
-fn inspect(s: &mut Session) -> Value {
-    run(s, "document.inspect", json!({}))
-}
-
-fn feature(s: &mut Session, name: &str) -> Value {
-    inspect(s)["features"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|f| f["name"] == name)
-        .unwrap_or_else(|| panic!("no feature {name}"))
-        .clone()
 }
 
 fn body(s: &mut Session, name: &str) -> Value {
@@ -88,17 +57,6 @@ fn body(s: &mut Session, name: &str) -> Value {
 
 fn volume(s: &mut Session, name: &str) -> f64 {
     body(s, name)["volume"].as_f64().unwrap()
-}
-
-fn deep(s: &mut Session) {
-    let check = run(s, "document.check", json!({"deep": true}));
-    assert_eq!(check["ok"], true, "{check}");
-}
-
-fn failure(s: &mut Session, name: &str) -> String {
-    let state = feature(s, name);
-    assert_eq!(state["status"], "failed", "{state}");
-    state["error"].as_str().unwrap().to_string()
 }
 
 #[track_caller]

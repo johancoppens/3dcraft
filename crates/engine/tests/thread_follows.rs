@@ -15,49 +15,16 @@
     clippy::indexing_slicing
 )]
 
+mod common;
+
+use common::checked::{failure, feature_brief as feature, inspect, refused_with as refused, run};
 use craft3d_engine::{Access, Session, Workspace};
 use serde_json::{Value, json};
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 use std::path::PathBuf;
 
 fn workdir(name: &str) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("thread-follows-{name}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    let result = session
-        .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"));
-    assert_ne!(
-        session.regeneration_matches_a_full_one(),
-        Some(false),
-        "after {id} {params}"
-    );
-    result
-}
-
-fn refused(session: &mut Session, id: &str, params: Value) -> String {
-    match session.execute(id, &params) {
-        Ok(result) => panic!("{id} {params} should have been refused: {result}"),
-        Err(error) => error.to_string(),
-    }
-}
-
-fn inspect(s: &mut Session) -> Value {
-    run(s, "document.inspect", json!({}))
-}
-
-fn feature(s: &mut Session, name: &str) -> Value {
-    inspect(s)["features"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|f| f["name"] == name)
-        .unwrap_or_else(|| panic!("no feature {name}"))
-        .clone()
+    common::workdir("thread-follows", name)
 }
 
 fn volume(s: &mut Session, name: &str) -> f64 {
@@ -77,12 +44,6 @@ fn report(s: &mut Session) -> Value {
     let state = feature(s, "Thread");
     assert_eq!(state["status"], "ok", "{state}");
     state["thread"].clone()
-}
-
-fn failure(s: &mut Session, name: &str) -> String {
-    let state = feature(s, name);
-    assert_eq!(state["status"], "failed", "{state}");
-    state["error"].as_str().unwrap().to_string()
 }
 
 fn set_d(s: &mut Session, mm: f64) {

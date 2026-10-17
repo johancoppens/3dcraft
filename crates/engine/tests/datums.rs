@@ -13,6 +13,9 @@
     clippy::indexing_slicing
 )]
 
+mod common;
+
+use common::checked::{body, built, failed, feature, inspect, new_document, refused, run, session};
 use craft3d_engine::{Access, Session, Workspace};
 use serde_json::{Value, json};
 use std::f64::consts::PI;
@@ -51,64 +54,7 @@ fn unit(a: V) -> V {
 }
 
 fn workdir(name: &str) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("datums-{name}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn session() -> Session {
-    Session::new(Workspace {
-        read: Access::None,
-        write: Access::None,
-    })
-}
-
-fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    let result = session
-        .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"));
-    // Built up edit by edit, the document is what regenerating it from
-    // nothing gives (docs/testing.md: incremental = full regeneration).
-    assert_ne!(
-        session.regeneration_matches_a_full_one(),
-        Some(false),
-        "after {id} {params}"
-    );
-    result
-}
-
-/// A command that adds or edits a feature, which has to regenerate.
-fn built(session: &mut Session, id: &str, params: Value) -> Value {
-    let result = run(session, id, params.clone());
-    assert_eq!(result["status"], "ok", "{id} {params}: {result}");
-    result
-}
-
-/// A command that is accepted but whose feature fails: the reason.
-fn failed(session: &mut Session, id: &str, params: Value) -> String {
-    let result = run(session, id, params.clone());
-    assert_eq!(result["status"], "failed", "{id} {params}: {result}");
-    result["error"].as_str().unwrap().to_string()
-}
-
-fn refused(session: &mut Session, id: &str, params: Value) -> String {
-    match session.execute(id, &params) {
-        Ok(value) => panic!("{id} {params} should be refused, returned {value}"),
-        Err(e) => {
-            assert!(!e.message().contains("internal error"), "{id}: {e}");
-            e.to_string()
-        }
-    }
-}
-
-/// A new document in millimetres whose tolerance fits parts of size `k`.
-fn new_document(session: &mut Session, k: f64) {
-    run(
-        session,
-        "file.new",
-        json!({"units": "mm", "tolerance": 1e-6 * k}),
-    );
+    common::workdir("datums", name)
 }
 
 fn rectangle(session: &mut Session, sketch: &str, x: (f64, f64), y: (f64, f64)) {
@@ -126,32 +72,6 @@ fn circle(session: &mut Session, sketch: &str, center: [f64; 2], radius: f64) {
         "sketch.circle",
         json!({"sketch": sketch, "center": center, "radius": radius}),
     );
-}
-
-fn inspect(session: &mut Session) -> Value {
-    run(session, "document.inspect", json!({}))
-}
-
-fn body(session: &mut Session, name: &str) -> Value {
-    let document = inspect(session);
-    document["bodies"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|b| b["name"] == name)
-        .unwrap_or_else(|| panic!("no body {name} in {document}"))
-        .clone()
-}
-
-fn feature(session: &mut Session, name: &str) -> Value {
-    let document = inspect(session);
-    document["features"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|f| f["name"] == name)
-        .unwrap_or_else(|| panic!("no feature {name} in {document}"))
-        .clone()
 }
 
 fn vector(value: &Value) -> V {

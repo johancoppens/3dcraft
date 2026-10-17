@@ -8,48 +8,17 @@
     clippy::indexing_slicing
 )]
 
-use craft3d_engine::{Access, Session, Workspace};
+mod common;
+
+use common::checked::{error, run, session_in};
+use craft3d_engine::{Session, Workspace};
 use serde_json::{Value, json};
 use std::f64::consts::PI;
 use std::path::PathBuf;
 
 /// A fresh directory under the test's temp dir, used as both roots.
 fn workdir(name: &str) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("commands-{name}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn session_in(dir: &std::path::Path) -> Session {
-    Session::new(Workspace {
-        read: Access::Root(dir.to_path_buf()),
-        write: Access::Root(dir.to_path_buf()),
-    })
-}
-
-fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    let result = session
-        .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"));
-    // Built up edit by edit, the document is what regenerating it from
-    // nothing gives (docs/testing.md: incremental = full regeneration).
-    assert_ne!(
-        session.regeneration_matches_a_full_one(),
-        Some(false),
-        "after {id} {params}"
-    );
-    result
-}
-
-fn error(session: &mut Session, id: &str, params: Value) -> String {
-    match session.execute(id, &params) {
-        Ok(value) => panic!("{id} {params} should fail, returned {value}"),
-        Err(e) => {
-            assert!(!e.message().contains("internal error"), "{id}: {e}");
-            e.to_string()
-        }
-    }
+    common::workdir("commands", name)
 }
 
 fn close(a: f64, b: f64) -> bool {

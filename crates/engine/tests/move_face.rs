@@ -11,6 +11,7 @@
     clippy::indexing_slicing
 )]
 
+mod common;
 mod face_ops_common;
 
 use craft3d_engine::{Access, Session, Workspace};

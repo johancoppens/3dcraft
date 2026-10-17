@@ -14,23 +14,13 @@
     clippy::indexing_slicing
 )]
 
-use craft3d_engine::{Access, PickKind, SECTION_CAP_COLOR, SectionSpec, Session, Workspace};
+mod common;
+
+use common::plain::{run, session};
+use craft3d_engine::{PickKind, SECTION_CAP_COLOR, SectionSpec, Session};
 use craft3d_math::Vec3;
 use craft3d_render::{Camera, Projection, SECTION_FACE};
 use serde_json::{Value, json};
-
-fn session() -> Session {
-    Session::new(Workspace {
-        read: Access::None,
-        write: Access::None,
-    })
-}
-
-fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    session
-        .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"))
-}
 
 /// A block of 40 × 30 × 20 with a pocket of 20 × 10 sunk 12 deep into its
 /// top, made by a boolean, and a datum plane 5 above the base plane xy.

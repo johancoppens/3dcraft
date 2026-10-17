@@ -15,24 +15,14 @@
     clippy::indexing_slicing
 )]
 
-use craft3d_engine::{Access, Session, Workspace};
+mod common;
+
+use common::plain::{run, session};
+use craft3d_engine::Session;
 use craft3d_math::Vec3;
 use craft3d_render::{Camera, Frame, NO_FACE, Projection, RenderParams};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
-
-fn session() -> Session {
-    Session::new(Workspace {
-        read: Access::None,
-        write: Access::None,
-    })
-}
-
-fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    session
-        .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"))
-}
 
 /// A box, a cylinder, a block with a hole drilled by a boolean, a row of
 /// four separate copies and a row of three copies that overlap into one

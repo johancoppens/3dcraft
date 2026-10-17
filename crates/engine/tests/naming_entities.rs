@@ -16,6 +16,9 @@
     clippy::indexing_slicing
 )]
 
+mod common;
+
+use common::checked::{built, new_document, run, session};
 use craft3d_engine::{Access, Session, Workspace};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -33,49 +36,12 @@ fn workdir(name: &str) -> PathBuf {
     dir
 }
 
-fn session() -> Session {
-    Session::new(Workspace {
-        read: Access::None,
-        write: Access::None,
-    })
-}
-
-fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    let result = session
-        .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"));
-    // Built up edit by edit, the document is what regenerating it from
-    // nothing gives (docs/testing.md: incremental = full regeneration).
-    assert_ne!(
-        session.regeneration_matches_a_full_one(),
-        Some(false),
-        "after {id} {params}"
-    );
-    result
-}
-
 /// A command that only asks: it changes nothing, so there is nothing to
 /// compare with a full regeneration.
 fn ask(session: &mut Session, id: &str, params: Value) -> Value {
     session
         .execute(id, &params)
         .unwrap_or_else(|e| panic!("{id} {params}: {e}"))
-}
-
-/// A command that adds or edits a feature, which has to regenerate.
-fn built(session: &mut Session, id: &str, params: Value) -> Value {
-    let result = run(session, id, params.clone());
-    assert_eq!(result["status"], "ok", "{id} {params}: {result}");
-    result
-}
-
-/// A new document in millimetres whose tolerance fits parts of size `k`.
-fn new_document(session: &mut Session, k: f64) {
-    run(
-        session,
-        "file.new",
-        json!({"units": "mm", "tolerance": 1e-6 * k}),
-    );
 }
 
 fn vector(value: &Value) -> V {

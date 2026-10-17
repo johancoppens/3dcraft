@@ -9,18 +9,15 @@
     clippy::indexing_slicing
 )]
 
+mod common;
+
+use common::plain::run;
 use craft3d_engine::{Access, DISPLAY_RELATIVE_TOLERANCE, Session, Workspace};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
 /// The renderer's default background.
 const BACKGROUND: [u8; 3] = [30, 33, 40];
-
-fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    session
-        .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"))
-}
 
 fn refused(session: &mut Session, params: Value) -> String {
     match session.execute("view.render", &params) {
