@@ -55,7 +55,9 @@ fn parse(args: &[String]) -> Result<Config, String> {
         minutes: None,
         shrink_runs: 150,
         shrink_minutes: 10,
-        out: root.join("target/fuzz"),
+        // Where `cargo xtask health` reads it: the main checkout, also when
+        // run from a worktree.
+        out: crate::health::main_checkout(&root).join("target/fuzz"),
         bin: None,
     };
     let mut it = args.iter();
@@ -136,7 +138,13 @@ impl Launcher {
         } else {
             Command::new("timeout")
         };
-        command.arg(&timeout).arg(&self.bin).args(args);
+        // TERM at the timeout, KILL ten seconds later if it is still there.
+        command
+            .args(["-k", "10"])
+            .arg(&timeout)
+            .arg(&self.bin)
+            .args(args);
+        let started = Instant::now();
         let out = match command.output() {
             Ok(out) => out,
             Err(e) => {
@@ -164,6 +172,12 @@ impl Launcher {
         }
         let died = match out.status.code() {
             Some(124) => ("timeout", format!("no verdict within {} s", self.timeout)),
+            // KILLed: by `timeout -k` after the timeout, or before it by the
+            // memory cap.
+            Some(137) if started.elapsed().as_secs() >= self.timeout => (
+                "timeout",
+                format!("no verdict within {} s, killed", self.timeout),
+            ),
             Some(137) => (
                 "oom",
                 format!("killed (out of memory at {}): {tail}", self.memory),

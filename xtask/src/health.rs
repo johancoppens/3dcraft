@@ -40,7 +40,7 @@ fn output(dir: &Path, program: &str, args: &[&str]) -> Option<String> {
 
 /// The main checkout: the parent of the repository's common git dir (a
 /// worktree shares it), else the current directory.
-fn main_checkout(here: &Path) -> PathBuf {
+pub(crate) fn main_checkout(here: &Path) -> PathBuf {
     output(
         here,
         "git",

@@ -36,6 +36,7 @@ fn fixed_seeds_neither_crash_nor_go_wrong() {
     let mut groups = 0;
     let mut accepted = 0;
     let mut booleans = 0;
+    let mut identities = 0;
     for seed in SEEDS {
         let (design, runner) = run_seed(setup(seed), options(), &mut |_| {}).expect("runs");
         let report = &runner.report;
@@ -48,11 +49,17 @@ fn fixed_seeds_neither_crash_nor_go_wrong() {
         groups += report.groups;
         accepted += report.accepted;
         booleans += report.booleans;
+        identities += report.identities_checked;
     }
     // The seeds really build something, and booleans among it.
     assert!(groups >= 100, "{groups} groups");
     assert!(accepted * 2 >= groups, "{accepted} of {groups} accepted");
     assert!(booleans >= 10, "{booleans} booleans");
+    // Siblings that all refused would switch the identity oracle off.
+    assert!(
+        identities * 2 >= booleans,
+        "identities checked on {identities} of {booleans} booleans"
+    );
 }
 
 #[test]

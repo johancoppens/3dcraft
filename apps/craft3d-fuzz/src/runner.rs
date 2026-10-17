@@ -20,6 +20,11 @@ use craft3d_engine::{Session, Workspace};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Saves made by the determinism check in this process: each gets a file
+/// of its own, also when designs run on several threads at once.
+static SAVES: AtomicU64 = AtomicU64::new(0);
 
 /// The mark of a caught panic in an engine error (`Session::execute`).
 const INTERNAL: &str = "internal error (a bug in 3DCraft";
@@ -445,8 +450,15 @@ impl Runner {
             .commands
             .last()
             .map(|c| map_strings(&c.params, &|s| resolved_text(s, &self.ids), 0))?;
-        let target = params.get("target").and_then(Value::as_str)?.to_string();
-        let tool = params.get("tool").and_then(Value::as_str)?.to_string();
+        let (Some(target), Some(tool)) = (
+            params.get("target").and_then(Value::as_str),
+            params.get("tool").and_then(Value::as_str),
+        ) else {
+            // The boolean itself refuses such params; nothing to compare.
+            self.report.identities_skipped += 1;
+            return None;
+        };
+        let (target, tool) = (target.to_string(), tool.to_string());
         let mut base = self.session.clone();
         let (Some((va, sa)), Some((vb, sb))) =
             (measure(&mut base, &target), measure(&mut base, &tool))
@@ -517,9 +529,10 @@ impl Runner {
     fn determinism(&mut self, end: usize) {
         let _ = std::fs::create_dir_all(&self.options.scratch);
         let path = self.options.scratch.join(format!(
-            "design-{}-{}.3dcraft",
+            "design-{}-{}-{}.3dcraft",
             self.setup.seed,
-            std::process::id()
+            std::process::id(),
+            SAVES.fetch_add(1, Ordering::Relaxed)
         ));
         let path_text = path.to_string_lossy().to_string();
         let Some(before) = self.query("document.inspect", &json!({})) else {
