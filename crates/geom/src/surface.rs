@@ -7,6 +7,7 @@ use crate::curve::wrap_angle;
 use crate::{BezierPatch, GeomError, NurbsSurface};
 use craft3d_math::{Bits, Frame, Vec3};
 use std::f64::consts::{FRAC_PI_2, TAU};
+use std::sync::{Arc, OnceLock};
 
 /// Steps each way of the grid a numeric projection starts from.
 const PROJECT_GRID: usize = 16;
@@ -14,6 +15,26 @@ const PROJECT_GRID: usize = 16;
 const PROJECT_STARTS: usize = 6;
 /// Steps of one descent of a numeric projection, at most.
 const PROJECT_STEPS: usize = 80;
+
+/// The samples of a Bézier or NURBS surface a numeric projection starts
+/// from ([`Surface::project_grid`]), and what they tell about the surface:
+/// whether it closes on itself in u and in v, and which of its border rows
+/// are one point ([u start, u end, v start, v end]).
+#[derive(Debug)]
+pub(crate) struct ProjectGrid {
+    points: [[Vec3; PROJECT_GRID + 1]; PROJECT_GRID + 1],
+    /// How far the samples reach from the first.
+    extent: f64,
+    closed_u: bool,
+    closed_v: bool,
+    collapsed: [bool; 4],
+}
+
+/// Where a Bézier or NURBS surface keeps its [`ProjectGrid`] once made:
+/// derived from the surface's numbers alone, so not part of its value
+/// (always equal, and left out of its debug text).
+#[derive(Clone, Default)]
+pub(crate) struct GridCache(pub(crate) OnceLock<Arc<ProjectGrid>>);
 
 fn positive(value: f64, message: &'static str) -> Result<f64, GeomError> {
     if value.is_finite() && value > 0.0 {
@@ -505,50 +526,15 @@ impl Surface {
                 v0 + (v1 - v0) * j as f64 / N as f64,
             )
         };
-        let mut points = [[Vec3::ZERO; N + 1]; N + 1];
-        let mut extent = 0.0_f64;
-        for (i, row) in points.iter_mut().enumerate() {
-            for (j, point) in row.iter_mut().enumerate() {
-                let (u, v) = at(i, j);
-                *point = self.eval(u, v);
-            }
-        }
-        let first = points.first().and_then(|row| row.first()).copied();
-        let Some(first) = first else {
-            return Ok((u0, v0));
-        };
-        for row in &points {
-            for point in row {
-                let reach = point.distance(first);
-                if reach.is_finite() {
-                    extent = extent.max(reach);
-                }
-            }
-        }
-        // The same point, as far as a sample can tell.
-        let same = |a: Vec3, b: Vec3| a.distance(b) <= 1e-9 * extent;
-        let row = |i: usize| points.get(i).map_or(&[][..], |row| row.as_slice());
-        let column = |j: usize| points.iter().filter_map(move |row| row.get(j).copied());
-        let closed_u = row(0).iter().zip(row(N)).all(|(&a, &b)| same(a, b));
-        let closed_v = column(0).zip(column(N)).all(|(a, b)| same(a, b));
-        let one_point = |points: &mut dyn Iterator<Item = Vec3>| {
-            let Some(first) = points.next() else {
-                return false;
-            };
-            for point in points {
-                if !same(point, first) {
-                    return false;
-                }
-            }
-            true
-        };
-        // Border rows that are a single point: [u start, u end, v start, v end].
-        let collapsed = [
-            one_point(&mut row(0).iter().copied()),
-            one_point(&mut row(N).iter().copied()),
-            one_point(&mut column(0)),
-            one_point(&mut column(N)),
-        ];
+        let grid = self.project_grid((u0, u1), (v0, v1));
+        let ProjectGrid {
+            points,
+            extent,
+            closed_u,
+            closed_v,
+            collapsed,
+        } = &*grid;
+        let (extent, closed_u, closed_v, collapsed) = (*extent, *closed_u, *closed_v, *collapsed);
         let skipped = |i: usize, j: usize| {
             (i == 0 && collapsed[0])
                 || (i == N && (collapsed[1] || closed_u))
@@ -736,6 +722,82 @@ impl Surface {
             Some((found, u, v)) if found <= d => (u, v),
             _ => at(i, j),
         })
+    }
+
+    /// The samples [`Surface::project_numeric`] starts from, of a Bézier
+    /// or NURBS surface: a function of the surface alone, made the first
+    /// time a point is projected onto it and kept with it (cloned with it)
+    /// from then on. A tessellation or a mass integral projects every
+    /// point of a face's boundary onto the face's surface, each from a
+    /// grid of 289 evaluations; with the grid kept that is a look-up, and
+    /// every projection the same, bit for bit.
+    fn project_grid(&self, (u0, u1): (f64, f64), (v0, v1): (f64, f64)) -> Arc<ProjectGrid> {
+        let made = || Arc::new(self.sample_grid((u0, u1), (v0, v1)));
+        match self {
+            Surface::Nurbs(s) => Arc::clone(s.project_grid.0.get_or_init(made)),
+            Surface::Bezier(b) => Arc::clone(b.project_grid.0.get_or_init(made)),
+            _ => made(),
+        }
+    }
+
+    /// [`Surface::project_grid`], made.
+    fn sample_grid(&self, (u0, u1): (f64, f64), (v0, v1): (f64, f64)) -> ProjectGrid {
+        const N: usize = PROJECT_GRID;
+        let at = |i: usize, j: usize| {
+            (
+                u0 + (u1 - u0) * i as f64 / N as f64,
+                v0 + (v1 - v0) * j as f64 / N as f64,
+            )
+        };
+        let mut points = [[Vec3::ZERO; N + 1]; N + 1];
+        let mut extent = 0.0_f64;
+        for (i, row) in points.iter_mut().enumerate() {
+            for (j, point) in row.iter_mut().enumerate() {
+                let (u, v) = at(i, j);
+                *point = self.eval(u, v);
+            }
+        }
+        let first = points.first().and_then(|row| row.first()).copied();
+        let first = first.unwrap_or(Vec3::ZERO);
+        for row in &points {
+            for point in row {
+                let reach = point.distance(first);
+                if reach.is_finite() {
+                    extent = extent.max(reach);
+                }
+            }
+        }
+        // The same point, as far as a sample can tell.
+        let same = |a: Vec3, b: Vec3| a.distance(b) <= 1e-9 * extent;
+        let row = |i: usize| points.get(i).map_or(&[][..], |row| row.as_slice());
+        let column = |j: usize| points.iter().filter_map(move |row| row.get(j).copied());
+        let closed_u = row(0).iter().zip(row(N)).all(|(&a, &b)| same(a, b));
+        let closed_v = column(0).zip(column(N)).all(|(a, b)| same(a, b));
+        let one_point = |points: &mut dyn Iterator<Item = Vec3>| {
+            let Some(first) = points.next() else {
+                return false;
+            };
+            for point in points {
+                if !same(point, first) {
+                    return false;
+                }
+            }
+            true
+        };
+        // Border rows that are a single point: [u start, u end, v start, v end].
+        let collapsed = [
+            one_point(&mut row(0).iter().copied()),
+            one_point(&mut row(N).iter().copied()),
+            one_point(&mut column(0)),
+            one_point(&mut column(N)),
+        ];
+        ProjectGrid {
+            points,
+            extent,
+            closed_u,
+            closed_v,
+            collapsed,
+        }
     }
 
     /// Walks downhill from `start` to a nearest point of `p` within the
@@ -1074,6 +1136,42 @@ mod tests {
             }
         }
         BezierPatch::bicubic(net).unwrap()
+    }
+
+    /// The samples a projection starts from are kept with the surface
+    /// once made: every later projection, and one onto a clone, is the
+    /// projection onto a surface that never kept them, bit for bit.
+    #[test]
+    fn a_kept_projection_grid_projects_as_a_fresh_one() {
+        for scale in [1e-3, 1.0, 1e6] {
+            let nurbs = NurbsSurface::from_bezier(&bumpy(scale)).unwrap();
+            let bezier = || Surface::Bezier(bumpy(scale));
+            let spline = || Surface::Nurbs(NurbsSurface::from_bezier(&bumpy(scale)).unwrap());
+            let makers: [&dyn Fn() -> Surface; 2] = [&bezier, &spline];
+            for make in makers {
+                let kept = make();
+                for k in 0..40 {
+                    let t = f64::from(k);
+                    let p = Vec3::new(
+                        (t * 0.37).sin() * 2.0 + 1.5,
+                        (t * 0.61).cos() * 3.0 + 2.0,
+                        (t * 0.23).sin() * 1.5,
+                    ) * scale;
+                    let fresh = make().project(p).unwrap();
+                    let again = kept.project(p).unwrap();
+                    let cloned = kept.clone().project(p).unwrap();
+                    for (a, b) in [(fresh, again), (fresh, cloned)] {
+                        assert_eq!(a.0.to_bits(), b.0.to_bits());
+                        assert_eq!(a.1.to_bits(), b.1.to_bits());
+                    }
+                }
+            }
+            // Kept or not, a surface is its numbers.
+            let used = Surface::Nurbs(nurbs.clone());
+            let _ = used.project(Vec3::ZERO);
+            assert_eq!(used, Surface::Nurbs(nurbs.clone()));
+            assert_eq!(format!("{used:?}"), format!("{:?}", Surface::Nurbs(nurbs)));
+        }
     }
 
     fn surfaces(scale: f64) -> Vec<Surface> {

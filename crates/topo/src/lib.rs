@@ -24,11 +24,11 @@ mod mass;
 mod touch;
 mod transform;
 
-pub use check::{Defect, check, genus};
+pub use check::{Defect, check, check_remembered, genus};
 pub use inside::{stranded, stranded_loops};
 pub use mass::{
     Inertia, MassBound, MassError, MassProperties, inertia, mass_and_inertia, mass_bound,
-    mass_properties, mass_work,
+    mass_properties, mass_properties_each, mass_properties_each_while, mass_work,
 };
 pub use touch::{Touch, TouchError, TouchScope, Touched, touches};
 pub use transform::{Offsets, TransformError, merge};

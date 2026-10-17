@@ -704,6 +704,9 @@ impl SceneCache {
 /// diagonal of the box around the sketches' points and circles; without
 /// those, one unit.
 fn model_size(regen: &Regen, doc: &Document) -> f64 {
+    let bodies: Vec<&std::sync::Arc<craft3d_topo::Body>> =
+        regen.bodies().map(|(_, body)| body).collect();
+    crate::mass::measure_ahead(&bodies);
     let area: f64 = regen
         .bodies()
         .filter_map(|(_, body)| mass_of(body).ok())

@@ -148,11 +148,31 @@ fn bernstein_derivative(n: usize, t: f64) -> Basis {
 ///
 /// Control points are stored row-major: point `(i, j)` (`i` along u, `j`
 /// along v) is at index `i * (degree_v + 1) + j`.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone)]
 pub struct BezierPatch {
     degree_u: usize,
     degree_v: usize,
     ctrl: Vec<Vec3>,
+    /// The samples a projection onto the patch starts from, once made
+    /// (`Surface::project_grid`). Not part of the patch's value: left out
+    /// of `==` and of the debug text.
+    project_grid: surface::GridCache,
+}
+
+impl PartialEq for BezierPatch {
+    fn eq(&self, o: &Self) -> bool {
+        self.degree_u == o.degree_u && self.degree_v == o.degree_v && self.ctrl == o.ctrl
+    }
+}
+
+impl std::fmt::Debug for BezierPatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BezierPatch")
+            .field("degree_u", &self.degree_u)
+            .field("degree_v", &self.degree_v)
+            .field("ctrl", &self.ctrl)
+            .finish()
+    }
 }
 
 impl BezierPatch {
@@ -179,6 +199,7 @@ impl BezierPatch {
             degree_u,
             degree_v,
             ctrl,
+            project_grid: surface::GridCache::default(),
         })
     }
 
@@ -292,6 +313,7 @@ impl BezierPatch {
             degree_u: self.degree_v,
             degree_v: self.degree_u,
             ctrl,
+            project_grid: surface::GridCache::default(),
         }
     }
 
@@ -308,6 +330,7 @@ impl BezierPatch {
             degree_u: self.degree_u,
             degree_v: self.degree_v,
             ctrl,
+            project_grid: surface::GridCache::default(),
         }
     }
 
@@ -359,6 +382,7 @@ impl Bits for BezierPatch {
             degree_u,
             degree_v,
             ctrl,
+            project_grid: _,
         } = self;
         degree_u.push_bits(out);
         degree_v.push_bits(out);
