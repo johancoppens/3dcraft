@@ -157,6 +157,49 @@ impl BoxTree {
         }
         true
     }
+
+    /// True when an item whose box passes `test` also passes `pick`; the
+    /// search stops at the first. `test` must pass for a box whenever it
+    /// passes for a box inside it, so this is `any` over the items `search`
+    /// finds.
+    ///
+    /// Every item whose box passes is taken from `budget`; when there is
+    /// none left the search stops and returns `None`, with the last item
+    /// taken in `last`.
+    pub(crate) fn any(
+        &self,
+        test: impl Fn(&Box2) -> bool,
+        mut pick: impl FnMut(usize) -> bool,
+        budget: &mut usize,
+        last: &mut Option<usize>,
+    ) -> Option<bool> {
+        let mut stack = vec![0_usize];
+        while let Some(at) = stack.pop() {
+            let Some(node) = self.nodes.get(at) else {
+                continue;
+            };
+            if !test(&node.bbox) {
+                continue;
+            }
+            match node.children {
+                Some(below) => stack.extend(below),
+                None => {
+                    let items = self.items.get(node.first..node.end).unwrap_or(&[]);
+                    for &i in items {
+                        if self.boxes.get(i).is_some_and(&test) {
+                            let left = budget.checked_sub(1)?;
+                            *budget = left;
+                            *last = Some(i);
+                            if pick(i) {
+                                return Some(true);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Some(false)
+    }
 }
 
 #[cfg(test)]
@@ -206,6 +249,13 @@ mod tests {
                     .filter(|&i| overlap(q, &boxes[i]))
                     .collect();
                 assert_eq!(out, all);
+                // `any` agrees with `any` over every box, for a pick that
+                // passes for some of them.
+                let pick = |i: usize| i % 5 == 3;
+                let mut budget = usize::MAX;
+                let mut last = None;
+                let found = tree.any(|b| overlap(q, b), pick, &mut budget, &mut last);
+                assert_eq!(found, Some(all.iter().any(|&i| pick(i))));
             }
         }
     }
@@ -221,5 +271,14 @@ mod tests {
         let mut budget = 100;
         assert!(tree.search(|_| true, &mut out, &mut budget));
         assert_eq!((out.len(), budget), (100, 0));
+        let (mut budget, mut last) = (30, None);
+        assert_eq!(tree.any(|_| true, |_| false, &mut budget, &mut last), None);
+        assert_eq!(budget, 0);
+        let (mut budget, mut last) = (30, None);
+        assert_eq!(
+            tree.any(|_| true, |_| true, &mut budget, &mut last),
+            Some(true)
+        );
+        assert_eq!(budget, 29);
     }
 }

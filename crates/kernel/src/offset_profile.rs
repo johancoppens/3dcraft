@@ -23,11 +23,17 @@
 //! 3. This raw offset is cut at every point where two of its curves meet
 //!    (exact line and circle intersections); curves that follow each
 //!    other at a smooth joint or a closed gap only meet there and are not
-//!    intersected.
+//!    intersected. The pairs whose boxes overlap come from a tree of the
+//!    boxes ([`BoxTree`]) and are judged in the order of a sweep in x
+//!    over every pair (`offset_reference.rs` keeps that sweep as the
+//!    oracle), so the cuts are the same, in the same order.
 //! 4. A piece is kept when its middle is at distance `|d|` from the
 //!    outline (at least `|d| − tol/4`; a piece nearer to it lies inside the
 //!    offset region and is not its boundary), and, for `Sharp`, not inside
-//!    the wedge a mitre adds at another corner. The boundary of the offset
+//!    the wedge a mitre adds at another corner (the curves and wedges
+//!    that may be that near come from trees of their boxes, grown by
+//!    more than the distance and the rounding of the tests). The boundary
+//!    of the offset
 //!    region is a subset of the raw offset (the closest point of the
 //!    outline to a boundary point is inside a curve, whose offset passes
 //!    there, or a corner, whose arc does), so the kept pieces are exactly
@@ -51,6 +57,7 @@
 
 use crate::KernelError;
 use crate::MAX_REPORTED;
+use crate::boxtree::{Box2, BoxTree};
 use crate::profile::{Curve2, Profile, Segment, Shape, SketchCurve, detect_profiles};
 use craft3d_math::Tolerance;
 use std::f64::consts::{PI, TAU};
@@ -395,6 +402,19 @@ enum Bound {
 }
 
 impl Bound {
+    /// A box that holds the curve: an arc by its circle.
+    fn bbox(&self) -> Box2 {
+        match self {
+            Bound::Line { a, b } => [
+                a[0].min(b[0]),
+                a[1].min(b[1]),
+                a[0].max(b[0]),
+                a[1].max(b[1]),
+            ],
+            Bound::Arc { c, r, .. } => [c[0] - r, c[1] - r, c[0] + r, c[1] + r],
+        }
+    }
+
     fn distance(&self, p: P2) -> f64 {
         match self {
             Bound::Line { a, b } => {
@@ -434,6 +454,11 @@ struct Candidate {
 /// offset curves and the tip, a convex quadrilateral.
 struct Wedge {
     corner: [P2; 4],
+    /// The sine of the angle the corner turns through (at the tip the
+    /// wedge's angle is its supplement, with the same sine).
+    turn_sine: f64,
+    /// The two curves of the input that meet at the corner.
+    curves: [u64; 2],
 }
 
 impl Wedge {
@@ -635,6 +660,8 @@ fn raw_loop(
         }
         wedges.push(Wedge {
             corner: [v, p1, m, p2],
+            turn_sine: denominator.abs(),
+            curves: [a.source, b.source],
         });
         // The neighbours carried on to the tip: a line is lengthened, an
         // arc gets a straight piece.
@@ -764,14 +791,16 @@ fn boxes_overlap(a: [f64; 4], b: [f64; 4], tol: f64) -> bool {
     a[0] <= b[2] + tol && b[0] <= a[2] + tol && a[1] <= b[3] + tol && b[1] <= a[3] + tol
 }
 
-/// The input's curves, for distances.
-fn bounds(profiles: &[Profile]) -> Vec<Bound> {
+/// The input's curves, for distances, and the curve each is.
+fn outline_bounds(profiles: &[Profile]) -> (Vec<Bound>, Vec<u64>) {
     let mut out = Vec::new();
+    let mut ids = Vec::new();
     for lp in profiles
         .iter()
         .flat_map(|p| std::iter::once(&p.outer).chain(&p.holes))
     {
         for s in &lp.segments {
+            ids.push(s.source);
             out.push(match &s.shape {
                 Shape::Arc { center, radius } | Shape::Circle { center, radius } => {
                     let (begin, sweep) = s.angles().unwrap_or((0.0, TAU));
@@ -793,18 +822,381 @@ fn bounds(profiles: &[Profile]) -> Vec<Bound> {
             });
         }
     }
-    out
+    (out, ids)
 }
 
-/// The most pieces an offset outline may have. The raw offset is cut and
-/// its pieces are kept by comparing pairs of curves whose boxes overlap in
-/// x, which is quadratic in the worst case; this is what profile detection
-/// took when the offset was built (its own cap was raised on 2026-10-17,
-/// with a broad phase that the offset does not have yet).
-const MAX_PIECES: usize = 4096;
+/// The most pieces an offset outline may have: what profile detection
+/// takes ([`crate::profile::MAX_CURVES`]), which the pieces go through.
+/// Until 2026-10-17 it was [`OLD_MAX_PIECES`], when the cut and keep steps
+/// compared pairs swept in x.
+pub const MAX_PIECES: usize = crate::profile::MAX_CURVES;
 
-/// The most curves the raw offset may have.
-const MAX_RAW: usize = 4 * MAX_PIECES;
+/// The most curves the raw offset may have: a round corner adds an arc to
+/// a curve, a sharp one up to two straight pieces, so an input that
+/// profile detection takes stays below it.
+pub const MAX_RAW: usize = 4 * MAX_PIECES;
+
+/// The cap on pieces before the broad phase (until 2026-10-17): the work
+/// bounds are set from it, so that nothing it let through is refused.
+pub const OLD_MAX_PIECES: usize = 4096;
+
+/// The cap on the raw offset's curves before the broad phase.
+pub const OLD_MAX_RAW: usize = 4 * OLD_MAX_PIECES;
+
+/// The most pairs of curves of the raw offset whose boxes overlap that the
+/// cut step looks at, counted in both directions and each with itself: as
+/// many as [`OLD_MAX_RAW`] curves can have, so nothing accepted under that
+/// cap is refused for it.
+pub const MAX_PAIRS: usize = OLD_MAX_RAW * OLD_MAX_RAW;
+
+/// The most points where curves of the raw offset cross that the cut step
+/// keeps: each is kept twice, once on each curve, and makes a piece of
+/// each, so this bounds the memory and the work of the keep step (1.2 GB
+/// and 19 s to reach the bound in a release build, measured by
+/// `offset_scale.rs` › `a_bound_ends_the_search_for_a_distance`). A
+/// patterned sheet has a few per curve.
+pub const MAX_CUT_POINTS: usize = 1 << 24;
+
+/// The most curves of the input and mitre wedges near the middles of the
+/// pieces (within the boxes searched) that the keep step looks at, for all
+/// pieces together: the bound on its work (each costs a box test and at
+/// most one distance or wedge test, tens of nanoseconds, so seconds at the
+/// bound).
+pub const MAX_NEAR: usize = 1 << 28;
+
+/// The most curves the names of pieces may list in all (a piece of a curve
+/// that left several is named by the curves of the loop it closes): as
+/// many as an outline of [`OLD_MAX_PIECES`] pieces can have, so nothing
+/// accepted under that cap is refused for it.
+pub const MAX_NAMED: usize = OLD_MAX_PIECES * OLD_MAX_PIECES;
+
+/// The caps and the bounds on the work, as one value so that tests can
+/// meet each with a small input.
+#[derive(Clone, Copy, Debug)]
+struct Bounds {
+    pieces: usize,
+    raw: usize,
+    pairs: usize,
+    cut_points: usize,
+    near: usize,
+    named: usize,
+}
+
+const BOUNDS: Bounds = Bounds {
+    pieces: MAX_PIECES,
+    raw: MAX_RAW,
+    pairs: MAX_PAIRS,
+    cut_points: MAX_CUT_POINTS,
+    near: MAX_NEAR,
+    named: MAX_NAMED,
+};
+
+/// How the pairs that may meet are found.
+#[derive(Clone, Copy, Debug)]
+enum Search {
+    /// From trees of boxes ([`BoxTree`]), within the bounds.
+    Indexed(Bounds),
+    /// By sweeps in x and by testing every curve and wedge, as before
+    /// 2026-10-17: the reference the indexed search must agree with. Its
+    /// caps are [`BOUNDS`]'.
+    #[cfg(test)]
+    AllPairs,
+}
+
+impl Search {
+    fn bounds(self) -> Bounds {
+        match self {
+            Search::Indexed(bounds) => bounds,
+            #[cfg(test)]
+            Search::AllPairs => BOUNDS,
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "offset_reference.rs"]
+mod reference;
+
+/// The error when a bound on the work was crossed while judging the
+/// candidates `about` (the one judged first, then those found near it),
+/// named by the curves of the input they are offsets of.
+fn crowded(what: &'static str, limit: usize, about: impl IntoIterator<Item = u64>) -> KernelError {
+    let mut curves: Vec<u64> = Vec::new();
+    for id in about {
+        if curves.len() >= MAX_REPORTED {
+            break;
+        }
+        if !curves.contains(&id) {
+            curves.push(id);
+        }
+    }
+    curves.sort_unstable();
+    KernelError::CrowdedOffset {
+        what,
+        curves,
+        limit,
+    }
+}
+
+/// The input curves a list of candidates are offsets of.
+fn sources<'a>(
+    raw: &'a [Candidate],
+    which: impl IntoIterator<Item = usize> + 'a,
+) -> impl Iterator<Item = u64> + 'a {
+    which
+        .into_iter()
+        .filter_map(|k| raw.get(k))
+        .flat_map(|c| c.source.curves())
+}
+
+/// The largest size of a coordinate in the boxes.
+fn size_of(boxes: &[Box2]) -> f64 {
+    boxes.iter().flatten().fold(0.0_f64, |m, x| m.max(x.abs()))
+}
+
+/// Step 3: every candidate is cut where it meets another.
+///
+/// Two candidates are intersected when their boxes overlap within `tol`
+/// and they are not adjacent, in the order of a sweep in x: the candidates
+/// by the left side of their box (then index), and for each the ones after
+/// it. The pairs come from a [`BoxTree`] of the boxes, whose test is the
+/// sweep's own overlap test (it passes for a box whenever it passes for a
+/// box inside it), and the candidates found after a candidate are sorted
+/// by their place in the sweep, so every cut is recorded in the order the
+/// sweep records it.
+fn cut(
+    raw: &mut [Candidate],
+    boxes: &[Box2],
+    adjacent: &[(usize, usize)],
+    tol: f64,
+    bounds: Bounds,
+) -> Result<(), KernelError> {
+    let left = |i: usize| boxes.get(i).map_or(f64::NAN, |b| b[0]);
+    let mut order: Vec<usize> = (0..raw.len()).collect();
+    order.sort_by(|&i, &j| left(i).total_cmp(&left(j)).then(i.cmp(&j)));
+    let mut position = vec![0_usize; raw.len()];
+    for (at, &i) in order.iter().enumerate() {
+        if let Some(slot) = position.get_mut(i) {
+            *slot = at;
+        }
+    }
+    let tree = BoxTree::new(boxes.to_vec());
+    let mut pairs = bounds.pairs;
+    let mut points = 0_usize;
+    let (mut found, mut later, mut met) = (Vec::new(), Vec::new(), Vec::new());
+    for &i in &order {
+        let (Some(bi), Some(&at)) = (boxes.get(i), position.get(i)) else {
+            continue;
+        };
+        if !tree.search(|b| boxes_overlap(*bi, *b, tol), &mut found, &mut pairs) {
+            return Err(crowded(
+                "pairs of curves near one another",
+                bounds.pairs,
+                sources(raw, std::iter::once(i).chain(found.iter().copied())),
+            ));
+        }
+        later.clear();
+        for &j in &found {
+            if let Some(&place) = position.get(j)
+                && place > at
+            {
+                later.push((place, j));
+            }
+        }
+        later.sort_unstable();
+        for &(_, j) in &later {
+            let pair = if i < j { (i, j) } else { (j, i) };
+            if adjacent.binary_search(&pair).is_ok() {
+                continue;
+            }
+            met.clear();
+            let (Some(ci), Some(cj)) = (raw.get(i), raw.get(j)) else {
+                continue;
+            };
+            for p in meet(&ci.geo, &cj.geo) {
+                if !p.iter().all(|x| x.is_finite()) {
+                    continue;
+                }
+                if let (Some(ti), Some(tj)) = (ci.geo.param(p, tol), cj.geo.param(p, tol)) {
+                    met.push((ti, tj, p));
+                }
+            }
+            for &(ti, tj, p) in &met {
+                points += 1;
+                if points > bounds.cut_points {
+                    return Err(crowded(
+                        "points where its curves cross",
+                        bounds.cut_points,
+                        sources(raw, [i, j]),
+                    ));
+                }
+                if let Some(c) = raw.get_mut(i) {
+                    c.cuts.push((ti, p));
+                }
+                if let Some(c) = raw.get_mut(j) {
+                    c.cuts.push((tj, p));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The trees of step 4: of the input's curves, each box grown so that it
+/// holds every point a curve's distance test can put within `keep_from`
+/// of it, and of the mitre wedges, each box grown so that it holds every
+/// point the wedge's test can find inside it.
+struct Near {
+    curves: BoxTree,
+    wedges: BoxTree,
+    left: usize,
+    limit: usize,
+}
+
+/// Step 4's test: a piece is kept when its middle is at least `keep_from`
+/// from every curve of the input and not inside a mitre wedge by more than
+/// `margin`.
+struct Judge<'a> {
+    outline: &'a [Bound],
+    /// The curve of the input each of `outline` is.
+    ids: &'a [u64],
+    wedges: &'a [Wedge],
+    keep_from: f64,
+    margin: f64,
+    /// `None` for the reference, which tests every curve and wedge.
+    near: Option<Near>,
+}
+
+/// How far, relative to the largest coordinate, the rounding of the
+/// distance and wedge tests may move what they find: a few products,
+/// differences and a square root of coordinates and their differences,
+/// each within half a unit in the last place, with ample room (64 units).
+const TEST_ROUNDING: f64 = 64.0 * f64::EPSILON;
+
+impl<'a> Judge<'a> {
+    /// `size` is the largest coordinate of the curves of the raw offset
+    /// and of the input, which the middles of pieces lie on and near.
+    fn new(
+        search: Search,
+        outline: &'a [Bound],
+        ids: &'a [u64],
+        wedges: &'a [Wedge],
+        keep_from: f64,
+        margin: f64,
+        size: f64,
+    ) -> Judge<'a> {
+        let near = match search {
+            Search::Indexed(bounds) => {
+                // The tests are exact up to `rounding`. A point a curve's
+                // test puts within `keep_from` of it is within
+                // `keep_from + rounding` of a point of the curve (the
+                // nearest point of a line, or of a circle, lies in its
+                // box), so in its box grown by that; twice `keep_from`
+                // leaves room for the rounding of the distance itself.
+                let rounding = TEST_ROUNDING * size;
+                let grow = |b: Box2, by: f64| [b[0] - by, b[1] - by, b[2] + by, b[3] + by];
+                let curves = outline
+                    .iter()
+                    .map(|b| grow(b.bbox(), 2.0 * keep_from + rounding))
+                    .collect();
+                // A point the wedge's test finds inside is within
+                // `rounding` of the inside of each side (the test is exact
+                // up to that, and asks for more than `margin` > 0), so
+                // within the wedge grown by the rounding over the sine of
+                // half its sharpest angle. The two at the offset curves
+                // are right angles; the corner's and the tip's add up to
+                // half a turn and have the sine of the turn, which is at
+                // most twice the sine of half of either; four times leaves
+                // room for the rounding of the sine. A sine of 0 (or NaN)
+                // grows the box to everything: the wedge is then tested
+                // with every point, as the reference does.
+                let wedge_boxes = wedges
+                    .iter()
+                    .map(|w| {
+                        let mut b = [
+                            f64::INFINITY,
+                            f64::INFINITY,
+                            f64::NEG_INFINITY,
+                            f64::NEG_INFINITY,
+                        ];
+                        for q in &w.corner {
+                            b = [
+                                b[0].min(q[0]),
+                                b[1].min(q[1]),
+                                b[2].max(q[0]),
+                                b[3].max(q[1]),
+                            ];
+                        }
+                        let sharp = if w.turn_sine > 0.0 {
+                            4.0 * rounding / w.turn_sine.min(1.0)
+                        } else {
+                            f64::INFINITY
+                        };
+                        grow(b, margin + rounding + sharp)
+                    })
+                    .collect();
+                Some(Near {
+                    curves: BoxTree::new(curves),
+                    wedges: BoxTree::new(wedge_boxes),
+                    left: bounds.near,
+                    limit: bounds.near,
+                })
+            }
+            #[cfg(test)]
+            Search::AllPairs => None,
+        };
+        Judge {
+            outline,
+            ids,
+            wedges,
+            keep_from,
+            margin,
+            near,
+        }
+    }
+
+    /// True when the piece whose middle is `p` is kept; `about` is the
+    /// candidate it is a piece of, for the error.
+    fn keeps(&mut self, p: P2, about: OffsetSource) -> Result<bool, KernelError> {
+        let (outline, keep_from) = (self.outline, self.keep_from);
+        let (wedges, margin) = (self.wedges, self.margin);
+        let Some(near) = &mut self.near else {
+            return Ok(!(outline.iter().any(|b| b.distance(p) < keep_from)
+                || wedges.iter().any(|w| w.contains(p, margin))));
+        };
+        let holds = |b: &Box2| b[0] <= p[0] && p[0] <= b[2] && b[1] <= p[1] && p[1] <= b[3];
+        let limit = near.limit;
+        let crowded_about = |last: Option<Vec<u64>>| {
+            crowded(
+                "curves near the middles of its pieces",
+                limit,
+                about.curves().into_iter().chain(last.into_iter().flatten()),
+            )
+        };
+        let mut last = None;
+        let near_curve = |i: usize| outline.get(i).is_some_and(|b| b.distance(p) < keep_from);
+        match near
+            .curves
+            .any(holds, near_curve, &mut near.left, &mut last)
+        {
+            None => {
+                return Err(crowded_about(
+                    last.and_then(|i| self.ids.get(i)).map(|&id| vec![id]),
+                ));
+            }
+            Some(true) => return Ok(false),
+            Some(false) => {}
+        }
+        last = None;
+        let in_wedge = |i: usize| wedges.get(i).is_some_and(|w| w.contains(p, margin));
+        match near.wedges.any(holds, in_wedge, &mut near.left, &mut last) {
+            None => Err(crowded_about(
+                last.and_then(|i| wedges.get(i)).map(|w| w.curves.to_vec()),
+            )),
+            Some(found) => Ok(!found),
+        }
+    }
+}
 
 /// One try at distance `d`: the outline, or why there is none.
 fn attempt(
@@ -812,7 +1204,9 @@ fn attempt(
     d: f64,
     corners: Corners,
     tolerance: &Tolerance,
+    search: Search,
 ) -> Result<OffsetOutline, KernelError> {
+    let bounds = search.bounds();
     let tol = tolerance.linear;
     let loops: Vec<&crate::profile::Loop2> = profiles
         .iter()
@@ -822,10 +1216,10 @@ fn attempt(
     let mut made = Raw::default();
     for (lp, l) in loops.iter().enumerate() {
         raw_loop(&l.segments, lp, d, corners, tol, &mut made)?;
-        if made.candidates.len() > MAX_RAW {
+        if made.candidates.len() > bounds.raw {
             return Err(KernelError::TooManyOffsetCurves {
                 count: made.candidates.len(),
-                limit: MAX_RAW,
+                limit: bounds.raw,
             });
         }
     }
@@ -842,52 +1236,31 @@ fn attempt(
     adjacent.sort_unstable();
     adjacent.dedup();
 
-    // 3. Cut at every meeting, sweeping by the boxes' left sides.
+    // 3. Cut at every meeting, in the order of a sweep by the boxes' left
+    // sides.
     let boxes: Vec<[f64; 4]> = raw.iter().map(|c| c.geo.bbox()).collect();
-    let mut order: Vec<usize> = (0..raw.len()).collect();
-    let left = |i: usize| boxes.get(i).map_or(f64::NAN, |b| b[0]);
-    order.sort_by(|&i, &j| left(i).total_cmp(&left(j)).then(i.cmp(&j)));
-    let mut cuts: Vec<(usize, f64, P2)> = Vec::new();
-    for (position, &i) in order.iter().enumerate() {
-        let (Some(bi), Some(ci)) = (boxes.get(i), raw.get(i)) else {
-            continue;
-        };
-        for &j in order.iter().skip(position + 1) {
-            let (Some(bj), Some(cj)) = (boxes.get(j), raw.get(j)) else {
-                continue;
-            };
-            if bj[0] > bi[2] + tol {
-                break;
-            }
-            if !boxes_overlap(*bi, *bj, tol) {
-                continue;
-            }
-            let pair = if i < j { (i, j) } else { (j, i) };
-            if adjacent.binary_search(&pair).is_ok() {
-                continue;
-            }
-            for p in meet(&ci.geo, &cj.geo) {
-                if !p.iter().all(|x| x.is_finite()) {
-                    continue;
-                }
-                if let (Some(ti), Some(tj)) = (ci.geo.param(p, tol), cj.geo.param(p, tol)) {
-                    cuts.push((i, ti, p));
-                    cuts.push((j, tj, p));
-                }
-            }
-        }
-    }
-    for (i, t, p) in cuts {
-        if let Some(c) = raw.get_mut(i) {
-            c.cuts.push((t, p));
-        }
+    match search {
+        Search::Indexed(bounds) => cut(&mut raw, &boxes, &adjacent, tol, bounds)?,
+        #[cfg(test)]
+        Search::AllPairs => reference::cut(&mut raw, &boxes, &adjacent, tol),
     }
 
     // 4. The pieces, kept by their distance from the outline.
-    let outline = bounds(profiles);
+    let (outline, outline_ids) = outline_bounds(profiles);
     let reach = d.abs();
     let keep_from = reach - tol / 4.0;
-    let near = |p: P2| outline.iter().any(|b| b.distance(p) < keep_from);
+    let size = size_of(&boxes).max(size_of(
+        &outline.iter().map(Bound::bbox).collect::<Vec<_>>(),
+    ));
+    let mut judge = Judge::new(
+        search,
+        &outline,
+        &outline_ids,
+        &wedges,
+        keep_from,
+        tol / 4.0,
+        size,
+    );
     let mut pieces: Vec<(Geo, OffsetSource, usize)> = Vec::new();
     for candidate in &mut raw {
         let geo = &candidate.geo;
@@ -935,14 +1308,14 @@ fn attempt(
         }
         if stretches.is_empty() {
             let middle = geo.point_at(0.5);
-            if !near(middle) && !wedges.iter().any(|w| w.contains(middle, tol / 4.0)) {
+            if judge.keeps(middle, candidate.source)? {
                 pieces.push((geo.clone(), candidate.source, candidate.lp));
             }
             continue;
         }
         for (ta, tb, pa, pb) in stretches {
             let middle = geo.point_at((ta + tb) / 2.0);
-            if near(middle) || wedges.iter().any(|w| w.contains(middle, tol / 4.0)) {
+            if !judge.keeps(middle, candidate.source)? {
                 continue;
             }
             pieces.push((geo.piece(ta, tb, pa, pb), candidate.source, candidate.lp));
@@ -1007,10 +1380,10 @@ fn attempt(
         out.truncate(MAX_REPORTED);
         out
     };
-    if curves.len() > MAX_PIECES {
+    if curves.len() > bounds.pieces {
         return Err(KernelError::TooManyOffsetCurves {
             count: curves.len(),
-            limit: MAX_PIECES,
+            limit: bounds.pieces,
         });
     }
     let found = detect_profiles(&curves, tolerance).map_err(|error| {
@@ -1067,6 +1440,7 @@ fn attempt(
     for origin in &origins {
         *count.entry(origin.source).or_insert(0) += 1;
     }
+    let mut named = 0_usize;
     for lp in found
         .iter()
         .flat_map(|p| std::iter::once(&p.outer).chain(&p.holes))
@@ -1081,6 +1455,19 @@ fn attempt(
             if let Some(origin) = origins.get_mut(i)
                 && count.get(&origin.source).is_some_and(|&n| n > 1)
             {
+                // Each such piece lists the loop's curves: bounded in all.
+                named = named.saturating_add(within.len());
+                if named > bounds.named {
+                    return Err(crowded(
+                        "curves listed in the names of its pieces (pieces of one curve in long loops)",
+                        bounds.named,
+                        origin
+                            .source
+                            .curves()
+                            .into_iter()
+                            .chain(within.iter().copied()),
+                    ));
+                }
                 origin.within = Some(within.clone());
             }
         }
@@ -1171,15 +1558,17 @@ fn largest_whole(
     d: f64,
     corners: Corners,
     tolerance: &Tolerance,
+    search: Search,
 ) -> Result<f64, KernelError> {
     let whole = |t: f64| {
         if t.abs() <= tolerance.linear {
             return Ok(true);
         }
-        match attempt(profiles, t, corners, tolerance) {
+        match attempt(profiles, t, corners, tolerance, search) {
             Ok(o) => Ok(o.is_whole()),
             Err(
                 e @ (KernelError::TooManyOffsetCurves { .. }
+                | KernelError::CrowdedOffset { .. }
                 | KernelError::TooManyCurves { .. }
                 | KernelError::CrowdedCurves { .. }),
             ) => Err(e),
@@ -1208,6 +1597,16 @@ pub fn offset_profiles(
     d: f64,
     corners: Corners,
     tolerance: &Tolerance,
+) -> Result<OffsetOutline, KernelError> {
+    offset_with(profiles, d, corners, tolerance, Search::Indexed(BOUNDS))
+}
+
+fn offset_with(
+    profiles: &[Profile],
+    d: f64,
+    corners: Corners,
+    tolerance: &Tolerance,
+    search: Search,
 ) -> Result<OffsetOutline, KernelError> {
     let tol = tolerance.linear;
     if !(tol.is_finite() && tol > 0.0) {
@@ -1266,13 +1665,13 @@ pub fn offset_profiles(
         return Err(KernelError::OffsetProfile {
             reason: "leaves nothing of a region",
             curves,
-            largest: largest_whole(profiles, -reach, corners, tolerance).ok(),
+            largest: largest_whole(profiles, -reach, corners, tolerance, search).ok(),
         });
     }
-    match attempt(profiles, d, corners, tolerance) {
+    match attempt(profiles, d, corners, tolerance, search) {
         Ok(mut outline) => {
             if !outline.is_whole() {
-                outline.whole_up_to = largest_whole(profiles, d, corners, tolerance).ok();
+                outline.whole_up_to = largest_whole(profiles, d, corners, tolerance, search).ok();
             }
             Ok(outline)
         }
@@ -1284,7 +1683,7 @@ pub fn offset_profiles(
             Err(KernelError::OffsetProfile {
                 reason,
                 curves,
-                largest: largest_whole(profiles, d, corners, tolerance).ok(),
+                largest: largest_whole(profiles, d, corners, tolerance, search).ok(),
             })
         }
         Err(other) => Err(other),

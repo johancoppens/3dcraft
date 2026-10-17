@@ -79,6 +79,18 @@ pub(crate) fn build(
                     "distance: the offset of sketch `{}` has {count} curves, more than an offset of profiles takes ({limit}); corners: sharp adds none where lines meet",
                     made.name
                 ),
+                KernelError::CrowdedOffset {
+                    what,
+                    curves,
+                    limit,
+                } => {
+                    let names: Vec<String> = curves.iter().map(|c| curve_name(*c)).collect();
+                    format!(
+                        "distance: the curves of the offset of sketch `{}` lie too close together: it would have more than {limit} {what} (at {}); use a smaller distance, or fewer curves near these",
+                        made.name,
+                        names.join(", ")
+                    )
+                }
                 other => format!("distance: {other}"),
             }
         })?;

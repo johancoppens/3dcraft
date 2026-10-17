@@ -784,6 +784,19 @@ fn every_error_says_what_to_look_at() {
             &["4200", "4096", "offset"],
         ),
         (
+            KernelError::CrowdedOffset {
+                what: "points where its curves cross",
+                curves: vec![2, 11],
+                limit: 16777216,
+            },
+            &[
+                "16777216",
+                "points where its curves cross",
+                "2, 11",
+                "offset",
+            ],
+        ),
+        (
             KernelError::InvalidOffsets { from: 2.0, to: 1.0 },
             &["from 2 to 1"],
         ),

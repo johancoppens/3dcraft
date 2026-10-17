@@ -82,6 +82,18 @@ pub enum KernelError {
         count: usize,
         limit: usize,
     },
+    /// The raw offset of profiles has more of something than an offset
+    /// compares (a bound on its work, far above what drawn or patterned
+    /// sketches need): `what` says what, `limit` how many it takes.
+    ///
+    /// `curves` are the curves of the input (the sketch's) whose offsets
+    /// were judged when the bound was crossed (at most [`MAX_REPORTED`],
+    /// ascending).
+    CrowdedOffset {
+        what: &'static str,
+        curves: Vec<u64>,
+        limit: usize,
+    },
     /// Two curves were given the same id.
     DuplicateCurveId {
         id: u64,
@@ -335,6 +347,16 @@ impl fmt::Display for KernelError {
             KernelError::TooManyOffsetCurves { count, limit } => write!(
                 f,
                 "the offset outline would have {count} curves, more than an offset of profiles takes ({limit})"
+            ),
+            KernelError::CrowdedOffset {
+                what,
+                curves,
+                limit,
+            } => write!(
+                f,
+                "the offset's curves lie too close together: it would have more than {limit} {what} (about curves {}); \
+                 use a smaller distance, or fewer curves near these",
+                id_list(curves)
             ),
             KernelError::DuplicateCurveId { id } => {
                 write!(f, "two curves have the same id {id}")
