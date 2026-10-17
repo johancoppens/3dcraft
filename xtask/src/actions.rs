@@ -13,9 +13,13 @@
 //! wrong (built, but the check or the identity fails), crash or timeout.
 //! The ratchet (`crates/engine/tests/action_matrix/ratchet.json`) holds,
 //! per model and kind, the entities that succeeded; one of them that does
-//! not succeed now is a regression and fails the run. `--update` adds the
-//! ones that newly succeed (raising the floor); nothing is ever taken out
-//! here.
+//! not succeed now is a regression and fails the run, and so does an entry
+//! that was not tried (gone, not planned, its model skipped or a worker
+//! lost). `--update` adds the ones that newly succeed in under a third of
+//! the time limit (raising the floor), `--raise` does it later from the
+//! last run's results when they are of the commit checked out; nothing is
+//! ever taken out here. A ratchet entry that times out is run once more
+//! alone with four times the limit before it counts.
 //!
 //! What it leaves in `<main checkout>/target/actions/`: `summary.json`
 //! (read by `cargo xtask health`), `results/<model>.jsonl` (one line per
@@ -287,11 +291,7 @@ impl Worker {
             }
             None => Command::new(&launch.cli),
         };
-        let stderr = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(launch.logs.join(log))
-            .map_or_else(|_| Stdio::null(), Stdio::from);
+        let stderr = log_file(launch, log);
         let mut child = command
             .arg("serve")
             .arg("--automation-read-root")
@@ -423,7 +423,11 @@ fn prepare(
     out: &Path,
     launch: &Launch,
     limit: Duration,
-) -> Result<(PathBuf, Option<PathBuf>), String> {
+) -> Result<(PathBuf, Option<PathBuf>), Skip> {
+    let fail = |why: String| Skip {
+        why,
+        missing: false,
+    };
     let steps = match model.source {
         Source::Steps(path) => repo.join(path),
         Source::WorkSteps(path) => main.join("target/work").join(path),
@@ -432,12 +436,19 @@ fn prepare(
             return if file.is_file() {
                 Ok((file, None))
             } else {
-                Err(format!("{} is not there", file.display()))
+                // Not in the repository: missing here is a warning.
+                Err(Skip {
+                    why: format!("{} is not there", file.display()),
+                    missing: true,
+                })
             };
         }
     };
     if !steps.is_file() {
-        return Err(format!("{} is not there", steps.display()));
+        return Err(Skip {
+            why: format!("{} is not there", steps.display()),
+            missing: matches!(model.source, Source::WorkSteps(_)),
+        });
     }
     let file = out.join("models").join(format!("{}.3dcraft", model.name));
     let _ = std::fs::remove_file(&file);
@@ -456,9 +467,9 @@ fn prepare(
         .arg("--out")
         .arg(&file)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(log_file(launch, &format!("{}-prepare.log", model.name)))
         .spawn()
-        .map_err(|e| format!("cannot run {}: {e}", launch.cli.display()))?;
+        .map_err(|e| fail(format!("cannot run {}: {e}", launch.cli.display())))?;
     let until = Instant::now() + limit;
     let status = loop {
         match child.try_wait() {
@@ -467,23 +478,40 @@ fn prepare(
             Ok(None) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!(
+                return Err(fail(format!(
                     "building {} from its steps took more than {} s",
                     model.name,
                     limit.as_secs()
-                ));
+                )));
             }
-            Err(e) => return Err(format!("building {}: {e}", model.name)),
+            Err(e) => return Err(fail(format!("building {}: {e}", model.name))),
         }
     };
     if status.success() && file.is_file() {
         Ok((file, Some(steps)))
     } else {
-        Err(format!(
-            "building {} from its steps failed ({status})",
-            model.name
-        ))
+        Err(fail(format!(
+            "building {} from its steps failed ({status}; logs/{}-prepare.log)",
+            model.name, model.name
+        )))
     }
+}
+
+/// Why a model was not run.
+struct Skip {
+    why: String,
+    /// Its input is not there and is not in the repository (`target/work`):
+    /// a warning, not a failure.
+    missing: bool,
+}
+
+/// A log file of `launch`, appended to; nowhere when it cannot be opened.
+fn log_file(launch: &Launch, name: &str) -> Stdio {
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(launch.logs.join(name))
+        .map_or_else(|_| Stdio::null(), Stdio::from)
 }
 
 /// One action's line in the results.
@@ -491,11 +519,30 @@ struct Record {
     action: Action,
     outcome: Outcome,
     seconds: f64,
+    /// The time limit of each call it made.
+    limit: f64,
+    /// Run again alone after a timeout ([`retry_timeouts`]).
+    retried: bool,
+}
+
+impl Record {
+    /// Whether it may go into the ratchet: ok, in under a third of its
+    /// limit, so that a slower day does not make it a timeout.
+    fn ratchets(&self) -> bool {
+        self.outcome.verdict == Verdict::Ok && self.seconds < self.limit / 3.0
+    }
 }
 
 #[derive(Default)]
 struct ModelReport {
-    skipped: Option<String>,
+    skipped: Option<Skip>,
+    /// What kept actions from being planned or run: each fails the run.
+    problems: Vec<String>,
+    /// Bodies that are not solids (sheets): no action is planned on them.
+    sheets: usize,
+    /// Bodies whose edges were not all listed (`document.edges` lists 2000
+    /// at most).
+    truncated: usize,
     seconds: f64,
     load_seconds: f64,
     bodies: usize,
@@ -512,17 +559,20 @@ fn run_model(
     file: &Path,
     first: Worker,
     actions: Vec<Action>,
+    problems: &mut Vec<String>,
 ) -> Vec<Record> {
     let total = actions.len();
     let queue = Mutex::new(actions.into_iter().collect::<VecDeque<Action>>());
     let (send, receive) = channel::<Record>();
     let jobs = o.jobs.min(total).max(1);
     let mut records = Vec::with_capacity(total);
+    let failures = Mutex::new(Vec::new());
     std::thread::scope(|scope| {
         let mut first = Some(first);
         for job in 0..jobs {
             let send = send.clone();
             let queue = &queue;
+            let failures = &failures;
             let given = first.take();
             scope.spawn(move || {
                 let log = format!("{}-{job}.log", model.name);
@@ -547,6 +597,12 @@ fn run_model(
                                     .lock()
                                     .unwrap_or_else(PoisonError::into_inner)
                                     .push_front(action);
+                                failures
+                                    .lock()
+                                    .unwrap_or_else(PoisonError::into_inner)
+                                    .push(format!(
+                                        "worker {job} could not open the model again: {e}"
+                                    ));
                                 break;
                             }
                         }
@@ -565,6 +621,8 @@ fn run_model(
                         action,
                         outcome,
                         seconds: start.elapsed().as_secs_f64(),
+                        limit: o.timeout.as_secs_f64(),
+                        retried: false,
                     };
                     if send.send(record).is_err() {
                         break;
@@ -583,9 +641,64 @@ fn run_model(
             }
         }
     });
+    problems.extend(
+        failures
+            .into_inner()
+            .unwrap_or_else(PoisonError::into_inner),
+    );
+    let left = queue
+        .into_inner()
+        .unwrap_or_else(PoisonError::into_inner)
+        .len();
+    if left > 0 {
+        problems.push(format!(
+            "{left} actions were not run: no worker could take them"
+        ));
+    }
     records
         .sort_by(|a, b| (a.action.kind, &a.action.entity).cmp(&(b.action.kind, &b.action.entity)));
     records
+}
+
+/// Runs the ratchet's entries that timed out once more, each alone in a
+/// fresh worker with four times the limit, so that a slow machine is not
+/// taken for a regression; the record keeps what that run says.
+fn retry_timeouts(
+    o: &Options,
+    launch: &Launch,
+    model: &Model,
+    file: &Path,
+    records: &mut [Record],
+    keep: &dyn Fn(Kind, &str) -> bool,
+) {
+    for record in records.iter_mut() {
+        if record.outcome.verdict != Verdict::Timeout
+            || !keep(record.action.kind, &record.action.entity)
+        {
+            continue;
+        }
+        let log = format!("{}-retry.log", model.name);
+        let Ok((mut worker, _)) = open(launch, &log, file, o.load_timeout) else {
+            continue;
+        };
+        let limit = o.timeout * 4;
+        let start = Instant::now();
+        let mut call = |id: &str, params: &Value| worker.call(id, params, limit);
+        let outcome = plan::run_action(&mut call, &record.action);
+        eprintln!(
+            "actions: {}: {} on {} timed out; alone with {} s: {}",
+            model.name,
+            record.action.kind.as_str(),
+            record.action.entity,
+            limit.as_secs(),
+            outcome.verdict.as_str()
+        );
+        record.outcome = outcome;
+        record.seconds = start.elapsed().as_secs_f64();
+        record.limit = limit.as_secs_f64();
+        record.retried = true;
+        worker.stop();
+    }
 }
 
 /// What a program prints, trimmed; "unknown" when it fails.
@@ -660,20 +773,64 @@ fn reproducer(
     Some(path)
 }
 
-fn read_ratchet(repo: &Path) -> Ratchet {
-    std::fs::read_to_string(repo.join(RATCHET))
-        .ok()
-        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-        .map(|v| plan::ratchet_from(&v))
-        .unwrap_or_default()
+fn read_ratchet(repo: &Path) -> Result<Ratchet, String> {
+    let path = repo.join(RATCHET);
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| format!("cannot read the ratchet {}: {e}", path.display()))?;
+    let value: Value = serde_json::from_str(&text)
+        .map_err(|e| format!("the ratchet {} is not JSON: {e}", path.display()))?;
+    plan::ratchet_from(&value).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// Adds to the ratchet what the last run's results say succeeded, for the
-/// models asked for: the same as `--update` at the end of that run.
+/// Adds to the ratchet what the last run's results say succeeded (in
+/// under a third of the limit), for the models asked for: the same as
+/// `--update` at the end of that run. Refused when the results are not of
+/// the commit checked out, or when that run had regressions or problems.
 fn raise(o: &Options, repo: &Path, out: &Path) -> Result<(), String> {
-    let mut ratchet = read_ratchet(repo);
+    let summary_path = out.join("summary.json");
+    let summary: Value = std::fs::read_to_string(&summary_path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .ok_or_else(|| format!("no summary of a run at {}", summary_path.display()))?;
+    let head = shell(repo, "git", &["rev-parse", "--short", "HEAD"]);
+    let of = summary
+        .get("commit")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    if of != head || summary.get("dirty").and_then(Value::as_bool) != Some(false) {
+        return Err(format!(
+            "the last run is of {of}{}, not of {head} as checked out: run again",
+            if summary.get("dirty").and_then(Value::as_bool) == Some(false) {
+                ""
+            } else {
+                " with changes not committed"
+            }
+        ));
+    }
+    let count = |key: &str| {
+        summary
+            .get(key)
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len)
+    };
+    if count("regressions") > 0 || count("problems") > 0 {
+        return Err(format!(
+            "the last run had {} regressions and {} problems: nothing is raised over them",
+            count("regressions"),
+            count("problems")
+        ));
+    }
+    let mut ratchet = read_ratchet(repo)?;
     let mut added = 0_usize;
     for model in &o.models {
+        if summary
+            .get("models")
+            .and_then(|m| m.get(model.name))
+            .is_none()
+        {
+            println!("{}: not in the last run", model.name);
+            continue;
+        }
         let path = out.join("results").join(format!("{}.jsonl", model.name));
         let Ok(text) = std::fs::read_to_string(&path) else {
             println!("{}: no results ({})", model.name, path.display());
@@ -682,7 +839,7 @@ fn raise(o: &Options, repo: &Path, out: &Path) -> Result<(), String> {
         let mut here = 0_usize;
         for line in text.lines() {
             let Ok(record) = serde_json::from_str::<Value>(line) else {
-                continue;
+                return Err(format!("{}: a line that is not JSON", path.display()));
             };
             let field = |key: &str| record.get(key).and_then(Value::as_str);
             let (Some("ok"), Some(kind), Some(entity)) =
@@ -690,6 +847,14 @@ fn raise(o: &Options, repo: &Path, out: &Path) -> Result<(), String> {
             else {
                 continue;
             };
+            let seconds = record.get("seconds").and_then(Value::as_f64);
+            let limit = record.get("limit").and_then(Value::as_f64);
+            let (Some(seconds), Some(limit)) = (seconds, limit) else {
+                continue;
+            };
+            if seconds >= limit / 3.0 {
+                continue;
+            }
             let set = ratchet
                 .entry(model.name.to_string())
                 .or_default()
@@ -740,7 +905,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
         cap,
         logs: out.join("logs"),
     };
-    let ratchet = read_ratchet(&repo);
+    let ratchet = read_ratchet(&repo)?;
     let mut reports: BTreeMap<&str, ModelReport> = BTreeMap::new();
     let mut sources: BTreeMap<&str, (PathBuf, Option<PathBuf>)> = BTreeMap::new();
     for model in &o.models {
@@ -750,9 +915,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
         let prepared = prepare(model, &repo, &main, &out, &launch, o.load_timeout);
         let (file, steps) = match prepared {
             Ok(p) => p,
-            Err(e) => {
-                eprintln!("actions: {}: skipped: {e}", model.name);
-                report.skipped = Some(e);
+            Err(skip) => {
+                eprintln!("actions: {}: skipped: {}", model.name, skip.why);
+                report.skipped = Some(skip);
                 reports.insert(model.name, report);
                 continue;
             }
@@ -768,7 +933,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
             Ok(w) => w,
             Err(e) => {
                 eprintln!("actions: {}: skipped: {e}", model.name);
-                report.skipped = Some(e);
+                report.skipped = Some(Skip {
+                    why: e,
+                    missing: false,
+                });
                 reports.insert(model.name, report);
                 continue;
             }
@@ -776,20 +944,35 @@ pub fn run(args: &[String]) -> Result<(), String> {
         let unit = plan::length_unit(&inspect);
         let bodies = plan::bodies(&inspect);
         let mut actions = Vec::new();
+        if bodies.len()
+            != inspect
+                .get("bodies")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len)
+        {
+            report
+                .problems
+                .push("a body of document.inspect could not be read".to_string());
+        }
+        report.sheets = bodies.iter().filter(|b| !b.solid).count();
         for body in bodies.iter().filter(|b| b.solid) {
             let edges = match worker.call(
                 "document.edges",
                 &json!({"feature": body.feature}),
                 o.load_timeout,
             ) {
-                Ok(answer) => plan::edges(&answer),
+                Ok(answer) => {
+                    if answer.get("truncated").and_then(Value::as_bool) == Some(true) {
+                        report.truncated += 1;
+                    }
+                    plan::edges(&answer)
+                }
                 Err(e) => {
-                    eprintln!(
-                        "actions: {}: no edges of {}: {}",
-                        model.name,
+                    report.problems.push(format!(
+                        "no edges of {}: {}",
                         body.feature,
                         call_text(&e)
-                    );
+                    ));
                     Vec::new()
                 }
             };
@@ -810,7 +993,14 @@ pub fn run(args: &[String]) -> Result<(), String> {
             "actions: {}: {} bodies, {} faces, {} actions (loaded in {:.0} s)",
             model.name, report.bodies, report.faces, report.planned, report.load_seconds
         );
-        report.records = run_model(&o, &launch, model, &file, worker, chosen);
+        let mut problems = std::mem::take(&mut report.problems);
+        let mut records = run_model(&o, &launch, model, &file, worker, chosen, &mut problems);
+        retry_timeouts(&o, &launch, model, &file, &mut records, &keep);
+        report.records = records;
+        report.problems = problems;
+        for p in &report.problems {
+            eprintln!("actions: {}: {p}", model.name);
+        }
         report.seconds = model_start.elapsed().as_secs_f64();
         let mut lines = String::new();
         for r in &report.records {
@@ -818,6 +1008,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 "kind": r.action.kind.as_str(), "body": r.action.body, "entity": r.action.entity,
                 "verdict": r.outcome.verdict.as_str(), "reason": r.outcome.reason,
                 "class": plan::reason_class(&r.outcome.reason), "seconds": r.seconds,
+                "limit": r.limit, "retried": r.retried,
+                "v0": r.action.volume, "a0": r.action.area,
+                "v1": r.outcome.after.map(|a| a.0), "a1": r.outcome.after.map(|a| a.1),
                 "command": r.action.command, "params": r.action.params,
             });
             let _ = writeln!(lines, "{line}");
@@ -854,6 +1047,9 @@ fn finish(
     let mut refusals: BTreeMap<String, usize> = BTreeMap::new();
     let mut bad: BTreeMap<&str, Vec<Value>> = BTreeMap::new();
     let mut regressions = Vec::new();
+    let mut problems: Vec<Value> = Vec::new();
+    let mut skipped: Vec<Value> = Vec::new();
+    let mut not_tried_total = 0_usize;
     let mut newly: Ratchet = Ratchet::new();
     let mut models_json = serde_json::Map::new();
     let mut table = String::new();
@@ -863,10 +1059,26 @@ fn finish(
     );
     let _ = writeln!(table, "|---|---|---:|---:|---:|---:|---:|");
     for (name, report) in reports {
-        if let Some(why) = &report.skipped {
-            models_json.insert((*name).to_string(), json!({"skipped": why}));
+        if let Some(skip) = &report.skipped {
+            let why = &skip.why;
+            let floor: usize = ratchet
+                .get(*name)
+                .map_or(0, |k| k.values().map(BTreeSet::len).sum());
+            models_json.insert(
+                (*name).to_string(),
+                json!({"skipped": why, "missing": skip.missing, "ratchetNotTried": floor}),
+            );
             let _ = writeln!(table, "| {name} | skipped: {why} | | | | | |");
+            skipped.push(json!({"model": name, "why": why, "missing": skip.missing}));
+            // A model of the ratchet that could not be run hides whatever
+            // regressed in it, unless its input is simply not here.
+            if !skip.missing && floor > 0 {
+                problems.push(json!({"model": name, "problem": format!("skipped with {floor} entries of the ratchet: {why}")}));
+            }
             continue;
+        }
+        for p in &report.problems {
+            problems.push(json!({"model": name, "problem": p}));
         }
         let mut kinds_json = serde_json::Map::new();
         let mut per_kind: BTreeMap<Kind, BTreeMap<Verdict, usize>> = BTreeMap::new();
@@ -883,7 +1095,9 @@ fn finish(
             tried.entry(kind).or_default().insert(&r.action.entity, r);
             match r.outcome.verdict {
                 Verdict::Ok => {
-                    ok_now.entry(kind).or_default().insert(&r.action.entity);
+                    if r.ratchets() {
+                        ok_now.entry(kind).or_default().insert(&r.action.entity);
+                    }
                 }
                 Verdict::Refused => {
                     *refusals
@@ -951,6 +1165,10 @@ fn finish(
                 }
             }
         }
+        if not_tried > 0 {
+            problems.push(json!({"model": name, "problem": format!("{not_tried} entries of the ratchet were not tried (no longer there, or not planned)")}));
+        }
+        not_tried_total += not_tried;
         let mut model_new = 0_usize;
         for (kind, names) in &ok_now {
             for entity in names {
@@ -972,7 +1190,8 @@ fn finish(
             "seconds": report.seconds, "loadSeconds": report.load_seconds, "bodies": report.bodies,
             "faces": report.faces, "actions": report.records.len(), "planned": report.planned,
             "kinds": kinds_json, "regressions": model_regressions, "newlyOk": model_new,
-            "ratchetNotTried": not_tried,
+            "ratchetNotTried": not_tried, "sheets": report.sheets,
+            "truncatedEdges": report.truncated, "problems": report.problems,
         }));
     }
     let mut top: Vec<(String, usize)> = refusals.into_iter().collect();
@@ -986,7 +1205,9 @@ fn finish(
     let summary = json!({
         "generated": shell(repo, "date", &["+%Y-%m-%d %H:%M"]),
         "commit": shell(repo, "git", &["rev-parse", "--short", "HEAD"]),
+        "dirty": !shell(repo, "git", &["status", "--porcelain", "--untracked-files=no"]).is_empty(),
         "seconds": seconds,
+        "limitSeconds": o.timeout.as_secs(),
         "perKind": o.per_kind,
         "totals": totals,
         "models": models_json,
@@ -995,6 +1216,9 @@ fn finish(
         "crash": bad.get("crash").cloned().unwrap_or_default(),
         "timeout": bad.get("timeout").cloned().unwrap_or_default(),
         "regressions": regressions,
+        "problems": problems,
+        "skipped": skipped,
+        "ratchetNotTried": not_tried_total,
         "newlyOk": newly_count,
     });
     let text = serde_json::to_string_pretty(&summary).map_err(|e| e.to_string())?;
@@ -1012,7 +1236,10 @@ fn finish(
         }
     }
     println!("summary: {}", out.join("summary.json").display());
-    if o.update && newly_count > 0 {
+    for p in &problems {
+        println!("problem: {p}");
+    }
+    if o.update && newly_count > 0 && regressions.is_empty() && problems.is_empty() {
         let mut raised = ratchet.clone();
         for (model, kinds) in newly {
             for (kind, names) in kinds {
@@ -1032,15 +1259,16 @@ fn finish(
     } else if newly_count > 0 {
         println!("ratchet: {newly_count} newly succeed; --update raises the floor");
     }
-    if regressions.is_empty() {
+    for r in &regressions {
+        println!("regression: {r}");
+    }
+    if regressions.is_empty() && problems.is_empty() {
         Ok(())
     } else {
-        for r in &regressions {
-            println!("regression: {r}");
-        }
         Err(format!(
-            "{} actions that succeeded before do not now",
-            regressions.len()
+            "{} actions that succeeded before do not now, and {} problems kept actions from running (ratchet entries not tried: {not_tried_total})",
+            regressions.len(),
+            problems.len()
         ))
     }
 }

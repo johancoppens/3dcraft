@@ -490,7 +490,7 @@ fn actions_section(out: &mut String, main: &Path) {
     let seconds = seconds.max(0.0) as u64;
     let _ = writeln!(
         out,
-        "Action matrix ({} at {}, {}): ok {}, refused {}, wrong {}, crash {}, timeout {}; regressions against the ratchet {}, newly succeeding {} (`target/actions/summary.json`; reproducers under `target/actions/<verdict>/`)",
+        "Action matrix ({} at {}, {}): ok {}, refused {}, wrong {}, crash {}, timeout {}; regressions against the ratchet {}, ratchet entries not tried {}, models skipped {}, problems {}, newly succeeding {} (`target/actions/summary.json`; reproducers under `target/actions/<verdict>/`)",
         text("generated"),
         text("commit"),
         minutes(seconds),
@@ -500,6 +500,9 @@ fn actions_section(out: &mut String, main: &Path) {
         total("crash"),
         total("timeout"),
         count("regressions"),
+        text("ratchetNotTried"),
+        count("skipped"),
+        count("problems"),
         text("newlyOk"),
     );
 }

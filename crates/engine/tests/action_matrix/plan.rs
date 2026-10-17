@@ -84,6 +84,7 @@ pub struct Body {
     pub faces: Vec<String>,
     pub volume: f64,
     pub area: f64,
+    pub centroid: [f64; 3],
     pub bbox: [[f64; 3]; 2],
     pub solid: bool,
 }
@@ -96,32 +97,56 @@ pub struct Edge {
     pub start: [f64; 3],
     pub end: [f64; 3],
     pub closed: bool,
+    /// Its length (`document.edges`: exact for a line, a polygon through
+    /// the curve otherwise).
+    pub length: Option<f64>,
 }
 
-/// What a successful action's volume must satisfy (stated, not tuned:
-/// each follows from what the operation does).
+/// What a successful action's volume (and area and centroid) must
+/// satisfy: stated, not tuned, each from what the operation does.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Expect {
     /// A positive, finite volume.
     Positive,
-    /// A blend of one edge: positive, and it changes the volume by less
-    /// than half (a blend that takes or adds half the body is not a blend
-    /// of one edge).
-    Blend,
+    /// A blend of one pair of faces with size `size` (a fillet's radius, a
+    /// chamfer's distance) along edges `length` long in all, `edges` of
+    /// them: the volume changes (a blend that changes nothing is not
+    /// built), by at most the cross-section's bound times the length. The
+    /// cross-section of a chamfer is a triangle with two sides `size`
+    /// long, at most `size²/2`; a fillet's lies within the triangle of its
+    /// two setbacks `r·cot(θ/2)`, which for a dihedral angle θ of 10° or
+    /// more is at most `(11.43·r)²/2`. Along a curved edge the cross-section
+    /// travels at most `2π·size` further than the edge per edge.
+    Blend {
+        size: f64,
+        length: f64,
+        edges: usize,
+        chamfer: bool,
+    },
     /// A face moved along its normal by `d` (positive is outward): the
-    /// volume changes with the sign of `d`, by at most `|d|` times the
-    /// larger area of the body before and after (the swept layer is no
-    /// thicker than `|d|` and no larger than the boundary).
+    /// volume changes with the sign of `d` (and does change), by at most
+    /// `|d|` times the larger area of the body before and after (the swept
+    /// layer is no thicker than `|d|` and no larger than the boundary).
     Offset(f64),
-    /// A shell: positive and less than the body.
-    Hollow,
+    /// A flat face moved by `d` along its normal, either way round: the
+    /// volume changes, by at most `|d|` times the larger area.
+    Move(f64),
+    /// A face tilted by 3°: no point of it moves further than
+    /// `tan 3°` times the body's diagonal `diag`, so the volume changes by
+    /// at most that times the larger area.
+    Draft(f64),
+    /// A shell with walls `t` thick: less than the body, and at most `t`
+    /// times its own area (each wall lies within `t` of the boundary).
+    Hollow(f64),
     /// A layer of thickness `t`: positive and at most `t` times its own
     /// area.
     Layer(f64),
-    /// A mirror image: the same volume.
-    Same,
-    /// Two instances apart: twice the volume.
-    Double,
+    /// A mirror image in the plane `x = x0`: the same volume and area, the
+    /// centroid mirrored.
+    Same(f64),
+    /// Two instances `step` apart along x: twice the volume and the area,
+    /// the centroid half a step along.
+    Double(f64),
 }
 
 /// One action: a command on a copy of the finished document.
@@ -137,9 +162,11 @@ pub struct Action {
     pub command: String,
     pub params: Value,
     pub expect: Expect,
-    /// Volume and area of the body before.
+    /// Volume, area and centroid of the body before, and its diagonal.
     pub volume: f64,
     pub area: f64,
+    pub centroid: [f64; 3],
+    pub diag: f64,
 }
 
 /// The outcome of an action.
@@ -196,8 +223,11 @@ pub struct Outcome {
     /// ok.
     pub reason: String,
     /// The engine must be started again before the next action (a crash,
-    /// a timeout, an undo that did not work).
+    /// a timeout, an undo that did not work or did not restore the
+    /// document).
     pub restart: bool,
+    /// Volume and area measured after a built action.
+    pub after: Option<(f64, f64)>,
 }
 
 /// Marks the message of a panic `Session::execute` caught.
@@ -238,6 +268,7 @@ pub fn bodies(inspect: &Value) -> Vec<Body> {
                 faces,
                 volume: num(b.get("volume")?)?,
                 area: num(b.get("area")?)?,
+                centroid: point(b.get("centroid"))?,
                 bbox: [point(Some(lo))?, point(Some(hi))?],
                 solid: b.get("kind").and_then(Value::as_str) == Some("solid"),
             })
@@ -272,6 +303,7 @@ pub fn edges(answer: &Value) -> Vec<Edge> {
                 start: point(e.get("start"))?,
                 end: point(e.get("end"))?,
                 closed: e.get("closed").and_then(Value::as_bool).unwrap_or(false),
+                length: e.get("length").and_then(num),
             })
         })
         .collect()
@@ -308,8 +340,8 @@ fn length(edge: &Edge) -> Option<f64> {
     (!edge.closed && l.is_finite() && l > 0.0).then_some(l)
 }
 
-/// A number as an expression in `unit`, with six significant digits.
-pub fn expr(x: f64, unit: &str) -> String {
+/// Decimals that leave six significant digits of `x`.
+fn decimals(x: f64) -> usize {
     let magnitude = if x.abs() > 0.0 && x.is_finite() {
         x.abs().log10().floor()
     } else {
@@ -319,7 +351,28 @@ pub fn expr(x: f64, unit: &str) -> String {
     // `digits` is a small whole number, 0 to 15.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let digits = digits as usize;
+    digits
+}
+
+/// A number as an expression in `unit`, with six significant digits.
+pub fn expr(x: f64, unit: &str) -> String {
+    let digits = decimals(x);
     format!("{x:.digits$} {unit}")
+}
+
+/// `x` as [`expr`] writes it: the value the command is given.
+fn rounded(x: f64) -> f64 {
+    let digits = decimals(x);
+    format!("{x:.digits$}").parse().unwrap_or(x)
+}
+
+/// The entity name of an edge pair: the two face names in order.
+pub fn pair_key(a: &str, b: &str) -> String {
+    if a <= b {
+        format!("{a}|{b}")
+    } else {
+        format!("{b}|{a}")
+    }
 }
 
 /// The plane of a face bounded by straight edges only, as its unit normal
@@ -365,13 +418,23 @@ pub fn plan(body: &Body, edges: &[Edge], unit: &str, kinds: &[Kind]) -> Vec<Acti
     }
     // Edges by the pair of faces they lie between (a pair means every
     // edge between them).
-    let mut pairs: BTreeMap<String, [String; 2]> = BTreeMap::new();
+    // The key is the two names in order, so that the same pair is the
+    // same entity whichever way round an edge lists them.
+    let mut pairs: BTreeMap<String, ([String; 2], f64, usize)> = BTreeMap::new();
     for e in edges {
-        if e.faces[0] != e.faces[1] {
-            pairs
-                .entry(format!("{}|{}", e.faces[0], e.faces[1]))
-                .or_insert_with(|| e.faces.clone());
+        let [a, b] = &e.faces;
+        if a == b {
+            continue;
         }
+        let (a, b) = if a < b { (a, b) } else { (b, a) };
+        // An edge without a length (an answer of an older engine) counts
+        // as long as half the body's box goes round: π times the diagonal.
+        let l = e.length.unwrap_or(std::f64::consts::PI * diag);
+        let entry = pairs
+            .entry(pair_key(a, b))
+            .or_insert_with(|| ([a.clone(), b.clone()], 0.0, 0));
+        entry.1 += l;
+        entry.2 += 1;
     }
     let shortest_of = |face: &str| -> Option<f64> {
         edges
@@ -408,6 +471,8 @@ pub fn plan(body: &Body, edges: &[Edge], unit: &str, kinds: &[Kind]) -> Vec<Acti
             expect,
             volume: body.volume,
             area: body.area,
+            centroid: body.centroid,
+            diag,
         });
     };
     let pair_names: Vec<String> = pairs.keys().cloned().collect();
@@ -415,7 +480,7 @@ pub fn plan(body: &Body, edges: &[Edge], unit: &str, kinds: &[Kind]) -> Vec<Acti
         match kind {
             Kind::FilletSmall | Kind::FilletLarge | Kind::Chamfer => {
                 for key in &pair_names {
-                    let Some([a, b]) = pairs.get(key) else {
+                    let Some(([a, b], length, count)) = pairs.get(key) else {
                         continue;
                     };
                     let near = [shortest_of(a), shortest_of(b)]
@@ -423,21 +488,19 @@ pub fn plan(body: &Body, edges: &[Edge], unit: &str, kinds: &[Kind]) -> Vec<Acti
                         .flatten()
                         .min_by(f64::total_cmp)
                         .unwrap_or(fallback);
-                    let (command, params) = match kind {
-                        Kind::FilletSmall => (
-                            "feature.fillet",
-                            json!({"edges": [[a, b]], "radius": expr(0.1 * near, unit)}),
-                        ),
-                        Kind::FilletLarge => (
-                            "feature.fillet",
-                            json!({"edges": [[a, b]], "radius": expr(0.3 * near, unit)}),
-                        ),
-                        _ => (
-                            "feature.chamfer",
-                            json!({"edges": [[a, b]], "distance": expr(0.15 * near, unit)}),
-                        ),
+                    let (command, key_name, size) = match kind {
+                        Kind::FilletSmall => ("feature.fillet", "radius", 0.1 * near),
+                        Kind::FilletLarge => ("feature.fillet", "radius", 0.3 * near),
+                        _ => ("feature.chamfer", "distance", 0.15 * near),
                     };
-                    push(kind, key, command, params, Expect::Blend);
+                    let params = json!({"edges": [[a, b]], key_name: expr(size, unit)});
+                    let expect = Expect::Blend {
+                        size: rounded(size),
+                        length: *length,
+                        edges: *count,
+                        chamfer: kind == Kind::Chamfer,
+                    };
+                    push(kind, key, command, params, expect);
                 }
             }
             Kind::OffsetOut | Kind::OffsetIn | Kind::DeleteFace | Kind::Shell | Kind::Thicken => {
@@ -449,14 +512,14 @@ pub fn plan(body: &Body, edges: &[Edge], unit: &str, kinds: &[Kind]) -> Vec<Acti
                             face,
                             "feature.offsetFace",
                             json!({"faces": [face], "distance": expr(d, unit)}),
-                            Expect::Offset(d),
+                            Expect::Offset(rounded(d)),
                         ),
                         Kind::OffsetIn => push(
                             kind,
                             face,
                             "feature.offsetFace",
                             json!({"faces": [face], "distance": expr(-d, unit)}),
-                            Expect::Offset(-d),
+                            Expect::Offset(-rounded(d)),
                         ),
                         Kind::DeleteFace => push(
                             kind,
@@ -470,14 +533,14 @@ pub fn plan(body: &Body, edges: &[Edge], unit: &str, kinds: &[Kind]) -> Vec<Acti
                             face,
                             "feature.shell",
                             json!({"source": source, "thickness": expr(wall, unit), "open": [face]}),
-                            Expect::Hollow,
+                            Expect::Hollow(rounded(wall)),
                         ),
                         _ => push(
                             kind,
                             face,
                             "feature.thicken",
                             json!({"faces": [face], "thickness": expr(wall, unit)}),
-                            Expect::Layer(wall),
+                            Expect::Layer(rounded(wall)),
                         ),
                     }
                 }
@@ -511,7 +574,7 @@ pub fn plan(body: &Body, edges: &[Edge], unit: &str, kinds: &[Kind]) -> Vec<Acti
                         face,
                         "feature.draft",
                         json!({"faces": [face], "neutral": g, "angle": "3 deg"}),
-                        Expect::Positive,
+                        Expect::Draft(diag),
                     );
                 }
             }
@@ -524,7 +587,7 @@ pub fn plan(body: &Body, edges: &[Edge], unit: &str, kinds: &[Kind]) -> Vec<Acti
                         face,
                         "feature.moveFace",
                         json!({"faces": [face], "translate": t}),
-                        Expect::Positive,
+                        Expect::Move(d),
                     );
                 }
             }
@@ -536,7 +599,7 @@ pub fn plan(body: &Body, edges: &[Edge], unit: &str, kinds: &[Kind]) -> Vec<Acti
                         &source,
                         "feature.mirror",
                         json!({"source": source, "normal": [1, 0, 0], "point": [expr(x, unit), "0", "0"]}),
-                        Expect::Same,
+                        Expect::Same(rounded(x)),
                     );
                 } else {
                     let step = extent[0] + 0.5 * diag;
@@ -545,7 +608,7 @@ pub fn plan(body: &Body, edges: &[Edge], unit: &str, kinds: &[Kind]) -> Vec<Acti
                         &source,
                         "feature.pattern",
                         json!({"source": source, "count": "2", "step": [expr(step, unit), "0", "0"]}),
-                        Expect::Double,
+                        Expect::Double(rounded(step)),
                     );
                 }
             }
@@ -625,10 +688,28 @@ fn first_problem(check: &Value) -> Option<String> {
     )
 }
 
-/// Whether `volume` (and `area`) after `action` keep its identity; the
+/// What is measured of the body an action made.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Measured {
+    pub volume: f64,
+    pub area: f64,
+    pub centroid: [f64; 3],
+}
+
+/// The fillet's setback over its radius at the smallest dihedral angle
+/// the bound allows, 10°: `cot 5°`.
+const SETBACK: f64 = 11.430_052_302_761_343;
+
+/// Whether what was measured after `action` keeps its identity; the
 /// failed identity when not.
-pub fn identity(action: &Action, volume: f64, area: f64) -> Result<(), String> {
+pub fn identity(action: &Action, after: &Measured) -> Result<(), String> {
     let v0 = action.volume;
+    let a0 = action.area;
+    let Measured {
+        volume,
+        area,
+        centroid,
+    } = *after;
     if !(volume.is_finite() && volume > 0.0) {
         return Err(format!("volume {volume} is not positive"));
     }
@@ -636,44 +717,70 @@ pub fn identity(action: &Action, volume: f64, area: f64) -> Result<(), String> {
     // Changes this small are within what the measure itself can be off by
     // (relative 1e-9 of the body): no conclusion either way.
     let noise = 1e-9 * v0.abs();
+    let larger = a0.max(area);
+    // The centroid is held to 1e-6 of the body's diagonal.
+    let near = |a: [f64; 3], b: [f64; 3]| norm(sub(a, b)) <= 1e-6 * action.diag;
+    let changes = |what: &str| {
+        if change.abs() > noise {
+            Ok(())
+        } else {
+            Err(format!(
+                "{what} left the volume as it was: {v0} to {volume}"
+            ))
+        }
+    };
+    let at_most = |what: &str, most: f64| {
+        if change.abs() <= most * (1.0 + 1e-6) + noise {
+            Ok(())
+        } else {
+            Err(format!(
+                "{what} changed the volume by {change}, more than {most}"
+            ))
+        }
+    };
     match action.expect {
         Expect::Positive => Ok(()),
-        Expect::Blend => {
-            if change.abs() <= 0.5 * v0 {
-                Ok(())
-            } else {
-                Err(format!(
-                    "a blend of one edge changed the volume from {v0} to {volume}"
-                ))
-            }
+        Expect::Blend {
+            size,
+            length,
+            edges,
+            chamfer,
+        } => {
+            changes("a blend")?;
+            let setback = if chamfer { size } else { SETBACK * size };
+            // `edges` is a small count.
+            #[allow(clippy::cast_precision_loss)]
+            let travel = length + std::f64::consts::TAU * setback * edges as f64;
+            at_most("a blend", 0.5 * setback * setback * travel)
         }
         Expect::Offset(d) => {
-            let most = d.abs() * action.area.max(area) * (1.0 + 1e-9) + noise;
-            if change.abs() <= noise {
-                Ok(())
-            } else if change * d < 0.0 {
-                Err(format!(
-                    "an offset by {d} changed the volume the other way: {v0} to {volume}"
-                ))
-            } else if change.abs() > most {
-                Err(format!(
-                    "an offset by {d} changed the volume by {change}, more than {most}"
-                ))
-            } else {
-                Ok(())
+            if change * d.signum() <= noise {
+                return Err(format!(
+                    "an offset by {d} did not change the volume that way: {v0} to {volume}"
+                ));
             }
+            at_most(&format!("an offset by {d}"), d.abs() * larger)
         }
-        Expect::Hollow => {
-            if volume < v0 {
-                Ok(())
-            } else {
+        Expect::Move(d) => {
+            changes("a move of a face along its normal")?;
+            at_most(&format!("a move by {d}"), d.abs() * larger)
+        }
+        Expect::Draft(diag) => at_most("a draft by 3°", 3f64.to_radians().tan() * diag * larger),
+        Expect::Hollow(t) => {
+            if volume >= v0 {
                 Err(format!(
                     "a shell has volume {volume}, not less than the body's {v0}"
                 ))
+            } else if volume > t * area * (1.0 + 1e-6) {
+                Err(format!(
+                    "a shell with walls {t} thick has volume {volume}, more than {t} times its area {area}"
+                ))
+            } else {
+                Ok(())
             }
         }
         Expect::Layer(t) => {
-            if volume <= t * area * (1.0 + 1e-9) {
+            if volume <= t * area * (1.0 + 1e-6) {
                 Ok(())
             } else {
                 Err(format!(
@@ -681,21 +788,40 @@ pub fn identity(action: &Action, volume: f64, area: f64) -> Result<(), String> {
                 ))
             }
         }
-        Expect::Same => {
-            if change.abs() <= 1e-6 * v0 {
-                Ok(())
-            } else {
+        Expect::Same(x0) => {
+            let c = action.centroid;
+            let mirrored = [2.0 * x0 - c[0], c[1], c[2]];
+            if change.abs() > 1e-6 * v0 {
                 Err(format!("a mirror image has volume {volume}, the body {v0}"))
+            } else if (area - a0).abs() > 1e-6 * a0 {
+                Err(format!("a mirror image has area {area}, the body {a0}"))
+            } else if !near(centroid, mirrored) {
+                Err(format!(
+                    "a mirror image has its centroid at {centroid:?}, not at {mirrored:?}"
+                ))
+            } else {
+                Ok(())
             }
         }
-        Expect::Double => {
-            if (volume - 2.0 * v0).abs() <= 2e-6 * v0 {
-                Ok(())
-            } else {
+        Expect::Double(step) => {
+            let c = action.centroid;
+            let between = [c[0] + 0.5 * step, c[1], c[2]];
+            if (volume - 2.0 * v0).abs() > 2e-6 * v0 {
                 Err(format!(
                     "two instances apart have volume {volume}, twice the body is {}",
                     2.0 * v0
                 ))
+            } else if (area - 2.0 * a0).abs() > 2e-6 * a0 {
+                Err(format!(
+                    "two instances apart have area {area}, twice the body is {}",
+                    2.0 * a0
+                ))
+            } else if !near(centroid, between) {
+                Err(format!(
+                    "two instances apart have their centroid at {centroid:?}, not at {between:?}"
+                ))
+            } else {
+                Ok(())
             }
         }
     }
@@ -706,6 +832,7 @@ fn outcome(verdict: Verdict, reason: impl Into<String>, restart: bool) -> Outcom
         verdict,
         reason: reason.into(),
         restart,
+        after: None,
     }
 }
 
@@ -732,16 +859,29 @@ where
         Err(e) => return failed_call(e, &action.command),
     };
     let mut verdict = judge(call, action, &result);
-    match call("edit.undo", &json!({})) {
-        Ok(_) => {}
-        Err(e) => {
-            if verdict.verdict == Verdict::Ok || verdict.verdict == Verdict::Refused {
-                let undo = failed_call(e, "edit.undo");
-                verdict = outcome(undo.verdict, format!("edit.undo: {}", undo.reason), true);
-            } else {
-                verdict.restart = true;
-            }
+    let undone = call("edit.undo", &json!({}));
+    // The undo must have taken the feature out again: asked about, it is
+    // not there.
+    let restored = match (&undone, result.get("id").and_then(Value::as_str)) {
+        (Ok(_), Some(id)) => match call("document.check", &json!({"feature": id})) {
+            Err(CallError::Command(message)) => message.contains("there is no feature"),
+            _ => false,
+        },
+        (Ok(_), None) => true,
+        (Err(_), _) => false,
+    };
+    if let Err(e) = undone {
+        if verdict.verdict == Verdict::Ok || verdict.verdict == Verdict::Refused {
+            let undo = failed_call(e, "edit.undo");
+            let after = verdict.after;
+            verdict = outcome(undo.verdict, format!("edit.undo: {}", undo.reason), true);
+            verdict.after = after;
         }
+        verdict.restart = true;
+    } else if !restored {
+        // Not a verdict on the action, but the next one would not start
+        // from the finished model.
+        verdict.restart = true;
     }
     verdict
 }
@@ -779,6 +919,13 @@ where
         let problem = first_problem(&check).unwrap_or_else(|| check.to_string());
         return outcome(Verdict::Wrong, problem, false);
     }
+    if check.get("bodiesChecked").and_then(Value::as_u64) != Some(1) {
+        return outcome(
+            Verdict::Wrong,
+            format!("document.check of the new feature did not check one body: {check}"),
+            false,
+        );
+    }
     let measure = match call("document.measure", &json!({"feature": id})) {
         Ok(measure) => measure,
         Err(CallError::Command(message)) if !message.contains(INTERNAL) => {
@@ -792,17 +939,25 @@ where
     };
     let volume = measure.get("volume").and_then(num);
     let area = measure.get("area").and_then(num);
-    let (Some(volume), Some(area)) = (volume, area) else {
+    let centroid = point(measure.get("centroid"));
+    let (Some(volume), Some(area), Some(centroid)) = (volume, area, centroid) else {
         return outcome(
             Verdict::Wrong,
-            format!("no volume or area in {measure}"),
+            format!("no volume, area or centroid in {measure}"),
             false,
         );
     };
-    match identity(action, volume, area) {
+    let measured = Measured {
+        volume,
+        area,
+        centroid,
+    };
+    let mut verdict = match identity(action, &measured) {
         Ok(()) => outcome(Verdict::Ok, "", false),
         Err(why) => outcome(Verdict::Wrong, why, false),
-    }
+    };
+    verdict.after = Some((volume, area));
+    verdict
 }
 
 /// The class of a reason: its words without names, numbers and the
@@ -865,29 +1020,37 @@ pub fn reason_class(reason: &str) -> String {
 /// The ratchet: per model and kind, the entities whose action succeeded.
 pub type Ratchet = BTreeMap<String, BTreeMap<String, BTreeSet<String>>>;
 
-pub fn ratchet_from(value: &Value) -> Ratchet {
+/// The ratchet of its file's JSON; an error for anything that is not
+/// one (a ratchet read wrong would let every regression through).
+pub fn ratchet_from(value: &Value) -> Result<Ratchet, String> {
     let mut out = Ratchet::new();
-    let Some(models) = value.get("models").and_then(Value::as_object) else {
-        return out;
-    };
+    let models = value
+        .get("models")
+        .and_then(Value::as_object)
+        .ok_or("the ratchet has no `models` object")?;
     for (model, kinds) in models {
-        let Some(kinds) = kinds.as_object() else {
-            continue;
-        };
+        let kinds = kinds
+            .as_object()
+            .ok_or_else(|| format!("the ratchet's {model} is not an object of kinds"))?;
         let entry = out.entry(model.clone()).or_default();
         for (kind, names) in kinds {
-            let set = names
+            if !KINDS.iter().any(|k| k.as_str() == kind) {
+                return Err(format!("the ratchet's {model} has an unknown kind {kind}"));
+            }
+            let names = names
                 .as_array()
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|n| n.as_str().map(str::to_string))
-                        .collect()
-                })
-                .unwrap_or_default();
+                .ok_or_else(|| format!("the ratchet's {model} {kind} is not a list"))?;
+            let mut set = BTreeSet::new();
+            for n in names {
+                let n = n.as_str().ok_or_else(|| {
+                    format!("the ratchet's {model} {kind} has a name that is not text: {n}")
+                })?;
+                set.insert(n.to_string());
+            }
             entry.insert(kind.clone(), set);
         }
     }
-    out
+    Ok(out)
 }
 
 pub fn ratchet_json(ratchet: &Ratchet) -> Value {
@@ -903,7 +1066,7 @@ pub fn ratchet_json(ratchet: &Ratchet) -> Value {
         })
         .collect();
     json!({
-        "about": "The action matrix's ratchet (docs/testing.md, oracle 12): per model and kind, the entities whose action succeeded (built, valid, volume as expected). Each must still succeed. Entries are only added (cargo xtask actions --update, an expectation change in the developer's favour, logged); removing one is an expectation change against the developer and needs the four conditions of docs/testing.md.",
+        "about": "The action matrix's ratchet (docs/testing.md, oracle 12): per model and kind, the entities whose action succeeded (built, valid, volume as expected). Each must still succeed. Entries are only added (cargo xtask actions --update or --raise, an expectation change in the developer's favour, logged); an entity is a face name (all the faces that share it: the pieces of a face a boolean split), an edge as its two faces in order (every edge between them), or the feature of a body; removing one is an expectation change against the developer and needs the four conditions of docs/testing.md.",
         "models": models,
     })
 }

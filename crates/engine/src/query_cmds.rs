@@ -12,8 +12,27 @@ const MAX_EDGES: usize = 2_000;
 
 pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("document.edges", "Edges", r#"{"feature": id or name, "between": [face name, face name]}"#,
-        "Lists the edges of a feature's body, each with its own name (name, which no other edge of the body has; after a boolean it is made of the faces the edge lies between, \"F7:between[face name,face name]\", with the faces near it after | and a number when several edges lie between the same two; aliases: the name an operand of a boolean gave the edge, when it is still one edge), the names of the faces it lies between, its curve kind and its end points, and under vertices the vertices those edges end in: index (its place among the vertices of the body), name (its own persistent name), point and faces (the names of the faces that meet in it). With between: only the edges between those two faces (names from document.inspect, faceNames; an alias from faceAliases names the same face). That is how an edge is referred to: by the faces it separates, which keeps meaning the same edge when the model changes upstream, also through booleans. There can be several, or none. The same name twice gives the seams of that face and the cuts between its pieces.", doc: true, document_edges),
+        "Lists the edges of a feature's body, each with its own name (name, which no other edge of the body has; after a boolean it is made of the faces the edge lies between, \"F7:between[face name,face name]\", with the faces near it after | and a number when several edges lie between the same two; aliases: the name an operand of a boolean gave the edge, when it is still one edge), the names of the faces it lies between, its curve kind, its end points and its length (exact for a line, else the polygon through 64 points of it), and under vertices the vertices those edges end in: index (its place among the vertices of the body), name (its own persistent name), point and faces (the names of the faces that meet in it). With between: only the edges between those two faces (names from document.inspect, faceNames; an alias from faceAliases names the same face). That is how an edge is referred to: by the faces it separates, which keeps meaning the same edge when the model changes upstream, also through booleans. There can be several, or none. The same name twice gives the seams of that face and the cuts between its pieces. At most 2000 edges are listed: count is how many there are, truncated says whether some were left out.", doc: true, document_edges),
 ];
+
+/// Samples along an edge for its length.
+const LENGTH_SAMPLES: u32 = 64;
+
+/// The length of an edge: exact for a line, the polygon through
+/// [`LENGTH_SAMPLES`] points of the curve otherwise (a lower bound; for a
+/// circle 0.04 % short).
+fn edge_length(edge: &craft3d_topo::Edge) -> f64 {
+    let (t0, t1) = edge.range;
+    let mut previous = edge.curve.eval(t0);
+    let mut total = 0.0;
+    for i in 1..=LENGTH_SAMPLES {
+        let t = t0 + (t1 - t0) * f64::from(i) / f64::from(LENGTH_SAMPLES);
+        let point = edge.curve.eval(t);
+        total += (point - previous).length();
+        previous = point;
+    }
+    if total.is_finite() { total } else { 0.0 }
+}
 
 fn vec3(v: Vec3) -> Value {
     json!([v.x, v.y, v.z])
@@ -151,6 +170,7 @@ fn document_edges(session: &mut Session, params: &Value) -> Run {
             "start": point(edge.start),
             "end": point(edge.end),
             "closed": edge.start == edge.end,
+            "length": edge_length(edge),
         });
         if let (Some(map), Some(name)) = (entry.as_object_mut(), names.edges.get(index)) {
             map.insert("name".into(), name.to_string().into());
@@ -191,6 +211,7 @@ fn document_edges(session: &mut Session, params: &Value) -> Run {
         "feature": feature.to_string(),
         "name": made_by,
         "count": total,
+        "truncated": total > edges.len(),
         "edges": edges,
         "vertices": vertices,
     }))
