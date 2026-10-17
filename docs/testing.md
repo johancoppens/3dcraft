@@ -222,6 +222,8 @@ cargo xtask actions --update              # raise the floor, then log it
 
 It leaves `target/actions/summary.json` (counts per model and kind, the top refusal classes, every wrong result, crash and timeout; `cargo xtask health` prints a line of it), `target/actions/results/<model>.jsonl` (one line per action) and, for every wrong result, crash and timeout, `target/actions/<verdict>/<model>-<kind>-<hash>.steps.json` with a `.sh` that replays it (for a model built from steps the whole model and the action; for a document, the action, run on that document). The gated part is `crates/engine/tests/action_matrix.rs`: the bracket, four entities per kind (42 actions, about 2 s), held to the ratchet and never a crash. The plan, the run of one action and its verdict are one file, `crates/engine/tests/action_matrix/plan.rs`, which the xtask includes by path, so the gated test and the full run cannot drift apart.
 
+**First run (2026-10-17, dd6d70c):** nine models (the lamp not), 2936 actions in 119 minutes at three processes: 1171 ok, 1670 refused, no wrong result, no crash, 95 timeouts. The timeouts are slow freeform work, not hangs as far as replayed: a shell of the impeller's and the bike's bodies (60; one replayed is refused after about four minutes), a thicken of their fillet and side faces (17), an offset or thicken of a lofted blade's end caps (rotor and turbofan, 18; one replayed is ok after about three minutes). The most common refusals: a vertex whose faces no longer meet in one point after a face moved (offset, move face, thicken, shell, draft: 447), a face delete cannot collapse or close (170), an edge between tangent faces (fillet and chamfer, 134). The ratchet holds the 1171.
+
 ## Test kinds per crate
 
 | Crate | Must have |
