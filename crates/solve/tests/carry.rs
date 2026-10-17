@@ -489,8 +489,14 @@ fn a_path_that_stops_says_how_far_it_got() {
     });
     let solved = solve(&pinned, &options(1.0)).unwrap();
     match solved.carry {
-        Some(Carried::Stopped { reached }) => {
-            assert!((0.0..1.0).contains(&reached), "{reached}")
+        Some(Carried::Stopped {
+            reached,
+            moved,
+            out_of_work,
+        }) => {
+            assert!((0.0..1.0).contains(&reached), "{reached}");
+            assert_eq!(moved, vec![w.image]);
+            assert!(!out_of_work);
         }
         other => panic!("{other:?}"),
     }
@@ -543,11 +549,10 @@ fn an_equation_too_full_for_the_path_is_not_carried() {
         *k = 7.0;
     }
     let carried = solve(&next, &options(1.0)).unwrap();
-    assert!(
-        matches!(carried.carry, Some(Carried::Skipped { .. })),
-        "{:?}",
-        carried.carry
-    );
+    match &carried.carry {
+        Some(Carried::Skipped { moved, .. }) => assert_eq!(moved, &vec![i1]),
+        other => panic!("{other:?}"),
+    }
     let mut plain = next.clone();
     plain.image_starts.clear();
     let plain = solve(&plain, &options(1.0)).unwrap();
@@ -616,6 +621,40 @@ fn carrying_never_takes_the_work_the_solve_needs() {
             assert_eq!(roomy.carry, Some(Carried::Whole), "3 -> {to}");
         }
     }
+}
+
+/// A carrying that runs out of its share of the work says so: at a work
+/// limit just above what the plain solve needs, the carrying's half of it
+/// does not reach the end of the jump 3 -> 400, while the solve after it
+/// succeeds.
+#[test]
+fn a_path_that_runs_out_of_work_says_so() {
+    let w = wave(1.0, 3);
+    let first = solve(&w.sketch, &options(1.0)).unwrap();
+    let carried = recount(&w, &first, 400, Start::Map);
+    let with = |limit: u64| {
+        let mut o = options(1.0);
+        o.work_limit = limit;
+        o
+    };
+    let found = (0..120u32)
+        .map(|i| 2f64.powf(f64::from(i) / 3.0) as u64)
+        .any(|limit| {
+            matches!(
+                solve(&carried, &with(limit)),
+                Ok(Solution {
+                    carry: Some(Carried::Stopped {
+                        out_of_work: true,
+                        ..
+                    }),
+                    ..
+                })
+            )
+        });
+    assert!(
+        found,
+        "no work limit at which the carrying runs out and the solve succeeds"
+    );
 }
 
 /// A stored map whose numbers on today's points do not put the image

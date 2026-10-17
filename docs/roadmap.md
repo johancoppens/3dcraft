@@ -72,6 +72,12 @@ The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item i
 - [ ] Speed: what is left is the booleans with a freeform face (the chart's projections and the marcher) and the measurement of their results.
 - [ ] Tolerant modelling (item 4), before STEP import.
 
+**Oracles owed** (the developer, 2026-10-17; approaches seen in another project's test setup, built our own way):
+
+- [ ] Random multi-step designs: a seeded generator of feature sequences that places operands on a grid and on the body's own faces, so coincidence and tangency are common; each seed in its own process with a timeout, shrunk automatically to the fewest steps that still fail; a refusal counts apart from a wrong result, and the rate of each goes into the morning health report.
+- [ ] An action matrix as a ratchet: every local operation (fillet, chamfer, shell, offset, delete face, mirror, …) tried on every face and edge of the showcase models; an action that succeeded before and fails now is a regression, one that fails before and succeeds now raises the floor.
+- [ ] A cheap check after every boolean, beside `topo::check`: outside the tool's reach the result equals the target, a subtract never adds volume and a union never loses any.
+
 ## Milestones in detail
 
 ### T0: Teapot (fast track)
@@ -215,6 +221,7 @@ Sketch entities and constraints as commands; `solve` (Newton-type, DOF analysis,
 - A pattern inside a sketch whose count is a formula (`sketch.pattern`: rows, grids, chained runs and rings as rigid images of the solved seed, image points `e5[last]` for the solver, names `e7[3]` and caps `e7[*]`, format 18; [`design/document.md`](design/document.md), *Patterns inside a sketch*) (2026-10-16)
 - The offset of a sketch's closed profiles (`feature.offsetProfile`: exact for lines and arcs, round or sharp corners, splits reported and vanishing loops refused with the largest distance that fits, names `F9:offset(e7[3])`, format 19; kerf as one feature; [`design/document.md`](design/document.md), *Offsets of profiles*) (2026-10-16)
 - One result whatever the edits before it: image points' places stored with the solution and a sketch carried along by continuation when an edit moves them (a line after a run's end no longer flips when the count jumps; format 20; [`design/document.md`](design/document.md), *Carrying a sketch along when its images jump*) (2026-10-16)
+- A sketch whose carry stops part of the way, or cannot be carried, fails with the reason and stores nothing, so undo or returning the variables gives the start bit for bit (the developer's decision; [`design/document.md`](design/document.md), *Carrying a sketch along when its images jump*) (2026-10-17)
 - Profile detection scales: pairs that may meet come from trees of boxes, judged in the order the old all-pairs sweep judged them (same result, oracle kept in the tests); the cap rises from 4096 to 262 144 curves, a 70 × 70 perforated sheet extrudes ([`design/sweeps.md`](design/sweeps.md), *Profile detection at scale*) (2026-10-17)
 - The offset of profiles scales the same way: its cut and keep steps search trees of boxes, judged as the old sweeps judged them (same outline, bit for bit; oracle kept in the tests); the cap rises from 4096 to 262 144 pieces and a 70 × 70 sheet offset by its kerf extrudes ([`design/sweeps.md`](design/sweeps.md), *Offset of profiles at scale*) (2026-10-17)
 
