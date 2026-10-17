@@ -629,6 +629,294 @@ pub(super) struct Bounds {
     pub mvv: f64,
 }
 
+impl Bounds {
+    /// The larger of each bound.
+    fn max(&self, o: &Bounds) -> Bounds {
+        Bounds {
+            lu: self.lu.max(o.lu),
+            lv: self.lv.max(o.lv),
+            muu: self.muu.max(o.muu),
+            muv: self.muv.max(o.muv),
+            mvv: self.mvv.max(o.mvv),
+        }
+    }
+
+    /// The smaller of each bound.
+    fn min(&self, o: &Bounds) -> Bounds {
+        Bounds {
+            lu: self.lu.min(o.lu),
+            lv: self.lv.min(o.lv),
+            muu: self.muu.min(o.muu),
+            muv: self.muv.min(o.muv),
+            mvv: self.mvv.min(o.mvv),
+        }
+    }
+
+    fn is_finite(&self) -> bool {
+        [self.lu, self.lv, self.muu, self.muv, self.mvv]
+            .iter()
+            .all(|x| x.is_finite())
+    }
+
+    fn of(b: &DerivativeBounds) -> Bounds {
+        Bounds {
+            lu: b.first_u,
+            lv: b.first_v,
+            muu: b.second_uu,
+            muv: b.second_uv,
+            mvv: b.second_vv,
+        }
+    }
+}
+
+/// How often a piece of a freeform surface is halved at most, from its
+/// Bézier span, for the bounds of its pieces ([`Pieces`]), in u and in v
+/// together: next to the light end of a span whose weights are `r` apart
+/// the weights even out within a piece about `1 / r` of it wide, some
+/// twenty halvings for the ratios a span may have ([`crate`]'s callers
+/// refuse more), each way.
+const PIECE_DEPTH: usize = 48;
+/// How many pieces the bounds of one surface keep at most.
+const PIECE_BUDGET: usize = 1 << 13;
+/// A piece is halved (the way that gains more) only where one of its
+/// halves has a bound on a first derivative more than this many times
+/// tighter than the piece's. A derivative that grows in proportion to the distance from a
+/// point (a fan at a pole) tightens by two at every halving, and the
+/// cells' own halving already pays for that: the budget would go on it
+/// all along such a border. Weights far apart tighten the pieces next to
+/// a light corner by orders of magnitude.
+const PIECE_GAIN: f64 = 1.5;
+/// How many pieces a query of [`Pieces::over`] looks at before it takes
+/// the bounds of the whole surface.
+const PIECE_LOOKS: usize = 1 << 12;
+
+/// The derivative bounds of a freeform surface piece by piece: a tree of
+/// pieces over its parameters, each with the bounds of its Bézier net
+/// ([`crate::RationalBezierPatch::derivative_bounds`], in the surface's own
+/// parameters), split where its quarters' bounds are much tighter
+/// ([`PIECE_GAIN`]), in halves. A node holds the larger of its own bounds and of the
+/// largest of its leaves', whichever is smaller. The marcher's cells take
+/// the bounds of the pieces under them ([`Chart::bounds_in`]): where a
+/// parametrisation is far from uniform (rational weights far apart) the
+/// bounds over the whole surface are orders of magnitude above what a cell
+/// near a heavy corner needs.
+pub(super) struct Pieces {
+    nodes: Vec<PieceNode>,
+    roots: Vec<usize>,
+    u: (f64, f64),
+    v: (f64, f64),
+}
+
+/// A gain ordered by `total_cmp`, for a heap.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Gain(f64);
+
+impl Eq for Gain {}
+
+impl PartialOrd for Gain {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Gain {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.total_cmp(&other.0)
+    }
+}
+
+struct PieceNode {
+    u: (f64, f64),
+    v: (f64, f64),
+    bounds: Bounds,
+    children: Option<Vec<usize>>,
+}
+
+impl Pieces {
+    /// The pieces of a Bézier or NURBS surface; `None` for another kind,
+    /// or where a piece has no finite bound.
+    fn new(surface: &Surface) -> Option<Pieces> {
+        let spans: Vec<BezierSpan> = match surface {
+            Surface::Bezier(b) => vec![BezierSpan {
+                u: (0.0, 1.0),
+                v: (0.0, 1.0),
+                patch: crate::RationalBezierPatch::from_bezier(b),
+            }],
+            Surface::Nurbs(s) => s.bezier_spans().ok()?,
+            _ => return None,
+        };
+        let (u, v) = surface.domain();
+        let bound = |patch: &crate::RationalBezierPatch, u: (f64, f64), v: (f64, f64)| {
+            let (wu, wv) = (u.1 - u.0, v.1 - v.0);
+            if !(wu > 0.0 && wv > 0.0) {
+                return None;
+            }
+            let b = Bounds::of(&patch.derivative_bounds()?.over(wu, wv));
+            b.is_finite().then_some(b)
+        };
+        let mut pieces = Pieces {
+            nodes: Vec::new(),
+            roots: Vec::new(),
+            u,
+            v,
+        };
+        // The split of a piece that gains more (its halves along u, along
+        // v, or its quarters), and how much.
+        type Part = (crate::RationalBezierPatch, (f64, f64), (f64, f64), Bounds);
+        let best_split = |patch: &crate::RationalBezierPatch,
+                          nu: (f64, f64),
+                          nv: (f64, f64),
+                          own: Bounds|
+         -> Option<(f64, Vec<Part>)> {
+            let (um, vm) = (0.5 * (nu.0 + nu.1), 0.5 * (nv.0 + nv.1));
+            let (cut_u, cut_v) = (um > nu.0 && um < nu.1, vm > nv.0 && vm < nv.1);
+            type Cut = (crate::RationalBezierPatch, (f64, f64), (f64, f64));
+            let parts = |pieces: Vec<Cut>| {
+                pieces
+                    .into_iter()
+                    .map(|(p, u, v)| Some((bound(&p, u, v)?.min(&own), p, u, v)))
+                    .map(|made| made.map(|(b, p, u, v)| (p, u, v, b)))
+                    .collect::<Option<Vec<Part>>>()
+            };
+            let mut options: Vec<Vec<Part>> = Vec::new();
+            if cut_u {
+                let (a, b) = patch.split_u(0.5);
+                options.extend(parts(vec![(a, (nu.0, um), nv), (b, (um, nu.1), nv)]));
+            }
+            if cut_v {
+                let (a, b) = patch.split_v(0.5);
+                options.extend(parts(vec![(a, nu, (nv.0, vm)), (b, nu, (vm, nv.1))]));
+            }
+            if cut_u && cut_v {
+                let (left, right) = patch.split_u(0.5);
+                let ((ll, lh), (rl, rh)) = (left.split_v(0.5), right.split_v(0.5));
+                options.extend(parts(vec![
+                    (ll, (nu.0, um), (nv.0, vm)),
+                    (lh, (nu.0, um), (vm, nv.1)),
+                    (rl, (um, nu.1), (nv.0, vm)),
+                    (rh, (um, nu.1), (vm, nv.1)),
+                ]));
+            }
+            let gain = |parts: &[Part]| {
+                parts
+                    .iter()
+                    .map(|h| (own.lu / h.3.lu).max(own.lv / h.3.lv))
+                    .fold(0.0, f64::max)
+            };
+            // The first of the best (halves before quarters on a tie), by
+            // the gain per halving: quarters are two.
+            let mut best: Option<(f64, Vec<Part>)> = None;
+            for option in options {
+                let g = if option.len() > 2 {
+                    gain(&option).sqrt()
+                } else {
+                    gain(&option)
+                };
+                if best.as_ref().is_none_or(|(b, _)| g > *b) {
+                    best = Some((g, option));
+                }
+            }
+            // (Not `>`-negated: a NaN gains nothing.)
+            best.filter(|(g, _)| *g > PIECE_GAIN)
+        };
+        // The pieces that gain most are halved first, so that the budget
+        // goes where the bounds tighten most (next to the light end of a
+        // span whose weights are far apart), not evenly over the surface.
+        let mut heap = std::collections::BinaryHeap::new();
+        let mut pending: std::collections::BTreeMap<usize, (Vec<Part>, usize)> =
+            std::collections::BTreeMap::new();
+        for span in spans {
+            let b = bound(&span.patch, span.u, span.v)?;
+            let index = pieces.nodes.len();
+            pieces.roots.push(index);
+            pieces.nodes.push(PieceNode {
+                u: span.u,
+                v: span.v,
+                bounds: b,
+                children: None,
+            });
+            if let Some((gain, halves)) = best_split(&span.patch, span.u, span.v, b) {
+                heap.push((Gain(gain), std::cmp::Reverse(index)));
+                pending.insert(index, (halves, 0));
+            }
+        }
+        while let Some((_, std::cmp::Reverse(index))) = heap.pop() {
+            let Some((parts, depth)) = pending.remove(&index) else {
+                continue;
+            };
+            if pieces.nodes.len().saturating_add(parts.len()) > PIECE_BUDGET {
+                break;
+            }
+            let mut kids = Vec::with_capacity(parts.len());
+            for (patch, u, v, b) in parts {
+                let slot = pieces.nodes.len();
+                kids.push(slot);
+                if depth + 1 < PIECE_DEPTH
+                    && let Some((gain, next)) = best_split(&patch, u, v, b)
+                {
+                    heap.push((Gain(gain), std::cmp::Reverse(slot)));
+                    pending.insert(slot, (next, depth + 1));
+                }
+                pieces.nodes.push(PieceNode {
+                    u,
+                    v,
+                    bounds: b,
+                    children: None,
+                });
+            }
+            if let Some(node) = pieces.nodes.get_mut(index) {
+                node.children = Some(kids);
+            }
+        }
+        // Children come after their parents: from the last node back, each
+        // parent takes the largest of its children's bounds where that is
+        // tighter than its own.
+        for index in (0..pieces.nodes.len()).rev() {
+            let Some(kids) = pieces.nodes.get(index).and_then(|n| n.children.clone()) else {
+                continue;
+            };
+            let mut most: Option<Bounds> = None;
+            for k in kids {
+                let b = pieces.nodes.get(k)?.bounds;
+                most = Some(most.map_or(b, |m| m.max(&b)));
+            }
+            if let (Some(most), Some(node)) = (most, pieces.nodes.get_mut(index)) {
+                node.bounds = node.bounds.min(&most);
+            }
+        }
+        Some(pieces)
+    }
+
+    /// Bounds on the derivatives over the part `u × v` of the parameters:
+    /// the largest of the bounds of the pieces that meet it, each taken as
+    /// small as the tree has it. `None` where the part reaches outside the
+    /// surface's domain or the query looks at too many pieces.
+    fn over(&self, u: (f64, f64), v: (f64, f64)) -> Option<Bounds> {
+        if !(u.0 >= self.u.0 && u.1 <= self.u.1 && v.0 >= self.v.0 && v.1 <= self.v.1) {
+            return None;
+        }
+        let mut most: Option<Bounds> = None;
+        let mut stack: Vec<usize> = self.roots.clone();
+        let mut looks = 0_usize;
+        while let Some(index) = stack.pop() {
+            looks += 1;
+            if looks > PIECE_LOOKS {
+                return None;
+            }
+            let node = self.nodes.get(index)?;
+            if node.u.1 < u.0 || node.u.0 > u.1 || node.v.1 < v.0 || node.v.0 > v.1 {
+                continue;
+            }
+            let within = node.u.0 >= u.0 && node.u.1 <= u.1 && node.v.0 >= v.0 && node.v.1 <= v.1;
+            match &node.children {
+                Some(kids) if !within => stack.extend(kids.iter().copied()),
+                _ => most = Some(most.map_or(node.bounds, |m| m.max(&node.bounds))),
+            }
+        }
+        most
+    }
+}
+
 /// A surface with the rectangle of its parameters that covers everything of
 /// it inside a box.
 pub(super) struct Chart {
@@ -641,6 +929,8 @@ pub(super) struct Chart {
     pub periodic_u: bool,
     pub periodic_v: bool,
     pub bounds: Bounds,
+    /// The bounds piece by piece, for a freeform surface ([`Pieces`]).
+    pub pieces: Option<Arc<Pieces>>,
 }
 
 impl Chart {
@@ -662,8 +952,14 @@ impl Chart {
     /// far side of the part from the pole. Without them the cells there
     /// would have to be as small across as the width is along, all around
     /// the border.
+    ///
+    /// For a freeform surface the bounds are those of the pieces under
+    /// the part ([`Pieces::over`]) where they are tighter.
     pub(super) fn bounds_in(&self, u: (f64, f64), v: (f64, f64)) -> Bounds {
-        let mut b = self.bounds;
+        let mut b = match self.pieces.as_ref().and_then(|p| p.over(u, v)) {
+            Some(local) => self.bounds.min(&local),
+            None => self.bounds,
+        };
         for cusp in &self.cusps {
             let n = &cusp.narrowing;
             let (lo, hi) = if cusp.pole.across_v() { v } else { u };
@@ -760,6 +1056,7 @@ impl Chart {
                 let f = *p.frame();
                 Chart {
                     cusps: Vec::new(),
+                    pieces: None,
                     surface: surface.clone(),
                     u: range(&|c| f.local(c).0),
                     v: range(&|c| f.local(c).1),
@@ -780,6 +1077,7 @@ impl Chart {
                 let r = c.radius();
                 Chart {
                     cusps: Vec::new(),
+                    pieces: None,
                     surface: surface.clone(),
                     u,
                     v: range(&|c| f.local(c).2),
@@ -812,6 +1110,7 @@ impl Chart {
                 let widest = (c.radius() + v0 * slope).max(c.radius() + v1 * slope);
                 Chart {
                     cusps: Vec::new(),
+                    pieces: None,
                     surface: surface.clone(),
                     u,
                     v: (v0, v1),
@@ -861,6 +1160,7 @@ impl Chart {
                 let frame = best.map_or(f, |(_, frame)| frame);
                 Chart {
                     cusps: Vec::new(),
+                    pieces: None,
                     surface: Surface::Sphere(Sphere::new(frame, r)?),
                     u: (0.0, TAU),
                     v: (-FRAC_PI_2, FRAC_PI_2),
@@ -879,6 +1179,7 @@ impl Chart {
                 let (major, minor) = t.radii();
                 Chart {
                     cusps: Vec::new(),
+                    pieces: None,
                     surface: surface.clone(),
                     u: (0.0, TAU),
                     v: (0.0, TAU),
@@ -923,6 +1224,7 @@ impl Chart {
                         muv,
                         mvv,
                     },
+                    pieces: Pieces::new(surface).map(Arc::new),
                 }
             }
             Surface::Nurbs(s) => {
@@ -940,6 +1242,7 @@ impl Chart {
                     periodic_u,
                     periodic_v,
                     bounds: nurbs_bounds(s, surface, u, v, count_u, count_v),
+                    pieces: Pieces::new(surface).map(Arc::new),
                 }
             }
         };

@@ -1508,6 +1508,119 @@ impl NurbsSurface {
         }
         Ok(out)
     }
+
+    /// The same surface drawn more evenly: split into its Bézier spans (as
+    /// [`Self::bezier_spans`]), and each span of u (of v) reparametrised by
+    /// the Möbius map `t ↦ β t / ((1 − t) + β t)` over it that brings the
+    /// weights at its two ends together (*The NURBS Book* §6.1; `β` from
+    /// the geometric mean, over every row of the net across the span, of
+    /// the ratio of the weights at its ends, to the power one over the
+    /// degree: one map per span of u, whatever v, so that it is a change of
+    /// the parameters). That is a
+    /// change of weights only: the weights of the span's row `i` times
+    /// `β^i`, and the whole span times the factor that makes its first row
+    /// what its neighbour's last became, so that the spans still meet. The
+    /// point set and the spans' ranges are the same; where the weights have
+    /// a product form (every surface of revolution) the result is drawn as
+    /// evenly as its weights allow. `None` where nothing would change (a
+    /// polynomial surface, or spans whose end weights are equal on
+    /// average), and for knots that are not clamped at both ends.
+    pub fn evened(&self) -> Option<NurbsSurface> {
+        let first = *self.weights.first()?;
+        if self.weights.iter().all(|&w| w == first) {
+            return None;
+        }
+        let (du, dv) = (self.degree_u, self.degree_v);
+        let clamped = |knots: &[f64], degree: usize| {
+            let (Some(&a), Some(&b)) = (knots.first(), knots.last()) else {
+                return false;
+            };
+            knots.iter().take(degree + 1).all(|&k| k == a)
+                && knots.iter().rev().take(degree + 1).all(|&k| k == b)
+        };
+        if !(clamped(&self.knots_u, du) && clamped(&self.knots_v, dv)) {
+            return None;
+        }
+        let (count_u, count_v) = self.counts();
+        let mut knots_u = self.knots_u.clone();
+        let mut columns: Vec<Vec<H>> = (0..count_v)
+            .map(|j| {
+                (0..count_u)
+                    .filter_map(|i| self.homogeneous.get(i * count_v + j).copied())
+                    .collect()
+            })
+            .collect();
+        make_bezier(&mut knots_u, du, &mut columns);
+        let count_u = columns.first().map_or(0, Vec::len);
+        let mut knots_v = self.knots_v.clone();
+        let mut rows: Vec<Vec<H>> = (0..count_u)
+            .map(|i| columns.iter().filter_map(|c| c.get(i).copied()).collect())
+            .collect();
+        make_bezier(&mut knots_v, dv, &mut rows);
+        let count_v = rows.first().map_or(0, Vec::len);
+        if knots_u.len() != count_u + du + 1 || knots_v.len() != count_v + dv + 1 {
+            return None;
+        }
+        let weight = |i: usize, j: usize| rows.get(i).and_then(|r| r.get(j)).map(|h| h.w);
+        // The factor of each row of control points along one direction.
+        let factors = |knots: &[f64], degree: usize, count: usize, across: usize, along_u: bool| {
+            let mut f = vec![1.0_f64; count];
+            let mut changed = false;
+            for k in degree..count {
+                let (Some(&lo), Some(&hi)) = (knots.get(k), knots.get(k + 1)) else {
+                    return None;
+                };
+                if hi <= lo || hi.is_nan() || lo.is_nan() {
+                    continue;
+                }
+                let (i0, i1) = (k - degree, k);
+                let mut log_ratio = 0.0;
+                for j in 0..across {
+                    let (a, b) = if along_u {
+                        (weight(i0, j)?, weight(i1, j)?)
+                    } else {
+                        (weight(j, i0)?, weight(j, i1)?)
+                    };
+                    if !(a > 0.0 && b > 0.0) {
+                        return None;
+                    }
+                    log_ratio += (a / b).ln();
+                }
+                let beta = (log_ratio / (across as f64 * degree as f64)).exp();
+                if !(beta.is_finite() && beta > 0.0) {
+                    return None;
+                }
+                changed |= (beta - 1.0).abs() > 1e-12;
+                let base = *f.get(i0)?;
+                let mut power = 1.0;
+                for i in i0..=i1 {
+                    *f.get_mut(i)? = base * power;
+                    power *= beta;
+                }
+            }
+            Some((f, changed))
+        };
+        let (fu, changed_u) = factors(&knots_u, du, count_u, count_v, true)?;
+        let (fv, changed_v) = factors(&knots_v, dv, count_v, count_u, false)?;
+        if !(changed_u || changed_v) {
+            return None;
+        }
+        let mut ctrl = Vec::with_capacity(count_u * count_v);
+        let mut weights = Vec::with_capacity(count_u * count_v);
+        for (i, row) in rows.iter().enumerate() {
+            for (j, h) in row.iter().enumerate() {
+                if h.w.is_nan() || h.w <= 0.0 {
+                    return None;
+                }
+                ctrl.push(h.p * (1.0 / h.w));
+                weights.push(h.w * fu.get(i)? * fv.get(j)?);
+            }
+        }
+        if !weights.iter().all(|w| w.is_finite() && *w > 0.0) {
+            return None;
+        }
+        NurbsSurface::new(du, dv, knots_u, knots_v, count_u, count_v, ctrl, weights).ok()
+    }
 }
 
 impl Bits for NurbsCurve {
@@ -2197,6 +2310,94 @@ mod tests {
                 1e-11
             ));
         }
+    }
+
+    #[test]
+    fn an_evened_surface_is_the_same_surface_drawn_by_moebius_maps_span_by_span() {
+        let surface = lumpy();
+        let even = surface.evened().unwrap();
+        assert_eq!(even.domain(), surface.domain());
+        let spans = surface.bezier_spans().unwrap();
+        // β of a span along u (along v): the geometric mean, over the rows
+        // of every span with the same range of u (of v), each row of the
+        // net once, of the ratio of the end weights, to one over the
+        // degree. (A function of u alone, so that the map is one of the
+        // parameters, not of the place.)
+        let beta = |span: &BezierSpan, along_u: bool| {
+            let (m, n) = (span.patch.degree_u, span.patch.degree_v);
+            let (mut log, mut rows) = (0.0, 0);
+            let mut others: Vec<&BezierSpan> = spans
+                .iter()
+                .filter(|o| {
+                    if along_u {
+                        o.u == span.u
+                    } else {
+                        o.v == span.v
+                    }
+                })
+                .collect();
+            others.sort_by(|a, b| {
+                let (a, b) = if along_u {
+                    (a.v.0, b.v.0)
+                } else {
+                    (a.u.0, b.u.0)
+                };
+                a.total_cmp(&b)
+            });
+            for (k, other) in others.iter().enumerate() {
+                let w = other.patch.weights();
+                let at = |i: usize, j: usize| w[i * (n + 1) + j];
+                let count = if along_u { n + 1 } else { m + 1 };
+                // The first row of every span but the first is the last of
+                // the one before.
+                for r in usize::from(k > 0)..count {
+                    log += if along_u {
+                        (at(0, r) / at(m, r)).ln()
+                    } else {
+                        (at(r, 0) / at(r, n)).ln()
+                    };
+                    rows += 1;
+                }
+            }
+            let degree = if along_u { m } else { n };
+            (log / (rows * degree) as f64).exp()
+        };
+        let moebius = |b: f64, s: f64| b * s / ((1.0 - s) + b * s);
+        let mut rng = 0x5eed_u64;
+        let mut next = || {
+            rng = rng
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (rng >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for _ in 0..200 {
+            let (u, v) = (next(), next());
+            let span = spans
+                .iter()
+                .find(|s| u >= s.u.0 && u <= s.u.1 && v >= s.v.0 && v <= s.v.1)
+                .unwrap();
+            let s = (u - span.u.0) / (span.u.1 - span.u.0);
+            let t = (v - span.v.0) / (span.v.1 - span.v.0);
+            let want = span
+                .patch
+                .eval(moebius(beta(span, true), s), moebius(beta(span, false), t));
+            assert!(close(even.eval(u, v), want, 1e-11), "({u}, {v})");
+        }
+        // Drawn evenly already: nothing changes the second time, nor for a
+        // polynomial surface.
+        assert!(even.evened().is_none());
+        let plain = NurbsSurface::new(
+            2,
+            3,
+            surface.knots_u().to_vec(),
+            surface.knots_v().to_vec(),
+            5,
+            7,
+            surface.control_points().to_vec(),
+            vec![1.0; 35],
+        )
+        .unwrap();
+        assert!(plain.evened().is_none());
     }
 
     #[test]

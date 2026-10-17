@@ -807,72 +807,88 @@ fn what_is_not_supported_says_so() {
     // the chart's speed over the whole face and gave up ("too close");
     // with the bound taken near each stretch they are built, a ball at a
     // corner of the bottom and one at a corner of the top, which cuts the
-    // weighted face. The results are held to the same booleans of the
-    // plain block, their twin, by point membership: 400 seeded points
-    // classified by ray casting (`boolean::contains_points`) against the
-    // block's results, and against the exact membership of block and
-    // ball; and, since `topo::mass_properties` settles on such a face
-    // (2026-10-17, its panels halved where its sums disagree), by volume,
-    // area and centroid to 1e-9. A thousand apart stays refused in the
-    // winding numbers.
+    // weighted face. A thousand apart, and a ball at a heavy corner of the
+    // top (refused at a hundred: "tangent or nearly coincident over too
+    // large an area"), since 2026-10-17: the marcher's cells take the
+    // bounds of the pieces under them, and the winding numbers the least
+    // singular value of pieces split where its bound is far below the
+    // surface's (`docs/design/booleans.md` › *Rational faces*). The
+    // results are held to the same booleans of the plain block, their
+    // twin, by point membership: 400 seeded points classified by ray
+    // casting (`boolean::contains_points`) against the block's results,
+    // and against the exact membership of block and ball; and, since
+    // `topo::mass_properties` settles on such a face (2026-10-17, its
+    // panels halved where its sums disagree), by volume, area and
+    // centroid to 1e-9.
     let mut rng = Rng(20_261_015);
-    for centre in [Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 2.0)] {
-        let ball = primitives::sphere(&Frame::WORLD.at(centre * k).unwrap(), 1.0 * k).unwrap();
-        let points: Vec<Vec3> = (0..400)
-            .map(|_| {
-                Vec3::new(
-                    rng.between(-1.2, 4.2),
-                    rng.between(-1.2, 3.2),
-                    rng.between(-1.2, 3.2),
-                ) * k
-            })
-            .collect();
-        let in_block = |p: Vec3| {
-            p.x > 0.0 && p.x < 4.0 * k && p.y > 0.0 && p.y < 3.0 * k && p.z > 0.0 && p.z < 2.0 * k
-        };
-        let in_ball = |p: Vec3| p.distance(centre * k) < 1.0 * k;
-        for (op, keeps) in [
-            (Union, (|a: bool, b: bool| a || b) as fn(bool, bool) -> bool),
-            (Subtract, |a: bool, b: bool| a && !b),
-            (Intersect, |a: bool, b: bool| a && b),
+    for heavy in [100.0, 1000.0] {
+        for centre in [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 2.0),
+            Vec3::new(0.0, 3.0, 2.0),
+            Vec3::new(4.0, 0.0, 2.0),
         ] {
-            let ours = solve(&weighted(100.0), &ball, op, k);
-            let twin = solve(&plate, &ball, op, k);
-            let classified = contains_points(&ours.body, &points, &tol).unwrap();
-            let expected = contains_points(&twin.body, &points, &tol).unwrap();
-            let mut decided = 0;
-            for ((p, got), want) in points.iter().zip(&classified).zip(&expected) {
-                // Within the tolerance of a face either answer is right.
-                let (Some(got), Some(want)) = (got, want) else {
-                    continue;
-                };
-                decided += 1;
-                assert_eq!(got, want, "{op:?} at {p:?}, ball at {centre:?}");
-                assert_eq!(*got, keeps(in_block(*p), in_ball(*p)), "{op:?} at {p:?}");
+            let ball = primitives::sphere(&Frame::WORLD.at(centre * k).unwrap(), 1.0 * k).unwrap();
+            let points: Vec<Vec3> = (0..400)
+                .map(|_| {
+                    Vec3::new(
+                        rng.between(-1.2, 4.2),
+                        rng.between(-1.2, 3.2),
+                        rng.between(-1.2, 3.2),
+                    ) * k
+                })
+                .collect();
+            let in_block = |p: Vec3| {
+                p.x > 0.0
+                    && p.x < 4.0 * k
+                    && p.y > 0.0
+                    && p.y < 3.0 * k
+                    && p.z > 0.0
+                    && p.z < 2.0 * k
+            };
+            let in_ball = |p: Vec3| p.distance(centre * k) < 1.0 * k;
+            for (op, keeps) in [
+                (Union, (|a: bool, b: bool| a || b) as fn(bool, bool) -> bool),
+                (Subtract, |a: bool, b: bool| a && !b),
+                (Intersect, |a: bool, b: bool| a && b),
+            ] {
+                let what = format!("{op:?}, weights {heavy} apart, ball at {centre:?}");
+                let ours = solve(&weighted(heavy), &ball, op, k);
+                let twin = solve(&plate, &ball, op, k);
+                let classified = contains_points(&ours.body, &points, &tol).unwrap();
+                let expected = contains_points(&twin.body, &points, &tol).unwrap();
+                let mut decided = 0;
+                for ((p, got), want) in points.iter().zip(&classified).zip(&expected) {
+                    // Within the tolerance of a face either answer is right.
+                    let (Some(got), Some(want)) = (got, want) else {
+                        continue;
+                    };
+                    decided += 1;
+                    assert_eq!(got, want, "{what} at {p:?}");
+                    assert_eq!(*got, keeps(in_block(*p), in_ball(*p)), "{what} at {p:?}");
+                }
+                assert!(decided > 390, "{what}: {decided} points decided");
+                assert_eq!(ours.body.faces.len(), twin.body.faces.len(), "{what}");
+                let (got, want) = (mass(&ours.body), mass(&twin.body));
+                let near = |a: f64, b: f64| (a - b).abs() <= 1e-9 * b.abs();
+                assert!(near(got.volume, want.volume), "{what}: {got:?} {want:?}");
+                assert!(near(got.area, want.area), "{what}: {got:?} {want:?}");
+                let centre = want.centroid.unwrap();
+                assert!(
+                    got.centroid.unwrap().distance(centre) <= 1e-9 * k,
+                    "{what}: {got:?} {want:?}"
+                );
             }
-            assert!(decided > 390, "{op:?}: {decided} points decided");
-            assert_eq!(ours.body.faces.len(), twin.body.faces.len(), "{op:?}");
-            let (got, want) = (mass(&ours.body), mass(&twin.body));
-            let near = |a: f64, b: f64| (a - b).abs() <= 1e-9 * b.abs();
-            assert!(near(got.volume, want.volume), "{op:?}: {got:?} {want:?}");
-            assert!(near(got.area, want.area), "{op:?}: {got:?} {want:?}");
-            let centre = want.centroid.unwrap();
-            assert!(
-                got.centroid.unwrap().distance(centre) <= 1e-9 * k,
-                "{op:?}: {got:?} {want:?}"
-            );
         }
     }
-    let thousand = weighted(1000.0);
-    let (why, _) = reason(&thousand, &ball, Union);
-    assert!(why.contains("too close"), "{why}");
     // What stays refused of a rational face: weights more than a factor
-    // of a thousand apart, for which no bound on the derivatives is of
-    // any use.
-    let rational = weighted(2000.0);
-    let (why, faces) = reason(&rational, &ball, Union);
-    assert!(why.contains("rational") && why.contains("weights"), "{why}");
-    assert_eq!(faces, [(Operand::A, FaceId(1))]);
+    // of ten million apart within a span (a thousand until 2026-10-17:
+    // expectation changed, see above; the plate with the weights 1, 2000,
+    // 2000, 1 was held refused here), for which the pieces the bounds are
+    // taken from would have to be finer than `2^-21` of the span. Held in
+    // `freeform.rs` › `weights_too_far_apart_are_refused_with_the_reason`:
+    // the plate that far apart is no valid body (its edges leave the patch
+    // by more than the tolerance from 1e5).
     // (Until the general surface intersection came in, crossing cylinders,
     // a cone cut along its axis and a ball through the side of a cylinder
     // were refused here. See boolean_surfaces.rs.)
@@ -963,7 +979,27 @@ fn what_is_not_supported_says_so() {
             ));
         }
     }
-    // The message names the faces.
+    // The message names the faces: the plate with its top drawn with the
+    // weights 1 and 2e7 along v (a Möbius reparametrisation of the same
+    // rectangle, which stays a valid body, unlike 1, h, h, 1 that far
+    // apart), refused for its weights.
+    let mut rational = plate.clone();
+    if let Surface::Nurbs(s) = &weighted(2.0).faces[1].surface {
+        rational.faces[1].surface = Surface::Nurbs(
+            craft3d_geom::NurbsSurface::new(
+                1,
+                1,
+                s.knots_u().to_vec(),
+                s.knots_v().to_vec(),
+                2,
+                2,
+                s.control_points().to_vec(),
+                vec![1.0, 2e7, 1.0, 2e7],
+            )
+            .unwrap(),
+        );
+    }
+    assert_eq!(craft3d_topo::check(&rational, &tol), []);
     let message = boolean(&rational, &ball, Union, &tol)
         .unwrap_err()
         .to_string();

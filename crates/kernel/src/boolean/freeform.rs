@@ -59,7 +59,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BinaryHeap};
 use std::sync::{Arc, Mutex, PoisonError};
 
-pub(super) const WEIGHTS: Reason = "a rational freeform face whose weights differ by more than a factor of a thousand within one span: its derivatives cannot be bounded usefully";
+pub(super) const WEIGHTS: Reason = "a rational freeform face whose weights differ by more than a factor of ten million within one span: its derivatives cannot be bounded usefully";
 pub(super) const IRREGULAR: Reason = "a freeform face whose parametrisation stalls or folds somewhere (a collapsed or self-overlapping patch); its chart cannot be followed";
 pub(super) const POLES_BOTH_WAYS: Reason = "a freeform face whose patch closes into a point on two adjacent sides (collapsed borders both along u and along v); its chart cannot be followed";
 pub(super) const POLE_SHAPE: Reason = "a freeform face that closes into a point too sharply or too unevenly for the directions around that point to be told apart (a cusp, or a point the surface folds back over)";
@@ -70,8 +70,39 @@ const TOO_MANY: Reason = "a freeform face with more pieces than booleans can ind
 const MAX_DEPTH: usize = 5;
 const MAX_LEAVES: usize = 1 << 15;
 /// How far apart the weights of one Bézier span of a rational surface may
-/// be: every bound on its derivatives carries a power of this ratio.
-const MAX_WEIGHT_RATIO: f64 = 1e3;
+/// be. Every bound on its derivatives carries a power of the ratio within
+/// a piece, so the bounds are taken from pieces small enough for their
+/// weights to be close ([`PatchTree::settled_sigma`], [`PatchTree::finer`],
+/// and the marcher's `Pieces` in `geom`); those go down to `2^-21` of a
+/// span, which is where weights `1e7` apart even out next to the light end.
+/// Held: the twins of `boolean_rational.rs` skewed a thousandfold both
+/// ways (1.4e6 within a span). (A thousand until 2026-10-17, when the
+/// bounds were taken over a whole leaf or span.)
+const MAX_WEIGHT_RATIO: f64 = 1e7;
+/// A leaf's bound on the least singular value is refined where it is more
+/// than this many times below the value measured at the corners and the
+/// middle of a piece ([`PatchTree::finer`]): a bound that pairs extremes
+/// over a piece is within a small factor of the truth wherever the
+/// Jacobian changes little over it, and four leaves room for that.
+const SIGMA_SLACK: f64 = 4.0;
+/// How often a leaf is halved for it at most, and into how many pieces
+/// for a whole surface: next to a heavy corner the Jacobian settles within
+/// a piece about the weights' ratio smaller than the corner's leaf, and
+/// `2^-FINE_DEPTH` of a leaf (`2^-21` of a span) covers ratios to the cap
+/// of a span ([`MAX_WEIGHT_RATIO`]).
+const FINE_DEPTH: usize = 16;
+/// How many pieces a leaf's bound is settled from at most when the tree
+/// is built ([`PatchTree::settled_sigma`]).
+const LEAF_PIECES: usize = 1 << 8;
+const FINE_PIECES: usize = 1 << 16;
+/// How many pieces one query of [`PatchTree::finer`] takes before it
+/// answers with the lowest bound left, which holds as well.
+const FINE_LOOKS: usize = 1 << 10;
+/// A piece whose box is more than this many times the reach across is
+/// split ([`PatchTree::finer`]): its box says little about where the piece
+/// is at that scale. Within a few times the reach the box is as near as
+/// the piece, give or take the reach.
+const FINE_REACH: f64 = 4.0;
 /// How many nearest points a tree remembers before it forgets them all.
 const MAX_MEMO: usize = 1 << 14;
 /// Newton's iteration for the nearest point.
@@ -98,6 +129,49 @@ struct Node {
     sigma: f64,
 }
 
+/// The leaves of a [`PatchTree`] split further where its bound on the
+/// least singular value of the Jacobian is far below what the surface has
+/// ([`PatchTree::finer`]): a tree of pieces under each leaf that was asked
+/// about, by the leaf's index.
+/// A float ordered by `total_cmp`, for a heap.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Ordered(f64);
+
+impl Eq for Ordered {}
+
+impl PartialOrd for Ordered {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Ordered {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0.total_cmp(&other.0)
+    }
+}
+
+#[derive(Debug, Default)]
+struct Fine {
+    nodes: Vec<FinePiece>,
+    roots: BTreeMap<usize, usize>,
+}
+
+#[derive(Debug)]
+struct FinePiece {
+    bbox: Bbox3,
+    u: (f64, f64),
+    v: (f64, f64),
+    sigma: f64,
+    /// The least and the largest of the least singular values at the
+    /// corners and the middle.
+    measured: (f64, f64),
+    depth: usize,
+    /// Kept until the piece is split.
+    patch: Option<RationalBezierPatch>,
+    children: Option<[usize; 4]>,
+}
+
 /// A surface with a tree of boxes around pieces of it.
 #[derive(Debug)]
 pub(super) struct PatchTree {
@@ -122,6 +196,12 @@ pub(super) struct PatchTree {
     /// taken about a point of it). A pure function of the point, so the
     /// answer from here is the answer the search would give.
     memo: Mutex<BTreeMap<[u64; 3], Option<Nearest>>>,
+    /// The leaves split further for [`Self::sigma_near`], as far as its
+    /// queries called for ([`Fine`]).
+    fine: Mutex<Fine>,
+    /// The tree of the same surface drawn more evenly
+    /// ([`PatchTree::evened`]), once asked for.
+    evened: std::sync::OnceLock<Option<Arc<PatchTree>>>,
 }
 
 /// The nearest point of the surface to a point.
@@ -1621,6 +1701,8 @@ impl PatchTree {
             closes: closure(surface),
             poles: found,
             memo: Mutex::new(BTreeMap::new()),
+            fine: Mutex::new(Fine::default()),
+            evened: std::sync::OnceLock::new(),
         };
         let whole = spans
             .iter()
@@ -1677,6 +1759,12 @@ impl PatchTree {
                 .max(sigma),
             None => sigma,
         };
+        // A leaf's bound, settled where it is far below the surface's.
+        let sigma = if children.is_none() && self.wedge.is_none() {
+            self.settled_sigma(patch, u, v, sigma)
+        } else {
+            sigma
+        };
         let slab = children.is_none().then(|| Slab::around(patch));
         let patch = children.is_none().then(|| patch.clone());
         self.nodes.push(Node {
@@ -1725,6 +1813,27 @@ impl PatchTree {
         (sigma.is_finite() && sigma > 0.0).then_some(sigma)
     }
 
+    /// The tree of the same surface drawn as evenly as its weights allow
+    /// ([`NurbsSurface::evened`]: each knot span reparametrised by the
+    /// Möbius map that brings the weights at its ends together), or this
+    /// tree where that changes nothing or gives no tree. A chart for
+    /// winding numbers ([`super::chart::Chart`]): next to a knot where two
+    /// spans are drawn at paces a thousand apart (rational weights far
+    /// apart in a product form, as on a surface of revolution skewed
+    /// span by span) the parameters move a thousand times faster on one
+    /// side than on the other, and a stretch of a boundary along the knot
+    /// takes the bound of the fast side; drawn evenly they do not.
+    pub(super) fn evened(tree: &Arc<PatchTree>) -> Arc<PatchTree> {
+        let made = tree.evened.get_or_init(|| {
+            let Surface::Nurbs(s) = &tree.surface else {
+                return None;
+            };
+            let even = s.evened()?;
+            PatchTree::new(&Surface::Nurbs(even)).ok().map(Arc::new)
+        });
+        made.as_ref().map_or_else(|| Arc::clone(tree), Arc::clone)
+    }
+
     /// A lower bound on the smallest singular value of the Jacobian over
     /// the pieces of the surface that come within `reach` of `p`: the
     /// least of the bounds of the smallest pieces there. Where the
@@ -1757,10 +1866,248 @@ impl PatchTree {
             });
             match node.children {
                 Some(kids) if !inside => stack.extend(kids),
-                _ => least = least.min(node.sigma),
+                Some(_) => least = least.min(node.sigma),
+                // A leaf's bound may be far below the least singular value
+                // over it: its pieces, split where that is so, are looked
+                // at instead (those within reach only).
+                None => match self.finer(index, node, p, reach, least) {
+                    Some(sigma) => least = least.min(sigma),
+                    None => least = least.min(node.sigma),
+                },
             }
         }
         (least.is_finite() && least > 0.0).then_some(least)
+    }
+
+    /// The least of the bounds on the least singular value of the Jacobian
+    /// over the parts of a leaf within `reach` of `p`, from its pieces, or
+    /// a value of at least `cutoff` where none of them is below it. The
+    /// pieces are taken lowest bound first, and the lowest is split (the
+    /// split kept: [`Fine`]) while that can raise it; the first that
+    /// cannot is the answer, since every other is at least as high. A
+    /// piece is split where its box is more than [`FINE_REACH`] times as
+    /// large as the reach (its box may come within reach where nothing of
+    /// it does: the iso-curves of a patch whose weights are far apart fan
+    /// out from a heavy corner, and the box of a narrow fan is wide), or
+    /// where its bound is more than [`SIGMA_SLACK`] times below the least
+    /// singular value measured at its corners and its middle: below the
+    /// least of them for a piece wholly within reach (the bound pairs the
+    /// shortest normal of a piece with its longest derivatives, and where
+    /// the Jacobian changes by orders of magnitude within one leaf, next
+    /// to a heavy corner, that is orders of magnitude below what any point
+    /// of it has), below the largest of them for one that reaches out of
+    /// it (the part within reach may have that much more). For a Jacobian
+    /// that is the same all over a piece the bound is exact, so the slack
+    /// goes as the pieces shrink. A piece keeps at least its parent's
+    /// bound, which holds over it too. `None` on a surface drawn in
+    /// another chart than its parameters (a pole's: the measured value is
+    /// not of that map).
+    fn finer(&self, index: usize, node: &Node, p: Vec3, reach: f64, cutoff: f64) -> Option<f64> {
+        if self.wedge.is_some() {
+            return None;
+        }
+        let patch = node.patch.as_ref()?;
+        let mut fine = self.fine.lock().unwrap_or_else(PoisonError::into_inner);
+        let root = match fine.roots.get(&index) {
+            Some(&root) => root,
+            None => {
+                let root = fine.nodes.len();
+                let piece = self.fine_piece(patch.clone(), node.u, node.v, node.sigma, 0);
+                fine.nodes.push(piece);
+                fine.roots.insert(index, root);
+                root
+            }
+        };
+        // Lowest bound first; ties by index, so that the order is fixed.
+        let mut heap = std::collections::BinaryHeap::new();
+        let near = |piece: &FinePiece| box_distance(&piece.bbox, p) <= reach;
+        if let Some(piece) = fine.nodes.get(root).filter(|piece| near(piece)) {
+            heap.push(std::cmp::Reverse((Ordered(piece.sigma), root)));
+        }
+        let mut looks = 0_usize;
+        while let Some(std::cmp::Reverse((Ordered(sigma), at))) = heap.pop() {
+            looks += 1;
+            if !(sigma < cutoff) || looks > FINE_LOOKS {
+                return Some(sigma);
+            }
+            let Some(piece) = fine.nodes.get(at) else {
+                continue;
+            };
+            if let Some(kids) = piece.children {
+                for k in kids {
+                    if let Some(kid) = fine.nodes.get(k).filter(|kid| near(kid)) {
+                        heap.push(std::cmp::Reverse((Ordered(kid.sigma), k)));
+                    }
+                }
+                continue;
+            }
+            let inside = piece.bbox.corners().is_some_and(|(lo, hi)| {
+                let far = Vec3::new(
+                    (p.x - lo.x).abs().max((hi.x - p.x).abs()),
+                    (p.y - lo.y).abs().max((hi.y - p.y).abs()),
+                    (p.z - lo.z).abs().max((hi.z - p.z).abs()),
+                );
+                far.length() <= reach
+            });
+            let measured = if inside {
+                piece.measured.0
+            } else {
+                piece.measured.1
+            };
+            let (um, vm) = (0.5 * (piece.u.0 + piece.u.1), 0.5 * (piece.v.0 + piece.v.1));
+            let split = piece.depth < FINE_DEPTH
+                && fine.nodes.len().saturating_add(4) <= FINE_PIECES
+                && um > piece.u.0
+                && um < piece.u.1
+                && vm > piece.v.0
+                && vm < piece.v.1
+                && (piece.bbox.diagonal() > FINE_REACH * reach
+                    || piece.sigma * SIGMA_SLACK < measured);
+            let Some(patch) = piece.patch.clone().filter(|_| split) else {
+                return Some(sigma);
+            };
+            let (u, v, depth) = (piece.u, piece.v, piece.depth + 1);
+            let (left, right) = patch.split_u(0.5);
+            let ((ll, lh), (rl, rh)) = (left.split_v(0.5), right.split_v(0.5));
+            let mut kids = [0_usize; 4];
+            for (slot, (part, pu, pv)) in kids.iter_mut().zip([
+                (ll, (u.0, um), (v.0, vm)),
+                (lh, (u.0, um), (vm, v.1)),
+                (rl, (um, u.1), (v.0, vm)),
+                (rh, (um, u.1), (vm, v.1)),
+            ]) {
+                *slot = fine.nodes.len();
+                let made = self.fine_piece(part, pu, pv, sigma, depth);
+                if near(&made) {
+                    heap.push(std::cmp::Reverse((Ordered(made.sigma), *slot)));
+                }
+                fine.nodes.push(made);
+            }
+            if let Some(piece) = fine.nodes.get_mut(at) {
+                piece.children = Some(kids);
+                piece.patch = None;
+            }
+        }
+        // Nothing of the leaf within reach: it has nothing to add.
+        Some(f64::INFINITY)
+    }
+
+    /// A leaf's bound on the least singular value of the Jacobian over all
+    /// of it (at least `sigma`, its own): where it is more than
+    /// [`SIGMA_SLACK`] times below the least singular value measured at the
+    /// corners and the middle of a piece, the piece is halved, the way that
+    /// raises the lower of its halves' bounds more, and the least of the
+    /// pieces' bounds taken, within [`LEAF_PIECES`] pieces and
+    /// [`FINE_DEPTH`] halvings each way. A leaf with no bound at all (none
+    /// that clears the rounding of its nets: the normal of a rational piece
+    /// is bounded through the cube of its heaviest weight, and with the
+    /// weights ten thousand apart along a span that is a factor of 3e7
+    /// within the leaf next to its light end) gets one where the surface
+    /// has one, and the surface a parameter speed. (Where the
+    /// parametrisation stalls the measured value is zero, nothing is
+    /// halved, and the leaf has none, as before.)
+    fn settled_sigma(
+        &self,
+        patch: &RationalBezierPatch,
+        u: (f64, f64),
+        v: (f64, f64),
+        sigma: f64,
+    ) -> f64 {
+        let first = self.fine_piece(patch.clone(), u, v, sigma, 0);
+        if !(first.sigma * SIGMA_SLACK < first.measured.0) {
+            return sigma;
+        }
+        let mut least = f64::INFINITY;
+        let mut stack = vec![(first, 0_usize, 0_usize)];
+        let mut pieces = 1_usize;
+        while let Some((piece, along_u, along_v)) = stack.pop() {
+            let Some(patch) = piece.patch.as_ref() else {
+                least = least.min(piece.sigma);
+                continue;
+            };
+            let slack = piece.sigma * SIGMA_SLACK < piece.measured.0;
+            if !slack || pieces.saturating_add(1) > LEAF_PIECES {
+                least = least.min(piece.sigma);
+                continue;
+            }
+            let (pu, pv, floor) = (piece.u, piece.v, piece.sigma);
+            let (um, vm) = (0.5 * (pu.0 + pu.1), 0.5 * (pv.0 + pv.1));
+            let halves_u = (along_u < FINE_DEPTH && um > pu.0 && um < pu.1).then(|| {
+                let (a, b) = patch.split_u(0.5);
+                [
+                    self.fine_piece(a, (pu.0, um), pv, floor, 0),
+                    self.fine_piece(b, (um, pu.1), pv, floor, 0),
+                ]
+            });
+            let halves_v = (along_v < FINE_DEPTH && vm > pv.0 && vm < pv.1).then(|| {
+                let (a, b) = patch.split_v(0.5);
+                [
+                    self.fine_piece(a, pu, (pv.0, vm), floor, 0),
+                    self.fine_piece(b, pu, (vm, pv.1), floor, 0),
+                ]
+            });
+            let lower = |halves: &Option<[FinePiece; 2]>| {
+                halves
+                    .as_ref()
+                    .map_or(f64::NEG_INFINITY, |[a, b]| a.sigma.min(b.sigma))
+            };
+            let (by_u, by_v) = (lower(&halves_u), lower(&halves_v));
+            let (halves, next) = if by_u >= by_v {
+                (halves_u, (along_u + 1, along_v))
+            } else {
+                (halves_v, (along_u, along_v + 1))
+            };
+            let Some(halves) = halves else {
+                least = least.min(piece.sigma);
+                continue;
+            };
+            pieces += 1;
+            for half in halves {
+                stack.push((half, next.0, next.1));
+            }
+        }
+        if least.is_finite() {
+            least.max(sigma)
+        } else {
+            sigma
+        }
+    }
+
+    /// A piece of a leaf for [`Self::finer`]: its box, its bound (at least
+    /// `floor`, its parent's) and the least singular values at its corners
+    /// and its middle, least and largest.
+    fn fine_piece(
+        &self,
+        patch: RationalBezierPatch,
+        u: (f64, f64),
+        v: (f64, f64),
+        floor: f64,
+        depth: usize,
+    ) -> FinePiece {
+        let (mut least, mut most) = (f64::INFINITY, 0.0_f64);
+        for (a, b) in [
+            (u.0, v.0),
+            (u.0, v.1),
+            (u.1, v.0),
+            (u.1, v.1),
+            (0.5 * (u.0 + u.1), 0.5 * (v.0 + v.1)),
+        ] {
+            let (_, su, sv) = self.surface.derivatives(a, b);
+            let sum = su.length_squared() + sv.length_squared();
+            let sigma = least_singular(sum, su.cross(sv).length_squared());
+            least = least.min(sigma);
+            most = most.max(sigma);
+        }
+        FinePiece {
+            bbox: patch.control_bbox(),
+            u,
+            v,
+            sigma: sigma_bound(&patch, (u.1 - u.0, v.1 - v.0)).max(floor),
+            measured: (least, most),
+            depth,
+            patch: Some(patch),
+            children: None,
+        }
     }
 
     /// How far the surface's parameters can change per unit of length
@@ -2742,9 +3089,14 @@ mod tests {
                 .unwrap(),
             )
         };
-        assert!(PatchTree::new(&surface(900.0)).is_ok());
-        assert_eq!(PatchTree::new(&surface(1100.0)).unwrap_err(), WEIGHTS);
-        assert_eq!(PatchTree::new(&surface(1.0 / 1100.0)).unwrap_err(), WEIGHTS);
+        // (A thousand until 2026-10-17, when the bounds came to be taken
+        // piece by piece where the weights are uneven: expectation changed,
+        // the twins skewed a thousandfold both ways, 1.4e6 within a span,
+        // are held in `boolean_rational.rs`.)
+        assert!(PatchTree::new(&surface(1100.0)).is_ok());
+        assert!(PatchTree::new(&surface(0.9e7)).is_ok());
+        assert_eq!(PatchTree::new(&surface(1.1e7)).unwrap_err(), WEIGHTS);
+        assert_eq!(PatchTree::new(&surface(1.0 / 1.1e7)).unwrap_err(), WEIGHTS);
     }
 
     #[test]

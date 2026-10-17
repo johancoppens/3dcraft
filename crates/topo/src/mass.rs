@@ -530,8 +530,10 @@ const ON_SURFACE: f64 = 1e-5;
 const SQUARE: f64 = 64.0 * f64::EPSILON;
 /// The work one face may take before it is given up as one whose sums do
 /// not settle (see the module documentation), in evaluations of the
-/// integrand on an analytic surface.
-const BUDGET: u64 = 1 << 26;
+/// integrand on an analytic surface. (2^26 until 2026-10-17: the quarter
+/// disc a ball cuts from a plate drawn with the weights 1, 1000, 1000, 1
+/// at a heavy corner needs a little more, and settles in 0.1 s.)
+const BUDGET: u64 = 1 << 27;
 /// How many times the work of its first sums a face whose boundary is
 /// refined part by part may take, where that is more than [`BUDGET`]
 /// ([`part_by_part`]). A part that settles at the second sum costs five
@@ -2031,6 +2033,45 @@ fn whole_surface(
 }
 
 /// `value` moved by whole periods to be as near to `target` as it gets.
+/// How far a parameter goes in all around the loops of some samples: the
+/// sum of the steps from each sample to the next and from the last of a
+/// loop back to its first, each taken the short way round where the
+/// surface closes on itself that way (`period`, as [`jumps`] tells a
+/// crossing of the seam). From where the samples are, not from a sum of
+/// their rates: next to a heavy corner of a patch whose weights are far
+/// apart the parameters move so unevenly that the coarsest quadrature of
+/// `∮ dv` is off by more than the domain (a ball cut at such a corner with
+/// the weights a thousand apart: "goes around in v"), where the loops of
+/// the face go around nothing.
+fn net_change(samples: &[Sample], pick: impl Fn(&Sample) -> f64, period: Option<f64>) -> f64 {
+    let step = |a: f64, b: f64| match period {
+        Some(period) if period > 0.0 => near(b, a, period) - a,
+        _ => b - a,
+    };
+    let mut total = 0.0;
+    let mut start = 0;
+    while let Some(first) = samples.get(start) {
+        let end = samples
+            .iter()
+            .skip(start)
+            .position(|s| s.loop_index != first.loop_index)
+            .map_or(samples.len(), |offset| start + offset);
+        let Some(block) = samples.get(start..end) else {
+            break;
+        };
+        for pair in block.windows(2) {
+            if let [a, b] = pair {
+                total += step(pick(a), pick(b));
+            }
+        }
+        if let (Some(last), Some(first)) = (block.last(), block.first()) {
+            total += step(pick(last), pick(first));
+        }
+        start = end;
+    }
+    total
+}
+
 fn near(value: f64, target: f64, period: f64) -> f64 {
     value + ((target - value) / period).round() * period
 }
@@ -2166,9 +2207,9 @@ fn plan(
             // side. That is a face only if the surface is a single point
             // there, a pole, which is then where `G` runs from, as from
             // an apex.
-            let swept = samples.iter().map(|s| s.du).sum::<f64>();
+            let swept = net_change(samples, |s| s.u, closes_u.map(|(lo, hi)| hi - lo));
             let turns = (sense * swept / (u_max - u_min)).round();
-            let risen = samples.iter().map(|s| s.dv).sum::<f64>();
+            let risen = net_change(samples, |s| s.v, closes_v.map(|(lo, hi)| hi - lo));
             if (risen / (v_max - v_min)).round() != 0.0 {
                 return Err(MassError::Unsupported {
                     face: index,
@@ -2287,9 +2328,10 @@ fn across_v_seam(
     sense: f64,
 ) -> Result<Plan, MassError> {
     let ((u_min, u_max), (v_min, v_max)) = surface.domain();
-    let swept = samples.iter().map(|s| s.dv).sum::<f64>();
+    let [closes_u, closes_v] = spline_closure(surface);
+    let swept = net_change(samples, |s| s.v, closes_v.map(|(lo, hi)| hi - lo));
     let turns = (sense * swept / (v_max - v_min)).round();
-    let risen = samples.iter().map(|s| s.du).sum::<f64>();
+    let risen = net_change(samples, |s| s.u, closes_u.map(|(lo, hi)| hi - lo));
     if (risen / (u_max - u_min)).round() != 0.0 {
         return Err(MassError::Unsupported {
             face: index,

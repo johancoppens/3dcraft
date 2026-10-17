@@ -341,6 +341,22 @@ fn agree(solid: &Solid, tool: &Body, k: f64, pad: f64, edges: bool, tilted: bool
         plain = plain.transformed(&tilt(k)).unwrap();
         tool = tool.transformed(&tilt(k)).unwrap();
     }
+    agree_with(&plain, &twin, &tool, k, what);
+}
+
+/// The three booleans of `twin` (a rational twin of `plain`) and a tool,
+/// held to the same booleans of `plain`.
+fn agree_with(plain: &Body, twin: &Body, tool: &Body, k: f64, what: &str) {
+    agree_meshed(plain, twin, tool, k, what, true);
+}
+
+/// [`agree_with`], meshed only with `meshed`: the tessellator does not
+/// mesh every face drawn as unevenly as the twins with weights far apart
+/// (its grid is even in the parameters: too many segments per side, a
+/// refinement that cannot go on, a side shared by two faces' meshes;
+/// 2026-10-17, open in `tess`).
+fn agree_meshed(plain: &Body, twin: &Body, tool: &Body, k: f64, what: &str, meshed: bool) {
+    let (plain, twin, tool) = (plain.clone(), twin.clone(), tool.clone());
     for op in [Union, Intersect, Subtract] {
         let what = format!("{what}, {op:?}");
         let started = Instant::now();
@@ -382,7 +398,9 @@ fn agree(solid: &Solid, tool: &Body, k: f64, pad: f64, edges: bool, tilted: bool
                 "{what}: all of the tool"
             );
         }
-        meshes(&result.body, k, &what);
+        if meshed {
+            meshes(&result.body, k, &what);
+        }
     }
 }
 
@@ -1065,4 +1083,58 @@ fn time_one() {
             );
         }
     }
+}
+
+/// Weights far apart in booleans (2026-10-17): the twins with the weights
+/// of every span skewed 10, 100 and 1000 times further apart along u, along
+/// v and both (a thousandfold both ways is 1.4e6 within a span), each the
+/// same solid, against the tools that cross their curved faces, held to
+/// the same booleans of the analytic solid as in [`agree`]. Two tools per
+/// ratio and direction, taken in turn, so that every tool meets every
+/// ratio. Before, a thousand apart was refused at the tree ("rational …
+/// weights"), and a hundred apart along u by the surface intersection
+/// ("tangent or nearly coincident over too large an area": the marcher's
+/// cells were judged by the derivative bounds of the whole surface; then
+/// "stalled", at a knot where the spans are drawn at paces a hundred
+/// apart).
+fn skewed_against_tools(name: &str) {
+    for k in SCALES {
+        let solid = solids(k).into_iter().find(|s| s.name == name).unwrap();
+        let (twin, _) = rationalized(&solid.body, 0.2, true);
+        let tools = tools(name, k);
+        let mut turn = 0;
+        for ratio in [10.0, 100.0, 1000.0] {
+            for (along_u, along_v) in [(ratio, 1.0), (1.0, ratio), (ratio, ratio)] {
+                let body = skewed_apart(&twin, along_u, along_v);
+                assert_eq!(check(&body, &tolerance(k)), [], "{name}");
+                for pick in [turn, turn + 2] {
+                    let (tool_name, tool) = &tools[pick % tools.len()];
+                    let what =
+                        format!("{name} skewed {along_u} by {along_v}, and {tool_name} at {k}");
+                    agree_meshed(&solid.body, &body, tool, k, &what, false);
+                }
+                turn += 1;
+            }
+        }
+    }
+}
+
+#[test]
+fn a_quarter_rod_with_weights_far_apart_against_tools() {
+    skewed_against_tools("quarter rod");
+}
+
+#[test]
+fn a_ball_zone_with_weights_far_apart_against_tools() {
+    skewed_against_tools("ball zone");
+}
+
+#[test]
+fn a_frustum_with_weights_far_apart_against_tools() {
+    skewed_against_tools("frustum");
+}
+
+#[test]
+fn a_ring_slice_with_weights_far_apart_against_tools() {
+    skewed_against_tools("ring slice");
 }

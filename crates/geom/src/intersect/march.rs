@@ -109,6 +109,12 @@ const MAX_TURN: f64 = 0.2;
 /// Sine of the angle between the surfaces below which a point is not
 /// marched through.
 const MIN_SINE: f64 = 1e-8;
+/// How often a step that goes too far or too short, however short it is
+/// made, is scaled anew ([`Marcher::rescaled`]): halving between a scale
+/// too short and one too far closes in on the window of a step (half to
+/// twice its length) across a jump in speed of `2^(RESCALES − 2)` and
+/// more.
+const RESCALES: usize = 48;
 
 fn stalled() -> GeomError {
     GeomError::NoConvergence(
@@ -1704,7 +1710,24 @@ impl Marcher {
                 h = match halved(h, hmin) {
                     Ok(h) => h,
                     Err(_) if !self.within.contains(cur.p, 0.0) => return Ok((pts, End::Open)),
-                    Err(e) => return Err(e),
+                    Err(err) => {
+                        // Where the speed of the parametrisation jumps (a
+                        // knot of a spline whose spans are drawn at other
+                        // paces: rational weights far apart) the step
+                        // predicted from the derivatives on one side goes
+                        // as far off however short it is. The parameter
+                        // step is then scaled to the length it went.
+                        let ahead = step.dot(cur.t) > 0.0 && turn >= cos_turn;
+                        let Some(new) = ahead
+                            .then(|| self.rescaled(&cur, h, len, sign, cos_turn))
+                            .flatten()
+                        else {
+                            return Err(err);
+                        };
+                        pts.push(new);
+                        cur = new;
+                        continue;
+                    }
                 };
                 continue;
             };
@@ -1746,6 +1769,46 @@ impl Marcher {
                 h = (1.5 * h).min(self.hmax);
             }
         }
+    }
+
+    /// A step of about `h` from `cur` where the step predicted along the
+    /// parameters' tangent went `len` instead, however short it was made:
+    /// the parameter step scaled by the length it went (a secant on its
+    /// length), and once one went too short and one too far, halved
+    /// between them (the length grows with the scale, at another rate on
+    /// either side of a jump). `None` unless one lands as a step must
+    /// (about `h` ahead, turning little, on the field and in the chart).
+    fn rescaled(&mut self, cur: &Pt, h: f64, len: f64, sign: f64, cos_turn: f64) -> Option<Pt> {
+        let (mut scale, mut went) = (h, len);
+        let (mut short, mut far): (Option<f64>, Option<f64>) = (None, None);
+        for _ in 0..RESCALES {
+            if !(went > 0.0 && went.is_finite()) {
+                return None;
+            }
+            if went < 0.5 * h {
+                short = Some(scale);
+            } else {
+                far = Some(scale);
+            }
+            scale = match (short, far) {
+                (Some(a), Some(b)) => 0.5 * (a + b),
+                _ => scale * h / went,
+            };
+            if !(scale > 0.0 && scale.is_finite()) {
+                return None;
+            }
+            let (e, u, v) = self.correct(cur.u + scale * cur.du, cur.v + scale * cur.dv)?;
+            let step = e.p - cur.p;
+            went = step.length();
+            let new = Self::point(&e, u, v, sign)?;
+            if !(step.dot(cur.t) > 0.0 && new.t.dot(cur.t) >= cos_turn) {
+                return None;
+            }
+            if went >= 0.5 * h && went <= 2.0 * h {
+                return (e.dist <= self.cut && self.inside(u, v)).then_some(new);
+            }
+        }
+        None
     }
 
     /// The last point before the edge of the field's surface, on the step
@@ -2164,7 +2227,32 @@ impl Marcher {
         if let Some(made) = self.tac_between(a, b) {
             return made;
         }
-        let (e, u, v) = self.correct(0.5 * (a.u + b.u), 0.5 * (a.v + b.v))?;
+        let (mu, mv) = (0.5 * (a.u + b.u), 0.5 * (a.v + b.v));
+        self.between_from(a, b, mu, mv).or_else(|| {
+            // Where the speed of the parametrisation jumps between `a`
+            // and `b` (a knot of a spline whose spans are drawn at other
+            // paces: rational weights far apart) the middle of their
+            // parameters may be next to one of them, or Newton from it
+            // may not settle: start from the foot of the middle of the
+            // chord instead.
+            let Field::Free(projector) = &self.own else {
+                return None;
+            };
+            let (u, v, _) = projector.foot(a.p.lerp(b.p, 0.5));
+            let (pu, pv) = (
+                self.chart.u.1 - self.chart.u.0,
+                self.chart.v.1 - self.chart.v.0,
+            );
+            let u = Self::unwrap(u, mu, self.chart.periodic_u, pu);
+            let v = Self::unwrap(v, mv, self.chart.periodic_v, pv);
+            self.between_from(a, b, u, v)
+        })
+    }
+
+    /// The point of the branch between `a` and `b` that Newton finds from
+    /// `(u, v)`, if it is between them.
+    fn between_from(&mut self, a: &Pt, b: &Pt, u: f64, v: f64) -> Option<Pt> {
+        let (e, u, v) = self.correct(u, v)?;
         let chord = b.p - a.p;
         let along = (e.p - a.p).dot(chord);
         if !(along > 0.0 && along < chord.length_squared()) {
