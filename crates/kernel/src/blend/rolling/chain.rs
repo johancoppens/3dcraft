@@ -48,7 +48,7 @@ use super::{
     Across, End, FOLLOW_DEPTH, Item, MAX_SAMPLES, Section, Shape, Side, Solver, Spine, Steps, Stop,
     add_edge, add_face, add_vertex, bend, beyond_by, blend_loop, border, cut_back, cut_curve,
     edge_length, end_at, end_cut, first_section, hang_borders, insert_cut, march_out, outward_from,
-    refine, refuse, scale_of, tangent_or_refused,
+    refine, refuse, scale_of, tangent_along,
 };
 use crate::chamfer::ChamferSize;
 use craft3d_geom::{Curve3, NurbsCurve, NurbsSurface, Surface};
@@ -1174,7 +1174,7 @@ fn compute(
         let mut params: Vec<f64> = list.iter().map(|x| x.0).collect();
         let mut sections: Vec<Section> = list.iter().map(|x| x.1).collect();
         let piece_edge = pieces.get(i).ok_or_else(lost)?.edge;
-        let surface = refine(solver, &mut params, &mut sections, limit, bend)
+        let surface = refine(solver, &mut params, &mut sections, limit, bend, false)
             .ok_or_else(|| refuse(piece_edge, None, Reason::FreeApproximation))?;
         let outward =
             outward_from(solver, &surface, &params, &sections, convex).ok_or_else(unsolvable)?;
@@ -1285,12 +1285,12 @@ fn measure(
     let shape = chain.pieces.first().ok_or_else(lost)?.shape;
     let mut faces = Vec::with_capacity(made.len());
     for (piece, (face, second_border)) in chain.pieces.iter().zip(made) {
-        tangent_or_refused(
+        let [first, second] = piece.faces;
+        tangent_along(
             body,
             piece.edge,
-            piece.faces,
+            &[(piece.edge, first), (*second_border, second)],
             *face,
-            *second_border,
             shape,
             tolerance,
         )?;
@@ -2213,7 +2213,7 @@ fn along_spine(
         }
         let mut params = samples;
         let piece_edge = pieces.get(i).ok_or_else(lost)?.edge;
-        let surface = refine(&solver, &mut params, &mut sections, limit, bend)
+        let surface = refine(&solver, &mut params, &mut sections, limit, bend, false)
             .ok_or_else(|| refuse(piece_edge, None, Reason::FreeApproximation))?;
         let outward =
             outward_from(&solver, &surface, &params, &sections, convex).ok_or_else(unsolvable)?;

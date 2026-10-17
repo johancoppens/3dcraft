@@ -909,7 +909,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
     use craft3d_geom::{Curve3, Line};
-    use craft3d_topo::BodyKind;
+    use craft3d_topo::{BodyKind, Vertex};
 
     /// A line along x from the origin and a curve that leaves the origin
     /// at about 27° and comes back down to `gap` above the line at x = 0.7

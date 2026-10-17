@@ -39,7 +39,8 @@
 
 use super::super::super::{BlendError, Reason, lost, refused};
 use super::super::{
-    Item, MAX_SAMPLES, Side, add_edge, add_vertex, curve_through, proven_on, refuse, sign_change,
+    Item, MAX_SAMPLES, Side, add_edge, add_vertex, curve_through, in_range, proven_on, refuse,
+    sign_change,
 };
 use super::{Chain, Computed, EndKind, Meet, MeetEnd, PieceMade, measure, prepare, splice_chain};
 use craft3d_geom::{Curve3, NurbsCurve, NurbsSurface, Surface};
@@ -551,16 +552,7 @@ fn work_out(
     }
     // The third edge, from the vertex back to `r`.
     let data = third_data;
-    let mut third_at = data.curve.project(r).map_err(|_| not_built())?;
-    if let Some(period) = data.curve.period().filter(|p| *p > 0.0) {
-        let (lo, hi) = data.range;
-        while third_at < lo - tol {
-            third_at += period;
-        }
-        while third_at > hi + tol {
-            third_at -= period;
-        }
-    }
+    let third_at = in_range(data, data.curve.project(r).map_err(|_| not_built())?, tol);
     let (lo, hi) = data.range;
     // Strictly inside the third edge's range: it keeps a piece.
     let inside = third_at > lo && third_at < hi;

@@ -508,6 +508,17 @@ fn vertex_edges(body: &Body) -> Vec<Vec<EdgeId>> {
     edges
 }
 
+/// The faces at `vertex`: those whose loops use an edge that ends there.
+fn faces_at(at: &[Vec<EdgeId>], uses: &[Vec<Use>], vertex: VertexId) -> BTreeSet<FaceId> {
+    at.get(vertex.0 as usize)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| uses.get(e.0 as usize))
+        .flatten()
+        .map(|u| u.face)
+        .collect()
+}
+
 /// The outward normal of `face` at the point of it nearest `point`.
 fn outward(body: &Body, face: FaceId, point: Vec3) -> Result<Vec3, BlendError> {
     let face = body.face(face).ok_or_else(lost)?;
@@ -1154,12 +1165,7 @@ fn end_plane(
     if !matches!(plan.path, Path::Line { .. }) {
         return Ok(None);
     }
-    let mut faces = BTreeSet::new();
-    for edge in at.get(vertex.0 as usize).into_iter().flatten() {
-        for used in uses.get(edge.0 as usize).into_iter().flatten() {
-            faces.insert(used.face);
-        }
-    }
+    let mut faces = faces_at(at, uses, vertex);
     for face in plan.faces {
         faces.remove(&face);
     }
@@ -2294,15 +2300,6 @@ fn finish(
             }
         }
     }
-    let faces_at = |vertex: VertexId| -> BTreeSet<FaceId> {
-        at.get(vertex.0 as usize)
-            .into_iter()
-            .flatten()
-            .filter_map(|e| uses.get(e.0 as usize))
-            .flatten()
-            .map(|u| u.face)
-            .collect()
-    };
     for (index, plan) in plans.iter().enumerate() {
         let Some([own]) = of_plan.get(index).map(Vec::as_slice) else {
             return Err(refused(plan.edge, Reason::InPieces));
@@ -2310,7 +2307,7 @@ fn finish(
         let ends: Vec<VertexId> = plan.ends.into_iter().flatten().collect();
         let mut allowed: BTreeSet<FaceId> = plan.faces.into_iter().collect();
         for vertex in &ends {
-            allowed.extend(faces_at(*vertex));
+            allowed.extend(faces_at(at, uses, *vertex));
         }
         let mut met = [false, false];
         for &other in beside.get(*own).into_iter().flatten() {
@@ -2556,12 +2553,9 @@ fn in_place(
         }
     }
     let one_loop = |vertex: VertexId| {
-        at.get(vertex.0 as usize)
+        faces_at(at, uses, vertex)
             .into_iter()
-            .flatten()
-            .filter_map(|e| uses.get(e.0 as usize))
-            .flatten()
-            .all(|u| body.face(u.face).is_some_and(|f| f.loops.len() == 1))
+            .all(|f| body.face(f).is_some_and(|f| f.loops.len() == 1))
     };
     let lone = |vertex: VertexId| {
         ends.get(&vertex) == Some(&1)

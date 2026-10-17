@@ -497,24 +497,9 @@ fn solve3(rows: [Vec3; 3], rhs: [f64; 3]) -> Option<Vec3> {
 /// The blend face as a surface, from sections at increasing `s`: the
 /// surface's `u` is `s`, its `v` runs from the first face to the second.
 fn surface_through(params: &[f64], sections: &[Section]) -> Option<NurbsSurface> {
-    let nets: Vec<Vec<(Vec3, f64)>> = sections
-        .iter()
-        .map(Section::net)
-        .collect::<Option<Vec<_>>>()?;
+    let (nets, values) = homogeneous(sections)?;
     let across = nets.first()?.len();
-    if nets.iter().any(|n| n.len() != across) {
-        return None;
-    }
     let degree = (params.len() - 1).min(3);
-    // Per sample, its net's weighted points and weights, in one row.
-    let values: Vec<Vec<f64>> = nets
-        .iter()
-        .map(|net| {
-            net.iter()
-                .flat_map(|(p, w)| [p.x * w, p.y * w, p.z * w, *w])
-                .collect()
-        })
-        .collect();
     let (knots_u, rows) = interpolate(params, degree, &values).ok()?;
     let count_u = params.len();
     let mut ctrl = Vec::with_capacity(count_u * across);
@@ -537,6 +522,30 @@ fn surface_through(params: &[f64], sections: &[Section]) -> Option<NurbsSurface>
         degree, degree_v, knots_u, knots_v, count_u, across, ctrl, weights,
     )
     .ok()
+}
+
+/// The nets of `sections` (all of one length) and, per section, its net's
+/// weighted points and weights in one row.
+type Homogeneous = (Vec<Vec<(Vec3, f64)>>, Vec<Vec<f64>>);
+
+fn homogeneous(sections: &[Section]) -> Option<Homogeneous> {
+    let nets: Vec<Vec<(Vec3, f64)>> = sections
+        .iter()
+        .map(Section::net)
+        .collect::<Option<Vec<_>>>()?;
+    let across = nets.first()?.len();
+    if nets.iter().any(|n| n.len() != across) {
+        return None;
+    }
+    let values = nets
+        .iter()
+        .map(|net| {
+            net.iter()
+                .flat_map(|(p, w)| [p.x * w, p.y * w, p.z * w, *w])
+                .collect()
+        })
+        .collect();
+    Some((nets, values))
 }
 
 /// The iso-curve of `surface` at `v = 0` (`last` false) or `v = 1`.
@@ -770,20 +779,10 @@ struct Made {
 }
 
 /// Fills `params`/`sections` until the surface through them is within
-/// `limit` of the exact sections everywhere between two samples.
-fn refine(
-    solver: &Solver<'_>,
-    params: &mut Vec<f64>,
-    sections: &mut Vec<Section>,
-    limit: f64,
-    bend: f64,
-) -> Option<NurbsSurface> {
-    refine_samples(solver, params, sections, limit, bend, false)
-}
-
-/// [`refine`] for an open surface (through the samples, `surface_through`)
-/// or a closed one (`closed`: round them, [`ring_surface`], the last
-/// sample followed by the first one turn on). Each pass holds the surface
+/// `limit` of the exact sections everywhere between two samples: an open
+/// surface (through the samples, `surface_through`) or a closed one
+/// (`closed`: round them, [`ring_surface`], the last sample followed by
+/// the first one turn on). Each pass holds the surface
 /// at the middle of every pair of samples against the exact section there
 /// (to `limit`, and a fillet's normal along its borders and across it to
 /// `bend`) and adds the middles where it does not hold, and next to them
@@ -792,7 +791,7 @@ fn refine(
 /// every two samples (`geom::certify`, at most [`STEP_PROOF_PIECES`]
 /// pieces a step), and a step where it is not is halved. At most
 /// [`PASSES`] passes and [`MAX_SAMPLES`] samples.
-fn refine_samples(
+fn refine(
     solver: &Solver<'_>,
     params: &mut Vec<f64>,
     sections: &mut Vec<Section>,
@@ -1223,15 +1222,15 @@ fn blend_one(
             stays_on(body, edge, border, face, tolerance)?;
         }
         no_loop_behind(body, blend_face, convex, &data.curve, edge, tolerance)?;
-        return tangent_or_refused(
+        tangent_along(
             body,
             edge,
-            [first, second],
+            &[(edge, first), (second_border, second)],
             blend_face,
-            second_border,
             shape,
             tolerance,
-        );
+        )?;
+        return Ok(blend_face);
     }
     let end_bound = bend(tolerance, shape.size());
     let mut ends = [
@@ -1506,7 +1505,7 @@ fn blend_open(
                 };
                 surface_through(&[*p0, *p1], &[*c0, *c1])
             }
-            None => refine(solver, &mut params, &mut sections, limit, bend),
+            None => refine(solver, &mut params, &mut sections, limit, bend, false),
         }
         .ok_or_else(|| refuse(edge, None, Reason::FreeApproximation))?;
         parts.push(surface);
@@ -1721,12 +1720,6 @@ enum Stop {
     TooFar,
 }
 
-/// Whether the whole of `section` lies outside the face `third`, by more
-/// than twice the tolerance.
-fn out_of(third: Side<'_>, section: &Section, tol: f64) -> bool {
-    beyond_by(third, section, tol, 1.0)
-}
-
 /// Whether the whole of `section` lies more than twice the tolerance
 /// beyond the face `third`: outside it (`sign` 1), or inside it (−1).
 fn beyond_by(third: Side<'_>, section: &Section, tol: f64, sign: f64) -> bool {
@@ -1753,7 +1746,7 @@ fn march_out(
     steps: Steps,
     tol: f64,
 ) -> Result<(Vec<(f64, Section)>, f64), Stop> {
-    let out_of = |section: &Section| out_of(third, section, tol);
+    let out_of = |section: &Section| beyond_by(third, section, tol, 1.0);
     let direction = if end < 0.5 { -1.0 } else { 1.0 };
     let (mut s, mut last) = from;
     let mut solved = Vec::new();
@@ -1894,31 +1887,10 @@ fn stays_on(
     Ok(())
 }
 
-/// A fillet face is tangent to both faces along its borders, measured
-/// again on the body (to ten times what the approximation was refined
-/// to); a chamfer passes.
-fn tangent_or_refused(
-    body: &Body,
-    edge: EdgeId,
-    [first, second]: [FaceId; 2],
-    blend_face: FaceId,
-    second_border: EdgeId,
-    shape: Shape,
-    tolerance: &Tolerance,
-) -> Result<FaceId, BlendError> {
-    tangent_along(
-        body,
-        edge,
-        &[(edge, first), (second_border, second)],
-        blend_face,
-        shape,
-        tolerance,
-    )?;
-    Ok(blend_face)
-}
-
-/// [`tangent_or_refused`] along `borders`, each with the face it lies
-/// on: each stays on its face, and a fillet face is tangent to it.
+/// The borders `borders` of a blend face, each with the face it lies on:
+/// each stays on its face ([`stays_on`]), and a fillet face is tangent to
+/// it, measured again on the body at seven points (to ten times what the
+/// approximation was refined to); a chamfer passes.
 fn tangent_along(
     body: &Body,
     edge: EdgeId,
@@ -2035,7 +2007,7 @@ fn ring(solver: &Solver<'_>, seed: Section, data: &Edge, tolerance: &Tolerance) 
         ),
     };
     let bend = bend(tolerance, size);
-    let surface = refine_samples(solver, &mut params, &mut sections, limit, bend, true)?;
+    let surface = refine(solver, &mut params, &mut sections, limit, bend, true)?;
     Some((surface, params, sections))
 }
 
@@ -2094,30 +2066,18 @@ fn closed_path(balls: &[Section]) -> Option<(Curve3, Vec<f64>)> {
 /// again.
 fn ring_surface(params: &[f64], sections: &[Section]) -> Option<NurbsSurface> {
     use craft3d_geom::refine::periodic_derivatives;
-    let nets: Vec<Vec<(Vec3, f64)>> = sections
-        .iter()
-        .map(Section::net)
-        .collect::<Option<Vec<_>>>()?;
-    let across = nets.first()?.len();
     let n = params.len();
-    if n < 3 || nets.iter().any(|x| x.len() != across) {
+    if n < 3 {
         return None;
     }
+    let (nets, values) = homogeneous(sections)?;
+    let across = nets.first()?.len();
     let first = *params.first()?;
     let steps: Vec<f64> = (0..n)
         .map(|i| {
             let a = params.get(i).copied().unwrap_or(0.0);
             let b = params.get(i + 1).copied().unwrap_or(first + 1.0);
             b - a
-        })
-        .collect();
-    // Per section, its homogeneous control points one after the other.
-    let values: Vec<Vec<f64>> = nets
-        .iter()
-        .map(|net| {
-            net.iter()
-                .flat_map(|(p, w)| [p.x * w, p.y * w, p.z * w, *w])
-                .collect()
         })
         .collect();
     let tangents = periodic_derivatives(&steps, &values).ok()?;
@@ -2606,10 +2566,19 @@ fn take_whole(body: &mut Body, edge: EdgeId) {
 /// The parameter of `point` on the edge `data` when it lies on it within
 /// `tol`, strictly between its ends; `Err` when it cannot be projected.
 fn parameter_on(data: &Edge, point: Vec3, tol: f64) -> Result<Option<f64>, ()> {
-    let t = data.curve.project(point).map_err(|_| ())?;
+    let t = in_range(data, data.curve.project(point).map_err(|_| ())?, tol);
     let (lo, hi) = data.range;
-    // A periodic curve: the turn that puts `t` in the range.
-    let t = match data.curve.period() {
+    let span = hi - lo;
+    let on =
+        data.curve.eval(t).distance(point) <= tol && t > lo + 1e-9 * span && t < hi - 1e-9 * span;
+    Ok(on.then_some(t))
+}
+
+/// The parameter `t` of the curve of `data` turned (by whole periods of
+/// a periodic curve) to lie in its range, give or take `tol`.
+fn in_range(data: &Edge, t: f64, tol: f64) -> f64 {
+    let (lo, hi) = data.range;
+    match data.curve.period() {
         Some(period) if period > 0.0 => {
             let mut t = t;
             while t < lo - tol {
@@ -2621,11 +2590,7 @@ fn parameter_on(data: &Edge, point: Vec3, tol: f64) -> Result<Option<f64>, ()> {
             t
         }
         _ => t,
-    };
-    let span = hi - lo;
-    let on =
-        data.curve.eval(t).distance(point) <= tol && t > lo + 1e-9 * span && t < hi - 1e-9 * span;
-    Ok(on.then_some(t))
+    }
 }
 
 /// The vertex of a corner at one end of a blend: the end's own vertex on
@@ -3833,8 +3798,8 @@ mod tests {
             .map(|s| solver.follow(0.5, &seed, *s, FOLLOW_DEPTH).expect("a ball"))
             .collect();
         let limit = 0.25e-6;
-        let surface =
-            refine(&solver, &mut samples, &mut sections, limit, 1e-3).expect("a fillet face");
+        let surface = refine(&solver, &mut samples, &mut sections, limit, 1e-3, false)
+            .expect("a fillet face");
         let on_wall = border(&surface, true).unwrap();
         // The wall as the blend sees it: continued past its domain.
         let side = solver.sides[1];
