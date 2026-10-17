@@ -10,7 +10,7 @@ use std::f64::consts::{PI, TAU};
 
 use crate::dual::{Dual, SLOTS, angle_of, length};
 use crate::error::{Site, SolveError};
-use crate::model::{Constraint, Entity, EntityId, Sketch};
+use crate::model::{Constraint, Entity, EntityId, EntityKind, Sketch};
 use crate::spline::{Foot, SplineVars};
 use crate::{MAX_ENTITIES, MAX_EQUATIONS, MAX_UNKNOWNS};
 
@@ -19,7 +19,17 @@ const NEGATIVE_RADIUS: &str = "a circle with a negative radius";
 const SMALL_ARC: &str = "an arc smaller than the linear tolerance has no tangent";
 const STALLED_SPLINE: &str =
     "a spline that stands still where the point is nearest to it has no direction there";
-pub(crate) const CROWDED: &str = "it ties together the images of more points than one equation can hold; split it into simpler constraints";
+/// Most image points an image point may be made from one after the other
+/// (an image of an image of ...): a tree of sketch patterns is three
+/// levels deep, and an end of a run that is itself an image adds one.
+pub const MAX_IMAGE_DEPTH: usize = 8;
+const TOO_DEEP: &str = "it is an image of an image of ... more than eight deep";
+
+/// Why an equation is not built: through its image points it would depend
+/// on more unknowns than one equation holds (`SLOTS`, 18: the
+/// coordinates of the points the images are made from, the ends of runs
+/// and the centres). Not supported yet rather than a wrong gradient.
+pub const CROWDED: &str = "through its image points it depends on more than 18 unknowns (the coordinates of the seed points, run ends and centres they are made from), more than one constraint holds; split it into constraints on fewer image points";
 
 /// Why an equation has no value at some point.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -59,6 +69,51 @@ pub(crate) enum Centre {
 pub(crate) struct ImageVars {
     pub map: MapVars,
     pub carry: Option<Carry>,
+    /// The stretch of the path parameter over which a carried image moves
+    /// by its own numbers ([`Stage`]).
+    pub stage: Stage,
+}
+
+/// The stretch `[lo, hi)` of the path parameter over which a carried image
+/// moves by its own numbers: an image made from moving images (nested
+/// patterns) is carried after them, one stage per level, so that along
+/// each stage every carried image moves on its family or a straight line,
+/// linearly in the parameter (`crate::carry`). Before `lo` its numbers are
+/// the old ones, from `hi` on the new ones.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Stage {
+    pub lo: f64,
+    pub hi: f64,
+}
+
+impl Stage {
+    pub(crate) const WHOLE: Stage = Stage { lo: 0.0, hi: 1.0 };
+
+    /// How far along its own stage the image is at `t`, from 0 to 1.
+    fn local(&self, t: f64) -> f64 {
+        if *self == Stage::WHOLE {
+            t
+        } else if t < self.lo {
+            0.0
+        } else if t >= self.hi {
+            1.0
+        } else {
+            (t - self.lo) / (self.hi - self.lo)
+        }
+    }
+
+    /// [`Stage::local`] in duals.
+    fn local_dual(&self, t: Dual) -> Dual {
+        if *self == Stage::WHOLE {
+            t
+        } else if t.v < self.lo {
+            Dual::constant(0.0)
+        } else if t.v >= self.hi {
+            Dual::constant(1.0)
+        } else {
+            (t - Dual::constant(self.lo)) * (1.0 / (self.hi - self.lo))
+        }
+    }
 }
 
 /// How a carried image moves with the continuation parameter, the unknown
@@ -105,18 +160,23 @@ fn lerp(a: f64, b: f64, t: f64) -> f64 {
 
 impl ImageVars {
     pub(crate) fn new(map: MapVars) -> Self {
-        ImageVars { map, carry: None }
+        ImageVars {
+            map,
+            carry: None,
+            stage: Stage::WHOLE,
+        }
     }
 
-    /// The coordinates at `x`.
-    pub(crate) fn at(&self, x: &[f64]) -> Option<[f64; 2]> {
+    /// The coordinates at `x`; `images` are the image points it may be
+    /// made from (those before it).
+    pub(crate) fn at(&self, x: &[f64], images: &[ImageVars]) -> Option<[f64; 2]> {
         let Some(carry) = self.carry else {
-            return self.map.at(x);
+            return self.map.at(x, images);
         };
-        let t = *x.get(carry.t())?;
+        let t = self.stage.local(*x.get(carry.t())?);
         match (carry, self.map) {
             (Carry::Straight { by: [bx, by], .. }, map) => {
-                let [px, py] = map.at(x)?;
+                let [px, py] = map.at(x, images)?;
                 let rest = 1.0 - t;
                 Some([px + rest * bx, py + rest * by])
             }
@@ -124,14 +184,14 @@ impl ImageVars {
                 of,
                 offset: [lerp(from[0], offset[0], t), lerp(from[1], offset[1], t)],
             }
-            .at(x),
+            .at(x, images),
             (Carry::Chain { from, .. }, MapVars::Chain { of, from: a, to, k }) => MapVars::Chain {
                 of,
                 from: a,
                 to,
                 k: lerp(from, k, t),
             }
-            .at(x),
+            .at(x, images),
             (Carry::Turn { from, to, at, .. }, MapVars::Turn { of, centre, .. }) => {
                 let (sin, cos) = lerp(from, to, t).sin_cos();
                 let centre = match centre {
@@ -144,7 +204,7 @@ impl ImageVars {
                     sin,
                     cos,
                 }
-                .at(x)
+                .at(x, images)
             }
             // A family that does not match its map is never made
             // (`crate::carry`); no place rather than a wrong one.
@@ -154,21 +214,22 @@ impl ImageVars {
 }
 
 /// How an image point is made from unknowns ([`crate::ImageMap`] with the
-/// points resolved to the indices of their x unknowns).
+/// points resolved to the indices of their x unknowns, or to image points
+/// before it: an image of an image, for nested patterns).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum MapVars {
     Shift {
-        of: usize,
+        of: Pt,
         offset: [f64; 2],
     },
     Chain {
-        of: usize,
-        from: usize,
-        to: usize,
+        of: Pt,
+        from: Pt,
+        to: Pt,
         k: f64,
     },
     Turn {
-        of: usize,
+        of: Pt,
         centre: Centre,
         sin: f64,
         cos: f64,
@@ -182,19 +243,19 @@ fn pair(x: &[f64], i: usize) -> Option<[f64; 2]> {
 
 impl MapVars {
     /// The coordinates at `x`, as [`crate::ImageMap::apply`] gives them.
-    fn at(&self, x: &[f64]) -> Option<[f64; 2]> {
+    fn at(&self, x: &[f64], images: &[ImageVars]) -> Option<[f64; 2]> {
         Some(match *self {
             MapVars::Shift {
                 of,
                 offset: [dx, dy],
             } => {
-                let [px, py] = pair(x, of)?;
+                let [px, py] = coords(x, images, of)?;
                 [px + dx, py + dy]
             }
             MapVars::Chain { of, from, to, k } => {
-                let [px, py] = pair(x, of)?;
-                let [ax, ay] = pair(x, from)?;
-                let [bx, by] = pair(x, to)?;
+                let [px, py] = coords(x, images, of)?;
+                let [ax, ay] = coords(x, images, from)?;
+                let [bx, by] = coords(x, images, to)?;
                 [px + (bx - ax) * k, py + (by - ay) * k]
             }
             MapVars::Turn {
@@ -203,7 +264,7 @@ impl MapVars {
                 sin,
                 cos,
             } => {
-                let [px, py] = pair(x, of)?;
+                let [px, py] = coords(x, images, of)?;
                 let [cx, cy] = match centre {
                     Centre::Own(c) => pair(x, c)?,
                     Centre::At(at) => at,
@@ -215,11 +276,12 @@ impl MapVars {
     }
 }
 
-/// The coordinates of a point at `x`.
+/// The coordinates of a point at `x`. An image point is made from the
+/// image points before it only (`prepare`), so this ends.
 pub(crate) fn coords(x: &[f64], images: &[ImageVars], p: Pt) -> Option<[f64; 2]> {
     match p {
         Pt::Own(i) => pair(x, i),
-        Pt::Image(i) => images.get(i)?.at(x),
+        Pt::Image(i) => images.get(i)?.at(x, images.get(..i)?),
     }
 }
 
@@ -384,7 +446,7 @@ impl<'a> Ctx<'a> {
         let Some(carry) = image.carry else {
             return self.map(image.map);
         };
-        let t = self.var(carry.t())?;
+        let t = image.stage.local_dual(self.var(carry.t())?);
         match (carry, image.map) {
             (Carry::Straight { by: [bx, by], .. }, map) => {
                 let [px, py] = self.map(map)?;
@@ -392,21 +454,21 @@ impl<'a> Ctx<'a> {
                 Ok([px + rest * bx, py + rest * by])
             }
             (Carry::Shift { from, .. }, MapVars::Shift { of, offset }) => {
-                let [px, py] = self.own(of)?;
+                let [px, py] = self.pt(of)?;
                 // The offset first, as `ImageVars::at` adds it.
                 let dx = t * (offset[0] - from[0]) + Dual::constant(from[0]);
                 let dy = t * (offset[1] - from[1]) + Dual::constant(from[1]);
                 Ok([px + dx, py + dy])
             }
             (Carry::Chain { from, .. }, MapVars::Chain { of, from: a, to, k }) => {
-                let [px, py] = self.own(of)?;
-                let [ax, ay] = self.own(a)?;
-                let [bx, by] = self.own(to)?;
+                let [px, py] = self.pt(of)?;
+                let [ax, ay] = self.pt(a)?;
+                let [bx, by] = self.pt(to)?;
                 let k = t * (k - from) + Dual::constant(from);
                 Ok([px + (bx - ax) * k, py + (by - ay) * k])
             }
             (Carry::Turn { from, to, at, .. }, MapVars::Turn { of, centre, .. }) => {
-                let [px, py] = self.own(of)?;
+                let [px, py] = self.pt(of)?;
                 let [cx, cy] = match centre {
                     Centre::Own(c) => self.own(c)?,
                     Centre::At([x, y]) => [
@@ -429,13 +491,13 @@ impl<'a> Ctx<'a> {
                 of,
                 offset: [dx, dy],
             } => {
-                let [px, py] = self.own(of)?;
+                let [px, py] = self.pt(of)?;
                 [px + Dual::constant(dx), py + Dual::constant(dy)]
             }
             MapVars::Chain { of, from, to, k } => {
-                let [px, py] = self.own(of)?;
-                let [ax, ay] = self.own(from)?;
-                let [bx, by] = self.own(to)?;
+                let [px, py] = self.pt(of)?;
+                let [ax, ay] = self.pt(from)?;
+                let [bx, by] = self.pt(to)?;
                 [px + (bx - ax) * k, py + (by - ay) * k]
             }
             MapVars::Turn {
@@ -444,7 +506,7 @@ impl<'a> Ctx<'a> {
                 sin,
                 cos,
             } => {
-                let [px, py] = self.own(of)?;
+                let [px, py] = self.pt(of)?;
                 let [cx, cy] = match centre {
                     Centre::Own(c) => self.own(c)?,
                     Centre::At([x, y]) => [Dual::constant(x), Dual::constant(y)],
@@ -1230,9 +1292,11 @@ pub(crate) fn prepare(sketch: &Sketch, min_len: f64) -> Result<Prepared, SolveEr
     too_large("unknowns", x0.len(), MAX_UNKNOWNS)?;
 
     // Image points: the indices of the unknowns of the points they are
-    // made from, which have to be points with coordinates.
+    // made from, which have to be points with coordinates or image points
+    // before them (an image of an image), at most `MAX_IMAGE_DEPTH` deep.
     let mut images = Vec::new();
-    let mut image_of = Vec::with_capacity(sketch.entities.len());
+    let mut image_of: Vec<Option<usize>> = Vec::with_capacity(sketch.entities.len());
+    let mut depth_of: Vec<usize> = Vec::new();
     for (index, entity) in sketch.entities.iter().enumerate() {
         let Entity::Image { of, map } = *entity else {
             image_of.push(None);
@@ -1255,6 +1319,26 @@ pub(crate) fn prepare(sketch: &Sketch, min_len: f64) -> Result<Prepared, SolveEr
                 None => Err(SolveError::UnknownEntity { at, id }),
             }
         };
+        let mut depth = 1usize;
+        let mut point = |id: EntityId| -> Result<Pt, SolveError> {
+            match sketch.entities.get(id.index()) {
+                Some(Entity::Image { .. }) => {
+                    let earlier = image_of.get(id.index()).copied().flatten();
+                    let Some(earlier) = earlier.filter(|_| id.index() < index) else {
+                        return Err(SolveError::WrongKind {
+                            at,
+                            id,
+                            expected: "point with coordinates, or an image point before it",
+                            found: EntityKind::Image,
+                        });
+                    };
+                    let below = depth_of.get(earlier).copied().unwrap_or(MAX_IMAGE_DEPTH);
+                    depth = depth.max(below.saturating_add(1));
+                    Ok(Pt::Image(earlier))
+                }
+                _ => own(id).map(Pt::Own),
+            }
+        };
         let finite = |values: &[f64]| {
             if values.iter().all(|v| v.is_finite()) {
                 Ok(())
@@ -1262,7 +1346,7 @@ pub(crate) fn prepare(sketch: &Sketch, min_len: f64) -> Result<Prepared, SolveEr
                 Err(SolveError::NonFinite { at })
             }
         };
-        let of = own(of)?;
+        let of = point(of)?;
         let vars = match map {
             crate::ImageMap::Shift { offset } => {
                 finite(&offset)?;
@@ -1272,8 +1356,8 @@ pub(crate) fn prepare(sketch: &Sketch, min_len: f64) -> Result<Prepared, SolveEr
                 finite(&[k])?;
                 MapVars::Chain {
                     of,
-                    from: own(from)?,
-                    to: own(to)?,
+                    from: point(from)?,
+                    to: point(to)?,
                     k,
                 }
             }
@@ -1292,7 +1376,14 @@ pub(crate) fn prepare(sketch: &Sketch, min_len: f64) -> Result<Prepared, SolveEr
                 }
             }
         };
+        if depth > MAX_IMAGE_DEPTH {
+            return Err(SolveError::InvalidEntity {
+                entity: index,
+                reason: TOO_DEEP,
+            });
+        }
         image_of.push(Some(images.len()));
+        depth_of.push(depth);
         images.push(ImageVars::new(vars));
     }
 
@@ -1394,8 +1485,12 @@ pub(crate) fn prepare(sketch: &Sketch, min_len: f64) -> Result<Prepared, SolveEr
     }
     // An image may lie far from the points it is made from (the end of a
     // long row).
-    for image in &builder.images {
-        if let Some([x, y]) = image.at(&builder.x0) {
+    for (i, image) in builder.images.iter().enumerate() {
+        if let Some([x, y]) = builder
+            .images
+            .get(..i)
+            .and_then(|before| image.at(&builder.x0, before))
+        {
             magnitude = magnitude.max(x.abs()).max(y.abs());
             place([x, y]);
         }
@@ -1455,29 +1550,29 @@ mod tests {
         let x = [0.7, -0.4, 0.1, 0.2, 1.3, 0.9, -0.6, 0.35];
         let images = [
             MapVars::Shift {
-                of: 0,
+                of: Pt::Own(0),
                 offset: [3.0, -1.5],
             },
             MapVars::Chain {
-                of: 0,
-                from: 2,
-                to: 4,
+                of: Pt::Own(0),
+                from: Pt::Own(2),
+                to: Pt::Own(4),
                 k: 3.0,
             },
             MapVars::Chain {
-                of: 4,
-                from: 2,
-                to: 4,
+                of: Pt::Own(4),
+                from: Pt::Own(2),
+                to: Pt::Own(4),
                 k: 2.0,
             },
             MapVars::Turn {
-                of: 0,
+                of: Pt::Own(0),
                 centre: Centre::Own(6),
                 sin: 0.8_f64.sin(),
                 cos: 0.8_f64.cos(),
             },
             MapVars::Turn {
-                of: 4,
+                of: Pt::Own(4),
                 centre: Centre::At([0.25, -0.5]),
                 sin: (-2.1_f64).sin(),
                 cos: (-2.1_f64).cos(),
@@ -1516,7 +1611,7 @@ mod tests {
         ];
         let of = [0, 0, 2, 0, 2];
         for ((image, map), of) in images.iter().zip(&maps).zip(of) {
-            let at = image.at(&x).unwrap();
+            let at = image.at(&x, &[]).unwrap();
             let want = map.apply(point(of).unwrap(), |id| point(id.0)).unwrap();
             assert_eq!(at, want, "{map:?}");
         }
@@ -1576,6 +1671,111 @@ mod tests {
         }
     }
 
+    /// Images of images (nested patterns), plain and carried in stages:
+    /// their place in numbers is the map applied to the place of the image
+    /// they are made from, the same in duals, and their gradient equals
+    /// central differences.
+    #[test]
+    fn images_of_images_have_exact_gradients() {
+        // Points 0..4 at x[0..8], the path parameter at x[8].
+        let x = [0.7, -0.4, 0.1, 0.2, 1.3, 0.9, -0.6, 0.35, 0.62];
+        let t = 8;
+        let own = Pt::Own;
+        let first = |stage| ImageVars {
+            map: MapVars::Chain {
+                of: own(4),
+                from: own(2),
+                to: own(4),
+                k: 3.0,
+            },
+            carry: Some(Carry::Chain { t, from: 1.0 }),
+            stage,
+        };
+        let half = Stage { lo: 0.0, hi: 0.5 };
+        let second = Stage { lo: 0.5, hi: 1.0 };
+        let images = [
+            // 0: the end of an inner run, carried in the first stage.
+            first(half),
+            // 1: the end of the outer run, from the inner end: an image of
+            // an image, its chain ending on it too, carried second.
+            ImageVars {
+                map: MapVars::Chain {
+                    of: Pt::Image(0),
+                    from: own(2),
+                    to: Pt::Image(0),
+                    k: 4.0,
+                },
+                carry: Some(Carry::Chain { t, from: 2.0 }),
+                stage: second,
+            },
+            // 2: a turn of that, not carried.
+            ImageVars::new(MapVars::Turn {
+                of: Pt::Image(1),
+                centre: Centre::Own(6),
+                sin: 0.3_f64.sin(),
+                cos: 0.3_f64.cos(),
+            }),
+            // 3: a shift of the inner end, carried straight.
+            ImageVars {
+                map: MapVars::Shift {
+                    of: Pt::Image(0),
+                    offset: [0.5, -0.25],
+                },
+                carry: Some(Carry::Straight { t, by: [0.1, 0.2] }),
+                stage: second,
+            },
+        ];
+        // In numbers: composed level by level.
+        let tl = 1.0; // x[8] = 0.62 is past the first stage.
+        let k0 = 1.0 + tl * (3.0 - 1.0);
+        let inner = [x[4] + (x[4] - x[2]) * k0, x[5] + (x[5] - x[3]) * k0];
+        assert_eq!(images[0].at(&x, &[]).unwrap(), inner);
+        let ts = (0.62 - 0.5) / 0.5;
+        let k1 = ts * (4.0 - 2.0) + 2.0;
+        let outer = images[1].at(&x, &images[..1]).unwrap();
+        let want = [
+            inner[0] + (inner[0] - x[2]) * k1,
+            inner[1] + (inner[1] - x[3]) * k1,
+        ];
+        assert!((outer[0] - want[0]).abs() <= 1e-14 && (outer[1] - want[1]).abs() <= 1e-14);
+        let equations = [
+            Equation::Same(Pt::Image(1), own(0)),
+            Equation::Distance(Pt::Image(2), own(0), 2.0),
+            Equation::Fixed(Pt::Image(3), [1.0, 2.0]),
+            Equation::PointOnLine(
+                Pt::Image(2),
+                Ln {
+                    a: Pt::Image(1),
+                    b: Pt::Image(3),
+                },
+            ),
+        ];
+        let h = 1e-6;
+        let eval = |eq: &Equation, x: &[f64]| eq.eval_with(x, 1e-9, &[], &images).unwrap();
+        for eq in &equations {
+            let e = eval(eq, &x);
+            // The same place in duals as in numbers.
+            for row in 0..e.count {
+                let mut gradient = [0.0; 9];
+                for slot in 0..e.used {
+                    gradient[e.slots[slot]] += e.rows[row].d[slot];
+                }
+                for (j, got) in gradient.iter().enumerate() {
+                    let (mut hi, mut lo) = (x, x);
+                    hi[j] += h;
+                    lo[j] -= h;
+                    let want = (eval(eq, &hi).rows[row].v - eval(eq, &lo).rows[row].v) / (2.0 * h);
+                    assert!(
+                        (got - want).abs() <= 1e-6 * (1.0 + want.abs()),
+                        "{eq:?} row {row} d/dx{j}: {got} vs {want}"
+                    );
+                }
+            }
+        }
+        let place = coords(&x, &images, Pt::Image(1)).unwrap();
+        assert_eq!(place, outer);
+    }
+
     /// Carried images (`Carry`): their place is the same in numbers and in
     /// duals, and their gradient, the path parameter's column included,
     /// equals central differences.
@@ -1587,9 +1787,10 @@ mod tests {
         let images = [
             ImageVars {
                 map: MapVars::Shift {
-                    of: 0,
+                    of: Pt::Own(0),
                     offset: [3.0, -1.5],
                 },
+                stage: Stage::WHOLE,
                 carry: Some(Carry::Shift {
                     t,
                     from: [-1.0, 0.5],
@@ -1597,20 +1798,22 @@ mod tests {
             },
             ImageVars {
                 map: MapVars::Chain {
-                    of: 0,
-                    from: 2,
-                    to: 4,
+                    of: Pt::Own(0),
+                    from: Pt::Own(2),
+                    to: Pt::Own(4),
                     k: 9.0,
                 },
+                stage: Stage::WHOLE,
                 carry: Some(Carry::Chain { t, from: 2.0 }),
             },
             ImageVars {
                 map: MapVars::Turn {
-                    of: 0,
+                    of: Pt::Own(0),
                     centre: Centre::Own(6),
                     sin: 4.7_f64.sin(),
                     cos: 4.7_f64.cos(),
                 },
+                stage: Stage::WHOLE,
                 carry: Some(Carry::Turn {
                     t,
                     from: 1.0,
@@ -1620,11 +1823,12 @@ mod tests {
             },
             ImageVars {
                 map: MapVars::Turn {
-                    of: 4,
+                    of: Pt::Own(4),
                     centre: Centre::At([0.25, -0.5]),
                     sin: (-2.1_f64).sin(),
                     cos: (-2.1_f64).cos(),
                 },
+                stage: Stage::WHOLE,
                 carry: Some(Carry::Turn {
                     t,
                     from: 0.4,
@@ -1634,11 +1838,12 @@ mod tests {
             },
             ImageVars {
                 map: MapVars::Chain {
-                    of: 4,
-                    from: 2,
-                    to: 4,
+                    of: Pt::Own(4),
+                    from: Pt::Own(2),
+                    to: Pt::Own(4),
                     k: 2.0,
                 },
+                stage: Stage::WHOLE,
                 carry: Some(Carry::Straight { t, by: [0.8, -2.5] }),
             },
         ];
@@ -1647,7 +1852,7 @@ mod tests {
         end[t] = 1.0;
         for image in &images {
             let plain = ImageVars::new(image.map);
-            let (a, b) = (image.at(&end).unwrap(), plain.at(&end).unwrap());
+            let (a, b) = (image.at(&end, &[]).unwrap(), plain.at(&end, &[]).unwrap());
             assert!(
                 (a[0] - b[0]).abs() < 1e-12 && (a[1] - b[1]).abs() < 1e-12,
                 "{image:?}"
@@ -1665,7 +1870,7 @@ mod tests {
         for eq in &equations {
             let e = eval(eq, &x);
             if let Equation::Fixed(Pt::Image(i), [fx, fy]) = eq {
-                let at = images[*i].at(&x).unwrap();
+                let at = images[*i].at(&x, &[]).unwrap();
                 assert_eq!(e.rows[0].v, at[0] - fx, "{eq:?}");
                 assert_eq!(e.rows[1].v, at[1] - fy, "{eq:?}");
             }

@@ -4,7 +4,7 @@
 use crate::cause::FIX_IT_FIRST;
 use crate::query::faces_named;
 use crate::sketch::same_plane;
-use crate::sketch_pattern::{curve_name, instance_curves};
+use crate::sketch_pattern::{CurveIds, curve_name, instance_curves};
 use crate::{FeatureResult, Status, length};
 use craft3d_doc::{
     Document, Extrude, ExtrudeEnd, FeatureId, FeatureKind, Geometry, NameRole, PersistentName,
@@ -48,7 +48,8 @@ fn sweep_name(feature: FeatureId, origin: &Origin) -> PersistentName {
 
 /// Why a sketch has no usable profile, with its curves called what the
 /// sketch calls them (`e7`).
-pub(crate) fn profile_error(error: &KernelError) -> String {
+pub(crate) fn profile_error(error: &KernelError, ids: &CurveIds) -> String {
+    let curve_name = |id: u64| curve_name(id, ids);
     let list = |curves: &[u64]| {
         curves
             .iter()
@@ -140,7 +141,7 @@ pub(crate) fn swept<'a>(
         ));
     }
     let profiles = detect_profiles(&curves, &tolerance)
-        .map_err(|e| format!("sketch `{name}`: {}", profile_error(&e)))?;
+        .map_err(|e| format!("sketch `{name}`: {}", profile_error(&e, &solved.curve_ids)))?;
     Ok(Swept {
         name,
         sketch,

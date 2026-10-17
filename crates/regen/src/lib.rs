@@ -508,15 +508,18 @@ fn length(doc: &Document, variables: &Evaluation, name: &str, expr: &Expr) -> Re
     }
 }
 
-/// Renames the caps among `faces` whose loop holds every instance of a
-/// curve of a pattern of sketch `sketch`: the run is written once,
-/// `e7[*]`, so the name of the cap does not change with the count. Only
-/// the caps of `roles` are of that sketch.
+/// Names what a feature made from the curves of sketch `sketch` after
+/// those curves: the kernel's numbers for curves of nested patterns become
+/// their names' numbers (`e3[2][1]`, [`sketch_pattern::CurveIds`]), in
+/// every name of `names`; and the caps of `roles` whose loop holds every
+/// instance of a curve of a pattern have the run written once, `e7[*]`
+/// (`e3[*][1]` for a cell), so the name of the cap does not change with
+/// the count.
 pub(crate) fn collapse_runs(
     doc: &Document,
     earlier: &[FeatureResult],
     sketch: FeatureId,
-    faces: &mut [PersistentName],
+    names: &mut [PersistentName],
     roles: &[NameRole],
 ) {
     let Some(FeatureKind::Sketch(drawn)) = doc.feature(sketch).map(|f| &f.kind) else {
@@ -532,8 +535,24 @@ pub(crate) fn collapse_runs(
     else {
         return;
     };
+    if !solved.curve_ids.is_empty() {
+        for name in names.iter_mut() {
+            // The link the kernel's numbers are in: under a piece, if any.
+            let mut link = name;
+            while link.role == NameRole::Piece {
+                let Some(next) = link.of.as_deref_mut() else {
+                    break;
+                };
+                link = next;
+            }
+            link.sources = solved.curve_ids.expand(&link.sources);
+        }
+    }
+    if roles.is_empty() {
+        return;
+    }
     let runs = sketch_pattern::full_runs(drawn, solved);
-    for face in faces {
+    for face in names {
         if roles.contains(&face.role)
             && let Some(sources) = sketch_pattern::collapse(&face.sources, &runs)
         {
@@ -915,6 +934,8 @@ fn build_feature(
                         &mut named.faces,
                         &[NameRole::StartCap, NameRole::EndCap],
                     );
+                    collapse_runs(doc, earlier, sketch, &mut named.edges, &[]);
+                    collapse_runs(doc, earlier, sketch, &mut named.vertices, &[]);
                     // Swept from an offset: named after its curves.
                     let caps = [NameRole::StartCap, NameRole::EndCap];
                     offset_profile::rename(doc, earlier, sketch, &mut named.faces, &caps)?;

@@ -135,7 +135,9 @@ fn an_image_of_what_is_not_a_point_is_refused() {
         solve(&s, &options(1.0)),
         Err(SolveError::WrongKind { .. })
     ));
-    // An image of an image, and one of a missing point.
+    // An image of an image (nested patterns) is the image of where the
+    // first one is; an image of one after it, of itself, or more than
+    // eight deep is refused. One of a missing point is refused too.
     let mut s = Sketch::new();
     let a = s.add_point(0.0, 0.0);
     s.entities.push(Entity::Image {
@@ -144,9 +146,43 @@ fn an_image_of_what_is_not_a_point_is_refused() {
     });
     s.entities.push(Entity::Image {
         of: EntityId(1),
-        map: ImageMap::Shift { offset: [1.0, 0.0] },
+        map: ImageMap::Shift { offset: [1.0, 0.5] },
     });
-    assert!(solve(&s, &options(1.0)).is_err());
+    let solved = solve(&s, &options(1.0)).unwrap();
+    assert_eq!(solved.point(EntityId(2)), None);
+    for (of, at) in [(1, 1), (2, 1), (2, 2)] {
+        let mut wrong = Sketch::new();
+        wrong.add_point(0.0, 0.0);
+        wrong.entities.push(Entity::Image {
+            of: EntityId(of),
+            map: ImageMap::Shift { offset: [1.0, 0.0] },
+        });
+        wrong.entities.push(Entity::Image {
+            of: EntityId(at),
+            map: ImageMap::Shift { offset: [1.0, 0.0] },
+        });
+        assert!(
+            matches!(
+                solve(&wrong, &options(1.0)),
+                Err(SolveError::WrongKind { .. })
+            ),
+            "{of} {at}"
+        );
+    }
+    let mut deep = Sketch::new();
+    deep.add_point(0.0, 0.0);
+    for i in 0..9 {
+        deep.entities.push(Entity::Image {
+            of: EntityId(i),
+            map: ImageMap::Shift { offset: [1.0, 0.0] },
+        });
+    }
+    assert!(matches!(
+        solve(&deep, &options(1.0)),
+        Err(SolveError::InvalidEntity { entity: 9, .. })
+    ));
+    deep.entities.pop();
+    assert!(solve(&deep, &options(1.0)).is_ok());
     let mut s = Sketch::new();
     s.entities.push(Entity::Image {
         of: EntityId(5),
@@ -198,4 +234,51 @@ fn solving_a_solved_sketch_with_images_moves_nothing() {
     let second = solve(&again, &options(1.0)).unwrap();
     assert_eq!(second.entities, first.entities);
     assert_eq!(second.iterations, 0);
+}
+
+/// Nested chained runs: a run from A (fixed) to B repeated `k` times, its
+/// end `Y = A + k (B - A)` (an image of B), and that whole run repeated `n`
+/// times from A to Y: the end of the last cell, an image of the image,
+/// `A + n k (B - A)`, coincident with a fixed point C. The solver finds
+/// `B = A + (C - A) / (n k)`, with exact gradients through both levels.
+#[test]
+fn the_solver_finds_the_step_of_a_run_of_runs_from_its_end() {
+    for scale in [1e-3, 1.0, 1e6] {
+        for (k, n) in [(1_u32, 1_u32), (2, 3), (3, 7), (6, 10), (1, 40)] {
+            let mut s = Sketch::new();
+            let a = s.add_point(0.0, 0.0);
+            let b = s.add_point(1.0 * scale, 0.3 * scale);
+            let c = s.add_point(97.0 * scale, 0.0);
+            let y = EntityId(u32::try_from(s.entities.len()).unwrap());
+            s.entities.push(Entity::Image {
+                of: b,
+                map: ImageMap::Chain {
+                    from: a,
+                    to: b,
+                    k: f64::from(k - 1),
+                },
+            });
+            let end = EntityId(u32::try_from(s.entities.len()).unwrap());
+            s.entities.push(Entity::Image {
+                of: y,
+                map: ImageMap::Chain {
+                    from: a,
+                    to: y,
+                    k: f64::from(n - 1),
+                },
+            });
+            s.add_constraint(C::Fixed { point: a, at: None });
+            s.add_constraint(C::Fixed { point: c, at: None });
+            s.add_constraint(C::Coincident { a: c, b: end });
+            let solved = solve(&s, &options(scale)).unwrap();
+            assert!(solved.is_consistent());
+            assert_eq!(solved.dof, 0, "images add no unknowns");
+            let [bx, by] = point(&solved, b);
+            let want = 97.0 * scale / f64::from(n * k);
+            assert!(
+                ((bx - want) / want).abs() <= 1e-12 && by.abs() <= 1e-12 * scale,
+                "k {k} n {n} at {scale}: {bx} {by} vs {want}"
+            );
+        }
+    }
 }

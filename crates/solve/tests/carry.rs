@@ -155,7 +155,7 @@ fn ok(solution: &Solution) {
 /// profile folded back.
 #[test]
 fn geometry_after_a_run_follows_its_end_when_the_count_jumps() {
-    for (scale, how) in [1e-3, 1.0, 1e3]
+    for (scale, how) in [1e-3, 1.0, 1e3, 1e6]
         .into_iter()
         .flat_map(|s| [(s, Start::Map), (s, Start::Place)])
     {
@@ -197,7 +197,7 @@ fn geometry_after_a_run_follows_its_end_when_the_count_jumps() {
 /// on the other root, and this fails there).
 #[test]
 fn a_count_that_goes_and_comes_back_returns_to_the_same_root() {
-    for scale in [1e-3, 1.0, 1e3] {
+    for scale in [1e-3, 1.0, 1e3, 1e6] {
         let w = wave(scale, 3);
         let first = solve(&w.sketch, &options(scale)).unwrap();
         let up = solve(&recount(&w, &first, 10, Start::Map), &options(scale)).unwrap();
@@ -223,7 +223,7 @@ fn a_count_that_goes_and_comes_back_returns_to_the_same_root() {
 /// beyond it (radius 4) rather than coming to rest before it (radius 2).
 #[test]
 fn a_turn_whose_angle_changes_carries_what_hangs_on_its_image() {
-    for scale in [1e-3, 1.0, 1e3] {
+    for scale in [1e-3, 1.0, 1e3, 1e6] {
         let p = |v: f64| v * scale;
         let build = |degrees: f64, start: [f64; 2]| {
             let mut s = Sketch::new();
@@ -452,7 +452,7 @@ fn returned(scale: f64, from: f64, to: f64, how: Start) -> (Solution, EntityId) 
 /// the centre, where the ray has nearly no direction.
 #[test]
 fn a_ring_whose_count_jumps_carries_what_hangs_on_its_image() {
-    for scale in [1e-3, 1.0, 1e3] {
+    for scale in [1e-3, 1.0, 1e3, 1e6] {
         for (from, to) in [
             (60.0f64, 270.0f64),
             (1.0, 179.0),
@@ -715,5 +715,146 @@ fn carrying_a_jump_of_400_is_quick() {
             "{carry:?}: 3 -> 400 {jump:?}, 400 -> 401 {step:?}, unmoved {none:?}, q at {:?}",
             solved.point(w.q)
         );
+    }
+}
+
+/// The wave as the inner run of a run of runs: `k` periods from the origin
+/// to `d` make a cell (its end `y` an image of `d`), `n` cells from the
+/// origin to `y` make the edge, and `q` hangs one unit after the very end
+/// (an image of `y`). When `k` jumps, the outer image moves although its
+/// own map did not change, and `q` follows it.
+/// Where an image lies, an image of an image included.
+fn place(s: &Sketch, id: EntityId) -> [f64; 2] {
+    match s.entities[id.0 as usize] {
+        Entity::Point { x, y } => [x, y],
+        Entity::Image { of, map } => map.apply(place(s, of), |p| Some(place(s, p))).unwrap(),
+        _ => panic!("not a point"),
+    }
+}
+
+fn nested_wave(scale: f64, k: u32, n: u32) -> (Sketch, [EntityId; 2], EntityId) {
+    let w = wave(scale, k);
+    let mut s = w.sketch;
+    let (o, y) = (EntityId(0), w.image);
+    // The line from the inner image to q is now from the outer one.
+    let outer = EntityId(u32::try_from(s.entities.len()).unwrap());
+    s.entities.push(Entity::Image {
+        of: y,
+        map: ImageMap::Chain {
+            from: o,
+            to: y,
+            k: f64::from(n - 1),
+        },
+    });
+    for entity in &mut s.entities {
+        if let Entity::Line { start, .. } = entity
+            && *start == y
+        {
+            *start = outer;
+        }
+    }
+    for constraint in &mut s.constraints {
+        if let C::Distance { a, .. } = constraint
+            && *a == y
+        {
+            *a = outer;
+        }
+    }
+    let end = 10.0 * scale * f64::from(k * n);
+    let q = w.q;
+    let r = w.r;
+    s.entities[q.0 as usize] = Entity::Point {
+        x: end + scale,
+        y: 0.0,
+    };
+    s.entities[r.0 as usize] = Entity::Point {
+        x: end + scale,
+        y: -5.0 * scale,
+    };
+    (s, [y, outer], q)
+}
+
+#[test]
+fn geometry_after_a_run_of_runs_follows_its_end_when_either_count_jumps() {
+    for scale in [1e-3, 1.0, 1e6] {
+        let (s, images, q) = nested_wave(scale, 2, 3);
+        let first = solve(&s, &options(scale)).unwrap();
+        ok(&first);
+        let mut at = first.entities.clone();
+        let mut counts = (2_u32, 3_u32);
+        for (k, n) in [
+            (6, 3),
+            (6, 10),
+            (2, 10),
+            (2, 3),
+            (1, 3),
+            (2, 3),
+            (2, 1),
+            (2, 3),
+            (1, 1),
+            (6, 10),
+            (2, 3),
+        ] {
+            let mut next = s.clone();
+            next.entities = at.clone();
+            // Where each image lies in the stored solution, with its map.
+            next.image_starts = images
+                .iter()
+                .map(|image| ImageStart {
+                    image: *image,
+                    at: place(&next, *image),
+                    map: match next.entities[image.0 as usize] {
+                        Entity::Image { map, .. } => Some(map),
+                        _ => None,
+                    },
+                })
+                .collect();
+            // The image places were taken with the old counts; now the
+            // new ones.
+            let (inner, outer) = (images[0].0 as usize, images[1].0 as usize);
+            if let Entity::Image { map, .. } = &mut next.entities[inner] {
+                *map = ImageMap::Chain {
+                    from: EntityId(0),
+                    to: EntityId(4),
+                    k: f64::from(k - 1),
+                };
+            }
+            if let Entity::Image { map, .. } = &mut next.entities[outer] {
+                *map = ImageMap::Chain {
+                    from: EntityId(0),
+                    to: images[0],
+                    k: f64::from(n - 1),
+                };
+            }
+            let solved = solve(&next, &options(scale)).unwrap();
+            ok(&solved);
+            let moved = (k, n) != counts;
+            assert_eq!(
+                solved.carry.is_some(),
+                moved,
+                "k {k} n {n}: {:?}",
+                solved.carry
+            );
+            if moved {
+                assert_eq!(solved.carry, Some(Carried::Whole), "k {k} n {n}");
+            }
+            let [qx, _] = solved.point(q).unwrap();
+            let want = 10.0 * scale * f64::from(k * n) + scale;
+            assert!(
+                (qx - want).abs() <= 1e-9 * scale,
+                "k {k} n {n} at {scale}: q at {qx}, not {want}"
+            );
+            at = solved.entities.clone();
+            counts = (k, n);
+        }
+        // Back at the start: the same root to rounding.
+        let [qx, qy] = Sketch {
+            entities: at,
+            ..Sketch::new()
+        }
+        .point(q)
+        .unwrap();
+        let [fx, fy] = first.point(q).unwrap();
+        assert!((qx - fx).abs().max((qy - fy).abs()) <= 1e-10 * scale);
     }
 }

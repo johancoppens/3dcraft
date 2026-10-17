@@ -794,6 +794,14 @@ pub struct SketchPattern {
     pub seed: Vec<u64>,
     pub count: String,
     pub layout: SketchPatternLayout,
+    /// The patterns repeated whole as part of the seed (format version
+    /// 21): a pattern of a pattern. Absent means none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub patterns: Vec<u64>,
+    /// The instances of the pattern's own level left out (format version
+    /// 21), in ascending order. Absent means none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skip: Vec<InstanceIndex>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -871,7 +879,9 @@ pub enum SketchGeometry {
         control: Vec<u64>,
     },
     /// The image of seed point `of` in instance `index` of pattern
-    /// `pattern` (format version 18): no coordinates of its own.
+    /// `pattern` (format version 18): no coordinates of its own. From
+    /// version 21 `of` may be an image point of a pattern in `pattern`'s
+    /// seed (an image of an image: `e8[last][last]`).
     Image {
         of: u64,
         pattern: u64,

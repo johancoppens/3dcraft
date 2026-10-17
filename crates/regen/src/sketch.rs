@@ -68,6 +68,9 @@ pub struct SketchResult {
     /// the document stores with the coordinates
     /// ([`craft3d_doc::Sketch::image_places`]).
     pub image_places: Vec<ImagePlace>,
+    /// The kernel's numbers for the curves of nested patterns
+    /// ([`crate::sketch_pattern::CurveIds`]).
+    pub curve_ids: crate::sketch_pattern::CurveIds,
 }
 
 impl SketchResult {
@@ -79,6 +82,12 @@ impl SketchResult {
             Ok(at) => self.points.get(at).map(|&(_, x, y)| (x, y)),
             Err(_) => None,
         }
+    }
+
+    /// A curve as the sketch calls it, from the number the kernel has for
+    /// it: `e7`, `e7[3]`, `e3[2][1]`.
+    pub fn curve_name(&self, id: u64) -> String {
+        self.curve_ids.name(id)
     }
 
     pub fn radius(&self, id: EntityId) -> Option<f64> {
@@ -140,31 +149,64 @@ struct Problem {
 type Instance = (usize, (u32, u32));
 
 /// Where each image point of the sketch is: the instance it stands for,
-/// or why there is no such instance.
+/// or why there is no such instance. An image of an image (nested
+/// patterns) is not there when the one it is made from is not, nor when
+/// an end of its pattern's run is an image point that is not there.
 fn image_instances(
     sketch: &Sketch,
     patterns: &[PatternResult],
 ) -> BTreeMap<EntityId, Result<Instance, String>> {
-    let mut out = BTreeMap::new();
-    for entity in &sketch.entities {
-        let Geometry::Image { of, pattern, index } = entity.geometry else {
-            continue;
+    fn own(
+        sketch: &Sketch,
+        patterns: &[PatternResult],
+        id: EntityId,
+    ) -> Option<Result<Instance, String>> {
+        let Ok(Geometry::Image { of, pattern, index }) = sketch.entity(id).map(|e| &e.geometry)
+        else {
+            return None;
         };
-        let found = patterns.iter().position(|p| p.id == pattern);
-        let at = match found.and_then(|n| patterns.get(n).map(|p| (n, p))) {
+        let found = patterns.iter().position(|p| p.id == *pattern);
+        Some(match found.and_then(|n| patterns.get(n).map(|p| (n, p))) {
             None => Err(format!(
-                "{} = {of}[{index}]: the sketch has no pattern {pattern}",
-                entity.id
+                "{id} = {of}[{index}]: the sketch has no pattern {pattern}"
             )),
-            Some((n, p)) => match p.resolve(index) {
+            Some((n, p)) => match p.resolve(*index) {
                 Some(instance) => Ok((n, instance)),
                 None => Err(format!(
-                    "{} = {of}[{index}] is not there: {}",
-                    entity.id,
+                    "{id} = {of}[{index}] is not there: {}",
                     p.describe()
                 )),
             },
+        })
+    }
+    let mut out = BTreeMap::new();
+    for entity in &sketch.entities {
+        let Some(mut at) = own(sketch, patterns, entity.id) else {
+            continue;
         };
+        // What it is made from, level by level inwards (bounded: a valid
+        // sketch nests three levels deep).
+        let mut next = vec![entity.id];
+        for _ in 0..=4 * craft3d_doc::MAX_PATTERN_DEPTH {
+            let Some(id) = next.pop() else { break };
+            let Ok(Geometry::Image { of, pattern, .. }) = sketch.entity(id).map(|e| &e.geometry)
+            else {
+                continue;
+            };
+            let mut from = vec![*of];
+            if let Some(found) = sketch.pattern(*pattern)
+                && let Some((a, b)) = found.layout.chain()
+            {
+                from.extend([a, b]);
+            }
+            for point in from {
+                match own(sketch, patterns, point) {
+                    Some(Err(why)) if at.is_ok() => at = Err(why),
+                    Some(_) => next.push(point),
+                    None => {}
+                }
+            }
+        }
         out.insert(entity.id, at);
     }
     out
@@ -590,6 +632,12 @@ fn explain(error: &solve::SolveError, problem: &Problem) -> String {
         E::Degenerate {
             constraint: i,
             reason,
+        } if *reason == solve::CROWDED => {
+            format!("{} is not supported yet: {reason}", constraint(*i))
+        }
+        E::Degenerate {
+            constraint: i,
+            reason,
         } => {
             format!("{} has no meaning here: {reason}", constraint(*i))
         }
@@ -632,25 +680,13 @@ fn stored(sketch: &Sketch) -> (Points, Radii) {
 /// curves of that instance).
 fn place_images(sketch: &Sketch, patterns: &[PatternResult], points: &mut Points) {
     points.sort_by_key(|(id, ..)| *id);
-    let mut placed = Vec::new();
-    {
+    let placed = {
         let lookup = |id: EntityId| match points.binary_search_by_key(&id, |(p, ..)| *p) {
             Ok(at) => points.get(at).map(|&(_, x, y)| [x, y]),
             Err(_) => None,
         };
-        for (image, at) in image_instances(sketch, patterns) {
-            let Ok((n, instance)) = at else { continue };
-            let Ok(Geometry::Image { of, .. }) = sketch.entity(image).map(|e| &e.geometry) else {
-                continue;
-            };
-            if let Some([x, y]) = patterns
-                .get(n)
-                .and_then(|p| p.image(&lookup, *of, instance))
-            {
-                placed.push((image, x, y));
-            }
-        }
-    }
+        crate::sketch_pattern::image_places(sketch, patterns, lookup)
+    };
     points.extend(placed);
     points.sort_by_key(|(id, ..)| *id);
 }
@@ -1106,6 +1142,9 @@ pub(crate) fn solve_sketch(
     let (points, radii) = stored(sketch);
     let evaluated = crate::sketch_pattern::evaluate(doc, variables, sketch);
     let patterns = evaluated.as_ref().map_or_else(|_| Vec::new(), Clone::clone);
+    // The kernel's numbers for curves of nested patterns: from the counts
+    // alone, before anything is solved.
+    let curve_ids = crate::sketch_pattern::CurveIds::of(sketch, &patterns);
     let unsolved = |reason: String| {
         let result = SketchResult {
             origin,
@@ -1126,12 +1165,17 @@ pub(crate) fn solve_sketch(
             radii: radii.clone(),
             patterns: patterns.clone(),
             image_places: Vec::new(),
+            curve_ids: curve_ids.clone().unwrap_or_default(),
         };
         (Status::Failed(reason), Some(result))
     };
     if let Err(reason) = &evaluated {
         return unsolved(reason.clone());
     }
+    let curve_ids = match &curve_ids {
+        Ok(ids) => ids.clone(),
+        Err(reason) => return unsolved(reason.clone()),
+    };
     let problem = match problem(doc, variables, sketch, &patterns) {
         Ok(problem) => problem,
         Err(reason) => return unsolved(reason),
@@ -1210,30 +1254,28 @@ pub(crate) fn solve_sketch(
         }
     }
     // A ring closes when its instances make a whole turn and the last
-    // joint lies on the first within the tolerance.
+    // joint, as the turns put it, lies on the first within the tolerance.
     {
         let lookup = |id: EntityId| match points.binary_search_by_key(&id, |(p, ..)| *p) {
             Ok(at) => points.get(at).map(|&(_, x, y)| [x, y]),
             Err(_) => None,
         };
-        for pattern in &mut patterns {
-            if let Placed::Turn {
-                chain: Some((from, _)),
-                ..
-            } = pattern.placed
-                && pattern.closes
-            {
-                let start = lookup(from);
-                // The last joint as the turns put it, before it is taken
-                // to be the first.
-                pattern.closes = false;
-                let last = pattern.image(&lookup, from, (pattern.counts[0], 0));
-                pattern.closes = match (start, last) {
-                    (Some([ax, ay]), Some([bx, by])) => {
-                        (ax - bx).hypot(ay - by) <= doc.tolerance.linear
-                    }
-                    _ => false,
-                };
+        let rings: Vec<usize> = patterns
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| matches!(p.placed, Placed::Turn { chain: Some(_), .. }) && p.closes)
+            .map(|(n, _)| n)
+            .collect();
+        let closing: Vec<(usize, bool)> = {
+            let mut placer = crate::sketch_pattern::Placer::new(sketch, &patterns, lookup);
+            rings
+                .iter()
+                .map(|n| (*n, placer.ring_closes(*n, doc.tolerance.linear)))
+                .collect()
+        };
+        for (n, closes) in closing {
+            if let Some(pattern) = patterns.get_mut(n) {
+                pattern.closes = closes;
             }
         }
     }
@@ -1342,6 +1384,7 @@ pub(crate) fn solve_sketch(
         radii,
         patterns,
         image_places,
+        curve_ids,
     };
     (status, Some(result))
 }
