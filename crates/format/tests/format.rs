@@ -1761,7 +1761,13 @@ fn stale_image_places_are_dropped_on_reading() {
         },
     );
     let text = with_stale(1_000_000);
+    // And an absolute bound at a million: a reader linear but ten times
+    // slower, or one whose growth shows only past 50 000, fails here
+    // (about 2 s of this thread's work in a debug build).
+    let clock = craft3d_testkit::cost::WorkClock::start();
     let (read, notes) = craft3d_format::from_manifest_json_noted(text.as_bytes()).unwrap();
+    let work = clock.elapsed();
+    assert!(work < std::time::Duration::from_secs(20), "{work:?}");
     let Some(FeatureKind::Sketch(read)) = read.features.get(1).map(|f| &f.kind) else {
         panic!("no sketch");
     };
