@@ -229,8 +229,50 @@ pub mod checked {
     use craft3d_engine::Session;
     use serde_json::{Value, json};
 
+    use std::cell::Cell;
+
+    /// Commands that only read the document: they leave its history, and
+    /// so its revision, as it was.
+    const READING: &[&str] = &[
+        "document.inspect",
+        "document.check",
+        "document.measure",
+        "document.edges",
+        "sketch.inspect",
+    ];
+
+    /// Which document a session shows, as far as a test can tell: the
+    /// session's address, the revision of its active document and what
+    /// that document's last regeneration rebuilt, reused and compared.
+    type State = (usize, Option<u64>, Option<(usize, usize)>, Option<usize>);
+
+    fn state(session: &Session) -> State {
+        (
+            std::ptr::from_ref(session) as usize,
+            session.document_revision(),
+            session.last_regeneration(),
+            session.last_regeneration_work(),
+        )
+    }
+
+    thread_local! {
+        /// The state the last check on this thread found to be a full
+        /// regeneration.
+        static CHECKED: Cell<Option<State>> = const { Cell::new(None) };
+    }
+
     pub fn run(session: &mut Session, id: &str, params: Value) -> Value {
+        let before = state(session);
         let result = super::plain::run(session, id, params.clone());
+        let now = state(session);
+        // A command that only reads, on the document the previous check
+        // found sound and left at the same revision: the same document,
+        // whose regeneration (kept per revision) was compared already, and
+        // regeneration is deterministic. Checking again would repeat the
+        // same comparison.
+        if READING.contains(&id) && before == now && CHECKED.get() == Some(now) {
+            return result;
+        }
         // Built up edit by edit, the document is what regenerating it from
         // nothing gives (docs/testing.md: incremental = full regeneration).
         assert_ne!(
@@ -238,6 +280,7 @@ pub mod checked {
             Some(false),
             "after {id} {params}"
         );
+        CHECKED.set(Some(state(session)));
         result
     }
 
