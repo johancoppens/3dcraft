@@ -11,7 +11,7 @@ turbofan commands 242
 turbofan context_entries 312
 turbofan features_rebuilt 203
 turbofan features_reused 13956
-turbofan mass_evaluations 123474480
+turbofan mass_evaluations 70493232
 turbofan mass_faces 4567
 turbofan mesh_faces 6525
 turbofan meshes 82
@@ -30,7 +30,7 @@ engine-block commands 331
 engine-block context_entries 1317
 engine-block features_rebuilt 371
 engine-block features_reused 31084
-engine-block mass_evaluations 19864000
+engine-block mass_evaluations 19861440
 engine-block mass_faces 1042
 engine-block mesh_faces 52626
 engine-block meshes 149
@@ -49,7 +49,7 @@ impeller commands 83
 impeller context_entries 122
 impeller features_rebuilt 74
 impeller features_reused 865
-impeller mass_evaluations 136497792
+impeller mass_evaluations 135770240
 impeller mass_faces 77
 impeller mesh_faces 260
 impeller meshes 12
@@ -68,7 +68,7 @@ rotor commands 34
 rotor context_entries 48
 rotor features_rebuilt 33
 rotor features_reused 177
-rotor mass_evaluations 2601344
+rotor mass_evaluations 2579840
 rotor mass_faces 18
 rotor mesh_faces 55
 rotor meshes 6

@@ -77,7 +77,15 @@
 //! there ([`run_off`]). `f`
 //! is a square root of a polynomial or rational function there, for which
 //! no panel count is known to do: the inner panels are doubled along with
-//! the boundary's, so the sums below only agree once both have settled. A
+//! the boundary's, so the sums below only agree once both have settled.
+//! On a rational surface each stretch of an inner integral is summed in the
+//! parameter of the Möbius map that makes the surface's weights at its two
+//! ends equal ([`moebius`], since 2026-10-17): the same integral, with the
+//! nodes where the surface is drawn evenly, so that weights far apart cost
+//! nothing where a reparametrisation can take them out (every surface of
+//! revolution) and as little as they can elsewhere. Weights that stay more
+//! than [`MAX_UNEVEN`] apart within a span however the span is
+//! reparametrised are refused ([`MassError::UnevenWeights`]). A
 //! spline surface may also close on itself around u without saying so (a
 //! sphere or a can swept from a rational circle). A boundary that then
 //! goes around once in total is the rim of a face that reaches to an end
@@ -200,6 +208,20 @@
 //! part), and the face to the sum of those: the face's sum is the sum of
 //! the parts' and carries the rounding of each.
 //!
+//! **Panel by panel** (2026-10-17). Within a piece the panels are refined
+//! adaptively ([`cell_by_cell`]): where a piece's sums do not agree, each
+//! of its panels is held to its own halves, and only those that disagree
+//! are halved again, past the seventh doubling if need be. An integrand
+//! that gathers on a short stretch of an edge (a rational patch with its
+//! weights a thousand apart puts most of its area on a millionth of an
+//! edge next to a heavy corner) takes twenty halvings there and none
+//! elsewhere, where doubling every panel ran out of doublings and budget
+//! alike. A piece is given up when more of its panels are open at once
+//! than it had at the seventh doubling: its sums then scatter wherever
+//! they are looked at, which finer panels do not help. (Not on a surface
+//! closed both ways, whose loops are unrolled as wholes and doubled as
+//! before, nor where the boundary goes together.)
+//!
 //! **The work is bounded.** Every doubling is four times the work of the
 //! one before on a spline surface (twice the boundary panels, each node
 //! with twice the inner panels), and all seven on a boundary of spline
@@ -288,6 +310,13 @@ pub enum MassError {
         face: usize,
         error: GeomError,
     },
+    /// A face on a rational surface whose weights within one span are
+    /// further apart than any reparametrisation evens out, by more than
+    /// the measure is held for ([`MAX_UNEVEN`]): `ratio` is how far.
+    UnevenWeights {
+        face: usize,
+        ratio: f64,
+    },
 }
 
 impl fmt::Display for MassError {
@@ -304,6 +333,10 @@ impl fmt::Display for MassError {
                 write!(f, "face {face}: not supported yet: {what}")
             }
             MassError::Geometry { face, error } => write!(f, "face {face}: {error}"),
+            MassError::UnevenWeights { face, ratio } => write!(
+                f,
+                "face {face}: not supported yet: rational weights {ratio:.3e} apart within one span after evening them out by a reparametrisation (at most {MAX_UNEVEN:e} is measured)"
+            ),
         }
     }
 }
@@ -443,9 +476,18 @@ const MAX_TURNS: f64 = 8.0;
 const INNER_PANELS: usize = 2;
 /// And at most: an unrolled parameter stays within a few turns.
 const MAX_INNER_PANELS: usize = 64;
+/// Panels per knot stretch of an inner integral on a spline surface, at
+/// most: as many as the last doubling of the boundary asks for
+/// (`2^MAX_DOUBLINGS`), so that every doubling refines them too. (Until
+/// 2026-10-17 they were held to [`MAX_INNER_PANELS`], so the last two sums
+/// had the same inner panels and could agree in what those missed: a
+/// cylinder whose rational weights were skewed a thousandfold along its
+/// axis measured 7e-6 short, and settled.)
+const MAX_SPLINE_INNER_PANELS: usize = 1 << MAX_DOUBLINGS;
 /// How often the panels along the boundary are doubled, starting from half
 /// of what an edge needs, before a face whose sums still change is given
-/// up.
+/// up; where the boundary is refined panel by panel ([`cell_by_cell`]),
+/// how often a panel is halved with its inner panels doubled along.
 const MAX_DOUBLINGS: u32 = 7;
 /// Panels along one edge, at most, however often they are doubled.
 const MAX_PANELS: usize = 1 << 16;
@@ -715,9 +757,15 @@ fn inner(
         _ => fixed,
     };
     let mut sum = Total::default();
-    let mut panel = |start: f64, end: f64, sign: f64| {
+    // `map`: the panel is one of the Möbius parameter `s` of a stretch,
+    // `(start, width, β)` (see [`moebius`]); without it, of `t` itself.
+    let mut panel = |start: f64, end: f64, sign: f64, map: Option<(f64, f64, f64)>| {
         work.add(NODES as u64);
-        for (t, w) in rule.points(start, end) {
+        for (s, w) in rule.points(start, end) {
+            let (t, w) = match map {
+                Some(map) => moebius_node(s, w, map),
+                None => (s, w),
+            };
             let (u, v) = match along {
                 Along::U => (t, fixed),
                 Along::V => (fixed, t),
@@ -736,12 +784,23 @@ fn inner(
         } else {
             (to, from, -1.0)
         };
-        let count = ((INNER_PANELS << doublings.min(8)) / 2).clamp(1, MAX_INNER_PANELS);
+        // Every doubling refines the inner integrals as well, up to the
+        // last: two sums with the same inner panels would agree in what
+        // those panels miss.
+        let count = ((INNER_PANELS << doublings.min(8)) / 2).clamp(1, MAX_SPLINE_INNER_PANELS);
         let mut stretch = |start: f64, end: f64| {
+            if let Some(beta) = moebius(surface, along, fixed, (start, end)) {
+                let width = 1.0 / count as f64;
+                for k in 0..count {
+                    let at = width * k as f64;
+                    panel(at, at + width, sign, Some((start, end - start, beta)));
+                }
+                return;
+            }
             let width = (end - start) / count as f64;
             for k in 0..count {
                 let at = start + width * k as f64;
-                panel(at, at + width, sign);
+                panel(at, at + width, sign, None);
             }
         };
         let mut between = |low: f64, high: f64| {
@@ -803,13 +862,80 @@ fn inner(
     let width = (to - from) / count as f64;
     for k in 0..count {
         let start = from + width * k as f64;
-        panel(start, start + width, 1.0);
+        panel(start, start + width, 1.0, None);
     }
     sum
 }
 
+/// The Möbius reparametrisation that makes the end weights of a stretch
+/// of an inner integral equal, on a rational surface: `β`, with the
+/// stretch `[start, end]` reached from `s ∈ [0, 1]` by
+/// `t = start + (end − start) τ`, `τ = β s / ((1 − s) + β s)`, and
+/// `dt = (end − start) β / ((1 − s) + β s)² ds`. `None` where that is the
+/// identity (`β = 1`: a polynomial surface, or end weights that are
+/// equal) or cannot be had.
+///
+/// Why. Within a knot span the surface along the stretch is
+/// `A(t) / w(t)`, with `w` a polynomial of the degree `q` in that
+/// direction whose Bernstein coefficients on the stretch, `w₀ … w_q`, are
+/// positive, and its ends are its values at the ends. Where they differ
+/// by a large factor, `w` has a zero close to the light end, outside the
+/// stretch (for a linear `w` at the stretch over the factor), the
+/// integrand varies on that scale, and Gauss–Legendre sums over panels
+/// wider than that converge slowly or, at the cap of the panels, not at
+/// all. In `τ` the Bernstein coefficients of the denominator are
+/// `w_i β^i` up to a common factor (`B_i^q(τ) = β^i B_i^q(s) / D^q`,
+/// `D = (1 − s) + β s`), so with `β = (w₀ / w_q)^{1/q}` its ends are
+/// equal: the surface along the stretch is drawn as evenly as its weights
+/// allow. The integral is the same (a change of variable, exact); only
+/// where the nodes fall changes. For weights of a product form
+/// (`w_ij = a_i b_j`, every surface of revolution and every analytic
+/// twin made with weights skewed by `c^i`) it is the reparametrisation
+/// that takes the skew out again, so the sums are those of the evenly
+/// drawn surface; for weights of no such form it makes each line's own
+/// ends equal, which a linear direction makes polynomial outright.
+fn moebius(surface: &Surface, along: Along, fixed: f64, (start, end): (f64, f64)) -> Option<f64> {
+    let Surface::Nurbs(s) = surface else {
+        return None;
+    };
+    let (du, dv) = s.degrees();
+    let (degree, w0, w1) = match along {
+        Along::U => (du, s.weight_at(start, fixed), s.weight_at(end, fixed)),
+        Along::V => (dv, s.weight_at(fixed, start), s.weight_at(fixed, end)),
+    };
+    // Equal ends (every polynomial surface) take the plain nodes. (Their
+    // sums still change in the last digits by the inner panels doubling
+    // to the last and by [`cell_by_cell`].)
+    if w0 == w1 || degree == 0 {
+        return None;
+    }
+    let ratio = w0 / w1;
+    let beta = match degree {
+        1 => ratio,
+        2 => ratio.sqrt(),
+        _ => ratio.powf(1.0 / degree as f64),
+    };
+    // Not `<=`: a NaN gives no map. Far outside `[1e-100, 1e100]` the map
+    // squeezes every node into rounding of an end; the plain sums are
+    // then the better ones (and settle or are refused).
+    (beta > MIN_BETA && beta < 1.0 / MIN_BETA && beta != 1.0).then_some(beta)
+}
+
+/// The factors of a Möbius map that are not taken ([`moebius`]).
+const MIN_BETA: f64 = 1e-100;
+
+/// A node `s` of the Möbius parameter and its weight `w`, as the place
+/// `t` on the stretch `(from, width)` and the weight in `t` (see
+/// [`moebius`]): `dt/ds = width β / D²`, as `(β / D) / D` so that it
+/// neither overflows nor vanishes for any `β` [`moebius`] gives.
+fn moebius_node(s: f64, w: f64, (from, width, beta): (f64, f64, f64)) -> (f64, f64) {
+    let d = (1.0 - s) + beta * s;
+    (from + width * (beta * s / d), w * width * ((beta / d) / d))
+}
+
 /// A quadrature panel along an edge: a parameter range, and whether it
 /// takes the coarse rule (half the nodes) rather than the full one.
+#[derive(Clone, Copy, Debug)]
 struct Panel {
     start: f64,
     end: f64,
@@ -1734,23 +1860,63 @@ fn samples(
     level: &dyn Fn(usize, usize) -> Option<u32>,
     work: &mut Work,
 ) -> Result<Vec<Sample>, MassError> {
+    let which = |loop_index: usize, piece_index: usize, piece: &Piece| {
+        let doublings = level(loop_index, piece_index)?;
+        let (low, high) = (piece.start.min(piece.end), piece.start.max(piece.end));
+        Some(panels(
+            piece.curve,
+            (low, high),
+            &piece.crossings,
+            doublings,
+        ))
+    };
+    Ok(sampled(outline, surface, index, rules, &which, work)?.0)
+}
+
+/// The panels of a piece a sum takes, by its loop and its place in the
+/// loop; `None` leaves the piece out.
+type PanelsOf<'a> = dyn Fn(usize, usize, &Piece) -> Option<Vec<Panel>> + 'a;
+
+/// Where the samples of one panel are among those [`sampled`] gives: its
+/// loop and piece, the panel, and the range of its samples.
+struct Sampled {
+    loop_index: usize,
+    piece: usize,
+    panel: Panel,
+    range: std::ops::Range<usize>,
+}
+
+/// The boundary as quadrature samples, in the order the loops run, over
+/// the panels `which` gives for each piece (by its loop and its place in
+/// the loop, in increasing order of the curve's parameter; a piece it
+/// says `None` of is left out), and where each panel's samples are.
+fn sampled(
+    outline: &Outline,
+    surface: &Surface,
+    index: usize,
+    rules: (&Rule, &Rule),
+    which: &PanelsOf,
+    work: &mut Work,
+) -> Result<(Vec<Sample>, Vec<Sampled>), MassError> {
     let mut samples = Vec::new();
+    let mut where_ = Vec::new();
     for (loop_index, pieces) in outline.loops.iter().enumerate() {
         for (piece_index, piece) in pieces.iter().enumerate() {
-            let Some(doublings) = level(loop_index, piece_index) else {
+            let Some(panels) = which(loop_index, piece_index, piece) else {
                 continue;
             };
-            let (low, high) = (piece.start.min(piece.end), piece.start.max(piece.end));
             let direction = if piece.end < piece.start { -1.0 } else { 1.0 };
             let first = samples.len();
+            let first_panel = where_.len();
             // Each node from the one before it along the piece.
             let mut follow = Follow::new(surface, outline.touch);
-            for panel in panels(piece.curve, (low, high), &piece.crossings, doublings) {
+            for panel in panels {
                 let rule = if panel.coarse { rules.1 } else { rules.0 };
                 work.add(PROJECTION * NODES as u64);
                 if work.spent_up() {
                     return Err(unsettled(index));
                 }
+                let from = samples.len();
                 for (t, w) in rule.points(panel.start, panel.end) {
                     let (point, tangent) = piece.curve.derivatives(t);
                     let ((u, v), (foot, su, sv)) = follow
@@ -1785,16 +1951,26 @@ fn samples(
                         dv: dv * w * direction,
                     });
                 }
+                where_.push(Sampled {
+                    loop_index,
+                    piece: piece_index,
+                    panel,
+                    range: from..samples.len(),
+                });
             }
             if direction < 0.0 {
                 // Keep the samples in the order the loop runs.
+                let end = samples.len();
                 if let Some(block) = samples.get_mut(first..) {
                     block.reverse();
+                }
+                for at in where_.iter_mut().skip(first_panel) {
+                    at.range = (first + end - at.range.end)..(first + end - at.range.start);
                 }
             }
         }
     }
-    Ok(samples)
+    Ok((samples, where_))
 }
 
 /// `∬ f du dv` over a whole closed surface.
@@ -2523,6 +2699,13 @@ fn face_integrals(
     sums: Wanted,
 ) -> FaceSums {
     let second = sums != Wanted::First;
+    if let Some(ratio) = uneven_weights(&face.surface).filter(|&r| r > MAX_UNEVEN || r.is_nan()) {
+        let error = MassError::UnevenWeights { face: index, ratio };
+        return FaceSums {
+            first: (sums == Wanted::Both).then(|| Err(error.clone())),
+            all: Err(error),
+        };
+    }
     if face.loops.is_empty() || seams_only(body, face) {
         let mut work = Work::about(&face.surface, middle, second);
         let all = whole_surface(&face.surface, index, rule, &mut work);
@@ -2554,6 +2737,68 @@ fn face_integrals(
     // moments ended where these did, with the same error.
     let first = (sums == Wanted::Both).then(|| first.unwrap_or_else(|| all.clone()));
     FaceSums { first, all }
+}
+
+/// How far apart the weights within one span of a rational surface may be
+/// once a reparametrisation has evened them out as far as it can
+/// ([`uneven_weights`]), for a face to be measured. Measured to 1.6e-13
+/// up to a thousand (the plate with the weights 1, h, h, 1, whose
+/// unevenness no reparametrisation takes out) and refused, by sums that
+/// do not settle, at ten thousand; further apart the edges no longer lie
+/// on such a surface to the modelling tolerance (from 1e5) and sums came
+/// out settled and wrong (from 1e7: 22 for a volume of 24). So the
+/// measure stops where it is held, not where it is seen to fail.
+const MAX_UNEVEN: f64 = 1e4;
+
+/// The largest ratio of two weights within one Bézier span of a rational
+/// surface after the Möbius maps along u and v that even out its corner
+/// weights (`α^m = √(w₀₀ w₀ₙ / (w_m0 w_mn))`, `β^n = √(w₀₀ w_m0 / (w₀ₙ
+/// w_mn))`, weights `w_ij α^i β^j`, the same surface): what is left is the
+/// unevenness no reparametrisation removes (one for weights of a product
+/// form, `h` for the corners 1, h, h, 1). In logarithms, so that weights
+/// of any size neither overflow nor vanish. `None` for a surface that is
+/// not a rational NURBS surface, or whose spans cannot be had.
+fn uneven_weights(surface: &Surface) -> Option<f64> {
+    let Surface::Nurbs(s) = surface else {
+        return None;
+    };
+    let first = s.weights().first()?;
+    if s.weights().iter().all(|w| w == first) {
+        return None;
+    }
+    let (m, n) = s.degrees();
+    let mut worst = 0.0_f64;
+    for span in s.bezier_spans().ok()? {
+        let logs: Vec<f64> = span.patch.weights().iter().map(|w| w.ln()).collect();
+        let at = |i: usize, j: usize| logs.get(i * (n + 1) + j).copied();
+        let (w00, w0n, wm0, wmn) = (at(0, 0)?, at(0, n)?, at(m, 0)?, at(m, n)?);
+        let alpha = if m > 0 {
+            (w00 + w0n - wm0 - wmn) / (2.0 * m as f64)
+        } else {
+            0.0
+        };
+        let beta = if n > 0 {
+            (w00 + wm0 - w0n - wmn) / (2.0 * n as f64)
+        } else {
+            0.0
+        };
+        let (mut low, mut high) = (f64::INFINITY, f64::NEG_INFINITY);
+        for (k, &w) in logs.iter().enumerate() {
+            let (i, j) = (k / (n + 1), k % (n + 1));
+            let even = w + alpha * i as f64 + beta * j as f64;
+            low = low.min(even);
+            high = high.max(even);
+        }
+        // Not `max`: a NaN (a weight that is not positive) is as uneven
+        // as it gets.
+        let spread = high - low;
+        worst = if spread.is_nan() {
+            f64::INFINITY
+        } else {
+            worst.max(spread)
+        };
+    }
+    Some(worst.exp())
 }
 
 /// Faces integrated, and the work they took ([`Work::spent`]), since the
@@ -2781,19 +3026,27 @@ fn part_by_part(
     // The first sums are as much work as the boundary at its coarsest
     // (see above), up to a ceiling of their own.
     work.limit = budget.max(FIRST_SUMS_WORK);
-    let mut first = samples(
-        outline,
-        surface,
-        index,
-        (rule, coarse),
-        &|_, _| Some(0),
-        work,
-    )?;
+    let coarsest = |_: usize, _: usize, piece: &Piece| {
+        let (low, high) = (piece.start.min(piece.end), piece.start.max(piece.end));
+        Some(panels(piece.curve, (low, high), &piece.crossings, 0))
+    };
+    let (mut first, panels_at) = sampled(outline, surface, index, (rule, coarse), &coarsest, work)?;
     let plan = match outline.poled {
         Some(poled) => Plan::Poles(poled),
         None => plan(face, surface, index, &mut first, sense)?,
     };
     let by_loop = plan.up_to_whole_surfaces();
+    if !by_loop {
+        return cell_by_cell(
+            (face, surface, outline, index),
+            (rule, coarse),
+            (sense, &plan),
+            (&mut first, &panels_at),
+            (start, budget),
+            work,
+            first_sums,
+        );
+    }
     if by_loop {
         // Inner integrals may then run beyond the domain of a spline
         // surface, by whole turns.
@@ -2940,6 +3193,423 @@ fn part_by_part(
         (total, plan.up_to_whole_surfaces()),
         work,
     )
+}
+
+/// A panel of a piece of the boundary refined on its own
+/// ([`cell_by_cell`]), and its sum.
+#[derive(Clone, Copy)]
+struct Cell {
+    /// Its loop, and its piece in the loop.
+    key: (usize, usize),
+    panel: Panel,
+    /// How often the panels the piece needs were halved for it.
+    level: u32,
+    /// How often the panels of its inner integrals were doubled
+    /// ([`inner`]): `level`, up to [`MAX_DOUBLINGS`] (see [`cell_by_cell`]).
+    inner: u32,
+    total: Total,
+    /// Past [`MAX_DOUBLINGS`]: the same sum with half the inner panels.
+    inner_check: Option<Total>,
+    /// How far its samples were found from their feet, at most.
+    off: f64,
+}
+
+/// An open cell and its finer cells, in one round of [`cell_by_cell`].
+type Opened = (Cell, Vec<Cell>);
+
+/// A sum that was taken: the coarser sum of some cells, and the finer
+/// cells that agreed with it.
+struct Group {
+    key: (usize, usize),
+    coarser: Total,
+    finer: Vec<Cell>,
+}
+
+/// How often a panel may be halved, from the panels its piece needs: in
+/// a panel 2⁻⁴⁰ of the piece wide the sixteen nodes are some 2⁻⁴⁷ of it
+/// apart, a few dozen units in the last place of a parameter of the
+/// piece's size; much finer and the nodes, and with them the sums, are
+/// rounding.
+const MAX_LEVEL: u32 = 40;
+
+/// The cells finer than `cell`: its two halves, or, for a panel with the
+/// coarse rule, the same panel with the full one (see [`panels`]); none
+/// for a panel of no width, and itself for one too narrow to halve.
+/// `None` past [`MAX_LEVEL`], or for a panel that is not one.
+fn finer(cell: &Cell) -> Option<Vec<Panel>> {
+    let Panel { start, end, coarse } = cell.panel;
+    // A panel of no width (a piece cut where it ends) sums to nothing,
+    // and so does nothing finer.
+    if start == end {
+        return Some(Vec::new());
+    }
+    if coarse {
+        return Some(vec![Panel {
+            start,
+            end,
+            coarse: false,
+        }]);
+    }
+    if cell.level >= MAX_LEVEL {
+        return None;
+    }
+    let middle = start + 0.5 * (end - start);
+    if !(middle > start && middle < end) {
+        // As narrow as its parameter allows (a piece cut a unit in the
+        // last place before its end): the same panel, with only its inner
+        // integrals refined.
+        return (start < end).then_some(vec![Panel {
+            start,
+            end,
+            coarse: false,
+        }]);
+    }
+    Some(vec![
+        Panel {
+            start,
+            end: middle,
+            coarse: false,
+        },
+        Panel {
+            start: middle,
+            end,
+            coarse: false,
+        },
+    ])
+}
+
+/// The sums of the panels `wanted` (each with its key and level), as
+/// cells, in the order given.
+#[allow(clippy::too_many_arguments)]
+fn cells_of(
+    (face, surface, outline, index): (&Face, &Surface, &Outline, usize),
+    (rule, coarse): (&Rule, &Rule),
+    (sense, plan): (f64, &Plan),
+    wanted: &[((usize, usize), Panel, u32, u32)],
+    work: &mut Work,
+) -> Result<Vec<Cell>, MassError> {
+    // Per piece in increasing order of its parameter, as `sampled` takes
+    // them; each remembers where it was asked for.
+    let mut by_piece: BTreeMap<(usize, usize), Vec<(usize, Panel)>> = BTreeMap::new();
+    for (at, &(key, panel, _, _)) in wanted.iter().enumerate() {
+        by_piece.entry(key).or_default().push((at, panel));
+    }
+    for panels in by_piece.values_mut() {
+        panels.sort_by(|a, b| a.1.start.total_cmp(&b.1.start));
+    }
+    let which = |loop_index: usize, piece: usize, _: &Piece| {
+        by_piece
+            .get(&(loop_index, piece))
+            .map(|panels| panels.iter().map(|&(_, panel)| panel).collect())
+    };
+    let (mut samples, panels_at) = sampled(outline, surface, index, (rule, coarse), &which, work)?;
+    let mut seen: BTreeMap<(usize, usize), usize> = BTreeMap::new();
+    let mut found: Vec<Option<Cell>> = vec![None; wanted.len()];
+    for at in panels_at {
+        let key = (at.loop_index, at.piece);
+        let count = seen.entry(key).or_insert(0);
+        let asked = by_piece.get(&key).and_then(|p| p.get(*count)).map(|p| p.0);
+        *count += 1;
+        let (Some(asked), Some(&(_, _, level, doublings))) =
+            (asked, asked.and_then(|a| wanted.get(a)))
+        else {
+            return Err(MassError::Invalid { face: index });
+        };
+        let Some(own) = samples.get_mut(at.range) else {
+            return Err(MassError::Invalid { face: index });
+        };
+        let mut sum = |doublings: u32, own: &mut [Sample]| {
+            boundary_integral(
+                (face, outline),
+                surface,
+                rule,
+                own,
+                sense,
+                plan,
+                (true, doublings),
+                work,
+            )
+            .map_err(|error| MassError::Geometry { face: index, error })?
+            .ok_or(unsettled(index))
+        };
+        let total = sum(doublings, own)?;
+        let inner_check = if level > MAX_DOUBLINGS {
+            Some(sum(doublings.saturating_sub(1), own)?)
+        } else {
+            None
+        };
+        let off = own.iter().map(|s| s.off).fold(0.0, f64::max);
+        if let Some(slot) = found.get_mut(asked) {
+            *slot = Some(Cell {
+                key,
+                panel: at.panel,
+                level,
+                inner: doublings,
+                total,
+                inner_check,
+                off,
+            });
+        }
+    }
+    found
+        .into_iter()
+        .map(|cell| cell.ok_or(MassError::Invalid { face: index }))
+        .collect()
+}
+
+/// [`part_by_part`] for a boundary integral that is a sum of one term
+/// per sample along each piece (every plan but the unrolled one, whose
+/// loops are unrolled as wholes): refined panel by panel, adaptively.
+///
+/// Each panel of a piece at its coarsest is a cell. A round sums every
+/// open cell's finer cells (its halves, [`finer`]) and holds them to it:
+/// first all of a piece's open cells together, as the piece's sums were
+/// held before (2026-10-17), and where those do not agree each cell on
+/// its own. The cells that agree are taken, the finer ones in place of
+/// the coarser, and are not summed again; the halves of the others are
+/// open in the next round. So the panels end up as fine as the integrand
+/// needs where it needs it, and nowhere else: a boundary integrand that
+/// gathers on a stretch a millionth of its edge long (the strips of a
+/// rational patch with weights a thousand apart, next to its light
+/// corner) takes some twenty halvings there, where doubling every panel
+/// would take twenty doublings of the whole edge. Every comparison is of
+/// sums that differ in everything that is refined: up to
+/// [`MAX_DOUBLINGS`] the inner integrals double with each halving; past
+/// it, where they do not, each finer cell is also summed with half its
+/// inner panels and must agree with that too. A cell's allowance is the
+/// share of its size the piece's is ([`CONVERGED`] and
+/// [`Outline::noise`] of the piece's sums), so the allowances of the cells
+/// a piece is taken in add up to the piece's.
+///
+/// With the second moments summed, the cells are first refined until the
+/// area, the volume and the moments agree, exactly as without them (the
+/// same cells, the same sums, the same work), which gives those sums;
+/// then every taken sum whose second moments do not agree is opened
+/// again and refined until they do.
+#[allow(clippy::too_many_arguments)]
+fn cell_by_cell(
+    (face, surface, outline, index): (&Face, &Surface, &Outline, usize),
+    (rule, coarse): (&Rule, &Rule),
+    (sense, plan): (f64, &Plan),
+    (first, panels_at): (&mut [Sample], &[Sampled]),
+    (start, budget): (u64, u64),
+    work: &mut Work,
+    mut first_sums: Option<&mut Option<Result<Sums, MassError>>>,
+) -> Result<Sums, MassError> {
+    let at = (face, surface, outline, index);
+    let mut open = Vec::with_capacity(panels_at.len());
+    for at in panels_at {
+        let Some(own) = first.get_mut(at.range.clone()) else {
+            return Err(MassError::Invalid { face: index });
+        };
+        let total = boundary_integral(
+            (face, outline),
+            surface,
+            rule,
+            own,
+            sense,
+            plan,
+            (true, 0),
+            work,
+        )
+        .map_err(|error| MassError::Geometry { face: index, error })?
+        .ok_or(unsettled(index))?;
+        open.push(Cell {
+            key: (at.loop_index, at.piece),
+            panel: at.panel,
+            level: 0,
+            inner: 0,
+            total,
+            inner_check: None,
+            off: own.iter().map(|s| s.off).fold(0.0, f64::max),
+        });
+    }
+    // The budget, from the face's first sums (see `part_by_part`).
+    let spent = work.spent.saturating_sub(start);
+    work.limit = budget.max(
+        PARTS_WORK
+            .saturating_mul(spent)
+            .min(PARTS_WORK.saturating_mul(FIRST_SUMS_WORK)),
+    );
+    // How wide each piece may be refined at once: as many open cells as
+    // panels its sums had at the last doubling when every panel was
+    // doubled (2^MAX_DOUBLINGS times its first panels).
+    let mut widest: BTreeMap<(usize, usize), usize> = BTreeMap::new();
+    for cell in &open {
+        *widest.entry(cell.key).or_insert(0) += 1 << MAX_DOUBLINGS;
+    }
+    let mut taken: Vec<Group> = Vec::new();
+    for parts in [FIRST_SUMS, SUMS] {
+        if parts == SUMS {
+            // Opened again where the second moments do not agree.
+            let shares: Vec<f64> = taken
+                .iter()
+                .map(|group| piece_share(outline, &taken, &[], group.key))
+                .collect();
+            let mut kept = Vec::with_capacity(taken.len());
+            for (group, share) in taken.into_iter().zip(shares) {
+                if holds(&group.coarser, &group.finer, share, parts) {
+                    kept.push(group);
+                } else {
+                    open.extend(group.finer);
+                }
+            }
+            taken = kept;
+        }
+        while !open.is_empty() {
+            if work.spent_up() {
+                return Err(unsettled(index));
+            }
+            // A piece with more open cells than that is not closing in on
+            // a place where its integrand gathers: its sums scatter
+            // (rounding, or a boundary through where the parametrisation
+            // collapses) however fine the panels.
+            let mut wide: BTreeMap<(usize, usize), usize> = BTreeMap::new();
+            for cell in &open {
+                let count = wide.entry(cell.key).or_insert(0);
+                *count += 1;
+                if *count > widest.get(&cell.key).copied().unwrap_or(0) {
+                    return Err(unsettled(index));
+                }
+            }
+            let mut wanted = Vec::new();
+            let mut spans = Vec::with_capacity(open.len());
+            for cell in &open {
+                let Some(halves) = finer(cell) else {
+                    return Err(unsettled(index));
+                };
+                let level = cell.level + 1;
+                let doublings = if level <= MAX_DOUBLINGS {
+                    level
+                } else {
+                    // Past the doublings, the inner panels go where the
+                    // cell's own two sums of them say: half as many once
+                    // they agreed, twice as many where they did not (up
+                    // to the most an inner integral takes), as many where
+                    // there was nothing to say. Never below two a
+                    // stretch, so that half of them is one.
+                    let share = piece_share(outline, &taken, &open, cell.key);
+                    match cell.inner_check {
+                        Some(half) if half.agrees_in(&cell.total, share, parts) => {
+                            cell.inner.saturating_sub(1).max(1)
+                        }
+                        Some(_) => (cell.inner + 1).min(MAX_DOUBLINGS),
+                        None => cell.inner,
+                    }
+                };
+                let from = wanted.len();
+                wanted.extend(halves.into_iter().map(|p| (cell.key, p, level, doublings)));
+                spans.push(from..wanted.len());
+            }
+            let finer_cells = cells_of(at, (rule, coarse), (sense, plan), &wanted, work)?;
+            // Per piece: its open cells and their finer ones.
+            let mut pieces: BTreeMap<(usize, usize), Vec<Opened>> = BTreeMap::new();
+            for (cell, span) in open.iter().zip(spans) {
+                let Some(halves) = finer_cells.get(span) else {
+                    return Err(MassError::Invalid { face: index });
+                };
+                pieces
+                    .entry(cell.key)
+                    .or_default()
+                    .push((*cell, halves.to_vec()));
+            }
+            let mut next = Vec::new();
+            for (key, cells) in pieces {
+                let all_finer: Vec<Cell> =
+                    cells.iter().flat_map(|(_, f)| f.iter().copied()).collect();
+                let share = piece_share(outline, &taken, &all_finer, key);
+                let mut coarser = Total::default();
+                for (cell, _) in &cells {
+                    coarser.add(cell.total, 1.0);
+                }
+                if holds(&coarser, &all_finer, share, parts) {
+                    taken.push(Group {
+                        key,
+                        coarser,
+                        finer: all_finer,
+                    });
+                    continue;
+                }
+                for (cell, halves) in cells {
+                    if holds(&cell.total, &halves, share, parts) {
+                        taken.push(Group {
+                            key,
+                            coarser: cell.total,
+                            finer: halves,
+                        });
+                    } else {
+                        next.extend(halves);
+                    }
+                }
+            }
+            open = next;
+        }
+        if parts == FIRST_SUMS
+            && let Some(slot) = first_sums.as_deref_mut()
+        {
+            // The sums without the second moments, with the work as it
+            // stands (see [`integrals_in`]).
+            let mut alone = work.clone();
+            alone.second = false;
+            *slot = Some(settle(
+                surface,
+                index,
+                rule,
+                (sum_of(&taken), plan.up_to_whole_surfaces()),
+                &mut alone,
+            ));
+        }
+    }
+    settle(
+        surface,
+        index,
+        rule,
+        (sum_of(&taken), plan.up_to_whole_surfaces()),
+        work,
+    )
+}
+
+/// The sum of the finer cells of every taken group.
+fn sum_of(taken: &[Group]) -> Total {
+    let mut total = Total::default();
+    for group in taken {
+        for cell in &group.finer {
+            total.add(cell.total, 1.0);
+        }
+    }
+    total
+}
+
+/// The share of their size that cells of the piece `key` are allowed to
+/// differ by beyond [`CONVERGED`]: [`Outline::noise`] of what is summed
+/// for the piece so far (its taken cells and `more`).
+fn piece_share(outline: &Outline, taken: &[Group], more: &[Cell], key: (usize, usize)) -> f64 {
+    let (mut area, mut off) = (0.0, 0.0_f64);
+    let cells = taken
+        .iter()
+        .filter(|g| g.key == key)
+        .flat_map(|g| g.finer.iter())
+        .chain(more.iter().filter(|c| c.key == key));
+    for cell in cells {
+        area += cell.total.size.area;
+        off = off.max(cell.off);
+    }
+    outline.noise(area, off)
+}
+
+/// Whether the cells `finer` agree with the coarser sum `coarser` in the
+/// first `parts` sums, and each of them past [`MAX_DOUBLINGS`] with its
+/// own sum of half the inner panels.
+fn holds(coarser: &Total, finer: &[Cell], share: f64, parts: usize) -> bool {
+    let mut total = Total::default();
+    for cell in finer {
+        total.add(cell.total, 1.0);
+    }
+    coarser.agrees_in(&total, share, parts)
+        && finer.iter().all(|cell| {
+            cell.inner_check
+                .is_none_or(|half| half.agrees_in(&cell.total, share, parts))
+        })
 }
 
 /// How big the body is: the extent of its vertices and of the ends and
@@ -3622,9 +4292,13 @@ mod tests {
             work
         };
         // A sphere is cheap: with the whole budget the part through the
-        // pole runs out of doublings first.
+        // pole is refused first, when its open cells grow wider than its
+        // panels at the last doubling (`cell_by_cell`; until 2026-10-17,
+        // when every panel was doubled, it ran out of doublings at under
+        // a hundredth of the budget; the cells take 1.15 million, a
+        // fifty-eighth).
         let whole = run(BUDGET);
-        assert!(whole.spent < BUDGET / 100, "{}", whole.spent);
+        assert!(whole.spent < BUDGET / 50, "{}", whole.spent);
         // With a budget of one evaluation the face has PARTS_WORK times
         // its first sums, and stops there, with at most one further round
         // on top.
@@ -3734,5 +4408,74 @@ mod tests {
             spent > FIRST_SUMS_WORK && spent <= FIRST_SUMS_WORK + taken,
             "{spent}"
         );
+    }
+
+    /// A bilinear patch over the unit square with these corner weights
+    /// (`w₀₀, w₀₁, w₁₀, w₁₁`).
+    fn weighted_square(weights: [f64; 4]) -> Surface {
+        let ctrl = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(1.0, 1.0, 0.0),
+        ];
+        let knots = vec![0.0, 0.0, 1.0, 1.0];
+        Surface::Nurbs(
+            craft3d_geom::NurbsSurface::new(
+                1,
+                1,
+                knots.clone(),
+                knots,
+                2,
+                2,
+                ctrl,
+                weights.to_vec(),
+            )
+            .unwrap(),
+        )
+    }
+
+    /// Hostile factors of the Möbius map: every node stays finite and
+    /// inside its stretch, its weight finite and not negative, and a
+    /// factor the map would squeeze into rounding is not taken.
+    #[test]
+    fn the_moebius_map_neither_overflows_nor_vanishes() {
+        let rule = Rule::new(NODES);
+        for beta in [
+            1e-300, 1e-160, 1e-100, 1e-3, 0.5, 2.0, 1e3, 1e100, 1e160, 1e300,
+        ] {
+            let mut total = 0.0;
+            for (s, w) in rule.points(0.0, 1.0) {
+                let (t, weight) = moebius_node(s, w, (2.0, 3.0, beta));
+                assert!((2.0..=5.0).contains(&t), "{beta}: {t}");
+                assert!(weight.is_finite() && weight >= 0.0, "{beta}: {weight}");
+                total += weight;
+            }
+            // The weights in t sum to the stretch's width where the map
+            // is gentle enough for sixteen nodes to integrate it.
+            if (0.5..=2.0).contains(&beta) {
+                assert!((total - 3.0).abs() < 1e-9, "{beta}: {total}");
+            }
+        }
+        let steep = weighted_square([1.0, 1e300, 1.0, 1e300]);
+        assert_eq!(moebius(&steep, Along::V, 0.5, (0.0, 1.0)), None);
+        let fine = weighted_square([1.0, 100.0, 1.0, 100.0]);
+        assert_eq!(moebius(&fine, Along::V, 0.5, (0.0, 1.0)), Some(0.01));
+        let even = weighted_square([3.0, 3.0, 3.0, 3.0]);
+        assert_eq!(moebius(&even, Along::V, 0.5, (0.0, 1.0)), None);
+    }
+
+    /// What no reparametrisation evens out is what counts: weights of a
+    /// product form are even, the corners 1, h, h, 1 are h apart, and
+    /// weights of any size are compared without overflow.
+    #[test]
+    fn uneven_weights_are_those_a_reparametrisation_leaves() {
+        let product = uneven_weights(&weighted_square([1.0, 1e6, 1e3, 1e9])).unwrap();
+        assert!((product - 1.0).abs() < 1e-9, "{product}");
+        for h in [10.0, 1e5, 1e12, 1e200] {
+            let ratio = uneven_weights(&weighted_square([1.0, h, h, 1.0])).unwrap();
+            assert!((ratio / h - 1.0).abs() < 1e-9, "{h}: {ratio}");
+        }
+        assert_eq!(uneven_weights(&weighted_square([2.0; 4])), None);
     }
 }
