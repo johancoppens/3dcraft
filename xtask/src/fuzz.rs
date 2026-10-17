@@ -443,6 +443,7 @@ fn one_seed(launcher: &Launcher, seed: u64, out: &Path, tally: &Mutex<Tally>, st
         (Some(r), _) => r.clone(),
         (None, Some((kind, detail))) => json!({
             "seed": seed, "verdict": kind,
+            "scale": read_design(&design).and_then(|d| d.get("scale").cloned()),
             "finding": {"kind": kind, "oracle": kind, "detail": detail},
         }),
         (None, None) => json!({ "seed": seed, "verdict": "crash" }),
