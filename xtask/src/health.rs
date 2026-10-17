@@ -374,7 +374,7 @@ fn findings_section(out: &mut String, main: &Path) {
 }
 
 /// The last run of the action matrix (`cargo xtask actions`,
-/// docs/testing.md, oracle 11): its totals, the regressions against the
+/// docs/testing.md, oracle 12): its totals, the regressions against the
 /// ratchet and the wrong results and crashes it left reproducers of.
 fn actions_section(out: &mut String, main: &Path) {
     let path = main.join("target/actions/summary.json");

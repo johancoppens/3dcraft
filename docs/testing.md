@@ -1,6 +1,6 @@
 # Testing: the AI loop and its oracles
 
-> **Last updated:** 2026-10-17 · **Status:** the loop is in use. In place: oracle 1 (closed-form mass properties, `testkit::solids`), oracle 2 (validity checker with seeded defects), oracle 3 (boolean identities on seeded random pairs), oracle 4 (tessellation against the exact body, for patches), oracle 6 (constraint solver), oracle 7 (CPU side), oracle 8 (FreeCAD), oracle 9 (no body passes through itself) and oracle 11 (the action matrix). The rest is design
+> **Last updated:** 2026-10-17 · **Status:** the loop is in use. In place: oracle 1 (closed-form mass properties, `testkit::solids`), oracle 2 (validity checker with seeded defects), oracle 3 (boolean identities on seeded random pairs), oracle 4 (tessellation against the exact body, for patches), oracle 6 (constraint solver), oracle 7 (CPU side), oracle 8 (FreeCAD), oracle 9 (no body passes through itself) and oracle 12 (the action matrix). The rest is design
 
 3DCraft is written by AI agents while the developer watches. That only works if an agent can tell, without a human, whether what it built is right. This document says how.
 
@@ -180,7 +180,7 @@ CRAFT3D_BOOLEAN_CHECK=full cargo test --release -p craft3d-kernel --tests
 
 A new boolean test calls `verified` on what it makes (or goes through `solve`). The check itself is held to seeded mistakes it must catch (`crates/kernel/tests/boolean_check.rs`): a dropped face, the tool's volume added, a moved or turned face, a filled cavity.
 
-### Oracle 11: the action matrix, a ratchet
+### Oracle 12: the action matrix, a ratchet
 
 Every local operation is tried on every face and edge of the finished bodies of the showcase models (2026-10-17, `cargo xtask actions`): fillet each edge with a tenth and with three tenths of the shortest edge next to it, chamfer it by fifteen hundredths, offset each face out and in by a tenth of its shortest edge, delete it, shell the body with it open and thicken it (a twentieth of the body's thinnest extent), draft each flat face by 3° from a flat neighbour square to it, move it along its normal, and mirror and pattern each body once. An edge is the pair of faces it lies between, a face its persistent name. Each action is run on the finished document and undone again (the history is the document, so undoing gives the document as it was), in `craft3d-cli serve` processes, at most three, each under a 2 GB memory cap and a minute per call, started afresh every 250 actions and after any crash or timeout.
 

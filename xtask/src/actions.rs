@@ -1,4 +1,4 @@
-//! `cargo xtask actions`: the action matrix (docs/testing.md, oracle 11).
+//! `cargo xtask actions`: the action matrix (docs/testing.md, oracle 12).
 //!
 //! Every local operation (fillet, chamfer, offset, delete face, shell,
 //! thicken, draft, move face, mirror, pattern) is tried on the faces and
@@ -137,6 +137,7 @@ struct Options {
     load_timeout: Duration,
     memory: String,
     update: bool,
+    raise: bool,
     cli: Option<PathBuf>,
 }
 
@@ -144,7 +145,7 @@ fn usage() -> String {
     let names: Vec<&str> = MODELS.iter().map(|m| m.name).collect();
     format!(
         "usage: cargo xtask actions [--models a,b] [--per-kind N | --all] [--jobs N (1-3)] \
-         [--timeout SECONDS] [--memory 2G] [--update] [--cli PATH]\nmodels: {}",
+         [--timeout SECONDS] [--memory 2G] [--update] [--cli PATH]\n       cargo xtask actions --raise [--models a,b]   (raise the ratchet from the last run's results)\nmodels: {}",
         names.join(", ")
     )
 }
@@ -158,6 +159,7 @@ fn options(args: &[String]) -> Result<Options, String> {
         load_timeout: Duration::from_secs(1800),
         memory: "2G".to_string(),
         update: false,
+        raise: false,
         cli: None,
     };
     let mut it = args.iter();
@@ -194,6 +196,7 @@ fn options(args: &[String]) -> Result<Options, String> {
             }
             "--memory" => o.memory = value()?,
             "--update" => o.update = true,
+            "--raise" => o.raise = true,
             "--cli" => o.cli = Some(PathBuf::from(value()?)),
             "-h" | "--help" => return Err(usage()),
             other => return Err(format!("unknown option `{other}`\n{}", usage())),
@@ -665,12 +668,57 @@ fn read_ratchet(repo: &Path) -> Ratchet {
         .unwrap_or_default()
 }
 
+/// Adds to the ratchet what the last run's results say succeeded, for the
+/// models asked for: the same as `--update` at the end of that run.
+fn raise(o: &Options, repo: &Path, out: &Path) -> Result<(), String> {
+    let mut ratchet = read_ratchet(repo);
+    let mut added = 0_usize;
+    for model in &o.models {
+        let path = out.join("results").join(format!("{}.jsonl", model.name));
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            println!("{}: no results ({})", model.name, path.display());
+            continue;
+        };
+        let mut here = 0_usize;
+        for line in text.lines() {
+            let Ok(record) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            let field = |key: &str| record.get(key).and_then(Value::as_str);
+            let (Some("ok"), Some(kind), Some(entity)) =
+                (field("verdict"), field("kind"), field("entity"))
+            else {
+                continue;
+            };
+            let set = ratchet
+                .entry(model.name.to_string())
+                .or_default()
+                .entry(kind.to_string())
+                .or_default();
+            if set.insert(entity.to_string()) {
+                here += 1;
+            }
+        }
+        println!("{}: {here} added", model.name);
+        added += here;
+    }
+    let text =
+        serde_json::to_string_pretty(&plan::ratchet_json(&ratchet)).map_err(|e| e.to_string())?;
+    std::fs::write(repo.join(RATCHET), format!("{text}\n"))
+        .map_err(|e| format!("cannot write the ratchet: {e}"))?;
+    println!("ratchet: raised by {added} (log it in the dev log)");
+    Ok(())
+}
+
 pub fn run(args: &[String]) -> Result<(), String> {
     let o = options(args)?;
     let started = Instant::now();
     let repo = repo_root();
     let main = main_checkout(&repo);
     let out = main.join("target/actions");
+    if o.raise {
+        return raise(&o, &repo, &out);
+    }
     for dir in ["models", "results", "logs"] {
         std::fs::create_dir_all(out.join(dir))
             .map_err(|e| format!("cannot make {}: {e}", out.join(dir).display()))?;

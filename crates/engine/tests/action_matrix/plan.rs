@@ -1,4 +1,4 @@
-//! The action matrix (docs/testing.md › Oracle 11): which local operations
+//! The action matrix (docs/testing.md › Oracle 12): which local operations
 //! are tried on which faces and edges of a model, how one is run on the
 //! finished document and undone again, and what its outcome is.
 //!
@@ -593,7 +593,14 @@ pub fn choose(
     }
     let mut out = Vec::new();
     for (kind, list) in by_kind {
-        let names: Vec<String> = list.iter().map(|a| a.entity.clone()).collect();
+        // A name can be given to several faces (the pieces of a face a
+        // boolean split): it is one entity, tried once.
+        let names: Vec<String> = list
+            .iter()
+            .map(|a| a.entity.clone())
+            .collect::<BTreeSet<String>>()
+            .into_iter()
+            .collect();
         let picked = sample(kind, &names, k);
         let mut chosen: Vec<Action> = list
             .into_iter()
@@ -896,7 +903,7 @@ pub fn ratchet_json(ratchet: &Ratchet) -> Value {
         })
         .collect();
     json!({
-        "about": "The action matrix's ratchet (docs/testing.md, oracle 11): per model and kind, the entities whose action succeeded (built, valid, volume as expected). Each must still succeed. Entries are only added (cargo xtask actions --update, an expectation change in the developer's favour, logged); removing one is an expectation change against the developer and needs the four conditions of docs/testing.md.",
+        "about": "The action matrix's ratchet (docs/testing.md, oracle 12): per model and kind, the entities whose action succeeded (built, valid, volume as expected). Each must still succeed. Entries are only added (cargo xtask actions --update, an expectation change in the developer's favour, logged); removing one is an expectation change against the developer and needs the four conditions of docs/testing.md.",
         "models": models,
     })
 }

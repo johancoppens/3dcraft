@@ -1,4 +1,4 @@
-//! The gated part of the action matrix (docs/testing.md, oracle 11): a
+//! The gated part of the action matrix (docs/testing.md, oracle 12): a
 //! small model, a few actions of every kind on it, held to the ratchet
 //! `action_matrix/ratchet.json`. The whole matrix over the showcase
 //! models is `cargo xtask actions`, which runs the same plan
