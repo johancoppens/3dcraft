@@ -838,37 +838,39 @@ pub const MAX_RAW: usize = 4 * MAX_PIECES;
 
 /// The cap on pieces before the broad phase (until 2026-10-17): the work
 /// bounds are set from it, so that nothing it let through is refused.
-pub const OLD_MAX_PIECES: usize = 4096;
+pub(crate) const OLD_MAX_PIECES: usize = 4096;
 
 /// The cap on the raw offset's curves before the broad phase.
-pub const OLD_MAX_RAW: usize = 4 * OLD_MAX_PIECES;
+pub(crate) const OLD_MAX_RAW: usize = 4 * OLD_MAX_PIECES;
 
 /// The most pairs of curves of the raw offset whose boxes overlap that the
 /// cut step looks at, counted in both directions and each with itself: as
 /// many as [`OLD_MAX_RAW`] curves can have, so nothing accepted under that
 /// cap is refused for it.
-pub const MAX_PAIRS: usize = OLD_MAX_RAW * OLD_MAX_RAW;
+pub(crate) const MAX_PAIRS: usize = OLD_MAX_RAW * OLD_MAX_RAW;
 
 /// The most points where curves of the raw offset cross that the cut step
 /// keeps: each is kept twice, once on each curve, and makes a piece of
-/// each, so this bounds the memory and the work of the keep step (1.2 GB
-/// and 19 s to reach the bound in a release build, measured by
-/// `offset_scale.rs` › `a_bound_ends_the_search_for_a_distance`). A
-/// patterned sheet has a few per curve.
-pub const MAX_CUT_POINTS: usize = 1 << 24;
+/// each, so this bounds the memory and the work of the keep step (reached
+/// in 3.5 s in a release build, at a peak of 388 MB for the whole test,
+/// whose input alone takes about 200 MB: `offset_scale.rs` ›
+/// `a_bound_ends_the_search_for_a_distance`; 2²⁴ took 1.2 GB per try). A
+/// patterned sheet has a few per curve: one of [`MAX_PIECES`] pieces about
+/// a million.
+pub(crate) const MAX_CUT_POINTS: usize = 1 << 22;
 
 /// The most curves of the input and mitre wedges near the middles of the
 /// pieces (within the boxes searched) that the keep step looks at, for all
 /// pieces together: the bound on its work (each costs a box test and at
 /// most one distance or wedge test, tens of nanoseconds, so seconds at the
 /// bound).
-pub const MAX_NEAR: usize = 1 << 28;
+pub(crate) const MAX_NEAR: usize = 1 << 28;
 
 /// The most curves the names of pieces may list in all (a piece of a curve
 /// that left several is named by the curves of the loop it closes): as
 /// many as an outline of [`OLD_MAX_PIECES`] pieces can have, so nothing
 /// accepted under that cap is refused for it.
-pub const MAX_NAMED: usize = OLD_MAX_PIECES * OLD_MAX_PIECES;
+pub(crate) const MAX_NAMED: usize = OLD_MAX_PIECES * OLD_MAX_PIECES;
 
 /// The caps and the bounds on the work, as one value so that tests can
 /// meet each with a small input.
