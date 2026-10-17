@@ -240,6 +240,67 @@ fn a_sheet_of_70_by_70_patterned_holes_extrudes() {
     assert_eq!(plate["faces"], 4 + 2 + 4900);
 }
 
+/// The laser's beam path of that sheet: its profiles offset by half the
+/// kerf (4908 pieces, more than the offset took before it had a broad
+/// phase: 4096). The outline grows by `d` with arcs of radius `d` at its
+/// corners and every hole shrinks by `d`: the volume is the closed form
+/// `(s² + 4 s d + π d² − 4900 π (r − d)²) t`, and the holes' faces are
+/// named after the instances they are offsets of.
+#[test]
+fn a_sheet_of_70_by_70_patterned_holes_offset_by_a_kerf_extrudes() {
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "kerf", "expr": "0.15 mm"}),
+    );
+    let (pitch, r, t, d) = (10.0, 3.0, 2.0, 0.075);
+    let side = 71.0 * pitch;
+    run(&mut s, "sketch.create", json!({"name": "Plate"}));
+    run(
+        &mut s,
+        "sketch.polyline",
+        json!({"sketch": "Plate", "points": [[0, 0], [side, 0], [side, side], [0, side]], "closed": true}),
+    );
+    let circle = run(
+        &mut s,
+        "sketch.circle",
+        json!({"sketch": "Plate", "center": [pitch, pitch], "radius": r}),
+    );
+    let circle = str_of(&circle["entity"]);
+    run(
+        &mut s,
+        "sketch.pattern",
+        json!({"sketch": "Plate", "entities": [circle], "count": 70, "step": [pitch, 0], "count2": 70, "step2": [0, pitch]}),
+    );
+    let made = run(
+        &mut s,
+        "feature.offsetProfile",
+        json!({"sketch": "Plate", "distance": "kerf / 2", "name": "Kerf"}),
+    );
+    assert_eq!(made["status"], "ok", "{made}");
+    let offset = str_of(&made["id"]);
+    let extruded = run(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "Kerf", "distance": t, "name": "Body"}),
+    );
+    let id = str_of(&extruded["id"]);
+    let plate = body(&mut s, "Body");
+    assert_close(
+        plate["volume"].as_f64().unwrap(),
+        (side * side + 4.0 * side * d + PI * d * d - 4900.0 * PI * (r - d) * (r - d)) * t,
+        "70 × 70 holes offset by the kerf",
+    );
+    assert_eq!(plate["faces"], 4 + 4 + 2 + 4900);
+    let names = face_names(&plate);
+    for hole in [circle.clone(), format!("{circle}[69,69]")] {
+        let name = format!("{id}:side({offset}:offset({hole}))");
+        assert!(names.contains(&name), "{name}");
+    }
+}
+
 /// A pattern that stacks 6000 copies of a line within the
 /// tolerance of each other (12 000 ends, two heaps of 6000, more pairs
 /// than the bound on ends holds): profile detection refuses it,

@@ -515,68 +515,36 @@ fn pieces_are_named_by_their_loop_not_by_an_order() {
     assert_eq!(outer[0].within.as_deref(), Some(&[1, 2, 3][..]));
 }
 
-/// An outline with more curves than an offset takes says so, at once (no
-/// search for a distance, which would not help).
+/// A polygon of 2100 sides offset with round corners has 4200 pieces:
+/// more than the offset took before 2026-10-17 (4096, refused then with
+/// `TooManyOffsetCurves`), within what it takes now. Its area is Steiner's
+/// `A + P d + π d²`. The cap itself (`MAX_PIECES`) is met by
+/// `offset_scale.rs` › `too_many_pieces_are_passed_on`, and a bound on the
+/// work that ends the search for a distance by
+/// `a_bound_ends_the_search_for_a_distance` there.
 #[test]
-fn too_many_curves_is_passed_on() {
+fn a_polygon_of_2100_round_corners_fits() {
     let t = tol(1.0);
     let n = 2100;
+    let r = 1000.0;
     let points: Vec<[f64; 2]> = (0..n)
         .map(|i| {
             let a = std::f64::consts::TAU * i as f64 / n as f64;
-            [1000.0 * a.cos(), 1000.0 * a.sin()]
+            [r * a.cos(), r * a.sin()]
         })
         .collect();
     let input = profiles(&polygon(&points, 1), &t);
     let started = std::time::Instant::now();
-    let err = offset_profiles(&input, 0.5, Corners::Round, &t).unwrap_err();
-    assert!(
-        matches!(err, KernelError::TooManyOffsetCurves { .. }),
-        "{err:?}"
-    );
+    let o = offset_profiles(&input, 0.5, Corners::Round, &t).unwrap();
     assert!(started.elapsed().as_secs_f64() < 5.0);
-    // Sharp corners add no curve where lines meet: it fits.
+    assert_eq!(o.curves.len(), 2 * n);
+    let k = n as f64;
+    let a = k / 2.0 * r * r * (2.0 * PI / k).sin();
+    let p = 2.0 * k * r * (PI / k).sin();
+    close(area(&o), steiner_area(a, p, 0.5), 1e-9);
+    // Sharp corners add no curve where lines meet.
     let o = offset_profiles(&input, 0.5, Corners::Sharp, &t).unwrap();
     assert_eq!(o.curves.len(), n);
-}
-
-/// Inward past the outline's reach the search for the largest distance
-/// that fits meets the offset's cap (a strip whose bottom is a saw of 1400
-/// teeth: each tip adds an arc inward): the reason stays the outline's,
-/// with no largest distance rather than 0. Slow in a test build (each try
-/// at a large distance takes seconds): run in release with
-/// `--ignored`; `too_many_curves_is_passed_on` is the gated check of the
-/// cap.
-#[test]
-#[ignore = "slow; run in release with --ignored"]
-fn the_cap_ends_the_search_for_a_distance() {
-    let t = tol(1.0);
-    let teeth = 1400;
-    let mut points: Vec<[f64; 2]> = Vec::new();
-    for i in 0..teeth {
-        let x = 2.0 * i as f64;
-        points.push([x, 0.0]);
-        points.push([x + 1.0, 1.0]);
-    }
-    let length = 2.0 * teeth as f64;
-    points.push([length, 0.0]);
-    points.push([length, 20.0]);
-    points.push([0.0, 20.0]);
-    let input = profiles(&polygon(&points, 1), &t);
-    let started = std::time::Instant::now();
-    let err = offset_profiles(&input, -2.0 * length, Corners::Round, &t).unwrap_err();
-    assert!(
-        matches!(
-            &err,
-            KernelError::OffsetProfile {
-                reason: "leaves nothing of a region",
-                largest: None,
-                ..
-            }
-        ),
-        "{err:?}"
-    );
-    println!("refused in {:.2?}", started.elapsed());
 }
 
 /// A huge distance: inward past half the outline's diagonal nothing is
