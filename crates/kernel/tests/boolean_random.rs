@@ -419,6 +419,7 @@ fn volume_of(
         Ok(result) => {
             *digests = digests.wrapping_add(digest(&result));
             assert_eq!(check(&result.body, &tol), [], "{what}: {op:?}");
+            boolean_common::verified(a, b, op, &result.body, &tol, what);
             assert_eq!(result.faces.len(), result.body.faces.len(), "{what}");
             assert_eq!(result.edges.len(), result.body.edges.len(), "{what}");
             assert_eq!(result.vertices.len(), result.body.vertices.len(), "{what}");

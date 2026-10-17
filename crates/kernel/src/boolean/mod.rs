@@ -58,9 +58,11 @@ mod outline;
 mod regions;
 mod section;
 mod sew;
+mod verify;
 
 pub use contact::{ContactKind, Interference, MAX_CONTACT_POINTS, interference};
 pub use freeform::{release_unused, shelf_size};
+pub use verify::{Verification, VerifyOptions, Violation, VolumeRule, Volumes, verify};
 
 use crate::{KernelError, MAX_REPORTED};
 use craft3d_geom::{Curve3, GeomError};
@@ -648,6 +650,26 @@ fn run(
         return Err(Stop::Error(KernelError::InvalidBody {
             operation: OPERATION,
             defects,
+        }));
+    }
+    // What every exact boolean keeps, at a few per cent of the boolean
+    // (verify.rs; the volumes and the classified points are left to the
+    // tests and to `document.check`, or asked for with
+    // CRAFT3D_BOOLEAN_CHECK=full): a result that breaks it is refused.
+    let verified = verify::verify(
+        a.body,
+        b.body,
+        op,
+        &result.body,
+        tolerance,
+        &verify::checked_by_every_boolean(),
+    )
+    .map_err(Stop::Error)?;
+    if let Some(first) = verified.violations.first() {
+        return Err(Stop::Error(KernelError::WrongResult {
+            operation: OPERATION,
+            violation: first.clone(),
+            count: verified.violations.len(),
         }));
     }
     if options.refuse_zero_thickness && result.body.shells.len() > 1 {
