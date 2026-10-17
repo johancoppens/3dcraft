@@ -112,12 +112,9 @@ impl Solid<'_> {
     /// face. `test` must pass for a box whenever it passes for a box inside
     /// it ([`FaceTree`]).
     pub fn candidates(&self, test: impl Fn(&Bbox3) -> bool) -> Vec<usize> {
-        let found = self
-            .tree
+        self.tree
             .get_or_init(|| FaceTree::new(&self.boxes))
-            .candidates(test);
-        crate::work::face_candidates(found.len() as u64);
-        found
+            .candidates(test)
     }
 
     /// The edges around a face whose boxes pass `test` (and those whose
@@ -133,13 +130,10 @@ impl Solid<'_> {
             let tree = FaceTree::new(&boxes);
             (edges, tree)
         });
-        let found: Vec<EdgeId> = tree
-            .candidates(test)
+        tree.candidates(test)
             .into_iter()
             .filter_map(|i| edges.get(i).copied())
-            .collect();
-        crate::work::edge_candidates(found.len() as u64);
-        found
+            .collect()
     }
 
     /// A box around an edge; empty for an edge the body does not have.
@@ -493,7 +487,9 @@ fn edge_cuts(
 ) -> Result<(), Stop> {
     let tol = tolerance.linear;
     let reach = EDGE_REACH * tol;
+    let mut asked = crate::work::Tally::edges();
     for id in own.edges_near(face, |b| boxes_meet(b, near, reach)) {
+        asked.one();
         let edge = own.body.edge(id).ok_or(Stop::of(LOST))?;
         let (Some(a), Some(b)) = (own.body.vertex(edge.start), own.body.vertex(edge.end)) else {
             return Err(Stop::of(LOST));
@@ -1041,10 +1037,12 @@ pub(super) fn section(
     if overlap(&a.bbox(), &b.bbox(), 2.0 * tol).is_none() {
         return Ok(sections);
     }
+    let mut tested = crate::work::Tally::faces();
     for (fa, box_a) in a.boxes.iter().enumerate() {
         // The faces of B whose boxes meet this one's, in the order of B's
         // faces: the pairs, and their order, of testing every face of B.
         for fb in b.candidates(|box_b| boxes_meet(box_a, box_b, 2.0 * tol)) {
+            tested.one();
             let Some(box_b) = b.boxes.get(fb) else {
                 return Err(Stop::of(LOST));
             };

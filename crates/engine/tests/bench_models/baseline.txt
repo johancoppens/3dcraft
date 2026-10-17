@@ -41,7 +41,7 @@ engine-block sketch_solves 166
 engine-block triangles 161930
 impeller blend_sections 3564
 impeller boolean_edge_candidates 2477
-impeller boolean_face_candidates 3588
+impeller boolean_face_candidates 3576
 impeller boolean_face_pairs 427
 impeller booleans 13
 impeller check_problems 0

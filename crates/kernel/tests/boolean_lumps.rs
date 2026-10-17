@@ -6,7 +6,8 @@
 //!
 //! The broad phase is held to the kernel's work counts, which are the same
 //! on any machine: per lump, the faces tested by box and the edges asked
-//! where they meet a surface stay the same as the lumps grow. Testing every
+//! where they meet a surface (each pass of the loops that do it, counted
+//! in the loops) stay the same as the lumps grow. Testing every
 //! face against every face (or every edge of a face for every face it
 //! meets) makes them grow with the number of lumps. The counts are
 //! process-wide, so the one test here that reads them is the only test of
@@ -133,7 +134,11 @@ fn many_lumps_cost_work_in_proportion_to_their_number_at_three_scales() {
         }
         let ((small, pairs_small), (large, pairs_large)) = (per_lump[0], per_lump[1]);
         // 16 times the lumps: the same work per lump. Testing every face
-        // would be 16 times as much per lump.
+        // would be 16 times as much per lump. (Every pass of the loops that
+        // test faces by box is counted, whatever they iterate over, so the
+        // count is never nothing: a lump is tested at least against its
+        // post.)
+        assert!(small > 0.0, "{k}: no faces tested by box");
         assert!(large <= 1.25 * small, "{k}: {small} then {large} per lump");
         assert_eq!(pairs_small, pairs_large, "{k}: face pairs per lump");
 
@@ -150,6 +155,7 @@ fn many_lumps_cost_work_in_proportion_to_their_number_at_three_scales() {
         let (small, large) = (per_block[0], per_block[1]);
         // 8 times the holes in the plate's top: the same edges asked per
         // block. Asking every edge of the top would be 8 times as many.
+        assert!(small > 0.0, "{k}: no edges asked");
         assert!(large <= 1.25 * small, "{k}: {small} then {large} per block");
         pocket(k, 3);
     }

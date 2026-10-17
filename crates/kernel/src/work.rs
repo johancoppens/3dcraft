@@ -61,12 +61,41 @@ pub(crate) fn face_pairs(count: u64) {
     FACE_PAIRS.fetch_add(count, Ordering::Relaxed);
 }
 
-pub(crate) fn face_candidates(count: u64) {
-    FACE_CANDIDATES.fetch_add(count, Ordering::Relaxed);
+/// A count of the faces (or edges) a loop of the boolean tested by box,
+/// added to its counter once, when the loop is left (by any way out): each
+/// pass of the loop counts one, whatever the loop iterates over, so a loop
+/// that went back to testing every face would show it.
+pub(crate) struct Tally {
+    count: u64,
+    counter: &'static AtomicU64,
 }
 
-pub(crate) fn edge_candidates(count: u64) {
-    EDGE_CANDIDATES.fetch_add(count, Ordering::Relaxed);
+impl Tally {
+    /// For [`KernelWork::face_candidates`].
+    pub(crate) fn faces() -> Tally {
+        Tally {
+            count: 0,
+            counter: &FACE_CANDIDATES,
+        }
+    }
+
+    /// For [`KernelWork::edge_candidates`].
+    pub(crate) fn edges() -> Tally {
+        Tally {
+            count: 0,
+            counter: &EDGE_CANDIDATES,
+        }
+    }
+
+    pub(crate) fn one(&mut self) {
+        self.count = self.count.saturating_add(1);
+    }
+}
+
+impl Drop for Tally {
+    fn drop(&mut self) {
+        self.counter.fetch_add(self.count, Ordering::Relaxed);
+    }
 }
 
 pub(crate) fn patch_tree() {

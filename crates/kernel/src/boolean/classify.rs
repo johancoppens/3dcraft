@@ -52,7 +52,9 @@ pub(super) fn inside(solid: &Solid, p: Vec3, tolerance: &Tolerance) -> Result<bo
     let tol = tolerance.linear;
     // A point within reach of a face of the solid is neither inside nor
     // outside it by any margin that means something.
+    let mut tested = crate::work::Tally::faces();
     for face in solid.candidates(|b| b.contains(p, 2.0 * tol)) {
+        tested.one();
         let Some(box_) = solid.boxes.get(face) else {
             return Err(Stop::of(LOST));
         };
@@ -99,6 +101,7 @@ pub(super) fn inside(solid: &Solid, p: Vec3, tolerance: &Tolerance) -> Result<bo
                 .is_some_and(|(_, leave)| leave.is_nan() || leave > from)
         });
         for face in reach {
+            tested.one();
             let Some(box_) = solid.boxes.get(face) else {
                 return Err(Stop::of(LOST));
             };
