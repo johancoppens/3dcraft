@@ -14,7 +14,7 @@
 //! border are independent). One point within [`SAME`] of the size of the
 //! control net: control points that differ by rounding are one.
 
-use crate::Surface;
+use crate::{RationalBezierPatch, Surface};
 use craft3d_math::{Bbox3, Vec3};
 
 /// Control points this share of the size of the control net apart are one.
@@ -287,6 +287,238 @@ impl Pole {
     }
 }
 
+/// A row of a net this share of its longest vector long is zero (a border
+/// collapsed up to rounding is collapsed, as [`SAME`] takes it).
+const ZERO_ROW: f64 = 1e-9;
+
+/// How a freeform surface narrows to one of its poles.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Narrowing {
+    /// The order: 1 where the surface leaves the pole in a fan (its
+    /// width grows as the distance from the pole), 2 or more at a cusp (a
+    /// profile that leaves the axis along it: the width grows as the
+    /// square of the distance, or faster).
+    pub order: u32,
+    /// The parameter range across of the spans at the pole.
+    pub span: f64,
+    /// An upper bound on the length of the iso-curve along the border at
+    /// the share `β` of [`Narrowing::span`] from it: `width · β^order`.
+    pub width: f64,
+    /// Upper bounds, in the surface's own parameters and within the
+    /// spans at the pole (`β ≤ 1`), on the derivatives along the border:
+    /// `|S_σ| ≤ speed · β^order`, `|S_σσ| ≤ bend · β^order` and `|S_στ|
+    /// ≤ twist · β^(order − 1)` (`τ` the parameter across).
+    pub speed: f64,
+    pub bend: f64,
+    pub twist: f64,
+}
+
+impl Narrowing {
+    /// The parameter distance from the pole's border within which every
+    /// iso-curve along it is at most `length` long (at most `span`).
+    pub fn within(&self, length: f64) -> f64 {
+        if !(self.width > 0.0 && length > 0.0) {
+            return self.span;
+        }
+        let share = (length / self.width).powf(1.0 / f64::from(self.order.max(1)));
+        self.span * share.min(1.0)
+    }
+}
+
+/// How a Bézier or NURBS surface narrows to `pole`
+/// ([`Narrowing`]), from the Bézier spans at the pole.
+///
+/// The derivative along the pole's border, `S_σ`, vanishes on the
+/// border; the net of the polynomial `w² S_σ`
+/// ([`crate::RationalBezierPatch::weighted_derivative_nets`]) has a row
+/// of zeros there, and a net whose border row is zero is, one degree
+/// lower, the net of the field divided by the parameter across
+/// (`B_j^n(β) / β = (n / j) B_{j−1}^{n−1}(β)`). The order is how many
+/// times every span's net divides so; with it, `|S_σ| ≤ β^order · |N| /
+/// w²` with `N` the divided net (its hull) and `w` the lightest weight,
+/// so the iso-curve at `β` is at most `β^order` times the sum over the
+/// spans of `max |N| / w_min²` long. `None` for a surface without Bézier
+/// spans, a weight that is not positive, or a border whose net does not
+/// divide at all.
+pub fn narrowing(surface: &Surface, pole: &Pole) -> Option<Narrowing> {
+    type Span = ((f64, f64), (f64, f64), RationalBezierPatch);
+    let spans: Vec<Span> = match surface {
+        Surface::Bezier(patch) => vec![(
+            (0.0, 1.0),
+            (0.0, 1.0),
+            RationalBezierPatch::from_bezier(patch),
+        )],
+        Surface::Nurbs(s) => s
+            .bezier_spans()
+            .ok()?
+            .into_iter()
+            .map(|span| (span.u, span.v, span.patch))
+            .collect(),
+        _ => return None,
+    };
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    let at_start = matches!(pole.border, Border::UStart | Border::VStart);
+    // The spans at the pole, each turned so that the pole is across its
+    // second parameter: its net of `w² S_σ`, the degree of that across,
+    // its ranges along and across, and its weights.
+    struct AtPole {
+        net: Vec<Vec3>,
+        degree: usize,
+        along: f64,
+        across: f64,
+        weights: Vec<f64>,
+        degrees: (usize, usize),
+    }
+    let mut found: Vec<AtPole> = Vec::new();
+    for (u, v, patch) in spans {
+        let touches = match pole.border {
+            Border::UStart => u.0 == u0,
+            Border::UEnd => u.1 == u1,
+            Border::VStart => v.0 == v0,
+            Border::VEnd => v.1 == v1,
+        };
+        if !touches {
+            continue;
+        }
+        let (patch, along, across) = if pole.across_v() {
+            (patch, u.1 - u.0, v.1 - v.0)
+        } else {
+            (patch.transposed(), v.1 - v.0, u.1 - u.0)
+        };
+        patch.weight_range()?;
+        let (net, _) = patch.weighted_derivative_nets()?;
+        found.push(AtPole {
+            net,
+            degree: 2 * patch.degrees().1,
+            along: along.abs(),
+            across: across.abs(),
+            weights: patch.weights(),
+            degrees: patch.degrees(),
+        });
+    }
+    // The order: how often every span's net divides.
+    let mut order: Option<usize> = None;
+    for span in &found {
+        let (mut net, mut degree, mut times) = (span.net.clone(), span.degree, 0_usize);
+        while degree > 0 {
+            match divided(&net, degree, at_start) {
+                Some(next) => {
+                    net = next;
+                    degree -= 1;
+                    times += 1;
+                }
+                None => break,
+            }
+        }
+        order = Some(order.map_or(times, |o| o.min(times)));
+    }
+    let order = order?;
+    if order == 0 {
+        return None;
+    }
+    let mut out = Narrowing {
+        order: u32::try_from(order).ok()?,
+        span: f64::INFINITY,
+        width: 0.0,
+        speed: 0.0,
+        bend: 0.0,
+        twist: 0.0,
+    };
+    for span in found {
+        // `N`: the net divided `order` times, of degrees `(rows − 1,
+        // degree)`.
+        let (mut net, mut degree) = (span.net, span.degree);
+        for _ in 0..order {
+            net = divided(&net, degree, at_start)?;
+            degree -= 1;
+        }
+        let columns = degree + 1;
+        let rows = net.len() / columns;
+        let at = |i: usize, j: usize| net.get(i * columns + j).copied();
+        let longest = net.iter().map(|v| v.length()).fold(0.0_f64, f64::max);
+        // The derivatives of `N` along and across, from the differences of
+        // its net.
+        let (mut n_along, mut n_across) = (0.0_f64, 0.0_f64);
+        for i in 0..rows {
+            for j in 0..columns {
+                let here = at(i, j)?;
+                if i + 1 < rows {
+                    n_along = n_along.max((at(i + 1, j)? - here).length() * (rows - 1) as f64);
+                }
+                if j + 1 < columns {
+                    n_across = n_across.max((at(i, j + 1)? - here).length() * degree as f64);
+                }
+            }
+        }
+        // The weight's derivatives, from the differences of the weights.
+        let (p, q) = span.degrees;
+        let w = |i: usize, j: usize| span.weights.get(i * (q + 1) + j).copied();
+        let (mut w_along, mut w_across, mut lightest) = (0.0_f64, 0.0_f64, f64::INFINITY);
+        for i in 0..=p {
+            for j in 0..=q {
+                let here = w(i, j)?;
+                lightest = lightest.min(here);
+                if i < p {
+                    w_along = w_along.max((w(i + 1, j)? - here).abs() * p as f64);
+                }
+                if j < q {
+                    w_across = w_across.max((w(i, j + 1)? - here).abs() * q as f64);
+                }
+            }
+        }
+        if !(lightest > 0.0 && span.along > 0.0 && span.across > 0.0) {
+            return None;
+        }
+        let (w2, w3) = (lightest * lightest, lightest * lightest * lightest);
+        // `S_σ = N β^k / w²`, so with `w` at least the lightest weight:
+        // `|S_σσ| ≤ β^k (|N_σ| / w² + 2 |N| |w_σ| / w³)` and `|S_στ| ≤
+        // β^(k−1) ((k |N| + |N_τ|) / w² + 2 |N| |w_τ| / w³)` for `β ≤ 1`.
+        let k = order as f64;
+        out.width += longest / w2;
+        out.speed = out.speed.max(longest / w2 / span.along);
+        out.bend = out
+            .bend
+            .max((n_along / w2 + 2.0 * longest * w_along / w3) / (span.along * span.along));
+        out.twist = out.twist.max(
+            ((k * longest + n_across) / w2 + 2.0 * longest * w_across / w3)
+                / (span.along * span.across),
+        );
+        out.span = out.span.min(span.across);
+    }
+    [out.width, out.speed, out.bend, out.twist, out.span]
+        .iter()
+        .all(|x| x.is_finite())
+        .then_some(out)
+}
+
+/// The net of a field divided by the parameter across, when the net's
+/// row at the border is zero (to [`ZERO_ROW`] of its longest vector):
+/// rows of `degree + 1` along the parameter across, the border at the
+/// start (`low`) or at the end of each.
+fn divided(net: &[Vec3], degree: usize, low: bool) -> Option<Vec<Vec3>> {
+    if degree == 0 || !net.len().is_multiple_of(degree + 1) {
+        return None;
+    }
+    let longest = net.iter().map(|v| v.length()).fold(0.0, f64::max);
+    let dropped = if low { 0 } else { degree };
+    let mut out = Vec::with_capacity(net.len() / (degree + 1) * degree);
+    for row in net.chunks(degree + 1) {
+        // Not `>`: a NaN is no zero.
+        let length = row.get(dropped)?.length();
+        if length.is_nan() || length > ZERO_ROW * longest {
+            return None;
+        }
+        for (j, &vector) in row.iter().enumerate() {
+            if j == dropped {
+                continue;
+            }
+            let over = if low { j } else { degree - j };
+            out.push(vector * (degree as f64 / over as f64));
+        }
+    }
+    Some(out)
+}
+
 /// The pole of `surface` that its point at `(u, v)` is, when it is one.
 pub fn pole_at(surface: &Surface, u: f64, v: f64) -> Option<Pole> {
     // Only a point on a border of the range can be: nothing is looked up
@@ -337,6 +569,98 @@ mod tests {
             )
             .unwrap(),
         )
+    }
+
+    /// The surface a profile `(ρ, y)` (a cubic Bézier) sweeps in a whole
+    /// turn about the y axis: u around (a rational circle of four
+    /// quarters), v along the profile; the pole is at v = 0 when the
+    /// profile starts on the axis.
+    fn swept(profile: [(f64, f64); 4], k: f64) -> Surface {
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let ring = [
+            (1.0, 0.0, 1.0),
+            (1.0, 1.0, s),
+            (0.0, 1.0, 1.0),
+            (-1.0, 1.0, s),
+            (-1.0, 0.0, 1.0),
+            (-1.0, -1.0, s),
+            (0.0, -1.0, 1.0),
+            (1.0, -1.0, s),
+            (1.0, 0.0, 1.0),
+        ];
+        let (mut ctrl, mut weights) = (Vec::new(), Vec::new());
+        for (x, z, w) in ring {
+            for (r, y) in profile {
+                ctrl.push(Vec3::new(x * r * k, y * k, z * r * k));
+                weights.push(w);
+            }
+        }
+        Surface::Nurbs(
+            NurbsSurface::new(
+                2,
+                3,
+                vec![
+                    0.0, 0.0, 0.0, 0.25, 0.25, 0.5, 0.5, 0.75, 0.75, 1.0, 1.0, 1.0,
+                ],
+                vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+                9,
+                4,
+                ctrl,
+                weights,
+            )
+            .unwrap(),
+        )
+    }
+
+    /// The order of a cusp and a fan, and that the bounds hold: the
+    /// length of the iso-curve along the border and the derivatives
+    /// along it, sampled at shares from a millionth to the whole span,
+    /// stay below `width β^k`, `speed β^k`, `bend β^k` and `twist
+    /// β^(k−1)`, at three scales.
+    #[test]
+    fn a_cusp_narrows_to_the_second_order_within_its_bounds() {
+        let cusp = [(0.0, 0.0), (0.0, 2.0), (3.0, 4.0), (3.0, 6.0)];
+        let cone = [(0.0, 0.0), (1.0, 2.0), (2.0, 4.0), (3.0, 6.0)];
+        for k in [1e-3, 1.0, 1e6] {
+            for (profile, order) in [(cusp, 2), (cone, 1)] {
+                let surface = swept(profile, k);
+                let found = poles(&surface);
+                assert_eq!(found.len(), 1);
+                let n = narrowing(&surface, &found[0]).unwrap();
+                assert_eq!(n.order, order);
+                let m = order as i32;
+                for beta in [1e-6, 1e-3, 0.01, 0.1, 0.5, 1.0] {
+                    let mut length = 0.0;
+                    let samples = 4000;
+                    let at = |u: f64, v: f64| surface.derivatives(u, v);
+                    let mut last = at(0.0, beta).0;
+                    let h = 1e-5;
+                    for i in 1..=samples {
+                        let u = f64::from(i) / f64::from(samples);
+                        let (p, su, _) = at(u, beta);
+                        length += p.distance(last);
+                        last = p;
+                        assert!(su.length() <= n.speed * beta.powi(m) * (1.0 + 1e-9));
+                        let a = u.clamp(h, 1.0 - h);
+                        let suu = (at(a + h, beta).1 - at(a - h, beta).1) * (0.5 / h);
+                        assert!(suu.length() <= n.bend * beta.powi(m) * 1.01, "{beta}");
+                        let b = beta.max(h);
+                        let suv = (at(u, b + h).1 - at(u, b - h).1) * (0.5 / h);
+                        let reach = (b + h).min(1.0);
+                        assert!(suv.length() <= n.twist * reach.powi(m - 1) * 1.01, "{beta}");
+                    }
+                    assert!(length <= n.width * beta.powi(m) * (1.0 + 1e-9), "{beta}");
+                    // Not loose by more than the weights and the hull
+                    // allow (a factor of two here).
+                    if (1e-3..=0.1).contains(&beta) {
+                        assert!(length >= 0.25 * n.width * beta.powi(m), "{beta}: {length}");
+                    }
+                }
+                // Within the width asked for, every iso-curve is as long.
+                let near = n.within(1e-6 * k);
+                assert!(near > 0.0 && near <= n.span);
+            }
+        }
     }
 
     #[test]

@@ -75,8 +75,10 @@ fn try_mesh(body: &Body, k: f64) -> Result<(), String> {
     Ok(())
 }
 
-/// (Empty since 2026-10-14: the tessellator meshes all eight that were
-/// listed here, cuts through and around a pole.)
+/// (Empty from 2026-10-14, when the tessellator meshed all eight that
+/// were listed here, cuts through and around a pole, to 2026-10-17: the
+/// cuts along the axis of a cusp and of the cone that a spline sweeps,
+/// below.)
 ///
 /// Results of this file that the tessellator does not mesh yet, by what
 /// their names contain, each with how it fails. They are valid bodies
@@ -85,7 +87,40 @@ fn try_mesh(body: &Body, k: f64) -> Result<(), String> {
 /// of its patch on the way of an edge, or runs around one), and
 /// `the_tessellator_meshes_cuts_through_a_pole` below reproduces them.
 /// An entry that meshes is to be removed here: the test says so.
-const UNMESHED: &[(&[&str], &str)] = &[];
+const UNMESHED: &[(&[&str], &str)] = &[
+    // The needle's face next to its point, where the cut's edges end:
+    // the face's mesh leaves the edge's chords unused there.
+    (&["cusp, a plane"], "is not closed along edge"),
+    (
+        &["cusp, a cylinder through the axis"],
+        "is not closed along edge",
+    ),
+    (&["cusp, a block edge", "union"], "is not closed along edge"),
+    (&["cusp, a block edge", "rest"], "is not closed along edge"),
+    (
+        &["cusp, a block edge", "turned 0.4", "common"],
+        "is not closed along edge",
+    ),
+    // The cone a straight spline sweeps from the axis, cut through its
+    // apex along the axis (a pole of the first order: the same at 1e-3
+    // meshes).
+    (
+        &["twin cone, a plane through the axis, at 1,"],
+        "folds three distinct points",
+    ),
+    (
+        &["twin cone, a plane through the axis, at 1000000,"],
+        "folds three distinct points",
+    ),
+    (
+        &["twin cone, a block edge along the axis, at 1,"],
+        "folds three distinct points",
+    ),
+    (
+        &["twin cone, a block edge along the axis, at 1000000, common"],
+        "folds three distinct points",
+    ),
+];
 
 /// The mesh of a body is closed and encloses its volume, unless it is
 /// one of the [`UNMESHED`], which must then fail as listed.
@@ -847,14 +882,11 @@ fn a_drop_cut_by_a_plane_is_what_its_profile_says() {
 /// sets for every tool (around the point, a leaning block around it, a
 /// ball, and away from it), to the exact membership of 400 seeded points
 /// (the solid is the points within `ρ(y)` of the axis), and every result
-/// is meshed. Refused still: a face that holds the axis through the
-/// point (a plane through it along the axis), which the needle touches
-/// there: on the needle's chart the distance to that face vanishes to the
-/// second order all along the border the point is, and the marcher takes
-/// that for a contact along a curve.
+/// is meshed. (A face that holds the axis through the point was refused
+/// here until 2026-10-17: see
+/// `a_cusp_cut_along_its_axis_is_what_its_profile_says`.)
 #[test]
 fn a_cusp_is_an_operand() {
-    const CUSP: [P; 4] = [[0.0, 0.0], [0.0, 2.0], [3.0, 4.0], [3.0, 6.0]];
     let mut rng = Rng(20_261_016);
     for k in SCALES {
         let cusp = swept_solid(&CUSP, k);
@@ -939,17 +971,454 @@ fn a_cusp_is_an_operand() {
                 }
             }
         }
-        let along = half_space(k, Vec3::ZERO, -Vec3::X, Vec3::Y);
-        for op in [Union, Intersect, Subtract] {
-            match boolean(&cusp, &along, op, &tolerance(k)) {
-                Err(KernelError::Unsupported { reason, .. }) => {
-                    assert!(reason.contains("touch along a curve"), "{reason}");
-                }
-                other => panic!(
-                    "a plane along the axis through the cusp, {op:?} at {k}: {:?}; hold it to the half solid",
-                    other.map(|r| counts(&r))
-                ),
+    }
+}
+
+/// The needle of [`a_cusp_is_an_operand`]: a spline that leaves the axis
+/// along it, `ρ = 9 t² − 6 t³` for `y = 6 t` near the point.
+const CUSP: [P; 4] = [[0.0, 0.0], [0.0, 2.0], [3.0, 4.0], [3.0, 6.0]];
+
+/// The exact membership of 400 seeded points in the three results of the
+/// needle and a tool, by ray casting, against the solids' own
+/// definitions (the needle is the points within `ρ(y)` of the axis).
+fn cusp_membership(
+    results: &[Body; 3],
+    k: f64,
+    in_tool: &dyn Fn(Vec3) -> bool,
+    rng: &mut Rng,
+    what: &str,
+) {
+    let meridian = Meridian::new(&CUSP, k);
+    let radius = |y: f64| meridian.at(meridian.at_height(y))[0];
+    let inside = |p: Vec3| p.y > 0.0 && p.y < 6.0 * k && p.x.hypot(p.z) < radius(p.y);
+    let points: Vec<Vec3> = (0..400)
+        .map(|_| {
+            Vec3::new(
+                rng.between(-3.5, 3.5),
+                rng.between(-1.0, 7.0),
+                rng.between(-3.5, 3.5),
+            ) * k
+        })
+        .collect();
+    let tol = tolerance(k);
+    for (body, kind) in results.iter().zip(["union", "common", "rest"]) {
+        let got = contains_points(body, &points, &tol).unwrap();
+        for (p, got) in points.iter().zip(&got) {
+            let Some(got) = got else { continue };
+            let (a, b) = (inside(*p), in_tool(*p));
+            let want = match kind {
+                "union" => a || b,
+                "common" => a && b,
+                _ => a && !b,
+            };
+            assert_eq!(*got, want, "{what}, {kind}, at {p:?}");
+        }
+    }
+}
+
+/// A cusp cut by faces that hold its axis through the point: planes
+/// through the axis (along the revolve's seam, a third of a turn from it,
+/// and leaning) and a cylinder that has the axis on its side. Refused
+/// until 2026-10-17 ("touch along a curve": on the needle's chart the
+/// distance to such a face vanishes to the second order all along the
+/// border the point is). Held to closed forms from the profile: a plane
+/// through the axis leaves half the needle and the section either side
+/// (`2 ∫ ρ dz`), and the cylinder of radius `R` through the axis the lens
+/// of two discs integrated up the profile (`∫ A(ρ) dz`, `A` the area
+/// common to the discs of radius `ρ` and `R` with their centres `R`
+/// apart); to the identities of sets, the exact membership of 400 seeded
+/// points and a valid result, at three scales. (The meshes of these
+/// results are the tessellator's to make: [`UNMESHED`].)
+#[test]
+fn a_cusp_cut_along_its_axis_is_what_its_profile_says() {
+    let mut rng = Rng(20_261_017);
+    for k in SCALES {
+        let cusp = swept_solid(&CUSP, k);
+        let meridian = Meridian::new(&CUSP, k);
+        let (volume, curved) = meridian.swept(0.0, 1.0);
+        let lid = PI * (3.0 * k).powi(2);
+        let section = meridian.section(0.0, 1.0);
+        for (name, normal) in [
+            ("along the seam", -Vec3::X),
+            (
+                "a third of a turn off",
+                Vec3::new(0.5, 0.0, 0.75_f64.sqrt()),
+            ),
+            ("leaning", Vec3::new(-0.8, 0.0, -0.6)),
+        ] {
+            let what = format!("cusp, a plane {name}, at {k}");
+            let tool = half_space(k, Vec3::ZERO, normal, Vec3::Y);
+            let results = identities(&cusp, &tool, k, &what);
+            for (half, part) in [(&results[1], "common"), (&results[2], "rest")] {
+                let m = mass(half);
+                near(
+                    m.volume,
+                    volume / 2.0,
+                    1e-7,
+                    &format!("{what}, {part}: volume"),
+                );
+                near(
+                    m.area,
+                    (curved + lid) / 2.0 + 2.0 * section,
+                    1e-7,
+                    &format!("{what}, {part}: area"),
+                );
             }
+            cusp_membership(&results, k, &|p| p.dot(normal) > 0.0, &mut rng, &what);
+        }
+        // A cylinder of radius 2 along the axis with the axis on its side.
+        let big = 2.0 * k;
+        let what = format!("cusp, a cylinder through the axis, at {k}");
+        let frame = Frame::new(Vec3::new(big, -k, 0.0), Vec3::Y, Vec3::X).unwrap();
+        let tool = primitives::cylinder(&frame, big, 8.0 * k).unwrap();
+        let results = identities(&cusp, &tool, k, &what);
+        let lens = |r: f64| {
+            if r <= 0.0 {
+                return 0.0;
+            }
+            let d = big;
+            let a = (r / (2.0 * big)).clamp(-1.0, 1.0).acos();
+            let b = (1.0 - r * r / (2.0 * big * big)).clamp(-1.0, 1.0).acos();
+            let k4 = (-d + r + big) * (d + r - big) * (d - r + big) * (d + r + big);
+            r * r * a + big * big * b - 0.5 * k4.max(0.0).sqrt()
+        };
+        let shared = meridian.integral(0.0, 1.0, &|p, d| lens(p[0]) * d[1]);
+        near(
+            mass(&results[1]).volume,
+            shared,
+            1e-7,
+            &format!("{what}: common volume"),
+        );
+        near(
+            mass(&results[2]).volume,
+            volume - shared,
+            1e-7,
+            &format!("{what}: rest volume"),
+        );
+        let in_tool = |p: Vec3| (p.x - big).hypot(p.z) < big && p.y > -k && p.y < 7.0 * k;
+        cusp_membership(&results, k, &in_tool, &mut rng, &what);
+    }
+}
+
+/// The needle quartered by a block whose edge is its axis (two faces
+/// through the point that hold the axis, and an edge along it), held to
+/// a quarter of the volume and of the curved area and lid, and the two
+/// sections, at scale 1 (square to the revolve's seams). Slow: the
+/// block's edge along the axis is within the tolerance of the needle
+/// for 2e-3 from the point, where every point of the axis is as near to
+/// a whole circle of the needle and the nearest-point search descends
+/// from every piece of it (about 5000 searches at 3 ms; 20 to 30 s per
+/// boolean in release). The same at 1e-3 and 1e6 and turned about the
+/// axis: [`a_cusp_quartered_along_its_axis_at_every_scale`].
+#[test]
+fn a_cusp_quartered_along_its_axis_is_what_its_profile_says() {
+    cusp_quartered(1.0, 0.0);
+}
+
+/// [`a_cusp_quartered_along_its_axis_is_what_its_profile_says`] at all
+/// three scales and turned: green on 2026-10-17 (release, 5.5 min).
+#[test]
+#[ignore = "slow: nearest points on the axis of a cusp (about 3 ms each)"]
+fn a_cusp_quartered_along_its_axis_at_every_scale() {
+    for k in SCALES {
+        for turn in [0.0, 0.4] {
+            cusp_quartered(k, turn);
+        }
+    }
+}
+
+fn cusp_quartered(k: f64, turn: f64) {
+    let cusp = swept_solid(&CUSP, k);
+    let meridian = Meridian::new(&CUSP, k);
+    let (volume, curved) = meridian.swept(0.0, 1.0);
+    let lid = PI * (3.0 * k).powi(2);
+    let section = meridian.section(0.0, 1.0);
+    let what = format!("cusp, a block edge along the axis (turned {turn}), at {k}");
+    let (x, z) = (
+        Vec3::new(turn.cos(), 0.0, -turn.sin()),
+        Vec3::new(turn.sin(), 0.0, turn.cos()),
+    );
+    let frame = Frame::new(-Vec3::Y * k, z, x).unwrap();
+    let tool = primitives::block(&frame, 10.0 * k, 10.0 * k, 8.0 * k).unwrap();
+    let results = identities(&cusp, &tool, k, &what);
+    let c = mass(&results[1]);
+    near(
+        c.volume,
+        volume / 4.0,
+        1e-7,
+        &format!("{what}: common volume"),
+    );
+    near(
+        c.area,
+        (curved + lid) / 4.0 + 2.0 * section,
+        1e-7,
+        &format!("{what}: common area"),
+    );
+    let r = mass(&results[2]);
+    near(
+        r.volume,
+        0.75 * volume,
+        1e-7,
+        &format!("{what}: rest volume"),
+    );
+    near(
+        r.area,
+        0.75 * (curved + lid) + 2.0 * section,
+        1e-7,
+        &format!("{what}: rest area"),
+    );
+    let mut rng = Rng(20_261_018);
+    cusp_membership(
+        &results,
+        k,
+        &|p| p.dot(x) > 0.0 && p.dot(z) > 0.0,
+        &mut rng,
+        &what,
+    );
+}
+
+/// A tool, its name and its signed distance (near enough; positive
+/// inside).
+type Probe = (String, Body, Box<dyn Fn(Vec3) -> f64>);
+
+/// Surfaces through the cusp's point that do not hold its axis, or hold
+/// it only within the strip's width: a ball of radius `c` centred on the
+/// axis at `c` (its surface through the point, swallowing the tip up to
+/// `2 c`; `c` = 2e-3 and 3e-3), a cone about the axis with its apex on
+/// the point, planes through the point a thousandth and a hundredth of a
+/// radian off the axis, a cylinder and a ball of radius 1 whose surface
+/// passes through the point and crosses the axis again at `y0` = 4e-3
+/// (they meet the needle in a closed loop from about 2.7e-3 to 8e-3,
+/// wholly inside the strip), and a ball of radius 1 tangent to the axis
+/// at 1e-3. Each of the three booleans is right or refused by name, never
+/// a body that is wrong: valid, and every one of 400 seeded points, of
+/// points along the axis next to the point and of points 1.8 tolerances
+/// deep in both solids next to the loop is where it should be by the
+/// solids' own definitions (points within half the tolerance of either
+/// surface are not asked). (The chart left the strip next to the point
+/// out whenever the other surface passed through the point until the
+/// review of 2026-10-17, and then wherever the other surface stayed
+/// within the strip's width of a meridian: the needle less the ball, and
+/// later less the chord's cylinder, came back whole, its tip through the
+/// tool.)
+#[test]
+fn surfaces_through_a_cusp_that_leave_its_axis_are_cut_or_refused() {
+    let mut rng = Rng(20_261_019);
+    for k in SCALES {
+        let cusp = swept_solid(&CUSP, k);
+        let tol = tolerance(k);
+        // Signed distances, near enough: positive inside.
+        let rho = |y: f64| y * y / 4.0 - y * y * y / 36.0;
+        let needle = move |p: Vec3| {
+            let y = p.y / k;
+            (k * rho(y.clamp(0.0, 6.0)) - p.x.hypot(p.z))
+                .min(p.y)
+                .min(6.0 * k - p.y)
+        };
+        let mut tools: Vec<Probe> = Vec::new();
+        for c in [2e-3, 3e-3] {
+            let centre = Vec3::Y * (c * k);
+            let ball = primitives::sphere(&Frame::WORLD.at(centre).unwrap(), c * k).unwrap();
+            tools.push((
+                format!("a ball of {c} through the point"),
+                ball,
+                Box::new(move |p: Vec3| c * k - p.distance(centre)),
+            ));
+        }
+        let frame = Frame::new(Vec3::Y * (2.0 * k), -Vec3::Y, Vec3::X).unwrap();
+        let cone = primitives::cone(&frame, k, 2.0 * k).unwrap();
+        tools.push((
+            "a cone about the axis, its apex on the point".to_string(),
+            cone,
+            Box::new(move |p: Vec3| {
+                ((0.5 * p.y - p.x.hypot(p.z)) * 0.8_f64.sqrt())
+                    .min(p.y)
+                    .min(2.0 * k - p.y)
+            }),
+        ));
+        for angle in [1e-3_f64, 1e-2] {
+            let normal = Vec3::new(-angle.cos(), angle.sin(), 0.0);
+            tools.push((
+                format!("a plane through the point {angle} off the axis"),
+                half_space(k, Vec3::ZERO, normal, Vec3::Z),
+                Box::new(move |p: Vec3| p.dot(normal)),
+            ));
+        }
+        let (big, y0) = (1.0, 4e-3);
+        let centre = Vec3::new((big * big - y0 * y0 / 4.0_f64).sqrt(), y0 / 2.0, 0.0) * k;
+        let frame = Frame::new(centre - Vec3::Z * (2.0 * k), Vec3::Z, Vec3::X).unwrap();
+        tools.push((
+            "a chord's cylinder through the point and the axis at 4e-3".to_string(),
+            primitives::cylinder(&frame, big * k, 4.0 * k).unwrap(),
+            Box::new(move |p: Vec3| {
+                (big * k - (p.x - centre.x).hypot(p.y - centre.y))
+                    .min(p.z + 2.0 * k)
+                    .min(2.0 * k - p.z)
+            }),
+        ));
+        tools.push((
+            "a chord's ball through the point and the axis at 4e-3".to_string(),
+            primitives::sphere(&Frame::WORLD.at(centre).unwrap(), big * k).unwrap(),
+            Box::new(move |p: Vec3| big * k - p.distance(centre)),
+        ));
+        let touching = Vec3::new(1.0, 1e-3, 0.0) * k;
+        tools.push((
+            "a ball tangent to the axis at 1e-3".to_string(),
+            primitives::sphere(&Frame::WORLD.at(touching).unwrap(), k).unwrap(),
+            Box::new(move |p: Vec3| k - p.distance(touching)),
+        ));
+        for (name, tool, in_tool) in &tools {
+            let what = format!("cusp, {name}, at {k}");
+            let mut points: Vec<Vec3> = (0..400)
+                .map(|_| {
+                    Vec3::new(
+                        rng.between(-3.5, 3.5),
+                        rng.between(-1.0, 7.0),
+                        rng.between(-3.5, 3.5),
+                    ) * k
+                })
+                .collect();
+            // Next to the point, where the strip is: along the axis, a
+            // little off it, and 1.8 tolerances deep next to the loop.
+            for y in [
+                1e-4, 3e-4, 1e-3, 2e-3, 3e-3, 3.5e-3, 4e-3, 4.5e-3, 5e-3, 6e-3, 8e-3, 1e-2,
+            ] {
+                points.push(Vec3::new(0.0, y, 0.0) * k);
+                let r = rho(y);
+                points.push(Vec3::new(0.3 * r, y, -0.2 * r) * k);
+                points.push(Vec3::new(-0.6 * r, y, 0.5 * r) * k);
+            }
+            for (x, y) in [
+                (1.92e-6, 3.96e-3),
+                (1.55e-6, 3.885e-3),
+                (0.88e-6, 3.75e-3),
+                (1.1e-6, 4.11e-3),
+                (0.12e-6, 3.405e-3),
+                (1.0e-6, 3.9e-3),
+                (2.0e-6, 4.0e-3),
+            ] {
+                points.push(Vec3::new(x, y, 0.0) * k);
+            }
+            let points: Vec<Vec3> = points
+                .into_iter()
+                .filter(|p| {
+                    needle(*p).abs() > 0.5 * tol.linear && in_tool(*p).abs() > 0.5 * tol.linear
+                })
+                .collect();
+            for op in [Union, Intersect, Subtract] {
+                let body = match boolean(&cusp, tool, op, &tol) {
+                    Ok(result) => result.body,
+                    Err(KernelError::Unsupported { reason, .. }) => {
+                        if std::env::var_os("POLE_TIMINGS").is_some() {
+                            eprintln!("{what}, {op:?}: refused: {reason}");
+                        }
+                        continue;
+                    }
+                    Err(e) => panic!("{what}, {op:?}: {e}"),
+                };
+                assert_eq!(check(&body, &tol), [], "{what}, {op:?}");
+                if std::env::var_os("POLE_TIMINGS").is_some() {
+                    eprintln!(
+                        "{what}, {op:?}: {} faces, volume {}",
+                        body.faces.len(),
+                        mass(&body).volume
+                    );
+                }
+                let got = contains_points(&body, &points, &tol).unwrap();
+                for (p, got) in points.iter().zip(&got) {
+                    let Some(got) = got else { continue };
+                    let (a, b) = (needle(*p) > 0.0, in_tool(*p) > 0.0);
+                    let want = match op {
+                        Union => a || b,
+                        Intersect => a && b,
+                        _ => a && !b,
+                    };
+                    assert_eq!(*got, want, "{what}, {op:?}, at {p:?}");
+                }
+            }
+        }
+    }
+}
+
+/// The same cuts of a cone, whose apex is a pole of the first order (the
+/// surface leaves it in a fan): the analytic cone and its twin that a
+/// straight spline from the axis sweeps, halved by a plane through the
+/// axis and quartered by a block whose edge is the axis, held to `π r²
+/// h / 3`, `π r s + π r²` and the triangles of the section, at three
+/// scales.
+#[test]
+fn a_cone_cut_along_its_axis_is_what_it_measures() {
+    for k in SCALES {
+        let (r, h) = (3.0 * k, 6.0 * k);
+        let volume = PI * r * r * h / 3.0;
+        let area = PI * r * r.hypot(h) + PI * r * r;
+        let triangle = 0.5 * r * h;
+        // The analytic cone stands on z = 0 with its apex up; the twin
+        // stands on its apex at the origin of the y axis.
+        let analytic = primitives::cone(&Frame::WORLD, r, h).unwrap();
+        let twin = swept_solid(&[[0.0, 0.0], [1.0, 2.0], [2.0, 4.0], [3.0, 6.0]], k);
+        for (name, solid, axis, across) in [
+            ("analytic", &analytic, Vec3::Z, Vec3::X),
+            ("twin", &twin, Vec3::Y, Vec3::X),
+        ] {
+            let m = mass(solid);
+            near(m.volume, volume, 1e-9, &format!("{name} cone: volume"));
+            near(m.area, area, 1e-9, &format!("{name} cone: area"));
+            let what = format!("{name} cone, a plane through the axis, at {k}");
+            let normal = Vec3::new(0.5, 0.0, 0.75_f64.sqrt());
+            let normal = if axis == Vec3::Z {
+                Vec3::new(normal.x, normal.z, 0.0)
+            } else {
+                normal
+            };
+            let tool = half_space(k, Vec3::ZERO, normal, axis);
+            let [_, common, rest] = identities(solid, &tool, k, &what);
+            for (half, part) in [(&common, "common"), (&rest, "rest")] {
+                let m = mass(half);
+                near(
+                    m.volume,
+                    volume / 2.0,
+                    1e-7,
+                    &format!("{what}, {part}: volume"),
+                );
+                near(
+                    m.area,
+                    area / 2.0 + 2.0 * triangle,
+                    1e-7,
+                    &format!("{what}, {part}: area"),
+                );
+            }
+            let what = format!("{name} cone, a block edge along the axis, at {k}");
+            let side = across.cross(axis);
+            let frame = Frame::new(-axis * k, side, across).unwrap();
+            let tool = primitives::block(&frame, 10.0 * k, 10.0 * k, 8.0 * k).unwrap();
+            let [_, common, rest] = identities(solid, &tool, k, &what);
+            let c = mass(&common);
+            near(
+                c.volume,
+                volume / 4.0,
+                1e-7,
+                &format!("{what}: common volume"),
+            );
+            near(
+                c.area,
+                area / 4.0 + 2.0 * triangle,
+                1e-7,
+                &format!("{what}: common area"),
+            );
+            let d = mass(&rest);
+            near(
+                d.volume,
+                0.75 * volume,
+                1e-7,
+                &format!("{what}: rest volume"),
+            );
+            near(
+                d.area,
+                0.75 * area + 2.0 * triangle,
+                1e-7,
+                &format!("{what}: rest area"),
+            );
         }
     }
 }
