@@ -1005,3 +1005,38 @@ fn nested_patterns_refuse_what_they_cannot_be() {
     run(&mut s, "variable.set", json!({"name": "n", "expr": "3"}));
     assert_eq!(status(&mut s, "Edge"), "ok");
 }
+
+/// Timings (release, `--ignored --nocapture`): an edge of 7 cells of 3
+/// tabs, built, and regenerated when either count changes by one command
+/// (the target of plan/nested-patterns.md: under 50 ms); the numbers are
+/// in the dev log and docs/design/document.md.
+#[test]
+#[ignore = "a timing, for release builds"]
+fn an_edge_of_7_cells_of_3_tabs_is_quick() {
+    use std::time::Instant;
+    let timed = |s: &mut Session, id: &str, params: Value| {
+        let started = Instant::now();
+        s.execute(id, &params).unwrap();
+        started.elapsed()
+    };
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    let started = Instant::now();
+    rib(&mut s, [1.0, 0.25, 3.0, 2.0, 6.0, 0.5], 3, 7);
+    let built = started.elapsed();
+    assert_eq!(status(&mut s, "Rib"), "ok");
+    let mut worst = std::time::Duration::ZERO;
+    for (name, value) in [("k", "4"), ("k", "3"), ("n", "8"), ("n", "7")] {
+        let took = timed(&mut s, "variable.set", json!({"name": name, "expr": value}));
+        // The edges of the body need it regenerated, and measure nothing
+        // (document.inspect also measures its mass properties).
+        let edges = timed(&mut s, "document.edges", json!({"feature": "Rib"}));
+        let inspected = timed(&mut s, "document.inspect", json!({}));
+        println!(
+            "{name} = {value}: variable.set {took:?}, then document.edges {edges:?}, document.inspect {inspected:?}"
+        );
+        worst = worst.max(took + edges);
+    }
+    println!("7 x 3 tabs: built in {built:?}, a count changed (regenerated) in at most {worst:?}");
+    assert!(worst.as_millis() < 50, "{worst:?}");
+}

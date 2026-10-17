@@ -217,14 +217,15 @@ Sketch entities and constraints as commands; `solve` (Newton-type, DOF analysis,
 - A sketch whose carry stops part of the way, or cannot be carried, fails with the reason and stores nothing, so undo or returning the variables gives the start bit for bit (the developer's decision; [`design/document.md`](design/document.md), *Carrying a sketch along when its images jump*) (2026-10-17)
 - Profile detection scales: pairs that may meet come from trees of boxes, judged in the order the old all-pairs sweep judged them (same result, oracle kept in the tests); the cap rises from 4096 to 262 144 curves, a 70 × 70 perforated sheet extrudes ([`design/sweeps.md`](design/sweeps.md), *Profile detection at scale*) (2026-10-17)
 - The offset of profiles scales the same way: its cut and keep steps search trees of boxes, judged as the old sweeps judged them (same outline, bit for bit; oracle kept in the tests); the cap rises from 4096 to 262 144 pieces and a 70 × 70 sheet offset by its kerf extrudes ([`design/sweeps.md`](design/sweeps.md), *Offset of profiles at scale*) (2026-10-17)
+- Nested sketch patterns: a pattern may repeat whole patterns (a tree, three levels at most), names `e3[2][1]` innermost first so wrapping renames nothing, caps `e3[*]` and `e3[*][1]`, carrying through every level; the welding table's tabs per cell is a variable (finding W3, format 21; [`design/document.md`](design/document.md), *Patterns inside a sketch*) (2026-10-17)
+- Skipping instances of a sketch pattern on its own level (never instance 0; `last` is the highest instance there is; skips past the count kept and inactive; not yet in chained runs and rings) (2026-10-17)
 
 #### Open
 - [ ] Which constraint is blamed in a nonlinear conflict is the solver's heuristic, not a proof, and about 8% of dense random sketches end as "did not converge" instead of a diagnosis; to be judged again on real models
 - [ ] A sketch that refers to geometry of other features (projected edges, coincident with a body vertex; from the field test)
 - [ ] A picture of a sketch: `view.render` draws bodies only
-- [ ] Nested sketch patterns (a pattern inside another pattern's period; today "an entity is the seed of one pattern")
 - [ ] An offset of profiles: splines (refused, "not supported yet"; owed: a fit within tol/4 refused where the curvature radius is below the distance, as `geom::offset` proves for faces), an offset as a loft section or a sweep's path, an offset of an offset, a choice of regions
-- [ ] A sketch pattern's later steps: skipping instances, a pattern along a curve, a pattern of a pattern, instance curves in line or round slots, image points in `sketch.path` and splines ([`design/document.md`](design/document.md), *Patterns inside a sketch*)
+- [ ] A sketch pattern's later steps: a pattern along a curve, instance curves in line or round slots, image points in `sketch.path` and splines, skips in chained runs and rings, a skip by formula and of one cell's instance (full-path skips), a level inserted into the middle of a tree, a loft section made by nested patterns ([`design/document.md`](design/document.md), *Patterns inside a sketch*)
 - [ ] `panic_hunt` takes 2.5 minutes
 - [ ] Two seeded breakages of the solver's rank test are caught only by unit tests or the random run, not by a small natural sketch
 
