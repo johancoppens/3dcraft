@@ -1170,9 +1170,9 @@ fn a_sweep_of_and_along_nested_patterns_names_both_curves() {
         let names: Vec<String> = face_boxes(&mut s, "Bar").into_keys().collect();
         no_kernel_numbers(&names, &what);
         // A side along the path's line 1 of cell 2, by both names.
-        let along = format!("e3[1][2])");
+        let along = "e3[1][2])";
         assert!(
-            names.iter().any(|f| f.ends_with(&along)),
+            names.iter().any(|f| f.ends_with(along)),
             "{what}: {names:?}"
         );
         if nested_profile {
