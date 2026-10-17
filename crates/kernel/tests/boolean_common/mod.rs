@@ -59,6 +59,24 @@ pub fn counts(result: &BooleanResult) -> (usize, usize, usize, usize) {
     )
 }
 
+/// The boolean's own check in full ([`craft3d_kernel::boolean::verify`]:
+/// volumes, the result's reach, the faces far from the other operand and
+/// seeded points), which every result a test makes must pass.
+#[track_caller]
+pub fn verified(a: &Body, b: &Body, op: BooleanOp, result: &Body, tol: &Tolerance, what: &str) {
+    use craft3d_kernel::boolean::{VerifyOptions, verify};
+    let found = match verify(a, b, op, result, tol, &VerifyOptions::default()) {
+        Ok(found) => found,
+        Err(e) => panic!("{what}: {op:?}: the boolean check cannot run: {e}"),
+    };
+    let violations: Vec<String> = found.violations.iter().map(ToString::to_string).collect();
+    assert!(
+        violations.is_empty(),
+        "{what}: {op:?}: the result breaks what every boolean keeps:\n  {}",
+        violations.join("\n  ")
+    );
+}
+
 /// The boolean, which must succeed, checked again here.
 pub fn solve(a: &Body, b: &Body, op: BooleanOp, k: f64) -> BooleanResult {
     let tol = tolerance(k);
@@ -67,6 +85,7 @@ pub fn solve(a: &Body, b: &Body, op: BooleanOp, k: f64) -> BooleanResult {
         Err(e) => panic!("{op:?} at scale {k}: {e}"),
     };
     assert_eq!(check(&result.body, &tol), [], "{op:?} at scale {k}");
+    verified(a, b, op, &result.body, &tol, &format!("scale {k}"));
     assert_eq!(result.faces.len(), result.body.faces.len());
     assert_eq!(result.edges.len(), result.body.edges.len());
     assert_eq!(result.vertices.len(), result.body.vertices.len());
@@ -107,6 +126,14 @@ pub fn solve_parts(a: &Body, b: &Body, op: BooleanOp, k: f64) -> (BooleanResult,
                 Err(e) => panic!("{op:?} at scale {k}, not refused: {e}"),
             };
             assert_eq!(check(&result.body, &tol), [], "{op:?} at scale {k}");
+            verified(
+                a,
+                b,
+                op,
+                &result.body,
+                &tol,
+                &format!("scale {k}, not refused"),
+            );
             assert!(
                 on_parts(&result.body, at, &tol) >= 2,
                 "{op:?} at scale {k}: refused at {at:?}, which is not on two parts"

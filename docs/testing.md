@@ -168,6 +168,18 @@ What it cannot see, so that a clean result is not read as more than it is:
 - **Contact without overlap** (shells touching along an edge or in a point, a vertex on a face) is a marginal finding at most on the mesh; a vertex of a shell on a vertex or an edge of the same shell, or of another shell of a solid, is a finding of its own (`Touch`, on the B-rep), and the boolean refuses a result whose parts touch (zero thickness, 2026-10-15); `topo::check` and the boolean's own refusals cover results that are not manifolds, with one stated allowance: a solid whose skin is pinched in a single point (a profile standing on the axis of a full revolution with one corner) passes `topo::check`, because nothing in how the body hangs together shows it (`crates/topo/tests/genus.rs`).
 - **Anything the tessellator cannot mesh** is an error, not a verdict; the check tries finer meshes before giving up. (Until 2026-10-13 a face narrower than the chordal tolerance was such a case: the polygon of a curved edge crossed its neighbour. The tessellator now samples the edge finer there, [`design/tessellator.md`](design/tessellator.md), held to oracle 4 at forty tolerances in `crates/tess/tests/near_edges.rs`.)
 
+### Oracle 10: the boolean's own check
+
+`topo::check` says a result is a valid solid; `kernel::boolean::verify` says it is the boolean of its operands, by what every exact boolean keeps ([`design/booleans.md`](design/booleans.md) › *The boolean's own check*): the volume bounds of the operation (a difference never adds volume, a union never loses any), each held to the measurement's own error bound (`topo::mass_bound`) and the tolerance band of the operands' boundaries; every vertex and edge within reach of the result; every face of an operand far from the other in the result as it was; and 16 seeded points whose membership of the result is the set formula of their membership of the operands. No allowance is tuned.
+
+Every boolean runs the cheap part of it (reach and far faces, 3.9 % of the boolean on the bench models) and refuses a result that breaks it (`KernelError::WrongResult`). The rest runs in the tests (`boolean_common::verified`, called by `solve` and `solve_parts`, by `boolean_random` and for every corpus result), in `document.check` deep for every boolean feature, and in every boolean of a process started with `CRAFT3D_BOOLEAN_CHECK=full`:
+
+```sh
+CRAFT3D_BOOLEAN_CHECK=full cargo test --release -p craft3d-kernel --tests
+```
+
+A new boolean test calls `verified` on what it makes (or goes through `solve`). The check itself is held to seeded mistakes it must catch (`crates/kernel/tests/boolean_check.rs`): a dropped face, the tool's volume added, a moved or turned face, a filled cavity.
+
 ## Test kinds per crate
 
 | Crate | Must have |
