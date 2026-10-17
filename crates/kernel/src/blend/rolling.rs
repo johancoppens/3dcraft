@@ -769,15 +769,6 @@ impl End {
     }
 }
 
-/// The blend face of one edge, worked out: its surface, the samples it
-/// went through, and where it is cut at each end.
-struct Made {
-    surface: NurbsSurface,
-    /// Per end: the cut curve (from the first face to the second) and the
-    /// parameter `s` at which each border meets it.
-    cuts: [(NurbsCurve, [f64; 2]); 2],
-}
-
 /// Fills `params`/`sections` until the surface through them is within
 /// `limit` of the exact sections everywhere between two samples: an open
 /// surface (through the samples, `surface_through`) or a closed one
@@ -1165,16 +1156,21 @@ fn proven_on(
         .map_err(|stop| stop.at)
 }
 
-/// Blends `request` of `body` (an edge none of the closed forms covers)
-/// in place: see the module documentation.
+/// Blends the edge of `one` (a chain of one piece, the request `item`:
+/// an edge none of the closed forms covers) in place: see the module
+/// documentation.
 fn blend_one(
     body: &mut Body,
-    request: &Request,
-    [first, second]: [FaceId; 2],
-    into: [Vec3; 2],
-    convex: bool,
+    one: &chain::Chain,
+    item: &Item,
     tolerance: &Tolerance,
 ) -> Result<FaceId, BlendError> {
+    let Item {
+        request,
+        faces: [first, second],
+        into,
+        convex,
+    } = *item;
     let edge = request.edge;
     let tol = tolerance.linear;
     let data = body.edge(edge).ok_or_else(lost)?.clone();
@@ -1262,18 +1258,7 @@ fn blend_one(
         }
     }
     let built = blend_open(
-        body,
-        edge,
-        [first, second],
-        into,
-        convex,
-        shape,
-        scale,
-        &data,
-        ends,
-        &crossings,
-        seed,
-        tolerance,
+        body, one, into, convex, shape, scale, &data, ends, &crossings, seed, tolerance,
     );
     if crossings.is_empty() {
         return built;
@@ -1309,8 +1294,7 @@ fn blend_one(
 #[allow(clippy::too_many_arguments)]
 fn blend_open(
     body: &mut Body,
-    edge: EdgeId,
-    faces: [FaceId; 2],
+    one: &chain::Chain,
     into: [Vec3; 2],
     convex: bool,
     shape: Shape,
@@ -1322,6 +1306,8 @@ fn blend_open(
     tolerance: &Tolerance,
 ) -> Result<FaceId, BlendError> {
     let tol = tolerance.linear;
+    let piece = one.pieces.first().ok_or_else(lost)?;
+    let (edge, faces) = (piece.edge, piece.faces);
     let unsolvable = || refuse(edge, None, Reason::FreeSurface);
     let [first, _] = faces;
     let runs_over = || refuse(edge, Some(first), Reason::FreeRunsOver);
@@ -1547,12 +1533,15 @@ fn blend_open(
     };
     drop(solvers);
     drop(thirds);
-    let made = Made {
+    let (blend_face, second_border) = chain::splice_one(
+        body,
+        one,
         surface,
-        cuts: [cut0, cut1],
-    };
-    let (blend_face, second_border) =
-        splice(body, edge, faces, ends, made, outward_hint, tolerance)?;
+        outward_hint,
+        ends,
+        [cut0, cut1],
+        tolerance,
+    )?;
     let borders = cross::carry(
         body,
         edge,
@@ -2259,122 +2248,6 @@ fn splice_ring(
     let loops = [(edge, !first_reversed), (second_border, first_reversed)]
         .map(|(edge, reversed)| vec![Coedge { edge, reversed }]);
     let id = add_face(body, surface, loops.into(), 0.5 * (u0 + u1), outward, first)?;
-    Ok((id, second_border))
-}
-
-/// Puts the blend face into the body in place of the edge (see the
-/// module documentation for what changes).
-fn splice(
-    body: &mut Body,
-    edge: EdgeId,
-    faces: [FaceId; 2],
-    ends: [End; 2],
-    made: Made,
-    outward: Vec3,
-    tolerance: &Tolerance,
-) -> Result<(FaceId, EdgeId), BlendError> {
-    let tol = tolerance.linear;
-    let too_large = |face: FaceId| refuse(edge, Some(face), Reason::FreeTooLarge);
-    let Made { surface, cuts } = made;
-    let borders = [
-        border(&surface, false).ok_or_else(lost)?,
-        border(&surface, true).ok_or_else(lost)?,
-    ];
-    let [(cut0, s0), (cut1, s1)] = &cuts;
-    // Per border: the range of s it covers, between the two cuts.
-    let spans = [(s0[0], s1[0]), (s0[1], s1[1])];
-    for (k, (a, b)) in spans.iter().enumerate() {
-        if !(b > a) {
-            return Err(too_large(*faces.get(k).ok_or_else(lost)?));
-        }
-    }
-    // The four corners: per end, on the first and on the second face.
-    let corner = |end: usize, k: usize| -> Option<Vec3> {
-        let s = cuts.get(end)?.1.get(k)?;
-        Some(borders.get(k)?.eval(*s))
-    };
-    // Shorten the other edges at each end; the vertex of the edge goes to
-    // the first face's corner, a new vertex for the second face's.
-    let mut new_vertex = [VertexId(0); 2];
-    let mut own_vertex = [VertexId(0); 2];
-    for (index, end) in ends.iter().enumerate() {
-        let (Some(p1), Some(p2)) = (corner(index, 0), corner(index, 1)) else {
-            return Err(lost());
-        };
-        let [own, added] = cut_back(body, end, faces, [p1, p2], tol, &too_large)?;
-        if let (Some(a), Some(b)) = (new_vertex.get_mut(index), own_vertex.get_mut(index)) {
-            *a = added;
-            *b = own;
-        }
-    }
-    let [start_vertex, end_vertex] = own_vertex;
-    // The edge becomes the first border; the second border and the two
-    // cuts are new.
-    {
-        let slot = body.edges.get_mut(edge.0 as usize).ok_or_else(lost)?;
-        let [b1, _] = &borders;
-        *slot = Edge {
-            curve: Curve3::Nurbs(b1.clone()),
-            range: spans[0],
-            start: start_vertex,
-            end: end_vertex,
-        };
-    }
-    let second_border = add_edge(
-        body,
-        Edge {
-            curve: Curve3::Nurbs(borders[1].clone()),
-            range: spans[1],
-            start: new_vertex[0],
-            end: new_vertex[1],
-        },
-    )?;
-    let mut cut_edges = [EdgeId(0); 2];
-    for (index, curve) in [cut0, cut1].into_iter().enumerate() {
-        let (from, to) = (
-            *[start_vertex, end_vertex].get(index).ok_or_else(lost)?,
-            *new_vertex.get(index).ok_or_else(lost)?,
-        );
-        let id = add_edge(
-            body,
-            Edge {
-                curve: Curve3::Nurbs(curve.clone()),
-                range: (0.0, 1.0),
-                start: from,
-                end: to,
-            },
-        )?;
-        if let Some(slot) = cut_edges.get_mut(index) {
-            *slot = id;
-        }
-    }
-    let first_reversed = hang_borders(body, edge, faces, second_border, false)?;
-    // The third faces: the cut in place of the corner.
-    for (index, end) in ends.iter().enumerate() {
-        let cut = *cut_edges.get(index).ok_or_else(lost)?;
-        let corners = [
-            *own_vertex.get(index).ok_or_else(lost)?,
-            *new_vertex.get(index).ok_or_else(lost)?,
-        ];
-        insert_cut(body, end, cut, corners)?;
-    }
-    let [cut0, cut1] = cut_edges;
-    let coedges = blend_loop(
-        edge,
-        second_border,
-        first_reversed,
-        &[(cut0, false)],
-        &[(cut1, false)],
-    );
-    let [first, _] = faces;
-    let id = add_face(
-        body,
-        surface,
-        vec![coedges],
-        0.5 * (spans[0].0 + spans[0].1),
-        outward,
-        first,
-    )?;
     Ok((id, second_border))
 }
 
@@ -3338,14 +3211,7 @@ pub(super) fn blend(
         if let ([piece], []) = (found.pieces.as_slice(), found.joints.as_slice()) {
             // Held to `no_loop_behind` inside, on its fitted surface.
             let item = items.get(piece.item).ok_or_else(lost)?;
-            let face = blend_one(
-                &mut out,
-                &item.request,
-                item.faces,
-                item.into,
-                item.convex,
-                tolerance,
-            )?;
+            let face = blend_one(&mut out, found, item, tolerance)?;
             blends.push((face, piece.item));
         } else {
             let made = chain::build(&mut out, found, &items, tolerance)?;

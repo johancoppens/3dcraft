@@ -1340,6 +1340,49 @@ fn smooth_joints(
     Ok(())
 }
 
+/// Puts the blend face of a single open edge (`one`, a chain of one
+/// piece) into `body`: `surface`, facing `outward`, cut at its two `ends`
+/// by `cuts` (each with where it meets the two borders), as the face of a
+/// chain's piece is. Its face and second border.
+pub(super) fn splice_one(
+    body: &mut Body,
+    one: &Chain,
+    surface: NurbsSurface,
+    outward: Vec3,
+    [start, finish]: [End; 2],
+    [(cut0, at0), (cut1, at1)]: [(NurbsCurve, [f64; 2]); 2],
+    tolerance: &Tolerance,
+) -> Result<(FaceId, EdgeId), BlendError> {
+    let mut piece = PieceMade {
+        surface,
+        spans: [(0.0, 1.0); 2],
+        outward,
+    };
+    cut_spans(&mut piece.spans, 0, at0);
+    cut_spans(&mut piece.spans, 1, at1);
+    spans_left(&one.pieces, std::slice::from_ref(&piece))?;
+    let computed = Computed {
+        pieces: vec![piece],
+        joints: Vec::new(),
+        ends: Some([
+            EndKind::Third(EndMade {
+                end: start,
+                cut: cut0,
+                at: at0,
+            }),
+            EndKind::Third(EndMade {
+                end: finish,
+                cut: cut1,
+                at: at1,
+            }),
+        ]),
+    };
+    match splice_chain(body, one, computed, [None, None], tolerance)?.as_slice() {
+        [made] => Ok(*made),
+        _ => Err(lost()),
+    }
+}
+
 /// Puts the blend faces of a chain into the body: per piece the edge
 /// becomes its first border and a second border is new; per joint the
 /// vertex moves to where the first side is touched, a new vertex where
