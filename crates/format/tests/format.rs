@@ -1697,7 +1697,10 @@ fn a_sketch_pattern_is_written_like_this_and_round_trips() {
 /// for one image, out of order) are dropped on reading with a
 /// warning, not a reason to refuse the file: a place is where the next
 /// solve starts carrying an image from, not part of the design. A million
-/// of them read in about a second, not quadratic.
+/// of them read in about a second, not quadratic: four times as many
+/// cost less than eight times the work (`craft3d_testkit::cost`, which
+/// a busy machine does not stretch), checked first so that a quadratic
+/// reader fails there and not after hours at a million.
 #[test]
 fn stale_image_places_are_dropped_on_reading() {
     use craft3d_doc::{ImagePlace, InstanceIndex, PlaceMap, SketchPatternLayout};
@@ -1726,9 +1729,8 @@ fn stale_image_places_are_dropped_on_reading() {
         .unwrap();
     doc.validate().unwrap();
     let json = to_manifest_json(&doc).unwrap();
-    let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    let places = &mut value["document"]["features"][1]["kind"]["image_places"];
-    let mut hostile = vec![
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let hostile = vec![
         // Out of order, and the second one again.
         serde_json::json!({"entity": second.0, "at": [2.0, 0.0], "map": {"type": "chain", "k": 2.0}}),
         serde_json::json!({"entity": last.0, "at": [3.0, 0.0], "map": {"type": "chain", "k": 3.0}}),
@@ -1739,18 +1741,27 @@ fn stale_image_places_are_dropped_on_reading() {
         serde_json::json!({"entity": 0, "at": [0.0, 0.0]}),
         serde_json::json!({"entity": u64::MAX, "at": [0.0, 0.0]}),
     ];
-    for i in 0..1_000_000u64 {
-        hostile.push(serde_json::json!({"entity": 1000 + i % 977, "at": [0.0, 0.0]}));
-    }
-    *places = serde_json::Value::Array(hostile);
-    let text = value.to_string();
-    let start = std::time::Instant::now();
-    let (read, notes) = craft3d_format::from_manifest_json_noted(text.as_bytes()).unwrap();
-    assert!(
-        start.elapsed() < std::time::Duration::from_secs(20),
-        "{:?}",
-        start.elapsed()
+    let with_stale = |count: u64| {
+        let mut value = value.clone();
+        let mut hostile = hostile.clone();
+        for i in 0..count {
+            hostile.push(serde_json::json!({"entity": 1000 + i % 977, "at": [0.0, 0.0]}));
+        }
+        value["document"]["features"][1]["kind"]["image_places"] =
+            serde_json::Value::Array(hostile);
+        value.to_string()
+    };
+    let texts = [with_stale(12_500), with_stale(50_000)];
+    craft3d_testkit::cost::assert_not_quadratic(
+        "reading stale image places",
+        (12_500, 50_000),
+        |n| {
+            let text = &texts[usize::from(n == 50_000)];
+            craft3d_format::from_manifest_json_noted(text.as_bytes()).unwrap();
+        },
     );
+    let text = with_stale(1_000_000);
+    let (read, notes) = craft3d_format::from_manifest_json_noted(text.as_bytes()).unwrap();
     let Some(FeatureKind::Sketch(read)) = read.features.get(1).map(|f| &f.kind) else {
         panic!("no sketch");
     };

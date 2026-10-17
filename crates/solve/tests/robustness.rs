@@ -11,49 +11,18 @@
 
 mod common;
 
-use std::time::{Duration, Instant};
-
-/// A clock of the work this thread does: its CPU time where the system
-/// reports it (Linux), the wall clock elsewhere. The bounds below are there
-/// to catch a loop that is not bounded, and a machine busy with other work
-/// stretches the wall clock of a solve that does the same work (gate 56:
-/// 13.7 s on the wall for a sketch that takes 0.5 s alone).
-struct WorkClock {
-    cpu: Option<u64>,
-    wall: Instant,
-}
-
-impl WorkClock {
-    fn start() -> Self {
-        Self {
-            cpu: thread_cpu_nanos(),
-            wall: Instant::now(),
-        }
-    }
-
-    fn elapsed(&self) -> Duration {
-        match (self.cpu, thread_cpu_nanos()) {
-            (Some(start), Some(now)) => Duration::from_nanos(now.saturating_sub(start)),
-            _ => self.wall.elapsed(),
-        }
-    }
-}
-
-/// Nanoseconds this thread has spent on a CPU, from the first field of
-/// `/proc/thread-self/schedstat`; `None` where there is no such file.
-fn thread_cpu_nanos() -> Option<u64> {
-    std::fs::read_to_string("/proc/thread-self/schedstat")
-        .ok()?
-        .split_whitespace()
-        .next()?
-        .parse()
-        .ok()
-}
+use std::time::Duration;
 
 use common::options;
 use craft3d_solve::{
     Constraint as C, ConstraintStatus, Entity, EntityId, Sketch, Solution, SolveError, solve,
 };
+/// The bounds below are there to catch a loop that is not bounded; they
+/// are measured on this thread's CPU time ([`WorkClock`]), since a machine
+/// busy with other work stretches the wall clock of a solve that does the
+/// same work (gate 56: 13.7 s on the wall for a sketch that takes 0.5 s
+/// alone).
+use craft3d_testkit::cost::WorkClock;
 
 /// xorshift64*: a fixed, portable stream.
 struct Rng(u64);

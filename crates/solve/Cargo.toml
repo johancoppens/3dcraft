@@ -10,3 +10,6 @@ workspace = true
 
 [dependencies]
 craft3d-math.workspace = true
+
+[dev-dependencies]
+craft3d-testkit.workspace = true

@@ -1007,9 +1007,9 @@ fn bad_input_is_an_error_not_a_crash() {
 }
 
 /// The time grows with the mesh, not with its square: four times the
-/// triangles may not take sixteen times as long. (A loose bound that a
-/// busy machine does not break; the real numbers are in the ignored test
-/// below.)
+/// triangles may not take sixteen times as long. (A loose bound, on the
+/// work of this thread, one thread searching, which a busy machine does
+/// not stretch; the real numbers are in the ignored test below.)
 #[test]
 fn the_time_does_not_grow_with_the_square() {
     let time = |n: usize| {
@@ -1017,7 +1017,7 @@ fn the_time_does_not_grow_with_the_square() {
         soup.ball(Vec3::ZERO, 1.0, n, 0);
         let mut best = f64::INFINITY;
         for _ in 0..3 {
-            let start = Instant::now();
+            let start = craft3d_testkit::cost::WorkClock::start();
             let report = self_intersection_report(&soup.mesh, 0.0, 10, 1).unwrap();
             best = best.min(start.elapsed().as_secs_f64());
             assert_eq!(report.crossings, []);

@@ -1,7 +1,10 @@
 //! Solve times. Run in release with `--nocapture` to read them:
 //! `cargo test -p craft3d-solve --release --test perf -- --nocapture`.
 //! The assertions are loose bounds that hold in any profile; they catch a
-//! solve that has become quadratically slower, not a few percent.
+//! solve that has become quadratically slower, not a few percent. They are
+//! measured on the work of this thread (its CPU time,
+//! `craft3d_testkit::cost::WorkClock`), which a machine busy with other
+//! work does not stretch.
 
 #![allow(
     clippy::unwrap_used,
@@ -12,23 +15,18 @@
 
 mod common;
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use common::{l_profile, options, resolved, solved};
 use craft3d_solve::{Constraint as C, EntityId, Sketch, solve};
+use craft3d_testkit::cost::least_work;
 
-/// Best of `runs` solves.
+/// Best of `runs` solves, in work done on this thread.
 fn time(sketch: &Sketch, runs: usize) -> Duration {
-    (0..runs)
-        .map(|_| {
-            let started = Instant::now();
-            let solution = solve(sketch, &options());
-            let took = started.elapsed();
-            assert!(solution.is_ok());
-            took
-        })
-        .min()
-        .unwrap()
+    least_work(runs, || {
+        let solution = solve(sketch, &options());
+        assert!(solution.is_ok());
+    })
 }
 
 /// A staircase of `steps` treads and risers, each tread 3 long and each
