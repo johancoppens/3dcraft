@@ -92,7 +92,7 @@ pub(crate) static SPECS: &[CommandSpec] = &[
     spec!("document.inspect", "Inspect", "{}",
         "Returns the whole document state: units, variables with values, features with status (a failed one with the reason under error, which starts with the parameter and names the feature and the name it lost, and, when the reason is that something it is made from failed, under causedBy the feature at the start of that chain: the one to fix; a datum with where it lies, under datum), bodies with counts, mass properties (with a material: mass and inertia), appearance and material, and faceNames (and, per face, faceAliases: the other names a face answers to when a boolean or a pattern merged faces of several operands into it), undo history.", doc: true, document_inspect),
     spec!("document.check", "Check", r#"{"deep": boolean = false}"#,
-        "Checks every body for validity and lists every problem: failed variables, failed features (with causedBy as in document.inspect), defects of bodies. ok is true when there is none. deep also looks for bodies that pass through themselves (faces crossing, shells overlapping or nested the wrong way), on a fine mesh: slower, and what it reports is certain (deeper than the mesh could be off); doubts are counted under marginal.", doc: true, document_check),
+        "Checks every body for validity and lists every problem: failed variables, failed features (with causedBy as in document.inspect), defects of bodies. ok is true when there is none. deep also looks for bodies that pass through themselves (faces crossing, shells overlapping or nested the wrong way), on a fine mesh: slower, and what it reports is certain (deeper than the mesh could be off); doubts are counted under marginal. deep also holds the body of every boolean feature to what every exact boolean of its target and tool keeps (volumes within bounds, the target unchanged out of the tool's reach, seeded points; counted under booleansChecked).", doc: true, document_check),
     spec!("document.measure", "Measure", r#"{"feature": id or name = all bodies}"#,
         "Returns volume, area and centroid, per body and in total, in document units. A body with a material (body.material) also has its mass (kg) and its inertia tensor about its centroid (kg times the length unit squared, along the model's axes), and its appearance (body.appearance); the total has the mass when every body has one.", doc: true, document_measure),
     spec!("view.render", "Render", r#"{"path": string, "width": integer = 800, "height": integer = 600, "view": "iso|front|back|left|right|top|bottom" = "iso", "projection": "perspective|orthographic" = "perspective", "zoom": number = 1, "box": [[x, y, z], [x, y, z]] = the whole model, "mode": "shaded|ids" = "shaded", "section": {plane, feature, point, normal, offset, flip, cap} = none, "tolerance": number = the picture's}"#,
@@ -2040,6 +2040,7 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
     }
     let mut checked = 0;
     let mut marginal = 0_usize;
+    let mut booleans_checked = 0_usize;
     for outcome in &regen.features {
         let name = doc
             .feature(outcome.id)
@@ -2054,6 +2055,12 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
                 map.insert("causedBy".into(), root.to_string().into());
             }
             problems.push(problem);
+        }
+        // Every boolean of the history, its body taken by a later feature
+        // or not.
+        if deep && outcome.status == Status::Ok {
+            booleans_checked +=
+                boolean_check(doc, &regen, outcome, &name, &tolerance, &mut problems);
         }
         if let Some(body) = outcome.own_body() {
             checked += 1;
@@ -2096,8 +2103,86 @@ fn document_check(session: &mut Session, params: &Value) -> Run {
     if let (true, Some(map)) = (deep, result.as_object_mut()) {
         map.insert("deep".into(), true.into());
         map.insert("marginal".into(), marginal.into());
+        map.insert("booleansChecked".into(), booleans_checked.into());
     }
     Ok(result)
+}
+
+/// `document.check` deep for a boolean feature: its body held to what
+/// every exact boolean of its target and tool keeps
+/// (`craft3d_kernel::boolean::verify` in full: volumes, the result's
+/// reach, the faces far from the other operand, seeded points). Each
+/// violation is a problem of the feature, naming the operand's face where
+/// it is about one. 1 when the feature was checked, 0 when it is not a
+/// boolean or has no body.
+fn boolean_check(
+    doc: &craft3d_doc::Document,
+    regen: &Regen,
+    outcome: &craft3d_regen::FeatureResult,
+    name: &str,
+    tolerance: &craft3d_math::Tolerance,
+    problems: &mut Vec<Value>,
+) -> usize {
+    use craft3d_kernel::boolean::{BooleanOp, Operand, VerifyOptions, Violation, verify};
+    let Some(feature) = doc.feature(outcome.id) else {
+        return 0;
+    };
+    // As it was built: with its names followed, where they were.
+    let kind = outcome
+        .followed
+        .as_deref()
+        .map_or(&feature.kind, |f| &f.kind);
+    let craft3d_doc::FeatureKind::Boolean(boolean) = kind else {
+        return 0;
+    };
+    let source = |id| {
+        regen
+            .features
+            .iter()
+            .find(|r| r.id == id)
+            .and_then(|r| r.body.as_ref().map(|body| (body, r.names.as_deref())))
+    };
+    let (Some(result), Some((a, a_names)), Some((b, b_names))) = (
+        outcome.body.as_ref(),
+        source(boolean.target),
+        source(boolean.tool),
+    ) else {
+        return 0;
+    };
+    let op = match boolean.op {
+        craft3d_doc::BooleanOp::Union => BooleanOp::Union,
+        craft3d_doc::BooleanOp::Subtract => BooleanOp::Subtract,
+        craft3d_doc::BooleanOp::Intersect => BooleanOp::Intersect,
+    };
+    let found = match verify(a, b, op, result, tolerance, &VerifyOptions::default()) {
+        Ok(found) => found,
+        Err(error) => {
+            problems.push(json!({
+                "feature": outcome.id.to_string(), "name": name,
+                "problem": format!("the boolean check cannot run: {error}"),
+            }));
+            return 1;
+        }
+    };
+    for violation in &found.violations {
+        let mut problem = json!({
+            "feature": outcome.id.to_string(), "name": name,
+            "problem": format!("not the {} of its target and tool: {violation}", boolean.op.name()),
+        });
+        if let (Violation::FarFace { operand, face, .. }, Some(map)) =
+            (violation, problem.as_object_mut())
+        {
+            let names = match operand {
+                Operand::A => a_names,
+                Operand::B => b_names,
+            };
+            if let Some(face_name) = names.and_then(|n| n.faces.get(face.0 as usize)) {
+                map.insert("face".into(), face_name.to_string().into());
+            }
+        }
+        problems.push(problem);
+    }
+    1
 }
 
 // ------------------------------------------------------------------- view

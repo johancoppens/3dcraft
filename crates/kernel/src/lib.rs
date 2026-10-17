@@ -188,6 +188,15 @@ pub enum KernelError {
     NoEnd {
         reason: &'static str,
     },
+    /// The boolean built a valid body that is not the boolean of its
+    /// operands: it breaks a rule every exact boolean keeps
+    /// ([`boolean::verify`]; `violation` is the first of `count`). A bug in
+    /// the kernel: the result is refused rather than returned.
+    WrongResult {
+        operation: &'static str,
+        violation: boolean::Violation,
+        count: usize,
+    },
     /// The operation leaves nothing: an intersection of bodies that do not
     /// overlap, a body minus one that contains it.
     EmptyResult {
@@ -476,6 +485,19 @@ impl fmt::Display for KernelError {
                 )
             }
             KernelError::NoEnd { reason } => write!(f, "the extrusion has no end: {reason}"),
+            KernelError::WrongResult {
+                operation,
+                violation,
+                count,
+            } => write!(
+                f,
+                "{operation}: the result is not the {operation} of its operands and was refused (a bug in the kernel; please report the model): {violation}{}",
+                if *count > 1 {
+                    format!(" (and {} more)", count - 1)
+                } else {
+                    String::new()
+                }
+            ),
             KernelError::EmptyResult { operation } => {
                 write!(f, "{operation} leaves nothing: the result is empty")
             }

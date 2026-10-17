@@ -574,6 +574,10 @@ struct Work {
     /// Past this much work the face is given up: [`BUDGET`], unless
     /// [`part_by_part`] sets it otherwise.
     limit: u64,
+    /// What the area and the volume of the sums settled so far were held
+    /// to: per sum taken, the difference its last two sums were allowed
+    /// ([`Total::allowance`]). [`mass_bound`] reports their sum.
+    held: [f64; 2],
 }
 
 impl Work {
@@ -591,7 +595,16 @@ impl Work {
             second,
             wrap: [None, None],
             limit: BUDGET,
+            held: [0.0; 2],
         }
+    }
+
+    /// Counts what `total` was held to, with `noise` its share of
+    /// rounding, among what the face's sums were held to.
+    fn hold(&mut self, total: &Total, noise: f64) {
+        let [area, volume] = total.allowance(noise);
+        self.held[0] += area;
+        self.held[1] += volume;
     }
 
     fn add(&mut self, evaluations: u64) {
@@ -709,6 +722,14 @@ impl Total {
     /// there and agree.
     fn first_agrees_with(&self, finer: &Total, noise: f64) -> bool {
         self.agrees_in(finer, noise, FIRST_SUMS)
+    }
+
+    /// How far the area and the volume of two sums in a row may differ
+    /// and agree, given the share `noise` of every term that is rounding:
+    /// what the finer of them is held to.
+    fn allowance(&self, noise: f64) -> [f64; 2] {
+        let share = CONVERGED + noise;
+        [share * self.size.area, share * self.size.volume]
     }
 
     /// Whether the first `parts` of the sums agree.
@@ -2007,6 +2028,9 @@ fn whole_surface(
         const U_PANELS: usize = 8;
         let mut sum = Total::default();
         across(u0, u1, U_PANELS, 0, &mut sum)?;
+        // Exact to rounding (a trigonometric polynomial on panels of an
+        // eighth of a turn); held to what any sum is.
+        work.hold(&sum, 0.0);
         return Ok(sum.sum);
     }
     let (mut lines, _) = knot_lines(surface);
@@ -2020,6 +2044,7 @@ fn whole_surface(
             start = line;
         }
         if coarser.is_some_and(|coarser| coarser.agrees_with(&sum, 0.0)) {
+            work.hold(&sum, 0.0);
             return Ok(sum.sum);
         }
         coarser = Some(sum);
@@ -2634,6 +2659,7 @@ fn settle(
     if up_to_whole_surfaces {
         // Right up to a whole number of times the entire surface; the area
         // says which.
+        let before = work.held;
         let whole = whole_surface(surface, index, rule, work)?;
         let share = sum.area / whole.area;
         let times = share.floor();
@@ -2646,6 +2672,10 @@ fn settle(
                 });
             }
             sum.add_scaled(whole, -times);
+        }
+        // The whole surface counts as often as it is taken away.
+        for (held, before) in work.held.iter_mut().zip(before) {
+            *held = before + (*held - before) * times.abs();
         }
     } else if matches!(surface, Surface::Sphere(_)) {
         // The face, less the whole sphere when the face holds the south
@@ -2704,19 +2734,21 @@ fn face_integrals(
         return FaceSums {
             first: (sums == Wanted::Both).then(|| Err(error.clone())),
             all: Err(error),
+            held: [0.0; 2],
         };
     }
     if face.loops.is_empty() || seams_only(body, face) {
         let mut work = Work::about(&face.surface, middle, second);
         let all = whole_surface(&face.surface, index, rule, &mut work);
         counted(&work);
+        let held = work.held;
         let first = (sums == Wanted::Both).then(|| {
             let mut work = Work::about(&face.surface, middle, false);
             let first = whole_surface(&face.surface, index, rule, &mut work);
             counted(&work);
             first
         });
-        return FaceSums { first, all };
+        return FaceSums { first, all, held };
     }
     let own = match &face.surface {
         Surface::Sphere(sphere) => own_sphere(body, face, sphere),
@@ -2736,7 +2768,11 @@ fn face_integrals(
     // Without first-order sums that agreed, the sums without the second
     // moments ended where these did, with the same error.
     let first = (sums == Wanted::Both).then(|| first.unwrap_or_else(|| all.clone()));
-    FaceSums { first, all }
+    FaceSums {
+        first,
+        all,
+        held: work.held,
+    }
 }
 
 /// How far apart the weights within one span of a rational surface may be
@@ -2840,6 +2876,9 @@ enum Wanted {
 struct FaceSums {
     first: Option<Result<Sums, MassError>>,
     all: Result<Sums, MassError>,
+    /// What the area and the volume of `all` were held to
+    /// ([`Work::held`]).
+    held: [f64; 2],
 }
 
 /// [`face_integrals`] of a face with loops, with `surface` standing in for
@@ -2970,6 +3009,7 @@ fn together(
             ));
         }
         if exact || coarser.is_some_and(|coarser| coarser.agrees_with(&total, noise)) {
+            work.hold(&total, noise);
             return settle(
                 surface,
                 index,
@@ -2995,6 +3035,8 @@ struct Part {
     /// With the second moments summed: the sums once its area, volume
     /// and moments agreed, which are those without the second moments.
     first: Option<Total>,
+    /// The share of rounding its settled sums were held with.
+    noise: f64,
 }
 
 /// [`integrals_in`] for a face whose boundary integral is a sum of one
@@ -3125,6 +3167,7 @@ fn part_by_part(
                 .is_some_and(|before| before.agrees_with(&total, noise))
             {
                 part.settled = Some(total);
+                part.noise = noise;
                 part.level = None;
             } else if doublings >= MAX_DOUBLINGS {
                 return Err(unsettled(index));
@@ -3183,6 +3226,7 @@ fn part_by_part(
     let mut total = Total::default();
     for part in parts.into_values() {
         if let Some(settled) = part.settled {
+            work.hold(&settled, part.noise);
             total.add(settled, 1.0);
         }
     }
@@ -3223,6 +3267,8 @@ struct Group {
     key: (usize, usize),
     coarser: Total,
     finer: Vec<Cell>,
+    /// The share of rounding it was last held with.
+    share: f64,
 }
 
 /// How often a panel may be halved, from the panels its piece needs: in
@@ -3447,8 +3493,9 @@ fn cell_by_cell(
                 .map(|group| piece_share(outline, &taken, &[], group.key))
                 .collect();
             let mut kept = Vec::with_capacity(taken.len());
-            for (group, share) in taken.into_iter().zip(shares) {
+            for (mut group, share) in taken.into_iter().zip(shares) {
                 if holds(&group.coarser, &group.finer, share, parts) {
+                    group.share = share;
                     kept.push(group);
                 } else {
                     open.extend(group.finer);
@@ -3527,6 +3574,7 @@ fn cell_by_cell(
                         key,
                         coarser,
                         finer: all_finer,
+                        share,
                     });
                     continue;
                 }
@@ -3536,6 +3584,7 @@ fn cell_by_cell(
                             key,
                             coarser: cell.total,
                             finer: halves,
+                            share,
                         });
                     } else {
                         next.extend(halves);
@@ -3559,6 +3608,13 @@ fn cell_by_cell(
                 &mut alone,
             ));
         }
+    }
+    for group in &taken {
+        let mut finer = Total::default();
+        for cell in &group.finer {
+            finer.add(cell.total, 1.0);
+        }
+        work.hold(&finer, group.share);
     }
     settle(
         surface,
@@ -3737,8 +3793,42 @@ fn each_face<T: Send>(count: usize, work: impl Fn(usize) -> T + Sync) -> Vec<T> 
 /// time is bounded). A face that is outside its own loops is
 /// [`MassError::UnboundedFace`].
 pub fn mass_properties(body: &Body) -> Result<MassProperties, MassError> {
-    let (all, _, middle) = integrate(body, Wanted::First);
+    let (all, _, middle, _) = integrate(body, Wanted::First);
     Ok(mass_from(body, all?, middle))
+}
+
+/// How far [`MassProperties::area`] and [`MassProperties::volume`] can be
+/// off by the integrator's own account ([`mass_bound`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MassBound {
+    pub area: f64,
+    pub volume: f64,
+}
+
+/// [`mass_properties`] of `body` (the very same value or error) and how
+/// far its area and volume can be off by the integrator's own account:
+/// every sum it takes is refined until two in a row agree to an allowance
+/// ([`CONVERGED`] of the size of what was summed, and the share of it that
+/// is rounding), and the bound is the sum of those allowances over every
+/// sum taken (per face, per part of a face's boundary, per panel group
+/// and per whole surface added or taken away), plus the rounding of
+/// adding up the faces. The sums converge geometrically, so the finer of
+/// two that agree is off by far less than they differ by; the bound is
+/// what they were allowed to differ by. It is the integrator's own
+/// estimate, not a guarantee: two sums can agree and both be off, which
+/// the closed-form tests (`reference_solids.rs`) hold in check. Of a sheet the volume is zero
+/// and so is its bound.
+pub fn mass_bound(body: &Body) -> Result<(MassProperties, MassBound), MassError> {
+    let (all, _, middle, held) = integrate(body, Wanted::First);
+    let mass = mass_from(body, all?, middle);
+    let solid = body.kind == BodyKind::Solid;
+    Ok((
+        mass,
+        MassBound {
+            area: held[0],
+            volume: if solid { held[1] } else { 0.0 },
+        },
+    ))
 }
 
 /// [`MassProperties`] from the sums of the faces.
@@ -3768,7 +3858,7 @@ pub fn mass_and_inertia(
     if body.kind != BodyKind::Solid {
         return (mass_properties(body), Err(NOT_A_SOLID));
     }
-    let (all, first, middle) = integrate(body, Wanted::Both);
+    let (all, first, middle, _) = integrate(body, Wanted::Both);
     let mass = first
         .unwrap_or_else(|| all.clone())
         .map(|total| mass_from(body, total, middle));
@@ -3786,6 +3876,7 @@ fn integrate(
     Result<Sums, MassError>,
     Option<Result<Sums, MassError>>,
     Vec3,
+    [f64; 2],
 ) {
     let rule = Rule::new(NODES);
     let (size, middle) = body_extent(body);
@@ -3804,19 +3895,36 @@ fn integrate(
             FaceSums {
                 first: (sums == Wanted::Both).then(|| Err(lost.clone())),
                 all: Err(lost),
+                held: [0.0; 2],
             }
         }
     });
     let mut all: Vec<Result<Sums, MassError>> = Vec::with_capacity(per_face.len());
     let mut first: Vec<Result<Sums, MassError>> = Vec::new();
+    // What the faces' sums were held to, and how large they are: adding
+    // them up rounds each partial sum, by at most a unit in the last place
+    // of the largest it reaches, once per face.
+    let mut held = [0.0_f64; 2];
+    let mut largest = [0.0_f64; 2];
     for face in per_face {
+        held[0] += face.held[0];
+        held[1] += face.held[1];
+        if let Ok(sums) = &face.all {
+            largest[0] += sums.area.abs();
+            largest[1] += sums.volume.abs();
+        }
         all.push(face.all);
         if let Some(sums) = face.first {
             first.push(sums);
         }
     }
+    let faces = body.faces.len() as f64;
+    let held = [
+        held[0] + faces * f64::EPSILON * largest[0],
+        held[1] + faces * f64::EPSILON * largest[1],
+    ];
     let first = (sums == Wanted::Both).then(|| total_of(body, first));
-    (total_of(body, all), first, middle)
+    (total_of(body, all), first, middle, held)
 }
 
 /// The sums of the faces of `body` (one per face, in order), outward: the
@@ -3862,7 +3970,7 @@ pub fn inertia(body: &Body) -> Result<Inertia, MassError> {
     if body.kind != BodyKind::Solid {
         return Err(NOT_A_SOLID);
     }
-    let (all, _, middle) = integrate(body, Wanted::Second);
+    let (all, _, middle, _) = integrate(body, Wanted::Second);
     inertia_from(all?, middle)
 }
 
@@ -4193,6 +4301,7 @@ mod tests {
                 second: false,
                 wrap: [None, None],
                 limit: BUDGET,
+                held: [0.0; 2],
             };
             let sums = integrals_in(
                 (&body, face, &surface, 0),
@@ -4224,6 +4333,7 @@ mod tests {
             second: false,
             wrap: [None, None],
             limit: BUDGET,
+            held: [0.0; 2],
         };
         assert!(matches!(
             whole_surface(&surface, 0, &rule, &mut work),

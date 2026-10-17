@@ -263,6 +263,28 @@ fn holes_cut_by_subtraction_follow_the_plate() {
     assert!(names.contains(&json!("F6:copy(1)/F5:face(0)")), "{names:?}");
 }
 
+/// `document.check` deep holds every boolean feature to what every exact
+/// boolean of its target and tool keeps (`kernel::boolean::verify`).
+#[test]
+fn a_deep_check_verifies_every_boolean() {
+    let mut s = plate();
+    for (name, x) in [("Drill", "length / 4"), ("Drill2", "3 * length / 4")] {
+        run(
+            &mut s,
+            "feature.cylinder",
+            json!({"name": name, "radius": 3, "height": 20, "position": [x, 20, -6]}),
+        );
+    }
+    boolean(&mut s, "subtract", "Plate", "Drill", "Drilled");
+    boolean(&mut s, "union", "Drilled", "Drill2", "Part");
+    let check = run(&mut s, "document.check", json!({"deep": true}));
+    assert_eq!(check["ok"], true, "{check}");
+    assert_eq!(check["booleansChecked"], 2, "{check}");
+    // Not deep: no boolean is looked at.
+    let check = run(&mut s, "document.check", json!({}));
+    assert_eq!(check["booleansChecked"], Value::Null, "{check}");
+}
+
 #[test]
 fn a_pattern_of_cutters_cuts_a_row_of_holes() {
     // What a gear or a bolt circle needs: one tool, repeated, then cut.

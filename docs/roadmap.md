@@ -76,7 +76,8 @@ The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item i
 
 - [ ] Random multi-step designs: a seeded generator of feature sequences that places operands on a grid and on the body's own faces, so coincidence and tangency are common; each seed in its own process with a timeout, shrunk automatically to the fewest steps that still fail; a refusal counts apart from a wrong result, and the rate of each goes into the morning health report.
 - [ ] An action matrix as a ratchet: every local operation (fillet, chamfer, shell, offset, delete face, mirror, …) tried on every face and edge of the showcase models; an action that succeeded before and fails now is a regression, one that fails before and succeeds now raises the floor.
-- [ ] A cheap check after every boolean, beside `topo::check`: outside the tool's reach the result equals the target, a subtract never adds volume and a union never loses any.
+- [x] A cheap check after every boolean, beside `topo::check`: outside the tool's reach the result equals the target, a subtract never adds volume and a union never loses any (2026-10-17: reach and far faces in every boolean, volumes and seeded points in the tests and `document.check` deep; [`design/booleans.md`](design/booleans.md) › *The boolean's own check*).
+- [ ] A second reference kernel, after the two above: NVIDIA's SMLib (`usd-brep`, Apache-2.0) as a black box beside FreeCAD, never a dependency or a source; `cargo xtask smlib` runs it in a container outside the workspace and pins its outcomes in a fixture, so tests and the gate never need it; it votes only on gross differences (shell counts, empty or not, volume off by more than a few percent), because its own measures are not exact; it scores cases where FreeCAD's reference is unreliable. A trial of 288 corpus cases (2026-10-17): all three kernels agree on 839 of 864 outcomes, SMLib is clearly wrong on 7, and 3DCraft disagrees with neither.
 
 ## Milestones in detail
 
