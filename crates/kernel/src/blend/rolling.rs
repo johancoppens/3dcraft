@@ -101,6 +101,15 @@ const FOOT_STEPS: usize = 60;
 /// the linear tolerance of the true one can lean by that much.
 const BEND: f64 = 1e-9;
 
+/// The sine to which a blend's normals are refined at `size` (its radius
+/// or largest distance): the angular tolerance, [`BEND`] at least, or the
+/// angle the linear tolerance makes over the size, whichever is more. The
+/// tangency of a fillet along its borders, across a joint and across a
+/// crossed smooth edge is measured to ten times it.
+fn bend(tolerance: &Tolerance, size: f64) -> f64 {
+    tolerance.angular.max(BEND).max(tolerance.linear / size)
+}
+
 fn refuse(edge: EdgeId, face: Option<FaceId>, reason: Reason) -> BlendError {
     BlendError::Refused {
         edge: Some(edge),
@@ -116,7 +125,16 @@ struct Side<'a> {
     reversed: bool,
 }
 
-impl Side<'_> {
+impl<'a> Side<'a> {
+    /// The face `face` of `body` as a side: its surface, out of the body.
+    fn of(body: &'a Body, face: FaceId) -> Result<Side<'a>, BlendError> {
+        let f = body.face(face).ok_or_else(lost)?;
+        Ok(Side {
+            surface: &f.surface,
+            reversed: f.reversed,
+        })
+    }
+
     fn normal(&self, (u, v): (f64, f64)) -> Option<Vec3> {
         let n = self.surface.normal(u, v)?;
         Some(if self.reversed { -n } else { n })
@@ -706,12 +724,8 @@ fn runs_into(
     };
     let (point, d) = data.curve.derivatives(t);
     let out = (d * sign).normalized()?;
-    let face = body.face(third)?;
-    let side = Side {
-        surface: &face.surface,
-        reversed: face.reversed,
-    };
-    let uv = face.surface.project(point).ok()?;
+    let side = Side::of(body, third).ok()?;
+    let uv = side.surface.project(point).ok()?;
     let n = side.normal(uv)?;
     // Into the material behind the face only when that is told beyond what
     // the normals are known to; otherwise out of it, as every end was
@@ -735,10 +749,10 @@ impl End {
     /// end: turned round where the blend runs into the material behind
     /// it.
     fn side<'a>(&self, body: &'a Body) -> Result<Side<'a>, BlendError> {
-        let face = body.face(self.third).ok_or_else(lost)?;
+        let face = Side::of(body, self.third)?;
         Ok(Side {
-            surface: &face.surface,
             reversed: face.reversed != self.facing,
+            ..face
         })
     }
 }
@@ -1172,18 +1186,7 @@ fn blend_one(
             return Err(refuse(edge, None, Reason::FreeAngle));
         }
     };
-    let face = |f: FaceId| body.face(f).ok_or_else(lost);
-    let (fa, fb) = (face(first)?, face(second)?);
-    let sides = [
-        Side {
-            surface: &fa.surface,
-            reversed: fa.reversed,
-        },
-        Side {
-            surface: &fb.surface,
-            reversed: fb.reversed,
-        },
-    ];
+    let sides = [Side::of(body, first)?, Side::of(body, second)?];
     let scale = scale_of(&data, shape.size(), tol);
     let solver = Solver {
         spine: Spine {
@@ -1200,13 +1203,6 @@ fn blend_one(
     };
     let unsolvable = || refuse(edge, None, Reason::FreeSurface);
     let seed = first_section(&solver, 0.5, into, edge)?;
-    // Where a motion carries the edge and both faces into themselves the
-    // sections are the seed moved by it, and the face is exact.
-    let motion = exact::motion(&solver.spine, solver.sides);
-    let solver = Solver {
-        moved: motion.and_then(|m| exact::Moved::new(m, &solver.spine, seed, 0.5)),
-        ..solver
-    };
     if closed {
         let (surface, params, sections) = ring(&solver, seed, &data, tolerance)
             .ok_or_else(|| refuse(edge, None, Reason::FreeApproximation))?;
@@ -1230,7 +1226,7 @@ fn blend_one(
             tolerance,
         );
     }
-    let end_bound = tolerance.angular.max(BEND).max(tol / shape.size());
+    let end_bound = bend(tolerance, shape.size());
     let mut ends = [
         end_at(body, edge, [first, second], data.start, end_bound)?,
         end_at(body, edge, [first, second], data.end, end_bound)?,
@@ -1250,165 +1246,62 @@ fn blend_one(
         },
         tolerance,
     )?;
-    if !crossings.is_empty() {
-        for c in &crossings {
-            for (j, end) in ends.iter_mut().enumerate() {
-                if (c.at.is_none() || c.end == j)
-                    && let Some(slot) = end.across.get_mut(c.side)
-                {
-                    *slot = Some(c.smooth);
-                }
+    for c in &crossings {
+        for (j, end) in ends.iter_mut().enumerate() {
+            if (c.at.is_none() || c.end == j)
+                && let Some(slot) = end.across.get_mut(c.side)
+            {
+                *slot = Some(c.smooth);
             }
         }
-        return blend_across(
-            body,
-            edge,
-            [first, second],
-            into,
-            convex,
-            shape,
-            scale,
-            &data,
-            ends,
-            &crossings,
-            tolerance,
-        )
-        .map_err(|error| match error {
-            // A border that cannot be carried across (no ball rolls
-            // against the faces beyond, or none within the tolerance)
-            // runs off its face, as it did before it was carried: which
-            // `fit` reads as no room.
-            BlendError::Refused {
-                reason: Reason::FreeSurface | Reason::FreeApproximation | Reason::NotTangent,
-                ..
-            } => refuse(
-                edge,
-                crossings.first().map(|c| c.before),
-                Reason::FreeRunsOver,
-            ),
-            other => other,
-        });
     }
-    let length = edge_length(&data);
-    if !(length > 0.0) {
-        return Err(unsolvable());
-    }
-    let size = shape.size();
-    let steps = Steps::of(size, length);
-    let thirds: Vec<Side<'_>> = ends
-        .iter()
-        .map(|end| end.side(body))
-        .collect::<Result<_, _>>()?;
-    // Sections from the middle outwards, each from its neighbour: along
-    // the edge in steps of a few radii, past its ends in steps of a
-    // quarter of the radius until the section is wholly out of the third
-    // face there.
-    let mut solved: Vec<(f64, Section)> = vec![(0.5, seed)];
-    let mut reach = [0.0_f64; 2];
-    for (index, end) in [(0_usize, 0.0_f64), (1, 1.0)] {
-        let third = *thirds.get(index).ok_or_else(lost)?;
-        let (more, past) = march_out(
-            &solver,
-            (0.5, seed),
-            end,
-            third,
-            ends.get(index).map_or(steps, |e| e.steps(steps)),
-            tol,
-        )
-        .map_err(|stop| match stop {
-            Stop::Unsolvable => unsolvable(),
-            Stop::TooFar => refuse(edge, ends.get(index).map(|e| e.third), Reason::FreeEnd),
-        })?;
-        solved.extend(more);
-        if let Some(slot) = reach.get_mut(index) {
-            *slot = past;
-        }
-    }
-    solved.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let mut params: Vec<f64> = solved.iter().map(|x| x.0).collect();
-    let mut sections: Vec<Section> = solved.iter().map(|x| x.1).collect();
-    let limit = 0.25 * tol;
-    let bend = tolerance.angular.max(BEND).max(tol / size);
-    // Under a motion the surface through the first and the last section
-    // is exact (a translation: linear along the edge), and the face gets
-    // the closed form it is once spliced in.
-    let surface = match solver.moved {
-        Some(_) => {
-            let (Some(p0), Some(p1), Some(c0), Some(c1)) = (
-                params.first(),
-                params.last(),
-                sections.first(),
-                sections.last(),
-            ) else {
-                return Err(unsolvable());
-            };
-            surface_through(&[*p0, *p1], &[*c0, *c1])
-        }
-        None => refine(&solver, &mut params, &mut sections, limit, bend),
-    }
-    .ok_or_else(|| refuse(edge, None, Reason::FreeApproximation))?;
-    // The cuts at the ends.
-    let mut cuts = Vec::with_capacity(2);
-    for (index, end) in ends.iter().enumerate() {
-        let third = *thirds.get(index).ok_or_else(lost)?;
-        let past = *reach.get(index).ok_or_else(lost)?;
-        let cut = end_cut(
-            &surface,
-            third,
-            index == 1,
-            past,
-            size / length,
-            limit,
-            scale,
-        )
-        .ok_or_else(|| refuse(edge, Some(end.third), Reason::FreeEnd))?;
-        cuts.push(cut);
-    }
-    let [cut0, cut1] = <[(NurbsCurve, [f64; 2]); 2]>::try_from(cuts).map_err(|_| lost())?;
-    let made = Made {
-        surface,
-        cuts: [cut0, cut1],
-    };
-    let outward_hint =
-        outward_from(&solver, &made.surface, &params, &sections, convex).ok_or_else(unsolvable)?;
-    let motion = solver.moved.map(|m| m.motion);
-    let (blend_face, second_border) = splice(
+    let built = blend_open(
         body,
         edge,
         [first, second],
-        ends,
-        made,
-        outward_hint,
-        tolerance,
-    )?;
-    // A border that runs off its face first (the more telling reason),
-    // then a loop left behind.
-    for (border, face) in [(edge, first), (second_border, second)] {
-        stays_on(body, edge, border, face, tolerance)?;
-    }
-    no_loop_behind(body, blend_face, convex, &data.curve, edge, tolerance)?;
-    if let Some(motion) = motion {
-        let surface = exact::swept(motion, &seed, shape).ok_or_else(unsolvable)?;
-        exact::make_exact(body, blend_face, surface, tolerance)?;
-    }
-    tangent_or_refused(
-        body,
-        edge,
-        [first, second],
-        blend_face,
-        second_border,
+        into,
+        convex,
         shape,
+        scale,
+        &data,
+        ends,
+        &crossings,
+        seed,
         tolerance,
-    )
+    );
+    if crossings.is_empty() {
+        return built;
+    }
+    built.map_err(|error| match error {
+        // A border that cannot be carried across (no ball rolls against
+        // the faces beyond, or none within the tolerance) runs off its
+        // face, as it did before it was carried: which `fit` reads as no
+        // room.
+        BlendError::Refused {
+            reason: Reason::FreeSurface | Reason::FreeApproximation | Reason::NotTangent,
+            ..
+        } => refuse(
+            edge,
+            crossings.first().map(|c| c.before),
+            Reason::FreeRunsOver,
+        ),
+        other => other,
+    })
 }
 
-/// [`blend_one`] where a border crosses smooth edges of its face
-/// ([`cross`]): the sections on each side of a switch are found against
+/// The blend face of an open edge, from `seed` (its section at the
+/// middle, against the edge's own faces): sections from the middle out
+/// past both ends, refined, cut at the ends against the third faces and
+/// spliced in. Where a border crosses smooth edges of its face
+/// ([`cross`]) the sections on each side of a switch are found against
 /// the faces there, the pieces refined each on their own faces and joined
-/// across the section at the switch (which both pass through); after the
-/// splice the borders are cut into pieces on the faces they lie on.
+/// across the section at the switch (which both pass through), and after
+/// the splice the borders are cut into pieces on the faces they lie on;
+/// with no crossing there is one piece, on the edge's faces. Under a
+/// motion that carries the edge and both faces of the one piece into
+/// themselves the sections are the seed moved ([`exact`]).
 #[allow(clippy::too_many_arguments)]
-fn blend_across(
+fn blend_open(
     body: &mut Body,
     edge: EdgeId,
     faces: [FaceId; 2],
@@ -1419,6 +1312,7 @@ fn blend_across(
     data: &Edge,
     ends: [End; 2],
     crossings: &[cross::Crossing],
+    seed: Section,
     tolerance: &Tolerance,
 ) -> Result<FaceId, BlendError> {
     let tol = tolerance.linear;
@@ -1448,13 +1342,6 @@ fn blend_across(
             cross::face_at(faces, crossings, 1, middle),
         ]);
     }
-    let side_of = |f: FaceId| -> Result<Side<'_>, BlendError> {
-        let face = body.face(f).ok_or_else(lost)?;
-        Ok(Side {
-            surface: &face.surface,
-            reversed: face.reversed,
-        })
-    };
     let spine = || Spine {
         curve: &data.curve,
         range: data.range,
@@ -1466,7 +1353,7 @@ fn blend_across(
     for [a, b] in &pieces {
         solvers.push(Solver {
             spine: spine(),
-            sides: [side_of(*a)?, side_of(*b)?],
+            sides: [Side::of(body, *a)?, Side::of(body, *b)?],
             shape,
             scale,
             moved: None,
@@ -1476,9 +1363,15 @@ fn blend_across(
         .windows(2)
         .position(|w| matches!(w, [lo, hi] if *lo <= 0.5 && 0.5 < *hi))
         .ok_or_else(lost)?;
-    let seed = first_section(solvers.get(home).ok_or_else(lost)?, 0.5, into, edge)?;
-    // One piece (an edge inside all along on a side): the sections may
-    // be the seed moved, as in `blend_one`.
+    // The seed holds where the middle of the blend touches the edge's own
+    // faces; past a switch at the middle it is found against the faces
+    // there.
+    let seed = if pieces.get(home) == Some(&faces) {
+        seed
+    } else {
+        first_section(solvers.get(home).ok_or_else(lost)?, 0.5, into, edge)?
+    };
+    // One piece: the sections may be the seed moved.
     if let [only] = solvers.as_mut_slice() {
         let motion = exact::motion(&only.spine, only.sides);
         only.moved = motion.and_then(|m| exact::Moved::new(m, &only.spine, seed, 0.5));
@@ -1558,7 +1451,7 @@ fn blend_across(
         }
     }
     let limit = 0.25 * tol;
-    let bend = tolerance.angular.max(BEND).max(tol / size);
+    let bend = bend(tolerance, size);
     let mut parts = Vec::with_capacity(solvers.len());
     let mut all: Vec<(f64, Section)> = Vec::new();
     for (index, solver) in solvers.iter().enumerate() {
@@ -2027,13 +1920,12 @@ fn tangent_along(
     shape: Shape,
     tolerance: &Tolerance,
 ) -> Result<(), BlendError> {
-    let tol = tolerance.linear;
     for (border, face) in borders {
         stays_on(body, edge, *border, *face, tolerance)?;
     }
     if let Shape::Ball { radius, .. } = shape {
         // Tangent to both faces along its borders, measured.
-        let limit = 10.0 * tolerance.angular.max(BEND).max(tol / radius);
+        let limit = 10.0 * bend(tolerance, radius);
         for &(border, face) in borders {
             let data = body.edge(border).ok_or_else(lost)?;
             let (own, other) = (
@@ -2141,7 +2033,7 @@ fn ring(solver: &Solver<'_>, seed: Section, data: &Edge, tolerance: &Tolerance) 
             solved.iter().map(|x| x.1).collect(),
         ),
     };
-    let bend = tolerance.angular.max(BEND).max(tolerance.linear / size);
+    let bend = bend(tolerance, size);
     let surface = refine_samples(solver, &mut params, &mut sections, limit, bend, true)?;
     Some((surface, params, sections))
 }
@@ -2281,6 +2173,93 @@ fn ring_surface(params: &[f64], sections: &[Section]) -> Option<NurbsSurface> {
     .ok()
 }
 
+/// Adds a vertex at `point` to `body`; its id.
+fn add_vertex(body: &mut Body, point: Vec3) -> Result<VertexId, BlendError> {
+    let id = VertexId(u32::try_from(body.vertices.len()).map_err(|_| lost())?);
+    body.vertices.push(Vertex { point });
+    Ok(id)
+}
+
+/// Adds `edge` to `body`; its id.
+fn add_edge(body: &mut Body, edge: Edge) -> Result<EdgeId, BlendError> {
+    let id = EdgeId(u32::try_from(body.edges.len()).map_err(|_| lost())?);
+    body.edges.push(edge);
+    Ok(id)
+}
+
+/// The faces beside a blend once its face is in: `faces[1]` uses
+/// `second_border` where it used `edge` (which stays the first border),
+/// and both run it the other way round when `turn` (a chain that goes
+/// against the edge's curve). How `faces[0]` runs along the first border
+/// then (whether its coedge is reversed).
+fn hang_borders(
+    body: &mut Body,
+    edge: EdgeId,
+    faces: [FaceId; 2],
+    second_border: EdgeId,
+    turn: bool,
+) -> Result<bool, BlendError> {
+    let mut found = None;
+    for (k, face) in faces.iter().enumerate() {
+        let loops = body.face(*face).ok_or_else(lost)?.loops.clone();
+        let mut done = false;
+        for l in loops {
+            let ring = body.loops.get_mut(l.0 as usize).ok_or_else(lost)?;
+            for coedge in &mut ring.coedges {
+                if coedge.edge != edge {
+                    continue;
+                }
+                if k == 1 {
+                    coedge.edge = second_border;
+                }
+                if turn {
+                    coedge.reversed = !coedge.reversed;
+                }
+                if k == 0 {
+                    found = Some(coedge.reversed);
+                }
+                done = true;
+            }
+        }
+        if !done {
+            return Err(lost());
+        }
+    }
+    found.ok_or_else(lost)
+}
+
+/// Adds the blend face on `surface` with the loops `loops` to the shell
+/// of `beside`, facing along `outward` at `(u, 0.5)`; its id.
+fn add_face(
+    body: &mut Body,
+    surface: NurbsSurface,
+    loops: Vec<Vec<Coedge>>,
+    u: f64,
+    outward: Vec3,
+    beside: FaceId,
+) -> Result<FaceId, BlendError> {
+    let mut ids = Vec::with_capacity(loops.len());
+    for coedges in loops {
+        ids.push(LoopId(u32::try_from(body.loops.len()).map_err(|_| lost())?));
+        body.loops.push(Loop { coedges });
+    }
+    let (_, du, dv) = surface.derivatives(u, 0.5);
+    let reversed = du.cross(dv).dot(outward) < 0.0;
+    let id = FaceId(u32::try_from(body.faces.len()).map_err(|_| lost())?);
+    body.faces.push(craft3d_topo::Face {
+        surface: Surface::Nurbs(surface),
+        reversed,
+        loops: ids,
+    });
+    body.shells
+        .iter_mut()
+        .find(|s| s.faces.contains(&beside))
+        .ok_or_else(lost)?
+        .faces
+        .push(id);
+    Ok(id)
+}
+
 /// Puts the blend face of a closed edge into the body: the edge becomes
 /// the first border (its vertex moved onto it), the second border is new
 /// with a vertex of its own, and the face between them has the two as
@@ -2299,58 +2278,26 @@ fn splice_ring(
     if let Some(v) = body.vertices.get_mut(vertex.0 as usize) {
         v.point = b1.eval(u0);
     }
-    let added = VertexId(u32::try_from(body.vertices.len()).map_err(|_| lost())?);
-    body.vertices.push(Vertex { point: b2.eval(u0) });
+    let added = add_vertex(body, b2.eval(u0))?;
     *body.edges.get_mut(edge.0 as usize).ok_or_else(lost)? = Edge {
         curve: Curve3::Nurbs(b1),
         range: (u0, u1),
         start: vertex,
         end: vertex,
     };
-    let second_border = EdgeId(u32::try_from(body.edges.len()).map_err(|_| lost())?);
-    body.edges.push(Edge {
-        curve: Curve3::Nurbs(b2),
-        range: (u0, u1),
-        start: added,
-        end: added,
-    });
-    let mut first_reversed = None;
-    for (face, replacement) in [(first, edge), (second, second_border)] {
-        let loops = body.face(face).ok_or_else(lost)?.loops.clone();
-        for l in loops {
-            let ring = body.loops.get_mut(l.0 as usize).ok_or_else(lost)?;
-            for coedge in &mut ring.coedges {
-                if coedge.edge == edge {
-                    coedge.edge = replacement;
-                    if face == first {
-                        first_reversed = Some(coedge.reversed);
-                    }
-                }
-            }
-        }
-    }
-    let first_reversed = first_reversed.ok_or_else(lost)?;
-    let mut ids = Vec::with_capacity(2);
-    for (edge, reversed) in [(edge, !first_reversed), (second_border, first_reversed)] {
-        ids.push(LoopId(u32::try_from(body.loops.len()).map_err(|_| lost())?));
-        body.loops.push(Loop {
-            coedges: vec![Coedge { edge, reversed }],
-        });
-    }
-    let (_, du, dv) = surface.derivatives(0.5 * (u0 + u1), 0.5);
-    let reversed = du.cross(dv).dot(outward) < 0.0;
-    let id = FaceId(u32::try_from(body.faces.len()).map_err(|_| lost())?);
-    body.faces.push(craft3d_topo::Face {
-        surface: Surface::Nurbs(surface),
-        reversed,
-        loops: ids,
-    });
-    body.shells
-        .iter_mut()
-        .find(|s| s.faces.contains(&first))
-        .ok_or_else(lost)?
-        .faces
-        .push(id);
+    let second_border = add_edge(
+        body,
+        Edge {
+            curve: Curve3::Nurbs(b2),
+            range: (u0, u1),
+            start: added,
+            end: added,
+        },
+    )?;
+    let first_reversed = hang_borders(body, edge, [first, second], second_border, false)?;
+    let loops = [(edge, !first_reversed), (second_border, first_reversed)]
+        .map(|(edge, reversed)| vec![Coedge { edge, reversed }]);
+    let id = add_face(body, surface, loops.into(), 0.5 * (u0 + u1), outward, first)?;
     Ok((id, second_border))
 }
 
@@ -2412,54 +2359,35 @@ fn splice(
             end: end_vertex,
         };
     }
-    let next_edge = |body: &Body| EdgeId(u32::try_from(body.edges.len()).unwrap_or(u32::MAX));
-    let second_border = next_edge(body);
-    body.edges.push(Edge {
-        curve: Curve3::Nurbs(borders[1].clone()),
-        range: spans[1],
-        start: new_vertex[0],
-        end: new_vertex[1],
-    });
+    let second_border = add_edge(
+        body,
+        Edge {
+            curve: Curve3::Nurbs(borders[1].clone()),
+            range: spans[1],
+            start: new_vertex[0],
+            end: new_vertex[1],
+        },
+    )?;
     let mut cut_edges = [EdgeId(0); 2];
     for (index, curve) in [cut0, cut1].into_iter().enumerate() {
-        let id = next_edge(body);
         let (from, to) = (
             *[start_vertex, end_vertex].get(index).ok_or_else(lost)?,
             *new_vertex.get(index).ok_or_else(lost)?,
         );
-        body.edges.push(Edge {
-            curve: Curve3::Nurbs(curve.clone()),
-            range: (0.0, 1.0),
-            start: from,
-            end: to,
-        });
+        let id = add_edge(
+            body,
+            Edge {
+                curve: Curve3::Nurbs(curve.clone()),
+                range: (0.0, 1.0),
+                start: from,
+                end: to,
+            },
+        )?;
         if let Some(slot) = cut_edges.get_mut(index) {
             *slot = id;
         }
     }
-    // The second face uses the second border where it used the edge.
-    let [first, second] = faces;
-    let mut first_reversed = None;
-    for (face, replacement) in [(first, edge), (second, second_border)] {
-        let loops = body.face(face).ok_or_else(lost)?.loops.clone();
-        let mut done = false;
-        for l in loops {
-            let ring = body.loops.get_mut(l.0 as usize).ok_or_else(lost)?;
-            for coedge in &mut ring.coedges {
-                if coedge.edge == edge {
-                    coedge.edge = replacement;
-                    if face == first {
-                        first_reversed = Some(coedge.reversed);
-                    }
-                    done = true;
-                }
-            }
-        }
-        if !done {
-            return Err(lost());
-        }
-    }
-    let first_reversed = first_reversed.ok_or_else(lost)?;
+    let first_reversed = hang_borders(body, edge, faces, second_border, false)?;
     // The third faces: the cut in place of the corner.
     for (index, end) in ends.iter().enumerate() {
         let cut = *cut_edges.get(index).ok_or_else(lost)?;
@@ -2469,66 +2397,60 @@ fn splice(
         ];
         insert_cut(body, end, cut, corners)?;
     }
-    // The blend face: against the first face along the first border.
-    let coedges = if first_reversed {
-        // The first face runs the border backwards: this face forwards.
-        vec![
-            Coedge {
-                edge,
-                reversed: false,
-            },
-            Coedge {
-                edge: cut_edges[1],
-                reversed: false,
-            },
-            Coedge {
-                edge: second_border,
-                reversed: true,
-            },
-            Coedge {
-                edge: cut_edges[0],
-                reversed: true,
-            },
-        ]
-    } else {
-        vec![
-            Coedge {
-                edge,
-                reversed: true,
-            },
-            Coedge {
-                edge: cut_edges[0],
-                reversed: false,
-            },
-            Coedge {
-                edge: second_border,
-                reversed: false,
-            },
-            Coedge {
-                edge: cut_edges[1],
-                reversed: true,
-            },
-        ]
-    };
-    let ring = LoopId(u32::try_from(body.loops.len()).map_err(|_| lost())?);
-    body.loops.push(Loop { coedges });
-    let normal = surface.derivatives(0.5 * (spans[0].0 + spans[0].1), 0.5);
-    let n = normal.1.cross(normal.2);
-    let reversed = n.dot(outward) < 0.0;
-    let id = FaceId(u32::try_from(body.faces.len()).map_err(|_| lost())?);
-    body.faces.push(craft3d_topo::Face {
-        surface: Surface::Nurbs(surface),
-        reversed,
-        loops: vec![ring],
-    });
-    // The shell of the first face gets it.
-    let shell = body
-        .shells
-        .iter_mut()
-        .find(|s| s.faces.contains(&first))
-        .ok_or_else(lost)?;
-    shell.faces.push(id);
+    let [cut0, cut1] = cut_edges;
+    let coedges = blend_loop(
+        edge,
+        second_border,
+        first_reversed,
+        &[(cut0, false)],
+        &[(cut1, false)],
+    );
+    let [first, _] = faces;
+    let id = add_face(
+        body,
+        surface,
+        vec![coedges],
+        0.5 * (spans[0].0 + spans[0].1),
+        outward,
+        first,
+    )?;
     Ok((id, second_border))
+}
+
+/// The loop of a blend face: along its first border against the way the
+/// first face runs it (`first_reversed`: how the first face's coedge
+/// runs), then from the first border's corner to the second's at the end
+/// it has come to (`finish` or `start`: edges each with whether it runs
+/// that way against its curve), back along the second border, and across
+/// the other end.
+fn blend_loop(
+    first_border: EdgeId,
+    second_border: EdgeId,
+    first_reversed: bool,
+    start: &[(EdgeId, bool)],
+    finish: &[(EdgeId, bool)],
+) -> Vec<Coedge> {
+    let coedge = |edge: EdgeId, reversed: bool| Coedge { edge, reversed };
+    let forwards = |list: &[(EdgeId, bool)]| -> Vec<Coedge> {
+        list.iter().map(|(e, r)| coedge(*e, *r)).collect()
+    };
+    let backwards = |list: &[(EdgeId, bool)]| -> Vec<Coedge> {
+        list.iter().rev().map(|(e, r)| coedge(*e, !*r)).collect()
+    };
+    let mut coedges = Vec::with_capacity(2 + start.len() + finish.len());
+    if first_reversed {
+        // The first face runs the border backwards: this face forwards.
+        coedges.push(coedge(first_border, false));
+        coedges.extend(forwards(finish));
+        coedges.push(coedge(second_border, true));
+        coedges.extend(backwards(start));
+    } else {
+        coedges.push(coedge(first_border, true));
+        coedges.extend(forwards(start));
+        coedges.push(coedge(second_border, false));
+        coedges.extend(backwards(finish));
+    }
+    coedges
 }
 
 /// At one end of a blend: moves the vertex of the edge to `corners[0]`
@@ -2636,21 +2558,22 @@ fn cut_back(
         }
         let (curve, range) =
             going_on(body, vertex, point, [face, end.third], tol).ok_or_else(|| too_large(face))?;
-        let middle = VertexId(u32::try_from(body.vertices.len()).map_err(|_| lost())?);
-        body.vertices.push(Vertex { point: vertex });
+        let middle = add_vertex(body, vertex)?;
         let slot = body.edges.get_mut(other.0 as usize).ok_or_else(lost)?;
         if at_start {
             slot.start = middle;
         } else {
             slot.end = middle;
         }
-        let on = EdgeId(u32::try_from(body.edges.len()).map_err(|_| lost())?);
-        body.edges.push(Edge {
-            curve,
-            range,
-            start: middle,
-            end: target,
-        });
+        let on = add_edge(
+            body,
+            Edge {
+                curve,
+                range,
+                start: middle,
+                end: target,
+            },
+        )?;
         for f in [face, end.third] {
             insert_next_to(body, f, *other, on, middle)?;
             let lengthened = body.edge(on).ok_or_else(lost)?.clone();
@@ -2716,9 +2639,7 @@ fn corner_vertex(
     if side == 0 {
         return Ok(end.vertex);
     }
-    let added = VertexId(u32::try_from(body.vertices.len()).map_err(|_| lost())?);
-    body.vertices.push(Vertex { point });
-    Ok(added)
+    add_vertex(body, point)
 }
 
 /// Shortens `edge` at its end at `near` to the parameter `t`, where it
@@ -3454,37 +3375,10 @@ pub(super) fn blend(
     let uses = super::edge_uses(body);
     let mut items = Vec::with_capacity(requests.len());
     for request in requests {
-        if body.edge(request.edge).is_none() {
-            return Err(refused(request.edge, Reason::NotAnEdge));
-        }
-        let found = super::across(body, &uses, request.edge)?
-            .ok_or(refused(request.edge, Reason::NotSolid))?;
-        let [a, b] = found.faces;
-        let (first, second) = match request.first {
-            None => (a, b),
-            Some(f) if f == a => (a, b),
-            Some(f) if f == b => (b, a),
-            Some(f) => {
-                return Err(BlendError::Refused {
-                    edge: Some(request.edge),
-                    face: Some(f),
-                    reason: Reason::NotAFace,
-                });
-            }
-        };
-        let convex = match found.turn {
-            super::Turn::Convex => true,
-            super::Turn::Concave => false,
-            super::Turn::Smooth => return Err(refused(request.edge, Reason::Smooth)),
-        };
-        let into = if first == a {
-            found.into
-        } else {
-            [found.into[1], found.into[0]]
-        };
+        let (faces, into, convex) = super::oriented(body, &uses, request)?;
         items.push(Item {
             request: *request,
-            faces: [first, second],
+            faces,
             into,
             convex,
         });

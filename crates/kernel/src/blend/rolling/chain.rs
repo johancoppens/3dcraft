@@ -42,17 +42,18 @@
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
 use super::super::{
-    BlendError, Reason, Size, Turn, Use, across, lost, refused, sine_at, vertex_edges,
+    BlendError, Reason, Size, Turn, Use, across, faces_of, lost, refused, sine_at, vertex_edges,
 };
 use super::{
-    Across, BEND, End, FOLLOW_DEPTH, Item, MAX_SAMPLES, Section, Shape, Side, Solver, Spine, Steps,
-    Stop, beyond_by, border, cut_back, cut_curve, edge_length, end_at, end_cut, first_section,
-    insert_cut, march_out, outward_from, refine, refuse, scale_of, tangent_or_refused,
+    Across, End, FOLLOW_DEPTH, Item, MAX_SAMPLES, Section, Shape, Side, Solver, Spine, Steps, Stop,
+    add_edge, add_face, add_vertex, bend, beyond_by, blend_loop, border, cut_back, cut_curve,
+    edge_length, end_at, end_cut, first_section, hang_borders, insert_cut, march_out, outward_from,
+    refine, refuse, scale_of, tangent_or_refused,
 };
 use crate::chamfer::ChamferSize;
 use craft3d_geom::{Curve3, NurbsCurve, NurbsSurface, Surface};
 use craft3d_math::{Tolerance, Vec3};
-use craft3d_topo::{Body, Coedge, Edge, EdgeId, FaceId, Loop, LoopId, Vertex, VertexId};
+use craft3d_topo::{Body, Edge, EdgeId, FaceId, VertexId};
 use std::collections::BTreeMap;
 
 mod meet;
@@ -190,13 +191,6 @@ fn vertex_of(data: &Edge, forward: bool, at_end: bool) -> VertexId {
     }
 }
 
-/// The faces of an edge, from its uses.
-fn faces_of(uses: &[Vec<Use>], edge: EdgeId) -> Option<[FaceId; 2]> {
-    let list = uses.get(edge.0 as usize)?;
-    let [a, b] = <[Use; 2]>::try_from(list.as_slice()).ok()?;
-    (a.face != b.face).then_some([a.face, b.face])
-}
-
 /// What is needed to read the body around a joint.
 struct Around<'a> {
     body: &'a Body,
@@ -320,12 +314,7 @@ impl Around<'_> {
                     Size::Chamfer(ChamferSize::Distances { first, second }) => first.max(second),
                     Size::Chamfer(ChamferSize::DistanceAngle { distance, .. }) => distance,
                 };
-                let bound = 10.0
-                    * self
-                        .tolerance
-                        .angular
-                        .max(BEND)
-                        .max(self.tolerance.linear / reach.abs().max(self.tolerance.linear));
+                let bound = 10.0 * bend(self.tolerance, reach.abs().max(self.tolerance.linear));
                 let at = body.vertex(vertex).ok_or_else(lost)?.point;
                 let smooth_here =
                     sine_at(body, self.uses, *smooth, at)?.is_some_and(|s| s <= bound);
@@ -819,16 +808,8 @@ pub(super) struct MeetEnd {
     edges: Vec<(EdgeId, bool)>,
 }
 
-fn sides_of<'a>(body: &'a Body, faces: [FaceId; 2]) -> Result<[Side<'a>; 2], BlendError> {
-    let side = |f: FaceId| -> Result<Side<'a>, BlendError> {
-        let face = body.face(f).ok_or_else(lost)?;
-        Ok(Side {
-            surface: &face.surface,
-            reversed: face.reversed,
-        })
-    };
-    let [a, b] = faces;
-    Ok([side(a)?, side(b)?])
+fn sides_of(body: &Body, [a, b]: [FaceId; 2]) -> Result<[Side<'_>; 2], BlendError> {
+    Ok([Side::of(body, a)?, Side::of(body, b)?])
 }
 
 /// The two sections are one ball (or one line), to well within the
@@ -995,14 +976,14 @@ fn compute(
                 first.edge,
                 first.faces,
                 vertex_of(fd, first.forward, false),
-                tolerance.angular.max(BEND).max(tolerance.linear / size),
+                bend(tolerance, size),
             )?,
             end_at(
                 body,
                 last.edge,
                 last.faces,
                 vertex_of(ld, last.forward, true),
-                tolerance.angular.max(BEND).max(tolerance.linear / size),
+                bend(tolerance, size),
             )?,
         ])
     };
@@ -1099,7 +1080,7 @@ fn compute(
     solved.first_mut().ok_or_else(lost)?.extend(back);
     // Each piece's surface.
     let limit = 0.25 * tol;
-    let bend = tolerance.angular.max(BEND).max(tol / size);
+    let bend = bend(tolerance, size);
     let mut made = Vec::with_capacity(n);
     for (i, list) in solved.iter_mut().enumerate() {
         list.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -1260,7 +1241,7 @@ fn smooth_joints(
 ) -> Result<(), BlendError> {
     let n = chain.pieces.len();
     let size = shape.size();
-    let limit = 10.0 * tolerance.angular.max(BEND).max(tolerance.linear / size);
+    let limit = 10.0 * bend(tolerance, size);
     for j in 0..chain.joints.len() {
         let (Some((a, _)), Some((b, _))) = (made.get(j), made.get((j + 1) % n)) else {
             return Err(lost());
@@ -1320,16 +1301,6 @@ fn splice_chain(
         })
         .collect::<Option<_>>()
         .ok_or_else(lost)?;
-    let new_vertex = |body: &mut Body, point: Vec3| -> Result<VertexId, BlendError> {
-        let id = VertexId(u32::try_from(body.vertices.len()).map_err(|_| lost())?);
-        body.vertices.push(Vertex { point });
-        Ok(id)
-    };
-    let new_edge = |body: &mut Body, edge: Edge| -> Result<EdgeId, BlendError> {
-        let id = EdgeId(u32::try_from(body.edges.len()).map_err(|_| lost())?);
-        body.edges.push(edge);
-        Ok(id)
-    };
     // The joints: the vertex to the first side's foot, a new one at the
     // second's, the smooth edge shortened.
     let mut joint_vertices = Vec::with_capacity(joints.len());
@@ -1338,7 +1309,7 @@ fn splice_chain(
         if let Some(v) = body.vertices.get_mut(joint.vertex.0 as usize) {
             v.point = w0;
         }
-        let added = new_vertex(body, w1)?;
+        let added = add_vertex(body, w1)?;
         if let (Some(switch), Some(t)) = (joint.switch, jm.touched) {
             let face = *first.faces.get(switch.side).ok_or_else(lost)?;
             let slot = body
@@ -1427,7 +1398,7 @@ fn splice_chain(
             start: a0,
             end: z0,
         };
-        second_borders.push(new_edge(
+        second_borders.push(add_edge(
             body,
             Edge {
                 curve: Curve3::Nurbs(b2),
@@ -1441,7 +1412,7 @@ fn splice_chain(
     let mut joint_edges = Vec::with_capacity(joints.len());
     for (jm, [v0, v1]) in joints.iter().zip(&joint_vertices) {
         let curve = section_curve(&jm.section).ok_or_else(lost)?;
-        joint_edges.push(new_edge(
+        joint_edges.push(add_edge(
             body,
             Edge {
                 curve: Curve3::Nurbs(curve),
@@ -1458,7 +1429,7 @@ fn splice_chain(
         for (index, (kind, [v0, v1])) in ends.iter().zip(&end_vertices).enumerate() {
             match kind {
                 EndKind::Third(em) => {
-                    let id = new_edge(
+                    let id = add_edge(
                         body,
                         Edge {
                             curve: Curve3::Nurbs(em.cut.clone()),
@@ -1485,41 +1456,16 @@ fn splice_chain(
     // chain goes against the edge's curve.
     let mut first_reversed = Vec::with_capacity(n);
     for (piece, second_border) in pieces.iter().zip(&second_borders) {
-        let mut found = None;
-        for (k, face) in piece.faces.iter().enumerate() {
-            let loops = body.face(*face).ok_or_else(lost)?.loops.clone();
-            let mut done = false;
-            for l in loops {
-                let ring = body.loops.get_mut(l.0 as usize).ok_or_else(lost)?;
-                for coedge in &mut ring.coedges {
-                    if coedge.edge != piece.edge {
-                        continue;
-                    }
-                    if k == 1 {
-                        coedge.edge = *second_border;
-                    }
-                    if !piece.forward {
-                        coedge.reversed = !coedge.reversed;
-                    }
-                    if k == 0 {
-                        found = Some(coedge.reversed);
-                    }
-                    done = true;
-                }
-            }
-            if !done {
-                return Err(lost());
-            }
-        }
-        first_reversed.push(found.ok_or_else(lost)?);
+        first_reversed.push(hang_borders(
+            body,
+            piece.edge,
+            piece.faces,
+            *second_border,
+            !piece.forward,
+        )?);
     }
     // The blend faces.
     let [own, _] = first.faces;
-    let shell = body
-        .shells
-        .iter()
-        .position(|s| s.faces.contains(&own))
-        .ok_or_else(lost)?;
     let mut faces = Vec::with_capacity(n);
     for (i, (piece, m)) in pieces.iter().zip(made).enumerate() {
         // From the first side's corner to the second's, at the start and
@@ -1538,43 +1484,20 @@ fn splice_chain(
         .ok_or_else(lost)?;
         let second_border = *second_borders.get(i).ok_or_else(lost)?;
         let reversed_first = *first_reversed.get(i).ok_or_else(lost)?;
-        let coedge = |edge: EdgeId, reversed: bool| Coedge { edge, reversed };
-        let forwards = |list: &[(EdgeId, bool)]| -> Vec<Coedge> {
-            list.iter().map(|(e, r)| coedge(*e, *r)).collect()
-        };
-        let backwards = |list: &[(EdgeId, bool)]| -> Vec<Coedge> {
-            list.iter().rev().map(|(e, r)| coedge(*e, !*r)).collect()
-        };
-        let mut coedges = Vec::with_capacity(4 + start_edges.len() + finish_edges.len());
-        if reversed_first {
-            // The first face runs the border backwards: this face forwards.
-            coedges.push(coedge(piece.edge, false));
-            coedges.extend(forwards(&finish_edges));
-            coedges.push(coedge(second_border, true));
-            coedges.extend(backwards(&start_edges));
-        } else {
-            coedges.push(coedge(piece.edge, true));
-            coedges.extend(forwards(&start_edges));
-            coedges.push(coedge(second_border, false));
-            coedges.extend(backwards(&finish_edges));
-        }
-        let ring = LoopId(u32::try_from(body.loops.len()).map_err(|_| lost())?);
-        body.loops.push(Loop { coedges });
+        let coedges = blend_loop(
+            piece.edge,
+            second_border,
+            reversed_first,
+            &start_edges,
+            &finish_edges,
+        );
         let PieceMade {
             surface,
             spans,
             outward,
         } = m;
         let [(u0, u1), _] = spans;
-        let (_, du, dv) = surface.derivatives(0.5 * (u0 + u1), 0.5);
-        let reversed = du.cross(dv).dot(outward) < 0.0;
-        let id = FaceId(u32::try_from(body.faces.len()).map_err(|_| lost())?);
-        body.faces.push(craft3d_topo::Face {
-            surface: Surface::Nurbs(surface),
-            reversed,
-            loops: vec![ring],
-        });
-        body.shells.get_mut(shell).ok_or_else(lost)?.faces.push(id);
+        let id = add_face(body, surface, vec![coedges], 0.5 * (u0 + u1), outward, own)?;
         faces.push((id, second_border));
     }
     Ok(faces)
@@ -2012,7 +1935,7 @@ fn along_spine(
                 piece.edge,
                 piece.faces,
                 vertex_of(data, piece.forward, at_end),
-                tolerance.angular.max(BEND).max(tolerance.linear / size),
+                bend(tolerance, size),
             )
             .map(Ending::Third),
         };
@@ -2024,13 +1947,7 @@ fn along_spine(
     let third_of = |end: &Ending| -> Result<Side<'_>, BlendError> {
         match end {
             Ending::Third(end) => end.side(body),
-            Ending::Meet { .. } => {
-                let face = body.face(end.third()).ok_or_else(lost)?;
-                Ok(Side {
-                    surface: &face.surface,
-                    reversed: face.reversed,
-                })
-            }
+            Ending::Meet { .. } => Side::of(body, end.third()),
         }
     };
     // Steps of up to two radii, or a 24th of the edge where that is
@@ -2210,7 +2127,7 @@ fn along_spine(
     }
     let mut made = Vec::with_capacity(n);
     let limit = 0.25 * tol;
-    let bend = tolerance.angular.max(BEND).max(tol / size);
+    let bend = bend(tolerance, size);
     let mut cut_ranges: [(f64, f64); 2] = [(0.0, 0.0); 2];
     for (i, ((list, params), path)) in kept.iter().zip(&paths).enumerate() {
         let before = if i > 0 {

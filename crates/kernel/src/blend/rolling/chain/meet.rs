@@ -38,11 +38,13 @@
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
 use super::super::super::{BlendError, Reason, lost, refused};
-use super::super::{Item, MAX_SAMPLES, Side, curve_through, proven_on, refuse};
+use super::super::{
+    Item, MAX_SAMPLES, Side, add_edge, add_vertex, curve_through, proven_on, refuse,
+};
 use super::{Chain, Computed, EndKind, Meet, MeetEnd, PieceMade, measure, prepare, splice_chain};
 use craft3d_geom::{Curve3, NurbsCurve, NurbsSurface, Surface};
 use craft3d_math::{Tolerance, Vec3};
-use craft3d_topo::{Body, Coedge, Edge, EdgeId, FaceId, Vertex, VertexId};
+use craft3d_topo::{Body, Coedge, Edge, EdgeId, FaceId, VertexId};
 
 /// One of the two fillets at a meet.
 #[derive(Clone, Copy)]
@@ -99,15 +101,6 @@ struct Made {
     at: [[f64; 2]; 2],
 }
 
-/// A face of the body as a side.
-fn side_of(body: &Body, face: FaceId) -> Result<Side<'_>, BlendError> {
-    let f = body.face(face).ok_or_else(lost)?;
-    Ok(Side {
-        surface: &f.surface,
-        reversed: f.reversed,
-    })
-}
-
 /// How far `p` lies outside a face (positive: out of what is kept; for a
 /// concave meet, what is kept is the empty side).
 fn beyond(side: Side<'_>, p: Vec3, sign: f64) -> Option<f64> {
@@ -130,7 +123,7 @@ fn beyond_fillet(body: &Body, arm: &Arm<'_>, p: Vec3, sign: f64, tol: f64) -> Op
             // in: they are kept (they leave what is kept where they meet
             // this arm's surface, which touches the face along its border).
             let face = *arm.faces.get(side)?;
-            Some(Some(beyond(side_of(body, face).ok()?, p, sign)? - tol))
+            Some(Some(beyond(Side::of(body, face).ok()?, p, sign)? - tol))
         } else {
             Some(None)
         }
@@ -439,7 +432,8 @@ fn work_out(
     let [a, b] = arms;
     // What arm `x` keeps: inside its far face and outside the other's
     // corner; and the two parts of that.
-    let far = |x: &Arm<'_>, p: Vec3| -> Option<f64> { beyond(side_of(body, x.far).ok()?, p, sign) };
+    let far =
+        |x: &Arm<'_>, p: Vec3| -> Option<f64> { beyond(Side::of(body, x.far).ok()?, p, sign) };
     let other = |x: usize| if x == 0 { b } else { a };
     let corner = |x: usize, p: Vec3| -> Option<f64> {
         Some(beyond_fillet(body, other(x), p, sign, tol)?.unwrap_or(f64::NEG_INFINITY))
@@ -672,9 +666,11 @@ pub(super) fn build_with(
                         .iter()
                         .position(|f| *f == meet.shared)
                         .ok_or_else(lost)?;
-                    let far_faces =
-                        super::faces_of(&super::super::super::edge_uses(body), meet.third)
-                            .ok_or_else(lost)?;
+                    let far_faces = super::super::super::faces_of(
+                        &super::super::super::edge_uses(body),
+                        meet.third,
+                    )
+                    .ok_or_else(lost)?;
                     let far = far_faces
                         .into_iter()
                         .find(|f| !p.faces.contains(f))
@@ -742,16 +738,6 @@ pub(super) fn build_with(
         }
     }
     // The vertices and edges of the meets.
-    let new_vertex = |body: &mut Body, point: Vec3| -> Result<VertexId, BlendError> {
-        let id = VertexId(u32::try_from(body.vertices.len()).map_err(|_| lost())?);
-        body.vertices.push(Vertex { point });
-        Ok(id)
-    };
-    let new_edge = |body: &mut Body, edge: Edge| -> Result<EdgeId, BlendError> {
-        let id = EdgeId(u32::try_from(body.edges.len()).map_err(|_| lost())?);
-        body.edges.push(edge);
-        Ok(id)
-    };
     // Per chain (in `computed`), what its two ends get from meets.
     let mut given: Vec<[Option<MeetEnd>; 2]> = vec![[None, None]; computed.len()];
     let mut finishing = Vec::with_capacity(mades.len());
@@ -760,12 +746,12 @@ pub(super) fn build_with(
         if let Some(v) = body.vertices.get_mut(q.0 as usize) {
             v.point = made.q;
         }
-        let r = new_vertex(body, made.r)?;
+        let r = add_vertex(body, made.r)?;
         let t = match made.long {
-            Some(_) => new_vertex(body, made.t)?,
+            Some(_) => add_vertex(body, made.t)?,
             None => r,
         };
-        let shared = new_edge(
+        let shared = add_edge(
             body,
             Edge {
                 curve: Curve3::Nurbs(made.shared.clone()),
@@ -775,7 +761,7 @@ pub(super) fn build_with(
             },
         )?;
         let cut = match &made.cut {
-            Some(curve) => Some(new_edge(
+            Some(curve) => Some(add_edge(
                 body,
                 Edge {
                     curve: Curve3::Nurbs(curve.clone()),
@@ -838,8 +824,9 @@ pub(super) fn build_with(
         if let (Some(long), Some(cut)) = (made.long, cut) {
             // The far face of the long arm is the other arm's own face.
             let _ = ends;
-            let far_faces = super::faces_of(&super::super::super::edge_uses(body), meet.third)
-                .ok_or_else(lost)?;
+            let far_faces =
+                super::super::super::faces_of(&super::super::super::edge_uses(body), meet.third)
+                    .ok_or_else(lost)?;
             let long_item = meet.items.get(long).ok_or_else(lost)?;
             let long_faces = items.get(*long_item).ok_or_else(lost)?.faces;
             let far = far_faces

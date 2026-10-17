@@ -68,10 +68,10 @@
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
 use super::super::{BlendError, Reason, Use, edge_uses, lost, sine_at};
-use super::{BEND, End, Section, Shape, Side, faces_of_edge, refuse};
+use super::{End, Section, Shape, Side, bend, faces_of_edge, refuse};
 use craft3d_geom::NurbsSurface;
 use craft3d_math::{Tolerance, Vec3};
-use craft3d_topo::{Body, Coedge, Edge, EdgeId, FaceId, Vertex, VertexId};
+use craft3d_topo::{Body, Coedge, Edge, EdgeId, FaceId, VertexId};
 
 /// Samples along a crossed edge in which the change from inside to
 /// outside is looked for, and the bisection steps that find it.
@@ -293,7 +293,7 @@ pub(super) fn find(
     let size = blend.shape.size();
     // Tangent where it is crossed as closely as a blend's own tangency
     // across a joint is measured: ten times what its faces are refined to.
-    let bound = 10.0 * tolerance.angular.max(BEND).max(tol / size);
+    let bound = 10.0 * bend(tolerance, size);
     // Which faces use which edge: only once a candidate is found.
     let uses: std::cell::OnceCell<Vec<Vec<Use>>> = std::cell::OnceCell::new();
     let mut found: Vec<Crossing> = Vec::new();
@@ -564,8 +564,7 @@ pub(super) fn carry(
             if others_at(body, c.inside, c.smooth) {
                 return Err(runs_over());
             }
-            let x = VertexId(u32::try_from(body.vertices.len()).map_err(|_| lost())?);
-            body.vertices.push(Vertex { point });
+            let x = super::add_vertex(body, point)?;
             super::shorten(body, c.smooth, c.inside, x, at.t)?;
             switched.push((x, c.smooth));
             let id = if mine_pieces.is_empty() {

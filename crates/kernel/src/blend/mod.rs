@@ -480,6 +480,18 @@ fn edge_uses(body: &Body) -> Vec<Vec<Use>> {
     uses
 }
 
+/// The two uses of `edge` by two different faces: `None` for an edge that
+/// is not between two faces (a seam, the border of a sheet, no edge).
+fn two_faces(uses: &[Vec<Use>], edge: EdgeId) -> Option<[Use; 2]> {
+    let [a, b] = <[Use; 2]>::try_from(uses.get(edge.0 as usize)?.as_slice()).ok()?;
+    (a.face != b.face).then_some([a, b])
+}
+
+/// The two faces of `edge` (see [`two_faces`]).
+fn faces_of(uses: &[Vec<Use>], edge: EdgeId) -> Option<[FaceId; 2]> {
+    two_faces(uses, edge).map(|[a, b]| [a.face, b.face])
+}
+
 /// Per vertex, the edges that end in it.
 fn vertex_edges(body: &Body) -> Vec<Vec<EdgeId>> {
     let mut edges: Vec<Vec<EdgeId>> = vec![Vec::new(); body.vertices.len()];
@@ -549,18 +561,9 @@ fn sine_at(
     edge: EdgeId,
     point: Vec3,
 ) -> Result<Option<f64>, BlendError> {
-    let Some(data) = body.edge(edge) else {
+    let (Some(data), Some([a, b])) = (body.edge(edge), two_faces(uses, edge)) else {
         return Ok(None);
     };
-    let Some([a, b]) = uses
-        .get(edge.0 as usize)
-        .and_then(|list| <[Use; 2]>::try_from(list.as_slice()).ok())
-    else {
-        return Ok(None);
-    };
-    if a.face == b.face {
-        return Ok(None);
-    }
     let t = data.curve.project(point)?;
     let at = data.curve.eval(t);
     let (na, nb) = (outward(body, a.face, at)?, outward(body, b.face, at)?);
@@ -573,18 +576,9 @@ fn sine_at(
 }
 
 fn across(body: &Body, uses: &[Vec<Use>], edge: EdgeId) -> Result<Option<Across>, BlendError> {
-    let Some(data) = body.edge(edge) else {
+    let (Some(data), Some([a, b])) = (body.edge(edge), two_faces(uses, edge)) else {
         return Ok(None);
     };
-    let Some([a, b]) = uses
-        .get(edge.0 as usize)
-        .and_then(|list| <[Use; 2]>::try_from(list.as_slice()).ok())
-    else {
-        return Ok(None);
-    };
-    if a.face == b.face {
-        return Ok(None);
-    }
     let middle = 0.5 * (data.range.0 + data.range.1);
     let point = data.curve.eval(middle);
     let along = tangent(&data.curve, middle)?;
@@ -790,9 +784,19 @@ fn about_axis(surface: &Surface, centre: Vec3, axis: Vec3, tol: f64, radius: f64
     }
 }
 
-fn plan(body: &Body, uses: &[Vec<Use>], request: &Request, tol: f64) -> Result<Plan, BlendError> {
+/// The faces of the requested edge, the first one first, the directions
+/// into them from its middle and whether it is convex; refused for an
+/// edge that is not one of the solid between two faces that meet at an
+/// angle, or a first face that is not one of its two.
+fn oriented(
+    body: &Body,
+    uses: &[Vec<Use>],
+    request: &Request,
+) -> Result<([FaceId; 2], [Vec3; 2], bool), BlendError> {
     let edge = request.edge;
-    let data = body.edge(edge).ok_or(refused(edge, Reason::NotAnEdge))?;
+    if body.edge(edge).is_none() {
+        return Err(refused(edge, Reason::NotAnEdge));
+    }
     let Some(found) = across(body, uses, edge)? else {
         return Err(refused(edge, Reason::NotSolid));
     };
@@ -815,6 +819,13 @@ fn plan(body: &Body, uses: &[Vec<Use>], request: &Request, tol: f64) -> Result<P
         Turn::Concave => false,
         Turn::Smooth => return Err(refused(edge, Reason::Smooth)),
     };
+    Ok((faces, into, convex))
+}
+
+fn plan(body: &Body, uses: &[Vec<Use>], request: &Request, tol: f64) -> Result<Plan, BlendError> {
+    let edge = request.edge;
+    let (faces, into, convex) = oriented(body, uses, request)?;
+    let data = body.edge(edge).ok_or_else(lost)?;
     let surfaces = [
         &body.face(faces[0]).ok_or_else(lost)?.surface,
         &body.face(faces[1]).ok_or_else(lost)?.surface,
@@ -2877,11 +2888,7 @@ fn chain_of(
 ) -> Result<Option<Vec<(EdgeId, FaceId)>>, BlendError> {
     let uses = edge_uses(body);
     let at = vertex_edges(body);
-    let faces = |edge: EdgeId| -> Option<[FaceId; 2]> {
-        let list = uses.get(edge.0 as usize)?;
-        let [a, b] = <[Use; 2]>::try_from(list.as_slice()).ok()?;
-        (a.face != b.face).then_some([a.face, b.face])
-    };
+    let faces = |edge: EdgeId| faces_of(&uses, edge);
     let Some(own) = faces(edge) else {
         return Ok(None);
     };
