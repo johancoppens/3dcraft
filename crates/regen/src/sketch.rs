@@ -68,12 +68,6 @@ pub struct SketchResult {
     /// the document stores with the coordinates
     /// ([`craft3d_doc::Sketch::image_places`]).
     pub image_places: Vec<ImagePlace>,
-    /// What the user should know about how the sketch solved although it
-    /// solved (today: that it could be carried along only part of the way
-    /// from where its image points were to where they are now). It belongs
-    /// to this solve: once the result is stored, the next solve starts
-    /// from it and does not repeat it.
-    pub warnings: Vec<String>,
 }
 
 impl SketchResult {
@@ -1132,7 +1126,6 @@ pub(crate) fn solve_sketch(
             radii: radii.clone(),
             patterns: patterns.clone(),
             image_places: Vec::new(),
-            warnings: Vec::new(),
         };
         (Status::Failed(reason), Some(result))
     };
@@ -1150,6 +1143,14 @@ pub(crate) fn solve_sketch(
         Ok(solution) => solution,
         Err(error) => return unsolved(explain(&error, &problem)),
     };
+    // A solution the sketch was not carried to all the way may lie on
+    // another root than the one it was on (folded over), and which one it
+    // found would depend on the path of edits: the sketch fails and nothing
+    // of the solve is kept (the developer's decision of 2026-10-17). The
+    // solve's own verdict comes first (below): a conflict is not fixed by
+    // a smaller step.
+    // (Made here, while the stored coordinates are at hand.)
+    let carry_failed = carry_failure(solution.carry.as_ref(), &problem, sketch).map(unsolved);
 
     let mut points = Vec::new();
     let mut radii = Vec::new();
@@ -1291,6 +1292,16 @@ pub(crate) fn solve_sketch(
             list(many)
         )),
     };
+    let status = match (status, carry_failed) {
+        (status, None) => status,
+        (Status::Ok, Some(failed)) => return failed,
+        // The sketch fails for a reason of its own; that is the one to
+        // fix, and nothing is stored either way (`clean`).
+        (Status::Failed(reason), Some(_)) => Status::Failed(format!(
+            "{reason} (nor could the sketch be carried along all the way to where its image points are now)"
+        )),
+        (status, Some(_)) => status,
+    };
     // The places of the image points with the numbers of their maps: the
     // next solve carries the sketch along from them when an edit moves
     // them.
@@ -1320,16 +1331,6 @@ pub(crate) fn solve_sketch(
             finite.then_some(place)
         })
         .collect();
-    let warnings = match &solution.carry {
-        None | Some(solve::Carried::Whole) => Vec::new(),
-        Some(solve::Carried::Stopped { reached }) => vec![format!(
-            "the sketch could be carried along only {:.1}% of the way from where its image points were to where they are now; it was solved from there and may have found another solution than the one it was on",
-            reached * 100.0
-        )],
-        Some(solve::Carried::Skipped { reason }) => vec![format!(
-            "the sketch was not carried along to where its image points are now: {reason}"
-        )],
-    };
     let result = SketchResult {
         origin,
         x_axis,
@@ -1341,9 +1342,74 @@ pub(crate) fn solve_sketch(
         radii,
         patterns,
         image_places,
-        warnings,
     };
     (status, Some(result))
+}
+
+/// Why a solve the sketch was not carried to all the way cannot be used,
+/// or `None` when it was carried all the way or nothing had to be.
+fn carry_failure(
+    carry: Option<&solve::Carried>,
+    problem: &Problem,
+    sketch: &Sketch,
+) -> Option<String> {
+    let images = |moved: &[solve::EntityId]| {
+        let named: Vec<String> = moved
+            .iter()
+            .filter_map(|id| problem.entities.get(id.index()))
+            .take(3)
+            .map(|id| {
+                match sketch
+                    .entities
+                    .iter()
+                    .find(|e| e.id == *id)
+                    .map(|e| &e.geometry)
+                {
+                    Some(Geometry::Image { of, index, .. }) => format!("{id} = {of}[{index}]"),
+                    _ => id.to_string(),
+                }
+            })
+            .collect();
+        let more = moved.len().saturating_sub(named.len());
+        let listed = if more > 0 {
+            format!("{} and {more} more", named.join(", "))
+        } else {
+            named.join(", ")
+        };
+        if moved.len() == 1 {
+            format!("image point {listed} went from where it was to where its pattern puts it now")
+        } else {
+            format!(
+                "image points {listed} went from where they were to where their patterns put them now"
+            )
+        }
+    };
+    const FOLDED: &str = "solving from anywhere else could find another solution than the one the sketch was on (folded over it), so the sketch is not solved and keeps its coordinates";
+    match carry? {
+        solve::Carried::Whole => None,
+        solve::Carried::Stopped {
+            reached,
+            moved,
+            out_of_work: false,
+        } => Some(format!(
+            "the sketch could be carried along only {:.1}% of the way as {}: past there its constraints have no solution that moves with the images; {FOLDED}; make the change in smaller steps, or change the constraints on the geometry that hangs on the images",
+            reached * 100.0,
+            images(moved)
+        )),
+        solve::Carried::Stopped {
+            reached,
+            moved,
+            out_of_work: true,
+        } => Some(format!(
+            "carrying the sketch along as {} ran out of work {:.1}% of the way; {FOLDED}; make the change in smaller steps",
+            images(moved),
+            reached * 100.0
+        )),
+        solve::Carried::Skipped { reason, moved } => Some(format!(
+            "the sketch could not be carried along as {}: {reason}; {FOLDED}; make the change in smaller steps, or use other constraints on the images (each on fewer image points)",
+            images(moved)
+        )),
+    }
 }
 
 /// The places of image points a document lacks (a file written before
@@ -1433,17 +1499,12 @@ fn clean(result: &SketchResult) -> bool {
             .iter()
             .all(|p| p.chain != Some(ConstraintState::Conflicting))
 }
-// A solution the sketch was carried to only part of the way (a warning) is
-// stored when it is otherwise clean: the path may have met a passing
-// singularity (a line through zero length half way), and keeping the old
-// state would carry every later edit from it again and warn again. The
-// warning belongs to the solve that carried; the next one starts from the
-// stored state, where no image has moved. (Decided by the coordinator on
-// 2026-10-17, for the developer to confirm.)
 
 /// Solves every sketch and stores the solution in the document, so the
 /// next solve starts from it. A sketch that cannot be solved, or only with
-/// a constraint left out as conflicting, keeps its coordinates. Returns
+/// a constraint left out as conflicting, or that could not be carried
+/// along all the way to where its image points are now, keeps its
+/// coordinates and image places. Returns
 /// true when anything moved.
 pub fn settle_sketches(doc: &mut Document) -> bool {
     settle_sketches_cached(doc, &mut crate::RegenCache::default())
@@ -1452,35 +1513,19 @@ pub fn settle_sketches(doc: &mut Document) -> bool {
 /// [`settle_sketches`], solving only the sketches that have changed since
 /// `cache` last saw them solved. The outcome is the same.
 pub fn settle_sketches_cached(doc: &mut Document, cache: &mut crate::RegenCache) -> bool {
-    settle_sketches_noted(doc, cache).0
-}
-
-/// [`settle_sketches_cached`], with the warnings of the solves it made, each
-/// after the sketch it is about (`F3: ...`): what the edit that called it
-/// should report, since the next solve of a stored sketch starts from the
-/// stored state and does not repeat them.
-pub fn settle_sketches_noted(
-    doc: &mut Document,
-    cache: &mut crate::RegenCache,
-) -> (bool, Vec<String>) {
     let Ok(table) = doc.variable_table() else {
-        return (false, Vec::new());
+        return false;
     };
     let variables = table.evaluate();
     let mut solved = Vec::new();
-    let mut warnings = Vec::new();
     for (index, feature) in doc.features.iter().enumerate() {
         if let FeatureKind::Sketch(sketch) = &feature.kind
             && !feature.suppressed
             // Where the sketch lies does not change how it solves.
             && let (_, Some(result)) = cache.solve(feature.id, doc, &variables, sketch)
+            && clean(&result)
         {
-            for warning in &result.warnings {
-                warnings.push(format!("{}: {warning}", feature.id));
-            }
-            if clean(&result) {
-                solved.push((index, result));
-            }
+            solved.push((index, result));
         }
     }
     let mut moved = false;
@@ -1525,5 +1570,5 @@ pub fn settle_sketches_noted(
             }
         }
     }
-    (moved, warnings)
+    moved
 }
