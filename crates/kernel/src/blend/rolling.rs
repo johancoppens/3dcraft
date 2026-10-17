@@ -597,7 +597,17 @@ struct End {
     across: [Option<EdgeId>; 2],
 }
 
-/// Per face, its edges; per edge, its faces.
+/// The edges of `body` that end at `vertex`, but `except`, in order.
+fn edges_at(body: &Body, vertex: VertexId, except: EdgeId) -> Vec<EdgeId> {
+    body.edges
+        .iter()
+        .enumerate()
+        .filter(|(i, e)| *i != except.0 as usize && (e.start == vertex || e.end == vertex))
+        .map(|(i, _)| EdgeId(u32::try_from(i).unwrap_or(u32::MAX)))
+        .collect()
+}
+
+/// The faces whose loops use `edge`, in order.
 fn faces_of_edge(body: &Body, edge: EdgeId) -> Vec<FaceId> {
     let mut found = Vec::new();
     for (index, face) in body.faces.iter().enumerate() {
@@ -625,14 +635,7 @@ fn end_at(
     vertex: VertexId,
     bound: f64,
 ) -> Result<End, BlendError> {
-    let at: Vec<EdgeId> = body
-        .edges
-        .iter()
-        .enumerate()
-        .filter(|(_, e)| e.start == vertex || e.end == vertex)
-        .map(|(i, _)| EdgeId(u32::try_from(i).unwrap_or(u32::MAX)))
-        .collect();
-    let others: Vec<EdgeId> = at.iter().copied().filter(|e| *e != edge).collect();
+    let others = edges_at(body, vertex, edge);
     let [x, y] = others.as_slice() else {
         return Err(refuse(edge, None, Reason::FreeEnd));
     };
@@ -700,7 +703,7 @@ fn goes_on(body: &Body, edge: EdgeId, vertex: VertexId, others: [EdgeId; 2]) -> 
     };
     others
         .into_iter()
-        .any(|o| leaving(o).is_some_and(|l| -back.dot(l) > 1.0 - 1e-9))
+        .any(|o| leaving(o).is_some_and(|l| super::straight_on(-back, l)))
 }
 
 /// Whether the edge, continued past its end at `vertex`, runs into the
@@ -1015,7 +1018,19 @@ fn crossing(
         };
     };
     let (start, inner) = found;
-    let g = |s: f64| third.signed(surface.eval(s, v), start).map(|x| x.0);
+    sign_change(
+        |s: f64| third.signed(surface.eval(s, v), start).map(|x| x.0),
+        inner,
+        outer,
+        scale,
+    )
+}
+
+/// Where `g` goes from below zero (at `inner`) to above (at `outer`), by
+/// bisection: `None` unless it does. A point where `g` is zero to
+/// rounding (of numbers about `scale`) is the place itself, not the middle
+/// of what is left of the bracket.
+fn sign_change(g: impl Fn(f64) -> Option<f64>, inner: f64, outer: f64, scale: f64) -> Option<f64> {
     let (mut lo, mut hi) = (inner, outer);
     let (mut glo, ghi) = (g(lo)?, g(hi)?);
     if !(glo < 0.0 && ghi > 0.0) {
@@ -1031,8 +1046,6 @@ fn crossing(
             hi = mid;
         }
         if glo.abs() <= 1e-15 * scale {
-            // On the surface already: that is the crossing, not the
-            // middle of what is left of the bracket.
             return Some(lo);
         }
         if (hi - lo).abs() <= 1e-15 * (1.0 + mid.abs()) {
@@ -1167,13 +1180,7 @@ fn blend_one(
     let tol = tolerance.linear;
     let data = body.edge(edge).ok_or_else(lost)?.clone();
     let closed = data.start == data.end;
-    if closed
-        && body
-            .edges
-            .iter()
-            .enumerate()
-            .any(|(i, e)| i != edge.0 as usize && (e.start == data.start || e.end == data.start))
-    {
+    if closed && !edges_at(body, data.start, edge).is_empty() {
         // A ring whose vertex other edges share (a seam through it).
         return Err(refuse(edge, None, Reason::FreeClosed));
     }
@@ -1928,19 +1935,13 @@ fn tangent_along(
         let limit = 10.0 * bend(tolerance, radius);
         for &(border, face) in borders {
             let data = body.edge(border).ok_or_else(lost)?;
-            let (own, other) = (
-                body.face(blend_face).ok_or_else(lost)?,
-                body.face(face).ok_or_else(lost)?,
-            );
+            body.face(blend_face).ok_or_else(lost)?;
+            body.face(face).ok_or_else(lost)?;
             for k in 1..8 {
                 let t = data.range.0 + (data.range.1 - data.range.0) * f64::from(k) / 8.0;
                 let p = data.curve.eval(t);
-                let normal = |f: &craft3d_topo::Face| -> Option<Vec3> {
-                    let (u, v) = f.surface.project(p).ok()?;
-                    let n = f.surface.normal(u, v)?;
-                    Some(if f.reversed { -n } else { n })
-                };
-                let (Some(a), Some(b)) = (normal(own), normal(other)) else {
+                let normal = |f: FaceId| super::outward(body, f, p).ok();
+                let (Some(a), Some(b)) = (normal(blend_face), normal(face)) else {
                     return Err(refuse(edge, Some(face), Reason::NotTangent));
                 };
                 if !(a.cross(b).length() <= limit && a.dot(b) > 0.0) {
@@ -2724,14 +2725,7 @@ fn walk_on(
         if far == near || far == from {
             return None;
         }
-        let at: Vec<EdgeId> = body
-            .edges
-            .iter()
-            .enumerate()
-            .filter(|(_, e)| e.start == far || e.end == far)
-            .map(|(i, _)| EdgeId(u32::try_from(i).unwrap_or(u32::MAX)))
-            .collect();
-        let rest: Vec<EdgeId> = at.iter().copied().filter(|e| *e != current).collect();
+        let rest = edges_at(body, far, current);
         let next = match rest.as_slice() {
             [next] => *next,
             // The smooth edge leaves here: the boundary goes on between
@@ -3204,6 +3198,26 @@ fn behind_all(
     Ok(())
 }
 
+/// Of the entities flagged `used`, per one left the index it had, and per
+/// old index its new one (`u32::MAX` for one dropped).
+fn renumbered(used: &[bool]) -> (Vec<usize>, Vec<u32>) {
+    let was: Vec<usize> = (0..used.len())
+        .filter(|i| used.get(*i).copied().unwrap_or(false))
+        .collect();
+    let mut now = vec![u32::MAX; used.len()];
+    for (index, &old) in was.iter().enumerate() {
+        if let Some(slot) = now.get_mut(old) {
+            *slot = u32::try_from(index).unwrap_or(u32::MAX);
+        }
+    }
+    (was, now)
+}
+
+/// The new index of `old` in `now` (see [`renumbered`]).
+fn new_index(now: &[u32], old: u32) -> u32 {
+    now.get(old as usize).copied().unwrap_or(u32::MAX)
+}
+
 /// Drops the edges no loop uses and the vertices no edge has (what a
 /// blend took whole, see [`cut_back`]), keeping the order of the rest;
 /// per edge and per vertex left, the index it had.
@@ -3216,9 +3230,7 @@ fn compact(body: &mut Body) -> (Vec<usize>, Vec<usize>) {
             }
         }
     }
-    let edge_was: Vec<usize> = (0..body.edges.len())
-        .filter(|i| used_edge.get(*i).copied().unwrap_or(false))
-        .collect();
+    let (edge_was, edge_now) = renumbered(&used_edge);
     let mut used_vertex = vec![false; body.vertices.len()];
     for &i in &edge_was {
         if let Some(edge) = body.edges.get(i) {
@@ -3229,32 +3241,16 @@ fn compact(body: &mut Body) -> (Vec<usize>, Vec<usize>) {
             }
         }
     }
-    let vertex_was: Vec<usize> = (0..body.vertices.len())
-        .filter(|i| used_vertex.get(*i).copied().unwrap_or(false))
-        .collect();
+    let (vertex_was, vertex_now) = renumbered(&used_vertex);
     if edge_was.len() == body.edges.len() && vertex_was.len() == body.vertices.len() {
         return (edge_was, vertex_was);
     }
-    let mut edge_now = vec![u32::MAX; body.edges.len()];
-    for (now, &was) in edge_was.iter().enumerate() {
-        if let Some(slot) = edge_now.get_mut(was) {
-            *slot = u32::try_from(now).unwrap_or(u32::MAX);
-        }
-    }
-    let mut vertex_now = vec![u32::MAX; body.vertices.len()];
-    for (now, &was) in vertex_was.iter().enumerate() {
-        if let Some(slot) = vertex_now.get_mut(was) {
-            *slot = u32::try_from(now).unwrap_or(u32::MAX);
-        }
-    }
-    let vertex_id =
-        |v: VertexId| VertexId(vertex_now.get(v.0 as usize).copied().unwrap_or(u32::MAX));
     body.edges = edge_was
         .iter()
         .filter_map(|&i| body.edges.get(i).cloned())
         .map(|mut edge| {
-            edge.start = vertex_id(edge.start);
-            edge.end = vertex_id(edge.end);
+            edge.start = VertexId(new_index(&vertex_now, edge.start.0));
+            edge.end = VertexId(new_index(&vertex_now, edge.end.0));
             edge
         })
         .collect();
@@ -3264,12 +3260,7 @@ fn compact(body: &mut Body) -> (Vec<usize>, Vec<usize>) {
         .collect();
     for ring in &mut body.loops {
         for coedge in &mut ring.coedges {
-            coedge.edge = EdgeId(
-                edge_now
-                    .get(coedge.edge.0 as usize)
-                    .copied()
-                    .unwrap_or(u32::MAX),
-            );
+            coedge.edge = EdgeId(new_index(&edge_now, coedge.edge.0));
         }
     }
     (edge_was, vertex_was)
@@ -3287,17 +3278,9 @@ fn compact_faces(body: &mut Body) -> Vec<usize> {
             }
         }
     }
-    let face_was: Vec<usize> = (0..body.faces.len())
-        .filter(|i| kept.get(*i).copied().unwrap_or(false))
-        .collect();
+    let (face_was, face_now) = renumbered(&kept);
     if face_was.len() == body.faces.len() {
         return face_was;
-    }
-    let mut face_now = vec![u32::MAX; body.faces.len()];
-    for (now, &was) in face_was.iter().enumerate() {
-        if let Some(slot) = face_now.get_mut(was) {
-            *slot = u32::try_from(now).unwrap_or(u32::MAX);
-        }
     }
     body.faces = face_was
         .iter()
@@ -3305,7 +3288,7 @@ fn compact_faces(body: &mut Body) -> Vec<usize> {
         .collect();
     for shell in &mut body.shells {
         for face in &mut shell.faces {
-            *face = FaceId(face_now.get(face.0 as usize).copied().unwrap_or(u32::MAX));
+            *face = FaceId(new_index(&face_now, face.0));
         }
     }
     // The loops the faces left have, in their order.
@@ -3317,22 +3300,14 @@ fn compact_faces(body: &mut Body) -> Vec<usize> {
             }
         }
     }
-    let loop_was: Vec<usize> = (0..body.loops.len())
-        .filter(|i| used.get(*i).copied().unwrap_or(false))
-        .collect();
-    let mut loop_now = vec![u32::MAX; body.loops.len()];
-    for (now, &was) in loop_was.iter().enumerate() {
-        if let Some(slot) = loop_now.get_mut(was) {
-            *slot = u32::try_from(now).unwrap_or(u32::MAX);
-        }
-    }
+    let (loop_was, loop_now) = renumbered(&used);
     body.loops = loop_was
         .iter()
         .filter_map(|&i| body.loops.get(i).cloned())
         .collect();
     for face in &mut body.faces {
         for l in &mut face.loops {
-            *l = LoopId(loop_now.get(l.0 as usize).copied().unwrap_or(u32::MAX));
+            *l = LoopId(new_index(&loop_now, l.0));
         }
     }
     face_was

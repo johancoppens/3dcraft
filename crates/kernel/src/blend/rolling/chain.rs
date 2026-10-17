@@ -191,6 +191,14 @@ fn vertex_of(data: &Edge, forward: bool, at_end: bool) -> VertexId {
     }
 }
 
+/// Whether two edges whose directions through their common vertex make
+/// the angle with `cosine` go on into each other: within the angular
+/// tolerance, or straight on as [`super::super::tangent_chain`] has it.
+fn continues(cosine: f64, tolerance: &Tolerance) -> bool {
+    let cosine = cosine.clamp(-1.0, 1.0);
+    cosine > 1.0 - 1e-9 || cosine.acos() <= tolerance.angular
+}
+
 /// What is needed to read the body around a joint.
 struct Around<'a> {
     body: &'a Body,
@@ -225,8 +233,7 @@ impl Around<'_> {
         ) else {
             return Err(meet());
         };
-        let cosine = out.dot(on).clamp(-1.0, 1.0);
-        if !(cosine > 1.0 - 1e-9 || cosine.acos() <= self.tolerance.angular) {
+        if !continues(out.dot(on), self.tolerance) {
             return Err(meet());
         }
         let p_convex = self.items.get(p.item).ok_or_else(lost)?.convex;
@@ -397,10 +404,7 @@ pub(super) fn group(
             Ok(direction(data, data.start == *vertex, false))
         };
         let tangent = match (leaving(*a)?, leaving(*b)?) {
-            (Some(da), Some(db)) => {
-                let cosine = (-da.dot(db)).clamp(-1.0, 1.0);
-                cosine > 1.0 - 1e-9 || cosine.acos() <= tolerance.angular
-            }
+            (Some(da), Some(db)) => continues(-da.dot(db), tolerance),
             _ => false,
         };
         if tangent {
@@ -839,30 +843,22 @@ fn apart(a: &Section, b: &Section) -> Option<f64> {
     Some(most)
 }
 
-/// Works out the blend faces of `chain` on `body` (unchanged), with the
-/// sections in planes across the edges (a chamfer's, whose lines depend
-/// on those planes).
-#[allow(clippy::too_many_lines)]
-fn compute(
-    body: &Body,
-    chain: &Chain,
-    items: &[Item],
-    tolerance: &Tolerance,
-) -> Result<Computed, BlendError> {
-    let tol = tolerance.linear;
-    let pieces = &chain.pieces;
-    let n = pieces.len();
-    let first = *pieces.first().ok_or_else(lost)?;
-    let edge = first.edge;
-    let unsolvable = || refuse(edge, None, Reason::FreeSurface);
-    let shape = first.shape;
-    let size = shape.size();
-    let convex = items.get(first.item).ok_or_else(lost)?.convex;
-    let datas: Vec<&Edge> = pieces
+/// What both ways of working out a chain start from: per piece its edge
+/// and its two sides, and the size of the numbers about them.
+struct Laid<'a> {
+    datas: Vec<&'a Edge>,
+    sides: Vec<[Side<'a>; 2]>,
+    scale: f64,
+}
+
+fn lay<'a>(body: &'a Body, chain: &Chain, size: f64, tol: f64) -> Result<Laid<'a>, BlendError> {
+    let datas: Vec<&Edge> = chain
+        .pieces
         .iter()
         .map(|p| body.edge(p.edge).ok_or_else(lost))
         .collect::<Result<_, _>>()?;
-    let sides: Vec<[Side<'_>; 2]> = pieces
+    let sides: Vec<[Side<'_>; 2]> = chain
+        .pieces
         .iter()
         .map(|p| sides_of(body, p.faces))
         .collect::<Result<_, _>>()?;
@@ -870,11 +866,56 @@ fn compute(
         .iter()
         .map(|d| scale_of(d, size, tol))
         .fold(tol, f64::max);
+    Ok(Laid {
+        datas,
+        sides,
+        scale,
+    })
+}
+
+/// The planes across a piece's edge, followed the chain's way, turning
+/// into `joints` at its ends over `turn` of it.
+fn piece_spine<'a>(
+    data: &'a Edge,
+    forward: bool,
+    joints: [Option<Across>; 2],
+    turn: f64,
+) -> Spine<'a> {
+    Spine {
+        curve: &data.curve,
+        range: if forward {
+            data.range
+        } else {
+            (data.range.1, data.range.0)
+        },
+        closed: false,
+        joints,
+        turn,
+    }
+}
+
+/// A ball where a face changes at a joint: the section against the faces
+/// before and after it, and the smooth edge's parameter where it touches.
+type Switched = Option<(Section, Section, f64)>;
+
+/// Per joint of `chain`, the plane its shared section lies in (across
+/// the edges at the vertex, or the plane of the ball found on the smooth
+/// edge where a face changes: [`switch_ball`]), with that ball.
+fn joint_planes(
+    body: &Body,
+    chain: &Chain,
+    datas: &[&Edge],
+    sides: &[[Side<'_>; 2]],
+    shape: Shape,
+    scale: f64,
+) -> Result<(Vec<Across>, Vec<Switched>), BlendError> {
+    let pieces = &chain.pieces;
+    let n = pieces.len();
+    let edge = pieces.first().ok_or_else(lost)?.edge;
+    let unsolvable = || refuse(edge, None, Reason::FreeSurface);
     let after = |j: usize| (j + 1) % n;
-    // The planes of the joints, and the shared sections where a face
-    // changes.
     let mut planes = Vec::with_capacity(chain.joints.len());
-    let mut switched: Vec<Option<(Section, Section, f64)>> = Vec::with_capacity(chain.joints.len());
+    let mut switched = Vec::with_capacity(chain.joints.len());
     for (j, joint) in chain.joints.iter().enumerate() {
         let (p, q) = (
             pieces.get(j).ok_or_else(lost)?,
@@ -918,17 +959,68 @@ fn compute(
             }
         }
     }
+    Ok((planes, switched))
+}
+
+/// Where the cut at end `index` (0 the start, 1 the end) of a piece
+/// meets its borders, `at`: the borders' spans end there.
+fn cut_spans(spans: &mut [(f64, f64); 2], index: usize, at: [f64; 2]) {
+    for (span, s) in spans.iter_mut().zip(at) {
+        if index == 0 {
+            span.0 = s;
+        } else {
+            span.1 = s;
+        }
+    }
+}
+
+/// Every border of every piece keeps a piece between its cuts: a blend
+/// whose cuts cross is too large for that face.
+fn spans_left(pieces: &[Piece], made: &[PieceMade]) -> Result<(), BlendError> {
+    for (piece, m) in pieces.iter().zip(made) {
+        for (k, (a, b)) in m.spans.iter().enumerate() {
+            if !(b > a) {
+                let face = *piece.faces.get(k).ok_or_else(lost)?;
+                return Err(refuse(piece.edge, Some(face), Reason::FreeTooLarge));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Works out the blend faces of `chain` on `body` (unchanged), with the
+/// sections in planes across the edges (a chamfer's, whose lines depend
+/// on those planes).
+#[allow(clippy::too_many_lines)]
+fn compute(
+    body: &Body,
+    chain: &Chain,
+    items: &[Item],
+    tolerance: &Tolerance,
+) -> Result<Computed, BlendError> {
+    let tol = tolerance.linear;
+    let pieces = &chain.pieces;
+    let n = pieces.len();
+    let first = *pieces.first().ok_or_else(lost)?;
+    let edge = first.edge;
+    let unsolvable = || refuse(edge, None, Reason::FreeSurface);
+    let shape = first.shape;
+    let size = shape.size();
+    let convex = items.get(first.item).ok_or_else(lost)?.convex;
+    let Laid {
+        datas,
+        sides,
+        scale,
+    } = lay(body, chain, size, tol)?;
+    // The planes of the joints, and the shared sections where a face
+    // changes.
+    let (planes, switched) = joint_planes(body, chain, &datas, &sides, shape, scale)?;
     let turn = 0.5;
     let solvers: Vec<Solver<'_>> = pieces
         .iter()
         .enumerate()
         .map(|(i, p)| -> Result<Solver<'_>, BlendError> {
             let data = *datas.get(i).ok_or_else(lost)?;
-            let range = if p.forward {
-                data.range
-            } else {
-                (data.range.1, data.range.0)
-            };
             let before = if i > 0 {
                 planes.get(i - 1).copied()
             } else if chain.closed {
@@ -942,13 +1034,7 @@ fn compute(
                 None
             };
             Ok(Solver {
-                spine: Spine {
-                    curve: &data.curve,
-                    range,
-                    closed: false,
-                    joints: [before, behind],
-                    turn,
-                },
+                spine: piece_spine(data, p.forward, [before, behind], turn),
                 sides: *sides.get(i).ok_or_else(lost)?,
                 shape: p.shape,
                 scale,
@@ -1024,7 +1110,7 @@ fn compute(
             Some((before, later, _)) => {
                 if !agree(&reached, before, agreement) {
                     return Err(refused(
-                        pieces.get(after(i)).ok_or_else(lost)?.edge,
+                        pieces.get((i + 1) % n).ok_or_else(lost)?.edge,
                         Reason::FreeJoint,
                     ));
                 }
@@ -1124,29 +1210,14 @@ fn compute(
                         Reason::FreeEnd,
                     )
                 })?;
-                let spans = &mut made.get_mut(piece).ok_or_else(lost)?.spans;
-                for (k, s) in at.iter().enumerate() {
-                    let span = spans.get_mut(k).ok_or_else(lost)?;
-                    if index == 0 {
-                        span.0 = *s;
-                    } else {
-                        span.1 = *s;
-                    }
-                }
+                cut_spans(&mut made.get_mut(piece).ok_or_else(lost)?.spans, index, at);
                 done.push(EndKind::Third(EndMade { end, cut, at }));
             }
             let [a, b] = <[EndKind; 2]>::try_from(done).map_err(|_| lost())?;
             Some([a, b])
         }
     };
-    for (piece, m) in pieces.iter().zip(&made) {
-        for (k, (a, b)) in m.spans.iter().enumerate() {
-            if !(b > a) {
-                let face = *piece.faces.get(k).ok_or_else(lost)?;
-                return Err(refuse(piece.edge, Some(face), Reason::FreeTooLarge));
-            }
-        }
-    }
+    spans_left(pieces, &made)?;
     let joints = joint_sections
         .into_iter()
         .zip(&switched)
@@ -1824,19 +1895,11 @@ fn along_spine(
     let shape = first.shape;
     let size = shape.size();
     let convex = items.get(first.item).ok_or_else(lost)?.convex;
-    let datas: Vec<&Edge> = pieces
-        .iter()
-        .map(|p| body.edge(p.edge).ok_or_else(lost))
-        .collect::<Result<_, _>>()?;
-    let sides: Vec<[Side<'_>; 2]> = pieces
-        .iter()
-        .map(|p| sides_of(body, p.faces))
-        .collect::<Result<_, _>>()?;
-    let scale = datas
-        .iter()
-        .map(|d| scale_of(d, size, tol))
-        .fold(tol, f64::max);
-    let after = |j: usize| (j + 1) % n;
+    let Laid {
+        datas,
+        sides,
+        scale,
+    } = lay(body, chain, size, tol)?;
     let lengths: Vec<f64> = datas.iter().map(|d| edge_length(d)).collect();
     if lengths.iter().any(|l| !(*l > 0.0)) {
         return Err(unsolvable());
@@ -1848,17 +1911,7 @@ fn along_spine(
         .map(|(i, p)| -> Result<Solver<'_>, BlendError> {
             let data = *datas.get(i).ok_or_else(lost)?;
             Ok(Solver {
-                spine: Spine {
-                    curve: &data.curve,
-                    range: if p.forward {
-                        data.range
-                    } else {
-                        (data.range.1, data.range.0)
-                    },
-                    closed: false,
-                    joints: [None, None],
-                    turn: 0.0,
-                },
+                spine: piece_spine(data, p.forward, [None, None], 0.0),
                 sides: *sides.get(i).ok_or_else(lost)?,
                 shape,
                 scale,
@@ -1867,51 +1920,7 @@ fn along_spine(
         })
         .collect::<Result<_, _>>()?;
     // The balls where a face changes, known before the walk.
-    let mut switched: Vec<Option<(Section, Section, f64)>> = Vec::with_capacity(chain.joints.len());
-    let mut stops: Vec<Across> = Vec::with_capacity(chain.joints.len());
-    for (j, joint) in chain.joints.iter().enumerate() {
-        let (p, q) = (
-            pieces.get(j).ok_or_else(lost)?,
-            pieces.get(after(j)).ok_or_else(lost)?,
-        );
-        let (pd, qd) = (
-            *datas.get(j).ok_or_else(lost)?,
-            *datas.get(after(j)).ok_or_else(lost)?,
-        );
-        let (Some(out), Some(on)) = (
-            direction(pd, p.forward, true),
-            direction(qd, q.forward, false),
-        ) else {
-            return Err(unsolvable());
-        };
-        let along = (out + on).normalized().ok_or_else(unsolvable)?;
-        match joint.switch {
-            None => {
-                let point = body.vertex(joint.vertex).ok_or_else(lost)?.point;
-                stops.push(Across {
-                    point,
-                    normal: along,
-                });
-                switched.push(None);
-            }
-            Some(switch) => {
-                let smooth = body.edge(switch.smooth).ok_or_else(lost)?;
-                let (before, later, plane, t) = switch_ball(
-                    *sides.get(j).ok_or_else(lost)?,
-                    *sides.get(after(j)).ok_or_else(lost)?,
-                    switch.side,
-                    smooth,
-                    joint.vertex,
-                    shape,
-                    along,
-                    scale,
-                )
-                .ok_or_else(|| refused(q.edge, Reason::FreeJoint))?;
-                stops.push(plane);
-                switched.push(Some((before, later, t)));
-            }
-        }
-    }
+    let (stops, switched) = joint_planes(body, chain, &datas, &sides, shape, scale)?;
     // The ends of an open chain.
     let ends = if chain.closed {
         None
@@ -2239,29 +2248,14 @@ fn along_spine(
                             Reason::FreeEnd,
                         )
                     })?;
-                let spans = &mut made.get_mut(piece).ok_or_else(lost)?.spans;
-                for (k, s) in at.iter().enumerate() {
-                    let span = spans.get_mut(k).ok_or_else(lost)?;
-                    if index == 0 {
-                        span.0 = *s;
-                    } else {
-                        span.1 = *s;
-                    }
-                }
+                cut_spans(&mut made.get_mut(piece).ok_or_else(lost)?.spans, index, at);
                 done.push(EndKind::Third(EndMade { end, cut, at }));
             }
             let [a, b] = <[EndKind; 2]>::try_from(done).map_err(|_| lost())?;
             Some([a, b])
         }
     };
-    for (piece, m) in pieces.iter().zip(&made) {
-        for (k, (a, b)) in m.spans.iter().enumerate() {
-            if !(b > a) {
-                let face = *piece.faces.get(k).ok_or_else(lost)?;
-                return Err(refuse(piece.edge, Some(face), Reason::FreeTooLarge));
-            }
-        }
-    }
+    spans_left(pieces, &made)?;
     let joints = joint_balls
         .into_iter()
         .zip(&switched)

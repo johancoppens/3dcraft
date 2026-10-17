@@ -39,7 +39,7 @@
 
 use super::super::super::{BlendError, Reason, lost, refused};
 use super::super::{
-    Item, MAX_SAMPLES, Side, add_edge, add_vertex, curve_through, proven_on, refuse,
+    Item, MAX_SAMPLES, Side, add_edge, add_vertex, curve_through, proven_on, refuse, sign_change,
 };
 use super::{Chain, Computed, EndKind, Meet, MeetEnd, PieceMade, measure, prepare, splice_chain};
 use craft3d_geom::{Curve3, NurbsCurve, NurbsSurface, Surface};
@@ -220,28 +220,7 @@ fn crossing_by(
         }
         from += (middle - from) * 0.5;
     }
-    let (mut lo, mut hi) = (from, outer);
-    let (mut glo, ghi) = (at(lo)?, at(hi)?);
-    if !(glo < 0.0 && ghi > 0.0) {
-        return None;
-    }
-    for _ in 0..200 {
-        let mid = 0.5 * (lo + hi);
-        let gm = at(mid)?;
-        if gm < 0.0 {
-            lo = mid;
-            glo = gm;
-        } else {
-            hi = mid;
-        }
-        if glo.abs() <= 1e-15 * scale {
-            return Some(lo);
-        }
-        if (hi - lo).abs() <= 1e-15 * (1.0 + mid.abs()) {
-            break;
-        }
-    }
-    Some(0.5 * (lo + hi))
+    sign_change(at, from, outer, scale)
 }
 
 /// The curve on `surface` where, for `v` from `v0` to `v1`, it leaves

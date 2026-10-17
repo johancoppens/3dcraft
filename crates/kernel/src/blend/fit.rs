@@ -25,7 +25,8 @@
 //! bounded ([`MOST_BUILDS`]), and a spent budget proves nothing.
 
 use super::{
-    BlendError, Failure, Path, Plan, Reason, Request, Size, Use, construct, face_edges, plan,
+    BlendError, Failure, Path, Plan, Reason, Request, Size, Use, construct, face_edges, half_tan,
+    plan,
 };
 use crate::KernelError;
 use crate::chamfer::ChamferSize;
@@ -314,10 +315,7 @@ fn nearest(body: &Body, plan: &Plan, side: usize, other: EdgeId) -> Vec<f64> {
     };
     // Along a straight edge between planes the measure along a line is
     // linear: least at an end.
-    if plan.flat()
-        && matches!(plan.path, Path::Line { .. })
-        && matches!(data.curve, Curve3::Line(_))
-    {
+    if plan.between_planes() && matches!(data.curve, Curve3::Line(_)) {
         return Vec::new();
     }
     let (t0, t1) = data.range;
@@ -439,8 +437,7 @@ fn events(body: &Body, plans: &[Plan], group: &BTreeSet<usize>, tol: f64) -> Vec
                 if let Some(round) = plan.round {
                     let [a, b] = plan.into;
                     let cosine = a.dot(b).clamp(-1.0, 1.0);
-                    let half_tan = (1.0 - cosine * cosine).max(0.0).sqrt() / (1.0 + cosine);
-                    let towards = (a + b).dot(radial) / (half_tan * (1.0 + cosine));
+                    let towards = (a + b).dot(radial) / (half_tan(cosine) * (1.0 + cosine));
                     let at = radius / (1.0 - towards);
                     if side == 0 && at.is_finite() && at > tol && round > 0.0 {
                         found.push(Event {

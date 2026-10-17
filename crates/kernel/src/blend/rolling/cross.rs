@@ -68,7 +68,7 @@
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
 use super::super::{BlendError, Reason, Use, edge_uses, lost, sine_at};
-use super::{End, Section, Shape, Side, bend, faces_of_edge, refuse};
+use super::{End, Section, Shape, Side, bend, edges_at, faces_of_edge, refuse};
 use craft3d_geom::NurbsSurface;
 use craft3d_math::{Tolerance, Vec3};
 use craft3d_topo::{Body, Coedge, Edge, EdgeId, FaceId, VertexId};
@@ -139,13 +139,7 @@ fn branch(
         if far == near || far == vertex {
             return None;
         }
-        let rest: Vec<EdgeId> = body
-            .edges
-            .iter()
-            .enumerate()
-            .filter(|(i, e)| *i != current.0 as usize && (e.start == far || e.end == far))
-            .map(|(i, _)| EdgeId(u32::try_from(i).unwrap_or(u32::MAX)))
-            .collect();
+        let rest = edges_at(body, far, current);
         match rest.as_slice() {
             [next] if pair(*next) == Some(want) => {
                 current = *next;
@@ -730,10 +724,7 @@ fn apart_beyond(body: &Body, a: EdgeId, b: EdgeId, at: VertexId, tol: f64) -> Op
 /// Whether an edge other than `edge` still ends at `vertex` (one taken
 /// whole ends nowhere).
 fn others_at(body: &Body, vertex: VertexId, edge: EdgeId) -> bool {
-    body.edges
-        .iter()
-        .enumerate()
-        .any(|(i, e)| i != edge.0 as usize && (e.start == vertex || e.end == vertex))
+    !edges_at(body, vertex, edge).is_empty()
 }
 
 /// Sets edge `id` to `data`, adding it when it is the next new one.
