@@ -1177,29 +1177,44 @@ fn cusp_quartered(k: f64, turn: f64) {
     );
 }
 
-/// Surfaces through the cusp's point that do not hold its axis: a ball
-/// of radius `c` centred on the axis at `c` (its surface through the
-/// point, swallowing the tip up to `2 c`; `c` = 2e-3 and 3e-3), a cone about the axis
-/// with its apex on the point, and planes through the point a thousandth
-/// and a hundredth of a radian off the axis. Each of the three booleans is
-/// right or refused by name, never a body that is wrong: valid, and every
-/// one of 400 seeded points and of points along the axis next to the
-/// point where it should be by the solids' own definitions. (The chart
-/// left the strip next to the point out whenever the other surface
-/// passed through the point until the review of 2026-10-17: the needle
-/// less the ball came back whole, its tip through the ball.)
-/// A tool, its name, its membership and how far from the point along the
-/// axis it reaches into the needle (for points looked at there).
-type Probe = (String, Body, Box<dyn Fn(Vec3) -> bool>, f64);
+/// A tool, its name and its signed distance (near enough; positive
+/// inside).
+type Probe = (String, Body, Box<dyn Fn(Vec3) -> f64>);
 
+/// Surfaces through the cusp's point that do not hold its axis, or hold
+/// it only within the strip's width: a ball of radius `c` centred on the
+/// axis at `c` (its surface through the point, swallowing the tip up to
+/// `2 c`; `c` = 2e-3 and 3e-3), a cone about the axis with its apex on
+/// the point, planes through the point a thousandth and a hundredth of a
+/// radian off the axis, a cylinder and a ball of radius 1 whose surface
+/// passes through the point and crosses the axis again at `y0` = 4e-3
+/// (they meet the needle in a closed loop from about 2.7e-3 to 8e-3,
+/// wholly inside the strip), and a ball of radius 1 tangent to the axis
+/// at 1e-3. Each of the three booleans is right or refused by name, never
+/// a body that is wrong: valid, and every one of 400 seeded points, of
+/// points along the axis next to the point and of points 1.8 tolerances
+/// deep in both solids next to the loop is where it should be by the
+/// solids' own definitions (points within half the tolerance of either
+/// surface are not asked). (The chart left the strip next to the point
+/// out whenever the other surface passed through the point until the
+/// review of 2026-10-17, and then wherever the other surface stayed
+/// within the strip's width of a meridian: the needle less the ball, and
+/// later less the chord's cylinder, came back whole, its tip through the
+/// tool.)
 #[test]
 fn surfaces_through_a_cusp_that_leave_its_axis_are_cut_or_refused() {
     let mut rng = Rng(20_261_019);
     for k in SCALES {
         let cusp = swept_solid(&CUSP, k);
-        let meridian = Meridian::new(&CUSP, k);
-        let radius = |y: f64| meridian.at(meridian.at_height(y))[0];
-        let inside = |p: Vec3| p.y > 0.0 && p.y < 6.0 * k && p.x.hypot(p.z) < radius(p.y);
+        let tol = tolerance(k);
+        // Signed distances, near enough: positive inside.
+        let rho = |y: f64| y * y / 4.0 - y * y * y / 36.0;
+        let needle = move |p: Vec3| {
+            let y = p.y / k;
+            (k * rho(y.clamp(0.0, 6.0)) - p.x.hypot(p.z))
+                .min(p.y)
+                .min(6.0 * k - p.y)
+        };
         let mut tools: Vec<Probe> = Vec::new();
         for c in [2e-3, 3e-3] {
             let centre = Vec3::Y * (c * k);
@@ -1207,8 +1222,7 @@ fn surfaces_through_a_cusp_that_leave_its_axis_are_cut_or_refused() {
             tools.push((
                 format!("a ball of {c} through the point"),
                 ball,
-                Box::new(move |p: Vec3| p.distance(centre) < c * k),
-                2.0 * c,
+                Box::new(move |p: Vec3| c * k - p.distance(centre)),
             ));
         }
         let frame = Frame::new(Vec3::Y * (2.0 * k), -Vec3::Y, Vec3::X).unwrap();
@@ -1216,20 +1230,44 @@ fn surfaces_through_a_cusp_that_leave_its_axis_are_cut_or_refused() {
         tools.push((
             "a cone about the axis, its apex on the point".to_string(),
             cone,
-            Box::new(move |p: Vec3| p.y > 0.0 && p.y < 2.0 * k && p.x.hypot(p.z) < 0.5 * p.y),
-            2.0,
+            Box::new(move |p: Vec3| {
+                ((0.5 * p.y - p.x.hypot(p.z)) * 0.8_f64.sqrt())
+                    .min(p.y)
+                    .min(2.0 * k - p.y)
+            }),
         ));
         for angle in [1e-3_f64, 1e-2] {
             let normal = Vec3::new(-angle.cos(), angle.sin(), 0.0);
             tools.push((
                 format!("a plane through the point {angle} off the axis"),
                 half_space(k, Vec3::ZERO, normal, Vec3::Z),
-                Box::new(move |p: Vec3| p.dot(normal) > 0.0),
-                0.01,
+                Box::new(move |p: Vec3| p.dot(normal)),
             ));
         }
-        let tol = tolerance(k);
-        for (name, tool, in_tool, reach) in &tools {
+        let (big, y0) = (1.0, 4e-3);
+        let centre = Vec3::new((big * big - y0 * y0 / 4.0_f64).sqrt(), y0 / 2.0, 0.0) * k;
+        let frame = Frame::new(centre - Vec3::Z * (2.0 * k), Vec3::Z, Vec3::X).unwrap();
+        tools.push((
+            "a chord's cylinder through the point and the axis at 4e-3".to_string(),
+            primitives::cylinder(&frame, big * k, 4.0 * k).unwrap(),
+            Box::new(move |p: Vec3| {
+                (big * k - (p.x - centre.x).hypot(p.y - centre.y))
+                    .min(p.z + 2.0 * k)
+                    .min(2.0 * k - p.z)
+            }),
+        ));
+        tools.push((
+            "a chord's ball through the point and the axis at 4e-3".to_string(),
+            primitives::sphere(&Frame::WORLD.at(centre).unwrap(), big * k).unwrap(),
+            Box::new(move |p: Vec3| big * k - p.distance(centre)),
+        ));
+        let touching = Vec3::new(1.0, 1e-3, 0.0) * k;
+        tools.push((
+            "a ball tangent to the axis at 1e-3".to_string(),
+            primitives::sphere(&Frame::WORLD.at(touching).unwrap(), k).unwrap(),
+            Box::new(move |p: Vec3| k - p.distance(touching)),
+        ));
+        for (name, tool, in_tool) in &tools {
             let what = format!("cusp, {name}, at {k}");
             let mut points: Vec<Vec3> = (0..400)
                 .map(|_| {
@@ -1240,12 +1278,33 @@ fn surfaces_through_a_cusp_that_leave_its_axis_are_cut_or_refused() {
                     ) * k
                 })
                 .collect();
-            // Next to the point, where the strip is.
-            for share in [0.1, 0.3, 0.5, 0.7, 0.95, 1.2] {
-                let y = share * reach * k;
-                points.push(Vec3::new(0.0, y, 0.0));
-                points.push(Vec3::new(0.3 * radius(y), y, -0.2 * radius(y)));
+            // Next to the point, where the strip is: along the axis, a
+            // little off it, and 1.8 tolerances deep next to the loop.
+            for y in [
+                1e-4, 3e-4, 1e-3, 2e-3, 3e-3, 3.5e-3, 4e-3, 4.5e-3, 5e-3, 6e-3, 8e-3, 1e-2,
+            ] {
+                points.push(Vec3::new(0.0, y, 0.0) * k);
+                let r = rho(y);
+                points.push(Vec3::new(0.3 * r, y, -0.2 * r) * k);
+                points.push(Vec3::new(-0.6 * r, y, 0.5 * r) * k);
             }
+            for (x, y) in [
+                (1.92e-6, 3.96e-3),
+                (1.55e-6, 3.885e-3),
+                (0.88e-6, 3.75e-3),
+                (1.1e-6, 4.11e-3),
+                (0.12e-6, 3.405e-3),
+                (1.0e-6, 3.9e-3),
+                (2.0e-6, 4.0e-3),
+            ] {
+                points.push(Vec3::new(x, y, 0.0) * k);
+            }
+            let points: Vec<Vec3> = points
+                .into_iter()
+                .filter(|p| {
+                    needle(*p).abs() > 0.5 * tol.linear && in_tool(*p).abs() > 0.5 * tol.linear
+                })
+                .collect();
             for op in [Union, Intersect, Subtract] {
                 let body = match boolean(&cusp, tool, op, &tol) {
                     Ok(result) => result.body,
@@ -1268,7 +1327,7 @@ fn surfaces_through_a_cusp_that_leave_its_axis_are_cut_or_refused() {
                 let got = contains_points(&body, &points, &tol).unwrap();
                 for (p, got) in points.iter().zip(&got) {
                     let Some(got) = got else { continue };
-                    let (a, b) = (inside(*p), in_tool(*p));
+                    let (a, b) = (needle(*p) > 0.0, in_tool(*p) > 0.0);
                     let want = match op {
                         Union => a || b,
                         Intersect => a && b,

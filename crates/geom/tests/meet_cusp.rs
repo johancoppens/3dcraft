@@ -64,7 +64,7 @@ fn curves(a: &Surface, b: &Surface, k: f64) -> Vec<(Curve3, (f64, f64), f64)> {
         Vec3::new(-4.0, -1.0, -4.0) * k,
         Vec3::new(4.0, 7.0, 4.0) * k,
     ]);
-    match meet_surfaces(a, b, &within, &tol).unwrap() {
+    match meet_surfaces(a, b, &within, &tol).unwrap_or_else(|e| panic!("{b:?} at {k}: {e}")) {
         SurfaceMeeting::Meets(m) => m
             .curves
             .into_iter()

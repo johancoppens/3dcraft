@@ -1102,7 +1102,10 @@ fn short_of_poles(mut chart: Chart, tol: &Tolerance, other: &Field) -> Chart {
 /// the point `|F|` is at most the distance to it.) `A` is walked by
 /// halving stretches across: a stretch is settled by its middle and how
 /// far `A` can move on it (the speed across), down to a stretch of an
-/// eighth of the tolerance, where the middle decides; at most
+/// eighth of the tolerance, where the middle decides. And the other
+/// surface must cross every iso-curve of the strip the same number of
+/// times ([`same_crossings`]): within the width of the meridian it may
+/// still cross the axis inside the strip and make a loop there. At most
 /// [`STRIP_LOOKS`] samples, past which the strip is not left out.
 fn holds_the_strip(
     chart: &Chart,
@@ -1117,7 +1120,7 @@ fn holds_the_strip(
     } else {
         (chart.v, chart.u, chart.bounds.lu)
     };
-    let (from, toward) = match pole.border {
+    let (from, toward): (f64, f64) = match pole.border {
         crate::pole::Border::UStart | crate::pole::Border::VStart => (across.0, 1.0),
         crate::pole::Border::UEnd | crate::pole::Border::VEnd => (across.1, -1.0),
     };
@@ -1160,11 +1163,98 @@ fn holds_the_strip(
         stack.push((mid, b));
         stack.push((a, mid));
     }
+    same_crossings(chart, pole, n, other, tol, (start, wide), looks)
+}
+
+/// Whether the other surface crosses every iso-curve along the border the
+/// same number of times from the border down to `start` (both as
+/// distances across from the pole): then no piece of the intersection
+/// begins or ends inside the strip (a closed loop wholly inside it, of a
+/// ball or a cylinder through the point that crosses the axis again
+/// within the strip, changes the number where it begins and where it
+/// ends), and every piece in it crosses the border, where the marcher
+/// finds it. The iso-curves are looked at a tolerance apart in space
+/// across (the speed across) and along each at places half a tolerance
+/// apart by the bound on its length, so a piece is missed only if it is
+/// thinner than that; the sign of the distance is read where it is above
+/// its rounding. At most [`STRIP_LOOKS`] samples in all, past which the
+/// strip is not left out.
+fn same_crossings(
+    chart: &Chart,
+    pole: &Pole,
+    n: &crate::pole::Narrowing,
+    other: &Field,
+    tol: &Tolerance,
+    (start, wide): (f64, f64),
+    mut looks: usize,
+) -> bool {
+    let (along, across, speed, closed) = if pole.across_v() {
+        (chart.u, chart.v, chart.bounds.lv, chart.periodic_u)
+    } else {
+        (chart.v, chart.u, chart.bounds.lu, chart.periodic_v)
+    };
+    let (from, toward): (f64, f64) = match pole.border {
+        crate::pole::Border::UStart | crate::pole::Border::VStart => (across.0, 1.0),
+        crate::pole::Border::UEnd | crate::pole::Border::VEnd => (across.1, -1.0),
+    };
+    if !(speed > 0.0) {
+        return false;
+    }
+    let step = tol.linear / speed;
+    let levels = ((wide - start) / step).ceil();
+    if !(levels.is_finite() && levels >= 0.0) || levels > STRIP_LOOKS as f64 {
+        return false;
+    }
+    let levels = levels as usize;
+    let rounding = 64.0 * f64::EPSILON * (pole.point.length() + 1e6 * tol.linear);
+    let mut expected: Option<usize> = None;
+    for level in 0..=levels {
+        let off = (wide - step * level as f64).max(start);
+        let x = from + toward * off;
+        let width = n.width * (off / n.span).powi(n.order as i32);
+        let places = (2.0 * width / tol.linear).ceil().clamp(8.0, 1e6) as usize;
+        looks = looks.saturating_add(places + 1);
+        if looks > STRIP_LOOKS {
+            return false;
+        }
+        let mut crossings = 0_usize;
+        let mut last: Option<bool> = None;
+        let mut first: Option<bool> = None;
+        for i in 0..=places {
+            let a = along.0 + (along.1 - along.0) * i as f64 / places as f64;
+            let p = if pole.across_v() {
+                chart.surface.eval(a, x)
+            } else {
+                chart.surface.eval(x, a)
+            };
+            let Some(sample) = other.sample(p) else {
+                return false;
+            };
+            if !(sample.signed.abs() > rounding) {
+                continue;
+            }
+            let side = sample.signed > 0.0;
+            if last.is_some_and(|l| l != side) {
+                crossings += 1;
+            }
+            last = Some(side);
+            first = first.or(Some(side));
+        }
+        // An iso-curve that closes on itself crosses where it closes too.
+        if closed && first.is_some() && first != last {
+            crossings += 1;
+        }
+        match expected {
+            None => expected = Some(crossings),
+            Some(e) if e != crossings => return false,
+            Some(_) => {}
+        }
+    }
     true
 }
 
-/// Samples of the meridian [`holds_the_strip`] takes at most.
-const STRIP_LOOKS: usize = 100_000;
+/// Samples of the other surface [`holds_the_strip`] takes at most.
+const STRIP_LOOKS: usize = 2_000_000;
 
 /// Derivative bounds of a surface, estimated from samples (four per control
 /// point and direction) with a margin. Not a proof: the last resort of
