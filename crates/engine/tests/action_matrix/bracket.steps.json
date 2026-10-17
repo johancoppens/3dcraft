@@ -1,0 +1,7 @@
+[
+  ["feature.block", {"size": ["40 mm", "30 mm", "10 mm"], "name": "Plate"}],
+  ["feature.cylinder", {"radius": "6 mm", "height": "12 mm", "position": ["12 mm", "15 mm", "10 mm"], "name": "Boss"}],
+  ["feature.boolean", {"target": "Plate", "tool": "Boss", "op": "union", "name": "Bossed"}],
+  ["feature.cylinder", {"radius": "3 mm", "height": "20 mm", "position": ["30 mm", "15 mm", "-5 mm"], "name": "Drill"}],
+  ["feature.boolean", {"target": "Bossed", "tool": "Drill", "op": "subtract", "name": "Bracket"}]
+]

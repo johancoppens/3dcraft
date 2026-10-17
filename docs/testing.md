@@ -1,6 +1,6 @@
 # Testing: the AI loop and its oracles
 
-> **Last updated:** 2026-10-17 · **Status:** the loop is in use. In place: oracle 1 (closed-form mass properties, `testkit::solids`), oracle 2 (validity checker with seeded defects), oracle 3 (boolean identities on seeded random pairs), oracle 4 (tessellation against the exact body, for patches), oracle 6 (constraint solver), oracle 7 (CPU side), oracle 8 (FreeCAD), oracle 9 (no body passes through itself), oracle 10 (the boolean's own check) and oracle 11 (random multi-step designs). The rest is design
+> **Last updated:** 2026-10-17 · **Status:** the loop is in use. In place: oracle 1 (closed-form mass properties, `testkit::solids`), oracle 2 (validity checker with seeded defects), oracle 3 (boolean identities on seeded random pairs), oracle 4 (tessellation against the exact body, for patches), oracle 6 (constraint solver), oracle 7 (CPU side), oracle 8 (FreeCAD), oracle 9 (no body passes through itself), oracle 10 (the boolean's own check) oracle 11 (random multi-step designs) and oracle 12 (the action matrix). The rest is design
 
 3DCraft is written by AI agents while the developer watches. That only works if an agent can tell, without a human, whether what it built is right. This document says how.
 
@@ -193,6 +193,48 @@ The other oracles judge one operation on inputs someone chose; this one builds w
 A finding is reported with its reproducer and fixed where the bug is; a seed is never taken out of the gate's list to get green, and the generator is never taught to avoid what fails.
 
 **First run (2026-10-17, f10a8dc):** 14563 seeds in 85 minutes (2.9 seeds a second at 4 processes), 109429 groups, 18.3 % refused (the most: an empty boolean result, 2067; a boolean whose result cannot be meshed for its self-check, 813; delete face whose neighbours do not meet, 766), 13805 booleans, 10882 with their identities checked (2923 skipped for a refused sibling). No crash, no identity broken, no determinism or regeneration difference. 19 timeouts, 13 of them a single command that runs past 90 s: offset face of a fillet or chamfer face on a torus, sphere or revolved body (7), shell of such a body (6), chamfer on a boolean of tori and spheres (3), and some that finish in 50 to 80 s. 2 wrong: a union of two revolved solids touching along a line where a plane is tangent to a cylinder, which the self-check finds touching itself (the boolean's own check and the identities pass); a chamfer on a sphere cut by a block whose body cannot be measured (the boundary integral does not settle). Reproducers under `target/fuzz/<verdict>/`.
+
+### Oracle 12: the action matrix, a ratchet
+
+Every local operation is tried on every face and edge of the finished bodies of the showcase models (2026-10-17, `cargo xtask actions`): fillet each edge with a tenth and with three tenths of the shortest edge next to it, chamfer it by fifteen hundredths, offset each face out and in by a tenth of its shortest edge, delete it, shell the body with it open and thicken it (a twentieth of the body's thinnest extent), draft each flat face by 3° from a flat neighbour square to it, move it along its normal, and mirror and pattern each body once. An edge is the pair of faces it lies between, a face its persistent name. Each action is run on the finished document and undone again (the history is the document, so undoing gives the document as it was; after each undo the new feature must be gone, or the process is started afresh), in `craft3d-cli serve` processes, at most three, each under a 2 GB memory cap and a minute per call, started afresh every 250 actions and after any crash or timeout.
+
+The outcome of each is one of:
+
+| verdict | what |
+|---|---|
+| ok | built; `document.check` deep on the new feature (`feature`) checks its one body and finds nothing; the volume keeps its identity |
+| refused | the feature failed or the command returned an error, with the reason (counted by class: the reason without names and numbers) |
+| wrong | built, but the check finds a problem or the volume breaks its identity |
+| crash | a panic (caught: "internal error"), or the process died (the memory cap) |
+| timeout | a call took more than a minute |
+
+The identities, each from what the operation does, none tuned (a change below 1e-9 of the body's volume is within the measure and decides nothing; it is not a change either):
+
+- every result has a positive volume;
+- an offset by `d` changes the volume with the sign of `d`, so an offset that changes nothing is wrong, and by at most `|d|` times the larger area of the body before and after;
+- a move of a flat face along its normal by `d` changes the volume, by at most `|d|` times the larger area;
+- a draft by 3° changes the volume, by at most `tan 3°` times the body's diagonal times the larger area;
+- a blend changes the volume. For one straight edge between two flat faces it changes it by its exact cross-section times the edge's length, with its sign: the outward normals (`datum.plane` on each face, undone again) and the faces' other edges at the edge's ends give the wedge angle φ between the faces and whether the edge is an outside one (material taken) or an inside one (material added); the cross-section is `r²·(cot(φ/2) − (π − φ)/2)` for a fillet of radius `r` and `d²·sin(φ)/2` for a chamfer of distance `d`, and each end of the blend may move by its setback times `cot 10°`, for end faces at 10° or more to the edge (assumed, not checked: a more slanted end is reported wrong, never let through). For any other blend it changes it by at most a bound of the cross-section times the length of the pair's edges (`document.edges` gives each edge's length): `d²/2` for a chamfer, `r` times the setback `r·cot(θ/2)` for a fillet, with the faces assumed to meet at θ of 10° or more (`11.43·r`; not checked, nothing computes θ there: a sharper edge is reported wrong, never let through), plus `2π` times the setback for each edge that is not straight;
+- a shell has less volume than its body and at most its wall thickness times its own area;
+- a layer of thickness `t` has at most `t` times its own area;
+- a mirror image has the same volume and area (1e-6) and its centroid mirrored (1e-6 of the diagonal); two instances apart have twice the volume and area (2e-6) and their centroid half a step along.
+
+They are held to seeded wrong results, no-ops among them, in `crates/engine/tests/action_matrix.rs`. The volumes before and after are in the results.
+
+**The ratchet** is `crates/engine/tests/action_matrix/ratchet.json`: per model and kind, the entities whose action was ok. One of them that is not ok now is a regression, and `cargo xtask actions` fails with it; so does any wrong result or crash (a bug found, with its reproducer; a timeout is reported and does not fail the run), an undo that did not give the document back (its feature and variable counts, `file.list`, and the new feature gone), a checkout that changed during the run, and one that was not tried (its name is gone, it was not planned, a worker could not open the model again) and a model of the ratchet that could not be built or opened, but a model whose input under `target/work` is not there is only a warning. A ratchet entry that times out is run once more alone, with four times the limit, before it counts. One that is ok now, in under a third of the limit, and not in the ratchet raises the floor: `--update` adds it at the end of the run, `--raise` later from that run's results (refused unless the run and every line of its results are of the commit checked out, without uncommitted changes, with a CLI it built itself rather than one given with `--cli`, and the run had no regression and no problem; a model the run skipped is left alone, and a model's results are deleted when a run starts on it), an expectation change in the developer's favour that is logged in the dev log like any other. Nothing is taken out of the ratchet by the tool; taking an entry out is an expectation change against the developer and needs the four conditions of *Changing an expectation*. A name that is no longer there is reported as not tried, which is itself worth a look (names are meant to last). An edge is its two faces in order (`a|b`, every edge between them); a face name stands for every face that has it (the pieces of a face a boolean split share its name), so an entry says the action on all of them succeeded, not on how many there were. A body whose edges `document.edges` does not list all of (2000 at most, `truncated`) and a body that is a sheet are counted in the summary; nothing is planned on a sheet.
+
+Big models are sampled: per model and kind the 40 entities with the lowest hash of their name (bottom-k: a name stays chosen as long as no new name hashes lower), and every entity of the ratchet besides; the bracket and the rotor are tried whole. The models: the bracket (`crates/engine/tests/action_matrix/bracket.steps.json`), the four bench models (`crates/engine/tests/bench_models/`), and from `target/work` (not in the repository; skipped with a note when missing) the laser box, the weld table and its w3 variant, and the bike; the lamp only on request (`--models lamp`, ten minutes to regenerate).
+
+```sh
+cargo xtask actions                       # the whole matrix (not in the gate; about two hours)
+cargo xtask actions --models bracket,rotor --per-kind 10
+cargo xtask actions --update              # raise the floor, then log it
+cargo xtask actions --raise               # the same from the last run's results
+```
+
+It leaves `target/actions/summary.json` (counts per model and kind, the top refusal classes, every wrong result, crash and timeout; `cargo xtask health` prints a line of it), `target/actions/results/<model>.jsonl` (one line per action) and, for every wrong result, crash and timeout, `target/actions/<verdict>/<model>-<kind>-<hash>.steps.json` with a `.sh` that replays it (for a model built from steps the whole model and the action; for a document, the action, run on that document). The gated part is `crates/engine/tests/action_matrix.rs`: the bracket, four entities per kind and every entry of its ratchet (98 actions, about 3 s); it fails on a crash, a wrong result, a ratchet entry that is not ok or not planned, and an undo that does not restore the document. The plan, the run of one action and its verdict are one file, `crates/engine/tests/action_matrix/plan.rs`, which the xtask includes by path, so the gated test and the full run cannot drift apart.
+
+**First run (2026-10-17, dd6d70c):** nine models (the lamp not), 2936 actions in 119 minutes at three processes: 1171 ok, 1670 refused, no wrong result, no crash, 95 timeouts. The timeouts are slow freeform work, not hangs as far as replayed: a shell of the impeller's and the bike's bodies (60; one replayed is refused after about four minutes), a thicken of their fillet and side faces (17), an offset or thicken of a lofted blade's end caps (rotor and turbofan, 18; one replayed is ok after about three minutes). The most common refusals: a vertex whose faces no longer meet in one point after a face moved (offset, move face, thicken, shell, draft: 447), a face delete cannot collapse or close (170), an edge between tangent faces (fillet and chamfer, 134). The ratchet holds the 1171.
 
 ## Test kinds per crate
 

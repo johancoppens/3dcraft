@@ -446,6 +446,67 @@ fn findings_section(out: &mut String, main: &Path) {
     );
 }
 
+/// The last run of the action matrix (`cargo xtask actions`,
+/// docs/testing.md, oracle 12): its totals, the regressions against the
+/// ratchet and the wrong results and crashes it left reproducers of.
+fn actions_section(out: &mut String, main: &Path) {
+    let path = main.join("target/actions/summary.json");
+    let Some(summary) = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+    else {
+        let _ = writeln!(
+            out,
+            "Action matrix: {UNKNOWN} (no {}; run `cargo xtask actions`)",
+            path.display()
+        );
+        return;
+    };
+    let text = |key: &str| {
+        summary.get(key).map_or_else(
+            || UNKNOWN.to_string(),
+            |v| v.as_str().map_or_else(|| v.to_string(), str::to_string),
+        )
+    };
+    let count = |key: &str| {
+        summary
+            .get(key)
+            .and_then(serde_json::Value::as_array)
+            .map_or(0, Vec::len)
+    };
+    let totals = summary.get("totals").and_then(serde_json::Value::as_object);
+    let total = |verdict: &str| {
+        totals
+            .and_then(|t| t.get(verdict))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+    };
+    let seconds = summary
+        .get("seconds")
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(0.0);
+    // Seconds of wall time, a whole number.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let seconds = seconds.max(0.0) as u64;
+    let _ = writeln!(
+        out,
+        "Action matrix ({} at {}, {}): ok {}, refused {}, wrong {}, crash {}, timeout {}; regressions against the ratchet {}, ratchet entries not tried {}, models skipped {}, problems {}, newly succeeding {} (`target/actions/summary.json`; reproducers under `target/actions/<verdict>/`)",
+        text("generated"),
+        text("commit"),
+        minutes(seconds),
+        total("ok"),
+        total("refused"),
+        total("wrong"),
+        total("crash"),
+        total("timeout"),
+        count("regressions"),
+        text("ratchetNotTried"),
+        count("skipped"),
+        count("problems"),
+        text("newlyOk"),
+    );
+}
+
 /// Expectation changes in the dev log after the line the last report read
 /// up to; the new line count to remember.
 fn expectation_section(out: &mut String, main: &Path, state: &Path) -> Option<usize> {
@@ -551,6 +612,8 @@ pub fn run() -> Result<(), String> {
     fuzz_section(&mut out, &main);
     out.push('\n');
     findings_section(&mut out, &main);
+    out.push('\n');
+    actions_section(&mut out, &main);
     out.push('\n');
     let health = main.join("target/health");
     let state = health.join("last.txt");
