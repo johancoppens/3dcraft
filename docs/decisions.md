@@ -1,10 +1,30 @@
 # Decisions
 
-> **Last updated:** 2026-10-16
+> **Last updated:** 2026-10-17
 
 Decisions that shape the project, newest first, each with its reason. An agent that needs something listed under *Open decisions* asks the developer; it does not pick silently. When one is settled, move it up with the date.
 
 ## Taken
+
+### 2026-10-17: Nested sketch patterns (decided by the developer; design in `plan/nested-patterns.md`)
+
+- **A pattern may hold whole patterns in its seed** (a tree, at most 3 deep); the maps compose level by level, with no new unknowns; an equation over the solver's 18 unknowns is refused by name.
+- **Names innermost first, a trailing all-zero level left out** (`e3[2][1]` is tab 2 of cell 1, `e3[2]` in cell 0), so wrapping a pattern renames nothing; encoded with continuation words (any depth, grids at any level).
+- **Skipping instances in v1, on a pattern's own level**: instance 0 cannot be skipped; `last` is the highest index not skipped; skips past the count are kept as inactive; skips in chained runs and rings are refused for now.
+- **One format bump** for all of it.
+
+### 2026-10-17: The frame of a flat export, and copies that keep their source (decided by the developer)
+
+- **A face is drawn upright and never mirrored**: seen from outside the material, y up the face along the model's +z, x along the model's +x when the face lies flat, `xAxis` to choose; exports of side faces, bottoms and faces of turned sketch planes change accordingly ([`file-formats.md`](file-formats.md), *The drawing frame*).
+- **A copy that keeps its source has names of its own** (`F11:copy(0)/F1:face(3)`); the source's name does not reach the copy, so a name never stands for two faces at once.
+
+### 2026-10-17: Work bounds that refuse what took minutes or hours (decided by the developer)
+
+- **The work bounds of profile detection and of the offset of profiles stay as they are**: at most 2^18 spline control points in one detection, about 4.2 million cut points and 2^28 near-item tests in one offset attempt. They refuse, naming the curves, inputs that were accepted before only after minutes to hours (dozens of 4096-point splines, large inward offsets of combs with thousands of teeth); an application that hangs that long is as bad as a crash. Every other bound refuses nothing accepted before ([`design/sweeps.md`](design/sweeps.md)).
+
+### 2026-10-17: A sketch whose carry stops part of the way (decided by the developer)
+
+- **When carrying a sketch along its jumping image points stops before the end, the sketch fails** with the reason (which image, how far the carry got, what to do: a smaller step or another constraint), like any other failed feature; nothing is stored, so undo or returning the variables restores the start exactly. The result never depends on the path of edits, and no body is built from a solution that may have folded over. Replaces the agents' interim choice of storing a clean final solve with a warning ([`design/document.md`](design/document.md), *Carrying a sketch along when its images jump*).
 
 ### 2026-10-16: How `round` breaks a tie (decided by the developer)
 
