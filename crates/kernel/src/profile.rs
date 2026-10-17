@@ -589,10 +589,14 @@ pub const MAX_PAIRS: usize = OLD_MAX_CURVES * OLD_MAX_CURVES;
 /// The most control points the splines of one call to [`detect_profiles`]
 /// may have in all. Deciding where a spline keeps clear of itself and of
 /// the curves near it takes time in proportion to its control points
-/// (25 to 90 µs each in a release build, measured on closed cubic splines
-/// of 8 to 4095 points), so this bounds that work to a few seconds; one
-/// spline may have [`MAX_SPLINE_POINTS`].
-pub const MAX_SPLINE_POINTS_IN_ALL: usize = 1 << 16;
+/// (25 to 90 µs each in a release build on an idle machine, measured on
+/// closed cubic splines of 8 to 4095 points; see `docs/design/sweeps.md`),
+/// so this bounds that work: at the bound 9 to 14 s for splines of 8 to
+/// 512 points and 53 s for 64 splines of 4096 points, measured on a loaded
+/// machine (about 2.4 times slower). One spline may have
+/// [`MAX_SPLINE_POINTS`]. Inputs above it were accepted before this bound,
+/// slowly (minutes to hours): a decision for the developer.
+pub const MAX_SPLINE_POINTS_IN_ALL: usize = 1 << 18;
 
 /// Refuses splines with more control points in all than
 /// [`MAX_SPLINE_POINTS_IN_ALL`], naming those with the most.
@@ -1148,8 +1152,9 @@ impl Turns {
 
 /// How deep each loop is nested and the smallest loop around it. No two
 /// loops touch, so a loop is inside another when one of its points is: the
-/// loops whose box holds that point come from a [`BoxTree`], in index
-/// order, and their winding numbers about it decide.
+/// loops whose box holds that point come from a [`BoxTree`], in no
+/// particular order, and their winding numbers about it decide; the
+/// parent is chosen as a scan in index order would choose it.
 fn nest(rings: &[Ring]) -> Result<Vec<(usize, Option<usize>)>, KernelError> {
     let tree = BoxTree::new(rings.iter().map(|r| r.bbox).collect());
     let turns: Vec<Turns> = rings.iter().map(|r| Turns::new(&r.path)).collect();

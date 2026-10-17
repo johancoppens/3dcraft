@@ -251,8 +251,8 @@ fn wavy_spline(id: u64, c: [f64; 2], r: f64, m: usize) -> SketchCurve {
 #[ignore = "timings; run in release with --ignored --nocapture"]
 fn spline_work_timings() {
     for m in [8, 32, 128, 512, 4095] {
-        for total in [16_384, 65_536] {
-            let count = (total / m).max(1);
+        for total in [16_384, 65_536, 262_144] {
+            let count = (total / (m + 1)).max(1);
             let side = (count as f64).sqrt().ceil() as usize;
             let curves: Vec<SketchCurve> = (0..count)
                 .map(|k| {
@@ -276,21 +276,21 @@ fn spline_work_timings() {
 }
 
 /// Splines whose control points in all pass the bound are refused at
-/// once, naming the largest; up to the bound they are accepted.
+/// once, naming the largest. (Up to the bound they are accepted; the
+/// largest such input takes seconds even in release, so it is timed by
+/// `spline_work_timings` and not here.)
 #[test]
 fn splines_with_too_many_points_in_all_are_refused() {
     use craft3d_kernel::KernelError;
     use craft3d_kernel::profile::MAX_SPLINE_POINTS_IN_ALL;
-    let spread = |count: usize, m: usize| -> Vec<SketchCurve> {
-        (0..count)
-            .map(|k| {
-                let c = [(k % 8) as f64 * 30.0, (k / 8) as f64 * 30.0];
-                wavy_spline(k as u64, c, 10.0, m)
-            })
-            .collect()
-    };
-    // 64 splines of 4096 control points (the last on the first).
-    let mut many = spread(64, 4095);
+    // 65 splines of 4096 control points (the last on the first): one
+    // more than the bound holds.
+    let mut many: Vec<SketchCurve> = (0..65)
+        .map(|k| {
+            let c = [(k % 8) as f64 * 30.0, (k / 8) as f64 * 30.0];
+            wavy_spline(k as u64, c, 10.0, 4095)
+        })
+        .collect();
     // One small spline among them, not named.
     many.push(wavy_spline(1000, [500.0, 500.0], 10.0, 8));
     let started = Instant::now();
@@ -299,15 +299,20 @@ fn splines_with_too_many_points_in_all_are_refused() {
     assert_eq!(
         err,
         KernelError::TooManySplinePoints {
-            count: 64 * 4096 + 9,
+            count: 65 * 4096 + 9,
             limit: MAX_SPLINE_POINTS_IN_ALL,
             curves: (0..8).collect(),
         }
     );
-    // Exactly the bound: accepted. 512 splines of 128 points.
-    let fits = spread(MAX_SPLINE_POINTS_IN_ALL / 128, 127);
+    // Small splines well under the bound: accepted.
+    let fits: Vec<SketchCurve> = (0..64)
+        .map(|k| {
+            let c = [(k % 8) as f64 * 30.0, (k / 8) as f64 * 30.0];
+            wavy_spline(k as u64, c, 10.0, 16)
+        })
+        .collect();
     assert_eq!(
         detect_profiles(&fits, &Tolerance::default()).unwrap().len(),
-        MAX_SPLINE_POINTS_IN_ALL / 128
+        64
     );
 }

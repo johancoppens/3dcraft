@@ -78,6 +78,18 @@ pub(crate) fn profile_error(error: &KernelError) -> String {
             format!("the loop of {} encloses no area", list(curves))
         }
         KernelError::DegenerateCurve { id, reason } => format!("{}: {reason}", curve_name(*id)),
+        KernelError::CrowdedCurves { curves, limit } => format!(
+            "the curves lie too close together for profile detection: more than {limit} pairs of curves, curve ends or loops are near one another (about {}); remove curves drawn on top of each other or loops stacked inside each other",
+            list(curves)
+        ),
+        KernelError::TooManySplinePoints {
+            count,
+            limit,
+            curves,
+        } => format!(
+            "the splines have {count} control points in all, more than profile detection compares ({limit}); the largest are {}: use fewer control points",
+            list(curves)
+        ),
         other => other.to_string(),
     }
 }

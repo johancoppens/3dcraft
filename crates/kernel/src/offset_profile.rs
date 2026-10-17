@@ -1165,7 +1165,7 @@ fn unchanged(profiles: &[Profile]) -> Result<OffsetOutline, KernelError> {
 ///
 /// A try that fails for a reason that is not the outline's (a cap on the
 /// work, which a smaller distance does not lift) ends the search with that
-/// error: no distance is found rather than a wrong one.
+/// error, and the callers report no distance rather than a wrong one.
 fn largest_whole(
     profiles: &[Profile],
     d: f64,
@@ -1266,7 +1266,7 @@ pub fn offset_profiles(
         return Err(KernelError::OffsetProfile {
             reason: "leaves nothing of a region",
             curves,
-            largest: Some(largest_whole(profiles, -reach, corners, tolerance)?),
+            largest: largest_whole(profiles, -reach, corners, tolerance).ok(),
         });
     }
     match attempt(profiles, d, corners, tolerance) {

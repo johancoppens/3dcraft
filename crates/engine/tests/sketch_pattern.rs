@@ -240,6 +240,43 @@ fn a_sheet_of_70_by_70_patterned_holes_extrudes() {
     assert_eq!(plate["faces"], 4 + 2 + 4900);
 }
 
+/// A pattern that stacks 6000 copies of a line within the
+/// tolerance of each other (12 000 ends, two heaps of 6000, more pairs
+/// than the bound on ends holds): profile detection refuses it,
+/// and the message names the curves as the sketch does (`e5[3]`), not by
+/// the numbers the kernel is handed.
+#[test]
+fn a_crowded_pattern_is_refused_with_its_curves_named() {
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(&mut s, "sketch.create", json!({"name": "Stack"}));
+    let made = run(
+        &mut s,
+        "sketch.line",
+        json!({"sketch": "Stack", "from": [0, 0], "to": [10, 0]}),
+    );
+    let line = str_of(&made["entity"]);
+    run(
+        &mut s,
+        "sketch.pattern",
+        json!({"sketch": "Stack", "entities": [line], "count": 6000, "step": ["1e-11", 0]}),
+    );
+    let _ = s.execute(
+        "feature.extrude",
+        &json!({"sketch": "Stack", "distance": 1, "name": "Body"}),
+    );
+    let status = feature_status(&mut s, "Body");
+    assert!(status.contains("too close together"), "{status}");
+    assert!(status.contains(&format!("{line}[")), "{status}");
+    // No raw number of an instance (entity and index packed into 64 bits).
+    assert!(
+        !status
+            .split(|c: char| !c.is_ascii_digit())
+            .any(|digits| digits.len() > 9),
+        "{status}"
+    );
+}
+
 /// A plate `length` wide and `height` high whose bottom edge is a chained
 /// run of `n` periods of fingers `depth` deep, half a period wide: the
 /// seed is one period from A (fixed at the origin) to B, and the far corner

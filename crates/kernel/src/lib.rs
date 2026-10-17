@@ -61,6 +61,7 @@ pub enum KernelError {
     /// More pairs of curves, curve ends or loops lie near one another than
     /// profile detection compares (a bound on its work, far above what
     /// drawn or patterned sketches need).
+    ///
     /// `curves` are where the bound was crossed (at most [`MAX_REPORTED`],
     /// ascending): the curve, end or loop searched about and curves found
     /// near it.

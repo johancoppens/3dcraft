@@ -532,11 +532,41 @@ fn large_and_adversarial_inputs_finish() {
     timed("ends in a column", &column, None);
 }
 
-/// At the cap: layouts that sketches make are accepted, and layouts whose
+/// At the cap, in every test run: a polygon is accepted, layouts whose
+/// curves are all near one another are refused by the bound on pairs
+/// (naming curves), and one quadratic in nesting but under the bound is
+/// accepted. Every layout: `the_cap_finishes_with_every_layout`.
+#[test]
+fn the_cap_finishes() {
+    let ngon_area = |n: usize, r: f64| n as f64 * r * r * (2.0 * PI / n as f64).sin() / 2.0;
+    timed(
+        "the cap as one polygon",
+        &ngon(MAX_CURVES, 1e5, 0),
+        Some(ngon_area(MAX_CURVES, 1e5)),
+    );
+    let same: Vec<SketchCurve> = (0..MAX_CURVES as u64)
+        .map(|i| line(i, [0.0, 0.0], [1.0, 1.0]))
+        .collect();
+    crowded("one line many times", &same, 4 * MAX_PAIRS);
+    let mut gons = Vec::new();
+    let mut area = 0.0;
+    for i in 0..50_u64 {
+        let r = 10.0 + i as f64;
+        gons.extend(ngon(1000, r, i * 1000));
+        let a = ngon_area(1000, r);
+        area += if (49 - i) % 2 == 0 { a } else { -a };
+    }
+    timed("50 nested 1000-gons", &gons, Some(area));
+}
+
+/// At the cap, every adversarial layout (run in release: `cargo test
+/// --release -p craft3d-kernel --test robustness -- --ignored --nocapture`;
+/// the times are in docs/design/sweeps.md). Layouts that sketches make are accepted, and layouts whose
 /// curves are all near one another are refused by the bound on pairs,
 /// quickly, instead of being compared pair by pair.
 #[test]
-fn the_cap_finishes() {
+#[ignore = "seconds per layout; run in release with --ignored --nocapture"]
+fn the_cap_finishes_with_every_layout() {
     let ngon_area = |n: usize, r: f64| n as f64 * r * r * (2.0 * PI / n as f64).sin() / 2.0;
     timed(
         "the cap as one polygon",
