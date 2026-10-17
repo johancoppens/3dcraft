@@ -12,6 +12,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static BOOLEANS: AtomicU64 = AtomicU64::new(0);
 static FACE_PAIRS: AtomicU64 = AtomicU64::new(0);
+static FACE_CANDIDATES: AtomicU64 = AtomicU64::new(0);
+static EDGE_CANDIDATES: AtomicU64 = AtomicU64::new(0);
 static PATCH_TREES: AtomicU64 = AtomicU64::new(0);
 static BLEND_SECTIONS: AtomicU64 = AtomicU64::new(0);
 
@@ -23,6 +25,16 @@ pub struct KernelWork {
     /// Pairs of faces, one of each operand, whose surfaces a boolean
     /// intersected (their boxes and hulls met).
     pub face_pairs: u64,
+    /// Faces a boolean's broad phase (`boolean/facetree.rs`) handed on to
+    /// an exact test of their boxes: per face of A the faces of B its box
+    /// may meet, per point or ray of the classification the faces it may
+    /// reach. Testing every face against every face, the count grows with
+    /// the product of the face counts; with the tree, about with their sum.
+    pub face_candidates: u64,
+    /// Edges of a face a boolean asked where they meet the other face's
+    /// surface: those near where the two faces are, of every pair of faces
+    /// whose surfaces meet (`boolean/section.rs` › `edge_cuts`).
+    pub edge_candidates: u64,
     /// Patch trees of freeform surfaces built (not found on the shelf).
     pub patch_trees: u64,
     /// Cross-sections of rolling-ball and chamfer blends solved.
@@ -34,6 +46,8 @@ pub fn work() -> KernelWork {
     KernelWork {
         booleans: BOOLEANS.load(Ordering::Relaxed),
         face_pairs: FACE_PAIRS.load(Ordering::Relaxed),
+        face_candidates: FACE_CANDIDATES.load(Ordering::Relaxed),
+        edge_candidates: EDGE_CANDIDATES.load(Ordering::Relaxed),
         patch_trees: PATCH_TREES.load(Ordering::Relaxed),
         blend_sections: BLEND_SECTIONS.load(Ordering::Relaxed),
     }
@@ -45,6 +59,14 @@ pub(crate) fn boolean() {
 
 pub(crate) fn face_pairs(count: u64) {
     FACE_PAIRS.fetch_add(count, Ordering::Relaxed);
+}
+
+pub(crate) fn face_candidates(count: u64) {
+    FACE_CANDIDATES.fetch_add(count, Ordering::Relaxed);
+}
+
+pub(crate) fn edge_candidates(count: u64) {
+    EDGE_CANDIDATES.fetch_add(count, Ordering::Relaxed);
 }
 
 pub(crate) fn patch_tree() {

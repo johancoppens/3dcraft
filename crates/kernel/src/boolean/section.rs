@@ -2,11 +2,12 @@
 //! in which two surfaces meet, cut down to the stretches that are within
 //! both faces.
 
+use super::facetree::FaceTree;
 use super::freeform::is_freeform;
 use super::hits::{curve_hits, signed_distance};
 use super::outline::{
     Hull, Outline, Seg, Sheet, Side, boxes_meet, hull_of, locate, nearest, onto, outward_normal,
-    surface_distance,
+    piece_box, surface_distance,
 };
 use super::{
     AMBIGUOUS, LOST, Meeting, NEAR, NEARLY_COINCIDENT, NEARLY_TOUCHING, Operand, Reason, Stop,
@@ -61,6 +62,11 @@ pub(super) struct Solid<'a> {
     pub hulls: Vec<Hull>,
     /// The merged vertex of each of the body's vertices.
     pub vertices: Vec<usize>,
+    /// The tree of `boxes`, made the first time it is asked for.
+    tree: OnceLock<FaceTree>,
+    /// Per face: its edges, each once and ascending, and the tree of their
+    /// boxes ([`piece_box`]), made the first time they are asked for.
+    edge_trees: Vec<OnceLock<(Vec<EdgeId>, FaceTree)>>,
 }
 
 impl Solid<'_> {
@@ -99,6 +105,52 @@ impl Solid<'_> {
             *self.vertices.get(e.start.0 as usize)?,
             *self.vertices.get(e.end.0 as usize)?,
         ))
+    }
+
+    /// The faces whose boxes may pass `test`, ascending: all that pass it
+    /// and some that do not, for the caller to test as it would test every
+    /// face. `test` must pass for a box whenever it passes for a box inside
+    /// it ([`FaceTree`]).
+    pub fn candidates(&self, test: impl Fn(&Bbox3) -> bool) -> Vec<usize> {
+        let found = self
+            .tree
+            .get_or_init(|| FaceTree::new(&self.boxes))
+            .candidates(test);
+        crate::work::face_candidates(found.len() as u64);
+        found
+    }
+
+    /// The edges around a face whose boxes pass `test` (and those whose
+    /// boxes are not finite), each once and ascending. `test` must pass for
+    /// a box whenever it passes for a box inside it.
+    pub fn edges_near(&self, face: usize, test: impl Fn(&Bbox3) -> bool) -> Vec<EdgeId> {
+        let Some(cell) = self.edge_trees.get(face) else {
+            return Vec::new();
+        };
+        let (edges, tree) = cell.get_or_init(|| {
+            let edges = self.edges_of(face);
+            let boxes: Vec<Bbox3> = edges.iter().map(|&e| self.edge_box(e)).collect();
+            let tree = FaceTree::new(&boxes);
+            (edges, tree)
+        });
+        let found: Vec<EdgeId> = tree
+            .candidates(test)
+            .into_iter()
+            .filter_map(|i| edges.get(i).copied())
+            .collect();
+        crate::work::edge_candidates(found.len() as u64);
+        found
+    }
+
+    /// A box around an edge; empty for an edge the body does not have.
+    fn edge_box(&self, id: EdgeId) -> Bbox3 {
+        let Some(edge) = self.body.edge(id) else {
+            return Bbox3::EMPTY;
+        };
+        match (self.body.vertex(edge.start), self.body.vertex(edge.end)) {
+            (Some(a), Some(b)) => piece_box(&edge.curve, a.point, b.point),
+            _ => Bbox3::EMPTY,
+        }
     }
 
     /// A box around the whole body.
@@ -258,6 +310,8 @@ pub(super) fn prepare<'a>(
         boxes,
         hulls,
         vertices: merged,
+        tree: OnceLock::new(),
+        edge_trees: (0..body.faces.len()).map(|_| OnceLock::new()).collect(),
     })
 }
 
@@ -405,17 +459,41 @@ fn one_meeting(
     (on(a, p_edges.0, q) && on(b, q_edges.1, p)) || (on(a, q_edges.0, p) && on(b, p_edges.1, q))
 }
 
-/// Adds to `cuts` where the edges of `face` of `own` meet `surface`.
+/// How far, in tolerances, an edge's box may be from where the boxes of
+/// two faces overlap and still be asked where it meets the other face's
+/// surface ([`edge_cuts`]). A kept stretch has its ends within twice the
+/// tolerance of both boxes, a cut is within the tolerance of its edge, and
+/// cuts within the tolerance of one another are merged: four tolerances
+/// would do; the rest is room.
+const EDGE_REACH: f64 = 16.0;
+
+/// Adds to `cuts` where the edges of `face` of `own` meet `surface`, of
+/// the edges whose boxes come within [`EDGE_REACH`] tolerances of `near`,
+/// the overlap of the two faces' boxes.
+///
+/// A cut further away bounds only stretches that [`clip`] leaves out
+/// without looking at them: a stretch is kept only when its middle and its
+/// ends are within both faces' boxes, and between two cuts that are, the
+/// curve does not leave both faces without crossing an edge of one of them
+/// where it is still within the other, which is a cut near the overlap
+/// too. So the stretches kept, their ends, and the vertices made of them
+/// are those of asking every edge; what is not asked is where an edge far
+/// from the other face meets its surface. Of a face with a thousand edges
+/// the few near the other face are asked, not all of them for every face
+/// it meets.
+#[allow(clippy::too_many_arguments)]
 fn edge_cuts(
     own: &Solid,
     face: usize,
     surface: Sheet,
+    near: &Bbox3,
     named: &[(Operand, FaceId)],
     tolerance: &Tolerance,
     cuts: &mut Vec<Cut>,
 ) -> Result<(), Stop> {
     let tol = tolerance.linear;
-    for id in own.edges_of(face) {
+    let reach = EDGE_REACH * tol;
+    for id in own.edges_near(face, |b| boxes_meet(b, near, reach)) {
         let edge = own.body.edge(id).ok_or(Stop::of(LOST))?;
         let (Some(a), Some(b)) = (own.body.vertex(edge.start), own.body.vertex(edge.end)) else {
             return Err(Stop::of(LOST));
@@ -964,7 +1042,12 @@ pub(super) fn section(
         return Ok(sections);
     }
     for (fa, box_a) in a.boxes.iter().enumerate() {
-        for (fb, box_b) in b.boxes.iter().enumerate() {
+        // The faces of B whose boxes meet this one's, in the order of B's
+        // faces: the pairs, and their order, of testing every face of B.
+        for fb in b.candidates(|box_b| boxes_meet(box_a, box_b, 2.0 * tol)) {
+            let Some(box_b) = b.boxes.get(fb) else {
+                return Err(Stop::of(LOST));
+            };
             // Only where both faces are can they meet: their surfaces are
             // intersected there and nowhere else, so that what the surfaces
             // do far from the faces (cross, touch, run tangent) does not
@@ -1053,8 +1136,10 @@ pub(super) fn section(
                         continue;
                     }
                     let mut found = Vec::new();
-                    edge_cuts(a, fa, ob.sheet(), &named, tolerance, &mut found)?;
-                    edge_cuts(b, fb, oa.sheet(), &named, tolerance, &mut found)?;
+                    // (Some: the boxes meet within twice the tolerance.)
+                    let near = overlap(box_a, box_b, 2.0 * tol).unwrap_or(within);
+                    edge_cuts(a, fa, ob.sheet(), &near, &named, tolerance, &mut found)?;
+                    edge_cuts(b, fb, oa.sheet(), &near, &named, tolerance, &mut found)?;
                     for curve in &meeting.curves {
                         clip(
                             curve,

@@ -281,6 +281,8 @@ Surface/surface intersection, imprint, classify and sew; union, subtract and int
 
 - Each pair of faces intersected in the box of the two faces (the impeller's blades with rounded leading edges, in a pattern and on a hub); two traces of one branch are one ([`design/booleans.md`](design/booleans.md) › *The box of the two faces*) (2026-10-15)
 - Only the part of a chart that can be inside the box is walked; a march step goes as far as it was asked; a face on a torus has a box of its own size (the bike's inset core and mirrored stays, the turbofan's 0.1 mm rounds on discs; [`design/geometry.md`](design/geometry.md), [`design/booleans.md`](design/booleans.md)) (2026-10-15)
+- Many lumps and faces with many edges cost work in proportion: the faces a face, a ray or a point can meet and the edges near the other face come from trees of boxes in the order of testing all, bit for bit the same (2500 lumps 5.4 s to 0.9 s; the welding table's finding W2; [`design/booleans.md`](design/booleans.md) › *Many lumps*) (2026-10-17)
+
 #### Open
 The [boolean checklist](#the-boolean-checklist) › *Owed*.
 

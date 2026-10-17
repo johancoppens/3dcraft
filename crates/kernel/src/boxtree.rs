@@ -1,9 +1,10 @@
-//! A static tree of axis-aligned boxes in the plane (a bounding-volume
-//! hierarchy), for finding which of many boxes pass a test without testing
-//! all of them: the broad phase of profile detection.
+//! A static tree of axis-aligned boxes (a bounding-volume hierarchy), for
+//! finding which of many boxes pass a test without testing all of them:
+//! the broad phase of profile detection (boxes in the plane) and of the
+//! booleans (the boxes of faces in space, `boolean/facetree.rs`).
 //!
 //! The tree is built once by splitting the boxes at the median of their
-//! centres along the longer side of the spread, down to leaves of a few
+//! centres along the axis of the widest spread, down to leaves of a few
 //! boxes; a node's box is the hull of the boxes under it (minima and
 //! maxima, so no rounding). A search hands every node's box to a test and
 //! goes below only where it passes, so any test that passes for a box
@@ -12,14 +13,74 @@
 //! found, and stops when it runs out: the bound on the work of profile
 //! detection.
 
+use craft3d_math::Bbox3;
+
 /// How many boxes a leaf holds at most.
 const LEAF: usize = 8;
 
 /// `[min x, min y, max x, max y]`.
 pub(crate) type Box2 = [f64; 4];
 
-struct Node {
-    bbox: Box2,
+/// A box the tree can hold: its hull with another, and its centre along
+/// an axis (for the split; any number that orders boxes along the axis).
+pub(crate) trait TreeBox: Clone {
+    const AXES: usize;
+    /// The box that holds nothing, the start of a hull.
+    fn nothing() -> Self;
+    /// Grows `self` to hold `other` too (minima and maxima, exact).
+    fn take_in(&mut self, other: &Self);
+    fn centre(&self, axis: usize) -> f64;
+}
+
+impl TreeBox for Box2 {
+    const AXES: usize = 2;
+    fn nothing() -> Self {
+        [
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ]
+    }
+    fn take_in(&mut self, b: &Self) {
+        *self = [
+            self[0].min(b[0]),
+            self[1].min(b[1]),
+            self[2].max(b[2]),
+            self[3].max(b[3]),
+        ];
+    }
+    fn centre(&self, axis: usize) -> f64 {
+        if axis == 1 {
+            self[1] / 2.0 + self[3] / 2.0
+        } else {
+            self[0] / 2.0 + self[2] / 2.0
+        }
+    }
+}
+
+impl TreeBox for Bbox3 {
+    const AXES: usize = 3;
+    fn nothing() -> Self {
+        Bbox3::EMPTY
+    }
+    fn take_in(&mut self, b: &Self) {
+        if let Some((lo, hi)) = b.corners() {
+            self.add(lo);
+            self.add(hi);
+        }
+    }
+    fn centre(&self, axis: usize) -> f64 {
+        self.corners().map_or(0.0, |(lo, hi)| match axis {
+            0 => lo.x / 2.0 + hi.x / 2.0,
+            1 => lo.y / 2.0 + hi.y / 2.0,
+            _ => lo.z / 2.0 + hi.z / 2.0,
+        })
+    }
+}
+
+struct Node<B> {
+    bbox: B,
     /// The range of `items` under this node.
     first: usize,
     end: usize,
@@ -27,37 +88,27 @@ struct Node {
     children: Option<[usize; 2]>,
 }
 
-pub(crate) struct BoxTree {
-    boxes: Vec<Box2>,
+pub(crate) struct BoxTree<B: TreeBox = Box2> {
+    boxes: Vec<B>,
     /// Box indices, grouped so that every node's boxes are one range.
     items: Vec<usize>,
-    nodes: Vec<Node>,
+    nodes: Vec<Node<B>>,
 }
 
-fn hull(boxes: &[Box2], items: &[usize]) -> Box2 {
-    let mut h = [
-        f64::INFINITY,
-        f64::INFINITY,
-        f64::NEG_INFINITY,
-        f64::NEG_INFINITY,
-    ];
+fn hull<B: TreeBox>(boxes: &[B], items: &[usize]) -> B {
+    let mut h = B::nothing();
     for b in items.iter().filter_map(|&i| boxes.get(i)) {
-        h = [
-            h[0].min(b[0]),
-            h[1].min(b[1]),
-            h[2].max(b[2]),
-            h[3].max(b[3]),
-        ];
+        h.take_in(b);
     }
     h
 }
 
-impl BoxTree {
-    pub(crate) fn new(boxes: Vec<Box2>) -> BoxTree {
+impl<B: TreeBox> BoxTree<B> {
+    pub(crate) fn new(boxes: Vec<B>) -> BoxTree<B> {
         let mut items: Vec<usize> = (0..boxes.len()).collect();
         let mut nodes = Vec::with_capacity(boxes.len() / LEAF * 2 + 1);
         let placeholder = || Node {
-            bbox: [0.0; 4],
+            bbox: B::nothing(),
             first: 0,
             end: 0,
             children: None,
@@ -73,23 +124,23 @@ impl BoxTree {
             let bbox = hull(&boxes, slice);
             let mut children = None;
             if slice.len() > LEAF {
-                // Split along the longer side of the spread of the centres.
-                let centre = |i: usize, along_y: bool| {
-                    boxes.get(i).map_or(0.0, |b| {
-                        if along_y {
-                            b[1] / 2.0 + b[3] / 2.0
-                        } else {
-                            b[0] / 2.0 + b[2] / 2.0
-                        }
-                    })
-                };
-                let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
-                for &i in slice.iter() {
-                    let c = [centre(i, false), centre(i, true)];
-                    lo = [lo[0].min(c[0]), lo[1].min(c[1])];
-                    hi = [hi[0].max(c[0]), hi[1].max(c[1])];
+                // Split along the axis of the widest spread of the centres
+                // (the first of equal ones).
+                let centre = |i: usize, axis: usize| boxes.get(i).map_or(0.0, |b| b.centre(axis));
+                let mut axis = 0;
+                let mut widest = f64::NEG_INFINITY;
+                for along in 0..B::AXES {
+                    let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+                    for &i in slice.iter() {
+                        let c = centre(i, along);
+                        lo = lo.min(c);
+                        hi = hi.max(c);
+                    }
+                    if along == 0 || hi - lo > widest {
+                        axis = along;
+                        widest = hi - lo;
+                    }
                 }
-                let axis = hi[1] - lo[1] > hi[0] - lo[0];
                 let mid = slice.len() / 2;
                 slice.select_nth_unstable_by(mid, |&i, &j| {
                     centre(i, axis).total_cmp(&centre(j, axis)).then(i.cmp(&j))
@@ -126,7 +177,7 @@ impl BoxTree {
     /// items found until then).
     pub(crate) fn search(
         &self,
-        test: impl Fn(&Box2) -> bool,
+        test: impl Fn(&B) -> bool,
         out: &mut Vec<usize>,
         budget: &mut usize,
     ) -> bool {

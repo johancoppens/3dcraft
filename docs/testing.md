@@ -256,7 +256,7 @@ A test that renders writes its images under `target/evidence/<crate>/<test>/` (a
 | Counter | Crate | What one unit is |
 |---|---|---|
 | `regenerations`, `features_rebuilt`, `features_reused`, `context_entries`, `sketch_solves` | `craft3d_regen::work` | one regeneration; a feature built or given back by the cache; an entry of what features are made from compared (`RegenCache::last_run_work`); a sketch solved afresh |
-| `booleans`, `boolean_face_pairs`, `patch_trees`, `blend_sections` | `craft3d_kernel::work` | a boolean; a pair of faces whose surfaces it intersected; a freeform patch tree built (not found on the shelf); a blend cross-section solved |
+| `booleans`, `boolean_face_pairs`, `boolean_face_candidates`, `boolean_edge_candidates`, `patch_trees`, `blend_sections` | `craft3d_kernel::work` | a boolean; a pair of faces whose surfaces it intersected; a face its broad phase handed on to an exact box test (per face of A, per ray or point of the classification); an edge asked where it meets the other face's surface (these two grow with a product of counts where a broad phase is lost); a freeform patch tree built (not found on the shelf); a blend cross-section solved |
 | `mass_faces`, `mass_evaluations` | `craft3d_topo::mass_work` | a face integrated; an evaluation of the integrand (the `Work` the face budget counts) |
 | `meshes`, `mesh_faces`, `triangles` | `craft3d_tess::tess_work` | a body tessellated; its faces; triangles made |
 | `refusals`, `check_problems`, `commands` | the test | a measure or export refused; a problem `document.check` lists; a command of the model |
