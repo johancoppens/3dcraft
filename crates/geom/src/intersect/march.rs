@@ -1724,6 +1724,12 @@ impl Marcher {
                         else {
                             return Err(err);
                         };
+                        // A loop that closes within the step closes here
+                        // too, as after any other step.
+                        let went = new.p.distance(cur.p);
+                        if may_close && pts.len() >= 2 && self.closes_on(start, &cur, went) {
+                            return Ok((pts, End::Closed));
+                        }
                         pts.push(new);
                         cur = new;
                         continue;
@@ -1731,16 +1737,8 @@ impl Marcher {
                 };
                 continue;
             };
-            if may_close && pts.len() >= 2 {
-                let back = start.p - cur.p;
-                let s = back.dot(cur.t);
-                if s > 0.0
-                    && s <= len * (1.0 + 1e-9)
-                    && (back - cur.t * s).length() <= 0.2 * len + self.on
-                    && start.t.dot(cur.t) > 0.5
-                {
-                    return Ok((pts, End::Closed));
-                }
+            if may_close && pts.len() >= 2 && self.closes_on(start, &cur, len) {
+                return Ok((pts, End::Closed));
             }
             if e.dist > self.cut {
                 pts.extend(self.edge(&cur, h, sign));
@@ -1769,6 +1767,17 @@ impl Marcher {
                 h = (1.5 * h).min(self.hmax);
             }
         }
+    }
+
+    /// Whether a step of length `len` from `cur` comes back to `start`: the
+    /// start is ahead within the step, near its line, heading the same way.
+    fn closes_on(&self, start: &Pt, cur: &Pt, len: f64) -> bool {
+        let back = start.p - cur.p;
+        let s = back.dot(cur.t);
+        s > 0.0
+            && s <= len * (1.0 + 1e-9)
+            && (back - cur.t * s).length() <= 0.2 * len + self.on
+            && start.t.dot(cur.t) > 0.5
     }
 
     /// A step of about `h` from `cur` where the step predicted along the
@@ -2238,14 +2247,19 @@ impl Marcher {
             let Field::Free(projector) = &self.own else {
                 return None;
             };
-            let (u, v, _) = projector.foot(a.p.lerp(b.p, 0.5));
+            let middle = a.p.lerp(b.p, 0.5);
+            let (u, v, _) = projector.foot(middle);
             let (pu, pv) = (
                 self.chart.u.1 - self.chart.u.0,
                 self.chart.v.1 - self.chart.v.0,
             );
             let u = Self::unwrap(u, mu, self.chart.periodic_u, pu);
             let v = Self::unwrap(v, mv, self.chart.periodic_v, pv);
+            // Near the chord: a point of another branch that Newton may
+            // find from there is not between them.
+            let chord = a.p.distance(b.p);
             self.between_from(a, b, u, v)
+                .filter(|pt| pt.p.distance(middle) <= 0.5 * chord)
         })
     }
 

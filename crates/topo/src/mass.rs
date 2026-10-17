@@ -2033,6 +2033,80 @@ fn whole_surface(
 }
 
 /// `value` moved by whole periods to be as near to `target` as it gets.
+/// A boundary whose samples jump across most of the domain of the
+/// parameter its inner integrals run along, on a spline surface not known
+/// to close that way: it may close all the same (rows that meet only to
+/// the precision of the file it came from, knots that are not clamped),
+/// and the loops are then not closed in its parameters.
+const UNSEEN_CLOSURE: &str = "a boundary that jumps across the parameters of a spline surface that may close on itself unseen";
+
+/// Whether the samples jump by more than half of `width` in a parameter
+/// whose closure is not known, on a surface whose two borders across that
+/// parameter are the same curve near enough to be a seam
+/// ([`UNSEEN_CLOSURE`]). (Next to a heavy corner of a patch whose weights
+/// are far apart the samples may jump that far on a surface that does not
+/// close at all: its borders are far apart, and the loops are closed in
+/// its parameters.)
+fn unseen(
+    surface: &Surface,
+    samples: &[Sample],
+    pick: impl Fn(&Sample) -> f64,
+    closes: Option<(f64, f64)>,
+    (width, along_u): (f64, bool),
+) -> bool {
+    closes.is_none() && jumps(samples, pick, width) && borders_meet(surface, along_u)
+}
+
+/// How near the two borders of a spline surface across a parameter must
+/// come, as a share of the size of its net, to be taken for a seam the
+/// closure test may have missed: the precision of a file, not of the
+/// arithmetic ([`SAME_ROW`]).
+const SEAM_LIKE: f64 = 1e-5;
+
+/// Whether the borders `u = start` and `u = end` (with `along_u`; else of
+/// v) of a spline surface are within [`SEAM_LIKE`] of each other at
+/// seventeen places along them.
+fn borders_meet(surface: &Surface, along_u: bool) -> bool {
+    let points: &[Vec3] = match surface {
+        Surface::Bezier(p) => p.control_points(),
+        Surface::Nurbs(s) => s.control_points(),
+        _ => return false,
+    };
+    let near = SEAM_LIKE * Bbox3::from_points(points.iter().copied()).diagonal();
+    let ((u0, u1), (v0, v1)) = surface.domain();
+    (0..=16).all(|k| {
+        let share = f64::from(k) / 16.0;
+        let (a, b) = if along_u {
+            let v = v0 + (v1 - v0) * share;
+            (surface.eval(u0, v), surface.eval(u1, v))
+        } else {
+            let u = u0 + (u1 - u0) * share;
+            (surface.eval(u, v0), surface.eval(u, v1))
+        };
+        a.distance(b) <= near
+    })
+}
+
+/// How far the loops go around in a parameter, all together: from where
+/// the samples are where the surface is known to close that way or they
+/// do not jump ([`net_change`], exact), and from the sum of its rates
+/// where they jump without a known closure (the surface may close unseen;
+/// the sum does not depend on knowing it, and is good to well within half
+/// a turn there, away from a heavy corner).
+fn turned(
+    surface: &Surface,
+    samples: &[Sample],
+    (pick, rate): (impl Fn(&Sample) -> f64 + Copy, impl Fn(&Sample) -> f64),
+    closes: Option<(f64, f64)>,
+    (width, along_u): (f64, bool),
+) -> f64 {
+    if unseen(surface, samples, pick, closes, (width, along_u)) {
+        samples.iter().map(rate).sum()
+    } else {
+        net_change(samples, pick, closes.map(|(lo, hi)| hi - lo))
+    }
+}
+
 /// How far a parameter goes in all around the loops of some samples: the
 /// sum of the steps from each sample to the next and from the last of a
 /// loop back to its first, each taken the short way round where the
@@ -2207,8 +2281,20 @@ fn plan(
             // side. That is a face only if the surface is a single point
             // there, a pole, which is then where `G` runs from, as from
             // an apex.
-            let swept = net_change(samples, |s| s.u, closes_u.map(|(lo, hi)| hi - lo));
+            let swept = turned(
+                surface,
+                samples,
+                (|s: &Sample| s.u, |s: &Sample| s.du),
+                closes_u,
+                (u_max - u_min, true),
+            );
             let turns = (sense * swept / (u_max - u_min)).round();
+            if unseen(surface, samples, |s| s.v, closes_v, (v_max - v_min, false)) {
+                return Err(MassError::Unsupported {
+                    face: index,
+                    what: UNSEEN_CLOSURE,
+                });
+            }
             let risen = net_change(samples, |s| s.v, closes_v.map(|(lo, hi)| hi - lo));
             if (risen / (v_max - v_min)).round() != 0.0 {
                 return Err(MassError::Unsupported {
@@ -2329,8 +2415,20 @@ fn across_v_seam(
 ) -> Result<Plan, MassError> {
     let ((u_min, u_max), (v_min, v_max)) = surface.domain();
     let [closes_u, closes_v] = spline_closure(surface);
-    let swept = net_change(samples, |s| s.v, closes_v.map(|(lo, hi)| hi - lo));
+    let swept = turned(
+        surface,
+        samples,
+        (|s: &Sample| s.v, |s: &Sample| s.dv),
+        closes_v,
+        (v_max - v_min, false),
+    );
     let turns = (sense * swept / (v_max - v_min)).round();
+    if unseen(surface, samples, |s| s.u, closes_u, (u_max - u_min, true)) {
+        return Err(MassError::Unsupported {
+            face: index,
+            what: UNSEEN_CLOSURE,
+        });
+    }
     let risen = net_change(samples, |s| s.u, closes_u.map(|(lo, hi)| hi - lo));
     if (risen / (u_max - u_min)).round() != 0.0 {
         return Err(MassError::Unsupported {

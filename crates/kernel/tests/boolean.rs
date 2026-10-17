@@ -882,10 +882,10 @@ fn what_is_not_supported_says_so() {
         }
     }
     // What stays refused of a rational face: weights more than a factor
-    // of ten million apart within a span (a thousand until 2026-10-17:
+    // of two million apart within a span (a thousand until 2026-10-17:
     // expectation changed, see above; the plate with the weights 1, 2000,
-    // 2000, 1 was held refused here), for which the pieces the bounds are
-    // taken from would have to be finer than `2^-21` of the span. Held in
+    // 2000, 1 was held refused here), beyond what the twins of
+    // `boolean_rational.rs` hold (1.4e6). Held in
     // `freeform.rs` › `weights_too_far_apart_are_refused_with_the_reason`:
     // the plate that far apart is no valid body (its edges leave the patch
     // by more than the tolerance from 1e5).

@@ -1111,7 +1111,10 @@ fn skewed_against_tools(name: &str) {
                     let (tool_name, tool) = &tools[pick % tools.len()];
                     let what =
                         format!("{name} skewed {along_u} by {along_v}, and {tool_name} at {k}");
-                    agree_meshed(&solid.body, &body, tool, k, &what, false);
+                    // Meshed where the tessellator meshes such faces: ten
+                    // apart (from a hundred it does not always, open in
+                    // `tess`).
+                    agree_meshed(&solid.body, &body, tool, k, &what, ratio <= 10.0);
                 }
                 turn += 1;
             }

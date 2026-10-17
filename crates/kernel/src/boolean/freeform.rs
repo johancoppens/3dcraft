@@ -59,7 +59,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BinaryHeap};
 use std::sync::{Arc, Mutex, PoisonError};
 
-pub(super) const WEIGHTS: Reason = "a rational freeform face whose weights differ by more than a factor of ten million within one span: its derivatives cannot be bounded usefully";
+pub(super) const WEIGHTS: Reason = "a rational freeform face whose weights differ by more than a factor of two million within one span: its derivatives cannot be bounded usefully";
 pub(super) const IRREGULAR: Reason = "a freeform face whose parametrisation stalls or folds somewhere (a collapsed or self-overlapping patch); its chart cannot be followed";
 pub(super) const POLES_BOTH_WAYS: Reason = "a freeform face whose patch closes into a point on two adjacent sides (collapsed borders both along u and along v); its chart cannot be followed";
 pub(super) const POLE_SHAPE: Reason = "a freeform face that closes into a point too sharply or too unevenly for the directions around that point to be told apart (a cusp, or a point the surface folds back over)";
@@ -73,20 +73,22 @@ const MAX_LEAVES: usize = 1 << 15;
 /// be. Every bound on its derivatives carries a power of the ratio within
 /// a piece, so the bounds are taken from pieces small enough for their
 /// weights to be close ([`PatchTree::settled_sigma`], [`PatchTree::finer`],
-/// and the marcher's `Pieces` in `geom`); those go down to `2^-21` of a
-/// span, which is where weights `1e7` apart even out next to the light end.
-/// Held: the twins of `boolean_rational.rs` skewed a thousandfold both
-/// ways (1.4e6 within a span). (A thousand until 2026-10-17, when the
-/// bounds were taken over a whole leaf or span.)
-const MAX_WEIGHT_RATIO: f64 = 1e7;
+/// and the marcher's `Pieces` in `geom`). The cap is what is held: the
+/// twins of `boolean_rational.rs` skewed a thousandfold both ways, 1.4e6
+/// within a span (a thousand until 2026-10-17, when the bounds were taken
+/// over a whole leaf or span). The measure (`topo::mass_properties`) holds
+/// less: weights more than 1e4 apart after evening by Möbius maps.
+const MAX_WEIGHT_RATIO: f64 = 2e6;
 /// A leaf's bound on the least singular value is refined where it is more
 /// than this many times below the value measured at the corners and the
 /// middle of a piece ([`PatchTree::finer`]): a bound that pairs extremes
 /// over a piece is within a small factor of the truth wherever the
 /// Jacobian changes little over it, and four leaves room for that.
 const SIGMA_SLACK: f64 = 4.0;
-/// How often a leaf is halved for it at most, and into how many pieces
-/// for a whole surface: next to a heavy corner the Jacobian settles within
+/// How often a leaf is halved for it at most, and how many pieces one
+/// surface keeps (16,384: at most about 11 MB for a bicubic surface, the
+/// store emptied when full; [`PatchTree::finer`]'s answers do not depend
+/// on it): next to a heavy corner the Jacobian settles within
 /// a piece about the weights' ratio smaller than the corner's leaf, and
 /// `2^-FINE_DEPTH` of a leaf (`2^-21` of a span) covers ratios to the cap
 /// of a span ([`MAX_WEIGHT_RATIO`]).
@@ -94,7 +96,7 @@ const FINE_DEPTH: usize = 16;
 /// How many pieces a leaf's bound is settled from at most when the tree
 /// is built ([`PatchTree::settled_sigma`]).
 const LEAF_PIECES: usize = 1 << 8;
-const FINE_PIECES: usize = 1 << 16;
+const FINE_PIECES: usize = 1 << 14;
 /// How many pieces one query of [`PatchTree::finer`] takes before it
 /// answers with the lowest bound left, which holds as well.
 const FINE_LOOKS: usize = 1 << 10;
@@ -1829,7 +1831,9 @@ impl PatchTree {
                 return None;
             };
             let even = s.evened()?;
-            PatchTree::new(&Surface::Nurbs(even)).ok().map(Arc::new)
+            // On the shelf like any other tree, so that what it holds is
+            // counted against the shelf's bytes.
+            PatchTree::shared(&Surface::Nurbs(even)).ok()
         });
         made.as_ref().map_or_else(|| Arc::clone(tree), Arc::clone)
     }
@@ -1908,6 +1912,12 @@ impl PatchTree {
         }
         let patch = node.patch.as_ref()?;
         let mut fine = self.fine.lock().unwrap_or_else(PoisonError::into_inner);
+        // The splits are kept only to be found again: the answer is the
+        // same whatever was kept (a kept split this query would not make
+        // is not looked into), so a full store is emptied, not let decide.
+        if fine.nodes.len().saturating_add(4 * FINE_LOOKS + 1) > FINE_PIECES {
+            *fine = Fine::default();
+        }
         let root = match fine.roots.get(&index) {
             Some(&root) => root,
             None => {
@@ -1918,14 +1928,25 @@ impl PatchTree {
                 root
             }
         };
-        // Lowest bound first; ties by index, so that the order is fixed.
+        // Lowest bound first; ties by where the piece is (not by its index
+        // in the store, which depends on what was kept before), so that the
+        // order is fixed.
         let mut heap = std::collections::BinaryHeap::new();
+        let key = |piece: &FinePiece, at: usize| {
+            std::cmp::Reverse((
+                Ordered(piece.sigma),
+                Ordered(piece.u.0),
+                Ordered(piece.v.0),
+                piece.depth,
+                at,
+            ))
+        };
         let near = |piece: &FinePiece| box_distance(&piece.bbox, p) <= reach;
         if let Some(piece) = fine.nodes.get(root).filter(|piece| near(piece)) {
-            heap.push(std::cmp::Reverse((Ordered(piece.sigma), root)));
+            heap.push(key(piece, root));
         }
         let mut looks = 0_usize;
-        while let Some(std::cmp::Reverse((Ordered(sigma), at))) = heap.pop() {
+        while let Some(std::cmp::Reverse((Ordered(sigma), _, _, _, at))) = heap.pop() {
             looks += 1;
             if !(sigma < cutoff) || looks > FINE_LOOKS {
                 return Some(sigma);
@@ -1933,14 +1954,6 @@ impl PatchTree {
             let Some(piece) = fine.nodes.get(at) else {
                 continue;
             };
-            if let Some(kids) = piece.children {
-                for k in kids {
-                    if let Some(kid) = fine.nodes.get(k).filter(|kid| near(kid)) {
-                        heap.push(std::cmp::Reverse((Ordered(kid.sigma), k)));
-                    }
-                }
-                continue;
-            }
             let inside = piece.bbox.corners().is_some_and(|(lo, hi)| {
                 let far = Vec3::new(
                     (p.x - lo.x).abs().max((hi.x - p.x).abs()),
@@ -1956,14 +1969,24 @@ impl PatchTree {
             };
             let (um, vm) = (0.5 * (piece.u.0 + piece.u.1), 0.5 * (piece.v.0 + piece.v.1));
             let split = piece.depth < FINE_DEPTH
-                && fine.nodes.len().saturating_add(4) <= FINE_PIECES
                 && um > piece.u.0
                 && um < piece.u.1
                 && vm > piece.v.0
                 && vm < piece.v.1
                 && (piece.bbox.diagonal() > FINE_REACH * reach
                     || piece.sigma * SIGMA_SLACK < measured);
-            let Some(patch) = piece.patch.clone().filter(|_| split) else {
+            if !split {
+                return Some(sigma);
+            }
+            if let Some(kids) = piece.children {
+                for k in kids {
+                    if let Some(kid) = fine.nodes.get(k).filter(|kid| near(kid)) {
+                        heap.push(key(kid, k));
+                    }
+                }
+                continue;
+            }
+            let Some(patch) = piece.patch.clone() else {
                 return Some(sigma);
             };
             let (u, v, depth) = (piece.u, piece.v, piece.depth + 1);
@@ -1979,7 +2002,7 @@ impl PatchTree {
                 *slot = fine.nodes.len();
                 let made = self.fine_piece(part, pu, pv, sigma, depth);
                 if near(&made) {
-                    heap.push(std::cmp::Reverse((Ordered(made.sigma), *slot)));
+                    heap.push(key(&made, *slot));
                 }
                 fine.nodes.push(made);
             }
@@ -3068,6 +3091,61 @@ mod tests {
     }
 
     #[test]
+    fn the_bound_near_a_point_does_not_depend_on_what_was_asked_before() {
+        // Review of 2026-10-17: `finer` keeps the splits it makes, and the
+        // answer to a question must be the same whatever was asked of the
+        // tree before (rule 5: a document regenerated step by step and the
+        // same document loaded from a file give the same bodies).
+        let plate = |heavy: f64| {
+            Surface::Nurbs(
+                NurbsSurface::new(
+                    1,
+                    1,
+                    vec![0.0, 0.0, 1.0, 1.0],
+                    vec![0.0, 0.0, 1.0, 1.0],
+                    2,
+                    2,
+                    vec![
+                        Vec3::new(0.0, 0.0, 2.0),
+                        Vec3::new(0.0, 3.0, 2.0),
+                        Vec3::new(4.0, 0.0, 2.0),
+                        Vec3::new(4.0, 3.0, 2.0),
+                    ],
+                    vec![1.0, heavy, heavy, 1.0],
+                )
+                .unwrap(),
+            )
+        };
+        let questions: Vec<(Vec3, f64)> = (0..60)
+            .map(|k| {
+                let t = f64::from(k) / 59.0;
+                let p = match k % 3 {
+                    0 => Vec3::new(4.0 * t, 0.0, 2.0),
+                    1 => Vec3::new(0.0, 3.0 * t, 2.0),
+                    _ => Vec3::new(4.0 * t, 3.0 * (1.0 - t), 2.0),
+                };
+                (p, 10f64.powi(-(k % 7)))
+            })
+            .collect();
+        let surface = plate(1000.0);
+        let first = PatchTree::new(&surface).unwrap();
+        let answers: Vec<Option<f64>> = questions
+            .iter()
+            .map(|&(p, r)| first.sigma_near(p, r))
+            .collect();
+        let second = PatchTree::new(&surface).unwrap();
+        for &(p, r) in questions.iter().rev() {
+            let _ = second.sigma_near(p * 1.0001, r * 3.0);
+            let _ = second.sigma_near(p, r);
+        }
+        for (&(p, r), want) in questions.iter().zip(&answers) {
+            let got = second.sigma_near(p, r);
+            assert_eq!(got.map(f64::to_bits), want.map(f64::to_bits), "{p:?} {r}");
+            assert!(got.is_some_and(|g| g > 0.0), "{p:?} {r}");
+        }
+    }
+
+    #[test]
     fn weights_too_far_apart_are_refused_with_the_reason() {
         let surface = |heavy: f64| {
             Surface::Nurbs(
@@ -3094,9 +3172,9 @@ mod tests {
         // the twins skewed a thousandfold both ways, 1.4e6 within a span,
         // are held in `boolean_rational.rs`.)
         assert!(PatchTree::new(&surface(1100.0)).is_ok());
-        assert!(PatchTree::new(&surface(0.9e7)).is_ok());
-        assert_eq!(PatchTree::new(&surface(1.1e7)).unwrap_err(), WEIGHTS);
-        assert_eq!(PatchTree::new(&surface(1.0 / 1.1e7)).unwrap_err(), WEIGHTS);
+        assert!(PatchTree::new(&surface(1.9e6)).is_ok());
+        assert_eq!(PatchTree::new(&surface(2.1e6)).unwrap_err(), WEIGHTS);
+        assert_eq!(PatchTree::new(&surface(1.0 / 2.1e6)).unwrap_err(), WEIGHTS);
     }
 
     #[test]

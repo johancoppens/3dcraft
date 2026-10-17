@@ -732,7 +732,38 @@ struct PieceNode {
     children: Option<Vec<usize>>,
 }
 
+/// The pieces of the surfaces charted lately, by the surface (written out
+/// in full, as for [`Projector::shared`]), the most recently used last.
+type PieceShelf = Vec<(String, Option<Arc<Pieces>>)>;
+static PIECE_SHELF: Mutex<PieceShelf> = Mutex::new(Vec::new());
+
 impl Pieces {
+    /// The pieces of `surface`, shared with every chart before that was
+    /// of the same surface: a function of the surface alone, asked for
+    /// again for every face it meets (measured on the benchmark's turbofan,
+    /// 1312 charts took 0.9 s of pieces made anew).
+    fn shared(surface: &Surface) -> Option<Arc<Pieces>> {
+        let key = format!("{surface:?}");
+        {
+            let mut shelf = PIECE_SHELF.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(at) = shelf.iter().position(|(k, _)| *k == key) {
+                let entry = shelf.remove(at);
+                let pieces = entry.1.clone();
+                shelf.push(entry);
+                return pieces;
+            }
+        }
+        let pieces = Pieces::new(surface).map(Arc::new);
+        let mut shelf = PIECE_SHELF.lock().unwrap_or_else(PoisonError::into_inner);
+        if !shelf.iter().any(|(k, _)| *k == key) {
+            shelf.push((key, pieces.clone()));
+        }
+        while shelf.len() > SHELF_SIZE {
+            let _forgotten = shelf.remove(0);
+        }
+        pieces
+    }
+
     /// The pieces of a Bézier or NURBS surface; `None` for another kind,
     /// or where a piece has no finite bound.
     fn new(surface: &Surface) -> Option<Pieces> {
@@ -1224,7 +1255,7 @@ impl Chart {
                         muv,
                         mvv,
                     },
-                    pieces: Pieces::new(surface).map(Arc::new),
+                    pieces: Pieces::shared(surface),
                 }
             }
             Surface::Nurbs(s) => {
@@ -1242,7 +1273,7 @@ impl Chart {
                     periodic_u,
                     periodic_v,
                     bounds: nurbs_bounds(s, surface, u, v, count_u, count_v),
-                    pieces: Pieces::new(surface).map(Arc::new),
+                    pieces: Pieces::shared(surface),
                 }
             }
         };

@@ -588,3 +588,90 @@ fn a_face_inside_a_spline_has_the_area_inside_the_spline() {
     }
     println!("{count} faces; worst relative error {worst:e}");
 }
+
+/// A cylinder whose wall is a NURBS surface that closes on itself around
+/// v without `mass`'s closure test seeing it: the last column of its net
+/// is moved off the first by `apart` of the radius (a surface read from a
+/// file closes to its writer's precision, not to the nine digits the test
+/// asks), less than the tolerance, so the body is valid. Its rims go
+/// around v, over the seam. Found in review (2026-10-17): the plan read
+/// how far a loop goes around from where the samples are, which telescopes
+/// to nothing where no closure is known, and the wall was measured as a
+/// face its loops do not bound. Measured right, or refused, never wrong.
+#[test]
+fn a_wall_that_closes_unseen_is_measured_right_or_refused() {
+    for apart in [0.0, 3e-7] {
+        let frame = Frame::WORLD;
+        let (radius, height) = (1.0, 2.0);
+        let ring = spline_ellipse(&frame, radius, radius, 4);
+        let Curve3::Nurbs(ring_spline) = &ring else {
+            panic!("the ring is a spline")
+        };
+        let mut ctrl = Vec::new();
+        let mut weights = Vec::new();
+        let count = ring_spline.control_points().len();
+        for z in [0.0, height] {
+            for (j, (&p, &w)) in ring_spline
+                .control_points()
+                .iter()
+                .zip(ring_spline.weights())
+                .enumerate()
+            {
+                let p = if j + 1 == count {
+                    p + Vec3::X * (apart * radius)
+                } else {
+                    p
+                };
+                ctrl.push(p + Vec3::Z * z);
+                weights.push(w);
+            }
+        }
+        let wall_surface = craft3d_geom::NurbsSurface::new(
+            1,
+            2,
+            vec![0.0, 0.0, 1.0, 1.0],
+            ring_spline.knots().to_vec(),
+            2,
+            count,
+            ctrl,
+            weights,
+        )
+        .unwrap();
+        let mut body = Body::new(BodyKind::Solid);
+        let bottom = spline_ring(&mut body, &frame, 0.0, radius, 4);
+        let top = spline_ring(&mut body, &frame, height, radius, 4);
+        let wall = curved(
+            &mut body,
+            Surface::Nurbs(wall_surface),
+            vec![vec![fwd(bottom)], vec![back(top)]],
+        );
+        let floor = flat(&mut body, frame.origin(), -frame.z(), vec![back(bottom)]);
+        let lid = flat(
+            &mut body,
+            frame.point(0.0, 0.0, height),
+            frame.z(),
+            vec![fwd(top)],
+        );
+        body.add_shell(vec![wall, floor, lid]);
+        // Which way the wall faces: out, as the cylinder's.
+        let ((u0, u1), (v0, v1)) = body.faces[wall.0 as usize].surface.domain();
+        let (u, v) = (0.5 * (u0 + u1), 0.37 * (v0 + v1));
+        let s = &body.faces[wall.0 as usize].surface;
+        let out = s.eval(u, v) - Vec3::Z * s.eval(u, v).z;
+        if s.normal(u, v).unwrap().dot(out) < 0.0 {
+            body.faces[wall.0 as usize].reversed = true;
+        }
+        assert_eq!(check(&body, &Tolerance::default()), [], "{apart}");
+        match mass_properties(&body) {
+            Ok(m) => {
+                let volume = PI * radius * radius * height;
+                assert!(
+                    (m.volume - volume).abs() <= 1e-6 * volume,
+                    "{apart}: {} for {volume}",
+                    m.volume
+                );
+            }
+            Err(e) => assert!(apart > 0.0, "{e:?}"),
+        }
+    }
+}
