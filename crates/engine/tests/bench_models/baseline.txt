@@ -60,7 +60,7 @@ impeller sketch_solves 63
 impeller triangles 184916
 rotor blend_sections 0
 rotor boolean_edge_candidates 0
-rotor boolean_face_candidates 108
+rotor boolean_face_candidates 1068
 rotor boolean_face_pairs 0
 rotor booleans 1
 rotor check_problems 0
@@ -68,11 +68,11 @@ rotor commands 34
 rotor context_entries 48
 rotor features_rebuilt 33
 rotor features_reused 177
-rotor mass_evaluations 2579840
-rotor mass_faces 18
+rotor mass_evaluations 7688320
+rotor mass_faces 48
 rotor mesh_faces 55
 rotor meshes 6
-rotor patch_trees 2
+rotor patch_trees 4
 rotor refusals 0
 rotor regenerations 33
 rotor sketch_solves 28

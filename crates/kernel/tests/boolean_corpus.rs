@@ -1079,10 +1079,27 @@ fn run_case(case: &Value, snap: Option<&Value>, verbose: bool) -> Vec<Outcome> {
                 digest(&result);
                 booleans_ms = started.elapsed().as_secs_f64() * 1e3;
                 let defects = check(&result.body, &tolerance);
+                // The boolean's own check in full (volumes, reach, the
+                // faces far from the other operand, seeded points).
+                let broken = match craft3d_kernel::boolean::verify(
+                    &a,
+                    &b,
+                    op,
+                    &result.body,
+                    &tolerance,
+                    &craft3d_kernel::boolean::VerifyOptions::default(),
+                ) {
+                    Ok(found) => found.violations.first().map(ToString::to_string),
+                    Err(e) => Some(format!("the check cannot run: {e}")),
+                };
                 match measure(&result.body, k) {
                     _ if !defects.is_empty() => {
                         Outcome::Invalid(format!("fails the checker: {:?}", defects.first()))
                     }
+                    _ if broken.is_some() => Outcome::Invalid(format!(
+                        "breaks what every boolean keeps: {}",
+                        broken.unwrap_or_default()
+                    )),
                     // (Nor is a body of such a case that `mass_properties`
                     // cannot measure held against its reference.)
                     Err(_) if set_aside => Outcome::Unscored,

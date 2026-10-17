@@ -180,3 +180,43 @@ fn unbounded_and_broken_faces_are_errors_not_panics() {
     let empty = mass_properties(&Body::new(BodyKind::Solid)).unwrap();
     assert_eq!((empty.area, empty.volume, empty.centroid), (0.0, 0.0, None));
 }
+
+/// `mass_bound` gives `mass_properties`' very value, and its bound covers
+/// how far that is from the closed form, while staying a small share of
+/// what is measured (it is the integrator's allowance, not a guess).
+#[test]
+fn the_mass_bound_covers_the_error_and_is_small() {
+    use craft3d_testkit::trimmed;
+    for scale in [1e-3, 1.0, 1e6] {
+        for frame in frames(scale) {
+            let mut all = solids::all(&frame, scale).unwrap();
+            all.extend(trimmed::all(&frame, scale).unwrap());
+            for solid in all {
+                let (m, bound) = craft3d_topo::mass_bound(&solid.body).unwrap();
+                assert_eq!(m, mass_properties(&solid.body).unwrap(), "{}", solid.name);
+                assert!(
+                    (m.volume - solid.volume).abs() <= bound.volume,
+                    "{} at {scale}: volume {} off by {}, bound {}",
+                    solid.name,
+                    m.volume,
+                    (m.volume - solid.volume).abs(),
+                    bound.volume
+                );
+                assert!(
+                    (m.area - solid.area).abs() <= bound.area,
+                    "{} at {scale}: area off by {}, bound {}",
+                    solid.name,
+                    (m.area - solid.area).abs(),
+                    bound.area
+                );
+                assert!(
+                    bound.volume > 0.0 && bound.volume < 1e-9 * solid.volume.abs(),
+                    "{} at {scale}: bound {} of {}",
+                    solid.name,
+                    bound.volume,
+                    solid.volume
+                );
+            }
+        }
+    }
+}
