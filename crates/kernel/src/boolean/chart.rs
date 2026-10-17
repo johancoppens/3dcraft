@@ -421,7 +421,12 @@ impl Chart {
                 }
             }
             Surface::Bezier(_) | Surface::Nurbs(_) => {
-                let tree = sheet.tree.ok_or(IRREGULAR)?;
+                // Drawn as evenly as the weights allow: windings are of
+                // points in space, so any parametrisation of the same
+                // point set is a chart of it, and one whose speed is the
+                // same all over needs the fewest steps.
+                let evened = PatchTree::evened(sheet.tree.ok_or(IRREGULAR)?);
+                let tree = &evened;
                 match tree.closure() {
                     None => {
                         let speed = tree.chart_speed()?;

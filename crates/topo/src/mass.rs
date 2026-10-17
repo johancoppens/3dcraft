@@ -530,8 +530,10 @@ const ON_SURFACE: f64 = 1e-5;
 const SQUARE: f64 = 64.0 * f64::EPSILON;
 /// The work one face may take before it is given up as one whose sums do
 /// not settle (see the module documentation), in evaluations of the
-/// integrand on an analytic surface.
-const BUDGET: u64 = 1 << 26;
+/// integrand on an analytic surface. (2^26 until 2026-10-17: the quarter
+/// disc a ball cuts from a plate drawn with the weights 1, 1000, 1000, 1
+/// at a heavy corner needs a little more, and settles in 0.1 s.)
+const BUDGET: u64 = 1 << 27;
 /// How many times the work of its first sums a face whose boundary is
 /// refined part by part may take, where that is more than [`BUDGET`]
 /// ([`part_by_part`]). A part that settles at the second sum costs five
@@ -2056,6 +2058,189 @@ fn whole_surface(
 }
 
 /// `value` moved by whole periods to be as near to `target` as it gets.
+/// A boundary whose samples jump across most of the domain of the
+/// parameter its inner integrals run along, on a spline surface not known
+/// to close that way: it may close all the same (rows that meet only to
+/// the precision of the file it came from, knots that are not clamped),
+/// and the loops are then not closed in its parameters.
+const UNSEEN_CLOSURE: &str = "a boundary that jumps across the parameters of a spline surface that may close on itself unseen";
+
+/// Whether the loops may go over a seam of the surface that the closure
+/// test did not see ([`UNSEEN_CLOSURE`]): the samples jump by more than
+/// half of `width` in a parameter whose closure is not known, and the
+/// surface's two borders across that parameter are not proven further
+/// than twice `touch` apart as point sets (`certify::curves_apart`). Why
+/// twice `touch`: a boundary point counts as on the surface within `touch`
+/// of it ([`ON_SURFACE`] of the body's size, the integrator's stand-in for
+/// the modelling tolerance it is not told), and a boundary that goes over
+/// a seam has a point within that of both borders where it does, so the
+/// borders come within twice that of each other there, wherever along
+/// them and whatever their parameters; borders proven further apart
+/// cannot be crossed but through the face, and a jump of the samples is
+/// then the boundary sweeping that parameter fast (next to a heavy corner
+/// of a patch whose weights are far apart), its loops closed in the
+/// parameters. Anything short of that proof (borders that come close, a
+/// proof the budget does not reach, knots not clamped across) takes the
+/// safe way: the rate sum of before, or a refusal. (A sheet whose two
+/// borders cross each other, an hourglass with its neck on the crossing,
+/// was measured short by the strip it left out while the borders were
+/// compared only at equal parameters at a few places: review,
+/// 2026-10-17.)
+fn unseen(
+    surface: &Surface,
+    samples: &[Sample],
+    pick: impl Fn(&Sample) -> f64,
+    closes: Option<(f64, f64)>,
+    (width, along_u, touch): (f64, bool, f64),
+) -> bool {
+    closes.is_none() && jumps(samples, pick, width) && !borders_apart(surface, along_u, 2.0 * touch)
+}
+
+/// How many pairs of pieces the proof that two borders are apart may take.
+const BORDER_PROOF: usize = 1 << 12;
+
+/// Whether the borders `u = start` and `u = end` (with `along_u`; else of
+/// v) of a spline surface are proven further than `near` apart: no point
+/// of one within `near` of the other. The borders are the end rows of the
+/// net across that parameter, which the surface interpolates when its
+/// knots there are clamped; otherwise nothing is proven.
+fn borders_apart(surface: &Surface, along_u: bool, near: f64) -> bool {
+    use craft3d_geom::NurbsCurve;
+    use craft3d_geom::certify::{Apart, CurveBound, curves_apart};
+    let rows = |points: &[Vec3], weights: &[f64], (cu, cv): (usize, usize)| {
+        let at = |i: usize, j: usize| {
+            let k = i * cv + j;
+            Some((*points.get(k)?, *weights.get(k)?))
+        };
+        let row = |fixed: usize| -> Option<(Vec<Vec3>, Vec<f64>)> {
+            let along: Vec<(Vec3, f64)> = if along_u {
+                (0..cv).map(|j| at(fixed, j)).collect::<Option<_>>()?
+            } else {
+                (0..cu).map(|i| at(i, fixed)).collect::<Option<_>>()?
+            };
+            Some(along.into_iter().unzip())
+        };
+        let last = if along_u { cu } else { cv }.checked_sub(1)?;
+        Some((row(0)?, row(last)?))
+    };
+    let clamped = |knots: &[f64], degree: usize| {
+        let (Some(&a), Some(&b)) = (knots.first(), knots.last()) else {
+            return false;
+        };
+        knots.iter().take(degree + 1).all(|&k| k == a)
+            && knots.iter().rev().take(degree + 1).all(|&k| k == b)
+    };
+    let curves = match surface {
+        Surface::Nurbs(s) => {
+            let (du, dv) = s.degrees();
+            let (across, across_degree, along, along_degree) = if along_u {
+                (s.knots_u(), du, s.knots_v(), dv)
+            } else {
+                (s.knots_v(), dv, s.knots_u(), du)
+            };
+            if !clamped(across, across_degree) {
+                return false;
+            }
+            let Some(((p0, w0), (p1, w1))) = rows(s.control_points(), s.weights(), s.counts())
+            else {
+                return false;
+            };
+            let curve = |p, w| NurbsCurve::new(along_degree, along.to_vec(), p, w).ok();
+            curve(p0, w0).zip(curve(p1, w1))
+        }
+        Surface::Bezier(b) => {
+            let (m, n) = (b.degree_u(), b.degree_v());
+            let weights = vec![1.0; (m + 1) * (n + 1)];
+            let Some(((p0, w0), (p1, w1))) = rows(b.control_points(), &weights, (m + 1, n + 1))
+            else {
+                return false;
+            };
+            let degree = if along_u { n } else { m };
+            let knots: Vec<f64> = std::iter::repeat_n(0.0, degree + 1)
+                .chain(std::iter::repeat_n(1.0, degree + 1))
+                .collect();
+            let curve = |p, w| NurbsCurve::new(degree, knots.clone(), p, w).ok();
+            curve(p0, w0).zip(curve(p1, w1))
+        }
+        _ => None,
+    };
+    let Some((lo, hi)) = curves else {
+        return false;
+    };
+    let (range_lo, range_hi) = (lo.domain(), hi.domain());
+    let (lo, hi) = (Curve3::Nurbs(lo), Curve3::Nurbs(hi));
+    matches!(
+        curves_apart(
+            &CurveBound::new(&lo),
+            range_lo,
+            &CurveBound::new(&hi),
+            range_hi,
+            near,
+            BORDER_PROOF,
+        ),
+        Apart::Yes
+    )
+}
+
+/// How far the loops go around in a parameter, all together: from where
+/// the samples are where the surface is known to close that way or they
+/// do not jump ([`net_change`], exact), and from the sum of its rates
+/// where they jump without a known closure (the surface may close unseen;
+/// the sum does not depend on knowing it, and is good to well within half
+/// a turn there, away from a heavy corner).
+fn turned(
+    surface: &Surface,
+    samples: &[Sample],
+    (pick, rate): (impl Fn(&Sample) -> f64 + Copy, impl Fn(&Sample) -> f64),
+    closes: Option<(f64, f64)>,
+    (width, along_u, touch): (f64, bool, f64),
+) -> f64 {
+    if unseen(surface, samples, pick, closes, (width, along_u, touch)) {
+        samples.iter().map(rate).sum()
+    } else {
+        net_change(samples, pick, closes.map(|(lo, hi)| hi - lo))
+    }
+}
+
+/// How far a parameter goes in all around the loops of some samples: the
+/// sum of the steps from each sample to the next and from the last of a
+/// loop back to its first, each taken the short way round where the
+/// surface closes on itself that way (`period`, as [`jumps`] tells a
+/// crossing of the seam). From where the samples are, not from a sum of
+/// their rates: next to a heavy corner of a patch whose weights are far
+/// apart the parameters move so unevenly that the coarsest quadrature of
+/// `∮ dv` is off by more than the domain (a ball cut at such a corner with
+/// the weights a thousand apart: "goes around in v"), where the loops of
+/// the face go around nothing.
+fn net_change(samples: &[Sample], pick: impl Fn(&Sample) -> f64, period: Option<f64>) -> f64 {
+    let step = |a: f64, b: f64| match period {
+        Some(period) if period > 0.0 => near(b, a, period) - a,
+        _ => b - a,
+    };
+    let mut total = 0.0;
+    let mut start = 0;
+    while let Some(first) = samples.get(start) {
+        let end = samples
+            .iter()
+            .skip(start)
+            .position(|s| s.loop_index != first.loop_index)
+            .map_or(samples.len(), |offset| start + offset);
+        let Some(block) = samples.get(start..end) else {
+            break;
+        };
+        for pair in block.windows(2) {
+            if let [a, b] = pair {
+                total += step(pick(a), pick(b));
+            }
+        }
+        if let (Some(last), Some(first)) = (block.last(), block.first()) {
+            total += step(pick(last), pick(first));
+        }
+        start = end;
+    }
+    total
+}
+
 fn near(value: f64, target: f64, period: f64) -> f64 {
     value + ((target - value) / period).round() * period
 }
@@ -2149,7 +2334,7 @@ fn plan(
     surface: &Surface,
     index: usize,
     samples: &mut [Sample],
-    sense: f64,
+    (sense, touch): (f64, f64),
 ) -> Result<Plan, MassError> {
     if let (Some(period_u), Some(period_v)) = (surface.period_u(), surface.period_v()) {
         return unrolled(face, index, samples, (period_u, period_v));
@@ -2174,7 +2359,7 @@ fn plan(
         (Some((u0, u1)), Some((v0, v1))) => {
             return unrolled(face, index, samples, (u1 - u0, v1 - v0));
         }
-        (None, Some(_)) => return across_v_seam(surface, index, samples, sense),
+        (None, Some(_)) => return across_v_seam(surface, index, samples, (sense, touch)),
         _ => {}
     }
     let ((u_min, u_max), (v_min, v_max)) = surface.domain();
@@ -2191,9 +2376,27 @@ fn plan(
             // side. That is a face only if the surface is a single point
             // there, a pole, which is then where `G` runs from, as from
             // an apex.
-            let swept = samples.iter().map(|s| s.du).sum::<f64>();
+            let swept = turned(
+                surface,
+                samples,
+                (|s: &Sample| s.u, |s: &Sample| s.du),
+                closes_u,
+                (u_max - u_min, true, touch),
+            );
             let turns = (sense * swept / (u_max - u_min)).round();
-            let risen = samples.iter().map(|s| s.dv).sum::<f64>();
+            if unseen(
+                surface,
+                samples,
+                |s| s.v,
+                closes_v,
+                (v_max - v_min, false, touch),
+            ) {
+                return Err(MassError::Unsupported {
+                    face: index,
+                    what: UNSEEN_CLOSURE,
+                });
+            }
+            let risen = net_change(samples, |s| s.v, closes_v.map(|(lo, hi)| hi - lo));
             if (risen / (v_max - v_min)).round() != 0.0 {
                 return Err(MassError::Unsupported {
                     face: index,
@@ -2309,12 +2512,31 @@ fn across_v_seam(
     surface: &Surface,
     index: usize,
     samples: &[Sample],
-    sense: f64,
+    (sense, touch): (f64, f64),
 ) -> Result<Plan, MassError> {
     let ((u_min, u_max), (v_min, v_max)) = surface.domain();
-    let swept = samples.iter().map(|s| s.dv).sum::<f64>();
+    let [closes_u, closes_v] = spline_closure(surface);
+    let swept = turned(
+        surface,
+        samples,
+        (|s: &Sample| s.v, |s: &Sample| s.dv),
+        closes_v,
+        (v_max - v_min, false, touch),
+    );
     let turns = (sense * swept / (v_max - v_min)).round();
-    let risen = samples.iter().map(|s| s.du).sum::<f64>();
+    if unseen(
+        surface,
+        samples,
+        |s| s.u,
+        closes_u,
+        (u_max - u_min, true, touch),
+    ) {
+        return Err(MassError::Unsupported {
+            face: index,
+            what: UNSEEN_CLOSURE,
+        });
+    }
+    let risen = net_change(samples, |s| s.u, closes_u.map(|(lo, hi)| hi - lo));
     if (risen / (u_max - u_min)).round() != 0.0 {
         return Err(MassError::Unsupported {
             face: index,
@@ -2968,7 +3190,7 @@ fn together(
                         }
                         Plan::Poles(poled)
                     }
-                    None => plan(face, surface, index, &mut samples, sense)?,
+                    None => plan(face, surface, index, &mut samples, (sense, outline.touch))?,
                 };
                 (plan, true)
             }
@@ -3075,7 +3297,7 @@ fn part_by_part(
     let (mut first, panels_at) = sampled(outline, surface, index, (rule, coarse), &coarsest, work)?;
     let plan = match outline.poled {
         Some(poled) => Plan::Poles(poled),
-        None => plan(face, surface, index, &mut first, sense)?,
+        None => plan(face, surface, index, &mut first, (sense, outline.touch))?,
     };
     let by_loop = plan.up_to_whole_surfaces();
     if !by_loop {
