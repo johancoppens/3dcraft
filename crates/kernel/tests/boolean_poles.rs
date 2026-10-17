@@ -1429,8 +1429,9 @@ fn the_tessellator_meshes_cuts_through_a_pole() {
 /// cut along their axes through the point (the cusp of the second order,
 /// the apex of the first), meshed at tolerances a quarter apart: each
 /// mesh closed (every side once each way, welded bit for bit), every
-/// triangle with an area, facing the way the surface's normals at its
-/// corners do and its centroid within the tolerance of its face, and the
+/// triangle with an area, facing the way the surface's normal does at the
+/// foot of its centroid and that centroid within the tolerance of its
+/// face, and the
 /// volume it encloses converging to the half of the closed form, within
 /// the area times the tolerance. (The cuts were refused by the
 /// tessellator until 2026-10-17: [`UNMESHED`].)

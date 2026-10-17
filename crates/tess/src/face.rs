@@ -611,11 +611,13 @@ fn build_ring(
     };
     let size = {
         let ((u0, u1), (v0, v1)) = param.surface.domain();
-        poles.first().map_or(0.0, |pole| {
+        // The largest over all poles: a patch whose corners all lie on one
+        // pole is no size from that one.
+        poles.iter().fold(0.0, |size: f64, pole| {
             [(u0, v0), (u0, v1), (u1, v0), (u1, v1)]
                 .iter()
                 .map(|&(u, v)| param.surface.eval(u, v).distance(pole.point))
-                .fold(0.0, f64::max)
+                .fold(size, f64::max)
         })
     };
     let on_pole: Vec<bool> = raw
