@@ -597,9 +597,45 @@ fn build_ring(
         raw.push(uv);
         sizes.push([da.length(), db.length()]);
     }
+    // On a spline surface with poles a parameter is free only at a pole:
+    // on its border, or its point to rounding (a billionth of the
+    // surface's size, as at a pole in a corner). Where the surface closes
+    // to a higher order (a cusp, whose iso-curves shrink as the square of
+    // the distance), the surface moves a billionth as fast as elsewhere a
+    // long way short of the pole, and the parameter is still known there:
+    // the point lies on its own meridian, not on that of the point before.
+    let poles = if param.is_freeform() {
+        craft3d_geom::pole::poles(param.surface)
+    } else {
+        Vec::new()
+    };
+    let size = {
+        let ((u0, u1), (v0, v1)) = param.surface.domain();
+        poles.first().map_or(0.0, |pole| {
+            [(u0, v0), (u0, v1), (u1, v0), (u1, v1)]
+                .iter()
+                .map(|&(u, v)| param.surface.eval(u, v).distance(pole.point))
+                .fold(0.0, f64::max)
+        })
+    };
+    let on_pole: Vec<bool> = raw
+        .iter()
+        .zip(points)
+        .map(|(&uv, &(pos, _))| {
+            let (u, v) = param.raw(uv);
+            poles.is_empty()
+                || poles.iter().any(|pole| {
+                    pole.holds(param.surface, u, v)
+                        || !exceeds(pole.point.distance(pos), 1e-9 * size)
+                })
+        })
+        .collect();
     // A parameter is free where the surface does not move with it: there
     // the projection returned an arbitrary value for it.
     let free_at = |i: usize| -> Option<usize> {
+        if !on_pole.get(i).copied().unwrap_or(true) {
+            return None;
+        }
         let [sa, sb] = sizes.get(i).copied().unwrap_or([1.0, 1.0]);
         let [la, lb] = largest;
         match (la > 0.0 && sa <= 1e-9 * la, lb > 0.0 && sb <= 1e-9 * lb) {
@@ -2987,15 +3023,27 @@ impl Work<'_> {
             a.1.distance(b.1)
                 .max(b.1.distance(c.1))
                 .max(c.1.distance(a.1));
-        if self.param.is_freeform() && facing.length() <= ROUNDED_AWAY * reach * longest {
+        // But such a triangle longer than the tolerance is no rounding
+        // near a pole: its corners lie on one line in space while the
+        // surface between them does not (two points of a ruling of a
+        // cone that a straight spline sweeps, and its apex, or another
+        // point of that ruling). It faces no way either, and is cut as
+        // one that faces the wrong way is, on any surface; so is one
+        // with no area at all.
+        let rounded = facing.length() <= ROUNDED_AWAY * reach * longest;
+        let flat =
+            !positive(facing.length_squared()) || (rounded && exceeds(longest, self.tolerance));
+        if !flat && rounded && self.param.is_freeform() {
             return Action::Keep;
         }
         let (_, [da, db]) = self.param.derivatives(middle);
         let reference = da.cross(db);
         let agreement = facing.dot(reference);
-        let clear = agreement > 0.5 * facing.length() * reference.length();
+        let clear = !flat && agreement > 0.5 * facing.length() * reference.length();
         if !clear {
-            let exact = if self.param.is_freeform() {
+            let exact = if flat {
+                Some(0.0)
+            } else if self.param.is_freeform() {
                 (reference.length() > 0.0).then_some(agreement)
             } else {
                 self.param

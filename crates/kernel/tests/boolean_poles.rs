@@ -76,9 +76,9 @@ fn try_mesh(body: &Body, k: f64) -> Result<(), String> {
 }
 
 /// (Empty from 2026-10-14, when the tessellator meshed all eight that
-/// were listed here, cuts through and around a pole, to 2026-10-17: the
-/// cuts along the axis of a cusp and of the cone that a spline sweeps,
-/// below.)
+/// were listed here, cuts through and around a pole; from 2026-10-17 to
+/// the same day it held the cuts along the axis of a cusp and of the cone
+/// that a spline sweeps: nine results, meshed since.)
 ///
 /// Results of this file that the tessellator does not mesh yet, by what
 /// their names contain, each with how it fails. They are valid bodies
@@ -87,40 +87,7 @@ fn try_mesh(body: &Body, k: f64) -> Result<(), String> {
 /// of its patch on the way of an edge, or runs around one), and
 /// `the_tessellator_meshes_cuts_through_a_pole` below reproduces them.
 /// An entry that meshes is to be removed here: the test says so.
-const UNMESHED: &[(&[&str], &str)] = &[
-    // The needle's face next to its point, where the cut's edges end:
-    // the face's mesh leaves the edge's chords unused there.
-    (&["cusp, a plane"], "is not closed along edge"),
-    (
-        &["cusp, a cylinder through the axis"],
-        "is not closed along edge",
-    ),
-    (&["cusp, a block edge", "union"], "is not closed along edge"),
-    (&["cusp, a block edge", "rest"], "is not closed along edge"),
-    (
-        &["cusp, a block edge", "turned 0.4", "common"],
-        "is not closed along edge",
-    ),
-    // The cone a straight spline sweeps from the axis, cut through its
-    // apex along the axis (a pole of the first order: the same at 1e-3
-    // meshes).
-    (
-        &["twin cone, a plane through the axis, at 1,"],
-        "folds three distinct points",
-    ),
-    (
-        &["twin cone, a plane through the axis, at 1000000,"],
-        "folds three distinct points",
-    ),
-    (
-        &["twin cone, a block edge along the axis, at 1,"],
-        "folds three distinct points",
-    ),
-    (
-        &["twin cone, a block edge along the axis, at 1000000, common"],
-        "folds three distinct points",
-    ),
-];
+const UNMESHED: &[(&[&str], &str)] = &[];
 
 /// The mesh of a body is closed and encloses its volume, unless it is
 /// one of the [`UNMESHED`], which must then fail as listed.
@@ -1455,5 +1422,83 @@ fn the_tessellator_meshes_cuts_through_a_pole() {
         let body = boolean(&dome, &block, op, &tol).unwrap().body;
         assert_eq!(check(&body, &tol), []);
         assert_eq!(try_mesh(&body, k), Ok(()), "dome and a block edge, {op:?}");
+    }
+}
+
+/// The halves of the needle and of the cone that a straight spline sweeps,
+/// cut along their axes through the point (the cusp of the second order,
+/// the apex of the first), meshed at tolerances a quarter apart: each
+/// mesh closed (every side once each way, welded bit for bit), every
+/// triangle with an area, facing the way the surface's normals at its
+/// corners do and its centroid within the tolerance of its face, and the
+/// volume it encloses converging to the half of the closed form, within
+/// the area times the tolerance. (The cuts were refused by the
+/// tessellator until 2026-10-17: [`UNMESHED`].)
+#[test]
+fn cuts_through_a_cusp_and_an_apex_mesh_closed_and_converge() {
+    let cone = [[0.0, 0.0], [1.0, 2.0], [2.0, 4.0], [3.0, 6.0]];
+    for k in [1.0, 1e6] {
+        let tol = tolerance(k);
+        let needle = Meridian::new(&CUSP, k).swept(0.0, 1.0).0;
+        let cases = [
+            ("needle", swept_solid(&CUSP, k), -Vec3::X, needle),
+            (
+                "spline cone",
+                swept_solid(&cone, k),
+                Vec3::new(0.5, 0.0, 0.75_f64.sqrt()),
+                PI * (3.0 * k).powi(2) * 6.0 * k / 3.0,
+            ),
+        ];
+        for (name, solid, normal, volume) in cases {
+            let tool = half_space(k, Vec3::ZERO, normal, Vec3::Y);
+            for op in [Intersect, Subtract] {
+                let half = boolean(&solid, &tool, op, &tol).unwrap().body;
+                let area = mass(&half).area;
+                let mut last = f64::INFINITY;
+                for chord in [2e-2, 5e-3, 1.25e-3] {
+                    let what = format!("{name} at {k}, {op:?}, chord {chord}");
+                    let chord = chord * k;
+                    let params = TessParams {
+                        chordal_tolerance: chord,
+                        ..TessParams::default()
+                    };
+                    let mesh =
+                        tessellate_body(&half, &params).unwrap_or_else(|e| panic!("{what}: {e}"));
+                    let welded = mesh.weld().unwrap();
+                    assert!(welded.is_closed(), "{what}: not closed");
+                    for (t, &face) in mesh.face_ids.iter().enumerate() {
+                        let [a, b, c] = mesh.corners(t).unwrap();
+                        let facing = (b - a).cross(c - a);
+                        assert!(facing.length() > 0.0, "{what}: triangle {t} has no area");
+                        // Faces the way the surface does where the
+                        // triangle stands for it: at the foot of its
+                        // centroid. (Not by the normals at its corners:
+                        // across the needle next to its point, thinner
+                        // than the tolerance, those turn by a right angle
+                        // from one corner to the next.)
+                        let face = &half.faces[face as usize];
+                        let centroid = (a + b + c) * (1.0 / 3.0);
+                        let (u, v) = face.surface.project(centroid).unwrap();
+                        let off = face.surface.eval(u, v).distance(centroid);
+                        assert!(off <= chord, "{what}: triangle {t} is {off:e} off its face");
+                        // (At the point itself the surface has no normal.)
+                        let outward = if face.reversed { -1.0 } else { 1.0 };
+                        if let Some(normal) = face.surface.normal(u, v) {
+                            assert!(
+                                facing.dot(normal) * outward > 0.0,
+                                "{what}: triangle {t} faces against its surface"
+                            );
+                        }
+                    }
+                    let error = (welded.volume() - volume / 2.0).abs();
+                    assert!(error <= area * chord, "{what}: volume off by {error:e}");
+                    assert!(error < last, "{what}: {error:e} after {last:e}");
+                    if std::env::var_os("POLE_TIMINGS").is_some() {
+                        eprintln!("{what}: volume off by {:e} of the area", error / area);
+                    }
+                    last = error;
+                }
+            }
+        }
     }
 }

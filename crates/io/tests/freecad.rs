@@ -279,3 +279,95 @@ fn freecad_reads_tessellated_solids_as_solids_of_the_right_volume() {
         }
     }
 }
+
+/// A needle (a cubic that leaves the axis along it, turned about it: a
+/// cusp at its point) cut in two by a block whose face holds the axis:
+/// the half's freeform face runs into the point from two edges. FreeCAD
+/// must read its STL and 3MF as a closed solid of the half's volume,
+/// `π ∫ ρ² dz / 2` with `ρ = 9 t² − 6 t³` and `z = 6 t`, to within the
+/// area times the tolerance. (The tessellator left that face open at the
+/// point until 2026-10-17.)
+#[test]
+#[ignore = "needs FreeCAD: set CRAFT3D_FREECAD and run with --ignored"]
+fn freecad_reads_a_needle_cut_along_its_axis_as_a_solid() {
+    use craft3d_kernel::boolean::{BooleanOp, boolean};
+    use craft3d_kernel::profile::{Curve2, SketchCurve, Spline2, detect_profiles};
+    use craft3d_kernel::{primitives, revolve::revolve};
+    use craft3d_math::{Frame, Tolerance};
+    use craft3d_tess::tessellate_body;
+
+    let k = 10.0;
+    let tol = Tolerance::new(1e-5 * k, 1e-9).unwrap();
+    let p = |x: f64, y: f64| [x * k, y * k];
+    let curves = vec![
+        SketchCurve {
+            id: 3,
+            curve: Curve2::Spline(Spline2 {
+                degree: 3,
+                knots: vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+                control: vec![p(0.0, 0.0), p(0.0, 2.0), p(3.0, 4.0), p(3.0, 6.0)],
+            }),
+        },
+        SketchCurve {
+            id: 5,
+            curve: Curve2::Line {
+                start: p(3.0, 6.0),
+                end: p(0.0, 6.0),
+            },
+        },
+        SketchCurve {
+            id: 7,
+            curve: Curve2::Line {
+                start: p(0.0, 6.0),
+                end: p(0.0, 0.0),
+            },
+        },
+    ];
+    let profiles = detect_profiles(&curves, &tol).unwrap();
+    let needle = revolve(
+        &profiles,
+        &Frame::WORLD,
+        [0.0, 0.0],
+        [0.0, 1.0],
+        0.0,
+        std::f64::consts::TAU,
+        &tol,
+    )
+    .unwrap()
+    .body;
+    // Everything with x ≥ 0: its face x = 0 holds the axis.
+    let corner = Frame::new(Vec3::new(0.0, -k, -5.0 * k), Vec3::Z, Vec3::X).unwrap();
+    let block = primitives::block(&corner, 5.0 * k, 8.0 * k, 10.0 * k).unwrap();
+    let half = boolean(&needle, &block, BooleanOp::Subtract, &tol)
+        .unwrap()
+        .body;
+    // π ∫ (9t² − 6t³)² 6 dt over [0, 1], halved.
+    let volume = 0.5 * std::f64::consts::PI * 6.0 * (81.0 / 5.0 - 18.0 + 36.0 / 7.0) * k.powi(3);
+    let tolerance = 0.01 * k;
+    let params = TessParams {
+        chordal_tolerance: tolerance,
+        ..TessParams::default()
+    };
+    let mesh = tessellate_body(&half, &params).unwrap();
+    let welded = mesh.weld().unwrap();
+    assert!(welded.is_closed());
+    for (extension, format) in [("stl", MeshFormat::StlBinary), ("3mf", MeshFormat::ThreeMf)] {
+        let bytes = export_mesh(&mesh, "needle half", Unit::Millimeter, format).unwrap();
+        let what = format!("needle-half.{extension}");
+        let report = freecad_reads(&what, &bytes);
+        println!("{what}: {report:?} against {volume}");
+        assert!(report.solid, "{what}: FreeCAD does not see a closed solid");
+        assert_eq!(report.facets, welded.triangles.len(), "{what}");
+        assert!(
+            close(report.volume, welded.volume()),
+            "{what}: {} vs {}",
+            report.volume,
+            welded.volume()
+        );
+        assert!(
+            (report.volume - volume).abs() <= mesh.area() * tolerance,
+            "{what}: FreeCAD's volume {} is not within area x tolerance of the exact {volume}",
+            report.volume
+        );
+    }
+}
