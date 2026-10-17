@@ -972,9 +972,30 @@ pub(super) struct Cusp {
     pub narrowing: crate::pole::Narrowing,
 }
 
-/// How wide, in tolerances, the surface may be where the chart stops short
-/// of a cusp: see [`short_of_poles`].
-pub(super) const CUSP_WIDTH: f64 = 64.0;
+/// The share of the curvature times the tolerance below which the marcher
+/// takes the gradient of the distance for zero (`Marcher::touches`: a
+/// point is a touch where `|∇f| ≤ TOUCH · tol · |H|`).
+pub(super) const TOUCH: f64 = 4.0;
+
+/// How much longer than the iso-curve the bound of `pole::narrowing` may
+/// be: at most four times (held by
+/// `pole.rs` › `a_cusp_narrows_to_the_second_order_within_its_bounds`; 1.8
+/// on the needle).
+const WIDTH_SLACK: f64 = 4.0;
+
+/// How wide, in tolerances, the surface may be (by the bound) where the
+/// chart stops short of a cusp: see [`short_of_poles`]. Next to the cusp
+/// the curvature across is that of a circle of radius `ρ`, and a surface
+/// that crosses there at the angle `φ` has `|∇f| = sin φ` against a
+/// Hessian of `1 / ρ`: the cells tell it from a touch only where `ρ >
+/// TOUCH · tol / sin φ`, an iso-curve (a whole turn) of `2π` times that.
+/// With the bound up to [`WIDTH_SLACK`] loose, the border is where the
+/// bound is that times `2π · TOUCH · tol` for crossings at a right angle
+/// (about 100 tolerances); a crossing at the border shallower than about
+/// a quarter of that slack allows is refused as a touch. (On a face that
+/// turns a fraction of the way round, the iso-curve is that fraction of
+/// the circle, and the radius is larger by its inverse.)
+pub(super) const CUSP_WIDTH: f64 = WIDTH_SLACK * std::f64::consts::TAU * TOUCH;
 
 /// The chart of a freeform surface stopped just short of its poles, as a
 /// cone's is of its apex: at a border that is one point the chart
@@ -996,7 +1017,9 @@ pub(super) const CUSP_WIDTH: f64 = 64.0;
 /// lies within that width of any one meridian of it; a curve that ends on
 /// that border is drawn on to the point along the intersection
 /// (`Marcher::on_into_cusp`), not left to the vertex rule. This is done only
-/// where the other surface passes within the tolerance of the point.
+/// where the other surface passes within the tolerance of the point and
+/// holds the strip all along ([`holds_the_strip`]); elsewhere the chart
+/// stops as at any other pole.
 fn short_of_poles(mut chart: Chart, tol: &Tolerance, other: &Field) -> Chart {
     for pole in poles(&chart.surface) {
         // Only where the other surface passes through the point: a curve
@@ -1008,20 +1031,25 @@ fn short_of_poles(mut chart: Chart, tol: &Tolerance, other: &Field) -> Chart {
             .is_some_and(|s| s.dist <= tol.linear);
         let narrowing =
             crate::pole::narrowing(&chart.surface, &pole).filter(|n| through && n.order >= 2);
-        let (range, speed) = if pole.across_v() {
-            (&mut chart.v, chart.bounds.lv)
+        let speed = if pole.across_v() {
+            chart.bounds.lv
         } else {
-            (&mut chart.u, chart.bounds.lu)
+            chart.bounds.lu
         };
         let mut short = 0.25 * tol.linear / speed;
         let mut cusp = None;
         if let Some(n) = narrowing {
             let wide = n.within(CUSP_WIDTH * tol.linear);
-            if wide > short {
+            if wide > short && holds_the_strip(&chart, &pole, &n, other, tol, wide) {
                 short = wide;
                 cusp = Some(n);
             }
         }
+        let range = if pole.across_v() {
+            &mut chart.v
+        } else {
+            &mut chart.u
+        };
         // A surface no larger than the tolerance keeps its chart: nothing
         // of it would be left.
         if !(short > 0.0 && short < 0.25 * (range.1 - range.0)) {
@@ -1054,6 +1082,89 @@ fn short_of_poles(mut chart: Chart, tol: &Tolerance, other: &Field) -> Chart {
     }
     chart
 }
+
+/// Whether the other surface holds the strip a cusp's chart would leave
+/// out (`wide` across from the pole): within the strip's own width of it
+/// all along. Every point of the iso-curve at the share `β` is within
+/// `r(β) = ½ · width · β^k` of the meridian `A` through the middle of the
+/// border (`pole::Narrowing`), and the other surface's distance `F` is
+/// 1-Lipschitz, so where `|F(A(β))| ≤ r(β) + tol` all the way from the
+/// tolerance around the point to the border, the other surface runs
+/// along the strip as the axis does (a plane, a block's face or a
+/// cylinder through the axis), and the curves in the strip are the ones
+/// that cross its border, which are drawn on to the point
+/// (`Marcher::on_into_cusp`, which refuses one that turns back). Where it
+/// leaves the strip somewhere (a ball through the point that swallows
+/// the tip, a cone about the axis, a plane through the point at an angle
+/// to the axis), the strip is not left out: the chart stops at the pole
+/// as for any other (`tol / (4 L)`). (The other way round, `|F| > r +
+/// tol` all along, cannot hold for a surface through the point: next to
+/// the point `|F|` is at most the distance to it.) `A` is walked by
+/// halving stretches across: a stretch is settled by its middle and how
+/// far `A` can move on it (the speed across), down to a stretch of an
+/// eighth of the tolerance, where the middle decides; at most
+/// [`STRIP_LOOKS`] samples, past which the strip is not left out.
+fn holds_the_strip(
+    chart: &Chart,
+    pole: &Pole,
+    n: &crate::pole::Narrowing,
+    other: &Field,
+    tol: &Tolerance,
+    wide: f64,
+) -> bool {
+    let (along, across, speed) = if pole.across_v() {
+        (chart.u, chart.v, chart.bounds.lv)
+    } else {
+        (chart.v, chart.u, chart.bounds.lu)
+    };
+    let (from, toward) = match pole.border {
+        crate::pole::Border::UStart | crate::pole::Border::VStart => (across.0, 1.0),
+        crate::pole::Border::UEnd | crate::pole::Border::VEnd => (across.1, -1.0),
+    };
+    let middle = 0.5 * (along.0 + along.1);
+    let at = |off: f64| {
+        let x = from + toward * off;
+        if pole.across_v() {
+            chart.surface.eval(middle, x)
+        } else {
+            chart.surface.eval(x, middle)
+        }
+    };
+    let width = |off: f64| 0.5 * n.width * (off / n.span).powi(n.order as i32);
+    let start = tol.linear / speed;
+    if !(start < wide && speed > 0.0) {
+        return false;
+    }
+    let mut stack = vec![(start, wide)];
+    let mut looks = 0_usize;
+    while let Some((a, b)) = stack.pop() {
+        looks += 1;
+        if looks > STRIP_LOOKS {
+            return false;
+        }
+        let mid = 0.5 * (a + b);
+        let Some(sample) = other.sample(at(mid)) else {
+            return false;
+        };
+        let reach = speed * 0.5 * (b - a);
+        let allowed = width(b) + tol.linear;
+        if sample.dist + reach <= allowed {
+            continue;
+        }
+        if sample.dist > width(mid) + tol.linear || reach <= 0.125 * tol.linear {
+            if sample.dist > width(mid) + tol.linear {
+                return false;
+            }
+            continue;
+        }
+        stack.push((mid, b));
+        stack.push((a, mid));
+    }
+    true
+}
+
+/// Samples of the meridian [`holds_the_strip`] takes at most.
+const STRIP_LOOKS: usize = 100_000;
 
 /// Derivative bounds of a surface, estimated from samples (four per control
 /// point and direction) with a margin. Not a proof: the last resort of

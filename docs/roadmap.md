@@ -62,7 +62,7 @@ The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item i
 
 **Owed, in order:**
 
-- [x] 2026-10-17 A cusp against a face that holds its axis through the point: the chart stops where the surface is wide, judged by bounds to the cusp's order, the curves drawn on to the point ([`design/booleans.md`](design/booleans.md) › *A cusp against a face that holds its axis*); its meshes and its speed along an edge on the axis are open.
+- [ ] A cusp against a face that holds its axis through the point: built 2026-10-17, not meshed (the tessellator leaves the needle's face open where the cut's edges end on the point), and a block edge along the axis takes 20 to 30 s ([`design/booleans.md`](design/booleans.md) › *A cusp against a face that holds its axis*).
 - [ ] Rational weights far apart: a hundred apart is built (2026-10-15), but `topo::mass_properties` does not settle on such a face, and a thousand apart the winding numbers still refuse ([`design/booleans.md`](design/booleans.md) › *Rational faces*).
 - [ ] The contact a fillet's boolean refused ([`design/blends.md`](design/blends.md) › *Fillets as built*), and whether fillet chains still need `blend::join`.
 - [ ] Sheet bodies, several lumps and cavities (item 5).
@@ -274,7 +274,7 @@ Surface/surface intersection, imprint, classify and sew; union, subtract and int
 - Coincident freeform faces: a patch on its analytic twin moved along itself, two patches of one surface ([`design/booleans.md`](design/booleans.md)) (2026-10-15)
 - The self-intersection check inside every operation, near what it changed, and a shell that touches itself refused (2026-10-15)
 - A cusp as a boolean operand: the wedge and the disc drawn to the pole's order, the pieces at the point put in order further along ([`design/booleans.md`](design/booleans.md) › *Cusps*) (2026-10-15)
-- A cusp against faces that hold its axis (planes, a block edge, a cylinder): the chart stops where the needle is wide, bounds to the cusp's order, curves drawn on to the point ([`design/booleans.md`](design/booleans.md) › *A cusp against a face that holds its axis*) (2026-10-17)
+- A cusp against faces that hold its axis (planes, a block edge, a cylinder) cut and measured, not yet meshed: the chart stops where the needle is wide, bounds to the cusp's order, curves drawn on to the point ([`design/booleans.md`](design/booleans.md) › *A cusp against a face that holds its axis*) (2026-10-17)
 - Rational faces with weights a hundred apart as operands: the winding numbers take the chart's speed near each stretch, held by point membership against the plain block ([`design/booleans.md`](design/booleans.md) › *Rational faces*) (2026-10-15)
 - Fourth-order contact: a tacnode or cusp of the intersection is a vertex whose tangent arms are made as graphs around it, a cylinder touching the top of a torus' tube from inside held to its closed-form volume ([`design/geometry.md`](design/geometry.md) › *Tacnodes and cusps*) (2026-10-15)
 - A row of booleans on a body of many freeform faces indexes each surface once (the impeller: a chamfer of the bore 12 s to 1 s); a material measures nothing, mass and inertia are measured at once ([`design/booleans.md`](design/booleans.md), [`design/regeneration.md`](design/regeneration.md)) (2026-10-15)

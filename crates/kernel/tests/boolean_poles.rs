@@ -1177,6 +1177,110 @@ fn cusp_quartered(k: f64, turn: f64) {
     );
 }
 
+/// Surfaces through the cusp's point that do not hold its axis: a ball
+/// of radius `c` centred on the axis at `c` (its surface through the
+/// point, swallowing the tip up to `2 c`; `c` = 2e-3 and 3e-3), a cone about the axis
+/// with its apex on the point, and planes through the point a thousandth
+/// and a hundredth of a radian off the axis. Each of the three booleans is
+/// right or refused by name, never a body that is wrong: valid, and every
+/// one of 400 seeded points and of points along the axis next to the
+/// point where it should be by the solids' own definitions. (The chart
+/// left the strip next to the point out whenever the other surface
+/// passed through the point until the review of 2026-10-17: the needle
+/// less the ball came back whole, its tip through the ball.)
+/// A tool, its name, its membership and how far from the point along the
+/// axis it reaches into the needle (for points looked at there).
+type Probe = (String, Body, Box<dyn Fn(Vec3) -> bool>, f64);
+
+#[test]
+fn surfaces_through_a_cusp_that_leave_its_axis_are_cut_or_refused() {
+    let mut rng = Rng(20_261_019);
+    for k in SCALES {
+        let cusp = swept_solid(&CUSP, k);
+        let meridian = Meridian::new(&CUSP, k);
+        let radius = |y: f64| meridian.at(meridian.at_height(y))[0];
+        let inside = |p: Vec3| p.y > 0.0 && p.y < 6.0 * k && p.x.hypot(p.z) < radius(p.y);
+        let mut tools: Vec<Probe> = Vec::new();
+        for c in [2e-3, 3e-3] {
+            let centre = Vec3::Y * (c * k);
+            let ball = primitives::sphere(&Frame::WORLD.at(centre).unwrap(), c * k).unwrap();
+            tools.push((
+                format!("a ball of {c} through the point"),
+                ball,
+                Box::new(move |p: Vec3| p.distance(centre) < c * k),
+                2.0 * c,
+            ));
+        }
+        let frame = Frame::new(Vec3::Y * (2.0 * k), -Vec3::Y, Vec3::X).unwrap();
+        let cone = primitives::cone(&frame, k, 2.0 * k).unwrap();
+        tools.push((
+            "a cone about the axis, its apex on the point".to_string(),
+            cone,
+            Box::new(move |p: Vec3| p.y > 0.0 && p.y < 2.0 * k && p.x.hypot(p.z) < 0.5 * p.y),
+            2.0,
+        ));
+        for angle in [1e-3_f64, 1e-2] {
+            let normal = Vec3::new(-angle.cos(), angle.sin(), 0.0);
+            tools.push((
+                format!("a plane through the point {angle} off the axis"),
+                half_space(k, Vec3::ZERO, normal, Vec3::Z),
+                Box::new(move |p: Vec3| p.dot(normal) > 0.0),
+                0.01,
+            ));
+        }
+        let tol = tolerance(k);
+        for (name, tool, in_tool, reach) in &tools {
+            let what = format!("cusp, {name}, at {k}");
+            let mut points: Vec<Vec3> = (0..400)
+                .map(|_| {
+                    Vec3::new(
+                        rng.between(-3.5, 3.5),
+                        rng.between(-1.0, 7.0),
+                        rng.between(-3.5, 3.5),
+                    ) * k
+                })
+                .collect();
+            // Next to the point, where the strip is.
+            for share in [0.1, 0.3, 0.5, 0.7, 0.95, 1.2] {
+                let y = share * reach * k;
+                points.push(Vec3::new(0.0, y, 0.0));
+                points.push(Vec3::new(0.3 * radius(y), y, -0.2 * radius(y)));
+            }
+            for op in [Union, Intersect, Subtract] {
+                let body = match boolean(&cusp, tool, op, &tol) {
+                    Ok(result) => result.body,
+                    Err(KernelError::Unsupported { reason, .. }) => {
+                        if std::env::var_os("POLE_TIMINGS").is_some() {
+                            eprintln!("{what}, {op:?}: refused: {reason}");
+                        }
+                        continue;
+                    }
+                    Err(e) => panic!("{what}, {op:?}: {e}"),
+                };
+                assert_eq!(check(&body, &tol), [], "{what}, {op:?}");
+                if std::env::var_os("POLE_TIMINGS").is_some() {
+                    eprintln!(
+                        "{what}, {op:?}: {} faces, volume {}",
+                        body.faces.len(),
+                        mass(&body).volume
+                    );
+                }
+                let got = contains_points(&body, &points, &tol).unwrap();
+                for (p, got) in points.iter().zip(&got) {
+                    let Some(got) = got else { continue };
+                    let (a, b) = (inside(*p), in_tool(*p));
+                    let want = match op {
+                        Union => a || b,
+                        Intersect => a && b,
+                        _ => a && !b,
+                    };
+                    assert_eq!(*got, want, "{what}, {op:?}, at {p:?}");
+                }
+            }
+        }
+    }
+}
+
 /// The same cuts of a cone, whose apex is a pole of the first order (the
 /// surface leaves it in a fan): the analytic cone and its twin that a
 /// straight spline from the axis sweeps, halved by a plane through the

@@ -76,7 +76,7 @@
 
 mod tacnode;
 
-use super::field::{Chart, Cusp, Field, Sample};
+use super::field::{Chart, Cusp, Field, Sample, TOUCH};
 use super::meet::{Meeting, MeetingCurve};
 use crate::{Curve3, GeomError, NurbsCurve, NurbsSurface, Surface};
 use craft3d_math::{Bbox3, Tolerance, Vec3};
@@ -1275,7 +1275,7 @@ impl Marcher {
     fn touches(&self, s: &Stationary, finest: f64) -> bool {
         let (ha, hb, hc) = s.h;
         let size = ha.abs().max(hb.abs()).max(hc.abs());
-        let tangent = s.g.0.hypot(s.g.1) <= 1e-6_f64.max(4.0 * size * self.tol.linear);
+        let tangent = s.g.0.hypot(s.g.1) <= 1e-6_f64.max(TOUCH * size * self.tol.linear);
         tangent && s.e.dist <= self.tol.linear.min(finest) && self.inside(s.u, s.v)
     }
 
@@ -1401,7 +1401,7 @@ impl Marcher {
     fn disc(&mut self, s: &Stationary, finest: f64) -> Option<Disc> {
         let (ha, hb, hc) = s.h;
         let size = ha.abs().max(hb.abs()).max(hc.abs());
-        let tangent = s.g.0.hypot(s.g.1) <= 1e-6_f64.max(4.0 * size * self.tol.linear);
+        let tangent = s.g.0.hypot(s.g.1) <= 1e-6_f64.max(TOUCH * size * self.tol.linear);
         if s.flat || !tangent || !self.inside(s.u, s.v) {
             return None;
         }
@@ -1894,7 +1894,12 @@ impl Marcher {
             self.chart.bounds.lu
         };
         let length = u1 - u0;
+        // Not wrapped round a periodic chart: the points continue the
+        // branch's parameters (the spans between them are halved in
+        // them), and every evaluation takes them round into the domain
+        // (`Chart::at`).
         let mut along = if across_v { end.u } else { end.v };
+        let mut previous = cusp.at;
         let mut pts: Vec<Pt> = Vec::new();
         let mut last = *end;
         let gap = cusp.at - cusp.from;
@@ -1915,14 +1920,22 @@ impl Marcher {
                 let (u, v) = place(y, across);
                 m.eval(u, v)
             };
+            // The zero continues the last one: along the border it moves
+            // no further than the derivatives along it turn, at most
+            // `twist / speed` per unit across (`pole::Narrowing`).
+            let limit = (n.twist * (across - previous).abs() / n.speed.max(f64::MIN_POSITIVE))
+                .min(0.25 * length);
+            previous = across;
             let here = f(self, along).ok_or(lost.clone())?;
             // The nearest change of sign along, either way.
+            // On the other surface already, as `correct` takes a point
+            // (near the point `f` changes along by less than rounding).
             let mut found = None;
-            if here.f == 0.0 {
+            if here.f.abs() <= self.on {
                 found = Some((along, along));
             }
-            let mut reach = 1e-9 * length;
-            while found.is_none() && reach <= 0.25 * length {
+            let mut reach = (1e-9 * length).min(limit);
+            while found.is_none() && reach <= limit {
                 for side in [-1.0, 1.0] {
                     let y = along + side * reach;
                     if !periodic && !(y >= u0 && y <= u1) {
@@ -1934,7 +1947,10 @@ impl Marcher {
                         break;
                     }
                 }
-                reach *= 4.0;
+                if reach >= limit {
+                    break;
+                }
+                reach = (reach * 4.0).min(limit);
             }
             let (mut lo, mut hi) = found.ok_or(lost.clone())?;
             let (mut flo, mut fhi) = (
@@ -1943,6 +1959,9 @@ impl Marcher {
             );
             let mut side = 0;
             for step in 0..100 {
+                if lo == hi {
+                    break;
+                }
                 if flo == 0.0 {
                     hi = lo;
                     break;
