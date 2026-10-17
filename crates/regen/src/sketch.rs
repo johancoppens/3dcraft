@@ -590,6 +590,12 @@ fn explain(error: &solve::SolveError, problem: &Problem) -> String {
         E::Degenerate {
             constraint: i,
             reason,
+        } if *reason == solve::CROWDED => {
+            format!("{} is not supported yet: {reason}", constraint(*i))
+        }
+        E::Degenerate {
+            constraint: i,
+            reason,
         } => {
             format!("{} has no meaning here: {reason}", constraint(*i))
         }
