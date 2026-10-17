@@ -68,10 +68,10 @@
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
 use super::super::{BlendError, Reason, Use, edge_uses, lost, sine_at};
-use super::{BEND, End, Section, Shape, Side, faces_of_edge, refuse};
+use super::{End, Section, Shape, Side, bend, edges_at, faces_of_edge, refuse};
 use craft3d_geom::NurbsSurface;
 use craft3d_math::{Tolerance, Vec3};
-use craft3d_topo::{Body, Coedge, Edge, EdgeId, FaceId, Vertex, VertexId};
+use craft3d_topo::{Body, Coedge, Edge, EdgeId, FaceId, VertexId};
 
 /// Samples along a crossed edge in which the change from inside to
 /// outside is looked for, and the bisection steps that find it.
@@ -139,13 +139,7 @@ fn branch(
         if far == near || far == vertex {
             return None;
         }
-        let rest: Vec<EdgeId> = body
-            .edges
-            .iter()
-            .enumerate()
-            .filter(|(i, e)| *i != current.0 as usize && (e.start == far || e.end == far))
-            .map(|(i, _)| EdgeId(u32::try_from(i).unwrap_or(u32::MAX)))
-            .collect();
+        let rest = edges_at(body, far, current);
         match rest.as_slice() {
             [next] if pair(*next) == Some(want) => {
                 current = *next;
@@ -293,7 +287,7 @@ pub(super) fn find(
     let size = blend.shape.size();
     // Tangent where it is crossed as closely as a blend's own tangency
     // across a joint is measured: ten times what its faces are refined to.
-    let bound = 10.0 * tolerance.angular.max(BEND).max(tol / size);
+    let bound = 10.0 * bend(tolerance, size);
     // Which faces use which edge: only once a candidate is found.
     let uses: std::cell::OnceCell<Vec<Vec<Use>>> = std::cell::OnceCell::new();
     let mut found: Vec<Crossing> = Vec::new();
@@ -564,8 +558,7 @@ pub(super) fn carry(
             if others_at(body, c.inside, c.smooth) {
                 return Err(runs_over());
             }
-            let x = VertexId(u32::try_from(body.vertices.len()).map_err(|_| lost())?);
-            body.vertices.push(Vertex { point });
+            let x = super::add_vertex(body, point)?;
             super::shorten(body, c.smooth, c.inside, x, at.t)?;
             switched.push((x, c.smooth));
             let id = if mine_pieces.is_empty() {
@@ -731,10 +724,7 @@ fn apart_beyond(body: &Body, a: EdgeId, b: EdgeId, at: VertexId, tol: f64) -> Op
 /// Whether an edge other than `edge` still ends at `vertex` (one taken
 /// whole ends nowhere).
 fn others_at(body: &Body, vertex: VertexId, edge: EdgeId) -> bool {
-    body.edges
-        .iter()
-        .enumerate()
-        .any(|(i, e)| i != edge.0 as usize && (e.start == vertex || e.end == vertex))
+    !edges_at(body, vertex, edge).is_empty()
 }
 
 /// Sets edge `id` to `data`, adding it when it is the next new one.
@@ -919,7 +909,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
     use super::*;
     use craft3d_geom::{Curve3, Line};
-    use craft3d_topo::BodyKind;
+    use craft3d_topo::{BodyKind, Vertex};
 
     /// A line along x from the origin and a curve that leaves the origin
     /// at about 27° and comes back down to `gap` above the line at x = 0.7

@@ -487,6 +487,18 @@ fn edge_uses(body: &Body) -> Vec<Vec<Use>> {
     uses
 }
 
+/// The two uses of `edge` by two different faces: `None` for an edge that
+/// is not between two faces (a seam, the border of a sheet, no edge).
+fn two_faces(uses: &[Vec<Use>], edge: EdgeId) -> Option<[Use; 2]> {
+    let [a, b] = <[Use; 2]>::try_from(uses.get(edge.0 as usize)?.as_slice()).ok()?;
+    (a.face != b.face).then_some([a, b])
+}
+
+/// The two faces of `edge` (see [`two_faces`]).
+fn faces_of(uses: &[Vec<Use>], edge: EdgeId) -> Option<[FaceId; 2]> {
+    two_faces(uses, edge).map(|[a, b]| [a.face, b.face])
+}
+
 /// Per vertex, the edges that end in it.
 fn vertex_edges(body: &Body) -> Vec<Vec<EdgeId>> {
     let mut edges: Vec<Vec<EdgeId>> = vec![Vec::new(); body.vertices.len()];
@@ -501,6 +513,17 @@ fn vertex_edges(body: &Body) -> Vec<Vec<EdgeId>> {
         }
     }
     edges
+}
+
+/// The faces at `vertex`: those whose loops use an edge that ends there.
+fn faces_at(at: &[Vec<EdgeId>], uses: &[Vec<Use>], vertex: VertexId) -> BTreeSet<FaceId> {
+    at.get(vertex.0 as usize)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| uses.get(e.0 as usize))
+        .flatten()
+        .map(|u| u.face)
+        .collect()
 }
 
 /// The outward normal of `face` at the point of it nearest `point`.
@@ -524,6 +547,13 @@ fn tangent(curve: &Curve3, t: f64) -> Result<Vec3, BlendError> {
         .ok_or(BlendError::Kernel(KernelError::Geometry(
             GeomError::InvalidParameter("an edge without a direction"),
         )))
+}
+
+/// Whether an edge that leaves along `away` goes straight on from one
+/// that arrives along `arriving` (both unit directions): the test the
+/// edges of a chain are picked with ([`tangent_chain`]).
+fn straight_on(arriving: Vec3, away: Vec3) -> bool {
+    arriving.dot(away) > 1.0 - 1e-9
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -556,18 +586,9 @@ fn sine_at(
     edge: EdgeId,
     point: Vec3,
 ) -> Result<Option<f64>, BlendError> {
-    let Some(data) = body.edge(edge) else {
+    let (Some(data), Some([a, b])) = (body.edge(edge), two_faces(uses, edge)) else {
         return Ok(None);
     };
-    let Some([a, b]) = uses
-        .get(edge.0 as usize)
-        .and_then(|list| <[Use; 2]>::try_from(list.as_slice()).ok())
-    else {
-        return Ok(None);
-    };
-    if a.face == b.face {
-        return Ok(None);
-    }
     let t = data.curve.project(point)?;
     let at = data.curve.eval(t);
     let (na, nb) = (outward(body, a.face, at)?, outward(body, b.face, at)?);
@@ -580,18 +601,9 @@ fn sine_at(
 }
 
 fn across(body: &Body, uses: &[Vec<Use>], edge: EdgeId) -> Result<Option<Across>, BlendError> {
-    let Some(data) = body.edge(edge) else {
+    let (Some(data), Some([a, b])) = (body.edge(edge), two_faces(uses, edge)) else {
         return Ok(None);
     };
-    let Some([a, b]) = uses
-        .get(edge.0 as usize)
-        .and_then(|list| <[Use; 2]>::try_from(list.as_slice()).ok())
-    else {
-        return Ok(None);
-    };
-    if a.face == b.face {
-        return Ok(None);
-    }
     let middle = 0.5 * (data.range.0 + data.range.1);
     let point = data.curve.eval(middle);
     let along = tangent(&data.curve, middle)?;
@@ -713,10 +725,16 @@ impl Plan {
         }
     }
 
-    /// Between two planes, or along a circle.
-    fn flat(&self) -> bool {
-        self.section.is_none()
+    /// A straight edge between two planes (a line with no section next to
+    /// a cylinder).
+    fn between_planes(&self) -> bool {
+        matches!(self.path, Path::Line { .. }) && self.section.is_none()
     }
+}
+
+/// Per edge planned, the index of its plan.
+fn by_edge(plans: &[Plan]) -> BTreeMap<EdgeId, usize> {
+    plans.iter().enumerate().map(|(i, p)| (p.edge, i)).collect()
 }
 
 fn positive(name: &'static str, value: f64) -> Result<f64, BlendError> {
@@ -779,6 +797,13 @@ fn distances(
     Ok(pair)
 }
 
+/// The tangent of half the angle whose cosine is `cosine` (between the
+/// directions into the two faces), from the cosine: exactly 1 for a
+/// square corner, which the tangent of a rounded quarter turn is not.
+fn half_tan(cosine: f64) -> f64 {
+    (1.0 - cosine * cosine).max(0.0).sqrt() / (1.0 + cosine)
+}
+
 /// True when `surface` is turned about the line through `centre` along
 /// `axis`, and is a plane across it, a cylinder or a cone.
 fn about_axis(surface: &Surface, centre: Vec3, axis: Vec3, tol: f64, radius: f64) -> bool {
@@ -797,9 +822,19 @@ fn about_axis(surface: &Surface, centre: Vec3, axis: Vec3, tol: f64, radius: f64
     }
 }
 
-fn plan(body: &Body, uses: &[Vec<Use>], request: &Request, tol: f64) -> Result<Plan, BlendError> {
+/// The faces of the requested edge, the first one first, the directions
+/// into them from its middle and whether it is convex; refused for an
+/// edge that is not one of the solid between two faces that meet at an
+/// angle, or a first face that is not one of its two.
+fn oriented(
+    body: &Body,
+    uses: &[Vec<Use>],
+    request: &Request,
+) -> Result<([FaceId; 2], [Vec3; 2], bool), BlendError> {
     let edge = request.edge;
-    let data = body.edge(edge).ok_or(refused(edge, Reason::NotAnEdge))?;
+    if body.edge(edge).is_none() {
+        return Err(refused(edge, Reason::NotAnEdge));
+    }
     let Some(found) = across(body, uses, edge)? else {
         return Err(refused(edge, Reason::NotSolid));
     };
@@ -822,6 +857,13 @@ fn plan(body: &Body, uses: &[Vec<Use>], request: &Request, tol: f64) -> Result<P
         Turn::Concave => false,
         Turn::Smooth => return Err(refused(edge, Reason::Smooth)),
     };
+    Ok((faces, into, convex))
+}
+
+fn plan(body: &Body, uses: &[Vec<Use>], request: &Request, tol: f64) -> Result<Plan, BlendError> {
+    let edge = request.edge;
+    let (faces, into, convex) = oriented(body, uses, request)?;
+    let data = body.edge(edge).ok_or_else(lost)?;
     let surfaces = [
         &body.face(faces[0]).ok_or_else(lost)?.surface,
         &body.face(faces[1]).ok_or_else(lost)?.surface,
@@ -887,9 +929,7 @@ fn plan(body: &Body, uses: &[Vec<Use>], request: &Request, tol: f64) -> Result<P
     let [into_first, into_second] = into;
     let cosine = into_first.dot(into_second).clamp(-1.0, 1.0);
     let between = cosine.acos();
-    // The tangent of half that angle, from the cosine: exactly 1 for a
-    // square corner, which the tangent of a rounded quarter turn is not.
-    let half_tan = (1.0 - cosine * cosine).max(0.0).sqrt() / (1.0 + cosine);
+    let half_tan = half_tan(cosine);
     let mut distances = distances(edge, request.size, between, half_tan, tol)?;
     let round = match request.size {
         Size::Radius(radius) => Some(radius),
@@ -1059,7 +1099,7 @@ fn lengthen(
                 .into_iter()
                 .filter(|l| l.edge != plan.edge)
                 .collect();
-            let goes_on = others.iter().any(|l| l.direction.dot(beyond) > 1.0 - 1e-9);
+            let goes_on = others.iter().any(|l| straight_on(beyond, l.direction));
             if goes_on {
                 continue;
             }
@@ -1132,12 +1172,7 @@ fn end_plane(
     if !matches!(plan.path, Path::Line { .. }) {
         return Ok(None);
     }
-    let mut faces = BTreeSet::new();
-    for edge in at.get(vertex.0 as usize).into_iter().flatten() {
-        for used in uses.get(edge.0 as usize).into_iter().flatten() {
-            faces.insert(used.face);
-        }
-    }
+    let mut faces = faces_at(at, uses, vertex);
     for face in plan.faces {
         faces.remove(&face);
     }
@@ -1426,8 +1461,7 @@ fn joints(
     at: &[Vec<EdgeId>],
     plans: &[Plan],
 ) -> Result<Vec<Joint>, BlendError> {
-    let planned: BTreeMap<EdgeId, usize> =
-        plans.iter().enumerate().map(|(i, p)| (p.edge, i)).collect();
+    let planned = by_edge(plans);
     let mut found = Vec::new();
     for index in 0..body.vertices.len() {
         let vertex = VertexId(index_u32(index));
@@ -1455,7 +1489,7 @@ fn joints(
             (None, None) => same_chamfer(),
             _ => false,
         };
-        if i != j && kinds && a.convex == b.convex && one.dot(*two) < -1.0 + 1e-9 {
+        if i != j && kinds && a.convex == b.convex && straight_on(-*one, *two) {
             found.push(Joint {
                 vertex,
                 plans: [*i, *j],
@@ -1849,8 +1883,7 @@ fn corners(
     plans: &[Plan],
     tol: f64,
 ) -> Result<Vec<Corner>, BlendError> {
-    let planned: BTreeMap<EdgeId, usize> =
-        plans.iter().enumerate().map(|(i, p)| (p.edge, i)).collect();
+    let planned = by_edge(plans);
     let mut found = Vec::new();
     for index in 0..body.vertices.len() {
         let vertex = VertexId(index_u32(index));
@@ -1865,8 +1898,7 @@ fn corners(
         let (Some(pa), Some(pb), Some(pc)) = (plans.get(ia), plans.get(ib), plans.get(ic)) else {
             continue;
         };
-        let straight = |p: &Plan| matches!(p.path, Path::Line { .. }) && p.flat();
-        if !(straight(pa) && straight(pb) && straight(pc))
+        if !(pa.between_planes() && pb.between_planes() && pc.between_planes())
             || pa.convex != pb.convex
             || pa.convex != pc.convex
         {
@@ -1994,8 +2026,7 @@ fn ball_corners(
     plans: &[Plan],
     tol: f64,
 ) -> Result<Vec<Corner>, BlendError> {
-    let planned: BTreeMap<EdgeId, usize> =
-        plans.iter().enumerate().map(|(i, p)| (p.edge, i)).collect();
+    let planned = by_edge(plans);
     let mut found = Vec::new();
     for index in 0..body.vertices.len() {
         let vertex = VertexId(index_u32(index));
@@ -2017,8 +2048,7 @@ fn ball_corners(
         let (Some(pa), Some(pb), Some(pc)) = (plans.get(ia), plans.get(ib), plans.get(ic)) else {
             return Err(lost());
         };
-        let straight = |p: &Plan| matches!(p.path, Path::Line { .. }) && p.flat();
-        if !(straight(pa) && straight(pb) && straight(pc))
+        if !(pa.between_planes() && pb.between_planes() && pc.between_planes())
             || pa.convex != pb.convex
             || pa.convex != pc.convex
         {
@@ -2277,15 +2307,6 @@ fn finish(
             }
         }
     }
-    let faces_at = |vertex: VertexId| -> BTreeSet<FaceId> {
-        at.get(vertex.0 as usize)
-            .into_iter()
-            .flatten()
-            .filter_map(|e| uses.get(e.0 as usize))
-            .flatten()
-            .map(|u| u.face)
-            .collect()
-    };
     for (index, plan) in plans.iter().enumerate() {
         let Some([own]) = of_plan.get(index).map(Vec::as_slice) else {
             return Err(refused(plan.edge, Reason::InPieces));
@@ -2293,7 +2314,7 @@ fn finish(
         let ends: Vec<VertexId> = plan.ends.into_iter().flatten().collect();
         let mut allowed: BTreeSet<FaceId> = plan.faces.into_iter().collect();
         for vertex in &ends {
-            allowed.extend(faces_at(*vertex));
+            allowed.extend(faces_at(at, uses, *vertex));
         }
         let mut met = [false, false];
         for &other in beside.get(*own).into_iter().flatten() {
@@ -2641,12 +2662,9 @@ fn in_place(
         }
     }
     let one_loop = |vertex: VertexId| {
-        at.get(vertex.0 as usize)
+        faces_at(at, uses, vertex)
             .into_iter()
-            .flatten()
-            .filter_map(|e| uses.get(e.0 as usize))
-            .flatten()
-            .all(|u| body.face(u.face).is_some_and(|f| f.loops.len() == 1))
+            .all(|f| body.face(f).is_some_and(|f| f.loops.len() == 1))
     };
     let lone = |vertex: VertexId| {
         ends.get(&vertex) == Some(&1)
@@ -2993,11 +3011,7 @@ fn chain_of(
 ) -> Result<Option<Vec<(EdgeId, FaceId)>>, BlendError> {
     let uses = edge_uses(body);
     let at = vertex_edges(body);
-    let faces = |edge: EdgeId| -> Option<[FaceId; 2]> {
-        let list = uses.get(edge.0 as usize)?;
-        let [a, b] = <[Use; 2]>::try_from(list.as_slice()).ok()?;
-        (a.face != b.face).then_some([a.face, b.face])
-    };
+    let faces = |edge: EdgeId| faces_of(&uses, edge);
     let Some(own) = faces(edge) else {
         return Ok(None);
     };
@@ -3026,7 +3040,7 @@ fn chain_of(
         for (vertex, beyond) in ends {
             let next: Vec<Leaving> = leaving(body, &uses, &at, vertex)?
                 .into_iter()
-                .filter(|l| l.edge != current && l.direction.dot(beyond) > 1.0 - 1e-9)
+                .filter(|l| l.edge != current && straight_on(beyond, l.direction))
                 .collect();
             let [next] = next.as_slice() else {
                 continue;
