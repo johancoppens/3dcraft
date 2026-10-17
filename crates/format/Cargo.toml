@@ -13,3 +13,6 @@ craft3d-doc.workspace = true
 craft3d-zipstore.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+craft3d-testkit.workspace = true

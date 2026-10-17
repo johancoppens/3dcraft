@@ -26,6 +26,7 @@
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
 use super::harness::{self, Extent, MeshFile, RELATIVE};
+use super::step;
 use super::{APPROX, EXACT, Expect, FLAT, RING, SPLINE, SPLINE_QUADRATURE, Set};
 use craft3d_engine::Session;
 use serde_json::{Value, json};
@@ -90,21 +91,6 @@ impl Closed {
 }
 
 type Forms = Result<Vec<Closed>, String>;
-
-/// A command that must work; a feature that fails is the reason returned
-/// (a refusal is a finding, listed in the report, not a panic).
-fn step(s: &mut Session, id: &str, params: Value) -> Result<Value, String> {
-    let result = s
-        .execute(id, &params)
-        .map_err(|e| format!("{id} {params}: {e}"))?;
-    if result["status"] == "failed" {
-        return Err(format!(
-            "{id} {params}: {}",
-            result["error"].as_str().unwrap_or("failed")
-        ));
-    }
-    Ok(result)
-}
 
 fn sketch(s: &mut Session, name: &str, plane: Value, offset: f64) -> Result<(), String> {
     step(

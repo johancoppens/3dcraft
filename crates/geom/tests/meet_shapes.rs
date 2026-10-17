@@ -371,7 +371,8 @@ fn touching_and_degenerate_configurations_do_not_hang() {
     let f = tilted(1.0);
     let t = tol(1.0);
     let within = cube(f.origin(), 12.0);
-    let clock = std::time::Instant::now();
+    // On the work of this thread, which a busy machine does not stretch.
+    let clock = craft3d_testkit::cost::WorkClock::start();
     // A sphere resting on a torus, off its axis: one point.
     let ring = torus(f, 4.0, 1.0);
     let ball = sphere(f.at(f.point(4.0, 0.0, 2.0)).unwrap(), 1.0);

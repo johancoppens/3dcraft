@@ -13,6 +13,11 @@
     clippy::indexing_slicing
 )]
 
+mod common;
+
+use common::checked::{
+    deep, failure, feature_brief as feature, inspect, refused_with as refused, run,
+};
 use craft3d_engine::{Access, Session, Workspace};
 use serde_json::{Value, json};
 use std::f64::consts::{PI, TAU};
@@ -23,31 +28,7 @@ const SCALES: [f64; 3] = [1e-3, 1.0, 1e6];
 type P = [f64; 2];
 
 fn workdir(name: &str) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("loft-{name}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    let result = session
-        .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"));
-    // Built up edit by edit, the document is what regenerating it from
-    // nothing gives (docs/testing.md: incremental = full regeneration).
-    assert_ne!(
-        session.regeneration_matches_a_full_one(),
-        Some(false),
-        "after {id} {params}"
-    );
-    result
-}
-
-fn refused(session: &mut Session, id: &str, params: Value) -> String {
-    match session.execute(id, &params) {
-        Ok(result) => panic!("{id} {params} should have been refused: {result}"),
-        Err(error) => error.to_string(),
-    }
+    common::workdir("loft", name)
 }
 
 fn new() -> Session {
@@ -98,20 +79,6 @@ fn turned(points: &[P], angle: f64) -> Vec<P> {
         .collect()
 }
 
-fn inspect(s: &mut Session) -> Value {
-    run(s, "document.inspect", json!({}))
-}
-
-fn feature(s: &mut Session, name: &str) -> Value {
-    inspect(s)["features"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|f| f["name"] == name)
-        .unwrap_or_else(|| panic!("no feature {name}"))
-        .clone()
-}
-
 fn body(s: &mut Session, name: &str) -> Value {
     let document = inspect(s);
     document["bodies"]
@@ -136,19 +103,8 @@ fn face_names(s: &mut Session, name: &str) -> Vec<String> {
         .collect()
 }
 
-fn deep(s: &mut Session) {
-    let check = run(s, "document.check", json!({"deep": true}));
-    assert_eq!(check["ok"], true, "{check}");
-}
-
 fn close(a: f64, b: f64, relative: f64) -> bool {
     (a - b).abs() <= relative * b.abs()
-}
-
-fn failure(s: &mut Session, name: &str) -> String {
-    let state = feature(s, name);
-    assert_eq!(state["status"], "failed", "{state}");
-    state["error"].as_str().unwrap().to_string()
 }
 
 /// See `twisted_volume` in the kernel's loft tests: the cross-section

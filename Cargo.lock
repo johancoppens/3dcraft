@@ -458,8 +458,17 @@ name = "craft3d-format"
 version = "0.0.1"
 dependencies = [
  "craft3d-doc",
+ "craft3d-testkit",
  "craft3d-zipstore",
  "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "craft3d-fuzz"
+version = "0.0.1"
+dependencies = [
+ "craft3d-engine",
  "serde_json",
 ]
 
@@ -562,6 +571,7 @@ name = "craft3d-solve"
 version = "0.0.1"
 dependencies = [
  "craft3d-math",
+ "craft3d-testkit",
 ]
 
 [[package]]

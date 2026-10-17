@@ -293,7 +293,8 @@ fn splines_with_too_many_points_in_all_are_refused() {
         .collect();
     // One small spline among them, not named.
     many.push(wavy_spline(1000, [500.0, 500.0], 10.0, 8));
-    let started = Instant::now();
+    // On the work of this thread, which a busy machine does not stretch.
+    let started = craft3d_testkit::cost::WorkClock::start();
     let err = detect_profiles(&many, &Tolerance::default()).unwrap_err();
     assert!(started.elapsed().as_secs_f64() < 1.0);
     assert_eq!(

@@ -13,87 +13,21 @@
     clippy::indexing_slicing
 )]
 
+mod common;
+
+use common::checked::{
+    assert_close, assert_solid, body, built, failed, feature, inspect, names_of, new_document,
+    refused, run, session,
+};
 use craft3d_engine::{Access, Session, Workspace};
-use serde_json::{Value, json};
+use serde_json::json;
 use std::f64::consts::PI;
 use std::path::PathBuf;
 
 const SCALES: [f64; 3] = [1e-3, 1.0, 1e6];
 
 fn workdir(name: &str) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("face-ops-{name}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn session() -> Session {
-    Session::new(Workspace {
-        read: Access::None,
-        write: Access::None,
-    })
-}
-
-fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    let result = session
-        .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"));
-    // Built up edit by edit, the document is what regenerating it from
-    // nothing gives (docs/testing.md: incremental = full regeneration).
-    assert_ne!(
-        session.regeneration_matches_a_full_one(),
-        Some(false),
-        "after {id} {params}"
-    );
-    result
-}
-
-/// A command that adds or edits a feature, which has to regenerate.
-fn built(session: &mut Session, id: &str, params: Value) -> Value {
-    let result = run(session, id, params.clone());
-    assert_eq!(result["status"], "ok", "{id} {params}: {result}");
-    result
-}
-
-/// A command that is accepted but whose feature fails: the reason.
-fn failed(session: &mut Session, id: &str, params: Value) -> String {
-    let result = run(session, id, params.clone());
-    assert_eq!(result["status"], "failed", "{id} {params}: {result}");
-    result["error"].as_str().unwrap().to_string()
-}
-
-fn refused(session: &mut Session, id: &str, params: Value) -> String {
-    match session.execute(id, &params) {
-        Ok(value) => panic!("{id} {params} should be refused, returned {value}"),
-        Err(e) => {
-            assert!(!e.message().contains("internal error"), "{id}: {e}");
-            e.to_string()
-        }
-    }
-}
-
-/// A new document in millimetres whose tolerance fits parts of size `k`.
-fn new_document(session: &mut Session, k: f64) {
-    run(
-        session,
-        "file.new",
-        json!({"units": "mm", "tolerance": 1e-6 * k}),
-    );
-}
-
-fn inspect(session: &mut Session) -> Value {
-    run(session, "document.inspect", json!({}))
-}
-
-fn body(session: &mut Session, name: &str) -> Value {
-    let document = inspect(session);
-    document["bodies"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|b| b["name"] == name)
-        .unwrap_or_else(|| panic!("no body {name} in {document}"))
-        .clone()
+    common::workdir("face-ops", name)
 }
 
 fn body_names(session: &mut Session) -> Vec<String> {
@@ -102,60 +36,6 @@ fn body_names(session: &mut Session) -> Vec<String> {
         .unwrap()
         .iter()
         .map(|b| b["name"].as_str().unwrap().to_string())
-        .collect()
-}
-
-fn feature(session: &mut Session, name: &str) -> Value {
-    let document = inspect(session);
-    document["features"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|f| f["name"] == name)
-        .unwrap_or_else(|| panic!("no feature {name} in {document}"))
-        .clone()
-}
-
-#[track_caller]
-fn assert_close(actual: &Value, expected: f64, what: &str) {
-    let actual = actual
-        .as_f64()
-        .unwrap_or_else(|| panic!("{what}: {actual}"));
-    assert!(
-        (actual - expected).abs() <= 1e-9 * expected.abs(),
-        "{what}: {actual}, expected {expected} (off by {:e})",
-        (actual - expected) / expected
-    );
-}
-
-/// The body is valid, also to the mesh-level check, and has this volume
-/// and area (given for scale 1).
-#[track_caller]
-fn assert_solid(
-    session: &mut Session,
-    name: &str,
-    volume: f64,
-    area: Option<f64>,
-    k: f64,
-) -> Value {
-    let found = body(session, name);
-    assert_eq!(found["valid"], true, "{found}");
-    assert_close(&found["volume"], volume * k * k * k, "volume");
-    if let Some(area) = area {
-        assert_close(&found["area"], area * k * k, "area");
-    }
-    let check = run(session, "document.check", json!({"deep": true}));
-    assert_eq!(check["ok"], true, "{check}");
-    assert_eq!(check["problems"], json!([]), "{check}");
-    found
-}
-
-fn names_of(body: &Value) -> Vec<String> {
-    body["faceNames"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|n| n.as_str().unwrap().to_string())
         .collect()
 }
 

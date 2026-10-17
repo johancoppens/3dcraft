@@ -10,38 +10,11 @@
     clippy::indexing_slicing
 )]
 
-use craft3d_engine::{Access, Session, Workspace};
-use serde_json::{Value, json};
+mod common;
 
-fn session() -> Session {
-    Session::new(Workspace {
-        read: Access::None,
-        write: Access::None,
-    })
-}
-
-fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    session
-        .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"))
-}
-
-fn built(session: &mut Session, id: &str, params: Value) -> Value {
-    let result = run(session, id, params.clone());
-    assert_eq!(result["status"], "ok", "{id} {params}: {result}");
-    result
-}
-
-fn body(session: &mut Session, name: &str) -> Value {
-    let document = run(session, "document.inspect", json!({}));
-    document["bodies"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|b| b["name"] == name)
-        .unwrap_or_else(|| panic!("no body {name} in {document}"))
-        .clone()
-}
+use common::plain::{body, built, run, session};
+use craft3d_engine::Session;
+use serde_json::json;
 
 fn deep_ok(session: &mut Session) {
     let check = run(session, "document.check", json!({"deep": true}));

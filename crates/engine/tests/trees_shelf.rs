@@ -13,14 +13,11 @@
     clippy::indexing_slicing
 )]
 
-use craft3d_engine::{Session, Workspace};
-use serde_json::{Value, json};
+mod common;
 
-fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    session
-        .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"))
-}
+use common::plain::run;
+use craft3d_engine::{Session, Workspace};
+use serde_json::json;
 
 /// A loft from a square to a circle (its sides freeform) with a rod cut
 /// out of it, in a new document: the volume and area of the result.

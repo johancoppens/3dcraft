@@ -19,6 +19,7 @@
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
 use super::harness;
+use super::step;
 use super::{EXACT, Expect, RING, Set};
 use craft3d_engine::Session;
 use serde_json::{Value, json};
@@ -26,19 +27,6 @@ use std::f64::consts::PI;
 use std::path::PathBuf;
 
 type Forms = Result<Vec<(&'static str, f64)>, String>;
-
-fn step(s: &mut Session, id: &str, params: Value) -> Result<Value, String> {
-    let result = s
-        .execute(id, &params)
-        .map_err(|e| format!("{id} {params}: {e}"))?;
-    if result["status"] == "failed" {
-        return Err(format!(
-            "{id} {params}: {}",
-            result["error"].as_str().unwrap_or("failed")
-        ));
-    }
-    Ok(result)
-}
 
 fn base(s: &mut Session, k: f64) -> Result<(), String> {
     step(

@@ -28,6 +28,7 @@ pub const LAYERS: &[(&str, u32)] = &[
     ("ui-egui", UI_LAYER),
     ("automation", UI_LAYER),
     ("cli", APP_LAYER),
+    ("fuzz", APP_LAYER),
     (APP, APP_LAYER),
     ("testkit", TESTKIT),
 ];

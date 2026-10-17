@@ -15,6 +15,9 @@
     clippy::indexing_slicing
 )]
 
+mod common;
+
+use common::plain::run;
 use craft3d_engine::{Access, ManualClock, RecoveryOptions, Session, Workspace};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -24,10 +27,7 @@ use std::time::Duration;
 const INTERVAL: Duration = Duration::from_secs(30);
 
 fn workdir(name: &str) -> PathBuf {
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("recovery-{name}"));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+    common::workdir("recovery", name)
 }
 
 /// A session that reads and writes under `dir/work` and autosaves into
@@ -44,12 +44,6 @@ fn session(dir: &Path) -> (Session, Arc<ManualClock>) {
         RecoveryOptions::manual(dir.join("recovery"), clock.clone()).with_interval(INTERVAL),
     );
     (s, clock)
-}
-
-fn run(session: &mut Session, id: &str, params: Value) -> Value {
-    session
-        .execute(id, &params)
-        .unwrap_or_else(|e| panic!("{id} {params}: {e}"))
 }
 
 fn error(session: &mut Session, id: &str, params: Value) -> String {
