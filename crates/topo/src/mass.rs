@@ -83,7 +83,9 @@
 //! ends equal ([`moebius`], since 2026-10-17): the same integral, with the
 //! nodes where the surface is drawn evenly, so that weights far apart cost
 //! nothing where a reparametrisation can take them out (every surface of
-//! revolution) and as little as they can elsewhere. A
+//! revolution) and as little as they can elsewhere. Weights that stay more
+//! than [`MAX_UNEVEN`] apart within a span however the span is
+//! reparametrised are refused ([`MassError::UnevenWeights`]). A
 //! spline surface may also close on itself around u without saying so (a
 //! sphere or a can swept from a rational circle). A boundary that then
 //! goes around once in total is the rim of a face that reaches to an end
@@ -308,6 +310,13 @@ pub enum MassError {
         face: usize,
         error: GeomError,
     },
+    /// A face on a rational surface whose weights within one span are
+    /// further apart than any reparametrisation evens out, by more than
+    /// the measure is held for ([`MAX_UNEVEN`]): `ratio` is how far.
+    UnevenWeights {
+        face: usize,
+        ratio: f64,
+    },
 }
 
 impl fmt::Display for MassError {
@@ -324,6 +333,10 @@ impl fmt::Display for MassError {
                 write!(f, "face {face}: not supported yet: {what}")
             }
             MassError::Geometry { face, error } => write!(f, "face {face}: {error}"),
+            MassError::UnevenWeights { face, ratio } => write!(
+                f,
+                "face {face}: not supported yet: rational weights {ratio:.3e} apart within one span after evening them out by a reparametrisation (at most {MAX_UNEVEN:e} is measured)"
+            ),
         }
     }
 }
@@ -750,10 +763,7 @@ fn inner(
         work.add(NODES as u64);
         for (s, w) in rule.points(start, end) {
             let (t, w) = match map {
-                Some((from, width, beta)) => {
-                    let d = (1.0 - s) + beta * s;
-                    (from + width * (beta * s / d), w * width * beta / (d * d))
-                }
+                Some(map) => moebius_node(s, w, map),
                 None => (s, w),
             };
             let (u, v) = match along {
@@ -893,8 +903,9 @@ fn moebius(surface: &Surface, along: Along, fixed: f64, (start, end): (f64, f64)
         Along::U => (du, s.weight_at(start, fixed), s.weight_at(end, fixed)),
         Along::V => (dv, s.weight_at(fixed, start), s.weight_at(fixed, end)),
     };
-    // Equal ends (every polynomial surface) take the plain path, bit for
-    // bit as before.
+    // Equal ends (every polynomial surface) take the plain nodes. (Their
+    // sums still change in the last digits by the inner panels doubling
+    // to the last and by [`cell_by_cell`].)
     if w0 == w1 || degree == 0 {
         return None;
     }
@@ -904,8 +915,22 @@ fn moebius(surface: &Surface, along: Along, fixed: f64, (start, end): (f64, f64)
         2 => ratio.sqrt(),
         _ => ratio.powf(1.0 / degree as f64),
     };
-    // Not `<=`: a NaN gives no map.
-    (beta > 0.0 && beta.is_finite() && beta != 1.0).then_some(beta)
+    // Not `<=`: a NaN gives no map. Far outside `[1e-100, 1e100]` the map
+    // squeezes every node into rounding of an end; the plain sums are
+    // then the better ones (and settle or are refused).
+    (beta > MIN_BETA && beta < 1.0 / MIN_BETA && beta != 1.0).then_some(beta)
+}
+
+/// The factors of a Möbius map that are not taken ([`moebius`]).
+const MIN_BETA: f64 = 1e-100;
+
+/// A node `s` of the Möbius parameter and its weight `w`, as the place
+/// `t` on the stretch `(from, width)` and the weight in `t` (see
+/// [`moebius`]): `dt/ds = width β / D²`, as `(β / D) / D` so that it
+/// neither overflows nor vanishes for any `β` [`moebius`] gives.
+fn moebius_node(s: f64, w: f64, (from, width, beta): (f64, f64, f64)) -> (f64, f64) {
+    let d = (1.0 - s) + beta * s;
+    (from + width * (beta * s / d), w * width * ((beta / d) / d))
 }
 
 /// A quadrature panel along an edge: a parameter range, and whether it
@@ -2674,6 +2699,13 @@ fn face_integrals(
     sums: Wanted,
 ) -> FaceSums {
     let second = sums != Wanted::First;
+    if let Some(ratio) = uneven_weights(&face.surface).filter(|&r| r > MAX_UNEVEN || r.is_nan()) {
+        let error = MassError::UnevenWeights { face: index, ratio };
+        return FaceSums {
+            first: (sums == Wanted::Both).then(|| Err(error.clone())),
+            all: Err(error),
+        };
+    }
     if face.loops.is_empty() || seams_only(body, face) {
         let mut work = Work::about(&face.surface, middle, second);
         let all = whole_surface(&face.surface, index, rule, &mut work);
@@ -2705,6 +2737,68 @@ fn face_integrals(
     // moments ended where these did, with the same error.
     let first = (sums == Wanted::Both).then(|| first.unwrap_or_else(|| all.clone()));
     FaceSums { first, all }
+}
+
+/// How far apart the weights within one span of a rational surface may be
+/// once a reparametrisation has evened them out as far as it can
+/// ([`uneven_weights`]), for a face to be measured. Measured to 1.6e-13
+/// up to a thousand (the plate with the weights 1, h, h, 1, whose
+/// unevenness no reparametrisation takes out) and refused, by sums that
+/// do not settle, at ten thousand; further apart the edges no longer lie
+/// on such a surface to the modelling tolerance (from 1e5) and sums came
+/// out settled and wrong (from 1e7: 22 for a volume of 24). So the
+/// measure stops where it is held, not where it is seen to fail.
+const MAX_UNEVEN: f64 = 1e4;
+
+/// The largest ratio of two weights within one Bézier span of a rational
+/// surface after the Möbius maps along u and v that even out its corner
+/// weights (`α^m = √(w₀₀ w₀ₙ / (w_m0 w_mn))`, `β^n = √(w₀₀ w_m0 / (w₀ₙ
+/// w_mn))`, weights `w_ij α^i β^j`, the same surface): what is left is the
+/// unevenness no reparametrisation removes (one for weights of a product
+/// form, `h` for the corners 1, h, h, 1). In logarithms, so that weights
+/// of any size neither overflow nor vanish. `None` for a surface that is
+/// not a rational NURBS surface, or whose spans cannot be had.
+fn uneven_weights(surface: &Surface) -> Option<f64> {
+    let Surface::Nurbs(s) = surface else {
+        return None;
+    };
+    let first = s.weights().first()?;
+    if s.weights().iter().all(|w| w == first) {
+        return None;
+    }
+    let (m, n) = s.degrees();
+    let mut worst = 0.0_f64;
+    for span in s.bezier_spans().ok()? {
+        let logs: Vec<f64> = span.patch.weights().iter().map(|w| w.ln()).collect();
+        let at = |i: usize, j: usize| logs.get(i * (n + 1) + j).copied();
+        let (w00, w0n, wm0, wmn) = (at(0, 0)?, at(0, n)?, at(m, 0)?, at(m, n)?);
+        let alpha = if m > 0 {
+            (w00 + w0n - wm0 - wmn) / (2.0 * m as f64)
+        } else {
+            0.0
+        };
+        let beta = if n > 0 {
+            (w00 + wm0 - w0n - wmn) / (2.0 * n as f64)
+        } else {
+            0.0
+        };
+        let (mut low, mut high) = (f64::INFINITY, f64::NEG_INFINITY);
+        for (k, &w) in logs.iter().enumerate() {
+            let (i, j) = (k / (n + 1), k % (n + 1));
+            let even = w + alpha * i as f64 + beta * j as f64;
+            low = low.min(even);
+            high = high.max(even);
+        }
+        // Not `max`: a NaN (a weight that is not positive) is as uneven
+        // as it gets.
+        let spread = high - low;
+        worst = if spread.is_nan() {
+            f64::INFINITY
+        } else {
+            worst.max(spread)
+        };
+    }
+    Some(worst.exp())
 }
 
 /// Faces integrated, and the work they took ([`Work::spent`]), since the
@@ -4314,5 +4408,74 @@ mod tests {
             spent > FIRST_SUMS_WORK && spent <= FIRST_SUMS_WORK + taken,
             "{spent}"
         );
+    }
+
+    /// A bilinear patch over the unit square with these corner weights
+    /// (`w₀₀, w₀₁, w₁₀, w₁₁`).
+    fn weighted_square(weights: [f64; 4]) -> Surface {
+        let ctrl = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(1.0, 1.0, 0.0),
+        ];
+        let knots = vec![0.0, 0.0, 1.0, 1.0];
+        Surface::Nurbs(
+            craft3d_geom::NurbsSurface::new(
+                1,
+                1,
+                knots.clone(),
+                knots,
+                2,
+                2,
+                ctrl,
+                weights.to_vec(),
+            )
+            .unwrap(),
+        )
+    }
+
+    /// Hostile factors of the Möbius map: every node stays finite and
+    /// inside its stretch, its weight finite and not negative, and a
+    /// factor the map would squeeze into rounding is not taken.
+    #[test]
+    fn the_moebius_map_neither_overflows_nor_vanishes() {
+        let rule = Rule::new(NODES);
+        for beta in [
+            1e-300, 1e-160, 1e-100, 1e-3, 0.5, 2.0, 1e3, 1e100, 1e160, 1e300,
+        ] {
+            let mut total = 0.0;
+            for (s, w) in rule.points(0.0, 1.0) {
+                let (t, weight) = moebius_node(s, w, (2.0, 3.0, beta));
+                assert!((2.0..=5.0).contains(&t), "{beta}: {t}");
+                assert!(weight.is_finite() && weight >= 0.0, "{beta}: {weight}");
+                total += weight;
+            }
+            // The weights in t sum to the stretch's width where the map
+            // is gentle enough for sixteen nodes to integrate it.
+            if (0.5..=2.0).contains(&beta) {
+                assert!((total - 3.0).abs() < 1e-9, "{beta}: {total}");
+            }
+        }
+        let steep = weighted_square([1.0, 1e300, 1.0, 1e300]);
+        assert_eq!(moebius(&steep, Along::V, 0.5, (0.0, 1.0)), None);
+        let fine = weighted_square([1.0, 100.0, 1.0, 100.0]);
+        assert_eq!(moebius(&fine, Along::V, 0.5, (0.0, 1.0)), Some(0.01));
+        let even = weighted_square([3.0, 3.0, 3.0, 3.0]);
+        assert_eq!(moebius(&even, Along::V, 0.5, (0.0, 1.0)), None);
+    }
+
+    /// What no reparametrisation evens out is what counts: weights of a
+    /// product form are even, the corners 1, h, h, 1 are h apart, and
+    /// weights of any size are compared without overflow.
+    #[test]
+    fn uneven_weights_are_those_a_reparametrisation_leaves() {
+        let product = uneven_weights(&weighted_square([1.0, 1e6, 1e3, 1e9])).unwrap();
+        assert!((product - 1.0).abs() < 1e-9, "{product}");
+        for h in [10.0, 1e5, 1e12, 1e200] {
+            let ratio = uneven_weights(&weighted_square([1.0, h, h, 1.0])).unwrap();
+            assert!((ratio / h - 1.0).abs() < 1e-9, "{h}: {ratio}");
+        }
+        assert_eq!(uneven_weights(&weighted_square([2.0; 4])), None);
     }
 }

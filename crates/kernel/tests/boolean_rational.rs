@@ -246,7 +246,8 @@ fn twins_with_weights_far_apart_measure_as_the_closed_forms() {
 /// a hundred apart (every panel doubled seven times, and the sums still
 /// crept); the panels are now halved only where they disagree. At ten
 /// thousand apart (a stretch 1e-8 long) the sums scatter at the rounding
-/// of the boundary's parameters and the face is refused, not guessed.
+/// of the boundary's parameters and the face is refused, not guessed;
+/// beyond that `topo::MAX_UNEVEN` refuses it before anything is summed.
 #[test]
 fn a_plate_with_weights_far_apart_measures_as_the_block() {
     for k in SCALES {
@@ -286,11 +287,46 @@ fn a_plate_with_weights_far_apart_measures_as_the_block() {
             );
         }
         if k == 1.0 {
+            // At ten thousand, the bound of the measure: refused by the
+            // bound, or by sums that do not settle (which is what refuses
+            // it without the bound), never measured wrong.
             let refused = craft3d_topo::mass_properties(&weighted(1e4));
             assert!(
-                matches!(&refused, Err(craft3d_topo::MassError::Unsupported { what, .. }) if what.contains("does not settle")),
+                matches!(&refused, Err(craft3d_topo::MassError::Unsupported { what, .. }) if what.contains("does not settle"))
+                    || matches!(
+                        &refused,
+                        Err(craft3d_topo::MassError::UnevenWeights { face: 1, .. })
+                    ),
                 "{refused:?}"
             );
+            // Further apart the measure is held for nothing, and is not
+            // tried (from 1e7 its sums settled wrong: 22 for 24). The
+            // bodies need not pass `check` any more (from 1e5 the edges
+            // leave such a surface by more than the tolerance).
+            for heavy in [1e5, 1e7, 1e12] {
+                let mut body = plate.clone();
+                body.faces[1].surface = weighted(1.0).faces[1].surface.clone();
+                if let Surface::Nurbs(s) = &body.faces[1].surface {
+                    body.faces[1].surface = Surface::Nurbs(
+                        NurbsSurface::new(
+                            1,
+                            1,
+                            s.knots_u().to_vec(),
+                            s.knots_v().to_vec(),
+                            2,
+                            2,
+                            s.control_points().to_vec(),
+                            vec![1.0, heavy, heavy, 1.0],
+                        )
+                        .unwrap(),
+                    );
+                }
+                let refused = craft3d_topo::mass_properties(&body);
+                assert!(
+                    matches!(&refused, Err(craft3d_topo::MassError::UnevenWeights { face: 1, ratio }) if (ratio / heavy - 1.0).abs() < 1e-9),
+                    "{heavy}: {refused:?}"
+                );
+            }
         }
     }
 }
