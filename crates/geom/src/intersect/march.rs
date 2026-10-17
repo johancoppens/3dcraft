@@ -76,7 +76,7 @@
 
 mod tacnode;
 
-use super::field::{Chart, Field, Sample};
+use super::field::{Chart, Cusp, Field, Sample};
 use super::meet::{Meeting, MeetingCurve};
 use crate::{Curve3, GeomError, NurbsCurve, NurbsSurface, Surface};
 use craft3d_math::{Bbox3, Tolerance, Vec3};
@@ -728,21 +728,26 @@ impl Marcher {
         span: (i64, i64),
         seeds: &mut Vec<(f64, f64)>,
     ) -> Result<(), GeomError> {
-        let b = self.chart.bounds;
-        let (speed, bend, step) = if along_u {
-            (b.lu, b.muu, grid.du)
-        } else {
-            (b.lv, b.mvv, grid.dv)
-        };
         let mut stack = vec![span];
         while let Some((lo, hi)) = stack.pop() {
             self.spent()?;
+            let step = if along_u { grid.du } else { grid.dv };
             let half = 0.5 * (hi - lo) as f64 * step;
             let mid = 0.5 * (lo + hi) as f64;
             let (u, v) = if along_u {
                 (grid.u0 + grid.du * mid, grid.v0 + grid.dv * fixed as f64)
             } else {
                 (grid.u0 + grid.du * fixed as f64, grid.v0 + grid.dv * mid)
+            };
+            let b = if along_u {
+                self.chart.bounds_in((u - half, u + half), (v, v))
+            } else {
+                self.chart.bounds_in((u, u), (v - half, v + half))
+            };
+            let (speed, bend) = if along_u {
+                (b.lu, b.muu)
+            } else {
+                (b.lv, b.mvv)
             };
             let reach = speed * half;
             let monotonic = match self.eval(u, v) {
@@ -957,6 +962,7 @@ impl Marcher {
             if discs.iter().any(|d| self.disc_covers(d, u, v, hu, hv)) {
                 continue;
             }
+            let b = self.chart.bounds_in((u - hu, u + hu), (v - hv, v + hv));
             let reach = b.lu * hu + b.lv * hv;
             let here = self.eval(u, v);
             // The image of the cell lies within `reach` of its centre's:
@@ -1816,8 +1822,228 @@ impl Marcher {
         if pts.len() < 2 {
             return Ok(None);
         }
+        // An end on a border moved in short of a cusp is drawn on to it.
+        if !closed {
+            if let Some(last) = pts.last().copied()
+                && let Some(cusp) = self.cusp_of(&last)
+            {
+                let more = self.on_into_cusp(&last, &cusp)?;
+                pts.extend(more);
+            }
+            if let Some(first) = pts.first().copied()
+                && let Some(cusp) = self.cusp_of(&first)
+            {
+                let more = self.on_into_cusp(&first.reversed(), &cusp)?;
+                let mut before: Vec<Pt> = more.into_iter().rev().map(Pt::reversed).collect();
+                before.append(&mut pts);
+                pts = before;
+            }
+        }
         self.refine(&mut pts)?;
         Ok(Some(Branch { pts, closed }))
+    }
+
+    /// The border moved in short of a cusp that `p` is on, if any.
+    fn cusp_of(&self, p: &Pt) -> Option<Cusp> {
+        let c = &self.chart;
+        c.cusps.iter().copied().find(|cusp| {
+            let (here, (lo, hi)) = if cusp.pole.across_v() {
+                (p.v, c.v)
+            } else {
+                (p.u, c.u)
+            };
+            (here - cusp.at).abs() <= 1e-9 * (hi - lo)
+        })
+    }
+
+    /// The rest of a branch that ends at `end` on a border moved in short
+    /// of a cusp (`field.rs`, `short_of_poles`), on to the point: at
+    /// places across ever nearer to the pole (halving the distance), the
+    /// zero of `f` along the border's parameter next to the last one, by
+    /// bracketing and regula falsi on its sign alone (there `f` and its
+    /// derivative along vanish to the order of the cusp, so no step size
+    /// or test in units of length applies, but the sign does), until the
+    /// place is within `on` of the pole by the speed across or every
+    /// iso-curve along is shorter than `on` (nearer than that the sign of
+    /// `f` is rounding, and what is left is within `on` of one meridian);
+    /// then the pole, with the direction the meridians leave it along. `end`
+    /// travels into the pole; the points come in that order.
+    ///
+    /// Refused where the zero is lost on the way (the intersection turns
+    /// back before the point), or the other surface ends there.
+    fn on_into_cusp(&mut self, end: &Pt, cusp: &Cusp) -> Result<Vec<Pt>, GeomError> {
+        let lost = GeomError::Unsupported(
+            "an intersection curve that comes close to a cusp of a surface and turns back before it",
+        );
+        let across_v = cusp.pole.across_v();
+        let ((u0, u1), periodic) = if across_v {
+            (self.chart.u, self.chart.periodic_u)
+        } else {
+            (self.chart.v, self.chart.periodic_v)
+        };
+        let place = |along: f64, across: f64| {
+            if across_v {
+                (along, across)
+            } else {
+                (across, along)
+            }
+        };
+        let speed = if across_v {
+            self.chart.bounds.lv
+        } else {
+            self.chart.bounds.lu
+        };
+        let length = u1 - u0;
+        let mut along = if across_v { end.u } else { end.v };
+        let mut pts: Vec<Pt> = Vec::new();
+        let mut last = *end;
+        let gap = cusp.at - cusp.from;
+        let n = cusp.narrowing;
+        for k in 1..=80 {
+            self.spent()?;
+            let across = cusp.from + gap * 0.5_f64.powi(k);
+            // Nearer than this every iso-curve along is shorter than `on`
+            // (the rest is one line to that, and `f` is rounding there),
+            // or the pole is within `on`.
+            let share = (across - cusp.from).abs() / n.span;
+            if n.width * share.powi(n.order as i32) <= self.on
+                || speed * (across - cusp.from).abs() <= self.on
+            {
+                break;
+            }
+            let f = |m: &mut Self, y: f64| -> Option<Eval> {
+                let (u, v) = place(y, across);
+                m.eval(u, v)
+            };
+            let here = f(self, along).ok_or(lost.clone())?;
+            // The nearest change of sign along, either way.
+            let mut found = None;
+            if here.f == 0.0 {
+                found = Some((along, along));
+            }
+            let mut reach = 1e-9 * length;
+            while found.is_none() && reach <= 0.25 * length {
+                for side in [-1.0, 1.0] {
+                    let y = along + side * reach;
+                    if !periodic && !(y >= u0 && y <= u1) {
+                        continue;
+                    }
+                    let other = f(self, y).ok_or(lost.clone())?;
+                    if (other.f >= 0.0) != (here.f >= 0.0) {
+                        found = Some(if side < 0.0 { (y, along) } else { (along, y) });
+                        break;
+                    }
+                }
+                reach *= 4.0;
+            }
+            let (mut lo, mut hi) = found.ok_or(lost.clone())?;
+            let (mut flo, mut fhi) = (
+                f(self, lo).ok_or(lost.clone())?.f,
+                f(self, hi).ok_or(lost.clone())?.f,
+            );
+            let mut side = 0;
+            for step in 0..100 {
+                if flo == 0.0 {
+                    hi = lo;
+                    break;
+                }
+                if fhi == 0.0 {
+                    lo = hi;
+                    break;
+                }
+                let y = if step % 4 == 3 {
+                    0.5 * (lo + hi)
+                } else {
+                    (lo * fhi - hi * flo) / (fhi - flo)
+                };
+                let y = if y > lo && y < hi { y } else { 0.5 * (lo + hi) };
+                if !(y > lo && y < hi) {
+                    break;
+                }
+                let fy = f(self, y).ok_or(lost.clone())?.f;
+                if (fy >= 0.0) == (flo >= 0.0) {
+                    (lo, flo) = (y, fy);
+                    if side == -1 {
+                        fhi *= 0.5;
+                    }
+                    side = -1;
+                } else {
+                    (hi, fhi) = (y, fy);
+                    if side == 1 {
+                        flo *= 0.5;
+                    }
+                    side = 1;
+                }
+            }
+            along = 0.5 * (lo + hi);
+            let (u, v) = place(along, across);
+            let e = self.eval(u, v).ok_or(lost.clone())?;
+            if e.dist > self.cut {
+                return Err(lost);
+            }
+            let toward = cusp.pole.point - e.p;
+            let point = Self::point(&e, u, v, 1.0)
+                .map(|pt| {
+                    if pt.t.dot(toward) < 0.0 {
+                        pt.reversed()
+                    } else {
+                        pt
+                    }
+                })
+                .or_else(|| {
+                    (e.p - last.p).normalized().map(|t| Pt {
+                        u,
+                        v,
+                        p: e.p,
+                        t,
+                        du: 0.0,
+                        dv: 0.0,
+                    })
+                })
+                .ok_or(lost.clone())?;
+            pts.push(point);
+            last = point;
+        }
+        // The point itself: every meridian leaves it along one line, the
+        // derivative across there (the same on all of them at a cusp).
+        let (u, v) = place(along, cusp.from);
+        let (_, su, sv) = self.chart.at(u, v);
+        let out = if across_v { sv } else { su };
+        let chord = (cusp.pole.point - last.p).normalized();
+        let t = match (out.normalized(), chord) {
+            (Some(d), Some(c)) => {
+                if d.dot(c) < 0.0 {
+                    -d
+                } else {
+                    d
+                }
+            }
+            (Some(d), None) => {
+                if d.dot(last.t) < 0.0 {
+                    -d
+                } else {
+                    d
+                }
+            }
+            (None, Some(c)) => c,
+            (None, None) => last.t,
+        };
+        let rate = out.length();
+        let step = if rate > 0.0 {
+            (cusp.from - cusp.at).signum() / rate
+        } else {
+            0.0
+        };
+        let (du, dv) = if across_v { (0.0, step) } else { (step, 0.0) };
+        pts.push(Pt {
+            u,
+            v,
+            p: cusp.pole.point,
+            t,
+            du,
+            dv,
+        });
+        Ok(pts)
     }
 
     // ----- fitting ---------------------------------------------------------------

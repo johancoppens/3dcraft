@@ -632,6 +632,9 @@ pub(super) struct Bounds {
 /// A surface with the rectangle of its parameters that covers everything of
 /// it inside a box.
 pub(super) struct Chart {
+    /// The borders moved in short of a cusp ([`short_of_poles`]), where
+    /// a curve that ends is drawn on to the point.
+    pub cusps: Vec<Cusp>,
     pub surface: Surface,
     pub u: (f64, f64),
     pub v: (f64, f64),
@@ -650,6 +653,40 @@ impl Chart {
     pub(super) fn at(&self, u: f64, v: f64) -> (Vec3, Vec3, Vec3) {
         let (u, v) = self.wrapped(u, v);
         self.surface.derivatives(u, v)
+    }
+
+    /// The bounds on the derivatives over the part of the chart `u × v`:
+    /// [`Chart::bounds`], and next to a cusp ([`Cusp`]) the bounds on the
+    /// derivatives along its border to the cusp's order there (they
+    /// vanish as the width does: `crate::pole::Narrowing`), taken at the
+    /// far side of the part from the pole. Without them the cells there
+    /// would have to be as small across as the width is along, all around
+    /// the border.
+    pub(super) fn bounds_in(&self, u: (f64, f64), v: (f64, f64)) -> Bounds {
+        let mut b = self.bounds;
+        for cusp in &self.cusps {
+            let n = &cusp.narrowing;
+            let (lo, hi) = if cusp.pole.across_v() { v } else { u };
+            let far = (lo - cusp.from).abs().max((hi - cusp.from).abs()) / n.span;
+            if !(far <= 1.0) {
+                continue;
+            }
+            let k = n.order as i32;
+            let (speed, bend, twist) = (
+                n.speed * far.powi(k),
+                n.bend * far.powi(k),
+                n.twist * far.powi(k - 1),
+            );
+            if cusp.pole.across_v() {
+                b.lu = b.lu.min(speed);
+                b.muu = b.muu.min(bend);
+            } else {
+                b.lv = b.lv.min(speed);
+                b.mvv = b.mvv.min(bend);
+            }
+            b.muv = b.muv.min(twist);
+        }
+        b
     }
 
     /// `(u, v)` taken around into the domain where a freeform surface
@@ -722,6 +759,7 @@ impl Chart {
             Surface::Plane(p) => {
                 let f = *p.frame();
                 Chart {
+                    cusps: Vec::new(),
                     surface: surface.clone(),
                     u: range(&|c| f.local(c).0),
                     v: range(&|c| f.local(c).1),
@@ -741,6 +779,7 @@ impl Chart {
                 let (u, periodic_u) = turn(&f);
                 let r = c.radius();
                 Chart {
+                    cusps: Vec::new(),
                     surface: surface.clone(),
                     u,
                     v: range(&|c| f.local(c).2),
@@ -772,6 +811,7 @@ impl Chart {
                 }
                 let widest = (c.radius() + v0 * slope).max(c.radius() + v1 * slope);
                 Chart {
+                    cusps: Vec::new(),
                     surface: surface.clone(),
                     u,
                     v: (v0, v1),
@@ -820,6 +860,7 @@ impl Chart {
                 }
                 let frame = best.map_or(f, |(_, frame)| frame);
                 Chart {
+                    cusps: Vec::new(),
                     surface: Surface::Sphere(Sphere::new(frame, r)?),
                     u: (0.0, TAU),
                     v: (-FRAC_PI_2, FRAC_PI_2),
@@ -837,6 +878,7 @@ impl Chart {
             Surface::Torus(t) => {
                 let (major, minor) = t.radii();
                 Chart {
+                    cusps: Vec::new(),
                     surface: surface.clone(),
                     u: (0.0, TAU),
                     v: (0.0, TAU),
@@ -868,6 +910,7 @@ impl Chart {
                 let (muu, muv, mvv) = b.second_derivative_bounds();
                 let [periodic_u, periodic_v] = closes(surface);
                 Chart {
+                    cusps: Vec::new(),
                     surface: surface.clone(),
                     u: (0.0, 1.0),
                     v: (0.0, 1.0),
@@ -890,6 +933,7 @@ impl Chart {
                 // evaluated (`Chart::at`).
                 let [periodic_u, periodic_v] = closes(surface);
                 Chart {
+                    cusps: Vec::new(),
                     surface: surface.clone(),
                     u,
                     v,
@@ -899,7 +943,7 @@ impl Chart {
                 }
             }
         };
-        let chart = short_of_poles(chart, tol);
+        let chart = short_of_poles(chart, tol, other);
         let finite = [chart.u.0, chart.u.1, chart.v.0, chart.v.1]
             .iter()
             .all(|x| x.is_finite());
@@ -917,6 +961,21 @@ impl Chart {
     }
 }
 
+/// A border of a chart moved in short of a cusp ([`short_of_poles`]).
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Cusp {
+    pub pole: Pole,
+    /// The parameter of the moved border.
+    pub at: f64,
+    /// The parameter of the pole's own border.
+    pub from: f64,
+    pub narrowing: crate::pole::Narrowing,
+}
+
+/// How wide, in tolerances, the surface may be where the chart stops short
+/// of a cusp: see [`short_of_poles`].
+pub(super) const CUSP_WIDTH: f64 = 64.0;
+
 /// The chart of a freeform surface stopped just short of its poles, as a
 /// cone's is of its apex: at a border that is one point the chart
 /// collapses (every parameter along the border is the same point, and a
@@ -925,22 +984,72 @@ impl Chart {
 /// across it, so that everything left out is within a quarter of the
 /// tolerance of the pole (a point moves no further than its speed allows),
 /// and a curve that runs into the pole ends within that of it.
-fn short_of_poles(mut chart: Chart, tol: &Tolerance) -> Chart {
+///
+/// At a cusp (a pole the surface narrows to as the square of the distance
+/// or faster, [`crate::pole::narrowing`]) that is not enough: next to the
+/// border the derivatives along it vanish to that order, a surface that
+/// holds the line the meridians leave along is within a hair of the chart
+/// all along the border and its derivatives too, and the cells take that
+/// for a contact along a curve. There the border is moved in further, to
+/// where every iso-curve along it is at most [`CUSP_WIDTH`] tolerances
+/// long (`β = (width / c)^(1/order)` of the first span). What is left out
+/// lies within that width of any one meridian of it; a curve that ends on
+/// that border is drawn on to the point along the intersection
+/// (`Marcher::on_into_cusp`), not left to the vertex rule. This is done only
+/// where the other surface passes within the tolerance of the point.
+fn short_of_poles(mut chart: Chart, tol: &Tolerance, other: &Field) -> Chart {
     for pole in poles(&chart.surface) {
+        // Only where the other surface passes through the point: a curve
+        // ends there only then, and a surface that crosses the axis near
+        // the point but not through it is cut where it is (the cells
+        // judge it as before).
+        let through = other
+            .sample(pole.point)
+            .is_some_and(|s| s.dist <= tol.linear);
+        let narrowing =
+            crate::pole::narrowing(&chart.surface, &pole).filter(|n| through && n.order >= 2);
         let (range, speed) = if pole.across_v() {
             (&mut chart.v, chart.bounds.lv)
         } else {
             (&mut chart.u, chart.bounds.lu)
         };
-        let short = 0.25 * tol.linear / speed;
+        let mut short = 0.25 * tol.linear / speed;
+        let mut cusp = None;
+        if let Some(n) = narrowing {
+            let wide = n.within(CUSP_WIDTH * tol.linear);
+            if wide > short {
+                short = wide;
+                cusp = Some(n);
+            }
+        }
         // A surface no larger than the tolerance keeps its chart: nothing
         // of it would be left.
         if !(short > 0.0 && short < 0.25 * (range.1 - range.0)) {
             continue;
         }
-        match pole.border {
-            crate::pole::Border::UStart | crate::pole::Border::VStart => range.0 += short,
-            crate::pole::Border::UEnd | crate::pole::Border::VEnd => range.1 -= short,
+        let from = match pole.border {
+            crate::pole::Border::UStart | crate::pole::Border::VStart => {
+                let from = range.0;
+                range.0 += short;
+                from
+            }
+            crate::pole::Border::UEnd | crate::pole::Border::VEnd => {
+                let from = range.1;
+                range.1 -= short;
+                from
+            }
+        };
+        if let Some(n) = cusp {
+            let at = match pole.border {
+                crate::pole::Border::UStart | crate::pole::Border::VStart => range.0,
+                crate::pole::Border::UEnd | crate::pole::Border::VEnd => range.1,
+            };
+            chart.cusps.push(Cusp {
+                pole,
+                at,
+                from,
+                narrowing: n,
+            });
         }
     }
     chart
