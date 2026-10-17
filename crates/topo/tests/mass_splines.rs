@@ -18,7 +18,9 @@
 use craft3d_geom::{Circle, Cone, Curve3, Cylinder, Line, NurbsCurve, Plane, Sphere, Surface};
 use craft3d_math::quadrature::Rule;
 use craft3d_math::{Frame, Tolerance, Vec3};
-use craft3d_topo::{Body, BodyKind, Coedge, EdgeId, FaceId, VertexId, check, mass_properties};
+use craft3d_topo::{
+    Body, BodyKind, Coedge, EdgeId, FaceId, MassError, VertexId, check, mass_properties,
+};
 use std::f64::consts::{PI, SQRT_2, TAU};
 
 fn fwd(edge: EdgeId) -> Coedge {
@@ -680,4 +682,176 @@ fn a_wall_that_closes_unseen_is_measured_right_or_refused() {
             Err(e) => assert!(apart > 0.0, "{e:?}"),
         }
     }
+}
+
+/// A ring around a diamond as a bilinear spline surface, `u` across the
+/// ring (radius 1 + u, or as `last` says for the last column) and `v`
+/// around it in four spans, its last column (v = 4) back on the first
+/// direction: the borders v = 0 and v = 4 are two curves near each other,
+/// which the closure test does not take for a seam.
+fn diamond_ring(last: impl Fn(f64) -> Vec3) -> craft3d_geom::NurbsSurface {
+    let directions = [Vec3::X, Vec3::Y, -Vec3::X, -Vec3::Y];
+    let mut ctrl = Vec::new();
+    for u in [0.0, 1.0] {
+        for d in directions {
+            ctrl.push(d * (1.0 + u));
+        }
+        ctrl.push(last(u));
+    }
+    craft3d_geom::NurbsSurface::new(
+        1,
+        1,
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 4.0],
+        2,
+        5,
+        ctrl,
+        vec![1.0; 10],
+    )
+    .unwrap()
+}
+
+/// The image of the straight segment of parameters from `a` to `b`, both
+/// in the span of v starting at `span`, on a bilinear surface: a quadratic
+/// whose middle control point is the polar form at the ends, exactly on
+/// the surface.
+fn segment_on(s: &craft3d_geom::NurbsSurface, a: (f64, f64), b: (f64, f64)) -> Curve3 {
+    let middle = (s.eval(a.0, b.1) + s.eval(b.0, a.1)) * 0.5;
+    Curve3::Nurbs(
+        NurbsCurve::new(
+            2,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![s.eval(a.0, a.1), middle, s.eval(b.0, b.1)],
+            vec![1.0; 3],
+        )
+        .unwrap(),
+    )
+}
+
+/// The area of the face over a quadrilateral of parameters (corners in
+/// order, all in one span of v) by Gauss–Legendre on a grid of it.
+fn area_over(s: &craft3d_geom::NurbsSurface, quad: [(f64, f64); 4]) -> f64 {
+    let rule = Rule::new(16);
+    let cells = 32;
+    let at = |x: f64, y: f64| {
+        let lerp =
+            |p: (f64, f64), q: (f64, f64), t: f64| (p.0 + (q.0 - p.0) * t, p.1 + (q.1 - p.1) * t);
+        let (bottom, top) = (lerp(quad[0], quad[1], x), lerp(quad[3], quad[2], x));
+        lerp(bottom, top, y)
+    };
+    let mut area = 0.0;
+    for ci in 0..cells {
+        for cj in 0..cells {
+            let (x0, y0) = (ci as f64 / cells as f64, cj as f64 / cells as f64);
+            let h = 1.0 / cells as f64;
+            for (x, wx) in rule.points(x0, x0 + h) {
+                for (y, wy) in rule.points(y0, y0 + h) {
+                    // The map from the unit square to the parameters is
+                    // bilinear: its derivatives in closed form.
+                    let p = at(x, y);
+                    let j = (
+                        (1.0 - y) * (quad[1].0 - quad[0].0) + y * (quad[2].0 - quad[3].0),
+                        (1.0 - y) * (quad[1].1 - quad[0].1) + y * (quad[2].1 - quad[3].1),
+                        at(x, 1.0).0 - at(x, 0.0).0,
+                        at(x, 1.0).1 - at(x, 0.0).1,
+                    );
+                    let (_, su, sv) = s.derivatives(p.0, p.1);
+                    let du = su * j.0 + sv * j.1;
+                    let dv = su * j.2 + sv * j.3;
+                    area += du.cross(dv).length() * wx * wy;
+                }
+            }
+        }
+    }
+    area
+}
+
+/// An hourglass on [`diamond_ring`]: one lobe over the parameters next to
+/// v = 0, one next to v = 4, meeting in a neck `2 neck` wide in u around
+/// `(at0, 0)` and `(at4, 4)`, which are the same point. The face is
+/// measured right, or refused; never measured short by the strip between
+/// the lobes that its loop does not close around in the parameters.
+fn hourglass(s: craft3d_geom::NurbsSurface, (at0, at4): (f64, f64), neck: f64) -> (Body, f64) {
+    let mut body = Body::new(BodyKind::Sheet);
+    let lobe0 = [
+        (at0 - neck, 0.0),
+        (0.2, 0.4),
+        (0.86, 0.4),
+        (at0 + neck, 0.0),
+    ];
+    let lobe4 = [
+        (at4 + neck, 4.0),
+        (0.86, 3.6),
+        (0.2, 3.6),
+        (at4 - neck, 4.0),
+    ];
+    let n1 = body.add_vertex(s.eval(lobe0[0].0, lobe0[0].1));
+    let a1 = body.add_vertex(s.eval(0.2, 0.4));
+    let a2 = body.add_vertex(s.eval(0.86, 0.4));
+    let n2 = body.add_vertex(s.eval(lobe0[3].0, lobe0[3].1));
+    let b2 = body.add_vertex(s.eval(0.86, 3.6));
+    let b1 = body.add_vertex(s.eval(0.2, 3.6));
+    let edge = |body: &mut Body, a: (f64, f64), b: (f64, f64), from, to| {
+        body.add_edge(segment_on(&s, a, b), (0.0, 1.0), from, to)
+    };
+    let edges = [
+        edge(&mut body, lobe0[0], lobe0[1], n1, a1),
+        edge(&mut body, lobe0[1], lobe0[2], a1, a2),
+        edge(&mut body, lobe0[2], lobe0[3], a2, n2),
+        edge(&mut body, lobe4[0], lobe4[1], n2, b2),
+        edge(&mut body, lobe4[1], lobe4[2], b2, b1),
+        edge(&mut body, lobe4[2], lobe4[3], b1, n1),
+    ];
+    let area = area_over(&s, [lobe0[0], lobe0[3], lobe0[2], lobe0[1]])
+        + area_over(&s, [lobe4[3], lobe4[0], lobe4[1], lobe4[2]]);
+    let face = curved(
+        &mut body,
+        Surface::Nurbs(s),
+        vec![edges.iter().map(|&e| fwd(e)).collect()],
+    );
+    // The loop runs clockwise in the parameters: the face's normal is
+    // the surface's turned over, so that the loop bounds it.
+    body.faces[face.0 as usize].reversed = true;
+    body.add_shell(vec![face]);
+    (body, area)
+}
+
+#[track_caller]
+fn right_or_refused(body: &Body, area: f64, what: &str) {
+    assert_eq!(check(body, &Tolerance::default()), [], "{what}");
+    match mass_properties(body) {
+        Ok(m) => assert!(
+            (m.area - area).abs() <= 1e-7 * area,
+            "{what}: area {} for {area} (off by {:e})",
+            m.area,
+            (m.area - area).abs() / area
+        ),
+        Err(MassError::Unsupported { .. }) => {}
+        Err(e) => panic!("{what}: {e:?}"),
+    }
+}
+
+/// Review of 2026-10-17: the two borders of the ring cross each other at
+/// u = 0.53 (the last column lifted by `0.5 (u − 0.53)`), and the neck of
+/// the hourglass is on the crossing. The borders were compared only at
+/// equal parameters, where the samples jump and at seventeen places, all
+/// too far from the crossing: the face came out short by 2.9e-5 (refused
+/// since, the borders not proven apart).
+#[test]
+fn an_hourglass_over_where_two_borders_cross_is_measured_right_or_refused() {
+    let s = diamond_ring(|u| Vec3::new(1.0 + u, 0.0, 0.5 * (u - 0.53)));
+    let (body, area) = hourglass(s, (0.53, 0.53), 1e-6);
+    right_or_refused(&body, area, "crossing borders");
+}
+
+/// The borders meet as point sets along a stretch, but at other
+/// parameters (the last column drawn over x from 1.2 to 1.82 where the
+/// first runs from 1 to 2): a seam over part of the border that a
+/// comparison at equal parameters cannot see. The hourglass's neck is on
+/// it, at x = 1.53. Measured 3.4e-5 short before; refused since.
+#[test]
+fn an_hourglass_over_a_seam_drawn_at_other_parameters_is_measured_right_or_refused() {
+    let s = diamond_ring(|u| Vec3::new(1.2 + 0.62 * u, 0.0, 0.0));
+    let (body, area) = hourglass(s, (0.53, 0.33 / 0.62), 1e-6);
+    right_or_refused(&body, area, "a seam at other parameters");
 }

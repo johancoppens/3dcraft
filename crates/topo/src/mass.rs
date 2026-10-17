@@ -2065,96 +2065,121 @@ fn whole_surface(
 /// and the loops are then not closed in its parameters.
 const UNSEEN_CLOSURE: &str = "a boundary that jumps across the parameters of a spline surface that may close on itself unseen";
 
-/// Whether the samples jump by more than half of `width` in a parameter
-/// whose closure is not known, on a surface whose two borders across that
-/// parameter come within twice `touch` of each other where they jump or
-/// at one of seventeen places along them: a seam the closure test may
-/// have missed ([`UNSEEN_CLOSURE`]). Why twice `touch`: a boundary point
-/// counts as on the surface within `touch` of it ([`ON_SURFACE`] of the
-/// body's size, the integrator's stand-in for the modelling tolerance it
-/// is not told), and a boundary that goes over a seam has a point within
-/// that of both borders where it does, so the borders there are within
-/// twice that of each other; borders further apart everywhere cannot be
-/// crossed but through the face, and a jump of the samples is then the
-/// boundary sweeping that parameter fast (next to a heavy corner of a
-/// patch whose weights are far apart), its loops closed in the
-/// parameters. The test errs one way only: borders taken for a seam cost
-/// the rate sum of before or a refusal, never a wrong measure; a seam it
-/// could miss would have to come together only between the places
-/// looked at, away from where the samples jump.
+/// Whether the loops may go over a seam of the surface that the closure
+/// test did not see ([`UNSEEN_CLOSURE`]): the samples jump by more than
+/// half of `width` in a parameter whose closure is not known, and the
+/// surface's two borders across that parameter are not proven further
+/// than twice `touch` apart as point sets (`certify::curves_apart`). Why
+/// twice `touch`: a boundary point counts as on the surface within `touch`
+/// of it ([`ON_SURFACE`] of the body's size, the integrator's stand-in for
+/// the modelling tolerance it is not told), and a boundary that goes over
+/// a seam has a point within that of both borders where it does, so the
+/// borders come within twice that of each other there, wherever along
+/// them and whatever their parameters; borders proven further apart
+/// cannot be crossed but through the face, and a jump of the samples is
+/// then the boundary sweeping that parameter fast (next to a heavy corner
+/// of a patch whose weights are far apart), its loops closed in the
+/// parameters. Anything short of that proof (borders that come close, a
+/// proof the budget does not reach, knots not clamped across) takes the
+/// safe way: the rate sum of before, or a refusal. (A sheet whose two
+/// borders cross each other, an hourglass with its neck on the crossing,
+/// was measured short by the strip it left out while the borders were
+/// compared only at equal parameters at a few places: review,
+/// 2026-10-17.)
 fn unseen(
     surface: &Surface,
     samples: &[Sample],
-    pick: impl Fn(&Sample) -> f64 + Copy,
+    pick: impl Fn(&Sample) -> f64,
     closes: Option<(f64, f64)>,
     (width, along_u, touch): (f64, bool, f64),
 ) -> bool {
-    if closes.is_some() {
-        return false;
-    }
-    let jumped = jump_places(samples, pick, width, along_u);
-    !jumped.is_empty() && borders_meet(surface, along_u, 2.0 * touch, &jumped)
+    closes.is_none() && jumps(samples, pick, width) && !borders_apart(surface, along_u, 2.0 * touch)
 }
 
-/// The other parameter at the samples on either side of every jump of
-/// `pick` by more than half of `width` (as [`jumps`] finds them).
-fn jump_places(
-    samples: &[Sample],
-    pick: impl Fn(&Sample) -> f64,
-    width: f64,
-    along_u: bool,
-) -> Vec<f64> {
-    let other = |s: &Sample| if along_u { s.v } else { s.u };
-    let mut places = Vec::new();
-    let mut start = 0;
-    while let Some(first) = samples.get(start) {
-        let end = samples
-            .iter()
-            .skip(start)
-            .position(|s| s.loop_index != first.loop_index)
-            .map_or(samples.len(), |offset| start + offset);
-        let Some(block) = samples.get(start..end) else {
-            break;
-        };
-        let around = block.last().zip(block.first());
-        for (a, b) in block
-            .windows(2)
-            .filter_map(|pair| match pair {
-                [a, b] => Some((a, b)),
-                _ => None,
-            })
-            .chain(around)
-        {
-            // Not `>`: a NaN is no jump.
-            if (pick(a) - pick(b)).abs() > 0.5 * width {
-                places.push(other(a));
-                places.push(other(b));
-            }
-        }
-        start = end;
-    }
-    places
-}
+/// How many pairs of pieces the proof that two borders are apart may take.
+const BORDER_PROOF: usize = 1 << 12;
 
 /// Whether the borders `u = start` and `u = end` (with `along_u`; else of
-/// v) of a spline surface come within `near` of each other at one of
-/// `places` (values of the other parameter) or of seventeen places evenly
-/// along them.
-fn borders_meet(surface: &Surface, along_u: bool, near: f64, places: &[f64]) -> bool {
-    if !matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_)) {
-        return false;
-    }
-    let ((u0, u1), (v0, v1)) = surface.domain();
-    let (lo, hi) = if along_u { (v0, v1) } else { (u0, u1) };
-    let even = (0..=16).map(|k| lo + (hi - lo) * f64::from(k) / 16.0);
-    places.iter().copied().chain(even).any(|at| {
-        let (a, b) = if along_u {
-            (surface.eval(u0, at), surface.eval(u1, at))
-        } else {
-            (surface.eval(at, v0), surface.eval(at, v1))
+/// v) of a spline surface are proven further than `near` apart: no point
+/// of one within `near` of the other. The borders are the end rows of the
+/// net across that parameter, which the surface interpolates when its
+/// knots there are clamped; otherwise nothing is proven.
+fn borders_apart(surface: &Surface, along_u: bool, near: f64) -> bool {
+    use craft3d_geom::NurbsCurve;
+    use craft3d_geom::certify::{Apart, CurveBound, curves_apart};
+    let rows = |points: &[Vec3], weights: &[f64], (cu, cv): (usize, usize)| {
+        let at = |i: usize, j: usize| {
+            let k = i * cv + j;
+            Some((*points.get(k)?, *weights.get(k)?))
         };
-        a.distance(b) <= near
-    })
+        let row = |fixed: usize| -> Option<(Vec<Vec3>, Vec<f64>)> {
+            let along: Vec<(Vec3, f64)> = if along_u {
+                (0..cv).map(|j| at(fixed, j)).collect::<Option<_>>()?
+            } else {
+                (0..cu).map(|i| at(i, fixed)).collect::<Option<_>>()?
+            };
+            Some(along.into_iter().unzip())
+        };
+        let last = if along_u { cu } else { cv }.checked_sub(1)?;
+        Some((row(0)?, row(last)?))
+    };
+    let clamped = |knots: &[f64], degree: usize| {
+        let (Some(&a), Some(&b)) = (knots.first(), knots.last()) else {
+            return false;
+        };
+        knots.iter().take(degree + 1).all(|&k| k == a)
+            && knots.iter().rev().take(degree + 1).all(|&k| k == b)
+    };
+    let curves = match surface {
+        Surface::Nurbs(s) => {
+            let (du, dv) = s.degrees();
+            let (across, across_degree, along, along_degree) = if along_u {
+                (s.knots_u(), du, s.knots_v(), dv)
+            } else {
+                (s.knots_v(), dv, s.knots_u(), du)
+            };
+            if !clamped(across, across_degree) {
+                return false;
+            }
+            let Some(((p0, w0), (p1, w1))) = rows(s.control_points(), s.weights(), s.counts())
+            else {
+                return false;
+            };
+            let curve = |p, w| NurbsCurve::new(along_degree, along.to_vec(), p, w).ok();
+            curve(p0, w0).zip(curve(p1, w1))
+        }
+        Surface::Bezier(b) => {
+            let (m, n) = (b.degree_u(), b.degree_v());
+            let weights = vec![1.0; (m + 1) * (n + 1)];
+            let Some(((p0, w0), (p1, w1))) = rows(b.control_points(), &weights, (m + 1, n + 1))
+            else {
+                return false;
+            };
+            let degree = if along_u { n } else { m };
+            let knots: Vec<f64> = std::iter::repeat_n(0.0, degree + 1)
+                .chain(std::iter::repeat_n(1.0, degree + 1))
+                .collect();
+            let curve = |p, w| NurbsCurve::new(degree, knots.clone(), p, w).ok();
+            curve(p0, w0).zip(curve(p1, w1))
+        }
+        _ => None,
+    };
+    let Some((lo, hi)) = curves else {
+        return false;
+    };
+    let (range_lo, range_hi) = (lo.domain(), hi.domain());
+    let (lo, hi) = (Curve3::Nurbs(lo), Curve3::Nurbs(hi));
+    matches!(
+        curves_apart(
+            &CurveBound::new(&lo),
+            range_lo,
+            &CurveBound::new(&hi),
+            range_hi,
+            near,
+            BORDER_PROOF,
+        ),
+        Apart::Yes
+    )
 }
 
 /// How far the loops go around in a parameter, all together: from where
