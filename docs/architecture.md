@@ -32,7 +32,7 @@ These are the invariants. Every part is built so that they hold by construction,
 ## 2. The parts and their layers
 
 ```text
- L8  apps          craft3d (window), craft3d-cli
+ L8  apps          craft3d (window), craft3d-cli, craft3d-fuzz
  L7  clients       ui-egui (the shell), automation (control server, MCP)
  L6  engine        Session: open documents, commands, undo, scenes
  L5  io            bodies and meshes <-> STEP, STL, 3MF, OBJ, DXF, SVG
@@ -71,7 +71,8 @@ These are the invariants. Every part is built so that they hold by construction,
 | `testkit` | dev | reference solids, mesh checks, image diff, fixtures | is a normal dependency |
 | `apps/craft3d` | L8 | the window: eframe, the engine thread, the control listener, file dialogs | holds modelling logic |
 | `apps/craft3d-cli` | L8 | the headless CLI: `run`, `info`, `render`, `convert`, `replay`, `commands`, `serve`, `mcp` | holds modelling logic |
-| `xtask` | — | `layers`, `wasm`, `ci`, `stats`, `freecad`, `boolean-corpus` | is shipped |
+| `apps/craft3d-fuzz` | L8 | random multi-step designs held to the oracles, one seed or reproducer per process ([`testing.md`](testing.md) › Oracle 11) | holds modelling logic; is a dependency of anything |
+| `xtask` | — | `layers`, `wasm`, `ci`, `stats`, `health`, `freecad`, `boolean-corpus`, `fuzz` | is shipped |
 
 ## 3. The data
 

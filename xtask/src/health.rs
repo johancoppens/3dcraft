@@ -3,7 +3,8 @@
 //!
 //! It only reads: the branches, the logs of the gate worktree, the
 //! evidence the gate's last run left (the boolean corpus score, the
-//! benchmark's counts), the sources, the showcases' findings under
+//! benchmark's counts), the summary of the last `cargo xtask fuzz` run,
+//! the sources, the showcases' findings under
 //! `target/work` and the dev log. Whatever is missing is reported as
 //! "unknown"; the report itself never fails. It is also kept in
 //! `target/health/<date>.md`, and the dev log line it read up to in
@@ -39,7 +40,7 @@ fn output(dir: &Path, program: &str, args: &[&str]) -> Option<String> {
 
 /// The main checkout: the parent of the repository's common git dir (a
 /// worktree shares it), else the current directory.
-fn main_checkout(here: &Path) -> PathBuf {
+pub(crate) fn main_checkout(here: &Path) -> PathBuf {
     output(
         here,
         "git",
@@ -339,6 +340,78 @@ fn refusal_sites(dir: &Path, depth: u32) -> usize {
     sites
 }
 
+/// The last `cargo xtask fuzz` run (docs/testing.md › Random multi-step
+/// designs): its counts and rates, from `target/fuzz/summary.json`.
+fn fuzz_section(out: &mut String, main: &Path) {
+    let path = main.join("target/fuzz/summary.json");
+    let Some(s) = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+    else {
+        let _ = writeln!(out, "Random designs: {UNKNOWN} (no {})", path.display());
+        return;
+    };
+    let n = |k: &str| s.get(k).and_then(serde_json::Value::as_u64).unwrap_or(0);
+    let text = |k: &str| {
+        s.get(k)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(UNKNOWN)
+    };
+    let rate = |k: &str| s.get(k).and_then(serde_json::Value::as_f64).unwrap_or(0.0) * 100.0;
+    let by_oracle = s
+        .get("wrongByOracle")
+        .and_then(serde_json::Value::as_object)
+        .map(|m| {
+            m.iter()
+                .map(|(k, v)| format!("{k} {v}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+    let wrong = s
+        .pointer("/verdicts/wrong")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let _ = writeln!(
+        out,
+        "Random designs (`cargo xtask fuzz`, {} on {}): {} seeds, {} groups; refused {:.1} % of groups; \
+         wrong **{wrong}** ({:.2} % of seeds{}), crashes **{}**, timeouts **{}**, out of memory **{}**; \
+         reproducers under {}",
+        text("date"),
+        text("commit"),
+        n("seeds"),
+        n("groups"),
+        rate("refusalRate"),
+        rate("wrongRate"),
+        if by_oracle.is_empty() {
+            String::new()
+        } else {
+            format!(": {by_oracle}")
+        },
+        n("crashes"),
+        n("timeouts"),
+        n("outOfMemory"),
+        main.join("target/fuzz").display(),
+    );
+    let top: Vec<String> = s
+        .get("refusedTop")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .take(3)
+        .filter_map(|r| {
+            Some(format!(
+                "{} × {}",
+                r.get("count")?.as_u64()?,
+                r.get("reason")?.as_str()?
+            ))
+        })
+        .collect();
+    if !top.is_empty() {
+        let _ = writeln!(out, "- most refused: {}", top.join("; "));
+    }
+}
+
 fn findings_section(out: &mut String, main: &Path) {
     let work = main.join("target/work");
     let Ok(entries) = std::fs::read_dir(&work) else {
@@ -474,6 +547,8 @@ pub fn run() -> Result<(), String> {
     corpus_section(&mut out, &gate);
     out.push('\n');
     bench_section(&mut out, &gate, &here);
+    out.push('\n');
+    fuzz_section(&mut out, &main);
     out.push('\n');
     findings_section(&mut out, &main);
     out.push('\n');
