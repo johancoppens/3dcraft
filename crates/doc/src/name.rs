@@ -441,7 +441,8 @@ pub fn curve_groups(sources: &[u64]) -> Result<Vec<&[u64]>, &'static str> {
 /// Sorts the curves of a cap's sources (each with its continuation
 /// words) word by word and drops repeats: the order names keep, which for
 /// curves that are not nested is the order of their numbers.
-pub fn sort_curves(sources: &[u64]) -> Vec<u64> {
+#[cfg(test)]
+pub(crate) fn sort_curves(sources: &[u64]) -> Vec<u64> {
     let mut groups: Vec<&[u64]> =
         curve_groups(sources).unwrap_or_else(|_| sources.chunks(1).collect());
     groups.sort_unstable();

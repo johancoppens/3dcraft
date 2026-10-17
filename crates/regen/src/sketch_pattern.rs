@@ -427,6 +427,14 @@ pub(crate) fn evaluate(
                 .map_or(1, PatternResult::instances);
             product = product.checked_mul(count).ok_or_else(too_many)?;
         }
+        // A tree's instances are visited level by level, curves or not:
+        // a product past the cap is refused before any is.
+        if sketch.pattern_levels(result.id).len() > 1 && product > MAX_PATTERN_CURVES {
+            return Err(format!(
+                "{}: the patterns around it make {product} instances of it, more than {MAX_PATTERN_CURVES}; make fewer instances",
+                result.id
+            ));
+        }
         let made = product.saturating_sub(1);
         for entity in curve_seeds(sketch, pattern) {
             let total = if entity.construction {
@@ -715,6 +723,7 @@ fn each_instance(
     fn walk(
         sketch: &Sketch,
         patterns: &[PatternResult],
+        holding: &std::collections::BTreeSet<PatternId>,
         level: usize,
         outer: &mut Vec<(usize, (u32, u32))>,
         found: &mut Found<'_>,
@@ -731,9 +740,14 @@ fn each_instance(
                 result.id
             ));
         }
+        // Only the levels that hold curves somewhere are walked.
+        if !holding.contains(&result.id) {
+            return Ok(());
+        }
         let inner: Vec<usize> = pattern
             .patterns
             .iter()
+            .filter(|q| holding.contains(q))
             .filter_map(|q| patterns.iter().position(|p| p.id == *q))
             .collect();
         for instance in result.each() {
@@ -746,15 +760,26 @@ fn each_instance(
                 }
             }
             for &child in &inner {
-                walk(sketch, patterns, child, outer, found)?;
+                walk(sketch, patterns, holding, child, outer, found)?;
             }
             outer.pop();
         }
         Ok(())
     }
+    // The patterns with curve seeds of their own or in a pattern in them.
+    let holding: std::collections::BTreeSet<PatternId> = patterns
+        .iter()
+        .filter(|r| {
+            std::iter::once(r.id)
+                .chain(sketch.inner_patterns(r.id))
+                .filter_map(|p| sketch.pattern(p))
+                .any(|p| curve_entities(sketch, p).next().is_some())
+        })
+        .map(|r| r.id)
+        .collect();
     for (level, result) in patterns.iter().enumerate() {
         if result.parent.is_none() {
-            walk(sketch, patterns, level, &mut Vec::new(), found)?;
+            walk(sketch, patterns, &holding, level, &mut Vec::new(), found)?;
         }
     }
     Ok(())
@@ -831,8 +856,7 @@ impl CurveIds {
     /// The name words of a kernel number: the number itself unless it is
     /// one of the nested curves'.
     pub fn words(&self, id: u64) -> Vec<u64> {
-        if id & NESTED != 0
-            && (id >> 32) & 0xFFFF == 0
+        if is_nested(id)
             && let Some(words) = usize::try_from(id & !NESTED)
                 .ok()
                 .and_then(|at| self.nested.get(at))
@@ -864,6 +888,66 @@ impl CurveIds {
     pub fn is_empty(&self) -> bool {
         self.nested.is_empty()
     }
+
+    /// The numbers of two sketches' curves handed to the kernel together
+    /// (a sweep's profile and path): this sketch's as they are, the
+    /// other's nested numbers moved past them; returns the joint table and
+    /// how far the other's numbers moved ([`CurveIds::moved`]).
+    pub(crate) fn joined(&self, other: &CurveIds) -> (CurveIds, u64) {
+        let by = u64::try_from(self.nested.len()).unwrap_or(u64::MAX);
+        let mut nested = self.nested.clone();
+        nested.extend(other.nested.iter().cloned());
+        (CurveIds { nested }, by)
+    }
+
+    /// A kernel number of the other sketch of [`CurveIds::joined`] as the
+    /// joint table has it.
+    pub(crate) fn moved(id: u64, by: u64) -> u64 {
+        if is_nested(id) {
+            NESTED | (id & !NESTED).saturating_add(by)
+        } else {
+            id
+        }
+    }
+
+    /// A text of the kernel's in which curves are written `e` and their
+    /// number (`e9223372036854775808`), with those of nested patterns
+    /// named as the sketch names them (`e3[2][1]`).
+    pub(crate) fn rename_in(&self, text: &str) -> String {
+        if self.nested.is_empty() {
+            return text.to_string();
+        }
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text;
+        while let Some(at) = rest.find('e') {
+            let (before, from) = rest.split_at(at);
+            out.push_str(before);
+            let digits: String = from
+                .chars()
+                .skip(1)
+                .take_while(char::is_ascii_digit)
+                .collect();
+            let word = before.chars().last().is_none_or(|c| !c.is_alphanumeric());
+            match digits.parse::<u64>() {
+                Ok(id) if word && is_nested(id) => {
+                    out.push_str(&self.name(id));
+                    rest = from.get(1 + digits.len()..).unwrap_or_default();
+                }
+                _ => {
+                    out.push('e');
+                    rest = from.get(1..).unwrap_or_default();
+                }
+            }
+        }
+        out.push_str(rest);
+        out
+    }
+}
+
+/// A kernel number of a curve of nested patterns ([`CurveIds`]), not a
+/// name's word.
+fn is_nested(id: u64) -> bool {
+    id & NESTED != 0 && (id >> 32) & 0xFFFF == 0
 }
 
 /// The instances of every pattern of a solved sketch as curves for the

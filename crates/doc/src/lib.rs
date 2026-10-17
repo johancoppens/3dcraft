@@ -25,7 +25,6 @@ pub use name::{
     CurveIndex, CurvePath, CurveRef, FaceLists, MAX_CURVE_ENTITY, MAX_CURVE_INDEX,
     MAX_CURVE_LEVELS, MAX_NAME_DEPTH, MAX_NAME_FACES, MAX_NAME_SOURCES, NameRole, OffsetGroup,
     OffsetHead, OffsetKind, PersistentName, curve_groups, decode_continuation, offset_groups,
-    sort_curves,
 };
 
 pub use sketch::{

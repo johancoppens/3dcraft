@@ -1000,7 +1000,9 @@ fn nested_patterns_refuse_what_they_cannot_be() {
         json!({"name": "n", "expr": "10000"}),
     );
     let edge = status(&mut s, "Edge");
-    assert!(edge.contains("more than 100000 curves"), "{edge}");
+    // Refused for the product of the counts around the tabs, before the
+    // curves are counted.
+    assert!(edge.contains("more than 100000"), "{edge}");
     run(&mut s, "variable.set", json!({"name": "k", "expr": "2"}));
     run(&mut s, "variable.set", json!({"name": "n", "expr": "3"}));
     assert_eq!(status(&mut s, "Edge"), "ok");
@@ -1039,4 +1041,260 @@ fn an_edge_of_7_cells_of_3_tabs_is_quick() {
     }
     println!("7 x 3 tabs: built in {built:?}, a count changed (regenerated) in at most {worst:?}");
     assert!(worst.as_millis() < 50, "{worst:?}");
+}
+
+/// No name holds a kernel number of a nested curve (bit 63 set): every
+/// curve is written as the sketch calls it.
+fn no_kernel_numbers(names: &[String], what: &str) {
+    for name in names {
+        let mut rest = name.as_str();
+        while let Some(at) = rest.find('e') {
+            let digits: String = rest[at + 1..]
+                .chars()
+                .take_while(char::is_ascii_digit)
+                .collect();
+            assert!(
+                digits.parse::<u64>().map_or(true, |n| n < 1 << 32),
+                "{what}: {name}"
+            );
+            rest = &rest[at + 1..];
+        }
+    }
+}
+
+/// A run of runs of collinear lines from the origin along x in sketch
+/// `name` on `plane` (the inner run `k` lines of length `step`, the outer
+/// one `n` such runs, chained), fixed by dimensions. Returns its lines.
+fn nested_line(s: &mut Session, name: &str, plane: &str, at: [f64; 2], step: f64) -> String {
+    run(s, "sketch.create", json!({"name": name, "plane": plane}));
+    let made = run(
+        s,
+        "sketch.line",
+        json!({"sketch": name, "from": at, "to": [at[0] + step, at[1]]}),
+    );
+    let (line, a, b) = (
+        str_of(&made["entity"]),
+        str_of(&made["start"]),
+        str_of(&made["end"]),
+    );
+    let constrain = |s: &mut Session, kind: &str, entities: Value, value: Option<f64>| {
+        let mut params = json!({"sketch": name, "type": kind, "entities": entities});
+        if let Some(value) = value {
+            params["value"] = json!(value);
+        }
+        run(s, "sketch.constrain", params)
+    };
+    constrain(s, "fixed", json!([a]), None);
+    constrain(s, "horizontal", json!([line]), None);
+    constrain(s, "distance", json!([line]), Some(step));
+    let inner = run(
+        s,
+        "sketch.pattern",
+        json!({"sketch": name, "entities": [line], "count": "k", "chain": [a, b]}),
+    );
+    let inner = str_of(&inner["pattern"]);
+    run(
+        s,
+        "sketch.pattern",
+        json!({"sketch": name, "patterns": [inner], "count": "n", "chain": [a, format!("{b}[last]")]}),
+    );
+    b
+}
+
+/// A sweep names its sides after a curve of the profile and one of the
+/// path, each as its own sketch calls it, also when both are made by
+/// nested patterns.
+#[test]
+fn a_sweep_of_and_along_nested_patterns_names_both_curves() {
+    let (k, n, step, side) = (2_u32, 3_u32, 2.0, 1.0);
+    for nested_profile in [false, true] {
+        let mut s = session();
+        run(&mut s, "file.new", json!({"units": "mm"}));
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "k", "expr": k.to_string()}),
+        );
+        run(
+            &mut s,
+            "variable.set",
+            json!({"name": "n", "expr": n.to_string()}),
+        );
+        // The path: k n lines along x.
+        nested_line(&mut s, "Path", "xy", [0.0, 0.0], step);
+        // The profile in the plane x = 0: a square of `side`, its bottom
+        // edge a run of runs too when nested.
+        let width = if nested_profile {
+            f64::from(k * n) * side / 6.0
+        } else {
+            side
+        };
+        if nested_profile {
+            let end = nested_line(
+                &mut s,
+                "Profile",
+                "yz",
+                [-width / 2.0, -side / 2.0],
+                side / 6.0,
+            );
+            run(
+                &mut s,
+                "sketch.polyline",
+                json!({"sketch": "Profile", "points": [format!("{end}[last][last]"), [width / 2.0, side / 2.0], [-width / 2.0, side / 2.0], "e1"]}),
+            );
+        } else {
+            run(
+                &mut s,
+                "sketch.create",
+                json!({"name": "Profile", "plane": "yz"}),
+            );
+            run(
+                &mut s,
+                "sketch.polyline",
+                json!({"sketch": "Profile", "points": [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]], "closed": true}),
+            );
+        }
+        run(
+            &mut s,
+            "feature.sweep",
+            json!({"sketch": "Profile", "path": "Path", "name": "Bar"}),
+        );
+        let what = format!("nested profile {nested_profile}");
+        assert_eq!(status(&mut s, "Bar"), "ok", "{what}");
+        close(
+            volume(&mut s, "Bar"),
+            width * side * f64::from(k * n) * step,
+            1e-9,
+            &what,
+        );
+        let names: Vec<String> = face_boxes(&mut s, "Bar").into_keys().collect();
+        no_kernel_numbers(&names, &what);
+        // A side along the path's line 1 of cell 2, by both names.
+        let along = format!("e3[1][2])");
+        assert!(
+            names.iter().any(|f| f.ends_with(&along)),
+            "{what}: {names:?}"
+        );
+        if nested_profile {
+            // The profile's bottom edge, a run of runs of collinear lines
+            // swept along a straight path: one plane per profile curve,
+            // named after it alone.
+            assert!(
+                names.contains(&"F3:side(e3[1][2])".to_string()),
+                "{what}: {names:?}"
+            );
+            assert!(
+                names
+                    .iter()
+                    .any(|f| f.contains("e3[*]") && f.contains("Cap")),
+                "{what}"
+            );
+        }
+    }
+}
+
+/// A revolution and an offset of a nested rib name its curves as the
+/// sketch does, and are their closed forms.
+#[test]
+fn a_revolution_and_an_offset_of_a_nested_rib_are_named_and_measured() {
+    let [w, c, p, g, h, t] = [1.0, 0.25, 3.0, 2.0, 6.0, 0.5];
+    let (k, n) = (2_u32, 3_u32);
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    let r = rib(&mut s, [w, c, p, g, h, t], k, n);
+    // A quarter turn about the sketch's y axis: Pappus, sum of area times
+    // distance from the axis, times the angle.
+    run(
+        &mut s,
+        "feature.revolve",
+        json!({"sketch": "Edge", "axis": "y", "angle": "90 deg", "name": "Turned"}),
+    );
+    let cell = f64::from(k) * p + g;
+    let length = f64::from(n) * cell;
+    let mut moment = length * h * length / 2.0;
+    for i in 0..n {
+        for j in 0..k {
+            let x = f64::from(i) * cell + f64::from(j) * p + w / 2.0;
+            moment += w * c * x;
+        }
+    }
+    assert_eq!(status(&mut s, "Turned"), "ok");
+    close(
+        volume(&mut s, "Turned"),
+        moment * PI / 2.0,
+        1e-9,
+        "revolved",
+    );
+    let names: Vec<String> = face_boxes(&mut s, "Turned").into_keys().collect();
+    no_kernel_numbers(&names, "revolved");
+    let top = format!("F3:side({}[1][2])", r.tab[1]);
+    assert!(names.contains(&top), "{top} in {names:?}");
+    // An offset by d, sharp: a rectilinear outline grows by P d + 4 d^2.
+    let d = 0.05;
+    run(
+        &mut s,
+        "feature.offsetProfile",
+        json!({"sketch": "Edge", "distance": d, "corners": "sharp", "name": "Kerf"}),
+    );
+    run(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "Kerf", "distance": t, "name": "Cut"}),
+    );
+    assert_eq!(status(&mut s, "Cut"), "ok");
+    let area = length * h + f64::from(n * k) * w * c;
+    let perimeter = 2.0 * length + 2.0 * h + 2.0 * c * f64::from(n * k);
+    close(
+        volume(&mut s, "Cut"),
+        (area + perimeter * d + 4.0 * d * d) * t,
+        1e-9,
+        "offset",
+    );
+    let names: Vec<String> = face_boxes(&mut s, "Cut").into_keys().collect();
+    no_kernel_numbers(&names, "offset");
+    let top = format!("F5:side(F4:offset({}[1][2]))", r.tab[1]);
+    assert!(names.contains(&top), "{top} in {names:?}");
+}
+
+/// Patterns of points only, three levels of 10 000: refused at once for
+/// the product of their counts, not visited one by one.
+#[test]
+fn a_tree_of_points_only_is_bounded_by_the_product_of_its_counts() {
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(&mut s, "variable.set", json!({"name": "k", "expr": "10"}));
+    run(&mut s, "sketch.create", json!({"name": "Dots"}));
+    let dot = run(
+        &mut s,
+        "sketch.point",
+        json!({"sketch": "Dots", "at": [0, 0]}),
+    );
+    let dot = str_of(&dot["entity"]);
+    run(
+        &mut s,
+        "sketch.pattern",
+        json!({"sketch": "Dots", "entities": [dot], "count": "k", "step": [1, 0]}),
+    );
+    run(
+        &mut s,
+        "sketch.pattern",
+        json!({"sketch": "Dots", "patterns": ["p1"], "count": "k", "step": [0, 1]}),
+    );
+    run(
+        &mut s,
+        "sketch.pattern",
+        json!({"sketch": "Dots", "patterns": ["p2"], "count": "k", "step": [0, 0.5]}),
+    );
+    assert_eq!(status(&mut s, "Dots"), "ok");
+    let started = std::time::Instant::now();
+    run(
+        &mut s,
+        "variable.set",
+        json!({"name": "k", "expr": "10000"}),
+    );
+    let failed = status(&mut s, "Dots");
+    assert!(failed.contains("more than 100000"), "{failed}");
+    assert!(started.elapsed().as_secs() < 5, "{:?}", started.elapsed());
+    run(&mut s, "variable.set", json!({"name": "k", "expr": "40"}));
+    assert_eq!(status(&mut s, "Dots"), "ok");
 }
