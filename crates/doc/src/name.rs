@@ -176,6 +176,296 @@ impl fmt::Display for CurveRef {
     }
 }
 
+/// Most levels the instance path of a curve has: one per pattern of a
+/// tree of sketch patterns, the innermost first
+/// ([`crate::sketch::MAX_PATTERN_DEPTH`]).
+pub const MAX_CURVE_LEVELS: usize = 3;
+
+/// The tag (bits 48 to 63) of a continuation word for an outer level in
+/// one direction, and for a grid. The tags of [`OffsetHead`] are 1 to 4;
+/// bits 32 to 47 are 0 in both, a combination no [`CurveRef`] encodes to.
+const CONTINUATION_AT: u64 = 5;
+const CONTINUATION_GRID: u64 = 6;
+/// The low bits of a continuation word for `*` (every instance).
+const CONTINUATION_ALL: u64 = 0xFFFF;
+
+/// The instance path of a curve made by nested sketch patterns: the
+/// curve with its index in the innermost pattern (`e3[2]`), and its
+/// index in each pattern around that one, the innermost first
+/// (`e3[2][1]` is instance 2 of the inner pattern in instance 1 of the
+/// outer one; `e5[1][2,4]` in cell 2,4 of a grid). A trailing level whose
+/// index is 0 is left out, so wrapping a pattern in another renames none
+/// of its curves: `e3[2]` is the same curve in cell 0. Kept in a name as
+/// the curve's number followed by one continuation word per outer level
+/// (`encode`): bits 32 to 47 are 0, the tag 5 (one direction) or 6 (a
+/// grid) from bit 48, and `i + 1` (`0xFFFF` for `*`), or `i + 1` and
+/// `j + 1` from bit 16, in the low 32 bits. A name without nesting has
+/// the numbers it always had.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CurvePath {
+    pub curve: CurveRef,
+    /// The index in each outer pattern, the innermost first: `At`,
+    /// `Grid` or `All` (never `Seed`).
+    pub outer: Vec<CurveIndex>,
+}
+
+/// One continuation word: an outer level's index.
+fn continuation(index: CurveIndex) -> Option<u64> {
+    let field = |i: u32| (i <= MAX_CURVE_INDEX).then(|| u64::from(i) + 1);
+    Some(match index {
+        CurveIndex::At(i) => (CONTINUATION_AT << SECOND_SHIFT) | field(i)?,
+        CurveIndex::All => (CONTINUATION_AT << SECOND_SHIFT) | CONTINUATION_ALL,
+        CurveIndex::Grid(i, j) => {
+            (CONTINUATION_GRID << SECOND_SHIFT) | field(i)? | (field(j)? << 16)
+        }
+        CurveIndex::Seed => return None,
+    })
+}
+
+/// The outer level a continuation word stands for; `None` for every
+/// other number.
+pub fn decode_continuation(word: u64) -> Option<CurveIndex> {
+    let first = (word >> INDEX_SHIFT) & FIELD;
+    let tag = (word >> SECOND_SHIFT) & FIELD;
+    if first != 0 {
+        return None;
+    }
+    let low = word & MAX_CURVE_ENTITY;
+    let index = |field: u64| {
+        u32::try_from(field.checked_sub(1)?)
+            .ok()
+            .filter(|&i| i <= MAX_CURVE_INDEX)
+    };
+    match tag {
+        CONTINUATION_AT if low == CONTINUATION_ALL => Some(CurveIndex::All),
+        CONTINUATION_AT => Some(CurveIndex::At(index(low)?)),
+        CONTINUATION_GRID => Some(CurveIndex::Grid(index(low & FIELD)?, index(low >> 16)?)),
+        _ => None,
+    }
+}
+
+/// True for an index that is instance 0 of its level.
+fn is_zero(index: CurveIndex) -> bool {
+    matches!(
+        index,
+        CurveIndex::Seed | CurveIndex::At(0) | CurveIndex::Grid(0, 0)
+    )
+}
+
+impl CurvePath {
+    /// A curve that is not nested: `e7`, `e7[3]`.
+    pub fn plain(curve: CurveRef) -> Self {
+        Self {
+            curve,
+            outer: Vec::new(),
+        }
+    }
+
+    /// The path of curve `entity` with an index on every level, the
+    /// innermost first (`At(0)` or `Grid(0, 0)` for instance 0, `All` for
+    /// every instance), in the one form a name keeps: trailing levels at
+    /// instance 0 left out, and `*` on an outer level after `*` on every
+    /// level inside it left out too (every instance of every level is
+    /// `e3[*]`); with no level left the seed, `e3`.
+    pub fn of_levels(entity: u64, levels: &[CurveIndex]) -> Self {
+        let mut levels: Vec<CurveIndex> = levels.to_vec();
+        loop {
+            match levels.as_slice() {
+                [.., last] if is_zero(*last) => {
+                    levels.pop();
+                }
+                [.., CurveIndex::All, CurveIndex::All] => {
+                    levels.pop();
+                }
+                _ => break,
+            }
+        }
+        let mut levels = levels.into_iter();
+        let first = levels.next().unwrap_or(CurveIndex::Seed);
+        Self {
+            curve: CurveRef {
+                entity,
+                index: first,
+            },
+            outer: levels.collect(),
+        }
+    }
+
+    /// The index on level `level` (0 the innermost), with the levels a
+    /// name leaves out: instance 0, or `*` after a `*`.
+    pub fn level(&self, level: usize) -> CurveIndex {
+        if level == 0 {
+            return self.curve.index;
+        }
+        match self.outer.get(level - 1) {
+            Some(index) => *index,
+            None => {
+                let all_inside = self.curve.index == CurveIndex::All
+                    && self.outer.iter().all(|i| *i == CurveIndex::All);
+                if all_inside {
+                    CurveIndex::All
+                } else {
+                    CurveIndex::At(0)
+                }
+            }
+        }
+    }
+
+    /// Whether this is the one form [`CurvePath::of_levels`] gives: no
+    /// trailing level at instance 0, at most [`MAX_CURVE_LEVELS`] levels,
+    /// `*` on an outer level only inside-out, and an inner index written
+    /// out when there are outer ones.
+    pub fn is_canonical(&self) -> bool {
+        if self.outer.is_empty() {
+            return true;
+        }
+        if self.outer.len() >= MAX_CURVE_LEVELS || self.curve.index == CurveIndex::Seed {
+            return false;
+        }
+        let mut all = self.curve.index == CurveIndex::All;
+        for index in &self.outer {
+            match index {
+                CurveIndex::Seed => return false,
+                CurveIndex::All if !all => return false,
+                CurveIndex::All => {}
+                _ => all = false,
+            }
+        }
+        let last = self.outer.last().copied().unwrap_or(CurveIndex::Seed);
+        let before = match self.outer.len() {
+            1 => self.curve.index,
+            n => self.outer.get(n - 2).copied().unwrap_or(CurveIndex::Seed),
+        };
+        !is_zero(last) && !(last == CurveIndex::All && before == CurveIndex::All)
+    }
+
+    /// The numbers a name keeps: the curve's, then a continuation word per
+    /// outer level. `None` beyond what a name holds or not canonical.
+    pub fn encode(&self) -> Option<Vec<u64>> {
+        if !self.is_canonical() {
+            return None;
+        }
+        let mut out = Vec::with_capacity(1 + self.outer.len());
+        out.push(self.curve.encode()?);
+        for index in &self.outer {
+            out.push(continuation(*index)?);
+        }
+        Some(out)
+    }
+
+    /// Reads one curve with its continuation words from the start of
+    /// `words`: the path and how many words it took. `None` when the
+    /// first word is no curve, or what follows it is not canonical.
+    pub fn read(words: &[u64]) -> Option<(Self, usize)> {
+        let (&first, rest) = words.split_first()?;
+        let curve = CurveRef::decode(first)?;
+        let outer: Vec<CurveIndex> = rest
+            .iter()
+            .map_while(|&w| decode_continuation(w))
+            .take(MAX_CURVE_LEVELS)
+            .collect();
+        let path = Self { curve, outer };
+        let taken = 1 + path.outer.len();
+        path.is_canonical().then_some((path, taken))
+    }
+
+    /// Reads `e3`, `e3[2]`, `e3[2][1]`, `e3[*][1]`, `e5[1][2,4]`.
+    pub fn parse(text: &str) -> Option<Self> {
+        let (first, rest) = match text.find(']') {
+            Some(at) => (text.get(..=at)?, text.get(at + 1..)?),
+            None => (text, ""),
+        };
+        let curve = CurveRef::parse(first)?;
+        let mut outer = Vec::new();
+        let mut rest = rest;
+        while !rest.is_empty() {
+            if outer.len() >= MAX_CURVE_LEVELS {
+                return None;
+            }
+            let inner = rest.strip_prefix('[')?;
+            let at = inner.find(']')?;
+            let (level, after) = (inner.get(..at)?, inner.get(at + 1..)?);
+            // An outer level reads as the inner one does.
+            let index = CurveRef::parse(&format!("e0[{level}]"))?.index;
+            outer.push(index);
+            rest = after;
+        }
+        let path = Self { curve, outer };
+        path.is_canonical().then_some(path)
+    }
+}
+
+impl fmt::Display for CurvePath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.curve)?;
+        for index in &self.outer {
+            match index {
+                CurveIndex::Seed => f.write_str("[0]")?,
+                CurveIndex::At(k) => write!(f, "[{k}]")?,
+                CurveIndex::Grid(i, j) => write!(f, "[{i},{j}]")?,
+                CurveIndex::All => f.write_str("[*]")?,
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The numbers of a name's sources cut into curves: each curve with the
+/// continuation words of its outer levels, every other number alone. An
+/// error for a continuation word that follows no curve, or a path that is
+/// not in the form a name keeps.
+pub fn curve_groups(sources: &[u64]) -> Result<Vec<&[u64]>, &'static str> {
+    let mut groups = Vec::new();
+    let mut rest = sources;
+    while !rest.is_empty() {
+        let first = rest.first().copied().unwrap_or_default();
+        let followed = rest
+            .get(1..)
+            .unwrap_or_default()
+            .iter()
+            .take_while(|&&w| decode_continuation(w).is_some())
+            .count();
+        if decode_continuation(first).is_some() {
+            return Err("a continuation word of a nested pattern follows no curve");
+        }
+        if followed > 0 && CurvePath::read(rest).is_none_or(|(_, n)| n != followed + 1) {
+            return Err("the instance path of a curve is not in the form a name keeps");
+        }
+        let (group, after) = rest.split_at(followed + 1);
+        groups.push(group);
+        rest = after;
+    }
+    Ok(groups)
+}
+
+/// Sorts the curves of a cap's sources (each with its continuation
+/// words) word by word and drops repeats: the order names keep, which for
+/// curves that are not nested is the order of their numbers.
+pub fn sort_curves(sources: &[u64]) -> Vec<u64> {
+    let mut groups: Vec<&[u64]> =
+        curve_groups(sources).unwrap_or_else(|_| sources.chunks(1).collect());
+    groups.sort_unstable();
+    groups.dedup();
+    groups.concat()
+}
+
+/// Writes one source group: a curve (nested or not), or a number no curve
+/// encodes to as it is.
+fn write_group(f: &mut fmt::Formatter<'_>, group: &[u64]) -> fmt::Result {
+    match CurvePath::read(group) {
+        Some((path, n)) if n == group.len() => write!(f, "{path}"),
+        _ => {
+            for (i, word) in group.iter().enumerate() {
+                if i > 0 {
+                    f.write_str(",")?;
+                }
+                write!(f, "e{word}")?;
+            }
+            Ok(())
+        }
+    }
+}
+
 /// What a curve an offset feature made is, as the head of its group in
 /// the sources of a sweep's name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -282,14 +572,18 @@ pub fn offset_groups(sources: &[u64]) -> Result<Option<Vec<OffsetGroup<'_>>>, &'
             .position(|&s| OffsetHead::decode(s).is_some())
             .unwrap_or(after.len());
         let (curves, next) = after.split_at(count);
-        if curves.iter().any(|&c| CurveRef::decode(c).is_none()) {
+        let named = curve_groups(curves)?;
+        if named
+            .iter()
+            .any(|g| CurvePath::read(g).is_none_or(|(_, n)| n != g.len()))
+        {
             return Err("an offset names curves of a sketch");
         }
         match head.kind {
-            OffsetKind::Offset | OffsetKind::Loop if curves.is_empty() => {
+            OffsetKind::Offset | OffsetKind::Loop if named.is_empty() => {
                 return Err("an offset or a loop names at least one curve");
             }
-            OffsetKind::Corner | OffsetKind::Extension if curves.len() != 2 => {
+            OffsetKind::Corner | OffsetKind::Extension if named.len() != 2 => {
                 return Err("an offset corner or extension names two curves");
             }
             _ => {}
@@ -319,14 +613,12 @@ pub fn offset_groups(sources: &[u64]) -> Result<Option<Vec<OffsetGroup<'_>>>, &'
 }
 
 fn write_curves(f: &mut fmt::Formatter<'_>, curves: &[u64]) -> fmt::Result {
-    for (i, &curve) in curves.iter().enumerate() {
+    let groups = curve_groups(curves).unwrap_or_else(|_| curves.chunks(1).collect());
+    for (i, group) in groups.iter().enumerate() {
         if i > 0 {
             f.write_str(",")?;
         }
-        match CurveRef::decode(curve) {
-            Some(curve) => write!(f, "{curve}")?,
-            None => write!(f, "e{curve}")?,
-        }
+        write_group(f, group)?;
     }
     Ok(())
 }
@@ -360,8 +652,9 @@ fn parse_offset(text: &str) -> Option<Vec<u64>> {
         let inner = inner.strip_prefix('(')?.strip_suffix(')')?;
         let curves = split_outside(inner, ',')
             .into_iter()
-            .map(|part| CurveRef::parse(part.trim()).and_then(CurveRef::encode))
-            .collect::<Option<Vec<u64>>>()?;
+            .map(|part| CurvePath::parse(part.trim()).and_then(|c| c.encode()))
+            .collect::<Option<Vec<Vec<u64>>>>()?
+            .concat();
         Some((digits.parse().ok()?, kind, curves))
     }
     let mut out = Vec::new();
@@ -937,8 +1230,10 @@ impl PersistentName {
                 if name.role.is_counted() && name.sources.is_empty() {
                     return Err("a copy, a chamfer or a fillet face has at least one number");
                 }
-                if !(name.role.is_counted() || name.role.is_numbered()) {
-                    offset_groups(&name.sources)?;
+                if !(name.role.is_counted() || name.role.is_numbered())
+                    && offset_groups(&name.sources)?.is_none()
+                {
+                    curve_groups(&name.sources)?;
                 }
             }
             match (name.role.is_derived(), &name.of) {
@@ -1005,17 +1300,19 @@ impl PersistentName {
                     }
                     continue;
                 }
-                for (i, source) in name.sources.iter().enumerate() {
-                    if i > 0 {
-                        f.write_str(",")?;
+                if prefix.is_empty() {
+                    for (i, source) in name.sources.iter().enumerate() {
+                        if i > 0 {
+                            f.write_str(",")?;
+                        }
+                        write!(f, "{source}")?;
                     }
+                } else {
                     // A curve of a sketch, possibly an instance of a
-                    // pattern of it; a number no curve encodes to (only a
-                    // name built by hand has one) as it is.
-                    match CurveRef::decode(*source).filter(|_| !prefix.is_empty()) {
-                        Some(curve) => write!(f, "{curve}")?,
-                        None => write!(f, "{prefix}{source}")?,
-                    }
+                    // pattern of it (nested patterns: with the indices of
+                    // the outer ones); a number no curve encodes to (only
+                    // a name built by hand has one) as it is.
+                    write_curves(f, &name.sources)?;
                 }
                 f.write_str(")")?;
             }
@@ -1128,13 +1425,19 @@ fn parse_sources(
                 .filter(|_| part.bytes().all(|b| b.is_ascii_digit()))
                 .ok_or_else(|| wrong("this role takes a plain number, as in copy(0)"))?
         } else {
-            CurveRef::parse(part)
-                .and_then(CurveRef::encode)
+            let words = CurvePath::parse(part)
+                .and_then(|c| c.encode())
                 .ok_or_else(|| {
                     wrong(
-                        "a source must be written e and a number below 4294967296, with an instance of a pattern after it as in e7[3], e7[2,5] or e7[*]",
+                        "a source must be written e and a number below 4294967296, with an instance of a pattern after it as in e7[3], e7[2,5] or e7[*], and of each pattern around that one after it, the innermost first, as in e7[3][1]",
                     )
-                })?
+                })?;
+            reading.sources = reading
+                .sources
+                .checked_sub(words.len().saturating_sub(1))
+                .ok_or_else(|| wrong("it has too many sources"))?;
+            sources.extend(words);
+            continue;
         };
         sources.push(id);
     }
@@ -1910,6 +2213,126 @@ mod tests {
                 .parse::<PersistentName>()
                 .is_err()
         );
+    }
+
+    #[test]
+    fn a_curve_of_nested_patterns_names_each_level_innermost_first() {
+        let at = CurveIndex::At;
+        // The path and its words, both ways.
+        for (text, levels, words) in [
+            ("e3[2][1]", vec![at(2), at(1)], 2),
+            ("e3[0][1]", vec![at(0), at(1)], 2),
+            ("e3[*][1]", vec![CurveIndex::All, at(1)], 2),
+            ("e5[1][2,4]", vec![at(1), CurveIndex::Grid(2, 4)], 2),
+            ("e5[1,0][2]", vec![CurveIndex::Grid(1, 0), at(2)], 2),
+            ("e3[2][1][3]", vec![at(2), at(1), at(3)], 3),
+            (
+                "e3[*][*][3]",
+                vec![CurveIndex::All, CurveIndex::All, at(3)],
+                3,
+            ),
+            ("e3[2][0][3]", vec![at(2), at(0), at(3)], 3),
+            ("e3[2]", vec![at(2)], 1),
+        ] {
+            let path = CurvePath::parse(text).unwrap_or_else(|| panic!("{text}"));
+            assert_eq!(
+                path,
+                CurvePath::of_levels(3.max(path.curve.entity), &levels)
+            );
+            assert_eq!(path.to_string(), text);
+            let encoded = path.encode().unwrap();
+            assert_eq!(encoded.len(), words, "{text}");
+            assert_eq!(CurvePath::read(&encoded), Some((path.clone(), words)));
+            // The first word is the curve's own: a curve in cell 0 has the
+            // number it had before it was wrapped.
+            assert_eq!(CurveRef::decode(encoded[0]), Some(path.curve));
+            for word in &encoded[1..] {
+                assert_eq!(CurveRef::decode(*word), None, "{text}");
+                assert_eq!(OffsetHead::decode(*word), None, "{text}");
+            }
+            for (level, index) in levels.iter().enumerate() {
+                assert_eq!(path.level(level), *index, "{text} {level}");
+            }
+        }
+        // Trailing zero levels, and `*` after `*`, are left out.
+        let of = |levels: &[CurveIndex]| CurvePath::of_levels(3, levels).to_string();
+        assert_eq!(of(&[at(2), at(0)]), "e3[2]");
+        assert_eq!(of(&[at(0), at(0), at(0)]), "e3");
+        assert_eq!(of(&[CurveIndex::All, CurveIndex::All]), "e3[*]");
+        assert_eq!(of(&[CurveIndex::All, at(0)]), "e3[*]");
+        assert_eq!(
+            of(&[CurveIndex::All, CurveIndex::All, CurveIndex::All]),
+            "e3[*]"
+        );
+        assert_eq!(of(&[at(2), at(1), at(0)]), "e3[2][1]");
+        assert_eq!(CurvePath::parse("e3[*]").unwrap().level(1), CurveIndex::All);
+        assert_eq!(CurvePath::parse("e3[2]").unwrap().level(1), at(0));
+        // Not in the one form a name keeps, or not a path.
+        for bad in [
+            "e3[2][0]",
+            "e3[*][*]",
+            "e3[*][0]",
+            "e3[1][*]",
+            "e3[2][1][1][1]",
+            "e3[][1]",
+            "e3[2][",
+            "e3[1,2,3][0]",
+            "e3[2]x",
+            "e3[2][last]",
+            "e3[2][-1]",
+            "e3[2][65534]",
+        ] {
+            assert_eq!(CurvePath::parse(bad), None, "{bad}");
+        }
+        // In names, and in the order names keep (word by word).
+        for text in [
+            "F2:side(e3[2][1])",
+            "F2:endCap(e1,e3[*],e12[*])",
+            "F2:endCap(e1,e3[*][1],e12[1])",
+            "F2:lateralEdge(e3[2][1],e5[2][1])",
+            "F2:startVertex(e5[0][4],e3[1][4])",
+            "F10:side(F9:offset(e3[2][1]))",
+            "F10:endCap(F9:offset(e1,e3[*][1]))",
+            "F10:side(F9:offsetCorner(e3[2][1],e5[0][2]))",
+            "F10:side(F9:loop(e1,e3[*][1])/F9:offset(e3[2][1]))",
+            "F7:between[F7:copy(0)/F2:side(e3[2][1]),F7:copy(1)/F3:face(1)]",
+        ] {
+            let name: PersistentName = text.parse().unwrap_or_else(|e| panic!("{text}: {e}"));
+            assert_eq!(name.to_string(), text);
+            assert_eq!(name.check(), Ok(()));
+        }
+        let side = |text: &str| text.parse::<PersistentName>().unwrap();
+        assert!(side("F2:side(e3[0][1])") < side("F2:side(e3[1])"));
+        assert!(side("F2:side(e3[1])") < side("F2:side(e3[1][1])"));
+        let cap = side("F2:endCap(e3[*][1],e1)");
+        let words = cap.sources.clone();
+        assert_eq!(cap.to_string(), "F2:endCap(e3[*][1],e1)");
+        assert_eq!(
+            PersistentName::new(FeatureId(2), NameRole::EndCap, sort_curves(&words)).to_string(),
+            "F2:endCap(e1,e3[*][1])"
+        );
+        // A continuation word that follows no curve, or one too many.
+        let word = |text: &str| CurvePath::parse(text).unwrap().encode().unwrap();
+        let cont = word("e3[2][1]")[1];
+        let head = OffsetHead {
+            feature: FeatureId(9),
+            kind: OffsetKind::Offset,
+        }
+        .encode()
+        .unwrap();
+        for sources in [
+            vec![cont],
+            vec![cont, 3],
+            vec![head, cont],
+            vec![3, cont, cont, cont],
+            vec![word("e3")[0], cont],
+        ] {
+            let name = PersistentName::new(FeatureId(2), NameRole::Side, sources.clone());
+            assert!(name.check().is_err(), "{sources:?}");
+        }
+        assert_eq!(decode_continuation(word("e3[2]")[0]), None);
+        assert_eq!(decode_continuation(head), None);
+        assert_eq!(decode_continuation(cont), Some(at(1)));
     }
 
     #[test]
