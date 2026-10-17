@@ -20,8 +20,8 @@ const LENGTH_SAMPLES: u32 = 64;
 
 /// The length of an edge: exact for a line, the polygon through
 /// [`LENGTH_SAMPLES`] points of the curve otherwise (a lower bound; for a
-/// circle 0.04 % short).
-fn edge_length(edge: &craft3d_topo::Edge) -> f64 {
+/// circle 0.04 % short); null when it does not come out finite.
+fn edge_length(edge: &craft3d_topo::Edge) -> Value {
     let (t0, t1) = edge.range;
     let mut previous = edge.curve.eval(t0);
     let mut total = 0.0;
@@ -31,7 +31,11 @@ fn edge_length(edge: &craft3d_topo::Edge) -> f64 {
         total += (point - previous).length();
         previous = point;
     }
-    if total.is_finite() { total } else { 0.0 }
+    if total.is_finite() {
+        total.into()
+    } else {
+        Value::Null
+    }
 }
 
 fn vec3(v: Vec3) -> Value {

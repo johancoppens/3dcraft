@@ -60,16 +60,27 @@ fn the_bracket_keeps_what_succeeded_before() {
     let inspect = session.execute("document.inspect", &json!({})).unwrap();
     let unit = plan::length_unit(&inspect);
     let mut actions = Vec::new();
+    let mut edges_of = std::collections::BTreeMap::new();
     // As the xtask: solids only.
     for body in plan::bodies(&inspect).into_iter().filter(|b| b.solid) {
         let edges = session
             .execute("document.edges", &json!({"feature": body.feature}))
             .unwrap();
         assert_eq!(edges["truncated"], false);
-        actions.extend(plan::plan(&body, &plan::edges(&edges), &unit, KINDS));
+        let edges = plan::edges(&edges);
+        actions.extend(plan::plan(&body, &edges, &unit, KINDS));
+        edges_of.insert(body.feature.clone(), edges);
     }
     // A few of every kind, and every entry of the ratchet.
-    let chosen = plan::choose(actions, Some(PER_KIND), &in_floor);
+    let mut chosen = plan::choose(actions, Some(PER_KIND), &in_floor);
+    // The straight edges between flat faces get their exact change: the
+    // block's twelve edges and the boss's foot are not all of them.
+    let oriented = plan::orient_all(&mut call(&mut session), &mut chosen, &edges_of).unwrap();
+    println!("{oriented} blends with their exact change");
+    assert!(
+        oriented >= 20,
+        "only {oriented} blends have an exact change"
+    );
     let mut failures = Vec::new();
     // Every entry of the ratchet is planned: one that is not (a name that
     // went away) is a failure, not a silent pass.
@@ -216,7 +227,142 @@ fn action(expect: Expect, volume: f64, area: f64) -> plan::Action {
         area,
         centroid: [5.0, 5.0, 5.0],
         diag: 300f64.sqrt(),
+        pair: None,
     }
+}
+
+/// The edges of the block 0..10 cubed, its faces named by side.
+fn cube_edges() -> Vec<plan::Edge> {
+    let c = |x: f64, y: f64, z: f64| [x, y, z];
+    let e = |a: &str, b: &str, s: [f64; 3], t: [f64; 3]| plan::Edge {
+        faces: [a.to_string(), b.to_string()],
+        curve: "line".into(),
+        start: s,
+        end: t,
+        closed: false,
+        length: Some(10.0),
+    };
+    vec![
+        e("bottom", "y0", c(0., 0., 0.), c(10., 0., 0.)),
+        e("bottom", "x1", c(10., 0., 0.), c(10., 10., 0.)),
+        e("bottom", "y1", c(10., 10., 0.), c(0., 10., 0.)),
+        e("bottom", "x0", c(0., 10., 0.), c(0., 0., 0.)),
+        e("top", "y0", c(0., 0., 10.), c(10., 0., 10.)),
+        e("top", "x1", c(10., 0., 10.), c(10., 10., 10.)),
+        e("top", "y1", c(10., 10., 10.), c(0., 10., 10.)),
+        e("top", "x0", c(0., 10., 10.), c(0., 0., 10.)),
+        e("x0", "y0", c(0., 0., 0.), c(0., 0., 10.)),
+        e("y0", "x1", c(10., 0., 0.), c(10., 0., 10.)),
+        e("x1", "y1", c(10., 10., 0.), c(10., 10., 10.)),
+        e("y1", "x0", c(0., 10., 0.), c(0., 10., 10.)),
+    ]
+}
+
+fn outward() -> std::collections::BTreeMap<String, [f64; 3]> {
+    [
+        ("bottom", [0., 0., -1.]),
+        ("top", [0., 0., 1.]),
+        ("x0", [-1., 0., 0.]),
+        ("x1", [1., 0., 0.]),
+        ("y0", [0., -1., 0.]),
+        ("y1", [0., 1., 0.]),
+    ]
+    .into_iter()
+    .map(|(f, n)| (f.to_string(), n))
+    .collect()
+}
+
+/// A blend of the block's edge between its top and the side x = 10.
+fn cube_blend(size: f64, chamfer: bool) -> plan::Action {
+    let mut a = action(
+        Expect::Blend {
+            size,
+            length: 10.0,
+            curved: 0,
+            chamfer,
+            exact: None,
+        },
+        1000.0,
+        600.0,
+    );
+    a.kind = if chamfer {
+        plan::Kind::Chamfer
+    } else {
+        plan::Kind::FilletSmall
+    };
+    a.pair = Some(plan::Pair {
+        faces: ["top".into(), "x1".into()],
+        line: Some(([10., 0., 10.], [10., 10., 10.])),
+    });
+    plan::orient(&mut a, &cube_edges(), &outward());
+    a
+}
+
+/// The exact change of a blend between flat faces, held to seeded
+/// mistakes: a radius three times too large, the wrong sign.
+#[test]
+fn a_blend_between_flat_faces_has_its_exact_change() {
+    let fillet = cube_blend(1.0, false);
+    let Expect::Blend { exact: Some(x), .. } = fillet.expect else {
+        panic!("the cube's edge is not oriented: {:?}", fillet.expect);
+    };
+    // An outside edge at 90°: r² (1 − π/4) = 0.2146 along 10.
+    assert!(!x.gains);
+    assert!((x.section - (1.0 - std::f64::consts::FRAC_PI_4)).abs() < 1e-12);
+    assert!((x.setback - 1.0).abs() < 1e-12);
+    let taken = 10.0 * x.section;
+    assert!(holds(&fillet, 1000.0 - taken, 598.0));
+    assert!(
+        !holds(&fillet, 1000.0 - 9.0 * taken, 598.0),
+        "three times the radius"
+    );
+    assert!(
+        !holds(&fillet, 1000.0 + taken, 598.0),
+        "material added at an outside edge"
+    );
+    assert!(!holds(&fillet, 1000.0, 600.0), "nothing done");
+    // A chamfer of 1: half a unit square along 10.
+    let chamfer = cube_blend(1.0, true);
+    let Expect::Blend { exact: Some(x), .. } = chamfer.expect else {
+        panic!("not oriented");
+    };
+    assert!((x.section - 0.5).abs() < 1e-12);
+    assert!(holds(&chamfer, 995.0, 596.0));
+    assert!(
+        !holds(&chamfer, 1000.0 - 16.0 * 5.0, 596.0),
+        "four times the distance"
+    );
+    // An inside edge (the faces' normals pointing the other way round, as
+    // in a pocket) gains material.
+    let mut inside = outward();
+    for n in inside.values_mut() {
+        *n = [-n[0], -n[1], -n[2]];
+    }
+    let mut pocket = action(
+        Expect::Blend {
+            size: 1.0,
+            length: 10.0,
+            curved: 0,
+            chamfer: false,
+            exact: None,
+        },
+        1000.0,
+        600.0,
+    );
+    pocket.pair = Some(plan::Pair {
+        faces: ["top".into(), "x1".into()],
+        line: Some(([10., 0., 10.], [10., 10., 10.])),
+    });
+    plan::orient(&mut pocket, &cube_edges(), &inside);
+    let Expect::Blend { exact: Some(x), .. } = pocket.expect else {
+        panic!("not oriented");
+    };
+    assert!(x.gains);
+    assert!(holds(&pocket, 1000.0 + 10.0 * x.section, 598.0));
+    assert!(
+        !holds(&pocket, 1000.0 - 10.0 * x.section, 598.0),
+        "material taken at an inside edge"
+    );
 }
 
 fn measured(volume: f64, area: f64) -> plan::Measured {
@@ -252,6 +398,7 @@ fn identities_catch_wrong_volumes() {
     // Tilted by 3° on a body of diagonal 17.3: at most 0.91 · 600.
     let draft = action(Expect::Draft(300f64.sqrt()), 1000.0, 600.0);
     assert!(holds(&draft, 1100.0, 600.0));
+    assert!(!holds(&draft, 1000.0, 600.0), "nothing done");
     assert!(!holds(&draft, 1600.0, 600.0));
     let shell = action(Expect::Hollow(1.0), 1000.0, 600.0);
     assert!(holds(&shell, 488.0, 1088.0));
@@ -304,26 +451,42 @@ fn identities_catch_wrong_volumes() {
     assert!(!two(1999.0, 1200.0, 20.0));
     assert!(!two(2000.0, 1100.0, 20.0), "instances merged");
     assert!(!two(2000.0, 1200.0, 5.0), "both in one place");
-    // A fillet of radius 1 along one edge 10 long: at most
-    // (11.43)²/2 · (10 + 2π · 11.43) ≈ 5.6e3; a chamfer of 1: at most 8.6.
+    // Without the exact change: a fillet of radius 1 along one straight
+    // edge 10 long takes at most 11.43 · 10 = 114 (r times its setback at
+    // 10°); a chamfer of 1 at most 5; along a curved edge 2π · 11.43 more.
     let fillet = action(
         Expect::Blend {
             size: 1.0,
             length: 10.0,
-            edges: 1,
+            curved: 0,
             chamfer: false,
+            exact: None,
         },
         1000.0,
         600.0,
     );
     assert!(holds(&fillet, 997.85, 598.0));
     assert!(!holds(&fillet, 1000.0, 600.0), "nothing done");
+    assert!(!holds(&fillet, 880.0, 598.0), "more than the bound");
+    let curved = action(
+        Expect::Blend {
+            size: 1.0,
+            length: 10.0,
+            curved: 1,
+            chamfer: false,
+            exact: None,
+        },
+        1000.0,
+        600.0,
+    );
+    assert!(holds(&curved, 880.0, 598.0));
     let chamfer = action(
         Expect::Blend {
             size: 1.0,
             length: 10.0,
-            edges: 1,
+            curved: 0,
             chamfer: true,
+            exact: None,
         },
         1000.0,
         600.0,

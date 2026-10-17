@@ -543,6 +543,8 @@ struct ModelReport {
     /// Bodies whose edges were not all listed (`document.edges` lists 2000
     /// at most).
     truncated: usize,
+    /// Blends whose exact change was worked out ([`plan::orient_all`]).
+    exact: usize,
     seconds: f64,
     load_seconds: f64,
     bodies: usize,
@@ -807,6 +809,12 @@ fn raise(o: &Options, repo: &Path, out: &Path) -> Result<(), String> {
             }
         ));
     }
+    if summary.get("cliGiven").and_then(Value::as_bool) != Some(false) {
+        return Err(
+            "the last run used a CLI given with --cli, which need not be built from this commit: run again without it"
+                .to_string(),
+        );
+    }
     let count = |key: &str| {
         summary
             .get(key)
@@ -823,13 +831,16 @@ fn raise(o: &Options, repo: &Path, out: &Path) -> Result<(), String> {
     let mut ratchet = read_ratchet(repo)?;
     let mut added = 0_usize;
     for model in &o.models {
-        if summary
-            .get("models")
-            .and_then(|m| m.get(model.name))
-            .is_none()
-        {
-            println!("{}: not in the last run", model.name);
-            continue;
+        match summary.get("models").and_then(|m| m.get(model.name)) {
+            None => {
+                println!("{}: not in the last run", model.name);
+                continue;
+            }
+            Some(entry) if entry.get("skipped").is_some() => {
+                println!("{}: skipped in the last run", model.name);
+                continue;
+            }
+            Some(_) => {}
         }
         let path = out.join("results").join(format!("{}.jsonl", model.name));
         let Ok(text) = std::fs::read_to_string(&path) else {
@@ -842,6 +853,13 @@ fn raise(o: &Options, repo: &Path, out: &Path) -> Result<(), String> {
                 return Err(format!("{}: a line that is not JSON", path.display()));
             };
             let field = |key: &str| record.get(key).and_then(Value::as_str);
+            if field("commit") != Some(head.as_str()) {
+                return Err(format!(
+                    "{}: a result of {}, not of {head}: run again",
+                    path.display(),
+                    field("commit").unwrap_or("no commit")
+                ));
+            }
             let (Some("ok"), Some(kind), Some(entity)) =
                 (field("verdict"), field("kind"), field("entity"))
             else {
@@ -891,6 +909,18 @@ pub fn run(args: &[String]) -> Result<(), String> {
     for verdict in [Verdict::Wrong, Verdict::Crash, Verdict::Timeout] {
         let _ = std::fs::remove_dir_all(out.join(verdict.as_str()));
     }
+    // What the run is of, read before anything is built: compared again at
+    // the end, so that a commit or an edit meanwhile is not taken for it.
+    let stamp = Stamp::now(&repo, o.cli.is_some());
+    let ratchet = read_ratchet(&repo)?;
+    for model in ratchet.keys() {
+        if !MODELS.iter().any(|m| m.name == model) {
+            return Err(format!(
+                "the ratchet has a model `{model}` that is not one of the models\n{}",
+                usage()
+            ));
+        }
+    }
     let cli = match &o.cli {
         Some(cli) => cli.clone(),
         None => build_cli(&repo)?,
@@ -905,12 +935,13 @@ pub fn run(args: &[String]) -> Result<(), String> {
         cap,
         logs: out.join("logs"),
     };
-    let ratchet = read_ratchet(&repo)?;
     let mut reports: BTreeMap<&str, ModelReport> = BTreeMap::new();
     let mut sources: BTreeMap<&str, (PathBuf, Option<PathBuf>)> = BTreeMap::new();
     for model in &o.models {
         let model_start = Instant::now();
         let mut report = ModelReport::default();
+        // Results of an earlier run must not outlive this one.
+        let _ = std::fs::remove_file(out.join("results").join(format!("{}.jsonl", model.name)));
         eprintln!("actions: {}: preparing", model.name);
         let prepared = prepare(model, &repo, &main, &out, &launch, o.load_timeout);
         let (file, steps) = match prepared {
@@ -955,6 +986,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 .push("a body of document.inspect could not be read".to_string());
         }
         report.sheets = bodies.iter().filter(|b| !b.solid).count();
+        let mut edges_of: BTreeMap<String, Vec<plan::Edge>> = BTreeMap::new();
         for body in bodies.iter().filter(|b| b.solid) {
             let edges = match worker.call(
                 "document.edges",
@@ -978,6 +1010,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             };
             report.faces += body.faces.len();
             actions.extend(plan::plan(body, &edges, &unit, KINDS));
+            edges_of.insert(body.feature.clone(), edges);
         }
         report.load_seconds = load.elapsed().as_secs_f64();
         report.bodies = bodies.len();
@@ -987,8 +1020,15 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 .is_some_and(|s| s.contains(entity))
         };
         let k = if model.every { None } else { o.per_kind };
-        let chosen = plan::choose(actions, k, &keep);
+        let mut chosen = plan::choose(actions, k, &keep);
         report.planned = chosen.len();
+        let mut on_first = |id: &str, params: &Value| worker.call(id, params, o.timeout);
+        match plan::orient_all(&mut on_first, &mut chosen, &edges_of) {
+            Ok(n) => report.exact = n,
+            Err(e) => report
+                .problems
+                .push(format!("cannot work the exact blends out: {e}")),
+        }
         eprintln!(
             "actions: {}: {} bodies, {} faces, {} actions (loaded in {:.0} s)",
             model.name, report.bodies, report.faces, report.planned, report.load_seconds
@@ -1008,7 +1048,8 @@ pub fn run(args: &[String]) -> Result<(), String> {
                 "kind": r.action.kind.as_str(), "body": r.action.body, "entity": r.action.entity,
                 "verdict": r.outcome.verdict.as_str(), "reason": r.outcome.reason,
                 "class": plan::reason_class(&r.outcome.reason), "seconds": r.seconds,
-                "limit": r.limit, "retried": r.retried,
+                "limit": r.limit, "retried": r.retried, "commit": stamp.commit,
+                "dirty": stamp.dirty, "cliGiven": stamp.cli_given,
                 "v0": r.action.volume, "a0": r.action.area,
                 "v1": r.outcome.after.map(|a| a.0), "a1": r.outcome.after.map(|a| a.1),
                 "command": r.action.command, "params": r.action.params,
@@ -1029,11 +1070,35 @@ pub fn run(args: &[String]) -> Result<(), String> {
         &ratchet,
         &reports,
         &sources,
+        &stamp,
         started.elapsed().as_secs_f64(),
     )
 }
 
-#[allow(clippy::too_many_lines)]
+/// What a run is of: the commit, whether the tree had changes, and
+/// whether the CLI was given (`--cli`, so possibly not built from it).
+struct Stamp {
+    commit: String,
+    dirty: bool,
+    cli_given: bool,
+}
+
+impl Stamp {
+    fn now(repo: &Path, cli_given: bool) -> Stamp {
+        Stamp {
+            commit: shell(repo, "git", &["rev-parse", "--short", "HEAD"]),
+            dirty: !shell(
+                repo,
+                "git",
+                &["status", "--porcelain", "--untracked-files=no"],
+            )
+            .is_empty(),
+            cli_given,
+        }
+    }
+}
+
+#[allow(clippy::too_many_lines, clippy::too_many_arguments)]
 fn finish(
     o: &Options,
     repo: &Path,
@@ -1041,6 +1106,7 @@ fn finish(
     ratchet: &Ratchet,
     reports: &BTreeMap<&str, ModelReport>,
     sources: &BTreeMap<&str, (PathBuf, Option<PathBuf>)>,
+    stamp: &Stamp,
     seconds: f64,
 ) -> Result<(), String> {
     let mut totals: BTreeMap<&str, usize> = BTreeMap::new();
@@ -1109,11 +1175,27 @@ fn finish(
                         .get(name)
                         .map_or((Path::new(""), None), |(f, s)| (f.as_path(), s.as_deref()));
                     let repro = reproducer(out, name, file, steps, r);
+                    let repro = repro.map(|p| p.display().to_string());
+                    // A wrong result or a crash is a bug found: the run
+                    // fails on it (a timeout is reported, not failed on).
+                    if matches!(verdict, Verdict::Wrong | Verdict::Crash) {
+                        problems.push(json!({
+                            "model": name,
+                            "problem": format!("{} {kind} on {}: {}", verdict.as_str(), r.action.entity, r.outcome.reason),
+                            "reproducer": repro,
+                        }));
+                    }
                     bad.entry(verdict.as_str()).or_default().push(json!({
                         "model": name, "kind": kind, "entity": r.action.entity, "reason": r.outcome.reason,
-                        "reproducer": repro.map(|p| p.display().to_string()),
+                        "reproducer": repro,
                     }));
                 }
+            }
+            if r.outcome.unrestored && matches!(r.outcome.verdict, Verdict::Ok | Verdict::Refused) {
+                problems.push(json!({
+                    "model": name,
+                    "problem": format!("{kind} on {}: the undo did not give the document back as it was", r.action.entity),
+                }));
             }
         }
         for kind in KINDS {
@@ -1191,8 +1273,17 @@ fn finish(
             "faces": report.faces, "actions": report.records.len(), "planned": report.planned,
             "kinds": kinds_json, "regressions": model_regressions, "newlyOk": model_new,
             "ratchetNotTried": not_tried, "sheets": report.sheets,
-            "truncatedEdges": report.truncated, "problems": report.problems,
+            "truncatedEdges": report.truncated, "exactBlends": report.exact,
+            "problems": report.problems,
         }));
+    }
+    let end = Stamp::now(repo, stamp.cli_given);
+    if end.commit != stamp.commit || end.dirty != stamp.dirty {
+        problems.push(json!({"problem": format!(
+            "the checkout changed during the run: {}{} at the start, {}{} at the end",
+            stamp.commit, if stamp.dirty { " with changes" } else { "" },
+            end.commit, if end.dirty { " with changes" } else { "" },
+        )}));
     }
     let mut top: Vec<(String, usize)> = refusals.into_iter().collect();
     top.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
@@ -1204,8 +1295,9 @@ fn finish(
         .sum();
     let summary = json!({
         "generated": shell(repo, "date", &["+%Y-%m-%d %H:%M"]),
-        "commit": shell(repo, "git", &["rev-parse", "--short", "HEAD"]),
-        "dirty": !shell(repo, "git", &["status", "--porcelain", "--untracked-files=no"]).is_empty(),
+        "commit": stamp.commit,
+        "dirty": stamp.dirty,
+        "cliGiven": stamp.cli_given,
         "seconds": seconds,
         "limitSeconds": o.timeout.as_secs(),
         "perKind": o.per_kind,
