@@ -2471,13 +2471,9 @@ fn mixed(
         // `free` is every request, in order.
         return Ok(rolled);
     }
-    let second = blend_inner(
-        &rolled.body,
-        &renamed(&rolled, &pick(&closed))?,
-        tolerance,
-        true,
-    )
-    .map_err(|error| named_before(&rolled, error))?;
+    let picked = pick(&closed);
+    let second = blend_inner(&rolled.body, &renamed(&rolled, &picked)?, tolerance, true)
+        .map_err(|error| named_before(&rolled, body, &picked, error))?;
     Ok(carry_back(rolled, second, &free, &closed))
 }
 
@@ -2526,11 +2522,22 @@ fn renamed(rolled: &Blended, requests: &[Request]) -> Result<Vec<Request>, Blend
         .collect()
 }
 
-/// `error`, met on the body a blend in place left (`rolled`), naming the
-/// edges and faces it had in the body that blend started from where they
-/// have one (an edge or a face the blend made has none, and keeps its
-/// number; an edge only named for what it says goes).
-fn named_before(rolled: &Blended, error: BlendError) -> BlendError {
+/// `error`, met on the body a blend in place left (`rolled`) while
+/// building `requests` (numbered as in `before`, the body that blend
+/// started from), naming the edges and faces of `before`. An edge or a
+/// face the blend made has no name there and is never named by its
+/// number in `rolled`, which in `before` is another entity: a refusal
+/// leaves it out; a size too large for a face the blend made names the
+/// request's own face instead (its first face, else the first face of
+/// its edge); a boolean that failed at an edge with no name says only
+/// what the boolean said. A kernel error (an invalid body's defects)
+/// keeps the numbers of `rolled`.
+fn named_before(
+    rolled: &Blended,
+    before: &Body,
+    requests: &[Request],
+    error: BlendError,
+) -> BlendError {
     let edge_was = |e: EdgeId| rolled.edges.get(e.0 as usize).copied().flatten();
     let face_was = |f: FaceId| match rolled.faces.get(f.0 as usize) {
         Some(Face::Kept(list)) => list.first().copied(),
@@ -2543,36 +2550,64 @@ fn named_before(rolled: &Blended, error: BlendError) -> BlendError {
             face,
             size,
             largest,
-        } => BlendError::TooLarge {
-            edge: edge_was(edge).unwrap_or(edge),
-            face: face_was(face).unwrap_or(face),
-            size,
-            largest,
-        },
+        } => {
+            let Some(edge) = edge_was(edge) else {
+                return lost();
+            };
+            let own = || {
+                requests
+                    .iter()
+                    .find(|r| r.edge == edge)
+                    .and_then(|r| r.first)
+                    .or_else(|| {
+                        edge_uses(before)
+                            .get(edge.0 as usize)
+                            .and_then(|uses| uses.first())
+                            .map(|u| u.face)
+                    })
+            };
+            match face_was(face).or_else(own) {
+                Some(face) => BlendError::TooLarge {
+                    edge,
+                    face,
+                    size,
+                    largest,
+                },
+                None => lost(),
+            }
+        }
         BlendError::Refused { edge, face, reason } => BlendError::Refused {
             edge: edge.and_then(edge_was),
-            face: face.map(|f| face_was(f).unwrap_or(f)),
+            face: face.and_then(face_was),
             reason,
         },
         BlendError::Boolean {
             edge,
             error,
             smaller_fails,
-        } => BlendError::Boolean {
-            edge: edge_was(edge).unwrap_or(edge),
-            error,
-            smaller_fails,
+        } => match edge_was(edge) {
+            Some(edge) => BlendError::Boolean {
+                edge,
+                error,
+                smaller_fails,
+            },
+            None => BlendError::Kernel(*error),
         },
     }
 }
 
 /// [`named_before`] for a failed build.
-fn failed_before(rolled: &Blended, failure: Failure) -> Failure {
+fn failed_before(
+    rolled: &Blended,
+    before: &Body,
+    requests: &[Request],
+    failure: Failure,
+) -> Failure {
     Failure {
         edge: failure
             .edge
             .and_then(|e| rolled.edges.get(e.0 as usize).copied().flatten()),
-        error: named_before(rolled, failure.error),
+        error: named_before(rolled, before, requests, failure.error),
     }
 }
 
@@ -2755,11 +2790,11 @@ fn construct(
     for request in &renamed(&rolled, &picked)? {
         second_plans.push(
             plan(&rolled.body, &now_uses, request, tolerance.linear)
-                .map_err(|error| named_before(&rolled, error))?,
+                .map_err(|error| named_before(&rolled, body, &picked, error))?,
         );
     }
     let second = build(&rolled.body, &now_uses, &now_at, second_plans, tolerance)
-        .map_err(|failure| failed_before(&rolled, failure))?;
+        .map_err(|failure| failed_before(&rolled, body, &picked, failure))?;
     Ok(carry_back(rolled, second, routed, &rest))
 }
 

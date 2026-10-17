@@ -211,15 +211,14 @@ fn requests_after_a_blend_in_place_follow_the_renumbering() {
             reason: Reason::TakenWhole
         })
     ));
-    let named = named_before(
-        &rolled,
-        BlendError::TooLarge {
-            edge: EdgeId(2),
-            face: FaceId(1),
-            size: 1.0,
-            largest: 0.5,
-        },
-    );
+    let before = rolled.body.clone();
+    let too_large = |face: u32| BlendError::TooLarge {
+        edge: EdgeId(2),
+        face: FaceId(face),
+        size: 1.0,
+        largest: 0.5,
+    };
+    let named = named_before(&rolled, &before, &[], too_large(1));
     assert!(matches!(
         named,
         BlendError::TooLarge {
@@ -228,7 +227,55 @@ fn requests_after_a_blend_in_place_follow_the_renumbering() {
             ..
         }
     ));
-    // An edge the blend made has no name before it.
-    let named = named_before(&rolled, refused(EdgeId(3), Reason::Reaches));
-    assert!(matches!(named, BlendError::Refused { edge: None, .. }));
+    // A face the blend made (2) is never named by its number now: a size
+    // too large names the request's own face, else the first of its edge.
+    let named = named_before(&rolled, &before, &[request(3, Some(5))], too_large(2));
+    assert!(matches!(
+        named,
+        BlendError::TooLarge {
+            edge: EdgeId(3),
+            face: FaceId(5),
+            ..
+        }
+    ));
+    let first_of_edge = edge_uses(&before)[3][0].face;
+    let named = named_before(&rolled, &before, &[], too_large(2));
+    assert!(matches!(named, BlendError::TooLarge { face, .. } if face == first_of_edge));
+    // A refusal leaves out what has no name before the blend.
+    let named = named_before(
+        &rolled,
+        &before,
+        &[],
+        BlendError::Refused {
+            edge: Some(EdgeId(3)),
+            face: Some(FaceId(2)),
+            reason: Reason::Reaches,
+        },
+    );
+    assert!(matches!(
+        named,
+        BlendError::Refused {
+            edge: None,
+            face: None,
+            ..
+        }
+    ));
+    // A boolean that failed at an edge the blend made says what it said.
+    let named = named_before(
+        &rolled,
+        &before,
+        &[],
+        BlendError::Boolean {
+            edge: EdgeId(3),
+            error: Box::new(KernelError::InvalidSize {
+                name: "test",
+                value: 0.0,
+            }),
+            smaller_fails: false,
+        },
+    );
+    assert!(matches!(
+        named,
+        BlendError::Kernel(KernelError::InvalidSize { .. })
+    ));
 }
