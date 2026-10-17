@@ -1955,3 +1955,77 @@ fn a_hole_wholly_inside_the_strip_a_fillet_takes_is_refused() {
         );
     }
 }
+
+/// The fillet of `chamfer.rs`'s E7 feature: on a block whose two long top
+/// edges an earlier chamfer took, the top edge across the end (built in
+/// place, it takes the chamfer's end edges whole, so the body it leaves
+/// numbers its edges anew) with the vertical edge at the far corner and
+/// the chamfer's end edge above it (built by the tools on that body).
+/// Each request is built where it was asked for: every fillet face is a
+/// cylinder of its request's radius along its request's edge, and the
+/// solid is the one the in-place fillet and then the other two, found
+/// again by where they are, make in two features.
+#[test]
+fn edges_after_one_a_fillet_takes_whole_keep_their_requests() {
+    use craft3d_kernel::chamfer::{ChamferEdge, ChamferSize, chamfer};
+    for k in SCALES {
+        let tol = tolerance(k);
+        let block = boxed(k, [0.0, 0.0, 0.0], [4.0, 3.0, 2.0]);
+        let cut = |middle: [f64; 3]| {
+            let edge = edge_in(&block, &Frame::WORLD, k, middle);
+            ChamferEdge {
+                edge,
+                first: faces_of(&block, edge)[0],
+                size: ChamferSize::Distances {
+                    first: 0.5 * k,
+                    second: 0.5 * k,
+                },
+            }
+        };
+        let first = chamfer(&block, &[cut([2.0, 0.0, 2.0]), cut([2.0, 3.0, 2.0])], &tol)
+            .unwrap()
+            .body;
+        let middles = [[0.0, 1.5, 2.0], [4.0, 2.75, 1.75], [4.0, 3.0, 0.75]];
+        let radii = [0.5, 0.2, 0.2];
+        let requests: Vec<FilletEdge> = middles
+            .iter()
+            .zip(radii)
+            .map(|(m, r)| round(&first, k, *m, r))
+            .collect();
+        let taken = edge_in(&first, &Frame::WORLD, k, [0.0, 2.75, 1.75]);
+        assert!(requests[1].edge > taken);
+        let made = solve(&first, &requests, k);
+        let along = [Vec3::Y, Vec3::new(0.0, -1.0, 1.0), Vec3::Z];
+        for (index, axis) in along.iter().enumerate() {
+            let faces: Vec<usize> = fillet_faces(&made)
+                .into_iter()
+                .filter(
+                    |f| matches!(&made.faces[*f], FilletFace::Fillet(of) if of.contains(&index)),
+                )
+                .collect();
+            assert!(!faces.is_empty(), "scale {k}: no face for request {index}");
+            for face in faces {
+                let Surface::Cylinder(cylinder) = &made.body.faces[face].surface else {
+                    panic!("scale {k}: the fillet face of request {index} is not a cylinder");
+                };
+                assert_close(cylinder.radius(), radii[index] * k, "radius");
+                let z = cylinder.frame().z();
+                assert!(
+                    z.cross(axis.normalized().unwrap()).length() < 1e-9,
+                    "scale {k}: the fillet face of request {index} is not along its edge"
+                );
+            }
+        }
+        let once = solve(&first, &requests[..1], k);
+        let rest: Vec<FilletEdge> = middles[1..]
+            .iter()
+            .zip(&radii[1..])
+            .map(|(m, r)| round(&once.body, k, *m, *r))
+            .collect();
+        let twice = solve(&once.body, &rest, k);
+        let (m, t) = (mass(&made.body), mass(&twice.body));
+        assert_close(m.volume, t.volume, "volume against two fillets");
+        assert_close(m.area, t.area, "area against two fillets");
+        assert_eq!(counts(&made), counts(&twice));
+    }
+}
