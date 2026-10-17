@@ -274,9 +274,12 @@ pub(crate) fn measure_ahead(doc: &Document, regen: &Regen, at: FeatureId, body: 
     }
 }
 
-/// [`measure_ahead`] for each of `bodies`, and the mass properties of
-/// those without a material measured together (`crate::mass::measure_ahead`):
-/// ahead of a command that asks for every body's measure one by one.
+/// [`measure_ahead`] for each of `bodies`, in their order, and the mass
+/// properties of the runs of those without a material between them
+/// measured together (`crate::mass::measure_ahead`): ahead of a command
+/// that asks for every body's measure one by one. Nothing after the first
+/// body that cannot be measured is measured, as a command that stops there
+/// would leave it.
 pub(crate) fn measure_all_ahead<'a>(
     doc: &Document,
     regen: &Regen,
@@ -285,7 +288,13 @@ pub(crate) fn measure_all_ahead<'a>(
     let mut plain = Vec::new();
     for (at, body) in bodies {
         if body_material(doc, regen, at).is_some() {
-            let _measured = mass_and_inertia_of(body);
+            if !crate::mass::measure_ahead(&plain) {
+                return;
+            }
+            plain.clear();
+            if mass_and_inertia_of(body).0.is_err() {
+                return;
+            }
         } else {
             plain.push(body);
         }

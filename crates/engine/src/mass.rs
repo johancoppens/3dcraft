@@ -83,29 +83,46 @@ pub(crate) fn mass_of(body: &Arc<Body>) -> Measured {
 }
 
 /// [`mass_of`] of each of `bodies`, ahead of asking for them one by one:
-/// the bodies not measured yet are measured at once, the faces of all of
+/// the bodies not measured yet are measured at once, the faces of a run of
 /// them shared out over the threads (`craft3d_topo::mass_properties_each`,
 /// each the value `mass_properties` gives), so that a body's slowest face
 /// does not leave the other threads waiting while the next body is not
-/// started. Each is remembered as [`mass_of`] would remember it.
-pub(crate) fn measure_ahead(bodies: &[&Arc<Body>]) {
+/// started. Each is remembered as [`mass_of`] would remember it. Nothing
+/// after the first body that cannot be measured (measured now or before)
+/// is measured, as a command that stops there would leave it: `false`
+/// then.
+pub(crate) fn measure_ahead(bodies: &[&Arc<Body>]) -> bool {
     let mut fresh: Vec<&Arc<Body>> = Vec::new();
+    let mut fine = true;
     for &body in bodies {
-        let seen = fresh.iter().any(|known| Arc::ptr_eq(known, body));
-        if !seen && recall(&REMEMBERED, body).is_none() {
-            fresh.push(body);
+        match recall(&REMEMBERED, body) {
+            Some(Err(_)) => {
+                fine = false;
+                break;
+            }
+            Some(Ok(_)) => {}
+            None => {
+                if !fresh.iter().any(|known| Arc::ptr_eq(known, body)) {
+                    fresh.push(body);
+                }
+            }
         }
     }
     // Room left in the store for what the bodies are asked for next.
     fresh.truncate(MAX_REMEMBERED / 2);
     if fresh.len() < 2 {
-        return;
+        return fine;
     }
     let plain: Vec<&Body> = fresh.iter().map(|body| body.as_ref()).collect();
     for (body, measured) in fresh.iter().zip(mass_properties_each(&plain)) {
+        let Some(measured) = measured else {
+            return false;
+        };
+        fine &= measured.is_ok();
         counted();
         remember(&REMEMBERED, body, measured);
     }
+    fine
 }
 
 /// `inertia(body)` and `mass_properties(body)`, each measured at most once

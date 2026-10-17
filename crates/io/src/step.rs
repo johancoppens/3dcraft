@@ -163,7 +163,9 @@ use craft3d_geom::{Curve3, NurbsCurve, NurbsSurface, Surface};
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_meshio::Unit;
 use craft3d_step::{Header, Param, Record, StepFile};
-use craft3d_topo::{Body, BodyKind, Coedge, Face, FaceId, LoopId, check, mass_properties_each};
+use craft3d_topo::{
+    Body, BodyKind, Coedge, Face, FaceId, LoopId, check, mass_properties_each_while,
+};
 use std::collections::BTreeMap;
 use std::f64::consts::FRAC_PI_2;
 
@@ -632,9 +634,17 @@ fn lumps(
             }
         }
     }
-    let measured = mass_properties_each(&shells.iter().collect::<Vec<_>>());
+    // Measured in runs, none after the first shell that fails (as one
+    // after the other would leave them).
+    let measured = mass_properties_each_while(&shells.iter().collect::<Vec<_>>(), |m| {
+        m.volume.is_finite() && m.volume != 0.0
+    });
     let mut parts = Vec::with_capacity(shells.len());
     for (index, (part, measure)) in shells.into_iter().zip(measured).enumerate() {
+        // Not measured: a shell before it failed, and said so below.
+        let Some(measure) = measure else {
+            break;
+        };
         let volume = measure
             .map_err(|e| {
                 unsupported(
