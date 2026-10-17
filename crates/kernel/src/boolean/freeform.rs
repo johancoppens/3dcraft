@@ -198,6 +198,20 @@ pub(super) struct PatchTree {
     /// taken about a point of it). A pure function of the point, so the
     /// answer from here is the answer the search would give.
     memo: Mutex<BTreeMap<[u64; 3], Option<Nearest>>>,
+    /// The answers of [`Self::sigma_near`] so far, by the bits of the
+    /// point and the reach: a winding number about each of many points
+    /// halves every piece of a face's boundary the same way and asks the
+    /// same of each stretch (the chart's speed near it does not depend on
+    /// the point wound about). A pure function of the two (the answer of
+    /// [`Self::finer`] does not depend on what it kept), so the answer
+    /// from here is the answer the search would give.
+    sigma_memo: Mutex<BTreeMap<[u64; 4], Option<f64>>>,
+    /// The answers of [`Self::lower_bound`] so far, by the bits of the
+    /// point, the resolution and the threshold: the root isolation along
+    /// a curve looks at the ends and the quarters of every stretch it
+    /// halves, so each end is asked about again by the stretch next to
+    /// it and each quarter by the halves. A pure function of the three.
+    bound_memo: Mutex<BTreeMap<[u64; 5], f64>>,
     /// The leaves split further for [`Self::sigma_near`], as far as its
     /// queries called for ([`Fine`]).
     fine: Mutex<Fine>,
@@ -321,9 +335,8 @@ impl Slab {
     /// The box around a piece's control points, in the frame of its
     /// corners; in the world's axes when the corners give no frame.
     fn around(patch: &RationalBezierPatch) -> Self {
-        let points = patch.control_points();
         let (m, n) = patch.degrees();
-        let at = |i: usize, j: usize| points.get(i * (n + 1) + j).copied();
+        let at = |i: usize, j: usize| patch.control_point(i * (n + 1) + j);
         let frame = (|| {
             let (p00, pm0, p0n, pmn) = (at(0, 0)?, at(m, 0)?, at(0, n)?, at(m, n)?);
             let along_u = (pm0 - p00) + (pmn - p0n);
@@ -332,7 +345,7 @@ impl Slab {
             let third = along_u.cross(along_v).normalized()?;
             Some([first, third.cross(first), third])
         })();
-        let (Some(axes), Some(&origin)) = (frame, points.first()) else {
+        let (Some(axes), Some(origin)) = (frame, patch.control_point(0)) else {
             return Slab::axis_aligned(patch.control_bbox());
         };
         let slab = Slab {
@@ -340,7 +353,7 @@ impl Slab {
             axes,
             local: Bbox3::EMPTY,
         };
-        let local = Bbox3::from_points(points.iter().map(|&p| slab.to_local(p)));
+        let local = Bbox3::from_points(patch.points().map(|p| slab.to_local(p)));
         Slab { local, ..slab }
     }
 
@@ -1703,6 +1716,8 @@ impl PatchTree {
             closes: closure(surface),
             poles: found,
             memo: Mutex::new(BTreeMap::new()),
+            sigma_memo: Mutex::new(BTreeMap::new()),
+            bound_memo: Mutex::new(BTreeMap::new()),
             fine: Mutex::new(Fine::default()),
             evened: std::sync::OnceLock::new(),
         };
@@ -1846,6 +1861,29 @@ impl PatchTree {
     /// surface, and never less than that. `None` where no piece is that
     /// near, or where a piece has no bound.
     pub(super) fn sigma_near(&self, p: Vec3, reach: f64) -> Option<f64> {
+        let key = [p.x.to_bits(), p.y.to_bits(), p.z.to_bits(), reach.to_bits()];
+        if let Some(found) = self
+            .sigma_memo
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&key)
+        {
+            return *found;
+        }
+        let found = self.sigma_search(p, reach);
+        let mut memo = self
+            .sigma_memo
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if memo.len() >= MAX_MEMO {
+            memo.clear();
+        }
+        memo.insert(key, found);
+        found
+    }
+
+    /// [`Self::sigma_near`]: the search.
+    fn sigma_search(&self, p: Vec3, reach: f64) -> Option<f64> {
         let mut least = f64::INFINITY;
         let mut stack: Vec<usize> = self.roots.clone();
         let mut visited = 0_usize;
@@ -2304,12 +2342,36 @@ impl PatchTree {
     /// farther piece is dropped unsplit. The splits are not kept. The
     /// bound is capped at `threshold` (see [`Self::segment_lower_bound`]).
     pub fn lower_bound(&self, p: Vec3, resolution: f64, threshold: f64) -> f64 {
-        self.bound_by(
+        let key = [
+            p.x.to_bits(),
+            p.y.to_bits(),
+            p.z.to_bits(),
+            resolution.to_bits(),
+            threshold.to_bits(),
+        ];
+        if let Some(&found) = self
+            .bound_memo
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&key)
+        {
+            return found;
+        }
+        let found = self.bound_by(
             &|slab| box_distance(&slab.local, slab.to_local(p)),
             resolution,
             MAX_LEAVES,
             threshold,
-        )
+        );
+        let mut memo = self
+            .bound_memo
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if memo.len() >= MAX_MEMO {
+            memo.clear();
+        }
+        memo.insert(key, found);
+        found
     }
 
     /// A distance no larger than the distance from any point of the

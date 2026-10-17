@@ -4019,6 +4019,47 @@ pub fn mass_properties(body: &Body) -> Result<MassProperties, MassError> {
     Ok(mass_from(body, all?, middle))
 }
 
+/// [`mass_properties`] of each of `bodies`, in their order: each the very
+/// value (or error) `mass_properties` gives for that body alone. The faces
+/// of all of them are integrated as one row of work, on as many threads as
+/// there are and summed per body in its faces' order, so that many small
+/// bodies (the shells of a body of hundreds of parts, each of a few faces,
+/// too few for a thread of its own) take the time of one large one.
+pub fn mass_properties_each(bodies: &[&Body]) -> Vec<Result<MassProperties, MassError>> {
+    let rule = Rule::new(NODES);
+    let extents: Vec<(f64, Vec3)> = bodies.iter().map(|body| body_extent(body)).collect();
+    let owners: Vec<(usize, usize)> = bodies
+        .iter()
+        .enumerate()
+        .flat_map(|(b, body)| (0..body.faces.len()).map(move |f| (b, f)))
+        .collect();
+    let mut per_face = each_face(owners.len(), |k| {
+        let found = owners.get(k).and_then(|&(b, f)| {
+            let body: &Body = bodies.get(b)?;
+            Some((body, body.faces.get(f)?, f, extents.get(b)?))
+        });
+        match found {
+            Some((body, face, index, &extent)) => {
+                face_integrals(body, face, index, &rule, extent, Wanted::First).all
+            }
+            None => Err(MassError::Unsupported {
+                face: k,
+                what: "a face that is not in the body",
+            }),
+        }
+    })
+    .into_iter();
+    bodies
+        .iter()
+        .zip(&extents)
+        .map(|(body, &(_, middle))| {
+            let faces: Vec<Result<Sums, MassError>> =
+                per_face.by_ref().take(body.faces.len()).collect();
+            Ok(mass_from(body, total_of(body, faces)?, middle))
+        })
+        .collect()
+}
+
 /// How far [`MassProperties::area`] and [`MassProperties::volume`] can be
 /// off by the integrator's own account ([`mass_bound`]).
 #[derive(Clone, Copy, Debug, PartialEq)]

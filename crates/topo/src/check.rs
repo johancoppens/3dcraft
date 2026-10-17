@@ -2,9 +2,10 @@
 
 use crate::{Body, BodyKind, Coedge, EdgeId, Face, FaceId, LoopId, VertexId};
 use craft3d_geom::Surface;
-use craft3d_math::Tolerance;
+use craft3d_math::{Bits, Tolerance};
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::{Mutex, PoisonError};
 
 /// One thing wrong with a body.
 #[derive(Clone, Debug, PartialEq)]
@@ -302,6 +303,48 @@ fn distance_to(surface: &Surface, p: craft3d_math::Vec3) -> Option<f64> {
     let (u, v) = surface.project(p).ok()?;
     let d = surface.eval(u, v).distance(p);
     d.is_finite().then_some(d)
+}
+
+/// Bodies that passed [`check`] lately, each written out in
+/// full with the tolerance it was checked with, every bit of every number
+/// (`craft3d_math::Bits`: two are the same only when every number of them
+/// is, bit for bit), the most recent last.
+static PASSED: Mutex<Vec<Vec<u64>>> = Mutex::new(Vec::new());
+/// How many are remembered, and how many words all of them are at most.
+const PASSED_BODIES: usize = 8;
+const PASSED_WORDS: usize = 1 << 22;
+
+/// [`check`] of `body`, remembering the bodies that pass. In a row of
+/// booleans each result is the first operand of the next, and is checked
+/// as a result, again by regeneration (which checks every feature's
+/// body) and again as an operand; written out, a body is
+/// compared at a small part of what checking it costs. Written out as its
+/// bits, not as text: formatting every number of a large body cost a
+/// quarter of a long row of cuts.
+pub fn check_remembered(body: &Body, tolerance: &Tolerance) -> Vec<Defect> {
+    let mut key = craft3d_math::bits_of(tolerance);
+    body.push_bits(&mut key);
+    {
+        let mut passed = PASSED.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(at) = passed.iter().position(|k| *k == key) {
+            let entry = passed.remove(at);
+            passed.push(entry);
+            return Vec::new();
+        }
+    }
+    let defects = check(body, tolerance);
+    if defects.is_empty() && key.len() <= PASSED_WORDS {
+        let mut passed = PASSED.lock().unwrap_or_else(PoisonError::into_inner);
+        if !passed.contains(&key) {
+            passed.push(key);
+        }
+        while passed.len() > PASSED_BODIES
+            || passed.iter().map(Vec::len).sum::<usize>() > PASSED_WORDS
+        {
+            let _forgotten = passed.remove(0);
+        }
+    }
+    defects
 }
 
 /// Everything wrong with `body`; empty when it is valid.

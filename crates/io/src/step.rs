@@ -163,7 +163,7 @@ use craft3d_geom::{Curve3, NurbsCurve, NurbsSurface, Surface};
 use craft3d_math::{Frame, Tolerance, Vec3};
 use craft3d_meshio::Unit;
 use craft3d_step::{Header, Param, Record, StepFile};
-use craft3d_topo::{Body, BodyKind, Coedge, Face, FaceId, LoopId, check, mass_properties};
+use craft3d_topo::{Body, BodyKind, Coedge, Face, FaceId, LoopId, check, mass_properties_each};
 use std::collections::BTreeMap;
 use std::f64::consts::FRAC_PI_2;
 
@@ -614,15 +614,28 @@ fn lumps(
         // solid of negative volume, which is not for the export to judge.
         return Ok(vec![(0, Vec::new())]);
     }
-    let mut parts = Vec::new();
+    // The shells up to the first that cannot be made, each measured as it
+    // is alone but all at once (the faces of all of them shared out over
+    // the threads), and judged in order: the first that fails says why,
+    // as one after the other would.
+    let mut shells = Vec::with_capacity(body.shells.len());
+    let mut unmade = None;
     for index in 0..body.shells.len() {
-        let part = shell_body(body, index).ok_or_else(|| {
-            unsupported(
-                name,
-                format!("shell {index} refers to a face or loop that does not exist"),
-            )
-        })?;
-        let volume = mass_properties(&part)
+        match shell_body(body, index) {
+            Some(part) => shells.push(part),
+            None => {
+                unmade = Some(unsupported(
+                    name,
+                    format!("shell {index} refers to a face or loop that does not exist"),
+                ));
+                break;
+            }
+        }
+    }
+    let measured = mass_properties_each(&shells.iter().collect::<Vec<_>>());
+    let mut parts = Vec::with_capacity(shells.len());
+    for (index, (part, measure)) in shells.into_iter().zip(measured).enumerate() {
+        let volume = measure
             .map_err(|e| {
                 unsupported(
                     name,
@@ -639,6 +652,9 @@ fn lumps(
             ));
         }
         parts.push((part, volume));
+    }
+    if let Some(error) = unmade {
+        return Err(error);
     }
     let outers: Vec<usize> = (0..parts.len())
         .filter(|&i| parts.get(i).is_some_and(|(_, v)| *v > 0.0))

@@ -13,6 +13,7 @@
 
 use craft3d_topo::{
     Body, Inertia, MassError, MassProperties, inertia, mass_and_inertia, mass_properties,
+    mass_properties_each,
 };
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 
@@ -79,6 +80,32 @@ pub(crate) fn mass_of(body: &Arc<Body>) -> Measured {
     let measured = mass_properties(body);
     remember(&REMEMBERED, body, measured.clone());
     measured
+}
+
+/// [`mass_of`] of each of `bodies`, ahead of asking for them one by one:
+/// the bodies not measured yet are measured at once, the faces of all of
+/// them shared out over the threads (`craft3d_topo::mass_properties_each`,
+/// each the value `mass_properties` gives), so that a body's slowest face
+/// does not leave the other threads waiting while the next body is not
+/// started. Each is remembered as [`mass_of`] would remember it.
+pub(crate) fn measure_ahead(bodies: &[&Arc<Body>]) {
+    let mut fresh: Vec<&Arc<Body>> = Vec::new();
+    for &body in bodies {
+        let seen = fresh.iter().any(|known| Arc::ptr_eq(known, body));
+        if !seen && recall(&REMEMBERED, body).is_none() {
+            fresh.push(body);
+        }
+    }
+    // Room left in the store for what the bodies are asked for next.
+    fresh.truncate(MAX_REMEMBERED / 2);
+    if fresh.len() < 2 {
+        return;
+    }
+    let plain: Vec<&Body> = fresh.iter().map(|body| body.as_ref()).collect();
+    for (body, measured) in fresh.iter().zip(mass_properties_each(&plain)) {
+        counted();
+        remember(&REMEMBERED, body, measured);
+    }
 }
 
 /// `inertia(body)` and `mass_properties(body)`, each measured at most once

@@ -220,3 +220,35 @@ fn the_mass_bound_covers_the_error_and_is_small() {
         }
     }
 }
+
+/// Bodies measured together (`mass_properties_each`, the faces of all of
+/// them shared out over the threads) measure as each does alone, bit for
+/// bit, in their order; with a spline cone among them, an empty list and
+/// a body of no faces.
+#[test]
+fn bodies_measured_together_measure_as_each_alone() {
+    use craft3d_topo::{Body, mass_properties_each};
+    for scale in [1e-3, 1.0, 1e6] {
+        for frame in frames(scale) {
+            let mut bodies: Vec<Body> = solids::all(&frame, scale)
+                .unwrap()
+                .into_iter()
+                .map(|r| r.body)
+                .collect();
+            bodies.push(
+                solids::spline_cone(&frame, 1.5 * scale, 2.0 * scale)
+                    .unwrap()
+                    .body,
+            );
+            bodies.push(Body::new(BodyKind::Solid));
+            let refs: Vec<&Body> = bodies.iter().collect();
+            let together = mass_properties_each(&refs);
+            assert_eq!(together.len(), bodies.len());
+            for (body, got) in bodies.iter().zip(&together) {
+                let alone = mass_properties(body);
+                assert_eq!(format!("{got:?}"), format!("{alone:?}"));
+            }
+        }
+    }
+    assert!(mass_properties_each(&[]).is_empty());
+}

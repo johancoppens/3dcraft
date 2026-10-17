@@ -496,6 +496,9 @@ fn file_close(session: &mut Session, params: &Value) -> Run {
 /// A default chordal tolerance that suits the size of the model: a
 /// thousandth of the side of a square with the bodies' total area.
 fn automatic_tolerance(regen: &Regen) -> f64 {
+    let bodies: Vec<&std::sync::Arc<craft3d_topo::Body>> =
+        regen.bodies().map(|(_, body)| body).collect();
+    crate::mass::measure_ahead(&bodies);
     let area: f64 = regen
         .bodies()
         .filter_map(|(_, body)| mass_of(body).ok())
@@ -1798,6 +1801,14 @@ fn document_inspect(session: &mut Session, params: &Value) -> Run {
     };
     let mut features = Vec::new();
     let mut bodies = Vec::new();
+    crate::appearance_cmds::measure_all_ahead(
+        doc,
+        &regen,
+        doc.features.iter().filter_map(|feature| {
+            let body = regen.feature(feature.id).and_then(|o| o.own_body())?;
+            Some((feature.id, body))
+        }),
+    );
     for feature in &doc.features {
         let outcome = regen.feature(feature.id);
         let (status, error) = outcome.map_or(("unknown", None), |o| status_json(&o.status));
@@ -1967,6 +1978,13 @@ fn document_measure(session: &mut Session, params: &Value) -> Run {
     let (mut volume, mut area, mut moment) = (0.0, 0.0, Vec3::ZERO);
     // The total mass, while every body has one.
     let mut total_mass = Some(0.0);
+    crate::appearance_cmds::measure_all_ahead(
+        doc,
+        &regen,
+        regen
+            .bodies()
+            .filter(|(id, _)| only.is_none_or(|o| o == *id)),
+    );
     for (id, body) in regen
         .bodies()
         .filter(|(id, _)| only.is_none_or(|o| o == *id))

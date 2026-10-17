@@ -274,6 +274,25 @@ pub(crate) fn measure_ahead(doc: &Document, regen: &Regen, at: FeatureId, body: 
     }
 }
 
+/// [`measure_ahead`] for each of `bodies`, and the mass properties of
+/// those without a material measured together (`crate::mass::measure_ahead`):
+/// ahead of a command that asks for every body's measure one by one.
+pub(crate) fn measure_all_ahead<'a>(
+    doc: &Document,
+    regen: &Regen,
+    bodies: impl IntoIterator<Item = (FeatureId, &'a Arc<Body>)>,
+) {
+    let mut plain = Vec::new();
+    for (at, body) in bodies {
+        if body_material(doc, regen, at).is_some() {
+            let _measured = mass_and_inertia_of(body);
+        } else {
+            plain.push(body);
+        }
+    }
+    crate::mass::measure_ahead(&plain);
+}
+
 /// Adds to a body's entry of `document.inspect` or `document.measure`
 /// its appearance and material (and from which feature it has them,
 /// when that is another), and with a material its mass (kg) and inertia
