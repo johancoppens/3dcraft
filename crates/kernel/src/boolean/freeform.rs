@@ -155,8 +155,19 @@ impl Ord for Ordered {
 
 #[derive(Debug, Default)]
 struct Fine {
+    /// The pieces under each leaf asked about, by the leaf's index (the
+    /// leaf's own piece first).
+    roots: BTreeMap<usize, FineRoot>,
+    /// How many pieces all of them hold.
+    pieces: usize,
+    /// Counts the queries, to tell which leaf was asked about last.
+    clock: u64,
+}
+
+#[derive(Debug, Default)]
+struct FineRoot {
     nodes: Vec<FinePiece>,
-    roots: BTreeMap<usize, usize>,
+    used: u64,
 }
 
 #[derive(Debug)]
@@ -168,6 +179,10 @@ struct FinePiece {
     /// The least and the largest of the least singular values at the
     /// corners and the middle.
     measured: (f64, f64),
+    /// Those values, at `(u.0, v.0)`, `(u.0, v.1)`, `(u.1, v.0)`, `(u.1,
+    /// v.1)` and the middle: the corners of a piece's halves and quarters
+    /// are among its corners and middle, and are not worked out again.
+    at: [f64; 5],
     depth: usize,
     /// Kept until the piece is split.
     patch: Option<RationalBezierPatch>,
@@ -1949,23 +1964,63 @@ impl PatchTree {
             return None;
         }
         let patch = node.patch.as_ref()?;
-        let mut fine = self.fine.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut guard = self.fine.lock().unwrap_or_else(PoisonError::into_inner);
+        let fine = &mut *guard;
+        fine.clock = fine.clock.wrapping_add(1);
         // The splits are kept only to be found again: the answer is the
         // same whatever was kept (a kept split this query would not make
-        // is not looked into), so a full store is emptied, not let decide.
-        if fine.nodes.len().saturating_add(4 * FINE_LOOKS + 1) > FINE_PIECES {
-            *fine = Fine::default();
+        // is not looked into). Room for what this query may add is made
+        // by letting go of the pieces of the leaves asked about longest
+        // ago, a leaf's all at once: the queries come along the curves of
+        // a boundary, near the last ones, and emptying the whole store
+        // made the same pieces again and again (36.7 million of them in
+        // one boolean of the helmet, for a store of 16,384).
+        while fine.pieces.saturating_add(4 * FINE_LOOKS + 1) > FINE_PIECES {
+            let oldest = fine
+                .roots
+                .iter()
+                .filter(|(leaf, _)| **leaf != index)
+                .min_by_key(|(_, root)| root.used)
+                .map(|(leaf, _)| *leaf)
+                .or_else(|| fine.roots.contains_key(&index).then_some(index));
+            let Some(oldest) = oldest else {
+                fine.pieces = 0;
+                break;
+            };
+            if let Some(gone) = fine.roots.remove(&oldest) {
+                fine.pieces = fine.pieces.saturating_sub(gone.nodes.len());
+            }
         }
-        let root = match fine.roots.get(&index) {
-            Some(&root) => root,
-            None => {
-                let root = fine.nodes.len();
+        let clock = fine.clock;
+        let root = match fine.roots.entry(index) {
+            std::collections::btree_map::Entry::Occupied(found) => found.into_mut(),
+            std::collections::btree_map::Entry::Vacant(free) => {
                 let piece = self.fine_piece(patch.clone(), node.u, node.v, node.sigma, 0);
-                fine.nodes.push(piece);
-                fine.roots.insert(index, root);
-                root
+                fine.pieces = fine.pieces.saturating_add(1);
+                free.insert(FineRoot {
+                    nodes: vec![piece],
+                    used: clock,
+                })
             }
         };
+        root.used = clock;
+        let before = root.nodes.len();
+        let answer = self.finer_in(&mut root.nodes, p, reach, cutoff);
+        let added = root.nodes.len().saturating_sub(before);
+        fine.pieces = fine.pieces.saturating_add(added);
+        answer
+    }
+
+    /// [`Self::finer`] in the pieces kept under one leaf, `nodes` (the
+    /// leaf's own piece first), adding the pieces it splits.
+    fn finer_in(
+        &self,
+        nodes: &mut Vec<FinePiece>,
+        p: Vec3,
+        reach: f64,
+        cutoff: f64,
+    ) -> Option<f64> {
+        let root = 0_usize;
         // Lowest bound first; ties by where the piece is (not by its index
         // in the store, which depends on what was kept before), so that the
         // order is fixed.
@@ -1980,7 +2035,7 @@ impl PatchTree {
             ))
         };
         let near = |piece: &FinePiece| box_distance(&piece.bbox, p) <= reach;
-        if let Some(piece) = fine.nodes.get(root).filter(|piece| near(piece)) {
+        if let Some(piece) = nodes.get(root).filter(|piece| near(piece)) {
             heap.push(key(piece, root));
         }
         let mut looks = 0_usize;
@@ -1989,7 +2044,7 @@ impl PatchTree {
             if !(sigma < cutoff) || looks > FINE_LOOKS {
                 return Some(sigma);
             }
-            let Some(piece) = fine.nodes.get(at) else {
+            let Some(piece) = nodes.get(at) else {
                 continue;
             };
             let inside = piece.bbox.corners().is_some_and(|(lo, hi)| {
@@ -2018,7 +2073,7 @@ impl PatchTree {
             }
             if let Some(kids) = piece.children {
                 for k in kids {
-                    if let Some(kid) = fine.nodes.get(k).filter(|kid| near(kid)) {
+                    if let Some(kid) = nodes.get(k).filter(|kid| near(kid)) {
                         heap.push(key(kid, k));
                     }
                 }
@@ -2028,23 +2083,30 @@ impl PatchTree {
                 return Some(sigma);
             };
             let (u, v, depth) = (piece.u, piece.v, piece.depth + 1);
+            // The corners of the quarters: the piece's corners and middle,
+            // and the middles of its sides.
+            let [c00, c01, c10, c11, m] = piece.at.map(Some);
             let (left, right) = patch.split_u(0.5);
             let ((ll, lh), (rl, rh)) = (left.split_v(0.5), right.split_v(0.5));
+            let side_l = Some(self.sigma_at(u.0, vm));
+            let side_r = Some(self.sigma_at(u.1, vm));
+            let side_b = Some(self.sigma_at(um, v.0));
+            let side_t = Some(self.sigma_at(um, v.1));
             let mut kids = [0_usize; 4];
-            for (slot, (part, pu, pv)) in kids.iter_mut().zip([
-                (ll, (u.0, um), (v.0, vm)),
-                (lh, (u.0, um), (vm, v.1)),
-                (rl, (um, u.1), (v.0, vm)),
-                (rh, (um, u.1), (vm, v.1)),
+            for (slot, (part, pu, pv, corners)) in kids.iter_mut().zip([
+                (ll, (u.0, um), (v.0, vm), [c00, side_l, side_b, m]),
+                (lh, (u.0, um), (vm, v.1), [side_l, c01, m, side_t]),
+                (rl, (um, u.1), (v.0, vm), [side_b, m, c10, side_r]),
+                (rh, (um, u.1), (vm, v.1), [m, side_t, side_r, c11]),
             ]) {
-                *slot = fine.nodes.len();
-                let made = self.fine_piece(part, pu, pv, sigma, depth);
+                *slot = nodes.len();
+                let made = self.fine_piece_with(part, pu, pv, sigma, depth, corners);
                 if near(&made) {
                     heap.push(key(&made, *slot));
                 }
-                fine.nodes.push(made);
+                nodes.push(made);
             }
-            if let Some(piece) = fine.nodes.get_mut(at) {
+            if let Some(piece) = nodes.get_mut(at) {
                 piece.children = Some(kids);
                 piece.patch = None;
             }
@@ -2093,18 +2155,23 @@ impl PatchTree {
             }
             let (pu, pv, floor) = (piece.u, piece.v, piece.sigma);
             let (um, vm) = (0.5 * (pu.0 + pu.1), 0.5 * (pv.0 + pv.1));
+            // The corners of the halves: the piece's corners and the
+            // middles of the sides it is halved across.
+            let [c00, c01, c10, c11, _] = piece.at.map(Some);
             let halves_u = (along_u < FINE_DEPTH && um > pu.0 && um < pu.1).then(|| {
                 let (a, b) = patch.split_u(0.5);
+                let (bottom, top) = (Some(self.sigma_at(um, pv.0)), Some(self.sigma_at(um, pv.1)));
                 [
-                    self.fine_piece(a, (pu.0, um), pv, floor, 0),
-                    self.fine_piece(b, (um, pu.1), pv, floor, 0),
+                    self.fine_piece_with(a, (pu.0, um), pv, floor, 0, [c00, c01, bottom, top]),
+                    self.fine_piece_with(b, (um, pu.1), pv, floor, 0, [bottom, top, c10, c11]),
                 ]
             });
             let halves_v = (along_v < FINE_DEPTH && vm > pv.0 && vm < pv.1).then(|| {
                 let (a, b) = patch.split_v(0.5);
+                let (left, right) = (Some(self.sigma_at(pu.0, vm)), Some(self.sigma_at(pu.1, vm)));
                 [
-                    self.fine_piece(a, pu, (pv.0, vm), floor, 0),
-                    self.fine_piece(b, pu, (vm, pv.1), floor, 0),
+                    self.fine_piece_with(a, pu, (pv.0, vm), floor, 0, [c00, left, c10, right]),
+                    self.fine_piece_with(b, pu, (vm, pv.1), floor, 0, [left, c01, right, c11]),
                 ]
             });
             let lower = |halves: &Option<[FinePiece; 2]>| {
@@ -2145,17 +2212,41 @@ impl PatchTree {
         floor: f64,
         depth: usize,
     ) -> FinePiece {
-        let (mut least, mut most) = (f64::INFINITY, 0.0_f64);
-        for (a, b) in [
+        self.fine_piece_with(patch, u, v, floor, depth, [None; 4])
+    }
+
+    /// The least singular value of the Jacobian at `(a, b)`.
+    fn sigma_at(&self, a: f64, b: f64) -> f64 {
+        let (_, su, sv) = self.surface.derivatives(a, b);
+        let sum = su.length_squared() + sv.length_squared();
+        least_singular(sum, su.cross(sv).length_squared())
+    }
+
+    /// [`Self::fine_piece`] with the values at its corners that are known
+    /// already (those of the piece it was split from, at the same
+    /// parameters, bit for bit), in the order of [`FinePiece::at`].
+    fn fine_piece_with(
+        &self,
+        patch: RationalBezierPatch,
+        u: (f64, f64),
+        v: (f64, f64),
+        floor: f64,
+        depth: usize,
+        corners: [Option<f64>; 4],
+    ) -> FinePiece {
+        let places = [
             (u.0, v.0),
             (u.0, v.1),
             (u.1, v.0),
             (u.1, v.1),
             (0.5 * (u.0 + u.1), 0.5 * (v.0 + v.1)),
-        ] {
-            let (_, su, sv) = self.surface.derivatives(a, b);
-            let sum = su.length_squared() + sv.length_squared();
-            let sigma = least_singular(sum, su.cross(sv).length_squared());
+        ];
+        let mut at = [0.0; 5];
+        let (mut least, mut most) = (f64::INFINITY, 0.0_f64);
+        for (k, (slot, (a, b))) in at.iter_mut().zip(places).enumerate() {
+            let known = corners.get(k).copied().flatten();
+            let sigma = known.unwrap_or_else(|| self.sigma_at(a, b));
+            *slot = sigma;
             least = least.min(sigma);
             most = most.max(sigma);
         }
@@ -2165,6 +2256,7 @@ impl PatchTree {
             v,
             sigma: sigma_bound(&patch, (u.1 - u.0, v.1 - v.0)).max(floor),
             measured: (least, most),
+            at,
             depth,
             patch: Some(patch),
             children: None,
