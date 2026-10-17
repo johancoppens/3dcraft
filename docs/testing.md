@@ -1,6 +1,6 @@
 # Testing: the AI loop and its oracles
 
-> **Last updated:** 2026-10-14 · **Status:** the loop is in use. In place: oracle 1 (closed-form mass properties, `testkit::solids`), oracle 2 (validity checker with seeded defects), oracle 3 (boolean identities on seeded random pairs), oracle 4 (tessellation against the exact body, for patches), oracle 6 (constraint solver), oracle 7 (CPU side), oracle 8 (FreeCAD) and oracle 9 (no body passes through itself). The rest is design
+> **Last updated:** 2026-10-17 · **Status:** the loop is in use. In place: oracle 1 (closed-form mass properties, `testkit::solids`), oracle 2 (validity checker with seeded defects), oracle 3 (boolean identities on seeded random pairs), oracle 4 (tessellation against the exact body, for patches), oracle 6 (constraint solver), oracle 7 (CPU side), oracle 8 (FreeCAD), oracle 9 (no body passes through itself) and oracle 11 (the action matrix). The rest is design
 
 3DCraft is written by AI agents while the developer watches. That only works if an agent can tell, without a human, whether what it built is right. This document says how.
 
@@ -179,6 +179,34 @@ CRAFT3D_BOOLEAN_CHECK=full cargo test --release -p craft3d-kernel --tests
 ```
 
 A new boolean test calls `verified` on what it makes (or goes through `solve`). The check itself is held to seeded mistakes it must catch (`crates/kernel/tests/boolean_check.rs`): a dropped face, the tool's volume added, a moved or turned face, a filled cavity.
+
+### Oracle 11: the action matrix, a ratchet
+
+Every local operation is tried on every face and edge of the finished bodies of the showcase models (2026-10-17, `cargo xtask actions`): fillet each edge with a tenth and with three tenths of the shortest edge next to it, chamfer it by fifteen hundredths, offset each face out and in by a tenth of its shortest edge, delete it, shell the body with it open and thicken it (a twentieth of the body's thinnest extent), draft each flat face by 3° from a flat neighbour square to it, move it along its normal, and mirror and pattern each body once. An edge is the pair of faces it lies between, a face its persistent name. Each action is run on the finished document and undone again (the history is the document, so undoing gives the document as it was), in `craft3d-cli serve` processes, at most three, each under a 2 GB memory cap and a minute per call, started afresh every 250 actions and after any crash or timeout.
+
+The outcome of each is one of:
+
+| verdict | what |
+|---|---|
+| ok | built; `document.check` deep on the new feature (`feature`) finds nothing; the volume keeps its identity |
+| refused | the feature failed or the command returned an error, with the reason (counted by class: the reason without names and numbers) |
+| wrong | built, but the check finds a problem or the volume breaks its identity |
+| crash | a panic (caught: "internal error"), or the process died (the memory cap) |
+| timeout | a call took more than a minute |
+
+The identities, each from what the operation does, none tuned: a face moved by `d` changes the volume with the sign of `d` and by at most `|d|` times the larger area of the body (a change below 1e-9 of the body is within the measure and decides nothing); a shell has less volume than its body; a layer of thickness `t` at most `t` times its own area; a mirror image the same volume (1e-6), two instances apart twice (2e-6); a blend of one edge changes the volume by less than half; every result has a positive volume. They are held to seeded wrong volumes in `crates/engine/tests/action_matrix.rs`.
+
+**The ratchet** is `crates/engine/tests/action_matrix/ratchet.json`: per model and kind, the entities whose action was ok. One of them that is not ok now is a regression, and `cargo xtask actions` fails with it. One that is ok now and not in the ratchet raises the floor: `--update` adds it, an expectation change in the developer's favour that is logged in the dev log like any other. Nothing is taken out of the ratchet by the tool; taking an entry out is an expectation change against the developer and needs the four conditions of *Changing an expectation*. A name that is no longer there is reported as not tried, which is itself worth a look (names are meant to last).
+
+Big models are sampled: per model and kind the 40 entities with the lowest hash of their name (bottom-k, so a name is chosen whatever else the body has), and every entity of the ratchet besides; the bracket and the rotor are tried whole. The models: the bracket (`crates/engine/tests/action_matrix/bracket.steps.json`), the four bench models (`crates/engine/tests/bench_models/`), and from `target/work` (not in the repository; skipped with a note when missing) the laser box, the weld table and its w3 variant, and the bike; the lamp only on request (`--models lamp`, ten minutes to regenerate).
+
+```sh
+cargo xtask actions                       # the whole matrix (not in the gate; about two hours)
+cargo xtask actions --models bracket,rotor --per-kind 10
+cargo xtask actions --update              # raise the floor, then log it
+```
+
+It leaves `target/actions/summary.json` (counts per model and kind, the top refusal classes, every wrong result, crash and timeout; `cargo xtask health` prints a line of it), `target/actions/results/<model>.jsonl` (one line per action) and, for every wrong result, crash and timeout, `target/actions/<verdict>/<model>-<kind>-<hash>.steps.json` with a `.sh` that replays it (for a model built from steps the whole model and the action; for a document, the action, run on that document). The gated part is `crates/engine/tests/action_matrix.rs`: the bracket, four entities per kind (42 actions, about 2 s), held to the ratchet and never a crash. The plan, the run of one action and its verdict are one file, `crates/engine/tests/action_matrix/plan.rs`, which the xtask includes by path, so the gated test and the full run cannot drift apart.
 
 ## Test kinds per crate
 

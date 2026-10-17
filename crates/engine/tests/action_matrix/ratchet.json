@@ -1,0 +1,123 @@
+{
+  "about": "The action matrix's ratchet (docs/testing.md, oracle 11): per model and kind, the entities whose action succeeded (built, valid, volume as expected). Each must still succeed. Entries are only added (cargo xtask actions --update, an expectation change in the developer's favour, logged); removing one is an expectation change against the developer and needs the four conditions of docs/testing.md.",
+  "models": {
+    "bracket": {
+      "chamfer": [
+        "F5:copy(0)/F1:face(0)|F5:copy(0)/F1:face(2)",
+        "F5:copy(0)/F1:face(0)|F5:copy(0)/F1:face(3)",
+        "F5:copy(0)/F1:face(0)|F5:copy(0)/F1:face(4)",
+        "F5:copy(0)/F1:face(0)|F5:copy(0)/F1:face(5)",
+        "F5:copy(0)/F1:face(0)|F5:copy(1)/F4:face(0)",
+        "F5:copy(0)/F1:face(1)|F5:copy(0)/F1:face(2)",
+        "F5:copy(0)/F1:face(1)|F5:copy(0)/F1:face(3)",
+        "F5:copy(0)/F1:face(1)|F5:copy(0)/F1:face(4)",
+        "F5:copy(0)/F1:face(1)|F5:copy(0)/F1:face(5)",
+        "F5:copy(0)/F1:face(1)|F5:copy(0)/F3:copy(1)/F2:face(0)",
+        "F5:copy(0)/F1:face(1)|F5:copy(1)/F4:face(0)",
+        "F5:copy(0)/F1:face(2)|F5:copy(0)/F1:face(4)",
+        "F5:copy(0)/F1:face(2)|F5:copy(0)/F1:face(5)",
+        "F5:copy(0)/F1:face(3)|F5:copy(0)/F1:face(4)",
+        "F5:copy(0)/F1:face(3)|F5:copy(0)/F1:face(5)",
+        "F5:copy(0)/F3:copy(1)/F2:face(0)|F5:copy(0)/F3:copy(1)/F2:face(2)"
+      ],
+      "deleteFace": [
+        "F5:copy(1)/F4:face(0)"
+      ],
+      "draft": [
+        "F5:copy(0)/F1:face(2)",
+        "F5:copy(0)/F1:face(3)",
+        "F5:copy(0)/F1:face(4)",
+        "F5:copy(0)/F1:face(5)"
+      ],
+      "fillet.large": [
+        "F5:copy(0)/F1:face(0)|F5:copy(0)/F1:face(2)",
+        "F5:copy(0)/F1:face(0)|F5:copy(0)/F1:face(3)",
+        "F5:copy(0)/F1:face(0)|F5:copy(0)/F1:face(4)",
+        "F5:copy(0)/F1:face(0)|F5:copy(0)/F1:face(5)",
+        "F5:copy(0)/F1:face(1)|F5:copy(0)/F1:face(2)",
+        "F5:copy(0)/F1:face(1)|F5:copy(0)/F1:face(3)",
+        "F5:copy(0)/F1:face(1)|F5:copy(0)/F1:face(4)",
+        "F5:copy(0)/F1:face(1)|F5:copy(0)/F1:face(5)",
+        "F5:copy(0)/F1:face(2)|F5:copy(0)/F1:face(4)",
+        "F5:copy(0)/F1:face(2)|F5:copy(0)/F1:face(5)",
+        "F5:copy(0)/F1:face(3)|F5:copy(0)/F1:face(4)",
+        "F5:copy(0)/F1:face(3)|F5:copy(0)/F1:face(5)",
+        "F5:copy(0)/F3:copy(1)/F2:face(0)|F5:copy(0)/F3:copy(1)/F2:face(2)"
+      ],
+      "fillet.small": [
+        "F5:copy(0)/F1:face(0)|F5:copy(0)/F1:face(2)",
+        "F5:copy(0)/F1:face(0)|F5:copy(0)/F1:face(3)",
+        "F5:copy(0)/F1:face(0)|F5:copy(0)/F1:face(4)",
+        "F5:copy(0)/F1:face(0)|F5:copy(0)/F1:face(5)",
+        "F5:copy(0)/F1:face(0)|F5:copy(1)/F4:face(0)",
+        "F5:copy(0)/F1:face(1)|F5:copy(0)/F1:face(2)",
+        "F5:copy(0)/F1:face(1)|F5:copy(0)/F1:face(3)",
+        "F5:copy(0)/F1:face(1)|F5:copy(0)/F1:face(4)",
+        "F5:copy(0)/F1:face(1)|F5:copy(0)/F1:face(5)",
+        "F5:copy(0)/F1:face(1)|F5:copy(0)/F3:copy(1)/F2:face(0)",
+        "F5:copy(0)/F1:face(1)|F5:copy(1)/F4:face(0)",
+        "F5:copy(0)/F1:face(2)|F5:copy(0)/F1:face(4)",
+        "F5:copy(0)/F1:face(2)|F5:copy(0)/F1:face(5)",
+        "F5:copy(0)/F1:face(3)|F5:copy(0)/F1:face(4)",
+        "F5:copy(0)/F1:face(3)|F5:copy(0)/F1:face(5)",
+        "F5:copy(0)/F3:copy(1)/F2:face(0)|F5:copy(0)/F3:copy(1)/F2:face(2)"
+      ],
+      "mirror": [
+        "F5"
+      ],
+      "moveFace": [
+        "F5:copy(0)/F1:face(2)",
+        "F5:copy(0)/F1:face(3)",
+        "F5:copy(0)/F1:face(4)",
+        "F5:copy(0)/F1:face(5)"
+      ],
+      "offset.in": [
+        "F5:copy(0)/F1:face(0)",
+        "F5:copy(0)/F1:face(1)",
+        "F5:copy(0)/F1:face(2)",
+        "F5:copy(0)/F1:face(3)",
+        "F5:copy(0)/F1:face(4)",
+        "F5:copy(0)/F1:face(5)",
+        "F5:copy(0)/F3:copy(1)/F2:face(0)",
+        "F5:copy(0)/F3:copy(1)/F2:face(2)",
+        "F5:copy(1)/F4:face(0)"
+      ],
+      "offset.out": [
+        "F5:copy(0)/F1:face(0)",
+        "F5:copy(0)/F1:face(1)",
+        "F5:copy(0)/F1:face(2)",
+        "F5:copy(0)/F1:face(3)",
+        "F5:copy(0)/F1:face(4)",
+        "F5:copy(0)/F1:face(5)",
+        "F5:copy(0)/F3:copy(1)/F2:face(0)",
+        "F5:copy(0)/F3:copy(1)/F2:face(2)",
+        "F5:copy(1)/F4:face(0)"
+      ],
+      "pattern": [
+        "F5"
+      ],
+      "shell": [
+        "F5:copy(0)/F1:face(0)",
+        "F5:copy(0)/F1:face(1)",
+        "F5:copy(0)/F1:face(2)",
+        "F5:copy(0)/F1:face(3)",
+        "F5:copy(0)/F1:face(4)",
+        "F5:copy(0)/F1:face(5)",
+        "F5:copy(0)/F3:copy(1)/F2:face(0)",
+        "F5:copy(0)/F3:copy(1)/F2:face(2)",
+        "F5:copy(1)/F4:face(0)"
+      ],
+      "thicken": [
+        "F5:copy(0)/F1:face(0)",
+        "F5:copy(0)/F1:face(1)",
+        "F5:copy(0)/F1:face(2)",
+        "F5:copy(0)/F1:face(3)",
+        "F5:copy(0)/F1:face(4)",
+        "F5:copy(0)/F1:face(5)",
+        "F5:copy(0)/F3:copy(1)/F2:face(0)",
+        "F5:copy(0)/F3:copy(1)/F2:face(2)",
+        "F5:copy(1)/F4:face(0)"
+      ]
+    }
+  }
+}
