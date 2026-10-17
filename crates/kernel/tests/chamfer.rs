@@ -1361,13 +1361,9 @@ fn edges_after_one_a_chamfer_takes_whole_keep_their_requests() {
         planes.push(upright);
         let m = mass(&made.body);
         assert_close(m.volume, convex_volume(&planes) * k * k * k, "volume");
-        for (index, (n, c)) in [
-            ([-1.0, 0.0, 1.0], 2.0 - d),
-            slanted.clone(),
-            upright.clone(),
-        ]
-        .into_iter()
-        .enumerate()
+        for (index, (n, c)) in [([-1.0, 0.0, 1.0], 2.0 - d), slanted, upright]
+            .into_iter()
+            .enumerate()
         {
             let n = Vec3::new(n[0], n[1], n[2]);
             let (n, c) = (n * (1.0 / n.length()), c / n.length() * k);
