@@ -515,8 +515,8 @@ fn pieces_are_named_by_their_loop_not_by_an_order() {
     assert_eq!(outer[0].within.as_deref(), Some(&[1, 2, 3][..]));
 }
 
-/// An outline with more curves than profile detection takes says so,
-/// at once (no search for a distance, which would not help).
+/// An outline with more curves than an offset takes says so, at once (no
+/// search for a distance, which would not help).
 #[test]
 fn too_many_curves_is_passed_on() {
     let t = tol(1.0);
@@ -530,11 +530,53 @@ fn too_many_curves_is_passed_on() {
     let input = profiles(&polygon(&points, 1), &t);
     let started = std::time::Instant::now();
     let err = offset_profiles(&input, 0.5, Corners::Round, &t).unwrap_err();
-    assert!(matches!(err, KernelError::TooManyCurves { .. }), "{err:?}");
+    assert!(
+        matches!(err, KernelError::TooManyOffsetCurves { .. }),
+        "{err:?}"
+    );
     assert!(started.elapsed().as_secs_f64() < 5.0);
     // Sharp corners add no curve where lines meet: it fits.
     let o = offset_profiles(&input, 0.5, Corners::Sharp, &t).unwrap();
     assert_eq!(o.curves.len(), n);
+}
+
+/// Inward past the outline's reach the search for the largest distance
+/// that fits meets the offset's cap (a strip whose bottom is a saw of 1400
+/// teeth: each tip adds an arc inward): the reason stays the outline's,
+/// with no largest distance rather than 0. Slow in a test build (each try
+/// at a large distance takes seconds): run in release with
+/// `--ignored`; `too_many_curves_is_passed_on` is the gated check of the
+/// cap.
+#[test]
+#[ignore = "slow; run in release with --ignored"]
+fn the_cap_ends_the_search_for_a_distance() {
+    let t = tol(1.0);
+    let teeth = 1400;
+    let mut points: Vec<[f64; 2]> = Vec::new();
+    for i in 0..teeth {
+        let x = 2.0 * i as f64;
+        points.push([x, 0.0]);
+        points.push([x + 1.0, 1.0]);
+    }
+    let length = 2.0 * teeth as f64;
+    points.push([length, 0.0]);
+    points.push([length, 20.0]);
+    points.push([0.0, 20.0]);
+    let input = profiles(&polygon(&points, 1), &t);
+    let started = std::time::Instant::now();
+    let err = offset_profiles(&input, -2.0 * length, Corners::Round, &t).unwrap_err();
+    assert!(
+        matches!(
+            &err,
+            KernelError::OffsetProfile {
+                reason: "leaves nothing of a region",
+                largest: None,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    println!("refused in {:.2?}", started.elapsed());
 }
 
 /// A huge distance: inward past half the outline's diagonal nothing is

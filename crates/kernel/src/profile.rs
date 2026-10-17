@@ -37,10 +37,22 @@
 //!    inside another (winding number). Nesting is even-odd: depth 0, 2, …
 //!    are outer boundaries, depth 1, 3, … holes of the loop around them.
 //!
+//! The pairs of steps 1, 4 and 5 that can meet at all (ends within twice
+//! the tolerance in x and y, curves whose boxes grown by the tolerance
+//! overlap, loops whose box holds a point of the other) are found in a
+//! tree of boxes ([`BoxTree`]), and judged in the order a sweep in x over
+//! every pair would judge them, so the result and the first error are the
+//! same as comparing every pair (`profile_reference.rs` keeps that sweep
+//! as the oracle). The winding number of a loop of many segments is summed
+//! over a tree of its stretches: a stretch whose box does not hold the
+//! point turns by the angle between its ends. How many pairs a step may
+//! look at is bounded ([`MAX_PAIRS`]).
+//!
 //! The result does not depend on the order of the input or on the direction
 //! lines were drawn in: curves are processed by ascending id, loops start at
 //! their smallest id, outer loops run counter-clockwise and holes clockwise.
 
+use crate::boxtree::BoxTree;
 use crate::spline2::{self, Part};
 pub use crate::spline2::{MAX_SPLINE_DEGREE, MAX_SPLINE_POINTS, Spline2};
 use crate::{KernelError, MAX_REPORTED};
@@ -48,10 +60,16 @@ use craft3d_geom::GeomError;
 use craft3d_math::Tolerance;
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
-/// The most curves [`detect_profiles`] accepts. Touch detection compares
-/// pairs of curves whose bounding boxes overlap, which is quadratic in the
-/// worst case.
-pub const MAX_CURVES: usize = 4096;
+#[cfg(test)]
+#[path = "profile_reference.rs"]
+mod reference;
+
+/// The most curves [`detect_profiles`] accepts (after splines are cut at
+/// their corners). Its time grows as `n log n` with the curves of a drawn
+/// or patterned sketch (the pairs it compares come from trees of boxes);
+/// what bounds hostile input is [`MAX_PAIRS`]. This cap bounds memory, and
+/// the time of the sheet of round holes it allows (see `docs/design/sweeps.md`).
+pub const MAX_CURVES: usize = 1 << 18;
 
 /// Coordinates and radii beyond this are refused: their products overflow.
 const MAX_COORDINATE: f64 = 1e100;
@@ -429,12 +447,6 @@ impl Loop2 {
         ids
     }
 
-    /// How many times the loop goes around `p`, counter-clockwise.
-    fn winding(&self, p: P2) -> f64 {
-        let turn: f64 = self.segments.iter().map(|s| s.turn_about(p)).sum();
-        (turn / TAU).round()
-    }
-
     /// `[min x, min y, max x, max y]` of the loop: its ends and the
     /// extremes of its arcs and circles, and the control points of its
     /// splines, so it contains the loop.
@@ -565,40 +577,174 @@ struct End {
     line: bool,
 }
 
-/// For every end the end it meets. Errors when an end meets none, or more
-/// than one.
-fn join_ends(curves: &[SketchCurve], ends: &[End], tol: f64) -> Result<Vec<usize>, KernelError> {
-    let mut order: Vec<usize> = (0..ends.len()).collect();
-    let x = |i: usize| ends.get(i).map_or(f64::NAN, |e| e.point[0]);
-    order.sort_by(|&i, &j| x(i).total_cmp(&x(j)).then(i.cmp(&j)));
-    // The first few ends near each end, and how many there are in all.
-    let mut near: Vec<(usize, [usize; 2])> = vec![(0, [usize::MAX; 2]); ends.len()];
-    let mut record = |i: usize, j: usize| {
-        if let Some((count, list)) = near.get_mut(i) {
-            if let Some(slot) = list.get_mut(*count) {
-                *slot = j;
-            }
-            *count = count.saturating_add(1);
-        }
+/// The most pairs of curves, or of loops, that one step of
+/// [`detect_profiles`] looks at because their boxes overlap (or a loop's
+/// box holds a point of the other), counted in both directions and each
+/// with itself: as many as [`OLD_MAX_CURVES`] curves can have, so nothing
+/// accepted under that cap is refused for it. Pairs of curve ends may be
+/// four times as many (two ends per curve). Drawn and patterned sketches
+/// need a few per curve.
+pub const MAX_PAIRS: usize = OLD_MAX_CURVES * OLD_MAX_CURVES;
+
+/// The most control points the splines of one call to [`detect_profiles`]
+/// may have in all. Deciding where a spline keeps clear of itself and of
+/// the curves near it takes time in proportion to its control points
+/// (25 to 90 µs each in a release build on an idle machine, measured on
+/// closed cubic splines of 8 to 4095 points; see `docs/design/sweeps.md`),
+/// so this bounds that work: at the bound 9 to 14 s for splines of 8 to
+/// 512 points and 53 s for 64 splines of 4096 points, measured on a loaded
+/// machine (about 2.4 times slower). One spline may have
+/// [`MAX_SPLINE_POINTS`]. Inputs above it were accepted before this bound,
+/// slowly (minutes to hours): a decision for the developer.
+pub const MAX_SPLINE_POINTS_IN_ALL: usize = 1 << 18;
+
+/// Refuses splines with more control points in all than
+/// [`MAX_SPLINE_POINTS_IN_ALL`], naming those with the most.
+fn spline_work(curves: &[SketchCurve]) -> Result<(), KernelError> {
+    let points = |c: &SketchCurve| match &c.curve {
+        Curve2::Spline(spline) => spline.control.len(),
+        _ => 0,
     };
-    for (position, &i) in order.iter().enumerate() {
-        let Some(a) = ends.get(i) else { continue };
-        for &j in order.iter().skip(position + 1) {
-            let Some(b) = ends.get(j) else { continue };
-            if b.point[0] - a.point[0] > tol {
-                break;
-            }
-            if distance(a.point, b.point) <= tol {
-                record(i, j);
-                record(j, i);
-            }
+    let count = curves
+        .iter()
+        .map(points)
+        .fold(0_usize, usize::saturating_add);
+    if count <= MAX_SPLINE_POINTS_IN_ALL {
+        return Ok(());
+    }
+    let mut largest: Vec<(usize, u64)> = curves
+        .iter()
+        .filter(|c| points(c) > 0)
+        .map(|c| (points(c), c.id))
+        .collect();
+    largest.sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    let mut ids: Vec<u64> = largest
+        .iter()
+        .take(MAX_REPORTED)
+        .map(|&(_, id)| id)
+        .collect();
+    ids.sort_unstable();
+    Err(KernelError::TooManySplinePoints {
+        count,
+        limit: MAX_SPLINE_POINTS_IN_ALL,
+        curves: ids,
+    })
+}
+
+/// The cap on curves before the broad phase (until 2026-10-17), when every
+/// step compared pairs swept in x: [`MAX_PAIRS`] is set from it.
+pub const OLD_MAX_CURVES: usize = 4096;
+
+/// The pairs a step of detection may still look at, of a limit.
+struct Work {
+    left: usize,
+    limit: usize,
+}
+
+impl Work {
+    fn new(limit: usize) -> Work {
+        Work { left: limit, limit }
+    }
+
+    /// The error when the search near the curves `ids` (the one searched
+    /// about first, then those found near it) ran out of pairs.
+    fn crowded(&self, ids: impl IntoIterator<Item = u64>) -> KernelError {
+        let mut curves: Vec<u64> = ids.into_iter().collect();
+        curves.sort_unstable();
+        curves.dedup();
+        curves.truncate(MAX_REPORTED);
+        KernelError::CrowdedCurves {
+            curves,
+            limit: self.limit,
         }
     }
+}
+
+/// `order` sorted by `key`, then index, and where each index is in it.
+fn sweep_order(len: usize, key: impl Fn(usize) -> f64) -> (Vec<usize>, Vec<usize>) {
+    let mut order: Vec<usize> = (0..len).collect();
+    order.sort_by(|&i, &j| key(i).total_cmp(&key(j)).then(i.cmp(&j)));
+    let mut position = vec![0; len];
+    for (at, &i) in order.iter().enumerate() {
+        if let Some(slot) = position.get_mut(i) {
+            *slot = at;
+        }
+    }
+    (order, position)
+}
+
+/// For every end the end it meets. Errors when an end meets none, or more
+/// than one.
+///
+/// Two ends meet when they are within `tol`; which of them comes first is
+/// the order of the ends by x (then index), as listed in errors. Candidates
+/// come from a [`BoxTree`] of the end points searched within `2 tol` in x
+/// and in y, which holds every end within `tol` (a distance is at least
+/// either of its components, here with room for the rounding of `hypot`);
+/// each candidate is then judged exactly as by comparing every pair.
+fn join_ends(curves: &[SketchCurve], ends: &[End], tol: f64) -> Result<Vec<usize>, KernelError> {
+    let x = |i: usize| ends.get(i).map_or(f64::NAN, |e| e.point[0]);
+    let (_, position) = sweep_order(ends.len(), x);
+    let tree = BoxTree::new(
+        ends.iter()
+            .map(|e| [e.point[0], e.point[1], e.point[0], e.point[1]])
+            .collect(),
+    );
+    let reach = 2.0 * tol;
+    let mut work = Work::new(4 * MAX_PAIRS);
+    let mut found = Vec::new();
     let id_of = |end: usize| {
         ends.get(end)
             .and_then(|e| curves.get(e.curve))
             .map(|c| c.id)
     };
+    // The first two ends near each end, in x order, and how many there are.
+    let mut near: Vec<(usize, [usize; 2])> = Vec::with_capacity(ends.len());
+    for (i, a) in ends.iter().enumerate() {
+        let p = a.point;
+        let within = tree.search(
+            |b| {
+                !(b[0] - p[0] > reach
+                    || p[0] - b[2] > reach
+                    || b[1] - p[1] > reach
+                    || p[1] - b[3] > reach)
+            },
+            &mut found,
+            &mut work.left,
+        );
+        if !within {
+            return Err(work.crowded(
+                std::iter::once(i)
+                    .chain(found.iter().copied())
+                    .filter_map(id_of),
+            ));
+        }
+        let at = position.get(i).copied().ok_or_else(internal)?;
+        let mut count = 0_usize;
+        // The two nearest the start of the x order, as (place, end).
+        let mut first_two = [(usize::MAX, usize::MAX); 2];
+        for &j in &found {
+            let (Some(b), Some(&bt)) = (ends.get(j), position.get(j)) else {
+                return Err(internal());
+            };
+            if j == i {
+                continue;
+            }
+            // The pair as a sweep in x meets it: the earlier end first.
+            let (first, second) = if bt > at { (a, b) } else { (b, a) };
+            // (The sweep stopped at an end more than `tol` further on in x.)
+            let beyond = second.point[0] - first.point[0] > tol;
+            if !beyond && distance(first.point, second.point) <= tol {
+                count += 1;
+                if bt < first_two[0].0 {
+                    first_two = [(bt, j), first_two[0]];
+                } else if bt < first_two[1].0 {
+                    first_two[1] = (bt, j);
+                }
+            }
+        }
+        near.push((count, first_two.map(|(_, j)| j)));
+    }
     let report = |mut ids: Vec<u64>| {
         ids.sort_unstable();
         ids.dedup();
@@ -819,23 +965,19 @@ fn keeps_clear(a: &Segment, b: &Segment, shared: [bool; 2], tol: f64) -> bool {
     true
 }
 
-/// Errors when two curves touch, cross or overlap away from a shared end.
-/// `mate_curve[i][k]` is the curve joined to end `k` of curve `i`.
-fn check_clear(
-    own: &[Segment],
-    mate_curve: &[[Option<usize>; 2]],
-    tol: f64,
-) -> Result<(), KernelError> {
-    // Boxes grown by the tolerance, swept in x: only pairs whose boxes
-    // overlap are compared.
-    let boxes: Vec<[f64; 4]> = own
-        .iter()
+/// Boxes of the segments grown by the tolerance: no part of a segment
+/// within `tol` of another lies outside its box.
+fn clear_boxes(own: &[Segment], tol: f64) -> Vec<[f64; 4]> {
+    own.iter()
         .map(|s| {
             let b = s.bbox();
             [b[0] - tol, b[1] - tol, b[2] + tol, b[3] + tol]
         })
-        .collect();
-    // A spline can cross itself.
+        .collect()
+}
+
+/// A spline can cross itself.
+fn check_self_clear(own: &[Segment], tol: f64) -> Result<(), KernelError> {
     for segment in own {
         if matches!(segment.shape, Shape::Spline(_)) && !spline2::self_clear(&segment.parts(), tol)
         {
@@ -844,26 +986,57 @@ fn check_clear(
             });
         }
     }
-    let mut order: Vec<usize> = (0..own.len()).collect();
+    Ok(())
+}
+
+/// Errors when two curves touch, cross or overlap away from a shared end.
+/// `mate_curve[i][k]` is the curve joined to end `k` of curve `i`.
+///
+/// Only pairs whose grown boxes overlap are compared, in the order of a
+/// sweep in x: the curves by the left side of their box (then index), and
+/// for each the ones after it. The pairs come from a [`BoxTree`] of the
+/// boxes, so the first pair that fails is the one a sweep would fail on.
+fn check_clear(
+    own: &[Segment],
+    mate_curve: &[[Option<usize>; 2]],
+    tol: f64,
+) -> Result<(), KernelError> {
+    let boxes = clear_boxes(own, tol);
+    check_self_clear(own, tol)?;
     let min_x = |i: usize| boxes.get(i).map_or(f64::NAN, |b| b[0]);
-    order.sort_by(|&i, &j| min_x(i).total_cmp(&min_x(j)).then(i.cmp(&j)));
-    for (position, &i) in order.iter().enumerate() {
-        let (Some(a), Some(box_a), Some(mates_a)) = (own.get(i), boxes.get(i), mate_curve.get(i))
+    let (order, position) = sweep_order(own.len(), min_x);
+    let tree = BoxTree::new(boxes.clone());
+    let mut work = Work::new(MAX_PAIRS);
+    let (mut found, mut later) = (Vec::new(), Vec::new());
+    for &i in &order {
+        let (Some(a), Some(box_a), Some(mates_a), Some(&at)) =
+            (own.get(i), boxes.get(i), mate_curve.get(i), position.get(i))
         else {
             return Err(internal());
         };
-        for &j in order.iter().skip(position + 1) {
-            let (Some(b), Some(box_b), Some(mates_b)) =
-                (own.get(j), boxes.get(j), mate_curve.get(j))
-            else {
+        let within = tree.search(
+            |b| !(b[0] > box_a[2] || box_a[0] > b[2] || b[1] > box_a[3] || box_a[1] > b[3]),
+            &mut found,
+            &mut work.left,
+        );
+        if !within {
+            let source = |j: &usize| own.get(*j).map(|s| s.source);
+            return Err(
+                work.crowded(std::iter::once(a.source).chain(found.iter().filter_map(source)))
+            );
+        }
+        later.clear();
+        for &j in &found {
+            let &bt = position.get(j).ok_or_else(internal)?;
+            if bt > at {
+                later.push((bt, j));
+            }
+        }
+        later.sort_unstable();
+        for &(_, j) in &later {
+            let (Some(b), Some(mates_b)) = (own.get(j), mate_curve.get(j)) else {
                 return Err(internal());
             };
-            if box_b[0] > box_a[2] {
-                break;
-            }
-            if box_b[1] > box_a[3] || box_a[1] > box_b[3] {
-                continue;
-            }
             let shared_a = mates_a.map(|m| m == Some(j));
             let shared_b = mates_b.map(|m| m == Some(i));
             if !(keeps_clear(a, b, shared_a, tol) && keeps_clear(b, a, shared_b, tol)) {
@@ -874,6 +1047,160 @@ fn check_clear(
         }
     }
     Ok(())
+}
+
+/// The segments of a loop in a tree of stretches (consecutive runs, halved
+/// down to a few segments), each with its box, for the winding number
+/// about many points.
+struct Turns {
+    nodes: Vec<TurnNode>,
+}
+
+struct TurnNode {
+    bbox: [f64; 4],
+    first: usize,
+    end: usize,
+    children: Option<[usize; 2]>,
+}
+
+/// How many segments a stretch at the bottom of [`Turns`] has at most.
+const TURN_LEAF: usize = 8;
+
+impl Turns {
+    fn new(path: &Loop2) -> Turns {
+        let placeholder = || TurnNode {
+            bbox: [0.0; 4],
+            first: 0,
+            end: 0,
+            children: None,
+        };
+        let mut nodes = vec![placeholder()];
+        let mut todo = vec![(0_usize, 0_usize, path.segments.len())];
+        while let Some((at, first, end)) = todo.pop() {
+            let mut bbox = [
+                f64::INFINITY,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                f64::NEG_INFINITY,
+            ];
+            for s in path.segments.get(first..end).unwrap_or(&[]) {
+                let o = s.bbox();
+                bbox = [
+                    bbox[0].min(o[0]),
+                    bbox[1].min(o[1]),
+                    bbox[2].max(o[2]),
+                    bbox[3].max(o[3]),
+                ];
+            }
+            let mut children = None;
+            if end - first > TURN_LEAF {
+                let mid = first + (end - first) / 2;
+                let (left, right) = (nodes.len(), nodes.len() + 1);
+                nodes.push(placeholder());
+                nodes.push(placeholder());
+                todo.push((left, first, mid));
+                todo.push((right, mid, end));
+                children = Some([left, right]);
+            }
+            if let Some(node) = nodes.get_mut(at) {
+                *node = TurnNode {
+                    bbox,
+                    first,
+                    end,
+                    children,
+                };
+            }
+        }
+        Turns { nodes }
+    }
+
+    /// How many times `path` (the loop the tree was made of) goes around
+    /// `p`, counter-clockwise; `p` must not be on it. A stretch whose box
+    /// does not hold `p` lies in a half-plane beside `p`, so the direction
+    /// from `p` to it turns by less than half a turn: by the angle between
+    /// its ends. Other stretches are summed segment by segment, as
+    /// [`Loop2::winding`] sums the whole loop; the sum is a whole number of
+    /// turns up to rounding either way.
+    fn winding(&self, path: &Loop2, p: P2) -> f64 {
+        let mut turn = 0.0;
+        let mut stack = vec![0_usize];
+        while let Some(at) = stack.pop() {
+            let Some(node) = self.nodes.get(at) else {
+                continue;
+            };
+            let b = node.bbox;
+            if p[0] < b[0] || p[1] < b[1] || p[0] > b[2] || p[1] > b[3] {
+                let first = path.segments.get(node.first);
+                let last = node.end.checked_sub(1).and_then(|l| path.segments.get(l));
+                if let (Some(first), Some(last)) = (first, last) {
+                    let (u, v) = (sub(first.start, p), sub(last.end, p));
+                    turn += cross(u, v).atan2(dot(u, v));
+                }
+                continue;
+            }
+            match node.children {
+                Some(below) => stack.extend(below),
+                None => {
+                    let stretch = path.segments.get(node.first..node.end).unwrap_or(&[]);
+                    turn += stretch.iter().map(|s| s.turn_about(p)).sum::<f64>();
+                }
+            }
+        }
+        (turn / TAU).round()
+    }
+}
+
+/// How deep each loop is nested and the smallest loop around it. No two
+/// loops touch, so a loop is inside another when one of its points is: the
+/// loops whose box holds that point come from a [`BoxTree`], in no
+/// particular order, and their winding numbers about it decide; the
+/// parent is chosen as a scan in index order would choose it.
+fn nest(rings: &[Ring]) -> Result<Vec<(usize, Option<usize>)>, KernelError> {
+    let tree = BoxTree::new(rings.iter().map(|r| r.bbox).collect());
+    let turns: Vec<Turns> = rings.iter().map(|r| Turns::new(&r.path)).collect();
+    let mut work = Work::new(MAX_PAIRS);
+    let mut found = Vec::new();
+    let mut nesting = Vec::with_capacity(rings.len());
+    for (i, ring) in rings.iter().enumerate() {
+        let p = ring.path.origin();
+        let within = tree.search(
+            |b| !(p[0] < b[0] || p[1] < b[1] || p[0] > b[2] || p[1] > b[3]),
+            &mut found,
+            &mut work.left,
+        );
+        if !within {
+            // The loop searched about, and the first curve of each loop found.
+            let first = |j: &usize| {
+                rings
+                    .get(*j)
+                    .and_then(|r| r.path.sources(1).first().copied())
+            };
+            return Err(work.crowded(
+                ring.path
+                    .sources(MAX_REPORTED)
+                    .into_iter()
+                    .chain(found.iter().filter_map(first)),
+            ));
+        }
+        // The found loops come in no particular order: the parent is the
+        // smallest loop round the point, the first in index order of
+        // equal ones, as a scan in index order keeps.
+        let (mut depth, mut parent): (usize, Option<(f64, usize)>) = (0, None);
+        for &j in &found {
+            let (Some(around), Some(turns)) = (rings.get(j), turns.get(j)) else {
+                return Err(internal());
+            };
+            if i == j || turns.winding(&around.path, p) == 0.0 {
+                continue;
+            }
+            depth += 1;
+            if parent.is_none_or(|(area, k)| around.area < area || (around.area == area && j < k)) {
+                parent = Some((around.area, j));
+            }
+        }
+        nesting.push((depth, parent.map(|(_, j)| j)));
+    }
+    Ok(nesting)
 }
 
 /// A loop, counter-clockwise, with what nesting needs.
@@ -896,6 +1223,25 @@ struct Ring {
 pub fn detect_profiles(
     curves: &[SketchCurve],
     tolerance: &Tolerance,
+) -> Result<Vec<Profile>, KernelError> {
+    detect(curves, tolerance, Search::Indexed)
+}
+
+/// How the pairs that may meet are found.
+#[derive(Clone, Copy, Debug)]
+enum Search {
+    /// From trees of boxes ([`BoxTree`]).
+    Indexed,
+    /// By sweeps in x over every pair, as before 2026-10-17: the reference
+    /// the indexed search must agree with.
+    #[cfg(test)]
+    AllPairs,
+}
+
+fn detect(
+    curves: &[SketchCurve],
+    tolerance: &Tolerance,
+    search: Search,
 ) -> Result<Vec<Profile>, KernelError> {
     let tol = tolerance.linear;
     if !(tol.is_finite() && tol > 0.0) {
@@ -923,6 +1269,7 @@ pub fn detect_profiles(
     for curve in &sorted {
         validate(curve, tol)?;
     }
+    spline_work(&sorted)?;
     // A spline is cut where its sweep would not be one smooth face that
     // ends: at its corners, and in two when it closes on itself. The
     // pieces are curves of their own from here on, with the spline's id; a
@@ -996,7 +1343,11 @@ pub fn detect_profiles(
             });
         }
     }
-    let mates = join_ends(&sorted, &ends, tol)?;
+    let mates = match search {
+        Search::Indexed => join_ends(&sorted, &ends, tol)?,
+        #[cfg(test)]
+        Search::AllPairs => reference::join_ends(&sorted, &ends, tol)?,
+    };
     let mate_of = |end: usize| mates.get(end).and_then(|&m| ends.get(m));
 
     // The representative of a junction: an arc's end before a line's, then
@@ -1127,27 +1478,18 @@ pub fn detect_profiles(
             None => [None, None],
         })
         .collect();
-    check_clear(&own, &mate_curve, tol)?;
-
-    // Nesting. No two loops touch, so a loop is inside another when one of
-    // its points is.
-    let mut nesting = Vec::with_capacity(rings.len());
-    for (i, ring) in rings.iter().enumerate() {
-        let p = ring.path.origin();
-        let (mut depth, mut parent): (usize, Option<(f64, usize)>) = (0, None);
-        for (j, around) in rings.iter().enumerate() {
-            let b = around.bbox;
-            let outside_box = p[0] < b[0] || p[1] < b[1] || p[0] > b[2] || p[1] > b[3];
-            if i == j || outside_box || around.path.winding(p) == 0.0 {
-                continue;
-            }
-            depth += 1;
-            if parent.is_none_or(|(area, _)| around.area < area) {
-                parent = Some((around.area, j));
-            }
-        }
-        nesting.push((depth, parent.map(|(_, j)| j)));
+    match search {
+        Search::Indexed => check_clear(&own, &mate_curve, tol)?,
+        #[cfg(test)]
+        Search::AllPairs => reference::check_clear(&own, &mate_curve, tol)?,
     }
+
+    // Nesting.
+    let nesting = match search {
+        Search::Indexed => nest(&rings)?,
+        #[cfg(test)]
+        Search::AllPairs => reference::nest(&rings),
+    };
     for (ring, (depth, parent)) in rings.iter_mut().zip(nesting) {
         (ring.depth, ring.parent) = (depth, parent);
     }

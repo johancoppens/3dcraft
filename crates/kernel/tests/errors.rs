@@ -762,6 +762,28 @@ fn every_error_says_what_to_look_at() {
             &["5000", "4096"],
         ),
         (
+            KernelError::CrowdedCurves {
+                curves: vec![3, 9],
+                limit: 16777216,
+            },
+            &["16777216", "too close together", "3, 9"],
+        ),
+        (
+            KernelError::TooManySplinePoints {
+                count: 70000,
+                limit: 65536,
+                curves: vec![4, 5],
+            },
+            &["70000", "65536", "4, 5"],
+        ),
+        (
+            KernelError::TooManyOffsetCurves {
+                count: 4200,
+                limit: 4096,
+            },
+            &["4200", "4096", "offset"],
+        ),
+        (
             KernelError::InvalidOffsets { from: 2.0, to: 1.0 },
             &["from 2 to 1"],
         ),

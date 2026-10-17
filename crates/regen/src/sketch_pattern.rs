@@ -25,9 +25,10 @@ use craft3d_kernel::profile::{Curve2, SketchCurve, Spline2};
 use craft3d_solve::ImageMap;
 use std::collections::BTreeMap;
 
-/// Most curves the patterns of one sketch may make, instances only. The
-/// kernel takes fewer in one profile (`profile::MAX_CURVES`); this cap
-/// keeps a hostile count from allocating more than that says.
+/// Most curves the patterns of one sketch may make, instances only: a
+/// bound on what a hostile count allocates. Profile detection takes more
+/// in one call (`profile::MAX_CURVES`, 262 144), so the drawn curves and
+/// spline pieces fit beside them.
 pub const MAX_PATTERN_CURVES: usize = 100_000;
 
 /// How the instances of a pattern lie, with its expressions evaluated.

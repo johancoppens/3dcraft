@@ -200,6 +200,83 @@ fn a_row_and_a_grid_of_holes_are_their_closed_forms_at_three_scales() {
     }
 }
 
+/// A 70 × 70 perforated sheet made by one pattern: 4900 holes and the
+/// outline, more curves than profile detection took before it had a broad
+/// phase (4096; roadmap M5). The volume is the closed form.
+#[test]
+fn a_sheet_of_70_by_70_patterned_holes_extrudes() {
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    let (pitch, r, t) = (10.0, 3.0, 2.0);
+    let side = 71.0 * pitch;
+    run(&mut s, "sketch.create", json!({"name": "Plate"}));
+    run(
+        &mut s,
+        "sketch.polyline",
+        json!({"sketch": "Plate", "points": [[0, 0], [side, 0], [side, side], [0, side]], "closed": true}),
+    );
+    let circle = run(
+        &mut s,
+        "sketch.circle",
+        json!({"sketch": "Plate", "center": [pitch, pitch], "radius": r}),
+    );
+    let circle = str_of(&circle["entity"]);
+    run(
+        &mut s,
+        "sketch.pattern",
+        json!({"sketch": "Plate", "entities": [circle], "count": 70, "step": [pitch, 0], "count2": 70, "step2": [0, pitch]}),
+    );
+    run(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "Plate", "distance": t, "name": "Body"}),
+    );
+    let plate = body(&mut s, "Body");
+    assert_close(
+        plate["volume"].as_f64().unwrap(),
+        (side * side - 4900.0 * PI * r * r) * t,
+        "70 × 70 holes",
+    );
+    assert_eq!(plate["faces"], 4 + 2 + 4900);
+}
+
+/// A pattern that stacks 6000 copies of a line within the
+/// tolerance of each other (12 000 ends, two heaps of 6000, more pairs
+/// than the bound on ends holds): profile detection refuses it,
+/// and the message names the curves as the sketch does (`e5[3]`), not by
+/// the numbers the kernel is handed.
+#[test]
+fn a_crowded_pattern_is_refused_with_its_curves_named() {
+    let mut s = session();
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    run(&mut s, "sketch.create", json!({"name": "Stack"}));
+    let made = run(
+        &mut s,
+        "sketch.line",
+        json!({"sketch": "Stack", "from": [0, 0], "to": [10, 0]}),
+    );
+    let line = str_of(&made["entity"]);
+    run(
+        &mut s,
+        "sketch.pattern",
+        json!({"sketch": "Stack", "entities": [line], "count": 6000, "step": ["1e-11", 0]}),
+    );
+    let _ = s.execute(
+        "feature.extrude",
+        &json!({"sketch": "Stack", "distance": 1, "name": "Body"}),
+    );
+    let status = feature_status(&mut s, "Body");
+    assert!(status.contains("too close together"), "{status}");
+    assert!(status.contains(&format!("{line}[")), "{status}");
+    // No raw number of an instance (entity and index packed into 64 bits).
+    assert!(
+        !status
+            .split(|c: char| !c.is_ascii_digit())
+            .any(|digits| digits.len() > 9),
+        "{status}"
+    );
+}
+
 /// A plate `length` wide and `height` high whose bottom edge is a chained
 /// run of `n` periods of fingers `depth` deep, half a period wide: the
 /// seed is one period from A (fixed at the origin) to B, and the far corner

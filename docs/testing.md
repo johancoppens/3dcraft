@@ -268,6 +268,8 @@ Every count is held to `bench_models/baseline.txt`: the test fails when one exce
 It is an ordinary integration test, so `cargo xtask ci` runs it with the others (about 2 to 2.5 minutes in the dev profile under load, beside binaries that take up to 12; the gate's wall time does not grow). The counts of the last run are left in `$CARGO_TARGET_TMPDIR/benchmark/last-counts.txt`, where `cargo xtask health` reads them. Timed benchmarks (`examples/regen_rows.rs`, `tests/regen_bench.rs`, `display_speed.rs`) remain for measuring in release; their numbers go in the dev log with the machine and its load.
 
 
+**Profile detection at scale** (2026-10-17). The gated tests hold the cap with a few layouts (`crates/kernel/tests/robustness.rs` › `the_cap_finishes`: a polygon at the cap, one layout refused by the bound on pairs, nested 1000-gons accepted; `profile_scale.rs`: perforated sheets and the weld table plate to their volumes, too many spline points refused). The full set is ignored and run in release when profile detection, `boxtree` or the offset changes, and the times are compared with `docs/design/sweeps.md` › *Profile detection at scale*: `cargo test --release -p craft3d-kernel --test robustness -- --ignored --nocapture the_cap_finishes_with_every_layout` (every adversarial layout at the cap, about 23 s), `--test profile_scale -- --ignored --nocapture` (detection time by size and layout, and per spline control point up to the bound, about 2.5 minutes), `--test offset_profile -- --ignored the_cap_ends_the_search_for_a_distance` (the offset's search meeting its cap).
+
 ## Geometry: intersections (`crates/geom/tests/`)
 
 What holds `geom::intersect` to its contract, as built (2026-10-13):
