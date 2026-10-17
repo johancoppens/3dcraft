@@ -261,3 +261,72 @@ pub fn rationalized(body: &Body, pad: f64, edges: bool) -> (Body, usize) {
     }
     (twin, replaced)
 }
+
+/// The same surface with the weight of control point `(i, j)` multiplied
+/// by `cu^i cv^j`. Where every span ends on a knot of full multiplicity
+/// (as the arcs above do), this is a Möbius reparametrisation of each
+/// span (*The NURBS Book* §6.1): the surface is the same point set, drawn
+/// unevenly, with the weights of a span `cu^degree` (or `cv^degree`) times
+/// further apart than before.
+pub fn skewed(surface: &NurbsSurface, cu: f64, cv: f64) -> NurbsSurface {
+    let (count_u, count_v) = surface.counts();
+    let (degree_u, degree_v) = surface.degrees();
+    let joined = |knots: &[f64], degree: usize| {
+        let inside = &knots[degree + 1..knots.len() - degree - 1];
+        inside
+            .iter()
+            .all(|k| inside.iter().filter(|&x| x == k).count() >= degree)
+    };
+    assert!(
+        joined(surface.knots_u(), degree_u) && joined(surface.knots_v(), degree_v),
+        "a span that is not joined by a full knot does not skew alone"
+    );
+    let mut weights = surface.weights().to_vec();
+    for i in 0..count_u {
+        for j in 0..count_v {
+            weights[i * count_v + j] *= cu.powi(i as i32) * cv.powi(j as i32);
+        }
+    }
+    NurbsSurface::new(
+        degree_u,
+        degree_v,
+        surface.knots_u().to_vec(),
+        surface.knots_v().to_vec(),
+        count_u,
+        count_v,
+        surface.control_points().to_vec(),
+        weights,
+    )
+    .unwrap()
+}
+
+/// The body with every NURBS face [`skewed`] so that the end weights of
+/// each span are `along_u` and `along_v` times further apart than before
+/// (a factor of `along^(1/degree)` per control point).
+pub fn skewed_apart(body: &Body, along_u: f64, along_v: f64) -> Body {
+    let mut skewed_body = body.clone();
+    for face in &mut skewed_body.faces {
+        if let Surface::Nurbs(s) = &face.surface {
+            let (du, dv) = s.degrees();
+            let root = |ratio: f64, degree: usize| ratio.powf(1.0 / degree as f64);
+            face.surface = Surface::Nurbs(skewed(s, root(along_u, du), root(along_v, dv)));
+        }
+    }
+    skewed_body
+}
+
+/// The largest ratio of two weights within one Bézier span of a surface.
+pub fn span_weight_ratio(surface: &NurbsSurface) -> f64 {
+    surface
+        .bezier_spans()
+        .unwrap()
+        .iter()
+        .map(|span| {
+            let w = span.patch.weights();
+            let (lo, hi) = w.iter().fold((f64::INFINITY, 0.0_f64), |(lo, hi), &x| {
+                (lo.min(x), hi.max(x))
+            });
+            hi / lo
+        })
+        .fold(1.0, f64::max)
+}

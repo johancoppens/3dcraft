@@ -25,7 +25,7 @@ use craft3d_math::{Frame, Transform, Vec3};
 use craft3d_tess::{TessParams, tessellate_body};
 use craft3d_testkit::trimmed::domed_block;
 use craft3d_topo::{Body, check};
-use rational_common::rationalized;
+use rational_common::{rationalized, skewed_apart, span_weight_ratio};
 use std::f64::consts::PI;
 use std::time::Instant;
 
@@ -189,6 +189,108 @@ fn the_rational_twins_are_valid_and_measure_as_the_closed_forms() {
                     meshes(&twin, k, &what);
                 }
             }
+        }
+    }
+}
+
+/// Weights far apart (2026-10-17): the rational twins with their weights
+/// skewed by a Möbius reparametrisation of every span (`skewed`), so that
+/// the weights of a span are 10, 100, 1000 and 10,000 times further apart
+/// along u, along v or both, while the faces stay the same point sets and
+/// the closed forms still hold. Before, `topo::mass_properties` settled on
+/// a cylinder skewed a thousandfold along its axis 7e-6 short (the inner
+/// panels stopped doubling before the boundary's did) and refused it at
+/// 10,000; now each inner stretch is summed in the Möbius parameter that
+/// evens out its end weights.
+#[test]
+fn twins_with_weights_far_apart_measure_as_the_closed_forms() {
+    for k in SCALES {
+        for solid in solids(k) {
+            let what = format!("{} at {k}", solid.name);
+            let (twin, _) = rationalized(&solid.body, 0.2, true);
+            let centre = mass(&solid.body).centroid.unwrap();
+            for ratio in [1.0_f64, 10.0, 100.0, 1e3, 1e4] {
+                for (along_u, along_v) in [(ratio, 1.0), (1.0, ratio), (ratio, ratio)] {
+                    let body = skewed_apart(&twin, along_u, along_v);
+                    let what = format!("{what}, weights {along_u} and {along_v} apart");
+                    let skew = body
+                        .faces
+                        .iter()
+                        .filter_map(|f| match &f.surface {
+                            Surface::Nurbs(s) => Some(span_weight_ratio(s)),
+                            _ => None,
+                        })
+                        .fold(1.0, f64::max);
+                    assert!(skew >= 0.5 * ratio, "{what}: {skew}");
+                    assert_eq!(check(&body, &tolerance(k)), [], "{what}");
+                    let m = mass(&body);
+                    near(m.volume, solid.volume * k * k * k, 1e-9, &what);
+                    near(m.area, solid.area * k * k, 1e-9, &what);
+                    assert!(
+                        m.centroid.unwrap().distance(centre) <= 1e-9 * k,
+                        "{what}: centroid"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// A block whose top is a bilinear rational patch with the weights 1, h,
+/// h, 1 at its corners: the same rectangle as the plain top, drawn so
+/// unevenly that no reparametrisation takes it out (the ratio of the
+/// products of the diagonals' weights, `1 / h²`, is the same in every
+/// parametrisation). Most of the top's area then lies, seen from the
+/// boundary integral, on a stretch of an edge `1 / h²` of it long next to
+/// a heavy corner. Before 2026-10-17 `topo::mass_properties` gave up at
+/// a hundred apart (every panel doubled seven times, and the sums still
+/// crept); the panels are now halved only where they disagree. At ten
+/// thousand apart (a stretch 1e-8 long) the sums scatter at the rounding
+/// of the boundary's parameters and the face is refused, not guessed.
+#[test]
+fn a_plate_with_weights_far_apart_measures_as_the_block() {
+    for k in SCALES {
+        let plate = boxed(k, [0.0, 0.0, 0.0], [4.0, 3.0, 2.0]);
+        let corner = |x: f64, y: f64| Vec3::new(x, y, 2.0) * k;
+        let weighted = |heavy: f64| {
+            let mut body = plate.clone();
+            body.faces[1].surface = Surface::Nurbs(
+                NurbsSurface::new(
+                    1,
+                    1,
+                    vec![0.0, 0.0, 1.0, 1.0],
+                    vec![0.0, 0.0, 1.0, 1.0],
+                    2,
+                    2,
+                    vec![
+                        corner(0.0, 0.0),
+                        corner(0.0, 3.0),
+                        corner(4.0, 0.0),
+                        corner(4.0, 3.0),
+                    ],
+                    vec![1.0, heavy, heavy, 1.0],
+                )
+                .unwrap(),
+            );
+            assert_eq!(check(&body, &tolerance(k)), []);
+            body
+        };
+        for heavy in [1.0, 10.0, 100.0, 1000.0] {
+            let what = format!("weights {heavy} apart at {k}");
+            let m = mass(&weighted(heavy));
+            near(m.volume, 24.0 * k * k * k, 1e-12, &what);
+            near(m.area, 52.0 * k * k, 1e-12, &what);
+            assert!(
+                m.centroid.unwrap().distance(Vec3::new(2.0, 1.5, 1.0) * k) <= 1e-12 * k,
+                "{what}: centroid"
+            );
+        }
+        if k == 1.0 {
+            let refused = craft3d_topo::mass_properties(&weighted(1e4));
+            assert!(
+                matches!(&refused, Err(craft3d_topo::MassError::Unsupported { what, .. }) if what.contains("does not settle")),
+                "{refused:?}"
+            );
         }
     }
 }

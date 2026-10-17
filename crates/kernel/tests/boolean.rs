@@ -807,13 +807,14 @@ fn what_is_not_supported_says_so() {
     // the chart's speed over the whole face and gave up ("too close");
     // with the bound taken near each stretch they are built, a ball at a
     // corner of the bottom and one at a corner of the top, which cuts the
-    // weighted face. `topo::mass_properties` does not settle on such a
-    // face yet (nor on the plate itself), so the results are held to the
-    // same booleans of the plain block, their twin, by point membership:
-    // 400 seeded points classified by ray casting
-    // (`boolean::contains_points`) against the block's results, and
-    // against the exact membership of block and ball. A thousand apart
-    // stays refused in the winding numbers.
+    // weighted face. The results are held to the same booleans of the
+    // plain block, their twin, by point membership: 400 seeded points
+    // classified by ray casting (`boolean::contains_points`) against the
+    // block's results, and against the exact membership of block and
+    // ball; and, since `topo::mass_properties` settles on such a face
+    // (2026-10-17, its panels halved where its sums disagree), by volume,
+    // area and centroid to 1e-9. A thousand apart stays refused in the
+    // winding numbers.
     let mut rng = Rng(20_261_015);
     for centre in [Vec3::new(0.0, 0.0, 0.0), Vec3::new(0.0, 0.0, 2.0)] {
         let ball = primitives::sphere(&Frame::WORLD.at(centre * k).unwrap(), 1.0 * k).unwrap();
@@ -851,6 +852,15 @@ fn what_is_not_supported_says_so() {
             }
             assert!(decided > 390, "{op:?}: {decided} points decided");
             assert_eq!(ours.body.faces.len(), twin.body.faces.len(), "{op:?}");
+            let (got, want) = (mass(&ours.body), mass(&twin.body));
+            let near = |a: f64, b: f64| (a - b).abs() <= 1e-9 * b.abs();
+            assert!(near(got.volume, want.volume), "{op:?}: {got:?} {want:?}");
+            assert!(near(got.area, want.area), "{op:?}: {got:?} {want:?}");
+            let centre = want.centroid.unwrap();
+            assert!(
+                got.centroid.unwrap().distance(centre) <= 1e-9 * k,
+                "{op:?}: {got:?} {want:?}"
+            );
         }
     }
     let thousand = weighted(1000.0);

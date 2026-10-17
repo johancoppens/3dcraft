@@ -314,6 +314,24 @@ fn surface_at<const N: usize>(
     (point, partial(a_u), partial(a_v))
 }
 
+/// The denominator of a NURBS surface at `(u, v)`: `Σ N_i(u) N_j(v) w_ij`,
+/// the weight of the homogeneous point (see [`NurbsSurface::weight_at`]).
+fn surface_weight_at<const N: usize>(s: &NurbsSurface, u: f64, v: f64) -> f64 {
+    let count_v = s.count_v.max(1);
+    let count_u = s.homogeneous.len() / count_v;
+    let along_u = Along::<N>::new(&s.knots_u, s.degree_u, count_u, u, false);
+    let along_v = Along::<N>::new(&s.knots_v, s.degree_v, count_v, v, false);
+    let mut rows = [ZERO; N];
+    for (point, row) in rows
+        .iter_mut()
+        .zip(s.homogeneous.chunks(count_v).skip(along_u.first))
+        .take(s.degree_u + 1)
+    {
+        *point = along_v.point(along_v.local(row));
+    }
+    along_u.point(rows).w
+}
+
 /// Picks the working room for a degree: small arrays for the usual low
 /// degrees, so clearing them costs next to nothing.
 macro_rules! sized_for {
@@ -762,6 +780,18 @@ impl NurbsSurface {
     pub fn derivatives(&self, u: f64, v: f64) -> (Vec3, Vec3, Vec3) {
         let degree = self.degree_u.max(self.degree_v);
         sized_for!(degree, surface_at(self, u, v, true))
+    }
+
+    /// The surface's denominator at `(u, v)`: `Σ N_i(u) N_j(v) w_ij`, the
+    /// weight of the homogeneous point the surface point is the quotient
+    /// of. Positive wherever the weights are. Along a line of constant u or
+    /// v and within one knot span it is a polynomial of the degree in that
+    /// direction, whose Bernstein coefficients at the ends of a stretch are
+    /// its values there (what a Möbius reparametrisation of the stretch
+    /// needs to make them equal).
+    pub fn weight_at(&self, u: f64, v: f64) -> f64 {
+        let degree = self.degree_u.max(self.degree_v);
+        sized_for!(degree, surface_weight_at(self, u, v))
     }
 }
 
@@ -1542,6 +1572,43 @@ mod tests {
         let knots = vec![0.0, 0.0, 0.0, 0.0, 0.3, 0.6, 0.6, 1.0, 1.0, 1.0, 1.0];
         let weights = vec![1.0, 2.0, 0.5, 1.0, 3.0, 1.0, 0.7];
         NurbsCurve::new(3, knots, ctrl, weights).unwrap()
+    }
+
+    /// `weight_at` is the denominator `Σ N_i N_j w_ij`: one for every
+    /// weight one, the corner weight at a clamped corner, and the bilinear
+    /// blend of the four weights of a bilinear patch.
+    #[test]
+    fn the_weight_of_a_surface_is_its_denominator() {
+        let ctrl = vec![
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 3.0, 0.0),
+            Vec3::new(4.0, 0.0, 0.0),
+            Vec3::new(4.0, 3.0, 1.0),
+        ];
+        let knots = vec![0.0, 0.0, 1.0, 1.0];
+        let weights = [1.0, 7.0, 3.0, 0.5];
+        let patch =
+            NurbsSurface::new(1, 1, knots.clone(), knots, 2, 2, ctrl, weights.to_vec()).unwrap();
+        for (u, v) in [(0.0, 0.0), (1.0, 1.0), (0.3, 0.8), (0.9, 0.05)] {
+            let want = weights[0] * (1.0 - u) * (1.0 - v)
+                + weights[1] * (1.0 - u) * v
+                + weights[2] * u * (1.0 - v)
+                + weights[3] * u * v;
+            assert!(
+                (patch.weight_at(u, v) - want).abs() <= 1e-14 * want,
+                "{u} {v}"
+            );
+        }
+        let polynomial = NurbsSurface::from_bezier(
+            &BezierPatch::new(
+                1,
+                1,
+                vec![Vec3::ZERO, Vec3::Y, Vec3::X, Vec3::new(1.0, 1.0, 1.0)],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(polynomial.weight_at(0.4, 0.7), 1.0);
     }
 
     #[test]
