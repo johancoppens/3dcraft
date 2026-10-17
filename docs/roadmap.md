@@ -71,6 +71,12 @@ The developer's first priority (2026-10-13): what makes 3DCraft pro. Each item i
 - [ ] Speed: what is left is the booleans with a freeform face (the chart's projections and the marcher) and the measurement of their results.
 - [ ] Tolerant modelling (item 4), before STEP import.
 
+**Oracles owed** (the developer, 2026-10-17; approaches seen in another project's test setup, built our own way):
+
+- [ ] Random multi-step designs: a seeded generator of feature sequences that places operands on a grid and on the body's own faces, so coincidence and tangency are common; each seed in its own process with a timeout, shrunk automatically to the fewest steps that still fail; a refusal counts apart from a wrong result, and the rate of each goes into the morning health report.
+- [ ] An action matrix as a ratchet: every local operation (fillet, chamfer, shell, offset, delete face, mirror, …) tried on every face and edge of the showcase models; an action that succeeded before and fails now is a regression, one that fails before and succeeds now raises the floor.
+- [ ] A cheap check after every boolean, beside `topo::check`: outside the tool's reach the result equals the target, a subtract never adds volume and a union never loses any.
+
 ## Milestones in detail
 
 ### T0: Teapot (fast track)
