@@ -119,6 +119,30 @@ pub fn least_work(runs: usize, mut f: impl FnMut()) -> Duration {
         .unwrap_or(Duration::ZERO)
 }
 
+/// Work [`work_per_run`] measures at least, in one go: the thread's CPU
+/// time is brought up to date only when the scheduler looks at the thread
+/// (at a tick or a switch, every few milliseconds), so a run shorter than
+/// that can read as no work at all (gate 95: 0 ns against 1.5 ms).
+const MIN_SAMPLE: Duration = Duration::from_millis(20);
+/// Runs [`work_per_run`] makes at most, however short each one is.
+const MAX_REPEATS: u32 = 10_000;
+
+/// The work of one run of `f` on this thread ([`WorkClock`]): `f` is run
+/// again until the clock has counted [`MIN_SAMPLE`] (or [`MAX_REPEATS`]
+/// runs, or as long on the wall), and the work is shared out over the runs.
+pub fn work_per_run(mut f: impl FnMut()) -> Duration {
+    let clock = WorkClock::start();
+    let mut runs = 0u32;
+    loop {
+        f();
+        runs = runs.saturating_add(1);
+        let work = clock.elapsed();
+        if work >= MIN_SAMPLE || runs >= MAX_REPEATS || clock.wall.elapsed() >= MIN_SAMPLE * 50 {
+            return work / runs.max(1);
+        }
+    }
+}
+
 /// How the work of `run(small)` and `run(large)` compare.
 #[derive(Clone, Copy, Debug)]
 pub struct Growth {
@@ -143,7 +167,8 @@ const SMALL_RUNS: usize = 3;
 
 /// Asserts that the work of `run(large)` is less than `limit` times that
 /// of `run(small)` (plus `slack`), measured on this thread
-/// ([`WorkClock`]). Each round runs the small size [`SMALL_RUNS`] times
+/// ([`work_per_run`], so a run shorter than the clock's grain is repeated
+/// until it can be measured). Each round runs the small size [`SMALL_RUNS`] times
 /// and the large one once, and the least of each over the rounds so far
 /// counts: contention only ever adds work, so the least is the closest to
 /// the work itself. It passes as soon as the ratio is below the limit
@@ -165,9 +190,9 @@ pub fn assert_growth_below(
     };
     for _ in 0..ROUNDS {
         for _ in 0..SMALL_RUNS {
-            least.small = least.small.min(work_of(|| run(small)).1);
+            least.small = least.small.min(work_per_run(|| run(small)));
         }
-        least.large = least.large.min(work_of(|| run(large)).1);
+        least.large = least.large.min(work_per_run(|| run(large)));
         if least.ratio(slack) < limit {
             return;
         }
@@ -228,6 +253,15 @@ mod tests {
             "{:?}",
             clock.elapsed()
         );
+    }
+
+    #[test]
+    fn a_run_shorter_than_the_clock_grain_is_still_measured() {
+        let work = work_per_run(|| {
+            std::hint::black_box(spin(20_000));
+        });
+        assert!(work > Duration::ZERO, "{work:?}");
+        assert!(work < Duration::from_millis(5), "{work:?}");
     }
 
     #[test]
