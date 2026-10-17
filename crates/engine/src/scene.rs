@@ -1080,8 +1080,7 @@ fn instance_polyline(
         }
     };
     points.iter().all(|p| p.is_finite()).then(|| ScenePolyline {
-        entity: craft3d_doc::CurveRef::decode(made.id)
-            .map_or_else(|| format!("e{}", made.id), |c| c.to_string()),
+        entity: solved.curve_name(made.id),
         curve,
         construction,
         points,

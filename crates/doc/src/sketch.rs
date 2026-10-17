@@ -2047,6 +2047,12 @@ impl Sketch {
         }
     }
 
+    /// The innermost pattern whose own seed has the point `of`, if there
+    /// is one: where the levels of an image point of it start.
+    pub fn image_owner(&self, of: EntityId) -> Option<PatternId> {
+        self.owner_of(of, "").ok()
+    }
+
     /// The innermost pattern whose own seed has the point `of`: where the
     /// levels of an image point of it start. Several patterns may have it
     /// only when each holds the next (a point shared by a seed curve and

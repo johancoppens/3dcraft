@@ -475,9 +475,9 @@ fn draw_segment(
                 None => (s.add_point(x, y)?, None),
             }
         }
-        (End::Point(PointArg::Image(of, index)), _) => {
+        (End::Point(PointArg::Image(of, path)), _) => {
             return invalid(format!(
-                "{of}[{index}]: an image point as the end of a path segment is not supported yet; draw that segment with sketch.line"
+                "{of}[{path}]: an image point as the end of a path segment is not supported yet; draw that segment with sketch.line"
             ));
         }
         (End::Point(point), _) => (point.place(s)?, None),

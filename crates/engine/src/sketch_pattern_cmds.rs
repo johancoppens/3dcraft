@@ -10,11 +10,11 @@
 
 use crate::commands::{Run, fail, spec};
 use crate::params::Params;
-use crate::sketch_cmds::{change, entity_id, ids, local_id, sketch_ref, sketch_result};
+use crate::sketch_cmds::{EntityArg, change, entity_id, ids, local_id, sketch_ref, sketch_result};
 use crate::{CommandError, CommandSpec, Session};
 use craft3d_doc::{
-    CenterRef, CurveIndex, CurveRef, EntityId, Expr, Geometry, PatternId, SecondDirection, Sketch,
-    SketchPatternLayout,
+    CenterRef, CurveIndex, CurvePath, EntityId, Expr, Geometry, InstanceIndex,
+    MAX_PATTERN_INSTANCES, PatternId, SecondDirection, Sketch, SketchPatternLayout,
 };
 use craft3d_regen::{ConstraintState, Placed, SketchResult};
 use serde_json::{Value, json};
@@ -22,8 +22,8 @@ use serde_json::{Value, json};
 pub(crate) static SPECS: &[CommandSpec] = &[spec!(
     "sketch.pattern",
     "Sketch Pattern",
-    r#"{"sketch": id or name, "entities": [entity id, ...], "count": expr, "step": [expr, expr], "count2": expr, "step2": [expr, expr], "chain": [point id, point id], "angle": expr, "center": point id or [expr, expr], "replace": pattern id}"#,
-    "Repeats seed entities of a sketch (lines, arcs, circles, splines and points; the points of curves come along) as rigid images of their solved shape: count instances, the seed's included (a whole number of at least 1, an expression such as \"floor(span / pitch)\"). step makes a row, instance k moved by k * step in the sketch's axes; count2 and step2 add rows: a grid. chain alone makes a chained run: the seed runs from the first point to the second, and each instance starts where the one before ends (the step is to - from, as solved), so the joints are shared exactly and a profile closes at any count. angle with center (a point of the sketch, or fixed coordinates) turns instance k by k * angle counter-clockwise; with chain as well it is a ring of runs, whose end has to be its start turned by angle. The instances are made at every regeneration from the solved seed and named after it: e7[3] is instance 3 of the seed curve e7 (e7[2,4] in a grid), so F2:side(e7[3]) is the side of instance 3, and a reference to an instance that a smaller count no longer has fails rather than moving to another. A point of an instance can be constrained or ended on where a point is taken: \"e5[3]\", or \"e5[last]\" for the last instance whatever the count (coincident with a fixed point, it lets the solver find the step of a run). replace edits pattern \"p1\": what is not given stays. Returns the pattern's id and its instances.",
+    r#"{"sketch": id or name, "entities": [entity id, ...], "patterns": [pattern id, ...], "count": expr, "step": [expr, expr], "count2": expr, "step2": [expr, expr], "chain": [point id, point id], "angle": expr, "center": point id or [expr, expr], "skip": [instance, ...], "replace": pattern id}"#,
+    "Repeats seed entities of a sketch (lines, arcs, circles, splines and points; the points of curves come along) as rigid images of their solved shape: count instances, the seed's included (a whole number of at least 1, an expression such as \"floor(span / pitch)\"). step makes a row, instance k moved by k * step in the sketch's axes; count2 and step2 add rows: a grid. chain alone makes a chained run: the seed runs from the first point to the second, and each instance starts where the one before ends (the step is to - from, as solved), so the joints are shared exactly and a profile closes at any count. angle with center (a point of the sketch, or fixed coordinates) turns instance k by k * angle counter-clockwise; with chain as well it is a ring of runs, whose end has to be its start turned by angle. The instances are made at every regeneration from the solved seed and named after it: e7[3] is instance 3 of the seed curve e7 (e7[2,4] in a grid), so F2:side(e7[3]) is the side of instance 3, and a reference to an instance that a smaller count no longer has fails rather than moving to another. A point of an instance can be constrained or ended on where a point is taken: \"e5[3]\", or \"e5[last]\" for the last instance whatever the count (coincident with a fixed point, it lets the solver find the step of a run). patterns puts whole patterns in the seed (a pattern of a pattern, at most three levels deep; each pattern in one seed): the run of tabs p1 repeated cell by cell. Their instances are named innermost first, e3[2][1] being instance 2 of the inner pattern in instance 1 of the outer one, and e3[2] in instance 0 (so wrapping renames nothing); a point of them is \"e8[last][last]\", and a seed curve may start on an image point of a pattern in its seed (\"e8[last]\"), as may a chain. skip leaves out instances of this pattern's own level, by number (3, \"3\", or [2, 4] / \"2,4\" in a grid): never instance 0; one past the count is kept and back when the count grows; not in a chained run or a ring yet. replace edits pattern \"p1\": what is not given stays. Returns the pattern's id and its instances.",
     doc: true,
     sketch_pattern
 )];
@@ -61,21 +61,54 @@ fn expr2(p: &Params, key: &str) -> Result<Option<[Expr; 2]>, CommandError> {
     ]))
 }
 
-/// The two points of `chain`.
-fn chain_param(p: &Params) -> Result<Option<[EntityId; 2]>, CommandError> {
+/// The two points of `chain`: ids, or image points of a pattern in the
+/// seed (`"e8[last]"`, made in the same edit).
+fn chain_param(p: &Params) -> Result<Option<[EntityArg; 2]>, CommandError> {
     let Some(value) = p.get("chain") else {
         return Ok(None);
     };
     let command = p.command();
     match value.as_array().map(Vec::as_slice) {
         Some([from, to]) => Ok(Some([
-            entity_id(command, "chain", from)?,
-            entity_id(command, "chain", to)?,
+            EntityArg::parse(command, "chain", from)?,
+            EntityArg::parse(command, "chain", to)?,
         ])),
         _ => fail(format!(
             "{command}: `chain` must be two point ids [from, to], the ends of the seed's run"
         )),
     }
+}
+
+/// The id an entity argument stands for before its image point is made:
+/// the seed point of an image, which [`with_chain`] replaces.
+fn placeholder(arg: EntityArg) -> EntityId {
+    match arg {
+        EntityArg::Id(id) => id,
+        EntityArg::Image(of, _) => of,
+    }
+}
+
+/// The layout with the ends of its chain as they are in the sketch, the
+/// image points among them made.
+fn with_chain(
+    sketch: &mut Sketch,
+    mut layout: SketchPatternLayout,
+    chain: Option<[EntityArg; 2]>,
+) -> Result<SketchPatternLayout, craft3d_doc::SketchError> {
+    let Some([from, to]) = chain else {
+        return Ok(layout);
+    };
+    let (a, b) = (from.place(sketch)?, to.place(sketch)?);
+    match &mut layout {
+        SketchPatternLayout::Chain { from, to } => {
+            (*from, *to) = (a, b);
+        }
+        SketchPatternLayout::Circular {
+            chain: Some(ends), ..
+        } => *ends = [a, b],
+        _ => {}
+    }
+    Ok(layout)
 }
 
 fn center_param(p: &Params) -> Result<Option<CenterRef>, CommandError> {
@@ -90,13 +123,17 @@ fn center_param(p: &Params) -> Result<Option<CenterRef>, CommandError> {
     }
 }
 
-/// The layout the params give, if they give one.
-fn layout_param(p: &Params) -> Result<Option<SketchPatternLayout>, CommandError> {
+/// The layout the params give, if they give one; the ends of a chain that
+/// are image points stand for their seed points until [`with_chain`].
+fn layout_param(
+    p: &Params,
+    chain: Option<[EntityArg; 2]>,
+) -> Result<Option<SketchPatternLayout>, CommandError> {
     let command = p.command();
     let step = expr2(p, "step")?;
     let step2 = expr2(p, "step2")?;
     let count2 = p.expr("count2")?.map(Expr::new);
-    let chain = chain_param(p)?;
+    let chain = chain.map(|[a, b]| [placeholder(a), placeholder(b)]);
     let angle = p.expr("angle")?.map(Expr::new);
     let center = center_param(p)?;
     if step2.is_some() != count2.is_some() {
@@ -141,14 +178,68 @@ fn layout_param(p: &Params) -> Result<Option<SketchPatternLayout>, CommandError>
     }
 }
 
+/// The instances `skip` leaves out: numbers (`3`, `"3"`) or, in a grid,
+/// pairs (`[2, 4]`, `"2,4"`), in ascending order without repeats.
+fn skip_param(p: &Params) -> Result<Option<Vec<InstanceIndex>>, CommandError> {
+    let command = p.command();
+    let Some(value) = p.get("skip") else {
+        return Ok(None);
+    };
+    let Value::Array(items) = value else {
+        return fail(format!(
+            "{command}: `skip` must be an array of instances, such as [3, 5] or [[2, 4]] in a grid"
+        ));
+    };
+    if items.len() > MAX_PATTERN_INSTANCES {
+        return fail(format!(
+            "{command}: a pattern skips at most {MAX_PATTERN_INSTANCES} instances"
+        ));
+    }
+    let wrong = |item: &Value| {
+        let shown: String = item.to_string().chars().take(40).collect();
+        CommandError::new(format!(
+            "{command}: `skip`: {shown} is not an instance; give a whole number from 1 (3 or \"3\"), or two in a grid ([2, 4] or \"2,4\")"
+        ))
+    };
+    let number = |item: &Value| -> Result<u32, CommandError> {
+        item.as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .ok_or_else(|| wrong(item))
+    };
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let index = match item {
+            Value::Number(_) => InstanceIndex::At(number(item)?),
+            Value::String(text) => match InstanceIndex::parse(text) {
+                Some(index @ (InstanceIndex::At(_) | InstanceIndex::Grid(_))) => index,
+                _ => return Err(wrong(item)),
+            },
+            Value::Array(pair) => match pair.as_slice() {
+                [i, j] => InstanceIndex::Grid([number(i)?, number(j)?]),
+                _ => return Err(wrong(item)),
+            },
+            _ => return Err(wrong(item)),
+        };
+        out.push(index);
+    }
+    let key = |index: &InstanceIndex| match *index {
+        InstanceIndex::At(k) => (0, k, 0),
+        InstanceIndex::Grid([i, j]) => (1, i, j),
+        InstanceIndex::Last => (2, 0, 0),
+    };
+    out.sort_by_key(key);
+    out.dedup();
+    Ok(Some(out))
+}
+
 fn sketch_pattern(session: &mut Session, params: &Value) -> Run {
     const COMMAND: &str = "sketch.pattern";
     let p = Params::new(
         COMMAND,
         params,
         &[
-            "sketch", "entities", "count", "step", "count2", "step2", "chain", "angle", "center",
-            "replace",
+            "sketch", "entities", "patterns", "count", "step", "count2", "step2", "chain", "angle",
+            "center", "skip", "replace",
         ],
     )?;
     let id = sketch_ref(session, &p, COMMAND)?;
@@ -173,8 +264,31 @@ fn sketch_pattern(session: &mut Session, params: &Value) -> Run {
             ));
         }
     };
+    let inner = match p.get("patterns") {
+        None => None,
+        Some(Value::Array(items)) => {
+            if items.len() > craft3d_doc::MAX_SKETCH_PATTERNS {
+                return fail(format!(
+                    "{COMMAND}: a pattern repeats at most {} patterns",
+                    craft3d_doc::MAX_SKETCH_PATTERNS
+                ));
+            }
+            let mut inner = Vec::with_capacity(items.len());
+            for item in items {
+                inner.push(pattern_id(COMMAND, "patterns", item)?);
+            }
+            Some(inner)
+        }
+        Some(_) => {
+            return fail(format!(
+                "{COMMAND}: `patterns` must be an array of pattern ids, such as [\"p1\"]"
+            ));
+        }
+    };
+    let skip = skip_param(&p)?;
     let count = p.expr("count")?.map(Expr::new);
-    let layout = layout_param(&p)?;
+    let chain = chain_param(&p)?;
+    let layout = layout_param(&p, chain)?;
     let replace = p
         .get("replace")
         .map(|v| pattern_id(COMMAND, "replace", v))
@@ -182,8 +296,10 @@ fn sketch_pattern(session: &mut Session, params: &Value) -> Run {
 
     let (pattern, removal) = match replace {
         None => {
-            let Some(seed) = seed else {
-                return Err(p.missing("entities"));
+            let seed = match (seed, &inner) {
+                (Some(seed), _) => seed,
+                (None, Some(inner)) if !inner.is_empty() => Vec::new(),
+                (None, _) => return Err(p.missing("entities")),
             };
             let Some(count) = count else {
                 return Err(p.missing("count"));
@@ -194,7 +310,14 @@ fn sketch_pattern(session: &mut Session, params: &Value) -> Run {
                 ));
             };
             let made = change(session, COMMAND, "Add sketch pattern", id, |s| {
-                s.add_pattern(seed, count, layout)
+                let layout = with_chain(s, layout, chain)?;
+                s.add_nested_pattern(
+                    seed,
+                    inner.unwrap_or_default(),
+                    count,
+                    layout,
+                    skip.unwrap_or_default(),
+                )
             })?;
             (made, None)
         }
@@ -205,11 +328,17 @@ fn sketch_pattern(session: &mut Session, params: &Value) -> Run {
                         "the sketch has no pattern {pattern}"
                     )));
                 };
-                s.replace_pattern(
+                let layout = match layout {
+                    Some(layout) => with_chain(s, layout, chain)?,
+                    None => old.layout,
+                };
+                s.replace_nested_pattern(
                     pattern,
                     seed.unwrap_or(old.seed),
+                    inner.unwrap_or(old.patterns),
                     count.unwrap_or(old.count),
-                    layout.unwrap_or(old.layout),
+                    layout,
+                    skip.unwrap_or(old.skip),
                 )
             })?;
             (pattern, Some(removal))
@@ -242,6 +371,10 @@ fn sketch_pattern(session: &mut Session, params: &Value) -> Run {
                     .collect();
                 map.insert("constraintsDeleted".into(), gone.into());
             }
+            if !removal.patterns.is_empty() {
+                let gone: Vec<String> = removal.patterns.iter().map(ToString::to_string).collect();
+                map.insert("patternsDeleted".into(), gone.into());
+            }
         }
     }
     sketch_result(session, id, own)
@@ -272,6 +405,24 @@ pub(crate) fn patterns_json(sketch: &Sketch, solved: Option<&SketchResult>) -> V
             let Some(map) = entry.as_object_mut() else {
                 return entry;
             };
+            // A tree of patterns: the patterns in its seed, the one it is
+            // in, and the levels of the names of its curves.
+            let levels = sketch.pattern_levels(pattern.id);
+            if !pattern.patterns.is_empty() {
+                let inner: Vec<String> = pattern.patterns.iter().map(ToString::to_string).collect();
+                map.insert("patterns".into(), inner.into());
+            }
+            if let Some(parent) = sketch.parent_pattern(pattern.id) {
+                map.insert("in".into(), parent.to_string().into());
+            }
+            if levels.len() > 1 || !pattern.patterns.is_empty() {
+                let shown: Vec<String> = levels.iter().map(ToString::to_string).collect();
+                map.insert("levels".into(), shown.into());
+            }
+            if !pattern.skip.is_empty() {
+                let shown: Vec<String> = pattern.skip.iter().map(ToString::to_string).collect();
+                map.insert("skip".into(), shown.into());
+            }
             let pair = |[x, y]: &[Expr; 2]| json!([x.source(), y.source()]);
             match &pattern.layout {
                 SketchPatternLayout::Linear { step, second } => {
@@ -315,27 +466,55 @@ pub(crate) fn patterns_json(sketch: &Sketch, solved: Option<&SketchResult>) -> V
                 let [a, b] = result.counts;
                 map.insert("instances".into(), result.instances().into());
                 map.insert("counts".into(), json!([a, b]));
+                if !result.inactive.is_empty() {
+                    let shown: Vec<String> =
+                        result.inactive.iter().map(ToString::to_string).collect();
+                    map.insert("inactive".into(), shown.into());
+                }
+                // Every level around a seed curve of this pattern: the
+                // instances of each, and of the whole tree.
+                let around: Vec<&craft3d_regen::PatternResult> = levels
+                    .iter()
+                    .filter_map(|id| solved.and_then(|s| s.patterns.iter().find(|r| r.id == *id)))
+                    .collect();
+                if around.len() > 1 {
+                    let total = around
+                        .iter()
+                        .try_fold(1usize, |n, r| n.checked_mul(r.instances()));
+                    map.insert("allInstances".into(), total.map_or(Value::Null, Value::from));
+                }
                 if let Placed::Turn { .. } = result.placed {
                     map.insert("closes".into(), result.closes.into());
                 }
                 if let Some(chain) = result.chain {
                     map.insert("chainState".into(), state_name(chain).into());
                 }
-                let last = |entity: u64| {
-                    let index = if result.grid {
-                        CurveIndex::Grid(a.saturating_sub(1), b.saturating_sub(1))
-                    } else {
-                        CurveIndex::At(a.saturating_sub(1))
-                    };
-                    CurveRef { entity, index }.to_string()
-                };
+                // The last instance on every level, the innermost first.
+                let last: Vec<CurveIndex> = around
+                    .iter()
+                    .map(|r| {
+                        let (i, j) = r
+                            .resolve(craft3d_doc::InstanceIndex::Last)
+                            .unwrap_or((0, 0));
+                        if r.grid {
+                            CurveIndex::Grid(i, j)
+                        } else {
+                            CurveIndex::At(i)
+                        }
+                    })
+                    .collect();
                 let names: Vec<Value> = curves
                     .iter()
                     .map(|e| {
                         json!({
                             "seed": e.id.to_string(),
-                            "last": last(e.id.0),
-                            "run": CurveRef { entity: e.id.0, index: CurveIndex::All }.to_string(),
+                            // One level: the index as it is (`e7[0]`
+                            // at one instance), as before nesting.
+                            "last": match last.as_slice() {
+                                [index] => craft3d_doc::CurveRef { entity: e.id.0, index: *index }.to_string(),
+                                _ => CurvePath::of_levels(e.id.0, &last).to_string(),
+                            },
+                            "run": CurvePath::of_levels(e.id.0, &[CurveIndex::All]).to_string(),
                         })
                     })
                     .collect();

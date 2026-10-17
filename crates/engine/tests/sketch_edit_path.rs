@@ -417,9 +417,12 @@ fn undo_redo_and_deletions_keep_the_session_equal_to_its_file() {
     let dir = dir("w1-undo");
     let mut s = replay(&dir, include_str!("edit_path/w1-run-end.steps.json"));
     let at = |state: &Value| point(state, "Edge", "e11")[0];
+    // The carried point lands on its root to rounding (the last bits are
+    // the path's); undone, it is back on the stored numbers exactly.
+    let near = |got: f64, want: f64| (got - want).abs() <= 1e-12 * want;
     set(&mut s, &[("n", "10")]);
     let up = equals_a_fresh_open(&mut s, &dir, "undo-10.3dcraft");
-    assert_eq!(at(&up), 101.0);
+    assert!(near(at(&up), 101.0), "{}", at(&up));
     run(&mut s, "edit.undo", json!({}));
     let undone = equals_a_fresh_open(&mut s, &dir, "undo-3.3dcraft");
     assert_eq!(at(&undone), 31.0);
@@ -430,7 +433,7 @@ fn undo_redo_and_deletions_keep_the_session_equal_to_its_file() {
     run(&mut s, "edit.undo", json!({}));
     set(&mut s, &[("n", "10")]);
     let again = equals_a_fresh_open(&mut s, &dir, "again-10.3dcraft");
-    assert_eq!(at(&again), 101.0);
+    assert!(near(at(&again), 101.0), "{}", at(&again));
 
     // The line on the run's end deleted (its image point stays, with its
     // place), then a line of the seed: whatever that leaves of the run and

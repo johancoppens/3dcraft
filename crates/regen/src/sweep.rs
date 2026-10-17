@@ -59,7 +59,10 @@ pub(crate) fn build(
                 KernelError::DegenerateCurve { .. }
                 | KernelError::DuplicateCurveId { .. }
                 | KernelError::TooManyCurves { .. } => {
-                    format!("path: helix `{along}`: {}", profile_error(&error))
+                    format!(
+                        "path: helix `{along}`: {}",
+                        profile_error(&error, &made.solved.curve_ids)
+                    )
                 }
                 other => format!("path: helix `{along}`: {other}"),
             }
@@ -84,7 +87,10 @@ pub(crate) fn build(
             KernelError::DegenerateCurve { .. }
             | KernelError::DuplicateCurveId { .. }
             | KernelError::TooManyCurves { .. } => {
-                format!("path: sketch `{along}`: {}", profile_error(&error))
+                format!(
+                    "path: sketch `{along}`: {}",
+                    profile_error(&error, &path.solved.curve_ids)
+                )
             }
             other => format!("path: {other}"),
         })?

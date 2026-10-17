@@ -70,6 +70,11 @@ pub(crate) fn build(
             format!("sections: section {number}: {reason}")
         })?;
         let name = made.name;
+        if !made.solved.curve_ids.is_empty() {
+            return Err(format!(
+                "sections: section {number}: sketch `{name}` has nested patterns; a section of a loft made by a pattern of a pattern is not supported yet"
+            ));
+        }
         let [profile] = made.profiles.as_slice() else {
             return Err(format!(
                 "sections: section {number}: sketch `{name}` has {} closed profiles; a section of a loft is one closed loop",
