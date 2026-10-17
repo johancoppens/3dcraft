@@ -3556,3 +3556,145 @@ fn a_version_16_file_with_a_variable_named_like_a_new_function_opens_renamed() {
     );
     assert!(from_manifest_json(current.as_bytes()).is_err());
 }
+
+/// Nested sketch patterns (version 21): a pattern's `patterns` and
+/// `skip`, an image point of an image point, and names with an index per
+/// level.
+#[test]
+fn nested_sketch_patterns_are_written_like_this_and_round_trip() {
+    use craft3d_doc::{InstanceIndex, SketchPatternLayout};
+    let mut doc = small();
+    let mut sketch = Sketch::new(SketchPlane::default());
+    let a = sketch.add_point(0.0, 0.0).unwrap();
+    let b = sketch.add_point(1.0, 0.0).unwrap();
+    let tab = sketch.add_line(a, b, false).unwrap();
+    let chain = |from, to| SketchPatternLayout::Chain { from, to };
+    let p1 = sketch
+        .add_pattern(vec![tab], Expr::new("k"), chain(a, b))
+        .unwrap();
+    let end = sketch.image_point(b, InstanceIndex::Last).unwrap();
+    let far = sketch.add_point(3.0, 0.0).unwrap();
+    let spacer = sketch.add_line(end, far, false).unwrap();
+    let p2 = sketch
+        .add_nested_pattern(
+            vec![spacer],
+            vec![p1],
+            Expr::new("n"),
+            chain(a, far),
+            vec![],
+        )
+        .unwrap();
+    let corner = sketch
+        .image_path(b, &[InstanceIndex::Last, InstanceIndex::Last])
+        .unwrap();
+    let hole = sketch.add_point(0.0, -5.0).unwrap();
+    let disc = sketch.add_circle(hole, 0.5, false).unwrap();
+    sketch
+        .add_nested_pattern(
+            vec![disc],
+            vec![],
+            Expr::new("6"),
+            SketchPatternLayout::Linear {
+                step: [Expr::new("2"), Expr::new("0")],
+                second: None,
+            },
+            vec![InstanceIndex::At(3)],
+        )
+        .unwrap();
+    doc.add_feature(Some("Edge"), FeatureKind::Sketch(sketch))
+        .unwrap();
+    // A name with an index per level, in a sketch on a face.
+    let mut on = Sketch::new(SketchPlane::Face {
+        face: "F9:side(e3[2][1])".parse().unwrap(),
+        offset: Expr::new("0"),
+    });
+    on.add_point(0.0, 0.0).unwrap();
+    doc.add_feature(Some("Mark"), FeatureKind::Sketch(on))
+        .unwrap();
+    doc.validate().unwrap();
+    let json = to_manifest_json(&doc).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["format_version"], 21);
+    let kind = &value["document"]["features"][1]["kind"];
+    assert_eq!(kind["patterns"][1]["patterns"], serde_json::json!([p1.0]));
+    assert_eq!(kind["patterns"][2]["skip"], serde_json::json!([{"at": 3}]));
+    let image = kind["entities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["id"] == corner.0)
+        .unwrap();
+    assert_eq!(
+        image["geometry"],
+        serde_json::json!({"type": "image", "of": end.0, "pattern": p2.0, "index": "last"})
+    );
+    // The curve's own number, then one word for the outer level: bits 32
+    // to 47 zero, tag 5 from bit 48, the index plus one.
+    let (curve, cell) = (3 + (3_u64 << 32), (5_u64 << 48) + 2);
+    assert_eq!(
+        value["document"]["features"][2]["kind"]["plane"]["face"],
+        serde_json::json!({"feature": 9, "role": "side", "sources": [curve, cell]})
+    );
+    assert_eq!(from_manifest_json(json.as_bytes()).unwrap(), doc);
+    assert_eq!(from_bytes(&to_bytes(&doc).unwrap()).unwrap(), doc);
+    // What a file may not hold: a cycle, a pattern in two seeds, four
+    // levels, an image of an image after it, a name whose levels are not
+    // in the form names keep.
+    for (from, to) in [
+        (
+            "\"count\": \"k\",".to_string(),
+            format!("\"count\": \"k\",\n            \"patterns\": [{}],", p2.0),
+        ),
+        (
+            "\"count\": \"6\",".to_string(),
+            format!("\"count\": \"6\",\n            \"patterns\": [{}],", p1.0),
+        ),
+        // A trailing level at instance 0, a continuation word without a
+        // curve, more levels than a tree has.
+        (cell.to_string(), ((5_u64 << 48) + 1).to_string()),
+        (format!("{curve},"), String::new()),
+        (cell.to_string(), format!("{cell}, {cell}, {cell}")),
+    ] {
+        let broken = json.replacen(&from, &to, 1);
+        assert_ne!(broken, json, "{from}");
+        assert!(
+            from_manifest_json(broken.as_bytes()).is_err(),
+            "{from} -> {to}"
+        );
+    }
+}
+
+/// A version-20 file (patterns of one level, image places) opens
+/// unchanged: version 21 adds fields, and changes the meaning of none.
+#[test]
+fn a_version_20_file_opens_unchanged_and_is_saved_as_the_current_version() {
+    use craft3d_doc::{InstanceIndex, SketchPatternLayout};
+    let mut doc = small();
+    let mut sketch = Sketch::new(SketchPlane::default());
+    let a = sketch.add_point(0.0, 0.0).unwrap();
+    let b = sketch.add_point(1.0, 0.0).unwrap();
+    let run = sketch.add_line(a, b, false).unwrap();
+    sketch
+        .add_pattern(
+            vec![run],
+            Expr::new("4"),
+            SketchPatternLayout::Chain { from: a, to: b },
+        )
+        .unwrap();
+    sketch.image_point(b, InstanceIndex::Last).unwrap();
+    doc.add_feature(Some("Run"), FeatureKind::Sketch(sketch))
+        .unwrap();
+    let mut on = Sketch::new(SketchPlane::Face {
+        face: "F3:side(e3[2])".parse().unwrap(),
+        offset: Expr::new("0"),
+    });
+    on.add_point(0.0, 0.0).unwrap();
+    doc.add_feature(Some("Mark"), FeatureKind::Sketch(on))
+        .unwrap();
+    let json = to_manifest_json(&doc).unwrap();
+    let old = json.replacen(&version_field(), "\"format_version\": 20", 1);
+    assert_ne!(old, json);
+    let opened = from_manifest_json(old.as_bytes()).unwrap();
+    assert_eq!(opened, doc);
+    assert_eq!(to_manifest_json(&opened).unwrap(), json);
+}

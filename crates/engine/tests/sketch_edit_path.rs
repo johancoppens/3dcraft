@@ -771,3 +771,123 @@ fn a_conflict_is_reported_before_a_carry_that_stops() {
     );
     assert_eq!(stored_sketches(&dir, "conflict-10.3dcraft"), stored);
 }
+
+/// W1 with nested patterns: a rib edge of `n` cells of `k` tabs (a chained
+/// run of the tab run and a spacer) and, after the end of the tabs of the
+/// last cell (`e5[last][last]`, an image of an image), a construction
+/// line one unit long to a point `q`. Both counts jump and come back: `q`
+/// follows its image without folding every time, returns to its start,
+/// and every state is what a fresh open of its file gives.
+#[test]
+fn geometry_after_a_run_of_runs_follows_both_counts() {
+    let dir = dir("w1-nested");
+    let mut s = session(&dir);
+    let (w, c, p, g, h) = (1.0, 0.25, 3.0, 2.0, 6.0);
+    run(&mut s, "file.new", json!({"units": "mm"}));
+    set(&mut s, &[("k", "2"), ("n", "3")]);
+    run(&mut s, "sketch.create", json!({"name": "Edge"}));
+    let made = run(
+        &mut s,
+        "sketch.polyline",
+        json!({"sketch": "Edge", "points": [[0, 0], [0, c], [w, c], [w, 0], [p, 0]]}),
+    );
+    let ids = |v: &Value| -> Vec<String> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e.as_str().unwrap().to_string())
+            .collect()
+    };
+    let points = ids(&made["points"]);
+    let lines = ids(&made["lines"]);
+    let (a, b) = (points[0].clone(), points[4].clone());
+    let constrain = |s: &mut Session, kind: &str, entities: Value, value: Option<f64>| {
+        let mut params = json!({"sketch": "Edge", "type": kind, "entities": entities});
+        if let Some(value) = value {
+            params["value"] = json!(value);
+        }
+        run(s, "sketch.constrain", params)
+    };
+    constrain(&mut s, "fixed", json!([a]), None);
+    constrain(&mut s, "vertical", json!([lines[0]]), None);
+    constrain(&mut s, "distance", json!([lines[0]]), Some(c));
+    constrain(&mut s, "horizontal", json!([lines[1]]), None);
+    constrain(&mut s, "distance", json!([lines[1]]), Some(w));
+    constrain(&mut s, "vertical", json!([lines[2]]), None);
+    constrain(&mut s, "horizontal", json!([lines[3]]), None);
+    constrain(&mut s, "distance", json!([lines[3]]), Some(p - w));
+    constrain(&mut s, "horizontal", json!([a, b]), None);
+    run(
+        &mut s,
+        "sketch.pattern",
+        json!({"sketch": "Edge", "entities": lines, "count": "k", "chain": [a, b]}),
+    );
+    let made = run(
+        &mut s,
+        "sketch.polyline",
+        json!({"sketch": "Edge", "points": [format!("{b}[last]"), [2.0 * p + g, 0]]}),
+    );
+    let spacer = ids(&made["lines"])[0].clone();
+    let end = ids(&made["points"])[1].clone();
+    constrain(&mut s, "horizontal", json!([spacer]), None);
+    constrain(&mut s, "distance", json!([spacer]), Some(g));
+    run(
+        &mut s,
+        "sketch.pattern",
+        json!({"sketch": "Edge", "entities": [spacer], "patterns": ["p1"], "count": "n", "chain": [a, end]}),
+    );
+    let length = 3.0 * (2.0 * p + g);
+    let made = run(
+        &mut s,
+        "sketch.polyline",
+        json!({"sketch": "Edge", "points": [format!("{end}[last]"), [length, -h], [0, -h], a]}),
+    );
+    let closing = ids(&made["lines"]);
+    constrain(&mut s, "vertical", json!([closing[0]]), None);
+    constrain(&mut s, "horizontal", json!([closing[1]]), None);
+    constrain(&mut s, "vertical", json!([closing[2]]), None);
+    constrain(&mut s, "distance", json!([closing[2]]), Some(h));
+    // One unit after the end of the tabs of the last cell.
+    let tabs_end = 2.0 * (2.0 * p + g) + 2.0 * p;
+    let made = run(
+        &mut s,
+        "sketch.line",
+        json!({"sketch": "Edge", "from": format!("{b}[last][last]"), "to": [tabs_end + 1.0, 0], "construction": true}),
+    );
+    let tail = made["entity"].as_str().unwrap().to_string();
+    let q = made["end"].as_str().unwrap().to_string();
+    constrain(&mut s, "horizontal", json!([tail]), None);
+    constrain(&mut s, "distance", json!([tail]), Some(1.0));
+    run(
+        &mut s,
+        "feature.extrude",
+        json!({"sketch": "Edge", "distance": 0.5, "name": "Rib"}),
+    );
+    let start = equals_a_fresh_open(&mut s, &dir, "nested-start.3dcraft");
+    assert!(failed(&start).is_empty(), "{:?}", failed(&start));
+    let [x0, _] = point(&start, "Edge", &q);
+    assert!((x0 - (tabs_end + 1.0)).abs() <= 1e-12 * x0, "{x0}");
+    for (k, n) in [(6_u32, 3_u32), (2, 3), (2, 10), (2, 3), (6, 10), (2, 3)] {
+        set(&mut s, &[("k", &k.to_string()), ("n", &n.to_string())]);
+        let now = equals_a_fresh_open(&mut s, &dir, &format!("nested-{k}-{n}.3dcraft"));
+        assert!(failed(&now).is_empty(), "k {k} n {n}: {:?}", failed(&now));
+        let cell = f64::from(k) * p + g;
+        let want = f64::from(n - 1) * cell + f64::from(k) * p + 1.0;
+        let [x, _] = point(&now, "Edge", &q);
+        assert!(
+            (x - want).abs() <= 1e-9 * want,
+            "k {k} n {n}: q at {x}, want {want}"
+        );
+        let area = f64::from(n) * cell * h + f64::from(n * k) * w * c;
+        let volume = volumes(&now)[0].1;
+        assert!(
+            (volume - area * 0.5).abs() <= 1e-9 * volume,
+            "k {k} n {n}: {volume}"
+        );
+    }
+    let back = state(&mut s);
+    let [x, _] = point(&back, "Edge", &q);
+    assert!((x - x0).abs() <= 1e-12 * x0, "back at {x}, started at {x0}");
+    assert!(largest_move(&start, &back) <= 1e-12, "back to the start");
+    let _ = std::fs::remove_dir_all(&dir);
+}
