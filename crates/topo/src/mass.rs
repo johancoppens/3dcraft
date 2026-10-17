@@ -2067,46 +2067,91 @@ const UNSEEN_CLOSURE: &str = "a boundary that jumps across the parameters of a s
 
 /// Whether the samples jump by more than half of `width` in a parameter
 /// whose closure is not known, on a surface whose two borders across that
-/// parameter are the same curve near enough to be a seam
-/// ([`UNSEEN_CLOSURE`]). (Next to a heavy corner of a patch whose weights
-/// are far apart the samples may jump that far on a surface that does not
-/// close at all: its borders are far apart, and the loops are closed in
-/// its parameters.)
+/// parameter come within twice `touch` of each other where they jump or
+/// at one of seventeen places along them: a seam the closure test may
+/// have missed ([`UNSEEN_CLOSURE`]). Why twice `touch`: a boundary point
+/// counts as on the surface within `touch` of it ([`ON_SURFACE`] of the
+/// body's size, the integrator's stand-in for the modelling tolerance it
+/// is not told), and a boundary that goes over a seam has a point within
+/// that of both borders where it does, so the borders there are within
+/// twice that of each other; borders further apart everywhere cannot be
+/// crossed but through the face, and a jump of the samples is then the
+/// boundary sweeping that parameter fast (next to a heavy corner of a
+/// patch whose weights are far apart), its loops closed in the
+/// parameters. The test errs one way only: borders taken for a seam cost
+/// the rate sum of before or a refusal, never a wrong measure; a seam it
+/// could miss would have to come together only between the places
+/// looked at, away from where the samples jump.
 fn unseen(
     surface: &Surface,
     samples: &[Sample],
-    pick: impl Fn(&Sample) -> f64,
+    pick: impl Fn(&Sample) -> f64 + Copy,
     closes: Option<(f64, f64)>,
-    (width, along_u): (f64, bool),
+    (width, along_u, touch): (f64, bool, f64),
 ) -> bool {
-    closes.is_none() && jumps(samples, pick, width) && borders_meet(surface, along_u)
+    if closes.is_some() {
+        return false;
+    }
+    let jumped = jump_places(samples, pick, width, along_u);
+    !jumped.is_empty() && borders_meet(surface, along_u, 2.0 * touch, &jumped)
 }
 
-/// How near the two borders of a spline surface across a parameter must
-/// come, as a share of the size of its net, to be taken for a seam the
-/// closure test may have missed: the precision of a file, not of the
-/// arithmetic ([`SAME_ROW`]).
-const SEAM_LIKE: f64 = 1e-5;
+/// The other parameter at the samples on either side of every jump of
+/// `pick` by more than half of `width` (as [`jumps`] finds them).
+fn jump_places(
+    samples: &[Sample],
+    pick: impl Fn(&Sample) -> f64,
+    width: f64,
+    along_u: bool,
+) -> Vec<f64> {
+    let other = |s: &Sample| if along_u { s.v } else { s.u };
+    let mut places = Vec::new();
+    let mut start = 0;
+    while let Some(first) = samples.get(start) {
+        let end = samples
+            .iter()
+            .skip(start)
+            .position(|s| s.loop_index != first.loop_index)
+            .map_or(samples.len(), |offset| start + offset);
+        let Some(block) = samples.get(start..end) else {
+            break;
+        };
+        let around = block.last().zip(block.first());
+        for (a, b) in block
+            .windows(2)
+            .filter_map(|pair| match pair {
+                [a, b] => Some((a, b)),
+                _ => None,
+            })
+            .chain(around)
+        {
+            // Not `>`: a NaN is no jump.
+            if (pick(a) - pick(b)).abs() > 0.5 * width {
+                places.push(other(a));
+                places.push(other(b));
+            }
+        }
+        start = end;
+    }
+    places
+}
 
 /// Whether the borders `u = start` and `u = end` (with `along_u`; else of
-/// v) of a spline surface are within [`SEAM_LIKE`] of each other at
-/// seventeen places along them.
-fn borders_meet(surface: &Surface, along_u: bool) -> bool {
-    let points: &[Vec3] = match surface {
-        Surface::Bezier(p) => p.control_points(),
-        Surface::Nurbs(s) => s.control_points(),
-        _ => return false,
-    };
-    let near = SEAM_LIKE * Bbox3::from_points(points.iter().copied()).diagonal();
+/// v) of a spline surface come within `near` of each other at one of
+/// `places` (values of the other parameter) or of seventeen places evenly
+/// along them.
+fn borders_meet(surface: &Surface, along_u: bool, near: f64, places: &[f64]) -> bool {
+    if !matches!(surface, Surface::Bezier(_) | Surface::Nurbs(_)) {
+        return false;
+    }
     let ((u0, u1), (v0, v1)) = surface.domain();
-    (0..=16).all(|k| {
-        let share = f64::from(k) / 16.0;
+    let (lo, hi) = if along_u { (v0, v1) } else { (u0, u1) };
+    let even = (0..=16).map(|k| lo + (hi - lo) * f64::from(k) / 16.0);
+    places.iter().copied().chain(even).any(|at| {
         let (a, b) = if along_u {
-            let v = v0 + (v1 - v0) * share;
-            (surface.eval(u0, v), surface.eval(u1, v))
+            (surface.eval(u0, at), surface.eval(u1, at))
         } else {
-            let u = u0 + (u1 - u0) * share;
-            (surface.eval(u, v0), surface.eval(u, v1))
+            (surface.eval(at, v0), surface.eval(at, v1))
         };
         a.distance(b) <= near
     })
@@ -2123,9 +2168,9 @@ fn turned(
     samples: &[Sample],
     (pick, rate): (impl Fn(&Sample) -> f64 + Copy, impl Fn(&Sample) -> f64),
     closes: Option<(f64, f64)>,
-    (width, along_u): (f64, bool),
+    (width, along_u, touch): (f64, bool, f64),
 ) -> f64 {
-    if unseen(surface, samples, pick, closes, (width, along_u)) {
+    if unseen(surface, samples, pick, closes, (width, along_u, touch)) {
         samples.iter().map(rate).sum()
     } else {
         net_change(samples, pick, closes.map(|(lo, hi)| hi - lo))
@@ -2264,7 +2309,7 @@ fn plan(
     surface: &Surface,
     index: usize,
     samples: &mut [Sample],
-    sense: f64,
+    (sense, touch): (f64, f64),
 ) -> Result<Plan, MassError> {
     if let (Some(period_u), Some(period_v)) = (surface.period_u(), surface.period_v()) {
         return unrolled(face, index, samples, (period_u, period_v));
@@ -2289,7 +2334,7 @@ fn plan(
         (Some((u0, u1)), Some((v0, v1))) => {
             return unrolled(face, index, samples, (u1 - u0, v1 - v0));
         }
-        (None, Some(_)) => return across_v_seam(surface, index, samples, sense),
+        (None, Some(_)) => return across_v_seam(surface, index, samples, (sense, touch)),
         _ => {}
     }
     let ((u_min, u_max), (v_min, v_max)) = surface.domain();
@@ -2311,10 +2356,16 @@ fn plan(
                 samples,
                 (|s: &Sample| s.u, |s: &Sample| s.du),
                 closes_u,
-                (u_max - u_min, true),
+                (u_max - u_min, true, touch),
             );
             let turns = (sense * swept / (u_max - u_min)).round();
-            if unseen(surface, samples, |s| s.v, closes_v, (v_max - v_min, false)) {
+            if unseen(
+                surface,
+                samples,
+                |s| s.v,
+                closes_v,
+                (v_max - v_min, false, touch),
+            ) {
                 return Err(MassError::Unsupported {
                     face: index,
                     what: UNSEEN_CLOSURE,
@@ -2436,7 +2487,7 @@ fn across_v_seam(
     surface: &Surface,
     index: usize,
     samples: &[Sample],
-    sense: f64,
+    (sense, touch): (f64, f64),
 ) -> Result<Plan, MassError> {
     let ((u_min, u_max), (v_min, v_max)) = surface.domain();
     let [closes_u, closes_v] = spline_closure(surface);
@@ -2445,10 +2496,16 @@ fn across_v_seam(
         samples,
         (|s: &Sample| s.v, |s: &Sample| s.dv),
         closes_v,
-        (v_max - v_min, false),
+        (v_max - v_min, false, touch),
     );
     let turns = (sense * swept / (v_max - v_min)).round();
-    if unseen(surface, samples, |s| s.u, closes_u, (u_max - u_min, true)) {
+    if unseen(
+        surface,
+        samples,
+        |s| s.u,
+        closes_u,
+        (u_max - u_min, true, touch),
+    ) {
         return Err(MassError::Unsupported {
             face: index,
             what: UNSEEN_CLOSURE,
@@ -3108,7 +3165,7 @@ fn together(
                         }
                         Plan::Poles(poled)
                     }
-                    None => plan(face, surface, index, &mut samples, sense)?,
+                    None => plan(face, surface, index, &mut samples, (sense, outline.touch))?,
                 };
                 (plan, true)
             }
@@ -3215,7 +3272,7 @@ fn part_by_part(
     let (mut first, panels_at) = sampled(outline, surface, index, (rule, coarse), &coarsest, work)?;
     let plan = match outline.poled {
         Some(poled) => Plan::Poles(poled),
-        None => plan(face, surface, index, &mut first, sense)?,
+        None => plan(face, surface, index, &mut first, (sense, outline.touch))?,
     };
     let by_loop = plan.up_to_whole_surfaces();
     if !by_loop {

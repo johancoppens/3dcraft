@@ -278,7 +278,13 @@ fn a_plate_with_weights_far_apart_measures_as_the_block() {
         };
         for heavy in [1.0, 10.0, 100.0, 1000.0] {
             let what = format!("weights {heavy} apart at {k}");
-            let m = mass(&weighted(heavy));
+            let body = weighted(heavy);
+            assert_eq!(
+                craft3d_topo::mass_bound(&body).map(|(m, _)| m),
+                craft3d_topo::mass_properties(&body),
+                "{what}"
+            );
+            let m = mass(&body);
             near(m.volume, 24.0 * k * k * k, 1e-12, &what);
             near(m.area, 52.0 * k * k, 1e-12, &what);
             assert!(

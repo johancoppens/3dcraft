@@ -662,6 +662,12 @@ fn a_wall_that_closes_unseen_is_measured_right_or_refused() {
             body.faces[wall.0 as usize].reversed = true;
         }
         assert_eq!(check(&body, &Tolerance::default()), [], "{apart}");
+        // The bound's integration plans the same way, to the bit.
+        assert_eq!(
+            craft3d_topo::mass_bound(&body).map(|(m, _)| m),
+            mass_properties(&body),
+            "{apart}"
+        );
         match mass_properties(&body) {
             Ok(m) => {
                 let volume = PI * radius * radius * height;
